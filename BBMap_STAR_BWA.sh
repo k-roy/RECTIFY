@@ -31,7 +31,7 @@ trim_galore --length 15 $FASTQ_DIR$sample".fastq";
 R1=$TRIMMED_DIR$sample"_trimmed.fq"
 
 ## BBMap
-bbmap.sh in1=$R1 ref=$GENOME_FASTA_FILE out=$ALIGNED_DIR$sample"_bbmap.bam" local=t nhtag=t
+bbmap.sh in1=$R1 ref=$GENOME_FASTA_FILE out=$ALIGNED_DIR$sample"_bbmap.bam" local=t nhtag=t mdtag=t nhtag=t xmtag=t  amtag=t  nmtag=t  xstag=fs stoptag=t lengthtag=t idtag=t inserttag=t  scoretag=t  timetag=t boundstag=t
 samtools sort $ALIGNED_DIR$sample"_bbmap.bam" -o $ALIGNED_DIR$sample"_bbmap_sorted.bam"
 samtools index $ALIGNED_DIR$sample"_bbmap_sorted.bam"
 
