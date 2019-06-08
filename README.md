@@ -1,1 +1,1 @@
-# PAMAP
+# PATMAP
