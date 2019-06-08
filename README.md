@@ -1,1 +1,1 @@
-# PATMAP
+# pAmapping
