@@ -4,7 +4,8 @@ processed data can be found here: https://drive.google.com/drive/folders/1UETZGw
 
 processed annotations can be found here: https://drive.google.com/drive/folders/1UHcrso8nN2RZ6hXgJ221ROnczVPCDdJG?usp=sharing
 *annotations are integrated from multiple sources
-*each coordinate in the genome is assigned to an annotation with conflicts resolved by a priority ranking in "prioritization_order_for_sequence_types.txt"
+*each coordinate in the genome is assigned to an annotation
+*conflicts resolved by a priority ranking in "prioritization_order_for_sequence_types.txt"
 *intergenic is the default when a coordinate has no annotation
 
 Data processing steps:
