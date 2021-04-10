@@ -1,18 +1,18 @@
 from GTF_GFF_manipulation import get_gene_id_from_gtf_annotation
 
-TIFseq_filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/S1_TIFs.txt'
-#filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/test.txt'
-genome_filename = '/Users/kevinroy/Dropbox/yeast_genome/saccharomyces_cerevisiae_R64-1-1_20110208.fa'
-UTR_filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/UTR_termini_accounting_for_' + str(REQUIRED_FRACTION_FOR_TRANSCRIPT_TERMINI*100) + '%_of_transcripts_screened_for_internal_AG_mispriming.txt'
-gtf_filename = '/Users/kevinroy/Dropbox/yeast_genome/R64_annotations_Mito.gtf'
-
-REQUIRED_FRACTION_FOR_TRANSCRIPT_TERMINI = 0.95
+REQUIRED_FRACTION_FOR_TRANSCRIPT_TERMINI = 0.90
 ## check sequence for downstream AG richness and screen these out
 ## parameters for filtering
 DOWNSTREAM_NT_TO_CHECK = 10
 MAX_G_ALLOWED = 4
 MAX_CT_ALLOWED = 1
 ## first four nucleotides must all be A to consider a read for flagging
+
+TIFseq_filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/S1_TIFs.txt'
+#filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/test.txt'
+genome_filename = '/Users/kevinroy/Dropbox/yeast_genome/saccharomyces_cerevisiae_R64-1-1_20110208.fa'
+UTR_filename = '/Users/kevinroy/Dropbox/temp/Pelechano_Transcript_Isoforms/UTR_termini_accounting_for_' + str(REQUIRED_FRACTION_FOR_TRANSCRIPT_TERMINI*100) + '%_of_transcripts_screened_for_internal_AG_mispriming.txt'
+gtf_filename = '/Users/kevinroy/Dropbox/yeast_genome/R64_annotations_Mito.gtf'
 
 def load_genome(genome_filename):
     '''
