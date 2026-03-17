@@ -1,0 +1,57 @@
+{% set name = "rectify" %}
+{% set version = "2.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: REPLACE_WITH_SHA256_AFTER_PYPI_UPLOAD
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv
+  entry_points:
+    - rectify = rectify.cli:main
+
+requirements:
+  host:
+    - python >=3.8
+    - pip
+    - setuptools >=61.0
+  run:
+    - python >=3.8
+    - pysam >=0.19.0
+    - numpy >=1.20.0
+    - pandas >=1.3.0
+    - pybigwig >=0.3.18
+    - biopython >=1.79
+    - tqdm >=4.60.0
+
+test:
+  imports:
+    - rectify
+    - rectify.core
+    - rectify.utils
+  commands:
+    - rectify --help
+
+about:
+  home: https://github.com/k-roy/RECTIFY
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: 'RNA 3'' End Correction Tool Integrating False-priming and poly(A) ambiguity'
+  description: |
+    RECTIFY is a unified framework for correcting 3' end mapping artifacts in
+    poly(A)-tailed RNA sequencing data. It addresses A-tract ambiguity,
+    AG mispriming, poly(A) tail alignment artifacts, and indel errors near
+    RNA 3' ends.
+  dev_url: https://github.com/k-roy/RECTIFY
+  doc_url: https://github.com/k-roy/RECTIFY#readme
+
+extra:
+  recipe-maintainers:
+    - k-roy
