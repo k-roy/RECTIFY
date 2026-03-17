@@ -142,7 +142,8 @@ class SpikeInInference:
                                     stderr=subprocess.PIPE, timeout=30)
             lines = result.stdout.decode().strip().split('\n')
             return ''.join(lines[1:]).upper()
-        except Exception as e:
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, UnicodeDecodeError) as e:
+            # Silent failure is intentional - caller handles empty sequence
             return ''
 
     def infer_spikein_signature(

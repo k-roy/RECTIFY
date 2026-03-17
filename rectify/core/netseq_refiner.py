@@ -124,8 +124,8 @@ class NetseqLoader:
                 # Replace None with 0
                 values = [v if v is not None else 0.0 for v in values]
                 combined_signal += np.array(values)
-            except:
-                # Chromosome not found in this BigWig, skip
+            except (KeyError, RuntimeError, ValueError):
+                # Chromosome not found or invalid region in this BigWig, skip
                 continue
 
         # Cache result with LRU eviction

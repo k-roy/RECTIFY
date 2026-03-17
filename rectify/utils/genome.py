@@ -350,42 +350,26 @@ def clamp_position(chrom: str, position: int) -> int:
 # Position Utilities
 # =============================================================================
 
-def get_read_3prime_position(read,
-                            strand: str,
-                            include_soft_clips: bool = True) -> int:
+def get_read_3prime_position(read, strand: str) -> int:
     """
     Get 3' end genomic position (strand-aware).
+
+    Returns the position where the read alignment ends on the 3' side,
+    which corresponds to the potential CPA site. Does NOT include soft-clipped
+    bases (poly-A tails) since those extend beyond the true 3' end.
 
     Args:
         read: pysam.AlignedSegment
         strand: Gene strand ('+' or '-')
-        include_soft_clips: Include soft-clipped bases in position calculation
 
     Returns:
-        Genomic coordinate of RNA 3' end (0-based)
+        Genomic coordinate of RNA 3' end (0-based, inclusive)
     """
     if strand == '+':
         # 3' end is at right (higher coordinate)
-        three_prime = read.reference_end  # 0-based, exclusive
-
-        if include_soft_clips and read.cigartuples:
-            # Check for soft-clip at 3' end (right)
-            if read.cigartuples[-1][0] == 4:  # 'S' operation
-                # Soft-clipped bases extend beyond reference_end
-                # But we want the aligned portion, so reference_end is correct
-                pass
-
-        return three_prime - 1  # Convert to 0-based inclusive
-
+        # reference_end is 0-based exclusive, so subtract 1 for inclusive
+        return read.reference_end - 1
     else:
         # 3' end is at left (lower coordinate)
-        three_prime = read.reference_start  # 0-based
-
-        if include_soft_clips and read.cigartuples:
-            # Check for soft-clip at 3' end (left)
-            if read.cigartuples[0][0] == 4:  # 'S' operation
-                # Soft-clipped bases extend leftward
-                # reference_start is already correct
-                pass
-
-        return three_prime
+        # reference_start is 0-based inclusive
+        return read.reference_start
