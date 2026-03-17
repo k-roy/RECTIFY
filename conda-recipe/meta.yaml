@@ -1,4 +1,4 @@
-{% set name = "rectify" %}
+{% set name = "rectify-rna" %}
 {% set version = "2.1.0" %}
 
 package:

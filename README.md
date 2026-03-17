@@ -1,8 +1,8 @@
 # RECTIFY: Unified RNA 3' End Correction Framework
 
+[![PyPI version](https://badge.fury.io/py/rectify-rna.svg)](https://pypi.org/project/rectify-rna/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Implementation Status](https://img.shields.io/badge/status-complete-brightgreen.svg)](https://github.com/k-roy/RECTIFY)
 [![Tests](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](tests/)
 
 **RECTIFY** (**R**NA 3' **E**nd **C**orrection **T**ool **I**ntegrating **F**alse-priming and pol**y**(A) ambiguity) is a unified framework for correcting 3' end mapping artifacts in poly(A)-tailed RNA sequencing data.
@@ -135,10 +135,10 @@ cd RECTIFY
 pip install -e .
 ```
 
-### From PyPI (future release)
+### From PyPI
 
 ```bash
-pip install rectify
+pip install rectify-rna
 ```
 
 ## Quick Start
