@@ -77,45 +77,45 @@ STEP 3: NET-seq REFINEMENT (Optional)
 
 For species with NET-seq data, we can resolve the ambiguity window.
 NET-seq captures Pol II at nascent 3' ends, but oligo(dT) priming
-spreads signal upstream due to internal A-tract priming.
+on internal A-tracts spreads signal RIGHTWARD from each true CPA site.
 
 Position:        31      34      37      40      42
                  |       |       |       |       |
-Raw NET-seq:     ##      ###     ##
-                ####    #####   ####
-               ######  ####### ######
-              ==============================
-              |  spread from internal priming |
+                 #                                    <- minor CPA (10%)
+Raw NET-seq:     ##-->-->-->                          (signal spreads right)
+                         ####                         <- major CPA (70%)
+                         ######-->-->-->-->           (signal spreads right)
+                                         ##           <- minor CPA (20%)
+                                         ###-->-->    (signal spreads right)
 
-After deconvolution (removing oligo(dT) spreading artifact):
+After deconvolution (removing rightward spreading artifact):
 
-True CPA sites:  #               #               #
+True CPA sites:  #               ####            ##
                  |               |               |
 Position:        31              35              39
-Weight:         (25%)           (50%)           (25%)
+Weight:         (10%)           (70%)           (20%)
 
 ===============================================================================
 STEP 4: PROPORTIONAL ASSIGNMENT
 ===============================================================================
 
 The Nanopore read has ambiguity window [31, 42]. Using NET-seq peaks,
-we split the read proportionally:
+we assign the read to the most likely CPA site:
 
                  31              35              39          42
                  |               |               |           |
 Ambiguity:       |===============================================|
-NET-seq peaks:   # (25%)         # (50%)         # (25%)
+NET-seq peaks:   # (10%)         #### (70%)      ## (20%)
 
-Final output:
+Final output (single best assignment):
 +----------+----------+------------+-----------------+----------------+
 | read_id  | position | confidence | ambiguity_range | netseq_support |
 +----------+----------+------------+-----------------+----------------+
-| read001  |    35    |    HIGH    |       11        |      0.50      |
-| read001  |    31    |   MEDIUM   |       11        |      0.25      |
-| read001  |    39    |   MEDIUM   |       11        |      0.25      |
+| read001  |    35    |    HIGH    |       11        |      0.70      |
 +----------+----------+------------+-----------------+----------------+
 
-Without NET-seq: Reports ambiguity window [31, 42] with uniform distribution.
+Confidence reflects NET-seq support: 70% support = HIGH confidence.
+Without NET-seq: Reports ambiguity window [31, 42] with uniform uncertainty.
 ```
 
 ## Installation
