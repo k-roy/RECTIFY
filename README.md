@@ -31,91 +31,91 @@ RECTIFY corrects 3' end mapping artifacts by walking a read through multiple cor
 Here's a single Nanopore read traversing the full pipeline:
 
 ```
-═══════════════════════════════════════════════════════════════════════════════
- STEP 1: RAW ALIGNMENT
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
+STEP 1: RAW ALIGNMENT
+===============================================================================
 
- Genome:        ...CTAGTGACAGTCAAAAAAAA-AAACAAAAGT|CTAGCGATC...
-                                        └───────┘
-                                     genomic A-tract (11 bp)
+Genome:         5'...CTAGTGACAGTCAAAAAAAA-AAACAAAAGT|CTAGCGATC...3'
+                                         ^^^^^^^^^^^
+                                      genomic A-tract
 
- Nanopore read: ...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAAA
-                                       ↑       ↑↑  └──────────────────┘
-                                   seq error  indels    soft-clipped
-                                   (T in As)            poly(A) tail
+Nanopore read:  5'...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAAA
+                                          ^      ^^  |__________________|
+                                       T error  dels    soft-clipped
+                                                        poly(A) tail
 
- Aligner output:
-   • Mapped 3' end: position 42 (at the |)
-   • Soft-clip starts after last aligned base
-   • Indels in A-tract are alignment artifacts (homopolymer confusion)
-   • The 'T' in the read's A-tract is a sequencing error
+The aligner places the soft-clip boundary at position 42 (the |). Everything
+after is called poly(A) tail. But notice:
+  - The 'T' in the read is a sequencing error (Nanopore homopolymer confusion)
+  - The deletions (-) are alignment artifacts, not real
+  - The true 3' end could be anywhere in the A-tract
 
-═══════════════════════════════════════════════════════════════════════════════
- STEP 2: INDEL CORRECTION — Walk Backwards to True 3' End
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
+STEP 2: INDEL CORRECTION - Walk Backwards to Find True 3' End
+===============================================================================
 
- Starting from mapped 3' end, walk upstream until genome and read AGREE on
- the first non-A base:
+Starting from mapped 3' end, walk upstream comparing genome vs read:
 
- Genome:  ...CTAGTGACAGT C A A A A A A A A - A A A C A A A A G T | ...
- Read:    ...CTAGTGACAGT C A A A A A A A A T A A A - A A A A - - | ...
-                         ↑                 ↑       ↑         ↑↑
-                      AGREE             seq err   del       del
-                      (C=C)             (ignore)  (+1bp)   (+2bp)
+Position:    ...  31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...
+                  |                                   |
+Genome:      ...  C  A  A  A  A  A  A  A  A  -  A  A  A  C  A  ...
+Read:        ...  C  A  A  A  A  A  A  A  A  T  A  A  A  -  A  ...
+                  ^                          ^           ^
+               AGREE                      seq err      del
+               (C=C)                     (ignore)    (+1bp)
 
- RECTIFY logic:
-   • Walk back from position 42
-   • Skip A's (ambiguous with poly(A) tail)
-   • Find first non-A agreement: 'C' at position 31
-   • Count deletions in A-tract: 3 bp total
-   • Corrected range: [31, 42] → ambiguity window = 11 bp
+RECTIFY walks back from position 42:
+  - Skip all A's (ambiguous with poly(A) tail)
+  - Ignore T (likely seq error in homopolymer)
+  - Count deletions: 1 bp in this region
+  - Find first non-A agreement: 'C' at position 31
+  - Result: ambiguity window = [31, 42], range = 11 bp
 
-═══════════════════════════════════════════════════════════════════════════════
- STEP 3: NET-seq REFINEMENT (Optional)
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
+STEP 3: NET-seq REFINEMENT (Optional)
+===============================================================================
 
- For species with NET-seq data (captures Pol II at nascent 3' ends), we can
- resolve the ambiguity window. Note: oligo(dT) priming spreads signal upstream
- due to internal A-tract priming.
+For species with NET-seq data, we can resolve the ambiguity window.
+NET-seq captures Pol II at nascent 3' ends, but oligo(dT) priming
+spreads signal upstream due to internal A-tract priming.
 
- Position:           31      34      37      40      42
-                     |       |       |       |       |
- Raw NET-seq:     ▂▄▆█▆▄▃▃▄▅▇█▇▅▄▃▃▄▅▆▇█▇▅▄▂▁▁▁▁▁▁▁▁
-                  └──────┘ └──────┘ └──────┘
-                   Peak 1   Peak 2   Peak 3
-                  (spread)  (spread) (spread)
+Position:        31      34      37      40      42
+                 |       |       |       |       |
+Raw NET-seq:     ##      ###     ##
+                ####    #####   ####
+               ######  ####### ######
+              ==============================
+              |  spread from internal priming |
 
- After deconvolution (removing oligo(dT) spreading artifact):
+After deconvolution (removing oligo(dT) spreading artifact):
 
- True CPA signal:    █           █           █
-                     ↑           ↑           ↑
-                   pos 31      pos 35      pos 39
-                   (25%)       (50%)       (25%)
+True CPA sites:  #               #               #
+                 |               |               |
+Position:        31              35              39
+Weight:         (25%)           (50%)           (25%)
 
-═══════════════════════════════════════════════════════════════════════════════
- STEP 4: PROPORTIONAL ASSIGNMENT
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
+STEP 4: PROPORTIONAL ASSIGNMENT
+===============================================================================
 
- The Nanopore read has ambiguity window [31, 42]. Using NET-seq deconvolved
- peaks, we assign probability to each CPA site:
+The Nanopore read has ambiguity window [31, 42]. Using NET-seq peaks,
+we split the read proportionally:
 
- Nanopore read:    ════════════════════════════════
-                   [          ambiguity           ]
-                   31                             42
+                 31              35              39          42
+                 |               |               |           |
+Ambiguity:       |===============================================|
+NET-seq peaks:   # (25%)         # (50%)         # (25%)
 
- NET-seq peaks:    █ (25%)      █ (50%)      █ (25%)
-                   31           35           39
+Final output:
++----------+----------+------------+-----------------+----------------+
+| read_id  | position | confidence | ambiguity_range | netseq_support |
++----------+----------+------------+-----------------+----------------+
+| read001  |    35    |    HIGH    |       11        |      0.50      |
+| read001  |    31    |   MEDIUM   |       11        |      0.25      |
+| read001  |    39    |   MEDIUM   |       11        |      0.25      |
++----------+----------+------------+-----------------+----------------+
 
- Final output:
- ┌──────────────────────────────────────────────────────────────────────────┐
- │  read_id    position   confidence   ambiguity_range   netseq_support     │
- │  ────────   ────────   ──────────   ───────────────   ──────────────     │
- │  read001    35         HIGH         11                0.50               │
- │  read001    31         MEDIUM       11                0.25               │
- │  read001    39         MEDIUM       11                0.25               │
- └──────────────────────────────────────────────────────────────────────────┘
-
- Without NET-seq: Reports ambiguity window [31, 42] with uniform distribution
+Without NET-seq: Reports ambiguity window [31, 42] with uniform distribution.
 ```
 
 ## Installation
