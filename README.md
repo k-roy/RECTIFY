@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Implementation Status](https://img.shields.io/badge/status-complete-brightgreen.svg)](https://github.com/k-roy/RECTIFY)
-[![Tests](https://img.shields.io/badge/tests-129%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](tests/)
 
-**RECTIFY** (RNA End Correction Tool Integrating False-priming and ambiguitY) is a unified framework for correcting 3' end mapping artifacts in poly(A)-tailed RNA sequencing data.
+**RECTIFY** (**R**NA 3' **E**nd **C**orrection **T**ool **I**ntegrating **F**alse-priming and pol**y**(A) ambiguity) is a unified framework for correcting 3' end mapping artifacts in poly(A)-tailed RNA sequencing data.
 
 ## Overview
 
@@ -110,7 +110,7 @@ MIT License - See [LICENSE](LICENSE) for details
 
 ## Contact
 
-- Kevin R. Roy - [kevinroy@stanford.edu](mailto:kevinroy@stanford.edu)
+- Kevin R. Roy - [kevinrjroy@gmail.com](mailto:kevinrjroy@gmail.com)
 - GitHub: [k-roy/RECTIFY](https://github.com/k-roy/RECTIFY)
 
 ## Acknowledgments

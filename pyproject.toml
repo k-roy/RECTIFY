@@ -7,7 +7,7 @@ name = "rectify"
 version = "2.1.0"
 description = "Unified RNA 3' End Correction Framework for poly(A)-tailed RNA sequencing"
 authors = [
-    {name = "Kevin R. Roy", email = "kevinroy@stanford.edu"}
+    {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"

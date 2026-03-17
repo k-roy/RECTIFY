@@ -579,13 +579,20 @@ class SpikeInFilter:
             return 'endogenous', gene_name
         else:
             # Intermediate case - check for synthetic cores in the clip
+            # Require >=2 matches to avoid false positives from random 6bp matches
+            min_cores = 2
             for sig in self.signatures:
                 gene_name = sig.get('gene', 'unknown')
                 syn_cores = sig.get('synthetic_3utr_cores', [])
+                gen_cores = sig.get('genomic_3utr_cores', [])
+
                 syn_matches = sum(1 for core in syn_cores if core in right_clip)
-                if syn_matches >= 1:
+                gen_matches = sum(1 for core in gen_cores if core in right_clip)
+
+                # Only classify as spike-in if strong synthetic signal and weak genomic
+                if syn_matches >= min_cores and gen_matches < min_cores:
                     return 'spikein', gene_name
-            # No synthetic pattern found
+            # No strong synthetic pattern found - classify as endogenous
             gene_name = self.signatures[0].get('gene', 'unknown') if self.signatures else ''
             return 'endogenous', gene_name
 
