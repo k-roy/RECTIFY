@@ -6,8 +6,8 @@ package:
   version: {{ version }}
 
 source:
-  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
-  sha256: REPLACE_WITH_SHA256_AFTER_PYPI_UPLOAD
+  url: https://pypi.io/packages/source/r/rectify-rna/rectify_rna-{{ version }}.tar.gz
+  sha256: bf9407ab66bfa867fbe519a1c9a565d79f146bbae053f4c12e61dd207f2eb030
 
 build:
   noarch: python
