@@ -36,7 +36,8 @@ STEP 1: RAW ALIGNMENT
 ===============================================================================
 
 The aligner maps a Nanopore direct RNA read to the genome. The poly(A) tail
-is soft-clipped, but indels and sequencing errors occur in homopolymer regions.
+is soft-clipped where the genomic A-tract ends, but the aligned region of the tail
+contains additional errors due to alignment and sequencing errors.
 
 genome: 5'..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC..3'
                                                        |
@@ -47,10 +48,10 @@ read:   5'..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAA..
                               T error  dels   soft-clipped tail
 
 Key observations:
-  - 'T' in the read = sequencing error (Nanopore homopolymer confusion)
-  - Deletions (-) = alignment artifacts from homopolymer uncertainty
-  - A-tract after GT creates ambiguity about true CPA position
   - Soft-clip boundary placed at mapped 3' end
+  - Deletions (-) = aligner attempts to maximize alignment of the poly(A) tail
+    at expense of indels
+  - 'T' in the poly(A) tail = Nanopore sequencing error in the homopolymer
 
 ===============================================================================
 STEP 2: INDEL CORRECTION - Walk Backwards to Find True 3' End
@@ -67,10 +68,10 @@ read:   ..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|..
 
 RECTIFY walks back from soft-clip boundary:
   - Skip all A's (ambiguous with poly(A) tail)
+  - Ignore deletions where mRNA has the poly(A) tail: 3 bp total
   - Ignore T (likely sequencing error in homopolymer)
-  - Count deletions: 3 bp total
   - Find first non-A agreement: 'C' at upstream position
-  - Result: ambiguity window spanning the A-tract
+  - Result: ambiguity window spanning the A-tract from upstream C to downstream C
 
 ===============================================================================
 STEP 3: NET-seq REFINEMENT (Optional)
@@ -78,8 +79,8 @@ STEP 3: NET-seq REFINEMENT (Optional)
 
 For species with NET-seq data, we can resolve the ambiguity window.
 NET-seq captures oligo-adenylated cleavage intermediates (mean ~6.6 bp tail).
-When genomic A's exist upstream of the CPA site, the oligo-A tail aligns
-to them, shifting the apparent position UPSTREAM.
+When genomic A's exist downstream of the CPA site, the oligo-A tails align
+to them, shifting the apparent position DOWNSTREAM.
 
 True CPA:                              |
                                        v
@@ -87,14 +88,14 @@ genome:         ...CGTACAAAAAAAA|GTCACC...
                        ^^^^^^^^
                     genomic A-tract
 
-NET-seq signal:    ####                      <- signal shifted upstream
+NET-seq signal:    ####                      <- signal spread downstream
                   ######                        because oligo-A tail
                  ########                       aligns to genomic A's
                     ^
               apparent position
 
-RECTIFY applies an upstream shift correction based on A-count to find
-peaks, then selects the strongest peak within the ambiguity window.
+RECTIFY models this distribution to first deconvolve signal that has spread
+from peaks and assign peaks with their true proportions.
 
 Confidence assignment:
   - HIGH:   Single clear peak with strong signal
