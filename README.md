@@ -25,6 +25,99 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
 - **NET-seq refinement** (optional, technology-independent)
 - **Unified output format** with confidence scores and QC flags
 
+## How It Works
+
+RECTIFY corrects common 3' end mapping artifacts through a series of modular steps:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXAMPLE 1: Poly(A) Tail Alignment Artifact                                 │
+│  ═══════════════════════════════════════════                                │
+│                                                                             │
+│  Genome:    ...TCGACTGCAAAAAA|GTCACC...    (| = true CPA site)              │
+│                          └──┘                                               │
+│                     genomic A-tract                                         │
+│                                                                             │
+│  Raw read:  ...TCGACTGCAAAAAAAAAAAAA        (poly(A) tail extends into As)  │
+│                              └────┘                                         │
+│                          tail aligned to genome                             │
+│                                                                             │
+│  Artifact:  Read 3' end maps 4bp downstream of true site                    │
+│                                                                             │
+│  RECTIFY:   Detects soft-clipped A-rich sequence, trims poly(A) tail       │
+│  Corrected: ...TCGACTGCAAAAAA|  ← correct position restored                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXAMPLE 2: Indel Artifacts Near 3' End (Nanopore)                          │
+│  ═════════════════════════════════════════════════                          │
+│                                                                             │
+│  Genome:    ...GCTAAGCTTAAAAA|GTCACC...                                     │
+│                                                                             │
+│  Raw read:  ...GCTAAGCT-AAAAA|GTCACC       (1bp deletion in A-tract)        │
+│                       ↑                                                     │
+│                  homopolymer deletion artifact                              │
+│                                                                             │
+│  Artifact:  Mapped 3' end shifted 1bp due to deletion                       │
+│                                                                             │
+│  RECTIFY:   Identifies A-tract deletion as systematic artifact              │
+│  Corrected: Position adjusted +1bp to compensate                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXAMPLE 3: A-tract Ambiguity Window                                        │
+│  ═══════════════════════════════════                                        │
+│                                                                             │
+│  Genome:    ...CGTACAAAAAAAA|GTCACC...                                      │
+│                   └───────┘                                                 │
+│                   8bp A-tract                                               │
+│                                                                             │
+│  Problem:   Any position within the A-tract could be the true 3' end        │
+│             (indistinguishable from poly(A) tail)                           │
+│                                                                             │
+│             ...CGTACAAAAAAAA|     ← could be here                           │
+│             ...CGTACAAAAAAA|A     ← or here                                 │
+│             ...CGTACAAAAAA|AA     ← or here                                 │
+│             ...CGTACAAAAA|AAA     ← etc.                                    │
+│                                                                             │
+│  RECTIFY:   Reports ambiguity window [pos-7, pos] with range=8              │
+│             Confidence score reflects uncertainty                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXAMPLE 4: NET-seq Refinement                                              │
+│  ═════════════════════════════                                              │
+│                                                                             │
+│  Genome:    ...CGTACAAAAAAAA|GTCACC...                                      │
+│                   └───────┘                                                 │
+│               ambiguity window                                              │
+│                                                                             │
+│  NET-seq:           ▁▂▃█▇▅▂▁                                                │
+│  signal:               ↑                                                    │
+│                    peak at -3                                               │
+│                                                                             │
+│  RECTIFY:   Uses NET-seq Pol II occupancy to identify most likely           │
+│             termination site within the ambiguity window                    │
+│                                                                             │
+│  Result:    Position refined to NET-seq peak, confidence = HIGH             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Pipeline Flow:
+══════════════
+
+  ┌──────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+  │  Input   │    │  Module 1   │    │ Module 2A/B │    │  Module 3   │
+  │   BAM    │───▶│   A-tract   │───▶│  Poly(A) &  │───▶│   NET-seq   │
+  │          │    │  Ambiguity  │    │   Indels    │    │ Refinement  │
+  └──────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                        │                  │                  │
+                        ▼                  ▼                  ▼
+                  ┌───────────────────────────────────────────────┐
+                  │              Corrected 3' Ends                │
+                  │   (position, ambiguity range, confidence)     │
+                  └───────────────────────────────────────────────┘
+```
+
 ## Installation
 
 ### From source (development)
