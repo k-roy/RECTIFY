@@ -77,15 +77,15 @@ STEP 3: NET-seq REFINEMENT (Optional)
 ===============================================================================
 
 For species with NET-seq data, we can resolve the ambiguity window.
-NET-seq captures Pol II at nascent 3' ends without poly(A) selection,
-providing ground truth for CPA site localization.
+NET-seq captures nascent RNA 3' ends directly (no oligo(dT) priming),
+providing ground truth unaffected by A-tract ambiguity.
 
 Position:        31      34      37      40      42
                  |       |       |       |       |
-NET-seq signal:              ####
-                            ######
-                           ########
-                          <- peak ->
+NET-seq signal:                  ####
+                                ######
+                               ########
+                                 peak
 
 RECTIFY finds peaks in NET-seq signal within the ambiguity window
 and selects the strongest peak as the refined position.
