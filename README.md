@@ -3,7 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/rectify-rna.svg)](https://pypi.org/project/rectify-rna/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen.svg)](tests/)
 
 **RECTIFY** (**R**NA 3' **E**nd **C**orrection **T**ool **I**ntegrating **F**alse-priming and pol**y**(A) ambiguity) is a unified framework for correcting 3' end mapping artifacts in poly(A)-tailed RNA sequencing data.
 
@@ -94,35 +94,66 @@ NET-seq signal:    ####                      <- signal spread downstream
                     ^
               apparent position
 
-RECTIFY models this distribution to first deconvolve signal that has spread
-from peaks and assign peaks with their true proportions.
+RECTIFY uses NNLS (Non-Negative Least Squares) deconvolution to remove
+the spreading artifact and recover true peak positions:
+
+1. Build convolution matrix from 0A PSF (Point-Spread Function)
+   - ~54% of signal stays at true position
+   - ~46% spreads downstream (mean ~3bp)
+
+2. Solve: observed = A @ true_peaks (regularized NNLS)
+
+3. Assign reads PROPORTIONALLY to deconvolved peaks:
+   - If 2 peaks with 70%/30% signal → assign 0.7 and 0.3 reads
 
 Confidence assignment:
-  - HIGH:   Single clear peak with strong signal
-  - MEDIUM: Multiple peaks or moderate signal
+  - HIGH:   Single dominant peak (>90% of signal)
+  - MEDIUM: Dominant peak (>70% of signal)
+  - SPLIT:  Multiple significant peaks (no dominant)
   - LOW:    Weak signal or no NET-seq data
 
 ===============================================================================
-STEP 4: FINAL OUTPUT
+STEP 4: FINAL OUTPUT (with proportional apportionment)
 ===============================================================================
 
-The Nanopore read has ambiguity window [31, 42]. Using the NET-seq peak,
-we assign the read to position 35:
+When NET-seq reveals multiple peaks within an ambiguity window, reads are
+APPORTIONED PROPORTIONALLY to each peak position. This preserves quantitative
+accuracy for downstream analysis.
+
+Example 1: Single dominant peak (HIGH confidence)
+-------------------------------------------------
+Ambiguity window [31, 42], NET-seq shows single peak at position 35:
 
                  31              35                          42
                  |               |                           |
 Ambiguity:       |===============================================|
 NET-seq peak:                    #
 
-Final output:
-+----------+----------+------------+-----------------+-----------+
-| read_id  | position | confidence | ambiguity_range | n_peaks   |
-+----------+----------+------------+-----------------+-----------+
-| read001  |    35    |    HIGH    |       11        |     1     |
-+----------+----------+------------+-----------------+-----------+
+Output: read001 → position 35, weight 1.0, confidence HIGH
+
+Example 2: Multiple peaks (SPLIT confidence)
+--------------------------------------------
+Ambiguity window [31, 42], NET-seq shows peaks at 33 (60%) and 38 (40%):
+
+                 31    33        38                          42
+                 |     |         |                           |
+Ambiguity:       |===============================================|
+NET-seq peaks:         ##       #
+
+Output: read001 → split into TWO output rows:
+  - read001 at position 33, weight 0.6
+  - read001 at position 38, weight 0.4
+
+Final output format:
++----------+----------+--------+------------+-----------------+
+| read_id  | position | weight | confidence | ambiguity_range |
++----------+----------+--------+------------+-----------------+
+| read001  |    33    |  0.6   |   SPLIT    |       11        |
+| read001  |    38    |  0.4   |   SPLIT    |       11        |
++----------+----------+--------+------------+-----------------+
 
 Without NET-seq: Reports ambiguity window [31, 42] and uses leftmost
-position (most conservative estimate).
+position (most conservative estimate), weight 1.0.
 ```
 
 ## Installation
@@ -167,12 +198,42 @@ rectify correct nanopore.bam \
 
 ## Output Format
 
-RECTIFY produces a TSV file with corrected 3' end positions and QC metrics:
+RECTIFY produces two output files:
+
+### 1. Corrected Positions TSV (`output.tsv`)
+
+Per-read corrected 3' end positions with QC metrics:
 
 ```
-read_id  chrom  strand  raw_position  corrected_position  ambiguity_min  ambiguity_max  ambiguity_range  correction_type  confidence  qc_flags
-read001  chrI   +       147588        147585              147583         147588         5                polya_trim       high        PASS
-read002  chrI   +       147593        147591              147591         147593         2                ag_mispriming    medium      AG_RICH
+read_id  chrom  strand  original_3prime  corrected_3prime  ambiguity_min  ambiguity_max  ambiguity_range  polya_length  correction_applied  confidence  qc_flags
+read001  chrI   +       147588           147585            147583         147588         5                42            atract_ambiguity    high        PASS
+read002  chrI   +       147593           147591            147591         147593         2                38            atract_ambiguity    medium      AG_RICH
+```
+
+**Key columns:**
+- `polya_length`: Total observed poly(A) tail length = aligned A's (from A-tract) + soft-clipped A's
+- `ambiguity_range`: Positional uncertainty due to poly(A) tail aligning to genomic A-tract
+- `correction_applied`: `atract_ambiguity` (position correction), `indel_correction`, `netseq_refinement`
+
+### 2. Processing Statistics TSV (`output_stats.tsv`)
+
+Comprehensive read flow statistics through each filtering and correction stage:
+
+```
+metric                       count      percent   description
+total_reads_in_bam           1000000    100.00    Total reads in BAM file
+reads_unmapped               5000       0.50      Unmapped reads (skipped)
+reads_secondary              2000       0.20      Secondary alignments (skipped)
+reads_processed              993000     99.30     Reads with 3' ends corrected
+ends_with_downstream_A       450000     45.32     3' ends with >=1 A immediately downstream
+ends_ambiguous_atract        180000     18.13     3' ends in A-tract (ambiguity range > 0)
+ends_shifted_atract_walking  85000      8.56      3' ends shifted by A-tract walking
+reads_with_polya             890000     89.63     Reads with detected poly(A) tail
+polya_length_mean            42.3       -         Mean poly(A) tail length (bp)
+polya_length_max             185        -         Maximum poly(A) tail length (bp)
+confidence_high              750000     75.53     High confidence assignments
+confidence_medium            200000     20.14     Medium confidence assignments
+confidence_low               43000      4.33      Low confidence assignments
 ```
 
 ## Module Architecture
@@ -187,13 +248,45 @@ RECTIFY applies corrections modularly based on your data:
    - Screens for downstream AG-richness
    - Flags likely misprimed reads
 
-3. **Module 2B+2C: Poly(A) Corrections** (when poly(A) IS sequenced)
-   - Models and trims poly(A) tails
-   - Detects and removes indel artifacts
+3. **Module 2B: Poly(A) Detection** (when poly(A) IS sequenced)
+   - Measures observed poly(A) tail length (aligned A's + soft-clipped A's)
+   - Reports tail length for QC (does NOT correct position - that's handled by A-tract detection)
 
-4. **Module 3: NET-seq Refinement** (optional)
-   - Resolves ambiguity using NET-seq data
-   - Assigns confidence scores
+4. **Module 2C: Indel Correction** (when poly(A) IS sequenced)
+   - Detects and corrects indel artifacts in aligned region
+
+5. **Module 3: NET-seq Refinement** (optional)
+   - Resolves ambiguity using NET-seq data via NNLS deconvolution
+   - Apportions reads PROPORTIONALLY to multiple peaks when ambiguity exists
+   - Assigns confidence scores (HIGH/MEDIUM/SPLIT/LOW)
+
+## Downstream Analysis
+
+RECTIFY includes a comprehensive `analyze` command for downstream analysis of corrected 3' ends:
+
+```bash
+rectify analyze corrected_3ends.tsv \
+  --annotation genes.gtf \
+  --output-dir analysis_results/
+```
+
+### Analysis Modules
+
+| Module | Description | Output |
+|--------|-------------|--------|
+| **Clustering** | Group nearby CPA sites into clusters | `clusters.tsv`, count matrices |
+| **Differential Expression** | DESeq2-based gene and cluster-level analysis | `deseq2_results.tsv` |
+| **PCA** | Sample quality control and batch effect detection | `pca_plot.png` |
+| **Shift Analysis** | Detect condition-specific CPA site usage changes | `shift_results.tsv`, browser plots |
+| **GO Enrichment** | Functional enrichment of genes with shifted 3' ends | `go_enrichment.tsv` |
+| **Motif Discovery** | Identify sequence motifs near CPA sites | `motif_results/` |
+
+### Browser-Style Visualization
+
+The shift analysis module generates publication-ready genome browser plots showing:
+- Per-condition CPA site usage distributions
+- Gene track with CDS boxes as directional pentagon arrows
+- CPA cluster markers
 
 ## Citation
 

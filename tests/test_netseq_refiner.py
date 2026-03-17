@@ -258,7 +258,7 @@ class TestRefineWithNetseq:
     """Test full refinement workflow."""
 
     def test_refine_with_clear_peak(self):
-        """Test refinement with clear NET-seq peak."""
+        """Test refinement with clear NET-seq peak (winner-take-all mode)."""
         # Mock loader
         loader = Mock()
         # Window: 1000-1005, expanded to 995-1010 = 15 positions
@@ -272,7 +272,9 @@ class TestRefineWithNetseq:
             ambiguity_min=1000,
             ambiguity_max=1005,
             strand='+',
-            original_position=1005
+            original_position=1005,
+            proportional_split=False,  # Use winner-take-all mode
+            use_deconvolution=False,   # Use simple peak finding
         )
 
         assert result['refined_position'] == 1002  # Peak position (995 + 7 = 1002)
@@ -292,7 +294,8 @@ class TestRefineWithNetseq:
             ambiguity_min=1000,
             ambiguity_max=1005,
             strand='+',
-            original_position=1005
+            original_position=1005,
+            proportional_split=False,  # Use winner-take-all mode
         )
 
         # Should fall back to leftmost position
@@ -300,12 +303,62 @@ class TestRefineWithNetseq:
         assert result['confidence'] == 'low'
         assert result['method'] == 'leftmost'
 
+    def test_refine_proportional_split(self):
+        """Test proportional splitting mode."""
+        loader = Mock()
+        # Window: 1000-1005, expanded to 995-1010 = 15 positions
+        # Signal with two peaks
+        signal = np.array([0.0, 0.1, 0.2, 1.0, 0.5, 0.3, 0.8, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
+        loader.get_signal.return_value = signal
+
+        result = netseq_refiner.refine_with_netseq(
+            loader,
+            chrom='chrI',
+            ambiguity_min=1000,
+            ambiguity_max=1005,
+            strand='+',
+            original_position=1005,
+            proportional_split=True,
+            use_deconvolution=False,  # Use simple peak finding for test
+        )
+
+        # Should return a list of assignments
+        assert isinstance(result, list)
+        assert len(result) >= 1
+        assert 'assigned_position' in result[0]
+        assert 'fraction' in result[0]
+
+        # Fractions should sum to ~1.0
+        total_fraction = sum(r['fraction'] for r in result)
+        assert abs(total_fraction - 1.0) < 0.01
+
+    def test_refine_no_signal_proportional(self):
+        """Test proportional mode with no signal falls back to leftmost."""
+        loader = Mock()
+        loader.get_signal.return_value = np.zeros(15)
+
+        result = netseq_refiner.refine_with_netseq(
+            loader,
+            chrom='chrI',
+            ambiguity_min=1000,
+            ambiguity_max=1005,
+            strand='+',
+            original_position=1005,
+            proportional_split=True,
+        )
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]['assigned_position'] == 1000
+        assert result[0]['confidence'] == 'low'
+        assert result[0]['method'] == 'leftmost'
+
 
 class TestBatchProcessing:
     """Test batch refinement."""
 
-    def test_refine_batch(self):
-        """Test batch refinement of multiple positions."""
+    def test_refine_batch_winner_take_all(self):
+        """Test batch refinement with winner-take-all mode."""
         loader = Mock()
         # Return appropriate signal size for each call (15 positions)
         loader.get_signal.return_value = np.array([0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0], dtype=float)
@@ -327,18 +380,51 @@ class TestBatchProcessing:
             },
         ]
 
-        results = netseq_refiner.refine_batch(loader, positions)
+        results = netseq_refiner.refine_batch(
+            loader, positions,
+            proportional_split=False,
+            use_deconvolution=False,
+        )
 
         assert len(results) == 2
         assert 'refined_position' in results[0]
         assert 'confidence' in results[0]
 
+    def test_refine_batch_proportional(self):
+        """Test batch refinement with proportional splitting."""
+        loader = Mock()
+        loader.get_signal.return_value = np.array([0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0], dtype=float)
+
+        positions = [
+            {
+                'chrom': 'chrI',
+                'ambiguity_min': 1000,
+                'ambiguity_max': 1005,
+                'strand': '+',
+                'original_position': 1005,
+                'count': 10,  # Read count for this position
+            },
+        ]
+
+        results = netseq_refiner.refine_batch(
+            loader, positions,
+            proportional_split=True,
+            use_deconvolution=False,
+        )
+
+        assert len(results) == 1
+        assert isinstance(results[0], list)
+        # Check weighted counts
+        for r in results[0]:
+            assert 'weighted_count' in r
+            assert 'fraction' in r
+
 
 class TestStatistics:
     """Test NET-seq refinement statistics."""
 
-    def test_calculate_statistics(self):
-        """Test statistics calculation."""
+    def test_calculate_statistics_single_dict(self):
+        """Test statistics calculation with single dict results (winner-take-all)."""
         results = [
             {
                 'refined_position': 1003,
@@ -362,17 +448,40 @@ class TestStatistics:
 
         stats = netseq_refiner.calculate_netseq_statistics(results)
 
-        assert stats['total'] == 3
+        assert stats['total_input'] == 3
+        assert stats['total_output'] == 3
         assert stats['refined'] == 2  # Two with non-zero shift
         assert stats['refinement_rate'] == pytest.approx(2/3)
         assert stats['by_confidence']['high'] == 1
         assert stats['by_method']['netseq_peak'] == 2
 
+    def test_calculate_statistics_proportional(self):
+        """Test statistics calculation with proportional results."""
+        results = [
+            # First position: split into 2 peaks
+            [
+                {'assigned_position': 1001, 'confidence': 'split', 'method': 'deconvolved', 'shift_from_original': -4, 'fraction': 0.6},
+                {'assigned_position': 1003, 'confidence': 'split', 'method': 'deconvolved', 'shift_from_original': -2, 'fraction': 0.4},
+            ],
+            # Second position: single peak
+            [
+                {'assigned_position': 2005, 'confidence': 'high', 'method': 'deconvolved', 'shift_from_original': 0, 'fraction': 1.0},
+            ],
+        ]
+
+        stats = netseq_refiner.calculate_netseq_statistics(results)
+
+        assert stats['total_input'] == 2
+        assert stats['total_output'] == 3  # 2 + 1 after flattening
+        assert stats['n_proportional'] == 2
+        assert stats['n_multi_peak'] == 1
+
     def test_statistics_empty(self):
         """Test statistics with empty input."""
         stats = netseq_refiner.calculate_netseq_statistics([])
 
-        assert stats['total'] == 0
+        assert stats['total_input'] == 0
+        assert stats['total_output'] == 0
 
     def test_format_report(self):
         """Test report formatting."""
@@ -411,14 +520,15 @@ class TestEdgeCases:
         # Provide signal of correct size
         loader.get_signal.return_value = np.zeros(1010)
 
-        # This should work even with large window
+        # This should work even with large window (winner-take-all mode)
         result = netseq_refiner.refine_with_netseq(
             loader,
             chrom='chrI',
             ambiguity_min=1000,
             ambiguity_max=2000,  # Very large window
             strand='+',
-            original_position=1500
+            original_position=1500,
+            proportional_split=False,
         )
 
         assert 'refined_position' in result

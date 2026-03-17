@@ -6,6 +6,7 @@ Provides commands for:
 - correct: Correct 3' end positions in BAM files
 - train-polya: Train poly(A) tail model from control data
 - validate: Validate corrections against NET-seq or other ground truth
+- analyze: Downstream analysis (clustering, DESeq2, PCA, motifs, etc.)
 
 Author: Kevin R. Roy
 Date: 2026-03-09
@@ -36,6 +37,10 @@ Examples:
 
   # Train poly(A) model
   rectify train-polya nanopore.bam --genome sacCer3.fa --control-sites cpa_clusters.tsv -o model.json
+
+  # Analyze corrected positions
+  rectify analyze corrected.tsv --annotation genes.gtf --run-deseq2 --genome sacCer3.fa \\
+          --run-motif -o analysis_output/
 
 Citation:
   Roy, K. R., & Chanfreau, G. F. (2019). RECTIFY: Identification and correction of mRNA
@@ -345,6 +350,12 @@ Citation:
         help='Verbose logging'
     )
 
+    # =========================================================================
+    # analyze command
+    # =========================================================================
+    from .core.analyze_command import create_analyze_parser
+    create_analyze_parser(subparsers)
+
     return parser
 
 
@@ -367,6 +378,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'validate':
         from .core import validate_command
         validate_command.run(args)
+    elif args.command == 'analyze':
+        from .core.analyze_command import run_analyze
+        sys.exit(run_analyze(args))
     else:
         parser.print_help()
         sys.exit(1)

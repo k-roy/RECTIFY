@@ -10,11 +10,22 @@ Problem: A-tract ambiguity creates positional uncertainty (0-4 bp). NET-seq
 data can resolve this by identifying the precise position of transcription
 termination.
 
+Key insight: NET-seq captures oligo-adenylated intermediates (~6.6 bp mean tail).
+When genomic A's exist downstream of the CPA site, these short tails align to
+them, spreading the signal DOWNSTREAM. NNLS deconvolution recovers the true
+peak positions by removing this spreading artifact.
+
+Algorithm:
+1. Load 0A PSF (Point-Spread-Function) from training data
+2. Build convolution matrix for A-tract region
+3. Deconvolve observed NET-seq signal using regularized NNLS
+4. Assign reads proportionally to deconvolved peak intensities
+
 Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 from collections import OrderedDict
 import numpy as np
@@ -33,6 +44,39 @@ try:
 except ImportError:
     pyBigWig = None
     PYBIGWIG_AVAILABLE = False
+
+# Try to import scipy for NNLS (optional but recommended)
+try:
+    from scipy.optimize import nnls
+    SCIPY_AVAILABLE = True
+except ImportError:
+    nnls = None
+    SCIPY_AVAILABLE = False
+
+
+# Default 0A PSF (Point-Spread-Function)
+# Empirically derived: 54% at true position, 46% spreading downstream
+# This is used when no external PSF model is provided
+DEFAULT_PSF_0A = np.array([
+    0.54,   # offset 0: true position
+    0.005,  # offset 1
+    0.015,  # offset 2
+    0.032,  # offset 3
+    0.052,  # offset 4
+    0.067,  # offset 5
+    0.073,  # offset 6
+    0.067,  # offset 7
+    0.052,  # offset 8
+    0.032,  # offset 9
+    0.020,  # offset 10
+    0.015,  # offset 11+
+    0.010,
+    0.008,
+    0.005,
+    0.003,
+])
+# Normalize to sum to 1
+DEFAULT_PSF_0A = DEFAULT_PSF_0A / DEFAULT_PSF_0A.sum()
 
 
 class NetseqLoader:
@@ -146,6 +190,139 @@ class NetseqLoader:
             bw.close()
         self.bigwigs.clear()
         self._cache.clear()
+
+
+def load_psf_model(filepath: str) -> np.ndarray:
+    """
+    Load PSF (Point-Spread-Function) model from file.
+
+    The PSF describes how signal from a true CPA position spreads
+    downstream due to oligo-adenylation alignment to genomic A's.
+
+    Args:
+        filepath: Path to TSV file with columns 'acount', 'offset', 'probability'
+
+    Returns:
+        1D array indexed by offset (0 = true position)
+    """
+    import pandas as pd
+    psf_df = pd.read_csv(filepath, sep='\t')
+    psf_0a = psf_df[psf_df['acount'] == 0].copy()
+
+    max_offset = int(psf_0a['offset'].max())
+    psf = np.zeros(max_offset + 1)
+    for _, row in psf_0a.iterrows():
+        psf[int(row['offset'])] = row['probability']
+
+    return psf
+
+
+def build_convolution_matrix(
+    tract_length: int,
+    psf: np.ndarray,
+    include_first_non_a: bool = True
+) -> np.ndarray:
+    """
+    Build convolution matrix for NNLS deconvolution.
+
+    A[i, j] = P(observe signal at position j | true peak at position i)
+
+    CRITICAL: Signal spreading beyond tract boundaries is LOST, not
+    accumulated. Row sums < 1.0 at boundaries correctly represent
+    the fact that only ~54% of boundary peak signal is observable.
+
+    Args:
+        tract_length: Length of the A-tract
+        psf: 0A point-spread-function (probability by offset)
+        include_first_non_a: Include first non-A position in matrix
+
+    Returns:
+        Convolution matrix of shape (n_positions, n_positions)
+        Note: Row sums may be < 1.0 for positions near boundaries
+    """
+    n = tract_length + (1 if include_first_non_a else 0)
+    A = np.zeros((n, n))
+
+    for i in range(n):  # True peak position
+        for offset in range(len(psf)):
+            j = i + offset  # Observed position
+            if j < n:
+                A[i, j] = psf[offset]
+            # Out of bounds: Signal is LOST (correct physical model)
+
+    return A
+
+
+def deconvolve_signal(
+    observed: np.ndarray,
+    A: np.ndarray,
+    regularization: float = 0.01
+) -> np.ndarray:
+    """
+    Deconvolve observed signal to recover true peak positions.
+
+    Solves: observed = A @ true_peaks
+    Using non-negative least squares with L2 regularization.
+
+    Args:
+        observed: Observed signal vector (n_positions,)
+        A: Convolution matrix (n_positions, n_positions)
+        regularization: L2 regularization strength
+
+    Returns:
+        Deconvolved signal (true peak intensities)
+
+    Raises:
+        ImportError: If scipy is not available
+    """
+    if not SCIPY_AVAILABLE:
+        raise ImportError(
+            "scipy is required for NNLS deconvolution. "
+            "Install with: pip install scipy"
+        )
+
+    n = len(observed)
+
+    # Add regularization: [A; sqrt(reg)*I] @ x = [observed; 0]
+    A_reg = np.vstack([A, np.sqrt(regularization) * np.eye(n)])
+    b_reg = np.concatenate([observed, np.zeros(n)])
+
+    # Solve with non-negative least squares
+    deconvolved, _ = nnls(A_reg, b_reg)
+
+    return deconvolved
+
+
+def identify_deconvolved_peaks(
+    deconvolved: np.ndarray,
+    positions: List[int],
+    threshold_frac: float = 0.1
+) -> List[Dict]:
+    """
+    Identify true peak positions from deconvolved signal.
+
+    Args:
+        deconvolved: Deconvolved signal vector
+        positions: Genomic positions corresponding to each index
+        threshold_frac: Minimum fraction of max signal to call a peak
+
+    Returns:
+        List of peak dicts with 'position' and 'signal'
+    """
+    if len(deconvolved) == 0 or deconvolved.max() == 0:
+        return []
+
+    threshold = threshold_frac * deconvolved.max()
+    peaks = []
+
+    for i, val in enumerate(deconvolved):
+        if val >= threshold and i < len(positions):
+            peaks.append({
+                'position': positions[i],
+                'signal': float(val),
+            })
+
+    return peaks
 
 
 def find_peaks_in_window(
@@ -295,16 +472,19 @@ def refine_with_netseq(
     ambiguity_min: int,
     ambiguity_max: int,
     strand: str,
-    original_position: int
-) -> Dict:
+    original_position: int,
+    use_deconvolution: bool = True,
+    psf: Optional[np.ndarray] = None,
+    proportional_split: bool = True,
+) -> Union[Dict, List[Dict]]:
     """
     Refine CPA position using NET-seq data.
 
     This function:
     1. Extracts NET-seq signal across ambiguity window
-    2. Finds peaks in the signal
-    3. Selects the best peak
-    4. Assigns confidence score
+    2. Optionally deconvolves signal using NNLS to remove spreading artifact
+    3. Finds peaks in the (deconvolved) signal
+    4. Returns proportional assignments OR winner-take-all
 
     Args:
         netseq_loader: NetseqLoader with BigWig files loaded
@@ -313,14 +493,27 @@ def refine_with_netseq(
         ambiguity_max: Maximum position in ambiguity window
         strand: Gene strand ('+' or '-')
         original_position: Original CPA position before refinement
+        use_deconvolution: Whether to use NNLS deconvolution (default: True)
+        psf: Point-spread-function for deconvolution (default: built-in)
+        proportional_split: Return proportional assignments (default: True)
 
     Returns:
-        Dict with:
-            - refined_position: Best estimate of true CPA
-            - confidence: 'high', 'medium', 'low'
-            - method: Refinement method used
-            - peak_signal: Signal at refined position (or 0)
-            - n_peaks: Number of peaks found
+        If proportional_split=True:
+            List of dicts, each with:
+                - assigned_position: Position for this fraction
+                - fraction: Fraction of read assigned here (0-1)
+                - confidence: 'high', 'medium', 'low', or 'split'
+                - method: Refinement method used
+                - peak_signal: NET-seq signal at position
+
+        If proportional_split=False:
+            Single dict with:
+                - refined_position: Best estimate of true CPA
+                - confidence: 'high', 'medium', 'low'
+                - method: Refinement method used
+                - peak_signal: Signal at refined position
+                - n_peaks: Number of peaks found
+                - shift_from_original: Position change from input
     """
     # Expand window slightly for peak detection
     window_start = ambiguity_min - NETSEQ_PEAK_WINDOW
@@ -332,43 +525,202 @@ def refine_with_netseq(
     # Create position array
     positions = np.arange(window_start, window_end)
 
-    # Find peaks
-    all_peaks = find_peaks_in_window(signal, positions.tolist())
+    # Choose deconvolution or simple peak finding
+    if use_deconvolution and SCIPY_AVAILABLE:
+        all_peaks = _refine_with_deconvolution(
+            signal, positions, ambiguity_min, ambiguity_max, strand, psf
+        )
+    else:
+        # Fall back to simple peak finding
+        all_peaks = find_peaks_in_window(signal, positions.tolist())
 
-    # Select best peak within ambiguity window
-    best_peak = select_best_peak(all_peaks, ambiguity_min, ambiguity_max)
+    # Filter peaks within ambiguity window
+    window_peaks = [
+        p for p in all_peaks
+        if ambiguity_min <= p['position'] <= ambiguity_max
+    ]
 
-    # Assign confidence
-    confidence, method = assign_confidence(
-        best_peak,
-        all_peaks,
-        ambiguity_max - ambiguity_min
+    # Handle no peaks case
+    if not window_peaks:
+        if proportional_split:
+            return [{
+                'assigned_position': ambiguity_min,
+                'fraction': 1.0,
+                'confidence': 'low',
+                'method': 'leftmost',
+                'peak_signal': 0.0,
+                'n_peaks': 0,
+            }]
+        else:
+            return {
+                'refined_position': ambiguity_min,
+                'confidence': 'low',
+                'method': 'leftmost',
+                'peak_signal': 0.0,
+                'n_peaks': 0,
+                'shift_from_original': ambiguity_min - original_position,
+            }
+
+    # Proportional splitting
+    if proportional_split:
+        return _proportional_assignment(
+            window_peaks, original_position, use_deconvolution
+        )
+    else:
+        # Winner-take-all (legacy behavior)
+        best_peak = select_best_peak(all_peaks, ambiguity_min, ambiguity_max)
+        confidence, method = assign_confidence(
+            best_peak, all_peaks, ambiguity_max - ambiguity_min
+        )
+
+        if best_peak:
+            refined_position = best_peak['position']
+            peak_signal = best_peak['signal']
+        else:
+            refined_position = ambiguity_min
+            peak_signal = 0.0
+            method = 'leftmost'
+
+        return {
+            'refined_position': refined_position,
+            'confidence': confidence,
+            'method': method,
+            'peak_signal': peak_signal,
+            'n_peaks': len(all_peaks),
+            'shift_from_original': refined_position - original_position,
+        }
+
+
+def _refine_with_deconvolution(
+    signal: np.ndarray,
+    positions: np.ndarray,
+    ambiguity_min: int,
+    ambiguity_max: int,
+    strand: str,
+    psf: Optional[np.ndarray] = None,
+) -> List[Dict]:
+    """
+    Deconvolve NET-seq signal and identify true peaks.
+
+    Args:
+        signal: Raw NET-seq signal array
+        positions: Genomic positions for each signal index
+        ambiguity_min: Start of ambiguity window
+        ambiguity_max: End of ambiguity window
+        strand: Strand ('+' or '-')
+        psf: Point-spread-function (default: built-in)
+
+    Returns:
+        List of peak dicts with 'position', 'signal', 'prominence'
+    """
+    if psf is None:
+        psf = DEFAULT_PSF_0A
+
+    # Build convolution matrix for the tract
+    tract_length = ambiguity_max - ambiguity_min + 1
+    A = build_convolution_matrix(tract_length, psf, include_first_non_a=True)
+
+    # Extract signal within tract region (plus first non-A)
+    tract_start_idx = np.searchsorted(positions, ambiguity_min)
+    tract_end_idx = np.searchsorted(positions, ambiguity_max + 2)  # +1 for non-A, +1 for exclusive
+
+    if tract_end_idx - tract_start_idx < 2:
+        return []
+
+    tract_signal = signal[tract_start_idx:tract_end_idx]
+    tract_positions = positions[tract_start_idx:tract_end_idx]
+
+    # Handle size mismatch
+    if len(tract_signal) != A.shape[0]:
+        n = min(len(tract_signal), A.shape[0])
+        A = A[:n, :n]
+        tract_signal = tract_signal[:n]
+        tract_positions = tract_positions[:n]
+
+    # Skip if no signal
+    if tract_signal.sum() < 1.0:
+        return []
+
+    # Deconvolve
+    try:
+        deconvolved = deconvolve_signal(tract_signal, A, regularization=0.01)
+    except Exception:
+        # Fall back to observed signal
+        deconvolved = tract_signal
+
+    # Identify peaks
+    peaks = identify_deconvolved_peaks(
+        deconvolved, tract_positions.tolist(), threshold_frac=0.1
     )
 
-    # Determine refined position
-    if best_peak:
-        refined_position = best_peak['position']
-        peak_signal = best_peak['signal']
-    else:
-        # No peak found - use leftmost position (most conservative)
-        refined_position = ambiguity_min
-        peak_signal = 0.0
-        method = 'leftmost'
+    # Add prominence (relative intensity)
+    total = sum(p['signal'] for p in peaks) if peaks else 1.0
+    for p in peaks:
+        p['prominence'] = p['signal'] / total if total > 0 else 0.0
 
-    return {
-        'refined_position': refined_position,
-        'confidence': confidence,
-        'method': method,
-        'peak_signal': peak_signal,
-        'n_peaks': len(all_peaks),
-        'shift_from_original': refined_position - original_position,
-    }
+    return peaks
+
+
+def _proportional_assignment(
+    peaks: List[Dict],
+    original_position: int,
+    use_deconvolution: bool,
+) -> List[Dict]:
+    """
+    Assign reads proportionally to multiple peaks.
+
+    Args:
+        peaks: List of peak dicts with 'position' and 'signal'
+        original_position: Original position before refinement
+        use_deconvolution: Whether deconvolution was used
+
+    Returns:
+        List of assignment dicts with position, fraction, confidence
+    """
+    if not peaks:
+        return []
+
+    total_signal = sum(p['signal'] for p in peaks)
+    if total_signal == 0:
+        total_signal = 1.0
+
+    # Determine confidence based on peak dominance
+    max_frac = max(p['signal'] / total_signal for p in peaks)
+    if max_frac > 0.9:
+        confidence = 'high'
+    elif max_frac > 0.7:
+        confidence = 'medium'
+    else:
+        confidence = 'split'
+
+    method = 'deconvolved' if use_deconvolution else 'netseq_peak'
+
+    results = []
+    for peak in peaks:
+        fraction = peak['signal'] / total_signal
+        results.append({
+            'assigned_position': peak['position'],
+            'fraction': fraction,
+            'confidence': confidence,
+            'method': method,
+            'peak_signal': peak['signal'],
+            'n_peaks': len(peaks),
+            'shift_from_original': peak['position'] - original_position,
+        })
+
+    # Sort by fraction (highest first)
+    results.sort(key=lambda x: x['fraction'], reverse=True)
+
+    return results
 
 
 def refine_batch(
     netseq_loader: NetseqLoader,
-    positions: List[Dict]
-) -> List[Dict]:
+    positions: List[Dict],
+    use_deconvolution: bool = True,
+    psf: Optional[np.ndarray] = None,
+    proportional_split: bool = True,
+) -> List[Union[Dict, List[Dict]]]:
     """
     Refine batch of CPA positions using NET-seq.
 
@@ -380,9 +732,15 @@ def refine_batch(
             - ambiguity_max: Max position
             - strand: Strand
             - original_position: Original CPA position
+            - count: (optional) Read count for this position
+        use_deconvolution: Whether to use NNLS deconvolution
+        psf: Point-spread-function for deconvolution
+        proportional_split: Return proportional assignments
 
     Returns:
-        List of refinement result dicts (same order as input)
+        List of refinement results (same order as input)
+        If proportional_split=True, each result is a List[Dict]
+        If proportional_split=False, each result is a Dict
     """
     results = []
 
@@ -393,57 +751,138 @@ def refine_batch(
             pos_data['ambiguity_min'],
             pos_data['ambiguity_max'],
             pos_data['strand'],
-            pos_data['original_position']
+            pos_data['original_position'],
+            use_deconvolution=use_deconvolution,
+            psf=psf,
+            proportional_split=proportional_split,
         )
+
+        # If proportional split and we have a read count, weight the fractions
+        if proportional_split and isinstance(result, list):
+            read_count = pos_data.get('count', 1.0)
+            for r in result:
+                r['weighted_count'] = read_count * r['fraction']
+
         results.append(result)
 
     return results
 
 
-def calculate_netseq_statistics(refinement_results: List[Dict]) -> Dict:
+def aggregate_proportional_results(
+    results: List[List[Dict]],
+) -> Dict[Tuple[str, str, int], float]:
+    """
+    Aggregate proportional assignments into position -> count mapping.
+
+    Args:
+        results: List of proportional assignment results from refine_batch
+
+    Returns:
+        Dict mapping (chrom, strand, position) -> aggregated weighted count
+    """
+    from collections import defaultdict
+    aggregated = defaultdict(float)
+
+    for result_list in results:
+        if not isinstance(result_list, list):
+            result_list = [result_list]
+
+        for r in result_list:
+            pos = r.get('assigned_position', r.get('refined_position'))
+            chrom = r.get('chrom', 'unknown')
+            strand = r.get('strand', '+')
+            count = r.get('weighted_count', r.get('fraction', 1.0))
+
+            aggregated[(chrom, strand, pos)] += count
+
+    return dict(aggregated)
+
+
+def calculate_netseq_statistics(
+    refinement_results: List[Union[Dict, List[Dict]]],
+    flatten: bool = True,
+) -> Dict:
     """
     Calculate summary statistics for NET-seq refinement.
 
     Args:
-        refinement_results: List of refinement result dicts
+        refinement_results: List of refinement result dicts or lists (proportional)
+        flatten: If True, flatten proportional results before counting
 
     Returns:
         Dict with summary statistics
     """
     if not refinement_results:
         return {
-            'total': 0,
+            'total_input': 0,
+            'total_output': 0,
             'refined': 0,
+            'refinement_rate': 0.0,
+            'mean_shift': 0.0,
             'by_confidence': {},
             'by_method': {},
+            'n_proportional': 0,
+            'n_multi_peak': 0,
+            'total_weighted_count': 0.0,
         }
+
+    # Flatten if needed
+    flat_results = []
+    n_proportional = 0
+    n_multi_peak = 0
+
+    for result in refinement_results:
+        if isinstance(result, list):
+            n_proportional += 1
+            if len(result) > 1:
+                n_multi_peak += 1
+            if flatten:
+                flat_results.extend(result)
+            else:
+                # Take the first (highest fraction) result
+                flat_results.append(result[0] if result else {})
+        else:
+            flat_results.append(result)
 
     # Count by confidence
     by_confidence = {}
-    for result in refinement_results:
-        conf = result['confidence']
+    for result in flat_results:
+        conf = result.get('confidence', 'unknown')
         by_confidence[conf] = by_confidence.get(conf, 0) + 1
 
     # Count by method
     by_method = {}
-    for result in refinement_results:
-        method = result['method']
+    for result in flat_results:
+        method = result.get('method', 'unknown')
         by_method[method] = by_method.get(method, 0) + 1
 
     # Count positions that were refined (changed)
-    refined = sum(1 for r in refinement_results if r['shift_from_original'] != 0)
+    refined = sum(
+        1 for r in flat_results
+        if r.get('shift_from_original', 0) != 0
+    )
 
     # Calculate mean shift
-    shifts = [abs(r['shift_from_original']) for r in refinement_results]
+    shifts = [abs(r.get('shift_from_original', 0)) for r in flat_results]
     mean_shift = np.mean(shifts) if shifts else 0.0
 
+    # Calculate total weighted counts for proportional assignments
+    total_weighted = sum(
+        r.get('weighted_count', r.get('fraction', 1.0))
+        for r in flat_results
+    )
+
     return {
-        'total': len(refinement_results),
+        'total_input': len(refinement_results),
+        'total_output': len(flat_results),
         'refined': refined,
-        'refinement_rate': refined / len(refinement_results),
+        'refinement_rate': refined / len(flat_results) if flat_results else 0.0,
         'mean_shift': mean_shift,
         'by_confidence': by_confidence,
         'by_method': by_method,
+        'n_proportional': n_proportional,
+        'n_multi_peak': n_multi_peak,
+        'total_weighted_count': total_weighted,
     }
 
 
@@ -463,22 +902,39 @@ def format_netseq_report(stats: Dict) -> str:
     report.append("=" * 60)
     report.append("")
 
+    total_in = stats.get('total_input', stats.get('total', 0))
+    total_out = stats.get('total_output', stats.get('total', 0))
+
     report.append("Overall:")
-    report.append(f"  Total positions:        {stats['total']:,}")
+    report.append(f"  Input positions:        {total_in:,}")
+    if total_out != total_in:
+        report.append(f"  Output assignments:     {total_out:,}")
     report.append(f"  Refined:                {stats['refined']:,} ({stats['refinement_rate']:.1%})")
     report.append(f"  Mean shift:             {stats['mean_shift']:.1f} bp")
-    report.append("")
 
+    # Proportional splitting stats
+    n_prop = stats.get('n_proportional', 0)
+    n_multi = stats.get('n_multi_peak', 0)
+    if n_prop > 0:
+        report.append("")
+        report.append("Proportional Assignment:")
+        report.append(f"  Proportionally split:   {n_prop:,} ({100.0 * n_prop / total_in:.1f}%)")
+        report.append(f"  Multi-peak regions:     {n_multi:,} ({100.0 * n_multi / total_in:.1f}%)")
+        if 'total_weighted_count' in stats:
+            report.append(f"  Total weighted count:   {stats['total_weighted_count']:,.1f}")
+
+    report.append("")
     report.append("Confidence Levels:")
-    for conf in ['high', 'medium', 'low']:
+    for conf in ['high', 'medium', 'split', 'low']:
         count = stats['by_confidence'].get(conf, 0)
-        pct = 100.0 * count / stats['total'] if stats['total'] > 0 else 0.0
-        report.append(f"  {conf:10s}          {count:7,} ({pct:5.1f}%)")
+        pct = 100.0 * count / total_out if total_out > 0 else 0.0
+        if count > 0:
+            report.append(f"  {conf:10s}          {count:7,} ({pct:5.1f}%)")
     report.append("")
 
     report.append("Refinement Methods:")
     for method, count in stats['by_method'].items():
-        pct = 100.0 * count / stats['total'] if stats['total'] > 0 else 0.0
+        pct = 100.0 * count / total_out if total_out > 0 else 0.0
         report.append(f"  {method:20s} {count:7,} ({pct:5.1f}%)")
 
     report.append("")

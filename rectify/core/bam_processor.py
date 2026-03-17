@@ -17,7 +17,7 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from multiprocessing import Pool
 from functools import partial
 import gzip
@@ -30,6 +30,7 @@ from . import ag_mispriming
 from . import polya_trimmer
 from . import indel_corrector
 from . import netseq_refiner
+from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ..utils.genome import load_genome, standardize_chrom_name
 from ..slurm import get_available_cpus
 
@@ -136,18 +137,27 @@ def correct_read_3prime(
             if result['confidence'] == 'high':
                 result['confidence'] = 'medium' if ag_result['confidence'] == 'medium' else 'low'
 
-    # Module 2B: Poly(A) tail trimming (when poly(A) is sequenced)
+    # Module 2B: Poly(A) tail detection (when poly(A) is sequenced)
+    # NOTE: This does NOT correct positions - it only measures poly(A) tail length.
+    # Position correction for A-tract ambiguity is already handled above.
     polya_shift = 0
     if apply_polya_trim:
-        polya_result = polya_trimmer.trim_polya_from_read(read, strand)
+        # Pass atract_result so polya_trimmer can include aligned A's in the count
+        atract_for_polya = {
+            'tract_length': result.get('ambiguity_range', 0),  # Approximate aligned A's
+        }
+        polya_result = polya_trimmer.trim_polya_from_read(
+            read, strand, atract_result=atract_for_polya
+        )
 
-        if polya_result['has_polya']:
-            result['correction_applied'].append('polya_trim')
-            result['polya_length'] = polya_result['polya_length']
-            polya_shift = polya_result['shift']
+        # Always record poly(A) length (even if 0) for completeness
+        result['polya_length'] = polya_result['polya_length']
+        result['aligned_a_length'] = polya_result['aligned_a_length']
+        result['soft_clip_a_length'] = polya_result['soft_clip_a_length']
 
-            # Update current position
-            current_position = polya_result['corrected_3prime']
+        # NOTE: We no longer add 'polya_trim' to correction_applied because
+        # soft-clips don't affect genomic position. The only position correction
+        # comes from A-tract ambiguity detection (atract_ambiguity).
 
     # Module 2C: Indel artifact correction (when poly(A) is sequenced)
     indel_shift = 0
@@ -311,6 +321,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
+            'polya_length',  # Total observed poly(A) tail length
             'correction_applied', 'confidence', 'qc_flags'
         ]
         f.write('\t'.join(header) + '\n')
@@ -326,6 +337,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 str(result['ambiguity_min']),
                 str(result['ambiguity_max']),
                 str(result['ambiguity_range']),
+                str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
                 ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
                 result['confidence'],
                 ','.join(result['qc_flags']),
@@ -618,8 +630,9 @@ def process_bam_file_parallel(
     output_path: Optional[str] = None,
     max_reads: Optional[int] = None,
     min_gap_size: int = 10000,
-    show_progress: bool = True
-) -> List[Dict]:
+    show_progress: bool = True,
+    return_stats: bool = False
+) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
 
@@ -639,9 +652,10 @@ def process_bam_file_parallel(
         max_reads: Optional maximum number of reads (for testing)
         min_gap_size: Minimum gap size for region splitting
         show_progress: Show progress information
+        return_stats: Return ProcessingStats alongside results
 
     Returns:
-        List of correction result dicts
+        List of correction result dicts, or tuple of (results, stats) if return_stats=True
     """
     # Auto-detect threads if not specified
     if n_threads <= 0:
@@ -652,6 +666,24 @@ def process_bam_file_parallel(
     # Load genome (shared across workers via fork)
     logger.info(f"Loading genome from {genome_path}...")
     genome = load_genome(genome_path)
+
+    # Count total reads and filtered reads for stats
+    stats = ProcessingStats()
+    logger.info("Counting reads in BAM file...")
+    bam = pysam.AlignmentFile(bam_path, 'rb')
+    for read in bam:
+        stats.total_reads_in_bam += 1
+        if read.is_unmapped:
+            stats.reads_unmapped += 1
+        elif read.is_secondary:
+            stats.reads_secondary += 1
+        elif read.is_supplementary:
+            stats.reads_supplementary += 1
+    bam.close()
+    logger.info(f"  Total reads: {stats.total_reads_in_bam:,}")
+    logger.info(f"  Unmapped: {stats.reads_unmapped:,}")
+    logger.info(f"  Secondary: {stats.reads_secondary:,}")
+    logger.info(f"  Supplementary: {stats.reads_supplementary:,}")
 
     # Get processing regions
     logger.info("Identifying processing regions...")
@@ -681,9 +713,15 @@ def process_bam_file_parallel(
 
         logger.info(f"Completed processing {len(all_results):,} reads")
 
+        # Update stats from results
+        for result in all_results:
+            stats.update_from_result(result)
+
         if output_path:
             write_output_tsv(all_results, output_path)
 
+        if return_stats:
+            return all_results, stats
         return all_results
 
     # Multi-threaded processing
@@ -725,10 +763,16 @@ def process_bam_file_parallel(
 
     logger.info(f"Completed processing {len(all_results):,} reads")
 
+    # Update stats from results
+    for result in all_results:
+        stats.update_from_result(result)
+
     # Write output if requested
     if output_path:
         write_output_tsv(all_results, output_path)
 
+    if return_stats:
+        return all_results, stats
     return all_results
 
 
@@ -748,7 +792,7 @@ def process_bam_streaming(
     apply_indel_correction: bool = False,
     netseq_dir: Optional[str] = None,
     show_progress: bool = True
-) -> Dict:
+) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
 
@@ -765,7 +809,7 @@ def process_bam_streaming(
         show_progress: Show progress information
 
     Returns:
-        Dict with summary statistics
+        ProcessingStats object with comprehensive statistics
     """
     # Load genome
     logger.info(f"Loading genome from {genome_path}...")
@@ -778,13 +822,8 @@ def process_bam_streaming(
         netseq_loader = netseq_refiner.NetseqLoader()
         netseq_loader.load_directory(netseq_dir, pattern="*.bw")
 
-    # Initialize stats
-    stats = {
-        'total_reads': 0,
-        'with_ambiguity': 0,
-        'position_corrected': 0,
-        'by_confidence': {'high': 0, 'medium': 0, 'low': 0},
-    }
+    # Initialize comprehensive stats
+    stats = ProcessingStats()
 
     # Open output file (support gzip)
     if output_path.endswith('.gz'):
@@ -798,6 +837,7 @@ def process_bam_streaming(
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
+            'polya_length',  # Total observed poly(A) tail length
             'correction_applied', 'confidence', 'qc_flags'
         ]
         out_fh.write('\t'.join(header) + '\n')
@@ -807,7 +847,17 @@ def process_bam_streaming(
         chunk = []
 
         for read in bam:
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+            stats.total_reads_in_bam += 1
+
+            # Track filtered reads
+            if read.is_unmapped:
+                stats.reads_unmapped += 1
+                continue
+            if read.is_secondary:
+                stats.reads_secondary += 1
+                continue
+            if read.is_supplementary:
+                stats.reads_supplementary += 1
                 continue
 
             result = correct_read_3prime(
@@ -820,21 +870,16 @@ def process_bam_streaming(
             )
             chunk.append(result)
 
-            # Update stats
-            stats['total_reads'] += 1
-            if result['ambiguity_range'] > 0:
-                stats['with_ambiguity'] += 1
-            if result['corrected_3prime'] != result['original_3prime']:
-                stats['position_corrected'] += 1
-            stats['by_confidence'][result['confidence']] += 1
+            # Update comprehensive stats
+            stats.update_from_result(result)
 
             # Write chunk when full
             if len(chunk) >= chunk_size:
                 _write_results_chunk(out_fh, chunk)
                 chunk = []
 
-                if show_progress and stats['total_reads'] % 100000 == 0:
-                    logger.info(f"  Processed {stats['total_reads']:,} reads...")
+                if show_progress and stats.reads_processed % 100000 == 0:
+                    logger.info(f"  Processed {stats.reads_processed:,} reads...")
 
         # Write remaining
         if chunk:
@@ -847,7 +892,7 @@ def process_bam_streaming(
         if netseq_loader:
             netseq_loader.close()
 
-    logger.info(f"Completed processing {stats['total_reads']:,} reads")
+    logger.info(f"Completed processing {stats.reads_processed:,} reads")
     logger.info(f"  Output written to {output_path}")
 
     return stats
@@ -865,6 +910,7 @@ def _write_results_chunk(fh, results: List[Dict]):
             str(result['ambiguity_min']),
             str(result['ambiguity_max']),
             str(result['ambiguity_range']),
+            str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
             ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
             result['confidence'],
             ','.join(result['qc_flags']),
@@ -872,17 +918,22 @@ def _write_results_chunk(fh, results: List[Dict]):
         fh.write('\t'.join(row) + '\n')
 
 
-def generate_summary_from_stats(stats: Dict) -> str:
+def generate_summary_from_stats(stats) -> str:
     """
-    Generate summary report from streaming stats dict.
+    Generate summary report from ProcessingStats or legacy dict.
 
     Args:
-        stats: Dict from process_bam_streaming
+        stats: ProcessingStats object or legacy Dict from process_bam_streaming
 
     Returns:
         Formatted report string
     """
-    n_total = stats['total_reads']
+    # Handle both ProcessingStats and legacy dict format
+    if isinstance(stats, ProcessingStats):
+        return generate_stats_report(stats)
+
+    # Legacy dict format (backwards compatibility)
+    n_total = stats.get('total_reads', 0)
     if n_total == 0:
         return "No reads processed."
 

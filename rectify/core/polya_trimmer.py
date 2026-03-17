@@ -235,69 +235,64 @@ def find_polya_boundary(
         return seq_len
 
 
-def trim_polya_from_read(
+def calculate_full_polya_length(
     read: pysam.AlignedSegment,
     strand: str,
-    genome: Optional[Dict[str, str]] = None,
+    atract_result: Optional[Dict] = None,
     threshold: float = POLYA_RICHNESS_THRESHOLD
 ) -> Dict:
     """
-    Detect poly(A) tail in soft-clipped 3' end of read.
+    Calculate the full observed poly(A) tail length from a read.
 
-    IMPORTANT: This function DETECTS poly(A) tails but does NOT shift positions.
-    The soft-clipped bases are already excluded from the alignment by the aligner.
-    Genomic A-tracts (which create positional ambiguity) are handled separately
-    by the A-tract detector module.
+    The poly(A) length includes:
+    1. Aligned A's: A bases in the genomic A-tract that the poly(A) tail aligned to
+    2. Soft-clipped A's: A bases that extend beyond the genomic A-tract
 
-    This function:
-    1. Extracts soft-clips at 3' end
-    2. Scores for poly(A) likelihood
-    3. Reports poly(A) tail length for QC
+    This represents the total observed poly(A) tail length, from the first non-A
+    base (the true CPA site) through all A's until the sequencing adapter.
+
+    NOTE: This function does NOT correct positions. Position correction is handled
+    by the A-tract detector. This function only measures poly(A) tail length for
+    QC and reporting purposes.
 
     Args:
         read: pysam AlignedSegment
         strand: Gene strand ('+' or '-')
-        genome: Optional genome dict (unused, kept for API compatibility)
-        threshold: A-richness threshold
+        atract_result: Optional result from atract_detector.calculate_atract_ambiguity()
+                      containing tract_length for aligned A's
+        threshold: A-richness threshold for soft-clip poly(A) detection
 
     Returns:
         Dict with:
-            - original_3prime: 3' end position from alignment (0-based)
-            - corrected_3prime: Same as original (no shift from poly-A)
-            - shift: Always 0 (soft-clips don't affect genomic position)
-            - polya_length: Length of poly(A) tail in soft-clip
-            - soft_clip_length: Length of soft-clip at 3' end
-            - soft_clip_score: Poly(A) score for soft-clip
-            - has_polya: True if poly(A) tail detected in soft-clip
+            - polya_length: Total poly(A) length (aligned A's + soft-clipped A's)
+            - aligned_a_length: A's in aligned region (from A-tract)
+            - soft_clip_a_length: A's in soft-clipped region
+            - soft_clip_length: Total length of soft-clip at 3' end
+            - has_polya: True if poly(A) tail detected (length > 0)
     """
     # Extract soft-clips
     soft_clips = extract_soft_clips(read)
 
     # Determine which clip is at 3' end
     if strand == '+':
-        # 3' end is at right
         three_prime_clip = next((c for c in soft_clips if c['side'] == 'right'), None)
-        original_3prime = read.reference_end - 1  # 0-based inclusive
     else:
-        # 3' end is at left
         three_prime_clip = next((c for c in soft_clips if c['side'] == 'left'), None)
-        original_3prime = read.reference_start  # 0-based
 
     # Initialize result
-    # NOTE: corrected_3prime = original_3prime because soft-clips do NOT
-    # affect the genomic position. The aligner already excluded them.
-    # Genomic A-tract ambiguity is handled by atract_detector.py
     result = {
-        'original_3prime': original_3prime,
-        'corrected_3prime': original_3prime,  # No shift from poly-A detection
-        'shift': 0,  # Soft-clips don't change genomic position
         'polya_length': 0,
+        'aligned_a_length': 0,
+        'soft_clip_a_length': 0,
         'soft_clip_length': 0,
-        'soft_clip_score': None,
         'has_polya': False,
     }
 
-    # Score soft-clip if present
+    # Get aligned A's from A-tract result (these are genomic A's that poly(A) aligned to)
+    if atract_result and atract_result.get('tract_length', 0) > 0:
+        result['aligned_a_length'] = atract_result['tract_length']
+
+    # Score soft-clip for poly(A) content
     if three_prime_clip:
         clip_seq = three_prime_clip['seq']
         result['soft_clip_length'] = three_prime_clip['length']
@@ -307,16 +302,76 @@ def trim_polya_from_read(
             clip_seq = reverse_complement(clip_seq)
 
         score = score_polya_tail(clip_seq, threshold)
-        result['soft_clip_score'] = score
 
         if score['is_polya']:
-            result['has_polya'] = True
-            result['polya_length'] = three_prime_clip['length']
+            # Count actual A's in soft-clip (may be slightly less than length due to errors)
+            result['soft_clip_a_length'] = clip_seq.upper().count('A')
 
-    # NOTE: We intentionally do NOT look for A's in the aligned sequence here.
-    # Aligned A's are GENOMIC sequence, not poly(A) tail. The ambiguity they
-    # create (poly-A aligning to genomic A-tract) is handled by atract_detector.py
-    # which looks at the genomic sequence downstream of the 3' position.
+    # Total poly(A) length = aligned A's + soft-clipped A's
+    result['polya_length'] = result['aligned_a_length'] + result['soft_clip_a_length']
+    result['has_polya'] = result['polya_length'] > 0
+
+    return result
+
+
+def trim_polya_from_read(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Optional[Dict[str, str]] = None,
+    threshold: float = POLYA_RICHNESS_THRESHOLD,
+    atract_result: Optional[Dict] = None
+) -> Dict:
+    """
+    Detect poly(A) tail and calculate full poly(A) length from read.
+
+    IMPORTANT: This function DETECTS poly(A) tails but does NOT shift positions.
+    The soft-clipped bases are already excluded from the alignment by the aligner.
+    Genomic A-tracts (which create positional ambiguity) are handled separately
+    by the A-tract detector module.
+
+    This function:
+    1. Extracts soft-clips at 3' end
+    2. Scores for poly(A) likelihood
+    3. Calculates full poly(A) tail length (aligned A's + soft-clipped A's)
+
+    Args:
+        read: pysam AlignedSegment
+        strand: Gene strand ('+' or '-')
+        genome: Optional genome dict (unused, kept for API compatibility)
+        threshold: A-richness threshold
+        atract_result: Optional result from atract_detector with tract_length
+
+    Returns:
+        Dict with:
+            - original_3prime: 3' end position from alignment (0-based)
+            - corrected_3prime: Same as original (no shift from poly-A)
+            - shift: Always 0 (soft-clips don't affect genomic position)
+            - polya_length: Full poly(A) length (aligned A's + soft-clipped A's)
+            - aligned_a_length: A's in aligned region (from A-tract)
+            - soft_clip_a_length: A's in soft-clipped region
+            - soft_clip_length: Length of soft-clip at 3' end
+            - has_polya: True if poly(A) tail detected
+    """
+    # Get 3' position
+    if strand == '+':
+        original_3prime = read.reference_end - 1  # 0-based inclusive
+    else:
+        original_3prime = read.reference_start  # 0-based
+
+    # Calculate full poly(A) length
+    polya_result = calculate_full_polya_length(read, strand, atract_result, threshold)
+
+    # Build result dict
+    result = {
+        'original_3prime': original_3prime,
+        'corrected_3prime': original_3prime,  # No shift from poly-A detection
+        'shift': 0,  # Soft-clips don't change genomic position
+        'polya_length': polya_result['polya_length'],
+        'aligned_a_length': polya_result['aligned_a_length'],
+        'soft_clip_a_length': polya_result['soft_clip_a_length'],
+        'soft_clip_length': polya_result['soft_clip_length'],
+        'has_polya': polya_result['has_polya'],
+    }
 
     return result
 

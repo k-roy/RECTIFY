@@ -18,6 +18,7 @@ from typing import Optional
 from ..slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
 from . import bam_processor
+from .processing_stats import write_stats_tsv, generate_stats_report
 from ..utils import genome as genome_utils
 
 
@@ -171,10 +172,10 @@ def run(args):
                 apply_indel_correction=config['apply_indel_correction'],
                 netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
             )
-            report = bam_processor.generate_summary_from_stats(stats)
+            report = generate_stats_report(stats)
         else:
             # Standard parallel processing
-            results = bam_processor.process_bam_file_parallel(
+            results, stats = bam_processor.process_bam_file_parallel(
                 bam_path=str(config['bam_path']),
                 genome_path=str(config['genome_path']),
                 n_threads=n_threads,
@@ -185,8 +186,17 @@ def run(args):
                 netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
                 output_path=str(config['output_path']) if config['output_path'] else None,
                 show_progress=not args.verbose,  # Use verbose logging instead of progress bar
+                return_stats=True,
             )
-            report = bam_processor.generate_summary_report(results)
+            report = generate_stats_report(stats)
+
+        # Write processing statistics TSV
+        if config['output_path']:
+            stats_path = str(config['output_path']).replace('.tsv', '_stats.tsv')
+            if stats_path == str(config['output_path']):
+                stats_path = str(config['output_path']) + '_stats.tsv'
+            write_stats_tsv(stats, stats_path)
+            logger.info(f"Wrote processing statistics to {stats_path}")
 
         # Generate summary report
         logger.info("")
