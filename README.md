@@ -76,46 +76,45 @@ STEP 3: NET-seq REFINEMENT (Optional)
 ===============================================================================
 
 For species with NET-seq data, we can resolve the ambiguity window.
-NET-seq captures Pol II at nascent 3' ends, but oligo(dT) priming
-on internal A-tracts spreads signal RIGHTWARD from each true CPA site.
+NET-seq captures Pol II at nascent 3' ends without poly(A) selection,
+providing ground truth for CPA site localization.
 
 Position:        31      34      37      40      42
                  |       |       |       |       |
-                 #                                    <- minor CPA (10%)
-Raw NET-seq:     ##-->-->-->                          (signal spreads right)
-                         ####                         <- major CPA (70%)
-                         ######-->-->-->-->           (signal spreads right)
-                                         ##           <- minor CPA (20%)
-                                         ###-->-->    (signal spreads right)
+NET-seq signal:              ####
+                            ######
+                           ########
+                          <- peak ->
 
-After deconvolution (removing rightward spreading artifact):
+RECTIFY finds peaks in NET-seq signal within the ambiguity window
+and selects the strongest peak as the refined position.
 
-True CPA sites:  #               ####            ##
-                 |               |               |
-Position:        31              35              39
-Weight:         (10%)           (70%)           (20%)
+Confidence assignment:
+  - HIGH:   Single clear peak with strong signal
+  - MEDIUM: Multiple peaks or moderate signal
+  - LOW:    Weak signal or no NET-seq data
 
 ===============================================================================
-STEP 4: PROPORTIONAL ASSIGNMENT
+STEP 4: FINAL OUTPUT
 ===============================================================================
 
-The Nanopore read has ambiguity window [31, 42]. Using NET-seq peaks,
-we assign the read to the most likely CPA site:
+The Nanopore read has ambiguity window [31, 42]. Using the NET-seq peak,
+we assign the read to position 35:
 
-                 31              35              39          42
-                 |               |               |           |
+                 31              35                          42
+                 |               |                           |
 Ambiguity:       |===============================================|
-NET-seq peaks:   # (10%)         #### (70%)      ## (20%)
+NET-seq peak:                    #
 
-Final output (single best assignment):
-+----------+----------+------------+-----------------+----------------+
-| read_id  | position | confidence | ambiguity_range | netseq_support |
-+----------+----------+------------+-----------------+----------------+
-| read001  |    35    |    HIGH    |       11        |      0.70      |
-+----------+----------+------------+-----------------+----------------+
+Final output:
++----------+----------+------------+-----------------+-----------+
+| read_id  | position | confidence | ambiguity_range | n_peaks   |
++----------+----------+------------+-----------------+-----------+
+| read001  |    35    |    HIGH    |       11        |     1     |
++----------+----------+------------+-----------------+-----------+
 
-Confidence reflects NET-seq support: 70% support = HIGH confidence.
-Without NET-seq: Reports ambiguity window [31, 42] with uniform uncertainty.
+Without NET-seq: Reports ambiguity window [31, 42] and uses leftmost
+position (most conservative estimate).
 ```
 
 ## Installation
