@@ -30,7 +30,8 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
 ### From source (development)
 
 ```bash
-cd /oak/stanford/groups/larsms/Users/kevinroy/software/rectify
+git clone https://github.com/k-roy/RECTIFY.git
+cd RECTIFY
 pip install -e .
 ```
 
@@ -99,7 +100,7 @@ RECTIFY applies corrections modularly based on your data:
 If you use RECTIFY, please cite:
 
 **Original RECTIFY (AG mispriming correction):**
-> Roy, K. R., & Chanfreau, G. F. (2019). RECTIFY: Identification and correction of mRNA mis-termination caused by oligo(dT)-primed internal priming. *Nucleic Acids Research*, 47(16), e96. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
+> Roy KR, Chanfreau GF. Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends at nucleotide resolution by 3'-end sequencing. *Methods*. 2020 Apr 1;176:4-13. doi: 10.1016/j.ymeth.2019.05.016. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
 
 **RECTIFY 2.0 (unified framework):**
 > Manuscript in preparation
@@ -116,5 +117,4 @@ MIT License - See [LICENSE](LICENSE) for details
 ## Acknowledgments
 
 - Original RECTIFY development supported by Chanfreau Lab, UCLA
-- Poly(A) tail correction modules developed in Lars Steinmetz Lab, Stanford/EMBL
 - NET-seq data from Churchman Lab, Harvard Medical School
