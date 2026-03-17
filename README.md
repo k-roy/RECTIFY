@@ -27,102 +27,95 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
 
 ## How It Works
 
-RECTIFY corrects common 3' end mapping artifacts through a series of modular steps:
+RECTIFY corrects 3' end mapping artifacts by walking a read through multiple correction steps.
+Here's a single Nanopore read traversing the full pipeline:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 1: Homopolymer Deletion Artifact (Nanopore)                        │
-│  ═══════════════════════════════════════════════════                        │
-│                                                                             │
-│  True RNA:     5'...GCTAAGCTTAAAAAA-3' + AAAAAAAAAA (poly(A) tail)          │
-│                              └────┘                                         │
-│                         6A genomic tract                                    │
-│                                                                             │
-│  Genome:          ...GCTAAGCTTAAAAAA|GTCACC...     (| = true CPA site)      │
-│                                                                             │
-│  Nanopore read:   ...GCTAAGCTT--AAAA|GTCACC        (2bp deletion in A-tract)│
-│                             ↑↑                                              │
-│                    systematic homopolymer error                             │
-│                                                                             │
-│  Problem:   Aligner maps 3' end 2bp upstream of true position              │
-│             (deletion consumes genomic bases that should be in transcript)  │
-│                                                                             │
-│  RECTIFY:   Detects A-tract deletion, adjusts position +2bp                 │
-│  Result:    Correct 3' end position restored                                │
-└─────────────────────────────────────────────────────────────────────────────┘
+═══════════════════════════════════════════════════════════════════════════════
+ STEP 1: RAW ALIGNMENT
+═══════════════════════════════════════════════════════════════════════════════
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 2: Multiple Indels Near 3' End                                     │
-│  ═══════════════════════════════════════                                    │
-│                                                                             │
-│  Genome:          ...TACGTTTTTTAAAAAA|GTCA...                               │
-│                          └────┘└────┘                                       │
-│                          T-tract A-tract                                    │
-│                                                                             │
-│  Nanopore read:   ...TACGT---TTAA-AAA|GTCA                                  │
-│                        ↑↑↑     ↑                                            │
-│                   3bp del  1bp del                                          │
-│                                                                             │
-│  RECTIFY logic:                                                             │
-│    • T-tract deletion (3bp): TRUE artifact → correct +3bp                   │
-│    • A-tract deletion (1bp): TRUE artifact → correct +1bp                   │
-│    • Total correction: +4bp                                                 │
-│                                                                             │
-│  Note: Insertions do NOT shift reference coordinates (no correction needed) │
-└─────────────────────────────────────────────────────────────────────────────┘
+ Genome:        ...CTAGTGACAGTCAAAAAAAA-AAACAAAAGT|CTAGCGATC...
+                                        └───────┘
+                                     genomic A-tract (11 bp)
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 3: A-tract Ambiguity Window                                        │
-│  ═══════════════════════════════════                                        │
-│                                                                             │
-│  Genome:    ...CGTACAAAAAAAA|GTCACC...                                      │
-│                   └───────┘                                                 │
-│                   8bp A-tract                                               │
-│                                                                             │
-│  Problem:   Any position within the A-tract could be the true 3' end        │
-│             (indistinguishable from poly(A) tail)                           │
-│                                                                             │
-│             ...CGTACAAAAAAAA|     ← could be here                           │
-│             ...CGTACAAAAAAA|A     ← or here                                 │
-│             ...CGTACAAAAAA|AA     ← or here                                 │
-│             ...CGTACAAAAA|AAA     ← etc.                                    │
-│                                                                             │
-│  RECTIFY:   Reports ambiguity window [pos-7, pos] with range=8              │
-│             Confidence score reflects uncertainty                           │
-└─────────────────────────────────────────────────────────────────────────────┘
+ Nanopore read: ...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAAA
+                                       ↑       ↑↑  └──────────────────┘
+                                   seq error  indels    soft-clipped
+                                   (T in As)            poly(A) tail
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 4: NET-seq Refinement                                              │
-│  ═════════════════════════════                                              │
-│                                                                             │
-│  Genome:    ...CGTACAAAAAAAA|GTCACC...                                      │
-│                   └───────┘                                                 │
-│               ambiguity window                                              │
-│                                                                             │
-│  NET-seq:           ▁▂▃█▇▅▂▁                                                │
-│  signal:               ↑                                                    │
-│                    peak at -3                                               │
-│                                                                             │
-│  RECTIFY:   Uses NET-seq Pol II occupancy to identify most likely           │
-│             termination site within the ambiguity window                    │
-│                                                                             │
-│  Result:    Position refined to NET-seq peak, confidence = HIGH             │
-└─────────────────────────────────────────────────────────────────────────────┘
+ Aligner output:
+   • Mapped 3' end: position 42 (at the |)
+   • Soft-clip starts after last aligned base
+   • Indels in A-tract are alignment artifacts (homopolymer confusion)
+   • The 'T' in the read's A-tract is a sequencing error
 
-Pipeline Flow:
-══════════════
+═══════════════════════════════════════════════════════════════════════════════
+ STEP 2: INDEL CORRECTION — Walk Backwards to True 3' End
+═══════════════════════════════════════════════════════════════════════════════
 
-  ┌──────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-  │  Input   │    │  Module 1   │    │ Module 2A/B │    │  Module 3   │
-  │   BAM    │───▶│   A-tract   │───▶│  Poly(A) &  │───▶│   NET-seq   │
-  │          │    │  Ambiguity  │    │   Indels    │    │ Refinement  │
-  └──────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                        │                  │                  │
-                        ▼                  ▼                  ▼
-                  ┌───────────────────────────────────────────────┐
-                  │              Corrected 3' Ends                │
-                  │   (position, ambiguity range, confidence)     │
-                  └───────────────────────────────────────────────┘
+ Starting from mapped 3' end, walk upstream until genome and read AGREE on
+ the first non-A base:
+
+ Genome:  ...CTAGTGACAGT C A A A A A A A A - A A A C A A A A G T | ...
+ Read:    ...CTAGTGACAGT C A A A A A A A A T A A A - A A A A - - | ...
+                         ↑                 ↑       ↑         ↑↑
+                      AGREE             seq err   del       del
+                      (C=C)             (ignore)  (+1bp)   (+2bp)
+
+ RECTIFY logic:
+   • Walk back from position 42
+   • Skip A's (ambiguous with poly(A) tail)
+   • Find first non-A agreement: 'C' at position 31
+   • Count deletions in A-tract: 3 bp total
+   • Corrected range: [31, 42] → ambiguity window = 11 bp
+
+═══════════════════════════════════════════════════════════════════════════════
+ STEP 3: NET-seq REFINEMENT (Optional)
+═══════════════════════════════════════════════════════════════════════════════
+
+ For species with NET-seq data (captures Pol II at nascent 3' ends), we can
+ resolve the ambiguity window. Note: oligo(dT) priming spreads signal upstream
+ due to internal A-tract priming.
+
+ Position:           31      34      37      40      42
+                     |       |       |       |       |
+ Raw NET-seq:     ▂▄▆█▆▄▃▃▄▅▇█▇▅▄▃▃▄▅▆▇█▇▅▄▂▁▁▁▁▁▁▁▁
+                  └──────┘ └──────┘ └──────┘
+                   Peak 1   Peak 2   Peak 3
+                  (spread)  (spread) (spread)
+
+ After deconvolution (removing oligo(dT) spreading artifact):
+
+ True CPA signal:    █           █           █
+                     ↑           ↑           ↑
+                   pos 31      pos 35      pos 39
+                   (25%)       (50%)       (25%)
+
+═══════════════════════════════════════════════════════════════════════════════
+ STEP 4: PROPORTIONAL ASSIGNMENT
+═══════════════════════════════════════════════════════════════════════════════
+
+ The Nanopore read has ambiguity window [31, 42]. Using NET-seq deconvolved
+ peaks, we assign probability to each CPA site:
+
+ Nanopore read:    ════════════════════════════════
+                   [          ambiguity           ]
+                   31                             42
+
+ NET-seq peaks:    █ (25%)      █ (50%)      █ (25%)
+                   31           35           39
+
+ Final output:
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  read_id    position   confidence   ambiguity_range   netseq_support     │
+ │  ────────   ────────   ──────────   ───────────────   ──────────────     │
+ │  read001    35         HIGH         11                0.50               │
+ │  read001    31         MEDIUM       11                0.25               │
+ │  read001    39         MEDIUM       11                0.25               │
+ └──────────────────────────────────────────────────────────────────────────┘
+
+ Without NET-seq: Reports ambiguity window [31, 42] with uniform distribution
 ```
 
 ## Installation
