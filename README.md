@@ -31,37 +31,44 @@ RECTIFY corrects common 3' end mapping artifacts through a series of modular ste
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 1: Poly(A) Tail Alignment Artifact                                 │
-│  ═══════════════════════════════════════════                                │
+│  EXAMPLE 1: Homopolymer Deletion Artifact (Nanopore)                        │
+│  ═══════════════════════════════════════════════════                        │
 │                                                                             │
-│  Genome:    ...TCGACTGCAAAAAA|GTCACC...    (| = true CPA site)              │
-│                          └──┘                                               │
-│                     genomic A-tract                                         │
-│                                                                             │
-│  Raw read:  ...TCGACTGCAAAAAAAAAAAAA        (poly(A) tail extends into As)  │
+│  True RNA:     5'...GCTAAGCTTAAAAAA-3' + AAAAAAAAAA (poly(A) tail)          │
 │                              └────┘                                         │
-│                          tail aligned to genome                             │
+│                         6A genomic tract                                    │
 │                                                                             │
-│  Artifact:  Read 3' end maps 4bp downstream of true site                    │
+│  Genome:          ...GCTAAGCTTAAAAAA|GTCACC...     (| = true CPA site)      │
 │                                                                             │
-│  RECTIFY:   Detects soft-clipped A-rich sequence, trims poly(A) tail       │
-│  Corrected: ...TCGACTGCAAAAAA|  ← correct position restored                 │
+│  Nanopore read:   ...GCTAAGCTT--AAAA|GTCACC        (2bp deletion in A-tract)│
+│                             ↑↑                                              │
+│                    systematic homopolymer error                             │
+│                                                                             │
+│  Problem:   Aligner maps 3' end 2bp upstream of true position              │
+│             (deletion consumes genomic bases that should be in transcript)  │
+│                                                                             │
+│  RECTIFY:   Detects A-tract deletion, adjusts position +2bp                 │
+│  Result:    Correct 3' end position restored                                │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE 2: Indel Artifacts Near 3' End (Nanopore)                          │
-│  ═════════════════════════════════════════════════                          │
+│  EXAMPLE 2: Multiple Indels Near 3' End                                     │
+│  ═══════════════════════════════════════                                    │
 │                                                                             │
-│  Genome:    ...GCTAAGCTTAAAAA|GTCACC...                                     │
+│  Genome:          ...TACGTTTTTTAAAAAA|GTCA...                               │
+│                          └────┘└────┘                                       │
+│                          T-tract A-tract                                    │
 │                                                                             │
-│  Raw read:  ...GCTAAGCT-AAAAA|GTCACC       (1bp deletion in A-tract)        │
-│                       ↑                                                     │
-│                  homopolymer deletion artifact                              │
+│  Nanopore read:   ...TACGT---TTAA-AAA|GTCA                                  │
+│                        ↑↑↑     ↑                                            │
+│                   3bp del  1bp del                                          │
 │                                                                             │
-│  Artifact:  Mapped 3' end shifted 1bp due to deletion                       │
+│  RECTIFY logic:                                                             │
+│    • T-tract deletion (3bp): TRUE artifact → correct +3bp                   │
+│    • A-tract deletion (1bp): TRUE artifact → correct +1bp                   │
+│    • Total correction: +4bp                                                 │
 │                                                                             │
-│  RECTIFY:   Identifies A-tract deletion as systematic artifact              │
-│  Corrected: Position adjusted +1bp to compensate                            │
+│  Note: Insertions do NOT shift reference coordinates (no correction needed) │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
