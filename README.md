@@ -35,41 +35,42 @@ Here's a single Nanopore read traversing the full pipeline:
 STEP 1: RAW ALIGNMENT
 ===============================================================================
 
-Genome:         5'...CTAGTGACAGTCAAAAAAAA-AAACAAAAGT|CTAGCGATC...3'
-                                         ^^^^^^^^^^^
-                                      genomic A-tract
+The aligner maps a Nanopore direct RNA read to the genome. The poly(A) tail
+is soft-clipped, but indels and sequencing errors occur in homopolymer regions.
 
-Nanopore read:  5'...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAAA
-                                          ^      ^^  |__________________|
-                                       T error  dels    soft-clipped
-                                                        poly(A) tail
+genome: 5'..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC..3'
+                                                       |
+                                              CPA site (true 3' end)
 
-The aligner places the soft-clip boundary at position 42 (the |). Everything
-after is called poly(A) tail. But notice:
-  - The 'T' in the read is a sequencing error (Nanopore homopolymer confusion)
-  - The deletions (-) are alignment artifacts, not real
-  - The true 3' end could be anywhere in the A-tract
+read:   5'..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAAAAAAAAAAAAA..
+                                 ^      ^^  |___________________|
+                              T error  dels   soft-clipped tail
+
+Key observations:
+  - 'T' in the read = sequencing error (Nanopore homopolymer confusion)
+  - Deletions (-) = alignment artifacts from homopolymer uncertainty
+  - A-tract after GT creates ambiguity about true CPA position
+  - Soft-clip boundary placed at mapped 3' end
 
 ===============================================================================
 STEP 2: INDEL CORRECTION - Walk Backwards to Find True 3' End
 ===============================================================================
 
-Starting from mapped 3' end, walk upstream comparing genome vs read:
+Starting from soft-clip boundary, walk upstream comparing genome vs read
+to find the first position where both agree on a non-A base:
 
-Position:    ...  31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...
-                  |                                   |
-Genome:      ...  C  A  A  A  A  A  A  A  A  -  A  A  A  C  A  ...
-Read:        ...  C  A  A  A  A  A  A  A  A  T  A  A  A  -  A  ...
-                  ^                          ^           ^
-               AGREE                      seq err      del
-               (C=C)                     (ignore)    (+1bp)
+genome: ..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|..
+read:   ..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|..
+                    ^          ^      ^^
+                 AGREE      T error  dels
+                 (C=C)     (ignore) (count)
 
-RECTIFY walks back from position 42:
+RECTIFY walks back from soft-clip boundary:
   - Skip all A's (ambiguous with poly(A) tail)
-  - Ignore T (likely seq error in homopolymer)
-  - Count deletions: 1 bp in this region
-  - Find first non-A agreement: 'C' at position 31
-  - Result: ambiguity window = [31, 42], range = 11 bp
+  - Ignore T (likely sequencing error in homopolymer)
+  - Count deletions: 3 bp total
+  - Find first non-A agreement: 'C' at upstream position
+  - Result: ambiguity window spanning the A-tract
 
 ===============================================================================
 STEP 3: NET-seq REFINEMENT (Optional)
