@@ -16,6 +16,7 @@ Date: 2026-03-09
 
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from collections import OrderedDict
 import numpy as np
 
 from ..config import (
@@ -42,10 +43,20 @@ class NetseqLoader:
     Multiple files can be loaded and their signals combined.
     """
 
-    def __init__(self):
-        """Initialize NET-seq loader with empty cache."""
+    # Maximum number of cached signal arrays
+    MAX_CACHE_SIZE = 10000
+
+    def __init__(self, max_cache_size: int = None):
+        """
+        Initialize NET-seq loader with LRU cache.
+
+        Args:
+            max_cache_size: Maximum number of cached signal arrays (default: 10000)
+        """
         self.bigwigs = {}  # {name: pyBigWig object}
-        self.cache = {}    # {(chrom, start, end, strand): signal_array}
+        self._max_cache_size = max_cache_size or self.MAX_CACHE_SIZE
+        # Use OrderedDict for LRU cache behavior
+        self._cache = OrderedDict()  # {(chrom, start, end, strand): signal_array}
 
     def load_bigwig(self, filepath: str, name: str = None):
         """
@@ -96,10 +107,12 @@ class NetseqLoader:
         Returns:
             Array of signal values (one per base)
         """
-        # Check cache
+        # Check cache (move to end for LRU behavior)
         cache_key = (chrom, start, end, strand)
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+        if cache_key in self._cache:
+            # Move to end (most recently used)
+            self._cache.move_to_end(cache_key)
+            return self._cache[cache_key]
 
         # Combine signal from all loaded BigWigs
         length = end - start
@@ -115,21 +128,24 @@ class NetseqLoader:
                 # Chromosome not found in this BigWig, skip
                 continue
 
-        # Cache result
-        self.cache[cache_key] = combined_signal
+        # Cache result with LRU eviction
+        self._cache[cache_key] = combined_signal
+        if len(self._cache) > self._max_cache_size:
+            # Remove oldest (first) item
+            self._cache.popitem(last=False)
 
         return combined_signal
 
     def clear_cache(self):
         """Clear signal cache."""
-        self.cache.clear()
+        self._cache.clear()
 
     def close(self):
         """Close all BigWig files."""
         for bw in self.bigwigs.values():
             bw.close()
         self.bigwigs.clear()
-        self.cache.clear()
+        self._cache.clear()
 
 
 def find_peaks_in_window(

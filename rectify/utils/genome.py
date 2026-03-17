@@ -30,24 +30,24 @@ from ..config import (
 # Sequence Complement
 # =============================================================================
 
-COMPLEMENT_MAP = {
-    'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
-    'a': 't', 't': 'a', 'g': 'c', 'c': 'g',
-    'N': 'N', 'n': 'n'
-}
+# Use str.maketrans for efficient string translation
+# This is much faster than per-character dict lookup
+COMPLEMENT_TABLE = str.maketrans('ATGCatgc', 'TACGtacg')
 
 
 def complement(seq: str) -> str:
     """
     Return complement of DNA sequence.
 
+    Uses optimized str.translate for O(n) performance.
+
     Args:
         seq: DNA sequence (case-insensitive)
 
     Returns:
-        Complemented sequence (preserves case)
+        Complemented sequence (preserves case, unknown bases unchanged)
     """
-    return ''.join(COMPLEMENT_MAP.get(base, 'N') for base in seq)
+    return seq.translate(COMPLEMENT_TABLE)
 
 
 def reverse_complement(seq: str) -> str:
@@ -256,55 +256,8 @@ def count_contiguous_a_tract(seq: str, strand: str = '+') -> int:
     return count
 
 
-def find_atract_boundaries(genome: Dict[str, str],
-                           chrom: str,
-                           position: int,
-                           strand: str,
-                           max_distance: int = 20) -> Tuple[int, int]:
-    """
-    Find boundaries of A-tract surrounding a position.
-
-    Args:
-        genome: Genome dict
-        chrom: Chromosome name
-        position: Position within or near A-tract (0-based)
-        strand: Gene strand
-        max_distance: Maximum distance to search for A-tract
-
-    Returns:
-        Tuple of (start, end) positions of A-tract (0-based, exclusive end)
-        Returns (position, position+1) if no A-tract found
-    """
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    seq = genome.get(genome_chrom)
-
-    if seq is None:
-        return (position, position + 1)
-
-    target_base = 'A' if strand == '+' else 'T'
-
-    # Search leftward for A-tract start
-    start = position
-    while start > 0 and position - start < max_distance:
-        if seq[start - 1] == target_base:
-            start -= 1
-        else:
-            break
-
-    # Search rightward for A-tract end
-    end = position + 1
-    while end < len(seq) and end - position < max_distance:
-        if seq[end] == target_base:
-            end += 1
-        else:
-            break
-
-    # Check if we actually found an A-tract
-    tract_length = end - start
-    if tract_length < 3:  # Minimum 3bp to be considered a tract
-        return (position, position + 1)
-
-    return (start, end)
+# NOTE: find_atract_boundaries has been consolidated to rectify.core.atract_detector
+# Use: from rectify.core.atract_detector import find_atract_boundaries
 
 
 # =============================================================================

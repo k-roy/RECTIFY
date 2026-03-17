@@ -14,11 +14,84 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
-from typing import Dict
+from typing import Dict, Optional
 from pathlib import Path
 
-from ..config import DOWNSTREAM_WINDOW_SIZE, CHROM_TO_GENOME, CHROM_SIZES
+from ..config import DOWNSTREAM_WINDOW_SIZE, CHROM_TO_GENOME, CHROM_SIZES, get_shift_from_acount
 from ..utils.genome import clamp_position
+
+
+def _get_sequence(genome: Dict[str, str], chrom: str) -> Optional[str]:
+    """
+    Get chromosome sequence, handling standard to NCBI name conversion.
+
+    Args:
+        genome: Genome dict with either standard (chrI) or NCBI (ref|NC_...|) keys
+        chrom: Chromosome name (can be either format)
+
+    Returns:
+        Sequence string or None if not found
+    """
+    # Try direct lookup first
+    if chrom in genome:
+        return genome[chrom]
+
+    # Try converting standard name to NCBI format
+    if chrom in CHROM_TO_GENOME:
+        ncbi_name = CHROM_TO_GENOME[chrom]
+        if ncbi_name in genome:
+            return genome[ncbi_name]
+
+    return None
+
+
+def _count_downstream_as(
+    genome: Dict[str, str],
+    chrom: str,
+    position: int,
+    strand: str,
+    window_size: int = DOWNSTREAM_WINDOW_SIZE
+) -> Optional[int]:
+    """
+    Count A's (or T's for - strand) in downstream window.
+
+    For + strand: Count A's going rightward from position
+    For - strand: Count T's going leftward from position (represents A's in RNA orientation)
+
+    Args:
+        genome: Genome dict
+        chrom: Chromosome name
+        position: Position to start from (0-based)
+        strand: '+' or '-'
+        window_size: Size of window to count in
+
+    Returns:
+        Count of A's (or T's) in window, or None if position is invalid
+    """
+    seq = _get_sequence(genome, chrom)
+    if seq is None:
+        return None
+
+    chrom_len = len(seq)
+    if position < 0 or position >= chrom_len:
+        return None
+
+    target_base = 'A' if strand == '+' else 'T'
+
+    if strand == '+':
+        # Downstream = rightward for + strand
+        window_end = min(position + window_size, chrom_len)
+        if window_end <= position:
+            return None
+        window_seq = seq[position:window_end]
+    else:
+        # Downstream = leftward for - strand
+        window_start = max(position - window_size + 1, 0)
+        if window_start >= position + 1:
+            return None
+        window_seq = seq[window_start:position + 1]
+
+    return window_seq.count(target_base)
 
 
 def find_atract_boundaries(
@@ -48,8 +121,8 @@ def find_atract_boundaries(
             - tract_length: Length of tract (0 if position is not in a tract)
             - first_non_a: Position of first non-A base upstream of tract
     """
-    # Get chromosome sequence
-    seq = genome.get(chrom)
+    # Get chromosome sequence (with name conversion)
+    seq = _get_sequence(genome, chrom)
     if seq is None:
         return {
             'tract_start': position,
@@ -144,80 +217,74 @@ def calculate_atract_ambiguity(
     making it impossible to determine the exact CPA site without external validation.
 
     Algorithm:
-    1. Find the A-tract (or T-tract for - strand) containing/adjacent to position
-    2. The true CPA is somewhere upstream of the observed position
-    3. Ambiguity window spans from first non-A/T base to the observed position
+    1. Count A's (or T's for - strand) in downstream window
+    2. Look up expected shift from calibration table
+    3. Calculate ambiguity window based on expected shift
 
     Args:
         genome: Genome dict from load_genome()
         chrom: Chromosome name (standard format: chrI, chrII, etc.)
         position: Observed 3' end position from BAM (0-based)
         strand: Gene strand ('+' or '-')
-        downstream_bp: Maximum distance to search for tract boundaries
+        downstream_bp: Window size for counting downstream A's
 
     Returns:
         Dict with:
             - ambiguity_min: Leftmost possible true CPA (0-based)
             - ambiguity_max: Rightmost possible true CPA (0-based)
             - ambiguity_range: Size of uncertainty window (bp)
-            - tract_start: Start of A/T-tract
-            - tract_end: End of A/T-tract
-            - tract_length: Length of A/T-tract
+            - tract_start: Start of contiguous A/T-tract
+            - tract_end: End of contiguous A/T-tract
+            - tract_length: Length of contiguous A/T-tract
             - has_ambiguity: True if ambiguity_range > 0
-            - downstream_a_count: Number of A's in the tract (same as tract_length)
-            - expected_shift: Expected shift distance due to poly(A) alignment (same as ambiguity_range)
+            - downstream_a_count: Number of A's in downstream window
+            - expected_shift: Expected shift from calibration table
 
     Example:
-        + strand read at position 1005, genomic sequence GGGAAAAAATTT:
-                                                            ^1005
-        - A-tract spans 1003-1008 (AAAAAA)
-        - First non-A is at 1002 (G)
-        - Ambiguity window: [1002, 1005] (true CPA could be 1002, 1003, 1004, or 1005)
-
-        - strand read at position 1000, genomic sequence AAATTTTTTTGGG:
-                                                           ^1000
-        - T-tract spans 1000-1006 (TTTTTTT)
-        - First non-T is at 1007 (G)
-        - Ambiguity window: [1000, 1007] (true CPA could be anywhere in T-tract)
+        + strand read at position 1010, downstream 10bp = 'TCGATCGATC' has 3 A's:
+        - downstream_a_count = 3
+        - expected_shift = 0.4 (from config table)
+        - ambiguity_min = int(1010 - 0.4) = 1009
+        - ambiguity_max = 1010
+        - ambiguity_range = 1
     """
-    # Find A-tract boundaries
-    tract_info = find_atract_boundaries(genome, chrom, position, strand, downstream_bp)
+    # Count A's in downstream window
+    downstream_a_count = _count_downstream_as(genome, chrom, position, strand, downstream_bp)
 
+    # Handle invalid positions
+    if downstream_a_count is None:
+        return {
+            'ambiguity_min': position,
+            'ambiguity_max': position,
+            'ambiguity_range': 0,
+            'tract_start': position,
+            'tract_end': position,
+            'tract_length': 0,
+            'has_ambiguity': False,
+            'downstream_a_count': None,
+            'expected_shift': 0.0,
+        }
+
+    # Get expected shift from calibration table
+    expected_shift = get_shift_from_acount(downstream_a_count)
+
+    # Find contiguous A-tract boundaries for tract_length calculation
+    tract_info = find_atract_boundaries(genome, chrom, position, strand, downstream_bp)
     tract_start = tract_info['tract_start']
     tract_end = tract_info['tract_end']
     tract_length = tract_info['tract_length']
-    first_non_a = tract_info['first_non_a']
 
-    # Calculate ambiguity window
-    # The true CPA is UPSTREAM of the observed position (poly-A shifts it downstream)
-    # The ambiguity window includes all positions where the CPA could be:
-    # - The observed position (if no poly-A aligned to genomic A-tract)
-    # - Any position upstream within the A-tract (poly-A partially aligned)
-    # - The position just before the A-tract (poly-A fully aligned)
-
+    # Calculate ambiguity window based on expected shift
     if strand == '+':
-        # + strand: upstream = lower coords
-        # If position is in an A-tract, CPA could be anywhere from first_non_a to position
-        # first_non_a is the position RIGHT BEFORE the A-tract starts
-        if tract_length > 0 and tract_start <= position <= tract_end:
-            ambiguity_min = first_non_a  # Position just before A-tract (CPA if poly-A fully aligned)
-            ambiguity_max = position  # Observed position (CPA if no alignment to A-tract)
-        else:
-            # Position is not in an A-tract, no ambiguity
-            ambiguity_min = position
-            ambiguity_max = position
-
+        # + strand: poly-A shifts position RIGHTWARD (downstream)
+        # True CPA is LEFTWARD (upstream) by expected_shift
+        ambiguity_min = int(position - expected_shift)
+        ambiguity_max = position
     else:
-        # - strand: upstream = higher coords (in gene orientation)
-        # If position is in a T-tract, CPA could be anywhere from position to first_non_a
-        # first_non_a is the position RIGHT AFTER the T-tract ends
-        if tract_length > 0 and tract_start <= position <= tract_end:
-            ambiguity_min = position  # Observed position
-            ambiguity_max = first_non_a  # Position just after T-tract (CPA if poly-A fully aligned)
-        else:
-            # Position is not in a T-tract, no ambiguity
-            ambiguity_min = position
-            ambiguity_max = position
+        # - strand: poly-A shifts position LEFTWARD (downstream in gene coords)
+        # True CPA is RIGHTWARD (upstream in gene coords) by expected_shift
+        ambiguity_min = position
+        ambiguity_max = int(position + expected_shift) + 1  # +1 because shift can be fractional
 
     # Ensure min <= max
     if ambiguity_min > ambiguity_max:
@@ -228,14 +295,6 @@ def calculate_atract_ambiguity(
     ambiguity_max = clamp_position(chrom, ambiguity_max)
 
     ambiguity_range = ambiguity_max - ambiguity_min
-
-    # Calculate downstream A-count (the number of A's in the tract)
-    # This corresponds to how far the poly(A) tail could have shifted the position
-    downstream_a_count = tract_length if tract_length > 0 else 0
-
-    # Expected shift is the ambiguity range itself (how far the observed position
-    # might be shifted from the true CPA due to poly(A) alignment to genomic A-tract)
-    expected_shift = ambiguity_range
 
     return {
         'ambiguity_min': ambiguity_min,

@@ -339,6 +339,8 @@ def generate_summary_report(results: List[Dict]) -> str:
     """
     Generate summary report from correction results.
 
+    Uses single-pass accumulation for efficiency with large datasets.
+
     Args:
         results: List of correction result dicts
 
@@ -351,21 +353,30 @@ def generate_summary_report(results: List[Dict]) -> str:
     if n_total == 0:
         return "No reads processed."
 
-    # Count corrections
-    n_with_ambiguity = sum(1 for r in results if r['ambiguity_range'] > 0)
-    n_corrected = sum(1 for r in results if r['corrected_3prime'] != r['original_3prime'])
+    # Single-pass accumulation of all metrics
+    n_with_ambiguity = 0
+    n_corrected = 0
+    ambiguity_ranges = []
+    corrected_shifts = []
+    by_confidence = {'high': 0, 'medium': 0, 'low': 0}
 
-    # Ambiguity ranges
-    ambiguity_ranges = [r['ambiguity_range'] for r in results]
-
-    # Shifts
-    shifts = [abs(r['corrected_3prime'] - r['original_3prime']) for r in results]
-
-    # Confidence levels
-    by_confidence = {}
     for r in results:
+        # Ambiguity check
+        ambig_range = r['ambiguity_range']
+        ambiguity_ranges.append(ambig_range)
+        if ambig_range > 0:
+            n_with_ambiguity += 1
+
+        # Correction check
+        shift = abs(r['corrected_3prime'] - r['original_3prime'])
+        if shift > 0:
+            n_corrected += 1
+            corrected_shifts.append(shift)
+
+        # Confidence
         conf = r['confidence']
-        by_confidence[conf] = by_confidence.get(conf, 0) + 1
+        if conf in by_confidence:
+            by_confidence[conf] += 1
 
     # Build report
     report = []
@@ -387,7 +398,6 @@ def generate_summary_report(results: List[Dict]) -> str:
 
     if n_corrected > 0:
         report.append("Position Corrections:")
-        corrected_shifts = [s for s in shifts if s > 0]
         report.append(f"  Mean shift:             {np.mean(corrected_shifts):.2f} bp")
         report.append(f"  Median shift:           {np.median(corrected_shifts):.1f} bp")
         report.append(f"  Maximum shift:          {max(corrected_shifts)} bp")
@@ -433,9 +443,8 @@ def find_coverage_gaps(
 
     # Get chromosome length
     chrom_length = None
-    for ref in bam.references:
+    for idx, ref in enumerate(bam.references):
         if ref == chrom:
-            idx = list(bam.references).index(ref)
             chrom_length = bam.lengths[idx]
             break
 

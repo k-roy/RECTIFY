@@ -186,8 +186,10 @@ class TestReadTrimming:
             assert result['has_polya']
             assert result['soft_clip_length'] == 20
             assert result['polya_length'] >= 20
-            # Corrected position should be upstream
-            assert result['corrected_3prime'] < result['original_3prime']
+            # NOTE: Soft-clips don't affect genomic position - aligner already excluded them
+            # Position ambiguity is handled by atract_detector, not polya_trimmer
+            assert result['corrected_3prime'] == result['original_3prime']
+            assert result['shift'] == 0
 
     def test_trim_read_with_left_softclip(self):
         """Test trimming read with poly(T) soft-clip on left (- strand)."""
@@ -212,8 +214,10 @@ class TestReadTrimming:
             assert result['original_3prime'] == 1000  # ref_start
             assert result['has_polya']
             assert result['soft_clip_length'] == 20
-            # Corrected position should be downstream (higher coord for - strand)
-            assert result['corrected_3prime'] > result['original_3prime']
+            # NOTE: Soft-clips don't affect genomic position - aligner already excluded them
+            # Position ambiguity is handled by atract_detector, not polya_trimmer
+            assert result['corrected_3prime'] == result['original_3prime']
+            assert result['shift'] == 0
 
     def test_trim_read_no_softclip(self):
         """Test trimming read without soft-clip."""

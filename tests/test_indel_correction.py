@@ -233,10 +233,12 @@ class TestCorrectPositionForIndels:
             strand='+'
         )
 
-        # Insertion: aligner added bases, move RIGHTWARD
-        assert result['corrected_position'] == 1100  # 1099 + 1
-        assert result['correction_bp'] == 1
-        assert result['n_insertions'] == 1
+        # IMPORTANT: Insertions do NOT affect reference coordinates!
+        # The reference_start and reference_end are unchanged by insertions.
+        # We count them for QC but do NOT apply position correction.
+        assert result['corrected_position'] == 1099  # No change for insertions
+        assert result['correction_bp'] == 0  # No correction applied
+        assert result['n_insertions'] == 1  # Counted for QC
 
     def test_multiple_artifacts(self):
         """Test correction for multiple artifacts."""

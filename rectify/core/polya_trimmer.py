@@ -134,6 +134,8 @@ def find_polya_boundary(
     Scans from right (+ strand) or left (- strand) to find where A-richness
     drops below threshold.
 
+    Uses O(n) sliding window algorithm for efficiency.
+
     Args:
         sequence: Aligned read sequence
         strand: Gene strand
@@ -146,47 +148,91 @@ def find_polya_boundary(
     if len(sequence) == 0:
         return 0
 
+    seq_len = len(sequence)
     sequence = sequence.upper()
     target_base = 'A' if strand == '+' else 'T'
 
     if strand == '+':
-        # Scan from right (3' end) leftward
-        for i in range(len(sequence) - 1, -1, -1):
-            # Check if we're still in A-rich region
-            window_start = max(0, i - POLYA_WINDOW_SIZE + 1)
-            window = sequence[window_start:i + 1]
+        # Scan from right (3' end) leftward with sliding window
+        # Initialize window at rightmost position
+        window_size = min(POLYA_WINDOW_SIZE, seq_len)
+        if window_size < 3:
+            return seq_len
 
-            if len(window) < 3:  # Too short to evaluate
+        # Initial window count
+        window_start = seq_len - window_size
+        a_count = sum(1 for c in sequence[window_start:seq_len] if c == target_base)
+
+        # Check initial window
+        if a_count / window_size < threshold:
+            return seq_len
+
+        # Slide window leftward (i is the right edge of window)
+        for i in range(seq_len - 1, -1, -1):
+            # Determine window boundaries
+            new_start = max(0, i - POLYA_WINDOW_SIZE + 1)
+            new_end = i + 1
+            curr_window_size = new_end - new_start
+
+            if curr_window_size < 3:
                 continue
 
-            a_count = window.count(target_base)
-            a_richness = a_count / len(window)
+            # Update count incrementally when window moves
+            if i < seq_len - 1:
+                # Character leaving window (right side)
+                if sequence[i + 1] == target_base:
+                    a_count -= 1
+                # When window shrinks at left boundary, no char enters
+                # When window is full size, a char enters at left
+                old_start = max(0, i + 1 - POLYA_WINDOW_SIZE + 1)
+                if new_start < old_start:
+                    if sequence[new_start] == target_base:
+                        a_count += 1
 
+            a_richness = a_count / curr_window_size
             if a_richness < threshold:
-                # Found boundary
                 return i + 1
 
         # Entire sequence is A-rich
         return 0
     else:
-        # Scan from left (3' end in - strand) rightward
-        for i in range(len(sequence)):
-            # Check if we're still in T-rich region
-            window_end = min(len(sequence), i + POLYA_WINDOW_SIZE)
-            window = sequence[i:window_end]
+        # Scan from left (3' end in - strand) rightward with sliding window
+        window_size = min(POLYA_WINDOW_SIZE, seq_len)
+        if window_size < 3:
+            return 0
 
-            if len(window) < 3:
+        # Initial window count
+        t_count = sum(1 for c in sequence[0:window_size] if c == target_base)
+
+        # Check initial window
+        if t_count / window_size < threshold:
+            return 0
+
+        # Slide window rightward (i is the left edge of window)
+        for i in range(seq_len):
+            window_end = min(seq_len, i + POLYA_WINDOW_SIZE)
+            curr_window_size = window_end - i
+
+            if curr_window_size < 3:
                 continue
 
-            t_count = window.count(target_base)
-            t_richness = t_count / len(window)
+            # Update count incrementally when window moves
+            if i > 0:
+                # Character leaving window (left side)
+                if sequence[i - 1] == target_base:
+                    t_count -= 1
+                # Character entering window (right side, if not at boundary)
+                old_end = min(seq_len, i - 1 + POLYA_WINDOW_SIZE)
+                if window_end > old_end:
+                    if sequence[window_end - 1] == target_base:
+                        t_count += 1
 
+            t_richness = t_count / curr_window_size
             if t_richness < threshold:
-                # Found boundary
                 return i
 
         # Entire sequence is T-rich
-        return len(sequence)
+        return seq_len
 
 
 def trim_polya_from_read(

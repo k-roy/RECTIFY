@@ -12,7 +12,7 @@ class TestConfig:
 
     def test_version(self):
         """Test version string."""
-        assert config.__version__ == "2.0.0"
+        assert config.__version__ == "2.1.0"
 
     def test_chromosome_mappings(self):
         """Test chromosome name mappings."""
