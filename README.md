@@ -23,6 +23,9 @@ pip install rectify-rna
 # 1. Correct 3' end positions
 rectify correct reads.bam --genome genome.fa --output corrected.tsv
 
+# With NET-seq refinement (optional, infers CPA sites within A-tracts and assigns mature mRNA 3' ends proportionally)
+rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corrected.tsv
+
 # 2. Analyze results (clustering, differential expression, motifs)
 rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 ```
