@@ -54,12 +54,31 @@ def validate_inputs(args) -> dict:
     if args.annotation and not args.annotation.exists():
         errors.append(f"Annotation file not found: {args.annotation}")
 
-    # Check NET-seq directory (optional)
+    # Resolve NET-seq directory (organism bundled data or custom)
+    resolved_netseq_dir = None
     if args.netseq_dir:
+        # Custom dir provided - validate it exists
         if not args.netseq_dir.exists():
             errors.append(f"NET-seq directory not found: {args.netseq_dir}")
         elif not args.netseq_dir.is_dir():
             errors.append(f"NET-seq path is not a directory: {args.netseq_dir}")
+        else:
+            resolved_netseq_dir = args.netseq_dir
+    elif hasattr(args, 'organism') and args.organism:
+        # Use bundled data for organism
+        from ..data import ensure_netseq_data
+        try:
+            resolved_netseq_dir = ensure_netseq_data(
+                args.organism,
+                auto_download=True,
+                verbose=True
+            )
+        except Exception as e:
+            logging.warning(f"Could not load bundled NET-seq data: {e}")
+            logging.warning("Continuing without NET-seq refinement.")
+
+    # Store resolved path for later use
+    args._resolved_netseq_dir = resolved_netseq_dir
 
     # Check poly(A) model (optional)
     if args.polya_model:
@@ -87,7 +106,7 @@ def validate_inputs(args) -> dict:
         'apply_ag_mispriming': not args.skip_ag_check,
         'apply_polya_trim': False,  # Default False
         'apply_indel_correction': False,  # Default False
-        'netseq_dir': args.netseq_dir,
+        'netseq_dir': getattr(args, '_resolved_netseq_dir', args.netseq_dir),
         'netseq_samples': args.netseq_samples,
         'polya_model_path': args.polya_model,
         'threads': args.threads,

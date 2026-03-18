@@ -374,10 +374,12 @@ def _draw_gene_track(
     use_common_names: bool = True,
 ) -> None:
     """
-    Draw gene structure track with CDS as pentagon arrows.
+    Draw gene structure track with CDS/UTR distinction.
 
     Follows locus_plotting conventions:
     - Pentagon/arrow shapes indicating strand direction
+    - CDS shown as filled boxes (full height)
+    - UTR shown as thinner lines (half height)
     - Target gene highlighted in red
     - Neighbor genes in gray
 
@@ -393,59 +395,125 @@ def _draw_gene_track(
         annotation_df: Gene annotation DataFrame
         use_common_names: Use common gene names
     """
-    from matplotlib.patches import Polygon
+    from matplotlib.patches import Polygon, Rectangle
 
     ax.set_xlim(region_start, region_end)
     ax.set_ylim(-0.5, 1.5)
 
     # Colors
     TARGET_COLOR = '#e74c3c'  # Red
+    TARGET_UTR_COLOR = '#f1948a'  # Light red for UTR
     NEIGHBOR_COLOR = '#95a5a6'  # Gray
+    NEIGHBOR_UTR_COLOR = '#d5d8dc'  # Light gray for UTR
     CPA_MARKER_COLOR = '#2c3e50'  # Dark blue-gray
 
-    # If we have annotation, draw CDS features
+    # Track which genes have been labeled
+    genes_labeled = set()
     features_drawn = False
+
     if annotation_df is not None and not annotation_df.empty:
-        # Filter to CDS in region
-        region_cds = annotation_df[
+        # Filter to features in region
+        region_features = annotation_df[
             (annotation_df['chrom'] == chrom) &
             (annotation_df['end'] >= region_start) &
             (annotation_df['start'] <= region_end)
-        ]
+        ].copy()
 
-        if 'feature_type' in annotation_df.columns:
-            region_cds = region_cds[region_cds['feature_type'] == 'CDS']
+        if 'feature_type' in region_features.columns:
+            # Draw UTRs first (thinner, behind CDS)
+            utr_types = {'UTR', '5UTR', '3UTR', 'five_prime_UTR', 'three_prime_UTR'}
+            utr_features = region_features[region_features['feature_type'].isin(utr_types)]
 
-        for _, feature in region_cds.iterrows():
-            start = max(feature['start'], region_start)
-            end = min(feature['end'], region_end)
-            feat_strand = feature.get('strand', strand)
-            feat_gene_id = feature.get('gene_id', '')
-            feat_gene_name = feature.get('gene_name', feat_gene_id)
+            for _, feature in utr_features.iterrows():
+                start = max(feature['start'], region_start)
+                end = min(feature['end'], region_end)
+                feat_gene_id = feature.get('gene_id', '')
+                feat_gene_name = feature.get('gene_name', feat_gene_id)
 
-            # Determine if this is the target gene
-            is_target = (feat_gene_id == gene_id or
-                        feat_gene_name == gene_name or
-                        gene_id in str(feat_gene_id))
+                is_target = (feat_gene_id == gene_id or
+                            feat_gene_name == gene_name or
+                            gene_id in str(feat_gene_id))
 
-            color = TARGET_COLOR if is_target else NEIGHBOR_COLOR
-            alpha = 0.9 if is_target else 0.5
-            linewidth = 1.5 if is_target else 0.8
+                utr_color = TARGET_UTR_COLOR if is_target else NEIGHBOR_UTR_COLOR
+                alpha = 0.8 if is_target else 0.4
 
-            # Draw pentagon arrow
-            _draw_gene_arrow(ax, start, end, feat_strand, 0.5, 0.35,
-                           color=color, alpha=alpha, linewidth=linewidth)
+                # Draw UTR as thin rectangle (half height of CDS)
+                rect = Rectangle(
+                    (start, 0.35), end - start, 0.3,
+                    facecolor=utr_color, edgecolor='black',
+                    linewidth=0.5, alpha=alpha
+                )
+                ax.add_patch(rect)
+                features_drawn = True
 
-            # Label
-            label_x = (start + end) / 2
-            display = feat_gene_name if use_common_names and feat_gene_name else feat_gene_id
-            if display:
-                fontsize = 9 if is_target else 7
-                fontweight = 'bold' if is_target else 'normal'
-                ax.text(label_x, 0.5, display[:12], ha='center', va='center',
-                       fontsize=fontsize, fontweight=fontweight, color='white')
+            # Draw CDS (full height arrows)
+            cds_features = region_features[region_features['feature_type'] == 'CDS']
 
-            features_drawn = True
+            for _, feature in cds_features.iterrows():
+                start = max(feature['start'], region_start)
+                end = min(feature['end'], region_end)
+                feat_strand = feature.get('strand', strand)
+                feat_gene_id = feature.get('gene_id', '')
+                feat_gene_name = feature.get('gene_name', feat_gene_id)
+
+                is_target = (feat_gene_id == gene_id or
+                            feat_gene_name == gene_name or
+                            gene_id in str(feat_gene_id))
+
+                color = TARGET_COLOR if is_target else NEIGHBOR_COLOR
+                alpha = 0.9 if is_target else 0.5
+                linewidth = 1.5 if is_target else 0.8
+
+                # Draw pentagon arrow for CDS
+                _draw_gene_arrow(ax, start, end, feat_strand, 0.5, 0.35,
+                               color=color, alpha=alpha, linewidth=linewidth)
+
+                # Label (only once per gene)
+                label_key = feat_gene_id or feat_gene_name
+                if label_key and label_key not in genes_labeled:
+                    label_x = (start + end) / 2
+                    display = feat_gene_name if use_common_names and feat_gene_name else feat_gene_id
+                    if display:
+                        fontsize = 9 if is_target else 7
+                        fontweight = 'bold' if is_target else 'normal'
+                        ax.text(label_x, 0.5, display[:12], ha='center', va='center',
+                               fontsize=fontsize, fontweight=fontweight, color='white')
+                        genes_labeled.add(label_key)
+
+                features_drawn = True
+
+        else:
+            # No feature_type column - treat all as CDS (legacy behavior)
+            for _, feature in region_features.iterrows():
+                start = max(feature['start'], region_start)
+                end = min(feature['end'], region_end)
+                feat_strand = feature.get('strand', strand)
+                feat_gene_id = feature.get('gene_id', '')
+                feat_gene_name = feature.get('gene_name', feat_gene_id)
+
+                is_target = (feat_gene_id == gene_id or
+                            feat_gene_name == gene_name or
+                            gene_id in str(feat_gene_id))
+
+                color = TARGET_COLOR if is_target else NEIGHBOR_COLOR
+                alpha = 0.9 if is_target else 0.5
+                linewidth = 1.5 if is_target else 0.8
+
+                _draw_gene_arrow(ax, start, end, feat_strand, 0.5, 0.35,
+                               color=color, alpha=alpha, linewidth=linewidth)
+
+                label_key = feat_gene_id or feat_gene_name
+                if label_key and label_key not in genes_labeled:
+                    label_x = (start + end) / 2
+                    display = feat_gene_name if use_common_names and feat_gene_name else feat_gene_id
+                    if display:
+                        fontsize = 9 if is_target else 7
+                        fontweight = 'bold' if is_target else 'normal'
+                        ax.text(label_x, 0.5, display[:12], ha='center', va='center',
+                               fontsize=fontsize, fontweight=fontweight, color='white')
+                        genes_labeled.add(label_key)
+
+                features_drawn = True
 
     # If no annotation, draw a simple gene box for the target
     if not features_drawn:

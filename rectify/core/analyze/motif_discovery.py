@@ -61,80 +61,91 @@ def extract_sequences_around_clusters(
             "Install with: pip install pysam"
         )
 
-    # Open FASTA
-    fasta = pysam.FastaFile(genome_fasta)
-    chrom_lengths = dict(zip(fasta.references, fasta.lengths))
+    # Use context manager for proper resource cleanup
+    with pysam.FastaFile(genome_fasta) as fasta:
+        chrom_lengths = dict(zip(fasta.references, fasta.lengths))
 
-    results = {}
+        results = {}
 
-    if region in ('upstream', 'both'):
-        results['upstream'] = []
+        if region in ('upstream', 'both'):
+            results['upstream'] = []
 
-    if region in ('downstream', 'both'):
-        results['downstream'] = []
+        if region in ('downstream', 'both'):
+            results['downstream'] = []
 
-    for _, cluster in clusters_df.iterrows():
-        chrom = cluster['chrom']
-        strand = cluster['strand']
-        pos = cluster['modal_position']
-        cluster_id = cluster.get('cluster_id', f"{chrom}_{pos}_{strand}")
+        skipped_chroms = set()
+        extraction_errors = 0
 
-        # Skip if chromosome not in FASTA
-        if chrom not in chrom_lengths:
-            continue
+        for _, cluster in clusters_df.iterrows():
+            chrom = cluster['chrom']
+            strand = cluster['strand']
+            pos = cluster['modal_position']
+            cluster_id = cluster.get('cluster_id', f"{chrom}_{pos}_{strand}")
 
-        chrom_len = chrom_lengths[chrom]
-
-        # Calculate coordinates (strand-aware)
-        if strand == '+':
-            upstream_start = max(0, pos - upstream_window)
-            upstream_end = pos
-            downstream_start = pos
-            downstream_end = min(chrom_len, pos + downstream_window)
-        else:
-            # For minus strand, upstream is higher coordinates
-            upstream_start = pos
-            upstream_end = min(chrom_len, pos + upstream_window)
-            downstream_start = max(0, pos - downstream_window)
-            downstream_end = pos
-
-        # Extract upstream
-        if 'upstream' in results:
-            try:
-                seq = fasta.fetch(chrom, upstream_start, upstream_end)
-                if strand == '-':
-                    seq = _reverse_complement(seq)
-                if len(seq) >= upstream_window * 0.8:  # At least 80% of requested
-                    results['upstream'].append({
-                        'cluster_id': cluster_id,
-                        'sequence': seq.upper(),
-                        'chrom': chrom,
-                        'start': upstream_start,
-                        'end': upstream_end,
-                        'strand': strand,
-                    })
-            except Exception:
+            # Skip if chromosome not in FASTA
+            if chrom not in chrom_lengths:
+                skipped_chroms.add(chrom)
                 continue
 
-        # Extract downstream
-        if 'downstream' in results:
-            try:
-                seq = fasta.fetch(chrom, downstream_start, downstream_end)
-                if strand == '-':
-                    seq = _reverse_complement(seq)
-                if len(seq) >= downstream_window * 0.8:
-                    results['downstream'].append({
-                        'cluster_id': cluster_id,
-                        'sequence': seq.upper(),
-                        'chrom': chrom,
-                        'start': downstream_start,
-                        'end': downstream_end,
-                        'strand': strand,
-                    })
-            except Exception:
-                continue
+            chrom_len = chrom_lengths[chrom]
 
-    fasta.close()
+            # Calculate coordinates (strand-aware)
+            if strand == '+':
+                upstream_start = max(0, pos - upstream_window)
+                upstream_end = pos
+                downstream_start = pos
+                downstream_end = min(chrom_len, pos + downstream_window)
+            else:
+                # For minus strand, upstream is higher coordinates
+                upstream_start = pos
+                upstream_end = min(chrom_len, pos + upstream_window)
+                downstream_start = max(0, pos - downstream_window)
+                downstream_end = pos
+
+            # Extract upstream
+            if 'upstream' in results:
+                try:
+                    seq = fasta.fetch(chrom, upstream_start, upstream_end)
+                    if strand == '-':
+                        seq = _reverse_complement(seq)
+                    if len(seq) >= upstream_window * 0.8:  # At least 80% of requested
+                        results['upstream'].append({
+                            'cluster_id': cluster_id,
+                            'sequence': seq.upper(),
+                            'chrom': chrom,
+                            'start': upstream_start,
+                            'end': upstream_end,
+                            'strand': strand,
+                        })
+                except Exception:
+                    extraction_errors += 1
+                    continue
+
+            # Extract downstream
+            if 'downstream' in results:
+                try:
+                    seq = fasta.fetch(chrom, downstream_start, downstream_end)
+                    if strand == '-':
+                        seq = _reverse_complement(seq)
+                    if len(seq) >= downstream_window * 0.8:
+                        results['downstream'].append({
+                            'cluster_id': cluster_id,
+                            'sequence': seq.upper(),
+                            'chrom': chrom,
+                            'start': downstream_start,
+                            'end': downstream_end,
+                            'strand': strand,
+                        })
+                except Exception:
+                    extraction_errors += 1
+                    continue
+
+        # Log statistics
+        if skipped_chroms:
+            print(f"  Skipped {len(skipped_chroms)} chromosomes not in FASTA: {list(skipped_chroms)[:5]}...")
+        if extraction_errors > 0:
+            print(f"  {extraction_errors} extraction errors (e.g., invalid coordinates)")
+
     return results
 
 

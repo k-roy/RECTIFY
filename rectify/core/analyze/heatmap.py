@@ -85,12 +85,13 @@ def plot_sample_heatmap(
         data = data.loc[top_features]
 
     # Calculate sample-sample correlation
+    # count_matrix is Features × Samples, so data.corr() gives sample correlation
     if method == 'correlation':
-        corr_matrix = data.T.corr()
+        corr_matrix = data.corr()  # Correlation between columns (samples)
     else:
-        # For other methods, use distance matrix
-        from scipy.spatial.distance import squareform
-        distances = pdist(data.T, metric=method)
+        # For other methods, use distance matrix between samples
+        from scipy.spatial.distance import pdist, squareform
+        distances = pdist(data.T, metric=method)  # data.T is Samples × Features
         corr_matrix = pd.DataFrame(
             1 - squareform(distances),
             index=data.columns,

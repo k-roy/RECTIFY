@@ -58,6 +58,15 @@ from .summary import (
     generate_html_report,
 )
 
+from .deconvolution import (
+    build_convolution_matrix,
+    deconvolve_signal,
+    deconvolve_with_confidence,
+    identify_peaks,
+    verify_boundary_recovery,
+    DEFAULT_PSF,
+)
+
 __all__ = [
     # Clustering
     'cluster_cpa_sites',
@@ -91,4 +100,11 @@ __all__ = [
     'generate_summary_tables',
     'generate_analysis_summary',
     'generate_html_report',
+    # Deconvolution
+    'build_convolution_matrix',
+    'deconvolve_signal',
+    'deconvolve_with_confidence',
+    'identify_peaks',
+    'verify_boundary_recovery',
+    'DEFAULT_PSF',
 ]

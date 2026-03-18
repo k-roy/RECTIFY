@@ -20,21 +20,21 @@ pip install rectify-rna
 ### Run
 
 ```bash
-# All-in-one: correct + analyze in a single command
+# All-in-one: correct + analyze (uses bundled WT NET-seq for yeast by default)
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
-That's it! RECTIFY automatically corrects 3' end positions and runs full downstream analysis.
+That's it! RECTIFY automatically downloads WT NET-seq data (Churchman lab) for supported organisms and runs the complete pipeline.
 
 <details>
-<summary>Or run steps separately</summary>
+<summary>Or run steps separately / use custom NET-seq data</summary>
 
 ```bash
-# 1. Correct 3' end positions
-rectify correct reads.bam --genome genome.fa --output corrected.tsv
+# 1. Correct 3' end positions (bundled WT NET-seq auto-downloaded)
+rectify correct reads.bam --genome genome.fa --organism yeast --output corrected.tsv
 
-# With NET-seq refinement (optional, infers CPA sites within A-tracts and assigns mature mRNA 3' ends proportionally)
-rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corrected.tsv
+# With custom/mutant NET-seq data (overrides bundled WT data)
+rectify correct reads.bam --genome genome.fa --netseq-dir my_mutant_netseq/ --output corrected.tsv
 
 # 2. Analyze results (clustering, differential expression, GO enrichment, enriched motifs around cluster peaks)
 rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/

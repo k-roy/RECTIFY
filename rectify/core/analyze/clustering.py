@@ -439,15 +439,24 @@ def build_cluster_count_matrix(
     # Build count matrix using vectorized groupby where possible
     samples = positions_df[sample_col].unique()
 
-    # Assign cluster IDs to all positions
-    positions_df = positions_df.copy()
-    positions_df['_cluster_id'] = positions_df.apply(
-        lambda row: find_cluster(row[chrom_col], row[strand_col], row[position_col]),
-        axis=1
-    )
+    # Assign cluster IDs to all positions using list comprehension (faster than apply)
+    # Extract arrays once to avoid repeated DataFrame indexing
+    chroms = positions_df[chrom_col].values
+    strands = positions_df[strand_col].values
+    positions = positions_df[position_col].values
 
-    # Filter to positions with assigned clusters
-    assigned = positions_df[positions_df['_cluster_id'].notna()].copy()
+    # Vectorized cluster assignment using list comprehension
+    cluster_ids = [
+        find_cluster(c, s, p)
+        for c, s, p in zip(chroms, strands, positions)
+    ]
+
+    positions_df = positions_df.copy()
+    positions_df['_cluster_id'] = cluster_ids
+
+    # Filter to positions with assigned clusters (avoid second copy)
+    mask = positions_df['_cluster_id'].notna()
+    assigned = positions_df.loc[mask]
 
     if assigned.empty:
         # No positions assigned to clusters

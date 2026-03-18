@@ -36,6 +36,25 @@ YEAST_CHR_TO_NCBI = {
     'chrMito': 'ref|NC_001224|',
     'chrM': 'ref|NC_001224|',
     'chrMT': 'ref|NC_001224|',
+    # Simple Roman numerals (Ensembl format without 'chr' prefix)
+    'I': 'ref|NC_001133|',
+    'II': 'ref|NC_001134|',
+    'III': 'ref|NC_001135|',
+    'IV': 'ref|NC_001136|',
+    'V': 'ref|NC_001137|',
+    'VI': 'ref|NC_001138|',
+    'VII': 'ref|NC_001139|',
+    'VIII': 'ref|NC_001140|',
+    'IX': 'ref|NC_001141|',
+    'X': 'ref|NC_001142|',
+    'XI': 'ref|NC_001143|',
+    'XII': 'ref|NC_001144|',
+    'XIII': 'ref|NC_001145|',
+    'XIV': 'ref|NC_001146|',
+    'XV': 'ref|NC_001147|',
+    'XVI': 'ref|NC_001148|',
+    'Mito': 'ref|NC_001224|',
+    'MT': 'ref|NC_001224|',
 }
 
 # NCBI RefSeq (ref|NC_001133|) to UCSC (chrI)

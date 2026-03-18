@@ -146,9 +146,16 @@ Citation:
     # NET-seq refinement
     netseq_group = correct_parser.add_argument_group('NET-seq refinement')
     netseq_group.add_argument(
+        '--organism',
+        help='Organism name for auto NET-seq (e.g., yeast, saccharomyces_cerevisiae). '
+             'Bundled WT NET-seq data will be downloaded automatically if available.'
+    )
+
+    netseq_group.add_argument(
         '--netseq-dir',
         type=Path,
-        help='Directory containing NET-seq BigWig files (.bw) for refinement'
+        help='Custom NET-seq BigWig directory (overrides bundled data). '
+             'Use this for mutant-specific NET-seq data.'
     )
 
     netseq_group.add_argument(
@@ -395,9 +402,15 @@ Citation:
 
     # Optional correction arguments
     run_parser.add_argument(
+        '--organism',
+        default='yeast',
+        help='Organism name (default: yeast). Bundled WT NET-seq used for refinement.'
+    )
+
+    run_parser.add_argument(
         '--netseq-dir',
         type=Path,
-        help='Directory with NET-seq bigWig files for refinement'
+        help='Custom NET-seq directory (overrides bundled data for mutant-specific analysis)'
     )
 
     run_parser.add_argument(

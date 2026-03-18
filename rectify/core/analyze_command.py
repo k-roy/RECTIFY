@@ -68,20 +68,80 @@ def run_analyze(args: argparse.Namespace) -> int:
     positions_df = load_corrected_positions(args.input, args.sample_column)
     print(f"  Loaded {len(positions_df):,} positions from {positions_df[args.sample_column].nunique()} samples")
 
+    # Load annotation early to detect exclusion regions
+    annotation_df = None
+    if args.annotation:
+        annotation_df = load_annotation(args.annotation)
+
+    # Filter problematic regions (default: exclude mito and rDNA separately)
+    exclude_mito = args.exclude_mito and not getattr(args, 'include_mito', False)
+    exclude_rdna = getattr(args, 'exclude_rdna', True) and not getattr(args, 'include_rdna', False)
+
+    if exclude_mito or exclude_rdna:
+        n_before = len(positions_df)
+
+        # Auto-detect mitochondrial and rDNA from annotation
+        mito_chroms, rdna_regions = _detect_exclusion_regions(
+            annotation_df, positions_df['chrom'].unique()
+        )
+
+        # Report what was auto-detected
+        if mito_chroms:
+            print(f"  Auto-detected mitochondrial chromosomes: {', '.join(sorted(mito_chroms))}")
+        if rdna_regions:
+            for chrom, start, end in rdna_regions:
+                print(f"  Auto-detected rDNA locus: {chrom}:{start:,}-{end:,} ({(end-start):,} bp)")
+
+        # Mitochondrial filter
+        mito_mask = pd.Series(False, index=positions_df.index)
+        if exclude_mito and mito_chroms:
+            mito_mask = positions_df['chrom'].isin(mito_chroms)
+
+        # rDNA filter (may have multiple regions)
+        rdna_mask = pd.Series(False, index=positions_df.index)
+        if exclude_rdna and rdna_regions:
+            for chrom, start, end in rdna_regions:
+                region_mask = (
+                    (positions_df['chrom'] == chrom) &
+                    (positions_df['corrected_position'] >= start) &
+                    (positions_df['corrected_position'] <= end)
+                )
+                rdna_mask = rdna_mask | region_mask
+
+        # Apply combined filter
+        exclude_mask = mito_mask | rdna_mask
+        positions_df = positions_df[~exclude_mask]
+
+        n_mito = mito_mask.sum()
+        n_rdna = rdna_mask.sum()
+        n_total_removed = n_before - len(positions_df)
+
+        if n_total_removed > 0:
+            print(f"  Excluded {n_total_removed:,} positions:")
+            if n_mito > 0:
+                print(f"    - Mitochondrial: {n_mito:,} positions")
+            if n_rdna > 0:
+                print(f"    - rDNA locus: {n_rdna:,} positions")
+
+    # Determine count column (may be auto-set by chunked loading)
+    count_col = args.count_column
+    if 'count' in positions_df.columns and not count_col:
+        count_col = 'count'
+        print(f"  Using pre-aggregated counts")
+
     # Form clusters
     print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
     clusters_df = cluster_cpa_sites(
         positions_df,
         cluster_distance=args.cluster_distance,
         min_reads=args.min_reads,
-        count_col=args.count_column if args.count_column else None,
+        count_col=count_col,
     )
     print(f"  Formed {len(clusters_df):,} clusters")
 
-    # Annotate with genes
-    if args.annotation:
+    # Annotate with genes (annotation_df already loaded above if provided)
+    if args.annotation and annotation_df is not None:
         print(f"\n  Annotating clusters with genes...")
-        annotation_df = load_annotation(args.annotation)
         clusters_df = annotate_clusters_with_genes(clusters_df, annotation_df)
         n_annotated = clusters_df['gene_id'].notna().sum()
         print(f"  Annotated {n_annotated:,} clusters ({100*n_annotated/len(clusters_df):.1f}%)")
@@ -97,7 +157,7 @@ def run_analyze(args: argparse.Namespace) -> int:
         positions_df,
         clusters_df,
         sample_col=args.sample_column,
-        count_col=args.count_column if args.count_column else None,
+        count_col=count_col,
     )
     print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
 
@@ -125,17 +185,59 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     # Run PCA
     print(f"\n[4/9] Running PCA analysis...")
-    pca_results = run_pca_analysis(count_matrix)
-    if pca_results['pca_coords'] is not None and not pca_results['pca_coords'].empty:
-        pca_path = plots_dir / 'pca_samples.png'
-        plot_pca(
-            pca_results,
-            sample_metadata=sample_metadata,
-            color_by='condition',
-            output_path=str(pca_path),
-            title='Sample PCA (CPA Clusters)',
-        )
-        print(f"  Saved PCA plot to {pca_path}")
+
+    # Parse sample sets if provided
+    sample_sets = None
+    if args.sample_sets:
+        import json
+        if args.sample_sets.startswith('{'):
+            sample_sets = json.loads(args.sample_sets)
+        elif Path(args.sample_sets).exists():
+            with open(args.sample_sets) as f:
+                sample_sets = json.load(f)
+        else:
+            print(f"  Warning: Could not parse sample_sets: {args.sample_sets}")
+
+    # If sample sets defined, create separate PCA plots
+    if sample_sets:
+        for set_name, conditions in sample_sets.items():
+            # Filter to samples in this set
+            set_samples = sample_metadata[
+                sample_metadata['condition'].isin(conditions)
+            ].index.tolist()
+            set_samples = [s for s in set_samples if s in count_matrix.columns]
+
+            if len(set_samples) < 3:
+                print(f"  Skipping PCA for {set_name} (only {len(set_samples)} samples)")
+                continue
+
+            set_matrix = count_matrix[set_samples]
+            set_meta = sample_metadata.loc[sample_metadata.index.isin(set_samples)]
+
+            pca_results = run_pca_analysis(set_matrix)
+            if pca_results['pca_coords'] is not None and not pca_results['pca_coords'].empty:
+                pca_path = plots_dir / f'pca_{set_name}.png'
+                plot_pca(
+                    pca_results,
+                    sample_metadata=set_meta,
+                    color_by='condition',
+                    output_path=str(pca_path),
+                    title=f'PCA: {set_name} ({", ".join(conditions)})',
+                )
+                print(f"  Saved PCA plot for {set_name}: {pca_path}")
+    else:
+        # Default: single PCA with all samples
+        pca_results = run_pca_analysis(count_matrix)
+        if pca_results['pca_coords'] is not None and not pca_results['pca_coords'].empty:
+            pca_path = plots_dir / 'pca_samples.png'
+            plot_pca(
+                pca_results,
+                sample_metadata=sample_metadata,
+                color_by='condition',
+                output_path=str(pca_path),
+                title='Sample PCA (CPA Clusters)',
+            )
+            print(f"  Saved PCA plot to {pca_path}")
 
     # Sample heatmap
     print(f"\n[5/9] Creating sample clustering heatmap...")
@@ -170,6 +272,10 @@ def run_analyze(args: argparse.Namespace) -> int:
             n_sig = (result_df['padj'] < 0.05).sum()
             print(f"    {condition}: {n_sig:,} significant genes")
 
+        # Free memory between gene and cluster analyses
+        import gc
+        gc.collect()
+
         # Cluster-level
         print("  Cluster-level analysis...")
         deseq2_cluster_results = run_deseq2_cluster_level(
@@ -184,6 +290,9 @@ def run_analyze(args: argparse.Namespace) -> int:
             result_df.to_csv(result_path, sep='\t')
             n_sig = (result_df['padj'] < 0.05).sum()
             print(f"    {condition}: {n_sig:,} significant clusters")
+
+        # Free memory after DESeq2
+        gc.collect()
     else:
         print(f"\n[6/9] Skipping DESeq2 (use --run-deseq2 to enable)")
 
@@ -342,21 +451,38 @@ def load_corrected_positions(
     sample_column: str,
     normalize_chroms: bool = True,
     chrom_format: str = 'ncbi',
+    chunk_size: int = 1_000_000,
+    max_rows: int = None,
 ) -> pd.DataFrame:
-    """Load corrected positions from TSV file.
+    """Load corrected positions from TSV file with optional chunked loading.
 
     Args:
         filepath: Path to TSV file with corrected positions
         sample_column: Column name for sample identifier
         normalize_chroms: Whether to normalize chromosome names
         chrom_format: Target chromosome format ('ncbi', 'ucsc')
+        chunk_size: Rows per chunk for large files (default: 1M)
+        max_rows: Maximum rows to load (for testing)
 
     Returns:
         DataFrame with corrected positions
     """
     from ..utils.chromosome import normalize_dataframe_chromosomes
+    import os
 
-    df = pd.read_csv(filepath, sep='\t')
+    # Check file size to determine loading strategy
+    file_size = os.path.getsize(filepath)
+    file_size_gb = file_size / (1024**3)
+
+    if file_size_gb > 5:
+        # Large file - use chunked loading with aggregation
+        print(f"  Large file ({file_size_gb:.1f} GB) - using chunked loading...")
+        return _load_large_file_chunked(
+            filepath, sample_column, normalize_chroms, chrom_format, chunk_size, max_rows
+        )
+
+    # Standard loading for smaller files
+    df = pd.read_csv(filepath, sep='\t', nrows=max_rows)
 
     # Handle different position column names
     position_col = None
@@ -387,18 +513,206 @@ def load_corrected_positions(
     return df
 
 
-def load_annotation(filepath: str) -> pd.DataFrame:
-    """Load gene annotation file (GTF or TSV)."""
+def _load_large_file_chunked(
+    filepath: str,
+    sample_column: str,
+    normalize_chroms: bool,
+    chrom_format: str,
+    chunk_size: int,
+    max_rows: int,
+) -> pd.DataFrame:
+    """Load large file in chunks, aggregating counts by position.
+
+    Instead of loading all 200M+ rows, aggregate counts by:
+    (chrom, strand, position, sample) -> count
+
+    This reduces memory by ~100x for most datasets.
+    Uses vectorized pandas operations instead of iterrows for speed.
+    """
+    from ..utils.chromosome import normalize_chromosome
+
+    print(f"  Aggregating counts by position (chunk_size={chunk_size:,})...")
+
+    # First pass: determine position column name
+    header = pd.read_csv(filepath, sep='\t', nrows=0)
+    position_col = None
+    for col in ['corrected_position', 'corrected_3prime', 'position']:
+        if col in header.columns:
+            position_col = col
+            break
+
+    if position_col is None:
+        raise ValueError("No position column found")
+
+    # Check for fraction column (proportional assignment)
+    has_fraction = 'fraction' in header.columns
+
+    # Aggregated DataFrames from each chunk
+    aggregated_chunks = []
+
+    total_rows = 0
+    for chunk_num, chunk in enumerate(pd.read_csv(filepath, sep='\t', chunksize=chunk_size)):
+        if max_rows and total_rows >= max_rows:
+            break
+
+        # Normalize chromosomes in chunk (vectorized)
+        if normalize_chroms:
+            chunk['chrom'] = chunk['chrom'].map(
+                lambda x: normalize_chromosome(x, chrom_format)
+            )
+
+        # VECTORIZED AGGREGATION: Use groupby instead of iterrows
+        group_cols = ['chrom', 'strand', position_col, sample_column]
+
+        if has_fraction:
+            # Sum fractions for each position/sample combination
+            chunk_agg = chunk.groupby(group_cols)['fraction'].sum().reset_index()
+            chunk_agg.columns = ['chrom', 'strand', 'corrected_position', sample_column, 'count']
+        else:
+            # Count occurrences
+            chunk_agg = chunk.groupby(group_cols).size().reset_index(name='count')
+            chunk_agg.columns = ['chrom', 'strand', 'corrected_position', sample_column, 'count']
+
+        aggregated_chunks.append(chunk_agg)
+
+        total_rows += len(chunk)
+        if chunk_num % 10 == 0:
+            print(f"    Processed {total_rows:,} rows...", flush=True)
+
+    # Combine all chunk aggregations and re-aggregate
+    print(f"  Combining {len(aggregated_chunks)} chunks...")
+    combined = pd.concat(aggregated_chunks, ignore_index=True)
+
+    # Final aggregation to merge duplicate keys across chunks
+    group_cols = ['chrom', 'strand', 'corrected_position', sample_column]
+    final = combined.groupby(group_cols)['count'].sum().reset_index()
+
+    print(f"  Aggregated {total_rows:,} rows into {len(final):,} position/sample combinations")
+
+    return final
+
+
+def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: str = 'ncbi') -> pd.DataFrame:
+    """Load gene annotation file (GTF or TSV).
+
+    Args:
+        filepath: Path to annotation file
+        normalize_chroms: Whether to normalize chromosome names
+        chrom_format: Target chromosome format ('ncbi', 'ucsc')
+
+    Returns:
+        DataFrame with gene annotations
+    """
+    from ..utils.chromosome import normalize_dataframe_chromosomes
+
     if filepath.endswith('.gtf') or filepath.endswith('.gff'):
         # Parse GTF/GFF
-        return _parse_gtf(filepath)
+        df = _parse_gtf(filepath)
     else:
         # Assume TSV
-        return pd.read_csv(filepath, sep='\t')
+        df = pd.read_csv(filepath, sep='\t')
+
+    # Normalize chromosome names to match position data
+    if normalize_chroms and 'chrom' in df.columns:
+        df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
+
+    return df
+
+
+def _detect_exclusion_regions(
+    annotation_df: pd.DataFrame,
+    data_chroms: list,
+) -> tuple:
+    """
+    Auto-detect mitochondrial chromosomes and rDNA regions from annotation.
+
+    Uses annotation to identify:
+    1. Mitochondrial chromosomes (by name or gene content)
+    2. rDNA loci (by gene names like RDN*, ribosomal RNA genes)
+
+    Args:
+        annotation_df: Gene annotation DataFrame (may be None)
+        data_chroms: List of chromosome names in the data
+
+    Returns:
+        Tuple of (mito_chroms: set, rdna_regions: list of (chrom, start, end))
+    """
+    # Default mitochondrial chromosome patterns
+    mito_patterns = {'chrM', 'chrMT', 'chrmt', 'MT', 'Mt', 'Mito', 'mitochondrion'}
+    mito_ncbi = {'ref|NC_001224|'}  # Yeast mito
+
+    # Find mitochondrial chromosomes in data
+    mito_chroms = set()
+    for chrom in data_chroms:
+        chrom_lower = str(chrom).lower()
+        if any(pat.lower() in chrom_lower for pat in mito_patterns):
+            mito_chroms.add(chrom)
+        if chrom in mito_ncbi:
+            mito_chroms.add(chrom)
+
+    # rDNA regions - detect from annotation if available
+    rdna_regions = []
+
+    if annotation_df is not None and not annotation_df.empty:
+        # Look for mitochondrial genes in annotation
+        if 'chrom' in annotation_df.columns:
+            for chrom in annotation_df['chrom'].unique():
+                chrom_lower = str(chrom).lower()
+                if any(pat.lower() in chrom_lower for pat in mito_patterns):
+                    mito_chroms.add(chrom)
+
+        # Look for rDNA genes (yeast: RDN5, RDN18, RDN25, RDN37, RDN58, ETS, ITS, NTS)
+        # These are the actual ribosomal RNA genes in the rDNA repeat unit
+        # Pattern matches gene names starting with RDN, ETS, ITS, NTS (rDNA-specific)
+        rdna_gene_patterns = ['^RDN', '^ETS', '^ITS', '^NTS']
+
+        gene_col = 'gene_name' if 'gene_name' in annotation_df.columns else 'gene_id'
+        if gene_col in annotation_df.columns:
+            import re
+            combined_pattern = '|'.join(rdna_gene_patterns)
+            rdna_genes = annotation_df[
+                annotation_df[gene_col].str.match(combined_pattern, case=False, na=False)
+            ]
+
+            if not rdna_genes.empty and 'chrom' in rdna_genes.columns:
+                # Group by chromosome and find bounds
+                for chrom in rdna_genes['chrom'].unique():
+                    chrom_genes = rdna_genes[rdna_genes['chrom'] == chrom]
+                    if 'start' in chrom_genes.columns and 'end' in chrom_genes.columns:
+                        # Get region bounds with padding
+                        start = int(chrom_genes['start'].min()) - 1000
+                        end = int(chrom_genes['end'].max()) + 1000
+                        start = max(0, start)
+
+                        # Add region if substantial (>5kb suggests rDNA locus)
+                        if end - start > 5000:
+                            rdna_regions.append((chrom, start, end))
+
+    # Deduplicate and sort rDNA regions
+    rdna_regions = list(set(rdna_regions))
+    rdna_regions.sort()
+
+    # If no rDNA detected from annotation, use default yeast coordinates
+    if not rdna_regions:
+        # Yeast rDNA locus on chrXII: ~451,000-469,000 bp
+        yeast_rdna_chroms = {'chrXII', 'chr12', 'ref|NC_001144|'}
+        for chrom in data_chroms:
+            if chrom in yeast_rdna_chroms:
+                rdna_regions.append((chrom, 450_000, 490_000))
+                break
+
+    return mito_chroms, rdna_regions
 
 
 def _parse_gtf(filepath: str) -> pd.DataFrame:
-    """Parse GTF file to extract gene coordinates."""
+    """Parse GTF/GFF3 file to extract gene coordinates.
+
+    Supports both GTF format (key "value") and GFF3 format (key=value).
+    For GFF3, extracts:
+        - ID -> gene_id
+        - Name -> systematic gene name
+        - gene -> common gene name (preferred for display)
+    """
     genes = []
 
     with open(filepath) as f:
@@ -418,16 +732,35 @@ def _parse_gtf(filepath: str) -> pd.DataFrame:
             end = int(fields[4])
             strand = fields[6]
 
-            # Parse attributes
+            # Parse attributes - handle both GTF and GFF3 formats
             attrs = {}
-            for attr in fields[8].split(';'):
-                attr = attr.strip()
-                if ' ' in attr:
-                    key, value = attr.split(' ', 1)
-                    attrs[key] = value.strip('"')
+            attr_string = fields[8]
 
-            gene_id = attrs.get('gene_id', f'{chrom}_{start}')
-            gene_name = attrs.get('gene_name', gene_id)
+            # Detect format: GFF3 uses key=value, GTF uses key "value"
+            if '=' in attr_string:
+                # GFF3 format: ID=YAL069W;Name=YAL069W;gene=PAU8
+                for attr in attr_string.split(';'):
+                    attr = attr.strip()
+                    if '=' in attr:
+                        key, value = attr.split('=', 1)
+                        # URL decode common escapes
+                        value = value.replace('%20', ' ').replace('%3B', ';').replace('%2C', ',')
+                        attrs[key] = value
+            else:
+                # GTF format: gene_id "YAL069W"; gene_name "PAU8"
+                for attr in attr_string.split(';'):
+                    attr = attr.strip()
+                    if ' ' in attr:
+                        key, value = attr.split(' ', 1)
+                        attrs[key] = value.strip('"')
+
+            # Extract gene_id - try GFF3 keys first, then GTF
+            gene_id = attrs.get('ID') or attrs.get('gene_id') or f'{chrom}_{start}'
+
+            # Extract gene_name - prefer common name, fall back to systematic name
+            # GFF3: 'gene' has common name, 'Name' has systematic name
+            # GTF: 'gene_name' has the name
+            gene_name = attrs.get('gene') or attrs.get('gene_name') or attrs.get('Name') or gene_id
 
             genes.append({
                 'chrom': chrom,
@@ -543,6 +876,41 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         type=int,
         default=4,
         help='Number of threads for DESeq2 (default: 4)',
+    )
+
+    # Filtering options
+    parser.add_argument(
+        '--exclude-mito',
+        action='store_true',
+        default=True,
+        help='Exclude mitochondrial chromosome from analysis (default: True)',
+    )
+
+    parser.add_argument(
+        '--include-mito',
+        action='store_true',
+        help='Include mitochondrial chromosome (overrides --exclude-mito)',
+    )
+
+    parser.add_argument(
+        '--exclude-rdna',
+        action='store_true',
+        default=True,
+        help='Exclude rDNA locus from analysis (default: True). Auto-detected from GFF if available.',
+    )
+
+    parser.add_argument(
+        '--include-rdna',
+        action='store_true',
+        help='Include rDNA locus (overrides --exclude-rdna)',
+    )
+
+    # Sample set grouping for separate PCA plots
+    parser.add_argument(
+        '--sample-sets',
+        type=str,
+        help='JSON string or file defining sample sets for separate PCA plots. '
+             'Format: {"set1_name": ["condition1", "condition2"], "set2_name": ["condition3"]}',
     )
 
     parser.set_defaults(func=run_analyze)

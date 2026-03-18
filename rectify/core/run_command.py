@@ -23,6 +23,7 @@ def run(args: argparse.Namespace) -> None:
     """
     from . import correct_command
     from .analyze_command import run_analyze
+    from ..data import ensure_netseq_data
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -33,6 +34,21 @@ def run(args: argparse.Namespace) -> None:
     print("=" * 70)
     print("RECTIFY: Complete Pipeline")
     print("=" * 70)
+
+    # Resolve NET-seq data (bundled or custom)
+    organism = getattr(args, 'organism', 'yeast')
+    custom_netseq = getattr(args, 'netseq_dir', None)
+
+    if custom_netseq:
+        print(f"\nUsing custom NET-seq data: {custom_netseq}")
+        resolved_netseq_dir = custom_netseq
+    else:
+        print(f"\nResolving NET-seq data for organism: {organism}")
+        resolved_netseq_dir = ensure_netseq_data(
+            organism,
+            auto_download=True,
+            verbose=True
+        )
 
     # =========================================================================
     # Step 1: Correct 3' end positions
@@ -46,7 +62,8 @@ def run(args: argparse.Namespace) -> None:
         genome=args.genome,
         annotation=args.annotation,
         output=corrected_tsv,
-        netseq_dir=getattr(args, 'netseq_dir', None),
+        netseq_dir=resolved_netseq_dir,
+        organism=None,  # Already resolved above
         aligner=getattr(args, 'aligner', 'minimap2'),
         polya_sequenced=getattr(args, 'polya_sequenced', False),
         threads=getattr(args, 'threads', 4),
