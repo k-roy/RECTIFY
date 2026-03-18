@@ -79,6 +79,50 @@ Comprehensive QC report showing read flow through each correction stage:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Analysis Outputs (`rectify analyze`)
+
+**Cluster-level counts** for differential expression:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  cluster_id  │  gene   │ chrom │ strand │  start  │   end   │ sample_A │ sample_B │ ... │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  cluster_1   │  ACT1   │ chrVI │   +    │ 54696   │ 54702   │   1523   │   1891   │     │
+│  cluster_2   │  ACT1   │ chrVI │   +    │ 54715   │ 54718   │    342   │    128   │     │
+│  cluster_3   │  PGK1   │ chrIII│   -    │ 137218  │ 137225  │   2104   │   2087   │     │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**DESeq2 differential expression** (gene and cluster level):
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│   gene   │ baseMean │ log2FoldChange │  lfcSE  │  stat   │  pvalue  │    padj     │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  RPL3    │  8542.3  │     1.82       │  0.12   │  15.2   │ 2.1e-52  │  4.8e-49    │
+│  HSP82   │  3201.7  │    -2.14       │  0.18   │ -11.9   │ 1.3e-32  │  1.5e-29    │
+│  ENO2    │  5876.2  │     0.92       │  0.09   │  10.2   │ 1.8e-24  │  1.4e-21    │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**3' UTR shift analysis** (alternative polyadenylation):
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│   gene   │ proximal_cluster │ distal_cluster │ shift_score │ direction │    padj     │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│  FAS1    │    cluster_12    │   cluster_14   │    0.42     │  SHORTEN  │  3.2e-08    │
+│  CDC19   │    cluster_28    │   cluster_31   │   -0.38     │  LENGTHEN │  1.7e-06    │
+│  TDH3    │    cluster_45    │   cluster_47   │    0.25     │  SHORTEN  │  4.1e-04    │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Visualization outputs:**
+- `pca_plot.png` - Sample clustering and batch effect detection
+- `heatmap.png` - Gene expression heatmap with hierarchical clustering
+- `shift_browser_*.png` - Genome browser plots showing CPA site usage per condition
+- `motif_results/` - Sequence motifs enriched near CPA sites (MEME format)
+
 ---
 
 ## Overview
