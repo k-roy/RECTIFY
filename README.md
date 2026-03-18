@@ -78,22 +78,31 @@ STEP 3: NET-seq REFINEMENT (Optional)
 ===============================================================================
 
 For species with NET-seq data, we can resolve the ambiguity window.
-NET-seq captures oligo-adenylated cleavage intermediates (mean ~6.6 bp tail).
-When genomic A's exist downstream of the CPA site, the oligo-A tails align
-to them, shifting the apparent position DOWNSTREAM.
 
-True CPA:                              |
-                                       v
-genome:         ...CGTACAAAAAAAA|GTCACC...
-                       ^^^^^^^^
-                    genomic A-tract
+NET-seq captures nascent RNA bound to RNA Pol II. Cleavage intermediates
+are oligo-adenylated (mean ~6.6 A's added) before release:
 
-NET-seq signal:    ####                      <- signal spread downstream
-                  ######                        because oligo-A tail
-                 ########                       aligns to genomic A's
-                    ^
-              apparent position
+                              CPA site
+                                 |
+                                 v
+    ___________                 ✂️
+   |  Pol II   |====~~~CGUACGUAG*AAAAAAA     <- oligo-A tail (~6 A's)
+   |___________|               3'              added after cleavage
 
+When this oligo-adenylated intermediate is sequenced and aligned to a
+genome with downstream A's, the oligo-A tail extends the alignment:
+
+                         true CPA
+                            |
+genome:       ...CGTACGTAG|AAAAAAAA|GTCACC...
+                          |^^^^^^^^|
+                          genomic A-tract
+                                   |
+aligned:      ...CGTACGTAG*AAAAAAA      <- oligo-A aligns to genomic A's
+                          |<----->|
+                           SHIFT (apparent 3' end moves downstream)
+
+This creates a spreading artifact: signal is shifted downstream.
 RECTIFY uses NNLS (Non-Negative Least Squares) deconvolution to remove
 the spreading artifact and recover true peak positions:
 

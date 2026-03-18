@@ -337,15 +337,52 @@ def run_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-def load_corrected_positions(filepath: str, sample_column: str) -> pd.DataFrame:
-    """Load corrected positions from TSV file."""
+def load_corrected_positions(
+    filepath: str,
+    sample_column: str,
+    normalize_chroms: bool = True,
+    chrom_format: str = 'ncbi',
+) -> pd.DataFrame:
+    """Load corrected positions from TSV file.
+
+    Args:
+        filepath: Path to TSV file with corrected positions
+        sample_column: Column name for sample identifier
+        normalize_chroms: Whether to normalize chromosome names
+        chrom_format: Target chromosome format ('ncbi', 'ucsc')
+
+    Returns:
+        DataFrame with corrected positions
+    """
+    from ..utils.chromosome import normalize_dataframe_chromosomes
+
     df = pd.read_csv(filepath, sep='\t')
+
+    # Handle different position column names
+    position_col = None
+    for col in ['corrected_position', 'corrected_3prime', 'position']:
+        if col in df.columns:
+            position_col = col
+            break
+
+    if position_col is None:
+        raise ValueError("No position column found (tried: corrected_position, corrected_3prime, position)")
+
+    # Standardize to 'corrected_position' if needed
+    if position_col != 'corrected_position':
+        df['corrected_position'] = df[position_col]
+        print(f"  Using '{position_col}' as position column")
 
     required_cols = ['chrom', 'strand', 'corrected_position', sample_column]
     missing = [c for c in required_cols if c not in df.columns]
 
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
+
+    # Normalize chromosome names for consistent analysis
+    if normalize_chroms:
+        df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
+        print(f"  Normalized chromosome names to {chrom_format} format")
 
     return df
 
