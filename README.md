@@ -147,6 +147,19 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
    - **AG mispriming**: Internal priming on A/G-rich regions (oligo-dT methods)
    - **Poly(A) tail alignment**: Tail bases align to genomic A-tracts creating systematic shifts (when poly(A) is sequenced)
 
+### NET-seq Refinement
+
+For organisms with available NET-seq data, RECTIFY can resolve A-tract ambiguity by using nascent RNA 3' end positions to infer true CPA sites. The bundled WT NET-seq data is auto-detected based on your genome:
+
+| Organism | NET-seq Data | Auto-detected from |
+|----------|--------------|-------------------|
+| *S. cerevisiae* | Churchman lab (bundled) | Genome size ~12 Mb, chrI-XVI |
+| Other eukaryotes | User-provided | Use `--netseq-dir` |
+
+**Without NET-seq**: RECTIFY still corrects A-tract artifacts and reports ambiguity windows - downstream analysis remains valid, just with wider confidence intervals.
+
+**Custom NET-seq**: Provide your own NET-seq data (e.g., from mutant strains) with `--netseq-dir` to override the bundled WT data for condition-specific refinement.
+
 ![Oligo(A) Spreading Artifact](docs/figures/oligo_a_spreading.png)
 
 **Poly(A) tails cause systematic 3' end mapping errors.** When poly(A) tails align to genomic A-tracts, the apparent 3' end shifts downstream. RECTIFY corrects this artifact using NNLS deconvolution:

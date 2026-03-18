@@ -36,19 +36,29 @@ def run(args: argparse.Namespace) -> None:
     print("=" * 70)
 
     # Resolve NET-seq data (bundled or custom)
-    organism = getattr(args, 'organism', 'yeast')
+    from ..data import detect_organism
     custom_netseq = getattr(args, 'netseq_dir', None)
 
     if custom_netseq:
         print(f"\nUsing custom NET-seq data: {custom_netseq}")
         resolved_netseq_dir = custom_netseq
     else:
-        print(f"\nResolving NET-seq data for organism: {organism}")
-        resolved_netseq_dir = ensure_netseq_data(
-            organism,
-            auto_download=True,
-            verbose=True
-        )
+        # Auto-detect organism from genome/annotation
+        organism = getattr(args, 'organism', None)
+        if not organism:
+            organism = detect_organism(args.genome, args.annotation)
+
+        if organism:
+            print(f"\nAuto-detected organism: {organism}")
+            resolved_netseq_dir = ensure_netseq_data(
+                organism,
+                auto_download=True,
+                verbose=True
+            )
+        else:
+            print("\nCould not auto-detect organism. Running without NET-seq refinement.")
+            print("(Provide --organism or --netseq-dir for NET-seq refinement)")
+            resolved_netseq_dir = None
 
     # =========================================================================
     # Step 1: Correct 3' end positions

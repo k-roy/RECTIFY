@@ -49,6 +49,155 @@ ORGANISM_ALIASES = {
 }
 
 
+def detect_organism_from_genome(genome_path: Path) -> Optional[str]:
+    """
+    Auto-detect organism from genome FASTA file.
+
+    Detection is based on:
+    - Genome size
+    - Chromosome naming conventions
+    - Known sequence signatures
+
+    Args:
+        genome_path: Path to genome FASTA (or .fai index)
+
+    Returns:
+        Detected organism name, or None if unknown
+    """
+    import re
+
+    # Try to read .fai index first (faster)
+    fai_path = Path(str(genome_path) + '.fai')
+    if fai_path.exists():
+        try:
+            chroms = {}
+            total_size = 0
+            with open(fai_path) as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 2:
+                        chroms[parts[0]] = int(parts[1])
+                        total_size += int(parts[1])
+
+            # S. cerevisiae detection:
+            # - ~12 Mb genome
+            # - Chromosomes named chrI-chrXVI or I-XVI
+            yeast_chroms = {'chrI', 'chrII', 'chrIII', 'chrIV', 'chrV', 'chrVI',
+                           'chrVII', 'chrVIII', 'chrIX', 'chrX', 'chrXI', 'chrXII',
+                           'chrXIII', 'chrXIV', 'chrXV', 'chrXVI', 'chrM', 'chrMito',
+                           'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX',
+                           'X', 'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'Mito'}
+
+            yeast_matches = sum(1 for c in chroms if c in yeast_chroms)
+
+            # Yeast: 12-13 Mb, mostly yeast chromosome names
+            if 10_000_000 < total_size < 15_000_000 and yeast_matches >= 10:
+                return 'saccharomyces_cerevisiae'
+
+            # Human: ~3 Gb, chr1-chr22 + chrX/Y
+            if 2_500_000_000 < total_size < 3_500_000_000:
+                human_chroms = {'chr1', 'chr2', 'chr3', 'chrX', 'chrY'}
+                if any(c in chroms for c in human_chroms):
+                    return 'homo_sapiens'
+
+            # Mouse: ~2.7 Gb
+            if 2_000_000_000 < total_size < 3_000_000_000:
+                mouse_chroms = {'chr1', 'chr2', 'chrX', 'chrY'}
+                if any(c in chroms for c in mouse_chroms):
+                    return 'mus_musculus'
+
+        except Exception:
+            pass
+
+    # Fallback: read first few lines of FASTA
+    try:
+        with open(genome_path) as f:
+            header_lines = []
+            for i, line in enumerate(f):
+                if line.startswith('>'):
+                    header_lines.append(line.strip())
+                if i > 100:  # Only check first 100 lines
+                    break
+
+            # Check for yeast chromosome patterns in headers
+            yeast_pattern = re.compile(r'>chr(I{1,3}|IV|V|VI{1,3}|IX|X{1,3}|XI{1,3}|XIV|XV|XVI|M)', re.IGNORECASE)
+            yeast_matches = sum(1 for h in header_lines if yeast_pattern.match(h))
+            if yeast_matches >= 5:
+                return 'saccharomyces_cerevisiae'
+
+    except Exception:
+        pass
+
+    return None
+
+
+def detect_organism_from_annotation(annotation_path: Path) -> Optional[str]:
+    """
+    Auto-detect organism from annotation GTF/GFF file.
+
+    Args:
+        annotation_path: Path to annotation file
+
+    Returns:
+        Detected organism name, or None if unknown
+    """
+    try:
+        with open(annotation_path) as f:
+            for i, line in enumerate(f):
+                if i > 50:  # Only check first 50 lines
+                    break
+
+                line_lower = line.lower()
+
+                # Check for organism indicators in comments/metadata
+                if 'saccharomyces' in line_lower or 'cerevisiae' in line_lower:
+                    return 'saccharomyces_cerevisiae'
+                if 'homo sapiens' in line_lower or 'human' in line_lower:
+                    return 'homo_sapiens'
+                if 'mus musculus' in line_lower or 'mouse' in line_lower:
+                    return 'mus_musculus'
+
+                # Check for SGD (yeast) gene naming
+                if line.startswith('#'):
+                    continue
+                if 'SGD' in line or 'gene_id "Y' in line:
+                    return 'saccharomyces_cerevisiae'
+
+    except Exception:
+        pass
+
+    return None
+
+
+def detect_organism(
+    genome_path: Optional[Path] = None,
+    annotation_path: Optional[Path] = None,
+) -> Optional[str]:
+    """
+    Auto-detect organism from genome and/or annotation files.
+
+    Args:
+        genome_path: Optional path to genome FASTA
+        annotation_path: Optional path to annotation GTF/GFF
+
+    Returns:
+        Detected organism name, or None if unknown
+    """
+    # Try annotation first (often has explicit organism info)
+    if annotation_path and annotation_path.exists():
+        org = detect_organism_from_annotation(annotation_path)
+        if org:
+            return org
+
+    # Try genome
+    if genome_path and genome_path.exists():
+        org = detect_organism_from_genome(genome_path)
+        if org:
+            return org
+
+    return None
+
+
 def get_cache_dir() -> Path:
     """Get the cache directory, creating if needed."""
     cache_dir = Path(os.environ.get('RECTIFY_CACHE_DIR', DEFAULT_CACHE_DIR))

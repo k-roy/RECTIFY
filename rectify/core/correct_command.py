@@ -64,18 +64,27 @@ def validate_inputs(args) -> dict:
             errors.append(f"NET-seq path is not a directory: {args.netseq_dir}")
         else:
             resolved_netseq_dir = args.netseq_dir
-    elif hasattr(args, 'organism') and args.organism:
-        # Use bundled data for organism
-        from ..data import ensure_netseq_data
-        try:
-            resolved_netseq_dir = ensure_netseq_data(
-                args.organism,
-                auto_download=True,
-                verbose=True
-            )
-        except Exception as e:
-            logging.warning(f"Could not load bundled NET-seq data: {e}")
-            logging.warning("Continuing without NET-seq refinement.")
+    else:
+        # Try to auto-detect organism from genome/annotation, or use explicit --organism
+        from ..data import detect_organism, ensure_netseq_data
+
+        organism = getattr(args, 'organism', None)
+        if not organism:
+            # Auto-detect from files
+            organism = detect_organism(args.genome, getattr(args, 'annotation', None))
+            if organism:
+                logging.info(f"Auto-detected organism: {organism}")
+
+        if organism:
+            try:
+                resolved_netseq_dir = ensure_netseq_data(
+                    organism,
+                    auto_download=True,
+                    verbose=True
+                )
+            except Exception as e:
+                logging.warning(f"Could not load bundled NET-seq data: {e}")
+                logging.warning("Continuing without NET-seq refinement.")
 
     # Store resolved path for later use
     args._resolved_netseq_dir = resolved_netseq_dir
