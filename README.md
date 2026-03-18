@@ -62,9 +62,9 @@ to find the first position where both agree on a non-A base:
 
 genome: ..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|..
 read:   ..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|..
-                    ^          ^      ^^
-                 AGREE      T error  dels
-                 (C=C)     (ignore) (count)
+                     ^         ^      ^^
+                  AGREE     T error  dels
+                  (C=C)    (ignore) (count)
 
 RECTIFY walks back from soft-clip boundary:
   - Skip all A's (ambiguous with poly(A) tail)
@@ -80,26 +80,39 @@ STEP 3: NET-seq REFINEMENT (Optional)
 For species with NET-seq data, we can resolve the ambiguity window.
 
 NET-seq captures nascent RNA bound to RNA Pol II. Cleavage intermediates
-are oligo-adenylated (mean ~6.6 A's added) before release:
+are oligo-adenylated before release, with a distribution of tail lengths:
 
-                              CPA site
-                                 |
-                                 v
-    ___________                 ✂️
-   |  Pol II   |====~~~CGUACGUAG*AAAAAAA     <- oligo-A tail (~6 A's)
-   |___________|               3'              added after cleavage
+                           CPA site (cleavage here)
+                                  |
+                                  v
+    ___________                  ✂️
+   |  Pol II   |====~~~CGUACGUAG*AAA...     <- oligo-A tail added
+   |___________|                 3'            after cleavage
 
-When this oligo-adenylated intermediate is sequenced and aligned to a
-genome with downstream A's, the oligo-A tail extends the alignment:
+Oligo(A) tail length distribution (typical):
+   1A:  ████████████  ~12%
+   2A:  ██████████    ~10%
+   3A:  █████████     ~9%
+   4A:  ████████      ~8%
+   5A:  ███████       ~7%
+   6A:  ██████        ~6%    mean ~6.6 A's
+   7A:  █████         ~5%
+   8A:  ████          ~4%
+   9A:  ███           ~3%
+  10A:  ██            ~2%
+  ...decreasing...
 
-                         true CPA
-                            |
+When oligo-adenylated intermediates align to a genome with downstream A's,
+the oligo-A tail extends the alignment into the genomic A-tract:
+
+                        true CPA
+                           |
 genome:       ...CGTACGTAG|AAAAAAAA|GTCACC...
                           |^^^^^^^^|
                           genomic A-tract
                                    |
 aligned:      ...CGTACGTAG*AAAAAAA      <- oligo-A aligns to genomic A's
-                          |<----->|
+                          |<------>|
                            SHIFT (apparent 3' end moves downstream)
 
 This creates a spreading artifact: signal is shifted downstream.
