@@ -20,11 +20,11 @@ pip install rectify-rna
 ### Run
 
 ```bash
-# Nanopore direct RNA-seq
+# 1. Correct 3' end positions
 rectify correct reads.bam --genome genome.fa --output corrected.tsv
 
-# With NET-seq refinement (optional, improves accuracy)
-rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corrected.tsv
+# 2. Analyze results (clustering, differential expression, motifs)
+rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 ```
 
 That's it! RECTIFY automatically detects your data type and applies the appropriate corrections.
