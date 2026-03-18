@@ -26,7 +26,7 @@ rectify correct reads.bam --genome genome.fa --output corrected.tsv
 # With NET-seq refinement (optional, infers CPA sites within A-tracts and assigns mature mRNA 3' ends proportionally)
 rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corrected.tsv
 
-# 2. Analyze results (clustering, differential expression, motifs)
+# 2. Analyze results (clustering, differential expression, GO enrichment, enriched motifs around cluster peaks)
 rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 
 # With explicit sample metadata (optional - conditions auto-inferred from sample names like WT_rep1, KO_rep2)
