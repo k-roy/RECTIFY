@@ -133,23 +133,30 @@ Output: read001 → position 35, weight 1.0, confidence HIGH
 
 Example 2: Multiple peaks (SPLIT confidence)
 --------------------------------------------
-Ambiguity window [31, 42], NET-seq shows peaks at 33 (60%) and 38 (40%):
+A SINGLE Nanopore read with ambiguity window [31, 42] can be refined using
+NET-seq to reveal THREE distinct CPA sites at positions 33, 36, and 40:
 
-                 31    33        38                          42
-                 |     |         |                           |
-Ambiguity:       |===============================================|
-NET-seq peaks:         ##       #
+                 31   33   36        40                       42
+                 |    |    |         |                        |
+Ambiguity:       |==============================================|
+NET-seq peaks:        ###  ##        #
+                      50%  30%       20%
 
-Output: read001 → split into TWO output rows:
-  - read001 at position 33, weight 0.6
-  - read001 at position 38, weight 0.4
+Output: read001 → split into THREE output rows (one read becomes three):
+  - read001 at position 33, weight 0.5
+  - read001 at position 36, weight 0.3
+  - read001 at position 40, weight 0.2
+
+This preserves quantitative accuracy: if 100 reads map to this ambiguous
+region, the output will have ~50 reads at pos 33, ~30 at pos 36, ~20 at pos 40.
 
 Final output format:
 +----------+----------+--------+------------+-----------------+
 | read_id  | position | weight | confidence | ambiguity_range |
 +----------+----------+--------+------------+-----------------+
-| read001  |    33    |  0.6   |   SPLIT    |       11        |
-| read001  |    38    |  0.4   |   SPLIT    |       11        |
+| read001  |    33    |  0.5   |   SPLIT    |       11        |
+| read001  |    36    |  0.3   |   SPLIT    |       11        |
+| read001  |    40    |  0.2   |   SPLIT    |       11        |
 +----------+----------+--------+------------+-----------------+
 
 Without NET-seq: Reports ambiguity window [31, 42] and uses leftmost
