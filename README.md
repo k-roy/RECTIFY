@@ -5,7 +5,76 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen.svg)](tests/)
 
-**RECTIFY** (**R**NA 3' **E**nd **C**orrection **T**ool **I**ntegrating **F**alse-priming and pol**y**(A) ambiguity) is a unified framework for correcting 3' end mapping artifacts in poly(A)-tailed RNA sequencing data.
+**Correct poly(A) tail artifacts in RNA 3' end sequencing data with a single command.**
+
+---
+
+## Quick Start
+
+### Install
+
+```bash
+pip install rectify-rna
+```
+
+### Run
+
+```bash
+# Nanopore direct RNA-seq
+rectify correct reads.bam --genome genome.fa --output corrected.tsv
+
+# With NET-seq refinement (optional, improves accuracy)
+rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corrected.tsv
+```
+
+That's it! RECTIFY automatically detects your data type and applies the appropriate corrections.
+
+---
+
+## What You Get
+
+### Corrected 3' End Positions
+
+Each read gets a corrected position with confidence scores and QC metrics:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│  read_id   │ chrom │ strand │ corrected_3prime │ confidence │ polya_length │ qc_flags   │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│  read001   │ chrI  │   +    │     147585       │    HIGH    │      42      │   PASS     │
+│  read002   │ chrI  │   +    │     147591       │   MEDIUM   │      38      │   PASS     │
+│  read003   │ chrI  │   -    │     147602       │    HIGH    │      55      │   PASS     │
+│  read004   │ chrII │   +    │     283104       │    LOW     │      31      │  AG_RICH   │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key fields:**
+- `corrected_3prime`: The true CPA site position (corrected for poly(A) artifacts)
+- `confidence`: HIGH (single peak), MEDIUM (dominant peak), SPLIT (multiple peaks), LOW (uncertain)
+- `polya_length`: Measured poly(A) tail length (aligned + soft-clipped A's)
+- `qc_flags`: PASS, AG_RICH (possible mispriming), or other warnings
+
+### Processing Statistics
+
+Comprehensive QC report showing read flow through each correction stage:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  RECTIFY Processing Summary                                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Total reads processed         │  993,000   │  99.3%                        │
+│  Reads with poly(A) detected   │  890,000   │  89.6%                        │
+│  Positions corrected           │  180,000   │  18.1%                        │
+│  Mean poly(A) length           │     42.3 bp                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Confidence Distribution                                                    │
+│    HIGH                        │  750,000   │  ████████████████████  75.5%  │
+│    MEDIUM                      │  200,000   │  █████                 20.1%  │
+│    LOW                         │   43,000   │  █                      4.3%  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Overview
 
@@ -16,19 +85,120 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
    - **AG mispriming**: Internal priming on A/G-rich regions (oligo-dT methods)
    - **Poly(A) tail alignment**: Tail bases align to genomic A-tracts creating systematic shifts (when poly(A) is sequenced)
 
-### Key Features
+![Oligo(A) Spreading Artifact](docs/figures/oligo_a_spreading.png)
 
-- **Modular correction strategies** that apply based on sequencing technology
-- **Universal A-tract ambiguity detection** for all poly(A)-tailed RNA-seq
-- **AG mispriming screening** (from original RECTIFY, Roy & Chanfreau 2019)
-- **Poly(A) tail trimming and indel artifact correction** (for direct RNA-seq: nanopore, Helicos, QuantSeq)
-- **NET-seq refinement** (optional, technology-independent)
-- **Unified output format** with confidence scores and QC flags
+**Poly(A) tails cause systematic 3' end mapping errors.** When poly(A) tails align to genomic A-tracts, the apparent 3' end shifts downstream. RECTIFY corrects this artifact using NNLS deconvolution:
 
-## How It Works
+![Deconvolution](docs/figures/oligo_a_deconvolution.png)
 
-RECTIFY corrects 3' end mapping artifacts by walking a read through multiple correction steps.
-Here's a single Nanopore read traversing the full pipeline:
+---
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **A-tract Correction** | Detects genomic A-tracts and calculates ambiguity windows |
+| **Poly(A) Measurement** | Reports observed tail length (aligned + soft-clipped) |
+| **Indel Correction** | Fixes alignment artifacts in poly(A) regions |
+| **AG Mispriming Detection** | Flags likely internal priming events (oligo-dT methods) |
+| **NET-seq Refinement** | Resolves ambiguity using nascent RNA data (optional) |
+| **Proportional Assignment** | Splits reads across multiple CPA sites when appropriate |
+
+### Supported Technologies
+
+- **Nanopore direct RNA-seq** (minimap2)
+- **QuantSeq** (oligo-dT short-read)
+- **Helicos** (single-molecule)
+- **PacBio Iso-Seq**
+- **Any poly(A)-tailed RNA-seq**
+
+---
+
+## Downstream Analysis
+
+RECTIFY includes a comprehensive `analyze` command:
+
+```bash
+rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
+```
+
+| Module | Description | Output |
+|--------|-------------|--------|
+| **Clustering** | Group nearby CPA sites | `clusters.tsv`, count matrices |
+| **Differential Expression** | DESeq2-based analysis | `deseq2_results.tsv` |
+| **PCA** | Sample QC and batch effects | `pca_plot.png` |
+| **Shift Analysis** | Condition-specific CPA usage | `shift_results.tsv` |
+| **GO Enrichment** | Functional enrichment | `go_enrichment.tsv` |
+| **Motif Discovery** | Sequence motifs near CPA sites | `motif_results/` |
+
+---
+
+## Installation Options
+
+### From PyPI (recommended)
+
+```bash
+pip install rectify-rna
+```
+
+### From source (development)
+
+```bash
+git clone https://github.com/k-roy/RECTIFY.git
+cd RECTIFY
+pip install -e .
+```
+
+---
+
+## Command Reference
+
+### Basic Usage
+
+```bash
+# Minimal (auto-detects settings)
+rectify correct reads.bam --genome genome.fa --output corrected.tsv
+
+# With annotation (recommended)
+rectify correct reads.bam --genome genome.fa --annotation genes.gtf --output corrected.tsv
+
+# Nanopore with NET-seq refinement
+rectify correct reads.bam \
+  --genome genome.fa \
+  --annotation genes.gtf \
+  --aligner minimap2 \
+  --netseq-dir netseq_bigwigs/ \
+  --output corrected.tsv
+
+# QuantSeq (oligo-dT)
+rectify correct reads.bam \
+  --genome genome.fa \
+  --annotation genes.gtf \
+  --polya-sequenced \
+  --output corrected.tsv
+```
+
+### Key Options
+
+| Option | Description |
+|--------|-------------|
+| `--genome` | Reference genome FASTA (required) |
+| `--annotation` | Gene annotation GTF/GFF |
+| `--netseq-dir` | Directory with NET-seq bigWig files |
+| `--aligner` | Aligner used: `minimap2`, `star`, `bowtie2` |
+| `--polya-sequenced` | Poly(A) tail was sequenced (not just primed) |
+| `--threads` | Number of threads (default: 4) |
+
+---
+
+## How It Works (Technical Details)
+
+<details>
+<summary>Click to expand detailed algorithm description</summary>
+
+### The Correction Pipeline
+
+RECTIFY corrects 3' end mapping artifacts by walking each read through multiple correction steps:
 
 ```
 ===============================================================================
@@ -117,13 +287,10 @@ aligned:      ...CGTACGTAG*AAAAAAA      <- oligo-A aligns to genomic A's
 
 This creates a spreading artifact: signal is shifted downstream.
 
-![Oligo(A) Spreading Artifact](docs/figures/oligo_a_spreading.png)
-*Figure: Oligo(A) spreading artifact showing three CPA sites within a 12bp A-tract. Each peak has a right-tailed distribution where signal "spills" downstream. Signal beyond the A-tract boundary is soft-clipped.*
-
 RECTIFY uses NNLS (Non-Negative Least Squares) deconvolution to remove
 the spreading artifact and recover true peak positions:
 
-1. Build convolution matrix from 0A PSF (Point-Spread Function)
+1. Build convolution matrix from oligo(A) PSF (Point-Spread Function)
    - ~54% of signal stays at true position
    - ~46% spreads downstream (mean ~3bp)
 
@@ -138,9 +305,6 @@ Confidence assignment:
   - SPLIT:  Multiple significant peaks (no dominant)
   - LOW:    Weak signal or no NET-seq data
 
-![Deconvolution](docs/figures/oligo_a_deconvolution.png)
-*Figure: NNLS deconvolution "adds back" the spread oligo-A tails to their true CPA positions. Left: observed signal with spreading. Right: deconvolved signal with all reads assigned to true peaks.*
-
 ===============================================================================
 STEP 4: FINAL OUTPUT (with proportional apportionment)
 ===============================================================================
@@ -149,7 +313,7 @@ When NET-seq reveals multiple peaks within an ambiguity window, reads are
 APPORTIONED PROPORTIONALLY to each peak position. This preserves quantitative
 accuracy for downstream analysis.
 
-Example 1: Single dominant peak (HIGH confidence)
+Example: Single dominant peak (HIGH confidence)
 -------------------------------------------------
 Ambiguity window [31, 42], NET-seq shows single peak at position 35:
 
@@ -160,7 +324,7 @@ NET-seq peak:                    #
 
 Output: read001 → position 35, weight 1.0, confidence HIGH
 
-Example 2: Multiple peaks (SPLIT confidence)
+Example: Multiple peaks (SPLIT confidence)
 --------------------------------------------
 A SINGLE Nanopore read with ambiguity window [31, 42] can be refined using
 NET-seq to reveal THREE distinct CPA sites at positions 33, 36, and 40:
@@ -179,100 +343,11 @@ Output: read001 → split into THREE output rows (one read becomes three):
 This preserves quantitative accuracy: if 100 reads map to this ambiguous
 region, the output will have ~50 reads at pos 33, ~30 at pos 36, ~20 at pos 40.
 
-Final output format:
-+----------+----------+--------+------------+-----------------+
-| read_id  | position | weight | confidence | ambiguity_range |
-+----------+----------+--------+------------+-----------------+
-| read001  |    33    |  0.5   |   SPLIT    |       11        |
-| read001  |    36    |  0.3   |   SPLIT    |       11        |
-| read001  |    40    |  0.2   |   SPLIT    |       11        |
-+----------+----------+--------+------------+-----------------+
-
 Without NET-seq: Reports ambiguity window [31, 42] and uses leftmost
 position (most conservative estimate), weight 1.0.
 ```
 
-## Installation
-
-### From source (development)
-
-```bash
-git clone https://github.com/k-roy/RECTIFY.git
-cd RECTIFY
-pip install -e .
-```
-
-### From PyPI
-
-```bash
-pip install rectify-rna
-```
-
-## Quick Start
-
-### QuantSeq (oligo-dT short-read)
-
-```bash
-rectify correct quantseq.bam \
-  --genome sacCer3.fa \
-  --annotation genes.gtf \
-  --polya-sequenced \
-  --output corrected_3ends.tsv
-```
-
-### Nanopore direct RNA-seq with NET-seq refinement
-
-```bash
-rectify correct nanopore.bam \
-  --genome sacCer3.fa \
-  --annotation genes.gtf \
-  --polya-sequenced \
-  --aligner minimap2 \
-  --netseq-dir churchman_bigwigs/ \
-  --output corrected_3ends.tsv
-```
-
-## Output Format
-
-RECTIFY produces two output files:
-
-### 1. Corrected Positions TSV (`output.tsv`)
-
-Per-read corrected 3' end positions with QC metrics:
-
-```
-read_id  chrom  strand  original_3prime  corrected_3prime  ambiguity_min  ambiguity_max  ambiguity_range  polya_length  correction_applied  confidence  qc_flags
-read001  chrI   +       147588           147585            147583         147588         5                42            atract_ambiguity    high        PASS
-read002  chrI   +       147593           147591            147591         147593         2                38            atract_ambiguity    medium      AG_RICH
-```
-
-**Key columns:**
-- `polya_length`: Total observed poly(A) tail length = aligned A's (from A-tract) + soft-clipped A's
-- `ambiguity_range`: Positional uncertainty due to poly(A) tail aligning to genomic A-tract
-- `correction_applied`: `atract_ambiguity` (position correction), `indel_correction`, `netseq_refinement`
-
-### 2. Processing Statistics TSV (`output_stats.tsv`)
-
-Comprehensive read flow statistics through each filtering and correction stage:
-
-```
-metric                       count      percent   description
-total_reads_in_bam           1000000    100.00    Total reads in BAM file
-reads_unmapped               5000       0.50      Unmapped reads (skipped)
-reads_secondary              2000       0.20      Secondary alignments (skipped)
-reads_processed              993000     99.30     Reads with 3' ends corrected
-ends_with_downstream_A       450000     45.32     3' ends with >=1 A immediately downstream
-ends_ambiguous_atract        180000     18.13     3' ends in A-tract (ambiguity range > 0)
-ends_shifted_atract_walking  85000      8.56      3' ends shifted by A-tract walking
-reads_with_polya             890000     89.63     Reads with detected poly(A) tail
-polya_length_mean            42.3       -         Mean poly(A) tail length (bp)
-polya_length_max             185        -         Maximum poly(A) tail length (bp)
-confidence_high              750000     75.53     High confidence assignments
-confidence_medium            200000     20.14     Medium confidence assignments
-confidence_low               43000      4.33      Low confidence assignments
-```
-
-## Module Architecture
+### Module Architecture
 
 RECTIFY applies corrections modularly based on your data:
 
@@ -286,43 +361,19 @@ RECTIFY applies corrections modularly based on your data:
 
 3. **Module 2B: Poly(A) Detection** (when poly(A) IS sequenced)
    - Measures observed poly(A) tail length (aligned A's + soft-clipped A's)
-   - Reports tail length for QC (does NOT correct position - that's handled by A-tract detection)
+   - Reports tail length for QC
 
 4. **Module 2C: Indel Correction** (when poly(A) IS sequenced)
    - Detects and corrects indel artifacts in aligned region
 
 5. **Module 3: NET-seq Refinement** (optional)
    - Resolves ambiguity using NET-seq data via NNLS deconvolution
-   - Apportions reads PROPORTIONALLY to multiple peaks when ambiguity exists
+   - Apportions reads PROPORTIONALLY to multiple peaks
    - Assigns confidence scores (HIGH/MEDIUM/SPLIT/LOW)
 
-## Downstream Analysis
+</details>
 
-RECTIFY includes a comprehensive `analyze` command for downstream analysis of corrected 3' ends:
-
-```bash
-rectify analyze corrected_3ends.tsv \
-  --annotation genes.gtf \
-  --output-dir analysis_results/
-```
-
-### Analysis Modules
-
-| Module | Description | Output |
-|--------|-------------|--------|
-| **Clustering** | Group nearby CPA sites into clusters | `clusters.tsv`, count matrices |
-| **Differential Expression** | DESeq2-based gene and cluster-level analysis | `deseq2_results.tsv` |
-| **PCA** | Sample quality control and batch effect detection | `pca_plot.png` |
-| **Shift Analysis** | Detect condition-specific CPA site usage changes | `shift_results.tsv`, browser plots |
-| **GO Enrichment** | Functional enrichment of genes with shifted 3' ends | `go_enrichment.tsv` |
-| **Motif Discovery** | Identify sequence motifs near CPA sites | `motif_results/` |
-
-### Browser-Style Visualization
-
-The shift analysis module generates publication-ready genome browser plots showing:
-- Per-condition CPA site usage distributions
-- Gene track with CDS boxes as directional pentagon arrows
-- CPA cluster markers
+---
 
 ## Citation
 
@@ -333,6 +384,8 @@ If you use RECTIFY, please cite:
 
 **RECTIFY 2.0 (unified framework):**
 > Manuscript in preparation
+
+---
 
 ## License
 
