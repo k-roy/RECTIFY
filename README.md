@@ -116,6 +116,10 @@ aligned:      ...CGTACGTAG*AAAAAAA      <- oligo-A aligns to genomic A's
                            SHIFT (apparent 3' end moves downstream)
 
 This creates a spreading artifact: signal is shifted downstream.
+
+![Oligo(A) Spreading Artifact](docs/figures/oligo_a_spreading.png)
+*Figure: Oligo(A) spreading artifact showing three CPA sites within a 12bp A-tract. Each peak has a right-tailed distribution where signal "spills" downstream. Signal beyond the A-tract boundary is soft-clipped.*
+
 RECTIFY uses NNLS (Non-Negative Least Squares) deconvolution to remove
 the spreading artifact and recover true peak positions:
 
@@ -133,6 +137,9 @@ Confidence assignment:
   - MEDIUM: Dominant peak (>70% of signal)
   - SPLIT:  Multiple significant peaks (no dominant)
   - LOW:    Weak signal or no NET-seq data
+
+![Deconvolution](docs/figures/oligo_a_deconvolution.png)
+*Figure: NNLS deconvolution "adds back" the spread oligo-A tails to their true CPA positions. Left: observed signal with spreading. Right: deconvolved signal with all reads assigned to true peaks.*
 
 ===============================================================================
 STEP 4: FINAL OUTPUT (with proportional apportionment)
