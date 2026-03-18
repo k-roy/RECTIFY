@@ -20,6 +20,16 @@ pip install rectify-rna
 ### Run
 
 ```bash
+# All-in-one: correct + analyze in a single command
+rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+```
+
+That's it! RECTIFY automatically corrects 3' end positions and runs full downstream analysis.
+
+<details>
+<summary>Or run steps separately</summary>
+
+```bash
 # 1. Correct 3' end positions
 rectify correct reads.bam --genome genome.fa --output corrected.tsv
 
@@ -33,7 +43,7 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 rectify analyze corrected.tsv --annotation genes.gtf --manifest samples.tsv --reference WT --output-dir results/
 ```
 
-That's it! RECTIFY automatically detects your data type and applies the appropriate corrections.
+</details>
 
 ---
 

@@ -356,6 +356,88 @@ Citation:
     from .core.analyze_command import create_analyze_parser
     create_analyze_parser(subparsers)
 
+    # =========================================================================
+    # run command (all-in-one: correct + analyze)
+    # =========================================================================
+    run_parser = subparsers.add_parser(
+        'run',
+        help='Run complete pipeline: correct 3\' ends + analyze results',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    # Required arguments
+    run_parser.add_argument(
+        'bam',
+        type=Path,
+        help='Input BAM file (aligned RNA-seq reads)'
+    )
+
+    run_parser.add_argument(
+        '--genome',
+        type=Path,
+        required=True,
+        help='Reference genome FASTA file'
+    )
+
+    run_parser.add_argument(
+        '--annotation',
+        type=Path,
+        required=True,
+        help='Gene annotation file (GTF/GFF)'
+    )
+
+    run_parser.add_argument(
+        '-o', '--output-dir',
+        type=Path,
+        required=True,
+        help='Output directory for all results'
+    )
+
+    # Optional correction arguments
+    run_parser.add_argument(
+        '--netseq-dir',
+        type=Path,
+        help='Directory with NET-seq bigWig files for refinement'
+    )
+
+    run_parser.add_argument(
+        '--aligner',
+        choices=['minimap2', 'star', 'bowtie2', 'bwa'],
+        default='minimap2',
+        help='Aligner used for BAM file'
+    )
+
+    run_parser.add_argument(
+        '--polya-sequenced',
+        action='store_true',
+        help='Poly(A) tail was sequenced (not just primed)'
+    )
+
+    # Optional analysis arguments
+    run_parser.add_argument(
+        '--reference',
+        help='Reference condition for DESeq2 (auto-detected if not specified)'
+    )
+
+    run_parser.add_argument(
+        '--manifest',
+        type=Path,
+        help='Sample metadata TSV (sample, condition columns)'
+    )
+
+    run_parser.add_argument(
+        '--go-annotations',
+        type=Path,
+        help='GO annotation file for enrichment analysis'
+    )
+
+    run_parser.add_argument(
+        '--threads',
+        type=int,
+        default=4,
+        help='Number of threads'
+    )
+
     return parser
 
 
@@ -381,6 +463,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'analyze':
         from .core.analyze_command import run_analyze
         sys.exit(run_analyze(args))
+    elif args.command == 'run':
+        from .core import run_command
+        run_command.run(args)
     else:
         parser.print_help()
         sys.exit(1)
