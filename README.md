@@ -216,6 +216,13 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 pip install rectify-rna
 ```
 
+### From Bioconda (coming soon)
+
+```bash
+# Once available on bioconda:
+conda install -c bioconda rectify-rna
+```
+
 ### From source (development)
 
 ```bash
@@ -223,6 +230,8 @@ git clone https://github.com/k-roy/RECTIFY.git
 cd RECTIFY
 pip install -e .
 ```
+
+> **Note**: This is a beta release. Please report issues at [GitHub Issues](https://github.com/k-roy/RECTIFY/issues).
 
 ---
 

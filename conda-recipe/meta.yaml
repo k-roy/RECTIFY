@@ -1,17 +1,17 @@
 {% set name = "rectify-rna" %}
-{% set version = "2.1.0" %}
+{% set version = "2.1.3" %}
 
 package:
   name: {{ name|lower }}
   version: {{ version }}
 
 source:
-  url: https://pypi.io/packages/source/r/rectify-rna/rectify_rna-{{ version }}.tar.gz
-  sha256: bf9407ab66bfa867fbe519a1c9a565d79f146bbae053f4c12e61dd207f2eb030
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name.replace("-", "_") }}-{{ version }}.tar.gz
+  sha256: # Will be filled when submitting to bioconda
 
 build:
-  noarch: python
   number: 0
+  noarch: python
   script: {{ PYTHON }} -m pip install . -vv
   entry_points:
     - rectify = rectify.cli:main
@@ -20,21 +20,23 @@ requirements:
   host:
     - python >=3.8
     - pip
-    - setuptools >=61.0
+    - setuptools
   run:
     - python >=3.8
-    - pysam >=0.19.0
-    - numpy >=1.20.0
-    - pandas >=1.3.0
-    - pybigwig >=0.3.18
+    - numpy >=1.20
+    - pandas >=1.3
+    - pysam >=0.19
+    - scipy >=1.7
+    - scikit-learn >=1.0
+    - matplotlib-base >=3.5
+    - seaborn >=0.11
+    - pybigwig >=0.3
     - biopython >=1.79
-    - tqdm >=4.60.0
+    - pydeseq2 >=0.4
 
 test:
   imports:
     - rectify
-    - rectify.core
-    - rectify.utils
   commands:
     - rectify --help
 
@@ -43,12 +45,11 @@ about:
   license: MIT
   license_family: MIT
   license_file: LICENSE
-  summary: 'RNA 3'' End Correction Tool Integrating False-priming and poly(A) ambiguity'
+  summary: 'Unified RNA 3'' End Correction Framework'
   description: |
-    RECTIFY is a unified framework for correcting 3' end mapping artifacts in
-    poly(A)-tailed RNA sequencing data. It addresses A-tract ambiguity,
-    AG mispriming, poly(A) tail alignment artifacts, and indel errors near
-    RNA 3' ends.
+    RECTIFY corrects poly(A) tail artifacts in RNA 3' end sequencing data.
+    Features A-tract ambiguity correction, AG mispriming detection,
+    NET-seq refinement, and downstream analysis (DESeq2, clustering, motifs).
   dev_url: https://github.com/k-roy/RECTIFY
   doc_url: https://github.com/k-roy/RECTIFY#readme
 
