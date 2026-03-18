@@ -28,6 +28,9 @@ rectify correct reads.bam --genome genome.fa --netseq-dir netseq/ --output corre
 
 # 2. Analyze results (clustering, differential expression, motifs)
 rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
+
+# With explicit sample metadata (optional - conditions auto-inferred from sample names like WT_rep1, KO_rep2)
+rectify analyze corrected.tsv --annotation genes.gtf --manifest samples.tsv --reference WT --output-dir results/
 ```
 
 That's it! RECTIFY automatically detects your data type and applies the appropriate corrections.
