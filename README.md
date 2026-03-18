@@ -41,18 +41,20 @@ That's it! RECTIFY automatically detects your data type and applies the appropri
 Each read gets a corrected position with confidence scores and QC metrics:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│  read_id   │ chrom │ strand │ corrected_3prime │ confidence │ polya_length │ qc_flags   │
-├──────────────────────────────────────────────────────────────────────────────────────────┤
-│  read001   │ chrI  │   +    │     147585       │    HIGH    │      42      │   PASS     │
-│  read002   │ chrI  │   +    │     147591       │   MEDIUM   │      38      │   PASS     │
-│  read003   │ chrI  │   -    │     147602       │    HIGH    │      55      │   PASS     │
-│  read004   │ chrII │   +    │     283104       │    LOW     │      31      │  AG_RICH   │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  read_id   │ chrom │ strand │ original_3prime │ corrected_3prime │ shift │ confidence │ polya_length │ qc_flags │
+├───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│  read001   │ chrI  │   +    │     147592      │     147585       │  -7   │    HIGH    │      42      │   PASS   │
+│  read002   │ chrI  │   +    │     147594      │     147591       │  -3   │   MEDIUM   │      38      │   PASS   │
+│  read003   │ chrI  │   -    │     147602      │     147602       │   0   │    HIGH    │      55      │   PASS   │
+│  read004   │ chrII │   +    │     283109      │     283104       │  -5   │    LOW     │      31      │ AG_RICH  │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key fields:**
-- `corrected_3prime`: The true CPA site position (corrected for poly(A) artifacts)
+- `original_3prime`: Mapped 3' end position from aligner
+- `corrected_3prime`: True CPA site (shifted upstream to first non-A)
+- `shift`: Correction applied (negative = shifted upstream through A-tract)
 - `confidence`: HIGH (single peak), MEDIUM (dominant peak), SPLIT (multiple peaks), LOW (uncertain)
 - `polya_length`: Measured poly(A) tail length (aligned + soft-clipped A's)
 - `qc_flags`: PASS, AG_RICH (possible mispriming), or other warnings
