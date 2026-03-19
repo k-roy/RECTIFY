@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen.svg)](tests/)
 
-**Correct poly(A) tail artifacts in RNA 3' end sequencing data with a single command.**
+**Correct poly(A) tail artifacts and perform comprehensive differential expression analysis with a single command.**
 
 ---
 
