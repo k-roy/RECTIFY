@@ -363,6 +363,65 @@ Citation:
     create_analyze_parser(subparsers)
 
     # =========================================================================
+    # export command (bedGraph/bigWig generation)
+    # =========================================================================
+    export_parser = subparsers.add_parser(
+        'export',
+        help='Export corrected 3\' ends to bedGraph/bigWig format',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    export_parser.add_argument(
+        'input',
+        type=Path,
+        help='Corrected 3\' end TSV file from RECTIFY'
+    )
+
+    export_parser.add_argument(
+        '-o', '--output-dir',
+        type=Path,
+        required=True,
+        help='Output directory for bedGraph/bigWig files'
+    )
+
+    export_parser.add_argument(
+        '--format',
+        choices=['bigwig', 'bedgraph'],
+        default='bigwig',
+        help='Output format'
+    )
+
+    export_parser.add_argument(
+        '--genome',
+        type=Path,
+        help='Reference genome FASTA (for chromosome sizes)'
+    )
+
+    export_parser.add_argument(
+        '--chrom-sizes',
+        type=Path,
+        help='Chromosome sizes file (tab-separated: chrom, size)'
+    )
+
+    export_parser.add_argument(
+        '--position-col',
+        default='position',
+        help='Column with corrected position'
+    )
+
+    export_parser.add_argument(
+        '--per-replicate',
+        action='store_true',
+        help='Generate per-replicate files'
+    )
+
+    export_parser.add_argument(
+        '--per-condition',
+        action='store_true',
+        help='Generate per-condition summed files'
+    )
+
+    # =========================================================================
     # run command (all-in-one: correct + analyze)
     # =========================================================================
     run_parser = subparsers.add_parser(
@@ -475,6 +534,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'analyze':
         from .core.analyze_command import run_analyze
         sys.exit(run_analyze(args))
+    elif args.command == 'export':
+        from .core import export_command
+        sys.exit(export_command.run(args))
     elif args.command == 'run':
         from .core import run_command
         run_command.run(args)

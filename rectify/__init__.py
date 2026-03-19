@@ -9,16 +9,17 @@ Modules:
 - Poly(A) tail trimming and indel correction (direct RNA-seq)
 - NET-seq refinement (optional)
 
-Features (v2.1.0):
+Features (v2.3.0):
 - Region-based parallel BAM processing with coverage gap splitting
 - SLURM-aware CPU detection to prevent oversubscription
 - Streaming output mode for large BAM files
+- Export to bedGraph/bigWig format
 
 Author: Kevin R. Roy
 License: MIT
 """
 
-__version__ = "2.1.0"
+__version__ = "2.3.0"
 __author__ = "Kevin R. Roy"
 __email__ = "kevinroy@stanford.edu"
 

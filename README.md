@@ -154,6 +154,31 @@ RECTIFY addresses two fundamental problems affecting RNA 3' end mapping:
    - **AG mispriming**: Internal priming on A/G-rich regions (oligo-dT methods)
    - **Poly(A) tail alignment**: Tail bases align to genomic A-tracts creating systematic shifts (when poly(A) is sequenced)
 
+### Indel Correction in A-rich Regions
+
+When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce indel artifacts to maximize alignment score. RECTIFY detects and corrects these artifacts.
+
+![Indel Correction](docs/figures/indel_correction.png)
+
+**Key Insight for IGV Users:** When viewing minus strand reads in IGV:
+- The poly(A) tail appears as **poly(T)** (because IGV shows the read sequence, not the RNA)
+- The tail extends **leftward** (toward lower genomic coordinates)
+- RECTIFY corrects by shifting **rightward** (toward the true CPA site)
+
+**The Problem:** Minimap2 introduces deletions to extend alignment of poly(A) tail bases into the genomic A-tract. This shifts the apparent 3' end **downstream** of the true CPA site.
+
+**RECTIFY's Solution:** Walk backwards from the soft-clip boundary to find the first non-A position where genome and read agree:
+
+1. Start at soft-clip boundary (poly(A) tail begins)
+2. Walk upstream through aligned region:
+   - Skip A/T positions (ambiguous with poly(A) tail)
+   - Absorb deletions (D) - these are alignment artifacts
+   - Absorb T errors - likely sequencing errors in homopolymer
+   - STOP at first non-A/T agreement
+3. Calculate corrected position and total poly(A) length
+
+**Result:** The true CPA site is shifted **upstream** by the number of absorbed A's and deletions. Reads that appeared to end at different positions within the A-tract are unified to the true cleavage site.
+
 ### NET-seq Refinement
 
 For organisms with available NET-seq data, RECTIFY can resolve A-tract ambiguity by using nascent RNA 3' end positions to infer true CPA sites. The bundled WT NET-seq data is auto-detected based on your genome:
@@ -211,6 +236,41 @@ For yeast (*S. cerevisiae*), RECTIFY includes:
 
 ---
 
+## Export to bedGraph/bigWig
+
+Generate genome browser tracks from corrected 3' ends:
+
+```bash
+# Export per-replicate and per-condition bigWig files
+rectify export corrected.tsv -o tracks/ --genome genome.fa
+
+# Or use bedGraph format
+rectify export corrected.tsv -o tracks/ --format bedgraph
+
+# Per-replicate only
+rectify export corrected.tsv -o tracks/ --per-replicate
+
+# Per-condition summed only
+rectify export corrected.tsv -o tracks/ --per-condition
+```
+
+**Output structure:**
+```
+tracks/
+├── per_replicate/
+│   ├── wt_rep1.plus.bw
+│   ├── wt_rep1.minus.bw
+│   ├── wt_rep2.plus.bw
+│   └── ...
+└── per_condition/
+    ├── wt.plus.bw
+    ├── wt.minus.bw
+    ├── mutant.plus.bw
+    └── ...
+```
+
+---
+
 ## Downstream Analysis
 
 RECTIFY includes a comprehensive `analyze` command:
@@ -238,15 +298,18 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 pip install rectify-rna
 ```
 
-### From Conda (coming soon)
+### From Conda (recommended)
 
 ```bash
-# Bioconda (recommended for bioinformatics)
+# Bioconda (recommended - includes MEME Suite for motif analysis)
 conda install -c conda-forge -c bioconda rectify-rna
 
 # Or with mamba (faster)
 mamba install -c conda-forge -c bioconda rectify-rna
 ```
+
+> **Note**: The conda installation includes MEME Suite (MEME, STREME, FIMO) for motif discovery.
+> If using pip, install MEME separately: `conda install -c bioconda meme>=5.4.0`
 
 ### From source (development)
 
@@ -341,21 +404,60 @@ Key observations:
 STEP 2: INDEL CORRECTION - Walk Backwards to Find True 3' End
 ===============================================================================
 
-Starting from soft-clip boundary, walk upstream comparing genome vs read
-to find the first position where both agree on a non-A base:
+When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce
+indels (insertions/deletions) to maximize the alignment score. These artifacts
+shift the apparent 3' end downstream.
 
-genome: ..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|..
-read:   ..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|..
-                     ^         ^      ^^
-                  AGREE     T error  dels
-                  (C=C)    (ignore) (count)
+Real Example: Read SRR32518284.2355129 at chrI:31,393 (IGV screenshot)
+------------------------------------------------------------------------
+This minus-strand read shows typical minimap2 indel artifacts in an A-rich region:
 
-RECTIFY walks back from soft-clip boundary:
-  - Skip all A's (ambiguous with poly(A) tail)
-  - Ignore deletions where mRNA has the poly(A) tail: 3 bp total
-  - Ignore T (likely sequencing error in homopolymer)
-  - Find first non-A agreement: 'C' at upstream position
-  - Result: ambiguity window spanning the A-tract from upstream C to downstream C
+Position:      31,395  31,400  31,405  31,410  31,415  31,420
+               |       |       |       |       |       |
+Genome (ref):  GAAT TTTTT T CTCAT AAA GAAA AA T AAA G...
+                        |       |||
+Read aligned:  GAAT-TTTTT T CTCAT AAA GAAA--AA T AAA G...
+                   ^           ^^^       ^^
+                   1D          3bp       2D
+               (deletion)   (aligned) (deletions)
+
+The aligner introduces deletions (shown as '-' or numbers in IGV) to
+maximize alignment of the poly(A) tail bases to genomic A's.
+
+RECTIFY's correction algorithm:
+------------------------------
+Starting from the soft-clip boundary, walk UPSTREAM comparing genome vs read
+to find the first position where both agree on a non-A/non-T base:
+
+STEP A: Start at soft-clip boundary (rightmost aligned position)
+        Count soft-clipped A's as part of poly(A) tail
+
+STEP B: Walk upstream through aligned region:
+        - Skip positions where genome = A (or T for minus strand)
+        - Skip deletions (D in CIGAR) - these are tail alignment artifacts
+        - Skip insertions (I in CIGAR) of A/T - these are sequencing errors
+        - Stop when genome and read AGREE on a non-A/T base
+
+STEP C: Calculate total poly(A) length:
+        = soft-clipped A's + aligned A's + deletion-absorbed A's
+
+Example walkback:
+                                          soft-clip boundary
+                                                   |
+Genome: ...CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC...
+Read:   ...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|AAAAAAAAAAA
+                     ^         ^      ^^             |<-------->
+                  AGREE     T error  dels          soft-clipped
+                  (C=C)    (ignore) (count)           tail
+
+Walk back from '|':
+  pos-1: A (genome) = A (read) → continue (ambiguous)
+  pos-2: A (genome), deletion → count as absorbed
+  ...
+  pos-N: C (genome) = C (read) → STOP (first non-A agreement)
+
+Result: True 3' end at position of C
+        Poly(A) length = 11 soft-clipped + 3 dels + 12 aligned A's = 26 bp
 
 ===============================================================================
 STEP 3: NET-seq REFINEMENT (Optional)
