@@ -489,3 +489,430 @@ def summarize_motif_results(results: Dict[str, Dict]) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows)
+
+
+# =============================================================================
+# Motif Database Matching
+# =============================================================================
+
+# Default motif database paths (MEME format)
+YEAST_MOTIF_DB = {
+    'jaspar_fungi': 'JASPAR2022_CORE_fungi_non-redundant_pfms_meme.txt',
+    'yeastract': 'yeastract_motifs.meme',
+    'scertf': 'ScerTF_motifs.meme',
+}
+
+# Known yeast transcription factor binding sites
+YEAST_TF_MOTIFS = {
+    # CPA-related factors
+    'Hrp1': 'UAUAUA',  # Hrp1/Nab4 - poly(A) signal recognition
+    'Rna15': 'AAUAAA',  # Rna15 - canonical poly(A) signal
+    'Fip1': 'UUUUUU',  # Fip1 - U-rich element
+    'Yth1': 'AAGAA',   # Yth1 - near CPA site
+    'Pab1': 'AAAAAAA', # Pab1 - poly(A) binding
+
+    # Termination-related
+    'Nrd1': 'GUAA|UGUA',  # Nrd1-Nab3-Sen1 pathway
+    'Nab3': 'UCUU',
+    'Sen1': 'G-rich',
+
+    # General TFs with A/T-rich motifs
+    'Reb1': 'TTACCCG',
+    'Abf1': 'RTCRYNNNNNACG',
+    'Rap1': 'ACACCCATACATC',
+    'Gcr1': 'CTTCC',
+}
+
+
+def get_bundled_motif_database(organism: str = 'scerevisiae') -> Optional[str]:
+    """
+    Get path to bundled motif database for an organism.
+
+    Args:
+        organism: Organism name ('scerevisiae', 'human', etc.)
+
+    Returns:
+        Path to MEME-format motif database, or None if not available
+    """
+    # Check if motif database is bundled with rectify
+    pkg_dir = Path(__file__).parent.parent.parent / 'data' / 'motif_databases'
+
+    if organism == 'scerevisiae':
+        db_path = pkg_dir / 'scerevisiae_tf_motifs.meme'
+        if db_path.exists():
+            return str(db_path)
+
+        # Try to find JASPAR fungi database
+        for db_name, db_file in YEAST_MOTIF_DB.items():
+            test_path = pkg_dir / db_file
+            if test_path.exists():
+                return str(test_path)
+
+    return None
+
+
+def create_yeast_cpa_motif_database(output_path: str) -> str:
+    """
+    Create a MEME-format motif database for yeast CPA-related factors.
+
+    This includes known binding sites for:
+    - Poly(A) signal recognition factors (Hrp1, Rna15)
+    - U-rich element binding (Fip1)
+    - NNS termination pathway (Nrd1, Nab3)
+    - Other relevant RNA-binding proteins
+
+    Args:
+        output_path: Path to write the MEME database
+
+    Returns:
+        Path to created database
+    """
+    meme_content = """MEME version 5.0
+
+ALPHABET= ACGT
+
+strands: + -
+
+Background letter frequencies
+A 0.31 C 0.19 G 0.19 T 0.31
+
+MOTIF Hrp1_polyA_signal
+letter-probability matrix: alength= 4 w= 6
+ 0.1  0.1  0.1  0.7
+ 0.8  0.1  0.0  0.1
+ 0.1  0.1  0.1  0.7
+ 0.8  0.1  0.0  0.1
+ 0.1  0.1  0.1  0.7
+ 0.8  0.1  0.0  0.1
+
+MOTIF Rna15_AAUAAA
+letter-probability matrix: alength= 4 w= 6
+ 0.9  0.0  0.05 0.05
+ 0.9  0.0  0.05 0.05
+ 0.05 0.05 0.0  0.9
+ 0.9  0.0  0.05 0.05
+ 0.9  0.0  0.05 0.05
+ 0.9  0.0  0.05 0.05
+
+MOTIF Fip1_Urich
+letter-probability matrix: alength= 4 w= 8
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+
+MOTIF Nrd1_GUAA
+letter-probability matrix: alength= 4 w= 4
+ 0.1  0.1  0.7  0.1
+ 0.1  0.1  0.1  0.7
+ 0.8  0.1  0.0  0.1
+ 0.8  0.1  0.0  0.1
+
+MOTIF Nab3_UCUU
+letter-probability matrix: alength= 4 w= 4
+ 0.1  0.1  0.1  0.7
+ 0.1  0.7  0.1  0.1
+ 0.1  0.1  0.1  0.7
+ 0.1  0.1  0.1  0.7
+
+MOTIF Pab1_polyA
+letter-probability matrix: alength= 4 w= 10
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+
+MOTIF T_tract_terminator
+letter-probability matrix: alength= 4 w= 8
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+ 0.05 0.05 0.05 0.85
+
+MOTIF Efficiency_element_EE
+letter-probability matrix: alength= 4 w= 6
+ 0.05 0.05 0.05 0.85
+ 0.85 0.05 0.05 0.05
+ 0.05 0.05 0.05 0.85
+ 0.85 0.05 0.05 0.05
+ 0.05 0.05 0.05 0.85
+ 0.85 0.05 0.05 0.05
+
+MOTIF Positioning_element_PE
+letter-probability matrix: alength= 4 w= 6
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.05 0.05 0.05 0.85
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+ 0.85 0.05 0.05 0.05
+
+"""
+    with open(output_path, 'w') as f:
+        f.write(meme_content)
+
+    return output_path
+
+
+def run_tomtom_motif_comparison(
+    query_motifs: str,
+    target_database: str,
+    output_dir: str,
+    evalue_threshold: float = 10.0,
+    min_overlap: int = 5,
+) -> Dict:
+    """
+    Run Tomtom to compare discovered motifs against a database.
+
+    Args:
+        query_motifs: Path to MEME-format file with query motifs
+        target_database: Path to MEME-format motif database
+        output_dir: Output directory for results
+        evalue_threshold: E-value threshold for matches
+        min_overlap: Minimum overlap between motifs
+
+    Returns:
+        Dict with:
+            - success: bool
+            - matches: List of matches (if successful)
+            - output_dir: Path to results
+            - error: Error message (if failed)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if tomtom is available
+    if not _check_tool_available('tomtom'):
+        return {
+            'success': False,
+            'error': 'tomtom not found in PATH. Install MEME Suite.',
+        }
+
+    # Run Tomtom
+    cmd = [
+        'tomtom',
+        '-oc', str(output_dir),
+        '-evalue',
+        '-thresh', str(evalue_threshold),
+        '-min-overlap', str(min_overlap),
+        '-dist', 'pearson',
+        query_motifs,
+        target_database,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=300,  # 5 minute timeout
+        )
+
+        if result.returncode != 0:
+            return {
+                'success': False,
+                'error': f'tomtom failed: {result.stderr.decode()[:500]}',
+                'output_dir': str(output_dir),
+            }
+
+        # Parse results
+        matches = _parse_tomtom_results(output_dir / 'tomtom.tsv')
+
+        return {
+            'success': True,
+            'matches': matches,
+            'output_dir': str(output_dir),
+            'n_matches': len(matches),
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'success': False,
+            'error': 'tomtom timed out',
+            'output_dir': str(output_dir),
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'output_dir': str(output_dir),
+        }
+
+
+def _parse_tomtom_results(tsv_path: Path) -> List[Dict]:
+    """Parse Tomtom TSV results file."""
+    matches = []
+
+    if not tsv_path.exists():
+        return matches
+
+    try:
+        df = pd.read_csv(tsv_path, sep='\t', comment='#')
+
+        # Standardize column names
+        col_map = {
+            'Query_ID': 'query_motif',
+            'Target_ID': 'target_motif',
+            'Optimal_offset': 'offset',
+            'p-value': 'pvalue',
+            'E-value': 'evalue',
+            'q-value': 'qvalue',
+            'Overlap': 'overlap',
+            'Query_consensus': 'query_consensus',
+            'Target_consensus': 'target_consensus',
+        }
+
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+        for _, row in df.iterrows():
+            matches.append(row.to_dict())
+
+    except Exception:
+        pass
+
+    return matches
+
+
+def annotate_motifs_with_database(
+    motif_results_dir: str,
+    motif_database: Optional[str] = None,
+    organism: str = 'scerevisiae',
+    evalue_threshold: float = 0.1,
+) -> pd.DataFrame:
+    """
+    Annotate discovered motifs by comparing to known motif databases.
+
+    Args:
+        motif_results_dir: Directory containing MEME/STREME results
+        motif_database: Path to custom motif database (MEME format).
+            If None, uses bundled database for organism.
+        organism: Organism name for bundled database
+        evalue_threshold: E-value threshold for matches
+
+    Returns:
+        DataFrame with motif annotations:
+            - motif_id: Discovered motif ID
+            - consensus: Discovered motif consensus
+            - match_tf: Matched transcription factor
+            - match_evalue: E-value of match
+            - match_consensus: Consensus of matched motif
+    """
+    results_dir = Path(motif_results_dir)
+
+    # Find query motifs file
+    meme_file = results_dir / 'meme.txt'
+    streme_file = results_dir / 'streme.txt'
+
+    if meme_file.exists():
+        query_file = meme_file
+    elif streme_file.exists():
+        query_file = streme_file
+    else:
+        print(f"Warning: No motif file found in {results_dir}")
+        return pd.DataFrame()
+
+    # Get motif database
+    if motif_database is None:
+        motif_database = get_bundled_motif_database(organism)
+
+        # If no bundled database, create CPA-specific one
+        if motif_database is None and organism == 'scerevisiae':
+            motif_database = str(results_dir / 'yeast_cpa_motifs.meme')
+            create_yeast_cpa_motif_database(motif_database)
+
+    if motif_database is None:
+        print(f"Warning: No motif database available for {organism}")
+        return pd.DataFrame()
+
+    # Run Tomtom
+    tomtom_dir = results_dir / 'tomtom_results'
+    result = run_tomtom_motif_comparison(
+        str(query_file),
+        motif_database,
+        str(tomtom_dir),
+        evalue_threshold=evalue_threshold,
+    )
+
+    if not result['success']:
+        print(f"Warning: Tomtom failed: {result.get('error', 'Unknown error')}")
+        return pd.DataFrame()
+
+    # Format results
+    matches = result.get('matches', [])
+    if not matches:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(matches)
+
+    # Select relevant columns
+    output_cols = ['query_motif', 'query_consensus', 'target_motif',
+                   'target_consensus', 'evalue', 'pvalue', 'overlap']
+    output_cols = [c for c in output_cols if c in df.columns]
+
+    return df[output_cols]
+
+
+def run_motif_discovery_with_annotation(
+    foreground_sequences: List[Dict],
+    background_sequences: Optional[List[Dict]] = None,
+    output_dir: str = '.',
+    organism: str = 'scerevisiae',
+    motif_database: Optional[str] = None,
+    **kwargs,
+) -> Dict:
+    """
+    Run motif discovery and automatically annotate with known motif database.
+
+    This is the recommended entry point for motif analysis in rectify.
+
+    Args:
+        foreground_sequences: Foreground sequences
+        background_sequences: Background sequences (optional)
+        output_dir: Output directory
+        organism: Organism for motif database
+        motif_database: Custom motif database path (optional)
+        **kwargs: Additional arguments passed to run_motif_discovery
+
+    Returns:
+        Dict with motif discovery results plus annotations
+    """
+    # Run motif discovery
+    result = run_motif_discovery(
+        foreground_sequences,
+        background_sequences,
+        output_dir,
+        **kwargs,
+    )
+
+    if not result.get('success', False):
+        return result
+
+    # Annotate motifs
+    annotations = annotate_motifs_with_database(
+        result['output_dir'],
+        motif_database=motif_database,
+        organism=organism,
+    )
+
+    result['annotations'] = annotations
+    result['n_annotated'] = len(annotations)
+
+    # Summarize top matches
+    if not annotations.empty and 'target_motif' in annotations.columns:
+        top_matches = annotations.groupby('query_motif')['target_motif'].first().to_dict()
+        result['top_matches'] = top_matches
+
+    return result

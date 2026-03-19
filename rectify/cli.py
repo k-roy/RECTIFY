@@ -61,22 +61,21 @@ Citation:
     # =========================================================================
     correct_parser = subparsers.add_parser(
         'correct',
-        help='Correct 3\' end positions in BAM file',
+        help='Correct 3\' end positions in BAM or FASTQ file',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
     # Required arguments
     correct_parser.add_argument(
-        'bam',
+        'input',
         type=Path,
-        help='Input BAM file (aligned RNA-seq reads)'
+        help='Input file (BAM or FASTQ/FASTQ.GZ). FASTQ files will be aligned with minimap2.'
     )
 
     correct_parser.add_argument(
         '--genome',
         type=Path,
-        required=True,
-        help='Reference genome FASTA file (indexed with .fai)'
+        help='Reference genome FASTA file. Required for FASTQ input unless using bundled genome.'
     )
 
     correct_parser.add_argument(

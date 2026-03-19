@@ -37,26 +37,99 @@ def validate_inputs(args) -> dict:
     """
     Validate input files and arguments.
 
+    Handles preprocessing of FASTQ files and bundled genomes.
+
     Returns:
         Dict with validated paths and settings
     """
+    from .preprocess import detect_input_type, prepare_input, prepare_bundled_genome
+    from ..data import (
+        normalize_organism, is_bundled_genome_available,
+        detect_organism, ensure_netseq_data
+    )
+
     errors = []
 
-    # Check BAM file
-    if not args.bam.exists():
-        errors.append(f"BAM file not found: {args.bam}")
+    # Check input file
+    if not args.input.exists():
+        errors.append(f"Input file not found: {args.input}")
+        # Can't proceed without input
+        if errors:
+            print("Input validation errors:")
+            for err in errors:
+                print(f"  - {err}")
+            sys.exit(1)
 
-    # Check genome
-    if not args.genome.exists():
-        errors.append(f"Genome FASTA not found: {args.genome}")
+    # Detect input type
+    input_type = detect_input_type(args.input)
+    logging.info(f"Input type detected: {input_type}")
 
-    # Check annotation (optional)
+    # Handle organism and bundled data
+    organism = getattr(args, 'organism', None)
+
+    # Try to get genome path
+    genome_path = getattr(args, 'genome', None)
+    annotation_path = getattr(args, 'annotation', None)
+
+    # If no genome provided, check for bundled genome
+    if genome_path is None and organism:
+        org = normalize_organism(organism)
+        if is_bundled_genome_available(org):
+            logging.info(f"Using bundled genome for {org}")
+            bundled_genome, bundled_ann = prepare_bundled_genome(
+                organism=org,
+                output_dir=args.output.parent if args.output else None,
+                verbose=True
+            )
+            genome_path = bundled_genome
+            if annotation_path is None:
+                annotation_path = bundled_ann
+
+    # For FASTQ input, genome is required
+    if input_type in ('fastq', 'fastq.gz') and genome_path is None:
+        errors.append(
+            "Genome required for FASTQ input. Provide --genome or --organism with bundled genome."
+        )
+
+    # Check genome exists
+    if genome_path and not genome_path.exists():
+        errors.append(f"Genome FASTA not found: {genome_path}")
+
+    # Preprocess FASTQ input (align with minimap2)
+    if input_type in ('fastq', 'fastq.gz') and genome_path and not errors:
+        try:
+            output_dir = args.output.parent if args.output else args.input.parent
+            threads = getattr(args, 'threads', 4)
+
+            bam_path, _ = prepare_input(
+                input_path=args.input,
+                genome_path=genome_path,
+                output_dir=output_dir,
+                threads=threads,
+                verbose=True
+            )
+            # Store the BAM path for later use
+            args._bam_path = bam_path
+        except Exception as e:
+            errors.append(f"Failed to align FASTQ: {e}")
+    else:
+        # Input is already BAM
+        args._bam_path = args.input
+
+    # Store resolved paths
+    args._genome_path = genome_path
+    args._annotation_path = annotation_path
+
+    # Check annotation (optional) - only if custom annotation provided
     if args.annotation and not args.annotation.exists():
         errors.append(f"Annotation file not found: {args.annotation}")
+    elif annotation_path:
+        # Use resolved annotation path (from bundled or custom)
+        pass
 
     # Resolve NET-seq directory (organism bundled data or custom)
     resolved_netseq_dir = None
-    if args.netseq_dir:
+    if getattr(args, 'netseq_dir', None):
         # Custom dir provided - validate it exists
         if not args.netseq_dir.exists():
             errors.append(f"NET-seq directory not found: {args.netseq_dir}")
@@ -65,13 +138,10 @@ def validate_inputs(args) -> dict:
         else:
             resolved_netseq_dir = args.netseq_dir
     else:
-        # Try to auto-detect organism from genome/annotation, or use explicit --organism
-        from ..data import detect_organism, ensure_netseq_data
-
-        organism = getattr(args, 'organism', None)
-        if not organism:
+        # Try to use organism for bundled NET-seq data
+        if not organism and genome_path:
             # Auto-detect from files
-            organism = detect_organism(args.genome, getattr(args, 'annotation', None))
+            organism = detect_organism(genome_path, annotation_path)
             if organism:
                 logging.info(f"Auto-detected organism: {organism}")
 
@@ -106,20 +176,25 @@ def validate_inputs(args) -> dict:
         sys.exit(1)
 
     # Determine which modules to apply
+    # Use resolved paths from preprocessing
+    bam_path = getattr(args, '_bam_path', args.input)
+    genome_path = getattr(args, '_genome_path', getattr(args, 'genome', None))
+    annotation_path = getattr(args, '_annotation_path', getattr(args, 'annotation', None))
+
     config = {
-        'bam_path': args.bam,
-        'genome_path': args.genome,
-        'annotation_path': args.annotation,
+        'bam_path': bam_path,
+        'genome_path': genome_path,
+        'annotation_path': annotation_path,
         'output_path': args.output,
         'apply_atract': not args.skip_atract_check,
         'apply_ag_mispriming': not args.skip_ag_check,
         'apply_polya_trim': False,  # Default False
         'apply_indel_correction': False,  # Default False
-        'netseq_dir': getattr(args, '_resolved_netseq_dir', args.netseq_dir),
-        'netseq_samples': args.netseq_samples,
-        'polya_model_path': args.polya_model,
-        'threads': args.threads,
-        'verbose': args.verbose,
+        'netseq_dir': getattr(args, '_resolved_netseq_dir', getattr(args, 'netseq_dir', None)),
+        'netseq_samples': getattr(args, 'netseq_samples', None),
+        'polya_model_path': getattr(args, 'polya_model', None),
+        'threads': getattr(args, 'threads', 4),
+        'verbose': getattr(args, 'verbose', False),
     }
 
     # Enable poly(A) corrections if --polya-sequenced flag set

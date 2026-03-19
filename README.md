@@ -20,17 +20,24 @@ pip install rectify-rna
 ### Run
 
 ```bash
+# Simplest: FASTQ input with bundled yeast genome (no external files needed!)
+rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
+
 # All-in-one: correct + analyze (uses bundled WT NET-seq for yeast by default)
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
-That's it! RECTIFY automatically downloads WT NET-seq data (Churchman lab) for supported organisms and runs the complete pipeline.
+**New in v2.2.0:** RECTIFY now includes:
+- **Bundled yeast genome** (S288C R64-5-1) and GFF annotations from SGD
+- **Pre-processed WT NET-seq data** (Churchman lab)
+- **FASTQ support** with automatic minimap2 alignment
+- **CPA motif database** for transcription factor binding site matching
 
 <details>
 <summary>Or run steps separately / use custom NET-seq data</summary>
 
 ```bash
-# 1. Correct 3' end positions (bundled WT NET-seq auto-downloaded)
+# 1. Correct 3' end positions (bundled WT NET-seq for yeast)
 rectify correct reads.bam --genome genome.fa --organism yeast --output corrected.tsv
 
 # With custom/mutant NET-seq data (overrides bundled WT data)
@@ -178,6 +185,21 @@ For organisms with available NET-seq data, RECTIFY can resolve A-tract ambiguity
 | **AG Mispriming Detection** | Flags likely internal priming events (oligo-dT methods) |
 | **NET-seq Refinement** | Resolves ambiguity using nascent RNA data (optional) |
 | **Proportional Assignment** | Splits reads across multiple CPA sites when appropriate |
+| **FASTQ Support** | Direct FASTQ input with automatic minimap2 alignment |
+| **Bundled Genomes** | Yeast S288C genome and annotations included |
+| **Motif Database** | CPA-related TF binding sites for motif matching |
+
+### Bundled Data (New in v2.2.0)
+
+For yeast (*S. cerevisiae*), RECTIFY includes:
+
+| Data | Description | Size |
+|------|-------------|------|
+| **Genome** | S288C R64-5-1 reference | 3.7 MB |
+| **Annotation** | SGD GFF3 with gene names | 5.0 MB |
+| **GO Annotations** | Gene Ontology from SGD | 400 KB |
+| **NET-seq** | WT pan-mutant consensus | ~1 MB |
+| **Motif Database** | CPA factors, NNS pathway, general TFs | 10 KB |
 
 ### Supported Technologies
 
@@ -243,7 +265,10 @@ pip install -e .
 ### Basic Usage
 
 ```bash
-# Minimal (auto-detects settings)
+# Simplest: FASTQ input with bundled yeast genome
+rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
+
+# BAM input with custom genome
 rectify correct reads.bam --genome genome.fa --output corrected.tsv
 
 # With annotation (recommended)
@@ -269,7 +294,9 @@ rectify correct reads.bam \
 
 | Option | Description |
 |--------|-------------|
-| `--genome` | Reference genome FASTA (required) |
+| `input` | Input BAM or FASTQ file (FASTQ auto-aligned with minimap2) |
+| `--genome` | Reference genome FASTA (optional with `--organism yeast`) |
+| `--organism` | Use bundled genome/annotation for organism (e.g., `yeast`) |
 | `--annotation` | Gene annotation GTF/GFF |
 | `--netseq-dir` | Directory with NET-seq bigWig files |
 | `--aligner` | Aligner used: `minimap2`, `star`, `bowtie2` |

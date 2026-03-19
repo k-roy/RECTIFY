@@ -334,3 +334,418 @@ def run_enrichment_comparison(
 
     combined = pd.concat(all_results, ignore_index=True)
     return combined
+
+
+def plot_functional_enrichment_with_genes(
+    up_genes: List[str],
+    down_genes: List[str],
+    go_annotations: pd.DataFrame,
+    gene_name_mapping: Optional[Dict[str, str]] = None,
+    functional_categories: Optional[Dict[str, List[str]]] = None,
+    padj_threshold: float = 0.05,
+    min_fold_enrichment: float = 1.5,
+    max_genes_per_category: int = 15,
+    figsize: Tuple[int, int] = (14, 8),
+    output_path: Optional[str] = None,
+    title: str = 'Functional Category Enrichment',
+    condition_name: str = 'condition',
+) -> Optional[plt.Figure]:
+    """
+    Create bidirectional bar plot showing up/down regulated genes by functional category.
+
+    Displays gene names annotated on the bars, similar to the functional_category_enrichment
+    style plot.
+
+    Args:
+        up_genes: List of upregulated gene IDs
+        down_genes: List of downregulated gene IDs
+        go_annotations: DataFrame with GO annotations
+        gene_name_mapping: Dict mapping systematic names to common names (optional)
+        functional_categories: Dict mapping category_name -> [GO terms].
+            If None, uses default yeast functional categories.
+        padj_threshold: p-value threshold for significance
+        min_fold_enrichment: Minimum fold enrichment to include a category
+        max_genes_per_category: Max genes to display in annotation
+        figsize: Figure size
+        output_path: Path to save figure
+        title: Plot title
+        condition_name: Name of the condition for labels
+
+    Returns:
+        matplotlib Figure
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+
+    # Default functional categories for yeast (curated GO terms)
+    if functional_categories is None:
+        functional_categories = get_default_yeast_categories()
+
+    # Run enrichment for each category
+    all_genes_in_background = go_annotations['gene_id'].unique().tolist()
+
+    category_data = []
+
+    for cat_name, go_terms in functional_categories.items():
+        # Get genes in this category
+        cat_genes = set(
+            go_annotations[go_annotations['go_term'].isin(go_terms)]['gene_id'].unique()
+        )
+
+        if not cat_genes:
+            continue
+
+        # Count up/down genes in category
+        up_in_cat = set(up_genes) & cat_genes
+        down_in_cat = set(down_genes) & cat_genes
+
+        # Calculate enrichment (Fisher's exact test)
+        if SCIPY_AVAILABLE and (up_in_cat or down_in_cat):
+            # Test for upregulated
+            up_pval = _fisher_test_category(
+                up_in_cat, set(up_genes), cat_genes, set(all_genes_in_background)
+            )
+
+            # Test for downregulated
+            down_pval = _fisher_test_category(
+                down_in_cat, set(down_genes), cat_genes, set(all_genes_in_background)
+            )
+        else:
+            up_pval = 1.0
+            down_pval = 1.0
+
+        category_data.append({
+            'category': cat_name,
+            'up_count': len(up_in_cat),
+            'down_count': len(down_in_cat),
+            'up_genes': list(up_in_cat),
+            'down_genes': list(down_in_cat),
+            'up_pval': up_pval,
+            'down_pval': down_pval,
+            'total_in_cat': len(cat_genes),
+        })
+
+    if not category_data:
+        print("Warning: No functional categories found with genes")
+        return None
+
+    cat_df = pd.DataFrame(category_data)
+
+    # Filter to significant categories (either up or down significant)
+    cat_df = cat_df[
+        ((cat_df['up_pval'] < padj_threshold) & (cat_df['up_count'] > 0)) |
+        ((cat_df['down_pval'] < padj_threshold) & (cat_df['down_count'] > 0))
+    ]
+
+    if cat_df.empty:
+        # Show top categories by count even if not significant
+        cat_df = pd.DataFrame(category_data)
+        cat_df['max_count'] = cat_df[['up_count', 'down_count']].max(axis=1)
+        cat_df = cat_df.nlargest(10, 'max_count')
+
+    # Sort by total effect size
+    cat_df['effect'] = cat_df['up_count'] - cat_df['down_count']
+    cat_df = cat_df.sort_values('effect', ascending=True)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+
+    y_positions = np.arange(len(cat_df))
+    bar_height = 0.7
+
+    # Colors
+    up_color = '#4393c3'    # Blue for upregulated
+    down_color = '#d6604d'  # Red/orange for downregulated
+
+    # Plot bars
+    for i, (idx, row) in enumerate(cat_df.iterrows()):
+        # Downregulated (negative direction)
+        if row['down_count'] > 0:
+            ax.barh(i, -row['down_count'], height=bar_height, color=down_color, alpha=0.8)
+
+            # Add gene names
+            gene_names = _format_gene_names(
+                row['down_genes'], gene_name_mapping, max_genes_per_category
+            )
+
+            # Significance marker
+            sig_marker = '*' if row['down_pval'] < padj_threshold else ''
+
+            # Add count and genes
+            ax.text(
+                -row['down_count'] / 2, i,
+                f"{row['down_count']}{sig_marker}\n{gene_names}",
+                ha='center', va='center', fontsize=7, color='white', fontweight='bold'
+            )
+
+            # Add p-value
+            if row['down_pval'] < padj_threshold:
+                ax.text(
+                    -row['down_count'] - 0.5, i - 0.25,
+                    f"p={row['down_pval']:.1e}",
+                    ha='right', va='center', fontsize=6, color='gray'
+                )
+
+        # Upregulated (positive direction)
+        if row['up_count'] > 0:
+            ax.barh(i, row['up_count'], height=bar_height, color=up_color, alpha=0.8)
+
+            # Add gene names
+            gene_names = _format_gene_names(
+                row['up_genes'], gene_name_mapping, max_genes_per_category
+            )
+
+            # Significance marker
+            sig_marker = '*' if row['up_pval'] < padj_threshold else ''
+
+            # Add count and genes
+            ax.text(
+                row['up_count'] / 2, i,
+                f"{row['up_count']}{sig_marker}\n{gene_names}",
+                ha='center', va='center', fontsize=7, color='white', fontweight='bold'
+            )
+
+            # Add p-value
+            if row['up_pval'] < padj_threshold:
+                ax.text(
+                    row['up_count'] + 0.5, i - 0.25,
+                    f"p={row['up_pval']:.1e}",
+                    ha='left', va='center', fontsize=6, color='gray'
+                )
+
+    # Add vertical line at 0
+    ax.axvline(x=0, color='black', linewidth=1)
+
+    # Labels
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(cat_df['category'], fontsize=10)
+    ax.set_xlabel('Number of DE Genes', fontsize=11)
+    ax.set_title(f"{title}\n(padj < {padj_threshold}; * = Fisher p < {padj_threshold})", fontsize=12)
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=up_color, label=f'UP in {condition_name}'),
+        Patch(facecolor=down_color, label=f'DOWN in {condition_name}'),
+    ]
+    ax.legend(handles=legend_elements, loc='lower right')
+
+    # Adjust x-axis to be symmetric
+    max_val = max(cat_df['up_count'].max(), cat_df['down_count'].max())
+    ax.set_xlim(-max_val * 1.3, max_val * 1.3)
+
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=200, bbox_inches='tight')
+        print(f"Saved functional enrichment plot to {output_path}")
+
+    return fig
+
+
+def _fisher_test_category(
+    overlap: set,
+    query_set: set,
+    category_set: set,
+    background_set: set,
+) -> float:
+    """Run Fisher's exact test for category enrichment."""
+    if not SCIPY_AVAILABLE:
+        return 1.0
+
+    a = len(overlap)
+    b = len(query_set) - a
+    c = len(category_set & background_set) - a
+    d = len(background_set) - len(query_set) - c
+
+    if a == 0:
+        return 1.0
+
+    _, pval = stats.fisher_exact([[a, b], [c, d]], alternative='greater')
+    return pval
+
+
+def _format_gene_names(
+    genes: List[str],
+    name_mapping: Optional[Dict[str, str]],
+    max_genes: int,
+) -> str:
+    """Format gene names for display, using common names if available."""
+    if not genes:
+        return ''
+
+    # Get display names
+    if name_mapping:
+        display_names = [name_mapping.get(g, g) for g in genes]
+    else:
+        display_names = genes
+
+    # Truncate if too many
+    if len(display_names) > max_genes:
+        display_names = display_names[:max_genes] + ['...']
+
+    return ', '.join(display_names)
+
+
+def get_default_yeast_categories() -> Dict[str, List[str]]:
+    """
+    Return default functional categories for S. cerevisiae.
+
+    These are curated GO term descriptions that group related processes.
+    """
+    return {
+        'Amino Acid Biosynthesis': [
+            'amino acid biosynthetic process',
+            'cellular amino acid biosynthetic process',
+            'branched-chain amino acid biosynthetic process',
+            'aromatic amino acid family biosynthetic process',
+            'histidine biosynthetic process',
+            'methionine biosynthetic process',
+            'lysine biosynthetic process',
+            'arginine biosynthetic process',
+            'serine family amino acid biosynthetic process',
+        ],
+        'Purine/Pyrimidine': [
+            'purine nucleotide biosynthetic process',
+            'pyrimidine nucleotide biosynthetic process',
+            'de novo IMP biosynthetic process',
+            'purine nucleobase biosynthetic process',
+            'nucleobase biosynthetic process',
+        ],
+        'Heat Shock/Stress': [
+            'response to heat',
+            'cellular response to heat',
+            'protein folding',
+            'protein refolding',
+            'response to unfolded protein',
+            'chaperone-mediated protein folding',
+        ],
+        'DNA Replication': [
+            'DNA replication',
+            'DNA replication initiation',
+            'DNA synthesis involved in DNA repair',
+            'regulation of DNA replication',
+        ],
+        'Histones/Chromatin': [
+            'chromatin organization',
+            'nucleosome assembly',
+            'chromatin remodeling',
+            'histone modification',
+            'DNA packaging',
+        ],
+        'Ribosome Biogenesis': [
+            'ribosome biogenesis',
+            'rRNA processing',
+            'rRNA metabolic process',
+            'ribosomal large subunit biogenesis',
+            'ribosomal small subunit biogenesis',
+            'maturation of LSU-rRNA',
+            'maturation of SSU-rRNA',
+        ],
+        'Translation': [
+            'translation',
+            'cytoplasmic translation',
+            'translational initiation',
+            'translational elongation',
+        ],
+        'mRNA Processing': [
+            'mRNA processing',
+            'mRNA splicing, via spliceosome',
+            'RNA splicing',
+            'mRNA polyadenylation',
+            'mRNA 3\'-end processing',
+        ],
+        'Cell Cycle': [
+            'cell cycle',
+            'mitotic cell cycle',
+            'cell division',
+            'chromosome segregation',
+            'mitotic spindle organization',
+        ],
+        'Proteasome': [
+            'proteasome-mediated ubiquitin-dependent protein catabolic process',
+            'proteasomal protein catabolic process',
+            'ubiquitin-dependent protein catabolic process',
+        ],
+        'Glycolysis/TCA': [
+            'glycolytic process',
+            'tricarboxylic acid cycle',
+            'pyruvate metabolic process',
+            'gluconeogenesis',
+        ],
+        'Lipid Metabolism': [
+            'lipid biosynthetic process',
+            'fatty acid biosynthetic process',
+            'sterol biosynthetic process',
+            'phospholipid biosynthetic process',
+        ],
+        'Autophagy': [
+            'autophagy',
+            'macroautophagy',
+            'autophagosome assembly',
+        ],
+        'Transcription': [
+            'transcription by RNA polymerase II',
+            'regulation of transcription by RNA polymerase II',
+            'transcription initiation from RNA polymerase II promoter',
+        ],
+    }
+
+
+def load_gene_name_mapping(
+    gff_path: Optional[str] = None,
+    mapping_file: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Load systematic to common gene name mapping.
+
+    Args:
+        gff_path: Path to GFF file (extracts Name and gene attributes)
+        mapping_file: Path to TSV with systematic_name, common_name columns
+
+    Returns:
+        Dict mapping systematic name -> common name
+    """
+    mapping = {}
+
+    if mapping_file and Path(mapping_file).exists():
+        df = pd.read_csv(mapping_file, sep='\t')
+        if 'systematic_name' in df.columns and 'common_name' in df.columns:
+            for _, row in df.iterrows():
+                if pd.notna(row['common_name']) and row['common_name']:
+                    mapping[row['systematic_name']] = row['common_name']
+
+    elif gff_path and Path(gff_path).exists():
+        # Parse GFF for gene names
+        import re
+        with open(gff_path, 'r') as f:
+            for line in f:
+                if line.startswith('#') or not line.strip():
+                    continue
+                fields = line.split('\t')
+                if len(fields) < 9:
+                    continue
+                if fields[2] != 'gene':
+                    continue
+
+                attrs = fields[8]
+
+                # Extract ID and Name
+                id_match = re.search(r'ID=([^;]+)', attrs)
+                name_match = re.search(r'Name=([^;]+)', attrs)
+                gene_match = re.search(r'gene=([^;]+)', attrs)
+
+                systematic = None
+                common = None
+
+                if id_match:
+                    systematic = id_match.group(1)
+                if name_match:
+                    common = name_match.group(1)
+                elif gene_match:
+                    common = gene_match.group(1)
+
+                if systematic and common and systematic != common:
+                    mapping[systematic] = common
+
+    return mapping
