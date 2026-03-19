@@ -5,6 +5,11 @@ Create aesthetic indel correction figure for README.
 Shows how minimap2 alignments in A-rich regions have indel artifacts
 that RECTIFY corrects, with both plus and minus strand examples.
 
+Key features shown:
+1. Indels where minimap2 forces poly(A) across non-A genomic bases
+2. Sequencing errors (T instead of A) in poly(A) tail region
+3. Why we can't just trim poly(A) before alignment
+
 Author: Kevin R. Roy
 Date: 2026-03-19
 """
@@ -15,7 +20,7 @@ from matplotlib.patches import FancyBboxPatch, Rectangle, FancyArrowPatch
 import numpy as np
 
 # Set up the figure with high DPI for quality
-fig = plt.figure(figsize=(16, 12))
+fig = plt.figure(figsize=(16, 14))
 fig.patch.set_facecolor('white')
 
 # Color scheme
@@ -27,17 +32,20 @@ COLORS = {
     'match': '#E8F5E9',  # Light green
     'mismatch': '#FFCDD2',  # Light red
     'deletion': '#FFE0B2',  # Light orange
+    'insertion': '#E1BEE7',  # Light purple
     'softclip': '#E3F2FD',  # Light blue
+    'error': '#FFCDD2',  # Light red for sequencing error
     'arrow': '#1976D2',  # Dark blue
     'text': '#212121',  # Dark gray
     'plus': '#8BC34A',  # Light green for + strand
     'minus': '#03A9F4',  # Light blue for - strand
 }
 
-def draw_base(ax, base, x, y, fontsize=13, bg_color='white', edge_color='#BDBDBD', width=0.85):
+def draw_base(ax, base, x, y, fontsize=13, bg_color='white', edge_color='#BDBDBD',
+              width=0.85, is_deletion=False, is_insertion=False, show_error=False):
     """Draw a single base with colored background."""
-    if base == '-':
-        # Deletion marker
+    if is_deletion:
+        # Deletion marker (gap in read)
         rect = FancyBboxPatch((x-width/2, y-0.35), width, 0.7,
                               boxstyle="round,pad=0.03",
                               facecolor=COLORS['deletion'],
@@ -57,208 +65,307 @@ def draw_base(ax, base, x, y, fontsize=13, bg_color='white', edge_color='#BDBDBD
                fontweight='bold', color=COLORS.get(base, COLORS['text']),
                family='monospace')
 
-def draw_sequence(ax, seq, y, x_start=0, base_colors=None, fontsize=13):
-    """Draw a DNA sequence with colored bases."""
-    if base_colors is None:
-        base_colors = {}
+def draw_sequence_with_features(ax, seq, y, x_start=0, features=None, fontsize=13):
+    """
+    Draw a DNA sequence with specified features per position.
+
+    features: dict of position -> dict with keys like:
+        'bg': background color
+        'edge': edge color
+        'deletion': True if this is a deletion
+        'error': True if sequencing error
+    """
+    if features is None:
+        features = {}
     x = x_start
     for i, base in enumerate(seq):
         if base == ' ':
             x += 1
             continue
-        bg = base_colors.get(i, {}).get('bg', 'white')
-        edge = base_colors.get(i, {}).get('edge', '#BDBDBD')
-        draw_base(ax, base, x, y, fontsize, bg, edge)
+        feat = features.get(i, {})
+        bg = feat.get('bg', 'white')
+        edge = feat.get('edge', '#BDBDBD')
+        is_del = feat.get('deletion', False)
+
+        draw_base(ax, base, x, y, fontsize, bg, edge, is_deletion=is_del)
         x += 1
     return x
 
 # Create subplots
-gs = fig.add_gridspec(3, 1, height_ratios=[1.3, 1.3, 1], hspace=0.4)
+gs = fig.add_gridspec(4, 1, height_ratios=[1.4, 1.4, 0.9, 0.9], hspace=0.35)
 ax1 = fig.add_subplot(gs[0])  # Plus strand
 ax2 = fig.add_subplot(gs[1])  # Minus strand
-ax3 = fig.add_subplot(gs[2])  # Summary
+ax3 = fig.add_subplot(gs[2])  # Why not just trim explanation
+ax4 = fig.add_subplot(gs[3])  # Summary
 
 # ============================================================================
-# Panel A: Plus Strand Example
+# Panel A: Plus Strand Example with indels and sequencing error
 # ============================================================================
-ax1.set_xlim(-4, 36)
-ax1.set_ylim(-1.5, 4)
+ax1.set_xlim(-4, 38)
+ax1.set_ylim(-1.8, 4.5)
 ax1.axis('off')
 
 # Title with strand indicator
-ax1.add_patch(FancyBboxPatch((-3.5, 3.2), 1.5, 0.6,
+ax1.add_patch(FancyBboxPatch((-3.5, 3.5), 1.5, 0.6,
               boxstyle="round,pad=0.1", facecolor=COLORS['plus'],
               edgecolor='#558B2F', linewidth=2))
-ax1.text(-2.75, 3.5, '+', ha='center', va='center', fontsize=16,
+ax1.text(-2.75, 3.8, '+', ha='center', va='center', fontsize=16,
          fontweight='bold', color='white')
-ax1.text(0, 3.5, 'Plus Strand: Poly(A) tail aligns to downstream genomic A-tract',
+ax1.text(0, 3.8, 'Plus Strand: Poly(A) tail aligns to downstream genomic A-tract',
          fontsize=13, fontweight='bold', va='center')
 
-# Reference sequence for + strand: CPA site followed by A-tract
-ref_plus = "CTGATCAGTC AAAAAAAAAA GTCA"
-#           0123456789 0123456789 0123
-#                     ^CPA site
+# Reference sequence for + strand: CPA site, then A-tract with a G in the middle
+# Genome:  C T G A T C A G T C | A A A A A G A A A A A | G T C A
+#          0 1 2 3 4 5 6 7 8 9  10 11 12 13 14 15 16 17 18 19 20  21 22 23 24
+#                              ^CPA site              ^non-A in tract
 
-# Read with poly(A) tail extending into A-tract
-read_plus = "CTGATCAGTC AAAAAAAAAA AAAA"  # Poly(A) continues past genomic
+ref_plus = "CTGATCAGTCAAAAAGAAAAAGT"
+#           0         1         2
+#           0123456789012345678901234
 
-# Color scheme for bases
-ref_colors = {}
-read_colors = {}
+# Read with poly(A) tail - note:
+# - Position 15 (G in genome) shows as deletion in read (minimap2 skips it)
+# - Position 18 shows T (sequencing error in poly(A))
+# - Positions 21+ are soft-clipped
+read_plus = "CTGATCAGTCAAAAA-AAATAAA"  # - is deletion, T is seq error
 
-# Mark the A-tract region (positions 10-19)
-for i in range(10, 20):
-    ref_colors[i] = {'bg': '#C8E6C9', 'edge': '#4CAF50'}
+# Features for reference
+ref_features = {}
+# A-tract region (positions 10-20) in green
+for i in range(10, 21):
+    ref_features[i] = {'bg': '#C8E6C9', 'edge': '#4CAF50'}
+# Mark the G at position 15 specially
+ref_features[15] = {'bg': '#FFCDD2', 'edge': '#C62828'}  # Red - non-A
 
-# Mark poly(A) tail region (soft-clipped, positions 20+)
-for i in range(20, 24):
-    read_colors[i] = {'bg': COLORS['softclip'], 'edge': '#1565C0'}
+# Features for read
+read_features = {}
+# Aligned A's
+for i in range(10, 15):
+    read_features[i] = {'bg': '#C8E6C9', 'edge': '#4CAF50'}
+# Deletion at position 15
+read_features[15] = {'deletion': True}
+# More aligned A's
+for i in range(16, 18):
+    read_features[i] = {'bg': '#C8E6C9', 'edge': '#4CAF50'}
+# Sequencing error at position 18 (T instead of A)
+read_features[18] = {'bg': COLORS['error'], 'edge': '#C62828'}
+# Soft-clipped region (positions 19+)
+for i in range(19, 23):
+    read_features[i] = {'bg': COLORS['softclip'], 'edge': '#1565C0'}
 
 # Draw reference
-ax1.text(-3.5, 2, 'Genome', ha='right', va='center', fontsize=11, fontweight='bold')
-draw_sequence(ax1, ref_plus.replace(' ', ''), 2, x_start=0, base_colors=ref_colors)
+ax1.text(-3.5, 2.2, 'Genome', ha='right', va='center', fontsize=11, fontweight='bold')
+draw_sequence_with_features(ax1, ref_plus, 2.2, x_start=0, features=ref_features)
 
 # Draw aligned read
-ax1.text(-3.5, 0.8, 'Read', ha='right', va='center', fontsize=11, fontweight='bold')
-draw_sequence(ax1, read_plus.replace(' ', ''), 0.8, x_start=0, base_colors=read_colors)
+ax1.text(-3.5, 1.0, 'Read', ha='right', va='center', fontsize=11, fontweight='bold')
+draw_sequence_with_features(ax1, read_plus, 1.0, x_start=0, features=read_features)
 
-# Add annotation for CPA site
-ax1.annotate('True CPA site', xy=(10, 2.5), xytext=(6, 3.1),
+# Annotations
+# CPA site
+ax1.annotate('True CPA site', xy=(10, 2.7), xytext=(6, 3.3),
             fontsize=10, ha='center', color='#C62828', fontweight='bold',
             arrowprops=dict(arrowstyle='->', color='#C62828', lw=1.5))
 
-# Add annotation for A-tract
-ax1.annotate('', xy=(10, 2.65), xytext=(20, 2.65),
+# A-tract with interruption
+ax1.annotate('', xy=(10, 2.85), xytext=(21, 2.85),
             arrowprops=dict(arrowstyle='<->', color='#4CAF50', lw=2))
-ax1.text(15, 2.9, 'Genomic A-tract', ha='center', fontsize=9, color='#2E7D32')
+ax1.text(15.5, 3.1, 'A-tract (with G interruption)', ha='center', fontsize=9, color='#2E7D32')
 
-# Add annotation for soft-clip
-ax1.annotate('', xy=(20, 0.35), xytext=(24, 0.35),
+# Mark the deletion
+ax1.annotate('1D\n(deletion)', xy=(15, 0.4), xytext=(15, -0.6),
+            fontsize=9, ha='center', color='#E65100', fontweight='bold',
+            arrowprops=dict(arrowstyle='->', color='#E65100', lw=1.2))
+
+# Mark the sequencing error
+ax1.annotate('seq error\n(T not A)', xy=(18, 0.4), xytext=(18, -0.6),
+            fontsize=9, ha='center', color='#C62828', fontweight='bold',
+            arrowprops=dict(arrowstyle='->', color='#C62828', lw=1.2))
+
+# Soft-clip annotation - moved below the read
+ax1.annotate('', xy=(19, 0.35), xytext=(23, 0.35),
             arrowprops=dict(arrowstyle='<->', color='#1565C0', lw=2))
-ax1.text(22, 0.05, 'Soft-clip\n(poly-A tail)', ha='center', fontsize=8, color='#1565C0')
+ax1.text(21, -0.1, 'Soft-clip\n(poly-A tail)', ha='center', fontsize=8, color='#1565C0')
 
-# Add correction arrow
-ax1.annotate('', xy=(9.5, 0.8), xytext=(20, 0.8),
-            arrowprops=dict(arrowstyle='<-', color=COLORS['arrow'], lw=2,
-                           connectionstyle="arc3,rad=0.3"))
-ax1.text(15, 0.2, 'RECTIFY shifts LEFT\n(upstream to true CPA)', ha='center',
-         fontsize=9, color=COLORS['arrow'], fontweight='bold')
+# Correction arrow - curves BELOW the sequences (away from genome/read)
+ax1.annotate('', xy=(9.5, 0.5), xytext=(19, 0.5),
+            arrowprops=dict(arrowstyle='<-', color=COLORS['arrow'], lw=2.5,
+                           connectionstyle="arc3,rad=0.4"))
+ax1.text(14, -0.5, 'RECTIFY walks back, absorbing deletions and seq errors',
+         ha='center', va='top', fontsize=9, color=COLORS['arrow'], fontweight='bold', style='italic')
 
-# RNA direction indicator
-ax1.annotate('', xy=(28, 2), xytext=(25, 2),
+# RNA direction
+ax1.annotate('', xy=(28, 2.2), xytext=(25, 2.2),
             arrowprops=dict(arrowstyle='->', color='#757575', lw=2))
-ax1.text(30, 2, "5'→3'\n(RNA)", ha='center', va='center', fontsize=9, color='#757575')
+ax1.text(30, 2.2, "5'→3'\n(RNA)", ha='center', va='center', fontsize=9, color='#757575')
 
 # ============================================================================
-# Panel B: Minus Strand Example
+# Panel B: Minus Strand Example with indels and sequencing error
 # ============================================================================
-ax2.set_xlim(-4, 36)
-ax2.set_ylim(-1.5, 4.5)
+ax2.set_xlim(-4, 38)
+ax2.set_ylim(-1.8, 4.8)
 ax2.axis('off')
 
 # Title with strand indicator
-ax2.add_patch(FancyBboxPatch((-3.5, 3.2), 1.5, 0.6,
+ax2.add_patch(FancyBboxPatch((-3.5, 3.7), 1.5, 0.6,
               boxstyle="round,pad=0.1", facecolor=COLORS['minus'],
               edgecolor='#0277BD', linewidth=2))
-ax2.text(-2.75, 3.5, '−', ha='center', va='center', fontsize=16,
+ax2.text(-2.75, 4.0, '−', ha='center', va='center', fontsize=16,
          fontweight='bold', color='white')
-ax2.text(0, 3.5, 'Minus Strand: Poly(A) tail appears as poly(T) in IGV',
+ax2.text(0, 4.0, 'Minus Strand: Poly(A) tail appears as poly(T) in IGV',
          fontsize=13, fontweight='bold', va='center')
 
 # Add explanation box for IGV confusion
-ax2.add_patch(FancyBboxPatch((20, 3.0), 13, 1.2,
+ax2.add_patch(FancyBboxPatch((22, 3.5), 12, 1.0,
               boxstyle="round,pad=0.1", facecolor='#FFF3E0',
               edgecolor='#E65100', linewidth=1.5))
-ax2.text(26.5, 3.9, '⚠️ IGV shows read sequence', ha='center', fontsize=9, fontweight='bold', color='#E65100')
-ax2.text(26.5, 3.4, 'Poly(A) on RNA = T on read', ha='center', fontsize=9, color='#BF360C')
+ax2.text(28, 4.2, 'Note: IGV shows read sequence', ha='center', fontsize=9, fontweight='bold', color='#E65100')
+ax2.text(28, 3.8, 'Poly(A) on RNA = T on read', ha='center', fontsize=9, color='#BF360C')
 
-# Reference sequence for - strand: T-tract (complement of A's) followed by CPA site
-# On minus strand, poly(A) on RNA = T's on genome template
-ref_minus = "TTTT TTTTTTTTTT GACTGATCAG"
-#                ^T-tract   ^CPA site
+# Reference sequence for - strand: T-tract with C interruption, then CPA site
+# Genome:  T T T T | T T T T C T T T T T | G A C T G A T C A G
+#          0 1 2 3   4 5 6 7 8 9 ...      14 ...
+#                              ^non-T       ^CPA site
 
-# Read with poly(A) tail (appears as T's in reverse-complement)
-read_minus = "TTTT TTTTTTTTTT GACTGATCAG"
+ref_minus = "TTTTTTTTCTTTTTGACTGATCAG"
+#            0         1         2
+#            012345678901234567890123
 
-# Color scheme for bases
-ref_colors2 = {}
-read_colors2 = {}
+# Read - minimap2 introduces deletion at C (position 8), and there's a sequencing error
+read_minus = "TTTT TTTT-ATTTTGACTGATCAG"  # First 4 soft-clipped, - is deletion, A is error
 
-# Mark the T-tract region (positions 0-13) - these are A's on the RNA
+# Features for reference
+ref_features2 = {}
+# T-tract region (positions 0-13) in blue
 for i in range(0, 14):
-    ref_colors2[i] = {'bg': '#BBDEFB', 'edge': '#1976D2'}
-    if i < 4:
-        read_colors2[i] = {'bg': COLORS['softclip'], 'edge': '#1565C0'}
+    ref_features2[i] = {'bg': '#BBDEFB', 'edge': '#1976D2'}
+# Mark the C at position 8 specially
+ref_features2[8] = {'bg': '#FFCDD2', 'edge': '#C62828'}  # Red - non-T
+
+# Features for read
+read_features2 = {}
+# Soft-clipped T's (positions 0-3)
+for i in range(0, 4):
+    read_features2[i] = {'bg': COLORS['softclip'], 'edge': '#1565C0'}
+# Skip position 4 (space)
+# Aligned T's (positions 5-8 in string = genomic 4-7)
+for i in range(5, 9):
+    read_features2[i] = {'bg': '#BBDEFB', 'edge': '#1976D2'}
+# Deletion at position 9 (the C)
+read_features2[9] = {'deletion': True}
+# Sequencing error at position 10 (A instead of T)
+read_features2[10] = {'bg': COLORS['error'], 'edge': '#C62828'}
+# More aligned T's
+for i in range(11, 15):
+    read_features2[i] = {'bg': '#BBDEFB', 'edge': '#1976D2'}
 
 # Draw reference
-ax2.text(-3.5, 2, 'Genome', ha='right', va='center', fontsize=11, fontweight='bold')
-draw_sequence(ax2, ref_minus.replace(' ', ''), 2, x_start=0, base_colors=ref_colors2)
+ax2.text(-3.5, 2.4, 'Genome', ha='right', va='center', fontsize=11, fontweight='bold')
+draw_sequence_with_features(ax2, ref_minus, 2.4, x_start=0, features=ref_features2)
 
 # Draw aligned read
-ax2.text(-3.5, 0.8, 'Read', ha='right', va='center', fontsize=11, fontweight='bold')
-draw_sequence(ax2, read_minus.replace(' ', ''), 0.8, x_start=0, base_colors=read_colors2)
+ax2.text(-3.5, 1.2, 'Read', ha='right', va='center', fontsize=11, fontweight='bold')
+draw_sequence_with_features(ax2, read_minus, 1.2, x_start=0, features=read_features2)
 
-# Add annotation for CPA site
-ax2.annotate('True CPA site', xy=(14, 2.5), xytext=(18, 3.1),
+# Annotations
+# CPA site
+ax2.annotate('True CPA site', xy=(14, 2.9), xytext=(18, 3.4),
             fontsize=10, ha='center', color='#C62828', fontweight='bold',
             arrowprops=dict(arrowstyle='->', color='#C62828', lw=1.5))
 
-# Add annotation for T-tract (A's on RNA)
-ax2.annotate('', xy=(0, 2.65), xytext=(14, 2.65),
+# T-tract with interruption
+ax2.annotate('', xy=(0, 3.0), xytext=(14, 3.0),
             arrowprops=dict(arrowstyle='<->', color='#1976D2', lw=2))
-ax2.text(7, 2.9, 'T-tract (= A on RNA)', ha='center', fontsize=9, color='#0D47A1')
+ax2.text(7, 3.25, 'T-tract (= A on RNA, with C interruption)', ha='center', fontsize=9, color='#0D47A1')
 
-# Add annotation for soft-clip
-ax2.annotate('', xy=(0, 0.35), xytext=(4, 0.35),
+# Soft-clip annotation - moved below the read
+ax2.annotate('', xy=(0, 0.55), xytext=(4, 0.55),
             arrowprops=dict(arrowstyle='<->', color='#1565C0', lw=2))
-ax2.text(2, 0.0, 'Soft-clip\n(poly-A as T)', ha='center', fontsize=8, color='#1565C0')
+ax2.text(2, 0.1, 'Soft-clip\n(poly-A as T)', ha='center', fontsize=8, color='#1565C0')
 
-# Add correction arrow
-ax2.annotate('', xy=(14.5, 0.8), xytext=(4, 0.8),
-            arrowprops=dict(arrowstyle='<-', color=COLORS['arrow'], lw=2,
-                           connectionstyle="arc3,rad=-0.3"))
-ax2.text(9, 0.2, 'RECTIFY shifts RIGHT\n(upstream on − strand)', ha='center',
-         fontsize=9, color=COLORS['arrow'], fontweight='bold')
+# Mark the deletion (at genomic position 8, read position 9) - moved lower
+ax2.annotate('1D\n(deletion)', xy=(9, 0.55), xytext=(7, -0.5),
+            fontsize=9, ha='center', color='#E65100', fontweight='bold',
+            arrowprops=dict(arrowstyle='->', color='#E65100', lw=1.2))
 
-# RNA direction indicator (opposite for minus strand)
-ax2.annotate('', xy=(28, 2), xytext=(31, 2),
+# Mark the sequencing error - moved lower
+ax2.annotate('seq error\n(A not T)', xy=(10, 0.55), xytext=(12, -0.5),
+            fontsize=9, ha='center', color='#C62828', fontweight='bold',
+            arrowprops=dict(arrowstyle='->', color='#C62828', lw=1.2))
+
+# Correction arrow - curves BELOW the sequences (away from genome/read)
+ax2.annotate('', xy=(14.5, 0.7), xytext=(4, 0.7),
+            arrowprops=dict(arrowstyle='<-', color=COLORS['arrow'], lw=2.5,
+                           connectionstyle="arc3,rad=-0.4"))
+ax2.text(9, -0.7, 'RECTIFY walks back, absorbing deletions and seq errors',
+         ha='center', va='top', fontsize=9, color=COLORS['arrow'], fontweight='bold', style='italic')
+
+# RNA direction (opposite for minus strand)
+ax2.annotate('', xy=(28, 2.4), xytext=(31, 2.4),
             arrowprops=dict(arrowstyle='->', color='#757575', lw=2))
-ax2.text(25, 2, "3'←5'\n(RNA)", ha='center', va='center', fontsize=9, color='#757575')
+ax2.text(25, 2.4, "3'←5'\n(RNA)", ha='center', va='center', fontsize=9, color='#757575')
 
 # ============================================================================
-# Panel C: Summary Box
+# Panel C: Why we can't just trim poly(A) before alignment
 # ============================================================================
 ax3.set_xlim(0, 10)
-ax3.set_ylim(0, 3)
+ax3.set_ylim(0, 2.5)
 ax3.axis('off')
 
+# Create explanation box
+why_box = FancyBboxPatch((0.2, 0.2), 9.6, 2.1,
+                          boxstyle="round,pad=0.1",
+                          facecolor='#FFFDE7',
+                          edgecolor='#F57F17', linewidth=2)
+ax3.add_patch(why_box)
+
+ax3.text(5, 2.1, 'Why not just trim poly(A) before alignment?', ha='center',
+         fontsize=12, fontweight='bold', color='#E65100')
+
+ax3.text(0.5, 1.5, '1. Genomic A-tracts extend alignment past true CPA site',
+         ha='left', fontsize=10, color=COLORS['text'])
+ax3.text(0.5, 1.1, '2. Indels reveal where aligner forced poly(A) across non-A bases (G, C, T)',
+         ha='left', fontsize=10, color=COLORS['text'])
+ax3.text(0.5, 0.7, '3. Sequencing errors (T in poly-A) help distinguish tail from genome',
+         ha='left', fontsize=10, color=COLORS['text'])
+
+ax3.text(5, 0.35, '→ The alignment itself contains information about the true CPA position!',
+         ha='center', fontsize=10, fontweight='bold', color='#2E7D32', style='italic')
+
+# ============================================================================
+# Panel D: Summary Box
+# ============================================================================
+ax4.set_xlim(0, 10)
+ax4.set_ylim(0, 2.2)
+ax4.axis('off')
+
 # Create summary box
-summary_box = FancyBboxPatch((0.5, 0.3), 9, 2.4,
+summary_box = FancyBboxPatch((0.5, 0.2), 9, 1.8,
                               boxstyle="round,pad=0.1",
                               facecolor='#FAFAFA',
                               edgecolor='#424242', linewidth=2)
-ax3.add_patch(summary_box)
+ax4.add_patch(summary_box)
 
-ax3.text(5, 2.5, 'Summary: Strand-Specific Correction Direction', ha='center',
-         fontsize=13, fontweight='bold')
+ax4.text(5, 1.85, 'Summary: Strand-Specific Correction Direction', ha='center',
+         fontsize=12, fontweight='bold')
 
 # Plus strand summary
-ax3.add_patch(FancyBboxPatch((1, 1.4), 0.4, 0.4,
+ax4.add_patch(FancyBboxPatch((1, 1.1), 0.4, 0.4,
               boxstyle="round,pad=0.05", facecolor=COLORS['plus'],
               edgecolor='#558B2F'))
-ax3.text(1.2, 1.6, '+', ha='center', va='center', fontsize=12,
+ax4.text(1.2, 1.3, '+', ha='center', va='center', fontsize=12,
          fontweight='bold', color='white')
-ax3.text(1.8, 1.6, 'Plus strand: Poly(A) extends RIGHT → Correct by shifting LEFT (−)',
-         ha='left', va='center', fontsize=11)
+ax4.text(1.8, 1.3, 'Plus strand: Poly(A) extends RIGHT → Correct by shifting LEFT (−)',
+         ha='left', va='center', fontsize=10)
 
 # Minus strand summary
-ax3.add_patch(FancyBboxPatch((1, 0.7), 0.4, 0.4,
+ax4.add_patch(FancyBboxPatch((1, 0.5), 0.4, 0.4,
               boxstyle="round,pad=0.05", facecolor=COLORS['minus'],
               edgecolor='#0277BD'))
-ax3.text(1.2, 0.9, '−', ha='center', va='center', fontsize=12,
+ax4.text(1.2, 0.7, '−', ha='center', va='center', fontsize=12,
          fontweight='bold', color='white')
-ax3.text(1.8, 0.9, 'Minus strand: Poly(A) extends LEFT → Correct by shifting RIGHT (+)',
-         ha='left', va='center', fontsize=11)
+ax4.text(1.8, 0.7, 'Minus strand: Poly(A) extends LEFT → Correct by shifting RIGHT (+)',
+         ha='left', va='center', fontsize=10)
 
 plt.savefig('/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/docs/figures/indel_correction.png',
             dpi=150, bbox_inches='tight', facecolor='white')
