@@ -108,7 +108,7 @@ def detect_chromosome_format(chrom_names: List[str]) -> str:
 
 def normalize_chromosome(
     chrom: str,
-    target_format: str = 'ncbi',
+    target_format: str = 'ucsc',
     organism: str = 'yeast',
 ) -> str:
     """
@@ -203,7 +203,7 @@ def build_chromosome_map(
 def normalize_dataframe_chromosomes(
     df,
     chrom_col: str = 'chrom',
-    target_format: str = 'ncbi',
+    target_format: str = 'ucsc',
     organism: str = 'yeast',
     inplace: bool = False,
 ):

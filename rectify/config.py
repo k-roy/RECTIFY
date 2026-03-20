@@ -19,35 +19,47 @@ from typing import Dict
 # Version
 # =============================================================================
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 # =============================================================================
 # Chromosome Mappings
 # =============================================================================
 
-# Standard chromosome to NCBI genome format mapping (S. cerevisiae)
-CHROM_TO_GENOME: Dict[str, str] = {
-    'chrI': 'ref|NC_001133|',
-    'chrII': 'ref|NC_001134|',
-    'chrIII': 'ref|NC_001135|',
-    'chrIV': 'ref|NC_001136|',
-    'chrV': 'ref|NC_001137|',
-    'chrVI': 'ref|NC_001138|',
-    'chrVII': 'ref|NC_001139|',
-    'chrVIII': 'ref|NC_001140|',
-    'chrIX': 'ref|NC_001141|',
-    'chrX': 'ref|NC_001142|',
-    'chrXI': 'ref|NC_001143|',
-    'chrXII': 'ref|NC_001144|',
-    'chrXIII': 'ref|NC_001145|',
-    'chrXIV': 'ref|NC_001146|',
-    'chrXV': 'ref|NC_001147|',
-    'chrXVI': 'ref|NC_001148|',
-    'chrMito': 'ref|NC_001224|',
+# Standard chromosome names (UCSC/Roman numeral format - canonical for RECTIFY)
+# All BAM files aligned with RECTIFY bundled genome will use these names
+CANONICAL_CHROMS: list[str] = [
+    'chrI', 'chrII', 'chrIII', 'chrIV', 'chrV', 'chrVI', 'chrVII', 'chrVIII',
+    'chrIX', 'chrX', 'chrXI', 'chrXII', 'chrXIII', 'chrXIV', 'chrXV', 'chrXVI',
+    'chrMito',
+]
+
+# NCBI to canonical (chrI) format mapping (for legacy BAM files)
+NCBI_TO_CHROM: Dict[str, str] = {
+    'ref|NC_001133|': 'chrI',
+    'ref|NC_001134|': 'chrII',
+    'ref|NC_001135|': 'chrIII',
+    'ref|NC_001136|': 'chrIV',
+    'ref|NC_001137|': 'chrV',
+    'ref|NC_001138|': 'chrVI',
+    'ref|NC_001139|': 'chrVII',
+    'ref|NC_001140|': 'chrVIII',
+    'ref|NC_001141|': 'chrIX',
+    'ref|NC_001142|': 'chrX',
+    'ref|NC_001143|': 'chrXI',
+    'ref|NC_001144|': 'chrXII',
+    'ref|NC_001145|': 'chrXIII',
+    'ref|NC_001146|': 'chrXIV',
+    'ref|NC_001147|': 'chrXV',
+    'ref|NC_001148|': 'chrXVI',
+    'ref|NC_001224|': 'chrMito',
 }
 
-# Reverse mapping
-GENOME_TO_CHROM: Dict[str, str] = {v: k for k, v in CHROM_TO_GENOME.items()}
+# Canonical to NCBI format mapping (for compatibility with legacy workflows)
+CHROM_TO_NCBI: Dict[str, str] = {v: k for k, v in NCBI_TO_CHROM.items()}
+
+# Legacy aliases (deprecated - use NCBI_TO_CHROM and CHROM_TO_NCBI instead)
+CHROM_TO_GENOME: Dict[str, str] = CHROM_TO_NCBI
+GENOME_TO_CHROM: Dict[str, str] = NCBI_TO_CHROM
 
 # Chromosome sizes (sacCer3/R64)
 CHROM_SIZES: Dict[str, int] = {

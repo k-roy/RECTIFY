@@ -192,7 +192,8 @@ def correct_read_3prime(
             result['ambiguity_min'],
             result['ambiguity_max'],
             strand,
-            current_position
+            current_position,
+            proportional_split=False,  # Return single dict, not list
         )
 
         result['corrected_3prime'] = netseq_result['refined_position']
