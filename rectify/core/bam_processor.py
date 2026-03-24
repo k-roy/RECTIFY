@@ -41,11 +41,17 @@ def get_read_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
     """
     Get 3' end position and strand from read.
 
+    The 3' end is the cleavage and polyadenylation (CPA) site.
+
     Args:
         read: pysam AlignedSegment
 
     Returns:
         Tuple of (position, strand)
+
+    Coordinate Details (0-based):
+        Plus strand (+): 3' end = reference_end - 1 (rightmost aligned base)
+        Minus strand (-): 3' end = reference_start (leftmost aligned base)
     """
     # Determine strand
     strand = '-' if read.is_reverse else '+'
@@ -57,6 +63,54 @@ def get_read_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
         position = read.reference_start  # 0-based
 
     return position, strand
+
+
+def get_read_5prime_position(read: pysam.AlignedSegment, strand: Optional[str] = None) -> int:
+    """
+    Get 5' end position from read (transcription start site end).
+
+    The 5' end is the opposite end from the 3' end (CPA site).
+    This represents where transcription started for this RNA molecule.
+
+    Args:
+        read: pysam AlignedSegment
+        strand: Optional strand override. If None, uses read.is_reverse.
+
+    Returns:
+        5' end position (0-based genomic coordinate)
+
+    Coordinate Details:
+        Plus strand (+): RNA 5'→3' matches genomic left→right
+            5' end = reference_start (leftmost = transcription start)
+
+        Minus strand (-): RNA 5'→3' matches genomic right→left
+            5' end = reference_end - 1 (rightmost = transcription start)
+
+    Visual Example (plus strand):
+        Genomic:  100       110       120       130
+                  |---------|---------|---------|
+        Read:     [====================]
+                  5'                  3'
+                  ↑                    ↑
+                  start=100           end-1=129
+        5' end = 100
+
+    Visual Example (minus strand):
+        Genomic:  100       110       120       130
+                  |---------|---------|---------|
+        Read:     [====================]
+                  3'                  5'
+                  ↑                    ↑
+                  start=100           end-1=129
+        5' end = 129
+    """
+    if strand is None:
+        strand = '-' if read.is_reverse else '+'
+
+    if strand == '+':
+        return read.reference_start  # Leftmost = 5' for plus strand
+    else:
+        return read.reference_end - 1  # Rightmost = 5' for minus strand
 
 
 def correct_read_3prime(
@@ -90,6 +144,9 @@ def correct_read_3prime(
     # Standardize chromosome name
     chrom_std = standardize_chrom_name(chrom)
 
+    # Get 5' end position (transcription start site)
+    five_prime_position = get_read_5prime_position(read, strand)
+
     # Initialize result (use standardized chromosome name for output)
     result = {
         'read_id': read.query_name,
@@ -97,6 +154,9 @@ def correct_read_3prime(
         'strand': strand,
         'original_3prime': original_position,
         'corrected_3prime': original_position,
+        'five_prime_position': five_prime_position,  # TSS end of the read
+        'alignment_start': read.reference_start,  # Leftmost aligned position
+        'alignment_end': read.reference_end,  # Rightmost + 1 (exclusive)
         'ambiguity_min': original_position,
         'ambiguity_max': original_position,
         'ambiguity_range': 0,
@@ -321,6 +381,8 @@ def write_output_tsv(results: List[Dict], output_path: str):
         header = [
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
+            'five_prime_position',  # TSS end of the read (v2.6.0)
+            'alignment_start', 'alignment_end',  # Full read body interval (v2.6.0)
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
             'correction_applied', 'confidence', 'qc_flags'
@@ -335,6 +397,9 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 result['strand'],
                 str(result['original_3prime']),
                 str(result['corrected_3prime']),
+                str(result.get('five_prime_position', '')),  # 5' end (TSS)
+                str(result.get('alignment_start', '')),  # Read body start
+                str(result.get('alignment_end', '')),  # Read body end (exclusive)
                 str(result['ambiguity_min']),
                 str(result['ambiguity_max']),
                 str(result['ambiguity_range']),

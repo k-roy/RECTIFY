@@ -85,6 +85,17 @@ from .pan_mutant_refiner import (
     PanMutantRefiner,
 )
 
+from .gene_attribution import (
+    get_read_5prime_position,
+    get_read_3prime_position,
+    get_read_body_interval,
+    build_cds_interval_tree,
+    find_overlapping_genes,
+    compute_read_gene_attribution,
+    aggregate_attributions_for_3prime_end,
+    compute_cluster_attribution,
+)
+
 __all__ = [
     # Clustering
     'cluster_cpa_sites',
@@ -136,4 +147,13 @@ __all__ = [
     'ATractRefiner',
     'refine_atract_position',
     'PanMutantRefiner',
+    # Gene attribution (5' end analysis)
+    'get_read_5prime_position',
+    'get_read_3prime_position',
+    'get_read_body_interval',
+    'build_cds_interval_tree',
+    'find_overlapping_genes',
+    'compute_read_gene_attribution',
+    'aggregate_attributions_for_3prime_end',
+    'compute_cluster_attribution',
 ]
