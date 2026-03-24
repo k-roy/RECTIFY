@@ -27,6 +27,11 @@ rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
+**New in v2.5.0:** A-tract refinement with bundled NET-seq reference!
+- **ATractRefiner** - Python API for refining nanopore 3' ends in A-tracts
+- **64K A-tract sites** with pre-computed NET-seq signal distributions (1.6 MB)
+- **NNLS deconvolution** with empirically-derived PSF (54% at true CPA, 46% downstream)
+
 **New in v2.2.0:** RECTIFY now includes:
 - **Bundled yeast genome** (S288C R64-5-1) and GFF annotations from SGD
 - **Pre-processed WT NET-seq data** (Churchman lab)
@@ -252,7 +257,44 @@ For yeast (*S. cerevisiae*), RECTIFY includes:
 | **Annotation** | SGD GFF3 with gene names | 5.0 MB |
 | **GO Annotations** | Gene Ontology from SGD | 400 KB |
 | **NET-seq** | WT pan-mutant consensus | ~1 MB |
+| **A-tract Reference** | 64K A-tract CPA sites with NET-seq signal (v2.5.0) | 1.6 MB |
 | **Motif Database** | CPA factors, NNS pathway, general TFs | 10 KB |
+
+### A-Tract Refinement API (New in v2.5.0)
+
+Refine nanopore 3' end positions within A-tracts using the bundled NET-seq reference:
+
+```python
+from rectify.core.analyze import ATractRefiner
+
+# Initialize (automatically loads bundled reference)
+refiner = ATractRefiner()
+
+# Refine a single position
+result = refiner.refine_position('chrX', 139811, '+')
+# Returns: [{'position': 139803, 'fraction': 0.41, 'shift': -8, ...}, ...]
+
+# Winner-take-all mode
+result = refiner.refine_position('chrX', 139811, '+', proportional=False)
+# Returns: {'position': 139803, 'confidence': 'medium', 'shift': -8}
+
+# Batch refinement
+results = refiner.refine_batch([
+    {'chrom': 'chrI', 'position': 6281, 'strand': '+'},
+    {'chrom': 'chrII', 'position': 150000, 'strand': '-'},
+])
+```
+
+**How it works:**
+1. Looks up the nearest A-tract CPA site in the bundled reference (64K sites)
+2. Extracts pre-computed NET-seq signal distribution (±10bp window)
+3. Applies NNLS deconvolution to remove oligo-A spreading artifact
+4. Returns peak positions with proportional assignments
+
+**Empirical constants** (from GSE25107 + GSE159603 analysis):
+- Mean oligo-A tail at 0A sites: 5.52 bp
+- PSF: 54% at true CPA position, 46% spreading downstream
+- Regularization: 0.01 (L2)
 
 ### Supported Technologies
 
