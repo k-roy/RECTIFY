@@ -146,7 +146,18 @@ Comprehensive QC report showing read flow through each correction stage:
 - `pca_plot.png` - Sample clustering and batch effect detection
 - `heatmap.png` - Gene expression heatmap with hierarchical clustering
 - `shift_browser_*.png` - Genome browser plots showing CPA site usage per condition
+- `genomic_distribution_pie_*.png` - Distribution of 3' ends by genomic region
 - `motif_results/` - Sequence motifs enriched near CPA sites (MEME format)
+
+**Example: Genomic distribution of 3' ends (BY4742 wild-type)**
+
+![Genomic Distribution Pie Chart](docs/images/genomic_distribution_pie_by4742.png)
+
+This pie chart shows where 3' ends map relative to annotated genes:
+- **UTR3** (green): Expected termination sites in 3' UTRs
+- **CDS** (blue): Premature termination within coding sequences
+- **UTR5** (light blue): Rare upstream termination
+- **Intergenic** (orange): Between genes (may indicate novel transcripts)
 
 ---
 
