@@ -159,6 +159,15 @@ This pie chart shows where 3' ends map relative to annotated genes:
 - **UTR5** (light blue): Rare upstream termination
 - **Intergenic** (orange): Between genes (may indicate novel transcripts)
 
+**Example: Genomic distribution of 5' ends (BY4742 wild-type)**
+
+![5' End Distribution Pie Chart](docs/images/5prime_distribution_pie_by4742.png)
+
+This pie chart shows where 5' ends (transcription start sites) map:
+- **5' UTR (TSS)** (light blue): Expected transcription start sites (~66%)
+- **CDS (internal)** (blue): Internal initiation within coding sequences (~27%)
+- **Intergenic/Other** (orange): Between genes (~7%)
+
 ---
 
 ## Overview

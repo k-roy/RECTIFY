@@ -3,8 +3,11 @@
 """
 Genomic Distribution Analysis Module
 
-Classifies 3' end positions by genomic region (UTR3, CDS, UTR5, intergenic, etc.)
+Classifies 3' and 5' end positions by genomic region (UTR3, CDS, UTR5, intergenic, etc.)
 and generates pie charts showing the distribution.
+
+For 3' ends (CPA sites): Expected mostly in UTR3
+For 5' ends (TSS sites): Expected mostly in UTR5
 
 Author: Kevin R. Roy
 Date: 2026-03-24
@@ -258,6 +261,153 @@ def plot_genomic_distribution_pie(
     return output_path
 
 
+def plot_genomic_distribution_pie_grid(
+    distributions: Dict[str, Dict[str, int]],
+    output_path: str,
+    title: str = "Genomic Distribution by Condition",
+    condition_labels: Optional[Dict[str, str]] = None,
+    wt_first: bool = True,
+    ncols: int = None,
+) -> str:
+    """
+    Create a grid of pie charts showing all conditions side-by-side for easy comparison.
+
+    Args:
+        distributions: Dict mapping condition -> {region -> count}
+        output_path: Output file path
+        title: Overall figure title
+        condition_labels: Optional mapping of condition names to display labels
+        wt_first: If True, put WT/control condition first (default: True)
+        ncols: Number of columns in grid (default: auto based on count)
+
+    Returns:
+        Path to saved plot
+    """
+    conditions = list(distributions.keys())
+
+    # Sort conditions: WT first if requested
+    if wt_first:
+        wt_names = ['wt', 'WT', 'wild_type', 'wildtype', 'control', 'by4742', 'BY4742']
+        wt_conditions = [c for c in conditions if any(w in c.lower() for w in ['wt', 'wild', 'control', 'by4742'])]
+        other_conditions = [c for c in conditions if c not in wt_conditions]
+        conditions = sorted(wt_conditions) + sorted(other_conditions)
+
+    n_conditions = len(conditions)
+
+    # Determine grid layout
+    if ncols is None:
+        if n_conditions <= 2:
+            ncols = n_conditions
+        elif n_conditions <= 4:
+            ncols = 2
+        elif n_conditions <= 9:
+            ncols = 3
+        else:
+            ncols = 4
+
+    nrows = (n_conditions + ncols - 1) // ncols
+
+    # Create figure
+    fig_width = 5 * ncols
+    fig_height = 4.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height))
+
+    # Flatten axes for easy iteration
+    if n_conditions == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+
+    # Preferred order for consistency across all pies
+    preferred_order = ['UTR3', 'CDS', 'UTR5', 'Intergenic', 'Antisense', 'ncRNA', 'rDNA', 'Other']
+
+    for idx, condition in enumerate(conditions):
+        ax = axes[idx]
+        distribution = distributions[condition]
+        total = sum(distribution.values())
+
+        # Build labels/sizes in consistent order
+        labels = []
+        sizes = []
+        colors = []
+        other_total = 0
+
+        for cat in preferred_order:
+            if cat in distribution:
+                count = distribution[cat]
+                pct = 100 * count / total if total > 0 else 0
+                if pct >= 1.0:
+                    labels.append(cat)
+                    sizes.append(count)
+                    colors.append(CATEGORY_COLORS.get(cat, '#888888'))
+                else:
+                    other_total += count
+
+        # Add categories not in preferred order
+        for cat, count in distribution.items():
+            if cat not in preferred_order:
+                pct = 100 * count / total if total > 0 else 0
+                if pct >= 1.0:
+                    labels.append(cat)
+                    sizes.append(count)
+                    colors.append(CATEGORY_COLORS.get(cat, '#888888'))
+                else:
+                    other_total += count
+
+        if other_total > 0 and (100 * other_total / total) >= 0.5:
+            labels.append('Other')
+            sizes.append(other_total)
+            colors.append('#DDDDDD')
+
+        def make_autopct(pct):
+            return f'{pct:.0f}%' if pct >= 5 else ''
+
+        wedges, texts, autotexts = ax.pie(
+            sizes,
+            labels=None,  # No labels on pie itself
+            colors=colors,
+            autopct=make_autopct,
+            startangle=90,
+            pctdistance=0.7,
+            textprops={'fontsize': 9, 'fontweight': 'bold'}
+        )
+
+        # Get display label
+        label = condition_labels.get(condition, condition) if condition_labels else condition
+        ax.set_title(f"{label}\n(n={total:,})", fontsize=11, fontweight='bold')
+
+    # Hide empty subplots
+    for idx in range(n_conditions, len(axes)):
+        axes[idx].set_visible(False)
+
+    # Add shared legend
+    # Create legend handles from first plot's data
+    first_dist = distributions[conditions[0]]
+    total = sum(first_dist.values())
+    legend_labels = []
+    legend_colors = []
+
+    for cat in preferred_order:
+        if any(cat in d for d in distributions.values()):
+            legend_labels.append(cat)
+            legend_colors.append(CATEGORY_COLORS.get(cat, '#888888'))
+
+    # Add legend at bottom
+    legend_handles = [plt.Rectangle((0, 0), 1, 1, fc=c) for c in legend_colors]
+    fig.legend(legend_handles, legend_labels, loc='lower center',
+               ncol=len(legend_labels), fontsize=10, frameon=False,
+               bbox_to_anchor=(0.5, 0.02))
+
+    # Add overall title
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
+
+    plt.tight_layout(rect=[0, 0.08, 1, 0.95])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    return output_path
+
+
 def plot_genomic_distribution_comparison(
     distributions: Dict[str, Dict[str, int]],
     output_path: str,
@@ -395,8 +545,20 @@ def run_genomic_distribution_analysis(
         output_files[f'pie_{condition}'] = str(pie_path)
         print(f"    {label}: {total:,} reads classified")
 
-    # Comparison plot if multiple conditions
+    # Combined pie chart grid (all conditions together for easy comparison)
     if len(conditions) > 1:
+        grid_path = output_dir / 'genomic_distribution_pie_grid.png'
+        plot_genomic_distribution_pie_grid(
+            distributions,
+            str(grid_path),
+            title="3' End Distribution by Condition",
+            condition_labels=condition_labels,
+            wt_first=True,
+        )
+        output_files['pie_grid'] = str(grid_path)
+        print(f"    Combined pie chart grid saved")
+
+        # Also generate bar chart comparison
         comparison_path = output_dir / 'genomic_distribution_comparison.png'
         plot_genomic_distribution_comparison(
             distributions,

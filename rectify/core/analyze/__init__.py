@@ -71,6 +71,7 @@ from .genomic_distribution import (
     classify_positions_by_region,
     calculate_genomic_distribution,
     plot_genomic_distribution_pie,
+    plot_genomic_distribution_pie_grid,
     plot_genomic_distribution_comparison,
     run_genomic_distribution_analysis,
 )
@@ -128,6 +129,7 @@ __all__ = [
     'classify_positions_by_region',
     'calculate_genomic_distribution',
     'plot_genomic_distribution_pie',
+    'plot_genomic_distribution_pie_grid',
     'plot_genomic_distribution_comparison',
     'run_genomic_distribution_analysis',
     # A-tract refinement
