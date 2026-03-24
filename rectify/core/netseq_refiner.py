@@ -35,6 +35,9 @@ from ..config import (
     NETSEQ_PEAK_THRESHOLD,
     NETSEQ_SIGNAL_HIGH,
     NETSEQ_SIGNAL_MEDIUM,
+    NETSEQ_PSF_POSITION_0_FRACTION,
+    NETSEQ_PSF_DOWNSTREAM_FRACTION,
+    NETSEQ_DECONV_REGULARIZATION,
 )
 
 # Try to import pyBigWig (optional dependency)
@@ -55,16 +58,20 @@ except ImportError:
 
 
 # Default 0A PSF (Point-Spread-Function)
-# Empirically derived: 54% at true position, 46% spreading downstream
-# This is used when no external PSF model is provided
+# Empirically derived from GSE25107 (2011) and GSE159603 (2022) NET-seq data:
+#   - 54% at true position (NETSEQ_PSF_POSITION_0_FRACTION)
+#   - 46% spreading downstream (NETSEQ_PSF_DOWNSTREAM_FRACTION)
+#   - Downstream decay follows oligo-A tail distribution (~Poisson, mean 5.5 bp)
+#
+# See config.py for empirical constants and their derivation
 DEFAULT_PSF_0A = np.array([
-    0.54,   # offset 0: true position
+    NETSEQ_PSF_POSITION_0_FRACTION,  # offset 0: true position (~54%)
     0.005,  # offset 1
     0.015,  # offset 2
     0.032,  # offset 3
     0.052,  # offset 4
     0.067,  # offset 5
-    0.073,  # offset 6
+    0.073,  # offset 6 (mode of downstream distribution)
     0.067,  # offset 7
     0.052,  # offset 8
     0.032,  # offset 9
@@ -75,7 +82,7 @@ DEFAULT_PSF_0A = np.array([
     0.005,
     0.003,
 ])
-# Normalize to sum to 1
+# Normalize to sum to 1 (preserving relative downstream weights)
 DEFAULT_PSF_0A = DEFAULT_PSF_0A / DEFAULT_PSF_0A.sum()
 
 
@@ -256,7 +263,7 @@ def build_convolution_matrix(
 def deconvolve_signal(
     observed: np.ndarray,
     A: np.ndarray,
-    regularization: float = 0.01
+    regularization: float = None
 ) -> np.ndarray:
     """
     Deconvolve observed signal to recover true peak positions.
@@ -280,6 +287,10 @@ def deconvolve_signal(
             "scipy is required for NNLS deconvolution. "
             "Install with: pip install scipy"
         )
+
+    # Use default regularization from config if not specified
+    if regularization is None:
+        regularization = NETSEQ_DECONV_REGULARIZATION
 
     n = len(observed)
 
@@ -641,9 +652,9 @@ def _refine_with_deconvolution(
     if tract_signal.sum() < 1.0:
         return []
 
-    # Deconvolve
+    # Deconvolve using config regularization
     try:
-        deconvolved = deconvolve_signal(tract_signal, A, regularization=0.01)
+        deconvolved = deconvolve_signal(tract_signal, A, regularization=NETSEQ_DECONV_REGULARIZATION)
     except Exception:
         # Fall back to observed signal
         deconvolved = tract_signal

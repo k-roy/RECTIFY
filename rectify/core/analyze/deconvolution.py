@@ -28,6 +28,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# Import config constants
+from ...config import (
+    NETSEQ_PSF_POSITION_0_FRACTION,
+    NETSEQ_PSF_DOWNSTREAM_FRACTION,
+    NETSEQ_OLIGO_A_MEAN_0A,
+    NETSEQ_DECONV_REGULARIZATION,
+)
+
 # Try to import scipy for NNLS
 try:
     from scipy.optimize import nnls
@@ -35,17 +43,28 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
-# Default PSF based on 0A site analysis
-# 54% at position 0, 46% spreading downstream with exponential decay
+# Default PSF based on 0A site analysis (GSE25107 + GSE159603)
+# Empirical finding: 54% at position 0, 46% spreading downstream
+# Downstream decay follows ~Poisson(lambda=5.5) for oligo-A tail lengths
+#
+# Analysis source: plots/oligoA_validation/nonA_cpa_oligoA_summary.tsv
+#   - Mean oligo-A tail: 5.52 bp
+#   - Median: 5.0 bp
+#   - Distribution: Peak at 2bp, smooth decay to 15+ bp
+#
+# The PSF represents P(observed_position = j | true_CPA = i) for offset j-i
 DEFAULT_PSF = np.array([
-    0.54,   # Position 0 (true CPA)
+    NETSEQ_PSF_POSITION_0_FRACTION,  # Position 0 (true CPA) - ~54%
     0.005, 0.015, 0.032, 0.052, 0.067, 0.073, 0.067,  # 1-7 bp downstream
     0.052, 0.038, 0.028, 0.020, 0.015, 0.011, 0.008,  # 8-14 bp downstream
     0.006, 0.005, 0.004, 0.003, 0.002, 0.002,         # 15-20 bp downstream
 ])
 
-# Normalize to sum to 1
+# Normalize to sum to 1 (preserving relative downstream weights)
 DEFAULT_PSF = DEFAULT_PSF / DEFAULT_PSF.sum()
+
+# Default regularization from config
+DEFAULT_REGULARIZATION = NETSEQ_DECONV_REGULARIZATION
 
 # Cache for convolution matrices
 _MATRIX_CACHE: Dict[int, np.ndarray] = {}
@@ -161,7 +180,7 @@ def deconvolve_signal(
     convolution_matrix: np.ndarray = None,
     tract_length: int = None,
     psf: np.ndarray = None,
-    regularization: float = 0.01,
+    regularization: float = None,
 ) -> np.ndarray:
     """
     Deconvolve observed signal to recover true peak positions.
@@ -184,6 +203,10 @@ def deconvolve_signal(
             "scipy is required for deconvolution. "
             "Install with: pip install scipy"
         )
+
+    # Use default regularization from config if not specified
+    if regularization is None:
+        regularization = DEFAULT_REGULARIZATION
 
     # Build matrix if not provided
     if convolution_matrix is None:

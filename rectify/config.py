@@ -174,6 +174,47 @@ NETSEQ_SIGNAL_MEDIUM: float = 0.5
 NETSEQ_PEAK_CLOSE_DISTANCE: int = 2  # bp
 
 # =============================================================================
+# NET-seq Oligo-A Parameters (Empirically Derived from 0A Sites)
+# =============================================================================
+#
+# These constants were derived from analysis of oligo-adenylated soft-clips at
+# 0A sites (CPA positions with no downstream genomic adenosines) in:
+#   - GSE25107 (Churchman 2011): 17.8% reads with detectable oligo-A
+#   - GSE159603 (Couvillion 2022, hexamer-trimmed): 6.2% reads with oligo-A
+#
+# Both datasets show identical oligo-A length distributions at 0A sites,
+# validating the robustness of this empirical model.
+
+# Mean oligo-A tail length at 0A sites (no downstream A-tract ambiguity)
+# Derived from 5000+ 0A CPA sites, both 2011 and 2022 NET-seq datasets
+NETSEQ_OLIGO_A_MEAN_0A: float = 5.52  # bp
+
+# Median oligo-A tail length at 0A sites
+NETSEQ_OLIGO_A_MEDIAN_0A: float = 5.0  # bp
+
+# Fraction of reads with detectable oligo-A at 0A sites (capture rate)
+# Lower rate in 2022 due to hexamer trimming removing some short tails
+NETSEQ_OLIGO_A_CAPTURE_RATE_2011: float = 0.178  # 17.8%
+NETSEQ_OLIGO_A_CAPTURE_RATE_2022: float = 0.062  # 6.2%
+
+# 0A Point-Spread-Function parameters
+# At 0A sites: ~54% of signal at true CPA, ~46% spreads downstream
+NETSEQ_PSF_POSITION_0_FRACTION: float = 0.54  # Signal at true CPA position
+NETSEQ_PSF_DOWNSTREAM_FRACTION: float = 0.46  # Signal spreading downstream
+
+# Peak shape statistics by A-tract length (from peak_shape_statistics.tsv)
+# Format: (right_signal_fraction, asymmetry)
+# Asymmetry > 0 indicates rightward (downstream) spreading
+NETSEQ_PEAK_SHAPE_0A = (0.61, 0.26)      # Moderate rightward spread
+NETSEQ_PEAK_SHAPE_1_3A = (0.408, -0.16)  # Slight leftward bias
+NETSEQ_PEAK_SHAPE_4_6A = (0.472, -0.02)  # Balanced
+NETSEQ_PEAK_SHAPE_7PLUS_A = (0.92, 0.85) # Severe rightward spread (deconvolution target)
+
+# NNLS deconvolution regularization strength
+# Higher values smooth the solution; lower values preserve peaks
+NETSEQ_DECONV_REGULARIZATION: float = 0.01
+
+# =============================================================================
 # AG Mispriming Parameters (from original RECTIFY)
 # =============================================================================
 
