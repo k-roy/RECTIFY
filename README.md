@@ -198,6 +198,34 @@ For organisms with available NET-seq data, RECTIFY can resolve A-tract ambiguity
 
 ![Deconvolution](docs/figures/oligo_a_deconvolution.png)
 
+### Adaptive Clustering and Differential Expression
+
+After 3' end correction, RECTIFY groups nearby CPA sites into clusters using an adaptive valley-based algorithm. This enables robust differential expression analysis at both the **cluster level** (individual CPA sites) and **gene level** (all CPA sites per gene).
+
+![Adaptive Clustering](docs/figures/adaptive_clustering.png)
+
+**How clustering works:**
+1. **Find peaks**: Identify local maxima in the 3' end signal
+2. **Find valleys**: Identify local minima between peaks
+3. **Set boundaries**: Place cluster boundaries at the midpoint between each peak and adjacent valley, capped at ±10bp from the peak
+
+**Why cluster-level analysis matters:**
+- Genes often have **multiple CPA sites** (alternative polyadenylation)
+- Conditions may shift usage between proximal and distal sites without changing total gene expression
+- Cluster-level DESeq2 detects these **isoform-specific changes** that gene-level analysis would miss
+
+**Dual-resolution DESeq2 analysis:**
+
+| Level | What it detects | Example |
+|-------|-----------------|---------|
+| **Gene** | Total expression changes | HSP82 is 2-fold down in heat shock |
+| **Cluster** | CPA site usage changes | FAS1 shifts from distal to proximal site under stress |
+
+The `rectify analyze` command automatically runs DESeq2 at both levels, producing:
+- `deseq2_gene_results.tsv` - Standard gene-level differential expression
+- `deseq2_cluster_results.tsv` - Cluster-level differential expression
+- `shift_results.tsv` - Genes with significant proximal/distal CPA shifts
+
 ---
 
 ## Features
