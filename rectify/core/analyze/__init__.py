@@ -67,6 +67,23 @@ from .deconvolution import (
     DEFAULT_PSF,
 )
 
+from .genomic_distribution import (
+    classify_positions_by_region,
+    calculate_genomic_distribution,
+    plot_genomic_distribution_pie,
+    plot_genomic_distribution_comparison,
+    run_genomic_distribution_analysis,
+)
+
+from .atract_refiner import (
+    ATractRefiner,
+    refine_atract_position,
+)
+
+from .pan_mutant_refiner import (
+    PanMutantRefiner,
+)
+
 __all__ = [
     # Clustering
     'cluster_cpa_sites',
@@ -107,4 +124,14 @@ __all__ = [
     'identify_peaks',
     'verify_boundary_recovery',
     'DEFAULT_PSF',
+    # Genomic distribution
+    'classify_positions_by_region',
+    'calculate_genomic_distribution',
+    'plot_genomic_distribution_pie',
+    'plot_genomic_distribution_comparison',
+    'run_genomic_distribution_analysis',
+    # A-tract refinement
+    'ATractRefiner',
+    'refine_atract_position',
+    'PanMutantRefiner',
 ]
