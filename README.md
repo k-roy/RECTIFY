@@ -168,6 +168,17 @@ This pie chart shows where 5' ends (transcription start sites) map:
 - **CDS (internal)** (blue): Internal initiation within coding sequences (~27%)
 - **Intergenic/Other** (orange): Between genes (~7%)
 
+**Example: Transcript body distribution by ORF classification (BY4742 wild-type)**
+
+![Transcript Body Distribution](docs/images/transcript_body_orf_distribution_by4742.png)
+
+This pie chart shows transcript abundance by ORF classification:
+- **Verified ORFs** (green): Experimentally verified protein-coding genes (~94%)
+- **Uncharacterized ORFs** (light blue): Protein-coding genes without functional annotation (~3.5%)
+- **Dubious ORFs** (red-orange): Unlikely to encode proteins (~2%)
+
+*Note: ncRNAs (tRNA, snoRNA, snRNA, rRNA) are not captured in poly(A)+ direct RNA-seq.*
+
 ---
 
 ## Overview
