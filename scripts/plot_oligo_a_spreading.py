@@ -395,9 +395,9 @@ def create_adaptive_clustering_visualization():
                    f'Total: {total_signal} reads\n' \
                    f'Range: [{start}, {end})'
 
-        # Position info box above cluster
+        # Position info box above cluster (raised to avoid valley markers)
         center_x = (start + end) / 2
-        ax.text(center_x, max(counts) * 1.02, info_text, ha='center', va='bottom', fontsize=9,
+        ax.text(center_x, max(counts) * 1.12, info_text, ha='center', va='bottom', fontsize=9,
                 bbox=dict(facecolor=cluster["color"], alpha=0.85, edgecolor='gray', pad=4),
                 family='monospace')
 
@@ -415,7 +415,7 @@ def create_adaptive_clustering_visualization():
                markeredgecolor='darkgreen', markersize=10, label='Valley (local min)'),
         Line2D([0], [0], color='gray', linestyle='--', linewidth=2, label='Cluster boundary'),
     ]
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=10)
+    ax.legend(handles=legend_elements, loc='center right', fontsize=10)
 
     # Add algorithm description box
     textstr = '\n'.join([
