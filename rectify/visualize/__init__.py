@@ -4,7 +4,6 @@ RECTIFY Visualization Module
 Provides plotting utilities for RNA 3' end analysis:
 - Metagene signal aggregation and plotting
 - Gene track rendering with box-arrow shapes
-- VEP (Variant Effect Prediction) panels
 - Coverage track visualization
 - Multi-track browser-style figures
 
@@ -25,7 +24,6 @@ Example usage:
     fig = (MultiTrackFigure()
         .add_gene_track(gff_features, highlight_gene="ENA1")
         .add_coverage_track("NET-seq", coverage_data)
-        .add_vep_track("evo2", df_evo2)
     )
     fig.save("browser.png", region_start=530000, region_end=535000)
 
@@ -94,15 +92,15 @@ from .gene_track import (
     draw_gene_arrow,
 )
 
-# VEP panels
-from .vep_panels import (
-    extract_position_from_variants,
-    draw_evo2_panel,
-    draw_esm1v_panel,
-    draw_shorkie_pergene_panel,
-    draw_yorzoi_pergene_panel,
-    draw_vep_panel_styled,
-)
+# VEP panels - disabled for now, pending further integration
+# from .vep_panels import (
+#     extract_position_from_variants,
+#     draw_evo2_panel,
+#     draw_esm1v_panel,
+#     draw_shorkie_pergene_panel,
+#     draw_yorzoi_pergene_panel,
+#     draw_vep_panel_styled,
+# )
 
 # Coverage
 from .coverage import (
@@ -169,13 +167,13 @@ __all__ = [
     'get_genes_in_region',
     'draw_gene_arrow',
 
-    # VEP panels
-    'extract_position_from_variants',
-    'draw_evo2_panel',
-    'draw_esm1v_panel',
-    'draw_shorkie_pergene_panel',
-    'draw_yorzoi_pergene_panel',
-    'draw_vep_panel_styled',
+    # VEP panels - disabled for now
+    # 'extract_position_from_variants',
+    # 'draw_evo2_panel',
+    # 'draw_esm1v_panel',
+    # 'draw_shorkie_pergene_panel',
+    # 'draw_yorzoi_pergene_panel',
+    # 'draw_vep_panel_styled',
 
     # Coverage
     'extract_coverage_from_bam',

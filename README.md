@@ -540,12 +540,6 @@ ax.set_ylabel('Normalized signal')
 fig.savefig('metagene.png', dpi=150, bbox_inches='tight')
 ```
 
-**Example: TRT (Transcription Read-Through) metagene profile**
-
-![Metagene Example](docs/examples/metagene_example.png)
-
-This figure shows 3' end signal distribution around TRT sites across three conditions (WT, rna15Δ, ysh1Δ), revealing condition-specific differences in transcription termination.
-
 ### Multi-Track Genome Browser
 
 Create IGV-style genome browser figures with a fluent API:
@@ -558,19 +552,11 @@ fig = (MultiTrackFigure(figsize=(12, 8))
     .add_gene_track(gff_features, highlight_gene="ENA1")
     .add_coverage_track("NET-seq", netseq_coverage, color="#0072B2")
     .add_coverage_track("3' ends", ends_coverage, color="#D55E00")
-    .add_vep_track("evo2", df_evo2)
-    .add_vep_track("esm1v", df_esm1v)
 )
 
 # Render and save
 fig.save("browser.png", region_start=530000, region_end=535000, gene_name="ENA1")
 ```
-
-**Example: Multi-track genome browser**
-
-![Genome Browser Example](docs/examples/genome_browser_example.png)
-
-This browser view shows gene annotations, strand-specific coverage tracks, and variant effect prediction (VEP) panels for the ENA1-ENA2 locus on chromosome IV.
 
 ### Available Visualization Components
 
@@ -582,22 +568,19 @@ This browser view shows gene annotations, strand-specific coverage tracks, and v
 | **draw_gene_track** | Gene annotation rendering with box-arrow shapes |
 | **draw_coverage_track** | Coverage as filled area plots |
 | **draw_strand_coverage** | Strand-specific coverage (mirrored or overlaid) |
-| **draw_evo2_panel** | Evo2 variant effect predictions |
-| **draw_esm1v_panel** | ESM1v variant effect predictions |
 
 ### Color Palettes
 
 RECTIFY includes colorblind-safe palettes:
 
 ```python
-from rectify.visualize import WONG_COLORS, GENE_TYPE_COLORS, CODON_VARIANT_COLORS
+from rectify.visualize import WONG_COLORS, GENE_TYPE_COLORS
 
 # Wong colorblind-safe palette
 WONG_COLORS  # {'blue': '#0072B2', 'orange': '#E69F00', 'green': '#009E73', ...}
 
 # Domain-specific palettes
-GENE_TYPE_COLORS     # For target/upstream/downstream genes
-CODON_VARIANT_COLORS # For missense/synonymous/nonsense variants
+GENE_TYPE_COLORS  # For target/upstream/downstream genes
 ```
 
 ### Figure Utilities
