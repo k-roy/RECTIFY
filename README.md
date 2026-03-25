@@ -1,11 +1,11 @@
-# RECTIFY: Unified RNA 3' End Correction Framework
+# RECTIFY: Precision Transcript Structure Mapping for Direct RNA Nanopore Sequencing
 
 [![PyPI version](https://badge.fury.io/py/rectify-rna.svg)](https://pypi.org/project/rectify-rna/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen.svg)](tests/)
 
-**Correct poly(A) tail artifacts and perform comprehensive differential expression analysis with a single command.**
+**Accurate 5' ends, 3' ends, and splice junctions through multi-aligner consensus and artifact correction.**
 
 ---
 

@@ -295,6 +295,177 @@ def get_deletions_near_3prime(read: pysam.AlignedSegment,
 
 
 # =============================================================================
+# Junction Extraction
+# =============================================================================
+
+def extract_junctions(read: pysam.AlignedSegment) -> List[Dict]:
+    """
+    Extract splice junctions (N operations) from CIGAR string.
+
+    Splice junctions represent introns in the alignment - regions where
+    the read sequence skips over genomic sequence.
+
+    Args:
+        read: pysam AlignedSegment
+
+    Returns:
+        List of junction dicts with keys:
+            - ref_start: genomic start of intron (0-based)
+            - ref_end: genomic end of intron (exclusive)
+            - length: intron length (bp)
+            - read_pos: position in read where junction occurs
+            - distance_from_5prime: distance from 5' end of alignment
+            - distance_from_3prime: distance from 3' end of alignment
+            - cigar_index: index in CIGAR tuple list
+    """
+    if not read.cigartuples:
+        return []
+
+    junctions = []
+    ref_pos = read.reference_start
+    query_pos = 0
+
+    # Calculate total reference and query lengths for distance calculations
+    total_ref_length = sum(length for op, length in read.cigartuples if op in CONSUMES_REF)
+
+    for i, (op, length) in enumerate(read.cigartuples):
+        if op == 3:  # N = skipped region (intron/junction)
+            # Calculate distance from 5' end
+            distance_from_5prime = sum(
+                l for o, l in read.cigartuples[:i]
+                if o in CONSUMES_REF
+            )
+
+            # Calculate distance from 3' end
+            distance_from_3prime = sum(
+                l for o, l in read.cigartuples[i+1:]
+                if o in CONSUMES_REF
+            )
+
+            junctions.append({
+                'ref_start': ref_pos,
+                'ref_end': ref_pos + length,
+                'length': length,
+                'read_pos': query_pos,
+                'distance_from_5prime': distance_from_5prime,
+                'distance_from_3prime': distance_from_3prime,
+                'cigar_index': i,
+            })
+
+        # Update positions
+        if op in CONSUMES_REF:
+            ref_pos += length
+        if op in CONSUMES_QUERY:
+            query_pos += length
+
+    return junctions
+
+
+def extract_junctions_simple(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
+    """
+    Extract splice junctions as simple (start, end) tuples.
+
+    This is a lightweight version of extract_junctions for cases where
+    only the coordinates are needed.
+
+    Args:
+        read: pysam AlignedSegment
+
+    Returns:
+        List of (intron_start, intron_end) tuples in 0-based coords
+    """
+    if not read.cigartuples:
+        return []
+
+    junctions = []
+    ref_pos = read.reference_start
+
+    for op, length in read.cigartuples:
+        if op == 3:  # N = skipped region
+            junctions.append((ref_pos, ref_pos + length))
+            ref_pos += length
+        elif op in CONSUMES_REF:  # M, D, =, X
+            ref_pos += length
+
+    return junctions
+
+
+def get_junctions_near_3prime(read: pysam.AlignedSegment,
+                               window: int = 50) -> List[Dict]:
+    """
+    Get junctions near 3' end of read alignment.
+
+    This is useful for identifying junctions that may be poly(A) artifacts.
+
+    Args:
+        read: pysam AlignedSegment
+        window: Maximum distance from 3' end (bp)
+
+    Returns:
+        List of junction dicts within window of 3' end
+    """
+    all_junctions = extract_junctions(read)
+
+    near_3prime = [
+        j for j in all_junctions
+        if j['distance_from_3prime'] <= window
+    ]
+
+    return near_3prime
+
+
+def get_junction_count(read: pysam.AlignedSegment) -> int:
+    """
+    Count the number of splice junctions in a read.
+
+    Args:
+        read: pysam AlignedSegment
+
+    Returns:
+        Number of N operations in CIGAR
+    """
+    if not read.cigartuples:
+        return 0
+
+    return sum(1 for op, _ in read.cigartuples if op == 3)
+
+
+def format_junctions_string(junctions: List[Tuple[int, int]]) -> str:
+    """
+    Format junctions list as compact string.
+
+    Args:
+        junctions: List of (start, end) tuples
+
+    Returns:
+        String like "1000-2000;3000-4000"
+    """
+    if not junctions:
+        return ""
+    return ";".join(f"{s}-{e}" for s, e in junctions)
+
+
+def parse_junctions_string(s: str) -> List[Tuple[int, int]]:
+    """
+    Parse junctions from string format.
+
+    Args:
+        s: String like "1000-2000;3000-4000"
+
+    Returns:
+        List of (start, end) tuples
+    """
+    if not s:
+        return []
+    junctions = []
+    for part in s.split(";"):
+        if "-" in part:
+            start, end = part.split("-")
+            junctions.append((int(start), int(end)))
+    return junctions
+
+
+# =============================================================================
 # Coordinate Conversion
 # =============================================================================
 
