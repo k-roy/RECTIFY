@@ -32,6 +32,11 @@ from . import indel_corrector
 from . import netseq_refiner
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ..utils.genome import load_genome, standardize_chrom_name
+from ..utils.alignment import (
+    extract_junctions_simple,
+    extract_soft_clips,
+    format_junctions_string,
+)
 from ..slurm import get_available_cpus
 
 logger = logging.getLogger(__name__)
@@ -147,6 +152,28 @@ def correct_read_3prime(
     # Get 5' end position (transcription start site)
     five_prime_position = get_read_5prime_position(read, strand)
 
+    # Extract splice junctions from CIGAR
+    junctions = extract_junctions_simple(read)
+    junctions_str = format_junctions_string(junctions)
+
+    # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
+    soft_clips_list = extract_soft_clips(read)
+    left_clip_length = 0
+    right_clip_length = 0
+    for clip in soft_clips_list:
+        if clip['side'] == 'left':
+            left_clip_length = clip['length']
+        elif clip['side'] == 'right':
+            right_clip_length = clip['length']
+
+    # Determine which soft clip is 5' vs 3' based on strand
+    if strand == '+':
+        five_prime_soft_clip_len = left_clip_length
+        three_prime_soft_clip_len = right_clip_length
+    else:
+        five_prime_soft_clip_len = right_clip_length
+        three_prime_soft_clip_len = left_clip_length
+
     # Initialize result (use standardized chromosome name for output)
     result = {
         'read_id': read.query_name,
@@ -163,6 +190,13 @@ def correct_read_3prime(
         'correction_applied': [],
         'qc_flags': [],
         'confidence': 'high',
+        # New fields for unified record
+        'junctions': junctions,  # List of (start, end) tuples
+        'junctions_str': junctions_str,  # Semicolon-separated string
+        'n_junctions': len(junctions),
+        'five_prime_soft_clip_length': five_prime_soft_clip_len,
+        'three_prime_soft_clip_length': three_prime_soft_clip_len,
+        'mapq': read.mapping_quality,
     }
 
     current_position = original_position
@@ -385,6 +419,10 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'alignment_start', 'alignment_end',  # Full read body interval (v2.6.0)
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
+            'aligned_a_length', 'soft_clip_a_length',  # Breakdown of poly(A)
+            'junctions', 'n_junctions',  # Splice junctions (v2.7.0)
+            'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips (v2.7.0)
+            'mapq',  # Mapping quality (v2.7.0)
             'correction_applied', 'confidence', 'qc_flags'
         ]
         f.write('\t'.join(header) + '\n')
@@ -404,6 +442,13 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 str(result['ambiguity_max']),
                 str(result['ambiguity_range']),
                 str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
+                str(result.get('aligned_a_length', 0)),  # Aligned A's
+                str(result.get('soft_clip_a_length', 0)),  # Soft-clipped A's
+                result.get('junctions_str', ''),  # Junctions as semicolon-separated string
+                str(result.get('n_junctions', 0)),  # Number of junctions
+                str(result.get('five_prime_soft_clip_length', 0)),  # 5' soft clip
+                str(result.get('three_prime_soft_clip_length', 0)),  # 3' soft clip
+                str(result.get('mapq', 0)),  # Mapping quality
                 ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
                 result['confidence'],
                 ','.join(result['qc_flags']),
@@ -902,8 +947,14 @@ def process_bam_streaming(
         header = [
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
+            'five_prime_position',  # TSS end of the read
+            'alignment_start', 'alignment_end',  # Full read body interval
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
+            'aligned_a_length', 'soft_clip_a_length',  # Breakdown of poly(A)
+            'junctions', 'n_junctions',  # Splice junctions
+            'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips
+            'mapq',  # Mapping quality
             'correction_applied', 'confidence', 'qc_flags'
         ]
         out_fh.write('\t'.join(header) + '\n')
@@ -973,10 +1024,20 @@ def _write_results_chunk(fh, results: List[Dict]):
             result['strand'],
             str(result['original_3prime']),
             str(result['corrected_3prime']),
+            str(result.get('five_prime_position', '')),  # 5' end (TSS)
+            str(result.get('alignment_start', '')),  # Read body start
+            str(result.get('alignment_end', '')),  # Read body end (exclusive)
             str(result['ambiguity_min']),
             str(result['ambiguity_max']),
             str(result['ambiguity_range']),
             str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
+            str(result.get('aligned_a_length', 0)),  # Aligned A's
+            str(result.get('soft_clip_a_length', 0)),  # Soft-clipped A's
+            result.get('junctions_str', ''),  # Junctions as semicolon-separated string
+            str(result.get('n_junctions', 0)),  # Number of junctions
+            str(result.get('five_prime_soft_clip_length', 0)),  # 5' soft clip
+            str(result.get('three_prime_soft_clip_length', 0)),  # 3' soft clip
+            str(result.get('mapq', 0)),  # Mapping quality
             ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
             result['confidence'],
             ','.join(result['qc_flags']),
