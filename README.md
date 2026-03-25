@@ -27,6 +27,12 @@ rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
+**New in v2.6.0:** DRS quantification modules inspired by NanoCount, IsoQuant, ESPRESSO, Bambu, and Isosceles!
+- **Junction Validation** (ESPRESSO-style) - Require ≥2 reads for novel junction calls
+- **Splice Site Tolerance** (IsoQuant-style) - ±10bp flexible junction matching
+- **Full-Length Classification** (Bambu-style) - Distinguish truncated vs complete reads
+- **APA Isoform Detection** (Isosceles-style) - Group reads by gene/junction/3' end
+
 **New in v2.5.0:** A-tract refinement with bundled NET-seq reference!
 - **ATractRefiner** - Python API for refining nanopore 3' ends in A-tracts
 - **64K A-tract sites** with pre-computed NET-seq signal distributions (1.6 MB)
@@ -277,6 +283,10 @@ The `rectify analyze` command automatically runs DESeq2 at both levels, producin
 | **FASTQ Support** | Direct FASTQ input with automatic minimap2 alignment |
 | **Bundled Genomes** | Yeast S288C genome and annotations included |
 | **Motif Database** | CPA-related TF binding sites for motif matching |
+| **Junction Validation** | ESPRESSO-style multi-read validation for novel junctions |
+| **Splice Site Tolerance** | IsoQuant-style ±10bp junction matching for noisy reads |
+| **Full-Length Classification** | Bambu-style truncated vs complete read detection |
+| **APA Isoform Detection** | Isosceles-style alternative polyadenylation quantification |
 
 ### Bundled Data (New in v2.2.0)
 
@@ -326,6 +336,125 @@ results = refiner.refine_batch([
 - Mean oligo-A tail at 0A sites: 5.52 bp
 - PSF: 54% at true CPA position, 46% spreading downstream
 - Regularization: 0.01 (L2)
+
+### DRS Quantification Modules (New in v2.6.0)
+
+RECTIFY now includes advanced modules for DRS isoform analysis, inspired by best practices from NanoCount, IsoQuant, ESPRESSO, Bambu, and Isosceles:
+
+#### Junction Validation (ESPRESSO-style)
+
+Reduce false positive novel junction calls by requiring multi-read support:
+
+```python
+from rectify.core.analyze import (
+    validate_novel_junctions,
+    filter_records_to_validated_junctions,
+    summarize_junction_validation,
+)
+
+# Validate junctions: require ≥2 reads for novel junctions
+validated = validate_novel_junctions(
+    records,
+    known_junctions=known_junction_set,
+    min_supporting_reads=2,
+    require_canonical_motif=True,  # GT-AG or GC-AG
+    genome=pysam.FastaFile("genome.fa"),
+)
+
+# Filter records to only include validated junctions
+filtered_records = filter_records_to_validated_junctions(records, validated)
+
+# Get summary statistics
+summary = summarize_junction_validation(all_evidence, validated)
+# {'total_junctions': 1523, 'validated_junctions': 892, 'novel_filtered': 631, ...}
+```
+
+#### Splice Site Tolerance (IsoQuant-style)
+
+Allow flexible junction matching to handle long-read alignment noise:
+
+```python
+from rectify.core.analyze import (
+    match_junction_with_tolerance,
+    correct_all_junction_coordinates,
+    DEFAULT_SPLICE_SITE_TOLERANCE,  # 10bp
+)
+
+# Match a read junction to known junctions within ±10bp
+matched = match_junction_with_tolerance(
+    read_junction=(1198, 1402),  # 2bp off on each end
+    known_junctions=[(1200, 1400), (2000, 2200)],
+    tolerance=10,
+)
+# Returns: (1200, 1400)
+
+# Correct all junctions in records to snap to known coordinates
+corrected_records, stats = correct_all_junction_coordinates(
+    records,
+    known_junctions=known_junction_set,
+    tolerance=10,
+)
+```
+
+#### Full-Length Read Classification (Bambu-style)
+
+Distinguish full-length from 5'-truncated reads for confidence weighting:
+
+```python
+from rectify.core.classify import (
+    classify_all_reads,
+    weight_5prime_ends,
+    summarize_full_length_classification,
+)
+
+# Classify reads as full-length or truncated
+classifications = classify_all_reads(
+    records,
+    max_5prime_softclip=50,      # Max 5' soft-clip for full-length
+    min_alignment_fraction=0.8,   # Min fraction of read aligned
+)
+
+# Weight 5' end positions by classification confidence
+position_weights = weight_5prime_ends(records, classifications)
+# {('chrI', '+', 1000): 1.0, ('chrI', '+', 1500): 0.6, ...}
+
+# Get summary
+summary = summarize_full_length_classification(classifications)
+# {'full_length_reads': 8542, 'truncated_reads': 1458, 'full_length_fraction': 0.85, ...}
+```
+
+#### APA Isoform Detection (Isosceles-style)
+
+Detect alternative polyadenylation isoforms by grouping reads by gene, junction pattern, and 3' cluster:
+
+```python
+from rectify.core.analyze import (
+    detect_apa_isoforms,
+    build_gene_apa_profiles,
+    quantify_apa_usage,
+    identify_proximal_distal_tes,
+)
+
+# Detect APA isoforms
+isoforms = detect_apa_isoforms(
+    records,
+    gene_attributions=gene_attr_dict,  # {read_id: (gene_id, gene_name)}
+    cluster_assignments=cluster_dict,   # {read_id: (cluster_id, modal_pos)}
+    min_reads_per_isoform=3,
+)
+
+# Build per-gene APA profiles
+profiles = build_gene_apa_profiles(isoforms)
+
+# Quantify APA usage as fraction per TES per gene
+df = quantify_apa_usage(isoforms)
+#   gene_id  gene_name  tes_position  n_reads  fraction  is_canonical
+#   YAL001C  TFC3       151097        156      0.78      True
+#   YAL001C  TFC3       151250        44       0.22      False
+
+# Identify proximal vs distal TES usage
+tes_df = identify_proximal_distal_tes(profiles, min_tes_difference=100)
+```
 
 ### Supported Technologies
 
@@ -388,6 +517,146 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 | **Shift Analysis** | Condition-specific CPA usage | `shift_results.tsv` |
 | **GO Enrichment** | Functional enrichment | `go_enrichment.tsv` |
 | **Motif Discovery** | Sequence motifs near CPA sites | `motif_results/` |
+| **Junction Validation** | Filter single-read junction artifacts | validated junctions |
+| **Junction Correction** | Snap junctions to known coordinates | corrected records |
+| **Full-Length Classification** | Identify truncated reads | classification scores |
+| **APA Detection** | Identify alternative 3' end isoforms | `apa_isoforms.tsv` |
+
+---
+
+## Visualization (New in v2.6.0)
+
+RECTIFY includes a powerful visualization module for publication-quality figures. Install with:
+
+```bash
+pip install rectify-rna[visualize]
+```
+
+### Metagene Analysis
+
+Aggregate signal around genomic features with efficient dict-based position indexing:
+
+```python
+from rectify.visualize import (
+    MetagenePipeline, MetageneConfig, PositionIndex,
+    set_publication_style, WONG_COLORS
+)
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load your data
+ends_df = pd.read_csv("3prime_ends.tsv", sep='\t')  # chrom, strand, position
+loci_df = pd.read_csv("features.tsv", sep='\t')     # chrom, strand, start, end
+
+# Build position index (O(1) lookups)
+index = PositionIndex(ends_df, position_col='position')
+
+# Configure and compute metagene profile
+config = MetageneConfig(
+    window_upstream=100,
+    window_downstream=100,
+    normalize_per_locus=True,
+    cap_percentile=90.0,
+)
+pipeline = MetagenePipeline(config)
+result = pipeline.compute_profile(loci_df, index)
+
+# Plot with publication styling
+set_publication_style()
+fig, ax = plt.subplots(figsize=(8, 5))
+pipeline.plot_profile(ax, result, color=WONG_COLORS['blue'], label='WT')
+ax.set_xlabel('Position relative to feature')
+ax.set_ylabel('Normalized signal')
+fig.savefig('metagene.png', dpi=150, bbox_inches='tight')
+```
+
+**Example: TRT (Transcription Read-Through) metagene profile**
+
+![Metagene Example](docs/examples/metagene_example.png)
+
+This figure shows 3' end signal distribution around TRT sites across three conditions (WT, rna15Δ, ysh1Δ), revealing condition-specific differences in transcription termination.
+
+### Multi-Track Genome Browser
+
+Create IGV-style genome browser figures with a fluent API:
+
+```python
+from rectify.visualize import MultiTrackFigure
+
+# Build multi-track figure
+fig = (MultiTrackFigure(figsize=(12, 8))
+    .add_gene_track(gff_features, highlight_gene="ENA1")
+    .add_coverage_track("NET-seq", netseq_coverage, color="#0072B2")
+    .add_coverage_track("3' ends", ends_coverage, color="#D55E00")
+    .add_vep_track("evo2", df_evo2)
+    .add_vep_track("esm1v", df_esm1v)
+)
+
+# Render and save
+fig.save("browser.png", region_start=530000, region_end=535000, gene_name="ENA1")
+```
+
+**Example: Multi-track genome browser**
+
+![Genome Browser Example](docs/examples/genome_browser_example.png)
+
+This browser view shows gene annotations, strand-specific coverage tracks, and variant effect prediction (VEP) panels for the ENA1-ENA2 locus on chromosome IV.
+
+### Available Visualization Components
+
+| Component | Description |
+|-----------|-------------|
+| **MetagenePipeline** | Signal aggregation with per-locus normalization |
+| **PositionIndex** | O(1) position lookups using Counter-based indexing |
+| **MultiTrackFigure** | Fluent API for multi-panel browser figures |
+| **draw_gene_track** | Gene annotation rendering with box-arrow shapes |
+| **draw_coverage_track** | Coverage as filled area plots |
+| **draw_strand_coverage** | Strand-specific coverage (mirrored or overlaid) |
+| **draw_evo2_panel** | Evo2 variant effect predictions |
+| **draw_esm1v_panel** | ESM1v variant effect predictions |
+
+### Color Palettes
+
+RECTIFY includes colorblind-safe palettes:
+
+```python
+from rectify.visualize import WONG_COLORS, GENE_TYPE_COLORS, CODON_VARIANT_COLORS
+
+# Wong colorblind-safe palette
+WONG_COLORS  # {'blue': '#0072B2', 'orange': '#E69F00', 'green': '#009E73', ...}
+
+# Domain-specific palettes
+GENE_TYPE_COLORS     # For target/upstream/downstream genes
+CODON_VARIANT_COLORS # For missense/synonymous/nonsense variants
+```
+
+### Figure Utilities
+
+```python
+from rectify.visualize import (
+    set_publication_style,
+    save_multi_format,
+    format_genomic_axis,
+    despine,
+    FigureConfig,
+)
+
+# Apply publication-ready styling
+set_publication_style()
+
+# Or use presentation style
+config = FigureConfig.presentation()
+config.apply()
+
+# Save in multiple formats
+save_multi_format(fig, "figure", formats=['png', 'svg', 'pdf'], dpi=300)
+
+# Format genomic coordinates on x-axis
+format_genomic_axis(ax, region_start=530000, region_end=535000)
+
+# Remove top/right spines
+despine(ax)
+```
 
 ---
 

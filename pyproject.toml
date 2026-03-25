@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rectify-rna"
-version = "2.5.0"
+version = "2.6.0"
 description = "Unified RNA 3' End Correction Framework for poly(A)-tailed RNA sequencing"
 authors = [
     {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}
@@ -46,6 +46,10 @@ docs = [
     "sphinx>=4.5.0",
     "sphinx-rtd-theme>=1.0.0",
 ]
+visualize = [
+    "matplotlib>=3.5.0",
+    "seaborn>=0.12.0",
+]
 # Note: MEME suite (meme, streme, etc.) is installed via conda as a binary dependency
 # Install with: conda install -c bioconda meme>=5.4.0
 
@@ -58,7 +62,7 @@ docs = [
 rectify = "rectify.cli:main"
 
 [tool.setuptools]
-packages = ["rectify", "rectify.core", "rectify.core.analyze", "rectify.utils", "rectify.data"]
+packages = ["rectify", "rectify.core", "rectify.core.analyze", "rectify.utils", "rectify.data", "rectify.visualize"]
 
 [tool.setuptools.package-data]
 rectify = [
