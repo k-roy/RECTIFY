@@ -96,6 +96,44 @@ from .gene_attribution import (
     compute_cluster_attribution,
 )
 
+from .junction_validation import (
+    JunctionEvidence,
+    collect_junction_evidence,
+    validate_novel_junctions,
+    filter_records_to_validated_junctions,
+    check_canonical_splice_motif,
+    summarize_junction_validation,
+    evidence_to_dataframe,
+)
+
+from .junction_analysis import (
+    # NOTE: Splice site tolerance matching is disabled pending further testing.
+    # The concern is that alternative 3' splice sites can be very close (3-10bp),
+    # and tolerance-based snapping could incorrectly merge distinct biological sites.
+    # match_junction_with_tolerance,
+    # correct_junction_coordinates,
+    # correct_all_junction_coordinates,
+    # DEFAULT_SPLICE_SITE_TOLERANCE,
+    deduplicate_novel_junctions,
+    JunctionSignature,
+    extract_junction_signatures,
+    build_junction_index_from_records,
+    build_known_junction_index,
+    summarize_junction_analysis,
+)
+
+from .apa_detection import (
+    APAIsoform,
+    GeneAPAProfile,
+    assign_reads_to_clusters,
+    detect_apa_isoforms,
+    build_gene_apa_profiles,
+    quantify_apa_usage,
+    identify_proximal_distal_tes,
+    summarize_apa_detection,
+    isoforms_to_dataframe,
+)
+
 __all__ = [
     # Clustering
     'cluster_cpa_sites',
@@ -156,4 +194,34 @@ __all__ = [
     'compute_read_gene_attribution',
     'aggregate_attributions_for_3prime_end',
     'compute_cluster_attribution',
+    # Junction validation (ESPRESSO-style)
+    'JunctionEvidence',
+    'collect_junction_evidence',
+    'validate_novel_junctions',
+    'filter_records_to_validated_junctions',
+    'check_canonical_splice_motif',
+    'summarize_junction_validation',
+    'evidence_to_dataframe',
+    # Junction analysis
+    # NOTE: Splice site tolerance functions disabled pending testing
+    # 'match_junction_with_tolerance',
+    # 'correct_junction_coordinates',
+    # 'correct_all_junction_coordinates',
+    # 'DEFAULT_SPLICE_SITE_TOLERANCE',
+    'deduplicate_novel_junctions',
+    'JunctionSignature',
+    'extract_junction_signatures',
+    'build_junction_index_from_records',
+    'build_known_junction_index',
+    'summarize_junction_analysis',
+    # APA detection (Isosceles-style)
+    'APAIsoform',
+    'GeneAPAProfile',
+    'assign_reads_to_clusters',
+    'detect_apa_isoforms',
+    'build_gene_apa_profiles',
+    'quantify_apa_usage',
+    'identify_proximal_distal_tes',
+    'summarize_apa_detection',
+    'isoforms_to_dataframe',
 ]

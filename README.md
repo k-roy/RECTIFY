@@ -27,9 +27,8 @@ rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
-**New in v2.6.0:** DRS quantification modules inspired by NanoCount, IsoQuant, ESPRESSO, Bambu, and Isosceles!
+**New in v2.6.0:** DRS quantification modules inspired by NanoCount, ESPRESSO, Bambu, and Isosceles!
 - **Junction Validation** (ESPRESSO-style) - Require ≥2 reads for novel junction calls
-- **Splice Site Tolerance** (IsoQuant-style) - ±10bp flexible junction matching
 - **Full-Length Classification** (Bambu-style) - Distinguish truncated vs complete reads
 - **APA Isoform Detection** (Isosceles-style) - Group reads by gene/junction/3' end
 
@@ -284,7 +283,6 @@ The `rectify analyze` command automatically runs DESeq2 at both levels, producin
 | **Bundled Genomes** | Yeast S288C genome and annotations included |
 | **Motif Database** | CPA-related TF binding sites for motif matching |
 | **Junction Validation** | ESPRESSO-style multi-read validation for novel junctions |
-| **Splice Site Tolerance** | IsoQuant-style ±10bp junction matching for noisy reads |
 | **Full-Length Classification** | Bambu-style truncated vs complete read detection |
 | **APA Isoform Detection** | Isosceles-style alternative polyadenylation quantification |
 
@@ -367,33 +365,6 @@ filtered_records = filter_records_to_validated_junctions(records, validated)
 # Get summary statistics
 summary = summarize_junction_validation(all_evidence, validated)
 # {'total_junctions': 1523, 'validated_junctions': 892, 'novel_filtered': 631, ...}
-```
-
-#### Splice Site Tolerance (IsoQuant-style)
-
-Allow flexible junction matching to handle long-read alignment noise:
-
-```python
-from rectify.core.analyze import (
-    match_junction_with_tolerance,
-    correct_all_junction_coordinates,
-    DEFAULT_SPLICE_SITE_TOLERANCE,  # 10bp
-)
-
-# Match a read junction to known junctions within ±10bp
-matched = match_junction_with_tolerance(
-    read_junction=(1198, 1402),  # 2bp off on each end
-    known_junctions=[(1200, 1400), (2000, 2200)],
-    tolerance=10,
-)
-# Returns: (1200, 1400)
-
-# Correct all junctions in records to snap to known coordinates
-corrected_records, stats = correct_all_junction_coordinates(
-    records,
-    known_junctions=known_junction_set,
-    tolerance=10,
-)
 ```
 
 #### Full-Length Read Classification (Bambu-style)
@@ -518,7 +489,6 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 | **GO Enrichment** | Functional enrichment | `go_enrichment.tsv` |
 | **Motif Discovery** | Sequence motifs near CPA sites | `motif_results/` |
 | **Junction Validation** | Filter single-read junction artifacts | validated junctions |
-| **Junction Correction** | Snap junctions to known coordinates | corrected records |
 | **Full-Length Classification** | Identify truncated reads | classification scores |
 | **APA Detection** | Identify alternative 3' end isoforms | `apa_isoforms.tsv` |
 
