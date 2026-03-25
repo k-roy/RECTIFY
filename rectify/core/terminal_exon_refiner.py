@@ -1005,6 +1005,138 @@ def build_comprehensive_splice_index(
     return merge_splice_indices(*indices)
 
 
+def detect_junction_truncated_reads(
+    bam_path: str,
+    splice_index: SpliceSiteIndex,
+    tolerance: int = 10
+) -> Dict[str, List[Dict]]:
+    """Detect reads that are truncated at junction boundaries.
+
+    These are reads that end precisely at a splice site without crossing
+    the junction. Common in mapPacBio alignments where soft-clipping is rare.
+
+    For minus strand genes:
+    - Reads ending at 3'SS (acceptor) without upstream exon coverage
+    - These represent 5' truncated transcripts
+
+    Args:
+        bam_path: Path to BAM file
+        splice_index: Index of known splice sites
+        tolerance: Position tolerance for boundary detection (bp)
+
+    Returns:
+        Dict with 'truncated_at_3ss' and 'truncated_at_5ss' lists
+    """
+    results = {
+        'truncated_at_3ss': [],
+        'truncated_at_5ss': [],
+        'stats': {
+            'total_reads': 0,
+            'truncated_at_3ss': 0,
+            'truncated_at_5ss': 0,
+            'properly_spliced': 0
+        }
+    }
+
+    bam = pysam.AlignmentFile(bam_path, 'rb')
+
+    for read in bam:
+        if read.is_unmapped or read.is_secondary or read.is_supplementary:
+            continue
+
+        results['stats']['total_reads'] += 1
+
+        chrom = read.reference_name
+        strand = '-' if read.is_reverse else '+'
+        read_start = read.reference_start
+        read_end = read.reference_end
+
+        # Check if read has any splice junctions
+        has_junction = any(op == 3 for op, _ in (read.cigartuples or []))
+
+        # Check if read ends near a known 3'SS
+        for pos, site in splice_index.three_ss.get(chrom, {}).items():
+            if site.strand != strand:
+                continue
+
+            # For + strand: 3'SS is at higher position, read ends there
+            # For - strand: 3'SS is at lower position, read starts there
+            if strand == '+':
+                if abs(read_end - pos - 2) <= tolerance and not has_junction:
+                    results['truncated_at_3ss'].append({
+                        'read_id': read.query_name,
+                        'chrom': chrom,
+                        'strand': strand,
+                        'read_start': read_start,
+                        'read_end': read_end,
+                        'splice_site_pos': pos,
+                        'intron_id': site.intron_id,
+                        'distance_from_ss': read_end - pos - 2
+                    })
+                    results['stats']['truncated_at_3ss'] += 1
+                    break
+            else:  # minus strand
+                if abs(read_end - pos - 2) <= tolerance and not has_junction:
+                    results['truncated_at_3ss'].append({
+                        'read_id': read.query_name,
+                        'chrom': chrom,
+                        'strand': strand,
+                        'read_start': read_start,
+                        'read_end': read_end,
+                        'splice_site_pos': pos,
+                        'intron_id': site.intron_id,
+                        'distance_from_ss': read_end - pos - 2
+                    })
+                    results['stats']['truncated_at_3ss'] += 1
+                    break
+
+        # Check if read starts near a known 5'SS (truncated at 5' end)
+        for pos, site in splice_index.five_ss.get(chrom, {}).items():
+            if site.strand != strand:
+                continue
+
+            if strand == '+':
+                if abs(read_start - pos) <= tolerance and not has_junction:
+                    results['truncated_at_5ss'].append({
+                        'read_id': read.query_name,
+                        'chrom': chrom,
+                        'strand': strand,
+                        'read_start': read_start,
+                        'read_end': read_end,
+                        'splice_site_pos': pos,
+                        'intron_id': site.intron_id,
+                        'distance_from_ss': read_start - pos
+                    })
+                    results['stats']['truncated_at_5ss'] += 1
+                    break
+            else:
+                if abs(read_start - pos) <= tolerance and not has_junction:
+                    results['truncated_at_5ss'].append({
+                        'read_id': read.query_name,
+                        'chrom': chrom,
+                        'strand': strand,
+                        'read_start': read_start,
+                        'read_end': read_end,
+                        'splice_site_pos': pos,
+                        'intron_id': site.intron_id,
+                        'distance_from_ss': read_start - pos
+                    })
+                    results['stats']['truncated_at_5ss'] += 1
+                    break
+
+        if has_junction:
+            results['stats']['properly_spliced'] += 1
+
+    bam.close()
+
+    logger.info(f"Total reads: {results['stats']['total_reads']:,}")
+    logger.info(f"Properly spliced: {results['stats']['properly_spliced']:,}")
+    logger.info(f"Truncated at 3'SS: {results['stats']['truncated_at_3ss']:,}")
+    logger.info(f"Truncated at 5'SS: {results['stats']['truncated_at_5ss']:,}")
+
+    return results
+
+
 def analyze_soft_clips_near_junctions(
     bam_path: str,
     splice_index: SpliceSiteIndex,
