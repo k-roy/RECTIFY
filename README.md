@@ -70,43 +70,16 @@ When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce i
 
 Long reads spanning splice junctions often have soft-clipped bases at the 5' end where the aligner fails to find the exact junction boundary. RECTIFY recovers the true splice site.
 
-```
-===============================================================================
-THE PROBLEM: Soft-clipped bases hide the true 5' junction
-===============================================================================
+![5' Junction Rescue](docs/figures/5prime_junction_rescue.png)
 
-                    true 5' splice site
-                           ↓
-Genome:     ...EXON1|gt----intron----ag|EXON2...
-                    ↑                  ↑
-                  donor              acceptor
+**The Problem:** Soft-clipped bases at the 5' end actually match the upstream exon, but the aligner couldn't extend through the splice junction.
 
-Read:       NNNNNN|====================|===================>
-            ↑     ↑
-         soft-    aligned portion starts here
-         clipped  (aligner missed the exact junction)
+**RECTIFY's Solution:**
+1. Identify reads with 5' soft-clips near annotated splice sites
+2. Check if soft-clipped sequence matches upstream exon
+3. Extend the alignment to the canonical splice donor (GT)
 
-The soft-clipped bases (N's) actually match EXON1, but the aligner
-couldn't extend through the splice junction.
-
-===============================================================================
-RECTIFY'S SOLUTION: Extend alignment to known junction
-===============================================================================
-
-  1. Identify reads with 5' soft-clips near annotated splice sites
-  2. Check if soft-clipped sequence matches upstream exon
-  3. Extend the alignment to the canonical splice donor (GT)
-
-Before:  NNNNNN|====================...
-              ↑
-           read starts here (wrong)
-
-After:   |=========================...
-         ↑
-      read starts at true exon boundary
-
-Result: Accurate 5' end for TSS analysis and full-length read classification
-```
+**Result:** Accurate 5' end for TSS analysis and full-length read classification.
 
 ---
 
@@ -166,6 +139,8 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 ## 3' False Junction Handling
 
 Poly(A) tails can create spurious "junctions" when the aligner introduces a skip (N) operation to align tail bases to a downstream genomic A-tract. **RECTIFY's walk back correction completely handles this artifact.**
+
+![False Junction Walk Back](docs/figures/false_junction_walkback.png)
 
 **The Problem:** The aligner introduces an N (skip) to extend the poly(A) tail alignment into a downstream A-tract, creating a spurious junction that doesn't exist in the transcript.
 
