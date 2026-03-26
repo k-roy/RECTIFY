@@ -229,7 +229,7 @@ conda install -c conda-forge -c bioconda rectify-rna
 | `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
 | `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
 | `rectify align` | Align FASTQ with minimap2 (DRS-optimized settings) |
-| `rectify run` | Full pipeline: correct → analyze |
+| `rectify run` | Full pipeline: align (if FASTQ) → correct → analyze |
 
 ### Examples
 
