@@ -195,7 +195,7 @@ def validate_inputs(args) -> dict:
         'polya_model_path': getattr(args, 'polya_model', None),
         'threads': getattr(args, 'threads', 4),
         'verbose': getattr(args, 'verbose', False),
-        'variant_aware': getattr(args, 'variant_aware', False),
+        'variant_aware': not getattr(args, 'skip_variant_aware', False),
     }
 
     # Enable poly(A) corrections if --polya-sequenced flag set
@@ -351,8 +351,8 @@ if __name__ == '__main__':
     parser.add_argument('--skip-ag-check', action='store_true')
     parser.add_argument('--skip-polya-trim', action='store_true')
     parser.add_argument('--skip-indel-correction', action='store_true')
-    parser.add_argument('--variant-aware', action='store_true',
-                        help='Enable variant-aware homopolymer rescue (two-pass)')
+    parser.add_argument('--skip-variant-aware', action='store_true',
+                        help='Skip variant-aware homopolymer rescue (enabled by default)')
     parser.add_argument('--netseq-dir', type=Path)
     parser.add_argument('--netseq-samples', nargs='+')
     parser.add_argument('--polya-model', type=Path)

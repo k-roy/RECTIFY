@@ -96,6 +96,12 @@ from .figure_utils import (
     despine,
     add_significance_bracket,
     create_figure_grid,
+    # Metagene plotting utilities
+    trimmed_mean,
+    apply_window_sum_capping,
+    plot_ridge_profiles,
+    add_metagene_annotations,
+    plot_metagene_line,
 )
 
 # Metagene
@@ -177,6 +183,12 @@ __all__ = [
     'despine',
     'add_significance_bracket',
     'create_figure_grid',
+    # Metagene plotting utilities
+    'trimmed_mean',
+    'apply_window_sum_capping',
+    'plot_ridge_profiles',
+    'add_metagene_annotations',
+    'plot_metagene_line',
 
     # Metagene
     'MetageneConfig',

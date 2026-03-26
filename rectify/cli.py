@@ -135,13 +135,14 @@ Citation:
     )
 
     module_group.add_argument(
-        '--variant-aware',
+        '--skip-variant-aware',
         action='store_true',
-        help='Enable variant-aware homopolymer rescue. Uses two-pass approach: '
-             'first scans all reads to identify positions where high mismatch '
-             'frequency suggests true variants (not basecalling errors), then '
-             'only rescues at low-frequency positions. Outputs potential '
-             'variants to *_potential_variants.tsv for review.'
+        help='Skip variant-aware homopolymer rescue (enabled by default). '
+             'The two-pass variant-aware approach first scans all reads to '
+             'identify positions where high mismatch frequency suggests true '
+             'variants (not basecalling errors), then only rescues at '
+             'low-frequency positions. Potential variants are written to '
+             '*_potential_variants.tsv for review.'
     )
 
     # Poly(A) model
