@@ -55,16 +55,16 @@ When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce i
 THE PROBLEM: Poly(A) tail alignment artifacts
 ===============================================================================
 
-                                              true CPA site
-                                                   ↓
-Genome: 5'..CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC..3'
-                                                       |
-                                              genomic A-tract ends here
+                        true CPA site
+                              ↓
+Genome: 5'..CTAGTGACAGTC|AAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC..3'
+                        |                               |
+                   CPA here                    genomic A-tract ends here
 
 Read:   5'..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|AAAAAAAAAAA
-                                 ↑      ↑↑            |<--------->
-                              T error  deletions    soft-clipped tail
-                              (seq err) (artifacts)
+                              ↑        ↑↑             |<--------->
+                           T error  deletions    soft-clipped tail
+                          (seq err) (artifacts)
 
 The aligner introduces deletions to extend alignment of poly(A) tail bases
 into the genomic A-tract. The apparent 3' end shifts downstream.
@@ -80,13 +80,13 @@ Starting from the soft-clip boundary, walk UPSTREAM through the aligned region:
   3. Skip T sequencing errors in the tail
   4. STOP at first non-A/T agreement between genome and read
 
-                                          soft-clip boundary
-                                                   ↓
+                                                   soft-clip boundary
+                                                          ↓
 Genome: ...CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC...
 Read:   ...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|AAAAAAAAAAA
-                     ↑         ↑      ↑↑             |
-                  STOP here  T err   dels         soft-clip
-                  (C = C)   (skip)  (absorb)
+                     ↑        ↑        ↑↑            |
+                  STOP      T err     dels      soft-clip
+                 (C = C)   (skip)   (absorb)
 
 Result: True 3' end at the C position
         Poly(A) length = soft-clipped + aligned A's + absorbed deletions
@@ -202,12 +202,12 @@ Poly(A) tails can create spurious "junctions" when the aligner introduces a skip
 THE PROBLEM: Poly(A) tails create false junctions
 ===============================================================================
 
-                              true CPA    false "junction"
-                                  ↓              ↓
-Genome:  ...EXON|AAAAA|----N----|AAAAA|...
-Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAA.|AAAAA (poly(A) tail)
-                    ↑                        ↑
-              aligned A's              soft-clipped tail
+              true CPA              false "junction"
+                  ↓                       ↓
+Genome:  ...EXON|AAAAA|-------N-------|AAAAA|...
+Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAAAAAAA.|AAAAA (poly(A) tail)
+                 ↑                         ↑
+           aligned A's               soft-clipped tail
 
 The aligner introduces an N (skip) to extend the alignment of poly(A) tail
 bases into a downstream genomic A-tract, creating a spurious junction.
@@ -220,14 +220,14 @@ The walk back algorithm finds the true 3' end by walking upstream through
 ALL aligned A's until it finds the first non-A agreement between genome
 and read. Crucially, it DISCARDS any N (skip) operations it encounters:
 
-         walk back eats through everything
-         <─────────────────────────────────
-                                          ↓
-Genome:  ...EXON|AAAAA|----N----|AAAAA|...
-Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAA.|AAAAA
-              ↑                             ↑
-           STOP here                  walk back starts
-           (non-A match)              (eats A's, discards N)
+              walk back eats through everything
+              <────────────────────────────────
+                                              ↓
+Genome:  ...EXON|AAAAA|-------N-------|AAAAA|...
+Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAAAAAAA.|AAAAA
+              ↑                              ↑
+           STOP here                   walk back starts
+          (non-A match)               (eats A's, discards N)
 
 Result:
   - Walk back finds the true CPA at the EXON/A boundary
