@@ -14,7 +14,7 @@ poly(A) tails to genomic sequences. Example:
 
 This shifts the apparent 3' end position and must be corrected.
 
-Two correction approaches are provided:
+Three correction approaches are provided:
 1. `detect_indel_artifacts()` + `correct_position_for_indels()`:
    Detects small indels near 3' end and corrects for them
 
@@ -23,16 +23,37 @@ Two correction approaches are provided:
    comparing read to genome, to find the TRUE CPA (cleavage and
    polyadenylation) site where they agree on a non-A base.
 
+3. `rescue_softclip_at_homopolymer()`:
+   Rescues soft-clipped bases adjacent to homopolymers. When basecaller
+   under-calls homopolymer length, aligner may soft-clip the adjacent
+   non-homopolymer base(s) instead of placing an indel. This function
+   extends the 3' end to include matching soft-clipped bases.
+   Use for LOCAL aligners (minimap2 default, STAR, etc.).
+
+4. `rescue_mismatch_inside_homopolymer()`:
+   Rescues misaligned bases inside homopolymers. When using GLOBAL alignment
+   (no soft-clipping), the aligner forces mismatches inside homopolymer tracts.
+   This function finds non-homopolymer bases in the read that were force-aligned
+   and treats them as the true 3' end.
+   Use for GLOBAL aligners (BBMap, minimap2 with local=false).
+
 The `find_polya_boundary()` approach is recommended for nanopore data as it
 handles complex poly(A) alignment artifacts including multiple deletions,
 mismatches (base-calling errors), and genomic A-tracts.
 
+For comprehensive coverage, use `correct_3prime_position()` which applies
+all strategies and picks the best correction.
+
 Author: Kevin R. Roy
 Date: 2026-03-09
 Updated: 2026-03-16 - Added genome-aware poly-A boundary detection
+Updated: 2026-03-26 - Added soft-clip rescue at homopolymer boundaries
+Updated: 2026-03-26 - Added variant-aware two-pass homopolymer rescue
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict, Counter
+from dataclasses import dataclass, field
 import pysam
 
 from ..config import (
@@ -237,6 +258,1056 @@ def find_polya_boundary(
                 }
 
     return None
+
+
+# =============================================================================
+# Soft-clip Rescue at Homopolymer Boundaries
+# =============================================================================
+
+def rescue_softclip_at_homopolymer(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    min_homopolymer_len: int = 3,
+    end: str = '3prime'
+) -> Optional[Dict]:
+    """
+    Rescue soft-clipped bases at homopolymer boundaries.
+
+    Problem: When the basecaller under-calls homopolymer length (e.g., calls 8 U's
+    instead of 9), the aligner may soft-clip the adjacent non-homopolymer base(s)
+    instead of placing an indel within the homopolymer. This causes the apparent
+    RNA end to appear INSIDE the homopolymer tract rather than at its boundary.
+
+    Example (+ strand, poly-A at 3' end):
+        True RNA:   ...GCTTTTTTTTC-AAAAAAAAA  (C followed by poly-A)
+        Basecalled: ...GCTTTTTTTCAAAAAAAA     (shorter poly-U -> shorter poly-A)
+        Aligned:    ...GCTTTTTTTT|c           (C soft-clipped, 3' end inside T-tract)
+                                ^-- apparent 3' end (wrong!)
+                                 ^-- true 3' end (the C)
+
+    This also applies to 5' ends when there are homopolymers near the TSS.
+
+    This function:
+    1. Detects soft-clip adjacent to homopolymer (any base: A, T, G, C)
+    2. Compares soft-clipped bases to reference sequence beyond alignment
+    3. Extends RNA end to include matching bases until mismatch or homopolymer entry
+
+    Args:
+        read: pysam AlignedSegment
+        strand: '+' or '-'
+        genome: Dict of chromosome sequences (NCBI format keys)
+        min_homopolymer_len: Minimum homopolymer run to trigger rescue (default 3)
+        end: '3prime' or '5prime' - which end of the RNA to rescue
+
+    Returns:
+        Dict with:
+            - corrected_pos: Extended position (0-based)
+            - original_pos: Original mapped position
+            - rescued_bases: Number of soft-clipped bases rescued
+            - rescued_seq: Sequence of rescued bases
+            - adjacent_homopolymer: The homopolymer base at boundary (A/T/G/C)
+            - end: Which end was rescued ('3prime' or '5prime')
+        Or None if no rescue applicable
+    """
+    cigar = read.cigartuples
+    seq = read.query_sequence
+    if not cigar or not seq:
+        return None
+
+    # Get genomic sequence
+    chrom = read.reference_name
+    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
+    genome_seq = genome.get(genome_chrom, '')
+    if not genome_seq:
+        return None
+
+    # CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5
+
+    # Determine which side of the alignment to examine based on strand and end:
+    # - 3' end: + strand = right side, - strand = left side
+    # - 5' end: + strand = left side, - strand = right side
+    use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
+
+    if use_right_side:
+        # Right side: soft-clip at END of CIGAR, position at reference_end - 1
+        if cigar[-1][0] != 4:  # No soft-clip at this end
+            return None
+
+        softclip_len = cigar[-1][1]
+        if softclip_len == 0:
+            return None
+
+        # Get the soft-clipped sequence (rightmost bases of read)
+        softclip_seq = seq[-softclip_len:].upper()
+
+        # Get the aligned position (just before soft-clip)
+        raw_pos = read.reference_end - 1  # 0-based, last aligned position
+
+        # Check if there's a homopolymer at the alignment boundary
+        # Look at the last few aligned positions in the genome
+        boundary_start = max(0, raw_pos - min_homopolymer_len + 1)
+        boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
+
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+
+        # Check if all bases in boundary region are the same (homopolymer)
+        boundary_base = boundary_seq[-1]  # Base at boundary
+        if not all(b == boundary_base for b in boundary_seq):
+            return None  # Not a homopolymer at boundary
+
+        # Now check soft-clipped bases against reference beyond alignment
+        # Walk through soft-clip, comparing to reference
+        rescued_count = 0
+        rescued_bases = []
+
+        for i in range(softclip_len):
+            ref_pos = raw_pos + 1 + i  # Position beyond alignment
+            if ref_pos >= len(genome_seq):
+                break
+
+            ref_base = genome_seq[ref_pos].upper()
+            softclip_base = softclip_seq[i]
+
+            # Stop if we're entering another homopolymer run
+            if ref_base == boundary_base:
+                break
+
+            # Check if soft-clipped base matches reference
+            if softclip_base == ref_base:
+                rescued_count += 1
+                rescued_bases.append(softclip_base)
+            else:
+                # Mismatch - stop rescue
+                break
+
+        if rescued_count == 0:
+            return None
+
+        return {
+            'corrected_pos': raw_pos + rescued_count,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued_count,
+            'rescued_seq': ''.join(rescued_bases),
+            'adjacent_homopolymer': boundary_base,
+            'end': end,
+        }
+
+    else:  # use_left_side
+        # Left side: soft-clip at START of CIGAR, position at reference_start
+        if cigar[0][0] != 4:  # No soft-clip at this end
+            return None
+
+        softclip_len = cigar[0][1]
+        if softclip_len == 0:
+            return None
+
+        # Get the soft-clipped sequence (leftmost bases of read)
+        softclip_seq = seq[:softclip_len].upper()
+
+        # Get the aligned position (just after soft-clip)
+        raw_pos = read.reference_start  # 0-based, first aligned position
+
+        # Check if there's a homopolymer at the alignment boundary
+        # Look at the first few aligned positions in the genome
+        boundary_end = min(len(genome_seq), raw_pos + min_homopolymer_len)
+        boundary_seq = genome_seq[raw_pos:boundary_end].upper()
+
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+
+        # Check if all bases in boundary region are the same (homopolymer)
+        boundary_base = boundary_seq[0]  # Base at boundary
+        if not all(b == boundary_base for b in boundary_seq):
+            return None  # Not a homopolymer at boundary
+
+        # Now check soft-clipped bases against reference beyond alignment
+        # Walk through soft-clip BACKWARDS (from alignment boundary outward)
+        rescued_count = 0
+        rescued_bases = []
+
+        for i in range(softclip_len):
+            ref_pos = raw_pos - 1 - i  # Position beyond alignment (leftward)
+            if ref_pos < 0:
+                break
+
+            ref_base = genome_seq[ref_pos].upper()
+            # Soft-clip bases: walk from right to left (alignment boundary outward)
+            softclip_base = softclip_seq[softclip_len - 1 - i]
+
+            # Stop if we're entering another homopolymer run
+            if ref_base == boundary_base:
+                break
+
+            # Check if soft-clipped base matches reference
+            if softclip_base == ref_base:
+                rescued_count += 1
+                rescued_bases.append(softclip_base)
+            else:
+                # Mismatch - stop rescue
+                break
+
+        if rescued_count == 0:
+            return None
+
+        return {
+            'corrected_pos': raw_pos - rescued_count,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued_count,
+            'rescued_seq': ''.join(reversed(rescued_bases)),  # Restore original order
+            'adjacent_homopolymer': boundary_base,
+            'end': end,
+        }
+
+
+def rescue_mismatch_inside_homopolymer(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    min_homopolymer_len: int = 3,
+    end: str = '3prime'
+) -> Optional[Dict]:
+    """
+    Rescue misaligned bases inside homopolymers from global alignment.
+
+    Problem: When using global alignment (no soft-clipping, e.g., BBMap or minimap2
+    with local=false), if the basecaller under-calls homopolymer length, the aligner
+    places mismatches inside the homopolymer tract. The apparent RNA end is inside
+    the homopolymer when it should be at its boundary.
+
+    Example (- strand, T-tract = poly-A in RNA at 3' end):
+        True RNA:       ...C-AAAAAAAAAA 3'  (ends with C before poly-A)
+        Basecalled:     ...CAAAAAAAA       (under-called poly-U -> shorter poly-A)
+        Reference:      ...TTTTTTTTTTG...  (T-tract; G is complement of C)
+        Global aligned: ...TTT[G]TTTTTTT   (G forced to align inside T-tract)
+                              ^ mismatch: read=G, ref=T
+
+        The G misaligned inside the T-tract is actually the true 3' end (the C).
+
+    This also applies to 5' ends when there are homopolymers near the TSS.
+
+    This function:
+    1. Checks if RNA end is inside a homopolymer tract
+    2. Walks INTO alignment looking for non-homopolymer bases in the READ
+    3. Extends RNA end to include those bases as the true boundary
+
+    Note: This is complementary to `rescue_softclip_at_homopolymer()` which handles
+    aligners that soft-clip. Use both for comprehensive coverage.
+
+    Args:
+        read: pysam AlignedSegment
+        strand: '+' or '-'
+        genome: Dict of chromosome sequences (NCBI format keys)
+        min_homopolymer_len: Minimum homopolymer run to trigger rescue (default 3)
+        end: '3prime' or '5prime' - which end of the RNA to rescue
+
+    Returns:
+        Dict with:
+            - corrected_pos: Extended position (0-based)
+            - original_pos: Original mapped position
+            - rescued_bases: Number of misaligned bases rescued
+            - rescued_seq: Sequence of rescued bases
+            - homopolymer_base: The homopolymer base (A/T/G/C)
+            - end: Which end was rescued ('3prime' or '5prime')
+        Or None if no rescue applicable
+    """
+    cigar = read.cigartuples
+    seq = read.query_sequence
+    if not cigar or not seq:
+        return None
+
+    # Get genomic sequence
+    chrom = read.reference_name
+    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
+    genome_seq = genome.get(genome_chrom, '')
+    if not genome_seq:
+        return None
+
+    # CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5
+
+    # Determine which side of the alignment to examine based on strand and end:
+    # - 3' end: + strand = right side, - strand = left side
+    # - 5' end: + strand = left side, - strand = right side
+    use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
+
+    # Build aligned positions (same for both sides)
+    ref_pos = read.reference_start
+    read_pos = 0
+
+    # Skip soft-clip at start if present
+    if cigar[0][0] == 4:
+        read_pos = cigar[0][1]
+
+    aligned_positions = []
+    for op, length in cigar:
+        if op == 4:  # Soft-clip
+            continue
+        elif op == 0 or op == 7 or op == 8:  # M, =, X
+            for i in range(length):
+                if ref_pos < len(genome_seq) and read_pos < len(seq):
+                    read_base = seq[read_pos].upper()
+                    genome_base = genome_seq[ref_pos].upper()
+                    aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                read_pos += 1
+                ref_pos += 1
+        elif op == 1:  # Insertion
+            read_pos += length
+        elif op == 2:  # Deletion
+            for i in range(length):
+                if ref_pos < len(genome_seq):
+                    genome_base = genome_seq[ref_pos].upper()
+                    aligned_positions.append((None, ref_pos, None, genome_base))
+                ref_pos += 1
+
+    if not aligned_positions:
+        return None
+
+    if use_right_side:
+        # Right side: position at reference_end - 1, walk backwards
+        raw_pos = read.reference_end - 1  # 0-based, last aligned position
+
+        # Check if we're inside a homopolymer at the boundary
+        boundary_end = min(len(genome_seq), raw_pos + min_homopolymer_len + 1)
+        boundary_seq = genome_seq[raw_pos:boundary_end].upper()
+
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+
+        # Check if the position is inside a homopolymer
+        homopolymer_base = boundary_seq[0]
+        if not all(b == homopolymer_base for b in boundary_seq[:min_homopolymer_len]):
+            return None  # Not inside a homopolymer
+
+        # Walk BACKWARDS from end looking for non-homopolymer bases in the READ
+        rescued_count = 0
+        rescued_bases = []
+        new_pos = raw_pos
+
+        for i in range(len(aligned_positions) - 1, -1, -1):
+            rp, refp, rb, gb = aligned_positions[i]
+            if rp is None:  # Skip deletions
+                continue
+
+            # If read base is NOT the homopolymer base, it's likely the true end
+            if rb != homopolymer_base:
+                new_pos = refp
+                rescued_count = raw_pos - refp
+                rescued_bases.append(rb)
+                break
+
+            # If we've moved past the homopolymer region in the genome, stop
+            if gb != homopolymer_base:
+                break
+
+        if rescued_count == 0:
+            return None
+
+        return {
+            'corrected_pos': new_pos,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued_count,
+            'rescued_seq': ''.join(rescued_bases),
+            'homopolymer_base': homopolymer_base,
+            'end': end,
+        }
+
+    else:  # use_left_side
+        # Left side: position at reference_start, walk forwards
+        raw_pos = read.reference_start  # 0-based, first aligned position
+
+        # Check if we're inside a homopolymer at the boundary
+        boundary_start = max(0, raw_pos - min_homopolymer_len)
+        boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
+
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+
+        # Check if the position is inside a homopolymer
+        homopolymer_base = boundary_seq[-1]
+        if not all(b == homopolymer_base for b in boundary_seq[-min_homopolymer_len:]):
+            return None  # Not inside a homopolymer
+
+        # Walk FORWARD from end looking for non-homopolymer bases in the READ
+        rescued_count = 0
+        rescued_bases = []
+        new_pos = raw_pos
+
+        for i in range(len(aligned_positions)):
+            rp, refp, rb, gb = aligned_positions[i]
+            if rp is None:  # Skip deletions
+                continue
+
+            # If read base is NOT the homopolymer base, it's likely the true end
+            if rb != homopolymer_base:
+                new_pos = refp
+                rescued_count = refp - raw_pos
+                rescued_bases.append(rb)
+                break
+
+            # If we've moved past the homopolymer region in the genome, stop
+            if gb != homopolymer_base:
+                break
+
+        if rescued_count == 0:
+            return None
+
+        return {
+            'corrected_pos': new_pos,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued_count,
+            'rescued_seq': ''.join(rescued_bases),
+            'homopolymer_base': homopolymer_base,
+            'end': end,
+        }
+
+
+# =============================================================================
+# Variant-Aware Homopolymer Rescue (Two-Pass Approach)
+# =============================================================================
+
+@dataclass
+class MismatchFrequency:
+    """Track mismatch frequencies at a genomic position."""
+    chrom: str
+    position: int
+    ref_base: str
+    homopolymer_base: str
+    total_reads: int = 0
+    mismatch_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+    @property
+    def mismatch_fraction(self) -> float:
+        """Fraction of reads with any non-homopolymer base at this position."""
+        if self.total_reads == 0:
+            return 0.0
+        total_mismatches = sum(self.mismatch_counts.values())
+        return total_mismatches / self.total_reads
+
+    @property
+    def dominant_mismatch(self) -> Tuple[str, float]:
+        """Return the most common mismatch base and its frequency."""
+        if not self.mismatch_counts or self.total_reads == 0:
+            return ('', 0.0)
+        most_common = max(self.mismatch_counts.items(), key=lambda x: x[1])
+        return (most_common[0], most_common[1] / self.total_reads)
+
+
+class VariantAwareHomopolymerRescue:
+    """
+    Two-pass variant-aware homopolymer rescue.
+
+    Problem: When rescuing mismatches inside homopolymers, we might incorrectly
+    "rescue" true SNPs as basecalling artifacts. A real T>C SNP 1bp upstream of
+    a T-tract would look identical to a basecalling error.
+
+    Solution: Use read frequency to distinguish:
+    - Basecalling errors: Stochastic, affect ~5-15% of reads at a position
+    - True SNPs: Consistent, affect >80% of reads at the position
+    - Heterozygous variants: ~50% of reads
+
+    Two-pass approach:
+    1. First pass: Scan all reads to build per-position mismatch frequencies
+    2. Second pass: Only rescue at positions where mismatch frequency is LOW
+       (indicating basecalling error, not true variant)
+
+    Usage:
+        rescue = VariantAwareHomopolymerRescue(min_variant_fraction=0.8)
+
+        # Pass 1: Build frequency map
+        for read in bam:
+            rescue.scan_read(read, strand, genome)
+        rescue.finalize_scan()
+
+        # Pass 2: Apply rescue with variant filtering
+        for read in bam:
+            result = rescue.rescue_with_variant_filter(read, strand, genome)
+    """
+
+    def __init__(
+        self,
+        min_variant_fraction: float = 0.8,
+        min_reads_for_variant_call: int = 5,
+        min_homopolymer_len: int = 4,  # Increased from 3 for safety
+        max_rescue_bases: int = 3,      # Limit rescue to 3bp max
+    ):
+        """
+        Initialize variant-aware rescue.
+
+        Args:
+            min_variant_fraction: If mismatch at position exceeds this fraction,
+                treat as true variant, not basecalling error (default 0.8 = 80%)
+            min_reads_for_variant_call: Minimum reads at position to make variant
+                call (default 5). Below this, flag as AMBIGUOUS.
+            min_homopolymer_len: Minimum homopolymer length to trigger rescue
+                (default 4, increased from 3 for safety)
+            max_rescue_bases: Maximum bases to rescue in one operation (default 3,
+                nanopore under-calling rarely exceeds this)
+        """
+        self.min_variant_fraction = min_variant_fraction
+        self.min_reads_for_variant_call = min_reads_for_variant_call
+        self.min_homopolymer_len = min_homopolymer_len
+        self.max_rescue_bases = max_rescue_bases
+
+        # Position frequency tracking: (chrom, position) -> MismatchFrequency
+        self._mismatch_freq: Dict[Tuple[str, int], MismatchFrequency] = {}
+
+        # Track potential variants for reporting
+        self._potential_variants: List[MismatchFrequency] = []
+
+        # Scan state
+        self._scan_complete = False
+
+    def scan_read(
+        self,
+        read: pysam.AlignedSegment,
+        strand: str,
+        genome: Dict[str, str],
+        end: str = '3prime'
+    ) -> None:
+        """
+        First pass: Scan a read to update mismatch frequencies.
+
+        Call this for every read in the BAM before applying rescue.
+
+        Args:
+            read: pysam AlignedSegment
+            strand: '+' or '-'
+            genome: Dict of chromosome sequences
+            end: '3prime' or '5prime' - which end to analyze
+        """
+        cigar = read.cigartuples
+        seq = read.query_sequence
+        if not cigar or not seq:
+            return
+
+        # Get genomic sequence
+        chrom = read.reference_name
+        genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
+        genome_seq = genome.get(genome_chrom, '')
+        if not genome_seq:
+            return
+
+        # Determine which side to examine
+        use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
+
+        # Build aligned positions
+        ref_pos = read.reference_start
+        read_pos = 0
+        if cigar[0][0] == 4:  # Skip soft-clip at start
+            read_pos = cigar[0][1]
+
+        aligned_positions = []
+        for op, length in cigar:
+            if op == 4:  # Soft-clip
+                continue
+            elif op == 0 or op == 7 or op == 8:  # M, =, X
+                for i in range(length):
+                    if ref_pos < len(genome_seq) and read_pos < len(seq):
+                        read_base = seq[read_pos].upper()
+                        genome_base = genome_seq[ref_pos].upper()
+                        aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                    read_pos += 1
+                    ref_pos += 1
+            elif op == 1:  # Insertion
+                read_pos += length
+            elif op == 2:  # Deletion
+                ref_pos += length
+
+        if not aligned_positions:
+            return
+
+        # Find positions inside homopolymers where read has non-homopolymer base
+        if use_right_side:
+            raw_pos = read.reference_end - 1
+
+            # Check if we're at/near a homopolymer
+            boundary_end = min(len(genome_seq), raw_pos + self.min_homopolymer_len + 1)
+            boundary_seq = genome_seq[raw_pos:boundary_end].upper()
+
+            if len(boundary_seq) < self.min_homopolymer_len:
+                return
+
+            homopolymer_base = boundary_seq[0]
+            if not all(b == homopolymer_base for b in boundary_seq[:self.min_homopolymer_len]):
+                return  # Not inside a homopolymer
+
+            # Walk backwards looking for mismatches
+            for i in range(len(aligned_positions) - 1, -1, -1):
+                rp, refp, rb, gb = aligned_positions[i]
+                if rp is None:
+                    continue
+
+                # If read base differs from homopolymer, record it
+                if rb != homopolymer_base:
+                    key = (chrom, refp)
+                    if key not in self._mismatch_freq:
+                        self._mismatch_freq[key] = MismatchFrequency(
+                            chrom=chrom,
+                            position=refp,
+                            ref_base=gb,
+                            homopolymer_base=homopolymer_base
+                        )
+
+                    self._mismatch_freq[key].total_reads += 1
+                    self._mismatch_freq[key].mismatch_counts[rb] += 1
+                    break  # Only record first mismatch
+
+                # Stop if we've moved past homopolymer region
+                if gb != homopolymer_base:
+                    break
+
+        else:  # left side
+            raw_pos = read.reference_start
+
+            boundary_start = max(0, raw_pos - self.min_homopolymer_len)
+            boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
+
+            if len(boundary_seq) < self.min_homopolymer_len:
+                return
+
+            homopolymer_base = boundary_seq[-1]
+            if not all(b == homopolymer_base for b in boundary_seq[-self.min_homopolymer_len:]):
+                return
+
+            # Walk forward looking for mismatches
+            for i in range(len(aligned_positions)):
+                rp, refp, rb, gb = aligned_positions[i]
+                if rp is None:
+                    continue
+
+                if rb != homopolymer_base:
+                    key = (chrom, refp)
+                    if key not in self._mismatch_freq:
+                        self._mismatch_freq[key] = MismatchFrequency(
+                            chrom=chrom,
+                            position=refp,
+                            ref_base=gb,
+                            homopolymer_base=homopolymer_base
+                        )
+
+                    self._mismatch_freq[key].total_reads += 1
+                    self._mismatch_freq[key].mismatch_counts[rb] += 1
+                    break
+
+                if gb != homopolymer_base:
+                    break
+
+    def finalize_scan(self) -> None:
+        """
+        Complete the scanning phase and identify potential variants.
+
+        Call this after scanning all reads, before applying rescue.
+        """
+        self._potential_variants = []
+
+        for key, freq in self._mismatch_freq.items():
+            if freq.total_reads >= self.min_reads_for_variant_call:
+                if freq.mismatch_fraction >= self.min_variant_fraction:
+                    self._potential_variants.append(freq)
+
+        self._scan_complete = True
+
+    def is_likely_variant(self, chrom: str, position: int) -> Tuple[bool, str]:
+        """
+        Check if a position is likely a true variant (not basecalling error).
+
+        Args:
+            chrom: Chromosome name
+            position: 0-based genomic position
+
+        Returns:
+            Tuple of (is_variant, confidence):
+            - is_variant: True if likely a true variant
+            - confidence: 'HIGH' (>80% of reads), 'MEDIUM' (15-80%),
+                         'LOW' (<15% - likely basecalling error),
+                         'UNKNOWN' (insufficient reads)
+        """
+        if not self._scan_complete:
+            raise RuntimeError("Must call finalize_scan() before checking variants")
+
+        key = (chrom, position)
+        if key not in self._mismatch_freq:
+            return (False, 'UNKNOWN')
+
+        freq = self._mismatch_freq[key]
+
+        if freq.total_reads < self.min_reads_for_variant_call:
+            return (False, 'UNKNOWN')
+
+        frac = freq.mismatch_fraction
+
+        if frac >= self.min_variant_fraction:
+            return (True, 'HIGH')  # Likely true variant
+        elif frac >= 0.15:
+            return (False, 'MEDIUM')  # Ambiguous
+        else:
+            return (False, 'LOW')  # Likely basecalling error - OK to rescue
+
+    def rescue_with_variant_filter(
+        self,
+        read: pysam.AlignedSegment,
+        strand: str,
+        genome: Dict[str, str],
+        end: str = '3prime'
+    ) -> Optional[Dict]:
+        """
+        Second pass: Apply rescue with variant filtering.
+
+        Like rescue_mismatch_inside_homopolymer(), but skips positions
+        that are likely true variants based on population frequency.
+
+        Args:
+            read: pysam AlignedSegment
+            strand: '+' or '-'
+            genome: Dict of chromosome sequences
+            end: '3prime' or '5prime'
+
+        Returns:
+            Dict with rescue result (same as rescue_mismatch_inside_homopolymer)
+            plus additional fields:
+            - variant_check: 'SKIPPED_LIKELY_VARIANT', 'RESCUED', or 'NO_RESCUE_NEEDED'
+            - variant_confidence: confidence level from is_likely_variant()
+            Or None if no rescue applicable
+        """
+        if not self._scan_complete:
+            raise RuntimeError("Must call finalize_scan() before rescue")
+
+        # Get the basic rescue result
+        result = rescue_mismatch_inside_homopolymer(
+            read, strand, genome, self.min_homopolymer_len, end
+        )
+
+        if result is None:
+            return None
+
+        # Check if rescued position is likely a variant
+        chrom = read.reference_name
+        rescued_pos = result['corrected_pos']
+
+        is_variant, confidence = self.is_likely_variant(chrom, rescued_pos)
+
+        if is_variant:
+            # This looks like a true variant - don't rescue!
+            return {
+                **result,
+                'variant_check': 'SKIPPED_LIKELY_VARIANT',
+                'variant_confidence': confidence,
+                'corrected_pos': result['original_pos'],  # Revert to original
+                'rescued_bases': 0,
+            }
+
+        # Check rescue size limit
+        if result['rescued_bases'] > self.max_rescue_bases:
+            return {
+                **result,
+                'variant_check': 'RESCUE_TOO_LARGE',
+                'variant_confidence': confidence,
+                'corrected_pos': result['original_pos'],  # Revert
+                'rescued_bases': 0,
+            }
+
+        # Safe to rescue
+        return {
+            **result,
+            'variant_check': 'RESCUED',
+            'variant_confidence': confidence,
+        }
+
+    def get_potential_variants(self) -> List[Dict]:
+        """
+        Get list of positions that look like true variants.
+
+        These should be reported to the user as potential reference issues
+        or strain-specific SNPs that should NOT be rescued.
+
+        Returns:
+            List of dicts with variant information
+        """
+        if not self._scan_complete:
+            raise RuntimeError("Must call finalize_scan() first")
+
+        variants = []
+        for freq in self._potential_variants:
+            dom_base, dom_frac = freq.dominant_mismatch
+            variants.append({
+                'chrom': freq.chrom,
+                'position': freq.position,
+                'ref_base': freq.ref_base,
+                'homopolymer_base': freq.homopolymer_base,
+                'total_reads': freq.total_reads,
+                'mismatch_fraction': freq.mismatch_fraction,
+                'dominant_mismatch_base': dom_base,
+                'dominant_mismatch_fraction': dom_frac,
+            })
+
+        return sorted(variants, key=lambda x: (x['chrom'], x['position']))
+
+    def get_statistics(self) -> Dict:
+        """Get summary statistics from the scan."""
+        if not self._scan_complete:
+            raise RuntimeError("Must call finalize_scan() first")
+
+        total_positions = len(self._mismatch_freq)
+        positions_with_coverage = sum(
+            1 for f in self._mismatch_freq.values()
+            if f.total_reads >= self.min_reads_for_variant_call
+        )
+
+        return {
+            'total_positions_scanned': total_positions,
+            'positions_with_sufficient_coverage': positions_with_coverage,
+            'potential_variants_detected': len(self._potential_variants),
+            'min_variant_fraction_threshold': self.min_variant_fraction,
+            'min_reads_for_variant_call': self.min_reads_for_variant_call,
+        }
+
+
+def process_bam_with_variant_aware_rescue(
+    bam_path: str,
+    genome: Dict[str, str],
+    output_variants_path: Optional[str] = None,
+    min_variant_fraction: float = 0.8,
+    min_reads_for_variant_call: int = 5,
+    region: Optional[str] = None,
+) -> Tuple[VariantAwareHomopolymerRescue, Dict]:
+    """
+    Process a BAM file with variant-aware homopolymer rescue.
+
+    This is a convenience function that handles the two-pass approach:
+    1. Scans all reads to build mismatch frequency map
+    2. Identifies potential variants (positions with high mismatch frequency)
+    3. Returns the rescue object ready for applying corrections
+
+    Args:
+        bam_path: Path to BAM file
+        genome: Dict of chromosome sequences
+        output_variants_path: Optional path to write potential variants TSV
+        min_variant_fraction: Threshold for calling a position as variant (default 0.8)
+        min_reads_for_variant_call: Minimum reads at position (default 5)
+        region: Optional region string (e.g., "chrI:1000-2000") to limit scan
+
+    Returns:
+        Tuple of (VariantAwareHomopolymerRescue object, statistics dict)
+
+    Example:
+        >>> rescue, stats = process_bam_with_variant_aware_rescue(
+        ...     "sample.bam", genome, output_variants_path="potential_variants.tsv"
+        ... )
+        >>> print(f"Found {stats['potential_variants_detected']} potential variants")
+        >>>
+        >>> # Now use rescue object in second pass
+        >>> with pysam.AlignmentFile("sample.bam") as bam:
+        ...     for read in bam:
+        ...         strand = '-' if read.is_reverse else '+'
+        ...         result = rescue.rescue_with_variant_filter(read, strand, genome)
+    """
+    rescue = VariantAwareHomopolymerRescue(
+        min_variant_fraction=min_variant_fraction,
+        min_reads_for_variant_call=min_reads_for_variant_call,
+    )
+
+    # Pass 1: Scan all reads
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        fetch_kwargs = {}
+        if region:
+            fetch_kwargs['region'] = region
+
+        for read in bam.fetch(**fetch_kwargs):
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+
+            strand = '-' if read.is_reverse else '+'
+            rescue.scan_read(read, strand, genome, end='3prime')
+
+    # Finalize scan
+    rescue.finalize_scan()
+
+    # Get statistics
+    stats = rescue.get_statistics()
+
+    # Write potential variants if requested
+    if output_variants_path:
+        variants = rescue.get_potential_variants()
+        if variants:
+            with open(output_variants_path, 'w') as f:
+                header = ['chrom', 'position', 'ref_base', 'homopolymer_base',
+                          'total_reads', 'mismatch_fraction',
+                          'dominant_mismatch_base', 'dominant_mismatch_fraction']
+                f.write('\t'.join(header) + '\n')
+                for v in variants:
+                    row = [
+                        v['chrom'],
+                        str(v['position']),
+                        v['ref_base'],
+                        v['homopolymer_base'],
+                        str(v['total_reads']),
+                        f"{v['mismatch_fraction']:.3f}",
+                        v['dominant_mismatch_base'],
+                        f"{v['dominant_mismatch_fraction']:.3f}",
+                    ]
+                    f.write('\t'.join(row) + '\n')
+
+    return rescue, stats
+
+
+def correct_rna_end_position(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    end: str = '3prime',
+    min_polya_len: int = 5,
+    min_homopolymer_len: int = 3,
+    variant_aware_rescue: Optional['VariantAwareHomopolymerRescue'] = None,
+) -> Dict:
+    """
+    Comprehensive RNA end correction combining multiple rescue strategies.
+
+    This function applies correction strategies to handle different aligner behaviors:
+    - For 3' ends: poly-A boundary detection + soft-clip rescue + mismatch rescue
+    - For 5' ends: soft-clip rescue + mismatch rescue (no poly-A detection)
+
+    The strategies handle different alignment scenarios:
+    - Soft-clip rescue: For aligners that soft-clip at homopolymer boundaries
+    - Mismatch rescue: For global aligners that force-align, placing mismatches
+
+    Args:
+        read: pysam AlignedSegment
+        strand: '+' or '-'
+        genome: Dict of chromosome sequences (NCBI format keys)
+        end: '3prime' or '5prime' - which end to correct
+        min_polya_len: Minimum poly-A length to trigger boundary correction (default 5)
+        min_homopolymer_len: Minimum homopolymer run to trigger rescue (default 3)
+        variant_aware_rescue: Optional VariantAwareHomopolymerRescue object for
+            filtering out likely true variants during mismatch rescue. If provided,
+            positions with high mismatch frequency (>80% of reads) will NOT be
+            rescued, preventing false correction of real SNPs.
+
+    Returns:
+        Dict with:
+            - original_pos: Original mapped position (0-based)
+            - corrected_pos: Final corrected position
+            - end: Which end was corrected ('3prime' or '5prime')
+            - polya_correction: Dict from find_polya_boundary() or None (3' only)
+            - softclip_rescue: Dict from rescue_softclip_at_homopolymer() or None
+            - mismatch_rescue: Dict from rescue_mismatch_inside_homopolymer() or None
+            - total_correction_bp: Total position shift
+            - variant_skipped: True if mismatch rescue was skipped due to likely variant
+    """
+    # Determine which side based on strand and end
+    use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
+
+    # Get original position
+    if use_right_side:
+        original_pos = read.reference_end - 1  # 0-based inclusive
+    else:
+        original_pos = read.reference_start  # 0-based
+
+    current_pos = original_pos
+    polya_result = None
+
+    # Apply poly-A boundary detection (only for 3' ends)
+    if end == '3prime':
+        polya_result = find_polya_boundary(read, strand, genome, min_polya_len)
+        if polya_result:
+            current_pos = polya_result['corrected_pos']
+
+    # Apply soft-clip rescue (for local aligners that soft-clip)
+    softclip_result = rescue_softclip_at_homopolymer(read, strand, genome, min_homopolymer_len, end)
+
+    # Apply mismatch rescue (for global aligners that force-align)
+    # Use variant-aware rescue if provided
+    variant_skipped = False
+    if variant_aware_rescue is not None:
+        mismatch_result = variant_aware_rescue.rescue_with_variant_filter(
+            read, strand, genome, end
+        )
+        if mismatch_result and mismatch_result.get('variant_check') == 'SKIPPED_LIKELY_VARIANT':
+            variant_skipped = True
+            mismatch_result = None  # Don't use this rescue
+    else:
+        mismatch_result = rescue_mismatch_inside_homopolymer(read, strand, genome, min_homopolymer_len, end)
+
+    # Combine all corrections - use the one that moves end furthest from homopolymer
+    # For 3' + strand or 5' - strand (right side): further = higher position
+    # For 3' - strand or 5' + strand (left side): further = lower position
+    candidate_positions = [current_pos]
+
+    if softclip_result:
+        candidate_positions.append(softclip_result['corrected_pos'])
+    if mismatch_result:
+        candidate_positions.append(mismatch_result['corrected_pos'])
+
+    if use_right_side:
+        final_pos = max(candidate_positions)
+    else:
+        final_pos = min(candidate_positions)
+
+    return {
+        'original_pos': original_pos,
+        'corrected_pos': final_pos,
+        'end': end,
+        'polya_correction': polya_result,
+        'softclip_rescue': softclip_result,
+        'mismatch_rescue': mismatch_result,
+        'total_correction_bp': abs(final_pos - original_pos),
+        'variant_skipped': variant_skipped,
+    }
+
+
+def correct_3prime_position(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    min_polya_len: int = 5,
+    min_homopolymer_len: int = 3
+) -> Dict:
+    """
+    Comprehensive 3' end correction (wrapper for correct_rna_end_position).
+
+    See correct_rna_end_position() for full documentation.
+
+    Returns:
+        Dict with original_3prime, corrected_3prime, and correction details.
+    """
+    result = correct_rna_end_position(
+        read, strand, genome, '3prime', min_polya_len, min_homopolymer_len
+    )
+    # Rename keys for backwards compatibility
+    return {
+        'original_3prime': result['original_pos'],
+        'corrected_3prime': result['corrected_pos'],
+        'polya_correction': result['polya_correction'],
+        'softclip_rescue': result['softclip_rescue'],
+        'mismatch_rescue': result['mismatch_rescue'],
+        'total_correction_bp': result['total_correction_bp'],
+    }
+
+
+def correct_5prime_position(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    min_homopolymer_len: int = 3
+) -> Dict:
+    """
+    Comprehensive 5' end correction (wrapper for correct_rna_end_position).
+
+    See correct_rna_end_position() for full documentation.
+
+    Returns:
+        Dict with original_5prime, corrected_5prime, and correction details.
+    """
+    result = correct_rna_end_position(
+        read, strand, genome, '5prime', min_polya_len=0, min_homopolymer_len=min_homopolymer_len
+    )
+    return {
+        'original_5prime': result['original_pos'],
+        'corrected_5prime': result['corrected_pos'],
+        'softclip_rescue': result['softclip_rescue'],
+        'mismatch_rescue': result['mismatch_rescue'],
+        'total_correction_bp': result['total_correction_bp'],
+    }
 
 
 # =============================================================================
