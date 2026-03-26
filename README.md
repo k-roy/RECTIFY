@@ -87,42 +87,18 @@ Long reads spanning splice junctions often have soft-clipped bases at the 5' end
 
 Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel and selects the best alignment per read.
 
-```
-===============================================================================
-THE PROBLEM: Aligner disagreement at splice junctions
-===============================================================================
+![Multi-Aligner Consensus](docs/figures/multi_aligner_consensus.png)
 
-minimap2:  ...EXON1|=====N=====|EXON2...  (spliced, but 5' soft-clipped)
-              SSSSS↑
+**The Problem:** Different aligners handle the same read differently. Some soft-clip at splice boundaries while others find the junction.
 
-mapPacBio: ...EXON1|=====N=====|EXON2...  (spliced, no soft-clip)
-                   ↑
+**RECTIFY's Solution:**
+1. Run all 3 aligners (minimap2, mapPacBio, gapmm2) on the same reads
+2. For each read, compare alignments across aligners
+3. Prefer alignments that splice through junctions rather than soft-clipping (5' rescue)
+4. Score by canonical splice sites (GT-AG) and annotation matches
+5. Output: Single consensus BAM with best alignment per read
 
-gapmm2:    ...EXON1|=====N=====|EXON2...  (spliced, terminal exon refined)
-                   ↑
-
-Each aligner may find the correct junction, miss it, or soft-clip at the boundary.
-
-===============================================================================
-RECTIFY'S SOLUTION: Multi-aligner consensus with 5' rescue
-===============================================================================
-
-  1. Run all 3 aligners on the same reads
-  2. For each read, compare junction sets across aligners
-  3. Prefer alignments that:
-     a. Splice through known junctions rather than soft-clipping (5' rescue)
-     b. Use canonical splice sites (GT-AG)
-     c. Are supported by multiple aligners (high confidence)
-  4. Output: Single consensus BAM with best alignments
-
-Note: 3' false junctions from poly(A) artifacts are handled separately by
-walk back correction (see "3' False Junction Handling" below).
-
-Confidence scoring:
-  - HIGH:   3/3 aligners agree on junction
-  - MEDIUM: 2/3 aligners agree
-  - LOW:    1/3 aligners (only one found it)
-```
+**Note:** 3' false junctions from poly(A) artifacts are handled separately by walk back correction (see "3' False Junction Handling" below).
 
 **Usage:**
 
@@ -159,31 +135,17 @@ Poly(A) tails can create spurious "junctions" when the aligner introduces a skip
 
 After correction, RECTIFY groups nearby CPA sites into clusters using a valley-based algorithm, then runs DESeq2 at both gene and cluster resolution.
 
-```
-===============================================================================
-ADAPTIVE CLUSTERING: Valley-based CPA site grouping
-===============================================================================
+![Adaptive Clustering](docs/figures/adaptive_clustering.png)
 
-Signal:
-            ▲                    ▲▲
-           ███                  ████
-          █████      ▲         ██████
-         ███████    ███       ████████
-        █████████  █████     ██████████
-       ─────┴─────┴─────────┴──────────────> position
-            │  ↑  │    ↑    │     ↑
-         cluster1  valley  cluster2  cluster3
+**Algorithm:**
+1. Find peaks (local maxima in 3' end signal)
+2. Find valleys (local minima between peaks)
+3. Set boundaries at midpoint between peak and valley (capped at ±10bp)
 
-Algorithm:
-  1. Find peaks (local maxima in 3' end signal)
-  2. Find valleys (local minima between peaks)
-  3. Set boundaries at midpoint between peak and valley (capped at ±10bp)
-
-Why cluster-level analysis matters:
-  - Genes often have MULTIPLE CPA sites (alternative polyadenylation)
-  - Conditions may shift usage between proximal/distal sites
-  - Cluster-level DESeq2 detects isoform-specific changes that gene-level misses
-```
+**Why cluster-level analysis matters:**
+- Genes often have MULTIPLE CPA sites (alternative polyadenylation)
+- Conditions may shift usage between proximal/distal sites
+- Cluster-level DESeq2 detects isoform-specific changes that gene-level misses
 
 **Dual-resolution output:**
 

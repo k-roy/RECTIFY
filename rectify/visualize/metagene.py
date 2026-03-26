@@ -4,12 +4,15 @@ Metagene signal aggregation for RECTIFY visualization.
 Provides efficient signal extraction and aggregation for metagene analysis:
 - PositionIndex: O(1) position lookups using dict-of-dicts structure
 - MetagenePipeline: Complete workflow with per-locus normalization
+- LociFilter: Consistent loci filtering across multiple datasets
 
 Key features:
 - Per-locus normalization: Each locus contributes equally regardless of expression
 - Percentile capping: Reduces influence of outlier loci
+- Trimmed mean: Excludes top/bottom loci by signal (better than capping)
 - Strand awareness: Correct handling of + and - strand coordinates
 - Variable-length scaling: Feature bodies scaled to fixed width using np.interp
+- Consistent loci filtering: Use one dataset to determine loci, apply to all
 
 Performance:
 - Index build: ~2s for 10M positions
@@ -22,7 +25,7 @@ Author: Kevin R. Roy
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -39,6 +42,8 @@ class MetageneConfig:
         normalize_per_locus: If True, each locus contributes equally
         cap_percentile: Cap values at this percentile (reduces outlier influence)
         min_locus_signal: Minimum total signal for a locus to be included
+        trimmed_proportion: Proportion to cut from each end for trimmed mean (0.1 = 10%)
+        use_trimmed_mean: If True, use trimmed mean instead of percentile capping
     """
     window_upstream: int = 100
     window_downstream: int = 100
@@ -46,6 +51,75 @@ class MetageneConfig:
     normalize_per_locus: bool = True
     cap_percentile: float = 90.0
     min_locus_signal: float = 0.0
+    trimmed_proportion: float = 0.1
+    use_trimmed_mean: bool = False
+
+
+@dataclass
+class LociFilter:
+    """
+    Filter for consistent loci selection across multiple datasets.
+
+    When comparing metagene profiles from different data types (e.g., RECTIFY,
+    NET-seq, PAR-CLIP), outlier loci may differ between datasets. Using the
+    same loci across all datasets ensures valid comparisons.
+
+    The filter is computed from a "priority" dataset and then applied to all
+    other datasets, ensuring they use the exact same set of loci.
+
+    Attributes:
+        kept_indices: Indices of loci to keep (relative to original DataFrame)
+        excluded_indices: Indices of loci excluded
+        priority_dataset: Name of the dataset used to determine filtering
+        method: Filtering method used ('trimmed_mean', 'top_percentile', etc.)
+        parameters: Dict of method parameters
+
+    Example:
+        # Compute filter from RECTIFY WT data
+        filter = pipeline.compute_loci_filter(
+            loci_df, rectify_wt_index,
+            method='trimmed_mean',
+            proportion=0.1  # Keep middle 80%
+        )
+
+        # Apply same filter to all datasets
+        results = {
+            'RECTIFY_WT': pipeline.compute_profile(loci_df, rectify_wt_index, loci_filter=filter),
+            'RECTIFY_dst1': pipeline.compute_profile(loci_df, rectify_dst1_index, loci_filter=filter),
+            'NET-seq_WT': pipeline.compute_profile(loci_df, netseq_wt_index, loci_filter=filter),
+        }
+    """
+    kept_indices: List[int]
+    excluded_indices: List[int]
+    priority_dataset: str = "unknown"
+    method: str = "trimmed_mean"
+    parameters: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def n_kept(self) -> int:
+        """Number of loci kept."""
+        return len(self.kept_indices)
+
+    @property
+    def n_excluded(self) -> int:
+        """Number of loci excluded."""
+        return len(self.excluded_indices)
+
+    @property
+    def fraction_kept(self) -> float:
+        """Fraction of loci kept."""
+        total = self.n_kept + self.n_excluded
+        return self.n_kept / total if total > 0 else 0.0
+
+    def apply_to_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply filter to DataFrame, keeping only selected loci."""
+        return df.iloc[self.kept_indices].copy()
+
+    def __repr__(self) -> str:
+        return (
+            f"LociFilter(n_kept={self.n_kept}, n_excluded={self.n_excluded}, "
+            f"method='{self.method}', priority='{self.priority_dataset}')"
+        )
 
 
 class PositionIndex:
@@ -427,6 +501,248 @@ class MetagenePipeline:
             'body_width': cfg.scaled_body_width,
             'included_loci': included_loci,
         }
+
+    def compute_loci_filter(
+        self,
+        loci: pd.DataFrame,
+        position_index: PositionIndex,
+        method: str = 'trimmed_mean',
+        proportion: float = 0.1,
+        priority_name: str = 'priority',
+        chrom_col: str = 'chrom',
+        strand_col: str = 'strand',
+        locus_start_col: str = 'start',
+        locus_end_col: str = 'end',
+    ) -> LociFilter:
+        """
+        Compute a loci filter based on signal from a priority dataset.
+
+        This determines which loci to include/exclude based on signal levels
+        in the priority dataset. The resulting filter can be applied to other
+        datasets to ensure consistent loci selection.
+
+        Methods:
+        - 'trimmed_mean': Exclude top and bottom proportion of loci by total signal
+        - 'top_percentile': Exclude top proportion of loci (highest signal)
+        - 'bottom_percentile': Exclude bottom proportion of loci (lowest signal)
+
+        Args:
+            loci: DataFrame with locus coordinates
+            position_index: PositionIndex for the priority dataset
+            method: Filtering method ('trimmed_mean', 'top_percentile', 'bottom_percentile')
+            proportion: Proportion to exclude (0.1 = 10% from each end for trimmed_mean)
+            priority_name: Name for the priority dataset (for tracking)
+            chrom_col: Column name for chromosome
+            strand_col: Column name for strand
+            locus_start_col: Column name for locus start position
+            locus_end_col: Column name for locus end position
+
+        Returns:
+            LociFilter object with kept/excluded indices
+
+        Example:
+            # Create filter from RECTIFY WT, excluding top/bottom 10%
+            filt = pipeline.compute_loci_filter(
+                loci_df, rectify_wt_index,
+                method='trimmed_mean',
+                proportion=0.1,
+                priority_name='RECTIFY_WT'
+            )
+            print(f"Keeping {filt.n_kept} of {filt.n_kept + filt.n_excluded} loci")
+        """
+        cfg = self.config
+
+        # Calculate total signal for each locus
+        locus_signals = []
+        locus_indices = []
+
+        for idx, locus in loci.iterrows():
+            chrom = locus[chrom_col]
+            strand = locus[strand_col]
+            locus_start = int(locus[locus_start_col])
+            locus_end = int(locus[locus_end_col])
+
+            # Sum signal in the window around this locus
+            if strand == '+':
+                window_start = locus_start - cfg.window_upstream
+                window_end = locus_end + cfg.window_downstream
+            else:
+                window_start = locus_start - cfg.window_downstream
+                window_end = locus_end + cfg.window_upstream
+
+            signal = position_index.extract_window_array(
+                chrom, strand, window_start, window_end
+            )
+            total = signal.sum()
+
+            locus_signals.append(total)
+            locus_indices.append(idx)
+
+        # Convert to arrays
+        signals = np.array(locus_signals)
+        indices = np.array(locus_indices)
+        n_loci = len(signals)
+
+        # Determine which loci to keep based on method
+        if method == 'trimmed_mean':
+            # Exclude top and bottom proportion
+            n_cut = int(n_loci * proportion)
+            sorted_order = np.argsort(signals)
+            # Keep middle portion
+            if n_cut > 0:
+                kept_positions = sorted_order[n_cut:-n_cut]
+                excluded_positions = np.concatenate([
+                    sorted_order[:n_cut],
+                    sorted_order[-n_cut:]
+                ])
+            else:
+                kept_positions = sorted_order
+                excluded_positions = np.array([], dtype=int)
+
+        elif method == 'top_percentile':
+            # Exclude top proportion (highest signal)
+            n_cut = int(n_loci * proportion)
+            sorted_order = np.argsort(signals)
+            if n_cut > 0:
+                kept_positions = sorted_order[:-n_cut]
+                excluded_positions = sorted_order[-n_cut:]
+            else:
+                kept_positions = sorted_order
+                excluded_positions = np.array([], dtype=int)
+
+        elif method == 'bottom_percentile':
+            # Exclude bottom proportion (lowest signal)
+            n_cut = int(n_loci * proportion)
+            sorted_order = np.argsort(signals)
+            if n_cut > 0:
+                kept_positions = sorted_order[n_cut:]
+                excluded_positions = sorted_order[:n_cut]
+            else:
+                kept_positions = sorted_order
+                excluded_positions = np.array([], dtype=int)
+
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'trimmed_mean', 'top_percentile', or 'bottom_percentile'")
+
+        # Convert positions back to original DataFrame indices
+        kept_indices = [indices[i] for i in kept_positions]
+        excluded_indices = [indices[i] for i in excluded_positions]
+
+        return LociFilter(
+            kept_indices=kept_indices,
+            excluded_indices=excluded_indices,
+            priority_dataset=priority_name,
+            method=method,
+            parameters={'proportion': proportion}
+        )
+
+    def compute_profile_filtered(
+        self,
+        loci: pd.DataFrame,
+        position_index: PositionIndex,
+        loci_filter: LociFilter,
+        **kwargs,
+    ) -> Dict:
+        """
+        Compute metagene profile using only loci specified by a filter.
+
+        This is the primary method for computing profiles with consistent
+        loci filtering. The filter is typically computed from a priority
+        dataset using compute_loci_filter().
+
+        Args:
+            loci: DataFrame with locus coordinates
+            position_index: PositionIndex with signal data
+            loci_filter: LociFilter specifying which loci to include
+            **kwargs: Additional arguments passed to compute_profile
+
+        Returns:
+            Dict with profile results (same format as compute_profile)
+
+        Example:
+            # Compute filter from RECTIFY WT
+            filt = pipeline.compute_loci_filter(loci_df, rectify_wt_index)
+
+            # Apply to all datasets
+            results = {
+                name: pipeline.compute_profile_filtered(loci_df, idx, filt)
+                for name, idx in datasets.items()
+            }
+        """
+        # Filter loci DataFrame
+        filtered_loci = loci_filter.apply_to_dataframe(loci)
+
+        # Compute profile on filtered loci
+        result = self.compute_profile(filtered_loci, position_index, **kwargs)
+
+        # Add filter info to result
+        result['loci_filter'] = loci_filter
+        result['filter_method'] = loci_filter.method
+        result['filter_priority'] = loci_filter.priority_dataset
+
+        return result
+
+    def compute_multiple_profiles_filtered(
+        self,
+        loci: pd.DataFrame,
+        condition_indices: Dict[str, PositionIndex],
+        priority_condition: str,
+        filter_method: str = 'trimmed_mean',
+        filter_proportion: float = 0.1,
+        **kwargs,
+    ) -> Tuple[Dict[str, Dict], LociFilter]:
+        """
+        Compute profiles for multiple conditions with consistent loci filtering.
+
+        First computes a loci filter from the priority condition, then applies
+        it to all conditions. This ensures all profiles use the exact same loci.
+
+        Args:
+            loci: DataFrame with locus coordinates
+            condition_indices: Dict mapping condition name -> PositionIndex
+            priority_condition: Name of condition to use for determining loci filter
+            filter_method: Filtering method ('trimmed_mean', 'top_percentile', 'bottom_percentile')
+            filter_proportion: Proportion to exclude
+            **kwargs: Additional arguments passed to compute_profile
+
+        Returns:
+            Tuple of (results dict, LociFilter used)
+
+        Example:
+            results, filt = pipeline.compute_multiple_profiles_filtered(
+                loci_df,
+                {'WT': wt_index, 'mutant': mut_index},
+                priority_condition='WT',
+                filter_method='trimmed_mean',
+                filter_proportion=0.1
+            )
+            print(f"Using {filt.n_kept} loci based on WT signal")
+        """
+        if priority_condition not in condition_indices:
+            raise ValueError(
+                f"Priority condition '{priority_condition}' not in condition_indices. "
+                f"Available: {list(condition_indices.keys())}"
+            )
+
+        # Compute filter from priority condition
+        loci_filter = self.compute_loci_filter(
+            loci,
+            condition_indices[priority_condition],
+            method=filter_method,
+            proportion=filter_proportion,
+            priority_name=priority_condition,
+            **{k: v for k, v in kwargs.items()
+               if k in ['chrom_col', 'strand_col', 'locus_start_col', 'locus_end_col']}
+        )
+
+        # Compute profiles for all conditions using the same filter
+        results = {}
+        for condition, index in condition_indices.items():
+            results[condition] = self.compute_profile_filtered(
+                loci, index, loci_filter, **kwargs
+            )
+
+        return results, loci_filter
 
     def compute_multiple_profiles(
         self,

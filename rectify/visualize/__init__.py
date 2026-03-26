@@ -3,6 +3,7 @@ RECTIFY Visualization Module
 
 Provides plotting utilities for RNA 3' end analysis:
 - Metagene signal aggregation and plotting
+- Consistent loci filtering across multiple data types
 - Gene track rendering with box-arrow shapes
 - Coverage track visualization
 - Multi-track browser-style figures
@@ -17,6 +18,27 @@ Example usage:
     index = PositionIndex(ends_df, position_col='position')
     pipeline = MetagenePipeline(MetageneConfig(window_upstream=100))
     result = pipeline.compute_profile(loci_df, index)
+
+    # Consistent loci filtering across data types
+    # (Use one "priority" dataset to determine which loci to include)
+    from rectify.visualize import MetagenePipeline, LociFilter
+
+    pipeline = MetagenePipeline(MetageneConfig(window_upstream=50))
+
+    # Compute filter from priority dataset (e.g., RECTIFY 3' ends)
+    loci_filter = pipeline.compute_loci_filter(
+        loci_df, rectify_index,
+        method='trimmed_mean',  # Exclude top/bottom 10% by signal
+        proportion=0.1,
+        priority_name='RECTIFY_WT'
+    )
+
+    # Apply same filter to all datasets
+    results = {
+        'RECTIFY': pipeline.compute_profile_filtered(loci_df, rectify_index, loci_filter),
+        'NET-seq': pipeline.compute_profile_filtered(loci_df, netseq_index, loci_filter),
+        'PAR-CLIP': pipeline.compute_profile_filtered(loci_df, parclip_index, loci_filter),
+    }
 
     # Multi-track browser
     from rectify.visualize import MultiTrackFigure
@@ -81,6 +103,7 @@ from .metagene import (
     MetageneConfig,
     PositionIndex,
     MetagenePipeline,
+    LociFilter,
     build_index_from_bam,
 )
 
@@ -159,6 +182,7 @@ __all__ = [
     'MetageneConfig',
     'PositionIndex',
     'MetagenePipeline',
+    'LociFilter',
     'build_index_from_bam',
 
     # Gene track
