@@ -66,6 +66,24 @@ When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce i
 
 ---
 
+## Soft-Clip Rescue at Homopolymer Boundaries
+
+Nanopore basecallers systematically under-call homopolymer runs (e.g., calling 8 U's instead of 10). When this happens at CPA sites with upstream T-tracts, the aligner soft-clips the non-T bases instead of placing them correctly.
+
+![Soft-Clip Rescue](docs/images/softclip_rescue.png)
+
+**The Problem:** The basecaller under-calls the T-tract, so when the aligner reaches the non-T base (G), it can't fit it into the shortened homopolymer and soft-clips it instead.
+
+**RECTIFY's Solution:**
+1. Detect soft-clips adjacent to homopolymer boundaries
+2. Skip over remaining reference homopolymer bases (the under-called T's)
+3. Match soft-clipped bases to reference sequence beyond the homopolymer
+4. Extend the 3' end to include the rescued bases
+
+**Result:** 3' end correctly placed after the rescued sequence (e.g., GTTC), recovering ~3.3% of reads with an average of 3.7 bp rescued per read.
+
+---
+
 ## 5' End Correction: Splice Junction Soft-Clips
 
 Long reads spanning splice junctions often have soft-clipped bases at the 5' end where the aligner fails to find the exact junction boundary. RECTIFY recovers the true splice site.
