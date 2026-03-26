@@ -79,7 +79,7 @@ Long reads spanning splice junctions often have soft-clipped bases at the 5' end
 2. Check if soft-clipped sequence matches upstream exon
 3. Extend the alignment to the canonical splice donor (GT)
 
-**Result:** Accurate 5' end for TSS analysis and full-length read classification.
+**Result:** Accurate read 5' end and recovered splice junction. Note: Due to 5'-to-3' degradation in direct RNA sequencing, the read's 5' end often does not represent the true TSS.
 
 ---
 
@@ -93,9 +93,9 @@ Different aligners make different tradeoffs at splice junctions. RECTIFY runs th
 
 **RECTIFY's Solution:**
 1. Run all 3 aligners (minimap2, mapPacBio, gapmm2) on the same reads
-2. For each read, compare alignments across aligners
-3. Prefer alignments that splice through junctions rather than soft-clipping (5' rescue)
-4. Score by canonical splice sites (GT-AG) and annotation matches
+2. **Attempt to rescue** each alignment's 5' soft-clips by extending through known junctions
+3. Score the (potentially rescued) alignments by canonical splice sites (GT-AG) and annotation matches
+4. Select the highest-scoring alignment per read
 5. Output: Single consensus BAM with best alignment per read
 
 **Note:** 3' false junctions from poly(A) artifacts are handled separately by walk back correction (see "3' False Junction Handling" below).
@@ -247,37 +247,23 @@ rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
 
 RECTIFY includes a dedicated pipeline for processing NET-seq (Native Elongating Transcript sequencing) data. NET-seq captures nascent RNA 3' ends, which undergo oligo-adenylation during library preparation, creating characteristic signal spreading at A-tract regions.
 
-```
-===============================================================================
-NET-SEQ SIGNAL SPREADING: Oligo(A) tails cause position ambiguity
-===============================================================================
+### The Problem: Oligo(A) Signal Spreading
 
-True CPA site at position P:
-                     ↓
-Genome:    ...GCTA|AAAAAAAA|TGCG...
-                  └────────┘
-                   A-tract region
+![Oligo(A) Spreading](docs/figures/oligo_a_spreading.png)
 
-With oligo(A) tails (~5.5 bp mean), reads can prime at ANY downstream A:
+With oligo(A) tails (~5.5 bp mean), reads can prime at ANY downstream A in genomic A-tracts. This causes signal to "spread" downstream, obscuring the true CPA site.
 
-             Position:  P   P+1  P+2  P+3  P+4  P+5  P+6  P+7
-             Signal:   54%  0.5% 1.5% 3.2% 5.2% 6.7% 7.3% 6.7% ...
+### RECTIFY's Solution: NNLS Deconvolution
 
-The signal "spreads" downstream into the A-tract, obscuring the true CPA site.
+![Oligo(A) Deconvolution](docs/figures/oligo_a_deconvolution.png)
 
-===============================================================================
-RECTIFY'S SOLUTION: NNLS deconvolution with empirical PSF
-===============================================================================
+Using the Point-Spread-Function (PSF) derived from 5000+ 0A sites (sites with no downstream genomic A's, where the true position is known):
 
-Using the Point-Spread-Function (PSF) derived from 5000+ 0A sites (sites with
-no downstream genomic A's, where the true position is known):
+1. Build convolution matrix: A[i,j] = P(observe at j | true peak at i)
+2. Solve NNLS with L2 regularization: min ||Ax - observed||² + λ||x||²
+3. Recover true peak positions from deconvolved signal
 
-  1. Build convolution matrix: A[i,j] = P(observe at j | true peak at i)
-  2. Solve NNLS with L2 regularization: min ||Ax - observed||² + λ||x||²
-  3. Recover true peak positions from deconvolved signal
-
-Result: Sharper, more accurate 3' end signal with A-tract ambiguity resolved.
-```
+**Result:** Sharper, more accurate 3' end signal with A-tract ambiguity resolved.
 
 ### NET-seq Command
 
