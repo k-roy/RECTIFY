@@ -50,47 +50,17 @@ For *S. cerevisiae*, RECTIFY includes the S288C genome, SGD annotations, GO term
 
 When poly(A) tails align to genomic A-tracts, aligners like minimap2 introduce indel artifacts to maximize alignment score. This shifts the apparent 3' end **downstream** of the true cleavage site.
 
-```
-===============================================================================
-THE PROBLEM: Poly(A) tail alignment artifacts
-===============================================================================
+![3' End Indel Correction](docs/figures/indel_correction.png)
 
-                        true CPA site
-                              ↓
-Genome: 5'..CTAGTGACAGTC|AAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC..3'
-                        |                               |
-                   CPA here                    genomic A-tract ends here
+**The Problem:** The aligner introduces deletions to extend alignment of poly(A) tail bases into downstream genomic A-tracts, shifting the apparent 3' end.
 
-Read:   5'..CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|AAAAAAAAAAA
-                              ↑        ↑↑             |<--------->
-                           T error  deletions    soft-clipped tail
-                          (seq err) (artifacts)
+**RECTIFY's Solution:** Walk upstream from the soft-clip boundary through the aligned region:
+1. Skip positions where genome = A (ambiguous with poly(A) tail)
+2. Skip deletions (D in CIGAR) - these are alignment artifacts
+3. Skip T sequencing errors in the tail
+4. **STOP** at first non-A/T agreement between genome and read
 
-The aligner introduces deletions to extend alignment of poly(A) tail bases
-into the genomic A-tract. The apparent 3' end shifts downstream.
-
-===============================================================================
-RECTIFY'S SOLUTION: Walk upstream to find true CPA
-===============================================================================
-
-Starting from the soft-clip boundary, walk UPSTREAM through the aligned region:
-
-  1. Skip positions where genome = A (ambiguous with poly(A) tail)
-  2. Skip deletions (D in CIGAR) - these are alignment artifacts
-  3. Skip T sequencing errors in the tail
-  4. STOP at first non-A/T agreement between genome and read
-
-                                                   soft-clip boundary
-                                                          ↓
-Genome: ...CTAGTGACAGTCAAAAAAAA-AAACAAAAGTAAAAAAAAAAAA|CTAGCGATC...
-Read:   ...CTAGTGACAGTCAAAAAAAATAAA-AAAAA--AAAAAAAAAA.|AAAAAAAAAAA
-                     ↑        ↑        ↑↑            |
-                  STOP      T err     dels      soft-clip
-                 (C = C)   (skip)   (absorb)
-
-Result: True 3' end at the C position
-        Poly(A) length = soft-clipped + aligned A's + absorbed deletions
-```
+**Result:** True 3' end at the correct position. Poly(A) length = soft-clipped + aligned A's + absorbed deletions.
 
 **Key insight for IGV users:** For minus strand reads, the poly(A) tail appears as poly(T) extending leftward. RECTIFY corrects by shifting rightward toward the true CPA.
 
@@ -197,47 +167,16 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 
 Poly(A) tails can create spurious "junctions" when the aligner introduces a skip (N) operation to align tail bases to a downstream genomic A-tract. **RECTIFY's walk back correction completely handles this artifact.**
 
-```
-===============================================================================
-THE PROBLEM: Poly(A) tails create false junctions
-===============================================================================
+**The Problem:** The aligner introduces an N (skip) to extend the poly(A) tail alignment into a downstream A-tract, creating a spurious junction that doesn't exist in the transcript.
 
-              true CPA              false "junction"
-                  ↓                       ↓
-Genome:  ...EXON|AAAAA|-------N-------|AAAAA|...
-Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAAAAAAA.|AAAAA (poly(A) tail)
-                 ↑                         ↑
-           aligned A's               soft-clipped tail
+**RECTIFY's Solution:** The walk back algorithm finds the true 3' end by walking upstream through ALL aligned A's until it finds the first non-A agreement between genome and read. Crucially, it **DISCARDS any N (skip) operations** it encounters.
 
-The aligner introduces an N (skip) to extend the alignment of poly(A) tail
-bases into a downstream genomic A-tract, creating a spurious junction.
+**Result:**
+- Walk back finds the true CPA at the EXON/A boundary
+- The false junction (N operation) is completely ignored
+- No special false junction detection needed
 
-===============================================================================
-RECTIFY'S SOLUTION: Walk back eats through false junctions
-===============================================================================
-
-The walk back algorithm finds the true 3' end by walking upstream through
-ALL aligned A's until it finds the first non-A agreement between genome
-and read. Crucially, it DISCARDS any N (skip) operations it encounters:
-
-              walk back eats through everything
-              <────────────────────────────────
-                                              ↓
-Genome:  ...EXON|AAAAA|-------N-------|AAAAA|...
-Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAAAAAAA.|AAAAA
-              ↑                              ↑
-           STOP here                   walk back starts
-          (non-A match)               (eats A's, discards N)
-
-Result:
-  - Walk back finds the true CPA at the EXON/A boundary
-  - The false junction (N operation) is completely ignored
-  - No special false junction detection needed
-
-This means 3' false junctions are NOT a problem for downstream analysis—
-walk back correction handles them automatically as part of finding the
-true cleavage and polyadenylation site.
-```
+**This means 3' false junctions are NOT a problem for downstream analysis**—walk back correction handles them automatically as part of finding the true cleavage and polyadenylation site.
 
 ---
 
