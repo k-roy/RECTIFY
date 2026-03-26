@@ -194,7 +194,7 @@ __all__ = [
     'compute_read_gene_attribution',
     'aggregate_attributions_for_3prime_end',
     'compute_cluster_attribution',
-    # Junction validation (ESPRESSO-style)
+    # Junction validation
     'JunctionEvidence',
     'collect_junction_evidence',
     'validate_novel_junctions',
@@ -214,7 +214,7 @@ __all__ = [
     'build_junction_index_from_records',
     'build_known_junction_index',
     'summarize_junction_analysis',
-    # APA detection (Isosceles-style)
+    # APA detection
     'APAIsoform',
     'GeneAPAProfile',
     'assign_reads_to_clusters',
