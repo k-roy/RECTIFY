@@ -358,21 +358,40 @@ def rescue_softclip_at_homopolymer(
             return None  # Not a homopolymer at boundary
 
         # Now check soft-clipped bases against reference beyond alignment
-        # Walk through soft-clip, comparing to reference
+        # KEY INSIGHT: The reference homopolymer may extend beyond the alignment.
+        # We need to skip over remaining reference homopolymer bases to find where
+        # the soft-clipped bases match.
+        #
+        # Example:
+        #   Read aligned to: ...TTTTTTTT (ending at pos 369,394)
+        #   Reference:       ...TTTTTTTTTTG (T-tract extends to 369,396, G at 369,397)
+        #   Soft-clip:       GTTC...
+        #   The G matches ref position 369,397, so rescue 3 bases (skip 2 T's + G)
+
+        # First, find where the reference homopolymer ends
+        homopolymer_extension = 0
+        for offset in range(1, min(softclip_len + 10, len(genome_seq) - raw_pos)):
+            ref_pos = raw_pos + offset
+            if ref_pos >= len(genome_seq):
+                break
+            ref_base = genome_seq[ref_pos].upper()
+            if ref_base != boundary_base:
+                # Found end of homopolymer
+                break
+            homopolymer_extension += 1
+
+        # Now try to match soft-clip to reference starting after homopolymer
         rescued_count = 0
         rescued_bases = []
+        match_start = raw_pos + homopolymer_extension + 1
 
         for i in range(softclip_len):
-            ref_pos = raw_pos + 1 + i  # Position beyond alignment
+            ref_pos = match_start + i
             if ref_pos >= len(genome_seq):
                 break
 
             ref_base = genome_seq[ref_pos].upper()
             softclip_base = softclip_seq[i]
-
-            # Stop if we're entering another homopolymer run
-            if ref_base == boundary_base:
-                break
 
             # Check if soft-clipped base matches reference
             if softclip_base == ref_base:
@@ -380,17 +399,23 @@ def rescue_softclip_at_homopolymer(
                 rescued_bases.append(softclip_base)
             else:
                 # Mismatch - stop rescue
+                # But only accept rescue if we got at least 1 base
                 break
 
         if rescued_count == 0:
             return None
 
+        # The corrected position is after all rescued bases
+        # Include the skipped homopolymer bases in the total shift
+        total_shift = homopolymer_extension + rescued_count
+
         return {
-            'corrected_pos': raw_pos + rescued_count,
+            'corrected_pos': raw_pos + total_shift,
             'original_pos': raw_pos,
-            'rescued_bases': rescued_count,
+            'rescued_bases': total_shift,  # Total bases rescued (homopolymer + matched)
             'rescued_seq': ''.join(rescued_bases),
             'adjacent_homopolymer': boundary_base,
+            'homopolymer_extension': homopolymer_extension,  # How many T's were under-called
             'end': end,
         }
 
@@ -423,22 +448,38 @@ def rescue_softclip_at_homopolymer(
             return None  # Not a homopolymer at boundary
 
         # Now check soft-clipped bases against reference beyond alignment
-        # Walk through soft-clip BACKWARDS (from alignment boundary outward)
+        # Similar to right side: we need to skip over remaining homopolymer bases
+        # in the reference before matching soft-clipped bases.
+        #
+        # Walk through reference LEFTWARD from alignment start to find
+        # where homopolymer ends
+
+        # First, find where the reference homopolymer ends (leftward)
+        homopolymer_extension = 0
+        for offset in range(1, min(softclip_len + 10, raw_pos + 1)):
+            ref_pos = raw_pos - offset
+            if ref_pos < 0:
+                break
+            ref_base = genome_seq[ref_pos].upper()
+            if ref_base != boundary_base:
+                # Found end of homopolymer
+                break
+            homopolymer_extension += 1
+
+        # Now try to match soft-clip to reference starting before homopolymer
         rescued_count = 0
         rescued_bases = []
+        match_start = raw_pos - homopolymer_extension - 1
 
+        # Walk through soft-clip BACKWARDS (from alignment boundary outward)
         for i in range(softclip_len):
-            ref_pos = raw_pos - 1 - i  # Position beyond alignment (leftward)
+            ref_pos = match_start - i
             if ref_pos < 0:
                 break
 
             ref_base = genome_seq[ref_pos].upper()
             # Soft-clip bases: walk from right to left (alignment boundary outward)
             softclip_base = softclip_seq[softclip_len - 1 - i]
-
-            # Stop if we're entering another homopolymer run
-            if ref_base == boundary_base:
-                break
 
             # Check if soft-clipped base matches reference
             if softclip_base == ref_base:
@@ -451,12 +492,16 @@ def rescue_softclip_at_homopolymer(
         if rescued_count == 0:
             return None
 
+        # The corrected position is before all rescued bases
+        total_shift = homopolymer_extension + rescued_count
+
         return {
-            'corrected_pos': raw_pos - rescued_count,
+            'corrected_pos': raw_pos - total_shift,
             'original_pos': raw_pos,
-            'rescued_bases': rescued_count,
+            'rescued_bases': total_shift,  # Total bases rescued
             'rescued_seq': ''.join(reversed(rescued_bases)),  # Restore original order
             'adjacent_homopolymer': boundary_base,
+            'homopolymer_extension': homopolymer_extension,
             'end': end,
         }
 
