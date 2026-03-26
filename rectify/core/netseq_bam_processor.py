@@ -79,7 +79,141 @@ def standardize_netseq_chrom(contig_name: str) -> str:
     return contig_name
 
 
-def get_netseq_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
+def count_terminal_oligo_a_mismatches(
+    read: pysam.AlignedSegment,
+    strand: str,
+) -> int:
+    """
+    Count terminal A/T mismatches at the biological 3' end.
+
+    BBMap sometimes aligns oligo(A) bases as mismatches (X in CIGAR)
+    rather than soft-clipping them. This shifts the apparent 3' position
+    and corrupts PSF/deconvolution if not corrected.
+
+    For minus strand: oligo(A) in RNA = T in genomic orientation (at left)
+    For plus strand: oligo(A) in RNA = A in genomic orientation (at right)
+
+    Args:
+        read: pysam AlignedSegment
+        strand: '+' or '-'
+
+    Returns:
+        Number of terminal oligo(A) bases aligned as mismatches
+    """
+    if not read.cigartuples or not read.query_sequence:
+        return 0
+
+    query_seq = read.query_sequence.upper()
+    cigar = read.cigartuples
+
+    n_oligo_a_mismatches = 0
+
+    if strand == '-':
+        # Minus strand: 3' end at left side
+        # Oligo(A) in RNA = T in genomic BAM orientation
+        pos_in_read = 0
+
+        for op, length in cigar:
+            if op == 4:  # Soft clip at start - skip past it
+                pos_in_read += length
+            elif op == 8:  # X = explicit mismatch
+                # Count consecutive T's (oligo A in RNA orientation)
+                for i in range(length):
+                    if pos_in_read + i < len(query_seq):
+                        base = query_seq[pos_in_read + i]
+                        if base == 'T':
+                            n_oligo_a_mismatches += 1
+                        else:
+                            # Non-T mismatch, stop counting
+                            return n_oligo_a_mismatches
+                pos_in_read += length
+            elif op == 0:  # M = match/mismatch (need MD tag to distinguish)
+                # For M operations, check if there's an MD tag
+                # If MD tag starts with a non-digit, it's a mismatch
+                md_tag = read.get_tag('MD') if read.has_tag('MD') else None
+                if md_tag:
+                    md_str = str(md_tag)
+                    # Count leading mismatches in MD tag
+                    # MD format: "3A5T2" means 3 match, A ref (mismatch), 5 match, T ref...
+                    # A leading letter means mismatch at position 0
+                    i = 0
+                    while i < len(md_str):
+                        if md_str[i].isdigit():
+                            # Matches - stop counting terminal mismatches
+                            break
+                        elif md_str[i].isalpha() and md_str[i] != '^':
+                            # Mismatch - check if read base is T
+                            if pos_in_read + n_oligo_a_mismatches < len(query_seq):
+                                base = query_seq[pos_in_read + n_oligo_a_mismatches]
+                                if base == 'T':
+                                    n_oligo_a_mismatches += 1
+                                    i += 1
+                                else:
+                                    break
+                            else:
+                                break
+                        else:
+                            break
+                break  # Stop after first alignment block
+            else:
+                # Other operation (insertion, deletion), stop
+                break
+
+        return n_oligo_a_mismatches
+
+    else:
+        # Plus strand: 3' end at right side
+        # Oligo(A) in RNA = A in genomic BAM orientation
+        pos_in_read = len(query_seq)
+
+        for op, length in reversed(cigar):
+            if op == 4:  # Soft clip at end - skip past it
+                pos_in_read -= length
+            elif op == 8:  # X = explicit mismatch
+                # Count consecutive A's from the end
+                for i in range(length):
+                    idx = pos_in_read - 1 - i
+                    if idx >= 0:
+                        base = query_seq[idx]
+                        if base == 'A':
+                            n_oligo_a_mismatches += 1
+                        else:
+                            return n_oligo_a_mismatches
+                pos_in_read -= length
+            elif op == 0:  # M = match/mismatch
+                # Check MD tag for trailing mismatches
+                md_tag = read.get_tag('MD') if read.has_tag('MD') else None
+                if md_tag:
+                    md_str = str(md_tag)
+                    # Count trailing mismatches
+                    i = len(md_str) - 1
+                    while i >= 0:
+                        if md_str[i].isdigit():
+                            break
+                        elif md_str[i].isalpha() and md_str[i] != '^':
+                            idx = pos_in_read - 1 - n_oligo_a_mismatches
+                            if idx >= 0:
+                                base = query_seq[idx]
+                                if base == 'A':
+                                    n_oligo_a_mismatches += 1
+                                    i -= 1
+                                else:
+                                    break
+                            else:
+                                break
+                        else:
+                            break
+                break
+            else:
+                break
+
+        return n_oligo_a_mismatches
+
+
+def get_netseq_3prime_position(
+    read: pysam.AlignedSegment,
+    trim_terminal_oligo_a: bool = True,
+) -> Tuple[int, str, int]:
     """
     Get 3' end position and strand from NET-seq read.
 
@@ -88,11 +222,18 @@ def get_netseq_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
     - Forward strand (FLAG 0): 3' end = right side = reference_end - 1
     - Reverse strand (FLAG 16): 3' end = left side = reference_start
 
+    If trim_terminal_oligo_a is True, detects and trims terminal A/T
+    mismatches that should have been soft-clipped (oligo(A) bases).
+
     Args:
         read: pysam AlignedSegment
+        trim_terminal_oligo_a: Whether to trim terminal oligo(A) mismatches
 
     Returns:
-        Tuple of (position, strand) where position is 0-based
+        Tuple of (position, strand, n_trimmed) where:
+        - position is 0-based, adjusted for terminal mismatches if requested
+        - strand is '+' or '-'
+        - n_trimmed is number of terminal oligo(A) bases trimmed
     """
     strand = '-' if read.is_reverse else '+'
 
@@ -103,7 +244,18 @@ def get_netseq_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
         # Minus strand: 3' end is leftmost aligned base
         position = read.reference_start
 
-    return position, strand
+    n_trimmed = 0
+    if trim_terminal_oligo_a:
+        n_trimmed = count_terminal_oligo_a_mismatches(read, strand)
+        if n_trimmed > 0:
+            if strand == '-':
+                # Minus strand: shift rightward (increase position)
+                position += n_trimmed
+            else:
+                # Plus strand: shift leftward (decrease position)
+                position -= n_trimmed
+
+    return position, strand, n_trimmed
 
 
 def detect_oligo_a_in_softclip(
@@ -211,26 +363,37 @@ def process_netseq_read(
     read: pysam.AlignedSegment,
     chrom_std: str,
     min_a_fraction: float = 0.8,
+    trim_terminal_oligo_a: bool = True,
 ) -> UnifiedReadRecord:
     """
     Process single NET-seq read into UnifiedReadRecord.
 
     Creates a record with:
-    - three_prime_raw: Raw 3' position from alignment
-    - three_prime_corrected: Same as raw (deconvolution is position-level)
+    - three_prime_raw: Raw 3' position from alignment (before trimming)
+    - three_prime_corrected: Position after terminal oligo(A) trimming
     - soft_clip_a_length: Oligo(A) in 3' soft-clip
+    - aligned_a_length: Oligo(A) bases aligned as mismatches (trimmed)
     - All other standard fields
 
     Args:
         read: pysam AlignedSegment
         chrom_std: Standardized chromosome name
         min_a_fraction: Minimum A fraction for oligo(A) detection
+        trim_terminal_oligo_a: Whether to trim terminal oligo(A) mismatches
 
     Returns:
         UnifiedReadRecord with all fields populated
     """
-    # Get 3' position and strand
-    three_prime_pos, strand = get_netseq_3prime_position(read)
+    # Get 3' position and strand (with optional trimming)
+    three_prime_corrected, strand, n_trimmed = get_netseq_3prime_position(
+        read, trim_terminal_oligo_a=trim_terminal_oligo_a
+    )
+
+    # Raw position is before trimming
+    if strand == '-':
+        three_prime_raw = three_prime_corrected - n_trimmed
+    else:
+        three_prime_raw = three_prime_corrected + n_trimmed
 
     # Get 5' position
     if strand == '+':
@@ -247,6 +410,9 @@ def process_netseq_read(
     # Parse CIGAR
     cigar_str = parse_cigar(read.cigartuples) if read.cigartuples else ''
 
+    # Total oligo(A) = soft-clipped + aligned-as-mismatch
+    total_oligo_a = oligo_a_info['soft_clip_a_length'] + n_trimmed
+
     # Create UnifiedReadRecord
     record = UnifiedReadRecord(
         read_id=read.query_name,
@@ -260,8 +426,8 @@ def process_netseq_read(
         starts_in_intron=False,
 
         # 3' end positions
-        three_prime_raw=three_prime_pos,
-        three_prime_corrected=three_prime_pos,  # Updated by deconvolution later
+        three_prime_raw=three_prime_raw,
+        three_prime_corrected=three_prime_corrected,  # After terminal oligo(A) trimming
 
         # Alignment span
         alignment_start=read.reference_start,
@@ -279,8 +445,8 @@ def process_netseq_read(
         three_prime_soft_clip_seq=oligo_a_info['three_prime_soft_clip_seq'],
 
         # Poly(A) / Oligo(A) information
-        polya_length=oligo_a_info['soft_clip_a_length'],
-        aligned_a_length=0,  # Not computed for NET-seq
+        polya_length=total_oligo_a,  # Total oligo(A) detected
+        aligned_a_length=n_trimmed,  # Oligo(A) bases aligned as mismatches (trimmed)
         soft_clip_a_length=oligo_a_info['soft_clip_a_length'],
 
         # Alignment quality
@@ -305,6 +471,7 @@ def process_netseq_bam(
     exclusion_detector: Optional[ExclusionRegionDetector] = None,
     min_mapq: int = 0,
     min_a_fraction: float = 0.8,
+    trim_terminal_oligo_a: bool = True,
     max_reads: Optional[int] = None,
     show_progress: bool = True,
     progress_interval: int = 1_000_000,
@@ -323,6 +490,7 @@ def process_netseq_bam(
         exclusion_detector: Optional ExclusionRegionDetector
         min_mapq: Minimum mapping quality (default 0)
         min_a_fraction: Minimum A fraction for oligo(A) detection
+        trim_terminal_oligo_a: Trim terminal A/T mismatches (oligo(A) aligned as mismatch)
         max_reads: Limit for testing (None = process all)
         show_progress: Print progress messages
         progress_interval: Print progress every N reads
@@ -356,6 +524,7 @@ def process_netseq_bam(
     n_skipped_mapq = 0
     n_skipped_excluded = 0
     n_yielded = 0
+    n_trimmed_oligo_a = 0  # Reads with terminal oligo(A) mismatches trimmed
 
     for read in bam:
         n_total += 1
@@ -379,8 +548,10 @@ def process_netseq_bam(
         contig_name = read.reference_name
         chrom_std = chrom_map.get(contig_name, contig_name)
 
-        # Get 3' position for exclusion check
-        three_prime_pos, strand = get_netseq_3prime_position(read)
+        # Get 3' position for exclusion check (with trimming)
+        three_prime_pos, strand, _ = get_netseq_3prime_position(
+            read, trim_terminal_oligo_a=trim_terminal_oligo_a
+        )
 
         # Check exclusion regions
         if exclusion_detector and exclusion_detector.is_excluded(chrom_std, three_prime_pos):
@@ -388,8 +559,15 @@ def process_netseq_bam(
             continue
 
         # Process read
-        record = process_netseq_read(read, chrom_std, min_a_fraction)
+        record = process_netseq_read(
+            read, chrom_std, min_a_fraction,
+            trim_terminal_oligo_a=trim_terminal_oligo_a
+        )
         n_yielded += 1
+
+        # Track terminal oligo(A) trimming
+        if record.aligned_a_length > 0:
+            n_trimmed_oligo_a += 1
 
         yield record
 
@@ -408,6 +586,9 @@ def process_netseq_bam(
         print(f"    Skipped secondary/supp: {n_skipped_secondary:,}")
         print(f"    Skipped low MAPQ: {n_skipped_mapq:,}")
         print(f"    Skipped excluded regions: {n_skipped_excluded:,}")
+        if trim_terminal_oligo_a:
+            pct = 100.0 * n_trimmed_oligo_a / n_yielded if n_yielded > 0 else 0
+            print(f"    Terminal oligo(A) trimmed: {n_trimmed_oligo_a:,} ({pct:.1f}%)")
 
 
 def aggregate_positions(
