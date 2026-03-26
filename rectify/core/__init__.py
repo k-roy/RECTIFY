@@ -11,10 +11,18 @@ This package contains the main correction algorithms:
 - spikein_filter: Spike-in RNA detection and filtering
 - output_writer: Unified output format
 
+NET-seq processing modules:
+- exclusion_regions: rDNA/Pol III region exclusion
+- netseq_bam_processor: NET-seq BAM processing
+- netseq_deconvolution: A-tract deconvolution
+- netseq_output: Output generation (parquet, bedgraph)
+- netseq_command: CLI command
+
 And CLI command implementations:
 - correct_command: Main correction workflow
 - train_polya_command: Poly(A) model training
 - validate_command: Validation against NET-seq
+- netseq_command: NET-seq processing
 """
 
 __all__ = [
@@ -29,4 +37,10 @@ __all__ = [
     "correct_command",
     "train_polya_command",
     "validate_command",
+    # NET-seq modules
+    "exclusion_regions",
+    "netseq_bam_processor",
+    "netseq_deconvolution",
+    "netseq_output",
+    "netseq_command",
 ]

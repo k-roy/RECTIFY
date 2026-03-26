@@ -334,6 +334,7 @@ conda install -c conda-forge -c bioconda rectify-rna
 | `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
 | `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
 | `rectify align` | Align FASTQ with minimap2 (DRS-optimized settings) |
+| `rectify netseq` | Process NET-seq BAM files (3' end extraction, deconvolution) |
 | `rectify run` | Full pipeline: align (if FASTQ) → correct → analyze |
 
 ### Examples
@@ -359,7 +360,98 @@ rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 # Full pipeline
 rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+
+# Process NET-seq data
+rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
 ```
+
+---
+
+## NET-seq Processing
+
+RECTIFY includes a dedicated pipeline for processing NET-seq (Native Elongating Transcript sequencing) data. NET-seq captures nascent RNA 3' ends, which undergo oligo-adenylation during library preparation, creating characteristic signal spreading at A-tract regions.
+
+```
+===============================================================================
+NET-SEQ SIGNAL SPREADING: Oligo(A) tails cause position ambiguity
+===============================================================================
+
+True CPA site at position P:
+                     ↓
+Genome:    ...GCTA|AAAAAAAA|TGCG...
+                  └────────┘
+                   A-tract region
+
+With oligo(A) tails (~5.5 bp mean), reads can prime at ANY downstream A:
+
+             Position:  P   P+1  P+2  P+3  P+4  P+5  P+6  P+7
+             Signal:   54%  0.5% 1.5% 3.2% 5.2% 6.7% 7.3% 6.7% ...
+
+The signal "spreads" downstream into the A-tract, obscuring the true CPA site.
+
+===============================================================================
+RECTIFY'S SOLUTION: NNLS deconvolution with empirical PSF
+===============================================================================
+
+Using the Point-Spread-Function (PSF) derived from 5000+ 0A sites (sites with
+no downstream genomic A's, where the true position is known):
+
+  1. Build convolution matrix: A[i,j] = P(observe at j | true peak at i)
+  2. Solve NNLS with L2 regularization: min ||Ax - observed||² + λ||x||²
+  3. Recover true peak positions from deconvolved signal
+
+Result: Sharper, more accurate 3' end signal with A-tract ambiguity resolved.
+```
+
+### NET-seq Command
+
+```bash
+# Basic usage
+rectify netseq input.bam --genome genome.fa --gff genes.gff -o output/
+
+# With exclusion region control
+rectify netseq input.bam --genome genome.fa --gff genes.gff \
+    --include-rdna \        # Don't exclude rDNA locus
+    --include-pol3 \        # Don't exclude Pol III genes (tRNAs)
+    --exclude-mito \        # Exclude mitochondrial genome
+    -o output/
+
+# Disable deconvolution (raw 3' ends only)
+rectify netseq input.bam --genome genome.fa --no-deconvolution -o output/
+
+# Process multiple samples
+rectify netseq sample1.bam sample2.bam sample3.bam \
+    --genome genome.fa --gff genes.gff -o output/
+```
+
+### Output Files
+
+| File | Description |
+|------|-------------|
+| `{sample}.unified_reads.parquet` | Per-read records (25 columns, same schema as nanopore) |
+| `{sample}.raw.plus.bedgraph` | Raw 3' ends, plus strand, RPM-normalized |
+| `{sample}.raw.minus.bedgraph` | Raw 3' ends, minus strand, RPM-normalized |
+| `{sample}.deconv.plus.bedgraph` | Deconvolved signal, plus strand, RPM-normalized |
+| `{sample}.deconv.minus.bedgraph` | Deconvolved signal, minus strand, RPM-normalized |
+
+### Exclusion Regions
+
+By default, RECTIFY excludes regions with non-standard transcription:
+
+- **rDNA locus** (chrXII ~450,000-490,000 in yeast): Highly repetitive, Pol I transcribed
+- **Pol III genes** (tRNAs, SNR6, RDN5, RPR1, SCR1): Different transcription termination mechanism
+- **Flanking regions** (100 bp by default): Buffer around excluded genes
+
+These regions are auto-detected from GFF annotation. Use `--include-rdna` and `--include-pol3` flags to include them if needed.
+
+### Strand-Aware Coordinate Mapping
+
+NET-seq reads are short (~40-76 bp) and represent the 3' end of nascent RNA:
+
+| Strand | 3' end position | 3' soft-clip | Oligo(A) detection |
+|--------|-----------------|--------------|-------------------|
+| **+** | `reference_end - 1` (rightmost) | Right clip | Count A's |
+| **-** | `reference_start` (leftmost) | Left clip | Count T's (= RNA A's) |
 
 ---
 
@@ -368,6 +460,7 @@ rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir res
 - Nanopore direct RNA-seq (minimap2)
 - QuantSeq (oligo-dT short-read)
 - PacBio Iso-Seq
+- NET-seq (nascent RNA 3' end sequencing)
 - Any poly(A)-tailed RNA-seq
 
 ---

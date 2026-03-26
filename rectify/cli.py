@@ -422,6 +422,36 @@ Citation:
     )
 
     # =========================================================================
+    # batch command (multi-sample with SLURM support)
+    # =========================================================================
+    from .core.batch_command import create_batch_parser
+    create_batch_parser(subparsers)
+
+    # =========================================================================
+    # align command (multi-aligner pipeline)
+    # =========================================================================
+    from .core.align_command import create_align_parser
+    create_align_parser(subparsers)
+
+    # =========================================================================
+    # extract command (per-read BAM to TSV)
+    # =========================================================================
+    from .core.extract_command import create_extract_parser
+    create_extract_parser(subparsers)
+
+    # =========================================================================
+    # aggregate command (3' ends, 5' ends, junctions)
+    # =========================================================================
+    from .core.aggregate_command import create_aggregate_parser
+    create_aggregate_parser(subparsers)
+
+    # =========================================================================
+    # netseq command (NET-seq BAM processing)
+    # =========================================================================
+    from .core.netseq_command import add_netseq_parser
+    add_netseq_parser(subparsers)
+
+    # =========================================================================
     # run command (all-in-one: correct + analyze)
     # =========================================================================
     run_parser = subparsers.add_parser(
@@ -540,6 +570,21 @@ def main(argv: Optional[list] = None):
     elif args.command == 'run':
         from .core import run_command
         run_command.run(args)
+    elif args.command == 'batch':
+        from .core import batch_command
+        sys.exit(batch_command.run(args))
+    elif args.command == 'aggregate':
+        from .core import aggregate_command
+        aggregate_command.run(args)
+    elif args.command == 'align':
+        from .core import align_command
+        align_command.run(args)
+    elif args.command == 'extract':
+        from .core import extract_command
+        extract_command.run(args)
+    elif args.command == 'netseq':
+        from .core import netseq_command
+        sys.exit(netseq_command.run_netseq(args))
     else:
         parser.print_help()
         sys.exit(1)
