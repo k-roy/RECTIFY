@@ -259,24 +259,25 @@ def score_alignment(
     Score an alignment based on junction quality.
 
     Scoring factors:
-    - +10 per canonical junction
+    - +10 per canonical junction (GT-AG)
     - +5 per annotated junction
     - -5 per non-canonical junction
-    - -2 per soft-clipped base at 5' end (prefer spliced)
-    - -20 if has false 3' junction
+    - -2 per soft-clipped base at 5' end (prefer spliced alignments)
+
+    Note: False 3' junctions from poly(A) artifacts are handled by the
+    walk back correction step, which eats through aligned A's and discards
+    spurious N operations to find the true CPA site.
     """
     score = 0.0
 
-    # Canonical junctions
+    # Canonical junctions bonus
     score += alignment.canonical_count * 10
+
+    # Non-canonical junction penalty
     score -= alignment.non_canonical_count * 5
 
-    # 5' soft-clip penalty (prefer spliced alignments)
+    # 5' soft-clip penalty (prefer alignments that splice through)
     score -= alignment.five_prime_softclip * 2
-
-    # False 3' junction penalty
-    if alignment.has_false_3prime_junction:
-        score -= 20
 
     # Annotated junction bonus
     if annotated_junctions and alignment.junctions:
@@ -301,7 +302,8 @@ def extract_alignment_info(
     chrom = read.reference_name
     canonical, non_canonical = check_canonical_splice_sites(junctions, chrom, genome)
 
-    has_false = detect_false_3prime_junction(read, junctions, genome)
+    # Note: False 3' junction detection is available via detect_false_3prime_junction()
+    # but not used in scoring since walk back correction handles this case.
 
     return AlignmentInfo(
         read_id=read.query_name,
@@ -317,7 +319,7 @@ def extract_alignment_info(
         three_prime_softclip=three_clip,
         canonical_count=canonical,
         non_canonical_count=non_canonical,
-        has_false_3prime_junction=has_false,
+        has_false_3prime_junction=False,  # Not used; walk back handles this
     )
 
 
@@ -391,7 +393,7 @@ def select_best_alignment(
         n_aligners_agree=n_agree,
         confidence=confidence,
         was_5prime_rescued=was_rescued,
-        false_junction_removed=best_alignment.has_false_3prime_junction,
+        false_junction_removed=False,  # Not tracked; walk back correction handles this
         all_alignments=alignments,
     )
 
@@ -458,7 +460,6 @@ def run_consensus_selection(
         'consensus_medium': 0,
         'consensus_low': 0,
         '5prime_rescued': 0,
-        'false_junctions_removed': 0,
         'by_aligner': defaultdict(int),
     }
 
@@ -484,8 +485,8 @@ def run_consensus_selection(
         if result.was_5prime_rescued:
             stats['5prime_rescued'] += 1
 
-        if result.false_junction_removed:
-            stats['false_junctions_removed'] += 1
+        # Note: False 3' junctions are handled by walk back correction,
+        # not during consensus selection.
 
         stats['by_aligner'][result.best_aligner] += 1
 
@@ -521,7 +522,6 @@ def run_consensus_selection(
     logger.info(f"  Medium confidence: {stats['consensus_medium']}")
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
-    logger.info(f"  False junctions detected: {stats['false_junctions_removed']}")
     logger.info(f"  By aligner: {dict(stats['by_aligner'])}")
 
     return stats

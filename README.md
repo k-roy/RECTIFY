@@ -31,7 +31,7 @@ rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir res
 | **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
-| **3' False Junction Removal** | Detects and removes spurious junctions from poly(A) tail artifacts |
+| **3' False Junction Handling** | Walk back correction eats through spurious junctions from poly(A) artifacts |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data (optional) |
@@ -170,8 +170,10 @@ RECTIFY'S SOLUTION: Multi-aligner consensus with 5' rescue
      a. Splice through known junctions rather than soft-clipping (5' rescue)
      b. Use canonical splice sites (GT-AG)
      c. Are supported by multiple aligners (high confidence)
-  4. Remove 3' false junctions from poly(A) artifacts
-  5. Output: Single consensus BAM with best alignments
+  4. Output: Single consensus BAM with best alignments
+
+Note: 3' false junctions from poly(A) artifacts are handled separately by
+walk back correction (see "3' False Junction Handling" below).
 
 Confidence scoring:
   - HIGH:   3/3 aligners agree on junction
@@ -191,35 +193,50 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 
 ---
 
-## 3' False Junction Removal
+## 3' False Junction Handling
 
-Poly(A) tails can create spurious "junctions" when the aligner introduces a deletion to align tail bases to a downstream A-tract.
+Poly(A) tails can create spurious "junctions" when the aligner introduces a skip (N) operation to align tail bases to a downstream genomic A-tract. **RECTIFY's walk back correction completely handles this artifact.**
 
 ```
 ===============================================================================
 THE PROBLEM: Poly(A) tails create false junctions
 ===============================================================================
 
-                                    true CPA        false "junction"
-                                        ↓                 ↓
-Genome:  ...EXON|AAAAA|---gap---|AAAAA|EXON2...
+                              true CPA    false "junction"
+                                  ↓              ↓
+Genome:  ...EXON|AAAAA|----N----|AAAAA|...
 Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAA.|AAAAA (poly(A) tail)
-                            ↑
-                    Aligner introduces N (skip)
-                    to align tail to downstream A-tract
+                    ↑                        ↑
+              aligned A's              soft-clipped tail
 
-Result: Spurious junction that doesn't exist in the transcript
+The aligner introduces an N (skip) to extend the alignment of poly(A) tail
+bases into a downstream genomic A-tract, creating a spurious junction.
 
 ===============================================================================
-RECTIFY'S SOLUTION: Detect and remove poly(A) false junctions
+RECTIFY'S SOLUTION: Walk back eats through false junctions
 ===============================================================================
 
-  1. Identify junctions where:
-     a. 5' side ends in poly(A) (≥3 A's)
-     b. 3' side starts with A-tract
-     c. Read has no downstream exon sequence (just poly(A))
-  2. Remove these false junctions from the alignment
-  3. Correct the 3' end position to the true CPA site
+The walk back algorithm finds the true 3' end by walking upstream through
+ALL aligned A's until it finds the first non-A agreement between genome
+and read. Crucially, it DISCARDS any N (skip) operations it encounters:
+
+         walk back eats through everything
+         <─────────────────────────────────
+                                          ↓
+Genome:  ...EXON|AAAAA|----N----|AAAAA|...
+Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAA.|AAAAA
+              ↑                             ↑
+           STOP here                  walk back starts
+           (non-A match)              (eats A's, discards N)
+
+Result:
+  - Walk back finds the true CPA at the EXON/A boundary
+  - The false junction (N operation) is completely ignored
+  - No special false junction detection needed
+
+This means 3' false junctions are NOT a problem for downstream analysis—
+walk back correction handles them automatically as part of finding the
+true cleavage and polyadenylation site.
 ```
 
 ---

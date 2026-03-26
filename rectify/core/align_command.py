@@ -11,8 +11,9 @@ Supported aligners:
 Consensus selection:
 - Runs all enabled aligners in parallel
 - Compares alignments per read
-- Selects best based on junction quality, 5' rescue, and false junction detection
+- Selects best based on junction quality (canonical sites, annotation) and 5' rescue
 - Outputs single consensus BAM with best alignment per read
+- Note: 3' false junctions are handled by walk back correction, not consensus
 
 Author: Kevin R. Roy
 """
@@ -327,7 +328,6 @@ def run_align(args: argparse.Namespace) -> int:
         logger.info(f"\nConsensus BAM: {consensus_bam}")
         logger.info(f"  High confidence: {stats['consensus_high']} reads")
         logger.info(f"  5' rescued: {stats['5prime_rescued']} reads")
-        logger.info(f"  False 3' junctions detected: {stats['false_junctions_removed']} reads")
 
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")
