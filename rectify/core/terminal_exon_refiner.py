@@ -21,7 +21,7 @@ Author: Kevin R. Roy
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
 from pathlib import Path
 
 import pysam
@@ -1135,6 +1135,491 @@ def detect_junction_truncated_reads(
     logger.info(f"Truncated at 5'SS: {results['stats']['truncated_at_5ss']:,}")
 
     return results
+
+
+@dataclass
+class PartialJunctionEvidence:
+    """Evidence of a partial junction crossing from soft-clipped sequence.
+
+    Even a few nucleotides of soft-clipped sequence at a splice site boundary
+    can provide evidence of a splicing event if they match the expected
+    upstream/downstream exon sequence.
+
+    Ambiguity handling:
+    - ambiguous=True: Multiple 5'SS have identical upstream sequences
+    - alternative_introns: List of other introns that match equally well
+    - For ambiguous reads, use proportional attribution or hold out
+    """
+    read_id: str
+    chrom: str
+    strand: str
+    read_start: int
+    read_end: int
+    splice_site_pos: int
+    splice_site_type: str  # '3ss' or '5ss'
+    intron_id: str
+    soft_clip_length: int
+    soft_clip_sequence: str
+    expected_exon_sequence: str
+    matches: int
+    mismatches: int
+    match_fraction: float
+    inferred_junction: Tuple[int, int]  # (intron_start, intron_end)
+    confidence: str  # 'high', 'medium', 'low'
+    ambiguous: bool = False  # True if multiple equally-good matches exist
+    alternative_introns: List[str] = field(default_factory=list)  # Other introns with same upstream seq
+
+
+def detect_partial_junction_crossings(
+    bam_path: str,
+    genome: Dict[str, str],
+    splice_index: SpliceSiteIndex,
+    boundary_tolerance: int = 5,
+    min_clip_length: int = 1,
+    min_match_fraction: float = 0.6,
+    ambiguous_mode: str = 'proportional'
+) -> Dict[str, any]:
+    """Detect reads with soft-clips at splice sites that provide junction evidence.
+
+    This function identifies reads that:
+    1. End precisely at a splice site boundary (within tolerance)
+    2. Have soft-clipped sequence at the 5' end
+    3. The soft-clipped sequence matches the expected upstream exon
+
+    Even a single nucleotide match provides some evidence of splicing.
+    This rescues the ~71% of reads with 11-20bp soft-clips that would
+    otherwise be counted as unspliced.
+
+    Ambiguity handling:
+    When multiple 5'SS have identical upstream sequences that match the soft-clip,
+    the read is marked as ambiguous. Options:
+    - 'proportional': Attribute reads in same proportion as confident reads
+    - 'holdout': Exclude ambiguous reads from counts
+
+    Args:
+        bam_path: Path to BAM file
+        genome: Dict mapping chrom -> sequence
+        splice_index: Index of known splice sites
+        boundary_tolerance: Max distance from splice site boundary (bp)
+        min_clip_length: Minimum soft-clip length to consider (default: 1)
+        min_match_fraction: Minimum fraction of matches required (0.0-1.0)
+        ambiguous_mode: How to handle ambiguous reads ('proportional' or 'holdout')
+
+    Returns:
+        Dict with:
+            - 'evidence': List of PartialJunctionEvidence objects
+            - 'stats': Statistics dict
+            - 'by_intron': Dict mapping intron_id to list of evidence
+    """
+    results = {
+        'evidence': [],
+        'stats': {
+            'total_reads': 0,
+            'reads_at_splice_boundary': 0,
+            'reads_with_softclip_at_boundary': 0,
+            'reads_with_matching_sequence': 0,
+            'reads_rescued_as_spliced': 0,
+            'reads_ambiguous': 0,
+            'by_clip_length': {},
+            'by_confidence': {'high': 0, 'medium': 0, 'low': 0}
+        },
+        'by_intron': {},
+        'ambiguous_mode': ambiguous_mode
+    }
+
+    # Pre-compute upstream exon sequences for all 5'SS to detect ambiguity
+    # Key: (chrom, strand, sequence) -> list of intron_ids with this upstream seq
+    upstream_seq_to_introns: Dict[Tuple[str, str, str], List[str]] = {}
+
+    for chrom, sites in splice_index.five_ss.items():
+        if chrom not in genome:
+            continue
+        genome_seq = genome[chrom]
+
+        for pos, site in sites.items():
+            # Get upstream exon sequence (first 30bp for comparison)
+            if site.strand == '-':
+                # Upstream exon is at higher coords (past 5'SS)
+                exon_start = pos + 2
+                exon_end = min(exon_start + 30, len(genome_seq))
+                upstream_seq = genome_seq[exon_start:exon_end]
+            else:
+                # Upstream exon is at lower coords (before 5'SS)
+                exon_end = pos
+                exon_start = max(0, exon_end - 30)
+                upstream_seq = genome_seq[exon_start:exon_end]
+
+            key = (chrom, site.strand, upstream_seq[:20])  # Use first 20bp for comparison
+            if key not in upstream_seq_to_introns:
+                upstream_seq_to_introns[key] = []
+            upstream_seq_to_introns[key].append(site.intron_id)
+
+    # Log potential ambiguity
+    n_ambiguous_seqs = sum(1 for introns in upstream_seq_to_introns.values() if len(introns) > 1)
+    if n_ambiguous_seqs > 0:
+        logger.info(f"Found {n_ambiguous_seqs} upstream exon sequences shared by multiple introns")
+
+    bam = pysam.AlignmentFile(bam_path, 'rb')
+
+    for read in bam:
+        if read.is_unmapped or read.is_secondary or read.is_supplementary:
+            continue
+
+        results['stats']['total_reads'] += 1
+
+        chrom = read.reference_name
+        strand = '-' if read.is_reverse else '+'
+        read_start = read.reference_start
+        read_end = read.reference_end
+
+        # Skip if already has a junction (properly spliced)
+        has_junction = any(op == 3 for op, _ in (read.cigartuples or []))
+        if has_junction:
+            continue
+
+        # Get soft-clip info
+        clip_info = get_soft_clip_info(read)
+
+        # For - strand (direct RNA): right clip is at 5' end of RNA (high genomic coord)
+        # The read ends at ref_end, and we're looking for 3'SS near ref_end
+        if strand == '-':
+            five_prime_clip = clip_info['right']
+            boundary_pos = read_end  # Position where alignment ends
+        else:
+            five_prime_clip = clip_info['left']
+            boundary_pos = read_start  # Position where alignment starts
+
+        # Check if read ends near a 3'SS (acceptor site at intron end)
+        # For - strand: 3'SS is at the lower coordinate of the intron
+        for pos, site in splice_index.three_ss.get(chrom, {}).items():
+            if site.strand != strand:
+                continue
+
+            # Check if boundary is near this 3'SS
+            # For - strand, the 3'SS position marks where the intron ends
+            # Reads ending at the 3'SS have ref_end near pos
+            distance = abs(boundary_pos - pos)
+
+            if distance <= boundary_tolerance:
+                results['stats']['reads_at_splice_boundary'] += 1
+
+                # Check if there's a soft-clip
+                if five_prime_clip['length'] < min_clip_length:
+                    continue
+
+                results['stats']['reads_with_softclip_at_boundary'] += 1
+
+                # Track clip length distribution
+                clip_len_bin = f"{(five_prime_clip['length'] // 5) * 5}-{(five_prime_clip['length'] // 5) * 5 + 4}"
+                results['stats']['by_clip_length'][clip_len_bin] = \
+                    results['stats']['by_clip_length'].get(clip_len_bin, 0) + 1
+
+                # Find the corresponding 5'SS for this intron
+                intron_id = site.intron_id
+                matching_5ss = None
+                for fpos, fsite in splice_index.five_ss.get(chrom, {}).items():
+                    if fsite.intron_id == intron_id and fsite.strand == strand:
+                        matching_5ss = fsite
+                        break
+
+                if not matching_5ss:
+                    continue
+
+                # Get the expected upstream exon sequence
+                # For - strand: upstream exon is at HIGHER coordinates (past the 5'SS)
+                # The soft-clipped sequence should match the end of the upstream exon
+                if chrom not in genome:
+                    continue
+
+                genome_seq = genome[chrom]
+                clip_seq = five_prime_clip['sequence']
+
+                if strand == '-':
+                    # For - strand, upstream exon is at higher coords (past 5'SS)
+                    # The 5'SS position is the rightmost position of the intron
+                    # Upstream exon starts just after 5'SS
+                    exon_start = matching_5ss.position + 2  # Just past the 5'SS
+                    exon_end = min(exon_start + len(clip_seq) + 20, len(genome_seq))
+                    expected_seq = genome_seq[exon_start:exon_end]
+
+                    # IMPORTANT: pysam stores soft-clipped sequence in GENOMIC orientation
+                    # (already reverse-complemented for - strand alignments)
+                    # So we compare the clip directly to the genomic exon sequence
+                    query_seq = clip_seq
+                else:
+                    # For + strand, upstream exon is at lower coords (before 5'SS)
+                    exon_end = matching_5ss.position
+                    exon_start = max(0, exon_end - len(clip_seq) - 20)
+                    expected_seq = genome_seq[exon_start:exon_end]
+                    query_seq = clip_seq
+
+                # Align the soft-clipped sequence to the expected exon
+                best_pos, best_score, n_mismatches = simple_align(
+                    query_seq, expected_seq, max_mismatches=int(len(query_seq) * (1 - min_match_fraction))
+                )
+
+                if best_pos >= 0:
+                    n_matches = len(query_seq) - n_mismatches
+                    match_fraction = n_matches / len(query_seq) if len(query_seq) > 0 else 0
+
+                    if match_fraction >= min_match_fraction:
+                        results['stats']['reads_with_matching_sequence'] += 1
+
+                        # Check for ambiguity: are there other introns with same upstream sequence?
+                        # Use the first 20bp of the matching region for comparison
+                        compare_len = min(20, len(query_seq))
+                        matched_portion = expected_seq[best_pos:best_pos + compare_len]
+                        ambiguity_key = (chrom, strand, matched_portion)
+
+                        is_ambiguous = False
+                        alternative_introns = []
+
+                        if ambiguity_key in upstream_seq_to_introns:
+                            matching_introns = upstream_seq_to_introns[ambiguity_key]
+                            if len(matching_introns) > 1:
+                                # Multiple introns have identical upstream sequences
+                                is_ambiguous = True
+                                alternative_introns = [i for i in matching_introns if i != intron_id]
+                                results['stats']['reads_ambiguous'] += 1
+
+                        # Determine confidence based on match quality and length
+                        if match_fraction >= 0.9 and len(query_seq) >= 10:
+                            confidence = 'high'
+                        elif match_fraction >= 0.75 and len(query_seq) >= 5:
+                            confidence = 'medium'
+                        else:
+                            confidence = 'low'
+
+                        results['stats']['by_confidence'][confidence] += 1
+                        results['stats']['reads_rescued_as_spliced'] += 1
+
+                        # Determine inferred junction coordinates
+                        # The 3'SS position marks where the AG dinucleotide starts
+                        # The 5'SS position marks where the GT dinucleotide starts
+                        # CIGAR intron coords use half-open: [intron_start, intron_end)
+                        # where intron_end is 2bp past the AG (exclusive end)
+                        if strand == '-':
+                            # Minus strand: 3'SS at lower coord, 5'SS at higher coord
+                            # intron_start = 3'SS position
+                            # intron_end = 5'SS position + 2 (past the GT)
+                            inferred_junction = (pos, matching_5ss.position + 2)
+                        else:
+                            # Plus strand: 5'SS at lower coord, 3'SS at higher coord
+                            # intron_start = 5'SS position
+                            # intron_end = 3'SS position + 2 (past the AG)
+                            inferred_junction = (matching_5ss.position, pos + 2)
+
+                        evidence = PartialJunctionEvidence(
+                            read_id=read.query_name,
+                            chrom=chrom,
+                            strand=strand,
+                            read_start=read_start,
+                            read_end=read_end,
+                            splice_site_pos=pos,
+                            splice_site_type='3ss',
+                            intron_id=intron_id,
+                            soft_clip_length=five_prime_clip['length'],
+                            soft_clip_sequence=clip_seq,
+                            expected_exon_sequence=expected_seq[:len(query_seq)+5],
+                            matches=n_matches,
+                            mismatches=n_mismatches,
+                            match_fraction=match_fraction,
+                            inferred_junction=inferred_junction,
+                            confidence=confidence,
+                            ambiguous=is_ambiguous,
+                            alternative_introns=alternative_introns
+                        )
+
+                        results['evidence'].append(evidence)
+
+                        if intron_id not in results['by_intron']:
+                            results['by_intron'][intron_id] = []
+                        results['by_intron'][intron_id].append(evidence)
+
+                break  # Only process one splice site per read
+
+    bam.close()
+
+    logger.info(f"Partial junction detection complete:")
+    logger.info(f"  Total reads: {results['stats']['total_reads']:,}")
+    logger.info(f"  At splice boundary: {results['stats']['reads_at_splice_boundary']:,}")
+    logger.info(f"  With soft-clip at boundary: {results['stats']['reads_with_softclip_at_boundary']:,}")
+    logger.info(f"  With matching sequence: {results['stats']['reads_with_matching_sequence']:,}")
+    logger.info(f"  Rescued as spliced: {results['stats']['reads_rescued_as_spliced']:,}")
+    logger.info(f"  Ambiguous (multiple matching introns): {results['stats']['reads_ambiguous']:,}")
+    logger.info(f"  Ambiguous mode: {ambiguous_mode}")
+
+    return results
+
+
+def compute_junction_counts_with_ambiguity(
+    detection_results: Dict,
+    mode: str = 'proportional'
+) -> Dict[str, Dict]:
+    """Compute junction counts with ambiguity handling.
+
+    For unambiguous reads: count directly toward their intron
+    For ambiguous reads:
+    - 'proportional': Attribute in same proportion as confident reads
+    - 'holdout': Exclude from counts
+
+    Args:
+        detection_results: Output from detect_partial_junction_crossings()
+        mode: 'proportional' or 'holdout'
+
+    Returns:
+        Dict mapping intron_id to {
+            'confident_count': int,  # Unambiguous reads
+            'ambiguous_count': int,  # Ambiguous reads (raw)
+            'attributed_count': float,  # After proportional attribution
+            'total_count': float,  # Final count (confident + attributed)
+            'alternative_introns': set,  # Introns that share upstream seq
+        }
+    """
+    counts = {}
+
+    # First pass: count confident (unambiguous) reads per intron
+    for evidence in detection_results['evidence']:
+        intron_id = evidence.intron_id
+
+        if intron_id not in counts:
+            counts[intron_id] = {
+                'confident_count': 0,
+                'ambiguous_count': 0,
+                'ambiguous_reads': [],  # Store for proportional attribution
+                'attributed_count': 0.0,
+                'total_count': 0.0,
+                'alternative_introns': set()
+            }
+
+        if evidence.ambiguous:
+            counts[intron_id]['ambiguous_count'] += 1
+            counts[intron_id]['ambiguous_reads'].append(evidence)
+            counts[intron_id]['alternative_introns'].update(evidence.alternative_introns)
+        else:
+            counts[intron_id]['confident_count'] += 1
+
+    if mode == 'holdout':
+        # Simply use confident counts only
+        for intron_id in counts:
+            counts[intron_id]['attributed_count'] = 0.0
+            counts[intron_id]['total_count'] = float(counts[intron_id]['confident_count'])
+
+    elif mode == 'proportional':
+        # For each group of introns sharing upstream sequences,
+        # distribute ambiguous reads proportionally based on confident counts
+
+        # Build groups of introns that share upstream sequences
+        processed_groups: Set[frozenset] = set()
+
+        for intron_id, data in counts.items():
+            if data['ambiguous_count'] == 0:
+                # No ambiguous reads, just use confident count
+                counts[intron_id]['total_count'] = float(data['confident_count'])
+                continue
+
+            # Build the group of introns that share this sequence
+            group = {intron_id} | data['alternative_introns']
+            group_key = frozenset(group)
+
+            if group_key in processed_groups:
+                continue
+            processed_groups.add(group_key)
+
+            # Get confident counts for all introns in the group
+            group_confident_counts = {}
+            for g_intron in group:
+                if g_intron in counts:
+                    group_confident_counts[g_intron] = counts[g_intron]['confident_count']
+                else:
+                    group_confident_counts[g_intron] = 0
+
+            total_confident = sum(group_confident_counts.values())
+
+            if total_confident == 0:
+                # No confident reads in any intron - distribute equally
+                for g_intron in group:
+                    if g_intron in counts:
+                        n_ambiguous = counts[g_intron]['ambiguous_count']
+                        fraction = 1.0 / len(group)
+                        counts[g_intron]['attributed_count'] = n_ambiguous * fraction
+            else:
+                # Distribute proportionally based on confident counts
+                for g_intron in group:
+                    if g_intron in counts:
+                        n_ambiguous = counts[g_intron]['ambiguous_count']
+                        fraction = group_confident_counts[g_intron] / total_confident
+                        counts[g_intron]['attributed_count'] = n_ambiguous * fraction
+
+        # Compute total counts
+        for intron_id in counts:
+            counts[intron_id]['total_count'] = (
+                counts[intron_id]['confident_count'] +
+                counts[intron_id]['attributed_count']
+            )
+
+    # Remove internal tracking data before returning
+    for intron_id in counts:
+        del counts[intron_id]['ambiguous_reads']
+        counts[intron_id]['alternative_introns'] = list(counts[intron_id]['alternative_introns'])
+
+    return counts
+
+
+def summarize_ambiguity_report(
+    detection_results: Dict,
+    counts: Dict[str, Dict]
+) -> str:
+    """Generate a summary report of ambiguity handling.
+
+    Args:
+        detection_results: Output from detect_partial_junction_crossings()
+        counts: Output from compute_junction_counts_with_ambiguity()
+
+    Returns:
+        Formatted string report
+    """
+    lines = []
+    lines.append("=" * 60)
+    lines.append("AMBIGUITY HANDLING REPORT")
+    lines.append("=" * 60)
+
+    mode = detection_results.get('ambiguous_mode', 'unknown')
+    lines.append(f"\nMode: {mode}")
+
+    stats = detection_results['stats']
+    total_rescued = stats['reads_rescued_as_spliced']
+    total_ambiguous = stats['reads_ambiguous']
+
+    lines.append(f"\nTotal rescued reads: {total_rescued:,}")
+    lines.append(f"Ambiguous reads: {total_ambiguous:,} ({100*total_ambiguous/max(1,total_rescued):.1f}%)")
+    lines.append(f"Unambiguous reads: {total_rescued - total_ambiguous:,}")
+
+    # Find introns with ambiguity
+    introns_with_ambiguity = [
+        (intron_id, data) for intron_id, data in counts.items()
+        if data['ambiguous_count'] > 0
+    ]
+
+    if introns_with_ambiguity:
+        lines.append(f"\nIntrons with ambiguous reads: {len(introns_with_ambiguity)}")
+        lines.append("-" * 60)
+
+        # Sort by ambiguous count
+        introns_with_ambiguity.sort(key=lambda x: x[1]['ambiguous_count'], reverse=True)
+
+        for intron_id, data in introns_with_ambiguity[:20]:  # Top 20
+            lines.append(f"\n{intron_id}:")
+            lines.append(f"  Confident: {data['confident_count']}")
+            lines.append(f"  Ambiguous: {data['ambiguous_count']}")
+            lines.append(f"  Attributed: {data['attributed_count']:.1f}")
+            lines.append(f"  Total: {data['total_count']:.1f}")
+            if data['alternative_introns']:
+                lines.append(f"  Shares sequence with: {', '.join(data['alternative_introns'][:3])}")
+
+    lines.append("\n" + "=" * 60)
+
+    return "\n".join(lines)
 
 
 def analyze_soft_clips_near_junctions(

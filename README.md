@@ -1,10 +1,12 @@
-# RECTIFY: Precision Transcript Structure Mapping for Direct RNA Nanopore Sequencing
+# RECTIFY
+
+**R**NA **E**nd **C**orrection **T**ool for **I**ntron re**F**inement with ambiguit**Y** resolution
 
 [![PyPI version](https://badge.fury.io/py/rectify-rna.svg)](https://pypi.org/project/rectify-rna/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-**Accurate 5' ends, 3' ends, and splice junctions through artifact correction and optional NET-seq refinement.**
+**Precision transcript structure mapping for direct RNA nanopore sequencing.** Accurate 5' ends, 3' ends, and splice junctions through multi-aligner consensus, artifact correction, and optional NET-seq refinement.
 
 ---
 
@@ -26,10 +28,12 @@ rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir res
 
 | Feature | Description |
 |---------|-------------|
+| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read |
+| **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
-| **5' End Junction Correction** | Recovers true splice sites from soft-clipped junction reads |
+| **3' False Junction Removal** | Detects and removes spurious junctions from poly(A) tail artifacts |
+| **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
-| **AG Mispriming Detection** | Flags internal priming on A/G-rich regions |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data (optional) |
 | **Adaptive Clustering** | Groups CPA sites with valley-based algorithm |
 | **Dual-Resolution DESeq2** | Gene-level and cluster-level differential expression |
@@ -132,6 +136,90 @@ After:   |=========================...
       read starts at true exon boundary
 
 Result: Accurate 5' end for TSS analysis and full-length read classification
+```
+
+---
+
+## Multi-Aligner Consensus Pipeline
+
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel and selects the best alignment per read.
+
+```
+===============================================================================
+THE PROBLEM: Aligner disagreement at splice junctions
+===============================================================================
+
+minimap2:  ...EXON1|=====N=====|EXON2...  (spliced, but 5' soft-clipped)
+              SSSSS↑
+
+mapPacBio: ...EXON1|=====N=====|EXON2...  (spliced, no soft-clip)
+                   ↑
+
+gapmm2:    ...EXON1|=====N=====|EXON2...  (spliced, terminal exon refined)
+                   ↑
+
+Each aligner may find the correct junction, miss it, or soft-clip at the boundary.
+
+===============================================================================
+RECTIFY'S SOLUTION: Multi-aligner consensus with 5' rescue
+===============================================================================
+
+  1. Run all 3 aligners on the same reads
+  2. For each read, compare junction sets across aligners
+  3. Prefer alignments that:
+     a. Splice through known junctions rather than soft-clipping (5' rescue)
+     b. Use canonical splice sites (GT-AG)
+     c. Are supported by multiple aligners (high confidence)
+  4. Remove 3' false junctions from poly(A) artifacts
+  5. Output: Single consensus BAM with best alignments
+
+Confidence scoring:
+  - HIGH:   3/3 aligners agree on junction
+  - MEDIUM: 2/3 aligners agree
+  - LOW:    1/3 aligners (only one found it)
+```
+
+**Usage:**
+
+```bash
+# Multi-aligner consensus alignment (default)
+rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
+
+# Single aligner mode (faster, less accurate)
+rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
+```
+
+---
+
+## 3' False Junction Removal
+
+Poly(A) tails can create spurious "junctions" when the aligner introduces a deletion to align tail bases to a downstream A-tract.
+
+```
+===============================================================================
+THE PROBLEM: Poly(A) tails create false junctions
+===============================================================================
+
+                                    true CPA        false "junction"
+                                        ↓                 ↓
+Genome:  ...EXON|AAAAA|---gap---|AAAAA|EXON2...
+Read:    ...EXON|AAAAAAAAAAAAAAAAAAAAA.|AAAAA (poly(A) tail)
+                            ↑
+                    Aligner introduces N (skip)
+                    to align tail to downstream A-tract
+
+Result: Spurious junction that doesn't exist in the transcript
+
+===============================================================================
+RECTIFY'S SOLUTION: Detect and remove poly(A) false junctions
+===============================================================================
+
+  1. Identify junctions where:
+     a. 5' side ends in poly(A) (≥3 A's)
+     b. 3' side starts with A-tract
+     c. Read has no downstream exon sequence (just poly(A))
+  2. Remove these false junctions from the alignment
+  3. Correct the 3' end position to the true CPA site
 ```
 
 ---
