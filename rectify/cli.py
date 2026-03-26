@@ -134,6 +134,16 @@ Citation:
         help='Skip indel artifact correction (even if --polya-sequenced)'
     )
 
+    module_group.add_argument(
+        '--variant-aware',
+        action='store_true',
+        help='Enable variant-aware homopolymer rescue. Uses two-pass approach: '
+             'first scans all reads to identify positions where high mismatch '
+             'frequency suggests true variants (not basecalling errors), then '
+             'only rescues at low-frequency positions. Outputs potential '
+             'variants to *_potential_variants.tsv for review.'
+    )
+
     # Poly(A) model
     polya_group = correct_parser.add_argument_group('Poly(A) tail model')
     polya_group.add_argument(

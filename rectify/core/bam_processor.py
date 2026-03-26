@@ -30,6 +30,7 @@ from . import ag_mispriming
 from . import polya_trimmer
 from . import indel_corrector
 from . import netseq_refiner
+from .indel_corrector import VariantAwareHomopolymerRescue
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ..utils.genome import load_genome, standardize_chrom_name
 from ..utils.alignment import (
@@ -125,7 +126,8 @@ def correct_read_3prime(
     apply_ag_mispriming: bool = False,
     apply_polya_trim: bool = False,
     apply_indel_correction: bool = False,
-    netseq_loader: Optional[netseq_refiner.NetseqLoader] = None
+    netseq_loader: Optional[netseq_refiner.NetseqLoader] = None,
+    variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
 ) -> Dict:
     """
     Apply all corrections to a single read.
@@ -138,6 +140,8 @@ def correct_read_3prime(
         apply_polya_trim: Apply poly(A) tail trimming
         apply_indel_correction: Apply indel artifact correction
         netseq_loader: Optional NET-seq loader for refinement
+        variant_aware_rescue: Optional VariantAwareHomopolymerRescue object for
+            filtering out likely true variants during homopolymer rescue
 
     Returns:
         Dict with correction results
@@ -265,6 +269,21 @@ def correct_read_3prime(
 
             # Update current position
             current_position = indel_result['corrected_3prime']
+
+    # Module 2D: Variant-aware homopolymer rescue (optional)
+    # This filters out positions where high read frequency suggests true variant
+    if variant_aware_rescue is not None:
+        var_rescue_result = variant_aware_rescue.rescue_with_variant_filter(
+            read, strand, genome, end='3prime'
+        )
+        if var_rescue_result:
+            if var_rescue_result['variant_check'] == 'RESCUED':
+                result['correction_applied'].append('homopolymer_rescue')
+                result['homopolymer_rescue_bases'] = var_rescue_result['rescued_bases']
+                current_position = var_rescue_result['corrected_pos']
+            elif var_rescue_result['variant_check'] == 'SKIPPED_LIKELY_VARIANT':
+                result['qc_flags'].append('LIKELY_VARIANT')
+                result['variant_confidence'] = var_rescue_result['variant_confidence']
 
     # Update corrected position (after poly(A) and indel corrections)
     result['corrected_3prime'] = current_position
@@ -674,7 +693,8 @@ def _process_region_worker(
     apply_ag_mispriming: bool,
     apply_polya_trim: bool,
     apply_indel_correction: bool,
-    netseq_dir: Optional[str] = None
+    netseq_dir: Optional[str] = None,
+    variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
 ) -> List[Dict]:
     """
     Worker function to process a single region.
@@ -687,6 +707,7 @@ def _process_region_worker(
         genome: Pre-loaded genome dict (shared via fork)
         apply_*: Correction module flags
         netseq_dir: Optional NET-seq BigWig directory
+        variant_aware_rescue: Optional variant-aware rescue object (from first pass)
 
     Returns:
         List of correction result dicts for reads in region
@@ -717,7 +738,8 @@ def _process_region_worker(
                 apply_ag_mispriming=apply_ag_mispriming,
                 apply_polya_trim=apply_polya_trim,
                 apply_indel_correction=apply_indel_correction,
-                netseq_loader=netseq_loader
+                netseq_loader=netseq_loader,
+                variant_aware_rescue=variant_aware_rescue,
             )
             results.append(result)
 
@@ -742,7 +764,9 @@ def process_bam_file_parallel(
     max_reads: Optional[int] = None,
     min_gap_size: int = 10000,
     show_progress: bool = True,
-    return_stats: bool = False
+    return_stats: bool = False,
+    variant_aware: bool = False,
+    variant_output_path: Optional[str] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -764,6 +788,8 @@ def process_bam_file_parallel(
         min_gap_size: Minimum gap size for region splitting
         show_progress: Show progress information
         return_stats: Return ProcessingStats alongside results
+        variant_aware: Enable variant-aware homopolymer rescue (two-pass)
+        variant_output_path: Optional path to write potential variants TSV
 
     Returns:
         List of correction result dicts, or tuple of (results, stats) if return_stats=True
@@ -777,6 +803,17 @@ def process_bam_file_parallel(
     # Load genome (shared across workers via fork)
     logger.info(f"Loading genome from {genome_path}...")
     genome = load_genome(genome_path)
+
+    # Run variant-aware scan if enabled (first pass)
+    variant_aware_rescue = None
+    if variant_aware:
+        variant_aware_rescue = run_variant_aware_scan(
+            bam_path=bam_path,
+            genome=genome,
+            min_variant_fraction=0.8,
+            min_reads_for_variant_call=5,
+            output_variants_path=variant_output_path,
+        )
 
     # Count total reads and filtered reads for stats
     stats = ProcessingStats()
@@ -814,7 +851,7 @@ def process_bam_file_parallel(
                 region, bam_path, genome,
                 apply_atract, apply_ag_mispriming,
                 apply_polya_trim, apply_indel_correction,
-                netseq_dir
+                netseq_dir, variant_aware_rescue
             )
             all_results.extend(results)
 
@@ -847,7 +884,8 @@ def process_bam_file_parallel(
         apply_ag_mispriming=apply_ag_mispriming,
         apply_polya_trim=apply_polya_trim,
         apply_indel_correction=apply_indel_correction,
-        netseq_dir=netseq_dir
+        netseq_dir=netseq_dir,
+        variant_aware_rescue=variant_aware_rescue,
     )
 
     all_results = []
@@ -1043,6 +1081,88 @@ def _write_results_chunk(fh, results: List[Dict]):
             ','.join(result['qc_flags']),
         ]
         fh.write('\t'.join(row) + '\n')
+
+
+def run_variant_aware_scan(
+    bam_path: str,
+    genome: Dict[str, str],
+    min_variant_fraction: float = 0.8,
+    min_reads_for_variant_call: int = 5,
+    output_variants_path: Optional[str] = None,
+) -> VariantAwareHomopolymerRescue:
+    """
+    Run first pass to scan reads and build variant frequency map.
+
+    This enables variant-aware homopolymer rescue by identifying positions
+    where high mismatch frequency indicates a true variant (not basecalling error).
+
+    Args:
+        bam_path: Path to BAM file
+        genome: Pre-loaded genome dict
+        min_variant_fraction: Threshold for variant call (default 0.8 = 80%)
+        min_reads_for_variant_call: Minimum reads at position (default 5)
+        output_variants_path: Optional path to write potential variants TSV
+
+    Returns:
+        VariantAwareHomopolymerRescue object ready for second pass
+    """
+    logger.info("Running variant-aware scan (first pass)...")
+
+    rescue = VariantAwareHomopolymerRescue(
+        min_variant_fraction=min_variant_fraction,
+        min_reads_for_variant_call=min_reads_for_variant_call,
+        min_homopolymer_len=4,
+        max_rescue_bases=3,
+    )
+
+    n_scanned = 0
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        for read in bam.fetch():
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+
+            strand = '-' if read.is_reverse else '+'
+            rescue.scan_read(read, strand, genome, end='3prime')
+            n_scanned += 1
+
+            if n_scanned % 500000 == 0:
+                logger.info(f"  Scanned {n_scanned:,} reads...")
+
+    logger.info(f"  Total scanned: {n_scanned:,} reads")
+
+    # Finalize scan
+    rescue.finalize_scan()
+
+    # Get statistics
+    stats = rescue.get_statistics()
+    logger.info(f"  Positions with mismatches: {stats['total_positions_scanned']:,}")
+    logger.info(f"  With sufficient coverage: {stats['positions_with_sufficient_coverage']:,}")
+    logger.info(f"  Potential variants: {stats['potential_variants_detected']:,}")
+
+    # Write potential variants if requested
+    if output_variants_path:
+        variants = rescue.get_potential_variants()
+        if variants:
+            logger.info(f"  Writing {len(variants)} potential variants to {output_variants_path}")
+            with open(output_variants_path, 'w') as f:
+                header = ['chrom', 'position', 'ref_base', 'homopolymer_base',
+                          'total_reads', 'mismatch_fraction',
+                          'dominant_mismatch_base', 'dominant_mismatch_fraction']
+                f.write('\t'.join(header) + '\n')
+                for v in variants:
+                    row = [
+                        v['chrom'],
+                        str(v['position']),
+                        v['ref_base'],
+                        v['homopolymer_base'],
+                        str(v['total_reads']),
+                        f"{v['mismatch_fraction']:.3f}",
+                        v['dominant_mismatch_base'],
+                        f"{v['dominant_mismatch_fraction']:.3f}",
+                    ]
+                    f.write('\t'.join(row) + '\n')
+
+    return rescue
 
 
 def generate_summary_from_stats(stats) -> str:

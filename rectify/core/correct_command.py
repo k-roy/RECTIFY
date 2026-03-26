@@ -195,6 +195,7 @@ def validate_inputs(args) -> dict:
         'polya_model_path': getattr(args, 'polya_model', None),
         'threads': getattr(args, 'threads', 4),
         'verbose': getattr(args, 'verbose', False),
+        'variant_aware': getattr(args, 'variant_aware', False),
     }
 
     # Enable poly(A) corrections if --polya-sequenced flag set
@@ -253,6 +254,7 @@ def run(args):
     logger.info(f"  AG mispriming:         {'ENABLED' if config['apply_ag_mispriming'] else 'DISABLED'}")
     logger.info(f"  Poly(A) trimming:      {'ENABLED' if config['apply_polya_trim'] else 'DISABLED'}")
     logger.info(f"  Indel correction:      {'ENABLED' if config['apply_indel_correction'] else 'DISABLED'}")
+    logger.info(f"  Variant-aware rescue:  {'ENABLED' if config['variant_aware'] else 'DISABLED'}")
     logger.info(f"  NET-seq refinement:    {'ENABLED' if config['netseq_dir'] else 'DISABLED'}")
     logger.info("")
 
@@ -278,6 +280,11 @@ def run(args):
             report = generate_stats_report(stats)
         else:
             # Standard parallel processing
+            # Determine variant output path
+            variant_output_path = None
+            if config['variant_aware'] and config['output_path']:
+                variant_output_path = str(config['output_path']).replace('.tsv', '_potential_variants.tsv')
+
             results, stats = bam_processor.process_bam_file_parallel(
                 bam_path=str(config['bam_path']),
                 genome_path=str(config['genome_path']),
@@ -290,6 +297,8 @@ def run(args):
                 output_path=str(config['output_path']) if config['output_path'] else None,
                 show_progress=not args.verbose,  # Use verbose logging instead of progress bar
                 return_stats=True,
+                variant_aware=config['variant_aware'],
+                variant_output_path=variant_output_path,
             )
             report = generate_stats_report(stats)
 
@@ -342,6 +351,8 @@ if __name__ == '__main__':
     parser.add_argument('--skip-ag-check', action='store_true')
     parser.add_argument('--skip-polya-trim', action='store_true')
     parser.add_argument('--skip-indel-correction', action='store_true')
+    parser.add_argument('--variant-aware', action='store_true',
+                        help='Enable variant-aware homopolymer rescue (two-pass)')
     parser.add_argument('--netseq-dir', type=Path)
     parser.add_argument('--netseq-samples', nargs='+')
     parser.add_argument('--polya-model', type=Path)
