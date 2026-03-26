@@ -219,20 +219,41 @@ conda install -c conda-forge -c bioconda rectify-rna
 
 ---
 
-## Usage
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `rectify correct` | Correct 3' end positions (indel correction, A-tract resolution) |
+| `rectify analyze` | Downstream analysis (clustering, DESeq2, GO, motifs) |
+| `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
+| `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
+| `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
+| `rectify align` | Align FASTQ with minimap2 (DRS-optimized settings) |
+| `rectify run` | Full pipeline: correct → analyze |
+
+### Examples
 
 ```bash
-# Basic correction
-rectify correct reads.bam --genome genome.fa --output corrected.tsv
+# Correct 3' ends (bundled yeast genome)
+rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 
-# With custom NET-seq data
-rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ --output corrected.tsv
+# Correct with custom genome and NET-seq
+rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ -o corrected.tsv
 
-# Analysis pipeline
+# Extract per-read features from BAM
+rectify extract reads.bam -o reads.tsv --genome genome.fa --annotation genes.gff
+
+# Aggregate into 3'/5'/junction datasets
+rectify aggregate reads.bam -o aggregated/ --annotation genes.gff --mode all
+
+# Differential expression analysis
 rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 
 # Export bigWig tracks
 rectify export corrected.tsv -o tracks/ --genome genome.fa
+
+# Full pipeline
+rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
 ---
