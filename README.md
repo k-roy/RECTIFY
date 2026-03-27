@@ -1,6 +1,6 @@
 # RECTIFY
 
-**R**NA **E**nd **C**orrection **T**ool for **I**ntron re**F**inement with ambiguit**Y** resolution
+**R**NA 5' and 3' **E**nd **C**orrection **T**ool with **I**ntron re**F**inement and ambiguit**Y** resolution
 
 [![PyPI version](https://badge.fury.io/py/rectify-rna.svg)](https://pypi.org/project/rectify-rna/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -72,15 +72,13 @@ Nanopore basecallers systematically under-call homopolymer runs (e.g., calling 8
 
 ![Soft-Clip Rescue](docs/images/softclip_rescue.png)
 
-**The Problem:** The basecaller under-calls the T-tract, so when the aligner reaches the non-T base (G), it can't fit it into the shortened homopolymer and soft-clips it instead.
+**The Problem:** The basecaller under-calls the T-tract, so when the aligner reaches the first non-T base, it can't fit it into the shortened homopolymer and soft-clips it instead.
 
 **RECTIFY's Solution:**
 1. Detect soft-clips adjacent to homopolymer boundaries
 2. Skip over remaining reference homopolymer bases (the under-called T's)
 3. Match soft-clipped bases to reference sequence beyond the homopolymer
 4. Extend the 3' end to include the rescued bases
-
-**Result:** 3' end correctly placed after the rescued sequence (e.g., GTTC), recovering ~3.3% of reads with an average of 3.7 bp rescued per read.
 
 ---
 
