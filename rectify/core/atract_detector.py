@@ -55,13 +55,13 @@ def _count_downstream_as(
     """
     Count A's (or T's for - strand) in downstream window.
 
-    For + strand: Count A's going rightward from position
-    For - strand: Count T's going leftward from position (represents A's in RNA orientation)
+    For + strand: Count A's in [position+1, position+window_size] (first base AFTER read end)
+    For - strand: Count T's in [position-window_size, position-1] (first base AFTER read end in gene direction)
 
     Args:
         genome: Genome dict
         chrom: Chromosome name
-        position: Position to start from (0-based)
+        position: 3' end position of read (0-based, last aligned base)
         strand: '+' or '-'
         window_size: Size of window to count in
 
@@ -79,17 +79,19 @@ def _count_downstream_as(
     target_base = 'A' if strand == '+' else 'T'
 
     if strand == '+':
-        # Downstream = rightward for + strand
-        window_end = min(position + window_size, chrom_len)
-        if window_end <= position:
+        # Downstream = rightward for + strand; start at position+1 (first base AFTER read end)
+        window_start = position + 1
+        window_end = min(window_start + window_size, chrom_len)
+        if window_start >= chrom_len:
             return None
-        window_seq = seq[position:window_end]
+        window_seq = seq[window_start:window_end]
     else:
-        # Downstream = leftward for - strand
-        window_start = max(position - window_size + 1, 0)
-        if window_start >= position + 1:
+        # Downstream = leftward for - strand; end at position-1 (first base AFTER read end in gene direction)
+        window_end = position
+        window_start = max(window_end - window_size, 0)
+        if window_end <= 0:
             return None
-        window_seq = seq[window_start:position + 1]
+        window_seq = seq[window_start:window_end]
 
     return window_seq.count(target_base)
 

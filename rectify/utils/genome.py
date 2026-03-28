@@ -71,16 +71,28 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
     """
     Load reference genome into memory.
 
+    Handles both plain FASTA and gzip-compressed FASTA (.gz).
+
     Args:
-        genome_path: Path to genome FASTA file
+        genome_path: Path to genome FASTA file (.fa, .fasta, .fsa, or .gz)
 
     Returns:
         Dict mapping chromosome name (NCBI format) to sequence string
     """
+    import gzip as _gzip
+
+    genome_path = Path(genome_path)
     print(f"Loading genome from {genome_path}...")
     genome = {}
-    for record in SeqIO.parse(str(genome_path), 'fasta'):
-        genome[record.id] = str(record.seq).upper()
+
+    if genome_path.suffix == '.gz':
+        with _gzip.open(str(genome_path), 'rt') as fh:
+            for record in SeqIO.parse(fh, 'fasta'):
+                genome[record.id] = str(record.seq).upper()
+    else:
+        for record in SeqIO.parse(str(genome_path), 'fasta'):
+            genome[record.id] = str(record.seq).upper()
+
     print(f"  Loaded {len(genome)} chromosomes")
     return genome
 

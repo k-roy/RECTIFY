@@ -9,6 +9,7 @@ Date: 2026-03-09
 """
 
 import sys
+import dataclasses
 import logging
 from pathlib import Path
 from typing import Optional
@@ -19,7 +20,9 @@ from ..slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
 from . import bam_processor
 from .processing_stats import write_stats_tsv, generate_stats_report
+from .spikein_filter import filter_spikein_reads
 from ..utils import genome as genome_utils
+from ..utils.provenance import init_provenance
 
 
 def setup_logging(verbose: bool = False):
@@ -147,11 +150,18 @@ def validate_inputs(args) -> dict:
 
         if organism:
             try:
-                resolved_netseq_dir = ensure_netseq_data(
+                result = ensure_netseq_data(
                     organism,
                     auto_download=True,
                     verbose=True
                 )
+                # ensure_netseq_data returns 'bundled' for organisms with
+                # pre-deconvolved TSV data included in the package.
+                # Encode organism so bam_processor workers can self-load.
+                if result == 'bundled':
+                    resolved_netseq_dir = f'bundled:{organism}'
+                else:
+                    resolved_netseq_dir = result
             except Exception as e:
                 logging.warning(f"Could not load bundled NET-seq data: {e}")
                 logging.warning("Continuing without NET-seq refinement.")
@@ -196,6 +206,7 @@ def validate_inputs(args) -> dict:
         'threads': getattr(args, 'threads', 4),
         'verbose': getattr(args, 'verbose', False),
         'variant_aware': not getattr(args, 'skip_variant_aware', False),
+        'filter_spikein': getattr(args, 'filter_spikein', None),
     }
 
     # Enable poly(A) corrections if --polya-sequenced flag set
@@ -256,18 +267,46 @@ def run(args):
     logger.info(f"  Indel correction:      {'ENABLED' if config['apply_indel_correction'] else 'DISABLED'}")
     logger.info(f"  Variant-aware rescue:  {'ENABLED' if config['variant_aware'] else 'DISABLED'}")
     logger.info(f"  NET-seq refinement:    {'ENABLED' if config['netseq_dir'] else 'DISABLED'}")
+    logger.info(f"  Spike-in filter:       {'ENABLED (' + ','.join(config['filter_spikein']) + ')' if config['filter_spikein'] else 'DISABLED'}")
     logger.info("")
+
+    # Initialize provenance tracking
+    provenance = None
+    if config['output_path']:
+        output_dir = Path(config['output_path']).parent
+        provenance = init_provenance(
+            output_dir,
+            description="RECTIFY corrected 3' end positions",
+            config=config
+        )
+        logger.info(f"Provenance tracking initialized for {output_dir}")
 
     # Process BAM file
     try:
         logger.info("Processing BAM file...")
+
+        # Spike-in filtering (pre-processing step)
+        bam_to_process = str(config['bam_path'])
+        spikein_stats = {}
+        if config['filter_spikein']:
+            filtered_bam = str(config['output_path']).replace('.tsv', '_spikein_filtered.bam')
+            spikein_report = str(config['output_path']).replace('.tsv', '_spikein_report.txt')
+            logger.info(f"Filtering spike-in reads ({', '.join(config['filter_spikein'])})...")
+            spikein_stats = filter_spikein_reads(
+                input_bam=bam_to_process,
+                output_bam=filtered_bam,
+                known_genes=config['filter_spikein'],
+                report_path=spikein_report,
+            )
+            bam_to_process = filtered_bam
+            logger.info(f"  Spike-in reads removed: {spikein_stats.get('spikein_reads', 0):,}")
 
         # Choose processing mode
         if streaming_mode:
             # Streaming mode - memory efficient for large BAMs
             chunk_size = getattr(args, 'chunk_size', 10000)
             stats = bam_processor.process_bam_streaming(
-                bam_path=str(config['bam_path']),
+                bam_path=bam_to_process,
                 genome_path=str(config['genome_path']),
                 output_path=str(config['output_path']),
                 chunk_size=chunk_size,
@@ -286,7 +325,7 @@ def run(args):
                 variant_output_path = str(config['output_path']).replace('.tsv', '_potential_variants.tsv')
 
             results, stats = bam_processor.process_bam_file_parallel(
-                bam_path=str(config['bam_path']),
+                bam_path=bam_to_process,
                 genome_path=str(config['genome_path']),
                 n_threads=n_threads,
                 apply_atract=config['apply_atract'],
@@ -301,6 +340,10 @@ def run(args):
                 variant_output_path=variant_output_path,
             )
             report = generate_stats_report(stats)
+
+        # Propagate spike-in count into stats
+        if spikein_stats:
+            stats.spikein_reads_filtered = spikein_stats.get('spikein_reads', 0)
 
         # Write processing statistics TSV
         if config['output_path']:
@@ -323,6 +366,22 @@ def run(args):
             logger.info(f"Saving detailed report to {args.report}...")
             with open(args.report, 'w') as f:
                 f.write(report)
+
+        # Save provenance
+        if provenance:
+            # Record output files
+            output_path = Path(config['output_path'])
+            if output_path.exists():
+                provenance.add_output_file(
+                    output_path,
+                    source_files=[config['bam_path']],
+                    metadata={'stats': dataclasses.asdict(stats)}  # serialize dataclass
+                )
+            stats_path = Path(str(config['output_path']).replace('.tsv', '_stats.tsv'))
+            if stats_path.exists():
+                provenance.add_output_file(stats_path)
+            provenance.save()
+            logger.info(f"Provenance saved to {provenance.output_dir}")
 
         logger.info("")
         logger.info("=" * 70)

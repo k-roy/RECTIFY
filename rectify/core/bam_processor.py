@@ -43,6 +43,29 @@ from ..slurm import get_available_cpus
 logger = logging.getLogger(__name__)
 
 
+def _load_netseq(netseq_dir: str) -> 'netseq_refiner.NetseqLoader':
+    """
+    Load NET-seq data into a NetseqLoader.
+
+    Handles two cases:
+    - 'bundled:<organism>': loads pre-deconvolved TSV bundled with the package
+    - '<path>': loads BigWig files from a directory
+
+    Args:
+        netseq_dir: Either 'bundled:<organism>' or a filesystem path
+
+    Returns:
+        Populated NetseqLoader
+    """
+    loader = netseq_refiner.NetseqLoader()
+    if netseq_dir.startswith('bundled:'):
+        organism = netseq_dir[len('bundled:'):]
+        loader.load_bundled(organism)
+    else:
+        loader.load_directory(netseq_dir, pattern="*.bw")
+    return loader
+
+
 def get_read_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
     """
     Get 3' end position and strand from read.
@@ -128,7 +151,7 @@ def correct_read_3prime(
     apply_indel_correction: bool = False,
     netseq_loader: Optional[netseq_refiner.NetseqLoader] = None,
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
-) -> Dict:
+) -> List[Dict]:
     """
     Apply all corrections to a single read.
 
@@ -298,35 +321,52 @@ def correct_read_3prime(
             result['ambiguity_max'] = current_position + result['ambiguity_range']
 
     # Module 3: NET-seq refinement (optional)
+    # Bundled TSV data is already deconvolved — skip re-deconvolution.
+    # Custom BigWig data has not been deconvolved — apply NNLS.
+    use_deconvolution = not getattr(netseq_loader, '_bundled_loaded', False)
+
     if netseq_loader is not None and result['ambiguity_range'] > 0:
-        netseq_result = netseq_refiner.refine_with_netseq(
+        assignments = netseq_refiner.refine_with_netseq(
             netseq_loader,
             chrom_std,
             result['ambiguity_min'],
             result['ambiguity_max'],
             strand,
             current_position,
-            proportional_split=False,  # Return single dict, not list
+            use_deconvolution=use_deconvolution,
+            proportional_split=True,
         )
-
-        result['corrected_3prime'] = netseq_result['refined_position']
-        result['netseq_confidence'] = netseq_result['confidence']
-        result['netseq_method'] = netseq_result['method']
-        result['netseq_peak_signal'] = netseq_result['peak_signal']
-
-        # Update overall confidence based on NET-seq
-        if netseq_result['confidence'] == 'low':
-            result['confidence'] = 'low'
-        elif netseq_result['confidence'] == 'medium' and result['confidence'] == 'high':
-            result['confidence'] = 'medium'
 
         result['correction_applied'].append('netseq_refinement')
 
-    # Set QC flags if none added
+        # Build one output row per proportional assignment.
+        # For a single dominant peak the list has length 1 (fraction=1.0).
+        output_rows = []
+        for assignment in assignments:
+            row = dict(result)  # shallow copy — all scalar fields
+            row['correction_applied'] = list(result['correction_applied'])
+            row['qc_flags'] = list(result['qc_flags'])
+            row['corrected_3prime'] = assignment['assigned_position']
+            row['fraction'] = assignment['fraction']
+            row['netseq_confidence'] = assignment['confidence']
+            row['netseq_method'] = assignment['method']
+            row['netseq_peak_signal'] = assignment['peak_signal']
+            # Propagate NET-seq confidence into overall confidence
+            if assignment['confidence'] == 'low':
+                row['confidence'] = 'low'
+            elif assignment['confidence'] == 'medium' and row['confidence'] == 'high':
+                row['confidence'] = 'medium'
+            if not row['qc_flags']:
+                row['qc_flags'].append('PASS')
+            output_rows.append(row)
+
+        return output_rows
+
+    # No NET-seq refinement — single row, full weight
+    result['fraction'] = 1.0
     if not result['qc_flags']:
         result['qc_flags'].append('PASS')
-
-    return result
+    return [result]
 
 
 def process_bam_file(
@@ -365,9 +405,10 @@ def process_bam_file(
     netseq_loader = None
     if netseq_dir:
         print(f"Loading NET-seq data from {netseq_dir}...")
-        netseq_loader = netseq_refiner.NetseqLoader()
-        netseq_loader.load_directory(netseq_dir, pattern="*.bw")
-        print(f"  Loaded {len(netseq_loader.bigwigs)} BigWig file(s)")
+        netseq_loader = _load_netseq(netseq_dir)
+        n_bw = len(netseq_loader.bigwigs)
+        src = f"{n_bw} BigWig file(s)" if n_bw else "bundled TSV"
+        print(f"  Loaded {src}")
 
     # Open BAM file
     print(f"Processing BAM file: {bam_path}")
@@ -386,7 +427,7 @@ def process_bam_file(
             continue
 
         # Apply corrections
-        result = correct_read_3prime(
+        read_results = correct_read_3prime(
             read,
             genome,
             apply_atract=apply_atract,
@@ -396,7 +437,7 @@ def process_bam_file(
             netseq_loader=netseq_loader
         )
 
-        results.append(result)
+        results.extend(read_results)
         n_processed += 1
 
         # Progress reporting
@@ -442,7 +483,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'junctions', 'n_junctions',  # Splice junctions (v2.7.0)
             'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips (v2.7.0)
             'mapq',  # Mapping quality (v2.7.0)
-            'correction_applied', 'confidence', 'qc_flags'
+            'correction_applied', 'confidence', 'qc_flags', 'fraction'
         ]
         f.write('\t'.join(header) + '\n')
 
@@ -471,6 +512,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
                 result['confidence'],
                 ','.join(result['qc_flags']),
+                f"{result.get('fraction', 1.0):.6f}",
             ]
             f.write('\t'.join(row) + '\n')
 
@@ -726,8 +768,7 @@ def _process_region_worker(
     # Load NET-seq if needed (per-worker to avoid file handle issues)
     netseq_loader = None
     if netseq_dir:
-        netseq_loader = netseq_refiner.NetseqLoader()
-        netseq_loader.load_directory(netseq_dir, pattern="*.bw")
+        netseq_loader = _load_netseq(netseq_dir)
 
     try:
         for read in bam.fetch(chrom, start, end):
@@ -736,7 +777,7 @@ def _process_region_worker(
                 continue
 
             # Apply corrections
-            result = correct_read_3prime(
+            read_results = correct_read_3prime(
                 read,
                 genome,
                 apply_atract=apply_atract,
@@ -746,7 +787,7 @@ def _process_region_worker(
                 netseq_loader=netseq_loader,
                 variant_aware_rescue=variant_aware_rescue,
             )
-            results.append(result)
+            results.extend(read_results)
 
     finally:
         bam.close()
@@ -973,8 +1014,7 @@ def process_bam_streaming(
     netseq_loader = None
     if netseq_dir:
         logger.info(f"Loading NET-seq data from {netseq_dir}...")
-        netseq_loader = netseq_refiner.NetseqLoader()
-        netseq_loader.load_directory(netseq_dir, pattern="*.bw")
+        netseq_loader = _load_netseq(netseq_dir)
 
     # Initialize comprehensive stats
     stats = ProcessingStats()
@@ -998,7 +1038,7 @@ def process_bam_streaming(
             'junctions', 'n_junctions',  # Splice junctions
             'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips
             'mapq',  # Mapping quality
-            'correction_applied', 'confidence', 'qc_flags'
+            'correction_applied', 'confidence', 'qc_flags', 'fraction'
         ]
         out_fh.write('\t'.join(header) + '\n')
 
@@ -1084,6 +1124,7 @@ def _write_results_chunk(fh, results: List[Dict]):
             ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
             result['confidence'],
             ','.join(result['qc_flags']),
+            f"{result.get('fraction', 1.0):.6f}",
         ]
         fh.write('\t'.join(row) + '\n')
 

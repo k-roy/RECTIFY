@@ -108,6 +108,16 @@ Citation:
         help='Aligner used (affects indel artifact detection)'
     )
 
+    # Spike-in filtering
+    spikein_group = correct_parser.add_argument_group('Spike-in filtering')
+    spikein_group.add_argument(
+        '--filter-spikein',
+        nargs='+',
+        metavar='GENE',
+        help='Remove spike-in reads by gene name (e.g., --filter-spikein ENO2). '
+             'Pre-defined signatures: ENO2. Multiple genes accepted.'
+    )
+
     # Module flags
     module_group = correct_parser.add_argument_group('Module selection')
     module_group.add_argument(
@@ -157,8 +167,17 @@ Citation:
     netseq_group = correct_parser.add_argument_group('NET-seq refinement')
     netseq_group.add_argument(
         '--organism',
-        help='Organism name for auto NET-seq (e.g., yeast, saccharomyces_cerevisiae). '
-             'Bundled WT NET-seq data will be downloaded automatically if available.'
+        help='Organism name for bundled genome/annotation/NET-seq '
+             '(e.g., yeast, saccharomyces_cerevisiae). '
+             'Bundled WT NET-seq data will be used automatically if available.'
+    )
+    netseq_group.add_argument(
+        '--Scer',
+        dest='organism',
+        action='store_const',
+        const='saccharomyces_cerevisiae',
+        help='Shorthand for --organism saccharomyces_cerevisiae. '
+             'Uses all bundled S. cerevisiae reference data.'
     )
 
     netseq_group.add_argument(
@@ -181,20 +200,6 @@ Citation:
         type=float,
         default=0.65,
         help='AG-richness threshold for mispriming flagging (0.0-1.0)'
-    )
-
-    param_group.add_argument(
-        '--polya-richness',
-        type=float,
-        default=0.8,
-        help='A-richness threshold for poly(A) tail detection (0.0-1.0)'
-    )
-
-    param_group.add_argument(
-        '--min-polya-length',
-        type=int,
-        default=15,
-        help='Minimum poly(A) tail length for nanopore oligo-dT priming'
     )
 
     # Output options
@@ -463,47 +468,116 @@ Citation:
     add_netseq_parser(subparsers)
 
     # =========================================================================
-    # run command (all-in-one: correct + analyze)
+    # run-all command (all-in-one: correct + analyze)
     # =========================================================================
     run_parser = subparsers.add_parser(
-        'run',
-        help='Run complete pipeline: correct 3\' ends + analyze results',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        'run-all',
+        help='Complete end-to-end pipeline: align → correct → analyze',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog="""
+Examples:
+  # S. cerevisiae — no need to specify genome/annotation (bundled)
+  rectify run-all sample.fastq.gz --Scer -o results/sample/
+
+  # Single sample with explicit references
+  rectify run-all sample.fastq.gz --genome genome.fa --annotation genes.gff -o results/sample/
+
+  # Single sample from pre-aligned BAM (skips alignment)
+  rectify run-all sample.bam --Scer -o results/sample/
+
+  # Multi-sample from manifest (parallel correction + combined DESeq2)
+  rectify run-all --manifest manifest.tsv --Scer -o results/
+
+  # Multi-sample with SLURM
+  rectify run-all --manifest manifest.tsv --Scer -o results/ \\
+      --profile rectify/slurm_profiles/sherlock_larsms.yaml
+
+Manifest format (TSV):
+  sample_id    path                    condition
+  wt_rep1      /path/wt_rep1.fastq.gz  WT
+  ko_rep1      /path/ko_rep1.fastq.gz  KO
+        """
     )
 
-    # Required arguments
+    # Input: single file (positional, optional) OR --manifest
+    # Validated at runtime — exactly one must be provided.
     run_parser.add_argument(
-        'bam',
+        'input',
         type=Path,
-        help='Input BAM file (aligned RNA-seq reads)'
+        nargs='?',
+        default=None,
+        help='Input FASTQ.gz or BAM file (single sample). '
+             'Omit when using --manifest.'
+    )
+    run_parser.add_argument(
+        '--manifest', '-m',
+        type=Path,
+        help='Sample manifest TSV (sample_id, path, condition). '
+             'Enables multi-sample parallel correction and combined DESeq2. '
+             'Cannot be combined with a positional input file.'
     )
 
     run_parser.add_argument(
         '--genome',
         type=Path,
-        required=True,
-        help='Reference genome FASTA file'
+        default=None,
+        help='Reference genome FASTA file. Not required when --Scer or --organism is set.'
     )
 
     run_parser.add_argument(
         '--annotation',
         type=Path,
-        required=True,
-        help='Gene annotation file (GTF/GFF)'
+        default=None,
+        help='Gene annotation file (GTF/GFF). Not required when --Scer or --organism is set.'
     )
 
     run_parser.add_argument(
         '-o', '--output-dir',
         type=Path,
         required=True,
-        help='Output directory for all results'
+        help='Output directory. Single sample: all outputs here. '
+             'Multi-sample: per-sample subdirs + combined/ for DESeq2.'
+    )
+
+    run_parser.add_argument(
+        '--profile',
+        type=Path,
+        metavar='PROFILE_YAML',
+        help='SLURM profile YAML for cluster submission (see rectify/slurm_profiles/)'
+    )
+
+    run_parser.add_argument(
+        '--skip-alignment',
+        action='store_true',
+        help='Skip triple-aligner alignment even for FASTQ input '
+             '(use if you already have a consensus.bam)'
+    )
+
+    # Organism / bundled reference
+    run_parser.add_argument(
+        '--organism',
+        default=None,
+        help='Organism name for bundled genome/annotation/NET-seq '
+             '(e.g., yeast, saccharomyces_cerevisiae). '
+             'Required when --genome and --annotation are not specified.'
+    )
+    run_parser.add_argument(
+        '--Scer',
+        dest='organism',
+        action='store_const',
+        const='saccharomyces_cerevisiae',
+        help='Shorthand for --organism saccharomyces_cerevisiae. '
+             'Uses all bundled S. cerevisiae reference data (genome, GFF, GO, NET-seq).'
     )
 
     # Optional correction arguments
+
     run_parser.add_argument(
-        '--organism',
-        default='yeast',
-        help='Organism name (default: yeast). Bundled WT NET-seq used for refinement.'
+        '--filter-spikein',
+        nargs='+',
+        metavar='GENE',
+        help='Remove spike-in reads by gene name (e.g., --filter-spikein ENO2). '
+             'Uses sequence-based classification to distinguish spike-in from endogenous reads.'
     )
 
     run_parser.add_argument(
@@ -532,12 +606,6 @@ Citation:
     )
 
     run_parser.add_argument(
-        '--manifest',
-        type=Path,
-        help='Sample metadata TSV (sample, condition columns)'
-    )
-
-    run_parser.add_argument(
         '--go-annotations',
         type=Path,
         help='GO annotation file for enrichment analysis'
@@ -548,6 +616,31 @@ Citation:
         type=int,
         default=4,
         help='Number of threads'
+    )
+
+    run_parser.add_argument(
+        '--streaming',
+        action='store_true',
+        help='Use streaming output mode to minimise memory usage during correction. '
+             'Recommended for BAM files > 10 GB.'
+    )
+
+    run_parser.add_argument(
+        '--chunk-size',
+        type=int,
+        default=10000,
+        help='Reads per output chunk in streaming mode (default: 10000)'
+    )
+
+    run_parser.add_argument(
+        '--parallel-aligners',
+        action='store_true',
+        default=False,
+        help=(
+            'Run minimap2, mapPacBio, and gapmm2 in parallel during alignment. '
+            'Threads are divided evenly across aligners (e.g., --threads 16 → 5 per aligner). '
+            'Reduces wall-clock time for the alignment step at the cost of higher peak memory.'
+        )
     )
 
     return parser
@@ -578,7 +671,7 @@ def main(argv: Optional[list] = None):
     elif args.command == 'export':
         from .core import export_command
         sys.exit(export_command.run(args))
-    elif args.command == 'run':
+    elif args.command == 'run-all':
         from .core import run_command
         run_command.run(args)
     elif args.command == 'batch':

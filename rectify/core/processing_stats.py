@@ -36,7 +36,7 @@ class ProcessingStats:
     reads_processed: int = 0
 
     # A-tract ambiguity (downstream A detection)
-    ends_with_downstream_A: int = 0  # Has >=1 A immediately downstream
+    ends_with_downstream_A: int = 0  # Has >=1 A in downstream 10bp window
     ends_ambiguous_atract: int = 0   # Has ambiguity range > 0
 
     # Correction breakdown
@@ -195,7 +195,7 @@ def write_stats_tsv(stats: ProcessingStats, output_path: str) -> None:
 
         # Correction section (percentages relative to processed reads)
         if processed > 0:
-            f.write(f"ends_with_downstream_A\t{stats.ends_with_downstream_A}\t{100*stats.ends_with_downstream_A/processed:.2f}\t3' ends with >=1 A immediately downstream\n")
+            f.write(f"ends_with_downstream_A\t{stats.ends_with_downstream_A}\t{100*stats.ends_with_downstream_A/processed:.2f}\t3' ends with >=1 A in downstream 10bp window\n")
             f.write(f"ends_ambiguous_atract\t{stats.ends_ambiguous_atract}\t{100*stats.ends_ambiguous_atract/processed:.2f}\t3' ends in A-tract (ambiguity range > 0)\n")
             f.write(f"ends_corrected_indel\t{stats.ends_corrected_indel}\t{100*stats.ends_corrected_indel/processed:.2f}\t3' ends corrected for indel artifacts\n")
             f.write(f"ends_shifted_atract_walking\t{stats.ends_shifted_atract_walking}\t{100*stats.ends_shifted_atract_walking/processed:.2f}\t3' ends shifted by A-tract walking\n")

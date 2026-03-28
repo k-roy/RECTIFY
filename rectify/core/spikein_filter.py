@@ -602,7 +602,7 @@ class SpikeInFilter:
         input_bam: str,
         output_bam: str,
         report_path: Optional[str] = None,
-        keep_ambiguous: bool = False
+        keep_ambiguous: bool = True
     ) -> Dict:
         """
         Filter spike-in reads from a BAM file.
@@ -611,7 +611,7 @@ class SpikeInFilter:
             input_bam: Input BAM file path
             output_bam: Output BAM file path (filtered)
             report_path: Optional path for filtering report
-            keep_ambiguous: If True, keep ambiguous reads; if False, remove them
+            keep_ambiguous: If True (default), keep ambiguous reads; only confirmed spike-ins are removed
 
         Returns:
             Dict with filtering statistics
@@ -683,8 +683,9 @@ class SpikeInFilter:
 
             f.write("Signatures used:\n")
             for sig in self.signatures:
-                f.write(f"  {sig.get('gene', 'unknown')}: "
-                        f"{sig.get('synthetic_3utr_core', 'N/A')}\n")
+                cores = sig.get('synthetic_3utr_cores', [])
+                core_str = sig.get('synthetic_3utr_full', ', '.join(cores[:3]) if cores else 'N/A')
+                f.write(f"  {sig.get('gene', 'unknown')}: {core_str}\n")
 
             f.write(f"\nTotal reads: {stats['total_reads']:,}\n")
             if stats['total_reads'] > 0:
@@ -756,7 +757,7 @@ def filter_spikein_reads(
     signatures: Optional[List[Dict]] = None,
     known_genes: Optional[List[str]] = None,
     report_path: Optional[str] = None,
-    keep_ambiguous: bool = False
+    keep_ambiguous: bool = True
 ) -> Dict:
     """
     Convenience function to filter spike-in reads from BAM.
@@ -767,7 +768,7 @@ def filter_spikein_reads(
         signatures: List of spike-in signature dicts
         known_genes: List of known spike-in gene names (e.g., ['ENO2'])
         report_path: Optional path for filtering report
-        keep_ambiguous: If True, keep ambiguous reads; if False (default), remove them
+        keep_ambiguous: If True (default), keep ambiguous reads; only confirmed spike-ins are removed
 
     Returns:
         Dict with filtering statistics

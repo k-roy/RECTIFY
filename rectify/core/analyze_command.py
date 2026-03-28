@@ -40,6 +40,7 @@ from .analyze import (
 )
 from .analyze.clustering import annotate_clusters_with_genes
 from .analyze.deseq2 import extract_condition_from_sample
+from ..utils.provenance import init_provenance
 
 
 def run_analyze(args: argparse.Namespace) -> int:
@@ -63,6 +64,13 @@ def run_analyze(args: argparse.Namespace) -> int:
     plots_dir.mkdir(exist_ok=True)
     tables_dir = output_dir / 'tables'
     tables_dir.mkdir(exist_ok=True)
+
+    # Initialize provenance tracking
+    provenance = init_provenance(
+        output_dir,
+        description="RECTIFY analysis output (clustering, DESeq2, motifs, etc.)",
+        config=vars(args)
+    )
 
     # Load corrected positions
     print(f"\n[1/9] Loading corrected positions from {args.input}...")
@@ -163,12 +171,14 @@ def run_analyze(args: argparse.Namespace) -> int:
             print(f"  Warning: Genomic distribution analysis failed: {e}")
 
     # Form clusters
+    fraction_col = 'fraction' if 'fraction' in positions_df.columns else None
     print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
     clusters_df = cluster_cpa_sites(
         positions_df,
         cluster_distance=args.cluster_distance,
         min_reads=args.min_reads,
         count_col=count_col,
+        fraction_col=fraction_col,
     )
     print(f"  Formed {len(clusters_df):,} clusters")
 
@@ -191,6 +201,7 @@ def run_analyze(args: argparse.Namespace) -> int:
         clusters_df,
         sample_col=args.sample_column,
         count_col=count_col,
+        fraction_col=fraction_col,
     )
     print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
 
@@ -470,10 +481,21 @@ def run_analyze(args: argparse.Namespace) -> int:
         title='RECTIFY Analysis Report',
     )
 
+    # Save provenance
+    # Record all output files
+    for tsv_file in tables_dir.glob('*.tsv'):
+        provenance.add_output_file(tsv_file, source_files=[Path(args.input)])
+    for png_file in plots_dir.glob('*.png'):
+        provenance.add_output_file(png_file)
+    provenance.add_output_file(html_path)
+    provenance.add_output_file(output_dir / 'analysis_summary.tsv')
+    provenance.save()
+
     print(f"\n" + "=" * 70)
     print(f"Analysis complete!")
     print(f"  Output directory: {output_dir}")
     print(f"  HTML report: {html_path}")
+    print(f"  Provenance: {output_dir / 'PROVENANCE.json'}")
     print("=" * 70)
 
     return 0

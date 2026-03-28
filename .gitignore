@@ -97,3 +97,7 @@ tests/data/*.fasta
 scratch/
 temp/
 *.log
+
+# Beta deployment staging (managed separately via beta worktree)
+rectify_beta_deploy/
+rectify_new_files/

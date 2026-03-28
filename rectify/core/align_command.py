@@ -213,10 +213,25 @@ def run_align(args: argparse.Namespace) -> int:
     # Run aligners
     results = {}
 
-    for aligner in aligners:
-        logger.info(f"Running {aligner}...")
+    parallel = getattr(args, 'parallel_aligners', False)
 
-        # Check availability
+    # Relative thread weights: minimap2 is ~2x faster than mapPacBio/gapmm2.
+    # In parallel mode, allocate proportionally so all three finish at roughly
+    # the same time rather than giving minimap2 idle cores it doesn't need.
+    # weights sum to 5 → for 16 threads: minimap2=3, mapPacBio=6, gapmm2=6 (=15)
+    _THREAD_WEIGHTS = {'minimap2': 1, 'mapPacBio': 2, 'gapmm2': 2}
+
+    if parallel:
+        total_weight = sum(_THREAD_WEIGHTS.get(a, 1) for a in aligners)
+        aligner_thread_counts = {
+            a: max(1, round(args.threads * _THREAD_WEIGHTS.get(a, 1) / total_weight))
+            for a in aligners
+        }
+    else:
+        aligner_thread_counts = {a: args.threads for a in aligners}
+
+    def _run_one_aligner(aligner):
+        """Run a single aligner and return (aligner, bam_path_or_None)."""
         if aligner == 'minimap2':
             exec_path = args.minimap2_path
         elif aligner == 'mapPacBio':
@@ -225,14 +240,15 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = args.gapmm2_path
         else:
             logger.warning(f"Unknown aligner: {aligner}")
-            continue
+            return aligner, None
 
         if not check_aligner_available(exec_path):
             logger.warning(f"{aligner} not found at {exec_path}, skipping")
-            continue
+            return aligner, None
 
-        # Run alignment
+        n_threads = aligner_thread_counts[aligner]
         output_bam = args.output_dir / f"{prefix}.{aligner}.bam"
+        logger.info(f"Running {aligner} (threads={n_threads})...")
 
         try:
             if aligner == 'minimap2':
@@ -240,7 +256,7 @@ def run_align(args: argparse.Namespace) -> int:
                     reads_path=str(args.reads),
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
-                    threads=args.threads,
+                    threads=n_threads,
                     annotation_path=str(args.annotation) if args.annotation else None,
                     junc_bonus=args.junc_bonus,
                     cache_dir=str(args.output_dir),
@@ -250,23 +266,41 @@ def run_align(args: argparse.Namespace) -> int:
                     reads_path=str(args.reads),
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
-                    threads=args.threads,
+                    threads=n_threads,
                 )
             elif aligner == 'gapmm2':
                 run_gapmm2(
                     reads_path=str(args.reads),
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
-                    threads=args.threads,
-                    # gapmm2 doesn't use annotation directly; it refines terminal exons
+                    threads=n_threads,
                 )
 
-            results[aligner] = str(output_bam)
             logger.info(f"{aligner} complete: {output_bam}")
+            return aligner, str(output_bam)
 
         except Exception as e:
             logger.error(f"{aligner} failed: {e}")
-            results[aligner] = None
+            return aligner, None
+
+    if parallel:
+        alloc_summary = ', '.join(
+            f"{a}={aligner_thread_counts[a]}" for a in aligners
+        )
+        logger.info(
+            f"Running {len(aligners)} aligners in parallel "
+            f"(threads: {alloc_summary}, total={args.threads})"
+        )
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=len(aligners)) as pool:
+            futures = {pool.submit(_run_one_aligner, a): a for a in aligners}
+            for future in as_completed(futures):
+                aligner, bam_path = future.result()
+                results[aligner] = bam_path
+    else:
+        for aligner in aligners:
+            aligner_name, bam_path = _run_one_aligner(aligner)
+            results[aligner_name] = bam_path
 
     # Summary of alignment step
     logger.info(f"\nAlignment summary:")
@@ -334,6 +368,34 @@ def run_align(args: argparse.Namespace) -> int:
         import traceback
         traceback.print_exc()
         return 1
+
+    # Add MD tags via samtools calmd (required for indel correction and
+    # alignment identity calculation downstream).
+    logger.info("Adding MD tags with samtools calmd...")
+    try:
+        import subprocess as _sp
+        calmd_bam = args.output_dir / f"{prefix}.consensus.md.bam"
+        calmd_cmd = [
+            'samtools', 'calmd', '-b',
+            str(consensus_bam),
+            str(args.genome),
+        ]
+        with open(str(calmd_bam), 'wb') as fh_out:
+            result = _sp.run(calmd_cmd, stdout=fh_out, stderr=_sp.PIPE)
+        if result.returncode == 0 and calmd_bam.stat().st_size > 0:
+            import shutil
+            calmd_bam.replace(consensus_bam)
+            _sp.run(['samtools', 'index', str(consensus_bam)], check=True)
+            logger.info("  MD tags added successfully")
+        else:
+            logger.warning(
+                f"  samtools calmd failed (rc={result.returncode}); "
+                "proceeding without MD tags"
+            )
+            if calmd_bam.exists():
+                calmd_bam.unlink()
+    except Exception as e:
+        logger.warning(f"  samtools calmd error: {e}; proceeding without MD tags")
 
     return 0
 

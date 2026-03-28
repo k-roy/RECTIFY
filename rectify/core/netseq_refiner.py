@@ -141,6 +141,27 @@ class NetseqLoader:
         for filepath in dir_path.glob(pattern):
             self.load_bigwig(str(filepath))
 
+    def load_bundled(self, organism: str):
+        """
+        Load bundled (pre-deconvolved) NET-seq signal for an organism.
+
+        Populates the signal cache from the bundled TSV dict so downstream
+        code can call get_signal() without knowing whether data came from
+        BigWig files or the bundled TSV.
+
+        Args:
+            organism: Organism name (e.g., 'saccharomyces_cerevisiae')
+        """
+        from ..data import load_bundled_netseq
+        signal_dict = load_bundled_netseq(organism)
+
+        # Group by (chrom, strand) and build per-region cache entries.
+        # Bundled data is sparse (only nonzero positions), so we store
+        # per-position values and serve them in get_signal() via the
+        # _bundled_signal attribute.
+        self._bundled_signal = signal_dict
+        self._bundled_loaded = True
+
     def get_signal(
         self,
         chrom: str,
@@ -164,9 +185,22 @@ class NetseqLoader:
         cache_key = (chrom, start, end, strand)
         with self._cache_lock:
             if cache_key in self._cache:
-                # Move to end (most recently used)
                 self._cache.move_to_end(cache_key)
                 return self._cache[cache_key]
+
+        # Serve from bundled TSV dict if loaded
+        if getattr(self, '_bundled_loaded', False):
+            signal_dict = self._bundled_signal
+            result = np.zeros(end - start)
+            for i, pos in enumerate(range(start, end)):
+                key = (chrom, strand, pos)
+                if key in signal_dict:
+                    result[i] = signal_dict[key]
+            with self._cache_lock:
+                self._cache[cache_key] = result
+                if len(self._cache) > self._max_cache_size:
+                    self._cache.popitem(last=False)
+            return result
 
         # Combine signal from all loaded BigWigs
         length = end - start
@@ -175,22 +209,18 @@ class NetseqLoader:
         for name, bw in self.bigwigs.items():
             try:
                 values = bw.values(chrom, start, end)
-                # Replace None with 0
                 values = [v if v is not None else 0.0 for v in values]
                 combined_signal += np.array(values)
             except (KeyError, RuntimeError, ValueError) as e:
-                # Chromosome not found or invalid region in this BigWig
                 import logging
                 logging.getLogger(__name__).debug(
                     f"No NET-seq signal for {chrom}:{start}-{end} in {name}: {e}"
                 )
                 continue
 
-        # Cache result with LRU eviction (thread-safe)
         with self._cache_lock:
             self._cache[cache_key] = combined_signal
             if len(self._cache) > self._max_cache_size:
-                # Remove oldest (first) item
                 self._cache.popitem(last=False)
 
         return combined_signal
