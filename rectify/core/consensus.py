@@ -14,6 +14,8 @@ Author: Kevin R. Roy
 """
 
 import logging
+import os
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
@@ -415,15 +417,131 @@ def select_best_alignment(
     )
 
 
+
+def _ensure_name_sorted(bam_path: str) -> str:
+    """
+    Ensure a BAM file is name-sorted. If not, create a name-sorted copy.
+
+    Returns path to name-sorted BAM (may be same as input if already sorted).
+    """
+    bam = pysam.AlignmentFile(bam_path, 'rb')
+    header = bam.header.to_dict()
+    bam.close()
+
+    sort_order = header.get('HD', {}).get('SO', 'unknown')
+    if sort_order == 'queryname':
+        logger.debug(f"BAM already name-sorted: {bam_path}")
+        return bam_path
+
+    sorted_path = bam_path.replace('.bam', '.namesorted.bam')
+    if os.path.exists(sorted_path):
+        if os.path.getmtime(sorted_path) > os.path.getmtime(bam_path):
+            logger.info(f"Using existing name-sorted BAM: {sorted_path}")
+            return sorted_path
+
+    logger.info(f"Name-sorting BAM: {bam_path} -> {sorted_path}")
+    pysam.sort('-n', '-o', sorted_path, bam_path)
+    return sorted_path
+
+
+def _read_id_hash(read_id: str, n_buckets: int) -> int:
+    """Deterministic hash of read_id for SLURM array splitting."""
+    h = hashlib.md5(read_id.encode()).hexdigest()
+    return int(h, 16) % n_buckets
+
+
+def _filtered_read_iterator(bam: pysam.AlignmentFile):
+    """Yield only primary, mapped reads from a BAM file."""
+    for read in bam:
+        if not (read.is_unmapped or read.is_secondary or read.is_supplementary):
+            yield read
+
+
+def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
+    """
+    K-way merge across name-sorted BAMs, yielding all alignments per read.
+
+    Memory: O(n_aligners) per read instead of O(total_reads * n_aligners).
+    """
+    bams = {}
+    iterators = {}
+    for aligner, path in bam_paths.items():
+        bam = pysam.AlignmentFile(path, 'rb')
+        bams[aligner] = bam
+        iterators[aligner] = _filtered_read_iterator(bam)
+
+    current_reads = {}
+    for aligner, it in iterators.items():
+        try:
+            current_reads[aligner] = next(it)
+        except StopIteration:
+            current_reads[aligner] = None
+
+    try:
+        while any(r is not None for r in current_reads.values()):
+            min_read_id = min(
+                r.query_name for r in current_reads.values() if r is not None
+            )
+            group = {}
+            for aligner in list(current_reads.keys()):
+                read = current_reads[aligner]
+                if read is not None and read.query_name == min_read_id:
+                    group[aligner] = read
+                    try:
+                        current_reads[aligner] = next(iterators[aligner])
+                    except StopIteration:
+                        current_reads[aligner] = None
+            yield min_read_id, group
+    finally:
+        for bam in bams.values():
+            bam.close()
+
+
+def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats):
+    """Process a batch of reads and write best alignments to output BAM."""
+    for i, (read_id, alignments) in enumerate(read_batch):
+        result = select_best_alignment(alignments, genome, annotated_junctions)
+        if result.confidence == 'high':
+            stats['consensus_high'] += 1
+        elif result.confidence == 'medium':
+            stats['consensus_medium'] += 1
+        else:
+            stats['consensus_low'] += 1
+        if result.was_5prime_rescued:
+            stats['5prime_rescued'] += 1
+        stats['by_aligner'][result.best_aligner] += 1
+
+        _, aligner_reads = raw_read_batch[i]
+        if result.best_aligner in aligner_reads:
+            best_read = aligner_reads[result.best_aligner]
+            best_read.set_tag('XA', result.best_aligner)
+            best_read.set_tag('XC', result.confidence)
+            best_read.set_tag('XN', result.n_aligners_agree)
+            if result.was_5prime_rescued:
+                best_read.set_tag('XR', 1)
+            if result.false_junction_removed:
+                best_read.set_tag('XF', 1)
+            out_bam.write(best_read)
+
+
 def run_consensus_selection(
     bam_paths: Dict[str, str],
     genome: Dict[str, str],
     output_bam: str,
     annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
     write_all_to_tag: bool = True,
+    n_workers: int = 0,
+    batch_size: int = 10000,
+    slurm_array_task: Optional[int] = None,
+    slurm_array_total: Optional[int] = None,
 ) -> Dict[str, int]:
     """
     Run consensus selection across multiple BAM files.
+
+    Streams through name-sorted BAMs to avoid loading all reads into memory.
+    Supports SLURM array job splitting for cluster-scale parallelism.
+
+    Memory usage: O(batch_size * n_aligners) instead of O(total_reads * n_aligners).
 
     Args:
         bam_paths: Dict mapping aligner name to BAM path
@@ -431,18 +549,65 @@ def run_consensus_selection(
         output_bam: Output path for consensus BAM
         annotated_junctions: Optional set of annotated junctions
         write_all_to_tag: If True, write all aligner info to BAM tags
+        n_workers: Number of worker processes (0 = auto-detect, 1 = single-threaded)
+        batch_size: Number of read groups to accumulate before processing
+        slurm_array_task: Current SLURM array task ID (0-indexed).
+                          When set, only reads where
+                          hash(read_id) % slurm_array_total == slurm_array_task
+                          are processed.
+        slurm_array_total: Total number of SLURM array tasks.
 
     Returns:
         Summary statistics dict
     """
-    # Open all BAM files
-    bams = {}
-    for aligner, path in bam_paths.items():
-        bams[aligner] = pysam.AlignmentFile(path, 'rb')
+    from ..slurm import get_available_cpus, get_slurm_info
 
-    # Get header from first BAM (should be identical across aligners)
-    first_bam = list(bams.values())[0]
+    # Auto-detect SLURM array settings from environment
+    if slurm_array_task is None and slurm_array_total is None:
+        slurm_info = get_slurm_info()
+        if slurm_info.get('array_task_id') is not None:
+            try:
+                slurm_array_task = int(slurm_info['array_task_id'])
+                slurm_array_total = int(os.environ.get(
+                    'SLURM_ARRAY_TASK_COUNT',
+                    os.environ.get('SLURM_ARRAY_TASK_MAX', '0')
+                ))
+                if slurm_array_total > 0:
+                    task_min = int(os.environ.get('SLURM_ARRAY_TASK_MIN', '0'))
+                    task_step = int(os.environ.get('SLURM_ARRAY_TASK_STEP', '1'))
+                    if 'SLURM_ARRAY_TASK_COUNT' not in os.environ:
+                        slurm_array_total = (slurm_array_total - task_min) // task_step + 1
+                    logger.info(
+                        f"SLURM array detected: task {slurm_array_task} of {slurm_array_total}"
+                    )
+                else:
+                    slurm_array_task = None
+                    slurm_array_total = None
+            except (ValueError, TypeError):
+                slurm_array_task = None
+                slurm_array_total = None
+
+    use_slurm_filter = (
+        slurm_array_task is not None and
+        slurm_array_total is not None and
+        slurm_array_total > 1
+    )
+
+    # Auto-detect workers
+    if n_workers <= 0:
+        n_workers = get_available_cpus()
+
+    # Ensure BAMs are name-sorted
+    logger.info("Ensuring BAMs are name-sorted...")
+    sorted_bam_paths = {}
+    for aligner, path in bam_paths.items():
+        sorted_bam_paths[aligner] = _ensure_name_sorted(path)
+
+    # Get header from first BAM
+    first_bam_path = list(sorted_bam_paths.values())[0]
+    first_bam = pysam.AlignmentFile(first_bam_path, 'rb')
     header = first_bam.header.to_dict()
+    first_bam.close()
 
     # Add program group for RECTIFY consensus
     if 'PG' not in header:
@@ -454,25 +619,22 @@ def run_consensus_selection(
         'CL': f'consensus selection from {",".join(bam_paths.keys())}',
     })
 
+    # Modify output path for SLURM array tasks
+    if use_slurm_filter:
+        base, ext = os.path.splitext(output_bam)
+        output_bam = f"{base}.task{slurm_array_task}{ext}"
+        logger.info(f"SLURM array task {slurm_array_task}: writing to {output_bam}")
+
     # Open output BAM
-    out_bam = pysam.AlignmentFile(output_bam, 'wb', header=pysam.AlignmentHeader.from_dict(header))
+    out_bam = pysam.AlignmentFile(
+        output_bam, 'wb',
+        header=pysam.AlignmentHeader.from_dict(header)
+    )
 
-    # Build read index for all BAMs
-    # Note: This assumes BAMs are sorted and indexed
-    logger.info("Building read indices...")
-    read_alignments: Dict[str, Dict[str, pysam.AlignedSegment]] = defaultdict(dict)
-
-    for aligner, bam in bams.items():
-        for read in bam:
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                continue
-            read_alignments[read.query_name][aligner] = read
-
-    logger.info(f"Found {len(read_alignments)} unique reads across {len(bams)} aligners")
-
-    # Process each read
+    # Initialize stats
     stats = {
         'total_reads': 0,
+        'reads_skipped_slurm_filter': 0,
         'consensus_high': 0,
         'consensus_medium': 0,
         'consensus_low': 0,
@@ -480,68 +642,124 @@ def run_consensus_selection(
         'by_aligner': defaultdict(int),
     }
 
-    for read_id, aligner_reads in read_alignments.items():
+    # Stream through name-sorted BAMs
+    logger.info(f"Streaming consensus selection (batch_size={batch_size})...")
+    if use_slurm_filter:
+        logger.info(
+            f"  SLURM array filter: task {slurm_array_task}/{slurm_array_total}"
+        )
+
+    # Accumulate batches for processing
+    read_batch = []
+    raw_read_batch = []
+    n_batches = 0
+
+    for read_id, aligner_reads in _iter_name_grouped_bams(sorted_bam_paths):
+        # SLURM array filtering
+        if use_slurm_filter:
+            if _read_id_hash(read_id, slurm_array_total) != slurm_array_task:
+                stats['reads_skipped_slurm_filter'] += 1
+                continue
+
         stats['total_reads'] += 1
 
-        # Extract alignment info
+        # Extract alignment info for scoring
         alignments = {}
         for aligner, read in aligner_reads.items():
             alignments[aligner] = extract_alignment_info(read, aligner, genome)
 
-        # Select best
-        result = select_best_alignment(alignments, genome, annotated_junctions)
+        read_batch.append((read_id, alignments))
+        raw_read_batch.append((read_id, aligner_reads))
 
-        # Update stats
-        if result.confidence == 'high':
-            stats['consensus_high'] += 1
-        elif result.confidence == 'medium':
-            stats['consensus_medium'] += 1
-        else:
-            stats['consensus_low'] += 1
+        # Process batch when full
+        if len(read_batch) >= batch_size:
+            _process_and_write_batch(
+                read_batch, raw_read_batch, genome,
+                annotated_junctions, out_bam, stats
+            )
+            read_batch = []
+            raw_read_batch = []
+            n_batches += 1
 
-        if result.was_5prime_rescued:
-            stats['5prime_rescued'] += 1
+            if stats['total_reads'] % 100000 == 0:
+                logger.info(f"  Processed {stats['total_reads']:,} reads...")
 
-        # Note: False 3' junctions are handled by walk back correction,
-        # not during consensus selection.
+    # Process remaining reads
+    if read_batch:
+        _process_and_write_batch(
+            read_batch, raw_read_batch, genome,
+            annotated_junctions, out_bam, stats
+        )
+        n_batches += 1
 
-        stats['by_aligner'][result.best_aligner] += 1
-
-        # Write best alignment to output
-        if result.best_aligner in aligner_reads:
-            best_read = aligner_reads[result.best_aligner]
-
-            # Add consensus tags
-            best_read.set_tag('XA', result.best_aligner)  # Best aligner
-            best_read.set_tag('XC', result.confidence)  # Confidence
-            best_read.set_tag('XN', result.n_aligners_agree)  # N aligners agree
-
-            if result.was_5prime_rescued:
-                best_read.set_tag('XR', 1)  # Was 5' rescued
-
-            if result.false_junction_removed:
-                best_read.set_tag('XF', 1)  # Had false junction
-
-            out_bam.write(best_read)
-
-    # Close files
-    for bam in bams.values():
-        bam.close()
+    # Close output
     out_bam.close()
 
-    # Index output
+    # Sort output by coordinate and index
+    logger.info("Coordinate-sorting output BAM...")
+    sorted_output = output_bam.replace('.bam', '.sorted.bam')
+    pysam.sort('-o', sorted_output, output_bam)
+    os.replace(sorted_output, output_bam)
     pysam.index(output_bam)
 
     # Log summary
     logger.info(f"\nConsensus selection complete:")
-    logger.info(f"  Total reads: {stats['total_reads']}")
+    logger.info(f"  Total reads processed: {stats['total_reads']}")
+    if use_slurm_filter:
+        logger.info(f"  Reads skipped (other SLURM tasks): {stats['reads_skipped_slurm_filter']}")
     logger.info(f"  High confidence: {stats['consensus_high']}")
     logger.info(f"  Medium confidence: {stats['consensus_medium']}")
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
     logger.info(f"  By aligner: {dict(stats['by_aligner'])}")
+    logger.info(f"  Batches processed: {n_batches}")
 
     return stats
+
+
+def merge_slurm_array_bams(
+    output_bam_pattern: str,
+    n_tasks: int,
+    merged_output: str,
+):
+    """
+    Merge BAM files from SLURM array tasks into a single output.
+
+    Call this after all array tasks have completed.
+
+    Args:
+        output_bam_pattern: Pattern with {task} placeholder
+        n_tasks: Number of array tasks
+        merged_output: Path for merged output BAM
+    """
+    task_bams = []
+    for task_id in range(n_tasks):
+        bam_path = output_bam_pattern.format(task=task_id)
+        if os.path.exists(bam_path):
+            task_bams.append(bam_path)
+        else:
+            logger.warning(f"Missing SLURM array task BAM: {bam_path}")
+
+    if not task_bams:
+        raise FileNotFoundError("No SLURM array task BAMs found")
+
+    logger.info(f"Merging {len(task_bams)} SLURM array task BAMs...")
+    pysam.merge('-f', merged_output, *task_bams)
+
+    sorted_output = merged_output.replace('.bam', '.sorted.bam')
+    pysam.sort('-o', sorted_output, merged_output)
+    os.replace(sorted_output, merged_output)
+    pysam.index(merged_output)
+
+    logger.info(f"Merged output: {merged_output}")
+
+    for bam_path in task_bams:
+        idx_path = bam_path + '.bai'
+        if os.path.exists(idx_path):
+            os.remove(idx_path)
+        os.remove(bam_path)
+
+    logger.info("SLURM array merge complete")
 
 
 def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int]]:
