@@ -65,8 +65,8 @@ results/
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 in parallel and selects best junction set per read |
-| **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
+| **5' End Junction Recovery** | Attempts to rescue 5' soft-clipped bases in each aligner's output by extending through splice junctions |
+| **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 and selects the best per read |
 | **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
 | **3' False Junction Handling** | Walk back correction eats through spurious junctions from poly(A) artifacts |
