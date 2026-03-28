@@ -68,8 +68,7 @@ results/
 | **5' End Junction Recovery** | Attempts to rescue 5' soft-clipped bases in each aligner's output by extending through splice junctions |
 | **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 and selects the best per read |
 | **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
-| **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
-| **3' False Junction Handling** | Walk back correction eats through spurious junctions from poly(A) artifacts |
+| **3' End Correction (Walk-back)** | Fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) from poly(A) artifacts are discarded automatically |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data; reads assigned proportionally across peaks |
