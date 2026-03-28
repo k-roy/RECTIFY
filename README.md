@@ -47,13 +47,13 @@ results/
 │   ├── junctions/junctions.tsv         # Splice junctions with partial-rescue evidence
 │   └── PROVENANCE.json
 │
-└── combined/                           # Cross-sample (requires ≥2 samples)
+└── combined/                           # Cross-sample analysis (≥2 samples in manifest)
     ├── cpa_clusters.tsv                # CPA site clusters with per-sample read counts
     ├── tables/
-    │   ├── deseq2_genes_*.tsv          # Gene-level differential expression
-    │   ├── deseq2_clusters_*.tsv       # Cluster-level differential expression
-    │   └── shift_results.tsv           # APA shift analysis (proximal/distal usage)
-    ├── go_enrichment.tsv               # GO enrichment for DE genes
+    │   ├── deseq2_genes_*.tsv          # Gene-level differential expression (≥2 conditions)
+    │   ├── deseq2_clusters_*.tsv       # Cluster-level differential expression (≥2 conditions)
+    │   └── shift_results.tsv           # APA shift analysis (≥2 conditions)
+    ├── go_enrichment.tsv               # GO enrichment for DE genes (≥2 conditions)
     ├── motif_results/                  # Enriched sequence motifs near CPA sites
     ├── report.html                     # Combined QC and results report
     └── PROVENANCE.json
