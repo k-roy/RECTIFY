@@ -15,11 +15,11 @@
 ```bash
 pip install rectify-rna
 
-# FASTQ input with bundled yeast genome (no external files needed)
-rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
+# Full pipeline from FASTQ — bundled yeast genome, no external files needed
+rectify run-all reads.fastq.gz --Scer --polya-sequenced -o results/
 
-# Full pipeline: correct + analyze
-rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+# Full pipeline from BAM (alignment skipped)
+rectify run-all reads.bam --genome genome.fa --annotation genes.gff -o results/
 ```
 
 ---
@@ -28,13 +28,14 @@ rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir res
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read |
+| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 in parallel and selects best junction set per read |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
 | **3' False Junction Handling** | Walk back correction eats through spurious junctions from poly(A) artifacts |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
-| **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data (optional) |
+| **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data; reads assigned proportionally across peaks |
+| **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
 | **Adaptive Clustering** | Groups CPA sites with valley-based algorithm |
 | **Dual-Resolution DESeq2** | Gene-level and cluster-level differential expression |
 | **APA Shift Analysis** | Detects proximal/distal CPA site usage changes |
@@ -42,7 +43,7 @@ rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir res
 
 ### Bundled Data (Yeast)
 
-For *S. cerevisiae*, RECTIFY includes the S288C genome, SGD annotations, GO terms, WT NET-seq data, and 64K pre-computed A-tract CPA sites—no external files needed.
+For *S. cerevisiae*, RECTIFY includes the S288C genome, SGD annotations, GO terms, and pre-deconvolved WT NET-seq data (pan-mutant consensus, NNLS-deconvolved offline)—no external files needed.
 
 ---
 
@@ -119,8 +120,13 @@ Different aligners make different tradeoffs at splice junctions. RECTIFY runs th
 **Usage:**
 
 ```bash
-# Multi-aligner consensus alignment (default)
+# Multi-aligner consensus alignment (default, aligners run in parallel)
 rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
+
+# Parallel aligners with proportional thread allocation (minimap2 gets fewer threads
+# since it's faster; mapPacBio and gapmm2 get more to finish at the same time)
+rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff \
+    --parallel-aligners --threads 16 -o aligned.bam
 
 # Single aligner mode (faster, less accurate)
 rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
@@ -177,11 +183,13 @@ After correction, RECTIFY groups nearby CPA sites into clusters using a valley-b
 Each read gets a corrected position with confidence scores:
 
 ```
-read_id   │ chrom │ strand │ original │ corrected │ shift │ confidence │ polya_len │ qc_flags
-read001   │ chrI  │   +    │  147592  │   147585  │  -7   │    HIGH    │    42     │   PASS
-read002   │ chrI  │   +    │  147594  │   147591  │  -3   │   MEDIUM   │    38     │   PASS
-read003   │ chrII │   +    │  283109  │   283104  │  -5   │    LOW     │    31     │ AG_RICH
+read_id   │ chrom │ strand │ original │ corrected │ shift │ confidence │ polya_len │ fraction │ qc_flags
+read001   │ chrI  │   +    │  147592  │   147585  │  -7   │    HIGH    │    42     │  1.0000  │   PASS
+read002   │ chrI  │   +    │  147594  │   147591  │  -3   │   MEDIUM   │    38     │  1.0000  │   PASS
+read003   │ chrII │   +    │  283109  │   283104  │  -5   │    LOW     │    31     │  0.6500  │ AG_RICH
 ```
+
+The `fraction` column reflects proportional NET-seq assignment: when a read falls in an A-tract with multiple NET-seq peaks, it is split across peaks rather than snapped to a single position. Fractions sum to 1.0 per input read.
 
 The `rectify analyze` command produces:
 - `clusters.tsv` - CPA site clusters with read counts per sample
@@ -195,9 +203,11 @@ The `rectify analyze` command produces:
 
 ## NET-seq Refinement (Optional)
 
-For organisms with NET-seq data, RECTIFY can resolve remaining ambiguity within A-tracts. Nascent RNA 3' ends from NET-seq are oligo-adenylated, creating a characteristic spreading pattern. RECTIFY uses NNLS deconvolution to recover true CPA positions and assign reads proportionally to multiple peaks.
+For organisms with NET-seq data, RECTIFY resolves remaining A-tract ambiguity by assigning reads proportionally across NET-seq peaks rather than snapping to a single position.
 
-Bundled WT NET-seq data for yeast is auto-detected. For other organisms or mutant conditions, provide NET-seq bigWigs with `--netseq-dir`.
+**Bundled yeast data** (`--Scer`): pre-deconvolved pan-mutant NET-seq (WT + DST1Δ consensus, NNLS deconvolution applied once offline). No runtime deconvolution — reads are assigned directly using the pre-computed signal.
+
+**Custom data**: provide raw NET-seq bigWigs with `--netseq-dir`. NNLS deconvolution is applied at runtime to recover true CPA positions from the oligo-adenylation spreading pattern.
 
 ---
 
@@ -220,23 +230,30 @@ conda install -c conda-forge -c bioconda rectify-rna
 
 | Command | Description |
 |---------|-------------|
+| `rectify run-all` | Full pipeline: align (if FASTQ) → correct → analyze |
+| `rectify align` | Triple-aligner consensus (minimap2 + mapPacBio + gapmm2) |
 | `rectify correct` | Correct 3' end positions (indel correction, A-tract resolution) |
 | `rectify analyze` | Downstream analysis (clustering, DESeq2, GO, motifs) |
+| `rectify batch` | Process multiple samples in parallel (interactive or SLURM) |
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
 | `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
 | `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
-| `rectify align` | Align FASTQ with minimap2 (DRS-optimized settings) |
 | `rectify netseq` | Process NET-seq BAM files (3' end extraction, deconvolution) |
-| `rectify run` | Full pipeline: align (if FASTQ) → correct → analyze |
 
 ### Examples
 
 ```bash
-# Correct 3' ends (bundled yeast genome)
-rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
+# Full pipeline from FASTQ (bundled yeast genome + NET-seq, spike-in removal)
+rectify run-all reads.fastq.gz --Scer --polya-sequenced --filter-spikein ENO2 -o results/
 
-# Correct with custom genome and NET-seq
+# Full pipeline from BAM (alignment skipped automatically)
+rectify run-all reads.bam --genome genome.fa --annotation genes.gff -o results/
+
+# Correct 3' ends only (BAM input)
 rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ -o corrected.tsv
+
+# Differential expression analysis
+rectify analyze corrected.tsv --annotation genes.gff --output-dir results/
 
 # Extract per-read features from BAM
 rectify extract reads.bam -o reads.tsv --genome genome.fa --annotation genes.gff
@@ -244,14 +261,8 @@ rectify extract reads.bam -o reads.tsv --genome genome.fa --annotation genes.gff
 # Aggregate into 3'/5'/junction datasets
 rectify aggregate reads.bam -o aggregated/ --annotation genes.gff --mode all
 
-# Differential expression analysis
-rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
-
 # Export bigWig tracks
 rectify export corrected.tsv -o tracks/ --genome genome.fa
-
-# Full pipeline
-rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 
 # Process NET-seq data
 rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
