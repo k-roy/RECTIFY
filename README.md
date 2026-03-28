@@ -22,6 +22,31 @@ rectify run-all reads.fastq.gz --Scer -o results/
 rectify run-all --manifest samples.tsv --Scer -o results/
 ```
 
+**Output structure** (multi-sample run into `results/`):
+
+```
+results/
+├── <sample_id>/                        # Per-sample outputs
+│   ├── <sample_id>.consensus.bam       # Triple-aligner consensus alignment
+│   ├── corrected_3ends.tsv             # Per-read corrected 3' ends, confidence, poly(A) length, fraction
+│   ├── corrected_3ends_stats.tsv       # Correction statistics
+│   ├── corrected_3ends_report.html     # Per-sample QC report
+│   ├── junctions/junctions.tsv         # Splice junctions with partial-rescue evidence
+│   └── PROVENANCE.json                 # Run parameters, input/output checksums
+│
+└── combined/                           # Cross-sample analysis (requires ≥2 samples)
+    ├── corrected_3ends_combined.tsv    # Merged corrected ends (all samples)
+    ├── cpa_clusters.tsv                # CPA site clusters with per-sample read counts
+    ├── tables/
+    │   ├── deseq2_genes_*.tsv          # Gene-level differential expression
+    │   ├── deseq2_clusters_*.tsv       # Cluster-level differential expression
+    │   └── shift_results.tsv           # APA shift analysis (proximal/distal usage)
+    ├── go_enrichment.tsv               # GO enrichment for DE genes
+    ├── motif_results/                  # Enriched sequence motifs near CPA sites
+    ├── report.html                     # Combined QC and results report
+    └── PROVENANCE.json
+```
+
 The manifest `samples.tsv` is a tab-separated file (no header):
 
 ```
