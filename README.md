@@ -245,7 +245,7 @@ conda install -c conda-forge -c bioconda rectify-rna
 
 | Command | Description |
 |---------|-------------|
-| `rectify run-all` | Full pipeline: align (if FASTQ) → correct → analyze. Skips completed steps automatically on re-run. |
+| `rectify run-all` | Full pipeline: align (if FASTQ) → correct → analyze → aggregate junctions. Skips completed steps automatically on re-run. |
 
 ### Individual steps
 
