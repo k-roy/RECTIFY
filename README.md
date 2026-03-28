@@ -15,11 +15,11 @@
 ```bash
 pip install rectify-rna
 
-# Full pipeline from FASTQ — bundled yeast genome, no external files needed
-rectify run-all reads.fastq.gz --Scer --polya-sequenced -o results/
+# Single sample — bundled yeast genome, no external files needed
+rectify run-all reads.fastq.gz --Scer -o results/
 
-# Full pipeline from BAM (alignment skipped)
-rectify run-all reads.bam --genome genome.fa --annotation genes.gff -o results/
+# Multiple samples via manifest (typical usage)
+rectify run-all --manifest samples.tsv --Scer -o results/
 ```
 
 ---
@@ -243,11 +243,15 @@ conda install -c conda-forge -c bioconda rectify-rna
 ### Examples
 
 ```bash
-# Full pipeline from FASTQ (bundled yeast genome + NET-seq, spike-in removal)
-rectify run-all reads.fastq.gz --Scer --polya-sequenced --filter-spikein ENO2 -o results/
+# Single sample, bundled yeast genome (poly(A) trimming + indel correction on by default)
+rectify run-all reads.fastq.gz --Scer -o results/
 
-# Full pipeline from BAM (alignment skipped automatically)
-rectify run-all reads.bam --genome genome.fa --annotation genes.gff -o results/
+# Multiple samples via manifest — typical multi-condition experiment
+rectify run-all --manifest samples.tsv --Scer --filter-spikein ENO2 -o results/
+
+# Non-DRS protocol where poly(A) tail is not sequenced
+rectify run-all reads.fastq.gz --genome genome.fa --annotation genes.gff \
+    --no-polya-sequenced -o results/
 
 # Correct 3' ends only (BAM input)
 rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ -o corrected.tsv

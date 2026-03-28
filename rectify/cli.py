@@ -594,9 +594,11 @@ Manifest format (TSV):
     )
 
     run_parser.add_argument(
-        '--polya-sequenced',
+        '--no-polya-sequenced',
         action='store_true',
-        help='Poly(A) tail was sequenced (not just primed)'
+        default=False,
+        help='Disable poly(A) trimming and indel correction '
+             '(use for protocols where the poly(A) tail is not sequenced)'
     )
 
     # Optional analysis arguments
