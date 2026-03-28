@@ -43,12 +43,12 @@ Columns: `filename` (no path; files are resolved relative to the manifest), `gro
 |---------|-------------|
 | **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 in parallel and selects best junction set per read |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
+| **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
 | **3' False Junction Handling** | Walk back correction eats through spurious junctions from poly(A) artifacts |
-| **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
+| **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data; reads assigned proportionally across peaks |
-| **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
 | **Adaptive Clustering** | Groups CPA sites with valley-based algorithm |
 | **Dual-Resolution DESeq2** | Gene-level and cluster-level differential expression |
 | **APA Shift Analysis** | Detects proximal/distal CPA site usage changes |
