@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-**Precision transcript structure mapping for direct RNA nanopore sequencing.** Accurate 5' ends, 3' ends, and splice junctions through multi-aligner consensus, artifact correction, and optional NET-seq refinement.
+**Precision transcript structure mapping for direct RNA nanopore sequencing data.** Accurate 5' ends, 3' ends, and splice junctions through refinement of alignments at transcript termini, correction of artifacts due to sequencing errors, and selection of the optimal alignments from a panel of aligners (minimap2, gapmm2, and mapPacBio).
 
 ---
 
@@ -21,6 +21,19 @@ rectify run-all reads.fastq.gz --Scer -o results/
 # Multiple samples via manifest (typical usage)
 rectify run-all --manifest samples.tsv --Scer -o results/
 ```
+
+The manifest `samples.tsv` is a tab-separated file (no header):
+
+```
+wt_rep1.fastq.gz      WT    rep1
+wt_rep2.fastq.gz      WT    rep2
+wt_rep3.fastq.gz      WT    rep3
+rna15_rep1.fastq.gz   rna15 rep1
+rna15_rep2.fastq.gz   rna15 rep2
+rna15_rep3.fastq.gz   rna15 rep3
+```
+
+Columns: `filename` (no path; files are resolved relative to the manifest), `group` (condition label used for DESeq2 contrasts), `bio_rep`.
 
 ---
 
@@ -228,45 +241,44 @@ conda install -c conda-forge -c bioconda rectify-rna
 
 ## Commands
 
+### All-in-one
+
 | Command | Description |
 |---------|-------------|
-| `rectify run-all` | Full pipeline: align (if FASTQ) → correct → analyze |
-| `rectify align` | Triple-aligner consensus (minimap2 + mapPacBio + gapmm2) |
-| `rectify correct` | Correct 3' end positions (indel correction, A-tract resolution) |
-| `rectify analyze` | Downstream analysis (clustering, DESeq2, GO, motifs) |
-| `rectify batch` | Process multiple samples in parallel (interactive or SLURM) |
+| `rectify run-all` | Full pipeline: align (if FASTQ) → correct → analyze. Skips completed steps automatically on re-run. |
+
+### Individual steps
+
+Run steps independently to re-process from any point in the pipeline.
+
+| Command | Description |
+|---------|-------------|
+| `rectify align` | Align FASTQ with the aligner panel (minimap2, gapmm2, mapPacBio; all with DRS-optimized settings) and select the best alignment per read |
+| `rectify correct` | Correct 5' ends, 3' ends, and junctions — indel correction at poly(A) boundaries, A-tract ambiguity resolution, NET-seq refinement |
+| `rectify analyze` | Downstream analysis: CPA clustering, DESeq2, GO enrichment, motif discovery |
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
-| `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
-| `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
-| `rectify netseq` | Process NET-seq BAM files (3' end extraction, deconvolution) |
+| `rectify extract` | Extract per-read features from BAM to TSV (5'/3' ends, junctions, poly(A) length) |
+| `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction-centered datasets |
+| `rectify netseq` | Process NET-seq BAM files (3' end extraction, NNLS deconvolution; for standalone analysis or for assigning DRS 3' ends in A-tracts to their likely CPA sites) |
 
 ### Examples
 
 ```bash
-# Single sample, bundled yeast genome (poly(A) trimming + indel correction on by default)
-rectify run-all reads.fastq.gz --Scer -o results/
-
 # Multiple samples via manifest — typical multi-condition experiment
 rectify run-all --manifest samples.tsv --Scer --filter-spikein ENO2 -o results/
+
+# Single sample, bundled yeast genome
+rectify run-all reads.fastq.gz --Scer -o results/
 
 # Non-DRS protocol where poly(A) tail is not sequenced
 rectify run-all reads.fastq.gz --genome genome.fa --annotation genes.gff \
     --no-polya-sequenced -o results/
 
-# Correct 3' ends only (BAM input)
+# Re-run correction only (alignment already done)
 rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ -o corrected.tsv
 
-# Differential expression analysis
+# Re-run analysis only (correction already done)
 rectify analyze corrected.tsv --annotation genes.gff --output-dir results/
-
-# Extract per-read features from BAM
-rectify extract reads.bam -o reads.tsv --genome genome.fa --annotation genes.gff
-
-# Aggregate into 3'/5'/junction datasets
-rectify aggregate reads.bam -o aggregated/ --annotation genes.gff --mode all
-
-# Export bigWig tracks
-rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 # Process NET-seq data
 rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
