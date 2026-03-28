@@ -599,33 +599,38 @@ def find_coverage_gaps(
     gaps = []
     last_covered = 0
 
-    # Iterate through all reads to find covered regions
-    covered_positions = set()
+    # Collect read intervals and merge to find covered regions
+    # Uses O(reads) memory instead of O(genome_positions)
+    intervals = []
     for read in bam.fetch(chrom):
         if read.is_unmapped or read.is_secondary or read.is_supplementary:
             continue
-        # Add start and end positions
-        covered_positions.add(read.reference_start)
-        covered_positions.add(read.reference_end)
+        intervals.append((read.reference_start, read.reference_end))
 
     bam.close()
 
-    if not covered_positions:
+    if not intervals:
         return [(0, chrom_length)]
 
-    # Sort covered positions
-    sorted_positions = sorted(covered_positions)
+    # Sort and merge overlapping intervals
+    intervals.sort()
+    merged = [list(intervals[0])]
+    for start, end in intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
 
-    # Find gaps larger than threshold
-    prev_pos = 0
-    for pos in sorted_positions:
-        if pos - prev_pos >= min_gap_size:
-            gaps.append((prev_pos, pos))
-        prev_pos = pos
+    # Find gaps between merged intervals
+    prev_end = 0
+    for seg_start, seg_end in merged:
+        if seg_start - prev_end >= min_gap_size:
+            gaps.append((prev_end, seg_start))
+        prev_end = seg_end
 
     # Check final gap
-    if chrom_length - prev_pos >= min_gap_size:
-        gaps.append((prev_pos, chrom_length))
+    if chrom_length - prev_end >= min_gap_size:
+        gaps.append((prev_end, chrom_length))
 
     return gaps
 

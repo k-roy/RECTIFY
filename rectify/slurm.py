@@ -36,12 +36,18 @@ def get_available_cpus(default: int = 1) -> int:
     # Check SLURM environment first
     slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
     if slurm_cpus:
-        return int(slurm_cpus)
+        try:
+            return int(slurm_cpus)
+        except ValueError:
+            pass  # Malformed value, fall through
 
     # Check LOKY_MAX_CPU_COUNT (user override)
     loky_cpus = os.environ.get('LOKY_MAX_CPU_COUNT')
     if loky_cpus:
-        return int(loky_cpus)
+        try:
+            return int(loky_cpus)
+        except ValueError:
+            pass  # Malformed value, fall through
 
     # Fall back to system CPU count (halved for safety on shared systems)
     cpu_count = os.cpu_count()

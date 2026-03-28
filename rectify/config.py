@@ -253,8 +253,14 @@ def validate_config():
     assert len(CHROM_TO_GENOME) == len(CHROM_SIZES), "Chromosome size mapping incomplete"
     assert 0.0 <= POLYA_RICHNESS_THRESHOLD <= 1.0, "Invalid poly(A) richness threshold"
     assert 0.0 <= AG_RICHNESS_THRESHOLD <= 1.0, "Invalid AG richness threshold"
+    assert 0.0 <= INDEL_FLANK_A_THRESHOLD <= 1.0, "Invalid indel flank A threshold"
+    assert 0.0 <= NETSEQ_PEAK_THRESHOLD <= 1.0, "Invalid NET-seq peak threshold"
     assert MIN_POLYA_LENGTH > 0, "Invalid minimum poly(A) length"
     assert INDEL_SEARCH_WINDOW > 0, "Invalid indel search window"
+    assert INDEL_MAX_SIZE > 0, "Invalid indel max size"
+    assert POLYA_WINDOW_SIZE > 0, "Invalid poly(A) window size"
+    assert NETSEQ_PEAK_WINDOW > 0, "Invalid NET-seq peak window"
+    assert NETSEQ_DECONV_REGULARIZATION > 0, "Invalid deconvolution regularization"
 
 
 # Run validation on import

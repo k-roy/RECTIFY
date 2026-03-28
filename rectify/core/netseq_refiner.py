@@ -28,6 +28,7 @@ Date: 2026-03-09
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 from collections import OrderedDict
+import threading
 import numpy as np
 
 from ..config import (
@@ -99,15 +100,16 @@ class NetseqLoader:
 
     def __init__(self, max_cache_size: int = None):
         """
-        Initialize NET-seq loader with LRU cache.
+        Initialize NET-seq loader with thread-safe LRU cache.
 
         Args:
             max_cache_size: Maximum number of cached signal arrays (default: 10000)
         """
         self.bigwigs = {}  # {name: pyBigWig object}
         self._max_cache_size = max_cache_size or self.MAX_CACHE_SIZE
-        # Use OrderedDict for LRU cache behavior
+        # Use OrderedDict for LRU cache behavior, with lock for thread safety
         self._cache = OrderedDict()  # {(chrom, start, end, strand): signal_array}
+        self._cache_lock = threading.Lock()
 
     def load_bigwig(self, filepath: str, name: str = None):
         """
@@ -160,10 +162,11 @@ class NetseqLoader:
         """
         # Check cache (move to end for LRU behavior)
         cache_key = (chrom, start, end, strand)
-        if cache_key in self._cache:
-            # Move to end (most recently used)
-            self._cache.move_to_end(cache_key)
-            return self._cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._cache:
+                # Move to end (most recently used)
+                self._cache.move_to_end(cache_key)
+                return self._cache[cache_key]
 
         # Combine signal from all loaded BigWigs
         length = end - start
@@ -175,15 +178,20 @@ class NetseqLoader:
                 # Replace None with 0
                 values = [v if v is not None else 0.0 for v in values]
                 combined_signal += np.array(values)
-            except (KeyError, RuntimeError, ValueError):
-                # Chromosome not found or invalid region in this BigWig, skip
+            except (KeyError, RuntimeError, ValueError) as e:
+                # Chromosome not found or invalid region in this BigWig
+                import logging
+                logging.getLogger(__name__).debug(
+                    f"No NET-seq signal for {chrom}:{start}-{end} in {name}: {e}"
+                )
                 continue
 
-        # Cache result with LRU eviction
-        self._cache[cache_key] = combined_signal
-        if len(self._cache) > self._max_cache_size:
-            # Remove oldest (first) item
-            self._cache.popitem(last=False)
+        # Cache result with LRU eviction (thread-safe)
+        with self._cache_lock:
+            self._cache[cache_key] = combined_signal
+            if len(self._cache) > self._max_cache_size:
+                # Remove oldest (first) item
+                self._cache.popitem(last=False)
 
         return combined_signal
 
@@ -629,11 +637,16 @@ def _refine_with_deconvolution(
 
     # Build convolution matrix for the tract
     tract_length = ambiguity_max - ambiguity_min + 1
+    if tract_length < 2:
+        # For single-base or empty tracts, deconvolution is underdetermined;
+        # fall back to simple peak finding on the raw signal
+        return find_peaks_in_window(signal, positions.tolist())
     A = build_convolution_matrix(tract_length, psf, include_first_non_a=True)
 
     # Extract signal within tract region (plus first non-A)
     tract_start_idx = np.searchsorted(positions, ambiguity_min)
-    tract_end_idx = np.searchsorted(positions, ambiguity_max + 2)  # +1 for non-A, +1 for exclusive
+    # +1 to include the first non-A position in the convolution matrix
+    tract_end_idx = np.searchsorted(positions, ambiguity_max + 1, side='right')
 
     if tract_end_idx - tract_start_idx < 2:
         return []
@@ -641,8 +654,13 @@ def _refine_with_deconvolution(
     tract_signal = signal[tract_start_idx:tract_end_idx]
     tract_positions = positions[tract_start_idx:tract_end_idx]
 
-    # Handle size mismatch
+    # Handle size mismatch (warn since it may indicate a boundary issue)
     if len(tract_signal) != A.shape[0]:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Signal/matrix size mismatch at {ambiguity_min}-{ambiguity_max}: "
+            f"signal={len(tract_signal)}, matrix={A.shape[0]}. Truncating."
+        )
         n = min(len(tract_signal), A.shape[0])
         A = A[:n, :n]
         tract_signal = tract_signal[:n]

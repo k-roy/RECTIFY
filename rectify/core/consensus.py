@@ -395,8 +395,8 @@ def select_best_alignment(
     n_agree = sum(1 for jset in junction_sets.values() if jset == best_juncs)
 
     # Confidence based on agreement
-    if n_agree == len(alignments) and len(alignments) >= 2:
-        confidence = 'high'
+    if n_agree == len(alignments):
+        confidence = 'high'  # All aligners agree (including single-aligner case)
     elif n_agree >= 2:
         confidence = 'medium'
     else:
