@@ -259,12 +259,11 @@ def score_alignment(
     Score an alignment based on junction quality.
 
     Scoring factors:
-    - +5 per annotated junction
     - -2 per soft-clipped base at 5' end (prefer spliced alignments)
 
-    Canonical splice site motifs (GT/AG) are NOT scored here to avoid
-    biasing against novel non-canonical junctions. Instead, canonical
-    counts are used only as a tiebreaker in select_best_alignment().
+    Neither canonical splice site motifs (GT/AG) nor annotated junction
+    matches are scored here, to avoid biasing against novel junctions.
+    Both are used only as tiebreakers in select_best_alignment().
 
     Note: False 3' junctions from poly(A) artifacts are handled by the
     walk back correction step, which eats through aligned A's and discards
@@ -279,11 +278,9 @@ def score_alignment(
     # 5' soft-clip penalty (prefer alignments that splice through)
     score -= alignment.five_prime_softclip * 2
 
-    # Annotated junction bonus
-    if annotated_junctions and alignment.junctions:
-        for junc in alignment.junctions:
-            if (alignment.chrom, junc[0], junc[1]) in annotated_junctions:
-                score += 5
+    # NOTE: Annotated junction matches are deliberately not scored here.
+    # They are used only as a tiebreaker in select_best_alignment() to avoid
+    # biasing against novel unannotated junctions.
 
     alignment.junction_score = score
     return score
@@ -353,7 +350,7 @@ def select_best_alignment(
     for aligner, alignment in alignments.items():
         score_alignment(alignment, genome, annotated_junctions)
 
-    # Select best by score, using canonical junction count as tiebreaker
+    # Select best by score, using annotation and canonical motifs as tiebreakers
     max_score = max(a.junction_score for a in alignments.values())
     tied_aligners = [name for name, a in alignments.items()
                      if a.junction_score == max_score]
@@ -361,9 +358,19 @@ def select_best_alignment(
     if len(tied_aligners) == 1:
         best_aligner = tied_aligners[0]
     else:
-        # Tiebreaker: prefer alignment with more canonical splice sites (GT/AG)
-        best_aligner = max(tied_aligners,
-                           key=lambda a: alignments[a].canonical_count)
+        # Tiebreaker 1: prefer alignment with more annotated junctions
+        # Tiebreaker 2: prefer alignment with more canonical splice sites (GT/AG)
+        def _tiebreak_key(aligner_name):
+            a = alignments[aligner_name]
+            n_annotated = 0
+            if annotated_junctions and a.junctions:
+                n_annotated = sum(
+                    1 for junc in a.junctions
+                    if (a.chrom, junc[0], junc[1]) in annotated_junctions
+                )
+            return (n_annotated, a.canonical_count)
+
+        best_aligner = max(tied_aligners, key=_tiebreak_key)
 
     best_alignment = alignments[best_aligner]
     best_alignment.is_best = True
