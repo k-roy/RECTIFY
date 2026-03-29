@@ -128,16 +128,19 @@ def run_minimap2(
 
     logger.info(f"Running minimap2: {' '.join(cmd[:10])}...")
 
-    # Run minimap2, pipe to samtools
+    # Run minimap2, pipe directly to name-sorted BAM.
+    # Name-sort (-n) so consensus selection can stream across aligners without
+    # a secondary sort step. Coordinate index is not created — not needed until
+    # after consensus selects the best alignment.
     sam_output = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
 
-    # Sort and convert to BAM
     sort_cmd = [
         'samtools', 'sort',
+        '-n',           # name-sort
         '-@', str(threads),
         '-o', str(output_bam)
     ]
@@ -149,15 +152,11 @@ def run_minimap2(
         stderr=subprocess.PIPE
     )
 
-    # Wait for completion
     sam_output.stdout.close()
     _, stderr = sort_proc.communicate()
 
     if sort_proc.returncode != 0:
         raise RuntimeError(f"minimap2/samtools failed: {stderr.decode()}")
-
-    # Index BAM
-    subprocess.run(['samtools', 'index', str(output_bam)], check=True)
 
     logger.info(f"minimap2 complete: {output_bam}")
     return str(output_bam)
@@ -221,20 +220,18 @@ def run_map_pacbio(
     if result.returncode != 0:
         raise RuntimeError(f"mapPacBio failed: {result.stderr}")
 
-    # Convert to sorted BAM
+    # Convert SAM to name-sorted BAM. Name-sort (-n) so consensus selection
+    # can stream across aligners without a secondary sort step.
     view_proc = subprocess.Popen(
         ['samtools', 'view', '-bS', str(sam_path)],
         stdout=subprocess.PIPE
     )
     sort_proc = subprocess.Popen(
-        ['samtools', 'sort', '-@', str(threads), '-o', str(output_bam)],
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
         stdin=view_proc.stdout
     )
     view_proc.stdout.close()
     sort_proc.communicate()
-
-    # Index
-    subprocess.run(['samtools', 'index', str(output_bam)], check=True)
 
     # Clean up SAM
     sam_path.unlink(missing_ok=True)
@@ -330,8 +327,11 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
         if current_chrom:
             chrom_lengths[current_chrom] = current_len
 
+    # PAF is in input (FASTQ) order — write directly then name-sort.
+    # Name-sort so consensus selection can stream across aligners without
+    # a secondary sort step.
     header = pysam.AlignmentHeader.from_dict({
-        'HD': {'VN': '1.6', 'SO': 'unsorted'},
+        'HD': {'VN': '1.6', 'SO': 'queryname'},
         'SQ': [{'SN': chrom, 'LN': length} for chrom, length in chrom_lengths.items()],
         'PG': [{'ID': 'gapmm2', 'PN': 'gapmm2'}],
     })
@@ -351,9 +351,7 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                 query_end = int(fields[3])
                 strand = fields[4]
                 target_name = fields[5]
-                target_len = int(fields[6])
                 target_start = int(fields[7])
-                target_end = int(fields[8])
                 mapq = int(fields[11])
 
                 if target_name not in chrom_lengths:
@@ -375,7 +373,6 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                 if cigar_str == '*':
                     continue
 
-                # Build SAM flag
                 flag = 0
                 if strand == '-':
                     flag |= 16  # reverse complement
@@ -393,9 +390,8 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
 
                 out_bam.write(seg)
 
-    # Sort and index
-    pysam.sort('-@', str(threads), '-o', str(output_bam), str(tmp_unsorted))
-    pysam.index(str(output_bam))
+    # Name-sort the unsorted BAM
+    pysam.sort('-n', '-@', str(threads), '-o', str(output_bam), str(tmp_unsorted))
     tmp_unsorted.unlink(missing_ok=True)
 
 
