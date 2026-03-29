@@ -6,9 +6,14 @@ based on junction quality, soft-clip rescue, and false junction detection.
 
 Scoring priorities:
 1. Prefer alignments that splice through junctions vs soft-clipping (5' rescue)
-2. Prefer junctions supported by multiple aligners
-3. Use canonical splice site motifs (GT/AG) only as tiebreaker for ambiguous cases
-4. Remove 3' false junctions from poly(A) artifacts
+2. Prefer alignments whose 3' end lands outside a downstream A-tract (3' end quality)
+3. Prefer junctions supported by multiple aligners
+4. Tiebreaker: prefer aligner whose corrected 3' position agrees with majority
+5. Tiebreaker: canonical splice site motifs (GT/AG) and annotated junctions
+
+Note: A-tract 3' correction is applied to each aligner pre-scoring using genome
+sequence only. Full indel correction (MD-tag dependent) is applied post-consensus
+as a refinement step.
 
 Author: Kevin R. Roy
 """
@@ -50,6 +55,11 @@ class AlignmentInfo:
     # Soft-clip info (5' and 3')
     five_prime_softclip: int = 0
     three_prime_softclip: int = 0
+
+    # 3' end A-tract correction (computed pre-consensus using genome sequence only;
+    # full indel correction requiring MD tags is applied post-consensus)
+    corrected_3prime: Optional[int] = None   # estimated true CPA position
+    three_prime_atract_depth: int = 0        # A's downstream of raw 3' end (0 = clean landing)
 
     # Quality scores
     junction_score: float = 0.0
@@ -280,6 +290,11 @@ def score_alignment(
     # 5' soft-clip penalty (prefer alignments that splice through)
     score -= alignment.five_prime_softclip * 2
 
+    # 3' A-tract depth penalty (prefer alignments landing closer to the true CPA).
+    # Each downstream A the aligner runs into costs 1 point — same scale as 5' penalty
+    # per base, but capped at 10 to avoid overwhelming junction scoring.
+    score -= min(alignment.three_prime_atract_depth, 10)
+
     # NOTE: Annotated junction matches are deliberately not scored here.
     # They are used only as a tiebreaker in select_best_alignment() to avoid
     # biasing against novel unannotated junctions.
@@ -293,22 +308,52 @@ def extract_alignment_info(
     aligner: str,
     genome: Dict[str, str],
 ) -> AlignmentInfo:
-    """Extract alignment info from a pysam read."""
+    """Extract alignment info from a pysam read.
+
+    Computes corrected_3prime pre-consensus using A-tract detection (genome-only,
+    no MD tags required). Full indel correction (MD-dependent) is applied
+    post-consensus as a refinement step.
+    """
+    from .atract_detector import calculate_atract_ambiguity
 
     junctions = extract_junctions_from_cigar(read)
     five_clip, three_clip = get_softclip_lengths(read)
 
     chrom = read.reference_name
+    strand = '-' if read.is_reverse else '+'
     canonical, non_canonical = check_canonical_splice_sites(junctions, chrom, genome)
 
-    # Note: False 3' junction detection is available via detect_false_3prime_junction()
-    # but not used in scoring since walk back correction handles this case.
+    # Estimate corrected 3' end using A-tract ambiguity detection.
+    # Raw 3' end: reference_end - 1 for + strand, reference_start for - strand.
+    raw_3prime = (read.reference_end - 1) if strand == '+' else read.reference_start
+    corrected_3prime = raw_3prime
+    atract_depth = 0
+
+    chrom_std = chrom
+    if genome.get(chrom_std) is None:
+        # Try standardized name
+        from ..utils.genome import standardize_chrom_name
+        chrom_std = standardize_chrom_name(chrom, genome) or chrom
+
+    if genome.get(chrom_std) is not None:
+        try:
+            atract = calculate_atract_ambiguity(
+                genome, chrom_std, raw_3prime, strand, downstream_bp=10
+            )
+            atract_depth = atract.get('downstream_a_count') or 0
+            # Best-guess corrected position: ambiguity_min for +, ambiguity_max for -
+            if strand == '+':
+                corrected_3prime = atract.get('ambiguity_min', raw_3prime)
+            else:
+                corrected_3prime = atract.get('ambiguity_max', raw_3prime)
+        except Exception:
+            pass  # Non-fatal; raw position used
 
     return AlignmentInfo(
         read_id=read.query_name,
         aligner=aligner,
         chrom=chrom,
-        strand='-' if read.is_reverse else '+',
+        strand=strand,
         reference_start=read.reference_start,
         reference_end=read.reference_end,
         cigar_string=read.cigarstring or "",
@@ -316,6 +361,8 @@ def extract_alignment_info(
         junctions=junctions,
         five_prime_softclip=five_clip,
         three_prime_softclip=three_clip,
+        corrected_3prime=corrected_3prime,
+        three_prime_atract_depth=atract_depth,
         canonical_count=canonical,
         non_canonical_count=non_canonical,
         has_false_3prime_junction=False,  # Not used; walk back handles this
@@ -360,8 +407,15 @@ def select_best_alignment(
     if len(tied_aligners) == 1:
         best_aligner = tied_aligners[0]
     else:
-        # Tiebreaker 1: prefer alignment with more annotated junctions
-        # Tiebreaker 2: prefer alignment with more canonical splice sites (GT/AG)
+        # Tiebreaker 1: prefer alignment whose corrected 3' end agrees with majority
+        all_corrected = [a.corrected_3prime for a in alignments.values()
+                         if a.corrected_3prime is not None]
+        def _count_3prime_agreement(aligner_name):
+            pos = alignments[aligner_name].corrected_3prime
+            return sum(1 for p in all_corrected if p == pos) if pos is not None else 0
+
+        # Tiebreaker 2: prefer alignment with more annotated junctions
+        # Tiebreaker 3: prefer alignment with more canonical splice sites (GT/AG)
         def _tiebreak_key(aligner_name):
             a = alignments[aligner_name]
             n_annotated = 0
@@ -370,7 +424,7 @@ def select_best_alignment(
                     1 for junc in a.junctions
                     if (a.chrom, junc[0], junc[1]) in annotated_junctions
                 )
-            return (n_annotated, a.canonical_count)
+            return (_count_3prime_agreement(aligner_name), n_annotated, a.canonical_count)
 
         best_aligner = max(tied_aligners, key=_tiebreak_key)
 

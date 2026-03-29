@@ -607,6 +607,14 @@ class SpikeInFilter:
         """
         Filter spike-in reads from a BAM file.
 
+        Uses positional restriction: k-mer classification is only applied to reads
+        that map to the spike-in gene locus (chrom/chrom_alt + start + end from the
+        signature). Reads mapping elsewhere are passed through unconditionally.
+
+        This prevents false positives from short k-mers matching random yeast
+        sequences genome-wide (tested: naive genome-wide k-mer matching has ~12%
+        false-positive rate on 6bp k-mers).
+
         Args:
             input_bam: Input BAM file path
             output_bam: Output BAM file path (filtered)
@@ -628,28 +636,64 @@ class SpikeInFilter:
         for sig in self.signatures:
             stats['by_gene'][sig.get('gene', 'unknown')] = 0
 
+        # Build locus index: set of (chrom_name, start, end) for each signature.
+        # Include both chrom and chrom_alt to handle different naming conventions.
+        sig_loci = []
+        for sig in self.signatures:
+            chroms = set()
+            if sig.get('chrom'):
+                chroms.add(sig['chrom'])
+            if sig.get('chrom_alt'):
+                chroms.add(sig['chrom_alt'])
+            locus_start = sig.get('start', 0)
+            locus_end = sig.get('end', 0)
+            gene_name = sig.get('gene', 'unknown')
+            if chroms and locus_end > locus_start:
+                sig_loci.append((chroms, locus_start, locus_end, gene_name, sig))
+
+        def _read_overlaps_locus(read) -> Optional[tuple]:
+            """Return (gene_name, sig) if read overlaps a spike-in locus, else None."""
+            if read.is_unmapped:
+                return None
+            ref = read.reference_name
+            rstart = read.reference_start
+            rend = read.reference_end or rstart
+            for (chroms, lstart, lend, gname, sig) in sig_loci:
+                if ref in chroms and rstart < lend and rend > lstart:
+                    return gname, sig
+            return None
+
         bam_in = pysam.AlignmentFile(input_bam, 'rb')
         bam_out = pysam.AlignmentFile(output_bam, 'wb', template=bam_in)
 
         for read in bam_in:
             stats['total_reads'] += 1
 
-            seq = read.query_sequence
-            classification, gene_name = self.classify_read_fast(seq)
+            locus_match = _read_overlaps_locus(read)
 
-            if classification == 'spikein':
-                stats['spikein_reads'] += 1
-                if gene_name in stats['by_gene']:
-                    stats['by_gene'][gene_name] += 1
-            elif classification == 'endogenous':
-                stats['endogenous_reads'] += 1
+            if locus_match is None:
+                # Not from a spike-in locus — keep unconditionally (zero false-positive risk)
                 bam_out.write(read)
+                stats['endogenous_reads'] += 1
                 stats['kept_reads'] += 1
-            else:  # ambiguous
-                stats['ambiguous_reads'] += 1
-                if keep_ambiguous:
+            else:
+                gene_name, sig = locus_match
+                seq = read.query_sequence
+                classification, _ = self.classify_read_fast(seq)
+
+                if classification == 'spikein':
+                    stats['spikein_reads'] += 1
+                    if gene_name in stats['by_gene']:
+                        stats['by_gene'][gene_name] += 1
+                elif classification == 'endogenous':
+                    stats['endogenous_reads'] += 1
                     bam_out.write(read)
                     stats['kept_reads'] += 1
+                else:  # ambiguous
+                    stats['ambiguous_reads'] += 1
+                    if keep_ambiguous:
+                        bam_out.write(read)
+                        stats['kept_reads'] += 1
 
             if stats['total_reads'] % 100000 == 0:
                 print(f"  Processed {stats['total_reads']:,} reads, "

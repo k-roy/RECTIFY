@@ -65,10 +65,11 @@ results/
 
 | Feature | Description |
 |---------|-------------|
+| **Spike-in Filtering** | Removes synthetic spike-in reads (e.g. ENO2) by k-mer sequence matching, restricted to the spike-in gene locus to prevent false positives |
 | **5' End Junction Recovery** | Attempts to rescue 5' soft-clipped bases in each aligner's output by extending through splice junctions |
-| **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 and selects the best per read |
-| **Spike-in Filtering** | Removes synthetic spike-in reads by sequence signature before correction |
-| **3' End Correction (Walk-back)** | Fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) from poly(A) artifacts are discarded automatically |
+| **3' End A-tract Estimation** | Estimates true CPA position for each aligner using downstream A-tract depth; used to score and break ties in consensus selection |
+| **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 — penalizing 5' soft-clips and 3' A-tract depth — and selects the best per read |
+| **3' End Correction (Walk-back)** | Refines 3' end on the consensus BAM: fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) are discarded automatically |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data; reads assigned proportionally across peaks |
