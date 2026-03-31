@@ -37,6 +37,8 @@ from .analyze import (
     generate_analysis_summary,
     generate_html_report,
     run_genomic_distribution_analysis,
+    run_3prime_distribution_analysis,
+    run_transcript_body_distribution_analysis,
 )
 from .analyze.clustering import annotate_clusters_with_genes
 from .analyze.deseq2 import extract_condition_from_sample
@@ -64,6 +66,10 @@ def run_analyze(args: argparse.Namespace) -> int:
     plots_dir.mkdir(exist_ok=True)
     tables_dir = output_dir / 'tables'
     tables_dir.mkdir(exist_ok=True)
+
+    # Dispatch to manifest mode if --manifest is provided
+    if getattr(args, 'manifest', None):
+        return _run_analyze_manifest(args, output_dir, plots_dir, tables_dir)
 
     # Initialize provenance tracking
     provenance = init_provenance(
@@ -153,10 +159,12 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     # Genomic distribution analysis (default: enabled if annotation provided)
     if annotation_df is not None and not getattr(args, 'no_genomic_distribution', False):
-        print(f"\n[Genomic Distribution] Analyzing 3' end distribution by genomic region...")
         position_col = 'corrected_3prime' if 'corrected_3prime' in positions_df.columns else 'corrected_position'
+
+        # 3' end distribution
+        print(f"\n[Genomic Distribution] Analyzing 3' end distribution by genomic region...")
         try:
-            genomic_dist_files = run_genomic_distribution_analysis(
+            dist3_files = run_3prime_distribution_analysis(
                 positions_df,
                 annotation_df,
                 output_dir=str(plots_dir),
@@ -164,11 +172,28 @@ def run_analyze(args: argparse.Namespace) -> int:
                 position_column=position_col,
                 count_column=count_col,
             )
-            print(f"  Generated {len(genomic_dist_files)} plots/tables")
+            print(f"  Generated {len(dist3_files)} plots/tables")
         except ImportError as e:
-            print(f"  Warning: Skipping genomic distribution (missing dependency: {e})")
+            print(f"  Warning: Skipping 3' end distribution (missing dependency: {e})")
         except Exception as e:
-            print(f"  Warning: Genomic distribution analysis failed: {e}")
+            print(f"  Warning: 3' end distribution analysis failed: {e}")
+
+        # Transcript body distribution
+        print(f"\n[Genomic Distribution] Analyzing transcript body distribution by RNA biotype...")
+        try:
+            body_files = run_transcript_body_distribution_analysis(
+                positions_df,
+                annotation_df,
+                output_dir=str(plots_dir),
+                sample_column=args.sample_column,
+                start_column='alignment_start',
+                end_column='alignment_end',
+            )
+            print(f"  Generated {len(body_files)} plots/tables")
+        except ImportError as e:
+            print(f"  Warning: Skipping body distribution (missing dependency: {e})")
+        except Exception as e:
+            print(f"  Warning: Transcript body distribution analysis failed: {e}")
 
     # Form clusters
     fraction_col = 'fraction' if 'fraction' in positions_df.columns else None
@@ -178,7 +203,6 @@ def run_analyze(args: argparse.Namespace) -> int:
         cluster_distance=args.cluster_distance,
         min_reads=args.min_reads,
         count_col=count_col,
-        fraction_col=fraction_col,
     )
     print(f"  Formed {len(clusters_df):,} clusters")
 
@@ -285,14 +309,17 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     # Sample heatmap
     print(f"\n[5/9] Creating sample clustering heatmap...")
-    heatmap_path = plots_dir / 'sample_heatmap.png'
-    plot_sample_heatmap(
-        count_matrix,
-        sample_metadata=sample_metadata,
-        color_by='condition',
-        output_path=str(heatmap_path),
-    )
-    print(f"  Saved heatmap to {heatmap_path}")
+    if count_matrix.shape[1] < 2:
+        print(f"  Skipping heatmap — requires ≥2 samples (have {count_matrix.shape[1]})")
+    else:
+        heatmap_path = plots_dir / 'sample_heatmap.png'
+        plot_sample_heatmap(
+            count_matrix,
+            sample_metadata=sample_metadata,
+            color_by='condition',
+            output_path=str(heatmap_path),
+        )
+        print(f"  Saved heatmap to {heatmap_path}")
 
     # Run DESeq2
     deseq2_gene_results = {}
@@ -529,7 +556,7 @@ def load_corrected_positions(
     file_size = os.path.getsize(filepath)
     file_size_gb = file_size / (1024**3)
 
-    if file_size_gb > 5:
+    if file_size_gb > 0.5:
         # Large file - use chunked loading with aggregation
         print(f"  Large file ({file_size_gb:.1f} GB) - using chunked loading...")
         return _load_large_file_chunked(
@@ -554,6 +581,14 @@ def load_corrected_positions(
         df['corrected_position'] = df[position_col]
         print(f"  Using '{position_col}' as position column")
 
+    # Auto-detect sample column if the specified name is not found
+    if sample_column not in df.columns:
+        _alt_sample_cols = ['sample', 'replicate', 'sample_id', 'sample_name', 'condition']
+        _detected = next((c for c in _alt_sample_cols if c in df.columns), None)
+        if _detected:
+            print(f"  Auto-detected sample column '{_detected}' (requested '{sample_column}' not found)")
+            sample_column = _detected
+
     required_cols = ['chrom', 'strand', 'corrected_position', sample_column]
     missing = [c for c in required_cols if c not in df.columns]
 
@@ -564,6 +599,15 @@ def load_corrected_positions(
     if normalize_chroms:
         df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
         print(f"  Normalized chromosome names to {chrom_format} format")
+
+    # Drop columns not needed downstream to reduce memory usage
+    _keep_cols = {'chrom', 'strand', 'corrected_position', sample_column}
+    for _opt in ('fraction', 'alignment_start', 'alignment_end'):
+        if _opt in df.columns:
+            _keep_cols.add(_opt)
+    _drop_cols = [c for c in df.columns if c not in _keep_cols]
+    if _drop_cols:
+        df = df.drop(columns=_drop_cols)
 
     return df
 
@@ -602,11 +646,21 @@ def _load_large_file_chunked(
     # Check for fraction column (proportional assignment)
     has_fraction = 'fraction' in header.columns
 
+    # Build usecols list — only load columns actually needed
+    _usecols_set = {position_col, sample_column, 'chrom', 'strand'}
+    if has_fraction:
+        _usecols_set.add('fraction')
+    for _optional_col in ('alignment_start', 'alignment_end'):
+        if _optional_col in header.columns:
+            _usecols_set.add(_optional_col)
+    # Preserve a stable order: required cols first, then optional
+    _usecols = [c for c in [position_col, sample_column, 'chrom', 'strand', 'fraction', 'alignment_start', 'alignment_end'] if c in _usecols_set]
+
     # Aggregated DataFrames from each chunk
     aggregated_chunks = []
 
     total_rows = 0
-    for chunk_num, chunk in enumerate(pd.read_csv(filepath, sep='\t', chunksize=chunk_size)):
+    for chunk_num, chunk in enumerate(pd.read_csv(filepath, sep='\t', chunksize=chunk_size, usecols=_usecols)):
         if max_rows and total_rows >= max_rows:
             break
 
@@ -660,7 +714,8 @@ def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: 
     """
     from ..utils.chromosome import normalize_dataframe_chromosomes
 
-    if filepath.endswith('.gtf') or filepath.endswith('.gff'):
+    filepath_str = str(filepath)
+    if any(filepath_str.endswith(ext) for ext in ('.gtf', '.gff', '.gtf.gz', '.gff.gz', '.gff3', '.gff3.gz')):
         # Parse GTF/GFF
         df = _parse_gtf(filepath)
     else:
@@ -668,6 +723,39 @@ def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: 
         df = pd.read_csv(filepath, sep='\t')
 
     # Normalize chromosome names to match position data
+    if normalize_chroms and 'chrom' in df.columns:
+        df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
+
+    return df
+
+
+def load_position_index(
+    tsv_path: str,
+    sample_id: str,
+    normalize_chroms: bool = True,
+    chrom_format: str = 'ncbi',
+) -> Optional[pd.DataFrame]:
+    """Load compact position index (_index.bed.gz) if it exists.
+
+    Returns None if the index file is missing.
+    """
+    from ..utils.chromosome import normalize_dataframe_chromosomes
+    from pathlib import Path as _Path
+
+    base = _Path(tsv_path)
+    stem = base.name
+    for _suffix in ('.tsv.gz', '.tsv'):
+        if stem.endswith(_suffix):
+            stem = stem[:-len(_suffix)]
+            break
+    index_path = base.parent / f"{stem}_index.bed.gz"
+    if not index_path.exists():
+        return None
+
+    df = pd.read_csv(str(index_path), sep='\t', compression='gzip')
+    df = df.rename(columns={'corrected_3prime': 'corrected_position'})
+    df['sample'] = sample_id
+
     if normalize_chroms and 'chrom' in df.columns:
         df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
 
@@ -770,7 +858,9 @@ def _parse_gtf(filepath: str) -> pd.DataFrame:
     """
     genes = []
 
-    with open(filepath) as f:
+    import gzip as _gzip
+    _open = _gzip.open if str(filepath).endswith('.gz') else open
+    with _open(filepath, 'rt') as f:
         for line in f:
             if line.startswith('#'):
                 continue
@@ -827,6 +917,467 @@ def _parse_gtf(filepath: str) -> pd.DataFrame:
             })
 
     return pd.DataFrame(genes)
+
+
+def _run_analyze_manifest(
+    args: argparse.Namespace,
+    output_dir: Path,
+    plots_dir: Path,
+    tables_dir: Path,
+) -> int:
+    """
+    Memory-efficient manifest-mode analysis pipeline.
+
+    Instead of loading a large combined TSV, processes each sample's corrected
+    TSV individually using a two-pass approach:
+
+    Pass 1 (clustering): Stream through each sample to aggregate position counts,
+        then cluster the combined positions.
+
+    Pass 2 (count matrix): Stream through each sample again, look up cluster IDs,
+        and accumulate counts per cluster/sample.
+
+    Downstream steps (PCA, DESeq2, GO, motifs, HTML report) run identically to
+    the standard pipeline. Steps that need a full positions_df (bedgraph,
+    genomic distribution) are skipped with a note.
+    """
+    from collections import defaultdict
+    from ..utils.chromosome import normalize_chromosome
+
+    print("=" * 70)
+    print("RECTIFY Analysis Pipeline (Manifest Mode)")
+    print("=" * 70)
+
+    # Load manifest
+    manifest_df = pd.read_csv(args.manifest, sep='\t')
+    required_manifest_cols = ['sample_id', 'path']
+    missing_manifest_cols = [c for c in required_manifest_cols if c not in manifest_df.columns]
+    if missing_manifest_cols:
+        print(f"ERROR: Manifest missing columns: {missing_manifest_cols}", flush=True)
+        return 1
+
+    samples = manifest_df.to_dict('records')
+    print(f"\nManifest: {len(samples)} samples")
+    for s in samples:
+        cond_str = f" [{s['condition']}]" if 'condition' in s else ''
+        print(f"  {s['sample_id']}: {s['path']}{cond_str}")
+
+    # Chromosome format settings
+    chrom_format = 'ncbi'
+    sample_column = getattr(args, 'sample_column', 'sample')
+
+    # Load annotation early
+    annotation_df = None
+    if args.annotation:
+        annotation_df = load_annotation(args.annotation)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pass 1: Aggregate positions across all samples for clustering
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n[1/9] Aggregating positions across {len(samples)} samples (Pass 1)...")
+
+    all_pos_dfs = []
+    for s in samples:
+        sample_id = s['sample_id']
+        tsv_path = s['path']
+
+        # Try loading from compact index first
+        idx_df = load_position_index(tsv_path, sample_id, normalize_chroms=True, chrom_format=chrom_format)
+        if idx_df is not None:
+            print(f"  {sample_id}: loaded index ({len(idx_df):,} positions)")
+            # Index has corrected_position, chrom, strand, count, sample
+            all_pos_dfs.append(idx_df[['chrom', 'strand', 'corrected_position', 'count', 'sample']])
+            continue
+
+        # Fall back: stream the full TSV with minimal columns
+        print(f"  {sample_id}: streaming TSV (no index found)...")
+        _header = pd.read_csv(tsv_path, sep='\t', nrows=0)
+        _pos_col = None
+        for _c in ['corrected_position', 'corrected_3prime', 'position']:
+            if _c in _header.columns:
+                _pos_col = _c
+                break
+        if _pos_col is None:
+            print(f"  WARNING: No position column in {tsv_path}, skipping.")
+            continue
+
+        _usecols = ['chrom', 'strand', _pos_col]
+        _agg = defaultdict(float)
+        for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
+            for row in _chunk.itertuples(index=False):
+                _agg[(getattr(row, 'chrom'), getattr(row, 'strand'), getattr(row, _pos_col))] += 1.0
+
+        if not _agg:
+            print(f"  WARNING: No positions found in {tsv_path}, skipping.")
+            continue
+
+        _rows = [{'chrom': c, 'strand': st, 'corrected_position': pos, 'count': cnt, 'sample': sample_id}
+                 for (c, st, pos), cnt in _agg.items()]
+        all_pos_dfs.append(pd.DataFrame(_rows))
+        print(f"  {sample_id}: aggregated {len(_rows):,} positions")
+
+    if not all_pos_dfs:
+        print("ERROR: No positions loaded from any sample.", flush=True)
+        return 1
+
+    positions_agg = pd.concat(all_pos_dfs, ignore_index=True)
+    print(f"  Total aggregated positions: {len(positions_agg):,} across {positions_agg['sample'].nunique()} samples")
+
+    # Filter exclusion regions
+    exclude_mito = args.exclude_mito and not getattr(args, 'include_mito', False)
+    exclude_rdna = getattr(args, 'exclude_rdna', True) and not getattr(args, 'include_rdna', False)
+    if exclude_mito or exclude_rdna:
+        n_before = len(positions_agg)
+        mito_chroms, rdna_regions = _detect_exclusion_regions(annotation_df, positions_agg['chrom'].unique())
+        if mito_chroms:
+            print(f"  Auto-detected mitochondrial chromosomes: {', '.join(sorted(mito_chroms))}")
+        mito_mask = pd.Series(False, index=positions_agg.index)
+        if exclude_mito and mito_chroms:
+            mito_mask = positions_agg['chrom'].isin(mito_chroms)
+        rdna_mask = pd.Series(False, index=positions_agg.index)
+        if exclude_rdna and rdna_regions:
+            for chrom, start, end in rdna_regions:
+                rdna_mask = rdna_mask | (
+                    (positions_agg['chrom'] == chrom) &
+                    (positions_agg['corrected_position'] >= start) &
+                    (positions_agg['corrected_position'] <= end)
+                )
+        positions_agg = positions_agg[~(mito_mask | rdna_mask)]
+        n_removed = n_before - len(positions_agg)
+        if n_removed > 0:
+            print(f"  Excluded {n_removed:,} positions (mito/rDNA)")
+
+    # Cluster CPA sites using aggregated data
+    count_col = 'count'
+    print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
+    clusters_df = cluster_cpa_sites(
+        positions_agg,
+        cluster_distance=args.cluster_distance,
+        min_reads=args.min_reads,
+        count_col=count_col,
+    )
+    print(f"  Formed {len(clusters_df):,} clusters")
+
+    if args.annotation and annotation_df is not None:
+        print(f"  Annotating clusters with genes...")
+        clusters_df = annotate_clusters_with_genes(clusters_df, annotation_df)
+        n_annotated = clusters_df['gene_id'].notna().sum()
+        print(f"  Annotated {n_annotated:,} clusters ({100*n_annotated/len(clusters_df):.1f}%)")
+
+    clusters_path = output_dir / 'cpa_clusters.tsv'
+    clusters_df.to_csv(clusters_path, sep='\t', index=False)
+    print(f"  Saved clusters to {clusters_path}")
+
+    # Build cluster lookup structure
+    try:
+        from intervaltree import IntervalTree
+        trees = {}
+        for _, row in clusters_df.iterrows():
+            key = (row['chrom'], row['strand'])
+            if key not in trees:
+                trees[key] = IntervalTree()
+            trees[key][row['start']:row['end'] + 1] = row['cluster_id']
+
+        def lookup(chrom, strand, pos):
+            hits = trees.get((chrom, strand), IntervalTree())[pos]
+            return hits.pop().data if hits else None
+    except ImportError:
+        from bisect import bisect_left
+        _lists = {}
+        for _, row in clusters_df.iterrows():
+            key = (row['chrom'], row['strand'])
+            _lists.setdefault(key, []).append((row['start'], row['end'], row['cluster_id']))
+        for k in _lists:
+            _lists[k].sort()
+
+        def lookup(chrom, strand, pos):
+            for s, e, cid in _lists.get((chrom, strand), []):
+                if s <= pos <= e:
+                    return cid
+            return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pass 2: Build count matrix by streaming each sample
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n[3/9] Building cluster count matrix (Pass 2)...")
+
+    count_accumulator = defaultdict(lambda: defaultdict(float))
+
+    for s in samples:
+        sample_id = s['sample_id']
+        tsv_path = s['path']
+
+        # Try index first
+        idx_df = load_position_index(tsv_path, sample_id, normalize_chroms=True, chrom_format=chrom_format)
+        if idx_df is not None:
+            _idx_assigned = 0
+            _idx_total = float(idx_df['count'].sum())
+            for row in idx_df.itertuples(index=False):
+                cid = lookup(row.chrom, row.strand, int(row.corrected_position))
+                if cid is not None:
+                    count_accumulator[cid][sample_id] += float(row.count)
+                    _idx_assigned += row.count
+            print(f"  {sample_id}: {_idx_assigned:,.0f}/{_idx_total:,.0f} reads assigned to clusters (index)")
+            continue
+
+        # Stream full TSV
+        _header = pd.read_csv(tsv_path, sep='\t', nrows=0)
+        _pos_col = None
+        for _c in ['corrected_position', 'corrected_3prime', 'position']:
+            if _c in _header.columns:
+                _pos_col = _c
+                break
+        if _pos_col is None:
+            print(f"  WARNING: No position column in {tsv_path}, skipping.")
+            continue
+
+        _has_fraction = 'fraction' in _header.columns
+        _usecols = ['chrom', 'strand', _pos_col]
+        if _has_fraction:
+            _usecols.append('fraction')
+
+        n_assigned = 0
+        for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
+            cids = [lookup(c, st, int(p)) for c, st, p in
+                    zip(_chunk['chrom'], _chunk['strand'], _chunk[_pos_col])]
+            weights = _chunk['fraction'].values if _has_fraction else None
+            for i, cid in enumerate(cids):
+                if cid is not None:
+                    count_accumulator[cid][sample_id] += (weights[i] if weights is not None else 1.0)
+                    n_assigned += 1
+
+        print(f"  {sample_id}: {n_assigned:,} reads assigned to clusters")
+
+    # Convert accumulator to DataFrame (clusters × samples)
+    if not count_accumulator:
+        print("ERROR: No reads could be assigned to clusters.", flush=True)
+        return 1
+
+    all_sample_ids = [s['sample_id'] for s in samples]
+    count_matrix = pd.DataFrame(count_accumulator).T.fillna(0)
+    # Ensure all samples present as columns
+    for sid in all_sample_ids:
+        if sid not in count_matrix.columns:
+            count_matrix[sid] = 0.0
+    count_matrix = count_matrix[all_sample_ids]
+    count_matrix.index.name = 'cluster_id'
+    print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
+
+    counts_path = output_dir / 'cluster_counts.tsv'
+    count_matrix.to_csv(counts_path, sep='\t')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # From here: same as run_analyze() starting from sample metadata
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Note: bedgraph and genomic distribution require full positions_df — skip in manifest mode
+    print("\n  Note: Bedgraph and genomic distribution steps skipped in manifest mode.")
+
+    sample_names = count_matrix.columns.tolist()
+
+    if args.reference:
+        reference_condition = args.reference
+    else:
+        control_samples = detect_control_samples(sample_names)
+        if control_samples:
+            reference_condition = extract_condition_from_sample(control_samples[0])
+            print(f"  Auto-detected reference condition: {reference_condition}")
+        else:
+            print("  Warning: Could not auto-detect reference. Using first condition.")
+            reference_condition = extract_condition_from_sample(sample_names[0])
+
+    sample_metadata = create_sample_metadata(sample_names, control_samples if not args.reference else None)
+    sample_metadata.to_csv(output_dir / 'sample_metadata.tsv', sep='\t')
+
+    # If manifest has a condition column, use it to override auto-detected conditions
+    if 'condition' in manifest_df.columns:
+        cond_map = dict(zip(manifest_df['sample_id'], manifest_df['condition']))
+        sample_metadata['condition'] = sample_metadata.index.map(lambda x: cond_map.get(x, sample_metadata.loc[x, 'condition']))
+        _manifest_conditions = manifest_df['condition'].unique().tolist()
+        if args.reference:
+            # Case-insensitive match of --reference against actual manifest conditions
+            _ref_lower = args.reference.lower()
+            _matched = [c for c in _manifest_conditions if c.lower() == _ref_lower]
+            if _matched:
+                reference_condition = _matched[0]
+            else:
+                print(f"  Warning: --reference '{args.reference}' not found in manifest conditions {_manifest_conditions}. Using as-is.")
+        else:
+            # Auto-detect reference from manifest conditions (wt/ctrl/control keywords)
+            _control_conditions = [c for c in _manifest_conditions if 'wt' in c.lower() or 'ctrl' in c.lower() or 'control' in c.lower()]
+            if _control_conditions:
+                reference_condition = _control_conditions[0]
+                print(f"  Reference condition from manifest: {reference_condition}")
+            else:
+                reference_condition = _manifest_conditions[0]
+
+    # PCA
+    print(f"\n[4/9] Running PCA analysis...")
+    sample_sets = None
+    if args.sample_sets:
+        import json
+        if args.sample_sets.startswith('{'):
+            sample_sets = json.loads(args.sample_sets)
+        elif Path(args.sample_sets).exists():
+            with open(args.sample_sets) as f:
+                sample_sets = json.load(f)
+
+    if sample_sets:
+        for set_name, conditions in sample_sets.items():
+            set_samples = sample_metadata[sample_metadata['condition'].isin(conditions)].index.tolist()
+            set_samples = [s for s in set_samples if s in count_matrix.columns]
+            if len(set_samples) < 3:
+                print(f"  Skipping PCA for {set_name} (only {len(set_samples)} samples)")
+                continue
+            set_matrix = count_matrix[set_samples]
+            set_meta = sample_metadata.loc[sample_metadata.index.isin(set_samples)]
+            pca_results = run_pca_analysis(set_matrix)
+            if pca_results['pca_coords'] is not None and not pca_results['pca_coords'].empty:
+                pca_path = plots_dir / f'pca_{set_name}.png'
+                plot_pca(pca_results, sample_metadata=set_meta, color_by='condition',
+                         output_path=str(pca_path), title=f'PCA: {set_name}')
+                print(f"  Saved PCA plot for {set_name}: {pca_path}")
+    else:
+        pca_results = run_pca_analysis(count_matrix)
+        if pca_results['pca_coords'] is not None and not pca_results['pca_coords'].empty:
+            pca_path = plots_dir / 'pca_samples.png'
+            plot_pca(pca_results, sample_metadata=sample_metadata, color_by='condition',
+                     output_path=str(pca_path), title='Sample PCA (CPA Clusters)')
+            print(f"  Saved PCA plot to {pca_path}")
+
+    # Sample heatmap
+    print(f"\n[5/9] Creating sample clustering heatmap...")
+    if count_matrix.shape[1] < 2:
+        print(f"  Skipping heatmap — requires ≥2 samples")
+    else:
+        heatmap_path = plots_dir / 'sample_heatmap.png'
+        plot_sample_heatmap(count_matrix, sample_metadata=sample_metadata,
+                            color_by='condition', output_path=str(heatmap_path))
+        print(f"  Saved heatmap to {heatmap_path}")
+
+    # DESeq2
+    deseq2_gene_results = {}
+    deseq2_cluster_results = {}
+
+    if args.run_deseq2:
+        print(f"\n[6/9] Running DESeq2 differential expression...")
+        print("  Gene-level analysis...")
+        deseq2_gene_results = run_deseq2_gene_level(
+            count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
+        for condition, result_df in deseq2_gene_results.items():
+            result_df.to_csv(tables_dir / f'deseq2_genes_{condition}.tsv', sep='\t')
+            n_sig = (result_df['padj'] < 0.05).sum()
+            print(f"    {condition}: {n_sig:,} significant genes")
+
+        import gc
+        gc.collect()
+
+        print("  Cluster-level analysis...")
+        deseq2_cluster_results = run_deseq2_cluster_level(
+            count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
+        for condition, result_df in deseq2_cluster_results.items():
+            result_df.to_csv(tables_dir / f'deseq2_clusters_{condition}.tsv', sep='\t')
+            n_sig = (result_df['padj'] < 0.05).sum()
+            print(f"    {condition}: {n_sig:,} significant clusters")
+
+        gc.collect()
+    else:
+        print(f"\n[6/9] Skipping DESeq2 (use --run-deseq2 to enable)")
+
+    # GO enrichment
+    if args.go_annotations and deseq2_gene_results:
+        print(f"\n[7/9] Running GO enrichment analysis...")
+        from .analyze.go_enrichment import load_go_annotations
+        go_annotations = load_go_annotations(args.go_annotations)
+        for condition, result_df in deseq2_gene_results.items():
+            up_genes = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)].index.tolist()
+            if len(up_genes) >= 10:
+                go_up = run_go_enrichment(up_genes, go_annotations)
+                if not go_up.empty:
+                    go_up.to_csv(tables_dir / f'go_enrichment_up_{condition}.tsv', sep='\t', index=False)
+                    plot_go_enrichment(go_up, output_path=str(plots_dir / f'go_enrichment_up_{condition}.png'),
+                                       title=f'GO Enrichment: Upregulated in {condition}')
+            down_genes = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)].index.tolist()
+            if len(down_genes) >= 10:
+                go_down = run_go_enrichment(down_genes, go_annotations)
+                if not go_down.empty:
+                    go_down.to_csv(tables_dir / f'go_enrichment_down_{condition}.tsv', sep='\t', index=False)
+                    plot_go_enrichment(go_down, output_path=str(plots_dir / f'go_enrichment_down_{condition}.png'),
+                                       title=f'GO Enrichment: Downregulated in {condition}')
+    else:
+        print(f"\n[7/9] Skipping GO enrichment (provide --go-annotations)")
+
+    # Motif discovery
+    if args.genome and args.run_motif and deseq2_cluster_results:
+        print(f"\n[8/9] Running de novo motif discovery...")
+        for condition, result_df in deseq2_cluster_results.items():
+            enriched = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)]
+            depleted = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)]
+            if len(enriched) >= 20 and len(depleted) >= 20:
+                motif_results = run_differential_motif_analysis(
+                    enriched, depleted, args.genome,
+                    str(output_dir / 'motifs' / condition),
+                    upstream_window=args.motif_upstream,
+                    downstream_window=args.motif_downstream,
+                )
+                summary = summarize_motif_results(motif_results)
+                summary.to_csv(tables_dir / f'motif_summary_{condition}.tsv', sep='\t', index=False)
+                print(f"  {condition}: {summary['motifs_found'].sum()} motifs found")
+    else:
+        print(f"\n[8/9] Skipping motif discovery (provide --genome and --run-motif)")
+
+    # Shift analysis
+    shift_results = None
+    if len(sample_metadata['condition'].unique()) >= 2:
+        print(f"\n[9/9] Running cluster shift analysis...")
+        conditions = [c for c in sample_metadata['condition'].unique() if c != reference_condition]
+        for condition in conditions:
+            shift_df = analyze_cluster_shifts(
+                count_matrix, clusters_df, reference_condition, condition, sample_metadata)
+            if not shift_df.empty:
+                shift_df.to_csv(tables_dir / f'shift_analysis_{condition}.tsv', sep='\t', index=False)
+                plot_shift_summary(shift_df, output_path=str(plots_dir / f'shift_summary_{condition}.png'))
+                top_shifted = get_top_shifted_genes(shift_df, n_top=20)
+                for _, row in top_shifted.head(5).iterrows():
+                    plot_gene_browser(
+                        row['gene_id'], count_matrix, clusters_df, sample_metadata,
+                        [reference_condition, condition],
+                        output_path=str(plots_dir / f'browser_{row["gene_name"]}_{condition}.png'),
+                    )
+                print(f"  {condition}: {len(shift_df)} genes analyzed, "
+                      f"{(shift_df['distribution_divergence'] > 0.2).sum()} with large shifts")
+                shift_results = shift_df
+    else:
+        print(f"\n[9/9] Skipping shift analysis (need >=2 conditions)")
+
+    # Summary
+    print(f"\n[Summary] Generating report...")
+    n_genes = clusters_df['gene_id'].nunique() if 'gene_id' in clusters_df.columns else 0
+    summary_df = generate_analysis_summary(
+        n_samples=len(sample_names),
+        n_clusters=len(clusters_df),
+        n_genes=n_genes,
+        deseq2_gene_results=deseq2_gene_results,
+        deseq2_cluster_results=deseq2_cluster_results,
+        reference_condition=reference_condition,
+    )
+    summary_df.to_csv(output_dir / 'analysis_summary.tsv', sep='\t', index=False)
+
+    plots_dict = {p.stem: str(p) for p in plots_dir.glob('*.png')}
+    tables_dict = {t.stem: str(t) for t in tables_dir.glob('*.tsv')}
+    html_path = output_dir / 'report.html'
+    generate_html_report(summary_df, plots_dict, tables_dict, str(html_path),
+                         title='RECTIFY Analysis Report (Manifest Mode)')
+
+    print(f"\n" + "=" * 70)
+    print(f"Manifest-mode analysis complete!")
+    print(f"  Output directory: {output_dir}")
+    print(f"  HTML report: {html_path}")
+    print("=" * 70)
+
+    return 0
 
 
 def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
@@ -985,6 +1536,14 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         type=str,
         help='JSON string or file defining sample sets for separate PCA plots. '
              'Format: {"set1_name": ["condition1", "condition2"], "set2_name": ["condition3"]}',
+    )
+
+    # Manifest mode (memory-efficient multi-sample processing)
+    parser.add_argument(
+        '--manifest',
+        help='Sample manifest TSV (columns: sample_id, path, [condition]). '
+             'When provided, processes per-sample TSVs one at a time instead of '
+             'a pre-combined TSV.',
     )
 
     parser.set_defaults(func=run_analyze)

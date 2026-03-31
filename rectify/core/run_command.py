@@ -155,7 +155,19 @@ def _run_alignment(
         verbose=False,
     )
 
-    rc = run_align(align_args)
+    # Temporarily hide SLURM array env vars so consensus.py runs in single-sample
+    # mode. In run-all, SLURM array indices are for sample-level parallelism;
+    # we never want within-sample read-level partitioning here.
+    import os as _os
+    _array_vars = {k: _os.environ.pop(k) for k in (
+        'SLURM_ARRAY_TASK_ID', 'SLURM_ARRAY_TASK_COUNT',
+        'SLURM_ARRAY_TASK_MAX', 'SLURM_ARRAY_TASK_MIN',
+        'SLURM_ARRAY_TASK_STEP',
+    ) if k in _os.environ}
+    try:
+        rc = run_align(align_args)
+    finally:
+        _os.environ.update(_array_vars)
     if rc != 0:
         raise RuntimeError(f"Triple-aligner failed for {input_path}")
 
@@ -356,6 +368,60 @@ def _run_analysis(
         no_bedgraph=False,
         bedgraph_dir=None,
         no_genomic_distribution=False,
+        # Manifest mode (not used in single-file path)
+        manifest=None,
+        # Motif windows
+        motif_upstream=100,
+        motif_downstream=50,
+    )
+
+    exit_code = run_analyze(analyze_args)
+    if exit_code != 0:
+        print(f"\nAnalysis completed with warnings (exit code: {exit_code})")
+
+
+def _run_analysis_manifest(
+    manifest_path: Path,
+    output_dir: Path,
+    genome_path: Optional[Path],
+    annotation_path: Optional[Path],
+    args,
+    n_samples: int = 1,
+) -> None:
+    """Run the analyze command in manifest mode (memory-efficient multi-sample path)."""
+    from .analyze_command import run_analyze
+
+    run_deseq2 = n_samples > 1
+
+    analyze_args = argparse.Namespace(
+        # In manifest mode, 'input' is unused but run_analyze checks it after
+        # the manifest dispatch, so set it to the manifest path as a fallback.
+        input=str(manifest_path),
+        manifest=str(manifest_path),
+        output=output_dir,
+        annotation=annotation_path,
+        genome=genome_path,
+        reference=getattr(args, 'reference', None),
+        go_annotations=getattr(args, 'go_annotations', None),
+        threads=getattr(args, 'threads', 4),
+        # Clustering
+        sample_column='sample',
+        count_column=None,
+        cluster_distance=25,
+        min_reads=5,
+        # Analysis flags
+        run_deseq2=run_deseq2,
+        run_motif=run_deseq2,
+        sample_sets=None,
+        # Filtering
+        exclude_mito=True,
+        include_mito=False,
+        exclude_rdna=True,
+        include_rdna=False,
+        # Manifest mode disables bedgraph/genomic distribution (no combined positions_df)
+        no_bedgraph=True,
+        bedgraph_dir=None,
+        no_genomic_distribution=True,
         # Motif windows
         motif_upstream=100,
         motif_downstream=50,
@@ -624,20 +690,32 @@ def _run_multi_sample(args) -> int:
     # Only combine successfully corrected samples
     successful_samples = [s for s in samples if s['sample_id'] not in failed]
 
-    # ── Stage 2: combine corrected TSVs ─────────────────────────────────────
-    print(f"\n[Stage 2/3] Combining corrected TSVs ({len(successful_samples)} samples)...")
-    try:
-        combined_tsv = _combine_corrected_tsvs(successful_samples, output_dir)
-    except Exception as e:
-        print(f"ERROR: Failed to combine TSVs: {e}", file=sys.stderr)
-        return 1
-
-    # ── Stage 3: combined analysis ───────────────────────────────────────────
-    print(f"\n[Stage 3/3] Running combined analysis (DESeq2, GO, motifs)...")
+    # ── Stage 2: write manifest pointing to per-sample corrected TSVs ────────
+    # No combine step needed — manifest mode in analyze streams each file separately
+    print(f"\n[Stage 2/3] Writing sample manifest for combined analysis...")
+    import pandas as pd
     combined_dir = output_dir / 'combined'
+    combined_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_rows = []
+    for s in successful_samples:
+        row = {
+            'sample_id': s['sample_id'],
+            'path': str(output_dir / s['sample_id'] / 'corrected_3ends.tsv'),
+        }
+        if 'condition' in s:
+            row['condition'] = s.get('condition', '')
+        manifest_rows.append(row)
+
+    manifest_for_analyze = combined_dir / 'corrected_manifest.tsv'
+    pd.DataFrame(manifest_rows).to_csv(manifest_for_analyze, sep='\t', index=False)
+    print(f"  Wrote manifest: {manifest_for_analyze} ({len(manifest_rows)} samples)")
+
+    # ── Stage 3: combined analysis (manifest mode) ───────────────────────────
+    print(f"\n[Stage 3/3] Running combined analysis (DESeq2, GO, motifs)...")
     try:
-        _run_analysis(
-            corrected_tsv=combined_tsv,
+        _run_analysis_manifest(
+            manifest_path=manifest_for_analyze,
             output_dir=combined_dir,
             genome_path=genome_path,
             annotation_path=annotation_path,
@@ -697,54 +775,97 @@ def _run_single_sample(args) -> int:
 
     bam_to_correct = input_path
 
+    # ── Scratch staging setup ────────────────────────────────────────────────
+    # If $SCRATCH is available (Sherlock), run all I/O there and rsync back.
+    # This avoids Oak NFS contention across concurrent SLURM array tasks.
+    # The consensus BAM is always copied back to Oak even on fresh alignments
+    # so it survives $SCRATCH's 90-day auto-purge.
+    from ..slurm import make_job_scratch_dir, sync_to_oak
+    import shutil as _shutil
+
+    use_scratch = getattr(args, 'use_scratch', True)  # default on when scratch available
+    scratch_dir = make_job_scratch_dir('rectify_single') if use_scratch else None
+    work_dir = scratch_dir if scratch_dir else output_dir
+
+    if scratch_dir:
+        print(f"\nScratch staging enabled: {scratch_dir}")
+
     # ── Step 0: Alignment ────────────────────────────────────────────────────
+    import time as _time
+    _pipeline_start = _time.perf_counter()
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
         print(f"\n[Step 1/3] Aligning with triple-aligner...")
         print("-" * 50)
+        _t0 = _time.perf_counter()
+        # Align directly to work_dir (scratch if available, else output_dir)
         bam_to_correct = _run_alignment(
             input_path=input_path,
             sample_id=sample_id,
-            sample_output_dir=output_dir,
+            sample_output_dir=work_dir,
             genome_path=genome_path,
             annotation_path=annotation_path,
             threads=getattr(args, 'threads', 4),
             parallel_aligners=getattr(args, 'parallel_aligners', False),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
+        print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
         step_correction = 2
     elif input_type in ('fastq', 'fastq.gz'):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
         consensus_bam = _consensus_bam_path(sample_id, output_dir)
         if consensus_bam.exists():
             print(f"\n[Step 1/3] Alignment — using existing consensus.bam")
-            bam_to_correct = consensus_bam
+            if scratch_dir:
+                # Stage existing BAM to scratch
+                print(f"  Staging to scratch: {scratch_dir}")
+                _shutil.copy2(consensus_bam, scratch_dir / consensus_bam.name)
+                bai = Path(str(consensus_bam) + '.bai')
+                if bai.exists():
+                    _shutil.copy2(bai, scratch_dir / bai.name)
+                bam_to_correct = scratch_dir / consensus_bam.name
+            else:
+                bam_to_correct = consensus_bam
         else:
             print(
                 f"ERROR: --skip-alignment set but no consensus.bam found: {consensus_bam}",
                 file=sys.stderr,
             )
+            if scratch_dir:
+                _shutil.rmtree(scratch_dir, ignore_errors=True)
             return 1
         step_correction = 2
     else:
         print(f"\nBAM input detected — skipping alignment")
+        if scratch_dir:
+            # Stage BAM to scratch
+            print(f"  Staging to scratch: {scratch_dir}")
+            _shutil.copy2(input_path, scratch_dir / input_path.name)
+            bai = Path(str(input_path) + '.bai')
+            if bai.exists():
+                _shutil.copy2(bai, scratch_dir / bai.name)
+            bam_to_correct = scratch_dir / input_path.name
         step_correction = 1
 
     # ── Step 1/2: Correction ─────────────────────────────────────────────────
     print(f"\n[Step {step_correction}/3] Correcting 3' end positions...")
     print("-" * 50)
+    _t0 = _time.perf_counter()
     try:
         corrected_tsv = _run_correction(
             bam_path=bam_to_correct,
-            output_dir=output_dir,
+            output_dir=work_dir,
             genome_path=genome_path,
             annotation_path=annotation_path,
             args=args,
         )
     except Exception as e:
         print(f"ERROR in correction step: {e}", file=sys.stderr)
+        if scratch_dir:
+            _shutil.rmtree(scratch_dir, ignore_errors=True)
         return 1
     print(f"\nCorrection complete: {corrected_tsv}")
+    print(f"[TIMING] Correction: {_time.perf_counter() - _t0:.1f}s")
 
     # Add sample column (needed by analyze even for single sample)
     try:
@@ -760,10 +881,11 @@ def _run_single_sample(args) -> int:
     print(f"\n[Step {step_correction + 1}/3] Analyzing results (single-sample)...")
     print("-" * 50)
     print("Note: DESeq2 requires multiple samples — skipped for single-sample run.")
+    _t0 = _time.perf_counter()
     try:
         _run_analysis(
             corrected_tsv=corrected_tsv,
-            output_dir=output_dir,
+            output_dir=work_dir,
             genome_path=genome_path,
             annotation_path=annotation_path,
             args=args,
@@ -779,10 +901,21 @@ def _run_single_sample(args) -> int:
             bam_path=bam_to_correct,
             genome_path=genome_path,
             annotation_path=annotation_path,
-            output_dir=output_dir,
+            output_dir=work_dir,
         )
 
+    print(f"[TIMING] Analysis:   {_time.perf_counter() - _t0:.1f}s")
+
+    # ── Copy from scratch to Oak ─────────────────────────────────────────────
+    if scratch_dir:
+        print(f"\nCopying outputs to Oak: {output_dir}")
+        _t0 = _time.perf_counter()
+        sync_to_oak(scratch_dir, output_dir)
+        print(f"[TIMING] Sync to Oak: {_time.perf_counter() - _t0:.1f}s")
+        _shutil.rmtree(scratch_dir, ignore_errors=True)
+
     # ── Summary ──────────────────────────────────────────────────────────────
+    _pipeline_elapsed = _time.perf_counter() - _pipeline_start
     print("\n" + "=" * 70)
     print("Pipeline Complete!")
     print("=" * 70)
@@ -791,6 +924,7 @@ def _run_single_sample(args) -> int:
     print(f"  Clusters:          {output_dir / 'cpa_clusters.tsv'}")
     print(f"  HTML report:       {output_dir / 'report.html'}")
     print(f"  Provenance:        {output_dir / 'PROVENANCE.json'}")
+    print(f"\n[TIMING] Total pipeline: {_pipeline_elapsed:.1f}s ({_pipeline_elapsed/60:.1f} min)")
 
     return 0
 

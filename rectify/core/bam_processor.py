@@ -519,6 +519,60 @@ def write_output_tsv(results: List[Dict], output_path: str):
     print(f"  Wrote {len(results):,} corrected positions")
 
 
+def write_position_index(results_or_path, output_tsv_path: str):
+    """
+    Write a compact position index (chrom, corrected_3prime, strand -> count).
+
+    Args:
+        results_or_path: List of result dicts, OR a path to an existing TSV file
+        output_tsv_path: Path to the main corrected TSV; index path is derived from it
+    """
+    from collections import defaultdict
+    import gzip as _gzip
+
+    # Derive index path: replace .tsv or .tsv.gz with _index.bed.gz
+    _base = str(output_tsv_path)
+    if _base.endswith('.tsv.gz'):
+        _index_path = _base[:-len('.tsv.gz')] + '_index.bed.gz'
+    elif _base.endswith('.tsv'):
+        _index_path = _base[:-len('.tsv')] + '_index.bed.gz'
+    else:
+        _index_path = _base + '_index.bed.gz'
+
+    pos_counts = defaultdict(float)
+
+    if isinstance(results_or_path, (str, Path)):
+        # Load from existing TSV
+        import pandas as pd
+        _df = pd.read_csv(str(results_or_path), sep='\t',
+                          usecols=['chrom', 'corrected_3prime', 'strand', 'fraction']
+                          if True else ['chrom', 'corrected_3prime', 'strand'])
+        # Try with fraction; fall back if column missing
+        try:
+            _df2 = pd.read_csv(str(results_or_path), sep='\t',
+                               usecols=['chrom', 'corrected_3prime', 'strand', 'fraction'])
+            for _, row in _df2.iterrows():
+                pos_counts[(row['chrom'], row['corrected_3prime'], row['strand'])] += float(row.get('fraction', 1.0))
+        except (ValueError, KeyError):
+            _df2 = pd.read_csv(str(results_or_path), sep='\t',
+                               usecols=['chrom', 'corrected_3prime', 'strand'])
+            for _, row in _df2.iterrows():
+                pos_counts[(row['chrom'], row['corrected_3prime'], row['strand'])] += 1.0
+    else:
+        # List of result dicts
+        for r in results_or_path:
+            key = (r['chrom'], r['corrected_3prime'], r['strand'])
+            pos_counts[key] += float(r.get('fraction', 1.0))
+
+    # Write gzip-compressed TSV sorted by (chrom, corrected_3prime, strand)
+    with _gzip.open(_index_path, 'wt') as f:
+        f.write('chrom\tcorrected_3prime\tstrand\tcount\n')
+        for (chrom, pos, strand), count in sorted(pos_counts.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
+            f.write(f'{chrom}\t{pos}\t{strand}\t{count:.6f}\n')
+
+    logger.info(f"Position index written to {_index_path}")
+
+
 def generate_summary_report(results: List[Dict]) -> str:
     """
     Generate summary report from correction results.
@@ -913,6 +967,7 @@ def process_bam_file_parallel(
 
         if output_path:
             write_output_tsv(all_results, output_path)
+            write_position_index(all_results, output_path)
 
         if return_stats:
             return all_results, stats
@@ -965,6 +1020,7 @@ def process_bam_file_parallel(
     # Write output if requested
     if output_path:
         write_output_tsv(all_results, output_path)
+        write_position_index(all_results, output_path)
 
     if return_stats:
         return all_results, stats
@@ -1019,6 +1075,10 @@ def process_bam_streaming(
     # Initialize comprehensive stats
     stats = ProcessingStats()
 
+    # Position count accumulator for the compact index
+    from collections import defaultdict as _defaultdict
+    _pos_counts = _defaultdict(float)
+
     # Open output file (support gzip)
     if output_path.endswith('.gz'):
         out_fh = gzip.open(output_path, 'wt')
@@ -1060,7 +1120,7 @@ def process_bam_streaming(
                 stats.reads_supplementary += 1
                 continue
 
-            result = correct_read_3prime(
+            read_results = correct_read_3prime(
                 read, genome,
                 apply_atract=apply_atract,
                 apply_ag_mispriming=apply_ag_mispriming,
@@ -1068,10 +1128,12 @@ def process_bam_streaming(
                 apply_indel_correction=apply_indel_correction,
                 netseq_loader=netseq_loader
             )
-            chunk.append(result)
+            chunk.extend(read_results)
 
-            # Update comprehensive stats
-            stats.update_from_result(result)
+            # Update comprehensive stats and position index accumulator
+            for result in read_results:
+                stats.update_from_result(result)
+                _pos_counts[(result['chrom'], result['corrected_3prime'], result['strand'])] += float(result.get('fraction', 1.0))
 
             # Write chunk when full
             if len(chunk) >= chunk_size:
@@ -1094,6 +1156,21 @@ def process_bam_streaming(
 
     logger.info(f"Completed processing {stats.reads_processed:,} reads")
     logger.info(f"  Output written to {output_path}")
+
+    # Write compact position index
+    _base = str(output_path)
+    if _base.endswith('.tsv.gz'):
+        _index_path = _base[:-len('.tsv.gz')] + '_index.bed.gz'
+    elif _base.endswith('.tsv'):
+        _index_path = _base[:-len('.tsv')] + '_index.bed.gz'
+    else:
+        _index_path = _base + '_index.bed.gz'
+
+    with gzip.open(_index_path, 'wt') as _idx_fh:
+        _idx_fh.write('chrom\tcorrected_3prime\tstrand\tcount\n')
+        for (chrom, pos, strand), count in sorted(_pos_counts.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
+            _idx_fh.write(f'{chrom}\t{pos}\t{strand}\t{count:.6f}\n')
+    logger.info(f"Position index written to {_index_path}")
 
     return stats
 
