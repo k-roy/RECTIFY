@@ -505,6 +505,313 @@ def run_gapmm2(
     return str(output_bam)
 
 
+def run_ultra(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    annotation_path: str,
+    threads: int = 8,
+    extra_args: Optional[List[str]] = None
+) -> str:
+    """Run uLTRA annotation-guided alignment.
+
+    uLTRA uses collinear chaining over a genome graph and excels at aligning
+    reads that span small exons (11-20 nt) that seed-chain aligners miss.
+    Requires a GTF or GFF annotation file.
+
+    Args:
+        reads_path: Path to FASTQ file
+        genome_path: Path to genome FASTA
+        output_bam: Path for output BAM file
+        annotation_path: Path to GFF/GTF annotation (required)
+        threads: Number of threads
+        extra_args: Additional uLTRA arguments
+
+    Returns:
+        Path to output BAM file
+    """
+    import gzip
+    import tempfile
+
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    ultra_path = shutil.which('uLTRA')
+    if not ultra_path:
+        ultra_path = '/home/users/kevinroy/.local/bin/uLTRA'
+        if not Path(ultra_path).exists():
+            raise FileNotFoundError("uLTRA not found in PATH or ~/.local/bin")
+
+    # uLTRA writes to an output directory; the SAM lives at <out_dir>/<prefix>.sam
+    ultra_out_dir = output_bam.parent / f"{output_bam.stem}_ultra_tmp"
+    ultra_out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = "ultra"
+
+    # uLTRA does not support gzipped inputs and requires GTF (not GFF) format.
+    _tmp_dir = None
+    ref_path = genome_path
+
+    def _is_gzipped(p: str) -> bool:
+        return str(p).endswith('.gz')
+
+    def _is_gff(p: str) -> bool:
+        return any(str(p).endswith(ext) for ext in ('.gff', '.gff3', '.gff.gz', '.gff3.gz'))
+
+    # Resolve annotation: GFF(gz) → look for sibling .gtf; GTF(gz) → decompress.
+    ann_p = Path(annotation_path)
+    if _is_gff(annotation_path):
+        stem = ann_p.stem if not ann_p.stem.endswith('.gz') else ann_p.stem[:-3]
+        stem = stem.rsplit('.', 1)[0] if stem.endswith('.gff') or stem.endswith('.gff3') else stem
+        candidate_gtf = ann_p.parent / (stem + '.gtf')
+        if not candidate_gtf.exists():
+            for ext in ('.gff.gz', '.gff3.gz', '.gff', '.gff3'):
+                if str(ann_p).endswith(ext):
+                    candidate_gtf = ann_p.parent / (str(ann_p.name)[:-len(ext)] + '.gtf')
+                    break
+        if not candidate_gtf.exists():
+            raise FileNotFoundError(
+                f"uLTRA requires GTF annotation but only GFF was found: {annotation_path}. "
+                f"Generate a GTF with: rectify build-gtf --annotation {annotation_path} "
+                f"-o {candidate_gtf}"
+            )
+        ann_path = str(candidate_gtf)
+        logger.info(f"uLTRA: using GTF annotation at {ann_path}")
+    else:
+        ann_path = annotation_path
+
+    # Decompress genome if gzipped (uLTRA cannot read gzip FASTA)
+    if _is_gzipped(genome_path):
+        _tmp_dir = tempfile.mkdtemp(prefix='ultra_decomp_')
+        ref_dest = Path(_tmp_dir) / Path(genome_path).stem
+        with gzip.open(genome_path, 'rb') as f_in, open(ref_dest, 'wb') as f_out:
+            f_out.write(f_in.read())
+        ref_path = str(ref_dest)
+
+    # Decompress annotation if gzipped GTF
+    if _is_gzipped(ann_path):
+        if _tmp_dir is None:
+            _tmp_dir = tempfile.mkdtemp(prefix='ultra_decomp_')
+        ann_dest = Path(_tmp_dir) / Path(ann_path).stem
+        with gzip.open(ann_path, 'rb') as f_in, open(ann_dest, 'wb') as f_out:
+            f_out.write(f_in.read())
+        ann_path = str(ann_dest)
+
+    # uLTRA pipeline = index + align in one step
+    # --disable_infer: skip gffutils gene-boundary inference (avoids crash on complex GFFs)
+    cmd = [
+        ultra_path, 'pipeline',
+        '--ont',
+        '--disable_infer',
+        '--t', str(threads),
+        '--prefix', prefix,
+        ref_path,
+        ann_path,
+        reads_path,
+        str(ultra_out_dir),
+    ]
+
+    if extra_args:
+        cmd.extend(extra_args)
+
+    logger.info(f"Running uLTRA: {' '.join(cmd[:6])}...")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+
+    # Clean up decompressed temp files
+    if _tmp_dir:
+        import shutil as _shutil2
+        _shutil2.rmtree(_tmp_dir, ignore_errors=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"uLTRA failed: {result.stderr}")
+
+    sam_path = ultra_out_dir / f"{prefix}.sam"
+    if not sam_path.exists() or sam_path.stat().st_size == 0:
+        raise RuntimeError(f"uLTRA produced no output at {sam_path}")
+
+    # Convert SAM → coordinate-sorted BAM
+    view_proc = subprocess.Popen(
+        ['samtools', 'view', '-bS', str(sam_path)],
+        stdout=subprocess.PIPE
+    )
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-@', str(threads), '-o', str(output_bam)],
+        stdin=view_proc.stdout
+    )
+    view_proc.stdout.close()
+    try:
+        sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        raise RuntimeError(f"samtools sort (uLTRA) timed out after {ALIGNER_TIMEOUT}s")
+
+    import shutil as _shutil
+    _shutil.rmtree(ultra_out_dir, ignore_errors=True)
+
+    logger.info(f"uLTRA complete: {output_bam}")
+    return str(output_bam)
+
+
+def _dedup_desalt_bam(input_bam: Path, output_bam: Path, threads: int = 1) -> None:
+    """Remove duplicate alignments from deSALT output.
+
+    deSALT has a known bug: it outputs each alignment N times where N is the
+    number of secondary alignment slots (-N flag, default 4). This removes
+    duplicates by keeping the first occurrence of each (read_name, flag,
+    chrom, pos, cigar) combination.
+    """
+    import pysam
+
+    seen: set = set()
+    n_total = 0
+    n_kept = 0
+
+    with pysam.AlignmentFile(str(input_bam), 'rb') as bam_in, \
+         pysam.AlignmentFile(str(output_bam), 'wb', header=bam_in.header) as bam_out:
+        for read in bam_in:
+            n_total += 1
+            key = (
+                read.query_name,
+                read.flag,
+                read.reference_name,
+                read.reference_start,
+                read.cigarstring,
+            )
+            if key not in seen:
+                seen.add(key)
+                bam_out.write(read)
+                n_kept += 1
+
+    n_removed = n_total - n_kept
+    if n_removed > 0:
+        logger.info(
+            f"deSALT dedup: {n_total} → {n_kept} alignments "
+            f"({n_removed} duplicates removed)"
+        )
+
+
+def run_desalt(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    annotation_path: Optional[str] = None,
+    threads: int = 8,
+    index_path: Optional[str] = None,
+    extra_args: Optional[List[str]] = None
+) -> str:
+    """Run deSALT De Bruijn graph splice aligner.
+
+    deSALT requires a pre-built RdBG index (build with: deSALT index <ref.fa> <index_dir>).
+    If index_path is not given, looks for a 'desalt_index' directory adjacent to genome_path.
+
+    Note: deSALT has a known bug where it outputs each primary alignment
+    N times. This function deduplicates automatically.
+
+    Args:
+        reads_path: Path to FASTQ file
+        genome_path: Path to genome FASTA (used only for default index discovery)
+        output_bam: Path for output BAM file
+        annotation_path: Optional GTF annotation (accepted for API compatibility; unused —
+                         deSALT's -G flag causes SIGSEGV on yeast GTF)
+        threads: Number of threads
+        index_path: Path to pre-built deSALT RdBG index directory
+        extra_args: Additional deSALT arguments
+
+    Returns:
+        Path to output BAM file
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    desalt_exec = shutil.which('deSALT')
+    if not desalt_exec:
+        desalt_exec = '/home/users/kevinroy/bin/deSALT'
+        if not Path(desalt_exec).exists():
+            raise FileNotFoundError("deSALT not found in PATH or ~/bin")
+
+    # Resolve index directory
+    if index_path:
+        index_dir = Path(index_path)
+    else:
+        genome_p = Path(genome_path)
+        candidates = [
+            genome_p.parent / 'desalt_index',
+            genome_p.parent / f"{genome_p.name.split('.')[0]}_desalt_index",
+        ]
+        index_dir = next((c for c in candidates if c.exists()), None)
+        if index_dir is None:
+            raise FileNotFoundError(
+                f"deSALT index not found adjacent to {genome_path}. "
+                f"Build it with: deSALT index <genome.fa> {candidates[0]}"
+            )
+
+    sam_path = output_bam.with_suffix('.sam')
+    # deSALT requires its -f tmp file on a local (non-NFS) filesystem to avoid
+    # "double free or corruption" crashes caused by memory-mapping over NFS.
+    import tempfile as _tmpmod
+    import os as _os
+    tmp_file = Path(_tmpmod.gettempdir()) / f"desalt_tmp_{_os.getpid()}_{output_bam.stem}.bin"
+
+    cmd = [
+        desalt_exec, 'aln',
+        '-t', str(threads),
+        '-f', str(tmp_file),
+        '-o', str(sam_path),
+    ]
+
+    # NOTE: deSALT's -G annotation flag causes a SIGSEGV when loading yeast GTF.
+    # Skip -G entirely; deSALT de novo splice detection is sufficient.
+    _ = annotation_path
+
+    if extra_args:
+        cmd.extend(extra_args)
+
+    cmd.extend([str(index_dir), reads_path])
+
+    logger.info(f"Running deSALT: {' '.join(cmd[:6])}...")
+
+    # Strip LD_LIBRARY_PATH so deSALT uses system glibc only (conda allocator
+    # incompatibility causes "double free or corruption" in parallel launches).
+    desalt_env = _os.environ.copy()
+    desalt_env.pop('LD_LIBRARY_PATH', None)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=desalt_env, timeout=ALIGNER_TIMEOUT)
+    tmp_file.unlink(missing_ok=True)
+    for sidecar in tmp_file.parent.glob(f"{tmp_file.name}*"):
+        sidecar.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"deSALT failed: {result.stderr}")
+
+    if not sam_path.exists() or sam_path.stat().st_size == 0:
+        raise RuntimeError(f"deSALT produced no output at {sam_path}")
+
+    # Convert SAM → coordinate-sorted BAM, then deduplicate
+    raw_bam = output_bam.with_suffix('.raw.bam')
+    view_proc = subprocess.Popen(
+        ['samtools', 'view', '-bS', str(sam_path)],
+        stdout=subprocess.PIPE
+    )
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-@', str(threads), '-o', str(raw_bam)],
+        stdin=view_proc.stdout
+    )
+    view_proc.stdout.close()
+    try:
+        sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        raise RuntimeError(f"samtools sort (deSALT) timed out after {ALIGNER_TIMEOUT}s")
+    sam_path.unlink(missing_ok=True)
+
+    _dedup_desalt_bam(raw_bam, output_bam, threads=threads)
+    raw_bam.unlink(missing_ok=True)
+
+    logger.info(f"deSALT complete: {output_bam}")
+    return str(output_bam)
+
+
 def run_multi_aligner(
     reads_path: str,
     genome_path: str,

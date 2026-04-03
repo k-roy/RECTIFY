@@ -118,9 +118,16 @@ def _run_alignment(
     annotation_path: Optional[Path],
     threads: int,
     parallel_aligners: bool = False,
+    junction_aligners: Optional[List[str]] = None,
+    chimeric_consensus: bool = False,
+    ultra_path: str = 'uLTRA',
+    desalt_path: str = 'deSALT',
 ) -> Path:
     """
-    Run triple-aligner consensus alignment or return existing consensus.bam.
+    Run consensus alignment or return existing consensus.bam.
+
+    Default aligners: minimap2 + mapPacBio + gapmm2.
+    Opt-in: uLTRA and/or deSALT via junction_aligners.
 
     Skips automatically if the consensus.bam already exists — safe to re-run.
     Returns the path to the consensus BAM.
@@ -131,7 +138,10 @@ def _run_alignment(
         print(f"    Skipping alignment — consensus.bam exists: {consensus_bam}")
         return consensus_bam
 
-    print(f"    Running triple-aligner (minimap2 + mapPacBio + gapmm2)...")
+    _junction_aligners = junction_aligners or []
+    all_aligners = ['minimap2', 'mapPacBio', 'gapmm2'] + _junction_aligners
+    aligner_desc = ' + '.join(all_aligners)
+    print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
     from .align_command import run_align
 
     align_args = argparse.Namespace(
@@ -141,13 +151,17 @@ def _run_alignment(
         annotation=annotation_path,
         threads=threads,
         aligners=['all'],
+        junction_aligners=_junction_aligners,
         no_consensus=False,
+        chimeric_consensus=chimeric_consensus,
         junc_bonus=9,
         junc_bed=None,
         parallel_aligners=parallel_aligners,
         minimap2_path='minimap2',
         mapPacBio_path='mapPacBio.sh',
         gapmm2_path='gapmm2',
+        ultra_path=ultra_path,
+        desalt_path=desalt_path,
         prefix='',
         keep_sam=False,
         sort=True,
@@ -560,6 +574,10 @@ def _process_one_sample(
                         annotation_path=annotation_path,
                         threads=getattr(args, 'threads', 4),
                         parallel_aligners=getattr(args, 'parallel_aligners', False),
+                        junction_aligners=getattr(args, 'junction_aligners', []),
+                        chimeric_consensus=getattr(args, 'chimeric_consensus', False),
+                        ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
+                        desalt_path=getattr(args, 'desalt_path', 'deSALT'),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -807,6 +825,10 @@ def _run_single_sample(args) -> int:
             annotation_path=annotation_path,
             threads=getattr(args, 'threads', 4),
             parallel_aligners=getattr(args, 'parallel_aligners', False),
+            junction_aligners=getattr(args, 'junction_aligners', []),
+            chimeric_consensus=getattr(args, 'chimeric_consensus', False),
+            ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
+            desalt_path=getattr(args, 'desalt_path', 'deSALT'),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")

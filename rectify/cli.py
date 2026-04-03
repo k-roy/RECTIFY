@@ -645,6 +645,41 @@ Manifest format (TSV):
         )
     )
 
+    run_parser.add_argument(
+        '--junction-aligners',
+        nargs='+',
+        choices=['uLTRA', 'deSALT'],
+        default=[],
+        metavar='ALIGNER',
+        help=(
+            'Opt-in junction-mode aligners to add to the consensus pool '
+            '(choices: uLTRA, deSALT). Requires --annotation. '
+            'Value is unknown/untested — benchmark before using in production.'
+        )
+    )
+
+    run_parser.add_argument(
+        '--chimeric-consensus',
+        action='store_true',
+        default=False,
+        help=(
+            'Use chimeric consensus selection: independently pick the best aligner '
+            'for each read segment. Experimental — not validated for production.'
+        )
+    )
+
+    run_parser.add_argument(
+        '--ultra-path',
+        default='uLTRA',
+        help='Path to uLTRA executable (used with --junction-aligners uLTRA)'
+    )
+
+    run_parser.add_argument(
+        '--desalt-path',
+        default='deSALT',
+        help='Path to deSALT executable (used with --junction-aligners deSALT)'
+    )
+
     return parser
 
 

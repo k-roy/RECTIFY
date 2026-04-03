@@ -63,7 +63,20 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         nargs='+',
         choices=['minimap2', 'mapPacBio', 'gapmm2', 'all'],
         default=['all'],
-        help='Aligners to run (default: all for consensus)'
+        help='Default aligners for 3\' end correction (default: all)'
+    )
+
+    aligner_group.add_argument(
+        '--junction-aligners',
+        nargs='+',
+        choices=['uLTRA', 'deSALT'],
+        default=[],
+        metavar='ALIGNER',
+        help=(
+            'Opt-in junction-mode aligners to add to the consensus pool '
+            '(choices: uLTRA, deSALT). Requires --annotation. '
+            'Value is unknown/untested — benchmark before using in production.'
+        )
     )
 
     aligner_group.add_argument(
@@ -99,6 +112,18 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--gapmm2-path',
         default='gapmm2',
         help='Path to gapmm2 executable'
+    )
+
+    aligner_group.add_argument(
+        '--ultra-path',
+        default='uLTRA',
+        help='Path to uLTRA executable'
+    )
+
+    aligner_group.add_argument(
+        '--desalt-path',
+        default='deSALT',
+        help='Path to deSALT executable'
     )
 
     # Junction annotation
@@ -198,16 +223,23 @@ def run_align(args: argparse.Namespace) -> int:
     # Determine prefix
     prefix = args.prefix if args.prefix else args.reads.stem.replace('.fastq', '').replace('.fq', '')
 
-    # Expand 'all' to list of aligners
-    aligners = args.aligners
+    # Expand 'all' to list of aligners, then append any junction-mode aligners
+    aligners = list(args.aligners)
     if 'all' in aligners:
         aligners = ['minimap2', 'mapPacBio', 'gapmm2']
+
+    junction_aligners = getattr(args, 'junction_aligners', []) or []
+    for ja in junction_aligners:
+        if ja not in aligners:
+            aligners.append(ja)
 
     # Import multi-aligner functions
     from .multi_aligner import (
         run_minimap2,
         run_map_pacbio,
         run_gapmm2,
+        run_ultra,
+        run_desalt,
         check_aligner_available,
     )
 
@@ -239,6 +271,10 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = args.mapPacBio_path
         elif aligner == 'gapmm2':
             exec_path = args.gapmm2_path
+        elif aligner == 'uLTRA':
+            exec_path = getattr(args, 'ultra_path', 'uLTRA')
+        elif aligner == 'deSALT':
+            exec_path = getattr(args, 'desalt_path', 'deSALT')
         else:
             logger.warning(f"Unknown aligner: {aligner}")
             return aligner, None
@@ -278,6 +314,25 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     threads=n_threads,
                 )
+            elif aligner == 'uLTRA':
+                if not args.annotation:
+                    logger.warning("uLTRA requires --annotation; skipping")
+                    return aligner, None
+                run_ultra(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    annotation_path=str(args.annotation),
+                    threads=n_threads,
+                )
+            elif aligner == 'deSALT':
+                run_desalt(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    annotation_path=str(args.annotation) if args.annotation else None,
+                    threads=n_threads,
+                )
 
             _elapsed = _time.perf_counter() - _t_aligner
             logger.info(f"{aligner} complete: {output_bam} [{_elapsed:.1f}s]")
@@ -298,22 +353,31 @@ def run_align(args: argparse.Namespace) -> int:
             )
             aligner_name, bam_path = _run_one_aligner('mapPacBio')
             results['mapPacBio'] = bam_path
-        # Phase 2: remaining aligners with equal thread shares.
+        # Phase 2: non-deSALT aligners run in parallel; deSALT runs sequentially
+        # after the parallel pool to avoid "double free or corruption" when forked
+        # from a multithreaded process.
         remaining = [a for a in aligners if a != 'mapPacBio']
-        if remaining:
-            per_thread = max(1, args.threads // len(remaining))
-            for a in remaining:
+        parallel_batch = [a for a in remaining if a != 'deSALT']
+        sequential_batch = [a for a in remaining if a == 'deSALT']
+        if parallel_batch:
+            per_thread = max(1, args.threads // len(parallel_batch))
+            for a in parallel_batch:
                 aligner_thread_counts[a] = per_thread
-            alloc_summary = ', '.join(f"{a}={per_thread}" for a in remaining)
+            alloc_summary = ', '.join(f"{a}={per_thread}" for a in parallel_batch)
             logger.info(
-                f"Running {len(remaining)} aligners in parallel "
+                f"Running {len(parallel_batch)} aligners in parallel "
                 f"(threads: {alloc_summary})"
             )
-            with ThreadPoolExecutor(max_workers=len(remaining)) as pool:
-                futures = {pool.submit(_run_one_aligner, a): a for a in remaining}
+            with ThreadPoolExecutor(max_workers=len(parallel_batch)) as pool:
+                futures = {pool.submit(_run_one_aligner, a): a for a in parallel_batch}
                 for future in as_completed(futures):
                     aligner, bam_path = future.result()
                     results[aligner] = bam_path
+        # deSALT must run sequentially (fork-unsafe in multithreaded context)
+        for aligner in sequential_batch:
+            aligner_thread_counts[aligner] = args.threads
+            aligner_name, bam_path = _run_one_aligner(aligner)
+            results[aligner_name] = bam_path
     else:
         for aligner in aligners:
             aligner_name, bam_path = _run_one_aligner(aligner)
