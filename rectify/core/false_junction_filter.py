@@ -39,6 +39,24 @@ from ..config import POLYA_RICHNESS_THRESHOLD
 
 
 # =============================================================================
+# Genome reference adapter
+# =============================================================================
+
+class _GenomeDictReference:
+    """Thin adapter so a genome dict can be passed where pysam.FastaFile is expected."""
+
+    def __init__(self, genome: Dict[str, str]):
+        self._genome = genome
+
+    def fetch(self, chrom: str, start: int, end: int) -> str:
+        seq = self._genome.get(chrom, '')
+        return seq[max(0, start):end]
+
+    def get_reference_length(self, chrom: str) -> int:
+        return len(self._genome.get(chrom, ''))
+
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
