@@ -27,6 +27,11 @@ from dataclasses import dataclass, field
 _CS_TOK_RE = re.compile(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-9]+[a-z]{2}')
 _INTRON_LEN_RE = re.compile(r'[0-9]+')
 
+# Maximum wall-clock seconds to wait for any single aligner subprocess.
+# uLTRA and deSALT on a large genome can take 30–60 min; 7200 s (2 h) is a
+# safe upper bound before treating a run as hung.
+ALIGNER_TIMEOUT = 7200
+
 from ..utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
 
 from rectify.core.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
@@ -169,12 +174,64 @@ def run_minimap2(
     return str(output_bam)
 
 
+def extract_fastq_chunk(
+    input_fastq: str,
+    output_fastq: str,
+    chunk_idx: int,
+    n_chunks: int,
+) -> int:
+    """Write reads where read_index % n_chunks == chunk_idx to output_fastq.
+
+    Interleaved distribution ensures read-length is evenly spread across chunks
+    without a pre-count pass.  Returns number of reads written.
+    """
+    import gzip as _gzip
+    _open_in = _gzip.open if str(input_fastq).endswith('.gz') else open
+    n_written = 0
+    read_idx = 0
+    with _open_in(input_fastq, 'rt') as fin, open(output_fastq, 'w') as fout:
+        while True:
+            header = fin.readline()
+            if not header:
+                break
+            seq  = fin.readline()
+            plus = fin.readline()
+            qual = fin.readline()
+            if read_idx % n_chunks == chunk_idx:
+                fout.write(header if header.endswith('\n') else header + '\n')
+                fout.write(seq   if seq.endswith('\n')    else seq   + '\n')
+                fout.write('+\n')
+                fout.write(qual  if qual.endswith('\n')   else qual  + '\n')
+                n_written += 1
+            read_idx += 1
+    logger.info(
+        "FASTQ chunk %d/%d extracted: %d reads → %s",
+        chunk_idx, n_chunks, n_written, output_fastq,
+    )
+    return n_written
+
+
+def _merge_bams(input_bams: List[str], output_bam: str, threads: int = 1) -> None:
+    """Merge a list of name-sorted BAMs into one name-sorted BAM via samtools merge."""
+    tmp = str(output_bam) + '.merging_tmp'
+    result = subprocess.run(
+        ['samtools', 'merge', '-n', '-f', '-@', str(threads), tmp] + list(input_bams),
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        Path(tmp).unlink(missing_ok=True)
+        raise RuntimeError(f"samtools merge failed: {result.stderr}")
+    Path(tmp).rename(output_bam)
+
+
 def run_map_pacbio(
     reads_path: str,
     genome_path: str,
     output_bam: str,
     threads: int = 8,
-    extra_args: Optional[List[str]] = None
+    extra_args: Optional[List[str]] = None,
+    chunk_idx: Optional[int] = None,
+    n_chunks: Optional[int] = None,
 ) -> str:
     """Run BBTools mapPacBio alignment.
 
@@ -183,12 +240,24 @@ def run_map_pacbio(
     the script default to 100000 at install time (see multi_aligner.py).
     intronlen=50 converts deletions >=50bp to N (intron) CIGAR operations.
 
+    Chunked mode (chunk_idx / n_chunks):
+        When chunk_idx is provided, only the reads where
+        read_index % n_chunks == chunk_idx are processed.  The output is written
+        to {output_bam_stem}.chunk_{chunk_idx}_of_{n_chunks}.bam instead of the
+        final output_bam path.
+
+        When chunk_idx is None but n_chunks > 1, the function looks for all N
+        chunk BAMs and merges them into output_bam.  If any chunk BAM is missing
+        it falls back to a full single-pass alignment.
+
     Args:
-        reads_path: Path to FASTQ file
+        reads_path: Path to FASTQ file (or FASTQ.GZ)
         genome_path: Path to genome FASTA
-        output_bam: Path for output BAM file
+        output_bam: Path for output BAM file (or chunk BAM when chunk_idx set)
         threads: Number of threads
         extra_args: Additional mapPacBio arguments
+        chunk_idx: 0-based index of this chunk (None = all reads)
+        n_chunks: Total number of chunks (None or 1 = no chunking)
 
     Returns:
         Path to output BAM file
@@ -196,15 +265,49 @@ def run_map_pacbio(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
+    # ── Chunk merge mode: all chunk BAMs exist → merge and return ──────────
+    if chunk_idx is None and n_chunks and n_chunks > 1:
+        chunk_bams = [
+            output_bam.parent / f"{output_bam.stem}.chunk_{k}_of_{n_chunks}.bam"
+            for k in range(n_chunks)
+        ]
+        if all(p.exists() for p in chunk_bams):
+            logger.info(
+                "All %d mapPacBio chunk BAMs found — merging into %s",
+                n_chunks, output_bam,
+            )
+            _merge_bams([str(p) for p in chunk_bams], str(output_bam), threads=threads)
+            logger.info("mapPacBio merge complete: %s", output_bam)
+            return str(output_bam)
+        else:
+            missing = [p.name for p in chunk_bams if not p.exists()]
+            logger.warning(
+                "%d/%d chunk BAMs missing (%s) — falling back to full alignment",
+                len(missing), n_chunks, ', '.join(missing),
+            )
+            # fall through to full alignment below
+
+    # ── Chunk extraction mode: write only reads for this chunk ─────────────
+    actual_reads_path = reads_path
+    chunk_tmp_fq = None
+    if chunk_idx is not None and n_chunks and n_chunks > 1:
+        # Redirect output to the chunk BAM path
+        output_bam = output_bam.parent / f"{output_bam.stem}.chunk_{chunk_idx}_of_{n_chunks}.bam"
+        chunk_tmp_fq = str(output_bam.with_suffix('.chunk_input.fastq'))
+        extract_fastq_chunk(reads_path, chunk_tmp_fq, chunk_idx, n_chunks)
+        actual_reads_path = chunk_tmp_fq
+
     # Check if mapPacBio is available
     map_pacbio_path = shutil.which('mapPacBio.sh')
     if not map_pacbio_path:
         # Try common anaconda location
         map_pacbio_path = '/home/groups/larsms/users/kevinroy/anaconda3/bin/mapPacBio.sh'
         if not Path(map_pacbio_path).exists():
+            if chunk_tmp_fq:
+                Path(chunk_tmp_fq).unlink(missing_ok=True)
             raise FileNotFoundError("mapPacBio.sh not found")
 
-    # mapPacBio outputs SAM to stdout
+    # mapPacBio outputs SAM to a temp file alongside the output BAM
     sam_path = output_bam.with_suffix('.sam')
 
     # Store BBTools index alongside the genome so all jobs share it
@@ -214,12 +317,12 @@ def run_map_pacbio(
     cmd = [
         map_pacbio_path,
         f'ref={genome_path}',
-        f'in={reads_path}',
+        f'in={actual_reads_path}',
         f'out={sam_path}',
         f'threads={threads}',
         f'path={mpb_index_dir}',
         'fastareadlen=100000',  # Belt-and-suspenders: also patched in mapPacBio.sh default
-        'intronlen=50',  # Convert large deletions to introns
+        'intronlen=50',         # Convert large deletions to introns
         'minratio=0.4',
     ]
 
@@ -229,36 +332,41 @@ def run_map_pacbio(
     # ── Split long reads (>6 kb) for mapPacBio ──
     mpb_split_fq = Path(sam_path).with_suffix('.split.fastq')
     mpb_chunk_map, mpb_n_split = split_long_reads(
-        reads_path, str(mpb_split_fq),
+        actual_reads_path, str(mpb_split_fq),
         max_length=MAX_MPB_READ_LENGTH,
     )
     if mpb_n_split > 0:
-        # Point mapPacBio at the split FASTQ
-        cmd = [c.replace(f'in={reads_path}', f'in={mpb_split_fq}')
-               if c.startswith('in=') else c for c in cmd]
+        cmd = [f'in={mpb_split_fq}' if c.startswith('in=') else c for c in cmd]
 
-    logger.info(f"Running mapPacBio: {' '.join(cmd[:5])}...")
+    logger.info(
+        "Running mapPacBio: %s",
+        ' '.join(cmd[:5]) + (f' [chunk {chunk_idx}/{n_chunks}]' if chunk_idx is not None else ''),
+    )
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+    if chunk_tmp_fq:
+        Path(chunk_tmp_fq).unlink(missing_ok=True)
     if result.returncode != 0:
+        mpb_split_fq.unlink(missing_ok=True)
         raise RuntimeError(f"mapPacBio failed: {result.stderr}")
 
     # Convert SAM to name-sorted BAM. Name-sort (-n) so consensus selection
     # can stream across aligners without a secondary sort step.
     view_proc = subprocess.Popen(
         ['samtools', 'view', '-bS', str(sam_path)],
-        stdout=subprocess.PIPE
+        stdout=subprocess.PIPE,
     )
     sort_proc = subprocess.Popen(
         ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
-        stdin=view_proc.stdout
+        stdin=view_proc.stdout,
     )
     view_proc.stdout.close()
     sort_proc.communicate()
-
-    # Clean up SAM
     sam_path.unlink(missing_ok=True)
-
+    if sort_proc.returncode != 0:
+        raise RuntimeError(
+            f"samtools sort (mapPacBio) failed with code {sort_proc.returncode}"
+        )
 
     # ── Stitch split mapPacBio chunks back into full-read alignments ──
     if mpb_n_split > 0:
@@ -271,7 +379,7 @@ def run_map_pacbio(
         mpb_pre_stitch.unlink(missing_ok=True)
     mpb_split_fq.unlink(missing_ok=True)
 
-    logger.info(f"mapPacBio complete: {output_bam}")
+    logger.info("mapPacBio complete: %s", output_bam)
     return str(output_bam)
 
 

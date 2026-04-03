@@ -122,6 +122,7 @@ def _run_alignment(
     chimeric_consensus: bool = False,
     ultra_path: str = 'uLTRA',
     desalt_path: str = 'deSALT',
+    mapPacBio_chunks: int = 1,
 ) -> Path:
     """
     Run consensus alignment or return existing consensus.bam.
@@ -162,6 +163,8 @@ def _run_alignment(
         gapmm2_path='gapmm2',
         ultra_path=ultra_path,
         desalt_path=desalt_path,
+        mapPacBio_chunks=mapPacBio_chunks,
+        mapPacBio_chunk_idx=None,  # merge mode: look for existing chunk BAMs
         prefix='',
         keep_sam=False,
         sort=True,
@@ -578,6 +581,7 @@ def _process_one_sample(
                         chimeric_consensus=getattr(args, 'chimeric_consensus', False),
                         ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
                         desalt_path=getattr(args, 'desalt_path', 'deSALT'),
+                        mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -808,6 +812,18 @@ def _run_single_sample(args) -> int:
     if scratch_dir:
         print(f"\nScratch staging enabled: {scratch_dir}")
 
+    # ── Provenance tracker ───────────────────────────────────────────────────
+    # scratch_root/oak_root mapping ensures all sidecar JSON keys use canonical
+    # Oak paths — so step_is_current() works on re-runs regardless of $SCRATCH.
+    from ..provenance import ProvenanceTracker
+    _cmd_string = ' '.join(sys.argv)
+    tracker = ProvenanceTracker(
+        output_dir=output_dir,
+        command_string=_cmd_string,
+        scratch_root=scratch_dir,
+        oak_root=output_dir if scratch_dir else None,
+    )
+
     # ── Step 0: Alignment ────────────────────────────────────────────────────
     import time as _time
     _pipeline_start = _time.perf_counter()
@@ -832,6 +848,7 @@ def _run_single_sample(args) -> int:
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
+        tracker.record_step('align', input_files=[input_path], output_files=[bam_to_correct])
         step_correction = 2
     elif input_type in ('fastq', 'fastq.gz'):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
@@ -846,6 +863,7 @@ def _run_single_sample(args) -> int:
                 if bai.exists():
                     _shutil.copy2(bai, scratch_dir / bai.name)
                 bam_to_correct = scratch_dir / consensus_bam.name
+                tracker.register_staged(bam_to_correct, consensus_bam)
             else:
                 bam_to_correct = consensus_bam
         else:
@@ -867,6 +885,7 @@ def _run_single_sample(args) -> int:
             if bai.exists():
                 _shutil.copy2(bai, scratch_dir / bai.name)
             bam_to_correct = scratch_dir / input_path.name
+            tracker.register_staged(bam_to_correct, input_path)
         step_correction = 1
 
     # ── Step 1/2: Correction ─────────────────────────────────────────────────
@@ -888,6 +907,20 @@ def _run_single_sample(args) -> int:
         return 1
     print(f"\nCorrection complete: {corrected_tsv}")
     print(f"[TIMING] Correction: {_time.perf_counter() - _t0:.1f}s")
+    tracker.record_step('correct', input_files=[bam_to_correct], output_files=[corrected_tsv])
+
+    # ── Early partial sync: corrected TSV → Oak ──────────────────────────────
+    # After correction, provenance moves back to Oak. Sync the corrected TSV
+    # (and its sidecar) immediately so analysis reads from Oak, not ephemeral
+    # scratch — matching the canonical paths written into the sidecar.
+    if scratch_dir:
+        _oak_corrected_tsv = output_dir / corrected_tsv.name
+        _shutil.copy2(corrected_tsv, _oak_corrected_tsv)
+        _sidecar = corrected_tsv.parent / f".{corrected_tsv.name}.provenance.json"
+        if _sidecar.exists():
+            _shutil.copy2(_sidecar, output_dir / _sidecar.name)
+        corrected_tsv = _oak_corrected_tsv
+        work_dir = output_dir  # analysis outputs go directly to Oak
 
     # Add sample column (needed by analyze even for single sample)
     try:
@@ -936,6 +969,9 @@ def _run_single_sample(args) -> int:
         print(f"[TIMING] Sync to Oak: {_time.perf_counter() - _t0:.1f}s")
         _shutil.rmtree(scratch_dir, ignore_errors=True)
 
+    # ── Provenance manifest ───────────────────────────────────────────────────
+    manifest_path = tracker.write_manifest()
+
     # ── Summary ──────────────────────────────────────────────────────────────
     _pipeline_elapsed = _time.perf_counter() - _pipeline_start
     print("\n" + "=" * 70)
@@ -945,7 +981,7 @@ def _run_single_sample(args) -> int:
     print(f"  Corrected 3' ends: {corrected_tsv}")
     print(f"  Clusters:          {output_dir / 'cpa_clusters.tsv'}")
     print(f"  HTML report:       {output_dir / 'report.html'}")
-    print(f"  Provenance:        {output_dir / 'PROVENANCE.json'}")
+    print(f"  Provenance:        {manifest_path}")
     print(f"\n[TIMING] Total pipeline: {_pipeline_elapsed:.1f}s ({_pipeline_elapsed/60:.1f} min)")
 
     return 0

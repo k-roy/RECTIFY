@@ -109,6 +109,31 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--mapPacBio-chunks',
+        type=int,
+        default=1,
+        metavar='N',
+        help=(
+            'Split mapPacBio alignment into N independent chunks for parallel '
+            'SLURM array execution. Each chunk processes 1/N of the reads '
+            '(interleaved, so read-length distribution is even). '
+            'Use with --mapPacBio-chunk-idx K to run chunk K, or without '
+            '--mapPacBio-chunk-idx to merge existing chunk BAMs.'
+        )
+    )
+
+    aligner_group.add_argument(
+        '--mapPacBio-chunk-idx',
+        type=int,
+        default=None,
+        metavar='K',
+        help=(
+            '0-based index of the mapPacBio chunk to run (0 to N-1). '
+            'Requires --mapPacBio-chunks N. Omit to trigger chunk-merge mode.'
+        )
+    )
+
+    aligner_group.add_argument(
         '--gapmm2-path',
         default='gapmm2',
         help='Path to gapmm2 executable'
@@ -286,6 +311,14 @@ def run_align(args: argparse.Namespace) -> int:
         import time as _time
         n_threads = aligner_thread_counts[aligner]
         output_bam = args.output_dir / f"{prefix}.{aligner}.bam"
+
+        # Per-aligner BAM checkpoint: skip if final output already exists.
+        # This lets the main pipeline skip mapPacBio when chunk BAMs have
+        # already been merged by a prior chunk array job.
+        if output_bam.exists():
+            logger.info(f"{aligner} BAM already exists, skipping: {output_bam}")
+            return aligner, str(output_bam)
+
         logger.info(f"Running {aligner} (threads={n_threads})...")
         _t_aligner = _time.perf_counter()
 
@@ -301,11 +334,15 @@ def run_align(args: argparse.Namespace) -> int:
                     cache_dir=str(args.output_dir),
                 )
             elif aligner == 'mapPacBio':
+                _n_chunks = getattr(args, 'mapPacBio_chunks', 1) or 1
+                _chunk_idx = getattr(args, 'mapPacBio_chunk_idx', None)
                 run_map_pacbio(
                     reads_path=str(args.reads),
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=n_threads,
+                    chunk_idx=_chunk_idx,
+                    n_chunks=_n_chunks if _n_chunks > 1 else None,
                 )
             elif aligner == 'gapmm2':
                 run_gapmm2(

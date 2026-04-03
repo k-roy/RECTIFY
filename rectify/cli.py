@@ -646,6 +646,20 @@ Manifest format (TSV):
     )
 
     run_parser.add_argument(
+        '--mapPacBio-chunks',
+        type=int,
+        default=1,
+        metavar='N',
+        help=(
+            'Number of mapPacBio FASTQ chunks. When N > 1, run-all merges '
+            'existing chunk BAMs ({sample}.mapPacBio.chunk_*_of_N.bam) instead '
+            'of re-running mapPacBio. Submit the chunk array job first with '
+            'rectify align --mapPacBio-chunks N --mapPacBio-chunk-idx K, then '
+            'run-all with --dependency and this flag.'
+        )
+    )
+
+    run_parser.add_argument(
         '--junction-aligners',
         nargs='+',
         choices=['uLTRA', 'deSALT'],
