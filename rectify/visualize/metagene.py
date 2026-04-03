@@ -31,6 +31,116 @@ import numpy as np
 import pandas as pd
 
 
+class StrandOrientationError(Exception):
+    """Raised when plus and minus strand peaks don't align in metagene analysis.
+
+    Indicates a strand orientation bug: minus strand signals were not reversed
+    to 5'→3' orientation, or center coordinates are wrong for one strand.
+
+    Common causes:
+    - Missing signal[::-1] reversal for minus strand
+    - Using trt_start instead of trt_end - 1 as center for minus strand loci
+    - Off-by-one in coordinate conversion (0-based vs 1-based)
+    """
+    pass
+
+
+def verify_strand_balance(
+    profiles_plus: np.ndarray,
+    profiles_minus: np.ndarray,
+    x: np.ndarray,
+    tolerance: int = 2,
+    raise_on_fail: bool = True,
+    label: str = "",
+) -> Dict:
+    """
+    Verify that plus and minus strand metagene profiles have aligned peaks.
+
+    A correctly oriented metagene must show the same peak position for both
+    strand subsets. Misaligned peaks indicate missing signal reversal
+    (signal[::-1]) or wrong center coordinate convention.
+
+    The canonical TRT metagene has its peak at ~-2 bp (CPA position) for both
+    strands when signals are correctly oriented. If the minus strand peak is at
+    a very different position (e.g., +133 bp), strand handling is broken.
+
+    Args:
+        profiles_plus: 2D array (n_plus x profile_length) for plus strand loci.
+                       Each row is one locus's signal profile.
+        profiles_minus: 2D array (n_minus x profile_length) for minus strand loci.
+        x: 1D array of x-axis positions (relative to center, e.g. np.arange(-150, 151))
+        tolerance: Max allowed peak position difference in bp (default: 2)
+        raise_on_fail: If True, raise StrandOrientationError when peaks diverge
+        label: Optional context string included in error messages
+
+    Returns:
+        Dict with keys:
+            - 'plus_peak': Peak x-position for plus strand loci
+            - 'minus_peak': Peak x-position for minus strand loci
+            - 'difference': Absolute difference between peaks (bp)
+            - 'passed': True if difference <= tolerance
+            - 'n_plus': Number of plus strand loci
+            - 'n_minus': Number of minus strand loci
+
+    Raises:
+        StrandOrientationError: If |plus_peak - minus_peak| > tolerance
+                                and raise_on_fail=True
+
+    Example:
+        profiles_plus = extract_profiles(plus_strand_loci)
+        profiles_minus = extract_profiles(minus_strand_loci)
+        x = np.arange(-150, 151)
+
+        result = verify_strand_balance(profiles_plus, profiles_minus, x)
+        print(f"Plus peak: {result['plus_peak']:+d} bp")
+        print(f"Minus peak: {result['minus_peak']:+d} bp")
+    """
+    n_plus = len(profiles_plus)
+    n_minus = len(profiles_minus)
+
+    if n_plus == 0 or n_minus == 0:
+        raise ValueError(
+            f"Cannot verify strand balance: need profiles for both strands "
+            f"(n_plus={n_plus}, n_minus={n_minus})"
+        )
+
+    plus_mean = np.mean(profiles_plus, axis=0)
+    minus_mean = np.mean(profiles_minus, axis=0)
+
+    plus_peak = x[np.argmax(plus_mean)]
+    minus_peak = x[np.argmax(minus_mean)]
+    difference = abs(int(plus_peak) - int(minus_peak))
+    passed = difference <= tolerance
+
+    ctx = f" [{label}]" if label else ""
+    print(
+        f"STRAND VERIFICATION{ctx}: "
+        f"Plus peak={plus_peak:+d} bp (n={n_plus}), "
+        f"Minus peak={minus_peak:+d} bp (n={n_minus}), "
+        f"Difference={difference} bp {'✓' if passed else '✗ FAIL'}"
+    )
+
+    if not passed and raise_on_fail:
+        raise StrandOrientationError(
+            f"Strand orientation bug detected{ctx}! "
+            f"Plus strand peak at {plus_peak:+d} bp, "
+            f"minus strand peak at {minus_peak:+d} bp "
+            f"(difference={difference} bp, tolerance={tolerance} bp). "
+            f"Check: (1) signal[::-1] applied for minus strand, "
+            f"(2) window coordinates flipped for minus strand, "
+            f"(3) center = trt_end - 1 (not trt_start) for minus strand loci."
+        )
+
+    return {
+        'plus_peak': int(plus_peak),
+        'minus_peak': int(minus_peak),
+        'difference': difference,
+        'passed': passed,
+        'n_plus': n_plus,
+        'n_minus': n_minus,
+    }
+
+
 @dataclass
 class MetageneConfig:
     """Configuration for metagene analysis.
@@ -764,6 +874,184 @@ class MetagenePipeline:
         for condition, index in condition_indices.items():
             results[condition] = self.compute_profile(loci, index, **kwargs)
         return results
+
+    def compute_center_profile(
+        self,
+        loci: List[Dict],
+        position_index: "PositionIndex",
+        window: Tuple[int, int],
+        normalize: bool = True,
+        total_reads: Optional[int] = None,
+        verify_strands: bool = True,
+        strand_tolerance: int = 2,
+        cap_percentile: Optional[int] = None,
+    ) -> Dict:
+        """
+        Compute metagene profile centered on a single position per locus.
+
+        Preferred method for TRT/CPA metagene analysis where each locus has a
+        single center position (e.g., first T of T-tract). Handles strand-aware
+        coordinate transformation internally — callers do NOT need to flip
+        coordinates or reverse signal arrays.
+
+        Strand handling (automatic, always applied):
+        - Plus strand:  genomic_start = center + window[0]
+                        genomic_end   = center + window[1]
+        - Minus strand: genomic_start = center - window[1]  (flipped)
+                        genomic_end   = center - window[0]
+                        signal array reversed [::-1] to 5'→3' orientation
+
+        If verify_strands=True (default), calls verify_strand_balance() after
+        extracting all profiles and raises StrandOrientationError if plus and
+        minus strand peaks diverge by more than strand_tolerance bp. This is
+        the primary safety net against strand bugs.
+
+        Args:
+            loci: List of dicts, each with keys:
+                      'chrom' (str), 'strand' ('+'/'-'), 'center' (int, 0-based)
+            position_index: PositionIndex with signal data
+            window: (window_start, window_end) relative to center (both inclusive),
+                    e.g. (-150, 150) extracts 301 bp centered on center position.
+                    window_start should be negative (upstream); window_end positive.
+            normalize: If True and total_reads provided, apply RPM normalization
+                       (multiply by 1e6 / total_reads)
+            total_reads: Total mapped reads for RPM normalization (required if normalize=True)
+            verify_strands: If True (default), run verify_strand_balance() and
+                            raise StrandOrientationError if peaks diverge
+            strand_tolerance: Max allowed bp difference between + and - strand
+                              peaks (default: 2)
+            cap_percentile: If set (e.g. 50), apply window-sum capping at this
+                            percentile to each strand's profiles before running
+                            strand verification. Reduces influence of outlier loci
+                            (e.g. extremely high-expression genes) on peak detection.
+                            Does NOT affect the returned profile_matrix or plots —
+                            only affects which peak is found for strand verification.
+                            Recommended: 50 (matches apply_window_sum_capping default).
+
+        Returns:
+            Dict with keys:
+                - 'profile': Mean metagene profile across all loci (1D array)
+                - 'profile_matrix': Per-locus profiles (2D array, n_loci x profile_length)
+                - 'sem': Standard error of mean (1D array)
+                - 'n_loci': Number of loci included
+                - 'x': X-axis positions (1D array, e.g. np.arange(-150, 151))
+                - 'window': The window tuple used
+                - 'profiles_plus': Per-locus profiles for + strand loci (2D array)
+                - 'profiles_minus': Per-locus profiles for - strand loci (2D array)
+                - 'strand_verification': Dict from verify_strand_balance() (if run)
+                - 'n_plus': Number of plus strand loci
+                - 'n_minus': Number of minus strand loci
+
+        Raises:
+            StrandOrientationError: If verify_strands=True and peaks diverge
+
+        Example:
+            # Load TRT loci cache and RECTIFY position index
+            loci = load_trt_loci_cache("cached_trt_signals_v3_no_poliii.pkl")
+            index, total_reads = load_rectify_position_index(tsv_files)
+
+            # Compute metagene — strand verification runs automatically
+            pipeline = MetagenePipeline()
+            result = pipeline.compute_center_profile(
+                loci, index,
+                window=(-150, 150),
+                total_reads=total_reads,
+            )
+            print(f"Peak at: {result['x'][np.argmax(result['profile'])]:+d} bp")
+        """
+        window_start, window_end = window
+        profile_length = window_end - window_start + 1
+        x = np.arange(window_start, window_end + 1)
+
+        profiles_all = []
+        profiles_plus = []
+        profiles_minus = []
+
+        for locus in loci:
+            chrom = locus['chrom']
+            strand = locus['strand']
+            center = int(locus['center'])
+
+            # Strand-aware coordinate transformation
+            if strand == '+':
+                gstart = center + window_start
+                gend = center + window_end
+            else:
+                # Minus strand: flip window in genomic coordinates
+                gstart = center - window_end
+                gend = center - window_start
+
+            signal = position_index.extract_window_array(chrom, strand, gstart, gend)
+
+            # Reverse minus strand signal to 5'→3' orientation
+            if strand == '-':
+                signal = signal[::-1]
+
+            # RPM normalization
+            if normalize and total_reads is not None and total_reads > 0:
+                signal = signal * (1e6 / total_reads)
+
+            profiles_all.append(signal)
+            if strand == '+':
+                profiles_plus.append(signal)
+            else:
+                profiles_minus.append(signal)
+
+        if not profiles_all:
+            return {
+                'profile': np.zeros(profile_length),
+                'profile_matrix': np.zeros((0, profile_length)),
+                'sem': np.zeros(profile_length),
+                'n_loci': 0,
+                'x': x,
+                'window': window,
+                'profiles_plus': np.zeros((0, profile_length)),
+                'profiles_minus': np.zeros((0, profile_length)),
+                'strand_verification': None,
+                'n_plus': 0,
+                'n_minus': 0,
+            }
+
+        arr_all = np.array(profiles_all)
+        arr_plus = np.array(profiles_plus) if profiles_plus else np.zeros((0, profile_length))
+        arr_minus = np.array(profiles_minus) if profiles_minus else np.zeros((0, profile_length))
+
+        # Strand balance verification — the primary safety net
+        strand_verification = None
+        if verify_strands and len(arr_plus) > 0 and len(arr_minus) > 0:
+            # Optionally cap outlier loci before peak detection to prevent a few
+            # high-expression genes from dominating the aggregate profile shape.
+            if cap_percentile is not None:
+                from .figure_utils import apply_window_sum_capping
+                plus_for_verify, _ = apply_window_sum_capping(arr_plus, percentile=cap_percentile)
+                minus_for_verify, _ = apply_window_sum_capping(arr_minus, percentile=cap_percentile)
+            else:
+                plus_for_verify = arr_plus
+                minus_for_verify = arr_minus
+            strand_verification = verify_strand_balance(
+                plus_for_verify,
+                minus_for_verify,
+                x,
+                tolerance=strand_tolerance,
+                raise_on_fail=True,
+            )
+
+        profile_mean = np.mean(arr_all, axis=0)
+        profile_sem = np.std(arr_all, axis=0) / np.sqrt(len(arr_all))
+
+        return {
+            'profile': profile_mean,
+            'profile_matrix': arr_all,
+            'sem': profile_sem,
+            'n_loci': len(profiles_all),
+            'x': x,
+            'window': window,
+            'profiles_plus': arr_plus,
+            'profiles_minus': arr_minus,
+            'strand_verification': strand_verification,
+            'n_plus': len(profiles_plus),
+            'n_minus': len(profiles_minus),
+        }
 
     def plot_profile(
         self,

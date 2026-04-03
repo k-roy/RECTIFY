@@ -110,7 +110,21 @@ from .metagene import (
     PositionIndex,
     MetagenePipeline,
     LociFilter,
+    StrandOrientationError,
+    verify_strand_balance,
     build_index_from_bam,
+)
+
+# Metagene loaders
+from .metagene_loaders import (
+    iupac_to_regex,
+    loci_from_tsv,
+    loci_from_bed,
+    loci_from_gff,
+    loci_from_motif_scan,
+    loci_from_pickle,
+    position_index_from_tsv,
+    position_index_from_bigwig,
 )
 
 # Gene track
@@ -144,6 +158,14 @@ from .coverage import (
 from .multi_track import (
     MultiTrackFigure,
     create_gene_browser,
+)
+
+# Read browser
+from .read_browser import (
+    assign_rows,
+    parse_junction_strings,
+    draw_stacked_reads,
+    plot_stacked_read_panel,
 )
 
 __all__ = [
@@ -195,7 +217,19 @@ __all__ = [
     'PositionIndex',
     'MetagenePipeline',
     'LociFilter',
+    'StrandOrientationError',
+    'verify_strand_balance',
     'build_index_from_bam',
+
+    # Metagene loaders
+    'iupac_to_regex',
+    'loci_from_tsv',
+    'loci_from_bed',
+    'loci_from_gff',
+    'loci_from_motif_scan',
+    'loci_from_pickle',
+    'position_index_from_tsv',
+    'position_index_from_bigwig',
 
     # Gene track
     'assign_feature_levels',
@@ -221,4 +255,10 @@ __all__ = [
     # Multi-track
     'MultiTrackFigure',
     'create_gene_browser',
+
+    # Read browser
+    'assign_rows',
+    'parse_junction_strings',
+    'draw_stacked_reads',
+    'plot_stacked_read_panel',
 ]

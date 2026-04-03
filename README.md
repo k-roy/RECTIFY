@@ -80,7 +80,18 @@ results/
 
 ### Bundled Data (Yeast)
 
-For *S. cerevisiae*, RECTIFY includes the S288C genome, SGD annotations, GO terms, and pre-deconvolved WT NET-seq data (pan-mutant consensus, NNLS-deconvolved offline)—no external files needed.
+For *S. cerevisiae*, RECTIFY includes the S288C genome, a merged annotation (see below), GO terms, and pre-deconvolved WT NET-seq data (pan-mutant consensus, NNLS-deconvolved offline)—no external files needed.
+
+**Bundled annotation** (`--Scer`) fuses four sources into a single GFF3:
+
+| Source | Features | Reference |
+|--------|----------|-----------|
+| SGD R64-5-1 | All protein-coding genes, tRNAs, snoRNAs, rDNA, etc. | SGD (yeastgenome.org) |
+| CUTs (925) | Cryptic Unstable Transcripts | Xu et al. 2009, *Nature* 457:1033 ([PMID:19169243](https://pubmed.ncbi.nlm.nih.gov/19169243/)) |
+| SUTs (847) | Stable Unannotated Transcripts | Xu et al. 2009, *Nature* 457:1033 ([PMID:19169243](https://pubmed.ncbi.nlm.nih.gov/19169243/)) |
+| XUTs (1,658) | Xrn1-sensitive Unstable Transcripts | van Dijk et al. 2011, *Nature* 475:114 ([PMID:21697827](https://pubmed.ncbi.nlm.nih.gov/21697827/)) |
+
+CUT/SUT coordinates are SGD-curated and lifted to R64-1-1. XUT coordinates are from the original van Dijk 2011 supplementary data (R64/sacCer3). All features use Roman numeral chromosome names (`chrI`–`chrXVI`, `chrMito`).
 
 ---
 
@@ -236,6 +247,75 @@ The `rectify analyze` command produces:
 - `go_enrichment.tsv` - GO enrichment for DE genes
 - `motif_results/` - Enriched sequence motifs near CPA sites
 
+#### Genomic category distribution
+
+The primary per-sample output includes a horizontal bar chart (`genomic_distribution.png`) showing the fraction of reads and number of unique clusters falling into each genomic category — directly comparable to the style of Xu et al. 2009 Figure 1B/C:
+
+```
+3' UTR            ████████████████████████████████████████  ~90%
+snoRNA +/- 300 bp ██  ~2%
+intergenic        ███  ~3%
+CUTs              █  ~1%
+SUTs / XUTs       █  ~1%
+5' UTR / CDS      ██  ~2%
+antisense CDS     █  <1%
+```
+
+The x-axis uses a broken scale so the dominant 3' UTR bar and the minority categories are both visible. Multiple conditions (e.g. WT vs *rrp6*Δ) are overlaid as separate bars.
+
+**Category definitions and classification priority:**
+
+| Category | Feature types | Source |
+|----------|--------------|--------|
+| 3' UTR | `UTR3` annotation (or 3' 10% heuristic) | SGD |
+| snoRNA +/- 300 bp | `snoRNA_gene` ± 300 bp on either strand | SGD |
+| CUTs | `CUT` features | Xu et al. 2009 |
+| SUTs / XUTs | `SUT` or `XUT` features | Xu 2009 / van Dijk 2011 |
+| 5' UTR / CDS | `UTR5` or `CDS` annotation | SGD |
+| antisense CDS | Position overlaps CDS on opposite strand | SGD |
+| intergenic / intronic | None of the above | — |
+
+When a position matches multiple categories, the highest-priority rule wins (order as listed above).
+
+The companion `genomic_distribution_3prime_summary.tsv` table contains:
+
+```
+condition  category  display_label        reads   reads_pct  clusters
+WT         UTR3      3' UTR               182034  91.2       4812
+WT         snoRNA    snoRNA +/- 300 bp    3940    1.97       208
+...
+```
+
+#### Transcript body distribution
+
+A second figure (`genomic_distribution_body.png`) classifies each read by RNA biotype based on the majority-overlap of its full alignment span with annotated features. Replicates are merged by condition; one pie chart is shown per condition.
+
+**Biotype assignments and priority:**
+
+| Biotype | Feature types matched | Source |
+|---------|-----------------------|--------|
+| protein-coding | `mRNA`, `CDS` | SGD |
+| CUTs | `CUT` | Xu et al. 2009 |
+| SUTs / XUTs | `SUT`, `XUT` | Xu 2009 / van Dijk 2011 |
+| snoRNA | `snoRNA_gene`, `snoRNA` | SGD |
+| tRNA | `tRNA_gene`, `tRNA` | SGD |
+| rRNA | `rRNA_gene`, `rRNA` | SGD |
+| LTR / retrotransposon | `LTR_retrotransposon`, `transposable_element_gene` | SGD |
+| pseudogene | `pseudogene` | SGD |
+| antisense | Read span overlaps an annotated feature on opposite strand | — |
+| intergenic | No annotated feature overlaps the alignment span | — |
+
+The read is assigned to whichever overlapping feature has the most base-pair overlap. Ties are broken by the priority order above (protein-coding > CUT > SUT_XUT > ...).
+
+The companion `genomic_distribution_body_summary.tsv` table contains:
+
+```
+condition  category      display_label    reads   reads_pct
+WT         protein_coding  protein-coding  175000  87.5
+WT         CUT             CUTs             4500   2.25
+...
+```
+
 ---
 
 ## NET-seq Refinement (Optional)
@@ -381,6 +461,238 @@ NET-seq reads are short (~40-76 bp) and represent the 3' end of nascent RNA:
 |--------|-----------------|--------------|-------------------|
 | **+** | `reference_end - 1` (rightmost) | Right clip | Count A's |
 | **-** | `reference_start` (leftmost) | Left clip | Count T's (= RNA A's) |
+
+---
+
+## Visualization
+
+Install with: `pip install rectify-rna[visualize]`
+
+### Metagene: single condition
+
+Aggregate 3' end signal around a set of loci (TRT sites, CPA clusters, gene TES/TSS, motif matches).
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from rectify.visualize import (
+    MetagenePipeline,
+    position_index_from_tsv,
+    loci_from_pickle,
+    loci_from_gff,
+    plot_metagene_line,
+    add_metagene_annotations,
+    set_publication_style,
+    despine,
+    WONG_COLORS,
+)
+
+# Build a position index from RECTIFY corrected 3' end TSVs
+# Multiple replicates merge automatically
+index, total_reads = position_index_from_tsv(
+    ["wt_rep1/corrected_3ends.tsv",
+     "wt_rep2/corrected_3ends.tsv",
+     "wt_rep3/corrected_3ends.tsv"],
+    position_col='corrected_3prime',
+)
+
+# Load loci — choose the loader that matches your input
+trt_loci = loci_from_pickle("cache/trt_signals_v3.pkl")            # TRT/CPA pkl cache
+tes_loci = loci_from_gff("genes.gff", feature_type='gene', center='end')   # gene 3' ends
+tss_loci = loci_from_gff("genes.gff", feature_type='gene', center='start') # gene 5' ends
+
+# Compute metagene (strand coordinate transformation + reversal handled internally)
+pipeline = MetagenePipeline()
+result = pipeline.compute_center_profile(
+    trt_loci, index,
+    window=(-50, 50),
+    total_reads=total_reads,
+    verify_strands=True,   # raises StrandOrientationError on strand bug — never skip this
+    cap_percentile=50,     # suppress outlier loci (e.g. TDH3) before peak detection
+)
+
+set_publication_style()
+fig, ax = plt.subplots(figsize=(5, 3), constrained_layout=True)
+
+x    = result['x']
+mean = np.mean(result['profile_matrix'], axis=0)
+sem  = np.std(result['profile_matrix'],  axis=0) / np.sqrt(result['n_loci'])
+
+plot_metagene_line(ax, x, mean, sem,
+                   color=WONG_COLORS['blue'],
+                   label=f"WT (n={result['n_loci']})")
+add_metagene_annotations(ax, positions=[0], labels=["TRT start"])
+ax.set_xlabel("Position (bp from TRT start)")
+ax.set_ylabel("RPM")
+despine(ax)
+ax.legend(fontsize=8)
+fig.savefig("trt_metagene_wt.png", dpi=150, bbox_inches='tight')
+```
+
+**Always set `cap_percentile=50`** with window ≥ 100 bp — a single highly expressed gene
+can dominate the aggregate and mask the biological peak.
+
+---
+
+### Metagene: multi-condition ridge plot
+
+Compare WT vs mutants at TRT sites, stacked as a ridge plot (conditions offset vertically
+so shapes can be compared without overlap).
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from rectify.visualize import (
+    MetagenePipeline,
+    position_index_from_tsv,
+    loci_from_pickle,
+    plot_ridge_profiles,
+    apply_window_sum_capping,
+    set_publication_style,
+    WONG_COLORS,
+)
+
+trt_loci = loci_from_pickle("cache/trt_signals_v3.pkl")
+pipeline  = MetagenePipeline()
+
+# Build per-condition profile matrices
+CONDITIONS = {
+    'wt':     ["wt_rep1/corrected_3ends.tsv",     "wt_rep2/corrected_3ends.tsv"],
+    'rna15':  ["rna15_rep1/corrected_3ends.tsv",  "rna15_rep2/corrected_3ends.tsv"],
+    'ysh1':   ["ysh1_rep1/corrected_3ends.tsv",   "ysh1_rep2/corrected_3ends.tsv"],
+}
+
+profiles = {}
+for cond, paths in CONDITIONS.items():
+    idx, n = position_index_from_tsv(paths, position_col='corrected_3prime')
+    r = pipeline.compute_center_profile(
+        trt_loci, idx, window=(-50, 50), total_reads=n,
+        verify_strands=True, cap_percentile=50,
+    )
+    profiles[cond] = r['profile_matrix']
+
+# Optional: cap outliers consistently across conditions before ridge plot
+profiles_capped = {k: apply_window_sum_capping(v, percentile=90)[0]
+                   for k, v in profiles.items()}
+
+x = np.arange(-50, 51)
+COLORS = {'wt': WONG_COLORS['blue'], 'rna15': WONG_COLORS['vermillion'],
+          'ysh1': WONG_COLORS['green']}
+LABELS = {'wt': 'WT', 'rna15': 'RNA15-AA', 'ysh1': 'YSH1-AA'}
+
+set_publication_style()
+fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
+plot_ridge_profiles(ax, x, profiles_capped, colors=COLORS, labels=LABELS,
+                    order=['wt', 'rna15', 'ysh1'])
+ax.set_xlabel("Position (bp from TRT start)")
+ax.axvline(0, color='#CC0000', linestyle='--', linewidth=0.8, alpha=0.7)
+fig.savefig("trt_metagene_ridge.png", dpi=150, bbox_inches='tight')
+```
+
+---
+
+### Stacked read browser
+
+Genome-browser-style view of individual nanopore reads, colored by transcript category.
+Uses `LineCollection` for fast batch rendering — 400 reads × 5 conditions renders as
+~30 draw calls instead of 2000.
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+from rectify.visualize import plot_stacked_read_panel
+
+# ── Read classification is your responsibility (domain-specific) ───────────────
+CAT_COLORS = {
+    'CDS-internal':   '#d62728',  # red
+    '3UTR-premature': '#ff9896',  # coral
+    'intronic':       '#9467bd',  # purple
+    'canonical':      '#2ca02c',  # green
+    'readthrough':    '#e6ac00',  # gold
+    'other':          '#aaaaaa',  # gray
+}
+
+# Load reads from RECTIFY TSV, filter to gene region
+reads_df = pd.read_csv("wt_rep1/corrected_3ends.tsv", sep='\t',
+                       usecols=['read_id', 'chrom', 'strand',
+                                'corrected_3prime', 'five_prime_position',
+                                'alignment_start', 'alignment_end',
+                                'qc_flags', 'junctions'])
+reads_df = reads_df[
+    (reads_df['qc_flags'] == 'PASS') &
+    (reads_df['chrom'] == 'chrXIV') &
+    (reads_df['strand'] == '+') &
+    (reads_df['alignment_start'] < 417000) &
+    (reads_df['alignment_end']   > 413000)
+]
+
+# Sort by 3' end so reads with the same termination site appear contiguous
+reads_df = reads_df.sort_values('corrected_3prime')
+
+# Classify and map to color (your logic here)
+reads_df['color'] = reads_df.apply(classify_read, axis=1).map(CAT_COLORS)
+
+# ── Draw ───────────────────────────────────────────────────────────────────────
+fig, axes = plt.subplots(
+    3, 1,                                         # gene track + 2 conditions
+    figsize=(14, 8),
+    gridspec_kw={'height_ratios': [1, 3, 3]},
+    constrained_layout=True,                      # NOT tight_layout()
+)
+
+# condition panel
+n_rows = plot_stacked_read_panel(
+    axes[1], reads_df,
+    color_col='color',
+    start_col='alignment_start',
+    end_col='alignment_end',
+    junction_col='junctions',  # "start-end,start-end" RECTIFY format
+    gap=50,
+)
+
+# mark internal pA sites
+for pos in [414500, 415200]:
+    axes[1].axvline(pos, color='#d62728', linestyle='--', linewidth=1.0, alpha=0.8)
+
+axes[1].set_xlim(413000, 417000)
+axes[1].set_ylabel("WT", rotation=0, ha='right', va='center')
+```
+
+---
+
+### Locus loaders
+
+| Function | Input | Use for |
+|----------|-------|---------|
+| `loci_from_pickle(path)` | `.pkl` cache | TRT/CPA caches |
+| `loci_from_gff(path, feature_type, center)` | GFF3 | TSS (`center='start'`), TES (`center='end'`) |
+| `loci_from_motif_scan(sequences, motif)` | dict of sequences | Regex motif, both strands (e.g. `T{6,}`) |
+| `loci_from_bed(path, center)` | BED file | Custom interval lists |
+| `loci_from_tsv(path)` | TSV with chrom/strand/center | Pre-computed loci |
+| `position_index_from_tsv(paths)` | RECTIFY `corrected_3ends.tsv` | 3' end signal |
+| `position_index_from_bigwig(path)` | bigWig | NET-seq, PAR-CLIP, any coverage |
+
+---
+
+### Figure utilities
+
+```python
+from rectify.visualize import set_publication_style, save_multi_format, WONG_COLORS
+
+set_publication_style()   # consistent fonts, tick sizes, rc params for all figures
+
+# Color-blind-safe palette (use for all new figures)
+blue       = WONG_COLORS['blue']        # #0072B2
+orange     = WONG_COLORS['orange']      # #E69F00
+green      = WONG_COLORS['green']       # #009E73
+vermillion = WONG_COLORS['vermillion']  # #D55E00
+
+# Save PNG + PDF + SVG in one call
+save_multi_format(fig, "figures/fig1_trt_metagene")
+# → figures/fig1_trt_metagene.png, .pdf, .svg
+```
+
+See [PLOT_SKILLS.md](PLOT_SKILLS.md) for the full API reference and list of pitfalls.
 
 ---
 
