@@ -620,44 +620,97 @@ def _restore_sequence_from_aligner_reads(
     )
 
 
-def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats):
+def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False):
     """Process a batch of reads and write best alignments to output BAM."""
+    if use_chimeric:
+        from .chimeric_consensus import select_best_chimeric, build_chimeric_read
+
     for i, (read_id, alignments) in enumerate(read_batch):
-        result = select_best_alignment(alignments, genome, annotated_junctions)
-        if result.confidence == 'high':
-            stats['consensus_high'] += 1
-        elif result.confidence == 'medium':
-            stats['consensus_medium'] += 1
-        else:
-            stats['consensus_low'] += 1
-        if result.was_5prime_rescued:
-            stats['5prime_rescued'] += 1
-        if result.n_tied_score > 1:
-            stats['tied_score'] += 1
-        stats['by_aligner'][result.best_aligner] += 1
-        stats['by_aligner_combo'][frozenset(result.aligners_compared)] += 1
-
         _, aligner_reads = raw_read_batch[i]
-        if result.best_aligner in aligner_reads:
-            best_read = aligner_reads[result.best_aligner]
 
-            # Enforce exactly one primary per read: clear secondary (0x100) and
-            # supplementary (0x800) bits so the winning record is always primary.
-            best_read.flag &= ~0x900
+        if use_chimeric:
+            chimeric_result = select_best_chimeric(aligner_reads, genome, annotated_junctions)
 
-            # gapmm2 PAF→BAM conversion does not preserve read sequences;
-            # restore SEQ from another aligner's record for the same read.
-            if best_read.query_sequence is None:
-                _restore_sequence_from_aligner_reads(best_read, aligner_reads)
+            # Pick a template read with a valid sequence (gapmm2 yields None).
+            # Verify sequence length matches the chimeric CIGAR's query length
+            # to prevent the "CIGAR and query sequence lengths differ" crash.
+            query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
+            expected_len = sum(
+                length for op, length in chimeric_result.chimeric_cigar if op in query_ops
+            ) if chimeric_result.chimeric_cigar else 0
+            template = None
+            for r in aligner_reads.values():
+                seq = r.query_sequence
+                if seq is not None and (expected_len == 0 or len(seq) == expected_len):
+                    template = r
+                    break
+            if template is None:
+                logger.warning(
+                    f"No valid template read for chimeric assembly of '{read_id}'; skipping"
+                )
+                continue
 
-            best_read.set_tag('XA', result.best_aligner)
-            best_read.set_tag('XC', result.confidence)
-            best_read.set_tag('XN', result.n_aligners_agree)
+            out_read = build_chimeric_read(
+                template_read=template,
+                ref_start=chimeric_result.chimeric_ref_start,
+                cigar_tuples=chimeric_result.chimeric_cigar,
+                chimeric_result=chimeric_result,
+                header=out_bam.header,
+            )
+            out_read.flag &= ~0x900  # enforce primary
+
+            if chimeric_result.confidence == 'high':
+                stats['consensus_high'] += 1
+            elif chimeric_result.confidence == 'medium':
+                stats['consensus_medium'] += 1
+            else:
+                stats['consensus_low'] += 1
+            if chimeric_result.is_chimeric:
+                stats['chimeric_reads'] += 1
+            for _pos, winner, _qs, _qe in (chimeric_result.segment_winners or []):
+                stats['by_aligner'][winner] += 1
+            unique_winners = frozenset(
+                w[1] for w in (chimeric_result.segment_winners or [])
+            )
+            stats['by_aligner_combo'][unique_winners] += 1
+
+            out_bam.write(out_read)
+
+        else:
+            result = select_best_alignment(alignments, genome, annotated_junctions)
+            if result.confidence == 'high':
+                stats['consensus_high'] += 1
+            elif result.confidence == 'medium':
+                stats['consensus_medium'] += 1
+            else:
+                stats['consensus_low'] += 1
             if result.was_5prime_rescued:
-                best_read.set_tag('XR', 1)
-            if result.false_junction_removed:
-                best_read.set_tag('XF', 1)
-            out_bam.write(best_read)
+                stats['5prime_rescued'] += 1
+            if result.n_tied_score > 1:
+                stats['tied_score'] += 1
+            stats['by_aligner'][result.best_aligner] += 1
+            stats['by_aligner_combo'][frozenset(result.aligners_compared)] += 1
+
+            if result.best_aligner in aligner_reads:
+                best_read = aligner_reads[result.best_aligner]
+
+                # Enforce exactly one primary per read: clear secondary (0x100) and
+                # supplementary (0x800) bits so the winning record is always primary.
+                best_read.flag &= ~0x900
+
+                # gapmm2 PAF→BAM conversion does not preserve read sequences;
+                # restore SEQ from another aligner's record for the same read.
+                if best_read.query_sequence is None:
+                    _restore_sequence_from_aligner_reads(best_read, aligner_reads)
+
+                best_read.set_tag('XA', result.best_aligner)
+                best_read.set_tag('XC', result.confidence)
+                best_read.set_tag('XN', result.n_aligners_agree)
+                if result.was_5prime_rescued:
+                    best_read.set_tag('XR', 1)
+                if result.false_junction_removed:
+                    best_read.set_tag('XF', 1)
+                out_bam.write(best_read)
 
 
 def run_consensus_selection(
@@ -670,6 +723,7 @@ def run_consensus_selection(
     batch_size: int = 10000,
     slurm_array_task: Optional[int] = None,
     slurm_array_total: Optional[int] = None,
+    use_chimeric: bool = False,
 ) -> Dict[str, int]:
     """
     Run consensus selection across multiple BAM files.
@@ -784,6 +838,7 @@ def run_consensus_selection(
         'consensus_low': 0,
         '5prime_rescued': 0,
         'tied_score': 0,
+        'chimeric_reads': 0,
         'by_aligner': defaultdict(int),
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
@@ -822,7 +877,8 @@ def run_consensus_selection(
         if len(read_batch) >= batch_size:
             _process_and_write_batch(
                 read_batch, raw_read_batch, genome,
-                annotated_junctions, out_bam, stats
+                annotated_junctions, out_bam, stats,
+                use_chimeric=use_chimeric,
             )
             read_batch = []
             raw_read_batch = []
@@ -835,7 +891,8 @@ def run_consensus_selection(
     if read_batch:
         _process_and_write_batch(
             read_batch, raw_read_batch, genome,
-            annotated_junctions, out_bam, stats
+            annotated_junctions, out_bam, stats,
+            use_chimeric=use_chimeric,
         )
         n_batches += 1
 
@@ -865,6 +922,8 @@ def run_consensus_selection(
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
     logger.info(f"  Tied score (tiebreaker used): {stats['tied_score']}")
+    if use_chimeric:
+        logger.info(f"  Chimeric reads (multi-aligner segments): {stats['chimeric_reads']}")
     logger.info(f"  By aligner: {dict(stats['by_aligner'])}")
     logger.info(f"  By aligner combo: { {'+'.join(sorted(k)): v for k, v in stats['by_aligner_combo'].items()} }")
     logger.info(f"  Batches processed: {n_batches}")

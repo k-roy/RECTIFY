@@ -73,6 +73,17 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--chimeric-consensus',
+        action='store_true',
+        default=False,
+        help=(
+            'Use chimeric consensus selection: independently pick the best aligner '
+            'for each read segment, then assemble a chimeric CIGAR from the winners. '
+            'Experimental — requires further validation before enabling by default.'
+        )
+    )
+
+    aligner_group.add_argument(
         '--minimap2-path',
         default='minimap2',
         help='Path to minimap2 executable'
@@ -397,11 +408,15 @@ def run_align(args: argparse.Namespace) -> int:
 
     try:
         _t_sel = _time.perf_counter()
+        use_chimeric = getattr(args, 'chimeric_consensus', False)
+        if use_chimeric:
+            logger.info("Chimeric consensus enabled (experimental) — segments scored independently")
         stats = run_consensus_selection(
             bam_paths=successful_aligners,
             genome=genome,
             output_bam=str(consensus_bam),
             annotated_junctions=annotated_junctions,
+            use_chimeric=use_chimeric,
         )
         logger.info(f"[TIMING] Consensus selection: {_time.perf_counter() - _t_sel:.1f}s")
 
