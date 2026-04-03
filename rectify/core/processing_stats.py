@@ -41,8 +41,10 @@ class ProcessingStats:
 
     # Correction breakdown
     ends_corrected_indel: int = 0
+    ends_corrected_false_junction: int = 0  # Poly(A)-artifact N-ops removed
     ends_shifted_atract_walking: int = 0  # Position changed due to A-tract
     ends_refined_netseq: int = 0
+    ends_five_prime_rescued: int = 0  # Reads where 5' end was rescued at 3'SS
 
     # Poly(A) tail length statistics
     reads_with_polya: int = 0        # Reads with detected poly(A) tail
@@ -74,8 +76,10 @@ class ProcessingStats:
             'ends_with_downstream_A': self.ends_with_downstream_A,
             'ends_ambiguous_atract': self.ends_ambiguous_atract,
             'ends_corrected_indel': self.ends_corrected_indel,
+            'ends_corrected_false_junction': self.ends_corrected_false_junction,
             'ends_shifted_atract_walking': self.ends_shifted_atract_walking,
             'ends_refined_netseq': self.ends_refined_netseq,
+            'ends_five_prime_rescued': self.ends_five_prime_rescued,
             'reads_with_polya': self.reads_with_polya,
             'polya_length_sum': self.polya_length_sum,
             'polya_length_max': self.polya_length_max,
@@ -99,8 +103,10 @@ class ProcessingStats:
         self.ends_with_downstream_A += other.ends_with_downstream_A
         self.ends_ambiguous_atract += other.ends_ambiguous_atract
         self.ends_corrected_indel += other.ends_corrected_indel
+        self.ends_corrected_false_junction += other.ends_corrected_false_junction
         self.ends_shifted_atract_walking += other.ends_shifted_atract_walking
         self.ends_refined_netseq += other.ends_refined_netseq
+        self.ends_five_prime_rescued += other.ends_five_prime_rescued
         self.reads_with_polya += other.reads_with_polya
         self.polya_length_sum += other.polya_length_sum
         self.polya_length_max = max(self.polya_length_max, other.polya_length_max)
@@ -113,53 +119,67 @@ class ProcessingStats:
         self.total_position_shifts += other.total_position_shifts
 
     def update_from_result(self, result: Dict) -> None:
-        """Update stats from a single read correction result."""
-        self.reads_processed += 1
+        """Update stats from a single read correction result.
 
-        # A-tract stats
-        downstream_a = result.get('downstream_a_count', 0)
-        if downstream_a and downstream_a > 0:
-            self.ends_with_downstream_A += 1
+        When NET-seq proportional splitting produces multiple output rows for
+        one read, only the first row has is_primary_result=True.  Per-read
+        stats (reads_processed, A-tract, corrections, poly(A), etc.) are gated
+        on is_primary_result so they count distinct reads, not output rows.
+        Per-row stats (confidence) are counted for every row.
+        """
+        is_primary = result.get('is_primary_result', True)
 
-        if result.get('ambiguity_range', 0) > 0:
-            self.ends_ambiguous_atract += 1
+        if is_primary:
+            self.reads_processed += 1
 
-        # Correction breakdown
-        corrections = result.get('correction_applied', [])
-        if 'indel_correction' in corrections:
-            self.ends_corrected_indel += 1
-        if 'atract_ambiguity' in corrections:
-            # Check if position actually shifted
+            # A-tract stats
+            downstream_a = result.get('downstream_a_count', 0)
+            if downstream_a and downstream_a > 0:
+                self.ends_with_downstream_A += 1
+
+            if result.get('ambiguity_range', 0) > 0:
+                self.ends_ambiguous_atract += 1
+
+            # Correction breakdown
+            corrections = result.get('correction_applied', [])
+            if 'indel_correction' in corrections:
+                self.ends_corrected_indel += 1
+            if 'false_junction' in corrections:
+                self.ends_corrected_false_junction += 1
+            if result.get('five_prime_rescued'):
+                self.ends_five_prime_rescued += 1
+            if 'atract_ambiguity' in corrections:
+                # Check if position actually shifted
+                if result.get('corrected_3prime') != result.get('original_3prime'):
+                    self.ends_shifted_atract_walking += 1
+            if 'netseq_refinement' in corrections:
+                self.ends_refined_netseq += 1
+
+            # Poly(A) length statistics
+            polya_length = result.get('polya_length', 0)
+            if polya_length > 0:
+                self.reads_with_polya += 1
+                self.polya_length_sum += polya_length
+                if polya_length > self.polya_length_max:
+                    self.polya_length_max = polya_length
+
+            # Position shift
             if result.get('corrected_3prime') != result.get('original_3prime'):
-                self.ends_shifted_atract_walking += 1
-        if 'netseq_refinement' in corrections:
-            self.ends_refined_netseq += 1
+                self.total_position_shifts += 1
 
-        # Poly(A) length statistics
-        polya_length = result.get('polya_length', 0)
-        if polya_length > 0:
-            self.reads_with_polya += 1
-            self.polya_length_sum += polya_length
-            if polya_length > self.polya_length_max:
-                self.polya_length_max = polya_length
+            # AG mispriming
+            qc_flags = result.get('qc_flags', [])
+            for flag in qc_flags:
+                if 'AG_RICH' in flag:
+                    self.ends_flagged_ag_mispriming += 1
+                    ag_conf = result.get('ag_confidence', '')
+                    if ag_conf == 'high':
+                        self.ends_ag_high_confidence += 1
+                    elif ag_conf == 'medium':
+                        self.ends_ag_medium_confidence += 1
+                    break
 
-        # Position shift
-        if result.get('corrected_3prime') != result.get('original_3prime'):
-            self.total_position_shifts += 1
-
-        # AG mispriming
-        qc_flags = result.get('qc_flags', [])
-        for flag in qc_flags:
-            if 'AG_RICH' in flag:
-                self.ends_flagged_ag_mispriming += 1
-                ag_conf = result.get('ag_confidence', '')
-                if ag_conf == 'high':
-                    self.ends_ag_high_confidence += 1
-                elif ag_conf == 'medium':
-                    self.ends_ag_medium_confidence += 1
-                break
-
-        # Final confidence
+        # Final confidence is per output row (each NET-seq assignment has its own)
         conf = result.get('confidence', 'high')
         if conf == 'high':
             self.confidence_high += 1
@@ -262,8 +282,10 @@ def generate_stats_report(stats: ProcessingStats) -> str:
     lines.append("3' End Corrections Applied:")
     if processed > 0:
         lines.append(f"  Indel correction:         {stats.ends_corrected_indel:>12,} ({100*stats.ends_corrected_indel/processed:>5.1f}%)")
+        lines.append(f"  False junction removed:   {stats.ends_corrected_false_junction:>12,} ({100*stats.ends_corrected_false_junction/processed:>5.1f}%)")
         lines.append(f"  A-tract walking:          {stats.ends_shifted_atract_walking:>12,} ({100*stats.ends_shifted_atract_walking/processed:>5.1f}%)")
         lines.append(f"  NET-seq refinement:       {stats.ends_refined_netseq:>12,} ({100*stats.ends_refined_netseq/processed:>5.1f}%)")
+        lines.append(f"  5' soft-clip rescued:     {stats.ends_five_prime_rescued:>12,} ({100*stats.ends_five_prime_rescued/processed:>5.1f}%)")
         lines.append(f"  Total position shifts:    {stats.total_position_shifts:>12,} ({100*stats.total_position_shifts/processed:>5.1f}%)")
     lines.append("")
 

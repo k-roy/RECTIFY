@@ -282,6 +282,8 @@ def run(args):
         logger.info(f"Provenance tracking initialized for {output_dir}")
 
     # Process BAM file
+    import time as _time
+    _t_correct_total = _time.perf_counter()
     try:
         logger.info("Processing BAM file...")
 
@@ -292,6 +294,7 @@ def run(args):
             filtered_bam = str(config['output_path']).replace('.tsv', '_spikein_filtered.bam')
             spikein_report = str(config['output_path']).replace('.tsv', '_spikein_report.txt')
             logger.info(f"Filtering spike-in reads ({', '.join(config['filter_spikein'])})...")
+            _t_spikein = _time.perf_counter()
             spikein_stats = filter_spikein_reads(
                 input_bam=bam_to_process,
                 output_bam=filtered_bam,
@@ -300,8 +303,24 @@ def run(args):
             )
             bam_to_process = filtered_bam
             logger.info(f"  Spike-in reads removed: {spikein_stats.get('spikein_reads', 0):,}")
+            logger.info(f"[TIMING] Spike-in filter: {_time.perf_counter() - _t_spikein:.1f}s")
+
+        # Load annotated junctions for Module 2F (3'SS truncation rescue).
+        # Without these, only reads whose own CIGAR contains an N operation near
+        # the alignment's 5' end can trigger rescue — truncated reads that end
+        # exactly at the 3'SS boundary (no N in CIGAR, just a soft-clip) are missed.
+        _t_junc = _time.perf_counter()
+        annotated_junctions = None
+        if config.get('annotation_path'):
+            from .consensus import load_annotated_junctions
+            annotated_junctions = load_annotated_junctions(str(config['annotation_path']))
+            logger.info(
+                f"Loaded {len(annotated_junctions):,} annotated junctions for 3'SS rescue "
+                f"({_time.perf_counter() - _t_junc:.1f}s)"
+            )
 
         # Choose processing mode
+        _t_proc = _time.perf_counter()
         if streaming_mode:
             # Streaming mode - memory efficient for large BAMs
             chunk_size = getattr(args, 'chunk_size', 10000)
@@ -315,6 +334,7 @@ def run(args):
                 apply_polya_trim=config['apply_polya_trim'],
                 apply_indel_correction=config['apply_indel_correction'],
                 netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
+                annotated_junctions=annotated_junctions,
             )
             report = generate_stats_report(stats)
         else:
@@ -338,8 +358,11 @@ def run(args):
                 return_stats=True,
                 variant_aware=config['variant_aware'],
                 variant_output_path=variant_output_path,
+                annotated_junctions=annotated_junctions,
             )
             report = generate_stats_report(stats)
+
+        logger.info(f"[TIMING] BAM processing: {_time.perf_counter() - _t_proc:.1f}s")
 
         # Propagate spike-in count into stats
         if spikein_stats:
@@ -386,6 +409,7 @@ def run(args):
         logger.info("")
         logger.info("=" * 70)
         logger.info("RECTIFY completed successfully!")
+        logger.info(f"[TIMING] Correction total: {_time.perf_counter() - _t_correct_total:.1f}s")
         logger.info("=" * 70)
 
     except Exception as e:

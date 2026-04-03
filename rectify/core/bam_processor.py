@@ -38,6 +38,8 @@ from ..utils.alignment import (
     extract_soft_clips,
     format_junctions_string,
 )
+from .splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
+from . import false_junction_filter as _fjf
 from ..slurm import get_available_cpus
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,7 @@ def correct_read_3prime(
     apply_indel_correction: bool = False,
     netseq_loader: Optional[netseq_refiner.NetseqLoader] = None,
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
+    annotated_junctions: Optional[set] = None,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -184,6 +187,32 @@ def correct_read_3prime(
 
     # Get 5' end position (transcription start site)
     five_prime_position = get_read_5prime_position(read, strand)
+
+    # Read XR BAM tag (set by consensus.py when 5' soft-clip was rescued during consensus)
+    try:
+        five_prime_rescued = read.get_tag('XR') == 1
+    except KeyError:
+        five_prime_rescued = False
+
+    # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
+    # so they are never used as 3'SS rescue candidates.
+    _genome_ref = _fjf._GenomeDictReference(genome)
+    _real_junctions, _ = _fjf.filter_polya_artifact_junctions(read, _genome_ref, strand)
+
+    # Module 2F: 3'SS truncation rescue (post-consensus).
+    # Corrects five_prime_position for reads truncated or soft-clipped at the
+    # exon 2 / 3' splice site boundary.
+    if annotated_junctions or _real_junctions:
+        _ss_junctions: set = set()
+        if annotated_junctions:
+            _ss_junctions.update(annotated_junctions)
+        for _js, _je in _real_junctions:
+            _ss_junctions.add((chrom_std, _js, _je))
+        if _ss_junctions:
+            _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
+            if _3ss_result['rescued']:
+                five_prime_rescued = True
+                five_prime_position = _3ss_result['five_prime_corrected']
 
     # Extract splice junctions from CIGAR
     junctions = extract_junctions_simple(read)
@@ -230,6 +259,7 @@ def correct_read_3prime(
         'five_prime_soft_clip_length': five_prime_soft_clip_len,
         'three_prime_soft_clip_length': three_prime_soft_clip_len,
         'mapq': read.mapping_quality,
+        'five_prime_rescued': five_prime_rescued,
     }
 
     current_position = original_position
@@ -347,8 +377,10 @@ def correct_read_3prime(
 
         # Build one output row per proportional assignment.
         # For a single dominant peak the list has length 1 (fraction=1.0).
+        # Only the first row is the primary result — subsequent rows are
+        # split-read duplicates and must not be double-counted in per-read stats.
         output_rows = []
-        for assignment in assignments:
+        for i, assignment in enumerate(assignments):
             row = dict(result)  # shallow copy — all scalar fields
             row['correction_applied'] = list(result['correction_applied'])
             row['qc_flags'] = list(result['qc_flags'])
@@ -357,6 +389,7 @@ def correct_read_3prime(
             row['netseq_confidence'] = assignment['confidence']
             row['netseq_method'] = assignment['method']
             row['netseq_peak_signal'] = assignment['peak_signal']
+            row['is_primary_result'] = (i == 0)
             # Propagate NET-seq confidence into overall confidence
             if assignment['confidence'] == 'low':
                 row['confidence'] = 'low'
@@ -370,6 +403,7 @@ def correct_read_3prime(
 
     # No NET-seq refinement — single row, full weight
     result['fraction'] = 1.0
+    result['is_primary_result'] = True
     if not result['qc_flags']:
         result['qc_flags'].append('PASS')
     return [result]
@@ -802,6 +836,7 @@ def _process_region_worker(
     apply_indel_correction: bool,
     netseq_dir: Optional[str] = None,
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
+    annotated_junctions: Optional[set] = None,
 ) -> List[Dict]:
     """
     Worker function to process a single region.
@@ -846,6 +881,7 @@ def _process_region_worker(
                 apply_indel_correction=apply_indel_correction,
                 netseq_loader=netseq_loader,
                 variant_aware_rescue=variant_aware_rescue,
+                annotated_junctions=annotated_junctions,
             )
             results.extend(read_results)
 
@@ -873,6 +909,7 @@ def process_bam_file_parallel(
     return_stats: bool = False,
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
+    annotated_junctions: Optional[set] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -957,7 +994,8 @@ def process_bam_file_parallel(
                 region, bam_path, genome,
                 apply_atract, apply_ag_mispriming,
                 apply_polya_trim, apply_indel_correction,
-                netseq_dir, variant_aware_rescue
+                netseq_dir, variant_aware_rescue,
+                annotated_junctions,
             )
             all_results.extend(results)
 
@@ -993,6 +1031,7 @@ def process_bam_file_parallel(
         apply_indel_correction=apply_indel_correction,
         netseq_dir=netseq_dir,
         variant_aware_rescue=variant_aware_rescue,
+        annotated_junctions=annotated_junctions,
     )
 
     all_results = []
@@ -1048,7 +1087,8 @@ def process_bam_streaming(
     apply_polya_trim: bool = False,
     apply_indel_correction: bool = False,
     netseq_dir: Optional[str] = None,
-    show_progress: bool = True
+    show_progress: bool = True,
+    annotated_junctions: Optional[set] = None,
 ) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
@@ -1132,7 +1172,8 @@ def process_bam_streaming(
                 apply_ag_mispriming=apply_ag_mispriming,
                 apply_polya_trim=apply_polya_trim,
                 apply_indel_correction=apply_indel_correction,
-                netseq_loader=netseq_loader
+                netseq_loader=netseq_loader,
+                annotated_junctions=annotated_junctions,
             )
             chunk.extend(read_results)
 

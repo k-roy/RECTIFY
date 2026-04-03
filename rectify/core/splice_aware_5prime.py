@@ -27,7 +27,7 @@ Email: kevinrjroy@gmail.com
 Date: 2026-03-24
 """
 
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 import pysam
 
@@ -76,7 +76,10 @@ def get_read_5prime_position(read: pysam.AlignedSegment, strand: Optional[str] =
     if strand == '+':
         return read.reference_start
     else:
-        return read.reference_end - 1
+        ref_end = read.reference_end
+        if ref_end is None:
+            return None  # Unmapped read — no valid position
+        return ref_end - 1
 
 
 def build_intron_interval_tree(
@@ -318,6 +321,359 @@ def correct_5prime_batch(
         corrections.append(correction)
 
     return corrections
+
+
+# =============================================================================
+# Post-Consensus 3'SS Truncation Rescue
+# =============================================================================
+
+def _get_5prime_softclip_len(read: pysam.AlignedSegment) -> int:
+    """Return the explicit 5' soft-clip length (S op adjacent to the 5' end)."""
+    if not read.cigartuples:
+        return 0
+    if read.is_reverse:
+        last_op, last_len = read.cigartuples[-1]
+        return last_len if last_op == 4 else 0
+    else:
+        first_op, first_len = read.cigartuples[0]
+        return first_len if first_op == 4 else 0
+
+
+def _extract_5prime_terminal_error_seq(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    five_clip: int,
+    scan_bp: int = 25,
+    window: int = 8,
+    error_threshold: float = 0.40,
+    min_errors: int = 2,
+) -> str:
+    """Return query bytes from the terminal mismatch/indel region at the 5' end.
+
+    mapPacBio forces mismatches/indels at splice junction boundaries instead of
+    producing a soft-clip. This function detects that region using the same
+    greedy sliding-window scan used in consensus._get_effective_5prime_clip,
+    then returns the actual query bytes so they can be matched against the
+    upstream exon sequence.
+
+    Returns empty string when no terminal error region is found or when the
+    read is a zero-clip/zero-error truncation (no sequence to rescue with).
+    """
+    if not read.query_sequence or not read.cigartuples:
+        return ""
+
+    chrom = read.reference_name
+    if not chrom or chrom not in genome:
+        return ""
+
+    ref_seq = genome[chrom]
+    query_seq = read.query_sequence
+    query_len = len(query_seq)
+
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return ""
+
+    errors: List[int] = []
+    if read.is_reverse:
+        cutoff_qp = query_len - 1 - five_clip
+        for qp, rp in reversed(pairs):
+            if qp is None:
+                continue
+            if qp > cutoff_qp:
+                continue
+            if len(errors) >= scan_bp:
+                break
+            if rp is None:
+                errors.append(1)
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                read_b = query_seq[qp].upper()
+                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+            else:
+                errors.append(0)
+    else:
+        cutoff_qp = five_clip
+        for qp, rp in pairs:
+            if qp is None:
+                continue
+            if qp < cutoff_qp:
+                continue
+            if len(errors) >= scan_bp:
+                break
+            if rp is None:
+                errors.append(1)
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                read_b = query_seq[qp].upper()
+                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+            else:
+                errors.append(0)
+
+    if len(errors) < window:
+        return ""
+
+    # Greedy scan: extend terminal boundary while leading windows are high-error
+    terminal_end = 0
+    for i in range(len(errors) - window + 1):
+        w = errors[i:i + window]
+        if sum(w) / window >= error_threshold:
+            terminal_end = i + window
+        else:
+            break
+
+    if terminal_end == 0 or sum(errors[:terminal_end]) < min_errors:
+        return ""
+
+    # Clip back to the last actual error position so that clean bases at the
+    # tail of the sliding window (overshoot) are excluded.  Without this, the
+    # extracted sequence would contain correctly-aligned bases that inflate the
+    # edit distance and prevent a valid rescue match.
+    last_err_idx = max((i for i, e in enumerate(errors[:terminal_end]) if e), default=-1)
+    if last_err_idx < 0:
+        return ""
+    terminal_end = last_err_idx + 1
+
+    # Extract the corresponding query bytes
+    if not read.is_reverse:
+        region_start = five_clip
+        region_end = five_clip + terminal_end
+        if region_end <= query_len:
+            return query_seq[region_start:region_end]
+    else:
+        region_end = query_len - five_clip
+        region_start = region_end - terminal_end
+        if region_start >= 0:
+            return query_seq[region_start:region_end]
+
+    return ""
+
+
+def _edit_distance(s1: str, s2: str) -> int:
+    """Simple edit distance (Levenshtein) for short sequences."""
+    n, m = len(s1), len(s2)
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+    dp = list(range(m + 1))
+    for i in range(1, n + 1):
+        prev, dp[0] = dp[0], i
+        for j in range(1, m + 1):
+            temp = dp[j]
+            dp[j] = min(dp[j] + 1, dp[j - 1] + 1,
+                        prev + (0 if s1[i - 1] == s2[j - 1] else 1))
+            prev = temp
+    return dp[m]
+
+
+def rescue_3ss_truncation(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    candidate_junctions: Set[Tuple[str, int, int]],
+    strand: Optional[str] = None,
+    max_edit_frac: float = 0.2,
+    junction_proximity_bp: int = 10,
+    scan_bp: int = 25,
+    window: int = 8,
+    error_threshold: float = 0.40,
+    min_errors: int = 2,
+) -> Dict:
+    """Rescue reads truncated or soft-clipped at the exon 2 / 3' splice site boundary.
+
+    Handles three cases in priority order:
+
+    1. **Soft-clip** — explicit S operation at the 5' end (minimap2, gapmm2, uLTRA):
+       Clip sequence is compared against the upstream exon end across each candidate
+       junction. Identical to the consensus-time _rescue_5prime_softclip logic.
+
+    2. **mapPacBio forced-mismatch / indel** — no explicit soft-clip but terminal
+       alignment errors at the 5' end (mapPacBio encodes junction boundary errors
+       as mismatches/indels rather than S operations):
+       The terminal error bytes are extracted with the same greedy sliding-window
+       scan as consensus._get_effective_5prime_clip and compared to the upstream exon.
+
+    3. **Zero-clip / zero-error truncation** — alignment starts at or within
+       `junction_proximity_bp` of a known 3'SS with no clipped or mismatched bases:
+       No sequence evidence is available; the rescue is recorded as a proximity hit
+       (`rescue_type = 'proximity'`) without changing the attributed 5' position.
+
+    Candidate junction pool should contain (chrom, intron_start, intron_end) tuples
+    from annotated junctions UNION any novel junctions observed in the first-pass
+    alignment (consensus BAM CIGAR junctions + per-aligner BAMs if available).
+
+    Args:
+        read: pysam AlignedSegment (from consensus BAM)
+        genome: chromosome → sequence dict
+        candidate_junctions: Set of (chrom, intron_start, intron_end) to test
+        strand: Strand override; inferred from read.is_reverse if None
+        max_edit_frac: Edit distance / rescue_seq_len threshold for sequence match
+        junction_proximity_bp: Max bp between alignment 5' end and intron edge
+            to attempt rescue (both sequence-based and proximity-only)
+        scan_bp / window / error_threshold / min_errors: Parameters for MPB
+            terminal error detection (same semantics as _get_effective_5prime_clip)
+
+    Returns:
+        Dict with keys:
+            'rescued'            bool   — True for sequence-confirmed rescue (cases 1 & 2)
+            'rescue_type'        str    — 'softclip' | 'mpb_mismatch' | 'proximity' | 'none'
+            'five_prime_corrected' int  — Updated 5' genomic position (upstream exon end)
+                                          for 'softclip' and 'mpb_mismatch'; raw 5' end
+                                          for 'proximity' and 'none'
+            'rescued_junction'   tuple  — (chrom, intron_start, intron_end) or None
+            'edit_distance'      int    — Edit distance for sequence-based rescues; -1 otherwise
+            'query_bp'           int    — Length of rescue sequence used; 0 for proximity
+    """
+    if strand is None:
+        strand = '-' if read.is_reverse else '+'
+
+    chrom = read.reference_name
+    if not chrom or chrom not in genome:
+        return _no_rescue(read, strand)
+
+    five_clip = _get_5prime_softclip_len(read)
+
+    # --- Determine 5' alignment boundary (first aligned base, after any soft-clip) ---
+    # + strand: reference_start is already the first aligned base
+    # − strand: reference_end - 1 is the first aligned base in transcript orientation
+    if strand == '+':
+        align_5prime = read.reference_start
+    else:
+        align_5prime = read.reference_end - 1
+
+    # --- Collect rescue sequence (priority: soft-clip > MPB terminal errors) ---
+    rescue_seq = ""
+    rescue_type_candidate = "none"
+
+    # Case 1: explicit soft-clip
+    if five_clip > 0 and read.query_sequence:
+        if not read.is_reverse:
+            rescue_seq = read.query_sequence[:five_clip]
+        else:
+            rescue_seq = read.query_sequence[-five_clip:]
+        rescue_type_candidate = "softclip"
+
+    # Case 2: MPB forced-mismatch terminal region (only if no explicit soft-clip)
+    if not rescue_seq:
+        terminal_seq = _extract_5prime_terminal_error_seq(
+            read, genome, five_clip,
+            scan_bp=scan_bp, window=window,
+            error_threshold=error_threshold, min_errors=min_errors,
+        )
+        if terminal_seq:
+            rescue_seq = terminal_seq
+            rescue_type_candidate = "mpb_mismatch"
+
+    genome_seq = genome[chrom]
+
+    # --- Try sequence-based rescue against each candidate junction ---
+    best_ed = -1
+    best_junction = None
+    best_five_prime_corrected = align_5prime
+
+    if rescue_seq:
+        rescue_len = len(rescue_seq)
+        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+            if j_chrom != chrom:
+                continue
+
+            if strand == '+':
+                # Upstream intron: intron_end must be at or just before align_5prime
+                dist = align_5prime - intron_end
+                if dist < 0 or dist > junction_proximity_bp:
+                    continue
+                # Exon1 end: last rescue_len bases before the intron donor
+                exon_end_start = intron_start - rescue_len
+                if exon_end_start < 0:
+                    continue
+                exon_seq = genome_seq[exon_end_start:intron_start].upper()
+            else:
+                # Minus strand: upstream intron (in transcript) has intron_start ≥ reference_end
+                dist = intron_start - align_5prime
+                if dist <= 0 or dist > junction_proximity_bp:
+                    continue
+                # Exon1 end (upstream in transcript = right of intron_end in genome):
+                exon_seq = genome_seq[intron_end:intron_end + rescue_len].upper()
+                if len(exon_seq) < rescue_len:
+                    continue
+
+            if len(exon_seq) < rescue_len:
+                continue
+
+            ed_exon = _edit_distance(rescue_seq.upper(), exon_seq)
+            # Compare against intronic sequence to avoid rescuing reads that match
+            # the intron equally well.  Nanopore homopolymer undercalling means a
+            # fixed edit-distance threshold is too strict; instead we rescue when
+            # the exon match is ≥30% better than the intron match.
+            if strand == '+':
+                # Intronic sequence: the last rescue_len bases before the 3'SS
+                # (i.e. just inside the intron from the splice-acceptor site)
+                _ic_start = intron_end - rescue_len
+                intron_cmp_seq = genome_seq[max(0, _ic_start):intron_end].upper()
+            else:
+                # Intronic sequence: the first rescue_len bases after the 3'SS
+                intron_cmp_seq = genome_seq[intron_start:intron_start + rescue_len].upper()
+            if len(intron_cmp_seq) == rescue_len:
+                ed_intron = _edit_distance(rescue_seq.upper(), intron_cmp_seq)
+                # Rescue if: perfect exon match, OR exon edit-dist is ≥30% better
+                # than intron edit-dist (comparative threshold, not absolute)
+                rescue_ok = (ed_exon == 0) or (ed_intron > 0 and ed_exon < ed_intron * 0.70)
+            else:
+                # Near chromosome boundary — fall back to absolute threshold
+                rescue_ok = (ed_exon / rescue_len <= max_edit_frac)
+            if rescue_ok:
+                if best_ed == -1 or ed_exon < best_ed:
+                    best_ed = ed_exon
+                    best_junction = (j_chrom, intron_start, intron_end)
+                    # Update 5' end: upstream boundary of the intron (= end of exon1)
+                    if strand == '+':
+                        best_five_prime_corrected = intron_start - 1
+                    else:
+                        best_five_prime_corrected = intron_end
+
+        if best_junction is not None:
+            return {
+                'rescued': True,
+                'rescue_type': rescue_type_candidate,
+                'five_prime_corrected': best_five_prime_corrected,
+                'rescued_junction': best_junction,
+                'edit_distance': best_ed,
+                'query_bp': len(rescue_seq),
+            }
+
+    # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
+    for (j_chrom, intron_start, intron_end) in candidate_junctions:
+        if j_chrom != chrom:
+            continue
+        if strand == '+':
+            dist = align_5prime - intron_end
+        else:
+            dist = intron_start - align_5prime
+        if 0 <= dist <= junction_proximity_bp:
+            return {
+                'rescued': False,
+                'rescue_type': 'proximity',
+                'five_prime_corrected': align_5prime,  # no change; no evidence
+                'rescued_junction': (j_chrom, intron_start, intron_end),
+                'edit_distance': -1,
+                'query_bp': 0,
+            }
+
+    return _no_rescue(read, strand)
+
+
+def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:
+    """Return a no-rescue result dict."""
+    five_prime = (read.reference_end - 1) if strand == '-' else read.reference_start
+    return {
+        'rescued': False,
+        'rescue_type': 'none',
+        'five_prime_corrected': five_prime,
+        'rescued_junction': None,
+        'edit_distance': -1,
+        'query_bp': 0,
+    }
 
 
 # =============================================================================
