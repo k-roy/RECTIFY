@@ -28,15 +28,15 @@ class TestCalculateAtractAmbiguity:
 
     def test_low_acount_plus_strand(self):
         """Test position with few downstream A's (+ strand)."""
-        # Position 1010: next 10bp in 'ATCG'*10 section
-        # Position 1010 = 'C', next 10bp = 'CGATCGATCG' has 2 A's
+        # position=1010 is the last aligned base (0-based inclusive).
+        # Downstream window = [1011, 1020]: G,A,T,C,G,A,T,C,G,A → 3 A's.
         result = atract_detector.calculate_atract_ambiguity(
             MOCK_GENOME, 'chrI', 1010, '+', downstream_bp=10
         )
 
-        assert result['downstream_a_count'] == 2
-        assert result['expected_shift'] == 0.3  # From config for 2A
-        # ambiguity_min = int(1010 - 0.3) = 1009
+        assert result['downstream_a_count'] == 3
+        assert result['expected_shift'] == 0.4  # From config for 3A
+        # ambiguity_min = int(1010 - 0.4) = 1009
         assert result['ambiguity_min'] == 1009
         assert result['ambiguity_max'] == 1010
         assert result['ambiguity_range'] == 1
@@ -98,14 +98,14 @@ class TestCalculateAtractAmbiguity:
 
     def test_saturated_acount(self):
         """Test A-counts > 10 use saturated shift value."""
-        # Position 1040: 12 A's (positions 1040-1051), then T's at 1052+
-        # With downstream_bp=12, we count all 12 A's
+        # position=1040 is the last aligned base. Downstream window [1041, 1052]:
+        # positions 1041-1051 are A's (11), position 1052 is T → 11 A's.
         result = atract_detector.calculate_atract_ambiguity(
             MOCK_GENOME, 'chrI', 1040, '+', downstream_bp=12
         )
 
-        assert result['downstream_a_count'] == 12
-        # Should use saturated value (>10 uses DEFAULT_MAX_SHIFT)
+        assert result['downstream_a_count'] == 11
+        # 11 > 10 → still uses saturated value (DEFAULT_MAX_SHIFT)
         assert result['expected_shift'] == config.DEFAULT_MAX_SHIFT
 
 
@@ -129,7 +129,7 @@ class TestBatchProcessing:
     def test_calculate_batch(self):
         """Test batch processing of positions."""
         positions = [
-            {'chrom': 'chrI', 'position': 1010, 'strand': '+'},  # 2A (in ATCG section)
+            {'chrom': 'chrI', 'position': 1010, 'strand': '+'},  # 3A (window [1011,1020])
             {'chrom': 'chrI', 'position': 1040, 'strand': '+'},  # 10A (start of A-tract)
             {'chrom': 'chrI', 'position': 1076, 'strand': '+'},  # 7A (start of 7-A tract)
         ]
@@ -139,9 +139,9 @@ class TestBatchProcessing:
         )
 
         assert len(results) == 3
-        assert results[0]['downstream_a_count'] == 2  # Position 1010 has 2 A's in next 10bp
-        assert results[1]['downstream_a_count'] == 10  # Position 1040 has 10 A's in next 10bp
-        assert results[2]['downstream_a_count'] == 7  # Position 1076 has 7 A's in next 10bp
+        assert results[0]['downstream_a_count'] == 3  # pos 1010, window [1011,1020]: 3 A's
+        assert results[1]['downstream_a_count'] == 10  # pos 1040, window [1041,1050]: 10 A's
+        assert results[2]['downstream_a_count'] == 7  # pos 1076, window [1077,1086]: 7 A's
 
     def test_empty_batch(self):
         """Test batch processing with empty input."""

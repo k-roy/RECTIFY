@@ -347,10 +347,12 @@ def correct_read_3prime(
     # Update corrected position (after poly(A) and indel corrections)
     result['corrected_3prime'] = current_position
 
-    # Update ambiguity window based on corrections
-    if polya_shift != 0 or indel_shift != 0:
+    # Update ambiguity window if the position moved from its original value.
+    # (polya_shift is always 0 since soft-clips don't move the genomic 3' coord;
+    # indel_shift can be nonzero, and variant-aware rescue can also shift position.)
+    if current_position != original_position:
         if strand == '+':
-            result['ambiguity_min'] = current_position - result['ambiguity_range']
+            result['ambiguity_min'] = max(0, current_position - result['ambiguity_range'])
             result['ambiguity_max'] = current_position
         else:
             result['ambiguity_min'] = current_position

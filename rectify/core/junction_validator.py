@@ -47,6 +47,8 @@ from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import pandas as pd
 
+from ..utils.genome import standardize_chrom_name
+
 try:
     import pysam
     HAS_PYSAM = True
@@ -117,14 +119,15 @@ def extract_sample_junctions(
                 continue
 
             strand = '-' if read.is_reverse else '+'
-            chrom = read.reference_name
+            chrom = standardize_chrom_name(read.reference_name) or read.reference_name
             ref_pos = read.reference_start
 
             for op, length in read.cigartuples:
                 if op == _BAM_CREF_SKIP:
                     intron_start = ref_pos
                     intron_end = ref_pos + length
-                    junction_counts[(chrom, intron_start, intron_end, strand)] += 1
+                    if length > 0:  # Skip malformed zero-length N-ops
+                        junction_counts[(chrom, intron_start, intron_end, strand)] += 1
                 # Advance reference position for all reference-consuming ops
                 if op in (0, 2, 3, 7, 8):  # M, D, N, =, X
                     ref_pos += length
@@ -135,23 +138,26 @@ def extract_sample_junctions(
             'sample_id', 'read_count', 'motif', 'is_canonical',
         ])
 
-    rows = []
+    # Build parallel lists then construct DataFrame once — avoids creating a
+    # list-of-dicts (one Python dict per row) which uses 5–10× more memory.
+    out: Dict[str, list] = {
+        'chrom': [], 'intron_start': [], 'intron_end': [], 'strand': [],
+        'sample_id': [], 'read_count': [], 'motif': [], 'is_canonical': [],
+    }
     for (chrom, intron_start, intron_end, strand), count in junction_counts.items():
         motif, is_canonical = _get_splice_motif(
             genome, chrom, intron_start, intron_end, strand
         )
-        rows.append({
-            'chrom': chrom,
-            'intron_start': intron_start,
-            'intron_end': intron_end,
-            'strand': strand,
-            'sample_id': sample_id,
-            'read_count': count,
-            'motif': motif,
-            'is_canonical': is_canonical,
-        })
+        out['chrom'].append(chrom)
+        out['intron_start'].append(intron_start)
+        out['intron_end'].append(intron_end)
+        out['strand'].append(strand)
+        out['sample_id'].append(sample_id)
+        out['read_count'].append(count)
+        out['motif'].append(motif)
+        out['is_canonical'].append(is_canonical)
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(out)
 
 
 def _get_splice_motif(
@@ -247,49 +253,64 @@ def filter_cross_sample_junctions(
     if not per_sample_dfs:
         return frozenset()
 
-    combined = pd.concat(per_sample_dfs, ignore_index=True)
-    if combined.empty:
+    # Streaming aggregation — process one DataFrame at a time to avoid
+    # loading all samples into memory simultaneously (OOM risk with many samples).
+    # acc: (chrom, intron_start, intron_end, strand) ->
+    #       {'samples': set[str], 'total_reads': int,
+    #        'motif_counts': dict[str, int], 'is_canonical': bool}
+    acc: Dict[Tuple[str, int, int, str], dict] = {}
+
+    for df in per_sample_dfs:
+        if df.empty:
+            continue
+        # Use numpy arrays instead of itertuples() — avoids materialising every
+        # row as a Python namedtuple object (5–10× cheaper for large DataFrames).
+        chroms = df['chrom'].to_numpy()
+        starts = df['intron_start'].to_numpy()
+        ends = df['intron_end'].to_numpy()
+        strands = df['strand'].to_numpy()
+        sids = df['sample_id'].to_numpy()
+        rcounts = df['read_count'].to_numpy()
+        motifs = df['motif'].to_numpy()
+        canonicals = df['is_canonical'].to_numpy()
+
+        for i in range(len(chroms)):
+            key = (str(chroms[i]), int(starts[i]), int(ends[i]), str(strands[i]))
+            if key not in acc:
+                acc[key] = {
+                    'samples': set(),
+                    'total_reads': 0,
+                    'motif_counts': defaultdict(int),
+                    'is_canonical': False,
+                }
+            entry = acc[key]
+            entry['samples'].add(str(sids[i]))
+            entry['total_reads'] += int(rcounts[i])
+            entry['motif_counts'][str(motifs[i])] += 1
+            entry['is_canonical'] = entry['is_canonical'] or bool(canonicals[i])
+
+    if not acc:
         return frozenset()
 
-    group_cols = ['chrom', 'intron_start', 'intron_end', 'strand']
+    validated_list = []
+    for (chrom, intron_start, intron_end, strand), entry in acc.items():
+        # Size filter
+        if (intron_end - intron_start) > max_intron:
+            continue
+        # Multi-sample and read-depth filters
+        if len(entry['samples']) < min_samples:
+            continue
+        if entry['total_reads'] < min_total_reads:
+            continue
+        # Pick most-common motif
+        motif = max(entry['motif_counts'], key=entry['motif_counts'].__getitem__)
+        is_canonical = entry['is_canonical']
+        # Canonical motif filter — only exclude if motif is known non-canonical
+        if require_canonical and not is_canonical and motif != 'unknown':
+            continue
+        validated_list.append((chrom, intron_start, intron_end))
 
-    # Aggregate: count samples and sum reads; keep the most-common motif
-    agg = (
-        combined
-        .groupby(group_cols, as_index=False)
-        .agg(
-            n_samples=('sample_id', 'nunique'),
-            total_reads=('read_count', 'sum'),
-            motif=('motif', lambda s: s.mode().iloc[0] if len(s) > 0 else 'unknown'),
-            is_canonical=('is_canonical', 'any'),
-        )
-    )
-
-    # Size filter
-    agg = agg[
-        (agg['intron_end'] - agg['intron_start']) <= max_intron
-    ]
-
-    # Multi-sample and read-depth filters
-    agg = agg[
-        (agg['n_samples'] >= min_samples) &
-        (agg['total_reads'] >= min_total_reads)
-    ]
-
-    # Canonical motif filter — only exclude if motif is known non-canonical
-    if require_canonical:
-        agg = agg[
-            (agg['is_canonical']) |
-            (agg['motif'] == 'unknown')
-        ]
-
-    chroms_arr = agg['chrom'].to_numpy()
-    starts_arr = agg['intron_start'].to_numpy()
-    ends_arr = agg['intron_end'].to_numpy()
-    validated = frozenset(
-        (str(chroms_arr[i]), int(starts_arr[i]), int(ends_arr[i]))
-        for i in range(len(chroms_arr))
-    )
+    validated = frozenset(validated_list)
 
     logger.info(
         "Junction validation: %d junctions passed cross-sample filters "
@@ -384,7 +405,7 @@ def _read_has_invalid_junction(
     if read.is_unmapped or not read.cigartuples:
         return False
 
-    chrom = read.reference_name
+    chrom = standardize_chrom_name(read.reference_name) or read.reference_name
     ref_pos = read.reference_start
 
     for op, length in read.cigartuples:

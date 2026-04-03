@@ -145,21 +145,15 @@ class NetseqLoader:
         """
         Load bundled (pre-deconvolved) NET-seq signal for an organism.
 
-        Populates the signal cache from the bundled TSV dict so downstream
-        code can call get_signal() without knowing whether data came from
-        BigWig files or the bundled TSV.
+        Stores signal as per-chromosome float32 numpy arrays keyed by
+        (chrom, strand).  Array indexing is O(1) and uses ~97 MB for yeast
+        vs ~3 GB for the previous tuple-keyed dict representation.
 
         Args:
             organism: Organism name (e.g., 'saccharomyces_cerevisiae')
         """
-        from ..data import load_bundled_netseq
-        signal_dict = load_bundled_netseq(organism)
-
-        # Group by (chrom, strand) and build per-region cache entries.
-        # Bundled data is sparse (only nonzero positions), so we store
-        # per-position values and serve them in get_signal() via the
-        # _bundled_signal attribute.
-        self._bundled_signal = signal_dict
+        from ..data import load_bundled_netseq_as_arrays
+        self._bundled_arrays = load_bundled_netseq_as_arrays(organism)
         self._bundled_loaded = True
 
     def get_signal(
@@ -188,14 +182,15 @@ class NetseqLoader:
                 self._cache.move_to_end(cache_key)
                 return self._cache[cache_key]
 
-        # Serve from bundled TSV dict if loaded
-        if getattr(self, '_bundled_loaded', False):
-            signal_dict = self._bundled_signal
-            result = np.zeros(end - start)
-            for i, pos in enumerate(range(start, end)):
-                key = (chrom, strand, pos)
-                if key in signal_dict:
-                    result[i] = signal_dict[key]
+        # Serve from per-chromosome numpy arrays (preferred path — O(1) slicing)
+        if getattr(self, '_bundled_arrays', None) is not None:
+            arr = self._bundled_arrays.get((chrom, strand))
+            length = end - start
+            result = np.zeros(length)
+            if arr is not None and start < len(arr):
+                a_start = max(0, start)
+                a_end = min(len(arr), end)
+                result[a_start - start : a_end - start] = arr[a_start:a_end]
             with self._cache_lock:
                 self._cache[cache_key] = result
                 if len(self._cache) > self._max_cache_size:

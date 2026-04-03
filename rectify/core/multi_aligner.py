@@ -165,7 +165,12 @@ def run_minimap2(
     )
 
     sam_output.stdout.close()
-    _, stderr = sort_proc.communicate()
+    try:
+        _, stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        sam_output.kill()
+        raise RuntimeError(f"minimap2/samtools timed out after {ALIGNER_TIMEOUT}s")
 
     if sort_proc.returncode != 0:
         raise RuntimeError(f"minimap2/samtools failed: {stderr.decode()}")
@@ -343,7 +348,7 @@ def run_map_pacbio(
         ' '.join(cmd[:5]) + (f' [chunk {chunk_idx}/{n_chunks}]' if chunk_idx is not None else ''),
     )
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
     if chunk_tmp_fq:
         Path(chunk_tmp_fq).unlink(missing_ok=True)
     if result.returncode != 0:
@@ -598,7 +603,7 @@ def run_gapmm2(
 
     logger.info(f"Running gapmm2: {' '.join(cmd[:5])}...")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
     if result.returncode != 0:
         raise RuntimeError(f"gapmm2 failed: {result.stderr}")
 

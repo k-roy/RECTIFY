@@ -205,6 +205,11 @@ def deconvolve_region(
 
     # Build observed signal vector
     n_positions = region_end - region_start
+    if n_positions <= 0:
+        raise ValueError(
+            f"deconvolve_region(): inverted coordinates — "
+            f"region_start={region_start} >= region_end={region_end}"
+        )
     observed = np.zeros(n_positions)
     positions = list(range(region_start, region_end))
 

@@ -55,6 +55,11 @@ def run_analyze(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success)
     """
+    # Must be called before any numpy/pandas/sklearn/pydeseq2 import side-effects
+    # so thread limits take effect before those libraries auto-spawn workers.
+    from ..slurm import set_thread_limits
+    set_thread_limits(getattr(args, 'threads', None))
+
     print("=" * 70)
     print("RECTIFY Analysis Pipeline")
     print("=" * 70)
@@ -152,7 +157,7 @@ def run_analyze(args: argparse.Namespace) -> int:
             positions_df,
             bedgraph_dir,
             sample_column=args.sample_column,
-            position_column='corrected_3prime' if 'corrected_3prime' in positions_df.columns else 'position',
+            position_column='corrected_3prime' if 'corrected_3prime' in positions_df.columns else 'corrected_position',
             normalize_rpm=True,
         )
         print(f"  Saved to {bedgraph_dir}")
@@ -237,7 +242,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     sample_names = count_matrix.columns.tolist()
 
     if args.reference:
-        reference_condition = args.reference
+        reference_condition = args.reference.lower()
     else:
         # Auto-detect reference
         control_samples = detect_control_samples(sample_names)
@@ -602,6 +607,12 @@ def load_corrected_positions(
         if _detected:
             print(f"  Auto-detected sample column '{_detected}' (requested '{sample_column}' not found)")
             sample_column = _detected
+        else:
+            raise ValueError(
+                f"Sample column '{sample_column}' not found. "
+                f"Tried fallbacks: {_alt_sample_cols}. "
+                f"Available columns: {list(df.columns)}"
+            )
 
     required_cols = ['chrom', 'strand', 'corrected_position', sample_column]
     missing = [c for c in required_cols if c not in df.columns]

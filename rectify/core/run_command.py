@@ -464,7 +464,9 @@ def _run_junction_aggregation(
     Only runs if annotation is GFF/GFF3 (has intron features).
     Returns path to junctions TSV, or None if skipped/failed.
     """
-    has_gff = annotation_path.suffix.lower() in ('.gff', '.gff3')
+    # Handle compressed files: .gff.gz → stem is .gff, suffixes[-1] is .gz
+    suffixes = [s.lower() for s in annotation_path.suffixes]
+    has_gff = any(s in ('.gff', '.gff3') for s in suffixes)
     if not has_gff:
         print(
             "\n[Junctions] Skipping — requires GFF/GFF3 annotation "
@@ -503,8 +505,8 @@ def _run_junction_aggregation(
             ambiguous_mode='proportional',
         )
 
-        n_rescued = partial_results['summary']['total_rescued']
-        n_ambiguous = partial_results['summary']['total_ambiguous']
+        n_rescued = partial_results['stats']['reads_rescued_as_spliced']
+        n_ambiguous = partial_results['stats']['reads_ambiguous']
         print(f"  Rescued {n_rescued} partial crossings ({n_ambiguous} ambiguous)")
 
         junction_df = merge_with_partial_evidence(

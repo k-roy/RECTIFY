@@ -73,6 +73,10 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
 
     Handles both plain FASTA and gzip-compressed FASTA (.gz).
 
+    A pickle sidecar cache (<genome>.pkl) is written alongside the FASTA on
+    first load and reused on subsequent calls as long as it is newer than the
+    FASTA file.  This saves 10-120 s per sample on large genomes.
+
     Args:
         genome_path: Path to genome FASTA file (.fa, .fasta, .fsa, or .gz)
 
@@ -80,8 +84,25 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
         Dict mapping chromosome name (NCBI format) to sequence string
     """
     import gzip as _gzip
+    import pickle as _pickle
+    import logging as _logging
 
+    _log = _logging.getLogger(__name__)
     genome_path = Path(genome_path)
+    pickle_path = genome_path.with_suffix('.pkl')
+
+    # Try cache first
+    try:
+        if (pickle_path.exists()
+                and pickle_path.stat().st_mtime >= genome_path.stat().st_mtime):
+            _log.debug("Loading genome from pickle cache: %s", pickle_path)
+            with open(pickle_path, 'rb') as _fh:
+                genome = _pickle.load(_fh)
+            _log.debug("  Loaded %d chromosomes from cache", len(genome))
+            return genome
+    except Exception as _exc:
+        _log.debug("Genome pickle cache unusable (%s); loading from FASTA", _exc)
+
     print(f"Loading genome from {genome_path}...")
     genome = {}
 
@@ -94,6 +115,15 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
             genome[record.id] = str(record.seq).upper()
 
     print(f"  Loaded {len(genome)} chromosomes")
+
+    # Write pickle cache for next call
+    try:
+        with open(pickle_path, 'wb') as _fh:
+            _pickle.dump(genome, _fh, protocol=_pickle.HIGHEST_PROTOCOL)
+        _log.debug("Wrote genome pickle cache: %s", pickle_path)
+    except Exception as _exc:
+        _log.debug("Could not write genome pickle cache (%s); continuing without cache", _exc)
+
     return genome
 
 

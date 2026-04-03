@@ -5,6 +5,70 @@ All notable changes to RECTIFY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.5] - 2026-04-03
+
+### Added
+
+- **Sequence-based 5' soft-clip rescue** (`consensus.py`): `_rescue_5prime_softclip()` aligns
+  soft-clipped bases against annotated upstream exon sequences (edit distance ≤ 20% mismatches),
+  replacing the prior length-only scoring. Added `_get_effective_5prime_clip()` and
+  `_get_effective_3prime_clip()` for fair mapPacBio scoring (accounts for forced mismatches).
+  Expanded `AlignmentInfo` dataclass with `five_prime_softclip_seq`, `effective_five_prime_clip`,
+  `effective_three_prime_clip` fields.
+
+- **Junction filtering utilities** (`aggregate/junctions.py`): `filter_junctions()` removes
+  junctions below read-count and canonical-motif thresholds; `resolve_homopolymer_ambiguity()`
+  assigns ambiguous junctions flanking homopolymers to the best-supported position.
+
+- **Genome pickle cache** (`utils/genome.py`): `load_genome()` writes a `.pkl` sidecar on first
+  load; subsequent loads use the cache, saving 10–120s per sample.
+
+### Fixed
+
+- **Bug 27 — `detect_partial_junction_crossings()` TypeError on SEQ=* reads**
+  (`terminal_exon_refiner.py`): `len(clip_seq)` crashed with `TypeError` when
+  `five_prime_clip['sequence']` is `None`. Added `if clip_seq is None: continue` guard.
+
+- **Bug 26 — `generate_bedgraphs()` KeyError** (`analyze_command.py`): Fallback column
+  name `'position'` (non-existent) replaced with `'corrected_position'`.
+
+- **Bug 24 — `_run_junction_aggregation()` KeyError** (`run_command.py`): Dict key
+  `partial_results['summary']` replaced with `partial_results['stats']` (correct key from
+  `detect_partial_junction_crossings()`). Also fixed `.suffix` → `.suffixes` check for
+  `.gff.gz` annotation detection.
+
+- **Bug 23 — `deconvolve_region()` silent bad output** (`netseq_deconvolution.py`): Inverted
+  `region_start ≥ region_end` coordinates now raise `ValueError` instead of returning a
+  zero-length result silently.
+
+- **Bug 22 — `get_netseq_3prime_position()` crash on unmapped reads** (`netseq_bam_processor.py`):
+  Added `if read.is_unmapped or read.reference_end is None: raise ValueError(...)` guard.
+
+- **Bugs 20–21 — Silent fallbacks in `_stitch_group()`** (`mpb_split_reads.py`): Added
+  `logger.debug()` calls for all-unmapped reads and cross-chromosome/cross-strand fallbacks
+  so these events appear in logs at DEBUG level.
+
+- **Bug 19 — BAM file descriptor leak** (`terminal_exon_refiner.py`):
+  `refine_terminal_exons()` converted from `bam.open()/bam.close()` to
+  `with pysam.AlignmentFile(...) as bam:` context manager.
+
+- **Bugs 17+11 — OOM and chrom normalization in `junction_validator.py`**:
+  `filter_cross_sample_junctions()` replaced `pd.concat` + `itertuples()` (OOM on large
+  datasets) with streaming dict accumulation. `read.reference_name` now passes through
+  `standardize_chrom_name()` before junction key construction.
+
+- **Bug 15 — Negative `ambiguity_min` for reads near chromosome start** (`bam_processor.py`):
+  `ambiguity_min` clipped to `max(0, ...)` to prevent negative coordinates.
+
+- **Bug 7 (partial) — Missing timeouts on minimap2/mapPacBio/gapmm2** (`multi_aligner.py`):
+  `ALIGNER_TIMEOUT` (7200s) now applied to all five aligners (was only applied to uLTRA
+  and deSALT). Added `try/except TimeoutExpired` with process kill for minimap2 pipe.
+
+### Ported from rectify-beta
+
+- `docs/IMPLEMENTATION_SUMMARY.md` — technical architecture and validation suite
+- `docs/ALIGNER_RECOMMENDATIONS.md` — guidance on expanding aligner panel
+
 ## [2.6.0] - 2026-04-03
 
 ### Fixed

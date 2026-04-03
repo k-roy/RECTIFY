@@ -243,7 +243,9 @@ def load_splice_sites_from_gff(gff_path: str) -> SpliceSiteIndex:
     """
     index = SpliceSiteIndex()
 
-    with open(gff_path, 'r') as f:
+    import gzip as _gzip
+    opener = _gzip.open if str(gff_path).endswith('.gz') else open
+    with opener(gff_path, 'rt') as f:
         for line in f:
             if line.startswith('#'):
                 continue
@@ -689,7 +691,7 @@ def get_soft_clip_info(read: pysam.AlignedSegment) -> Dict:
         length = read.cigartuples[0][1]
         info['left'] = {
             'length': length,
-            'sequence': seq[:length],
+            'sequence': seq[:length] if seq is not None else None,
             'quality': qual[:length] if qual else None
         }
 
@@ -698,7 +700,7 @@ def get_soft_clip_info(read: pysam.AlignedSegment) -> Dict:
         length = read.cigartuples[-1][1]
         info['right'] = {
             'length': length,
-            'sequence': seq[-length:],
+            'sequence': seq[-length:] if seq is not None else None,
             'quality': qual[-length:] if qual else None
         }
 
@@ -922,36 +924,33 @@ def refine_terminal_exons(
     """
     results = {}
 
-    bam = pysam.AlignmentFile(bam_path, 'rb')
-
     n_total = 0
     n_with_softclip = 0
     n_refined = 0
 
-    for read in bam:
-        if read.is_unmapped or read.is_secondary or read.is_supplementary:
-            continue
+    with pysam.AlignmentFile(bam_path, 'rb') as bam:
+        for read in bam:
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
 
-        n_total += 1
+            n_total += 1
 
-        # Check if read has significant soft-clip at 5' end
-        clip_info = get_soft_clip_info(read)
-        strand = '-' if read.is_reverse else '+'
+            # Check if read has significant soft-clip at 5' end
+            clip_info = get_soft_clip_info(read)
+            strand = '-' if read.is_reverse else '+'
 
-        five_prime_clip = clip_info['left'] if strand == '+' else clip_info['right']
+            five_prime_clip = clip_info['left'] if strand == '+' else clip_info['right']
 
-        if five_prime_clip['length'] >= min_softclip:
-            n_with_softclip += 1
+            if five_prime_clip['length'] >= min_softclip:
+                n_with_softclip += 1
 
-            result = attempt_5prime_refinement(
-                read, genome, splice_index, min_softclip
-            )
-            results[read.query_name] = result
+                result = attempt_5prime_refinement(
+                    read, genome, splice_index, min_softclip
+                )
+                results[read.query_name] = result
 
-            if result.success:
-                n_refined += 1
-
-    bam.close()
+                if result.success:
+                    n_refined += 1
 
     logger.info(f"Processed {n_total} reads")
     logger.info(f"  With soft-clip >= {min_softclip}bp: {n_with_softclip}")
@@ -1333,6 +1332,8 @@ def detect_partial_junction_crossings(
 
                 genome_seq = genome[chrom]
                 clip_seq = five_prime_clip['sequence']
+                if clip_seq is None:
+                    continue  # SEQ=* read — no sequence to align
 
                 if strand == '-':
                     # For - strand, upstream exon is at higher coords (past 5'SS)

@@ -174,6 +174,7 @@ def _stitch_group(orig_name, chunks, header):
 
     mapped = [(info, seg) for info, seg in chunks if not seg.is_unmapped]
     if not mapped:
+        logger.debug("mapPacBio stitch: %s — all chunks unmapped; read dropped", orig_name)
         return None
 
     # Sort by chunk_idx (query order)
@@ -190,6 +191,10 @@ def _stitch_group(orig_name, chunks, header):
     if len(refs) > 1 or len(strands) > 1:
         # Fall back to longest single chunk
         best = max(mapped, key=lambda x: x[1].query_alignment_length)
+        logger.debug(
+            "mapPacBio stitch: %s chunks span multiple chromosomes/strands (%s) → using longest chunk",
+            orig_name, refs,
+        )
         return _promote_single(orig_name, best, total_len, header)
 
     is_reverse = mapped[0][1].is_reverse

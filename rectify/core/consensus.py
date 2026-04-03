@@ -5,7 +5,14 @@ Compares alignments from multiple aligners and selects the best one per read
 based on junction quality, soft-clip rescue, and false junction detection.
 
 Scoring priorities:
-1. Prefer alignments that splice through junctions vs soft-clipping (5' rescue)
+1. Prefer alignments that splice through junctions vs soft-clipping (5' rescue):
+   - If a 5' soft-clip can be explained by a missed intron (the clipped bases
+     match the upstream exon end, checked via edit distance), the soft-clip is
+     "rescued" and carries no penalty. This avoids penalizing aligners that
+     correctly identify a junction but soft-clip a few upstream exon bases,
+     relative to aligners that simply start mapping AFTER the junction.
+   - Per-read junction pool = annotated junctions UNION all aligners' observed
+     junctions for this read.
 2. Prefer alignments whose 3' end lands outside a downstream A-tract (3' end quality)
 3. Prefer junctions supported by multiple aligners
 4. Tiebreaker: prefer aligner whose corrected 3' position agrees with majority
@@ -64,10 +71,32 @@ class AlignmentInfo:
     corrected_3prime: Optional[int] = None   # estimated true CPA position
     three_prime_atract_depth: int = 0        # A's downstream of raw 3' end (0 = clean landing)
 
+    # Soft-clipped sequence at the 5' end (for sequence-based rescue scoring)
+    five_prime_softclip_seq: str = ""
+
+    # Query bases in the terminal mismatch/indel region at the 5' end.
+    # mapPacBio forces mismatches/indels at splice junction boundaries instead of
+    # soft-clipping; those forced-error bases are structurally equivalent to a
+    # soft-clip and should be used for sequence-based rescue if five_prime_softclip_seq
+    # is empty.  Length = effective_five_prime_clip - five_prime_softclip.
+    effective_five_prime_clip_seq: str = ""
+
     # Quality scores
     junction_score: float = 0.0
     canonical_count: int = 0
     non_canonical_count: int = 0
+
+    # Effective 5' clip for scoring: max(explicit_soft_clip, terminal_error_region).
+    # Some aligners (mapPacBio) substitute forced mismatches/indels for soft-clips at
+    # splice junction boundaries — identical structural situation, different CIGAR encoding.
+    # This field ensures fair scoring regardless of the aligner's clipping policy.
+    effective_five_prime_clip: int = 0
+
+    # Effective 3' clip for scoring: non-poly(A) terminal errors at the 3' end.
+    # Aligners should only soft-clip the poly(A) tail; clipping or force-mismatching
+    # real exon sequence means the aligner stopped before the true 3' end.
+    # Complementary to the A-tract depth penalty (which catches going too far INTO poly(A)).
+    effective_three_prime_clip: int = 0
 
     # Flags
     has_false_3prime_junction: bool = False
@@ -266,16 +295,401 @@ def detect_false_3prime_junction(
     return False
 
 
+def _rescue_5prime_softclip(
+    alignment: AlignmentInfo,
+    genome: Dict[str, str],
+    candidate_junctions: Set[Tuple[str, int, int]],
+    max_edit_frac: float = 0.2,
+    search_window_bp: int = 300,
+    rescue_seq_override: str = "",
+) -> bool:
+    """Check whether a 5' soft-clip (or MPB terminal error region) is explained
+    by a missed upstream intron.
+
+    Algorithm (2-pass rescue):
+      Pass 1 — candidate junction pool is built by the caller from annotated
+               junctions UNION junctions detected by any aligner for this read.
+      Pass 2 — For each candidate junction that is UPSTREAM of the alignment's
+               5' end (i.e., intron_end ≤ align_5prime for + strand, or
+               intron_start ≥ reference_end for − strand), within search_window_bp:
+                 1. Fetch the upstream exon-end sequence (last N bases of the exon
+                    before the intron donor, where N = rescue sequence length).
+                 2. Compute edit distance between rescue query bases and that
+                    reference sequence.
+                 3. If distance / clip_len ≤ max_edit_frac → rescue.
+
+    Rescue sequence priority:
+      rescue_seq_override (explicit caller-supplied)
+        > five_prime_softclip_seq (explicit soft-clip, e.g. minimap2/gapmm2)
+        > effective_five_prime_clip_seq (MPB forced-mismatch/indel terminal region)
+
+    Coordinate conventions:
+      + strand: alignment 5' end = reference_start (leftmost mapped base).
+                Upstream intron has intron_end ≤ reference_start.
+                Exon upstream of intron: genome[intron_start - N : intron_start].
+      − strand: alignment 5' end = reference_end − 1 (rightmost mapped base).
+                Upstream intron (in transcript) has intron_start ≥ reference_end.
+                Exon upstream of intron (in transcript) = genome[intron_end : intron_end + N].
+                BAM stores reverse-strand query_sequence in reference orientation,
+                so no reverse-complement is needed for the comparison.
+
+    Args:
+        alignment: AlignmentInfo with five_prime_softclip_seq (and optionally
+            effective_five_prime_clip_seq) populated
+        genome: Dict mapping chrom to sequence
+        candidate_junctions: Set of (chrom, intron_start, intron_end)
+        max_edit_frac: Max edit distance / clip_len to declare a rescue
+        search_window_bp: Max distance from 5' alignment boundary to intron edge
+        rescue_seq_override: Explicit sequence to use instead of alignment fields.
+            When supplied, skips the field-selection logic entirely.
+
+    Returns:
+        True if the clip/error region is explained by a missed intron (no penalty),
+        False if unexplained (apply normal penalty).
+    """
+    # Priority: explicit override > soft-clip seq > MPB terminal error seq
+    clip_seq = (
+        rescue_seq_override
+        or alignment.five_prime_softclip_seq
+        or alignment.effective_five_prime_clip_seq
+    )
+    if not clip_seq:
+        return False
+
+    clip_len = len(clip_seq)
+    chrom = alignment.chrom
+
+    if chrom not in genome:
+        return False
+
+    from .spikein_filter import edit_distance
+    genome_seq = genome[chrom]
+    clip_seq_upper = clip_seq.upper()  # Hoist out of per-junction loop
+
+    if alignment.strand == '+':
+        # 5' alignment start = leftmost mapped base
+        align_5prime = alignment.reference_start
+        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+            if j_chrom != chrom:
+                continue
+            # Upstream intron: its 3'SS (intron_end) must be at or before align_5prime.
+            # Directional: intron_end ≤ align_5prime (not abs, to exclude internal junctions).
+            dist = align_5prime - intron_end
+            if dist < 0 or dist > search_window_bp:
+                continue
+            # Exon1-end sequence: last clip_len bases of exon before the intron donor
+            exon_end_start = intron_start - clip_len
+            if exon_end_start < 0:
+                continue
+            exon_end_seq = genome_seq[exon_end_start:intron_start].upper()
+            ed = edit_distance(clip_seq_upper, exon_end_seq)
+            if ed / clip_len <= max_edit_frac:
+                logger.debug(
+                    f"5' rescue (+): {chrom}:{align_5prime} clip={clip_len}bp "
+                    f"matches exon1 end before intron {intron_start}-{intron_end} "
+                    f"(edit={ed}/{clip_len})"
+                )
+                return True
+    else:
+        # Minus strand: 5' end is at reference_end - 1 (rightmost mapped base).
+        # In transcript orientation, "upstream" means higher reference coordinates.
+        align_5prime = alignment.reference_end - 1
+        reference_end = alignment.reference_end
+        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+            if j_chrom != chrom:
+                continue
+            # Upstream intron (in transcript): intron_start must be ≥ reference_end.
+            # Directional: intron_start > align_5prime (excludes internal junctions).
+            dist = intron_start - align_5prime
+            if dist <= 0 or dist > search_window_bp:
+                continue
+            # Exon upstream of intron (in transcript) = exon to the right of intron_end
+            # in reference. BAM reverse-strand query_sequence is in reference orientation,
+            # so compare directly without reverse-complementing.
+            exon_end_seq = genome_seq[intron_end:intron_end + clip_len].upper()
+            if len(exon_end_seq) < clip_len:
+                continue
+            ed = edit_distance(clip_seq_upper, exon_end_seq)
+            if ed / clip_len <= max_edit_frac:
+                logger.debug(
+                    f"5' rescue (−): {chrom}:{align_5prime} clip={clip_len}bp "
+                    f"matches exon upstream of intron {intron_start}-{intron_end} "
+                    f"(edit={ed}/{clip_len})"
+                )
+                return True
+
+    return False
+
+
+def _get_effective_5prime_clip(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    scan_bp: int = 25,
+    window: int = 8,
+    error_threshold: float = 0.40,
+    min_errors: int = 2,
+) -> int:
+    """
+    Compute effective 5' clip length including both explicit soft-clips and
+    terminal mismatch/indel regions.
+
+    Some aligners (notably mapPacBio) substitute forced mismatches/indels for
+    soft-clips at splice junction boundaries — the read cannot be aligned there
+    due to a missed or partially-resolved intron, but instead of clipping, the
+    aligner records mismatches. This is structurally the same situation as a
+    soft-clip and should receive the same scoring penalty.
+
+    Algorithm:
+      1. Collect per-position error flags (mismatch or insertion) for the first
+         `scan_bp` aligned bases from the 5' end (after explicit soft-clips).
+      2. Scan with a sliding window of size `window`. The terminal error region
+         extends as long as the leading window(s) have density >= error_threshold.
+         Stop at the first clean window (greedy from 5' end).
+      3. Return max(explicit_soft_clip, explicit_soft_clip + terminal_error_length),
+         provided at least `min_errors` errors were found in the terminal region.
+
+    The explicit soft-clip sequence in `five_prime_softclip_seq` is NOT updated —
+    the sequence-based rescue uses that field and operates on the clip sequence only.
+
+    Args:
+        read: pysam aligned read
+        genome: chromosome → sequence dict (for mismatch detection without MD tags)
+        scan_bp: aligned positions to scan from 5' end (after explicit soft-clips)
+        window: sliding window size for density estimation
+        error_threshold: fraction of errors per window to qualify as terminal region
+        min_errors: minimum total errors to apply terminal clip extension
+
+    Returns:
+        Effective 5' clip length (>= explicit soft-clip).
+    """
+    five_clip, _ = get_softclip_lengths(read)
+
+    if not read.query_sequence or not read.cigartuples:
+        return five_clip
+
+    chrom = read.reference_name
+    if not chrom or chrom not in genome:
+        return five_clip
+
+    ref_seq = genome[chrom]
+    query_seq = read.query_sequence
+    query_len = len(query_seq)
+
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return five_clip
+
+    # Build error array for the first `scan_bp` aligned bases from the 5' end.
+    # Skip explicit soft-clip positions; only examine the true aligned region.
+    errors: List[int] = []
+    if read.is_reverse:
+        # 5' end is at high query coordinates; scan backward from cutoff
+        cutoff_qp = query_len - 1 - five_clip  # last pos inside aligned region
+        for qp, rp in reversed(pairs):
+            if qp is None:
+                continue
+            if qp > cutoff_qp:
+                continue  # still in soft-clip region
+            if len(errors) >= scan_bp:
+                break
+            if rp is None:
+                errors.append(1)  # insertion into read = mismatch-equivalent
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                read_b = query_seq[qp].upper()
+                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+            else:
+                errors.append(0)
+    else:
+        # 5' end is at low query coordinates; scan forward from cutoff
+        cutoff_qp = five_clip  # first pos inside aligned region
+        for qp, rp in pairs:
+            if qp is None:
+                continue
+            if qp < cutoff_qp:
+                continue  # still in soft-clip region
+            if len(errors) >= scan_bp:
+                break
+            if rp is None:
+                errors.append(1)
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                read_b = query_seq[qp].upper()
+                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+            else:
+                errors.append(0)
+
+    if len(errors) < window:
+        return five_clip
+
+    # Greedy scan from 5' end: extend terminal boundary while leading windows are
+    # high-error. Stop at the first clean window — terminal errors are contiguous.
+    terminal_end = 0
+    for i in range(len(errors) - window + 1):
+        w = errors[i:i + window]
+        n_err = sum(w)
+        if n_err / window >= error_threshold:
+            terminal_end = i + window
+        else:
+            break  # first clean window; stop extending
+
+    if terminal_end == 0:
+        return five_clip
+
+    total_errors = sum(errors[:terminal_end])
+    if total_errors < min_errors:
+        return five_clip
+
+    return max(five_clip, five_clip + terminal_end)
+
+
+def _get_effective_3prime_clip(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    scan_bp: int = 25,
+    window: int = 8,
+    error_threshold: float = 0.40,
+    min_errors: int = 2,
+) -> int:
+    """
+    Compute effective 3' clip length for non-poly(A) terminal errors.
+
+    Aligners should only soft-clip the poly(A) tail at the 3' end. Clipping or
+    force-mismatching real exon sequence (non-A on + strand, non-T on - strand in
+    read coordinates) means the aligner stopped before the true 3' end and should
+    be penalized.
+
+    Key distinction from 5' end: poly(A) base errors/clips are EXPECTED at the 3'
+    end and are already handled by the A-tract depth penalty. Only non-A terminal
+    errors are counted here.
+
+    Algorithm:
+      1. Collect per-position error flags for the first `scan_bp` aligned bases
+         from the 3' end, scanning inward. Mark a position as an error only if it
+         is a mismatch/insertion AND the read base is non-A (+ strand) or non-T
+         (- strand in BAM coords, where poly(A) appears as poly(T)).
+      2. Apply the same greedy sliding-window scan as _get_effective_5prime_clip.
+      3. Return max(explicit_3prime_clip, explicit_3prime_clip + terminal_end).
+
+    The explicit 3' soft-clip is also filtered: only non-A/T bases within the
+    clip sequence count toward the penalty.
+
+    Args:
+        read: pysam aligned read
+        genome: chromosome → sequence dict
+        scan_bp: aligned positions to scan inward from 3' end
+        window: sliding window size
+        error_threshold: fraction of errors per window (non-A only)
+        min_errors: minimum non-A errors to trigger penalty
+
+    Returns:
+        Effective 3' clip length (>= explicit soft-clip).
+    """
+    _, three_clip = get_softclip_lengths(read)
+
+    if not read.query_sequence or not read.cigartuples:
+        return three_clip
+
+    chrom = read.reference_name
+    if not chrom or chrom not in genome:
+        return three_clip
+
+    ref_seq = genome[chrom]
+    query_seq = read.query_sequence
+    query_len = len(query_seq)
+
+    # Poly(A) base in read coordinates:
+    # - Plus strand: A in query = expected at 3' end (poly(A) tail)
+    # - Minus strand: poly(A) tail is stored as poly(T) in the reverse-complemented BAM query
+    polya_base = 'T' if read.is_reverse else 'A'
+
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return three_clip
+
+    # Build error array for the first `scan_bp` aligned bases from the 3' end.
+    # Scan inward (3' → 5') and flag only non-poly(A) errors.
+    errors: List[int] = []
+    if read.is_reverse:
+        # 3' RNA end is at the LEFT (low query positions) for minus strand.
+        # Explicit 3' clip occupies query_seq[:three_clip]; scan just inside.
+        cutoff_qp = three_clip  # first pos inside aligned region
+        for qp, rp in pairs:
+            if qp is None:
+                continue
+            if qp < cutoff_qp:
+                continue
+            if len(errors) >= scan_bp:
+                break
+            read_b = query_seq[qp].upper()
+            if rp is None:
+                # Insertion — count as error only if not a poly(A)-base insertion
+                errors.append(0 if read_b == polya_base else 1)
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                is_mismatch = ref_b != 'N' and read_b != ref_b
+                # Only count non-polyA mismatches
+                errors.append(1 if (is_mismatch and read_b != polya_base) else 0)
+            else:
+                errors.append(0)
+    else:
+        # 3' RNA end is at the RIGHT (high query positions) for plus strand.
+        # Explicit 3' clip occupies query_seq[-three_clip:]; scan just inside.
+        cutoff_qp = query_len - 1 - three_clip  # last pos inside aligned region
+        for qp, rp in reversed(pairs):
+            if qp is None:
+                continue
+            if qp > cutoff_qp:
+                continue
+            if len(errors) >= scan_bp:
+                break
+            read_b = query_seq[qp].upper()
+            if rp is None:
+                errors.append(0 if read_b == polya_base else 1)
+            elif rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                is_mismatch = ref_b != 'N' and read_b != ref_b
+                errors.append(1 if (is_mismatch and read_b != polya_base) else 0)
+            else:
+                errors.append(0)
+
+    if len(errors) < window:
+        return three_clip
+
+    # Same greedy scan as _get_effective_5prime_clip
+    terminal_end = 0
+    for i in range(len(errors) - window + 1):
+        w = errors[i:i + window]
+        n_err = sum(w)
+        if n_err / window >= error_threshold:
+            terminal_end = i + window
+        else:
+            break
+
+    if terminal_end == 0:
+        return three_clip
+
+    total_errors = sum(errors[:terminal_end])
+    if total_errors < min_errors:
+        return three_clip
+
+    return max(three_clip, three_clip + terminal_end)
+
+
 def score_alignment(
     alignment: AlignmentInfo,
     genome: Dict[str, str],
-    annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    candidate_junctions: Optional[Set[Tuple[str, int, int]]] = None,
 ) -> float:
     """
     Score an alignment based on junction quality.
 
     Scoring factors:
-    - -2 per soft-clipped base at 5' end (prefer spliced alignments)
+    - 5' soft-clip penalty: -2 per unexplained clipped base; 0 if sequence-rescue
+      confirms the aligner found an intron but could not align the upstream exon end
+    - 3' A-tract depth penalty: -1 per downstream A (capped at 10)
 
     Neither canonical splice site motifs (GT/AG) nor annotated junction
     matches are scored here, to avoid biasing against novel junctions.
@@ -284,31 +698,55 @@ def score_alignment(
     Note: False 3' junctions from poly(A) artifacts are handled by the
     walk back correction step, which eats through aligned A's and discards
     spurious N operations to find the true CPA site.
+
+    Args:
+        alignment: AlignmentInfo for this aligner
+        genome: Dict mapping chrom to sequence
+        candidate_junctions: Per-read junction pool (annotated + all aligners'
+            observed junctions). Used for 5' soft-clip rescue. When provided,
+            a soft-clip that matches an upstream exon end is NOT penalized.
     """
     score = 0.0
 
-    # NOTE: Canonical junction motifs (GT-AG) are deliberately not scored here.
-    # They are used only as a tiebreaker in select_best_alignment() to avoid
-    # biasing against novel non-canonical junctions.
-
-    # 5' soft-clip penalty (prefer alignments that splice through)
-    # TODO: Replace with sequence-based rescue — take the soft-clipped bases, find
-    # annotated junctions within range of the read's 5' alignment start, fetch the
-    # upstream exon-end sequence, and check edit distance. An aligner that clips
-    # because it missed a real intron (e.g. mapPacBio on SNC1) currently beats
-    # aligners that found the intron but have unrescued soft clip, because those
-    # aligners accrue this penalty while mapPacBio starts after the junction and
-    # has nothing to clip. edit_distance() already exists in spikein_filter.py.
-    score -= alignment.five_prime_softclip * 2
+    # 5' terminal penalty: penalize both explicit soft-clips and terminal mismatch/
+    # indel regions equivalently. `effective_five_prime_clip` = max(explicit_clip,
+    # terminal_error_length) so aligners that force mismatches instead of clipping
+    # (mapPacBio) are scored on equal footing with aligners that soft-clip (minimap2).
+    #
+    # Rescue uses whichever sequence is available: explicit soft-clip bytes
+    # (minimap2/gapmm2/uLTRA) or MPB's forced-mismatch/indel terminal region
+    # (effective_five_prime_clip_seq). Both represent the same structural
+    # situation — bases that should align to the upstream exon across the intron.
+    effective_clip = alignment.effective_five_prime_clip
+    if effective_clip > 0:
+        rescue_seq = (
+            alignment.five_prime_softclip_seq
+            or alignment.effective_five_prime_clip_seq
+        )
+        clip_rescued = (
+            bool(rescue_seq)
+            and candidate_junctions is not None
+            and genome
+            and _rescue_5prime_softclip(alignment, genome, candidate_junctions)
+        )
+        if not clip_rescued:
+            score -= effective_clip * 2
 
     # 3' A-tract depth penalty (prefer alignments landing closer to the true CPA).
     # Each downstream A the aligner runs into costs 1 point — same scale as 5' penalty
     # per base, but capped at 10 to avoid overwhelming junction scoring.
     score -= min(alignment.three_prime_atract_depth, 10)
 
-    # NOTE: Annotated junction matches are deliberately not scored here.
-    # They are used only as a tiebreaker in select_best_alignment() to avoid
-    # biasing against novel unannotated junctions.
+    # 3' non-poly(A) terminal error penalty: penalizes aligners that stop before the
+    # true 3' end. Aligners should only soft-clip the poly(A) tail; non-A/T clipping or
+    # forced mismatches at the 3' end indicate missed exon coverage.
+    # Same -2/base scale as the 5' penalty; capped at 10 to avoid overwhelming junction scores.
+    if alignment.effective_three_prime_clip > 0:
+        score -= min(alignment.effective_three_prime_clip * 2, 10)
+
+    # NOTE: Canonical junction motifs (GT-AG) and annotated junction matches are
+    # deliberately not scored here. They are used only as tiebreakers in
+    # select_best_alignment() to avoid biasing against novel non-canonical junctions.
 
     alignment.junction_score = score
     return score
@@ -330,6 +768,45 @@ def extract_alignment_info(
     junctions = extract_junctions_from_cigar(read)
     five_clip, three_clip = get_softclip_lengths(read)
 
+    # Effective 5' clip for scoring: includes terminal mismatch/indel region.
+    # Must be computed before the AlignmentInfo is constructed.
+    effective_five_clip = _get_effective_5prime_clip(read, genome)
+
+    # Effective 3' clip for scoring: non-poly(A) terminal errors at 3' end.
+    effective_three_clip = _get_effective_3prime_clip(read, genome)
+
+    # Extract soft-clipped bases at the 5' end for sequence-based rescue
+    five_prime_seq = ""
+    if five_clip > 0 and read.query_sequence:
+        if not read.is_reverse:
+            five_prime_seq = read.query_sequence[:five_clip]
+        else:
+            five_prime_seq = read.query_sequence[-five_clip:]
+
+    # Extract the terminal mismatch/indel region for mapPacBio rescue.
+    # MPB forces mismatches/indels instead of soft-clipping at splice boundaries;
+    # effective_five_clip > five_clip means there are terminal alignment errors.
+    # We extract those query bases so _rescue_5prime_softclip can compare them
+    # against the upstream exon end — same test as for an explicit soft-clip.
+    effective_five_prime_seq = ""
+    terminal_error_len = effective_five_clip - five_clip
+    if terminal_error_len > 0 and read.query_sequence:
+        qlen = len(read.query_sequence)
+        if not read.is_reverse:
+            # Plus strand: terminal errors are the first `terminal_error_len` aligned bases
+            # (immediately after the explicit soft-clip region, if any)
+            region_start = five_clip
+            region_end = five_clip + terminal_error_len
+            if region_end <= qlen:
+                effective_five_prime_seq = read.query_sequence[region_start:region_end]
+        else:
+            # Minus strand: terminal errors are at the high end of query_sequence
+            # (immediately before the explicit soft-clip region, if any)
+            region_end = qlen - five_clip
+            region_start = region_end - terminal_error_len
+            if region_start >= 0:
+                effective_five_prime_seq = read.query_sequence[region_start:region_end]
+
     chrom = read.reference_name
     strand = '-' if read.is_reverse else '+'
     canonical, non_canonical = check_canonical_splice_sites(junctions, chrom, genome)
@@ -344,7 +821,7 @@ def extract_alignment_info(
     if genome.get(chrom_std) is None:
         # Try standardized name
         from ..utils.genome import standardize_chrom_name
-        chrom_std = standardize_chrom_name(chrom, genome) or chrom
+        chrom_std = standardize_chrom_name(chrom) or chrom
 
     if genome.get(chrom_std) is not None:
         try:
@@ -376,6 +853,10 @@ def extract_alignment_info(
         junctions=junctions,
         five_prime_softclip=five_clip,
         three_prime_softclip=three_clip,
+        five_prime_softclip_seq=five_prime_seq,
+        effective_five_prime_clip=effective_five_clip,
+        effective_five_prime_clip_seq=effective_five_prime_seq,
+        effective_three_prime_clip=effective_three_clip,
         corrected_3prime=corrected_3prime,
         three_prime_atract_depth=atract_depth,
         canonical_count=canonical,
@@ -410,9 +891,24 @@ def select_best_alignment(
 
     read_id = list(alignments.values())[0].read_id
 
+    # Build per-read junction pool for 5' soft-clip rescue.
+    # Pool = annotated junctions UNION all junctions observed by any aligner for
+    # this read. Using all aligners' junctions ensures that if any aligner correctly
+    # identifies an intron, soft-clips at that intron in other aligners are rescued.
+    chrom_for_read = list(alignments.values())[0].chrom
+    candidate_junctions: Set[Tuple[str, int, int]] = set()
+    if annotated_junctions:
+        # Only keep annotated junctions on the same chrom to avoid scanning everything
+        for j in annotated_junctions:
+            if j[0] == chrom_for_read:
+                candidate_junctions.add(j)
+    for alignment in alignments.values():
+        for junc_start, junc_end in alignment.junctions:
+            candidate_junctions.add((alignment.chrom, junc_start, junc_end))
+
     # Score all alignments
     for aligner, alignment in alignments.items():
-        score_alignment(alignment, genome, annotated_junctions)
+        alignment.junction_score = score_alignment(alignment, genome, candidate_junctions)
 
     # Select best by score, using annotation and canonical motifs as tiebreakers
     max_score = max(a.junction_score for a in alignments.values())
@@ -446,13 +942,13 @@ def select_best_alignment(
     best_alignment = alignments[best_aligner]
     best_alignment.is_best = True
 
-    # Check for 5' rescue
-    # Did we pick an alignment that spliced through vs one that soft-clipped?
+    # Check for 5' rescue using effective clip (includes terminal mismatch regions)
+    # Did we pick an alignment that spliced through vs one that soft-clipped/had terminal errors?
     was_rescued = False
     if len(alignments) > 1:
-        min_5clip = min(a.five_prime_softclip for a in alignments.values())
-        max_5clip = max(a.five_prime_softclip for a in alignments.values())
-        if max_5clip > min_5clip and best_alignment.five_prime_softclip == min_5clip:
+        min_5clip = min(a.effective_five_prime_clip for a in alignments.values())
+        max_5clip = max(a.effective_five_prime_clip for a in alignments.values())
+        if max_5clip > min_5clip and best_alignment.effective_five_prime_clip == min_5clip:
             was_rescued = True
 
     # Count junction agreement across aligners
@@ -510,7 +1006,11 @@ def _ensure_name_sorted(bam_path: str) -> str:
             return sorted_path
 
     logger.info(f"Name-sorting BAM: {bam_path} -> {sorted_path}")
-    pysam.sort('-n', '-o', sorted_path, bam_path)
+    # Cap samtools sort memory: without -m, samtools uses 768MB × all threads.
+    # With 5 BAMs sorted sequentially, Python's allocator retains each peak
+    # in RSS, compounding to ~60GB on a 16-core node. 1G per sort is ample
+    # for typical per-sample BAM sizes.
+    pysam.sort('-n', '-m', '1G', '-o', sorted_path, bam_path)
     return sorted_path
 
 
@@ -571,7 +1071,8 @@ def _cigar_query_length(read: pysam.AlignedSegment) -> int:
     """Return the total number of query-consuming bases implied by the CIGAR."""
     if not read.cigartuples:
         return 0
-    query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
+    # ops that consume query: M=0, I=1, S=4, =7, X=8
+    query_ops = {0, 1, 4, 7, 8}
     return sum(length for op, length in read.cigartuples if op in query_ops)
 
 
@@ -587,13 +1088,13 @@ def _restore_sequence_from_aligner_reads(
     downstream steps (indel correction, poly-A trimming, etc.).
 
     This function looks through the other aligners' reads for the same read_id
-    and copies the first non-None sequence + quality scores to best_read.
-    Hard-clipped donor records (e.g., deSALT) may have a shorter sequence than
-    the winning CIGAR's implied query length — those donors are skipped to
-    prevent samtools downstream crash: "CIGAR and query sequence lengths differ".
+    and copies the first non-None sequence whose length matches the CIGAR's
+    expected query length.  Donors with mismatched lengths (e.g. hard-clipped
+    records from deSALT) are skipped to prevent samtools from rejecting the
+    BAM with "CIGAR and query sequence lengths differ".
 
-    If no aligner has sequence (shouldn't happen in practice), a warning is
-    logged and best_read is left unchanged.
+    If no donor with the correct length is found, best_read is left as SEQ=*
+    and a warning is logged.
 
     Args:
         best_read: The winning pysam.AlignedSegment (modified in place).
@@ -907,7 +1408,7 @@ def run_consensus_selection(
     _t_sort = _time.perf_counter()
     logger.info("Coordinate-sorting output BAM...")
     sorted_output = output_bam.replace('.bam', '.sorted.bam')
-    pysam.sort('-o', sorted_output, output_bam)
+    pysam.sort('-m', '1G', '-o', sorted_output, output_bam)
     os.replace(sorted_output, output_bam)
     pysam.index(output_bam)
     logger.info(f"[TIMING] Coordinate-sort + index: {_time.perf_counter() - _t_sort:.1f}s")
@@ -962,7 +1463,7 @@ def merge_slurm_array_bams(
     pysam.merge('-f', merged_output, *task_bams)
 
     sorted_output = merged_output.replace('.bam', '.sorted.bam')
-    pysam.sort('-o', sorted_output, merged_output)
+    pysam.sort('-m', '1G', '-o', sorted_output, merged_output)
     os.replace(sorted_output, merged_output)
     pysam.index(merged_output)
 
@@ -1005,5 +1506,13 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int]]:
                 end = int(parts[4])  # Already exclusive in GFF end
                 junctions.add((chrom, start, end))
 
-    logger.info(f"Loaded {len(junctions)} annotated junctions from {annotation_path}")
+    if len(junctions) == 0:
+        logger.warning(
+            "load_annotated_junctions: 0 junctions loaded from %s. "
+            "Check that the file exists, is readable, and contains 'intron' "
+            "feature records (column 3). Junction-guided scoring will be disabled.",
+            annotation_path,
+        )
+    else:
+        logger.info(f"Loaded {len(junctions)} annotated junctions from {annotation_path}")
     return junctions

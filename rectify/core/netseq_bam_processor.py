@@ -235,6 +235,12 @@ def get_netseq_3prime_position(
         - strand is '+' or '-'
         - n_trimmed is number of terminal oligo(A) bases trimmed
     """
+    if read.is_unmapped or read.reference_end is None:
+        raise ValueError(
+            f"get_netseq_3prime_position() called on unmapped read "
+            f"{read.query_name!r}"
+        )
+
     strand = '-' if read.is_reverse else '+'
 
     if strand == '+':

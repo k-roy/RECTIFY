@@ -390,31 +390,33 @@ def run_align(args: argparse.Namespace) -> int:
             )
             aligner_name, bam_path = _run_one_aligner('mapPacBio')
             results['mapPacBio'] = bam_path
-        # Phase 2: non-deSALT aligners run in parallel; deSALT runs sequentially
-        # after the parallel pool to avoid "double free or corruption" when forked
-        # from a multithreaded process.
+        # Phase 2: remaining aligners with equal thread shares.
+        # deSALT runs sequentially after the parallel pool — it crashes with
+        # "double free or corruption" when forked inside a multithreaded process.
         remaining = [a for a in aligners if a != 'mapPacBio']
-        parallel_batch = [a for a in remaining if a != 'deSALT']
-        sequential_batch = [a for a in remaining if a == 'deSALT']
-        if parallel_batch:
-            per_thread = max(1, args.threads // len(parallel_batch))
-            for a in parallel_batch:
+        if remaining:
+            per_thread = max(1, args.threads // len(remaining))
+            for a in remaining:
                 aligner_thread_counts[a] = per_thread
-            alloc_summary = ', '.join(f"{a}={per_thread}" for a in parallel_batch)
+
+            alloc_summary = ', '.join(f"{a}={per_thread}" for a in remaining)
             logger.info(
-                f"Running {len(parallel_batch)} aligners in parallel "
-                f"(threads: {alloc_summary})"
+                f"Running {len(remaining)} aligners in parallel "
+                f"(threads: {alloc_summary}, total≤{args.threads})"
             )
-            with ThreadPoolExecutor(max_workers=len(parallel_batch)) as pool:
+
+            parallel_batch = [a for a in remaining if a != 'deSALT']
+            sequential_batch = [a for a in remaining if a == 'deSALT']
+
+            with ThreadPoolExecutor(max_workers=max(1, len(parallel_batch))) as pool:
                 futures = {pool.submit(_run_one_aligner, a): a for a in parallel_batch}
                 for future in as_completed(futures):
                     aligner, bam_path = future.result()
                     results[aligner] = bam_path
-        # deSALT must run sequentially (fork-unsafe in multithreaded context)
-        for aligner in sequential_batch:
-            aligner_thread_counts[aligner] = args.threads
-            aligner_name, bam_path = _run_one_aligner(aligner)
-            results[aligner_name] = bam_path
+
+            for aligner in sequential_batch:
+                aligner_name, bam_path = _run_one_aligner(aligner)
+                results[aligner_name] = bam_path
     else:
         for aligner in aligners:
             aligner_name, bam_path = _run_one_aligner(aligner)

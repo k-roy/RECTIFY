@@ -588,6 +588,121 @@ def summarize_junction_analysis(
     return stats
 
 
+# =============================================================================
+# Alternative Splice Site (ASS) Detection
+# =============================================================================
+
+class ASSDetector:
+    """Classify junctions relative to annotated splice sites.
+
+    Categories:
+      exact     — matches an annotated junction exactly
+      alt_5ss   — shares the 3'SS with an annotated junction, different 5'SS
+      alt_3ss   — shares the 5'SS with an annotated junction, different 3'SS
+      alt_both  — neither end matches exactly, but nearby annotation exists
+      novel     — no annotated junction within proximity_threshold
+
+    Args:
+        annotated_junctions: Dict mapping chrom → set of (donor, acceptor) tuples.
+            Use build_known_junction_index() to build this.
+        proximity_threshold: Max distance (bp) to consider an end as "nearby".
+    """
+
+    def __init__(
+        self,
+        annotated_junctions: Dict[str, Set[Tuple[int, int]]],
+        proximity_threshold: int = DEFAULT_SPLICE_SITE_TOLERANCE,
+    ):
+        self.proximity_threshold = proximity_threshold
+        # Build per-chrom sorted lists for fast lookup
+        self._by_chrom: Dict[str, List[Tuple[int, int]]] = {}
+        for chrom, junctions in annotated_junctions.items():
+            self._by_chrom[chrom] = sorted(junctions)
+
+    def classify(
+        self,
+        chrom: str,
+        intron_start: int,
+        intron_end: int,
+    ) -> Dict:
+        """Classify a junction (intron_start, intron_end) in 0-based half-open coords.
+
+        Returns a dict with keys:
+          classification: 'exact' | 'alt_5ss' | 'alt_3ss' | 'alt_both' | 'novel'
+          is_exact: bool
+          is_alt_5ss: bool
+          is_alt_3ss: bool
+          is_novel: bool
+          offset_donor: int or None  (observed - annotated; 0 = exact match)
+          offset_acceptor: int or None
+          nearest_annotated: (donor, acceptor) tuple or None
+        """
+        thresh = self.proximity_threshold
+        known = self._by_chrom.get(chrom, [])
+
+        best: Optional[Tuple[int, int]] = None
+        best_total = float('inf')
+        best_d_off = best_a_off = 0
+
+        for donor, acceptor in known:
+            d_off = intron_start - donor
+            a_off = intron_end - acceptor
+            if abs(d_off) > thresh and abs(a_off) > thresh:
+                continue
+            total = abs(d_off) + abs(a_off)
+            if total < best_total:
+                best_total = total
+                best = (donor, acceptor)
+                best_d_off = d_off
+                best_a_off = a_off
+
+        if best is None:
+            return {
+                'classification': 'novel',
+                'is_exact': False,
+                'is_alt_5ss': False,
+                'is_alt_3ss': False,
+                'is_novel': True,
+                'offset_donor': None,
+                'offset_acceptor': None,
+                'nearest_annotated': None,
+            }
+
+        is_exact = best_d_off == 0 and best_a_off == 0
+        is_alt_5ss = best_d_off != 0 and best_a_off == 0
+        is_alt_3ss = best_d_off == 0 and best_a_off != 0
+
+        if is_exact:
+            cls = 'exact'
+        elif is_alt_5ss:
+            cls = 'alt_5ss'
+        elif is_alt_3ss:
+            cls = 'alt_3ss'
+        else:
+            cls = 'alt_both'
+
+        return {
+            'classification': cls,
+            'is_exact': is_exact,
+            'is_alt_5ss': is_alt_5ss,
+            'is_alt_3ss': is_alt_3ss,
+            'is_novel': False,
+            'offset_donor': best_d_off,
+            'offset_acceptor': best_a_off,
+            'nearest_annotated': best,
+        }
+
+    def classify_many(
+        self,
+        junctions: List[Tuple[str, int, int]],
+    ) -> Dict[Tuple[str, int, int], Dict]:
+        """Classify a list of (chrom, intron_start, intron_end) tuples.
+
+        Returns dict mapping each junction to its classification dict.
+        """
+        return {j: self.classify(j[0], j[1], j[2]) for j in junctions}
+
+
 if __name__ == '__main__':
     # Quick test
     print("Testing junction_analysis module...")

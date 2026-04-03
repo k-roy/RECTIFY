@@ -89,7 +89,8 @@ def extract_junctions_from_cigar(read: pysam.AlignedSegment) -> List[Tuple[int, 
         if op == 3:  # N = skipped region (intron)
             intron_start = ref_pos
             intron_end = ref_pos + length
-            junctions.append((intron_start, intron_end))
+            if length > 0:  # Skip malformed zero-length N-ops (invalid CIGAR)
+                junctions.append((intron_start, intron_end))
             ref_pos += length
         elif op in (0, 2, 7, 8):  # M, D, =, X consume reference
             ref_pos += length
@@ -351,6 +352,192 @@ def classify_annotation_status(
     logger.info(f"Junction annotation status: {dict(status_counts)}")
 
     return junction_df
+
+
+def filter_junctions(
+    junction_df: pd.DataFrame,
+    min_reads: int = 5,
+    min_aligners: int = 1,
+    require_canonical: bool = False,
+    require_annotated_or_near: bool = False,
+) -> pd.DataFrame:
+    """Apply multi-tier quality filters to a junction DataFrame.
+
+    Filtering tiers:
+      1. Minimum read support (min_reads)
+      2. Multi-aligner consensus (min_aligners; based on n_aligners column if present)
+      3. Canonical splice sites only (require_canonical; if is_canonical column present)
+      4. Annotation status filter (require_annotated_or_near)
+
+    Args:
+        junction_df: DataFrame as produced by aggregate_junctions / classify_annotation_status.
+        min_reads: Minimum full_junction_reads (or total_reads if former absent).
+        min_aligners: Minimum n_aligners value. Ignored if column absent.
+        require_canonical: If True, keep only canonical (GT-AG / GC-AG / AT-AC) junctions.
+        require_annotated_or_near: If True, keep only 'exact' or 'near' annotation_status.
+
+    Returns:
+        Filtered copy of the DataFrame.
+    """
+    if junction_df.empty:
+        return junction_df
+
+    mask = pd.Series(True, index=junction_df.index)
+
+    # Tier 1: read support
+    read_col = 'full_junction_reads' if 'full_junction_reads' in junction_df.columns else 'total_reads'
+    if read_col in junction_df.columns:
+        mask &= junction_df[read_col] >= min_reads
+
+    # Tier 2: multi-aligner consensus
+    if min_aligners > 1 and 'n_aligners' in junction_df.columns:
+        mask &= junction_df['n_aligners'] >= min_aligners
+
+    # Tier 3: canonical splice sites
+    if require_canonical and 'is_canonical' in junction_df.columns:
+        mask &= junction_df['is_canonical']
+
+    # Tier 4: annotation status
+    if require_annotated_or_near and 'annotation_status' in junction_df.columns:
+        mask &= junction_df['annotation_status'].isin(('exact', 'near'))
+
+    filtered = junction_df[mask].copy()
+    logger.info(
+        f"filter_junctions: {len(junction_df)} → {len(filtered)} junctions "
+        f"(min_reads={min_reads}, min_aligners={min_aligners}, "
+        f"canonical={require_canonical}, annot={require_annotated_or_near})"
+    )
+    return filtered
+
+
+def resolve_homopolymer_ambiguity(
+    junction_df: pd.DataFrame,
+    genome: Dict[str, str],
+    motif_scorer=None,
+    max_shift: int = 10,
+) -> pd.DataFrame:
+    """Collapse homopolymer-ambiguous junctions to their best representative.
+
+    When identical bases flank an intron boundary (e.g., ...AAAA|AAAA...), the
+    aligner may place the junction at several equivalent positions. This function
+    clusters such junctions and keeps only the one with the best splice motif score
+    (or, if no scorer is provided, the one with the most reads).
+
+    Requires columns: chrom, intron_start, intron_end, strand.
+    The best representative inherits the sum of all reads in the cluster.
+
+    Args:
+        junction_df: Junction DataFrame.
+        genome: Dict[chrom, sequence] for sequence access.
+        motif_scorer: SpliceMotifScorer instance (from rectify.utils.splice_motif).
+            If None, selects the position with the most reads.
+        max_shift: Maximum shift window for homopolymer detection.
+
+    Returns:
+        Deduplicated DataFrame with ambiguous clusters merged.
+    """
+    from rectify.utils.splice_motif import get_splice_site_sequences
+
+    if junction_df.empty:
+        return junction_df
+
+    required = {'chrom', 'intron_start', 'intron_end', 'strand'}
+    if not required.issubset(junction_df.columns):
+        logger.warning("resolve_homopolymer_ambiguity: missing required columns, skipping")
+        return junction_df
+
+    read_col = 'full_junction_reads' if 'full_junction_reads' in junction_df.columns else 'total_reads'
+
+    processed: set = set()
+    keep_rows: List[int] = []
+    drop_rows: set = set()
+    merged_counts: Dict[int, float] = {}
+
+    for idx, row in junction_df.iterrows():
+        if idx in processed:
+            continue
+
+        chrom = row['chrom']
+        start = int(row['intron_start'])
+        end = int(row['intron_end'])
+        strand = row['strand']
+        seq = genome.get(chrom, '')
+
+        if not seq:
+            keep_rows.append(idx)
+            processed.add(idx)
+            continue
+
+        # Detect equivalent positions by sliding the boundary through identical bases
+        cluster_coords: List[Tuple[int, int]] = [(start, end)]
+
+        # Slide left
+        for shift in range(1, max_shift + 1):
+            if start - shift < 0:
+                break
+            if seq[start - shift] == seq[end - shift]:
+                cluster_coords.append((start - shift, end - shift))
+            else:
+                break
+
+        # Slide right
+        for shift in range(1, max_shift + 1):
+            if end + shift > len(seq):
+                break
+            if seq[start + shift - 1] == seq[end + shift - 1]:
+                cluster_coords.append((start + shift, end + shift))
+            else:
+                break
+
+        if len(cluster_coords) == 1:
+            # Not ambiguous
+            keep_rows.append(idx)
+            processed.add(idx)
+            continue
+
+        # Find all rows in this cluster
+        cluster_mask = (
+            (junction_df['chrom'] == chrom)
+            & (junction_df['strand'] == strand)
+            & (junction_df['intron_start'].isin([c[0] for c in cluster_coords]))
+            & (junction_df['intron_end'].isin([c[1] for c in cluster_coords]))
+        )
+        cluster_idxs = junction_df.index[cluster_mask].tolist()
+        cluster_rows = junction_df.loc[cluster_idxs]
+        total_reads = cluster_rows[read_col].sum() if read_col in cluster_rows.columns else len(cluster_rows)
+
+        # Choose best representative
+        if motif_scorer is not None:
+            best_score = float('inf')
+            best_idx = cluster_idxs[0]
+            for cidx in cluster_idxs:
+                crow = junction_df.loc[cidx]
+                five_seq, three_seq = get_splice_site_sequences(
+                    genome, chrom, int(crow['intron_start']), int(crow['intron_end']), strand
+                )
+                score = motif_scorer.score_five_ss(five_seq) + motif_scorer.score_three_ss(three_seq)
+                if score < best_score:
+                    best_score = score
+                    best_idx = cidx
+        else:
+            # Most reads wins
+            best_idx = cluster_rows[read_col].idxmax() if read_col in cluster_rows.columns else cluster_idxs[0]
+
+        keep_rows.append(best_idx)
+        merged_counts[best_idx] = total_reads
+        processed.update(cluster_idxs)
+
+    result = junction_df.loc[keep_rows].copy()
+    for idx, count in merged_counts.items():
+        if idx in result.index and read_col in result.columns:
+            result.loc[idx, read_col] = count
+
+    n_merged = len(junction_df) - len(result)
+    logger.info(
+        f"resolve_homopolymer_ambiguity: {len(junction_df)} → {len(result)} junctions "
+        f"({n_merged} homopolymer-ambiguous positions merged)"
+    )
+    return result.reset_index(drop=True)
 
 
 def export_junctions(
