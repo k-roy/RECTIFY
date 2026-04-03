@@ -63,6 +63,11 @@ def split_long_reads(input_fastq, output_fastq, max_length=MAX_MPB_READ_LENGTH):
 
             read_name = header[1:].split()[0]
 
+            # Normalize RNA notation to DNA: BBMap does not handle U bases and
+            # throws a Java AssertionError on reads from RNA004/Dorado basecallers
+            # that output U instead of T.
+            seq = seq.replace('U', 'T').replace('u', 't')
+
             if len(seq) <= max_length:
                 fout.write(f"{header}\n{seq}\n+\n{qual}\n")
                 continue
