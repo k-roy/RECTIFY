@@ -74,6 +74,8 @@ from .genomic_distribution import (
     plot_genomic_distribution_pie_grid,
     plot_genomic_distribution_comparison,
     run_genomic_distribution_analysis,
+    run_3prime_distribution_analysis,
+    run_transcript_body_distribution_analysis,
 )
 
 from .atract_refiner import (
@@ -181,6 +183,8 @@ __all__ = [
     'plot_genomic_distribution_pie_grid',
     'plot_genomic_distribution_comparison',
     'run_genomic_distribution_analysis',
+    'run_3prime_distribution_analysis',
+    'run_transcript_body_distribution_analysis',
     # A-tract refinement
     'ATractRefiner',
     'refine_atract_position',

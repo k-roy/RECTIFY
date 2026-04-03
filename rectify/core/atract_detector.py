@@ -53,20 +53,34 @@ def _count_downstream_as(
     window_size: int = DOWNSTREAM_WINDOW_SIZE
 ) -> Optional[int]:
     """
-    Count A's (or T's for - strand) in downstream window.
+    Count the contiguous A-run (or T-run for - strand) immediately adjacent to
+    the 3' end position.
 
-    For + strand: Count A's in [position+1, position+window_size] (first base AFTER read end)
-    For - strand: Count T's in [position-window_size, position-1] (first base AFTER read end in gene direction)
+    Only bases forming an unbroken run from the first position after the 3' end
+    are counted.  A non-A base anywhere in the run terminates the count at that
+    point.  Scattered A's further downstream (e.g., an AAA that follows a TTTT
+    block) have zero bearing on poly-A ambiguity and are NOT counted.
+
+    For + strand: count consecutive A's in genome[position+1, position+2, ...]
+                  stopping at the first non-A.
+    For - strand: count consecutive T's in genome[position-1, position-2, ...]
+                  stopping at the first non-T.
+
+    Example (+ strand):
+        genome[P+1:P+11] = "TTTTTTTAAA"  -> count = 0  (T at P+1, no ambiguity)
+        genome[P+1:P+11] = "TAAAAAAAAA"  -> count = 0  (T at P+1, no ambiguity)
+        genome[P+1:P+11] = "ATTTTTTTTT"  -> count = 1  (1-bp ambiguity window)
+        genome[P+1:P+11] = "AAAGTTTTTT"  -> count = 3  (3-bp contiguous A-run)
 
     Args:
         genome: Genome dict
         chrom: Chromosome name
         position: 3' end position of read (0-based, last aligned base)
         strand: '+' or '-'
-        window_size: Size of window to count in
+        window_size: Maximum bp to search for contiguous run (caps search length)
 
     Returns:
-        Count of A's (or T's) in window, or None if position is invalid
+        Length of contiguous A/T run immediately downstream, or None if position invalid
     """
     seq = _get_sequence(genome, chrom)
     if seq is None:
@@ -76,24 +90,30 @@ def _count_downstream_as(
     if position < 0 or position >= chrom_len:
         return None
 
-    target_base = 'A' if strand == '+' else 'T'
-
     if strand == '+':
-        # Downstream = rightward for + strand; start at position+1 (first base AFTER read end)
-        window_start = position + 1
-        window_end = min(window_start + window_size, chrom_len)
-        if window_start >= chrom_len:
-            return None
-        window_seq = seq[window_start:window_end]
+        # Walk rightward from position+1, counting contiguous A's
+        count = 0
+        for i in range(1, window_size + 1):
+            idx = position + i
+            if idx >= chrom_len:
+                break
+            if seq[idx].upper() == 'A':
+                count += 1
+            else:
+                break
+        return count
     else:
-        # Downstream = leftward for - strand; end at position-1 (first base AFTER read end in gene direction)
-        window_end = position
-        window_start = max(window_end - window_size, 0)
-        if window_end <= 0:
-            return None
-        window_seq = seq[window_start:window_end]
-
-    return window_seq.count(target_base)
+        # Walk leftward from position-1, counting contiguous T's
+        count = 0
+        for i in range(1, window_size + 1):
+            idx = position - i
+            if idx < 0:
+                break
+            if seq[idx].upper() == 'T':
+                count += 1
+            else:
+                break
+        return count
 
 
 def find_atract_boundaries(

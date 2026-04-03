@@ -1,0 +1,10 @@
+# RECTIFY SLURM Profile — Sherlock GPU partition
+# Usage: rectify batch --manifest manifest.tsv ... --profile sherlock_gpu.yaml
+
+partition: gpu
+time: "8:00:00"
+mem: 64G
+cpus: 16
+max_concurrent: 4        # GPU jobs are limited — don't flood the queue
+job_name: rectify_batch_gpu
+submit: false

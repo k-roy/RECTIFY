@@ -79,21 +79,63 @@ echo "Date:     $(date)"
 echo "Host:     $(hostname)"
 echo ""
 
-OUTPUT_DIR="{output_dir}/${{SAMPLE_ID}}"
-mkdir -p "$OUTPUT_DIR"
+OAK_OUTPUT_DIR="{output_dir}/${{SAMPLE_ID}}"
+mkdir -p "$OAK_OUTPUT_DIR"
+
+{scratch_setup}
 
 $PYTHON -m rectify correct \\
-    "$INPUT" \\
+    "${{WORK_INPUT}}" \\
     --genome "{genome}" \\
     --annotation "{annotation}" \\
-    -o "$OUTPUT_DIR/corrected_3ends.tsv" \\
+    -o "${{WORK_OUTPUT_DIR}}/corrected_3ends.tsv" \\
     --threads $SLURM_CPUS_PER_TASK \\
     {extra_args}
+
+{scratch_teardown}
 
 echo ""
 echo "Complete: ${{SAMPLE_ID}}"
 echo "Finished: $(date)"
 '''
+
+# Scratch staging block — inserted when use_scratch=True in the profile.
+# $SCRATCH on Sherlock has ~75 GB/s vs Oak NFS; staging BAMs here reduces
+# wall time and eliminates I/O contention across concurrent array tasks.
+# BAMs are staged (copied) because they are accessed non-sequentially during
+# correction; FASTQ inputs are left on Oak (read once, sequentially).
+_SCRATCH_SETUP_BLOCK = '''\
+# --- Scratch staging (use_scratch=true in profile) ---
+# Stage BAM to $SCRATCH for high-bandwidth local I/O.
+SCRATCH_DIR="$SCRATCH/rectify_${{SLURM_JOB_ID}}_${{SLURM_ARRAY_TASK_ID}}"
+mkdir -p "$SCRATCH_DIR"
+trap 'rm -rf "$SCRATCH_DIR"' EXIT
+
+if [[ "${{INPUT}}" == *.bam ]]; then
+    echo "Staging BAM to scratch: ${{SCRATCH_DIR}}"
+    cp "${{INPUT}}" "${{SCRATCH_DIR}}/"
+    cp "${{INPUT}}.bai" "${{SCRATCH_DIR}}/" 2>/dev/null || true
+    WORK_INPUT="${{SCRATCH_DIR}}/$(basename "${{INPUT}}")"
+else
+    # FASTQ is read sequentially once — no staging benefit
+    WORK_INPUT="${{INPUT}}"
+fi
+WORK_OUTPUT_DIR="${{SCRATCH_DIR}}"
+'''
+
+_SCRATCH_TEARDOWN_BLOCK = '''\
+# Copy all outputs from scratch back to Oak (exclude BAMs — already on Oak)
+echo "Copying outputs to Oak: $OAK_OUTPUT_DIR"
+rsync -a --exclude="*.bam" --exclude="*.bai" "${{SCRATCH_DIR}}/" "$OAK_OUTPUT_DIR/"
+echo "Outputs copied: $(date)"
+'''
+
+_NO_SCRATCH_SETUP_BLOCK = '''\
+WORK_INPUT="${{INPUT}}"
+WORK_OUTPUT_DIR="${{OAK_OUTPUT_DIR}}"
+'''
+
+_NO_SCRATCH_TEARDOWN_BLOCK = ''  # outputs already in OAK_OUTPUT_DIR
 
 
 SLURM_ANALYZE_TEMPLATE = '''#!/bin/bash
@@ -416,6 +458,11 @@ def generate_slurm_scripts(
     pairs = [(s['sample_id'], s.get('path', s.get('bam_path', ''))) for s in samples]
     samples_python_list = repr(pairs)
 
+    # Scratch staging
+    use_scratch = getattr(args, 'use_scratch', False)
+    scratch_setup    = _SCRATCH_SETUP_BLOCK    if use_scratch else _NO_SCRATCH_SETUP_BLOCK
+    scratch_teardown = _SCRATCH_TEARDOWN_BLOCK if use_scratch else _NO_SCRATCH_TEARDOWN_BLOCK
+
     # Correction extra args
     extra_args = []
     if getattr(args, 'organism', None):
@@ -428,6 +475,8 @@ def generate_slurm_scripts(
         extra_args.append(f'--netseq-dir "{args.netseq_dir}"')
     if getattr(args, 'filter_spikein', None):
         extra_args.append('--filter-spikein ' + ' '.join(args.filter_spikein))
+    if getattr(args, 'streaming', False):
+        extra_args.append('--streaming')
     extra_args_str = ' \\\n    '.join(extra_args) if extra_args else ''
 
     # Analyze extra args (go annotations etc.)
@@ -460,6 +509,8 @@ def generate_slurm_scripts(
         genome=genome,
         annotation=annotation,
         extra_args=extra_args_str,
+        scratch_setup=scratch_setup,
+        scratch_teardown=scratch_teardown,
     )
 
     analyze_script = SLURM_ANALYZE_TEMPLATE.format(

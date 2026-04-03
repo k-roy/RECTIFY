@@ -110,7 +110,7 @@ def extract_soft_clips(read: pysam.AlignedSegment) -> List[Dict]:
         clip_length = read.cigartuples[0][1]
         soft_clips.append({
             'side': 'left',
-            'seq': read_seq[:clip_length],
+            'seq': read_seq[:clip_length] if read_seq is not None else None,
             'qual': read_qual[:clip_length] if read_qual else None,
             'start': read.reference_start - clip_length,
             'length': clip_length,
@@ -121,7 +121,7 @@ def extract_soft_clips(read: pysam.AlignedSegment) -> List[Dict]:
         clip_length = read.cigartuples[-1][1]
         soft_clips.append({
             'side': 'right',
-            'seq': read_seq[-clip_length:],
+            'seq': read_seq[-clip_length:] if read_seq is not None else None,
             'qual': read_qual[-clip_length:] if read_qual else None,
             'start': read.reference_end,
             'length': clip_length,
@@ -183,7 +183,10 @@ def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
 
     # Try to get reference sequence (if MD tag available)
     read_seq = read.query_sequence or ''
-    ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
+    try:
+        ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
+    except (ValueError, KeyError):
+        ref_seq = None
 
     for i, (op, length) in enumerate(read.cigartuples):
         if op == 2:  # Deletion

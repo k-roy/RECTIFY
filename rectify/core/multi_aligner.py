@@ -15,6 +15,7 @@ remains BLIND to annotations (novel junctions can still be detected).
 Author: Kevin R. Roy
 """
 
+import re
 import subprocess
 import logging
 import shutil
@@ -22,7 +23,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+# Pre-compiled regexes for gapmm2 PAF cs-tag parsing (avoid per-call recompilation)
+_CS_TOK_RE = re.compile(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-9]+[a-z]{2}')
+_INTRON_LEN_RE = re.compile(r'[0-9]+')
+
 from ..utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
+
+from rectify.core.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -171,8 +178,9 @@ def run_map_pacbio(
 ) -> str:
     """Run BBTools mapPacBio alignment.
 
-    mapPacBio is splice-aware for long reads. fastareadlen=100000 overrides
-    the default 6000 limit that causes AssertionErrors on reads >6019 bp.
+    mapPacBio is splice-aware for long reads. The mapPacBio.sh script default
+    of fastareadlen=6000 causes AssertionErrors on reads >6019 bp; we patch
+    the script default to 100000 at install time (see multi_aligner.py).
     intronlen=50 converts deletions >=50bp to N (intron) CIGAR operations.
 
     Args:
@@ -199,20 +207,35 @@ def run_map_pacbio(
     # mapPacBio outputs SAM to stdout
     sam_path = output_bam.with_suffix('.sam')
 
+    # Store BBTools index alongside the genome so all jobs share it
+    mpb_index_dir = Path(genome_path).parent / 'bbmap_index'
+    mpb_index_dir.mkdir(parents=True, exist_ok=True)
+
     cmd = [
         map_pacbio_path,
         f'ref={genome_path}',
         f'in={reads_path}',
         f'out={sam_path}',
         f'threads={threads}',
-        'fastareadlen=100000',  # Override 6000 default; avoids AssertionError on reads >6019 bp
+        f'path={mpb_index_dir}',
+        'fastareadlen=100000',  # Belt-and-suspenders: also patched in mapPacBio.sh default
         'intronlen=50',  # Convert large deletions to introns
-        'nodisk',
         'minratio=0.4',
     ]
 
     if extra_args:
         cmd.extend(extra_args)
+
+    # ── Split long reads (>6 kb) for mapPacBio ──
+    mpb_split_fq = Path(sam_path).with_suffix('.split.fastq')
+    mpb_chunk_map, mpb_n_split = split_long_reads(
+        reads_path, str(mpb_split_fq),
+        max_length=MAX_MPB_READ_LENGTH,
+    )
+    if mpb_n_split > 0:
+        # Point mapPacBio at the split FASTQ
+        cmd = [c.replace(f'in={reads_path}', f'in={mpb_split_fq}')
+               if c.startswith('in=') else c for c in cmd]
 
     logger.info(f"Running mapPacBio: {' '.join(cmd[:5])}...")
 
@@ -236,6 +259,18 @@ def run_map_pacbio(
     # Clean up SAM
     sam_path.unlink(missing_ok=True)
 
+
+    # ── Stitch split mapPacBio chunks back into full-read alignments ──
+    if mpb_n_split > 0:
+        mpb_pre_stitch = output_bam.with_suffix('.pre_stitch.bam')
+        output_bam.rename(mpb_pre_stitch)
+        stitch_split_bam(
+            str(mpb_pre_stitch), str(output_bam),
+            mpb_chunk_map, threads=threads,
+        )
+        mpb_pre_stitch.unlink(missing_ok=True)
+    mpb_split_fq.unlink(missing_ok=True)
+
     logger.info(f"mapPacBio complete: {output_bam}")
     return str(output_bam)
 
@@ -255,8 +290,6 @@ def _cs_long_to_cigar(cs: str, query_len: int, query_start: int, query_end: int,
       -seq = deletion (ref only)
       ~nnNnn (or ~NNintronlenNN) = splice junction (N in CIGAR)
     """
-    import re
-
     left_clip = query_start
     right_clip = query_len - query_end
 
@@ -270,8 +303,8 @@ def _cs_long_to_cigar(cs: str, query_len: int, query_start: int, query_end: int,
         if right_clip:
             ops.append((4, right_clip))  # S
 
-    # Parse cs string
-    for tok in re.findall(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-9]+[a-z]{2}', cs):
+    # Parse cs string (uses module-level pre-compiled regexes)
+    for tok in _CS_TOK_RE.findall(cs):
         if tok[0] == ':':
             ops.append((0, int(tok[1:])))       # M
         elif tok[0] == '*':
@@ -282,7 +315,7 @@ def _cs_long_to_cigar(cs: str, query_len: int, query_start: int, query_end: int,
             ops.append((2, len(tok) - 1))       # D
         elif tok[0] == '~':
             # ~nnNNNnn where NNN is intron length digits
-            intron_len = int(re.search(r'[0-9]+', tok).group())
+            intron_len = int(_INTRON_LEN_RE.search(tok).group())
             ops.append((3, intron_len))         # N (splice)
 
     # Soft-clip at 3' end
@@ -307,25 +340,12 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
     consensus selection module can work with it normally.
     """
     import pysam
-    import gzip
 
-    # Load chromosome lengths from genome FASTA for BAM header
+    # Load chromosome lengths from genome FASTA index (fast: reads .fai, not full FASTA)
     chrom_lengths = {}
-    opener = gzip.open if str(genome_path).endswith('.gz') else open
-    current_chrom = None
-    current_len = 0
-    with opener(genome_path, 'rt') as fh:
-        for line in fh:
-            line = line.rstrip()
-            if line.startswith('>'):
-                if current_chrom:
-                    chrom_lengths[current_chrom] = current_len
-                current_chrom = line[1:].split()[0]
-                current_len = 0
-            else:
-                current_len += len(line)
-        if current_chrom:
-            chrom_lengths[current_chrom] = current_len
+    with pysam.FastaFile(str(genome_path)) as fa:
+        for ref in fa.references:
+            chrom_lengths[ref] = fa.get_reference_length(ref)
 
     # PAF is in input (FASTQ) order — write directly then name-sort.
     # Name-sort so consensus selection can stream across aligners without
@@ -338,6 +358,7 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
 
     tmp_unsorted = output_bam.with_suffix('.unsorted.bam')
 
+    n_skipped = 0
     with pysam.AlignmentFile(str(tmp_unsorted), 'wb', header=header) as out_bam:
         with open(paf_path) as fh:
             for line in fh:
@@ -357,14 +378,11 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                 if target_name not in chrom_lengths:
                     continue
 
-                # Extract cs tag
-                cs_tag = None
-                nm_tag = None
-                for f in fields[12:]:
-                    if f.startswith('cs:Z:'):
-                        cs_tag = f[5:]
-                    elif f.startswith('NM:i:'):
-                        nm_tag = int(f[5:])
+                # Extract cs tag (build tag dict for O(1) lookup)
+                tags = {f[:4]: f[5:] for f in fields[12:] if len(f) > 5}
+                cs_tag = tags.get('cs:Z')
+                nm_raw = tags.get('NM:i')
+                nm_tag = int(nm_raw) if nm_raw is not None else None
 
                 if cs_tag is None:
                     continue
@@ -377,10 +395,28 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                 if strand == '-':
                     flag |= 16  # reverse complement
 
+                # PAF tp:A: tag encodes alignment type: 'P'=primary, 'S'=secondary,
+                # 'I'=inversion. Mark non-primary PAF records as secondary (FLAG 0x100)
+                # so downstream _filtered_read_iterator skips them and only one primary
+                # per read_id comes out of the gapmm2 BAM.
+                tp_tag = tags.get('tp:A')
+                if tp_tag is not None and tp_tag != 'P':
+                    flag |= 0x100  # secondary alignment
+
+                # Validate position before writing BAM record (gapmm2 can
+                # produce artifacts with negative or out-of-bounds positions)
+                if target_start < 0:
+                    n_skipped += 1
+                    continue
+                ref_id = header.get_tid(target_name)
+                if ref_id < 0:
+                    n_skipped += 1
+                    continue
+
                 seg = pysam.AlignedSegment(header)
                 seg.query_name = read_name
                 seg.flag = flag
-                seg.reference_id = header.get_tid(target_name)
+                seg.reference_id = ref_id
                 seg.reference_start = target_start
                 seg.mapping_quality = mapq
                 seg.cigarstring = cigar_str
@@ -389,6 +425,11 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                 seg.set_tag('cs', cs_tag)
 
                 out_bam.write(seg)
+
+    if n_skipped > 0:
+        logger.warning(
+            f"Skipped {n_skipped} gapmm2 records with invalid positions in {paf_path.name}"
+        )
 
     # Name-sort the unsorted BAM
     pysam.sort('-n', '-@', str(threads), '-o', str(output_bam), str(tmp_unsorted))

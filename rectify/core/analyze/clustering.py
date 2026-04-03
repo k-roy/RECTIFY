@@ -454,9 +454,9 @@ def build_cluster_count_matrix(
     positions_df = positions_df.copy()
     positions_df['_cluster_id'] = cluster_ids
 
-    # Filter to positions with assigned clusters (avoid second copy)
+    # Filter to positions with assigned clusters
     mask = positions_df['_cluster_id'].notna()
-    assigned = positions_df.loc[mask]
+    assigned = positions_df.loc[mask].copy()
 
     if assigned.empty:
         # No positions assigned to clusters

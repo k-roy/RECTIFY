@@ -514,8 +514,13 @@ BUNDLED_GENOMES = {
         'annotation': {
             'file': 'genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz',
             'version': 'R64-5-1',
-            'source': 'SGD',
+            'source': 'SGD + ncRNA additions',
             'format': 'GFF3',
+            'ncRNA': {
+                'CUT': {'count': 925, 'citation': 'Xu et al. 2009 (PMID:19169243)'},
+                'SUT': {'count': 847, 'citation': 'Xu et al. 2009 (PMID:19169243)'},
+                'XUT': {'count': 1658, 'citation': 'van Dijk et al. 2011 (PMID:21697827)'},
+            },
         },
         'go_annotations': {
             'file': 'genomes/saccharomyces_cerevisiae/go_annotations.tsv.gz',

@@ -1,0 +1,23 @@
+# RECTIFY SLURM Profile — Sherlock larsms partition
+# Usage: rectify batch --manifest manifest.tsv --Scer --profile sherlock_larsms.yaml -o results/
+#
+# Profile options are merged with CLI args; CLI args take precedence.
+# To submit automatically after script generation: set submit: true
+
+partition: larsms,owners
+time: "8:00:00"        # 8h: sufficient for largest BAMs (~7 GB, ~50 min correction)
+mem: 128G              # 128G: ~4x peak RSS observed for 7 GB BAM in streaming mode
+cpus: 8                # 8T: halves parallel workers vs 16T, key to avoiding OOM
+max_concurrent: 20     # Run up to 20 array tasks simultaneously
+job_name: rectify_batch
+submit: false          # Set to true to auto-submit after script generation
+
+# I/O staging
+use_scratch: true      # Stage BAMs to $SCRATCH (~75 GB/s) before correction.
+                       # All outputs are rsynced back to Oak at job end.
+                       # Set false only if $SCRATCH is unavailable or full.
+
+# Memory-efficient processing
+streaming: true        # Stream BAM reads one-at-a-time instead of loading all
+                       # into memory. Eliminates OOM on large BAMs (>3 GB).
+                       # Required when mem < ~8x BAM size.

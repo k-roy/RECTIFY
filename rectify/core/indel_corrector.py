@@ -261,6 +261,159 @@ def find_polya_boundary(
 
 
 # =============================================================================
+# Poly-A Prefix Rescue: extend past soft-clipped genomic A/T bases
+# =============================================================================
+
+def rescue_polya_prefix_in_softclip(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    current_pos: Optional[int] = None,
+    min_softclip_len: int = 5,
+    min_polya_fraction: float = 0.7,
+    max_rescue_bases: int = 5,
+) -> Optional[Dict]:
+    """
+    Extend 3' end by rescuing genomic A/T bases incorrectly grouped with poly-A soft-clip.
+
+    Problem: minimap2 cannot distinguish a genomic 'A' immediately adjacent to a
+    T-tract from the poly-A tail. When the base at position P+1 (just past the
+    alignment boundary) is 'A' and the poly-A tail also begins with 'A', minimap2
+    soft-clips P+1 together with the poly-A tail. This shifts corrected_3prime 1 bp
+    upstream (from the true CPA site at P+1 to the apparent site at P).
+
+    Example (+ strand, center = first T of T-tract):
+        Genome: ...[X][A][T][T][T][T][T]   <-- 'A' at center-1, T-tract at center+
+        Read:   ...[X][A][A][A][A][A][A]   <-- poly-A tail
+
+        minimap2 aligns X at center-2, then soft-clips the rest:
+            [X] | [A][T][T][T][T][T][A][A][A][A][A]  (soft-clipped)
+             raw_pos=center-2
+
+        True CPA is center-1, but appears as center-2.
+
+    Fix: if genome[P+1] == softclip[0] == 'A', extend corrected_3prime by 1
+    (continuing as long as both are 'A', up to max_rescue_bases).
+
+    For minus strand reads (poly-A → T's in BAM soft-clip):
+        Extends leftward when genome[P-1] == softclip[-1] == 'T'.
+        This is a no-op for TRT loci (center+1 is always non-A) but handles
+        symmetric cases on other minus strand loci.
+
+    Args:
+        read: pysam AlignedSegment
+        strand: '+' or '-'
+        genome: Dict of chromosome sequences (NCBI format keys)
+        current_pos: Current corrected position to extend from (default: BAM raw position)
+        min_softclip_len: Minimum soft-clip length to consider (default 5)
+        min_polya_fraction: Minimum fraction of A's (+ strand) or T's (- strand) in
+            soft-clip to confirm poly-A tail (default 0.7)
+        max_rescue_bases: Maximum bases to rescue (default 5)
+
+    Returns:
+        Dict with:
+            - corrected_pos: Extended position (0-based)
+            - original_pos: Starting position (= current_pos or BAM raw)
+            - rescued_bases: Number of bases rescued
+            - rescued_seq: Rescued genomic sequence
+        Or None if no rescue applicable
+    """
+    cigar = read.cigartuples
+    seq = read.query_sequence
+    if not cigar or not seq:
+        return None
+
+    chrom = read.reference_name
+    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
+    genome_seq = genome.get(genome_chrom, '')
+    if not genome_seq:
+        return None
+
+    if strand == '+':
+        # 3' end is at right side; check right soft-clip
+        if cigar[-1][0] != 4:
+            return None
+
+        softclip_len = cigar[-1][1]
+        if softclip_len < min_softclip_len:
+            return None
+
+        softclip_seq = seq[-softclip_len:].upper()
+        if softclip_seq.count('A') / softclip_len < min_polya_fraction:
+            return None
+
+        raw_pos = current_pos if current_pos is not None else (read.reference_end - 1)
+
+        # Extend rightward while soft-clip base == genomic base == 'A'
+        rescued = 0
+        rescued_chars: List[str] = []
+        for i in range(min(softclip_len, max_rescue_bases)):
+            genome_pos = raw_pos + 1 + i
+            if genome_pos >= len(genome_seq):
+                break
+            genome_base = genome_seq[genome_pos].upper()
+            softclip_base = softclip_seq[i]
+            if genome_base == softclip_base == 'A':
+                rescued += 1
+                rescued_chars.append('A')
+            else:
+                break
+
+        if rescued == 0:
+            return None
+
+        return {
+            'corrected_pos': raw_pos + rescued,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued,
+            'rescued_seq': ''.join(rescued_chars),
+        }
+
+    else:  # strand == '-'
+        # 3' end is at left side; check left soft-clip
+        # For minus strand reads in BAM, query_sequence is reverse-complemented,
+        # so the poly-A tail (A's in RNA) appears as T's at the START of the sequence.
+        if cigar[0][0] != 4:
+            return None
+
+        softclip_len = cigar[0][1]
+        if softclip_len < min_softclip_len:
+            return None
+
+        softclip_seq = seq[:softclip_len].upper()
+        if softclip_seq.count('T') / softclip_len < min_polya_fraction:
+            return None
+
+        raw_pos = current_pos if current_pos is not None else read.reference_start
+
+        # Extend leftward while (soft-clip base from right end) == genomic base == 'T'
+        rescued = 0
+        rescued_chars: List[str] = []
+        for i in range(min(softclip_len, max_rescue_bases)):
+            genome_pos = raw_pos - 1 - i
+            if genome_pos < 0:
+                break
+            genome_base = genome_seq[genome_pos].upper()
+            # Walk from rightmost soft-clip base (closest to alignment boundary)
+            softclip_base = softclip_seq[softclip_len - 1 - i]
+            if genome_base == softclip_base == 'T':
+                rescued += 1
+                rescued_chars.append('T')
+            else:
+                break
+
+        if rescued == 0:
+            return None
+
+        return {
+            'corrected_pos': raw_pos - rescued,
+            'original_pos': raw_pos,
+            'rescued_bases': rescued,
+            'rescued_seq': ''.join(reversed(rescued_chars)),
+        }
+
+
+# =============================================================================
 # Soft-clip Rescue at Homopolymer Boundaries
 # =============================================================================
 

@@ -297,6 +297,10 @@ def calculate_full_polya_length(
         clip_seq = three_prime_clip['seq']
         result['soft_clip_length'] = three_prime_clip['length']
 
+        if clip_seq is None:
+            # query_sequence absent from BAM record — skip soft-clip scoring
+            return result
+
         # For - strand, reverse complement to get RNA orientation
         if strand == '-':
             clip_seq = reverse_complement(clip_seq)

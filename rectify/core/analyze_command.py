@@ -372,13 +372,27 @@ def run_analyze(args: argparse.Namespace) -> int:
         print(f"\n[7/9] Running GO enrichment analysis...")
         from .analyze.go_enrichment import load_go_annotations
 
-        go_annotations = load_go_annotations(args.go_annotations)
+        go_annotations = load_go_annotations(
+            args.go_annotations,
+            gene_col='gene_name',
+            go_term_col='description',
+            category_col='go_category',
+        )
+
+        # Build systematic → common name mapping so DESeq2 indices match GO file
+        _sys2common = {}
+        if 'gene_id' in clusters_df.columns and 'gene_name' in clusters_df.columns:
+            for _, _r in clusters_df[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
+                _sys2common[_r['gene_id']] = _r['gene_name']
+
+        def _to_common_names(genes):
+            return [_sys2common.get(g, g) for g in genes]
 
         for condition, result_df in deseq2_gene_results.items():
             # Upregulated genes
-            up_genes = result_df[
+            up_genes = _to_common_names(result_df[
                 (result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)
-            ].index.tolist()
+            ].index.tolist())
 
             if len(up_genes) >= 10:
                 go_up = run_go_enrichment(up_genes, go_annotations)
@@ -391,9 +405,9 @@ def run_analyze(args: argparse.Namespace) -> int:
                     )
 
             # Downregulated genes
-            down_genes = result_df[
+            down_genes = _to_common_names(result_df[
                 (result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)
-            ].index.tolist()
+            ].index.tolist())
 
             if len(down_genes) >= 10:
                 go_down = run_go_enrichment(down_genes, go_annotations)
@@ -1290,16 +1304,30 @@ def _run_analyze_manifest(
     if args.go_annotations and deseq2_gene_results:
         print(f"\n[7/9] Running GO enrichment analysis...")
         from .analyze.go_enrichment import load_go_annotations
-        go_annotations = load_go_annotations(args.go_annotations)
+        go_annotations = load_go_annotations(
+            args.go_annotations,
+            gene_col='gene_name',
+            go_term_col='description',
+            category_col='go_category',
+        )
+        # Build systematic → common name mapping so DESeq2 indices match GO file
+        _sys2common = {}
+        if 'gene_id' in clusters_df.columns and 'gene_name' in clusters_df.columns:
+            for _, _r in clusters_df[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
+                _sys2common[_r['gene_id']] = _r['gene_name']
+
+        def _to_common_names(genes):
+            return [_sys2common.get(g, g) for g in genes]
+
         for condition, result_df in deseq2_gene_results.items():
-            up_genes = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)].index.tolist()
+            up_genes = _to_common_names(result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)].index.tolist())
             if len(up_genes) >= 10:
                 go_up = run_go_enrichment(up_genes, go_annotations)
                 if not go_up.empty:
                     go_up.to_csv(tables_dir / f'go_enrichment_up_{condition}.tsv', sep='\t', index=False)
                     plot_go_enrichment(go_up, output_path=str(plots_dir / f'go_enrichment_up_{condition}.png'),
                                        title=f'GO Enrichment: Upregulated in {condition}')
-            down_genes = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)].index.tolist()
+            down_genes = _to_common_names(result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)].index.tolist())
             if len(down_genes) >= 10:
                 go_down = run_go_enrichment(down_genes, go_annotations)
                 if not go_down.empty:
