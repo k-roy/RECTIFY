@@ -264,8 +264,8 @@ def analyze_junction_for_artifact(
                     donor_seq.upper() == 'GT' and acceptor_seq.upper() == 'AG'
                 )
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Junction motif analysis failed for read '{read.query_name}': {e}")
 
     # Final artifact determination
     if analysis.downstream_a_richness >= A_RICHNESS_THRESHOLD:

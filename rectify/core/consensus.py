@@ -31,6 +31,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Module-level A-tract result cache: (chrom, pos, strand) → atract dict
+# Many reads share the same 3' endpoint; this avoids repeated sequence lookups.
+_atract_cache: Dict[Tuple[str, int, str], dict] = {}
 
 # Canonical splice site dinucleotides
 CANONICAL_5SS = {'GT', 'GC'}  # 5' splice site (donor)
@@ -81,6 +84,7 @@ class ConsensusResult:
 
     # Consensus metrics
     n_aligners_agree: int = 0  # Number of aligners with same junctions
+    n_tied_score: int = 1      # Number of aligners with equal top junction score
     confidence: str = ""  # 'high', 'medium', 'low'
 
     # Rescue info
@@ -288,6 +292,13 @@ def score_alignment(
     # biasing against novel non-canonical junctions.
 
     # 5' soft-clip penalty (prefer alignments that splice through)
+    # TODO: Replace with sequence-based rescue — take the soft-clipped bases, find
+    # annotated junctions within range of the read's 5' alignment start, fetch the
+    # upstream exon-end sequence, and check edit distance. An aligner that clips
+    # because it missed a real intron (e.g. mapPacBio on SNC1) currently beats
+    # aligners that found the intron but have unrescued soft clip, because those
+    # aligners accrue this penalty while mapPacBio starts after the junction and
+    # has nothing to clip. edit_distance() already exists in spikein_filter.py.
     score -= alignment.five_prime_softclip * 2
 
     # 3' A-tract depth penalty (prefer alignments landing closer to the true CPA).
@@ -337,9 +348,13 @@ def extract_alignment_info(
 
     if genome.get(chrom_std) is not None:
         try:
-            atract = calculate_atract_ambiguity(
-                genome, chrom_std, raw_3prime, strand, downstream_bp=10
-            )
+            # Cache A-tract results by (chrom, pos, strand) — many reads share 3' ends
+            _cache_key = (chrom_std, raw_3prime, strand)
+            if _cache_key not in _atract_cache:
+                _atract_cache[_cache_key] = calculate_atract_ambiguity(
+                    genome, chrom_std, raw_3prime, strand, downstream_bp=10
+                )
+            atract = _atract_cache[_cache_key]
             atract_depth = atract.get('downstream_a_count') or 0
             # Best-guess corrected position: ambiguity_min for +, ambiguity_max for -
             if strand == '+':
@@ -464,6 +479,7 @@ def select_best_alignment(
         best_alignment=best_alignment,
         aligners_compared=list(alignments.keys()),
         n_aligners_agree=n_agree,
+        n_tied_score=len(tied_aligners),
         confidence=confidence,
         was_5prime_rescued=was_rescued,
         false_junction_removed=False,  # Not tracked; walk back correction handles this
@@ -551,6 +567,59 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
             bam.close()
 
 
+def _cigar_query_length(read: pysam.AlignedSegment) -> int:
+    """Return the total number of query-consuming bases implied by the CIGAR."""
+    if not read.cigartuples:
+        return 0
+    query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
+    return sum(length for op, length in read.cigartuples if op in query_ops)
+
+
+def _restore_sequence_from_aligner_reads(
+    best_read: pysam.AlignedSegment,
+    aligner_reads: Dict[str, pysam.AlignedSegment],
+) -> None:
+    """Copy query sequence and quality scores to best_read from another aligner.
+
+    gapmm2 outputs PAF which carries no read sequence, so _paf_to_bam() leaves
+    query_sequence=None on every gapmm2 BAM record.  When gapmm2 wins consensus
+    selection the output BAM would contain SEQ=* records that break all
+    downstream steps (indel correction, poly-A trimming, etc.).
+
+    This function looks through the other aligners' reads for the same read_id
+    and copies the first non-None sequence + quality scores to best_read.
+    Hard-clipped donor records (e.g., deSALT) may have a shorter sequence than
+    the winning CIGAR's implied query length — those donors are skipped to
+    prevent samtools downstream crash: "CIGAR and query sequence lengths differ".
+
+    If no aligner has sequence (shouldn't happen in practice), a warning is
+    logged and best_read is left unchanged.
+
+    Args:
+        best_read: The winning pysam.AlignedSegment (modified in place).
+        aligner_reads: Dict mapping aligner name to pysam.AlignedSegment for
+                       the same read_id.
+    """
+    expected_len = _cigar_query_length(best_read)
+    for donor_read in aligner_reads.values():
+        seq = donor_read.query_sequence
+        if seq is None:
+            continue
+        if expected_len > 0 and len(seq) != expected_len:
+            logger.debug(
+                f"Skipping donor for '{best_read.query_name}': "
+                f"sequence length {len(seq)} != CIGAR query length {expected_len}"
+            )
+            continue
+        best_read.query_sequence = seq
+        best_read.query_qualities = donor_read.query_qualities
+        return
+    logger.warning(
+        f"No aligner has query_sequence for read '{best_read.query_name}'; "
+        "writing SEQ=* record"
+    )
+
+
 def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats):
     """Process a batch of reads and write best alignments to output BAM."""
     for i, (read_id, alignments) in enumerate(read_batch):
@@ -563,11 +632,24 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             stats['consensus_low'] += 1
         if result.was_5prime_rescued:
             stats['5prime_rescued'] += 1
+        if result.n_tied_score > 1:
+            stats['tied_score'] += 1
         stats['by_aligner'][result.best_aligner] += 1
+        stats['by_aligner_combo'][frozenset(result.aligners_compared)] += 1
 
         _, aligner_reads = raw_read_batch[i]
         if result.best_aligner in aligner_reads:
             best_read = aligner_reads[result.best_aligner]
+
+            # Enforce exactly one primary per read: clear secondary (0x100) and
+            # supplementary (0x800) bits so the winning record is always primary.
+            best_read.flag &= ~0x900
+
+            # gapmm2 PAF→BAM conversion does not preserve read sequences;
+            # restore SEQ from another aligner's record for the same read.
+            if best_read.query_sequence is None:
+                _restore_sequence_from_aligner_reads(best_read, aligner_reads)
+
             best_read.set_tag('XA', result.best_aligner)
             best_read.set_tag('XC', result.confidence)
             best_read.set_tag('XN', result.n_aligners_agree)
@@ -616,10 +698,14 @@ def run_consensus_selection(
     """
     from ..slurm import get_available_cpus, get_slurm_info
 
-    # Auto-detect SLURM array settings from environment
+    # Auto-detect SLURM array settings from environment.
+    # Only activates when RECTIFY_CONSENSUS_ARRAY_MODE=1 is explicitly set.
+    # In run-all mode, SLURM array indices are for sample parallelism, not
+    # read-level partitioning — do not auto-activate there.
     if slurm_array_task is None and slurm_array_total is None:
         slurm_info = get_slurm_info()
-        if slurm_info.get('array_task_id') is not None:
+        if (slurm_info.get('array_task_id') is not None
+                and os.environ.get('RECTIFY_CONSENSUS_ARRAY_MODE') == '1'):
             try:
                 slurm_array_task = int(slurm_info['array_task_id'])
                 slurm_array_total = int(os.environ.get(
@@ -652,10 +738,14 @@ def run_consensus_selection(
         n_workers = get_available_cpus()
 
     # Ensure BAMs are name-sorted
+    import time as _time
+    _t_total = _time.perf_counter()
     logger.info("Ensuring BAMs are name-sorted...")
+    _t_ns = _time.perf_counter()
     sorted_bam_paths = {}
     for aligner, path in bam_paths.items():
         sorted_bam_paths[aligner] = _ensure_name_sorted(path)
+    logger.info(f"[TIMING] Name-sort: {_time.perf_counter() - _t_ns:.1f}s")
 
     # Get header from first BAM
     first_bam_path = list(sorted_bam_paths.values())[0]
@@ -693,10 +783,13 @@ def run_consensus_selection(
         'consensus_medium': 0,
         'consensus_low': 0,
         '5prime_rescued': 0,
+        'tied_score': 0,
         'by_aligner': defaultdict(int),
+        'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
 
     # Stream through name-sorted BAMs
+    _t_stream = _time.perf_counter()
     logger.info(f"Streaming consensus selection (batch_size={batch_size})...")
     if use_slurm_filter:
         logger.info(
@@ -748,13 +841,19 @@ def run_consensus_selection(
 
     # Close output
     out_bam.close()
+    logger.info(f"[TIMING] Streaming ({stats['total_reads']:,} reads, {n_batches} batches): {_time.perf_counter() - _t_stream:.1f}s")
+    if stats['total_reads'] > 0:
+        _reads_per_sec = stats['total_reads'] / max(_time.perf_counter() - _t_stream, 0.001)
+        logger.info(f"[TIMING] Throughput: {_reads_per_sec:,.0f} reads/sec")
 
     # Sort output by coordinate and index
+    _t_sort = _time.perf_counter()
     logger.info("Coordinate-sorting output BAM...")
     sorted_output = output_bam.replace('.bam', '.sorted.bam')
     pysam.sort('-o', sorted_output, output_bam)
     os.replace(sorted_output, output_bam)
     pysam.index(output_bam)
+    logger.info(f"[TIMING] Coordinate-sort + index: {_time.perf_counter() - _t_sort:.1f}s")
 
     # Log summary
     logger.info(f"\nConsensus selection complete:")
@@ -765,8 +864,11 @@ def run_consensus_selection(
     logger.info(f"  Medium confidence: {stats['consensus_medium']}")
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
+    logger.info(f"  Tied score (tiebreaker used): {stats['tied_score']}")
     logger.info(f"  By aligner: {dict(stats['by_aligner'])}")
+    logger.info(f"  By aligner combo: { {'+'.join(sorted(k)): v for k, v in stats['by_aligner_combo'].items()} }")
     logger.info(f"  Batches processed: {n_batches}")
+    logger.info(f"[TIMING] run_consensus_selection total: {_time.perf_counter() - _t_total:.1f}s")
 
     return stats
 
@@ -824,7 +926,9 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int]]:
     """
     junctions = set()
 
-    with open(annotation_path) as f:
+    import gzip as _gzip
+    _open = _gzip.open if str(annotation_path).endswith('.gz') else open
+    with _open(annotation_path, 'rt') as f:
         for line in f:
             if line.startswith('#'):
                 continue

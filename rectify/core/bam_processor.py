@@ -87,7 +87,10 @@ def get_read_3prime_position(read: pysam.AlignedSegment) -> Tuple[int, str]:
 
     # Get 3' end position
     if strand == '+':
-        position = read.reference_end - 1  # 0-based inclusive
+        ref_end = read.reference_end
+        if ref_end is None:
+            return None, strand  # Unmapped read — no valid position
+        position = ref_end - 1  # 0-based inclusive
     else:
         position = read.reference_start  # 0-based
 
@@ -139,7 +142,10 @@ def get_read_5prime_position(read: pysam.AlignedSegment, strand: Optional[str] =
     if strand == '+':
         return read.reference_start  # Leftmost = 5' for plus strand
     else:
-        return read.reference_end - 1  # Rightmost = 5' for minus strand
+        ref_end = read.reference_end
+        if ref_end is None:
+            return None  # Unmapped read — no valid position
+        return ref_end - 1  # Rightmost = 5' for minus strand
 
 
 def correct_read_3prime(

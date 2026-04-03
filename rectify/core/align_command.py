@@ -215,20 +215,10 @@ def run_align(args: argparse.Namespace) -> int:
 
     parallel = getattr(args, 'parallel_aligners', False)
 
-    # Relative thread weights: minimap2 is ~2x faster than mapPacBio/gapmm2.
-    # In parallel mode, allocate proportionally so all three finish at roughly
-    # the same time rather than giving minimap2 idle cores it doesn't need.
-    # weights sum to 5 → for 16 threads: minimap2=3, mapPacBio=6, gapmm2=6 (=15)
-    _THREAD_WEIGHTS = {'minimap2': 1, 'mapPacBio': 2, 'gapmm2': 2}
-
-    if parallel:
-        total_weight = sum(_THREAD_WEIGHTS.get(a, 1) for a in aligners)
-        aligner_thread_counts = {
-            a: max(1, round(args.threads * _THREAD_WEIGHTS.get(a, 1) / total_weight))
-            for a in aligners
-        }
-    else:
-        aligner_thread_counts = {a: args.threads for a in aligners}
+    # Two-phase scheduler: mapPacBio is ~10x slower than minimap2/gapmm2.
+    # Phase 1: mapPacBio runs alone with all threads.
+    # Phase 2: remaining aligners run in parallel with equal thread shares.
+    aligner_thread_counts = {a: args.threads for a in aligners}
 
     def _run_one_aligner(aligner):
         """Run a single aligner and return (aligner, bam_path_or_None)."""
@@ -246,9 +236,11 @@ def run_align(args: argparse.Namespace) -> int:
             logger.warning(f"{aligner} not found at {exec_path}, skipping")
             return aligner, None
 
+        import time as _time
         n_threads = aligner_thread_counts[aligner]
         output_bam = args.output_dir / f"{prefix}.{aligner}.bam"
         logger.info(f"Running {aligner} (threads={n_threads})...")
+        _t_aligner = _time.perf_counter()
 
         try:
             if aligner == 'minimap2':
@@ -276,27 +268,41 @@ def run_align(args: argparse.Namespace) -> int:
                     threads=n_threads,
                 )
 
-            logger.info(f"{aligner} complete: {output_bam}")
+            _elapsed = _time.perf_counter() - _t_aligner
+            logger.info(f"{aligner} complete: {output_bam} [{_elapsed:.1f}s]")
             return aligner, str(output_bam)
 
         except Exception as e:
-            logger.error(f"{aligner} failed: {e}")
+            _elapsed = _time.perf_counter() - _t_aligner
+            logger.error(f"{aligner} failed after {_elapsed:.1f}s: {e}")
             return aligner, None
 
     if parallel:
-        alloc_summary = ', '.join(
-            f"{a}={aligner_thread_counts[a]}" for a in aligners
-        )
-        logger.info(
-            f"Running {len(aligners)} aligners in parallel "
-            f"(threads: {alloc_summary}, total={args.threads})"
-        )
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=len(aligners)) as pool:
-            futures = {pool.submit(_run_one_aligner, a): a for a in aligners}
-            for future in as_completed(futures):
-                aligner, bam_path = future.result()
-                results[aligner] = bam_path
+        # Phase 1: mapPacBio alone with all threads (~10x slower than others).
+        if 'mapPacBio' in aligners:
+            logger.info(
+                f"Running mapPacBio first with all {args.threads} threads "
+                f"(two-phase: mapPacBio → rest in parallel)"
+            )
+            aligner_name, bam_path = _run_one_aligner('mapPacBio')
+            results['mapPacBio'] = bam_path
+        # Phase 2: remaining aligners with equal thread shares.
+        remaining = [a for a in aligners if a != 'mapPacBio']
+        if remaining:
+            per_thread = max(1, args.threads // len(remaining))
+            for a in remaining:
+                aligner_thread_counts[a] = per_thread
+            alloc_summary = ', '.join(f"{a}={per_thread}" for a in remaining)
+            logger.info(
+                f"Running {len(remaining)} aligners in parallel "
+                f"(threads: {alloc_summary})"
+            )
+            with ThreadPoolExecutor(max_workers=len(remaining)) as pool:
+                futures = {pool.submit(_run_one_aligner, a): a for a in remaining}
+                for future in as_completed(futures):
+                    aligner, bam_path = future.result()
+                    results[aligner] = bam_path
     else:
         for aligner in aligners:
             aligner_name, bam_path = _run_one_aligner(aligner)
@@ -320,48 +326,89 @@ def run_align(args: argparse.Namespace) -> int:
     # Skip consensus if only one aligner or --no-consensus
     if len(successful_aligners) == 1 or getattr(args, 'no_consensus', False):
         logger.info("Skipping consensus selection (single aligner or --no-consensus)")
-        # Copy single BAM to consensus output path
+        # Copy single BAM to consensus output path, sort and index
         if len(successful_aligners) == 1:
             single_bam = list(successful_aligners.values())[0]
             consensus_bam = args.output_dir / f"{prefix}.consensus.bam"
             import shutil
-            shutil.copy(single_bam, str(consensus_bam))
-            shutil.copy(f"{single_bam}.bai", f"{consensus_bam}.bai")
-            logger.info(f"Single-aligner output: {consensus_bam}")
+            import subprocess as _sp
+            threads = getattr(args, 'threads', 1)
+            sorted_tmp = str(consensus_bam) + '.sorting_tmp'
+            _sp.run(
+                ['samtools', 'sort', '-@', str(threads), '-o', str(consensus_bam), str(single_bam)],
+                check=True,
+            )
+            _sp.run(['samtools', 'index', str(consensus_bam)], check=True)
+            logger.info(f"Single-aligner output (sorted+indexed): {consensus_bam}")
         return 0
 
     # Run consensus selection
+    import time as _time
+    _t_consensus_start = _time.perf_counter()
     logger.info(f"\nRunning consensus selection across {len(successful_aligners)} aligners...")
 
     from .consensus import run_consensus_selection, load_annotated_junctions
 
     # Load genome for consensus scoring
+    _t_genome_load = _time.perf_counter()
     genome = {}
     import pysam as pysam_lib
-    fasta = pysam_lib.FastaFile(str(args.genome))
+    genome_path = str(args.genome)
+    try:
+        fasta = pysam_lib.FastaFile(genome_path)
+    except (OSError, IOError) as e:
+        # Handle gzip (not bgzip) compressed genome — auto-convert
+        if genome_path.endswith('.gz'):
+            import gzip as _gzip
+            import subprocess as _sp
+            from shutil import which as _which
+            logger.warning(f"pysam cannot open {genome_path}: {e}")
+            logger.warning("Attempting gzip→bgzip conversion...")
+            raw_path = genome_path[:-3]  # strip .gz
+            with _gzip.open(genome_path, 'rb') as _fin, open(raw_path, 'wb') as _fout:
+                _fout.write(_fin.read())
+            import os as _os
+            _os.rename(genome_path, genome_path + '.gzip_bak')
+            if _which('bgzip'):
+                _sp.run(['bgzip', raw_path], check=True)
+                _sp.run(['samtools', 'faidx', genome_path], check=True)
+                fasta = pysam_lib.FastaFile(genome_path)
+                logger.info(f"Successfully converted genome to bgzip: {genome_path}")
+            else:
+                # No bgzip — use uncompressed
+                fasta = pysam_lib.FastaFile(raw_path)
+                logger.info(f"Using uncompressed genome: {raw_path}")
+        else:
+            raise
     for chrom in fasta.references:
         genome[chrom] = fasta.fetch(chrom)
     fasta.close()
+    logger.info(f"[TIMING] Genome load: {_time.perf_counter() - _t_genome_load:.1f}s")
 
     # Load annotated junctions if annotation provided
     annotated_junctions = None
     if args.annotation:
+        _t_junc = _time.perf_counter()
         annotated_junctions = load_annotated_junctions(str(args.annotation))
+        logger.info(f"[TIMING] Junction load: {_time.perf_counter() - _t_junc:.1f}s")
 
     # Run consensus
     consensus_bam = args.output_dir / f"{prefix}.consensus.bam"
 
     try:
+        _t_sel = _time.perf_counter()
         stats = run_consensus_selection(
             bam_paths=successful_aligners,
             genome=genome,
             output_bam=str(consensus_bam),
             annotated_junctions=annotated_junctions,
         )
+        logger.info(f"[TIMING] Consensus selection: {_time.perf_counter() - _t_sel:.1f}s")
 
         logger.info(f"\nConsensus BAM: {consensus_bam}")
         logger.info(f"  High confidence: {stats['consensus_high']} reads")
         logger.info(f"  5' rescued: {stats['5prime_rescued']} reads")
+        logger.info(f"[TIMING] Consensus total (incl. genome/junctions): {_time.perf_counter() - _t_consensus_start:.1f}s")
 
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")
