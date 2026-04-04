@@ -5,6 +5,16 @@ All notable changes to RECTIFY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.6] - 2026-04-03
+
+### Fixed
+
+- **Missing `logger` in `false_junction_filter.py`**: `logger.debug()` was called but `import logging` / `logger = logging.getLogger(__name__)` were absent — would raise `NameError` at runtime on any junction motif exception.
+
+- **`NetSeqSignal` not picklable** (`netseq_refiner.py`): Added `__getstate__()` / `__setstate__()` to exclude the `threading.Lock` and open `pyBigWig` handles from pickle state and recreate them on restore. `NetSeqSignal` is now safe to use with `multiprocessing.Pool`.
+
+- **BAM handle leak in `iter_netseq_reads()`** (`netseq_bam_processor.py`): Wrapped read iteration loop in `try/finally` so `bam.close()` is always called, even when `max_reads` limit causes an early `break`.
+
 ## [2.7.5] - 2026-04-03
 
 ### Added

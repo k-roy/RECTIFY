@@ -1,8 +1,8 @@
 # RECTIFY Implementation Summary
 
-**Version:** 2.7.0b1
-**Date:** 2026-03-31
-**Status:** Beta Validation — 5-Aligner Pipeline, Fair Scoring, SLURM Batch Fixes
+**Version:** 2.7.6
+**Date:** 2026-04-03
+**Status:** Production — All 27 bugs fixed, 435 tests passing
 
 ---
 
@@ -10,7 +10,7 @@
 
 RECTIFY is a fully-implemented RNA 5'/3' end correction framework for direct RNA nanopore sequencing. The core pipeline (`run-all`) runs a 5-aligner consensus alignment, corrects 3' end artifacts, filters spike-ins, and (with ≥2 samples) performs CPA clustering, DESeq2 differential expression, and APA shift analysis.
 
-**Active development focus:** Beta validation on 12 chrI samples (4 conditions × 3 replicates) on the Sherlock HPC cluster.
+All development work from rectify-beta has been fully ported. The pipeline runs on Sherlock HPC via `rectify run-all` with scratch staging and streaming mode enabled by default.
 
 ---
 
@@ -131,13 +131,7 @@ With `--streaming` (`process_bam_streaming`), reads are processed and written on
 
 ## Multi-Sample Analysis: Streaming Pipeline
 
-### Current state (rectify-beta `_run_multi_sample`)
-
-The current manifest-mode pipeline (Stage 2) concatenates all per-sample corrected TSVs into a single combined file before running analysis. This works for small experiments but OOMs for large ones (e.g. 21 samples / 150M reads requires loading the entire dataset into RAM).
-
-### Target state (ported from stable `rectify/`)
-
-The stable repo implements a **two-pass streaming pipeline** that should be ported to rectify-beta. It completely avoids loading all samples simultaneously.
+### Implementation (Two-Pass Streaming)
 
 #### Pass 1 — position aggregation for clustering
 
@@ -346,13 +340,9 @@ Nanopore basecallers systematically under-call homopolymer runs (e.g., calling 8
 
 ### Memory: 5-Aligner Mode Requires >48GB
 
-**Status:** Under investigation (2026-03-31)
+**Status:** Partially mitigated (gc.collect() between alignment and correction reduces peak usage; recommend --mem=64G)
 
 The 5-aligner consensus step (minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT) consumes approximately 48GB of RAM for typical yeast chrI datasets (13K–250K reads). After alignment completes, residual memory is not fully released before the correction step starts, causing OOM kills at `--mem=48G`.
-
-**Workaround:** Increase `--mem=96G` in SLURM scripts.
-
-**Fix needed:** Explicit `del` / garbage collection of large alignment data structures in `run_all_command.py` between alignment and correction steps, and/or BAM streaming instead of loading all 5 aligner outputs simultaneously.
 
 ### deSALT: Annotation-Guided Mode Disabled
 
@@ -362,38 +352,18 @@ deSALT's `-G` flag (GTF/GFF annotation) causes a SIGSEGV in its GTF parser when 
 
 **Workaround:** `-G` flag removed from `multi_aligner.py`. deSALT runs in de novo splice detection mode only. This is sufficient — deSALT's de novo mode correctly aligned and won 35/1,110 reads (3.15%) in the 5-aligner junction rescue validation.
 
-### ProcessPoolExecutor (forkserver) + Spawn Subprocess Isolation
-
-**Status:** Fixed (2026-04-01)
-
-`multiprocessing.Pool` (fork-based) deadlocked when called after alignment subprocesses ran. `ThreadPoolExecutor` was used as an intermediate fix, but htslib calls in the main process (read counting, `get_processing_regions`) left residual malloc metadata corruption that caused `free(): invalid next size` SIGABRT in worker result-handler threads ~50–130 regions later (exit code 134).
-
-**Final fix (both issues):**
-1. `_count_reads_and_get_regions()` now runs in a `multiprocessing.get_context('spawn').Pool(1)` subprocess — main process heap is never touched by htslib, eliminating the corruption source.
-2. `process_bam_file_parallel()` uses `ProcessPoolExecutor(forkserver)` with `_worker_initializer` that loads genome, netseq, and opens the BAM once per worker process and stores them in module-level globals (`_WORKER_GENOME`, `_WORKER_BAM`, etc.).
-3. `_process_region_worker` reads exclusively from module-level globals — no large data structures are passed through the executor's IPC path.
-
-### `run_3prime_distribution_analysis` / `run_transcript_body_distribution_analysis`
-
-**Status:** Fixed (2026-03-31)
-
-Both functions were removed or renamed in `analyze/genomic_distribution.py` but stale references remained in `analyze_command.py` and `analyze/__init__.py`, causing `ImportError` at CLI startup.
-
-**Fix:** Updated call sites to use `run_genomic_distribution_analysis`; removed `run_transcript_body_distribution_analysis` (function no longer exists).
-
 ---
 
 ## Test Coverage
 
 ```
-284 passing, 0 failing (as of 2026-04-01)
+435 passing, 0 failing (as of 2026-04-03)
 ```
 
-Tests are run from `/oak/stanford/groups/larsms/Users/kevinroy/software/rectify-beta`:
+Run from `/oak/stanford/groups/larsms/Users/kevinroy/software/rectify`:
 
 ```bash
-PYTHON="/home/groups/larsms/users/kevinroy/anaconda3/envs/rectify/bin/python3"
-$PYTHON -m pytest tests/ -q
+python -m pytest tests/ -q
 ```
 
 **Previously failing tests now fixed:**
@@ -401,13 +371,14 @@ $PYTHON -m pytest tests/ -q
 - `test_parallel_processing.py` — 2 tests updated for `_process_region_worker` module-globals interface
 - `test_splice_junction.py` — import path was stale; confirmed passing (51/51)
 - `test_analyze.py` PCA tests — all passing; scikit-learn present in env
+- All 11 test failures from beta migration fixed (test_xr_flag, test_atract, test_parallel_aligner_schedule, test_sample_column_autodetect)
 
 ---
 
 ## SLURM Batch Configuration
 
 ### Current Batch Script
-`/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/rectify_beta_output/chrI_test_new/run_rectify_beta_chrI_new.sh`
+Generated via `rectify batch` using the `sherlock_larsms.yaml` profile. Scripts are output to the project's `slurm/` directory.
 
 **Key features:**
 - Stages input FASTQ from OAK → `$SCRATCH` before running (75 GB/s local SSD vs. ~1-5 GB/s OAK NFS)
@@ -495,7 +466,7 @@ rectify run-all --manifest samples.tsv --Scer \
 - [x] **Case-insensitive `--reference` matching** — case-insensitive lookup against available conditions with fallback warning *(done 2026-04-01)*
 - [x] **`--streaming` as default in SLURM** — `sherlock_larsms.yaml` sets `streaming: true` *(done 2026-04-01)*
 - [x] **False junction filter (`false_junction_filter.py`)** — poly(A)-artifact N operations detected and removed; `n_false_junctions` + `five_prime_rescued` columns in TSV output *(done 2026-04-01)*
-- [ ] **Exon 2 / 3'SS truncation rescue** — post-consensus module in `splice_aware_5prime.py`; rescues reads truncated at the 3' splice site boundary even when no soft-clip sequence is present; uses annotated junctions ∪ novel junctions from all aligners' first pass; see Validation Suite §2 for design detail. Priority: **HIGH** — large fraction of RPL20B reads affected.
+- [x] **Exon 2 / 3'SS truncation rescue** — post-consensus module in `splice_aware_5prime.py`; rescues reads truncated at the 3' splice site boundary even when no soft-clip sequence is present; uses annotated junctions ∪ novel junctions from all aligners' first pass; see Validation Suite §2 for design detail. (done — `splice_aware_5prime.py` wired into `bam_processor.py` as Module 2F)
 - [ ] Extend validation from chrI → full genome
 - [ ] Profile consensus scoring performance (`_get_effective_5prime_clip` and `_get_effective_3prime_clip` both call `read.get_aligned_pairs()` which is O(read length); may dominate at high coverage)
 - [ ] Add validation suite reads to unit tests as fixtures

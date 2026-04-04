@@ -12,6 +12,84 @@
 
 ## Fixed
 
+### ~~Bug 27 — `detect_partial_junction_crossings()` TypeError on SEQ=* reads~~ — Fixed 2026-04-03 (v2.7.5)
+`terminal_exon_refiner.py`: `len(clip_seq)` crashed with `TypeError` when `five_prime_clip['sequence']` is `None` (unmapped reads with `SEQ=*` in BAM). Added `if clip_seq is None: continue` guard.
+**File:** `rectify/core/terminal_exon_refiner.py`
+
+---
+
+### ~~Bug 26 — `generate_bedgraphs()` KeyError~~ — Fixed 2026-04-03 (v2.7.5)
+`analyze_command.py`: Fallback column name `'position'` (non-existent) replaced with `'corrected_position'` (the actual column name in output TSVs).
+**File:** `rectify/core/analyze_command.py`
+
+---
+
+### ~~Bug 24 — `_run_junction_aggregation()` KeyError + `.gff.gz` detection~~ — Fixed 2026-04-03 (v2.7.5)
+`run_command.py`: Dict key `partial_results['summary']` replaced with `partial_results['stats']` (correct key from `detect_partial_junction_crossings()`). Also fixed `.suffix` → `.suffixes` so `.gff.gz` files are correctly detected as GFF.
+**File:** `rectify/core/run_command.py`
+
+---
+
+### ~~Bug 23 — `deconvolve_region()` silent bad output~~ — Fixed 2026-04-03 (v2.7.5)
+`netseq_deconvolution.py`: Inverted coordinates (`region_start ≥ region_end`) now raise `ValueError` instead of silently returning a zero-length result.
+**File:** `rectify/core/netseq_deconvolution.py`
+
+---
+
+### ~~Bug 22 — `get_netseq_3prime_position()` crash on unmapped reads~~ — Fixed 2026-04-03 (v2.7.5)
+`netseq_bam_processor.py`: Added `if read.is_unmapped or read.reference_end is None: raise ValueError(...)` guard to prevent `TypeError` on unmapped reads.
+**File:** `rectify/core/netseq_bam_processor.py`
+
+---
+
+### ~~Bugs 20–21 — Silent fallbacks in `_stitch_group()`~~ — Fixed 2026-04-03 (v2.7.5)
+`mpb_split_reads.py`: Added `logger.debug()` calls for (20) all-unmapped read groups and (21) cross-chromosome/cross-strand chunk fallbacks, so these events are visible at DEBUG level instead of silently dropped.
+**File:** `rectify/core/mpb_split_reads.py`
+
+---
+
+### ~~Bug 19 — BAM file descriptor leak in `refine_terminal_exons()`~~ — Fixed 2026-04-03 (v2.7.5)
+`terminal_exon_refiner.py`: Converted from `bam.open()/bam.close()` to `with pysam.AlignmentFile(...) as bam:` context manager, ensuring file handle is closed even on early exit.
+**File:** `rectify/core/terminal_exon_refiner.py`
+
+---
+
+### ~~Bugs 17+11 — OOM and chrom normalization in `junction_validator.py`~~ — Fixed 2026-04-03 (v2.7.5)
+`junction_validator.py`: `filter_cross_sample_junctions()` replaced `pd.concat` + `itertuples()` (OOM on large datasets) with streaming dict accumulation. `read.reference_name` now passes through `standardize_chrom_name()` before junction key construction.
+**File:** `rectify/core/junction_validator.py`
+
+---
+
+### ~~Bug 15 — Negative `ambiguity_min` for reads near chromosome start~~ — Fixed 2026-04-03 (v2.7.5)
+`bam_processor.py`: `ambiguity_min` is now clipped to `max(0, ...)` to prevent negative genomic coordinates for reads near the chromosome start.
+**File:** `rectify/core/bam_processor.py`
+
+---
+
+### ~~Bug 7 — Missing timeouts on minimap2/mapPacBio/gapmm2~~ — Fixed 2026-04-03 (v2.7.5)
+`multi_aligner.py`: `ALIGNER_TIMEOUT` (7200s) now applied to all five aligners (was only applied to uLTRA and deSALT). Added `try/except TimeoutExpired` with process kill for minimap2 pipe.
+**File:** `rectify/core/multi_aligner.py`
+
+---
+
+### ~~Missing `logger` in `false_junction_filter.py`~~ — Fixed 2026-04-03 (v2.7.6)
+`false_junction_filter.py`: `logger.debug()` was called on line 286 but `import logging` and `logger = logging.getLogger(__name__)` were never added. Would have raised `NameError` at runtime whenever a junction motif analysis exception occurred.
+**File:** `rectify/core/false_junction_filter.py`
+
+---
+
+### ~~`NetSeqSignal` not picklable~~ — Fixed 2026-04-03 (v2.7.6)
+`netseq_refiner.py`: Added `__getstate__()` and `__setstate__()` methods so `NetSeqSignal` can be pickled for use with `multiprocessing.Pool`. The methods exclude the `threading.Lock` and open `pyBigWig` file handles (which are not picklable) and recreate them on restore.
+**File:** `rectify/core/netseq_refiner.py`
+
+---
+
+### ~~BAM file handle leak in `iter_netseq_reads()`~~ — Fixed 2026-04-03 (v2.7.6)
+`netseq_bam_processor.py`: The read iteration loop in `iter_netseq_reads()` called `bam.close()` after the loop, but an early `break` (e.g. `max_reads` limit reached) or exception would skip the close. Wrapped the loop in `try: ... finally: bam.close()`.
+**File:** `rectify/core/netseq_bam_processor.py`
+
+---
+
 ### ~~Bug 1: SettingWithCopyWarning in clustering.py~~ — Fixed 2026-04-01
 
 `clustering.py:473` warned about setting on a copy of a DataFrame slice.

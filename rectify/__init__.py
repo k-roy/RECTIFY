@@ -10,7 +10,7 @@ Modules:
 - NET-seq refinement (optional)
 - Visualization (optional, requires matplotlib)
 
-Features (v2.6.0):
+Features (v2.7.6):
 - Region-based parallel BAM processing with coverage gap splitting
 - SLURM-aware CPU detection to prevent oversubscription
 - Streaming output mode for large BAM files
@@ -21,7 +21,7 @@ Author: Kevin R. Roy
 License: MIT
 """
 
-__version__ = "2.7.5"
+__version__ = "2.7.6"
 __author__ = "Kevin R. Roy"
 __email__ = "kevinroy@stanford.edu"
 
