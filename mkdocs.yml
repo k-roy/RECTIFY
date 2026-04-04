@@ -1,0 +1,153 @@
+# Exclude internal developer docs from nav warnings (they're still accessible via direct URL)
+exclude_docs: |
+  ALIGNER_RECOMMENDATIONS.md
+  BUGS_TO_FIX.md
+  CHANGELOG.md
+  IMPLEMENTATION_SUMMARY.md
+
+site_name: RECTIFY
+site_description: "RNA 5' and 3' End Correction Tool with Intron reFInement and ambiguitY resolution"
+site_author: Kevin R. Roy
+site_url: https://rectify-rna.readthedocs.io
+repo_url: https://github.com/k-roy/RECTIFY
+repo_name: k-roy/RECTIFY
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: light-blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: light-blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            docstring_style: google
+            merge_init_into_class: true
+
+markdown_extensions:
+  - admonition
+  - abbr
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.snippets:
+      base_path: ["."]
+  - tables
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/k-roy/RECTIFY
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/rectify-rna/
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick Start: quickstart.md
+  - User Guide:
+    - Input Formats: user_guide/input_formats.md
+    - Output Formats: user_guide/output_formats.md
+    - Commands:
+      - Overview: user_guide/commands/overview.md
+      - rectify correct: user_guide/commands/correct.md
+      - rectify run: user_guide/commands/run.md
+      - rectify align: user_guide/commands/align.md
+      - rectify analyze: user_guide/commands/analyze.md
+      - rectify export: user_guide/commands/export.md
+      - rectify extract: user_guide/commands/extract.md
+      - rectify aggregate: user_guide/commands/aggregate.md
+      - rectify netseq: user_guide/commands/netseq.md
+      - rectify validate: user_guide/commands/validate.md
+      - rectify train-polya: user_guide/commands/train_polya.md
+      - rectify batch: user_guide/commands/batch.md
+    - Multi-Sample Analysis: user_guide/multi_sample.md
+    - HPC / SLURM: user_guide/hpc_slurm.md
+    - Bundled Data (Yeast): user_guide/bundled_data.md
+  - Algorithms:
+    - Overview: algorithms/overview.md
+    - 3' End Indel Correction: algorithms/3prime_indel_correction.md
+    - Soft-Clip Rescue: algorithms/softclip_rescue.md
+    - Multi-Aligner Consensus: algorithms/multi_aligner_consensus.md
+    - False Junction Handling: algorithms/false_junction_handling.md
+    - NET-seq Refinement: algorithms/netseq_refinement.md
+    - Adaptive Clustering: algorithms/adaptive_clustering.md
+    - APA Detection: algorithms/apa_detection.md
+  - Coordinate System: coordinate_system.md
+  - API Reference:
+    - Overview: api/index.md
+    - rectify.core: api/core.md
+    - rectify.core.analyze: api/analyze.md
+    - rectify.utils: api/utils.md
+    - rectify.visualize: api/visualize.md
+  - Changelog: changelog.md
+  - Contributing: contributing.md

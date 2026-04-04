@@ -43,8 +43,11 @@ dev = [
     "mypy>=0.950",
 ]
 docs = [
-    "sphinx>=4.5.0",
-    "sphinx-rtd-theme>=1.0.0",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.4.0",
+    "mkdocstrings[python]>=0.24.0",
+    "mkdocs-autorefs>=0.5.0",
+    "pymdown-extensions>=10.0",
 ]
 visualize = [
     "matplotlib>=3.5.0",
@@ -55,6 +58,7 @@ visualize = [
 
 [project.urls]
 "Homepage" = "https://github.com/k-roy/RECTIFY"
+"Documentation" = "https://rectify-rna.readthedocs.io"
 "Bug Tracker" = "https://github.com/k-roy/RECTIFY/issues"
 "Publication" = "https://pubmed.ncbi.nlm.nih.gov/31128237/"
 
