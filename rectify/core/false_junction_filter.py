@@ -31,9 +31,12 @@ Email: kevinrjroy@gmail.com
 Date: 2026-03-24
 """
 
+import logging
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import pysam
+
+logger = logging.getLogger(__name__)
 
 from ..config import POLYA_RICHNESS_THRESHOLD
 

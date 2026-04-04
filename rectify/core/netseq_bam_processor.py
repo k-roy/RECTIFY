@@ -532,58 +532,59 @@ def process_netseq_bam(
     n_yielded = 0
     n_trimmed_oligo_a = 0  # Reads with terminal oligo(A) mismatches trimmed
 
-    for read in bam:
-        n_total += 1
+    try:
+        for read in bam:
+            n_total += 1
 
-        # Progress reporting
-        if show_progress and n_total % progress_interval == 0:
-            print(f"  Processed {n_total:,} reads, yielded {n_yielded:,}...")
+            # Progress reporting
+            if show_progress and n_total % progress_interval == 0:
+                print(f"  Processed {n_total:,} reads, yielded {n_yielded:,}...")
 
-        # Skip invalid reads
-        if read.is_unmapped:
-            n_skipped_unmapped += 1
-            continue
-        if read.is_secondary or read.is_supplementary:
-            n_skipped_secondary += 1
-            continue
-        if read.mapping_quality < min_mapq:
-            n_skipped_mapq += 1
-            continue
+            # Skip invalid reads
+            if read.is_unmapped:
+                n_skipped_unmapped += 1
+                continue
+            if read.is_secondary or read.is_supplementary:
+                n_skipped_secondary += 1
+                continue
+            if read.mapping_quality < min_mapq:
+                n_skipped_mapq += 1
+                continue
 
-        # Get standardized chromosome name
-        contig_name = read.reference_name
-        chrom_std = chrom_map.get(contig_name, contig_name)
+            # Get standardized chromosome name
+            contig_name = read.reference_name
+            chrom_std = chrom_map.get(contig_name, contig_name)
 
-        # Get 3' position for exclusion check (with trimming)
-        three_prime_pos, strand, _ = get_netseq_3prime_position(
-            read, trim_terminal_oligo_a=trim_terminal_oligo_a
-        )
+            # Get 3' position for exclusion check (with trimming)
+            three_prime_pos, strand, _ = get_netseq_3prime_position(
+                read, trim_terminal_oligo_a=trim_terminal_oligo_a
+            )
 
-        # Check exclusion regions
-        if exclusion_detector and exclusion_detector.is_excluded(chrom_std, three_prime_pos):
-            n_skipped_excluded += 1
-            continue
+            # Check exclusion regions
+            if exclusion_detector and exclusion_detector.is_excluded(chrom_std, three_prime_pos):
+                n_skipped_excluded += 1
+                continue
 
-        # Process read
-        record = process_netseq_read(
-            read, chrom_std, min_a_fraction,
-            trim_terminal_oligo_a=trim_terminal_oligo_a
-        )
-        n_yielded += 1
+            # Process read
+            record = process_netseq_read(
+                read, chrom_std, min_a_fraction,
+                trim_terminal_oligo_a=trim_terminal_oligo_a
+            )
+            n_yielded += 1
 
-        # Track terminal oligo(A) trimming
-        if record.aligned_a_length > 0:
-            n_trimmed_oligo_a += 1
+            # Track terminal oligo(A) trimming
+            if record.aligned_a_length > 0:
+                n_trimmed_oligo_a += 1
 
-        yield record
+            yield record
 
-        # Check max_reads limit
-        if max_reads and n_yielded >= max_reads:
-            if show_progress:
-                print(f"  Reached max_reads limit ({max_reads})")
-            break
-
-    bam.close()
+            # Check max_reads limit
+            if max_reads and n_yielded >= max_reads:
+                if show_progress:
+                    print(f"  Reached max_reads limit ({max_reads})")
+                break
+    finally:
+        bam.close()
 
     if show_progress:
         print(f"  Completed: {n_total:,} total reads")

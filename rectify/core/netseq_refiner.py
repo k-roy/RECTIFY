@@ -111,6 +111,19 @@ class NetseqLoader:
         self._cache = OrderedDict()  # {(chrom, start, end, strand): signal_array}
         self._cache_lock = threading.Lock()
 
+    def __getstate__(self):
+        """Return picklable state (exclude threading.Lock and open BigWig handles)."""
+        state = self.__dict__.copy()
+        del state['_cache_lock']
+        del state['bigwigs']   # pyBigWig file handles are not picklable
+        return state
+
+    def __setstate__(self, state):
+        """Restore state and recreate the lock and empty bigwigs dict."""
+        self.__dict__.update(state)
+        self._cache_lock = threading.Lock()
+        self.bigwigs = {}  # BigWig files not restored; bundled signal still works
+
     def load_bigwig(self, filepath: str, name: str = None):
         """
         Load a BigWig file.
