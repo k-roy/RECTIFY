@@ -52,8 +52,9 @@ results/
     ├── tables/
     │   ├── deseq2_genes_*.tsv          # Gene-level differential expression (≥2 conditions)
     │   ├── deseq2_clusters_*.tsv       # Cluster-level differential expression (≥2 conditions)
-    │   └── shift_results.tsv           # APA shift analysis (≥2 conditions)
-    ├── go_enrichment.tsv               # GO enrichment for DE genes (≥2 conditions)
+    │   └── shift_analysis_*.tsv        # APA shift analysis (≥2 conditions)
+    ├── go_enrichment_up_*.tsv          # GO enrichment for up-regulated DE genes (≥2 conditions)
+    ├── go_enrichment_down_*.tsv        # GO enrichment for down-regulated DE genes (≥2 conditions)
     ├── motif_results/                  # Enriched sequence motifs near CPA sites
     ├── report.html                     # Combined QC and results report
     └── PROVENANCE.json
