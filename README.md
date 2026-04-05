@@ -14,7 +14,7 @@
 
 ## Overview
 
-Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving four intertwined problems: spurious 3' ends created by poly(A) tail artifacts (indels and false splice junctions), soft-clipped 5' bases that actually align upstream of splice sites, homopolymer-driven soft-clipping at 3' ends, and conflicting junction calls between different aligners. **RECTIFY** solves all four through multi-aligner consensus, artifact-aware corrections, and optional NET-seq refinement, delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
+Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving four intertwined problems: spurious 3' ends created by poly(A) tail artifacts (indels and false splice junctions), soft-clipped 5' bases that actually align upstream of splice sites, homopolymer-driven soft-clipping at 3' ends, and conflicting junction calls between different aligners. **RECTIFY** solves all four through multi-aligner rectification, artifact-aware corrections, and optional NET-seq refinement, delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
 
 **Use RECTIFY when you need:**
 - Accurate cleavage and polyadenylation (CPA) site mapping from DRS data
@@ -94,18 +94,18 @@ Nanopore basecallers systematically under-call homopolymer runs. At CPA sites wi
 
 This correction is especially critical for detecting true 3' ends in regions where weak basecalling and homopolymer under-calling create false soft-clip boundaries.
 
-### 4. Multi-Aligner Consensus: Selecting the Best Junction Set
+### 4. Multi-Aligner Rectification: Selecting the Optimal Junction Set
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **mapPacBio**, **gapmm2**), attempts soft-clip rescue on all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the best per read.
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **mapPacBio**, **gapmm2**), applies soft-clip rescue to all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the optimal rectified alignment per read.
 
 <p align="center">
-  <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Consensus Pipeline" width="680">
+  <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Rectification Pipeline" width="680">
 </p>
 
-**Scoring criteria:** Each alignment is scored by (1) number of GT-AG canonical junctions, (2) matches to annotated junctions in the provided GFF/GTF, and (3) remaining soft-clip length. The alignment with the highest composite score becomes the consensus and is written to the output BAM.
+**Scoring criteria:** Each alignment is scored by (1) number of GT-AG canonical junctions, (2) matches to annotated junctions in the provided GFF/GTF, and (3) remaining soft-clip length. The highest-scoring alignment is written to the output BAM.
 
 ```bash
-# Multi-aligner consensus (default, DRS-optimized)
+# Multi-aligner rectification (default, DRS-optimized)
 rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
 
 # Single-aligner mode (faster, less accurate)
@@ -118,7 +118,7 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 
 | Feature | Benefit |
 |:--------|:--------|
-| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read, reducing spurious calls |
+| **Multi-Aligner Rectification** | Runs minimap2, mapPacBio, gapmm2, scores each alignment, and selects the optimal rectified result per read |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through known splice junctions |
 | **3' End Walk-Back** | Walks backward from soft-clip boundary to recover true CPA site, transparently absorbing indels, T sequencing errors, and spurious splice junctions (N ops) in a single pass |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
@@ -178,7 +178,7 @@ For organisms with nascent RNA (NET-seq) data, RECTIFY resolves remaining ambigu
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
 | `rectify extract` | Extract per-read 5'/3' ends and junctions to TSV |
 | `rectify aggregate` | Group reads into 3'/5'/junction dataset files |
-| `rectify align` | Align FASTQ with multi-aligner consensus |
+| `rectify align` | Align FASTQ with multi-aligner rectification |
 | `rectify netseq` | Process NET-seq BAM files (3' extraction + deconvolution) |
 | `rectify run` | Full pipeline: align (if FASTQ) → correct → analyze |
 | `rectify run-all` | Full pipeline with provenance tracking and step-skip |
