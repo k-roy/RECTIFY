@@ -14,7 +14,7 @@
 
 ## Overview
 
-Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving three intertwined problems: spurious 3' ends created by poly(A) tail artifacts, soft-clipped 5' bases that actually align upstream, and conflicting junction calls between different aligners. **RECTIFY** solves all three through multi-aligner consensus, artifact-aware corrections, and optional NET-seq refinement, delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
+Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving four intertwined problems: spurious 3' ends created by poly(A) tail artifacts (indels and false splice junctions), soft-clipped 5' bases that actually align upstream of splice sites, homopolymer-driven soft-clipping at 3' ends, and conflicting junction calls between different aligners. **RECTIFY** solves all four through multi-aligner consensus, artifact-aware corrections, and optional NET-seq refinement, delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
 
 **Use RECTIFY when you need:**
 - Accurate cleavage and polyadenylation (CPA) site mapping from DRS data
@@ -58,7 +58,7 @@ rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
 
 ## How It Works
 
-RECTIFY reconstructs true RNA 3' and 5' ends through three sequential corrections, each addressing a specific alignment artifact.
+RECTIFY reconstructs true RNA 3' and 5' ends through four sequential corrections, each addressing a specific alignment artifact.
 
 ### 1. 3' End Walk-Back: Recovering the True CPA Site
 
@@ -72,7 +72,19 @@ When poly(A) tails align to genomic A-tracts, aligners introduce indels and spur
 
 **False junction cleanup is built-in:** Poly(A) tails can cause aligners to introduce skip (N) operations to reach downstream A-tracts, creating spurious splice junctions. The same walk-back that corrects indel artifacts transparently absorbs these N operations — they require no separate detection step.
 
-### 2. Soft-Clip Rescue: Recovering 5' Bases at Homopolymer Boundaries
+<p align="center">
+  <img src="docs/figures/false_junction_walkback.png" alt="False Junction Walk-Back" width="680">
+</p>
+
+### 2. 5' End Junction Rescue: Recovering Soft-Clipped Bases at Splice Sites
+
+Nanopore reads that begin near a splice junction frequently have their 5'-most bases soft-clipped rather than placed in the upstream exon. RECTIFY identifies these soft-clipped sequences, locates the nearest annotated donor site, and extends the alignment through the intron to recover the true transcription start position.
+
+<p align="center">
+  <img src="docs/figures/5prime_junction_rescue.png" alt="5' End Junction Rescue" width="680">
+</p>
+
+### 3. Soft-Clip Rescue: Recovering 5' Bases at Homopolymer Boundaries
 
 Nanopore basecallers systematically under-call homopolymer runs. At CPA sites with upstream T-rich regions, this causes the aligner to soft-clip non-T bases rather than place them in the correct exon. RECTIFY identifies soft-clipped sequences, skips remaining reference homopolymer bases, and matches them to downstream reference positions.
 
@@ -82,7 +94,7 @@ Nanopore basecallers systematically under-call homopolymer runs. At CPA sites wi
 
 This correction is especially critical for detecting true 3' ends in regions where weak basecalling and homopolymer under-calling create false soft-clip boundaries.
 
-### 3. Multi-Aligner Consensus: Selecting the Best Junction Set
+### 4. Multi-Aligner Consensus: Selecting the Best Junction Set
 
 Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **mapPacBio**, **gapmm2**), attempts soft-clip rescue on all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the best per read.
 
