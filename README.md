@@ -58,17 +58,19 @@ rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
 
 ## How It Works
 
-RECTIFY reconstructs true RNA 3' and 5' ends through four sequential corrections, each addressing a specific alignment artifact.
+RECTIFY reconstructs true RNA 3' and 5' ends through three sequential corrections, each addressing a specific alignment artifact.
 
-### 1. 3' End Indel Correction: Recovering the True CPA Site
+### 1. 3' End Walk-Back: Recovering the True CPA Site
 
-When poly(A) tails align to genomic A-tracts, aligners introduce indels to maximize alignment score, **shifting the apparent 3' end far downstream** of the true cleavage site. RECTIFY walks backward from the soft-clip boundary, skipping A's, deletions, and T sequencing errors, until it finds the first non-A/T agreement between genome and read — the true CPA site.
+When poly(A) tails align to genomic A-tracts, aligners introduce indels and spurious splice junctions (N operations) to maximize alignment score, **shifting the apparent 3' end far downstream** of the true cleavage site. RECTIFY walks backward from the soft-clip boundary, skipping A's, deletions, T sequencing errors, and any intron-skip (N) operations it encounters, until it finds the first non-A/T agreement between genome and read — the true CPA site.
 
 <p align="center">
-  <img src="docs/figures/indel_correction.png" alt="3' End Indel Correction" width="680">
+  <img src="docs/figures/indel_correction.png" alt="3' End Walk-Back Correction" width="680">
 </p>
 
-**Why simple poly(A) trimming fails:** The boundary between genomic A's and tail A's is ambiguous in A-tract regions. RECTIFY's walk-back algorithm handles deletions and T sequencing errors within the A-tract, recovering the true CPA position even when the aligner has spread the poly(A) signal across multiple genomic A-runs. For minus-strand genes, the poly(A) tail appears as a poly(T) prefix extending leftward — RECTIFY applies identical logic in reverse orientation.
+**Why simple poly(A) trimming fails:** The boundary between genomic A's and tail A's is ambiguous in A-tract regions. RECTIFY's walk-back algorithm handles deletions, T sequencing errors, and false splice junctions within the A-tract, recovering the true CPA position even when the aligner has spread the poly(A) signal across multiple genomic A-runs or introduced spurious N operations to reach downstream A-tracts. For minus-strand genes, the poly(A) tail appears as a poly(T) prefix extending leftward — RECTIFY applies identical logic in reverse orientation.
+
+**False junction cleanup is built-in:** Poly(A) tails can cause aligners to introduce skip (N) operations to reach downstream A-tracts, creating spurious splice junctions. The same walk-back that corrects indel artifacts transparently absorbs these N operations — they require no separate detection step.
 
 ### 2. Soft-Clip Rescue: Recovering 5' Bases at Homopolymer Boundaries
 
@@ -98,10 +100,6 @@ rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligne
 rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
 ```
 
-### 4. False Junction Walk-Back: Cleaning Up Poly(A) Artifacts
-
-Poly(A) tails can create spurious "junctions" when aligners introduce skip (N) operations to align tail bases to downstream A-tracts. The walk-back algorithm handles this automatically — it eats through all aligned A's and discards any N operations it encounters, recovering the true CPA site without needing explicit false junction detection.
-
 ---
 
 ## Key Features
@@ -110,8 +108,7 @@ Poly(A) tails can create spurious "junctions" when aligners introduce skip (N) o
 |:--------|:--------|
 | **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read, reducing spurious calls |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through known splice junctions |
-| **3' End Indel Correction** | Walks backward from soft-clip boundary to recover true CPA site in A-tract regions |
-| **False Junction Cleanup** | Discards spurious junctions created by poly(A) tail alignment artifacts |
+| **3' End Walk-Back** | Walks backward from soft-clip boundary to recover true CPA site, transparently absorbing indels, T sequencing errors, and spurious splice junctions (N ops) in a single pass |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length including both aligned and soft-clipped bases |
 | **NET-seq Refinement** | Uses nascent RNA 3' ends to deconvolve A-tract ambiguity (optional) |
