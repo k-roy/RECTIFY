@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="360" viewBox="0 0 760 360">
+<rect fill="#ffffff" width="760" height="360"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">False Junction Walk-Back</text>
+<text fill="#dc2626" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">BEFORE CORRECTION</text>
+<text fill="#64748b" font-size="10" x="14" y="86">Genome</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="70" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="83" y="86">G</text>
+<rect fill="#ffedd5" height="24" rx="3" width="26" x="96" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="109" y="86">T</text>
+<rect fill="#f3e8ff" height="24" rx="3" width="26" x="122" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="135" y="86">C</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="148" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="161" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="174" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="187" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="200" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="226" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="86">A</text>
+<line stroke="#94a3b8" stroke-dasharray="5,3" stroke-width="1.5" x1="252" x2="302" y1="82" y2="82"/>
+<text fill="#94a3b8" font-size="8" text-anchor="middle" x="277" y="74">gap</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="302" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="315" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="328" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="341" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="354" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="367" y="86">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="380" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="393" y="86">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="406" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="419" y="86">G</text>
+<rect fill="#ffedd5" height="24" rx="3" width="26" x="432" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="445" y="86">T</text>
+<rect fill="#f3e8ff" height="24" rx="3" width="26" x="458" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="471" y="86">C</text>
+<path d="M148,69 L148,64 L252,64 L252,69" fill="none" stroke="#059669" stroke-width="1" opacity="0.6"/>
+<text fill="#059669" font-size="8.5" text-anchor="middle" x="200.0" y="60">A-tract</text>
+<path d="M302,69 L302,64 L406,64 L406,69" fill="none" stroke="#059669" stroke-width="1" opacity="0.6"/>
+<text fill="#059669" font-size="8.5" text-anchor="middle" x="354.0" y="60">A-tract</text>
+<line stroke="#059669" stroke-width="2" x1="148" x2="148" y1="56" y2="70"/>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="end" x="143" y="52">true CPA</text>
+<text fill="#64748b" font-size="10" x="14" y="136">Read</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="70" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="83" y="136">G</text>
+<rect fill="#ffedd5" height="24" rx="3" width="26" x="96" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="109" y="136">T</text>
+<rect fill="#f3e8ff" height="24" rx="3" width="26" x="122" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="135" y="136">C</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="148" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="161" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="174" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="187" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="200" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="226" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="136">A</text>
+<rect fill="#fee2e2" height="24" rx="3" stroke="#dc2626" stroke-width="1.5" width="50" x="252" y="120"/>
+<text fill="#dc2626" font-size="10" font-weight="700" text-anchor="middle" x="277" y="136">N</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="302" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="315" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="328" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="341" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="354" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="367" y="136">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="380" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="393" y="136">A</text>
+<rect fill="#bfdbfe" height="24" rx="3" width="26" x="406" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="419" y="136">A</text>
+<rect fill="#bfdbfe" height="24" rx="3" width="26" x="432" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="445" y="136">A</text>
+<rect fill="#bfdbfe" height="24" rx="3" width="26" x="458" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="471" y="136">A</text>
+<path d="M406,119 L406,114 L484,114 L484,119" fill="none" stroke="#1d4ed8" stroke-width="1" opacity="0.6"/>
+<text fill="#1d4ed8" font-size="8.5" text-anchor="middle" x="445.0" y="110">soft-clip</text>
+<text fill="#dc2626" font-size="9" font-weight="600" text-anchor="middle" x="277" y="158">false N op</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="170" y2="170"/>
+<text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="188">AFTER CORRECTION</text>
+<line stroke="#2563eb" stroke-width="1.5" x1="458" x2="152" y1="206" y2="206"/>
+<polygon fill="#2563eb" points="152,206 159,202.5 159,209.5"/>
+<text fill="#2563eb" font-size="9" text-anchor="middle" x="305.0" y="197">walk back: eat A’s, discard N</text>
+<text fill="#64748b" font-size="10" x="14" y="246">Corrected</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="70" y="230" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="83" y="246">G</text>
+<rect fill="#ffedd5" height="24" rx="3" width="26" x="96" y="230" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="109" y="246">T</text>
+<rect fill="#f3e8ff" height="24" rx="3" width="26" x="122" y="230" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="135" y="246">C</text>
+<line stroke="#059669" stroke-width="2" x1="148" x2="148" y1="222" y2="258"/>
+<text fill="#059669" font-size="9" font-weight="600" x="153" y="218">correct 3′ end</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="148" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="161" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="174" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="187" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="200" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="226" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="252" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="265" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="278" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="291" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="304" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="317" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="330" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="343" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="356" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="369" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="382" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395" y="246">A</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="408" y="230" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="421" y="246">A</text>
+<path d="M148,255 L148,260 L434,260 L434,255" fill="none" stroke="#2563eb" stroke-width="1" opacity="0.6"/>
+<text fill="#2563eb" font-size="8.5" text-anchor="middle" x="291.0" y="272">poly(A) tail (false N discarded)</text>
+</g>
+</svg>

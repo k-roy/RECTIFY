@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="310" viewBox="0 0 760 310">
+<rect fill="#ffffff" width="760" height="310"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">5′ End Correction: Junction Soft-Clips</text>
+<text fill="#dc2626" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">BEFORE CORRECTION</text>
+<text fill="#64748b" font-size="10" x="14" y="83">Genome</text>
+<rect fill="#6366f1" height="30" rx="4" width="180" x="90" y="64"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="180.0" y="83.0">Exon 1</text>
+<line stroke="#94a3b8" stroke-dasharray="6,4" stroke-width="1.5" x1="270" x2="390" y1="79" y2="79"/>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="330.0" y="72">intron</text>
+<text fill="#94a3b8" font-size="8" x="273" y="93">GT</text>
+<text fill="#94a3b8" font-size="8" text-anchor="end" x="387" y="93">AG</text>
+<rect fill="#6366f1" height="30" rx="4" width="180" x="390" y="64"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="480.0" y="83.0">Exon 2</text>
+<text fill="#64748b" font-size="10" x="14" y="131">Read</text>
+<rect fill="#fee2e2" height="30" rx="4" stroke="#dc2626" stroke-dasharray="4,3" stroke-width="1" width="170" x="220" y="112"/>
+<text fill="#dc2626" font-size="9" text-anchor="middle" x="305.0" y="130.0">soft-clipped bases</text>
+<rect fill="#6366f1" height="30" opacity="0.18" rx="4" stroke="#6366f1" stroke-width="1" width="180" x="390" y="112"/>
+<text fill="#6366f1" font-size="9" font-weight="600" text-anchor="middle" x="480.0" y="130.0">aligned to Exon 2</text>
+<text fill="#dc2626" font-size="9" text-anchor="middle" x="305" y="156">these bases match Exon 1</text>
+<line stroke="#dc2626" stroke-width="1.2" x1="228" x2="382" y1="162" y2="162"/>
+<polygon fill="#dc2626" points="228,162 235,159 235,165"/>
+<polygon fill="#dc2626" points="382,162 375,159 375,165"/>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="180" y2="180"/>
+<text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="198">AFTER CORRECTION</text>
+<text fill="#64748b" font-size="10" x="14" y="239">Genome</text>
+<rect fill="#6366f1" height="30" rx="4" width="180" x="90" y="220"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="180.0" y="239.0">Exon 1</text>
+<line stroke="#94a3b8" stroke-dasharray="6,4" stroke-width="1.5" x1="270" x2="390" y1="235" y2="235"/>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="330.0" y="228">intron</text>
+<rect fill="#6366f1" height="30" rx="4" width="180" x="390" y="220"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="480.0" y="239.0">Exon 2</text>
+<text fill="#64748b" font-size="10" x="14" y="283">Corrected</text>
+<rect fill="#ccfbf1" height="30" rx="4" stroke="#0d9488" stroke-width="1.2" width="170" x="100" y="264"/>
+<text fill="#0d9488" font-size="9" font-weight="600" text-anchor="middle" x="185.0" y="282.0">rescued → Exon 1</text>
+<line stroke="#94a3b8" stroke-dasharray="6,4" stroke-width="1.5" x1="270" x2="390" y1="279" y2="279"/>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="330.0" y="272">N (splice)</text>
+<rect fill="#6366f1" height="30" opacity="0.18" rx="4" stroke="#6366f1" stroke-width="1" width="180" x="390" y="264"/>
+<text fill="#6366f1" font-size="9" font-weight="600" text-anchor="middle" x="480.0" y="282.0">Exon 2</text>
+</g>
+</svg>
