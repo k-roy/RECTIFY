@@ -68,7 +68,7 @@ results/
 |---------|-------------|
 | **Spike-in Filtering** | Removes synthetic spike-in reads (e.g. ENO2) by k-mer sequence matching, restricted to the spike-in gene locus to prevent false positives |
 | **5' End Junction Recovery** | Attempts to rescue 5' soft-clipped bases in each aligner's output by extending through splice junctions |
-| **3' End A-tract Estimation** | Estimates true CPA position for each aligner using downstream A-tract depth; used to score and break ties in consensus selection |
+| **3' End A-tract Estimation** | Estimates true CPA position for each aligner using downstream A-tract depth; used to score and break ties in optimal alignment selection |
 | **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 — penalizing 5' soft-clips and 3' A-tract depth — and selects the best per read |
 | **3' End Correction (Walk-back)** | Refines 3' end on the rectified BAM: fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) are discarded automatically |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
