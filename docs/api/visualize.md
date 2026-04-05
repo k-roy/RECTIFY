@@ -86,18 +86,6 @@ Read-level alignment visualization.
 
 ---
 
-## ridge
-
-Ridge plots for CPA position distributions across samples.
-
-::: rectify.visualize.ridge
-    options:
-      members:
-        - plot_ridge
-        - RidgePlotConfig
-
----
-
 ## figure_utils
 
 Plotting utilities and style helpers.
