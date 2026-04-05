@@ -40,7 +40,7 @@ Columns: `filename` (resolved relative to the manifest), `group` (condition labe
 ```
 results/
 ├── <sample_id>/                        # Per-sample
-│   ├── <sample_id>.consensus.bam       # Triple-aligner consensus alignment
+│   ├── <sample_id>.rectified.bam       # Optimal aligner selection + 3' end rectification
 │   ├── corrected_3ends.tsv             # Per-read corrected 3' ends, confidence, poly(A) length, fraction
 │   ├── corrected_3ends_stats.tsv       # Correction statistics
 │   ├── corrected_3ends_report.html     # Per-sample QC report
@@ -69,11 +69,11 @@ results/
 | **5' End Junction Recovery** | Attempts to rescue 5' soft-clipped bases in each aligner's output by extending through splice junctions |
 | **3' End A-tract Estimation** | Estimates true CPA position for each aligner using downstream A-tract depth; used to score and break ties in consensus selection |
 | **Multi-Aligner Consensus** | Scores rescued alignments from minimap2, mapPacBio, and gapmm2 — penalizing 5' soft-clips and 3' A-tract depth — and selects the best per read |
-| **3' End Correction (Walk-back)** | Refines 3' end on the consensus BAM: fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) are discarded automatically |
+| **3' End Correction (Walk-back)** | Refines 3' end on the rectified BAM: fixes CIGAR deletion artifacts and walks upstream to the true CPA site; false splice junctions (N operations) are discarded automatically |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data; reads assigned proportionally across peaks |
-| **Adaptive Clustering** | Groups CPA sites with valley-based algorithm |
+| **CPA Clustering** | Groups CPA sites with fixed-distance clustering (default) or adaptive valley-based algorithm (optional) |
 | **Dual-Resolution DESeq2** | Gene-level and cluster-level differential expression |
 | **APA Shift Analysis** | Detects proximal/distal CPA site usage changes |
 | **Visualization** | Metagene plots, genome browser figures (`pip install rectify-rna[visualize]`) |
@@ -148,36 +148,36 @@ Long reads spanning splice junctions often have soft-clipped bases at the 5' end
 
 ---
 
-## Multi-Aligner Consensus Pipeline
+## Multi-Aligner Rectification Pipeline
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel and selects the best alignment per read.
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs minimap2, mapPacBio, and gapmm2, selects the optimal alignment per read, then applies 3' end rectification.
 
-![Multi-Aligner Consensus](docs/figures/multi_aligner_consensus.png)
+![Multi-Aligner Rectification](docs/figures/multi_aligner_consensus.png)
 
 **The Problem:** Different aligners handle the same read differently. Some soft-clip at splice boundaries while others find the junction.
 
 **RECTIFY's Solution:**
 1. Run all 3 aligners (minimap2, mapPacBio, gapmm2) on the same reads
 2. **Attempt to rescue** each alignment's 5' soft-clips by extending through known junctions
-3. Score the (potentially rescued) alignments by canonical splice sites (GT-AG) and annotation matches
-4. Select the highest-scoring alignment per read
-5. Output: Single consensus BAM with best alignment per read
+3. Score rescued alignments: penalize remaining 5' soft-clips and 3' A-tract depth (GT-AG motifs serve as tiebreakers only — deliberately excluded from primary score to avoid penalizing novel non-canonical junctions)
+4. Select the **optimal** alignment per read
+5. Apply 3' end rectification; output **rectified BAM**
 
 **Note:** 3' false junctions from poly(A) artifacts are handled separately by walk back correction (see "3' False Junction Handling" below).
 
 **Usage:**
 
 ```bash
-# Multi-aligner consensus alignment (default, aligners run in parallel)
-rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
+# Multi-aligner rectified alignment (default, aligners run sequentially)
+rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned/
 
 # Parallel aligners with proportional thread allocation (minimap2 gets fewer threads
 # since it's faster; mapPacBio and gapmm2 get more to finish at the same time)
 rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff \
     --parallel-aligners --threads 16 -o aligned.bam
 
-# Single aligner mode (faster, less accurate)
-rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
+# Single aligner mode — outputs optimal alignment from one aligner only
+rectify align reads.fastq.gz --genome genome.fa --aligners minimap2 -o aligned/
 ```
 
 ---
@@ -190,7 +190,7 @@ Poly(A) tails can create spurious "junctions" when the aligner introduces a skip
 
 **The Problem:** The aligner introduces an N (skip) to extend the poly(A) tail alignment into a downstream A-tract, creating a spurious junction that doesn't exist in the transcript.
 
-**RECTIFY's Solution:** The walk back algorithm finds the true 3' end by walking upstream through ALL aligned A's until it finds the first non-A agreement between genome and read. Crucially, it **DISCARDS any N (skip) operations** it encounters.
+**RECTIFY's Solution:** The walk back algorithm finds the true 3' end by walking upstream through ALL aligned A's until it finds the first non-A agreement between genome and read. N (skip/junction) operations are excluded from the walk-back position list during CIGAR parsing — so they are never traversed, and any spurious junction is simply absent from the corrected output.
 
 **Result:**
 - Walk back finds the true CPA at the EXON/A boundary
@@ -203,11 +203,11 @@ Poly(A) tails can create spurious "junctions" when the aligner introduces a skip
 
 ## Adaptive Clustering and Differential Expression
 
-After correction, RECTIFY groups nearby CPA sites into clusters using a valley-based algorithm, then runs DESeq2 at both gene and cluster resolution.
+After correction, RECTIFY groups nearby CPA sites into clusters, then runs DESeq2 at both gene and cluster resolution. Two modes: **fixed-distance** (default — merge sites within a set bp window) and **adaptive valley-based** (optional, `--adaptive-clustering` — find signal peaks then split at valleys).
 
 ![Adaptive Clustering](docs/figures/adaptive_clustering.png)
 
-**Algorithm:**
+**Adaptive valley-based algorithm** (`--adaptive-clustering`):
 1. Find peaks (local maxima in 3' end signal)
 2. Find valleys (local minima between peaks)
 3. Set boundaries at midpoint between peak and valley (capped at ±10bp)
@@ -231,20 +231,20 @@ After correction, RECTIFY groups nearby CPA sites into clusters using a valley-b
 Each read gets a corrected position with confidence scores:
 
 ```
-read_id   │ chrom │ strand │ original │ corrected │ shift │ confidence │ polya_len │ fraction │ qc_flags
-read001   │ chrI  │   +    │  147592  │   147585  │  -7   │    HIGH    │    42     │  1.0000  │   PASS
-read002   │ chrI  │   +    │  147594  │   147591  │  -3   │   MEDIUM   │    38     │  1.0000  │   PASS
-read003   │ chrII │   +    │  283109  │   283104  │  -5   │    LOW     │    31     │  0.6500  │ AG_RICH
+read_id   │ chrom │ strand │ original_3prime │ corrected_3prime │ confidence │ polya_length │ fraction │ qc_flags
+read001   │ chrI  │   +    │    147592       │     147585       │    high    │      42      │  1.0000  │   PASS
+read002   │ chrI  │   +    │    147594       │     147591       │   medium   │      38      │  1.0000  │   PASS
+read003   │ chrII │   +    │    283109       │     283104       │    low     │      31      │  0.6500  │ AG_RICH
 ```
 
 The `fraction` column reflects proportional NET-seq assignment: when a read falls in an A-tract with multiple NET-seq peaks, it is split across peaks rather than snapped to a single position. Fractions sum to 1.0 per input read.
 
 The `rectify analyze` command produces:
-- `clusters.tsv` - CPA site clusters with read counts per sample
-- `deseq2_gene_results.tsv` - Gene-level differential expression
-- `deseq2_cluster_results.tsv` - Cluster-level differential expression
-- `shift_results.tsv` - Genes with significant APA shifts
-- `go_enrichment.tsv` - GO enrichment for DE genes
+- `cpa_clusters.tsv` - CPA site clusters with read counts per sample
+- `deseq2_genes_{condition}.tsv` - Gene-level differential expression
+- `deseq2_clusters_{condition}.tsv` - Cluster-level differential expression
+- `shift_analysis_{condition}.tsv` - Genes with significant APA shifts
+- `go_enrichment_up_{condition}.tsv` / `go_enrichment_down_{condition}.tsv` - GO enrichment for up/down DE genes
 - `motif_results/` - Enriched sequence motifs near CPA sites
 
 #### Genomic category distribution
@@ -357,7 +357,7 @@ Run steps independently to re-process from any point in the pipeline.
 
 | Command | Description |
 |---------|-------------|
-| `rectify align` | Align FASTQ with the aligner panel (minimap2, gapmm2, mapPacBio; all with DRS-optimized settings) and select the best alignment per read |
+| `rectify align` | Align FASTQ with the aligner panel (minimap2, gapmm2, mapPacBio; all with DRS-optimized settings) select the optimal alignment per read, and output a rectified BAM |
 | `rectify correct` | Correct 5' ends, 3' ends, and junctions — indel correction at poly(A) boundaries, A-tract ambiguity resolution, NET-seq refinement |
 | `rectify analyze` | Downstream analysis: CPA clustering, DESeq2, GO enrichment, motif discovery |
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
@@ -700,7 +700,7 @@ See [PLOT_SKILLS.md](PLOT_SKILLS.md) for the full API reference and list of pitf
 
 - Nanopore direct RNA-seq (minimap2)
 - QuantSeq (oligo-dT short-read)
-- PacBio Iso-Seq
+- PacBio Iso-Seq (experimental — mapPacBio/gapmm2 aligners available)
 - NET-seq (nascent RNA 3' end sequencing)
 - Any poly(A)-tailed RNA-seq
 
@@ -711,7 +711,7 @@ See [PLOT_SKILLS.md](PLOT_SKILLS.md) for the full API reference and list of pitf
 **Original RECTIFY:**
 > Roy KR, Chanfreau GF. Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends at nucleotide resolution by 3'-end sequencing. *Methods*. 2020;176:4-13. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
 
-**RECTIFY 2.0:** Manuscript in preparation
+**RECTIFY 2.x (current):** Manuscript in preparation
 
 ---
 
