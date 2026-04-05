@@ -497,11 +497,11 @@ def fig_multi_aligner_consensus():
     L.append(exon(370, y_g, 160, BLK_H, "Exon 2"))
 
     # Aligner rows
-    aligner_colors = {"minimap2": "#3b82f6", "pbmm2": "#f59e0b", "gapmm2": "#22c55e"}
+    aligner_colors = {"minimap2": "#3b82f6", "mapPacBio": "#f59e0b", "gapmm2": "#22c55e"}
     aligner_configs = [
-        ("minimap2", "full"),
-        ("pbmm2",   "sc_5p"),
-        ("gapmm2",  "sc_3p"),
+        ("minimap2",   "full"),
+        ("mapPacBio",  "sc_5p"),
+        ("gapmm2",     "sc_3p"),
     ]
 
     for i, (name, mode) in enumerate(aligner_configs):
@@ -536,9 +536,9 @@ def fig_multi_aligner_consensus():
     L.append(exon(370, y_g2, 160, BLK_H, "Exon 2"))
 
     rescued_data = [
-        ("minimap2", "#3b82f6", False),
-        ("pbmm2",   "#f59e0b", True),
-        ("gapmm2",  "#22c55e", True),
+        ("minimap2",   "#3b82f6", False),
+        ("mapPacBio",  "#f59e0b", True),
+        ("gapmm2",     "#22c55e", True),
     ]
     for i, (name, color, was_rescued) in enumerate(rescued_data):
         y = y_g2 + 34 + i * 32

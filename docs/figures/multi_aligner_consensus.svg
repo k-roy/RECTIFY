@@ -17,7 +17,7 @@
 <line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="115" y2="115"/>
 <rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="370" y="102"/>
 <text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="118.0">Exon 2</text>
-<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="155">pbmm2</text>
+<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="155">mapPacBio</text>
 <rect fill="#fee2e2" height="26" rx="4" stroke="#dc2626" stroke-dasharray="4,3" stroke-width="1" width="50" x="320" y="138"/>
 <text fill="#dc2626" font-size="9" text-anchor="middle" x="345.0" y="154.0">SC</text>
 <rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="370" y="138"/>
@@ -45,7 +45,7 @@
 <line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="301" y2="301"/>
 <rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="370" y="288"/>
 <text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="304.0">Exon 2</text>
-<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="337">pbmm2</text>
+<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="337">mapPacBio</text>
 <rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="100" y="320"/>
 <text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="336.0">Exon 1</text>
 <line stroke="#f59e0b" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="333" y2="333"/>

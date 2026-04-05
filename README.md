@@ -82,7 +82,7 @@ This correction is especially critical for detecting true 3' ends in regions whe
 
 ### 3. Multi-Aligner Consensus: Selecting the Best Junction Set
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **pbmm2**, **gapmm2**), attempts soft-clip rescue on all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the best per read.
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **mapPacBio**, **gapmm2**), attempts soft-clip rescue on all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the best per read.
 
 <p align="center">
   <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Consensus Pipeline" width="680">
@@ -108,7 +108,7 @@ Poly(A) tails can create spurious "junctions" when aligners introduce skip (N) o
 
 | Feature | Benefit |
 |:--------|:--------|
-| **Multi-Aligner Consensus** | Runs minimap2, pbmm2, gapmm2 and selects best junction set per read, reducing spurious calls |
+| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 and selects best junction set per read, reducing spurious calls |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through known splice junctions |
 | **3' End Indel Correction** | Walks backward from soft-clip boundary to recover true CPA site in A-tract regions |
 | **False Junction Cleanup** | Discards spurious junctions created by poly(A) tail alignment artifacts |
