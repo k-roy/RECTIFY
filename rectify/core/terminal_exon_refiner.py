@@ -1075,7 +1075,8 @@ def detect_junction_truncated_reads(
                     results['stats']['truncated_at_3ss'] += 1
                     break
             else:  # minus strand
-                if abs(read_end - pos - 2) <= tolerance and not has_junction:
+                # 3'SS is at lower position; read start (leftmost) should be near it
+                if abs(read_start - pos) <= tolerance and not has_junction:
                     results['truncated_at_3ss'].append({
                         'read_id': read.query_name,
                         'chrom': chrom,
@@ -1084,7 +1085,7 @@ def detect_junction_truncated_reads(
                         'read_end': read_end,
                         'splice_site_pos': pos,
                         'intron_id': site.intron_id,
-                        'distance_from_ss': read_end - pos - 2
+                        'distance_from_ss': read_start - pos
                     })
                     results['stats']['truncated_at_3ss'] += 1
                     break
@@ -1279,11 +1280,11 @@ def detect_partial_junction_crossings(
         # Get soft-clip info
         clip_info = get_soft_clip_info(read)
 
+        # The 3'SS is at the lower coordinate for minus strand, so check read_start
         # For - strand (direct RNA): right clip is at 5' end of RNA (high genomic coord)
-        # The read ends at ref_end, and we're looking for 3'SS near ref_end
         if strand == '-':
             five_prime_clip = clip_info['right']
-            boundary_pos = read_end  # Position where alignment ends
+            boundary_pos = read_start  # 3'SS is at low coord; read left edge should be near it
         else:
             five_prime_clip = clip_info['left']
             boundary_pos = read_start  # Position where alignment starts

@@ -150,8 +150,9 @@ INDEL_MIN_FLANK_LENGTH: int = 5  # bp
 # Maximum shift to consider when calculating ambiguity ranges
 MAX_AMBIGUITY_SHIFT: int = 5  # bp
 
-# Window size for downstream A-count calculation
-DOWNSTREAM_WINDOW_SIZE: int = 10  # bp
+# Window size for A-tract detection downstream A-count calculation
+ATRACT_DETECTION_WINDOW_BP: int = 10  # bp
+DOWNSTREAM_WINDOW_SIZE = ATRACT_DETECTION_WINDOW_BP  # backward-compat alias
 
 # =============================================================================
 # NET-seq Refinement Parameters

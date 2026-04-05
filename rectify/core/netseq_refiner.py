@@ -110,6 +110,8 @@ class NetseqLoader:
         # Use OrderedDict for LRU cache behavior, with lock for thread safety
         self._cache = OrderedDict()  # {(chrom, start, end, strand): signal_array}
         self._cache_lock = threading.Lock()
+        self._bundled_arrays = None  # set by load_bundled()
+        self._bundled_loaded = False
 
     def __getstate__(self):
         """Return picklable state (exclude threading.Lock and open BigWig handles)."""

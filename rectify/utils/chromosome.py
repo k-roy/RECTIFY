@@ -9,8 +9,11 @@ Author: Kevin R. Roy
 Email: kevinrjroy@gmail.com
 """
 
+import logging
 from typing import Dict, Optional, List
 import re
+
+logger = logging.getLogger(__name__)
 
 # Standard chromosome mappings for S. cerevisiae (yeast)
 # Maps from various formats to a canonical format
@@ -138,6 +141,10 @@ def normalize_chromosome(
         elif chrom in YEAST_SGD_TO_NCBI:
             return YEAST_SGD_TO_NCBI[chrom]
         else:
+            logger.warning(
+                "normalize_chromosome: unrecognized yeast chromosome name %r "
+                "for target_format=%r; returning unchanged", chrom, target_format
+            )
             return chrom
 
     elif target_format == 'ucsc':
@@ -151,6 +158,10 @@ def normalize_chromosome(
             for sgd, ncbi in YEAST_SGD_TO_NCBI.items():
                 if chrom == sgd:
                     return YEAST_NCBI_TO_CHR.get(ncbi, chrom)
+            logger.warning(
+                "normalize_chromosome: unrecognized yeast chromosome name %r "
+                "for target_format=%r; returning unchanged", chrom, target_format
+            )
             return chrom
 
     return chrom

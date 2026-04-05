@@ -219,6 +219,7 @@ def step_is_current(
     input_files: Sequence[Union[str, Path]],
     command_string: str,
     version: str = __version__,
+    path_translator: Optional[Any] = None,
 ) -> bool:
     """
     Check whether a step's output is still valid (inputs + command unchanged).
@@ -254,9 +255,10 @@ def step_is_current(
 
     # Check each input hash
     recorded_inputs = record.get('inputs', {})
+    _xlate = path_translator if callable(path_translator) else (lambda p: p)
     for fp in input_files:
         fp = Path(fp)
-        fp_str = str(fp)
+        fp_str = str(_xlate(fp))
 
         if fp_str not in recorded_inputs:
             return False

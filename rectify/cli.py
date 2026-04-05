@@ -616,8 +616,8 @@ Manifest format (TSV):
     run_parser.add_argument(
         '--threads',
         type=int,
-        default=4,
-        help='Number of threads'
+        default=0,
+        help='Number of threads (0 = auto-detect from SLURM_CPUS_PER_TASK or CPU count)'
     )
 
     run_parser.add_argument(

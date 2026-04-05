@@ -21,7 +21,7 @@ Author: Kevin R. Roy
 License: MIT
 """
 
-__version__ = "2.7.6"
+__version__ = "2.7.7"
 __author__ = "Kevin R. Roy"
 __email__ = "kevinroy@stanford.edu"
 

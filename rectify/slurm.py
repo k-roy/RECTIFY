@@ -36,11 +36,14 @@ Author: Kevin R. Roy
 Date: 2026-03
 """
 
+import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def get_available_cpus(default: int = 1) -> int:
@@ -139,6 +142,14 @@ def get_scratch_dir() -> Optional[Path]:
             p = Path(val)
             if p.exists():
                 return p
+    if os.environ.get('SLURM_JOB_ID'):
+        logger.warning(
+            "get_scratch_dir(): running under SLURM (SLURM_JOB_ID=%s) but no "
+            "scratch directory found ($SCRATCH, $SLURM_TMPDIR, $TMPDIR unset or "
+            "non-existent). All I/O will go to Oak NFS, which may cause severe "
+            "contention under array jobs.",
+            os.environ['SLURM_JOB_ID'],
+        )
     return None
 
 
@@ -202,14 +213,18 @@ def sync_to_oak(scratch_dir: Path, oak_dir: Path, exclude_bam: bool = False) -> 
         subprocess.run(cmd, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         # rsync not available — fall back to shutil
-        for src in scratch_dir.iterdir():
-            if exclude_bam and src.suffix in ('.bam', '.bai'):
-                continue
-            dst = oak_dir / src.name
-            if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src, dst)
+        def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for src in src_dir.iterdir():
+                if exclude_bam and src.suffix in ('.bam', '.bai'):
+                    continue
+                dst = dst_dir / src.name
+                if src.is_dir():
+                    _copy_tree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+
+        _copy_tree(scratch_dir, oak_dir)
 
 
 def is_slurm_job() -> bool:

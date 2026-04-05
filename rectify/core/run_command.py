@@ -995,6 +995,14 @@ def _run_single_sample(args) -> int:
 
 def run(args: argparse.Namespace) -> None:
     """Dispatch to single-sample or multi-sample pipeline."""
+    if getattr(args, 'manifest', None) and getattr(args, 'input', None):
+        print(
+            "ERROR: Cannot combine a positional input file with --manifest. "
+            "Provide one or the other.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if getattr(args, 'manifest', None):
         rc = _run_multi_sample(args)
     elif getattr(args, 'input', None):

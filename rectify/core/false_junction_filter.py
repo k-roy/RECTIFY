@@ -280,10 +280,17 @@ def analyze_junction_for_artifact(
                 donor_seq = reference.fetch(read.reference_name, start, start + 2)
                 acceptor_seq = reference.fetch(read.reference_name, end - 2, end)
 
-                # Canonical: GT-AG
-                analysis.has_canonical_motif = (
-                    donor_seq.upper() == 'GT' and acceptor_seq.upper() == 'AG'
-                )
+                # Canonical: GT-AG (plus strand) or CT-AC in genomic coords (minus strand)
+                if strand == '+':
+                    analysis.has_canonical_motif = (
+                        donor_seq.upper() == 'GT' and acceptor_seq.upper() == 'AG'
+                    )
+                else:
+                    # Minus strand: RC of GT-AG = CT-AC in genomic coordinates
+                    # donor is at junction_start (left boundary), acceptor at junction_end-2
+                    analysis.has_canonical_motif = (
+                        donor_seq.upper() == 'CT' and acceptor_seq.upper() == 'AC'
+                    )
 
         except Exception as e:
             logger.debug(f"Junction motif analysis failed for read '{read.query_name}': {e}")

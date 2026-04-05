@@ -289,7 +289,9 @@ def detect_apa_isoforms(
             tes_key = cluster_id
         else:
             tes_modal = record.three_prime_corrected
-            tes_key = f"pos_{tes_modal}"
+            # Bin nearby positions together within tes_tolerance (round to nearest bin)
+            _bin = round(tes_modal / tes_tolerance) * tes_tolerance
+            tes_key = f"pos_{_bin}"
 
         # Group key
         key = (gene_id, gene_name, junction_sig, tes_key)
@@ -399,7 +401,7 @@ def quantify_apa_usage(
 
     if not isoforms:
         return pd.DataFrame(columns=[
-            'gene_id', 'gene_name', 'chrom', 'strand',
+            'isoform_id', 'gene_id', 'gene_name', 'chrom', 'strand',
             'tes_position', 'junction_signature', 'n_reads',
             'fraction', 'is_canonical'
         ])
@@ -414,6 +416,7 @@ def quantify_apa_usage(
             fraction = iso.n_reads / profile.total_reads if profile.total_reads > 0 else 0
 
             rows.append({
+                'isoform_id': iso.isoform_id,
                 'gene_id': iso.gene_id,
                 'gene_name': iso.gene_name,
                 'chrom': iso.chrom,
@@ -600,6 +603,7 @@ def summarize_apa_detection(
     tes_per_gene = [p.n_isoforms for p in profiles.values()]
 
     return {
+        'n_isoforms': n_isoforms,
         'total_isoforms': n_isoforms,
         'total_genes': n_genes,
         'genes_with_apa': n_genes_with_apa,

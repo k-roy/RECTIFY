@@ -109,7 +109,7 @@ def analyze_cluster_shifts(
         major_cluster_b = frac_b.idxmax() if total_b > 0 else None
 
         # Calculate shift
-        if major_cluster_a and major_cluster_b:
+        if major_cluster_a is not None and major_cluster_b is not None:
             pos_a = cluster_info.loc[major_cluster_a, 'modal_position']
             pos_b = cluster_info.loc[major_cluster_b, 'modal_position']
             strand = cluster_info.loc[major_cluster_a, 'strand']
