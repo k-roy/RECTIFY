@@ -74,6 +74,13 @@ rectify = [
     "data/*.tsv.gz",
     "data/genomes/**/*.gz",
     "data/motif_databases/*.meme",
+    "data/validation_reads.bam",
+    "data/validation_reads.bam.bai",
+    "data/VALIDATION_READS.md",
+    "data/rectified.bam",
+    "data/rectified.bam.bai",
+    "data/aligners/*.bam",
+    "data/aligners/*.bai",
 ]
 
 [tool.pytest.ini_options]
