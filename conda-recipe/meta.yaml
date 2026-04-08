@@ -1,5 +1,5 @@
 {% set name = "rectify-rna" %}
-{% set version = "2.7.6" %}
+{% set version = "2.7.7" %}
 
 package:
   name: {{ name|lower }}
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name.replace("-", "_") }}-{{ version }}.tar.gz
-  sha256: ""  # TODO: update after publishing v2.7.5 to PyPI
+  sha256: "4a59308b15ec883e6e245e31f506c08fbeb424b634296052a21963caada647e9"  # update with `sha256sum rectify_rna-{{ version }}.tar.gz` after PyPI publish
 
 build:
   number: 0
@@ -22,6 +22,7 @@ requirements:
     - pip
     - setuptools
   run:
+    # --- Python runtime ---
     - python >=3.8
     - numpy >=1.20
     - pandas >=1.3
@@ -34,24 +35,47 @@ requirements:
     - biopython >=1.79
     - tqdm >=4.60
     - pydeseq2 >=0.4
-    - meme >=5.4.0  # MEME Suite for motif analysis (MEME, STREME, etc.)
+    - mappy >=2.24                # Python bindings for minimap2 (required by gapmm2)
+
+    # --- External aligners (Tier 1: default multi-aligner rectification) ---
+    - minimap2 >=2.24             # Baseline splice-aware aligner
+    - bbmap >=39.0                # Provides mapPacBio.sh (BBTools long-read aligner)
+    - gapmm2 >=0.2                # minimap2 wrapper with edlib terminal exon refinement
+    - samtools >=1.15             # SAM/BAM manipulation, sorting, indexing, calmd
+    - htslib >=1.15               # Provides bgzip for FASTA compression
+
+    # --- External aligners (Tier 2: opt-in junction-mode, --junction-aligners) ---
+    - desalt >=1.5                # De Bruijn graph splice aligner (optional)
+    # ultra-bioinformatics not on bioconda — install via pip if needed:
+    #   pip install ultra-bioinformatics
+
+    # --- Motif analysis (optional but recommended) ---
+    - meme >=5.4.0                # MEME Suite (MEME, STREME, etc.)
 
 test:
   imports:
     - rectify
   commands:
     - rectify --help
+    - minimap2 --version
+    - mapPacBio.sh --version || true  # BBTools prints to stderr
+    - gapmm2 --help || true
+    - samtools --version
+    - deSALT || true                  # deSALT prints usage to stderr with exit 1
 
 about:
   home: https://github.com/k-roy/RECTIFY
   license: MIT
   license_family: MIT
   license_file: LICENSE
-  summary: 'Unified RNA 3'' End Correction Framework'
+  summary: 'RNA 5'' and 3'' End Correction Tool with Intron Refinement and Ambiguity Resolution'
   description: |
-    RECTIFY corrects poly(A) tail artifacts in RNA 3' end sequencing data.
-    Features A-tract ambiguity correction, AG mispriming detection,
-    NET-seq refinement, and downstream analysis (DESeq2, clustering, motifs).
+    RECTIFY reconstructs true RNA 3' and 5' ends from direct RNA nanopore
+    sequencing data through multi-aligner rectification (minimap2, mapPacBio,
+    gapmm2), poly(A) A-tract ambiguity resolution via NET-seq NNLS
+    deconvolution, soft-clip rescue, and splice junction refinement.
+    Includes downstream analysis: DESeq2 differential expression,
+    CPA clustering, GO enrichment, and motif discovery.
   dev_url: https://github.com/k-roy/RECTIFY
   doc_url: https://github.com/k-roy/RECTIFY#readme
 
