@@ -26,35 +26,66 @@ FASTQ / BAM
     │
     ▼
 [Step 0: Alignment]        multi-aligner rectification pipeline
-    │                      minimap2 + mapPacBio + gapmm2 (in parallel)
-    │                      chimeric consensus selection per read
+    │                      Tier 1 (default): minimap2 + mapPacBio + gapmm2
+    │                      Tier 2 (opt-in):  + deSALT, + uLTRA
+    │                      All enabled aligners run in parallel subprocesses.
+    │                      Chimeric consensus selection per read:
+    │                        find sync-points where aligners agree →
+    │                        score each inter-sync segment independently →
+    │                        stitch best segment from each aligner
     ▼
     <sample>.rectified.bam
     │
     ▼
-[Step 1: Correction]       per-read 3' end correction
+[Step 1: Correction]       per-read 3' and 5' end correction
     │                      ① A-tract ambiguity detection (universal)
     │                      ② AG mispriming screen (oligo-dT only)
     │                      ③ Poly(A) tail trimming (if sequenced)
     │                      ④ Indel artifact correction
-    │                      ⑤ False junction filtering
-    │                      ⑥ NET-seq refinement (optional)
-    │                      ⑦ Spike-in read filtering
+    │                      ⑤ False junction filtering (poly(A)-artifact N-ops)
+    │                      ⑥ 5' soft-clip junction rescue
+    │                      ⑦ NET-seq refinement (optional, resolves ambiguous windows)
+    │                      ⑧ Spike-in read filtering
     ▼
-    corrected_3ends.tsv         per-read corrected 3' positions
-    corrected_3ends_index.bed.gz  pre-aggregated position counts (fast mode)
-    <sample>.stats.tsv          per-sample QC report
+    corrected_3ends.tsv           per-read corrected positions; each row is one read
+                                  columns include: chrom, strand, original_3prime,
+                                  corrected_3prime, five_prime_position, polya_length,
+                                  junctions_str, n_junctions, confidence, …
+    corrected_3ends_index.bed.gz  position-count summary: one row per unique
+                                  (chrom, corrected_3prime, strand) with read count.
+                                  ~300× smaller than the per-read TSV; used by
+                                  manifest-mode analysis to skip re-reading every read.
+    <sample>.stats.tsv            per-sample QC report (reads processed, corrections
+                                  applied per module, confidence distribution)
     │
     ▼
 [Step 2: Analysis]         multi-sample downstream analysis
     │                      ① CPA site clustering
     │                      ② Gene attribution (which gene owns each cluster?)
-    │                      ③ DESeq2 differential usage (multi-sample only)
-    │                      ④ 3' UTR shift analysis
-    │                      ⑤ Alternative polyadenylation (APA) isoform detection
-    │                      ⑥ De novo motif discovery (STREME/MEME)
-    │                      ⑦ GO enrichment
-    │                      ⑧ Genomic region distribution
+    │                      ③ DESeq2 differential usage (multi-sample only):
+    │                           — cluster level: per-CPA-site read counts
+    │                           — gene level: summed CPA counts across all clusters
+    │                           each produces deseq2_{clusters,genes}_{condition}.tsv
+    │                      ④ 3' UTR shift analysis: gene-level weighted-mean CPA
+    │                           position shift in bp between conditions — detects
+    │                           global 3' UTR lengthening/shortening per gene
+    │                      ⑤ APA isoform detection: read-level grouping by
+    │                           (gene, junction signature, 3' cluster) to identify
+    │                           distinct isoforms and proximal:distal usage ratios
+    │                      ⑥ De novo motif discovery: STREME/MEME on sequences
+    │                           around DESeq2-enriched (padj<0.05, log2FC>1) and
+    │                           -depleted (log2FC<-1) CPA clusters — identifies
+    │                           differential poly(A) signal or downstream elements
+    │                      ⑦ GO enrichment: Fisher's exact test on genes with
+    │                           significantly increased or decreased CPA cluster
+    │                           usage (padj<0.05, |log2FC|>1 at gene level)
+    │                      ⑧ Genomic region distribution (two analyses):
+    │                           — 3' end distribution: classify corrected 3' end
+    │                             positions by feature (3'UTR > snoRNA > CUT >
+    │                             SUT/XUT > 5'UTR/CDS > antisense > intergenic)
+    │                           — Transcript body distribution: classify each read
+    │                             by the biotype of the feature its full alignment
+    │                             span (alignment_start → alignment_end) overlaps most
     ▼
     cpa_clusters.tsv
     deseq2_genes_{condition}.tsv
@@ -80,16 +111,33 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 | `align` | `core/align_command.py` | Multi-aligner alignment only (Step 0) |
 | `correct` | `core/correct_command.py` | 3' end correction only (Step 1) |
 | `analyze` | `core/analyze_command.py` | Downstream analysis only (Step 2) |
-| `batch` | `core/batch_command.py` | Parallel correction across samples; generates SLURM array scripts |
-| `train-polya` | `core/train_polya_command.py` | Train poly(A) tail model from control data |
-| `validate` | `core/validate_command.py` | Validate corrections against NET-seq or known CPA sites |
+| `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
+| `train-polya` | `core/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
+| `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
 | `export` | `core/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
 | `extract` | `core/extract_command.py` | Extract per-read info from BAM to TSV |
 | `netseq` | `core/netseq_command.py` | Process NET-seq BAM files with deconvolution |
 | `aggregate` | `core/aggregate_command.py` | Aggregate reads into CPA / TSS / junction datasets |
 
-> **Note:** `run_all_command.py` is an experimental redesign that is **not**
-> wired to the CLI. The active `run-all` dispatcher is `run_command.py`.
+> **Note on `train-polya`:** Run once per sequencing technology/chemistry to
+> fit A-richness thresholds. Operates on reads mapping to control sites that
+> have zero downstream genomic A's — any A-rich soft-clipped sequence at such
+> sites must be a genuine poly(A) tail, not a genomic artifact. Outputs a JSON
+> model loaded by `rectify correct --polya-model`. Bundled models for common
+> platforms are included; re-run only when adapting to a new chemistry.
+
+> **Note on `validate`:** Optional post-correction QC. Compares corrected 3'
+> end positions against NET-seq bigWig files or a known-CPA-positions TSV and
+> reports accuracy improvement over raw positions. Used during development and
+> benchmarking; not needed for routine production runs.
+
+> **Note on `run_all_command.py`:** This file contains an alternative
+> orchestrator (align → correct → aggregate → export → analyze) with
+> provenance-based step-skipping built into the chain. It is **not wired to
+> the CLI** — the active `run-all` dispatcher is `run_command.py`. The file
+> should either be promoted to replace `run_command.py` (once the aggregate
+> step is validated end-to-end) or deleted. Keeping both is a maintenance
+> liability.
 
 ---
 
@@ -118,28 +166,27 @@ rectify/                              ← git repo root
 │   │   ├── analyze_command.py        Step 2 CLI wrapper + GFF/GTF parsing
 │   │   ├── batch_command.py          parallel/SLURM batch correction
 │   │   │
-│   │   ├── multi_aligner.py          runs minimap2, mapPacBio, gapmm2 in parallel
+│   │   ├── multi_aligner.py          Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
 │   │   ├── chimeric_consensus.py     chimeric alignment stitching from sync-points
-│   │   ├── consensus.py              per-read optimal aligner selection
-│   │   ├── bam_processor.py          correction pipeline orchestrator (Steps 1①–⑦)
+│   │   ├── consensus.py              per-read optimal aligner selection (non-chimeric fallback)
+│   │   ├── bam_processor.py          correction pipeline orchestrator (Steps 1①–⑧)
 │   │   │
 │   │   ├── atract_detector.py        A-tract boundary detection + ambiguity window
 │   │   ├── ag_mispriming.py          AG-richness mispriming screen (Roy & Chanfreau 2019)
 │   │   ├── polya_trimmer.py          poly(A) tail detection and trimming
 │   │   ├── polya_model.py            JSON poly(A) model (A-richness thresholds)
 │   │   ├── indel_corrector.py        indel artifact correction; variant-aware rescue
-│   │   ├── false_junction_filter.py  poly(A)-artifact splice junction removal
+│   │   ├── false_junction_filter.py  poly(A)-artifact N-op (splice junction) removal
+│   │   ├── splice_aware_5prime.py    5' soft-clip junction rescue (intron-displaced TSS)
 │   │   ├── netseq_refiner.py         NET-seq NNLS deconvolution for CPA localization
 │   │   ├── netseq_deconvolution.py   low-level NNLS / PSF math
 │   │   ├── netseq_command.py         `rectify netseq` CLI
 │   │   ├── netseq_bam_processor.py   NET-seq BAM → 3' end TSV
 │   │   ├── netseq_output.py          NET-seq output formatting
 │   │   ├── terminal_exon_refiner.py  terminal exon boundary refinement
-│   │   ├── splice_aware_5prime.py    splice-aware 5' end correction
 │   │   ├── spikein_filter.py         spike-in construct detection and filtering
 │   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
 │   │   ├── junction_validator.py     cross-sample COMPASS-style junction validation
-│   │   ├── false_junction_filter.py  poly(A)-artifact junction removal
 │   │   ├── mpb_split_reads.py        mapPacBio long-read splitting and stitching
 │   │   ├── preprocess.py             input detection (FASTQ vs BAM), bundled genome prep
 │   │   ├── unified_record.py         unified read record dataclass
@@ -272,10 +319,14 @@ runs once across all corrected outputs. DESeq2, GO enrichment, and motif
 discovery only fire in multi-sample mode (need multiple conditions for
 statistics). Also resolves bundled genome/annotation paths transparently.
 
-**`core/batch_command.py`** — Parallel batch correction. In interactive
-mode, auto-sizes a `ThreadPoolExecutor` to available CPUs and runs
-`rectify correct` per sample. In SLURM mode, reads a profile YAML and
-generates array job scripts with scratch-staging blocks.
+**`core/batch_command.py`** — Parallel batch correction across samples.
+In interactive mode, auto-sizes a `ThreadPoolExecutor` to available CPUs
+and runs `rectify correct` per sample in parallel. In HPC mode, reads a
+profile YAML and generates array job scripts. Generated scripts include a
+portable scheduler abstraction block that normalises CPU count, job ID, and
+task ID from SLURM (`$SLURM_CPUS_PER_TASK`), PBS/Torque (`$PBS_NUM_PPN`),
+and UGE/SGE (`$NSLOTS`) environment variables, so the same script body
+works on all three schedulers without modification.
 
 **`core/align_command.py`** — Thin CLI wrapper around `multi_aligner.py`.
 
@@ -291,11 +342,14 @@ Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
 ### Layer 3: Alignment (Step 0)
 
-**`core/multi_aligner.py`** — Runs minimap2, mapPacBio, and gapmm2 in
-parallel subprocesses. Each aligner produces a sorted, indexed BAM.
-Junction annotations from GFF are passed to minimap2 via `--junc-bed`
-to improve splice site accuracy while keeping scoring annotation-blind
-(novel junctions are still discoverable). Returns per-aligner BAM paths.
+**`core/multi_aligner.py`** — Runs all enabled aligners in parallel
+subprocesses. Tier 1 (default): minimap2, mapPacBio, gapmm2. Tier 2
+(opt-in via `--aligners`): deSALT (high-sensitivity splice aligner) and
+uLTRA (annotation-guided graph aligner, requires GTF). Each aligner
+produces a sorted, indexed BAM. Junction annotations from GFF are passed
+to minimap2 via `--junc-bed` to improve splice site accuracy while keeping
+scoring annotation-blind (novel junctions are still discoverable). Returns
+per-aligner BAM paths.
 
 **`core/chimeric_consensus.py`** — Chimeric rectification: finds "sync
 points" where two or more aligners agree on query→reference mapping, then
@@ -318,7 +372,7 @@ back together with corrected CIGAR strings.
 ### Layer 4: Correction (Step 1)
 
 **`core/bam_processor.py`** — The correction pipeline hub. Reads the BAM,
-dispatches per-read correction through modules ①–⑦ in sequence, and writes
+dispatches per-read correction through modules ①–⑧ in sequence, and writes
 results. Supports two execution modes:
 - `process_bam_file_parallel()`: per-chromosome parallelism, accumulates
   all results in memory before writing (use for small genomes or low RAM).
@@ -354,21 +408,27 @@ Correction modules are called in this order:
    a configurable window of the 3' end AND the downstream region is
    highly A-rich.
 
-6. **`netseq_refiner.py`** — For reads whose corrected position falls in
+6. **`splice_aware_5prime.py`** — 5' soft-clip junction rescue. When the
+   first exon is very short, aligners may place the read's 5' end (TSS)
+   within an annotated intron rather than at the true TSS. This module
+   checks whether the 5' end falls inside an intron and, if so, shifts it
+   to the nearest upstream exon boundary. Uses both annotated junctions and
+   real junctions observed in the read's own CIGAR string.
+
+7. **`netseq_refiner.py`** — For reads whose corrected position falls in
    an ambiguous window: queries NET-seq signal, deconvolves the PSF spread
    caused by short poly(A) tails in NET-seq, and re-assigns reads
    proportionally to deconvolved peak intensities. Converts positional
    uncertainty into a probabilistic split across the most likely true CPA
    sites. Requires NET-seq bigWig or TSV data.
 
-7. **`spikein_filter.py`** — Detects and removes reads from synthetic
+8. **`spikein_filter.py`** — Detects and removes reads from synthetic
    spike-in constructs by comparing 3' UTR sequence to the genomic
    reference; spike-ins have a synthetic 3' UTR not present in the genome.
 
 Support modules called by `bam_processor`:
 - **`polya_model.py`** — Loads/saves the JSON poly(A) model.
 - **`terminal_exon_refiner.py`** — Refines terminal exon boundaries.
-- **`splice_aware_5prime.py`** — Corrects 5' ends at splice junctions.
 - **`junction_validator.py`** — Cross-sample COMPASS-style junction
   validation: aggregates junctions across samples, applies minimum-support
   and splice-motif filters, then downgrades low-confidence junctions.
@@ -395,33 +455,59 @@ read body overlapping a given CDS/ncRNA feature. This handles the common
 case of two adjacent genes where the read bodies disambiguate which gene
 the 3' end belongs to.
 
-**`core/analyze/deseq2.py`** — Wraps pyDESeq2 for differential cluster
-and gene usage. Runs at both cluster level (per-CPA-site differential
-usage) and gene level (summed CPA counts per gene). Outputs separate TSVs
-for up and down-regulated genes per condition pair.
+**`core/analyze/deseq2.py`** — Wraps pyDESeq2 for differential CPA usage.
+Runs two independent analyses per condition pair:
+- **Cluster level**: per-CPA-site read counts across samples → identifies
+  which individual CPA sites are gained or lost between conditions.
+  Output: `deseq2_clusters_{condition}.tsv`
+- **Gene level**: CPA counts summed across all clusters within each gene →
+  identifies genes whose overall 3' end usage changes.
+  Output: `deseq2_genes_{condition}.tsv`
+Both analyses output padj, log2FoldChange, and baseMean columns. Results
+from the cluster-level analysis feed motif discovery; gene-level results
+feed GO enrichment.
 
-**`core/analyze/shift_analysis.py`** — Scores 3' UTR lengthening/shortening
-between conditions by computing the weighted mean 3' end position per gene
-in each condition and reporting the shift in bp. Genes with significant
-shifts are ranked and plotted.
+**`core/analyze/shift_analysis.py`** — Gene-level 3' UTR shift scoring.
+For each gene, computes the weighted mean CPA position (weights = read
+counts per cluster) in condition A and condition B, and reports the
+difference in bp. A positive shift means the 3' ends moved downstream
+(3' UTR lengthening); negative means upstream (3' UTR shortening). This
+is a single scalar per gene — it summarizes the overall directionality of
+CPA redistribution without specifying which isoforms are responsible.
 
-**`core/analyze/apa_detection.py`** — Isosceles-style APA isoform
-quantification. Groups reads by `(gene, junction_signature, 3' cluster)`
-to identify distinct APA isoforms (same gene body but different CPA site).
-Computes proximal:distal CPA usage ratio per condition.
+**`core/analyze/apa_detection.py`** — Read-level APA isoform detection
+(Isosceles-style). Where shift analysis gives one number per gene, APA
+detection identifies *which isoforms* drive the change. Groups reads by
+the triplet `(gene, junction_signature, 3' cluster)` — reads with the
+same gene body splicing pattern and the same CPA cluster are counted as
+one isoform. Computes proximal:distal CPA usage ratio and flags genes
+where this ratio changes between conditions.
 
-**`core/analyze/motif_discovery.py`** — Runs STREME or MEME on sequences
-extracted from windows around high-confidence CPA clusters. Supports
-parallel motif discovery per cluster group. Writes MEME-format output and
-summary TSV.
+**`core/analyze/motif_discovery.py`** — De novo motif discovery via STREME
+or MEME. Operates on DESeq2 cluster-level results: extracts sequences from
+±100/50 bp windows around enriched CPA clusters (padj<0.05, log2FC>1) and
+depleted clusters (log2FC<−1), then runs motif discovery on each set. This
+identifies poly(A) signals, downstream elements, or other sequence features
+that distinguish gained from lost CPA sites. Writes MEME-format output and
+a summary TSV per condition.
 
-**`core/analyze/go_enrichment.py`** — Fisher's exact test GO enrichment
-for genes that shift their 3' end significantly between conditions.
-Reads SGD GO annotation TSV and reports enriched terms.
+**`core/analyze/go_enrichment.py`** — GO term enrichment via Fisher's exact
+test. Operates on DESeq2 gene-level results: collects genes with
+significantly increased CPA usage (padj<0.05, log2FC>1) and genes with
+significantly decreased usage (log2FC<−1) separately, then tests for GO
+term over-representation in each set. Outputs
+`go_enrichment_up_{condition}.tsv` and `go_enrichment_down_{condition}.tsv`.
 
-**`core/analyze/genomic_distribution.py`** — Classifies corrected 3' ends
-by genomic region (CDS, 3' UTR, 5' UTR, intergenic, etc.) using
-IntervalTrees built from the annotation. Reports distribution statistics.
+**`core/analyze/genomic_distribution.py`** — Two complementary distribution
+analyses, each producing a horizontal bar chart across conditions:
+- **3' end distribution**: classifies each corrected 3' end *position* by
+  the genomic feature it falls in. Priority order: 3'UTR > snoRNA±300bp >
+  CUTs > SUTs/XUTs > 5'UTR/CDS > antisense CDS > intergenic. Mirrors
+  panels B/C of Xu et al. 2009 (Nature 457:1033).
+- **Transcript body distribution**: classifies each *read* by the RNA
+  biotype of the feature whose bp overlap its full alignment span
+  (alignment_start → alignment_end) is greatest. Categories: protein_coding,
+  CUT, SUT/XUT, snoRNA, tRNA, rRNA, LTR, pseudogene, antisense, intergenic.
 
 Other analysis modules: `junction_analysis.py` (splice stats),
 `junction_validation.py` (annotation-based validation), `heatmap.py`
