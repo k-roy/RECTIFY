@@ -79,10 +79,12 @@ FASTQ / BAM
     │                      ⑦ GO enrichment: Fisher's exact test on genes with
     │                           significantly increased or decreased CPA cluster
     │                           usage (padj<0.05, |log2FC|>1 at gene level)
-    │                      ⑧ Genomic region distribution (two analyses):
+    │                      ⑧ Genomic region distribution (three analyses):
     │                           — 3' end distribution: classify corrected 3' end
     │                             positions by feature (3'UTR > snoRNA > CUT >
     │                             SUT/XUT > 5'UTR/CDS > antisense > intergenic)
+    │                           — 5' end distribution: classify corrected 5' end
+    │                             positions by the same feature hierarchy
     │                           — Transcript body distribution: classify each read
     │                             by the biotype of the feature its full alignment
     │                             span (alignment_start → alignment_end) overlaps most
@@ -131,14 +133,6 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 > reports accuracy improvement over raw positions. Used during development and
 > benchmarking; not needed for routine production runs.
 
-> **Note on `run_all_command.py`:** This file contains an alternative
-> orchestrator (align → correct → aggregate → export → analyze) with
-> provenance-based step-skipping built into the chain. It is **not wired to
-> the CLI** — the active `run-all` dispatcher is `run_command.py`. The file
-> should either be promoted to replace `run_command.py` (once the aggregate
-> step is validated end-to-end) or deleted. Keeping both is a maintenance
-> liability.
-
 ---
 
 ## Directory structure
@@ -160,7 +154,6 @@ rectify/                              ← git repo root
 │   ├── core/                         pipeline step implementations
 │   │   │
 │   │   ├── run_command.py            Step 0+1+2 orchestrator (the "run-all" dispatcher)
-│   │   ├── run_all_command.py        ⚠️ experimental redesign — NOT active
 │   │   ├── align_command.py          Step 0 CLI wrapper
 │   │   ├── correct_command.py        Step 1 CLI wrapper
 │   │   ├── analyze_command.py        Step 2 CLI wrapper + GFF/GTF parsing
@@ -498,12 +491,15 @@ significantly decreased usage (log2FC<−1) separately, then tests for GO
 term over-representation in each set. Outputs
 `go_enrichment_up_{condition}.tsv` and `go_enrichment_down_{condition}.tsv`.
 
-**`core/analyze/genomic_distribution.py`** — Two complementary distribution
+**`core/analyze/genomic_distribution.py`** — Three complementary distribution
 analyses, each producing a horizontal bar chart across conditions:
 - **3' end distribution**: classifies each corrected 3' end *position* by
   the genomic feature it falls in. Priority order: 3'UTR > snoRNA±300bp >
   CUTs > SUTs/XUTs > 5'UTR/CDS > antisense CDS > intergenic. Mirrors
   panels B/C of Xu et al. 2009 (Nature 457:1033).
+- **5' end distribution**: classifies each corrected 5' end *position*
+  (`five_prime_position`) by the same genomic feature hierarchy. Shows
+  where TSS positions land relative to annotated gene structures.
 - **Transcript body distribution**: classifies each *read* by the RNA
   biotype of the feature whose bp overlap its full alignment span
   (alignment_start → alignment_end) is greatest. Categories: protein_coding,
