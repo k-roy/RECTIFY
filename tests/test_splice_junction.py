@@ -458,7 +458,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=290,
             clip_seq='A' * 10,
         )
-        junctions = {('chrT', 100, 200)}  # intron [100,200)
+        junctions = {('chrT', 100, 200, '+')}  # intron [100,200)
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is True
 
@@ -470,7 +470,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=290,
             clip_seq='C' * 10,  # C's, but exon1 is all A's
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is False
 
@@ -482,7 +482,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=150,
             clip_seq='A' * 10,
         )
-        junctions = {('chrT', 100, 200)}  # intron_end=200 > align_5prime=50 → dist<0 → skip
+        junctions = {('chrT', 100, 200, '+')}  # intron_end=200 > align_5prime=50 → dist<0 → skip
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is False
 
@@ -496,7 +496,7 @@ class TestRescue5PrimeSoftclip:
         )
         # intron_end=190 → dist = 200-190 = 10, within default window (300)
         # But let's use search_window_bp=5 to test exclusion
-        junctions = {('chrT', 100, 190)}  # intron_end=190, dist=10 > window=5
+        junctions = {('chrT', 100, 190, '+')}  # intron_end=190, dist=10 > window=5
         result = _rescue_5prime_softclip(
             aln, self.GENOME, junctions, search_window_bp=5
         )
@@ -512,7 +512,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=99,  # align_5prime = reference_end - 1 = 98
             clip_seq='G' * 10,
         )
-        junctions = {('chrT', 100, 200)}  # intron [100,200)
+        junctions = {('chrT', 100, 200, '-')}  # intron [100,200)
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is True
 
@@ -523,7 +523,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=99,
             clip_seq='T' * 10,  # T's, but exon2 is G's
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '-')}
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is False
 
@@ -545,7 +545,7 @@ class TestRescue5PrimeSoftclip:
             clip_seq='A' * 10,
             chrom='chrMissing',
         )
-        result = _rescue_5prime_softclip(aln, self.GENOME, {('chrMissing', 100, 200)})
+        result = _rescue_5prime_softclip(aln, self.GENOME, {('chrMissing', 100, 200, '+')})
         assert result is False
 
     def test_wrong_chrom_in_junctions_skipped(self):
@@ -556,7 +556,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=290,
             clip_seq='A' * 10,
         )
-        junctions = {('chrOther', 100, 200)}  # different chrom
+        junctions = {('chrOther', 100, 200, '+')}  # different chrom
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is False
 
@@ -570,7 +570,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=290,
             clip_seq=clip,
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is True
 
@@ -583,7 +583,7 @@ class TestRescue5PrimeSoftclip:
             reference_end=290,
             clip_seq=clip,
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         result = _rescue_5prime_softclip(aln, self.GENOME, junctions)
         assert result is False
 
@@ -629,7 +629,7 @@ class TestMPBRescue:
             reference_end=300,
             effective_seq='A' * 10,  # matches genome[90:100]
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         assert _rescue_5prime_softclip(aln, self.GENOME, junctions) is True
 
     def test_plus_strand_mpb_no_rescue_wrong_seq(self):
@@ -640,7 +640,7 @@ class TestMPBRescue:
             reference_end=300,
             effective_seq='C' * 10,  # C's ≠ A's in exon1
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         assert _rescue_5prime_softclip(aln, self.GENOME, junctions) is False
 
     def test_explicit_clip_takes_priority_over_effective(self):
@@ -659,7 +659,7 @@ class TestMPBRescue:
             effective_five_prime_clip=12,
             effective_five_prime_clip_seq='CC',     # does NOT match (would fail alone)
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         # Should rescue because five_prime_softclip_seq is tried first and matches
         assert _rescue_5prime_softclip(aln, self.GENOME, junctions) is True
 
@@ -679,7 +679,7 @@ class TestMPBRescue:
             effective_five_prime_clip=10,
             effective_five_prime_clip_seq='C' * 10,  # would fail
         )
-        junctions = {('chrT', 100, 200)}
+        junctions = {('chrT', 100, 200, '+')}
         # Override with matching sequence → rescued
         assert _rescue_5prime_softclip(
             aln, self.GENOME, junctions,
@@ -702,7 +702,7 @@ class TestMPBRescue:
             effective_five_prime_clip=0,
             effective_five_prime_clip_seq='',
         )
-        assert _rescue_5prime_softclip(aln, self.GENOME, {('chrT', 100, 200)}) is False
+        assert _rescue_5prime_softclip(aln, self.GENOME, {('chrT', 100, 200, '+')}) is False
 
 
 # =============================================================================

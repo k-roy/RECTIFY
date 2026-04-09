@@ -160,8 +160,8 @@ def _jensen_shannon_divergence(p: np.ndarray, q: np.ndarray) -> float:
     from scipy.spatial.distance import jensenshannon
     p = np.array(p, dtype=float)
     q = np.array(q, dtype=float)
-    # jensenshannon returns the square root of JSD; square to get JSD in [0, 1]
-    return float(jensenshannon(p, q) ** 2)
+    # jensenshannon returns sqrt(JSD); square and use base=2 to get JSD in [0, 1]
+    return float(jensenshannon(p, q, base=2) ** 2)
 
 
 def get_top_shifted_genes(
