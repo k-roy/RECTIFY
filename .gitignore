@@ -101,3 +101,10 @@ temp/
 # Beta deployment staging (managed separately via beta worktree)
 rectify_beta_deploy/
 rectify_new_files/
+
+# Generated caches and indices (large, reproducible)
+*.pkl
+**/bbmap_index/
+
+# MkDocs site build
+site/

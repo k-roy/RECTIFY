@@ -63,7 +63,7 @@ Author: Kevin R. Roy
 Date: 2026-03-24
 """
 
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -182,18 +182,27 @@ def build_cds_interval_tree(
 
     trees = defaultdict(IntervalTree)
 
+    # Detect likely 1-based input: if the minimum start value equals 1 this
+    # almost certainly means GFF coords were not converted before calling here.
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    if 'start' in annotation_df.columns and annotation_df['start'].min() == 1:
+        _log.warning(
+            "build_cds_interval_tree(): 'start' column minimum is 1 — this may "
+            "indicate GFF 1-based coordinates that were not converted to 0-based. "
+            "Use load_annotation() which performs the conversion automatically."
+        )
+
     for _, row in annotation_df.iterrows():
         chrom = row['chrom']
         strand = row.get('strand', '+')
 
-        # Handle both 0-based and 1-based annotations
-        # If 'start' looks like GFF (1-based), convert to 0-based
+        # Coordinates must be 0-based half-open.  annotation_df loaded via
+        # load_annotation() / _parse_gtf() already converts GFF 1-based coords
+        # to 0-based on load.  Passing a raw GFF DataFrame (without conversion)
+        # is an error; detect it with a minimum-value heuristic and warn once.
         start = int(row['start'])
         end = int(row['end'])
-
-        # GFF is 1-based inclusive, we need 0-based half-open
-        # If start is 1-based, convert: start_0 = start - 1, end stays same (becomes exclusive)
-        # Most annotation_df from RECTIFY's load_annotation are already 0-based
 
         gene_id = row.get('gene_id', '')
         gene_name = row.get('gene_name', gene_id)
@@ -357,7 +366,7 @@ def compute_cluster_attribution(
     cluster_reads: List[pysam.AlignedSegment],
     interval_trees: Dict[Tuple[str, str], 'IntervalTree'],
     chrom: Optional[str] = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Compute gene attribution for a cluster of reads sharing a 3' end region.
 

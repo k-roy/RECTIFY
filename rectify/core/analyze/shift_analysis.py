@@ -157,26 +157,11 @@ def analyze_cluster_shifts(
 
 def _jensen_shannon_divergence(p: np.ndarray, q: np.ndarray) -> float:
     """Calculate Jensen-Shannon divergence between two distributions."""
-    # Add small epsilon to avoid log(0)
-    epsilon = 1e-10
-    p = np.array(p) + epsilon
-    q = np.array(q) + epsilon
-
-    # Normalize
-    p = p / p.sum()
-    q = q / q.sum()
-
-    # Midpoint distribution
-    m = 0.5 * (p + q)
-
-    # KL divergences
-    kl_pm = np.sum(p * np.log2(p / m))
-    kl_qm = np.sum(q * np.log2(q / m))
-
-    # JS divergence
-    js = 0.5 * (kl_pm + kl_qm)
-
-    return js
+    from scipy.spatial.distance import jensenshannon
+    p = np.array(p, dtype=float)
+    q = np.array(q, dtype=float)
+    # jensenshannon returns the square root of JSD; square to get JSD in [0, 1]
+    return float(jensenshannon(p, q) ** 2)
 
 
 def get_top_shifted_genes(

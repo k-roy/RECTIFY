@@ -72,12 +72,15 @@ class ExclusionRegionDetector:
     MITO_PATTERNS = {'chrM', 'chrMT', 'chrmt', 'MT', 'Mt', 'Mito', 'mitochondrion'}
     MITO_NCBI = {'ref|NC_001224|'}
 
-    def __init__(self, flanking_bp: int = 100):
+    def __init__(self, flanking_bp: int = 100, chrom_sizes: Optional[Dict[str, int]] = None):
         """
         Args:
             flanking_bp: Bases to add on each side of Pol III genes
+            chrom_sizes: Optional dict of {chrom: size} used to clamp downstream
+                         flanking to valid chromosome boundaries
         """
         self.flanking_bp = flanking_bp
+        self.chrom_sizes: Optional[Dict[str, int]] = chrom_sizes
         self.regions: List[ExclusionRegion] = []
         self._region_index: Dict[str, List[Tuple[int, int, str]]] = {}
 
@@ -90,10 +93,17 @@ class ExclusionRegionDetector:
         gene_name: Optional[str] = None,
     ) -> None:
         """Add a single exclusion region."""
+        # Clamp upstream boundary to 0 (chromosome start).
+        clamped_start = max(0, start)
+        # Clamp downstream boundary to chromosome size when available.
+        if self.chrom_sizes and chrom in self.chrom_sizes:
+            clamped_end = min(end, self.chrom_sizes[chrom])
+        else:
+            clamped_end = end
         region = ExclusionRegion(
             chrom=chrom,
-            start=max(0, start),
-            end=end,
+            start=clamped_start,
+            end=clamped_end,
             reason=reason,
             gene_name=gene_name,
         )
@@ -130,6 +140,7 @@ class ExclusionRegionDetector:
         exclude_rDNA: bool = True,
         exclude_mito: bool = False,
         data_chroms: Optional[Set[str]] = None,
+        chrom_sizes: Optional[Dict[str, int]] = None,
     ) -> int:
         """
         Auto-detect exclusion regions from GFF annotation.
@@ -148,11 +159,18 @@ class ExclusionRegionDetector:
             exclude_rDNA: Include rDNA locus in exclusion regions
             exclude_mito: Include mitochondrial chromosome in exclusion regions
             data_chroms: Set of chromosome names in data (for rDNA fallback)
+            chrom_sizes: Optional dict of {chrom: size} to clamp downstream
+                         flanking regions to valid chromosome boundaries.
+                         Stored on self.chrom_sizes for all subsequent add_region calls.
 
         Returns:
             Number of exclusion regions detected
         """
         import gzip
+
+        # Update stored chrom_sizes if provided (used by add_region for clamping).
+        if chrom_sizes is not None:
+            self.chrom_sizes = chrom_sizes
 
         gff_path = Path(gff_path)
         open_fn = gzip.open if gff_path.suffix == '.gz' else open
@@ -324,6 +342,26 @@ class ExclusionRegionDetector:
         """
         if df.empty or not self.regions:
             return df, pd.DataFrame(columns=df.columns)
+
+        # Coordinate validation: if the minimum position in the column is exactly 1,
+        # this is a strong indicator that 1-based (GFF/GTF) coordinates were passed
+        # without the required -1 conversion. Raise immediately so the caller fixes
+        # the source rather than silently filtering the wrong genomic positions.
+        if position_col in df.columns and len(df) > 0:
+            col_min = int(df[position_col].min())
+            if col_min == 1 and (df[position_col] == 1).sum() / len(df) > 0.01:
+                import logging
+                logging.getLogger(__name__).error(
+                    "filter_dataframe(): column '%s' has a minimum value of 1 with "
+                    "%.1f%% of rows at position 1 — this strongly indicates 1-based "
+                    "(GFF/GTF) coordinates were passed to a 0-based function. "
+                    "Subtract 1 from '%s' before calling filter_dataframe() "
+                    "(e.g. via load_annotation() which performs this conversion). "
+                    "Proceeding, but exclusion filtering may target incorrect positions.",
+                    position_col,
+                    100.0 * (df[position_col] == 1).sum() / len(df),
+                    position_col,
+                )
 
         # Build exclusion mask
         excluded_mask = pd.Series(False, index=df.index)

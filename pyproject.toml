@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rectify-rna"
-version = "2.7.7"
+version = "2.7.8"
 description = "RNA 5' and 3' End Correction Tool with Intron Refinement and Ambiguity Resolution"
 authors = [
     {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}
@@ -96,9 +96,18 @@ rectify = [
     "data/motif_databases/*.meme",
     "data/validation_reads.bam",
     "data/validation_reads.bam.bai",
+    "data/validation_reads.fastq.gz",
     "data/VALIDATION_READS.md",
     "data/rectified.bam",
     "data/rectified.bam.bai",
+    "data/rectified_softclip.bam",
+    "data/rectified_softclip.bam.bai",
+    "data/minimap2.bam",
+    "data/minimap2.bam.bai",
+    "data/mapPacBio.bam",
+    "data/mapPacBio.bam.bai",
+    "data/gapmm2.bam",
+    "data/gapmm2.bam.bai",
     "data/aligners/*.bam",
     "data/aligners/*.bai",
 ]

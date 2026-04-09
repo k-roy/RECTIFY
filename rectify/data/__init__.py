@@ -207,6 +207,41 @@ def get_netseq_signal_with_wt(
     return total_signal, wt_signal
 
 
+def load_bundled_netseq_as_arrays(
+    organism: str,
+) -> Dict[Tuple[str, str], np.ndarray]:
+    """
+    Load bundled NET-seq data as per-chromosome numpy arrays.
+
+    Returns a dict mapping (chrom, strand) -> 1-D numpy array where
+    array[position] is the NET-seq signal at that genomic position.
+    This representation enables O(1) slicing vs. O(n) dict lookups.
+
+    Args:
+        organism: Organism name (e.g., 'saccharomyces_cerevisiae')
+
+    Returns:
+        Dict mapping (chrom, strand) -> ndarray of signal values
+    """
+    signal_dict = load_bundled_netseq(organism, return_wt_signal=False)
+
+    # Determine per-chromosome sizes from the signal dict keys
+    chrom_max: Dict[str, int] = {}
+    for (chrom, strand, pos) in signal_dict:
+        if chrom not in chrom_max or pos > chrom_max[chrom]:
+            chrom_max[chrom] = pos
+
+    # Build per-chromosome arrays
+    arrays: Dict[Tuple[str, str], np.ndarray] = {}
+    for (chrom, strand, pos), val in signal_dict.items():
+        key = (chrom, strand)
+        if key not in arrays:
+            arrays[key] = np.zeros(chrom_max[chrom] + 1, dtype=np.float32)
+        arrays[key][pos] = val
+
+    return arrays
+
+
 def is_bundled_data_available(organism: str) -> bool:
     """Check if bundled NET-seq data is available for an organism."""
     org = normalize_organism(organism)

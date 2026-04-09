@@ -1,157 +1,118 @@
-# RECTIFY Validation Reads
+# RECTIFY Validation Reads — Reference
 
-This directory contains `validation_reads.bam` and its index — a curated set of 20 nanopore
-direct RNA-seq reads from *Saccharomyces cerevisiae* (strain BY4742, WT) that each exemplify
-one of the four RECTIFY correction categories or chimeric alignment reconstruction.
+`validation_reads.bam` contains 24 real reads from `wt_by4742_rep1.bam`
+(S. cerevisiae wild-type, direct RNA nanopore) covering all six correction
+categories. Each read carries:
 
-All reads are drawn from a single DRS experiment aligned to the S288C R64-5-1 reference genome.
-Each read is tagged with `XV` (validation label) and `XG` (correction category) for easy
-programmatic access.
-
----
-
-## Category 1 — 3' End Indel Correction
-
-The aligner introduces deletions (and occasionally insertions) at the boundary between the
-poly(A) tail and a genomic A-tract, shifting the apparent 3' end downstream of the true
-cleavage and polyadenylation site (CPA). RECTIFY walks backward from the soft-clip boundary,
-skipping A's and deletions, until it reaches the first non-A/T agreement — the true CPA site.
-
-| Label | Read ID | Chrom | Strand | Coords | Key artifact |
-|-------|---------|-------|--------|--------|--------------|
-| `cat1_plus_1` | `9747f421-2a30-435b-84da-9925649998f9` | chrVIII | + | 508,599–508,794 | 3×D ops in last 85 bp; 19-A run at ref_end |
-| `cat1_plus_2` | `0821dc9e-5f02-4308-a4c7-e818ce2c0328` | chrIX | + | 22,544–22,850 | 4×1D in last 100 bp; 5-A run at ref_end |
-| `cat1_minus_1` | `fc492516-6e83-4420-b76c-4addf55e5a3a` | chrI | − | 5,068–6,331 | 9 bp poly-T clip (100% T); D12 at +14 bp inside poly-A tract |
-| `cat1_minus_2` | `21a45f3a-7f72-4e83-b083-7c3858967e15` | chrXII | − | 451,530–451,719 | 9 bp poly-T clip (100% T); D12 deletes `AAAAAAAAAAAT` at +14 bp |
-
-**Expected correction:** `three_prime_corrected` < `reference_end` (plus strand) or
-`three_prime_corrected` > `reference_start` (minus strand) — i.e. the CPA site is walked
-back from the raw alignment boundary.
+- **XV**: label (e.g. `cat1_plus_1`) — used as primary key in tests
+- **XG**: category name (e.g. `cat1_indel`)
+- **XK**: chimeric flag (`1` = chimeric, Cat5 only)
+- **XA**: comma-separated aligner list (Cat5 only)
+- **XS**: segment count (Cat5 only)
 
 ---
 
-## Category 2 — Soft-Clip Rescue at Homopolymer Boundary
+## Category 1 — polya_walkback (`cat1_indel`)
 
-Nanopore basecallers systematically under-call homopolymer runs. At poly(A)/poly(T) CPA
-boundaries the aligner soft-clips the tail one base short, leaving the true 3' end one
-position beyond the alignment. RECTIFY identifies this pattern and extends the alignment
-through the remaining homopolymer bases.
+Reads end in genomic A-tracts; the aligner's 3' boundary is shifted inward
+(plus: left; minus: right) by polya_walkback. All four reads confirmed to
+produce `corrected_3prime != original_3prime` after `rectify correct`.
 
-| Label | Read ID | Chrom | Strand | Coords | Key artifact |
-|-------|---------|-------|--------|--------|--------------|
-| `cat2_plus_1` | `7e72d78c-a6ff-41e3-8603-5fa46a5211a6` | chrVIII | + | 69,703–71,916 | 17 bp 3' clip; 10-T run starts at ref_end; first clip base = C |
-| `cat2_plus_2` | `2587252b-3734-49fa-973e-e6e519389348` | chrIX | + | 4,714–6,968 | 9 bp 3' clip (`AAAAAAAAA`); 8-T run starts at ref_end; A/T boundary |
-| `cat2_minus_1` | `47a52aea-9413-40c3-861c-c97d9160c58d` | chrI | − | 23,726–24,735 | 15 bp 5' clip (93% T); 11-A run straddles ref_start |
-| `cat2_minus_2` | `90300e53-3388-4d53-9629-301aa9c19ffa` | chrIX | − | 21,257–21,809 | 11 bp 5' clip (100% T); unbroken 11-A run crosses ref_start; up to 6 bp ambiguity |
-
-**Expected correction:** `correction_type` includes `softclip_rescue`; corrected CPA site
-shifts by 1–6 bp relative to raw alignment boundary.
+| Label | Coords (0-based half-open) | Strand | Shift |
+|---|---|---|---|
+| `cat1_plus_1` | chrVIII:508599–508794 | + | −3 bp |
+| `cat1_plus_2` | chrIX:22544–22850 | + | −3 bp |
+| `cat1_minus_1` | chrII:9855–10533 | − | +6 bp |
+| `cat1_minus_2` | chrII:9813–10539 | − | +4 bp |
 
 ---
 
-## Category 3 — 5' End Junction Rescue
+## Category 2 — soft-clip rescue (`cat2_softclip`)
 
-Nanopore reads that begin near a splice junction have their 5'-most bases soft-clipped rather
-than placed in the upstream exon. RECTIFY identifies soft-clipped sequences at the 5' end,
-locates the nearest canonical splice donor, and extends the alignment through the intron to
-recover the true transcription start position.
+Reads with A-rich 3' soft-clips that match the reference. The soft-clip is
+rescued and the corrected position shifts by 1–20 bp relative to the raw
+alignment end.
 
-| Label | Read ID | Chrom | Strand | Coords | Key artifact |
-|-------|---------|-------|--------|--------|--------------|
-| `cat3_plus_1` | `443f3f26-b8f8-47e3-9bf8-5f363409da28` | chrVIII | + | 104,292–105,214 | 620 bp 5' clip; canonical 398 bp GT-AG intron |
-| `cat3_plus_2` | `2b9f301c-d755-4c25-9728-6f01a34c2372` | chrII | + | 45,625–46,429 | 49 bp 5' clip; canonical 333 bp GT-AG intron |
-| `cat3_minus_1` | `a5cb1f45-8acd-4bb7-a1b0-f8b9a856187b` | chrVI | − | 53,083–54,797 | 12 bp rightmost clip (RNA 5' end); canonical 309 bp CT-AC intron |
-| `cat3_minus_2` | `345ff641-573b-4c92-958e-fcb5f945a89f` | chrIX | − | 98,413–99,413 | 11 bp rightmost clip; canonical 290 bp CT-AC intron |
-
-**Expected correction:** `five_prime_corrected` differs from raw alignment 5' end; clipped
-bases re-placed in upstream exon via the rescue alignment.
+| Label | Coords | Strand | Shift |
+|---|---|---|---|
+| `cat2_plus_1` | chrI:31119–31567 | + | −6 bp |
+| `cat2_plus_2` | chrI:11324–14730 | + | −1 bp |
+| `cat2_minus_1` | chrI:32932–34333 | − | +1 bp |
+| `cat2_minus_2` | chrI:31417–32958 | − | +1 bp |
 
 ---
 
-## Category 4 — False Junction Walk-Back
+## Category 3 — 5' junction rescue (`cat3_junction`)
 
-Poly(A) tails cause aligners to introduce spurious N (intron-skip) operations to align tail
-bases against downstream A-tracts, creating phantom splice junctions near the 3' end of the
-read. The same walk-back algorithm that handles indel artifacts (Category 1) transparently
-absorbs these N operations — they require no separate detection step.
+Reads with a 5' soft-clip that lands within `junction_proximity_bp` (default
+10 bp) of an annotated splice-site 3'SS. The 5' end is rescued to the intron
+boundary. Requires `--annotation` to be passed to `rectify correct`.
 
-| Label | Read ID | Chrom | Strand | Coords | Key artifact |
-|-------|---------|-------|--------|--------|--------------|
-| `cat4_plus_1` | `22e25c29-ed88-42f3-8bc8-4d0b8d3b3697` | chrXI | + | 19,592–22,073 | 1,520 bp N near 3' end; acceptor = `AAAAAA`; 24-A run downstream |
-| `cat4_plus_2` | `09b04cdd-4573-40cf-95fb-6110595cfc89` | chrX | + | 392,246–393,837 | 100 bp N, 112 bp from 3' end; CT/AA flanks (non-canonical); 16-A run at acceptor |
-| `cat4_minus_1` | `5b387eb1-b81c-4635-b30e-db4da94a6813` | chrVI | − | 54,492–56,010 | 745 bp N at 15 bp from ref_start; TC/AG flanks; 80% T in ref before N |
-| `cat4_minus_2` | `a9706bbe-b2b1-485f-ad7c-bec458c3f448` | chrIX | − | 76,016–77,313 | 223 bp N at 11 bp from ref_start; GT/AG flanks (plus-strand canonical = wrong for −); 14-T run |
+| Label | Coords | Strand | Gene / Intron | Rescued 5' end |
+|---|---|---|---|---|
+| `cat3_plus_1` | chrII:125270–126182 | + | intron 125154–125270 | 125153 |
+| `cat3_plus_2` | chrII:168808–169478 | + | intron 168424–168808 | 168423 |
+| `cat3_minus_1` | chrXV:900071–900767 | − | RPL20B intron 900767–901193 | 901193 |
+| `cat3_minus_2` | chrII:59715–60193 | − | intron 60193–60697 | 60697 |
 
-**Expected correction:** `three_prime_corrected` is walked back past the spurious N op to the
-true CPA site; `correction_type` includes `false_junction`.
-
----
-
-## Category 5 — Chimeric Alignment Reconstruction
-
-These reads were processed with `rectify align --chimeric-consensus`. For each read, different
-aligners produced better results for different segments. RECTIFY identified sync points where
-the aligners agreed, independently scored each inter-sync segment, and assembled the final
-alignment from the winning aligner per segment.
-
-All reads are from the chrI validation dataset (SRR32518283, minimap2 + mapPacBio + gapmm2)
-and carry the `XK:i:1` tag (chimeric) and `XA` tag (comma-separated winning aligners).
-
-| Label | Read ID | Chrom | Strand | Coords | Aligners used | Segments |
-|-------|---------|-------|--------|--------|---------------|----------|
-| `cat5_plus_3aligner` | `SRR32518283.3077333` | chrI | + | 9,411–9,965 | mapPacBio + minimap2 + gapmm2 | 9 |
-| `cat5_plus_2aligner` | `SRR32518283.2923588` | chrI | + | 7,109–9,030 | minimap2 + mapPacBio | 32 |
-| `cat5_minus_long` | `SRR32518283.1221212` | chrI | − | 4,923–6,316 | minimap2 + mapPacBio | 28 |
-| `cat5_minus_short` | `SRR32518283.3516917` | chrI | − | 5,044–5,683 | minimap2 + mapPacBio | 18 |
-
-**Expected tag:** `XK:i:1`; `XA` contains multiple aligner names separated by commas;
-`XS` (segment count) ≥ 3.
+For plus-strand reads the raw 5' end equals `reference_start`; for minus-strand
+reads it equals `reference_end − 1`. The test asserts `five_prime_position ≠
+raw_5prime`.
 
 ---
 
-## BAM Tags
+## Category 4 — false N op near 3' end (`cat4_false_junc`)
 
-| Tag | Type | Description |
-|-----|------|-------------|
-| `XV` | String | Validation label (e.g. `cat1_plus_1`) |
-| `XG` | String | Correction category (e.g. `cat1_indel`) |
-| `XK` | Integer | 1 = chimeric alignment, 0 = single aligner (Cat 5 only) |
-| `XA` | String | Winning aligner(s), comma-separated (Cat 5 only) |
-| `XS` | Integer | Number of independently scored segments (Cat 5 only) |
+Reads where the aligner inserts a spurious N (intron) CIGAR op in the
+poly-T / poly-A region close to the 3' end. The N is absorbed and the
+corrected position walks back past it (plus: corrected < original;
+minus: corrected > original).
 
----
-
-## Reference Genome
-
-Reads are aligned to *S. cerevisiae* S288C reference, R64-5-1 (2024-05-29):
-
-```
-S288C_reference_sequence_R64-5-1_20240529.chrnames.fsa
-MD5: (see SGD release page)
-Source: https://www.yeastgenome.org/
-```
-
-Chromosome names use the `chrI`…`chrXVI` convention (not NCBI accessions).
+| Label | Coords (0-based half-open) | Strand | Spurious N op | dist from 3' end | Shift |
+|---|---|---|---|---|---|
+| `cat4_plus_1` | chrXI:19592–22073 | + | 20527–22047 (1520 bp) | 26 bp | −45 bp |
+| `cat4_plus_2` | chrX:392246–393837 | + | 393725–393825 (100 bp) | 12 bp | −72 bp |
+| `cat4_minus_1` | chrI:128094–129063 | − | 128521–129021 (500 bp) | 427 bp | +3 bp |
+| `cat4_minus_2` | chrIX:76016–77313 | − | 76027–76250 (223 bp) | 11 bp | +11 bp |
 
 ---
 
-## Usage
+## Category 5 — chimeric reconstruction (`cat5_chimeric`)
 
-```python
-import importlib.resources
-import pysam
+Chimeric reads whose consensus was reconstructed from multiple aligner
+outputs. No re-correction is applied; tests verify BAM tags only.
 
-# Access bundled BAM
-with importlib.resources.path('rectify.data', 'validation_reads.bam') as bam_path:
-    bam = pysam.AlignmentFile(str(bam_path), 'rb')
-    for read in bam:
-        label = read.get_tag('XV')
-        category = read.get_tag('XG')
-        print(f'{label}: {read.reference_name}:{read.reference_start}-{read.reference_end}')
-```
+| Label | Coords (0-based half-open) | Strand | Aligners (XA) | Segments (XS) | Gene |
+|---|---|---|---|---|---|
+| `cat5_plus_3aligner` | chrI:9411–9965 | + | minimap2,mapPacBio,gapmm2 | 9 | YAL066W (partial, 159 bp overlap) |
+| `cat5_plus_2aligner` | chrI:7109–9030 | + | minimap2,mapPacBio | 32 | intergenic (YAL067C is −strand) |
+| `cat5_minus_long` | chrI:4923–6316 | − | minimap2,mapPacBio | 28 | intergenic |
+| `cat5_minus_short` | chrI:5044–5683 | − | minimap2,mapPacBio | 18 | intergenic |
 
-Or via the CLI validation command:
+All four carry `XK=1`.
 
-```bash
-rectify validate --show-reads
-```
+---
+
+## Category 6 — NET-seq A-tract refinement (`cat6_netseq_refine`)
+
+Reads ending in genomic A-tracts at positions with NET-seq signal are
+assigned fractional weights across nearby A-tract peaks. Single-peak reads
+produce exactly 1 output row with `fraction=1.0`; multi-peak reads produce
+≥2 rows with fractions in (0, 1) summing to 1.0.
+
+| Label | Coords | Strand | Expected output |
+|---|---|---|---|
+| `cat6_plus_single` | chrII:297998–300059 | + | 1 row, fraction=1.0 |
+| `cat6_plus_multi` | chrIV:232523–234067 | + | ≥2 rows, fractions sum=1.0 |
+| `cat6_minus_single` | chrIV:1169625–1172005 | − | 1 row, fraction=1.0 |
+| `cat6_minus_multi` | chrVIII:100505–101004 | − | ≥2 rows, fractions sum=1.0 |
+
+---
+
+## Regenerating the BAM
+
+All reads are sourced from `wt_by4742_rep1.bam`. If the validation BAM needs
+to be rebuilt, use the read names stored in the XV tags as query names to
+`samtools view` the source BAM, then re-apply the XV/XG/XK/XA/XS tags with
+a pysam script. The selection criteria for each category are documented in
+the session transcript.

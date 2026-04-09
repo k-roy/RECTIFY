@@ -88,7 +88,7 @@ def select_best_alignment(read_group, annotated_junctions=None):
     """
 ```
 
-The winning aligner's BAM record is written to the consensus BAM.
+The winning aligner's BAM record is written to the rectified BAM.
 
 ---
 

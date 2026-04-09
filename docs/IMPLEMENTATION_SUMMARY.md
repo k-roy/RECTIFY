@@ -57,27 +57,11 @@ Input: FASTQ (direct RNA nanopore)
 
 ---
 
-## Critical: Two `run-all` Implementations
-
-**Do not confuse these two files.**
-
-| File | Wired to CLI? | Purpose |
-|------|--------------|---------|
-| `core/run_command.py` | **Yes** — `rectify run-all` dispatches here | Production pipeline |
-| `core/run_all_command.py` | **No** — experimental redesign, not active | Refactor-in-progress |
-
-`run_command.py` dispatches to `_run_single_sample()` or `_run_multi_sample()` depending on whether `--manifest` is provided. **Always edit `run_command.py` for pipeline changes.**
-
-DESeq2, motif discovery, and GO enrichment only run in multi-sample (`--manifest`) mode. Single-sample runs skip them by design (`run_deseq2 = n_samples > 1`).
-
----
-
 ## Module Map
 
 | File | Role |
 |------|------|
 | `core/run_command.py` | **Active** `run-all` dispatcher (single + multi-sample) |
-| `core/run_all_command.py` | Experimental redesign — NOT wired to CLI |
 | `core/multi_aligner.py` | Runs all 5 aligners, builds per-aligner BAMs |
 | `core/consensus.py` | Scores alignments, selects best per read |
 | `core/bam_processor.py` | 3' end correction orchestration (parallel + streaming) |
@@ -303,7 +287,7 @@ Handles reads truncated or soft-clipped at the exon 2 / 3' splice site (3'SS) bo
 
 **Junction universe:**
 ```
-annotated 3'SS from GFF  ∪  novel 3'SS from consensus BAM CIGAR
+annotated 3'SS from GFF  ∪  novel 3'SS from rectified BAM CIGAR
 ```
 
 Sets `five_prime_rescued=True` and updates `five_prime_position` for cases 1 & 2. Case 3 sets `rescue_type='proximity'` without position change.
@@ -382,7 +366,7 @@ Generated via `rectify batch` using the `sherlock_larsms.yaml` profile. Scripts 
 
 **Key features:**
 - Stages input FASTQ from OAK → `$SCRATCH` before running (75 GB/s local SSD vs. ~1-5 GB/s OAK NFS)
-- Runs all I/O (5-aligner BAMs, consensus BAM, correction outputs) on `$SCRATCH`
+- Runs all I/O (5-aligner BAMs, rectified BAM, correction outputs) on `$SCRATCH`
 - Copies final outputs back to OAK via `rsync` after completion
 - Cleans up `$SCRATCH` regardless of exit code
 

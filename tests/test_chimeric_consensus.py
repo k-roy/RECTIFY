@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 from unittest.mock import MagicMock
 
-from rectify_beta_deploy.chimeric_consensus import (
+from rectify.core.chimeric_consensus import (
     CigarEvent,
     ChimericSegment,
     build_chimeric_cigar,
@@ -264,12 +264,12 @@ class TestSelectBestChimericFallback:
     """
     Test that select_best_chimeric falls back correctly when build_chimeric_cigar
     returns invalid results. _fallback_simple_selection uses a relative import
-    (rectify_beta_deploy.consensus) not available in the test environment, so
+    (rectify.core.chimeric_consensus) not available in the test environment, so
     we mock it out.
     """
 
     def _make_chimeric_result(self, aligner_name, read):
-        from rectify_beta_deploy.chimeric_consensus import ChimericResult
+        from rectify.core.chimeric_consensus import ChimericResult
         return ChimericResult(
             read_id=read.query_name,
             is_chimeric=False,
@@ -289,7 +289,7 @@ class TestSelectBestChimericFallback:
         When build_chimeric_cigar returns (None, []), select_best_chimeric
         must fall back to single-aligner rather than crashing.
         """
-        from rectify_beta_deploy.chimeric_consensus import select_best_chimeric
+        from rectify.core.chimeric_consensus import select_best_chimeric
         import unittest.mock as mock
 
         genome = {'chrI': 'A' * 250_000}
@@ -309,10 +309,10 @@ class TestSelectBestChimericFallback:
         fallback_result = self._make_chimeric_result('a', read_a)
 
         with mock.patch(
-            'rectify_beta_deploy.chimeric_consensus.build_chimeric_cigar',
+            'rectify.core.chimeric_consensus.build_chimeric_cigar',
             return_value=(None, []),
         ), mock.patch(
-            'rectify_beta_deploy.chimeric_consensus._fallback_simple_selection',
+            'rectify.core.chimeric_consensus._fallback_simple_selection',
             return_value=fallback_result,
         ) as mock_fallback:
             result = select_best_chimeric(aligner_reads, genome)
@@ -326,7 +326,7 @@ class TestSelectBestChimericFallback:
         (947I in a 50-bp read context), select_best_chimeric must call
         _fallback_simple_selection rather than returning the bad CIGAR.
         """
-        from rectify_beta_deploy.chimeric_consensus import select_best_chimeric
+        from rectify.core.chimeric_consensus import select_best_chimeric
         import unittest.mock as mock
 
         genome = {'chrI': 'A' * 250_000}
@@ -349,10 +349,10 @@ class TestSelectBestChimericFallback:
         bad_cigar = [(0, 23), (3, 24716), (1, 947), (0, 213)]
 
         with mock.patch(
-            'rectify_beta_deploy.chimeric_consensus.build_chimeric_cigar',
+            'rectify.core.chimeric_consensus.build_chimeric_cigar',
             return_value=(1000, bad_cigar),
         ), mock.patch(
-            'rectify_beta_deploy.chimeric_consensus._fallback_simple_selection',
+            'rectify.core.chimeric_consensus._fallback_simple_selection',
             return_value=fallback_result,
         ) as mock_fallback:
             result = select_best_chimeric(aligner_reads, genome)

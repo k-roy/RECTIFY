@@ -669,15 +669,17 @@ def plot_metagene_line(
     """
     if aggregation == 'trimmed_mean':
         mean = trimmed_mean(profiles, proportion=trim_proportion, axis=0)
-        # For trimmed mean, estimate effective n
-        n_eff = int(profiles.shape[0] * (1 - 2 * trim_proportion))
+        n = profiles.shape[0]
+        k = int(n * trim_proportion)
+        n_eff = n - 2 * k
+        trimmed_profiles = np.sort(profiles, axis=0)[k:n - k, :]
+        sem = np.std(trimmed_profiles, axis=0, ddof=1) / np.sqrt(n_eff)
     elif aggregation == 'mean':
         mean = np.mean(profiles, axis=0)
         n_eff = profiles.shape[0]
+        sem = np.std(profiles, axis=0, ddof=1) / np.sqrt(n_eff)
     else:
         raise ValueError(f"Unknown aggregation: {aggregation}")
-
-    sem = np.std(profiles, axis=0, ddof=1) / np.sqrt(n_eff)
 
     if show_sem:
         ax.fill_between(

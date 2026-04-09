@@ -9,11 +9,14 @@ Author: Kevin R. Roy
 Date: 2026-03-17
 """
 
+import logging
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import re
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Try to import pyDESeq2 (optional dependency)
 try:
@@ -227,6 +230,13 @@ def run_deseq2_cluster_level(
             right_index=True,
             how='left'
         )
+        n_missing = result_df['chrom'].isna().sum() if 'chrom' in result_df.columns else 0
+        if n_missing > 0:
+            import logging
+            logging.warning(
+                f"DESeq2 result for '{condition}': {n_missing} clusters have no annotation "
+                f"(NaN values in merged output). Check that clusters_df is complete."
+            )
         results[condition] = result_df
 
     return results
@@ -281,6 +291,14 @@ def _run_deseq2(
 
     Returns results for each non-reference condition vs reference.
     """
+    # Validate reference_condition is present in metadata before proceeding
+    available_conditions = metadata['condition'].unique().tolist()
+    if reference_condition not in available_conditions:
+        raise ValueError(
+            f"Reference condition '{reference_condition}' not found in sample metadata. "
+            f"Available conditions: {available_conditions}"
+        )
+
     # Convert counts to integers
     counts = counts.astype(int)
 
@@ -325,8 +343,17 @@ def _run_deseq2(
             results[treatment] = result_df
 
         except Exception as e:
-            print(f"Warning: DESeq2 failed for {treatment} vs {reference_condition}: {e}")
+            logger.warning(
+                "DESeq2 failed for %s vs %s: %s",
+                treatment, reference_condition, e,
+            )
             continue
+
+    if not results:
+        raise RuntimeError(
+            f"DESeq2 failed for all contrasts against reference '{reference_condition}'. "
+            "Check logs for per-contrast errors."
+        )
 
     return results
 

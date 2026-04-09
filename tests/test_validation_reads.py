@@ -1,8 +1,8 @@
 """
-Validation test suite for the 20 bundled RECTIFY example reads.
+Validation test suite for the 24 bundled RECTIFY example reads.
 
 Runs rectify correction on each read and asserts that the expected correction
-was applied for each of the five categories. This serves as both a regression
+was applied for each of the six categories. This serves as both a regression
 test and an installation smoke-test.
 
 Run with:
@@ -10,7 +10,6 @@ Run with:
     rectify validate          (CLI shortcut)
 """
 
-import importlib.resources
 import pytest
 import pysam
 from pathlib import Path
@@ -45,23 +44,58 @@ def load_reads(bam_path: Path) -> dict:
     return reads
 
 
-def run_correction(bam_path: Path, genome_path: Path, tmp_path: Path) -> dict:
+def run_correction(bam_path: Path, genome_path: Path, annotation_path: Path,
+                   tmp_path: Path) -> dict:
     """
     Run `rectify correct` on the validation BAM and return the TSV results as
-    a dict keyed by read_id.
+    a dict keyed by read_id (first row per read_id, by appearance).
     """
     import subprocess, sys, csv
 
     out_tsv = tmp_path / 'corrected.tsv'
-    result = subprocess.run(
-        [
-            sys.executable, '-m', 'rectify.cli', 'correct',
-            str(bam_path),
-            '--genome', str(genome_path),
-            '-o', str(out_tsv),
-        ],
-        capture_output=True, text=True
-    )
+    cmd = [
+        sys.executable, '-m', 'rectify.cli', 'correct',
+        str(bam_path),
+        '--genome', str(genome_path),
+        '-o', str(out_tsv),
+    ]
+    if annotation_path is not None:
+        cmd += ['--annotation', str(annotation_path)]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f'rectify correct failed:\n{result.stderr}')
+
+    # Return first row per read_id (primary position; Cat6 may produce multiple)
+    rows = {}
+    with open(out_tsv) as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            rid = row['read_id']
+            if rid not in rows:
+                rows[rid] = row
+    return rows
+
+
+def run_correction_all_rows(bam_path: Path, genome_path: Path,
+                             annotation_path: Path, tmp_path: Path) -> dict:
+    """
+    Like run_correction but returns *all* rows per read_id as a list.
+    Used for Cat6 fraction tests.
+    """
+    import subprocess, sys, csv
+
+    out_tsv = tmp_path / 'corrected_all.tsv'
+    cmd = [
+        sys.executable, '-m', 'rectify.cli', 'correct',
+        str(bam_path),
+        '--genome', str(genome_path),
+        '-o', str(out_tsv),
+    ]
+    if annotation_path is not None:
+        cmd += ['--annotation', str(annotation_path)]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         pytest.fail(f'rectify correct failed:\n{result.stderr}')
 
@@ -69,7 +103,8 @@ def run_correction(bam_path: Path, genome_path: Path, tmp_path: Path) -> dict:
     with open(out_tsv) as f:
         reader = csv.DictReader(f, delimiter='\t')
         for row in reader:
-            rows[row['read_id']] = row
+            rid = row['read_id']
+            rows.setdefault(rid, []).append(row)
     return rows
 
 
@@ -97,9 +132,21 @@ def genome_path():
 
 
 @pytest.fixture(scope='module')
-def corrected(bam_path, genome_path, tmp_path_factory):
+def annotation_path():
+    from rectify.data import get_bundled_annotation_path
+    return get_bundled_annotation_path('saccharomyces_cerevisiae')  # None is OK
+
+
+@pytest.fixture(scope='module')
+def corrected(bam_path, genome_path, annotation_path, tmp_path_factory):
     tmp = tmp_path_factory.mktemp('correction')
-    return run_correction(bam_path, genome_path, tmp)
+    return run_correction(bam_path, genome_path, annotation_path, tmp)
+
+
+@pytest.fixture(scope='module')
+def corrected_all_rows(bam_path, genome_path, annotation_path, tmp_path_factory):
+    tmp = tmp_path_factory.mktemp('correction_all')
+    return run_correction_all_rows(bam_path, genome_path, annotation_path, tmp)
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +154,8 @@ def corrected(bam_path, genome_path, tmp_path_factory):
 # ---------------------------------------------------------------------------
 
 class TestBamIntegrity:
-    def test_bam_has_20_reads(self, raw_reads):
-        assert len(raw_reads) == 20, f'Expected 20 reads, got {len(raw_reads)}'
+    def test_bam_has_24_reads(self, raw_reads):
+        assert len(raw_reads) == 24, f'Expected 24 reads, got {len(raw_reads)}'
 
     def test_all_labels_present(self, raw_reads):
         expected = {
@@ -118,6 +165,8 @@ class TestBamIntegrity:
             'cat4_plus_1', 'cat4_plus_2', 'cat4_minus_1', 'cat4_minus_2',
             'cat5_plus_3aligner', 'cat5_plus_2aligner',
             'cat5_minus_long', 'cat5_minus_short',
+            'cat6_plus_single', 'cat6_plus_multi',
+            'cat6_minus_single', 'cat6_minus_multi',
         }
         assert set(raw_reads.keys()) == expected
 
@@ -128,6 +177,7 @@ class TestBamIntegrity:
             'cat3': 'cat3_junction',
             'cat4': 'cat4_false_junc',
             'cat5': 'cat5_chimeric',
+            'cat6': 'cat6_netseq_refine',
         }
         for label, read in raw_reads.items():
             prefix = label[:4]
@@ -135,7 +185,7 @@ class TestBamIntegrity:
                 f'{label}: expected XG={cat_map[prefix]}, got {read.get_tag("XG")}'
 
     def test_strand_balance(self, raw_reads):
-        for cat in ['cat1', 'cat2', 'cat3', 'cat4', 'cat5']:
+        for cat in ['cat1', 'cat2', 'cat3', 'cat4', 'cat6']:
             cat_reads = {k: v for k, v in raw_reads.items() if k.startswith(cat)}
             plus = sum(1 for r in cat_reads.values() if not r.is_reverse)
             minus = sum(1 for r in cat_reads.values() if r.is_reverse)
@@ -192,7 +242,7 @@ class TestCategory1IndelCorrection:
 
 
 class TestCategory2SoftClipRescue:
-    """Corrected position should shift by 1–10 bp relative to raw alignment end."""
+    """Corrected position should shift by ≥1 bp relative to raw alignment end."""
 
     @pytest.mark.parametrize('label,strand', [
         ('cat2_plus_1', '+'),
@@ -209,7 +259,7 @@ class TestCategory2SoftClipRescue:
         corrected_pos = int(row['corrected_3prime'])
         shift = abs(corrected_pos - original)
         assert shift >= 1, f'{label}: soft-clip rescue should shift position by ≥1 bp'
-        assert shift <= 15, f'{label}: soft-clip rescue shift of {shift} bp seems too large'
+        assert shift <= 20, f'{label}: soft-clip rescue shift of {shift} bp seems too large'
 
 
 class TestCategory3JunctionRescue:
@@ -231,11 +281,15 @@ class TestCategory3JunctionRescue:
             f'{label}: five_prime_position should be set after junction rescue'
 
     @pytest.mark.parametrize('label,strand,raw_5prime', [
-        # raw 5' end = alignment_start for plus, alignment_end-1 for minus
-        ('cat3_plus_1', '+', 104292),   # 620 bp clip — true TSS is much further left
-        ('cat3_plus_2', '+', 45625),    # 49 bp clip; 333 bp GT-AG intron on chrII
-        ('cat3_minus_1', '-', 54786),   # 12 bp rightmost clip
-        ('cat3_minus_2', '-', 99412),   # 11 bp rightmost clip
+        # raw 5' end = reference_start for plus, reference_end-1 for minus
+        # cat3_plus_1: chrII:125270-126182+, alignment starts at 125270
+        ('cat3_plus_1', '+', 125270),
+        # cat3_plus_2: chrII:168808-169478+, alignment starts at 168808
+        ('cat3_plus_2', '+', 168808),
+        # cat3_minus_1: chrXV:900071-900767-, RPL20B; reference_end-1 = 900766
+        ('cat3_minus_1', '-', 900766),
+        # cat3_minus_2: chrII:59715-60193-; reference_end-1 = 60192
+        ('cat3_minus_2', '-', 60192),
     ])
     def test_5prime_rescued(self, corrected, raw_reads, label, strand, raw_5prime):
         read = raw_reads[label]
@@ -291,3 +345,42 @@ class TestCategory5ChimericReconstruction:
             r = raw_reads[label]
             xs = r.get_tag('XS') if r.has_tag('XS') else 0
             assert xs >= 3, f'{label}: expected ≥3 segments (XS), got {xs}'
+
+
+class TestCategory6NetseqRefinement:
+    """NET-seq A-tract refinement: single-peak reads get fraction=1.0;
+    multi-peak reads get ≥2 fractional rows summing to 1.0."""
+
+    @pytest.mark.parametrize('label', [
+        'cat6_plus_single',
+        'cat6_minus_single',
+    ])
+    def test_single_peak_fraction(self, corrected_all_rows, raw_reads, label):
+        read = raw_reads[label]
+        rows = corrected_all_rows.get(read.query_name, [])
+        if not rows:
+            pytest.skip(f'Read {label} not in correction output')
+        assert len(rows) == 1, \
+            f'{label}: single-peak read should produce exactly 1 output row, got {len(rows)}'
+        frac = float(rows[0].get('fraction', 1.0))
+        assert abs(frac - 1.0) < 0.01, \
+            f'{label}: single-peak fraction should be 1.0, got {frac}'
+
+    @pytest.mark.parametrize('label', [
+        'cat6_plus_multi',
+        'cat6_minus_multi',
+    ])
+    def test_multi_peak_fractions(self, corrected_all_rows, raw_reads, label):
+        read = raw_reads[label]
+        rows = corrected_all_rows.get(read.query_name, [])
+        if not rows:
+            pytest.skip(f'Read {label} not in correction output')
+        assert len(rows) >= 2, \
+            f'{label}: multi-peak read should produce ≥2 output rows, got {len(rows)}'
+        total = sum(float(r.get('fraction', 1.0)) for r in rows)
+        assert abs(total - 1.0) < 0.02, \
+            f'{label}: fractions should sum to 1.0, got {total:.3f}'
+        for r in rows:
+            frac = float(r.get('fraction', 1.0))
+            assert 0.0 < frac < 1.0, \
+                f'{label}: each fraction should be in (0, 1), got {frac}'

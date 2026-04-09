@@ -1,180 +1,217 @@
 # HPC / SLURM
 
-RECTIFY has built-in support for SLURM HPC environments. This page covers the bundled profiles, job submission, and best practices for running on Stanford's Sherlock cluster or any compatible system.
+RECTIFY has built-in support for HPC batch schedulers. The `rectify batch` command generates
+scheduler scripts and, optionally, submits them automatically.
+
+Supported schedulers: **SLURM**, **UGE/SGE** (Altair Grid Engine), **PBS/Torque**.
 
 ---
 
-## Quick submission
+## Quick start
 
 ```bash
-rectify run \
+# 1. Copy and edit the generic profile for your cluster
+cp rectify/slurm_profiles/slurm_generic.yaml my_cluster.yaml
+# Edit: set `partition` to your cluster's partition or queue name
+
+# 2. Generate (and optionally submit) SLURM array scripts
+rectify batch \
     --manifest manifest.tsv \
-    --Scer \
+    --genome genome.fa \
+    --annotation genes.gff \
     --reference wt \
     -o results/ \
-    --profile /path/to/rectify/slurm_profiles/sherlock_larsms.yaml
+    --profile my_cluster.yaml
 ```
 
-This generates and optionally submits two SLURM scripts:
+This generates two scheduler scripts:
 
-1. `results/slurm/rectify_batch_correct.sh` — SLURM array job (one task per sample)
-2. `results/slurm/rectify_batch_analyze.sh` — combined analysis (submitted after array completes)
+1. `results/slurm/rectify_batch_correct.sh` — array job (one task per sample)
+2. `results/slurm/rectify_batch_analyze.sh` — combined analysis (runs after array)
+
+To submit immediately, add `submit: true` to your profile, or pass `--submit` on the CLI.
 
 ---
 
 ## Bundled profiles
 
-Two profiles are included in `rectify/slurm_profiles/`:
+Three profiles are included in `rectify/slurm_profiles/`:
 
-### `sherlock_larsms.yaml` (recommended)
+| Profile | Purpose |
+|---------|---------|
+| `slurm_generic.yaml` | **Start here.** Generic template with all options documented. |
+| `sherlock_larsms.yaml` | Stanford Sherlock `larsms` partition (lab-specific). |
+| `sherlock_gpu.yaml` | Stanford Sherlock GPU partition (lab-specific). |
 
-```yaml
-partition: larsms,owners
-time: "8:00:00"
-mem: 128G
-cpus: 8
-max_concurrent: 20
-use_scratch: true   # Stage BAMs through $SCRATCH (75 GB/s)
-streaming: true     # Process reads in chunks — peak RSS ~4-5 GB
-```
-
-### `sherlock_gpu.yaml`
-
-For GPU-accelerated alignment (e.g. with dorado basecalling):
-
-```yaml
-partition: gpu
-time: "4:00:00"
-mem: 64G
-cpus: 8
-gpus: 1
-```
+For any cluster other than Stanford Sherlock, start with `slurm_generic.yaml`.
 
 ---
 
-## $SCRATCH staging
+## Profile reference
 
-**Never run BAM correction I/O directly on Oak in a SLURM array job.**
+All profile fields (with defaults from `slurm_generic.yaml`):
 
-Oak is NFS-backed shared storage. Running 20 concurrent array tasks each streaming a 7 GB BAM through Oak causes severe I/O contention and inflates wall time 2–3×.
+```yaml
+partition: null           # REQUIRED: your partition/queue name (null = cluster default)
+cpus: 8                   # CPUs per correction task
+mem: "32G"                # Memory per correction task
+time: "4:00:00"           # Wall-clock limit per correction task
+analyze_cpus: 8           # CPUs for combined analysis
+analyze_mem: "64G"        # Memory for combined analysis
+analyze_time: "8:00:00"   # Wall-clock limit for analysis
+job_name: rectify_batch
+max_concurrent: 10        # Max simultaneous array tasks
+submit: false             # true = submit after generating scripts
+use_scratch: false        # true = stage BAMs through $SCRATCH (see below)
+streaming: true           # true = stream BAM reads in chunks (recommended)
+```
 
-When `use_scratch: true` is set, the generated SLURM script:
-1. Copies the input BAM to `$SCRATCH` (node-local, ~75 GB/s)
+CLI flags override profile values. For example, `--cpus 16` overrides `cpus: 8`.
+
+---
+
+## Scratch staging
+
+When `use_scratch: true` is set and `$SCRATCH` is defined in the job environment,
+the generated script:
+
+1. Copies the input BAM to `$SCRATCH` (typically node-local, high-bandwidth)
 2. Runs `rectify correct` on the local copy
-3. Rsyncs all outputs back to Oak
+3. Rsyncs all outputs back to the output directory
 4. Cleans up `$SCRATCH`
 
-!!! note
-    FASTQ inputs are left on Oak — they are read sequentially once and don't benefit from staging.
+This avoids I/O contention on shared NFS/Lustre filesystems when many array tasks
+run concurrently. On clusters with fast local storage, this typically reduces
+correction wall time by 2–3×.
 
-!!! warning
-    `$SCRATCH` on Sherlock is auto-purged after 90 days. Always rsync outputs back to Oak before the purge window.
+!!! note
+    FASTQ inputs are left on shared storage — they are read once sequentially and
+    do not benefit from staging.
+
+!!! note
+    `$SCRATCH` variable convention varies by cluster. Common names: `$SCRATCH`,
+    `$SLURM_TMPDIR`, `$TMPDIR`. RECTIFY checks these in priority order. If none
+    is set, I/O falls back to the output directory.
 
 ---
 
 ## Thread limits
 
-**SLURM will suspend or ban accounts that spawn more processes than allocated CPUs.**
+**Batch schedulers will suspend or terminate jobs that use more CPU threads than allocated.**
 
-Python packages (numpy, sklearn, pydeseq2) auto-spawn threads via OpenMP, OpenBLAS, MKL, and joblib's loky backend. RECTIFY's generated SLURM scripts set all thread limits automatically:
+Python packages (numpy, sklearn, pydeseq2) spawn threads via OpenMP, OpenBLAS, MKL,
+and joblib's loky backend. RECTIFY's generated scripts set all limits automatically
+using `$RECTIFY_CPUS` (normalised from `SLURM_CPUS_PER_TASK`, `NSLOTS`, or `PBS_NUM_PPN`):
 
 ```bash
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export LOKY_MAX_CPU_COUNT=$SLURM_CPUS_PER_TASK   # critical for pydeseq2/sklearn
+export OMP_NUM_THREADS=$RECTIFY_CPUS
+export OPENBLAS_NUM_THREADS=$RECTIFY_CPUS
+export MKL_NUM_THREADS=$RECTIFY_CPUS
+export LOKY_MAX_CPU_COUNT=$RECTIFY_CPUS   # critical for pydeseq2/sklearn
 ```
 
 !!! warning "LOKY_MAX_CPU_COUNT is mandatory"
-    Joblib's loky backend ignores `JOBLIB_WORKERS`. You **must** set `LOKY_MAX_CPU_COUNT` or pydeseq2 and sklearn will over-subscribe.
+    Joblib's loky backend ignores `JOBLIB_WORKERS`. You **must** set
+    `LOKY_MAX_CPU_COUNT` or pydeseq2 and sklearn will over-subscribe.
 
-If writing your own scripts, set these **before** importing numpy:
+If writing custom scripts, set these **before** importing numpy:
 
 ```python
 import os
-os.environ['OMP_NUM_THREADS'] = '8'
-os.environ['LOKY_MAX_CPU_COUNT'] = '8'
-# ... now safe to import numpy, pandas, sklearn
-import numpy as np
+os.environ['OMP_NUM_THREADS'] = str(n_cpus)
+os.environ['LOKY_MAX_CPU_COUNT'] = str(n_cpus)
+# now safe to import numpy, pandas, sklearn
 ```
 
 ---
 
 ## Streaming mode
 
-For large BAMs (> 2 GB), use streaming mode to keep peak RAM at ~4–5 GB regardless of file size:
+For large BAMs (> 2 GB), use streaming mode to keep peak RAM at ~4–5 GB regardless
+of file size:
 
 ```bash
-rectify correct reads.bam --Scer --streaming -o results/
+rectify correct reads.bam --genome genome.fa --annotation genes.gff --streaming -o results/
 ```
 
-The `sherlock_larsms.yaml` profile sets `streaming: true` by default.
+The `slurm_generic.yaml` profile sets `streaming: true` by default.
 
-Without streaming, the parallel accumulation path loads all results into RAM before writing. For a 7 GB BAM with 40M reads, this requires ~30–40 GB.
+Without streaming, all reads are accumulated in RAM before writing. For a 7 GB BAM
+with 40M reads this requires ~30–40 GB.
 
 ---
 
-## Interactive sessions
+## BAM output options
 
-For quick tests before submitting batch jobs:
+By default, per-aligner BAMs (minimap2, mapPacBio, gapmm2) are discarded after
+consensus selection; only the rectified BAM is kept. Use these flags if you want
+to inspect the per-aligner outputs:
 
 ```bash
-# Request an interactive node (Sherlock)
-srun --partition=larsms --account=larsms \
-     --cpus-per-task=8 --time=2:00:00 --mem=32G --pty bash
-
-# Set thread limits
-export OMP_NUM_THREADS=8
-export LOKY_MAX_CPU_COUNT=8
-
-# Test with a small BAM
-rectify correct test.bam --Scer --streaming -o test_output/
+rectify run-all sample.fastq.gz --Scer -o results/ \
+    --bam-dir /path/to/bams/ \      # Write all alignment BAMs here
+    --keep-aligner-bams             # Retain per-aligner BAMs alongside rectified BAM
 ```
 
 ---
 
-## Checking job status
+## HPC scheduler compatibility
+
+RECTIFY's generated scripts detect the active scheduler automatically using
+environment variables and normalise them into `RECTIFY_*` variables:
 
 ```bash
-squeue -u $USER            # Active jobs
-sacct -j <jobid>           # Completed job stats
-sstat -j <jobid>           # Running job resource usage
-sshare -u $USER            # Fairshare score (higher = better priority)
+# Set at the top of every generated script:
+RECTIFY_CPUS         # CPUs allocated to this task
+RECTIFY_JOB_ID       # Job identifier
+RECTIFY_TASK_ID      # Array task index (0-based)
+RECTIFY_SCRATCH_BASE # Fast scratch directory (if available)
+```
+
+| Scheduler | CPU source | Job ID | Array task ID |
+|-----------|-----------|--------|---------------|
+| SLURM | `SLURM_CPUS_PER_TASK` | `SLURM_JOB_ID` | `SLURM_ARRAY_TASK_ID` |
+| UGE/SGE | `NSLOTS` | `JOB_ID` | `SGE_TASK_ID` |
+| PBS/Torque | `PBS_NUM_PPN` | `PBS_JOBID` | `PBS_ARRAY_INDEX` |
+
+The generated scripts are SLURM `#SBATCH` scripts. For UGE or PBS clusters, use
+the script body as a template and replace the directive block with the appropriate
+`#$ -` or `#PBS` equivalents.
+
+---
+
+## Python path in generated scripts
+
+Generated scripts activate the conda environment by prepending its `bin/` directory
+to `PATH`. Avoid `conda activate` in batch scripts — it can silently fail in
+non-interactive shells, leaving the job using system Python.
+
+Recommended pattern:
+
+```bash
+# In your SLURM script:
+export PATH="/path/to/conda/envs/myenv/bin:$PATH"
+python -m rectify correct ...
 ```
 
 ---
 
-## Python path in SLURM scripts
+## Troubleshooting
 
-Generated scripts use an explicit Python path — never `conda activate`:
+**Job fails immediately with "command not found: rectify"**
+: The conda environment is not on `PATH`. Set `PATH` explicitly (see above) and
+  verify with `which rectify` in an interactive session first.
 
-```bash
-PYTHON="/home/groups/larsms/users/kevinroy/anaconda3/bin/python"
-$PYTHON -m rectify correct ...
-```
+**Job exceeds memory limit (OOM kill)**
+: Enable streaming mode (`streaming: true` in profile or `--streaming` on CLI)
+  and increase `mem` to at least 8× the input BAM size.
 
-This avoids the common failure where `conda activate` silently falls back to system Python 3.6.
+**Many concurrent tasks all fail with I/O errors**
+: NFS contention. Enable scratch staging (`use_scratch: true`) and verify that
+  `$SCRATCH` (or equivalent) is defined in your job environment.
 
----
-
-## Dry-run validation
-
-Before submitting to a slow partition (e.g., GPU), validate your environment on a fast partition:
-
-```bash
-#!/bin/bash
-#SBATCH --partition=larsms
-#SBATCH --time=0:05:00
-#SBATCH --mem=4G
-
-PYTHON="/home/groups/larsms/users/kevinroy/anaconda3/bin/python"
-
-$PYTHON -c "
-import rectify
-print(f'RECTIFY {rectify.__version__} OK')
-import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')
-"
-$PYTHON -m py_compile $(which rectify) && echo 'Syntax OK'
-```
-
-Submit this first; if it passes, submit your real job.
+**Array task 0 succeeds; others fail**
+: Check that array indices map correctly to samples. The generated script uses
+  `$RECTIFY_TASK_ID` (0-based) to index into the sample list. Verify that
+  `SLURM_ARRAY_TASK_ID` (or scheduler equivalent) is set and exported in your
+  job environment.

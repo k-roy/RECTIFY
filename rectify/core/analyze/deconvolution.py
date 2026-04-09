@@ -219,10 +219,11 @@ def deconvolve_signal(
 
     # Ensure dimensions match
     if A.shape[0] != n:
-        min_n = min(A.shape[0], n)
-        A = A[:min_n, :min_n]
-        observed = observed[:min_n]
-        n = min_n
+        raise ValueError(
+            f"Dimension mismatch: convolution_matrix has {A.shape[0]} rows "
+            f"but observed vector has length {n}. "
+            f"Ensure tract_length matches the length of the observed signal."
+        )
 
     # Add L2 regularization: [A; sqrt(reg)*I] @ x = [observed; 0]
     A_reg = np.vstack([A, np.sqrt(regularization) * np.eye(n)])

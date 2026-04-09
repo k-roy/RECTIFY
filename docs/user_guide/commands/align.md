@@ -2,7 +2,7 @@
 
 Multi-aligner consensus alignment for direct RNA and long-read sequencing.
 
-Runs up to five aligners in parallel, attempts to rescue soft-clips through annotated splice junctions, scores alignments by canonical GT-AG sites and annotation matches, and writes the best alignment per read to a consensus BAM.
+Runs up to five aligners in parallel, attempts to rescue soft-clips through annotated splice junctions, scores alignments by canonical GT-AG sites and annotation matches, and writes the best alignment per read to a rectified BAM.
 
 ---
 

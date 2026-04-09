@@ -126,10 +126,18 @@ def load_corrected_tsv(filepath: Path) -> List[CorrectedPosition]:
         header = f.readline().strip().split('\t')
         header_lower = [h.lower().replace('_', '') for h in header]
 
-        # Map columns
+        # Map columns — detect collisions caused by underscore removal
         col_map = {}
-        for i, col in enumerate(header_lower):
+        _normalized_origin = {}  # normalized_name -> original column name
+        for i, (col, orig) in enumerate(zip(header_lower, header)):
+            if col in _normalized_origin and _normalized_origin[col] != orig:
+                raise ValueError(
+                    f"Column name collision after underscore removal: "
+                    f"'{orig}' and '{_normalized_origin[col]}' both normalize to '{col}'. "
+                    f"Rename one column to avoid ambiguity."
+                )
             col_map[col] = i
+            _normalized_origin[col] = orig
 
         # Read data
         for line_num, line in enumerate(f, start=2):

@@ -163,8 +163,9 @@ class ProcessingStats:
                 if polya_length > self.polya_length_max:
                     self.polya_length_max = polya_length
 
-            # Position shift
-            if result.get('corrected_3prime') != result.get('original_3prime'):
+            # Position shift (skip reads already counted via atract_ambiguity branch)
+            if (result.get('corrected_3prime') != result.get('original_3prime')
+                    and 'atract_ambiguity' not in corrections):
                 self.total_position_shifts += 1
 
             # AG mispriming

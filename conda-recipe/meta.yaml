@@ -1,5 +1,5 @@
 {% set name = "rectify-rna" %}
-{% set version = "2.7.7" %}
+{% set version = "2.7.8" %}
 
 package:
   name: {{ name|lower }}
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name.replace("-", "_") }}-{{ version }}.tar.gz
-  sha256: "4a59308b15ec883e6e245e31f506c08fbeb424b634296052a21963caada647e9"  # update with `sha256sum rectify_rna-{{ version }}.tar.gz` after PyPI publish
+  sha256: "e7f03565338b1c9a9c78113f6c09d109b83f003929292c02848aaaac6b8a8df0"
 
 build:
   number: 0

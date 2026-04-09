@@ -574,16 +574,33 @@ def build_chimeric_cigar(
                     ref_start = ev.r_start
                     cur_ref = ev.r_start
                 elif ev.r_start > cur_ref:
-                    # Reference gap between segments: insert N bridge.
-                    # This replaces the phantom insertion that would otherwise
-                    # appear when a new winner's events start ahead of cur_ref.
+                    # Reference gap between segments.
                     gap = ev.r_start - cur_ref
-                    chimeric_ops.append((3, gap))  # op 3 = N (skip/intron)
-                    logger.debug(
-                        "Inserted %d-bp N bridge between chimeric segments "
-                        "(prev ref=%d, next ref=%d)",
-                        gap, cur_ref, ev.r_start,
-                    )
+                    if ev.op in (2, 3):
+                        # D or N event at a segment boundary: the gap is
+                        # contiguous with this reference-only operation.
+                        # Extend the event to cover the gap rather than
+                        # inserting a separate N bridge, which would either
+                        # duplicate the op (N bridge + N event) or produce
+                        # a phantom N before a D event (malformed CIGAR).
+                        ev = CigarEvent(
+                            ev.op, ev.length + gap,
+                            ev.q_start, ev.q_end,
+                            cur_ref, ev.r_end,
+                        )
+                        logger.debug(
+                            "Extended %d-bp gap into %s event at chimeric "
+                            "boundary (prev ref=%d, next ref=%d)",
+                            gap, "D" if ev.op == 2 else "N", cur_ref, ev.r_end,
+                        )
+                    else:
+                        # M/=/X event: gap must be a separate skip bridge.
+                        chimeric_ops.append((3, gap))  # op 3 = N (skip/intron)
+                        logger.debug(
+                            "Inserted %d-bp N bridge between chimeric segments "
+                            "(prev ref=%d, next ref=%d)",
+                            gap, cur_ref, ev.r_start,
+                        )
                 elif ev.r_start < cur_ref:
                     # Reference regression: chimeric assembly is geometrically
                     # invalid (two segments map to overlapping reference regions).

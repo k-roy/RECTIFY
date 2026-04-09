@@ -75,6 +75,7 @@ from .genomic_distribution import (
     plot_genomic_distribution_comparison,
     run_genomic_distribution_analysis,
     run_3prime_distribution_analysis,
+    run_5prime_distribution_analysis,
     run_transcript_body_distribution_analysis,
 )
 
@@ -184,6 +185,7 @@ __all__ = [
     'plot_genomic_distribution_comparison',
     'run_genomic_distribution_analysis',
     'run_3prime_distribution_analysis',
+    'run_5prime_distribution_analysis',
     'run_transcript_body_distribution_analysis',
     # A-tract refinement
     'ATractRefiner',

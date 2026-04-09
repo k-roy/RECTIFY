@@ -149,11 +149,8 @@ def fetch_genomic_sequence(genome: Dict[str, str],
     Returns:
         Sequence string, or empty if invalid coordinates
     """
-    # Map chromosome name to genome format if needed
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-
-    # Get sequence
-    seq = genome.get(genome_chrom)
+    # Get sequence (try canonical name first, fall back to NCBI format)
+    seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''))
     if seq is None:
         return ''
 
@@ -195,9 +192,7 @@ def get_downstream_sequence(genome: Dict[str, str],
     Returns:
         Downstream sequence in gene orientation (RNA 5'→3')
     """
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    seq = genome.get(genome_chrom)
-
+    seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''))
     if seq is None:
         return ''
 

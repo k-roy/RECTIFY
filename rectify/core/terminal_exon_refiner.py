@@ -21,7 +21,7 @@ Author: Kevin R. Roy
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from pathlib import Path
 
 import pysam
@@ -232,11 +232,18 @@ def merge_splice_indices(*indices: SpliceSiteIndex) -> SpliceSiteIndex:
     return merged
 
 
-def load_splice_sites_from_gff(gff_path: str) -> SpliceSiteIndex:
+def load_splice_sites_from_gff(
+    gff_path: str,
+    genome: Optional[Dict[str, str]] = None,
+) -> SpliceSiteIndex:
     """Load splice sites from GFF intron features.
 
     Args:
         gff_path: Path to GFF annotation file
+        genome: Optional dict mapping chrom → sequence string.  When supplied,
+            the expected AG (plus) / CT (minus) dinucleotide at each 3'SS
+            position is verified against the reference sequence.  Introns
+            whose 3'SS does not match are skipped with a WARNING.
 
     Returns:
         SpliceSiteIndex with 5'SS and 3'SS positions
@@ -293,6 +300,26 @@ def load_splice_sites_from_gff(gff_path: str) -> SpliceSiteIndex:
                     chrom=chrom, position=start_0, strand=strand,
                     site_type='3ss', intron_id=name
                 )
+
+            # Optional: verify 3'SS dinucleotide against reference sequence
+            if genome is not None:
+                chrom_seq = genome.get(chrom, '')
+                if chrom_seq:
+                    if strand == '+':
+                        three_dinuc = chrom_seq[end_0 - 2:end_0].upper()
+                        expected_3ss = 'AG'
+                    else:
+                        # Minus-strand 3'SS AG appears as CT on the plus strand
+                        three_dinuc = chrom_seq[start_0:start_0 + 2].upper()
+                        expected_3ss = 'CT'
+                    if three_dinuc != expected_3ss:
+                        logger.warning(
+                            "Skipping intron %s (%s %s:%d-%d): 3'SS dinucleotide "
+                            "is '%s', expected '%s' — likely annotation coordinate error",
+                            name or '(unnamed)', chrom, strand, start_0, end_0,
+                            three_dinuc, expected_3ss,
+                        )
+                        continue
 
             index.add_site(five_ss)
             index.add_site(three_ss)
@@ -878,6 +905,14 @@ def attempt_5prime_refinement(
                 new_start = search_start + pos
                 intron_start = aligned_5prime + 1
                 intron_end = new_start
+                # Guard: intron_end must be > intron_start on minus strand.
+                # If the matched 5'SS is not to the right of aligned_5prime the
+                # coordinates would be inverted.  Skip this candidate.
+                if intron_end <= intron_start:
+                    result.success = False
+                    result.matched_splice_site = None
+                    result.alignment_score = 0.0
+                    continue
 
             result.junction_added = (intron_start, intron_end)
             result.refined_start = new_start
@@ -1061,7 +1096,7 @@ def detect_junction_truncated_reads(
             # For + strand: 3'SS is at higher position, read ends there
             # For - strand: 3'SS is at lower position, read starts there
             if strand == '+':
-                if abs(read_end - pos - 2) <= tolerance and not has_junction:
+                if abs(read_end - pos) <= tolerance and not has_junction:
                     results['truncated_at_3ss'].append({
                         'read_id': read.query_name,
                         'chrom': chrom,
@@ -1070,7 +1105,7 @@ def detect_junction_truncated_reads(
                         'read_end': read_end,
                         'splice_site_pos': pos,
                         'intron_id': site.intron_id,
-                        'distance_from_ss': read_end - pos - 2
+                        'distance_from_ss': read_end - pos
                     })
                     results['stats']['truncated_at_3ss'] += 1
                     break
@@ -1110,7 +1145,9 @@ def detect_junction_truncated_reads(
                     results['stats']['truncated_at_5ss'] += 1
                     break
             else:
-                if abs(read_start - pos) <= tolerance and not has_junction:
+                # Minus-strand 5' end is at reference_end - 1 (highest coord)
+                read_5prime = read_end - 1
+                if abs(read_5prime - pos) <= tolerance and not has_junction:
                     results['truncated_at_5ss'].append({
                         'read_id': read.query_name,
                         'chrom': chrom,
@@ -1119,7 +1156,7 @@ def detect_junction_truncated_reads(
                         'read_end': read_end,
                         'splice_site_pos': pos,
                         'intron_id': site.intron_id,
-                        'distance_from_ss': read_start - pos
+                        'distance_from_ss': read_5prime - pos
                     })
                     results['stats']['truncated_at_5ss'] += 1
                     break
@@ -1178,7 +1215,7 @@ def detect_partial_junction_crossings(
     min_clip_length: int = 1,
     min_match_fraction: float = 0.6,
     ambiguous_mode: str = 'proportional'
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Detect reads with soft-clips at splice sites that provide junction evidence.
 
     This function identifies reads that:

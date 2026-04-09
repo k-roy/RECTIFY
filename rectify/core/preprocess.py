@@ -203,17 +203,10 @@ def run_minimap2_alignment(
                 check=True
             )
 
-        # Convert to BAM and sort
+        # Sort SAM → BAM
         if verbose:
             print("Converting to sorted BAM...")
 
-        subprocess.run(
-            ['samtools', 'view', '-bh', '-@', str(threads), str(temp_sam)],
-            stdout=subprocess.PIPE,
-            check=True
-        )
-
-        # Sort and output
         subprocess.run(
             [
                 'samtools', 'sort',

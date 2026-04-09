@@ -177,8 +177,8 @@ def draw_gene_track(
         f_start = getattr(f, 'start', 0)
         f_end = getattr(f, 'end', 0)
 
-        # Check if feature overlaps with region
-        if f_end >= region_start and f_start <= region_end:
+        # Check if feature overlaps with region (0-based half-open: [start, end))
+        if f_end > region_start and f_start < region_end:
             # Clip to region
             feat_start = max(f_start, region_start)
             feat_end = min(f_end, region_end)

@@ -113,7 +113,7 @@ def plot_sample_heatmap(
     g = sns.clustermap(
         corr_matrix,
         cmap=cmap,
-        center=None if method != 'correlation' else None,
+        center=0 if method == 'correlation' else None,
         vmin=0 if method == 'correlation' else None,
         vmax=1 if method == 'correlation' else None,
         col_colors=col_colors,
@@ -196,8 +196,9 @@ def plot_cluster_heatmap(
                 columns=data.columns,
             )
         else:
-            # Manual z-score
-            data = (data.T - data.mean(axis=1)) / data.std(axis=1)
+            # Manual z-score; replace zero std with 1 to avoid NaN for constant features
+            std = data.std(axis=1).replace(0, 1)
+            data = (data.T - data.mean(axis=1)) / std
             data = data.T
 
     # Create column colors if metadata provided

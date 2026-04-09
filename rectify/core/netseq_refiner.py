@@ -54,6 +54,12 @@ try:
     from scipy.optimize import nnls
     SCIPY_AVAILABLE = True
 except ImportError:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "scipy not available: NNLS deconvolution will fall back to raw observed "
+        "signal. Install scipy for improved CPA position refinement: "
+        "pip install scipy"
+    )
     nnls = None
     SCIPY_AVAILABLE = False
 
@@ -713,8 +719,9 @@ def _refine_with_deconvolution(
     # Deconvolve using config regularization
     try:
         deconvolved = deconvolve_signal(tract_signal, A, regularization=NETSEQ_DECONV_REGULARIZATION)
-    except Exception:
-        # Fall back to observed signal
+    except Exception as e:
+        import logging
+        logging.warning(f"Deconvolution failed, falling back to observed signal: {e}")
         deconvolved = tract_signal
 
     # Identify peaks

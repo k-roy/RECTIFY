@@ -14,6 +14,7 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
+import math
 from typing import Dict, Optional
 from pathlib import Path
 
@@ -86,9 +87,10 @@ def _count_downstream_as(
             return None
         window_seq = seq[window_start:window_end]
     else:
-        # Downstream = leftward for - strand; end at position-1 (first base AFTER read end in gene direction)
-        window_end = position
-        window_start = max(window_end - window_size, 0)
+        # Downstream = leftward for - strand; poly-A tail extends toward lower genomic
+        # coordinates (3' direction on minus strand). Exclude the cleavage position itself.
+        window_end = position  # first base AFTER read end in gene direction (exclusive)
+        window_start = max(0, window_end - window_size)
         if window_end <= 0:
             return None
         window_seq = seq[window_start:window_end]
@@ -286,7 +288,7 @@ def calculate_atract_ambiguity(
         # - strand: poly-A shifts position LEFTWARD (downstream in gene coords)
         # True CPA is RIGHTWARD (upstream in gene coords) by expected_shift
         ambiguity_min = position
-        ambiguity_max = int(position + expected_shift) + 1  # +1 because shift can be fractional
+        ambiguity_max = math.ceil(position + expected_shift)  # ceil handles fractional shifts
 
     # Ensure min <= max
     if ambiguity_min > ambiguity_max:

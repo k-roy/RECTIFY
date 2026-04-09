@@ -142,9 +142,20 @@ class SpikeInInference:
                                     stderr=subprocess.PIPE, timeout=30)
             lines = result.stdout.decode().strip().split('\n')
             return ''.join(lines[1:]).upper()
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, UnicodeDecodeError) as e:
-            # Silent failure is intentional - caller handles empty sequence
+        except subprocess.TimeoutExpired as e:
+            # Timeout is recoverable — caller handles empty sequence
+            print(f"WARNING: samtools faidx timed out for {chrom}:{start}-{end}: {e}")
             return ''
+        except UnicodeDecodeError as e:
+            print(f"WARNING: could not decode samtools output for {chrom}:{start}-{end}: {e}")
+            return ''
+        except subprocess.SubprocessError as e:
+            # Re-raise subprocess errors (e.g. missing FASTA index) so callers
+            # are not silently given an empty sequence for a hard failure.
+            raise RuntimeError(
+                f"samtools faidx failed for {chrom}:{start}-{end} "
+                f"(genome={self.genome_path}): {e}"
+            ) from e
 
     def infer_spikein_signature(
         self,
@@ -678,13 +689,11 @@ class SpikeInFilter:
                 stats['kept_reads'] += 1
             else:
                 gene_name, sig = locus_match
-                seq = read.query_sequence
-                classification, _ = self.classify_read_fast(seq)
+                classification, _ = self.classify_read_by_3utr(read)
 
                 if classification == 'spikein':
                     stats['spikein_reads'] += 1
-                    if gene_name in stats['by_gene']:
-                        stats['by_gene'][gene_name] += 1
+                    stats['by_gene'][gene_name] = stats['by_gene'].get(gene_name, 0) + 1
                 elif classification == 'endogenous':
                     stats['endogenous_reads'] += 1
                     bam_out.write(read)

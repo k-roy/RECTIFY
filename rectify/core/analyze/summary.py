@@ -285,12 +285,12 @@ def create_excel_report(
 
             # Gene-level results
             for condition, df in deseq2_gene_results.items():
-                sheet_name = f'Genes_{condition[:20]}'  # Excel sheet name limit
+                sheet_name = f'Genes_{condition[:25]}'  # Excel sheet name limit (31 chars total)
                 df.to_excel(writer, sheet_name=sheet_name)
 
             # Cluster-level results
             for condition, df in deseq2_cluster_results.items():
-                sheet_name = f'Clusters_{condition[:17]}'
+                sheet_name = f'Clusters_{condition[:22]}'  # Excel sheet name limit (31 chars total)
                 df.to_excel(writer, sheet_name=sheet_name)
 
             # Shift results

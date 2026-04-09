@@ -164,11 +164,12 @@ def _build_feature_trees(annotation_df: pd.DataFrame) -> dict:
         elif ft in ('xut',):
             trees['XUT'][(chrom, strand)][start:end] = data
         elif ft in ('snorna_gene', 'snorna'):
-            # Expand by flank on both strands (snoRNAs are processed on both)
+            # Expand by flank on the feature's own strand only.
+            # Inserting into both strands caused positions on the opposite strand
+            # near (but not overlapping) a snoRNA to be misclassified as snoRNA.
             fs = max(0, start - SNORNA_FLANK_BP)
             fe = end + SNORNA_FLANK_BP
-            for s in ('+', '-'):
-                trees['snoRNA'][(chrom, s)][fs:fe] = data
+            trees['snoRNA'][(chrom, strand)][fs:fe] = data
         elif ft in ('utr3', "3'utr", "three_prime_utr"):
             trees['UTR3'][(chrom, strand)][start:end] = data
         elif ft in ('utr5', "5'utr", "five_prime_utr"):
@@ -243,7 +244,7 @@ def classify_positions_by_region(
                 gs, ge = gene_data['start'], gene_data['end']
                 utr_sz = max(50, int((ge - gs) * 0.1))
                 if strand == '+':
-                    cat = 'UTR3' if pos >= ge - utr_sz else ('UTR5_CDS' if pos <= gs + utr_sz else 'UTR5_CDS')
+                    cat = 'UTR3' if pos >= ge - utr_sz else ('UTR5' if pos <= gs + utr_sz else 'CDS')
                 else:
                     cat = 'UTR3' if pos <= gs + utr_sz else 'UTR5_CDS'
             else:
@@ -297,6 +298,8 @@ def plot_genomic_distribution_pie(
         Path to saved plot
     """
     total = sum(distribution.values())
+    if total == 0:
+        return None
 
     # Sort by expected biological order
     preferred_order = ['UTR3', 'CDS', 'UTR5', 'Intergenic', 'Antisense', 'ncRNA', 'rDNA', 'Other']
@@ -1102,6 +1105,104 @@ def run_3prime_distribution_analysis(
                 'clusters': cluster_counts[cond].get(cat, 0),
             })
     summary_path = output_dir / 'genomic_distribution_3prime_summary.tsv'
+    pd.DataFrame(rows).to_csv(summary_path, sep='\t', index=False)
+    output_files['summary'] = str(summary_path)
+    return output_files
+
+
+def run_5prime_distribution_analysis(
+    positions_df: pd.DataFrame,
+    annotation_df: pd.DataFrame,
+    output_dir: str,
+    sample_column: str = 'sample',
+    position_column: str = 'five_prime_position',
+    count_column: Optional[str] = None,
+    condition_labels: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    5' end distribution analysis.
+
+    Classifies each 5' end position by genomic feature
+    (UTR3, snoRNA±300bp, CUT, SUT_XUT, UTR5_CDS, Antisense, Intergenic)
+    and writes a combined figure (barh + pie grid) for all conditions.
+
+    Replicates are merged by condition before plotting.
+
+    Args:
+        positions_df:     DataFrame with per-read 5' end positions
+        annotation_df:    Gene annotation with feature_type column
+        output_dir:       Directory for output files
+        sample_column:    Column identifying the sample
+        position_column:  Column holding 5' end position
+        count_column:     Optional pre-aggregated count column
+        condition_labels: Optional display names per condition
+
+    Returns:
+        Dict mapping output_name → file path
+    """
+    if position_column not in positions_df.columns:
+        logger.warning("5' end distribution skipped: '%s' column not in DataFrame", position_column)
+        return {}
+
+    from ..analyze.deseq2 import extract_condition_from_sample
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_files: Dict[str, str] = {}
+
+    df = positions_df.copy()
+    df['condition'] = df[sample_column].apply(extract_condition_from_sample)
+    conditions = sorted(df['condition'].unique())
+
+    n = len(df)
+    if n > 1_000_000:
+        print(f"    Sampling 1,000,000/{n:,} positions for 5' end classification...")
+        df = df.sample(n=1_000_000, random_state=42)
+
+    print(f"    Classifying 5' end positions ({len(conditions)} conditions)...")
+    classified = classify_positions_by_region(df, annotation_df, position_column)
+
+    distributions: Dict[str, Dict[str, int]] = {}
+    cluster_counts: Dict[str, Dict[str, int]] = {}
+    for cond in conditions:
+        sub = classified[classified['condition'] == cond]
+        distributions[cond]  = calculate_genomic_distribution(sub, 'genomic_region', count_column)
+        cluster_counts[cond] = count_clusters_by_region(sub, 'genomic_region', position_column)
+        total = sum(distributions[cond].values())
+        ncl   = sum(cluster_counts[cond].values())
+        lbl   = (condition_labels or {}).get(cond, cond)
+        print(f"      {lbl}: {total:,} reads, {ncl:,} unique clusters")
+
+    # Combined figure
+    fig_path = output_dir / 'genomic_distribution_5prime.png'
+    _plot_combined_distribution_figure(
+        distributions, cluster_counts, str(fig_path),
+        category_order=CATEGORY_ORDER,
+        category_labels=CATEGORY_LABELS,
+        category_colors=CATEGORY_COLORS,
+        figure_title="5\u2019 End Distribution by Genomic Category",
+        barh_title="% of reads per category (all conditions)",
+        right_label='clusters',
+        axis_break=10.0,
+        condition_labels=condition_labels,
+    )
+    output_files['figure'] = str(fig_path)
+    print(f"    Combined figure: {fig_path.name}")
+
+    # Summary TSV
+    rows = []
+    for cond in conditions:
+        total = sum(distributions[cond].values()) or 1
+        for cat in CATEGORY_ORDER:
+            rows.append({
+                'condition': cond,
+                'category': cat,
+                'display_label': CATEGORY_LABELS[cat],
+                'reads': distributions[cond].get(cat, 0),
+                'reads_pct': 100 * distributions[cond].get(cat, 0) / total,
+                'clusters': cluster_counts[cond].get(cat, 0),
+            })
+    summary_path = output_dir / 'genomic_distribution_5prime_summary.tsv'
     pd.DataFrame(rows).to_csv(summary_path, sep='\t', index=False)
     output_files['summary'] = str(summary_path)
     return output_files

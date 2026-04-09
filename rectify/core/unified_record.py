@@ -411,9 +411,13 @@ def validate_record(record: UnifiedReadRecord) -> List[str]:
     if record.strand == '+':
         if record.five_prime_raw < record.alignment_start:
             errors.append(f"five_prime_raw ({record.five_prime_raw}) < alignment_start")
+        if record.five_prime_raw > record.alignment_end - 1:
+            errors.append(f"five_prime_raw ({record.five_prime_raw}) > alignment_end - 1")
     else:
         if record.five_prime_raw > record.alignment_end - 1:
             errors.append(f"five_prime_raw ({record.five_prime_raw}) > alignment_end - 1")
+        if record.five_prime_raw < record.alignment_start:
+            errors.append(f"five_prime_raw ({record.five_prime_raw}) < alignment_start")
 
     # Check junction count consistency
     if record.n_junctions != len(record.junctions):

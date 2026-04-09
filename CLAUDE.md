@@ -5,17 +5,11 @@ patterns for future developers and AI agents working on this codebase.
 
 ---
 
-## Architecture: two `run-all` implementations
+## Architecture: `run-all` dispatcher
 
-There are two different `run-all` implementations. **Do not confuse them.**
-
-| File | Invoked by | Purpose |
-|---|---|---|
-| `rectify/core/run_command.py` | `rectify run-all` CLI | Production pipeline — use this |
-| `rectify/core/run_all_command.py` | not wired to CLI | Experimental redesign — not active |
-
-`run_command.py` dispatches to `_run_single_sample()` or `_run_multi_sample()`
-based on whether `--manifest` is provided.
+`rectify run-all` dispatches to `rectify/core/run_command.py`, which calls
+`_run_single_sample()` or `_run_multi_sample()` based on whether `--manifest`
+is provided.
 
 **DESeq2, motif discovery, and GO enrichment only run in multi-sample mode.**
 Single-sample runs skip them by design (`run_deseq2 = n_samples > 1`).
@@ -264,7 +258,6 @@ rectify/
 │   │   └── sherlock_gpu.yaml     # GPU partition
 │   ├── core/
 │   │   ├── run_command.py    # Active run-all dispatcher (single + multi-sample)
-│   │   ├── run_all_command.py # Experimental redesign — NOT wired to CLI
 │   │   ├── batch_command.py  # Generates SLURM array scripts; reads profile YAMLs
 │   │   ├── correct_command.py
 │   │   ├── bam_processor.py  # process_bam_file_parallel + process_bam_streaming

@@ -1,5 +1,5 @@
 """
-Test: no duplicate primary records in the consensus BAM output.
+Test: no duplicate primary records in the rectified BAM output.
 
 Bug 4: gapmm2 PAF records were written as primary alignments (FLAG=0/16)
 even when another aligner already held the primary for the same read_id.
@@ -117,10 +117,10 @@ def test_paf_to_bam_marks_secondary_records():
 
 
 # ---------------------------------------------------------------------------
-# Integration test: consensus BAM writer produces at most one primary per read
+# Integration test: rectified BAM writer produces at most one primary per read
 # ---------------------------------------------------------------------------
 
-def test_consensus_bam_no_duplicate_primaries():
+def test_rectified_bam_no_duplicate_primaries():
     """
     Simulate two aligner BAMs for the same read_id: aligner_a provides a
     primary alignment and aligner_b also provides a primary alignment (the
@@ -165,7 +165,7 @@ def test_consensus_bam_no_duplicate_primaries():
     stats['by_aligner_combo'] = defaultdict(int)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, 'consensus.bam')
+        out_path = os.path.join(tmpdir, 'rectified.bam')
         with pysam.AlignmentFile(out_path, 'wb', header=header) as out_bam:
             _process_and_write_batch(
                 read_batch, raw_read_batch,
@@ -218,7 +218,7 @@ def test_consensus_winner_promoted_from_secondary():
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, 'consensus.bam')
+        out_path = os.path.join(tmpdir, 'rectified.bam')
         with pysam.AlignmentFile(out_path, 'wb', header=header) as out_bam:
             _process_and_write_batch(
                 read_batch, raw_read_batch,

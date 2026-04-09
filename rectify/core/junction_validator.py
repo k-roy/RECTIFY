@@ -62,7 +62,7 @@ _BAM_CMATCH = 0   # M
 _BAM_CREF_SKIP = 3  # N  — intron
 
 # Canonical splice motifs
-_CANONICAL_MOTIFS = frozenset({'GT-AG', 'AT-AC'})
+_CANONICAL_MOTIFS = frozenset({'GT-AG', 'AT-AC', 'GC-AG'})
 
 # Confidence downgrade ladder
 _DOWNGRADE = {'high': 'medium', 'medium': 'low', 'low': 'low'}

@@ -291,7 +291,6 @@ class PanMutantRefiner:
             method = 'pan_mutant_raw'
 
         # Find peaks
-        center_idx = len(refined_signal) // 2
         center_pos = self.positions[np.where(self.cluster_ids == int(cluster_id))[0][0]]
 
         # Compute position for each index

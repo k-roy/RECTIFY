@@ -1,0 +1,48 @@
+# RECTIFY SLURM Profile — Generic Template
+#
+# Usage:
+#   rectify batch --manifest manifest.tsv --genome genome.fa --annotation genes.gff \
+#       --profile rectify/slurm_profiles/slurm_generic.yaml -o results/
+#
+# Copy and customise this file for your cluster. CLI flags override profile values.
+# See: rectify batch --help   for all available options.
+
+# ─── Required ──────────────────────────────────────────────────────────────────
+# Set to your cluster's partition name. Common examples:
+#   partition: cpu          # generic CPU partition
+#   partition: batch        # many institutional clusters
+#   partition: normal       # some SLURM defaults
+#   partition: null         # omit #SBATCH --partition entirely (use cluster default)
+partition: null             # REQUIRED: replace null with your partition name
+
+# ─── Compute resources ─────────────────────────────────────────────────────────
+cpus: 8                     # CPUs per task. Correction is parallelised up to ~16T.
+mem: "32G"                  # Memory per task. Use ≥ 8× input BAM size in streaming
+                            # mode; ≥ 32× without streaming (not recommended for > 3 GB).
+time: "4:00:00"             # Wall-clock limit per sample. 4 h is usually sufficient
+                            # for BAMs up to ~7 GB with streaming mode enabled.
+
+# ─── Analysis stage ────────────────────────────────────────────────────────────
+analyze_cpus: 8             # CPUs for combined analysis step (DESeq2, GO, motifs).
+analyze_mem: "64G"          # Memory for combined analysis. DESeq2 on >20 samples
+                            # may need 128 G if cluster counts are large.
+analyze_time: "8:00:00"     # Wall-clock limit for analysis step.
+
+# ─── Job settings ──────────────────────────────────────────────────────────────
+job_name: rectify_batch
+max_concurrent: 10          # Maximum simultaneous array tasks. Lower if the cluster
+                            # has queue limits or you want to be a good neighbour.
+submit: false               # Set to true to auto-submit after script generation.
+
+# ─── I/O staging ───────────────────────────────────────────────────────────────
+use_scratch: false          # Set to true if your cluster provides a fast local scratch
+                            # filesystem (e.g. $SCRATCH, $TMPDIR, $L_SCRATCH).
+                            # When true, BAMs are staged to scratch before correction
+                            # and results are rsynced back at job end — typically 2–3×
+                            # faster than reading large BAMs from shared NFS/Lustre.
+                            # Requires $SCRATCH (or $TMPDIR) to be set in the job env.
+
+# ─── Processing mode ───────────────────────────────────────────────────────────
+streaming: true             # Process BAM reads in chunks instead of loading all into
+                            # RAM. Required for large BAMs; negligible overhead for small.
+                            # Disable only if downstream tools require random BAM access.

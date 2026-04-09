@@ -39,6 +39,7 @@ import pysam
 logger = logging.getLogger(__name__)
 
 from ..config import POLYA_RICHNESS_THRESHOLD
+POLYPOLYA_RICHNESS_THRESHOLD = POLYA_RICHNESS_THRESHOLD  # legacy alias
 
 
 # =============================================================================
@@ -64,10 +65,8 @@ class _GenomeDictReference:
 # =============================================================================
 
 POLYA_JUNCTION_WINDOW = 50      # bp from 3' end to consider for artifacts
-A_RICHNESS_THRESHOLD = 0.7      # Minimum A-richness to flag as artifact
+# POLYA_RICHNESS_THRESHOLD sourced from config.POLYPOLYA_RICHNESS_THRESHOLD (0.8)
 GENOMIC_ATRACT_THRESHOLD = 0.8  # A-richness in junction target
-MIN_ARTIFACT_SIZE = 10          # Minimum "intron" size to consider (bp)
-MAX_ARTIFACT_SIZE = 10000       # Maximum "intron" size to consider (bp)
 
 
 # =============================================================================
@@ -156,7 +155,7 @@ def get_sequence_after_junction(
     length: int = 20,
 ) -> str:
     """
-    Get the read sequence after a junction.
+    Get the read sequence after a junction (rightward in cigar / genomic order).
 
     Args:
         read: pysam AlignedSegment
@@ -179,6 +178,41 @@ def get_sequence_after_junction(
 
     end_pos = min(query_pos + length, len(read.query_sequence))
     return read.query_sequence[query_pos:end_pos]
+
+
+def get_sequence_before_junction(
+    read: pysam.AlignedSegment,
+    junction_cigar_index: int,
+    length: int = 20,
+) -> str:
+    """
+    Get the read sequence immediately before a junction (leftward in cigar / genomic order).
+
+    For minus-strand reads stored in BAM, the 3' poly-A tail is reverse-complemented
+    to poly-T and sits at the start of query_sequence (left side of the alignment).
+    A false N near the 3' end thus has poly-T *before* it in cigar order, not after.
+
+    Args:
+        read: pysam AlignedSegment
+        junction_cigar_index: Index of junction in CIGAR
+        length: Number of bases to extract
+
+    Returns:
+        Sequence before the junction (up to `length` bases, ending at the junction)
+    """
+    if read.query_sequence is None or read.cigartuples is None:
+        return ""
+
+    # Accumulate query length up to (but not including) the N op
+    query_pos = 0
+    for i, (op, op_len) in enumerate(read.cigartuples):
+        if i >= junction_cigar_index:
+            break
+        if op in (0, 1, 4, 7, 8):  # M, I, S, =, X consume query
+            query_pos += op_len
+
+    start_pos = max(0, query_pos - length)
+    return read.query_sequence[start_pos:query_pos]
 
 
 # =============================================================================
@@ -218,7 +252,6 @@ def analyze_junction_for_artifact(
         JunctionAnalysis with artifact determination
     """
     start, end, cigar_idx = junction
-    size = end - start
 
     # Get 3' end position
     three_prime = get_read_3prime_position(read, strand)
@@ -233,7 +266,7 @@ def analyze_junction_for_artifact(
     analysis = JunctionAnalysis(
         junction_start=start,
         junction_end=end,
-        junction_size=size,
+        junction_size=end - start,
         distance_to_3prime=dist_to_3prime,
         downstream_a_richness=0.0,
         target_a_richness=0.0,
@@ -246,20 +279,19 @@ def analyze_junction_for_artifact(
     if dist_to_3prime > POLYA_JUNCTION_WINDOW:
         return analysis
 
-    # Check junction size
-    if size < MIN_ARTIFACT_SIZE or size > MAX_ARTIFACT_SIZE:
-        return analysis
-
-    # Get downstream sequence (in read)
-    downstream_seq = get_sequence_after_junction(read, cigar_idx, 20)
-
+    # Get the poly-A-side sequence: for plus strand it is after the N (rightward toward 3'),
+    # for minus strand it is before the N (leftward toward 3').  In the BAM the minus-strand
+    # poly-A is stored as poly-T at the start of query_sequence (reverse-complemented), so
+    # it sits to the LEFT of the false N in cigar order.
     if strand == '+':
-        analysis.downstream_a_richness = calculate_a_richness(downstream_seq)
+        polya_side_seq = get_sequence_after_junction(read, cigar_idx, 20)
+        analysis.downstream_a_richness = calculate_a_richness(polya_side_seq)
     else:
-        analysis.downstream_a_richness = calculate_t_richness(downstream_seq)
+        polya_side_seq = get_sequence_before_junction(read, cigar_idx, 20)
+        analysis.downstream_a_richness = calculate_t_richness(polya_side_seq)
 
     # Check if downstream region is A-rich
-    if analysis.downstream_a_richness < A_RICHNESS_THRESHOLD:
+    if analysis.downstream_a_richness < POLYA_RICHNESS_THRESHOLD:
         return analysis
 
     # Check junction target in genome (if reference available)
@@ -296,7 +328,7 @@ def analyze_junction_for_artifact(
             logger.debug(f"Junction motif analysis failed for read '{read.query_name}': {e}")
 
     # Final artifact determination
-    if analysis.downstream_a_richness >= A_RICHNESS_THRESHOLD:
+    if analysis.downstream_a_richness >= POLYA_RICHNESS_THRESHOLD:
         if analysis.target_a_richness >= GENOMIC_ATRACT_THRESHOLD:
             analysis.is_artifact = True
             analysis.artifact_reason = "Junction to genomic A-tract with A-rich downstream"

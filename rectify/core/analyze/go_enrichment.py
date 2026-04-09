@@ -175,8 +175,11 @@ def run_go_enrichment(
     results_df = pd.DataFrame(results)
 
     # Multiple testing correction (Benjamini-Hochberg)
+    # n_tests must be the total number of GO terms tested (all size-filtered terms),
+    # NOT just the subset with non-zero query overlap. Terms with a==0 were skipped
+    # above but they were still hypotheses tested.
+    n_tests = len(go_terms)
     results_df = results_df.sort_values('pvalue')
-    n_tests = len(results_df)
     results_df['padj'] = _benjamini_hochberg(results_df['pvalue'].values, n_tests)
 
     # Sort by padj

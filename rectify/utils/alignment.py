@@ -112,7 +112,7 @@ def extract_soft_clips(read: pysam.AlignedSegment) -> List[Dict]:
             'side': 'left',
             'seq': read_seq[:clip_length] if read_seq is not None else None,
             'qual': read_qual[:clip_length] if read_qual else None,
-            'start': read.reference_start - clip_length,
+            'start': max(0, read.reference_start - clip_length),
             'length': clip_length,
         })
 
