@@ -31,6 +31,9 @@ from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 import pysam
 
+from ..utils.genome import standardize_chrom_name
+from ..config import CHROM_TO_GENOME
+
 try:
     from intervaltree import IntervalTree
     HAS_INTERVALTREE = True
@@ -249,9 +252,9 @@ def correct_5prime_for_splicing(
             # If 5' end is within the first junction, correct to upstream exon
             if five_prime_raw >= first_junction_start and five_prime_raw < first_junction_end:
                 result.starts_in_intron = True
-                result.five_prime_corrected = first_junction_start
-                result.first_exon_start = first_junction_start
-                result.correction_bp = five_prime_raw - first_junction_start
+                result.five_prime_corrected = first_junction_start - 1
+                result.first_exon_start = first_junction_start - 1
+                result.correction_bp = five_prime_raw - (first_junction_start - 1)
                 result.correction_reason = "5' end within read junction - shifted to exon boundary"
                 return result
 
@@ -264,9 +267,9 @@ def correct_5prime_for_splicing(
             # If 5' end is within the last junction, correct to downstream exon
             if five_prime_raw >= last_junction_start and five_prime_raw < last_junction_end:
                 result.starts_in_intron = True
-                result.five_prime_corrected = last_junction_end - 1
+                result.five_prime_corrected = last_junction_end
                 result.first_exon_start = last_junction_end
-                result.correction_bp = last_junction_end - 1 - five_prime_raw
+                result.correction_bp = last_junction_end - five_prime_raw
                 result.correction_reason = "5' end within read junction - shifted to exon boundary"
                 return result
 
@@ -501,10 +504,10 @@ def rescue_3ss_truncation(
 
     Candidate junction pool should contain (chrom, intron_start, intron_end) tuples
     from annotated junctions UNION any novel junctions observed in the first-pass
-    alignment (consensus BAM CIGAR junctions + per-aligner BAMs if available).
+    alignment (rectified BAM CIGAR junctions + per-aligner BAMs if available).
 
     Args:
-        read: pysam AlignedSegment (from consensus BAM)
+        read: pysam AlignedSegment (from rectified BAM)
         genome: chromosome → sequence dict
         candidate_junctions: Set of (chrom, intron_start, intron_end) to test
         strand: Strand override; inferred from read.is_reverse if None
@@ -528,8 +531,14 @@ def rescue_3ss_truncation(
     if strand is None:
         strand = '-' if read.is_reverse else '+'
 
-    chrom = read.reference_name
-    if not chrom or chrom not in genome:
+    chrom = standardize_chrom_name(read.reference_name) if read.reference_name else read.reference_name
+    if not chrom:
+        return _no_rescue(read, strand)
+
+    # Genome may be keyed by NCBI format (NC_001133.3) or canonical (chrI).
+    # Try canonical first, then fall back to NCBI key via CHROM_TO_GENOME.
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''))
+    if not genome_seq:
         return _no_rescue(read, strand)
 
     five_clip = _get_5prime_softclip_len(read)
@@ -540,6 +549,8 @@ def rescue_3ss_truncation(
     if strand == '+':
         align_5prime = read.reference_start
     else:
+        if read.reference_end is None:
+            return _no_rescue(read, strand)
         align_5prime = read.reference_end - 1
 
     # --- Collect rescue sequence (priority: soft-clip > MPB terminal errors) ---
@@ -565,8 +576,6 @@ def rescue_3ss_truncation(
             rescue_seq = terminal_seq
             rescue_type_candidate = "mpb_mismatch"
 
-    genome_seq = genome[chrom]
-
     # --- Try sequence-based rescue against each candidate junction ---
     best_ed = -1
     best_junction = None
@@ -574,7 +583,8 @@ def rescue_3ss_truncation(
 
     if rescue_seq:
         rescue_len = len(rescue_seq)
-        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+        for j_entry in candidate_junctions:
+            j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
             if j_chrom != chrom:
                 continue
 
@@ -591,9 +601,11 @@ def rescue_3ss_truncation(
             else:
                 # Minus strand: upstream intron (in transcript) has intron_start ≥ reference_end
                 dist = intron_start - align_5prime
-                if dist <= 0 or dist > junction_proximity_bp:
+                if dist < 0 or dist > junction_proximity_bp:
                     continue
                 # Exon1 end (upstream in transcript = right of intron_end in genome):
+                # The BAM stores minus-strand sequence as RC of RNA, so the right soft-clip
+                # equals genome_seq[intron_end:intron_end+rescue_len] directly.
                 exon_seq = genome_seq[intron_end:intron_end + rescue_len].upper()
                 if len(exon_seq) < rescue_len:
                     continue
@@ -643,7 +655,8 @@ def rescue_3ss_truncation(
             }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
-    for (j_chrom, intron_start, intron_end) in candidate_junctions:
+    for j_entry in candidate_junctions:
+        j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
             continue
         if strand == '+':
@@ -665,7 +678,11 @@ def rescue_3ss_truncation(
 
 def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:
     """Return a no-rescue result dict."""
-    five_prime = (read.reference_end - 1) if strand == '-' else read.reference_start
+    if strand == '-':
+        _ref_end = read.reference_end
+        five_prime = (_ref_end - 1) if _ref_end is not None else None
+    else:
+        five_prime = read.reference_start
     return {
         'rescued': False,
         'rescue_type': 'none',

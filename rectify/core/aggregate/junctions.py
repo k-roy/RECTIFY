@@ -38,6 +38,12 @@ CANONICAL_5SS = {'GT', 'GC'}  # 5' splice site (donor)
 CANONICAL_3SS = {'AG'}  # 3' splice site (acceptor)
 
 
+def _reverse_complement(seq: str) -> str:
+    """Return the reverse complement of a DNA sequence."""
+    complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', 'N': 'N'}
+    return ''.join(complement.get(base, 'N') for base in reversed(seq))
+
+
 @dataclass
 class JunctionStats:
     """Statistics for a single splice junction."""
@@ -153,12 +159,24 @@ def aggregate_junctions(
         three_ss_dinuc = ""
         is_canonical = False
 
-        if genome and chrom in genome:
+        if genome and chrom in genome and intron_length >= 4:
             genome_seq = genome[chrom]
-            # 5'SS: first 2 bases of intron
-            five_ss_dinuc = genome_seq[intron_start:intron_start + 2].upper()
-            # 3'SS: last 2 bases of intron
-            three_ss_dinuc = genome_seq[intron_end - 2:intron_end].upper()
+
+            if strand == '-':
+                # On the minus strand the canonical donor is at the 3' end of
+                # the intron (high coordinate) and the acceptor is at the 5'
+                # end (low coordinate); both must be reverse-complemented.
+                five_ss_dinuc = _reverse_complement(
+                    genome_seq[intron_end - 2:intron_end].upper()
+                )
+                three_ss_dinuc = _reverse_complement(
+                    genome_seq[intron_start:intron_start + 2].upper()
+                )
+            else:
+                # 5'SS: first 2 bases of intron
+                five_ss_dinuc = genome_seq[intron_start:intron_start + 2].upper()
+                # 3'SS: last 2 bases of intron
+                three_ss_dinuc = genome_seq[intron_end - 2:intron_end].upper()
 
             is_canonical = (five_ss_dinuc in CANONICAL_5SS and
                            three_ss_dinuc in CANONICAL_3SS)
@@ -475,7 +493,8 @@ def resolve_homopolymer_ambiguity(
         for shift in range(1, max_shift + 1):
             if start - shift < 0:
                 break
-            if seq[start - shift] == seq[end - shift]:
+            span = seq[start - shift:end - shift]
+            if span and len(set(span)) == 1:
                 cluster_coords.append((start - shift, end - shift))
             else:
                 break
@@ -484,7 +503,8 @@ def resolve_homopolymer_ambiguity(
         for shift in range(1, max_shift + 1):
             if end + shift > len(seq):
                 break
-            if seq[start + shift - 1] == seq[end + shift - 1]:
+            span = seq[start + shift:end + shift]
+            if span and len(set(span)) == 1:
                 cluster_coords.append((start + shift, end + shift))
             else:
                 break

@@ -298,7 +298,7 @@ def detect_false_3prime_junction(
 def _rescue_5prime_softclip(
     alignment: AlignmentInfo,
     genome: Dict[str, str],
-    candidate_junctions: Set[Tuple[str, int, int]],
+    candidate_junctions: Set[Tuple[str, int, int, str]],
     max_edit_frac: float = 0.2,
     search_window_bp: int = 300,
     rescue_seq_override: str = "",
@@ -337,7 +337,7 @@ def _rescue_5prime_softclip(
         alignment: AlignmentInfo with five_prime_softclip_seq (and optionally
             effective_five_prime_clip_seq) populated
         genome: Dict mapping chrom to sequence
-        candidate_junctions: Set of (chrom, intron_start, intron_end)
+        candidate_junctions: Set of (chrom, intron_start, intron_end, strand)
         max_edit_frac: Max edit distance / clip_len to declare a rescue
         search_window_bp: Max distance from 5' alignment boundary to intron edge
         rescue_seq_override: Explicit sequence to use instead of alignment fields.
@@ -369,7 +369,7 @@ def _rescue_5prime_softclip(
     if alignment.strand == '+':
         # 5' alignment start = leftmost mapped base
         align_5prime = alignment.reference_start
-        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+        for (j_chrom, intron_start, intron_end, j_strand) in candidate_junctions:
             if j_chrom != chrom:
                 continue
             # Upstream intron: its 3'SS (intron_end) must be at or before align_5prime.
@@ -395,13 +395,13 @@ def _rescue_5prime_softclip(
         # In transcript orientation, "upstream" means higher reference coordinates.
         align_5prime = alignment.reference_end - 1
         reference_end = alignment.reference_end
-        for (j_chrom, intron_start, intron_end) in candidate_junctions:
+        for (j_chrom, intron_start, intron_end, j_strand) in candidate_junctions:
             if j_chrom != chrom:
                 continue
             # Upstream intron (in transcript): intron_start must be ≥ reference_end.
             # Directional: intron_start > align_5prime (excludes internal junctions).
             dist = intron_start - align_5prime
-            if dist <= 0 or dist > search_window_bp:
+            if dist == 0 or dist > search_window_bp:
                 continue
             # Exon upstream of intron (in transcript) = exon to the right of intron_end
             # in reference. BAM reverse-strand query_sequence is in reference orientation,
@@ -477,7 +477,12 @@ def _get_effective_5prime_clip(
 
     try:
         pairs = read.get_aligned_pairs()
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "_get_effective_5prime_clip: get_aligned_pairs failed for read %s: %s",
+            getattr(read, "query_name", "<unknown>"),
+            e,
+        )
         return five_clip
 
     # Build error array for the first `scan_bp` aligned bases from the 5' end.
@@ -541,7 +546,7 @@ def _get_effective_5prime_clip(
     if total_errors < min_errors:
         return five_clip
 
-    return max(five_clip, five_clip + terminal_end)
+    return five_clip + terminal_end
 
 
 def _get_effective_3prime_clip(
@@ -681,7 +686,7 @@ def _get_effective_3prime_clip(
 def score_alignment(
     alignment: AlignmentInfo,
     genome: Dict[str, str],
-    candidate_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    candidate_junctions: Optional[Set[Tuple[str, int, int, str]]] = None,
 ) -> float:
     """
     Score an alignment based on junction quality.
@@ -868,7 +873,7 @@ def extract_alignment_info(
 def select_best_alignment(
     alignments: Dict[str, AlignmentInfo],
     genome: Dict[str, str],
-    annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    annotated_junctions: Optional[Set[Tuple[str, int, int, str]]] = None,
 ) -> ConsensusResult:
     """
     Select the best alignment from multiple aligners for a single read.
@@ -876,7 +881,7 @@ def select_best_alignment(
     Args:
         alignments: Dict mapping aligner name to AlignmentInfo
         genome: Dict mapping chrom to sequence
-        annotated_junctions: Optional set of (chrom, start, end) for annotated junctions
+        annotated_junctions: Optional set of (chrom, start, end, strand) for annotated junctions
 
     Returns:
         ConsensusResult with best alignment selected
@@ -896,7 +901,7 @@ def select_best_alignment(
     # this read. Using all aligners' junctions ensures that if any aligner correctly
     # identifies an intron, soft-clips at that intron in other aligners are rescued.
     chrom_for_read = list(alignments.values())[0].chrom
-    candidate_junctions: Set[Tuple[str, int, int]] = set()
+    candidate_junctions: Set[Tuple[str, int, int, str]] = set()
     if annotated_junctions:
         # Only keep annotated junctions on the same chrom to avoid scanning everything
         for j in annotated_junctions:
@@ -904,7 +909,7 @@ def select_best_alignment(
                 candidate_junctions.add(j)
     for alignment in alignments.values():
         for junc_start, junc_end in alignment.junctions:
-            candidate_junctions.add((alignment.chrom, junc_start, junc_end))
+            candidate_junctions.add((alignment.chrom, junc_start, junc_end, alignment.strand))
 
     # Score all alignments
     for aligner, alignment in alignments.items():
@@ -933,7 +938,7 @@ def select_best_alignment(
             if annotated_junctions and a.junctions:
                 n_annotated = sum(
                     1 for junc in a.junctions
-                    if (a.chrom, junc[0], junc[1]) in annotated_junctions
+                    if (a.chrom, junc[0], junc[1], a.strand) in annotated_junctions
                 )
             return (_count_3prime_agreement(aligner_name), n_annotated, a.canonical_count)
 
@@ -954,7 +959,7 @@ def select_best_alignment(
     # Count junction agreement across aligners
     junction_sets = {}
     for aligner, alignment in alignments.items():
-        junc_key = tuple(sorted(alignment.junctions))
+        junc_key = (alignment.strand, tuple(sorted(alignment.junctions)))
         junction_sets[aligner] = junc_key
 
     # Count how many aligners agree with the best alignment's junctions
@@ -1218,7 +1223,7 @@ def run_consensus_selection(
     bam_paths: Dict[str, str],
     genome: Dict[str, str],
     output_bam: str,
-    annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    annotated_junctions: Optional[Set[Tuple[str, int, int, str]]] = None,
     write_all_to_tag: bool = True,
     n_workers: int = 0,
     batch_size: int = 10000,
@@ -1237,7 +1242,7 @@ def run_consensus_selection(
     Args:
         bam_paths: Dict mapping aligner name to BAM path
         genome: Dict mapping chrom to sequence
-        output_bam: Output path for consensus BAM
+        output_bam: Output path for rectified BAM
         annotated_junctions: Optional set of annotated junctions
         write_all_to_tag: If True, write all aligner info to BAM tags
         n_workers: Number of worker processes (0 = auto-detect, 1 = single-threaded)
@@ -1344,58 +1349,68 @@ def run_consensus_selection(
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
 
-    # Stream through name-sorted BAMs
-    _t_stream = _time.perf_counter()
-    logger.info(f"Streaming consensus selection (batch_size={batch_size})...")
-    if use_slurm_filter:
-        logger.info(
-            f"  SLURM array filter: task {slurm_array_task}/{slurm_array_total}"
-        )
-
-    # Accumulate batches for processing
-    read_batch = []
-    raw_read_batch = []
-    n_batches = 0
-
-    for read_id, aligner_reads in _iter_name_grouped_bams(sorted_bam_paths):
-        # SLURM array filtering
+    try:
+        # Stream through name-sorted BAMs
+        _t_stream = _time.perf_counter()
+        logger.info(f"Streaming consensus selection (batch_size={batch_size})...")
         if use_slurm_filter:
-            if _read_id_hash(read_id, slurm_array_total) != slurm_array_task:
-                stats['reads_skipped_slurm_filter'] += 1
-                continue
+            logger.info(
+                f"  SLURM array filter: task {slurm_array_task}/{slurm_array_total}"
+            )
 
-        stats['total_reads'] += 1
+        # Accumulate batches for processing
+        read_batch = []
+        raw_read_batch = []
+        n_batches = 0
 
-        # Extract alignment info for scoring
-        alignments = {}
-        for aligner, read in aligner_reads.items():
-            alignments[aligner] = extract_alignment_info(read, aligner, genome)
+        for read_id, aligner_reads in _iter_name_grouped_bams(sorted_bam_paths):
+            # SLURM array filtering
+            if use_slurm_filter:
+                if _read_id_hash(read_id, slurm_array_total) != slurm_array_task:
+                    stats['reads_skipped_slurm_filter'] += 1
+                    continue
 
-        read_batch.append((read_id, alignments))
-        raw_read_batch.append((read_id, aligner_reads))
+            stats['total_reads'] += 1
 
-        # Process batch when full
-        if len(read_batch) >= batch_size:
+            # Extract alignment info for scoring
+            alignments = {}
+            for aligner, read in aligner_reads.items():
+                alignments[aligner] = extract_alignment_info(read, aligner, genome)
+
+            read_batch.append((read_id, alignments))
+            raw_read_batch.append((read_id, aligner_reads))
+
+            # Process batch when full
+            if len(read_batch) >= batch_size:
+                _process_and_write_batch(
+                    read_batch, raw_read_batch, genome,
+                    annotated_junctions, out_bam, stats,
+                    use_chimeric=use_chimeric,
+                )
+                read_batch = []
+                raw_read_batch = []
+                n_batches += 1
+
+                if stats['total_reads'] % 100000 == 0:
+                    logger.info(f"  Processed {stats['total_reads']:,} reads...")
+
+        # Process remaining reads
+        if read_batch:
             _process_and_write_batch(
                 read_batch, raw_read_batch, genome,
                 annotated_junctions, out_bam, stats,
                 use_chimeric=use_chimeric,
             )
-            read_batch = []
-            raw_read_batch = []
             n_batches += 1
 
-            if stats['total_reads'] % 100000 == 0:
-                logger.info(f"  Processed {stats['total_reads']:,} reads...")
-
-    # Process remaining reads
-    if read_batch:
-        _process_and_write_batch(
-            read_batch, raw_read_batch, genome,
-            annotated_junctions, out_bam, stats,
-            use_chimeric=use_chimeric,
-        )
-        n_batches += 1
+    except Exception:
+        out_bam.close()
+        # Remove partial output BAM so callers don't see an incomplete file
+        try:
+            os.unlink(output_bam)
+        except OSError:
+            pass
+        raise
 
     # Close output
     out_bam.close()
@@ -1478,12 +1493,16 @@ def merge_slurm_array_bams(
     logger.info("SLURM array merge complete")
 
 
-def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int]]:
+def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int, str]]:
     """
     Load annotated junctions from GFF/GTF file.
 
-    Returns set of (chrom, intron_start, intron_end) tuples.
+    Returns set of (chrom, intron_start, intron_end, strand) tuples where chrom is in
+    standardized canonical format (chrI, chrII, etc.) so that junction lookups
+    match the standardized chrom names used during correction.
     """
+    from ..utils.genome import standardize_chrom_name
+
     junctions = set()
 
     import gzip as _gzip
@@ -1501,10 +1520,11 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int]]:
 
             # Look for intron features
             if feature_type == 'intron':
-                chrom = parts[0]
+                chrom = standardize_chrom_name(parts[0])
                 start = int(parts[3]) - 1  # Convert to 0-based
                 end = int(parts[4])  # Already exclusive in GFF end
-                junctions.add((chrom, start, end))
+                strand = parts[6] if parts[6] in ('+', '-') else '+'
+                junctions.add((chrom, start, end, strand))
 
     if len(junctions) == 0:
         logger.warning(

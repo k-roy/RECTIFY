@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import pysam
+
 # CRITICAL: Set thread limits BEFORE importing numpy/pandas
 # This must happen before bam_processor imports numpy
 from ..slurm import set_thread_limits, get_available_cpus, get_slurm_info
@@ -198,6 +200,7 @@ def validate_inputs(args) -> dict:
         'output_path': args.output,
         'apply_atract': not args.skip_atract_check,
         'apply_ag_mispriming': not args.skip_ag_check,
+        'ag_threshold': getattr(args, 'ag_threshold', 0.65),
         'apply_polya_trim': False,  # Default False
         'apply_indel_correction': False,  # Default False
         'netseq_dir': getattr(args, '_resolved_netseq_dir', getattr(args, 'netseq_dir', None)),
@@ -207,6 +210,10 @@ def validate_inputs(args) -> dict:
         'verbose': getattr(args, 'verbose', False),
         'variant_aware': not getattr(args, 'skip_variant_aware', False),
         'filter_spikein': getattr(args, 'filter_spikein', None),
+        'output_bam': getattr(args, 'output_bam', None),
+        'corrected_bam': getattr(args, 'corrected_bam', None),
+        'softclipped_bam': getattr(args, 'softclipped_bam', None),
+        'bedgraph_prefix': getattr(args, 'bedgraph_prefix', None),
     }
 
     # Enable poly(A) corrections if --polya-sequenced flag set
@@ -319,6 +326,22 @@ def run(args):
                 f"({_time.perf_counter() - _t_junc:.1f}s)"
             )
 
+        # Build per-read gene attribution interval trees (optional, requires annotation)
+        gene_interval_trees = None
+        if config.get('annotation_path'):
+            try:
+                from .analyze.gene_attribution import build_cds_interval_tree
+                from .analyze_command import load_annotation as _load_annotation_for_trees
+                _ann_df = _load_annotation_for_trees(str(config['annotation_path']),
+                                                      normalize_chroms=False)
+                gene_interval_trees = build_cds_interval_tree(_ann_df)
+                logger.info(
+                    "Built gene interval trees for per-read attribution (%d (chrom, strand) pairs)",
+                    len(gene_interval_trees),
+                )
+            except Exception as e:
+                logger.warning("Per-read gene attribution unavailable: %s", e)
+
         # Choose processing mode
         _t_proc = _time.perf_counter()
         if streaming_mode:
@@ -331,10 +354,12 @@ def run(args):
                 chunk_size=chunk_size,
                 apply_atract=config['apply_atract'],
                 apply_ag_mispriming=config['apply_ag_mispriming'],
+                ag_threshold=config['ag_threshold'],
                 apply_polya_trim=config['apply_polya_trim'],
                 apply_indel_correction=config['apply_indel_correction'],
                 netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
                 annotated_junctions=annotated_junctions,
+                gene_interval_trees=gene_interval_trees,
             )
             report = generate_stats_report(stats)
         else:
@@ -350,6 +375,7 @@ def run(args):
                 n_threads=n_threads,
                 apply_atract=config['apply_atract'],
                 apply_ag_mispriming=config['apply_ag_mispriming'],
+                ag_threshold=config['ag_threshold'],
                 apply_polya_trim=config['apply_polya_trim'],
                 apply_indel_correction=config['apply_indel_correction'],
                 netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
@@ -359,6 +385,7 @@ def run(args):
                 variant_aware=config['variant_aware'],
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
+                gene_interval_trees=gene_interval_trees,
             )
             report = generate_stats_report(stats)
 
@@ -383,6 +410,115 @@ def run(args):
         logger.info("=" * 70)
 
         print(report)
+
+        # Write poly(A)-trimmed BAM if requested
+        if config.get('output_bam'):
+            _t_bam = _time.perf_counter()
+            logger.info(f"Writing poly(A)-trimmed BAM to {config['output_bam']}...")
+            _unsorted_polya = str(config['output_bam']) + '.unsorted.bam'
+            bam_stats = bam_processor.write_polya_trimmed_bam(
+                str(bam_to_process),
+                _unsorted_polya,
+            )
+            logger.info(
+                f"  Reads written: {bam_stats['total']:,}  "
+                f"trimmed: {bam_stats['trimmed']:,}  "
+                f"bases removed: {bam_stats['bases_trimmed']:,}"
+            )
+            pysam.sort('-o', str(config['output_bam']), _unsorted_polya)
+            pysam.index(str(config['output_bam']))
+            import os as _os_polya
+            _os_polya.unlink(_unsorted_polya)
+            logger.info(f"  Sorted and indexed {config['output_bam']}")
+            logger.info(f"[TIMING] Poly(A) BAM trim: {_time.perf_counter() - _t_bam:.1f}s")
+
+        # Write fully-corrected BAM if requested (hard-clips aligned poly-A regions)
+        if config.get('corrected_bam') and config.get('output_path'):
+            import subprocess as _subprocess
+            _t_cbam = _time.perf_counter()
+            _unsorted_bam = str(config['corrected_bam']) + '.unsorted.bam'
+            logger.info(f"Writing corrected BAM to {config['corrected_bam']}...")
+            cbam_stats = bam_processor.write_corrected_bam(
+                str(bam_to_process),
+                str(config['output_path']),
+                _unsorted_bam,
+            )
+            logger.info(
+                f"  Reads written: {cbam_stats['total']:,}  "
+                f"clipped: {cbam_stats['clipped']:,}  "
+                f"unchanged: {cbam_stats['unchanged']:,}"
+            )
+            # Sort and index so the BAM is immediately usable in IGV
+            pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
+            pysam.index(str(config['corrected_bam']))
+            import os as _os
+            _os.unlink(_unsorted_bam)
+            logger.info(
+                f"  Sorted and indexed {config['corrected_bam']}"
+            )
+            logger.info(f"[TIMING] Corrected BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
+
+        # Write soft-clipped BAM if requested (poly-A bases retained but soft-clipped)
+        if config.get('softclipped_bam') and config.get('output_path'):
+            _t_sbam = _time.perf_counter()
+            _unsorted_sbam = str(config['softclipped_bam']) + '.unsorted.bam'
+            logger.info(f"Writing soft-clipped BAM to {config['softclipped_bam']}...")
+            sbam_stats = bam_processor.write_softclipped_bam(
+                str(bam_to_process),
+                str(config['output_path']),
+                _unsorted_sbam,
+            )
+            logger.info(
+                f"  Reads written: {sbam_stats['total']:,}  "
+                f"clipped: {sbam_stats['clipped']:,}  "
+                f"unchanged: {sbam_stats['unchanged']:,}"
+            )
+            pysam.sort('-o', str(config['softclipped_bam']), _unsorted_sbam)
+            pysam.index(str(config['softclipped_bam']))
+            import os as _os
+            _os.unlink(_unsorted_sbam)
+            logger.info(f"  Sorted and indexed {config['softclipped_bam']}")
+            logger.info(f"[TIMING] Soft-clipped BAM write: {_time.perf_counter() - _t_sbam:.1f}s")
+
+        # Write NET-seq bedgraph files if requested
+        if config.get('bedgraph_prefix') and config.get('output_path'):
+            import pandas as _pd
+            from .netseq_output import write_bedgraph as _write_bedgraph
+            _t_bg = _time.perf_counter()
+            _tsv_path = str(config['output_path'])
+            _prefix = str(config['bedgraph_prefix'])
+            logger.info(f"Writing NET-seq bedgraph files (prefix: {_prefix})...")
+            try:
+                _df = _pd.read_csv(
+                    _tsv_path, sep='\t',
+                    usecols=lambda c: c in ('chrom', 'strand', 'corrected_3prime', 'fraction'),
+                )
+                if 'fraction' not in _df.columns:
+                    logger.warning(
+                        "--write-bedgraph: 'fraction' column absent from TSV; "
+                        "bedgraph output skipped (NET-seq input required)."
+                    )
+                else:
+                    _counts_series = (
+                        _df.groupby(['chrom', 'strand', 'corrected_3prime'])['fraction'].sum()
+                    )
+                    _counts = {
+                        (chrom, strand, int(pos)): float(val)
+                        for (chrom, strand, pos), val in _counts_series.items()
+                    }
+                    for _strand, _name in [('+', 'plus'), ('-', 'minus')]:
+                        _bg_path = Path(f"{_prefix}.{_name}.bedgraph")
+                        _write_bedgraph(
+                            _counts, _bg_path, _strand,
+                            total_reads=1,
+                            normalize_rpm=False,
+                            track_name=f"{_bg_path.stem}",
+                        )
+                        _n = sum(1 for (_, s, _) in _counts if s == _strand)
+                        logger.info(f"  Wrote {_bg_path} ({_n:,} positions)")
+            except Exception as _bg_exc:
+                logger.warning(f"Failed to write bedgraph: {_bg_exc}")
+            logger.info(f"[TIMING] Bedgraph write: {_time.perf_counter() - _t_bg:.1f}s")
 
         # Save report if requested
         if args.report:

@@ -205,6 +205,55 @@ Citation:
     # Output options
     output_group = correct_parser.add_argument_group('Output options')
     output_group.add_argument(
+        '--output-bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a poly(A)-trimmed BAM alongside the corrected TSV. '
+             'The 3\' poly(A) soft-clip is removed from each read; all '
+             'other alignment fields and BAM tags are preserved unchanged. '
+             'Requires --polya-sequenced.'
+    )
+
+    output_group.add_argument(
+        '--write-corrected-bam',
+        dest='corrected_bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a corrected BAM where every read is hard-clipped at its '
+             'corrected 3\' end. Unlike --output-bam, this reflects all '
+             'correction categories (Cat1 poly-A walkback, Cat4 false-N '
+             'absorption, Cat2 soft-clip rescue, etc.) — not just soft-clip '
+             'trimming. The output is sorted and indexed. Best used with '
+             '--annotation for full correction coverage.'
+    )
+
+    output_group.add_argument(
+        '--write-softclipped-bam',
+        dest='softclipped_bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a corrected BAM where poly(A) tail bases are soft-clipped '
+             'rather than hard-clipped at the corrected 3\' end. The poly(A) '
+             'bases remain in the query sequence and are visible in IGV when '
+             '"Show soft-clipped bases" is enabled. Useful for visualising '
+             'where the poly(A) tail was without affecting pileup or coverage. '
+             'The output is sorted and indexed.'
+    )
+
+    output_group.add_argument(
+        '--write-bedgraph',
+        dest='bedgraph_prefix',
+        metavar='PREFIX',
+        help='Write strand-specific bedGraph files for NET-seq reads. '
+             'Signal at each position is the sum of fractional contributions '
+             'across all reads (the fraction column in the corrected TSV), so '
+             'each read contributes exactly 1.0 of total signal distributed '
+             'across its candidate positions. Output files: '
+             'PREFIX.plus.bedgraph and PREFIX.minus.bedgraph. '
+             'Requires NET-seq input (fraction column must be present).'
+    )
+
+    output_group.add_argument(
         '--report',
         type=Path,
         help='Output QC report file (HTML or PDF)'
@@ -444,6 +493,12 @@ Citation:
     create_batch_parser(subparsers)
 
     # =========================================================================
+    # test command (installation smoke-test)
+    # =========================================================================
+    from .core.test_command import create_test_parser
+    create_test_parser(subparsers)
+
+    # =========================================================================
     # align command (multi-aligner pipeline)
     # =========================================================================
     from .core.align_command import create_align_parser
@@ -490,7 +545,7 @@ Examples:
 
   # Multi-sample with SLURM
   rectify run-all --manifest manifest.tsv --Scer -o results/ \\
-      --profile rectify/slurm_profiles/sherlock_larsms.yaml
+      --profile my_cluster.yaml
 
 Manifest format (TSV):
   sample_id    path                    condition
@@ -550,7 +605,7 @@ Manifest format (TSV):
         '--skip-alignment',
         action='store_true',
         help='Skip triple-aligner alignment even for FASTQ input '
-             '(use if you already have a consensus.bam)'
+             '(use if you already have a rectified.bam or consensus.bam)'
     )
 
     # Organism / bundled reference
@@ -588,8 +643,8 @@ Manifest format (TSV):
 
     run_parser.add_argument(
         '--aligner',
-        choices=['minimap2', 'star', 'bowtie2', 'bwa'],
-        default='minimap2',
+        choices=['minimap2', 'bwa', 'star', 'auto'],
+        default='auto',
         help='Aligner used for BAM file'
     )
 
@@ -694,6 +749,40 @@ Manifest format (TSV):
         help='Path to deSALT executable (used with --junction-aligners deSALT)'
     )
 
+    # BAM output options
+    bam_group = run_parser.add_argument_group('BAM output options')
+    bam_group.add_argument(
+        '--bam-dir',
+        type=Path,
+        default=None,
+        metavar='DIR',
+        help='Directory to write alignment BAMs (per-aligner and rectified). '
+             'Defaults to the sample output directory. '
+             'Useful for inspecting per-aligner BAMs separately from corrected outputs.'
+    )
+    bam_group.add_argument(
+        '--keep-aligner-bams',
+        action='store_true',
+        default=False,
+        help='Retain per-aligner BAMs (minimap2, mapPacBio, gapmm2) after '
+             'consensus selection. By default, per-aligner BAMs are excluded '
+             'from the Oak sync to save disk space; only the rectified BAM is kept.'
+    )
+
+    run_parser.add_argument(
+        '--continue-on-error',
+        action='store_true',
+        default=False,
+        help='Continue processing remaining samples if one fails'
+    )
+
+    run_parser.add_argument(
+        '--use-scratch',
+        action='store_true',
+        default=False,
+        help='Stage I/O through $SCRATCH for better performance'
+    )
+
     return parser
 
 
@@ -731,6 +820,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'aggregate':
         from .core import aggregate_command
         aggregate_command.run(args)
+    elif args.command == 'test':
+        from .core import test_command
+        sys.exit(test_command.run(args))
     elif args.command == 'align':
         from .core import align_command
         align_command.run(args)

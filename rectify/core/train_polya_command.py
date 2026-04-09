@@ -287,12 +287,12 @@ def collect_training_data(
 
         # Extract soft-clips
         clips = extract_soft_clips_at_site(bam, site)
-        training_data.n_reads_total += len(clips)
 
         if len(clips) < min_reads:
             training_data.n_sites_filtered += 1
             continue
 
+        training_data.n_reads_total += len(clips)
         training_data.n_sites_used += 1
 
         for clip_seq in clips:

@@ -272,6 +272,17 @@ def detect_apa_isoforms(
         'tes_positions': [],
     })
 
+    n_total = len(records)
+    n_no_attribution = sum(1 for r in records if r.read_id not in gene_attributions)
+    if n_total > 0 and n_no_attribution / n_total > 0.10:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "build_apa_isoforms(): %.1f%% of records (%d / %d) lack gene attribution "
+            "and will be silently excluded. Check that gene_attributions covers this "
+            "dataset, or that the annotation matches the genome build.",
+            100.0 * n_no_attribution / n_total, n_no_attribution, n_total,
+        )
+
     for record in records:
         read_id = record.read_id
 
@@ -290,11 +301,19 @@ def detect_apa_isoforms(
         else:
             tes_modal = record.three_prime_corrected
             # Bin nearby positions together within tes_tolerance (round to nearest bin)
-            _bin = round(tes_modal / tes_tolerance) * tes_tolerance
-            tes_key = f"pos_{_bin}"
+            if tes_tolerance == 0:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "tes_tolerance is 0, skipping position binning for read %s", read_id
+                )
+                tes_key = f"pos_{tes_modal}"
+            else:
+                _bin = round(tes_modal / tes_tolerance) * tes_tolerance
+                tes_key = f"pos_{_bin}"
 
-        # Group key
-        key = (gene_id, gene_name, junction_sig, tes_key)
+        # Group key — include chrom and strand to prevent merging isoforms from
+        # different loci or strands that share the same gene_id/junction/tes_key.
+        key = (gene_id, gene_name, record.chrom, record.strand, junction_sig, tes_key)
 
         isoform_groups[key]['reads'].append(read_id)
         isoform_groups[key]['chrom'] = record.chrom
@@ -305,12 +324,12 @@ def detect_apa_isoforms(
     isoforms = []
     isoform_counter = 0
 
-    for (gene_id, gene_name, junction_sig, tes_key), data in isoform_groups.items():
+    for (gene_id, gene_name, _chrom, _strand, junction_sig, tes_key), data in isoform_groups.items():
         n_reads = len(data['reads'])
         if n_reads < min_reads_per_isoform:
             continue
 
-        # Calculate modal TES position
+        # Calculate median TES position
         tes_position = int(np.median(data['tes_positions']))
 
         # Check if canonical TES
@@ -332,7 +351,7 @@ def detect_apa_isoforms(
             chrom=data['chrom'],
             strand=data['strand'],
             tes_position=tes_position,
-            tes_cluster_id=tes_key if tes_key.startswith('cluster') else None,
+            tes_cluster_id=tes_key,
             junction_signature=junction_sig,
             supporting_reads=data['reads'],
             is_canonical_tes=is_canonical,

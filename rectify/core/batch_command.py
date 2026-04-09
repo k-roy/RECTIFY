@@ -11,7 +11,7 @@ Usage:
 
     # SLURM array job via profile
     rectify batch --manifest manifest.tsv --genome genome.fa --annotation genes.gtf -o results/ \
-        --profile slurm_profiles/sherlock_larsms.yaml
+        --profile my_cluster.yaml
 
     # Or specify BAM files directly
     rectify batch --bams *.bam --genome genome.fa --annotation genes.gtf -o results/
@@ -24,6 +24,7 @@ Date: 2026-03-25
 import os
 import sys
 import json
+import shlex
 import subprocess
 import concurrent.futures
 import multiprocessing
@@ -36,7 +37,7 @@ from ..utils.provenance import init_provenance
 
 SLURM_CORRECT_TEMPLATE = '''#!/bin/bash
 #SBATCH --job-name={job_name}_correct
-#SBATCH --partition={partition}
+{partition_line}
 #SBATCH --time={time}
 #SBATCH --mem={mem}
 #SBATCH --cpus-per-task={cpus}
@@ -49,12 +50,38 @@ SLURM_CORRECT_TEMPLATE = '''#!/bin/bash
 # After all tasks complete, submit: rectify_batch_analyze.sh
 # =============================================================================
 
-set -euo pipefail
+{error_handling}
 
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export LOKY_MAX_CPU_COUNT=$SLURM_CPUS_PER_TASK
+# ── Portable scheduler abstraction ──────────────────────────────────────────
+# Normalize scheduler-specific variables so the script body works on
+# SLURM, UGE/SGE, PBS/Torque, and interactive sessions without modification.
+if   [ -n "$SLURM_CPUS_PER_TASK" ]; then RECTIFY_CPUS=$SLURM_CPUS_PER_TASK
+elif [ -n "$NSLOTS" ];               then RECTIFY_CPUS=$NSLOTS
+elif [ -n "$PBS_NUM_PPN" ];          then RECTIFY_CPUS=$PBS_NUM_PPN
+else                                      RECTIFY_CPUS={cpus}; fi
+
+if   [ -n "$SLURM_JOB_ID" ];        then RECTIFY_JOB_ID=$SLURM_JOB_ID
+elif [ -n "$JOB_ID" ];               then RECTIFY_JOB_ID=$JOB_ID
+elif [ -n "$PBS_JOBID" ];            then RECTIFY_JOB_ID=$PBS_JOBID
+else                                      RECTIFY_JOB_ID=$$; fi
+
+if   [ -n "$SLURM_ARRAY_TASK_ID" ]; then RECTIFY_TASK_ID=$SLURM_ARRAY_TASK_ID
+elif [ -n "$SGE_TASK_ID" ];          then RECTIFY_TASK_ID=$((SGE_TASK_ID - 1))  # SGE is 1-based; normalize to 0-based
+elif [ -n "$PBS_ARRAY_INDEX" ];      then RECTIFY_TASK_ID=$PBS_ARRAY_INDEX
+else                                      RECTIFY_TASK_ID=0; fi
+
+# Scratch: prefer $SCRATCH (persistent, inspectable after job) over $TMPDIR.
+if   [ -n "$SCRATCH" ]      && [ -d "$SCRATCH" ];      then RECTIFY_SCRATCH_BASE=$SCRATCH
+elif [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ]; then RECTIFY_SCRATCH_BASE=$SLURM_TMPDIR
+elif [ -n "$TMPDIR" ]       && [ -d "$TMPDIR" ];        then RECTIFY_SCRATCH_BASE=$TMPDIR
+else                                                          RECTIFY_SCRATCH_BASE=""; fi
+# ────────────────────────────────────────────────────────────────────────────
+
+export OMP_NUM_THREADS=$RECTIFY_CPUS
+export OPENBLAS_NUM_THREADS=$RECTIFY_CPUS
+export MKL_NUM_THREADS=$RECTIFY_CPUS
+export LOKY_MAX_CPU_COUNT=$RECTIFY_CPUS
+export NUMEXPR_MAX_THREADS=$RECTIFY_CPUS
 
 PYTHON="{python}"
 
@@ -66,15 +93,15 @@ INPUT_PATHS=(
 {input_paths_array}
 )
 
-SAMPLE_ID="${{SAMPLE_IDS[$SLURM_ARRAY_TASK_ID]}}"
-INPUT="${{INPUT_PATHS[$SLURM_ARRAY_TASK_ID]}}"
+SAMPLE_ID="${{SAMPLE_IDS[$RECTIFY_TASK_ID]}}"
+INPUT="${{INPUT_PATHS[$RECTIFY_TASK_ID]}}"
 
 echo "=============================="
 echo "RECTIFY Correction"
 echo "=============================="
 echo "Sample:   ${{SAMPLE_ID}}"
 echo "Input:    ${{INPUT}}"
-echo "Task ID:  $SLURM_ARRAY_TASK_ID"
+echo "Task ID:  $RECTIFY_TASK_ID"
 echo "Date:     $(date)"
 echo "Host:     $(hostname)"
 echo ""
@@ -89,7 +116,7 @@ $PYTHON -m rectify correct \\
     --genome "{genome}" \\
     --annotation "{annotation}" \\
     -o "${{WORK_OUTPUT_DIR}}/corrected_3ends.tsv" \\
-    --threads $SLURM_CPUS_PER_TASK \\
+    --threads $RECTIFY_CPUS \\
     {extra_args}
 
 {scratch_teardown}
@@ -106,28 +133,39 @@ echo "Finished: $(date)"
 # correction; FASTQ inputs are left on Oak (read once, sequentially).
 _SCRATCH_SETUP_BLOCK = '''\
 # --- Scratch staging (use_scratch=true in profile) ---
-# Stage BAM to $SCRATCH for high-bandwidth local I/O.
-SCRATCH_DIR="$SCRATCH/rectify_${{SLURM_JOB_ID}}_${{SLURM_ARRAY_TASK_ID}}"
-mkdir -p "$SCRATCH_DIR"
-trap 'rm -rf "$SCRATCH_DIR"' EXIT
-
-if [[ "${{INPUT}}" == *.bam ]]; then
-    echo "Staging BAM to scratch: ${{SCRATCH_DIR}}"
-    cp "${{INPUT}}" "${{SCRATCH_DIR}}/"
-    cp "${{INPUT}}.bai" "${{SCRATCH_DIR}}/" 2>/dev/null || true
-    WORK_INPUT="${{SCRATCH_DIR}}/$(basename "${{INPUT}}")"
+# $RECTIFY_SCRATCH_BASE is set by the scheduler abstraction block above.
+# $SCRATCH is preferred over $TMPDIR: BAM files survive for post-job inspection
+# and job resumption (re-alignment is skipped if the rectified BAM already exists).
+if [ -z "$RECTIFY_SCRATCH_BASE" ]; then
+    echo "WARNING: No scratch filesystem detected; all I/O will go to output directory."
+    SCRATCH_DIR=""
+    WORK_OUTPUT_DIR="$OAK_OUTPUT_DIR"
 else
-    # FASTQ is read sequentially once — no staging benefit
-    WORK_INPUT="${{INPUT}}"
+    SCRATCH_DIR="$RECTIFY_SCRATCH_BASE/rectify_${RECTIFY_JOB_ID}_${RECTIFY_TASK_ID}"
+    mkdir -p "$SCRATCH_DIR"
+    WORK_OUTPUT_DIR="$SCRATCH_DIR"
 fi
-WORK_OUTPUT_DIR="${{SCRATCH_DIR}}"
+
+if [[ "${INPUT}" == *.bam ]] && [ -n "$SCRATCH_DIR" ]; then
+    echo "Staging BAM to scratch: ${SCRATCH_DIR}"
+    cp "${INPUT}" "${SCRATCH_DIR}/"
+    cp "${INPUT}.bai" "${SCRATCH_DIR}/" 2>/dev/null || true
+    WORK_INPUT="${SCRATCH_DIR}/$(basename "${INPUT}")"
+else
+    # FASTQ is read sequentially once — no staging benefit; or no scratch available
+    WORK_INPUT="${INPUT}"
+fi
 '''
 
 _SCRATCH_TEARDOWN_BLOCK = '''\
 # Copy all outputs from scratch back to Oak (exclude BAMs — already on Oak)
-echo "Copying outputs to Oak: $OAK_OUTPUT_DIR"
-rsync -a --exclude="*.bam" --exclude="*.bai" "${{SCRATCH_DIR}}/" "$OAK_OUTPUT_DIR/"
-echo "Outputs copied: $(date)"
+if [ -n "${{SCRATCH_DIR}}" ] && [ -d "${{SCRATCH_DIR}}" ]; then
+    echo "Copying outputs to Oak: $OAK_OUTPUT_DIR"
+    rsync -a --exclude="*.bam" --exclude="*.bai" "${{SCRATCH_DIR}}/" "$OAK_OUTPUT_DIR/"
+    echo "Outputs copied: $(date)"
+else
+    echo "No scratch directory to sync (SCRATCH_DIR not set or does not exist); outputs already in $OAK_OUTPUT_DIR"
+fi
 '''
 
 _NO_SCRATCH_SETUP_BLOCK = '''\
@@ -140,7 +178,7 @@ _NO_SCRATCH_TEARDOWN_BLOCK = ''  # outputs already in OAK_OUTPUT_DIR
 
 SLURM_ANALYZE_TEMPLATE = '''#!/bin/bash
 #SBATCH --job-name={job_name}_analyze
-#SBATCH --partition={partition}
+{partition_line}
 #SBATCH --time={analyze_time}
 #SBATCH --mem={analyze_mem}
 #SBATCH --cpus-per-task={analyze_cpus}
@@ -151,12 +189,20 @@ SLURM_ANALYZE_TEMPLATE = '''#!/bin/bash
 # Generated: {timestamp}
 # =============================================================================
 
-set -euo pipefail
+{error_handling}
 
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export LOKY_MAX_CPU_COUNT=$SLURM_CPUS_PER_TASK
+# ── Portable scheduler abstraction ──────────────────────────────────────────
+if   [ -n "$SLURM_CPUS_PER_TASK" ]; then RECTIFY_CPUS=$SLURM_CPUS_PER_TASK
+elif [ -n "$NSLOTS" ];               then RECTIFY_CPUS=$NSLOTS
+elif [ -n "$PBS_NUM_PPN" ];          then RECTIFY_CPUS=$PBS_NUM_PPN
+else                                      RECTIFY_CPUS={analyze_cpus}; fi
+# ────────────────────────────────────────────────────────────────────────────
+
+export OMP_NUM_THREADS=$RECTIFY_CPUS
+export OPENBLAS_NUM_THREADS=$RECTIFY_CPUS
+export MKL_NUM_THREADS=$RECTIFY_CPUS
+export LOKY_MAX_CPU_COUNT=$RECTIFY_CPUS
+export NUMEXPR_MAX_THREADS=$RECTIFY_CPUS
 
 PYTHON="{python}"
 
@@ -208,7 +254,7 @@ $PYTHON -m rectify analyze \\
     --annotation "{annotation}" \\
     --genome "{genome}" \\
     -o "$COMBINED_DIR" \\
-    --threads $SLURM_CPUS_PER_TASK \\
+    --threads $RECTIFY_CPUS \\
     --run-deseq2 \\
     {extra_analyze_args}
 
@@ -292,6 +338,20 @@ def parse_manifest(manifest_path: Path) -> List[Dict[str, str]]:
                     'bam_path': bam_path,
                 })
 
+    # Check for duplicate sample_id values (Bug NEW-024).
+    # Duplicates cause downstream output directories to be silently overwritten.
+    seen = set()
+    dupes = []
+    for s in samples:
+        sid = s['sample_id']
+        if sid in seen:
+            if sid not in dupes:
+                dupes.append(sid)
+        else:
+            seen.add(sid)
+    if dupes:
+        raise ValueError(f"Duplicate sample_id values in manifest: {dupes}")
+
     return samples
 
 
@@ -334,7 +394,7 @@ def _build_sample_cmd(sample: Dict[str, str], sample_output: Path, args) -> List
     Batch runs correct-only per sample (not run-all), then combines TSVs
     and runs a single shared analyze step for cross-sample DESeq2.
     """
-    input_path = sample.get('path', sample.get('bam_path'))
+    input_path = sample.get('bam_path', sample.get('path'))
     corrected_tsv = sample_output / 'corrected_3ends.tsv'
 
     cmd = [
@@ -356,6 +416,10 @@ def _build_sample_cmd(sample: Dict[str, str], sample_output: Path, args) -> List
         cmd.extend(['--netseq-dir', str(args.netseq_dir)])
     if getattr(args, 'filter_spikein', None):
         cmd.extend(['--filter-spikein'] + args.filter_spikein)
+    if getattr(args, 'streaming', False):
+        cmd.append('--streaming')
+    if getattr(args, 'chunk_size', None) and args.chunk_size != 10000:
+        cmd.extend(['--chunk-size', str(args.chunk_size)])
     return cmd
 
 
@@ -375,7 +439,7 @@ def load_slurm_profile(profile_path: Path) -> Dict:
     """
     Load SLURM settings from a YAML or JSON profile file.
 
-    YAML profile example (sherlock_larsms.yaml):
+    YAML profile example (my_cluster.yaml):
         partition: larsms,owners
         time: "4:00:00"    # MUST quote HH:MM:SS — bare colons parse as sexagesimal
         mem: 32G
@@ -389,7 +453,7 @@ def load_slurm_profile(profile_path: Path) -> Dict:
         if suffix in ('.yaml', '.yml'):
             try:
                 import yaml
-                return yaml.safe_load(f) or {}
+                profile = yaml.safe_load(f) or {}
             except ImportError:
                 raise ImportError(
                     "PyYAML is required for YAML profiles.\n"
@@ -397,11 +461,26 @@ def load_slurm_profile(profile_path: Path) -> Dict:
                     "Or use a JSON profile file (.json) instead."
                 )
         elif suffix == '.json':
-            return json.load(f)
+            profile = json.load(f)
         else:
             raise ValueError(
                 f"Profile must be .yaml, .yml, or .json (got '{suffix}')"
             )
+
+    _KNOWN_PROFILE_KEYS = {
+        'partition', 'time', 'mem', 'cpus', 'max_concurrent', 'job_name',
+        'submit', 'use_scratch', 'streaming', 'analyze_cpus', 'analyze_mem',
+        'analyze_time',
+    }
+    unknown = set(profile.keys()) - _KNOWN_PROFILE_KEYS
+    if unknown:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "load_slurm_profile(): unrecognized profile keys (typo?): %s",
+            ', '.join(sorted(unknown)),
+        )
+
+    return profile
 
 
 def _apply_profile(args, profile: Dict) -> None:
@@ -414,15 +493,25 @@ def _apply_profile(args, profile: Dict) -> None:
         'max_concurrent': 'max_concurrent',
         'job_name': 'job_name',
         'submit': 'submit',
+        'use_scratch': 'use_scratch',
+        'streaming': 'streaming',
+        'analyze_cpus': 'analyze_cpus',
+        'analyze_mem': 'analyze_mem',
+        'analyze_time': 'analyze_time',
     }
     defaults = {
-        'partition': 'larsms,owners',
+        'partition': None,
         'time': '4:00:00',
         'mem': '32G',
         'cpus': 8,
         'max_concurrent': None,
         'job_name': 'rectify_batch',
         'submit': False,
+        'use_scratch': False,
+        'streaming': True,
+        'analyze_cpus': 8,
+        'analyze_mem': '64G',
+        'analyze_time': '8:00:00',
     }
     for profile_key, arg_key in profile_to_arg.items():
         if profile_key in profile:
@@ -446,16 +535,18 @@ def generate_slurm_scripts(
 
     Returns (correct_script, analyze_script) as strings.
     """
-    # Parallel arrays of sample IDs and input paths
+    # Parallel arrays of sample IDs and input paths.
+    # shlex.quote() prevents shell metacharacters in sample names/paths from
+    # breaking the generated script (Bug NEW-008).
     sample_ids_array = '\n'.join(
-        f'    "{s["sample_id"]}"' for s in samples
+        f'    {shlex.quote(s["sample_id"])}' for s in samples
     )
     input_paths_array = '\n'.join(
-        f'    "{s.get("path", s.get("bam_path", ""))}"' for s in samples
+        f'    {shlex.quote(s.get("bam_path", s.get("path", "")))}' for s in samples
     )
 
     # Python list literal for the analyze script
-    pairs = [(s['sample_id'], s.get('path', s.get('bam_path', ''))) for s in samples]
+    pairs = [(s['sample_id'], s.get('bam_path', s.get('path', ''))) for s in samples]
     samples_python_list = repr(pairs)
 
     # Scratch staging
@@ -477,6 +568,8 @@ def generate_slurm_scripts(
         extra_args.append('--filter-spikein ' + ' '.join(args.filter_spikein))
     if getattr(args, 'streaming', False):
         extra_args.append('--streaming')
+    if getattr(args, 'chunk_size', None) and args.chunk_size != 10000:
+        extra_args.append(f'--chunk-size {args.chunk_size}')
     extra_args_str = ' \\\n    '.join(extra_args) if extra_args else ''
 
     # Analyze extra args (go annotations etc.)
@@ -490,11 +583,20 @@ def generate_slurm_scripts(
     log_dir = output_dir / 'slurm_logs'
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     job_name = getattr(args, 'job_name', None) or 'rectify_batch'
-    partition = getattr(args, 'partition', 'larsms,owners')
+    partition = getattr(args, 'partition', None)
+    partition_line = (
+        f'#SBATCH --partition={partition}' if partition
+        else '# --partition not set; SLURM will use the cluster default partition'
+    )
+    # --continue-on-error: drop -e so individual task failures don't abort the job
+    if getattr(args, 'continue_on_error', False):
+        error_handling = 'set -uo pipefail'
+    else:
+        error_handling = 'set -euo pipefail'
 
     correct_script = SLURM_CORRECT_TEMPLATE.format(
         job_name=job_name,
-        partition=partition,
+        partition_line=partition_line,
         time=getattr(args, 'time', '4:00:00'),
         mem=getattr(args, 'mem', '32G'),
         cpus=getattr(args, 'cpus', 8),
@@ -511,11 +613,12 @@ def generate_slurm_scripts(
         extra_args=extra_args_str,
         scratch_setup=scratch_setup,
         scratch_teardown=scratch_teardown,
+        error_handling=error_handling,
     )
 
     analyze_script = SLURM_ANALYZE_TEMPLATE.format(
         job_name=job_name,
-        partition=partition,
+        partition_line=partition_line,
         # Analyze may need more time/memory (DESeq2 is RAM-intensive)
         analyze_time=getattr(args, 'analyze_time', '8:00:00'),
         analyze_mem=getattr(args, 'analyze_mem', '64G'),
@@ -528,6 +631,7 @@ def generate_slurm_scripts(
         annotation=annotation,
         genome=genome,
         extra_analyze_args=extra_analyze_str,
+        error_handling=error_handling,
     )
 
     return correct_script, analyze_script
@@ -580,7 +684,7 @@ def _run_slurm_mode(
         f.write(analyze_script)
     os.chmod(analyze_path, 0o755)
 
-    partition = getattr(args, 'partition', 'larsms,owners')
+    partition = getattr(args, 'partition', None)
     print(f"SLURM scripts generated:")
     print(f"  Stage 1 (correction array):  {correct_path}")
     print(f"    Partition: {partition}  |  CPUs: {getattr(args, 'cpus', 8)}  "
@@ -592,6 +696,14 @@ def _run_slurm_mode(
           f"|  Time: {getattr(args, 'analyze_time', '8:00:00')}")
 
     should_submit = getattr(args, 'submit', False)
+    if should_submit and not partition:
+        print(
+            "ERROR: --submit requires --partition to be set. "
+            "Specify a partition (e.g. --partition larsms,owners) or omit --submit "
+            "and run the generated scripts manually.",
+            file=sys.stderr,
+        )
+        return 1
     if should_submit:
         print("\nSubmitting Stage 1 (correction array)...")
         result1 = subprocess.run(
@@ -724,7 +836,7 @@ def _run_interactive_mode(samples: List[Dict[str, str]], args) -> int:
     )
     for sample in successful:
         sample_output = args.output_dir / sample['sample_id']
-        input_path = Path(sample.get('path', sample.get('bam_path', '')))
+        input_path = Path(sample.get('bam_path', sample.get('path', '')))
         for tsv_file in sample_output.glob('*.tsv'):
             provenance.add_output_file(tsv_file, source_files=[input_path])
     provenance.save()
@@ -787,6 +899,8 @@ def _resolve_reference_paths(args) -> None:
 
 def run(args) -> int:
     """Run batch command."""
+    from ..slurm import set_thread_limits
+    set_thread_limits(getattr(args, 'threads', None))
 
     _resolve_reference_paths(args)
 
@@ -849,7 +963,7 @@ Examples:
 
   # SLURM array job via profile file
   rectify batch --manifest manifest.tsv --Scer -o results/ \\
-      --profile slurm_profiles/sherlock_larsms.yaml
+      --profile my_cluster.yaml
 
   # With explicit references
   rectify batch --manifest manifest.tsv --genome genome.fa --annotation genes.gtf -o results/
@@ -939,8 +1053,8 @@ Manifest format (TSV):
 
     slurm_group.add_argument(
         '--partition',
-        default='larsms,owners',
-        help='SLURM partition'
+        default=None,
+        help='SLURM partition name (required for --submit; e.g. "gpu", "cpu", "batch")'
     )
 
     slurm_group.add_argument(
@@ -1049,6 +1163,20 @@ Manifest format (TSV):
         nargs='+',
         metavar='GENE',
         help='Remove spike-in reads by gene name before processing (e.g., --filter-spikein ENO2)'
+    )
+
+    rectify_group.add_argument(
+        '--streaming',
+        action='store_true',
+        default=False,
+        help='Process reads in streaming mode to reduce peak RAM usage (recommended for large BAMs)'
+    )
+
+    rectify_group.add_argument(
+        '--chunk-size',
+        type=int,
+        default=10000,
+        help='Number of reads per chunk in streaming mode (default: 10000)'
     )
 
 

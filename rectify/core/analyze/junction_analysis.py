@@ -430,7 +430,7 @@ def build_junction_index_from_records(
 def build_known_junction_index(
     annotation_path: str,
     file_format: str = 'auto',
-) -> Dict[str, Set[Tuple[int, int]]]:
+) -> Dict[Tuple[str, str], Set[Tuple[int, int]]]:
     """
     Build junction index from annotation file.
 
@@ -439,7 +439,7 @@ def build_known_junction_index(
         file_format: 'gff', 'bed', or 'auto' (detect from extension)
 
     Returns:
-        Dictionary mapping chrom to set of (donor, acceptor) junctions
+        Dictionary mapping (chrom, strand) to set of (donor, acceptor) junctions
     """
     # Auto-detect format
     if file_format == 'auto':
@@ -493,12 +493,12 @@ def build_known_junction_index(
                                 # Junction = end of exon i to start of exon i+1
                                 donor = exons[i][1]
                                 acceptor = exons[i + 1][0]
-                                index[exons[i][2]].add((donor, acceptor))
+                                index[(exons[i][2], exons[i][3])].add((donor, acceptor))
 
                         current_transcript = transcript_id
                         exons = []
 
-                    exons.append((start, end, chrom))
+                    exons.append((start, end, chrom, strand))
 
             # Process last transcript
             if current_transcript and len(exons) > 1:
@@ -506,7 +506,7 @@ def build_known_junction_index(
                 for i in range(len(exons) - 1):
                     donor = exons[i][1]
                     acceptor = exons[i + 1][0]
-                    index[exons[i][2]].add((donor, acceptor))
+                    index[(exons[i][2], exons[i][3])].add((donor, acceptor))
 
     elif file_format == 'bed':
         # Parse BED file (direct junction coordinates)
@@ -647,7 +647,7 @@ class ASSDetector:
         for donor, acceptor in known:
             d_off = intron_start - donor
             a_off = intron_end - acceptor
-            if abs(d_off) > thresh and abs(a_off) > thresh:
+            if abs(d_off) > thresh or abs(a_off) > thresh:
                 continue
             total = abs(d_off) + abs(a_off)
             if total < best_total:

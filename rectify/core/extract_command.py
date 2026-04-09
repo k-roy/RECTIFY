@@ -451,10 +451,15 @@ def run_batch_extract(bam, args, genome, region_chrom, region_start, region_end)
         records.append(info)
 
     # Write output
-    df = pd.DataFrame(records)
-    df.to_csv(args.output, sep='\t', index=False)
+    output_df = pd.DataFrame(records)
+    if output_df.empty:
+        logger.warning(
+            f"No reads matched extraction criteria — output file {args.output} is empty. "
+            "Check your filters and input data."
+        )
+    output_df.to_csv(args.output, sep='\t', index=False)
 
-    logger.info(f"Extracted {len(df):,} reads")
+    logger.info(f"Extracted {len(output_df):,} reads")
 
 
 def run(args: argparse.Namespace):

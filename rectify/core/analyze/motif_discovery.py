@@ -13,9 +13,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import os
+import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Default window sizes (configurable)
 DEFAULT_UPSTREAM_WINDOW = 100  # bp upstream of CPA site
@@ -117,7 +120,8 @@ def extract_sequences_around_clusters(
                             'end': upstream_end,
                             'strand': strand,
                         })
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Skipping locus due to error: {e}")
                     extraction_errors += 1
                     continue
 
@@ -136,7 +140,8 @@ def extract_sequences_around_clusters(
                             'end': downstream_end,
                             'strand': strand,
                         })
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Skipping locus due to error: {e}")
                     extraction_errors += 1
                     continue
 

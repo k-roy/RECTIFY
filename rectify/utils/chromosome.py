@@ -61,7 +61,11 @@ YEAST_CHR_TO_NCBI = {
 }
 
 # NCBI RefSeq (ref|NC_001133|) to UCSC (chrI)
-YEAST_NCBI_TO_CHR = {v: k for k, v in YEAST_CHR_TO_NCBI.items() if not k.startswith('chrM')}
+# Exclude short Roman-numeral keys ('I', 'II', ...) and 'chrM*' variants so
+# that NCBI accessions map to the canonical 'chrI'-style names.  The mitochondrial
+# entry is set explicitly afterwards to guarantee 'chrMito' wins.
+YEAST_NCBI_TO_CHR = {v: k for k, v in YEAST_CHR_TO_NCBI.items()
+                     if k.startswith('chr') and not k.startswith('chrM')}
 YEAST_NCBI_TO_CHR['ref|NC_001224|'] = 'chrMito'
 
 # SGD format (BK006935.2) to NCBI

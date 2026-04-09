@@ -24,6 +24,15 @@ import sys
 import os
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    """Python 3.8-compatible replacement for Path.is_relative_to() (added in 3.9)."""
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 class ProvenanceTracker:
     """
     Track provenance for RECTIFY output directories.
@@ -135,7 +144,7 @@ class ProvenanceTracker:
         self.current_run['outputs'].append(file_info)
 
         # Update master file list
-        rel_path = str(filepath.relative_to(self.output_dir)) if filepath.is_relative_to(self.output_dir) else str(filepath)
+        rel_path = str(filepath.relative_to(self.output_dir)) if _is_relative_to(filepath, self.output_dir) else str(filepath)
         self.provenance['files'][rel_path] = file_info
 
     def _get_hash(self, filepath: Path, chunk_size: int = 8192) -> str:
@@ -161,9 +170,12 @@ class ProvenanceTracker:
         self.provenance['runs'].append(self.current_run)
         self.provenance['last_updated'] = datetime.now().isoformat()
 
-        # Write PROVENANCE.json
-        with open(self.prov_file, 'w') as f:
+        # Write PROVENANCE.json atomically: write to .tmp then rename so a
+        # crash mid-write never leaves a corrupt sidecar on disk.
+        tmp_file = self.prov_file.with_suffix('.json.tmp')
+        with open(tmp_file, 'w') as f:
             json.dump(self.provenance, f, indent=2)
+        os.replace(tmp_file, self.prov_file)
 
         # Write README.md
         self._write_readme()

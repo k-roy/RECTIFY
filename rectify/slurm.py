@@ -48,13 +48,15 @@ logger = logging.getLogger(__name__)
 
 def get_available_cpus(default: int = 1) -> int:
     """
-    Get number of available CPUs, respecting SLURM allocation.
+    Get number of available CPUs, portable across SLURM, UGE/SGE, PBS, and interactive.
 
     Priority order:
-    1. SLURM_CPUS_PER_TASK (if running in SLURM job)
-    2. LOKY_MAX_CPU_COUNT (if set by user)
-    3. os.cpu_count() / 2 (conservative default for shared systems)
-    4. default parameter
+    1. SLURM_CPUS_PER_TASK  (SLURM)
+    2. NSLOTS               (UGE/SGE — set by scheduler to requested -pe slots)
+    3. PBS_NUM_PPN          (PBS/Torque — processors per node)
+    4. LOKY_MAX_CPU_COUNT   (user override, any scheduler)
+    5. os.cpu_count() / 2   (conservative default for shared systems)
+    6. default parameter
 
     Args:
         default: Fallback value if no CPU count can be determined
@@ -62,21 +64,13 @@ def get_available_cpus(default: int = 1) -> int:
     Returns:
         Number of CPUs to use
     """
-    # Check SLURM environment first
-    slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
-    if slurm_cpus:
-        try:
-            return int(slurm_cpus)
-        except ValueError:
-            pass  # Malformed value, fall through
-
-    # Check LOKY_MAX_CPU_COUNT (user override)
-    loky_cpus = os.environ.get('LOKY_MAX_CPU_COUNT')
-    if loky_cpus:
-        try:
-            return int(loky_cpus)
-        except ValueError:
-            pass  # Malformed value, fall through
+    for var in ('SLURM_CPUS_PER_TASK', 'NSLOTS', 'PBS_NUM_PPN', 'LOKY_MAX_CPU_COUNT'):
+        val = os.environ.get(var)
+        if val:
+            try:
+                return int(val)
+            except ValueError:
+                pass  # Malformed value, try next
 
     # Fall back to system CPU count (halved for safety on shared systems)
     cpu_count = os.cpu_count()
@@ -84,6 +78,34 @@ def get_available_cpus(default: int = 1) -> int:
         return max(1, cpu_count // 2)
 
     return default
+
+
+def get_job_id() -> str:
+    """
+    Return the current job ID, portable across SLURM, UGE/SGE, PBS, and local runs.
+
+    Priority: SLURM_JOB_ID → JOB_ID (UGE/SGE) → PBS_JOBID → os.getpid()
+    """
+    return (
+        os.environ.get('SLURM_JOB_ID')
+        or os.environ.get('JOB_ID')       # UGE/SGE
+        or os.environ.get('PBS_JOBID')    # PBS/Torque
+        or str(os.getpid())               # Interactive fallback
+    )
+
+
+def get_task_id() -> str:
+    """
+    Return the current array task ID, portable across schedulers.
+
+    Priority: SLURM_ARRAY_TASK_ID → SGE_TASK_ID (UGE/SGE) → PBS_ARRAY_INDEX → '0'
+    """
+    return (
+        os.environ.get('SLURM_ARRAY_TASK_ID')
+        or os.environ.get('SGE_TASK_ID')       # UGE/SGE
+        or os.environ.get('PBS_ARRAY_INDEX')   # PBS/Torque
+        or '0'
+    )
 
 
 def set_thread_limits(n_threads: Optional[int] = None) -> int:
@@ -125,16 +147,21 @@ def get_scratch_dir() -> Optional[Path]:
     Return the best available high-bandwidth scratch directory for this job.
 
     Priority order (first that exists wins):
-      1. $SCRATCH       — Sherlock per-user scratch (~75 GB/s aggregate)
-      2. $SLURM_TMPDIR  — node-local tmpdir on some clusters
-      3. $TMPDIR        — generic temp dir fallback
+      1. $SCRATCH       — Preferred: persistent per-user scratch (Sherlock, Hoffman2,
+                          TACC). BAM files survive for post-job inspection and job
+                          resumption. Auto-purged after ~90 days.
+      2. $SLURM_TMPDIR  — Node-local tmpdir on some SLURM clusters.
+      3. $TMPDIR        — POSIX generic; auto-cleaned at job end (not stable).
 
     Returns None if no scratch filesystem is detected.
 
     Notes:
-        - On Sherlock, $SCRATCH is auto-purged after 90 days.
+        - $SCRATCH is preferred over $TMPDIR because rectify writes large intermediate
+          BAMs that users may want to inspect after the job completes, and because
+          job resumption (skipping re-alignment) relies on files surviving past the job.
+        - $TMPDIR is appropriate only for purely transient files created and consumed
+          within a single tool invocation.
         - Always clean up job-specific subdirectories at job end.
-        - Do NOT use $L_SCRATCH across nodes (node-local only).
     """
     for var in ('SCRATCH', 'SLURM_TMPDIR', 'TMPDIR'):
         val = os.environ.get(var)
@@ -142,13 +169,12 @@ def get_scratch_dir() -> Optional[Path]:
             p = Path(val)
             if p.exists():
                 return p
-    if os.environ.get('SLURM_JOB_ID'):
+    if get_job_id() != str(os.getpid()):  # running under a real scheduler
         logger.warning(
-            "get_scratch_dir(): running under SLURM (SLURM_JOB_ID=%s) but no "
-            "scratch directory found ($SCRATCH, $SLURM_TMPDIR, $TMPDIR unset or "
-            "non-existent). All I/O will go to Oak NFS, which may cause severe "
-            "contention under array jobs.",
-            os.environ['SLURM_JOB_ID'],
+            "get_scratch_dir(): running in a batch job but no scratch directory "
+            "found ($SCRATCH, $SLURM_TMPDIR, $TMPDIR unset or non-existent). "
+            "All I/O will go directly to the output filesystem, which may cause "
+            "severe NFS contention under concurrent array tasks."
         )
     return None
 
@@ -157,15 +183,15 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
     """
     Create a unique per-job scratch directory and return its path.
 
-    The directory name encodes the SLURM job ID and array task ID so
-    concurrent array tasks never collide. Returns None if no scratch
-    filesystem is available (falls back to Oak I/O).
+    The directory name encodes the job ID and array task ID (portable across
+    SLURM, UGE/SGE, and PBS) so concurrent array tasks never collide.
+    Returns None if no scratch filesystem is available.
 
     Example::
 
         scratch = make_job_scratch_dir('rectify_correct')
         if scratch:
-            work_bam = scratch / 'sample.consensus.bam'
+            work_bam = scratch / 'sample.rectified.bam'
             shutil.copy(oak_bam, work_bam)
             # ... run correction on scratch ...
             sync_to_oak(scratch, oak_output_dir)
@@ -181,42 +207,77 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
     if scratch_base is None:
         return None
 
-    job_id = os.environ.get('SLURM_JOB_ID', 'local')
-    task_id = os.environ.get('SLURM_ARRAY_TASK_ID', '0')
+    job_id = get_job_id()
+    task_id = get_task_id()
     scratch_dir = scratch_base / f'{prefix}_{job_id}_{task_id}'
     scratch_dir.mkdir(parents=True, exist_ok=True)
     return scratch_dir
 
 
-def sync_to_oak(scratch_dir: Path, oak_dir: Path, exclude_bam: bool = False) -> None:
+def sync_to_oak(
+    scratch_dir: Path,
+    oak_dir: Path,
+    exclude_bam: bool = False,
+    exclude_aligner_bams: bool = False,
+) -> None:
     """
     Copy all outputs from a scratch directory back to Oak using rsync.
 
-    Uses rsync -a (archive mode: preserves permissions, timestamps,
-    symlinks) to copy only new/changed files.
+    Uses rsync -rlL (recursive, copy symlinks as files, dereference
+    symlinks) to copy only new/changed files without propagating symlinks.
 
     Args:
         scratch_dir: Source directory on scratch filesystem.
         oak_dir: Destination directory on Oak (created if needed).
-        exclude_bam: If True, skip *.bam and *.bai files (use when the
+        exclude_bam: If True, skip all *.bam and *.bai files (use when the
             BAM already lives on Oak and was only staged temporarily).
+        exclude_aligner_bams: If True, skip per-aligner BAMs (*.minimap2.bam,
+            *.mapPacBio.bam, *.gapmm2.bam, etc.) but keep the rectified BAM.
+            Takes effect only when exclude_bam is False.
 
     Notes:
         - Always call this before rmtree(scratch_dir).
         - Falls back to shutil.copytree if rsync is unavailable.
     """
     oak_dir.mkdir(parents=True, exist_ok=True)
-    cmd = ['rsync', '-a', f'{scratch_dir}/', str(oak_dir) + '/']
+    cmd = ['rsync', '-rlL', f'{scratch_dir}/', str(oak_dir) + '/']
     if exclude_bam:
         cmd += ['--exclude=*.bam', '--exclude=*.bai']
+    elif exclude_aligner_bams:
+        # Keep only *.rectified.bam; discard per-aligner BAMs.
+        # rsync rule matching: first matching rule wins.
+        cmd += [
+            '--include=*.rectified.bam',
+            '--include=*.rectified.bam.bai',
+            '--exclude=*.bam',
+            '--exclude=*.bai',
+        ]
     try:
         subprocess.run(cmd, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # rsync not available — fall back to shutil
+    except subprocess.CalledProcessError as e:
+        logger.error("sync_to_oak: rsync failed (exit %d): %s", e.returncode, e)
+        raise RuntimeError(f"sync_to_oak failed — rsync exited with status {e.returncode}") from e
+    except FileNotFoundError:
+        # rsync binary not installed — fall back to shutil with a warning
+        logger.warning(
+            "sync_to_oak: rsync not found on PATH; falling back to shutil.copy2. "
+            "Install rsync for reliable Oak syncing."
+        )
+        def _should_skip(p: Path) -> bool:
+            if exclude_bam and p.suffix in ('.bam', '.bai'):
+                return True
+            if exclude_aligner_bams:
+                n = p.name
+                is_bam_like = n.endswith('.bam') or n.endswith('.bai')
+                is_rectified = n.endswith('.rectified.bam') or n.endswith('.rectified.bam.bai')
+                if is_bam_like and not is_rectified:
+                    return True
+            return False
+
         def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
             dst_dir.mkdir(parents=True, exist_ok=True)
             for src in src_dir.iterdir():
-                if exclude_bam and src.suffix in ('.bam', '.bai'):
+                if _should_skip(src):
                     continue
                 dst = dst_dir / src.name
                 if src.is_dir():
@@ -230,6 +291,15 @@ def sync_to_oak(scratch_dir: Path, oak_dir: Path, exclude_bam: bool = False) -> 
 def is_slurm_job() -> bool:
     """Check if currently running inside a SLURM job."""
     return 'SLURM_JOB_ID' in os.environ
+
+
+def is_hpc_job() -> bool:
+    """Check if currently running inside a recognized HPC batch job (any scheduler)."""
+    return bool(
+        os.environ.get('SLURM_JOB_ID')   # SLURM
+        or os.environ.get('JOB_ID')       # UGE/SGE
+        or os.environ.get('PBS_JOBID')    # PBS/Torque
+    )
 
 
 def get_slurm_info() -> dict:

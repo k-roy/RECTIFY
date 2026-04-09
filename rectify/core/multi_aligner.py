@@ -165,15 +165,34 @@ def run_minimap2(
     )
 
     sam_output.stdout.close()
+
+    # Drain minimap2 stderr in a background thread to prevent the OS pipe buffer
+    # (~64 KB) from filling and deadlocking the pipeline: minimap2 blocks on
+    # stderr write → cannot write more SAM → sort_proc.communicate() never returns.
+    import threading
+    mm2_stderr_chunks = []
+    def _drain_stderr():
+        mm2_stderr_chunks.append(sam_output.stderr.read())
+    drain_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    drain_thread.start()
+
     try:
         _, stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
     except subprocess.TimeoutExpired:
         sort_proc.kill()
         sam_output.kill()
         raise RuntimeError(f"minimap2/samtools timed out after {ALIGNER_TIMEOUT}s")
+    finally:
+        drain_thread.join()
+
+    # Check minimap2 exit code (sort failing is often a symptom of minimap2 failing)
+    sam_output.wait()
+    if sam_output.returncode != 0:
+        mm2_err = mm2_stderr_chunks[0].decode(errors='replace') if mm2_stderr_chunks else ''
+        raise RuntimeError(f"minimap2 failed (exit {sam_output.returncode}): {mm2_err[-500:]}")
 
     if sort_proc.returncode != 0:
-        raise RuntimeError(f"minimap2/samtools failed: {stderr.decode()}")
+        raise RuntimeError(f"samtools sort failed: {stderr.decode()}")
 
     logger.info(f"minimap2 complete: {output_bam}")
     return str(output_bam)
@@ -305,12 +324,9 @@ def run_map_pacbio(
     # Check if mapPacBio is available
     map_pacbio_path = shutil.which('mapPacBio.sh')
     if not map_pacbio_path:
-        # Try common anaconda location
-        map_pacbio_path = '/home/groups/larsms/users/kevinroy/anaconda3/bin/mapPacBio.sh'
-        if not Path(map_pacbio_path).exists():
-            if chunk_tmp_fq:
-                Path(chunk_tmp_fq).unlink(missing_ok=True)
-            raise FileNotFoundError("mapPacBio.sh not found")
+        if chunk_tmp_fq:
+            Path(chunk_tmp_fq).unlink(missing_ok=True)
+        raise FileNotFoundError("mapPacBio.sh not found in PATH")
 
     # mapPacBio outputs SAM to a temp file alongside the output BAM
     sam_path = output_bam.with_suffix('.sam')
@@ -357,21 +373,38 @@ def run_map_pacbio(
 
     # Convert SAM to name-sorted BAM. Name-sort (-n) so consensus selection
     # can stream across aligners without a secondary sort step.
+    #
+    # stderr=subprocess.DEVNULL for view_proc: using PIPE without a reader
+    # causes a deadlock when samtools view writes enough warnings to fill the
+    # OS pipe buffer (~64 KB) — view_proc blocks on stderr write, stops
+    # forwarding data to sort_proc, and sort_proc's communicate() hangs.
     view_proc = subprocess.Popen(
         ['samtools', 'view', '-bS', str(sam_path)],
         stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
     )
     sort_proc = subprocess.Popen(
         ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
         stdin=view_proc.stdout,
+        stderr=subprocess.PIPE,
     )
     view_proc.stdout.close()
-    sort_proc.communicate()
+    try:
+        _sort_out, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+        if sort_proc.returncode != 0:
+            raise RuntimeError(
+                f"samtools sort failed: {sort_stderr.decode(errors='replace') if sort_stderr else ''}"
+            )
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        sort_proc.communicate()
+        view_proc.communicate()
+        raise RuntimeError("samtools sort (mapPacBio) timed out")
     sam_path.unlink(missing_ok=True)
-    if sort_proc.returncode != 0:
-        raise RuntimeError(
-            f"samtools sort (mapPacBio) failed with code {sort_proc.returncode}"
-        )
+    view_proc.wait()
+    if view_proc.returncode not in (0, -9):  # -9 = SIGKILL on normal exit path
+        raise RuntimeError(f"samtools view (mapPacBio) failed with exit code {view_proc.returncode}")
 
     # ── Stitch split mapPacBio chunks back into full-read alignments ──
     if mpb_n_split > 0:
@@ -581,9 +614,7 @@ def run_gapmm2(
     # Check if gapmm2 is available
     gapmm2_path = shutil.which('gapmm2')
     if not gapmm2_path:
-        gapmm2_path = '/home/groups/larsms/users/kevinroy/anaconda3/bin/gapmm2'
-        if not Path(gapmm2_path).exists():
-            raise FileNotFoundError("gapmm2 not found")
+        raise FileNotFoundError("gapmm2 not found in PATH")
 
     # gapmm2 outputs PAF natively — name it .paf (not .sam)
     paf_path = output_bam.with_suffix('.paf')
@@ -651,9 +682,7 @@ def run_ultra(
 
     ultra_path = shutil.which('uLTRA')
     if not ultra_path:
-        ultra_path = '/home/users/kevinroy/.local/bin/uLTRA'
-        if not Path(ultra_path).exists():
-            raise FileNotFoundError("uLTRA not found in PATH or ~/.local/bin")
+        raise FileNotFoundError("uLTRA not found in PATH")
 
     # uLTRA writes to an output directory; the SAM lives at <out_dir>/<prefix>.sam
     ultra_out_dir = output_bam.parent / f"{output_bam.stem}_ultra_tmp"
@@ -759,6 +788,12 @@ def run_ultra(
         view_proc.kill()
         raise RuntimeError(f"samtools sort (uLTRA) timed out after {ALIGNER_TIMEOUT}s")
 
+    view_proc.wait()
+    if view_proc.returncode != 0:
+        raise RuntimeError(f"samtools view (uLTRA) failed with exit code {view_proc.returncode}")
+    if sort_proc.returncode != 0:
+        raise RuntimeError(f"samtools sort (uLTRA) failed with exit code {sort_proc.returncode}")
+
     import shutil as _shutil
     _shutil.rmtree(ultra_out_dir, ignore_errors=True)
 
@@ -839,9 +874,7 @@ def run_desalt(
 
     desalt_exec = shutil.which('deSALT')
     if not desalt_exec:
-        desalt_exec = '/home/users/kevinroy/bin/deSALT'
-        if not Path(desalt_exec).exists():
-            raise FileNotFoundError("deSALT not found in PATH or ~/bin")
+        raise FileNotFoundError("deSALT not found in PATH")
 
     # Resolve index directory
     if index_path:
@@ -916,6 +949,13 @@ def run_desalt(
         sort_proc.kill()
         view_proc.kill()
         raise RuntimeError(f"samtools sort (deSALT) timed out after {ALIGNER_TIMEOUT}s")
+
+    view_proc.wait()
+    if view_proc.returncode != 0:
+        raise RuntimeError(f"samtools view (deSALT) failed with exit code {view_proc.returncode}")
+    if sort_proc.returncode != 0:
+        raise RuntimeError(f"samtools sort (deSALT) failed with exit code {sort_proc.returncode}")
+
     sam_path.unlink(missing_ok=True)
 
     _dedup_desalt_bam(raw_bam, output_bam, threads=threads)

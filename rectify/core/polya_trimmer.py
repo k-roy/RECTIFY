@@ -196,42 +196,46 @@ def find_polya_boundary(
         # Entire sequence is A-rich
         return 0
     else:
-        # Scan from left (3' end in - strand) rightward with sliding window
+        # Minus strand: poly-T is at the LEFT (beginning) of the read.
+        # Scan left-to-right with an early-exit: advance as long as the
+        # current window starting at position i is T-rich, and stop (return i)
+        # the moment T-richness drops below threshold.  This prevents the
+        # sliding-window from bridging across non-T-rich gaps and returning
+        # an incorrectly large boundary.
         window_size = min(POLYA_WINDOW_SIZE, seq_len)
         if window_size < 3:
             return 0
 
-        # Initial window count
+        # Check whether the leftmost window is T-rich at all.
         t_count = sum(1 for c in sequence[0:window_size] if c == target_base)
-
-        # Check initial window
         if t_count / window_size < threshold:
             return 0
 
-        # Slide window rightward (i is the left edge of window)
-        for i in range(seq_len):
-            window_end = min(seq_len, i + POLYA_WINDOW_SIZE)
+        # Scan rightward: i is the left edge of the current window.
+        # We already checked i=0 above; update incrementally from i=1 onward.
+        for i in range(1, seq_len):
+            window_end = min(seq_len, i + window_size)
             curr_window_size = window_end - i
 
             if curr_window_size < 3:
-                continue
+                # Window too small to be reliable — treat as end of poly-T.
+                return i
 
-            # Update count incrementally when window moves
-            if i > 0:
-                # Character leaving window (left side)
-                if sequence[i - 1] == target_base:
-                    t_count -= 1
-                # Character entering window (right side, if not at boundary)
-                old_end = min(seq_len, i - 1 + POLYA_WINDOW_SIZE)
-                if window_end > old_end:
-                    if sequence[window_end - 1] == target_base:
-                        t_count += 1
+            # Character leaving window on the left.
+            if sequence[i - 1] == target_base:
+                t_count -= 1
+            # Character entering window on the right (only when window is full-size).
+            old_end = min(seq_len, (i - 1) + window_size)
+            if window_end > old_end and window_end <= seq_len:
+                if sequence[window_end - 1] == target_base:
+                    t_count += 1
 
             t_richness = t_count / curr_window_size
             if t_richness < threshold:
+                # T-richness dropped — poly-T region ends here.
                 return i
 
-        # Entire sequence is T-rich
+        # Entire sequence is T-rich.
         return seq_len
 
 
@@ -307,7 +311,7 @@ def calculate_full_polya_length(
 
         score = score_polya_tail(clip_seq, threshold)
 
-        if score['is_polya']:
+        if score['is_polya'] and three_prime_clip['length'] >= MIN_POLYA_LENGTH:
             # Count actual A's in soft-clip (may be slightly less than length due to errors)
             result['soft_clip_a_length'] = clip_seq.upper().count('A')
 
@@ -453,3 +457,109 @@ def format_polya_report(stats: Dict) -> str:
     report.append("=" * 60)
 
     return "\n".join(report)
+
+
+# =============================================================================
+# BAM-level poly(A) tail removal
+# =============================================================================
+
+def trim_polya_from_bam_read(
+    read: pysam.AlignedSegment,
+    strand: str,
+    threshold: float = POLYA_RICHNESS_THRESHOLD,
+) -> Tuple[pysam.AlignedSegment, int]:
+    """
+    Remove the 3' poly(A) soft-clip from a BAM read in-place.
+
+    Strips the poly(A)-rich soft-clip at the RNA 3' end from the read's
+    CIGAR string, query sequence, and base-quality array.  The alignment
+    coordinates are unchanged because the soft-clip is already excluded
+    from the aligned region; only the stored query bases are affected.
+
+    The function is conservative: it only removes bases that pass the
+    A-richness threshold.  Any non-poly(A) soft-clip bases are preserved.
+
+    Strand convention (consistent with bam_processor.py):
+        + strand: 3' soft-clip is the RIGHT clip  (cigartuples[-1] with op=4)
+        - strand: 3' soft-clip is the LEFT  clip  (cigartuples[0]  with op=4)
+
+    Args:
+        read:      pysam AlignedSegment (mutated in-place)
+        strand:    '+' or '-'
+        threshold: Minimum fraction of A's (plus) / T's (minus) required
+                   for a soft-clip to be considered a poly(A) tail
+
+    Returns:
+        (read, n_trimmed) — the modified read and the number of bases removed.
+        Returns (read, 0) unchanged if no trimming was applied.
+
+    # TODO — Dorado poly(A) tail length integration:
+    # Dorado (≥0.9) estimates the poly(A) tail length for each read and stores
+    # it as the BAM tag  pt:i:<length>  in the unaligned BAM.  Once this tag
+    # is propagated through alignment and into the consensus BAM, we can use it
+    # to replace the A-richness heuristic here:
+    #
+    #   try:
+    #       dorado_polya_len = read.get_tag('pt')
+    #   except KeyError:
+    #       dorado_polya_len = None
+    #
+    # When dorado_polya_len is present we should:
+    #   1. Accept it as the authoritative tail length instead of measuring the
+    #      soft-clip directly (it may be longer than the observable soft-clip
+    #      because part of the tail aligned to the genomic A-tract).
+    #   2. Pad the soft-clip with artificial A's up to dorado_polya_len before
+    #      removing them, so the stored sequence reflects the full tail.
+    #   3. Record the Dorado-derived length in the output TSV alongside the
+    #      observed soft_clip_a_length for comparison.
+    #
+    # This feature is gated behind --use-dorado-polya (default: off) and
+    # should be developed and tested once Dorado pt-tag support stabilises.
+    """
+    cigar = read.cigartuples
+    seq   = read.query_sequence
+    quals = read.query_qualities
+
+    if not cigar or not seq:
+        return read, 0
+
+    if strand == '+':
+        # 3' end is the right (last) soft-clip
+        if cigar[-1][0] != 4:
+            return read, 0
+        clip_len  = cigar[-1][1]
+        if clip_len == 0:
+            return read, 0
+        clip_seq  = seq[-clip_len:].upper()
+        a_frac    = clip_seq.count('A') / clip_len
+        if a_frac < threshold:
+            return read, 0
+        # Trim: remove last clip_len bases
+        new_seq   = seq[:-clip_len]
+        new_quals = quals[:-clip_len] if quals is not None else None
+        new_cigar = cigar[:-1]          # drop the trailing S op
+    else:
+        # 3' end is the left (first) soft-clip
+        if cigar[0][0] != 4:
+            return read, 0
+        clip_len  = cigar[0][1]
+        if clip_len == 0:
+            return read, 0
+        clip_seq  = seq[:clip_len].upper()
+        t_frac    = clip_seq.count('T') / clip_len
+        if t_frac < threshold:
+            return read, 0
+        # Trim: remove first clip_len bases
+        new_seq   = seq[clip_len:]
+        new_quals = quals[clip_len:] if quals is not None else None
+        new_cigar = cigar[1:]           # drop the leading S op
+
+    if not new_cigar:
+        # Degenerate: the entire read was a soft-clip — leave untouched
+        return read, 0
+
+    read.query_sequence  = new_seq
+    read.query_qualities = new_quals
+    read.cigartuples     = new_cigar
+
+    return read, clip_len

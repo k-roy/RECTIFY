@@ -126,9 +126,13 @@ class PolyAModel:
 
         # Load position profile (convert string keys to int)
         if 'position_profile' in data:
-            model.position_profile = {
-                int(k): v for k, v in data['position_profile'].items()
-            }
+            position_profile = {}
+            for k, v in data['position_profile'].items():
+                try:
+                    position_profile[int(k)] = v
+                except (ValueError, TypeError):
+                    logger.debug(f"Skipping non-integer position_profile key: {k!r}")
+            model.position_profile = position_profile
 
         # Load other fields
         if 'non_a_frequencies' in data:

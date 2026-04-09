@@ -63,7 +63,7 @@ from ..config import (
     INDEL_MIN_FLANK_LENGTH,
 )
 from ..utils.alignment import extract_deletions, extract_insertions
-from ..utils.genome import fetch_genomic_sequence
+from ..utils.genome import fetch_genomic_sequence, standardize_chrom_name
 from ..config import CHROM_TO_GENOME
 
 
@@ -75,7 +75,6 @@ def find_polya_boundary(
     read: pysam.AlignedSegment,
     strand: str,
     genome: Dict[str, str],
-    min_polya_len: int = 5
 ) -> Optional[Dict]:
     """
     Find the true 3' end by comparing mRNA and genome sequences.
@@ -106,8 +105,6 @@ def find_polya_boundary(
         read: pysam AlignedSegment
         strand: '+' or '-'
         genome: Dict of chromosome sequences (NCBI format keys)
-        min_polya_len: Minimum poly-A length to consider for correction (default 5)
-
     Returns:
         Dict with:
             - corrected_pos: True CPA position (0-based)
@@ -121,10 +118,9 @@ def find_polya_boundary(
     if not cigar or not seq:
         return None
 
-    # Get genomic sequence
+    # Get genomic sequence (try canonical name first, fall back to NCBI format)
     chrom = read.reference_name
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    genome_seq = genome.get(genome_chrom, '')
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
     if not genome_seq:
         return None
 
@@ -185,8 +181,7 @@ def find_polya_boundary(
 
         if true_cpa_ref_pos is not None:
             polya_len = raw_3prime - true_cpa_ref_pos
-            # Only return correction if we found significant poly-A
-            if polya_len >= min_polya_len:
+            if polya_len > 0:
                 return {
                     'corrected_pos': true_cpa_ref_pos,
                     'original_pos': raw_3prime,
@@ -248,8 +243,7 @@ def find_polya_boundary(
 
         if true_cpa_ref_pos is not None:
             polya_len = true_cpa_ref_pos - raw_3prime
-            # Only return correction if we found significant poly-A
-            if polya_len >= min_polya_len:
+            if polya_len > 0:
                 return {
                     'corrected_pos': true_cpa_ref_pos,
                     'original_pos': raw_3prime,
@@ -324,8 +318,7 @@ def rescue_polya_prefix_in_softclip(
         return None
 
     chrom = read.reference_name
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    genome_seq = genome.get(genome_chrom, '')
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
     if not genome_seq:
         return None
 
@@ -422,7 +415,8 @@ def rescue_softclip_at_homopolymer(
     strand: str,
     genome: Dict[str, str],
     min_homopolymer_len: int = 3,
-    end: str = '3prime'
+    end: str = '3prime',
+    current_pos: Optional[int] = None,
 ) -> Optional[Dict]:
     """
     Rescue soft-clipped bases at homopolymer boundaries.
@@ -468,10 +462,9 @@ def rescue_softclip_at_homopolymer(
     if not cigar or not seq:
         return None
 
-    # Get genomic sequence
+    # Get genomic sequence (try canonical name first, fall back to NCBI format)
     chrom = read.reference_name
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    genome_seq = genome.get(genome_chrom, '')
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
     if not genome_seq:
         return None
 
@@ -494,8 +487,9 @@ def rescue_softclip_at_homopolymer(
         # Get the soft-clipped sequence (rightmost bases of read)
         softclip_seq = seq[-softclip_len:].upper()
 
-        # Get the aligned position (just before soft-clip)
-        raw_pos = read.reference_end - 1  # 0-based, last aligned position
+        # Get the aligned position (just before soft-clip); use prior corrected
+        # position if provided, otherwise fall back to BAM raw position.
+        raw_pos = current_pos if current_pos is not None else (read.reference_end - 1)
 
         # Check if there's a homopolymer at the alignment boundary
         # Look at the last few aligned positions in the genome
@@ -584,8 +578,9 @@ def rescue_softclip_at_homopolymer(
         # Get the soft-clipped sequence (leftmost bases of read)
         softclip_seq = seq[:softclip_len].upper()
 
-        # Get the aligned position (just after soft-clip)
-        raw_pos = read.reference_start  # 0-based, first aligned position
+        # Get the aligned position (just after soft-clip); use prior corrected
+        # position if provided, otherwise fall back to BAM raw position.
+        raw_pos = current_pos if current_pos is not None else read.reference_start
 
         # Check if there's a homopolymer at the alignment boundary
         # Look at the first few aligned positions in the genome
@@ -664,7 +659,8 @@ def rescue_mismatch_inside_homopolymer(
     strand: str,
     genome: Dict[str, str],
     min_homopolymer_len: int = 3,
-    end: str = '3prime'
+    end: str = '3prime',
+    current_pos: Optional[int] = None,
 ) -> Optional[Dict]:
     """
     Rescue misaligned bases inside homopolymers from global alignment.
@@ -715,10 +711,9 @@ def rescue_mismatch_inside_homopolymer(
     if not cigar or not seq:
         return None
 
-    # Get genomic sequence
+    # Get genomic sequence (try canonical name first, fall back to NCBI format)
     chrom = read.reference_name
-    genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-    genome_seq = genome.get(genome_chrom, '')
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
     if not genome_seq:
         return None
 
@@ -763,7 +758,8 @@ def rescue_mismatch_inside_homopolymer(
 
     if use_right_side:
         # Right side: position at reference_end - 1, walk backwards
-        raw_pos = read.reference_end - 1  # 0-based, last aligned position
+        # Use prior corrected position if provided, otherwise fall back to BAM raw.
+        raw_pos = current_pos if current_pos is not None else (read.reference_end - 1)
 
         # Check if we're inside a homopolymer at the boundary
         boundary_end = min(len(genome_seq), raw_pos + min_homopolymer_len + 1)
@@ -812,7 +808,8 @@ def rescue_mismatch_inside_homopolymer(
 
     else:  # use_left_side
         # Left side: position at reference_start, walk forwards
-        raw_pos = read.reference_start  # 0-based, first aligned position
+        # Use prior corrected position if provided, otherwise fall back to BAM raw.
+        raw_pos = current_pos if current_pos is not None else read.reference_start
 
         # Check if we're inside a homopolymer at the boundary
         boundary_start = max(0, raw_pos - min_homopolymer_len)
@@ -979,10 +976,9 @@ class VariantAwareHomopolymerRescue:
         if not cigar or not seq:
             return
 
-        # Get genomic sequence
+        # Get genomic sequence (try canonical name first, fall back to NCBI format)
         chrom = read.reference_name
-        genome_chrom = CHROM_TO_GENOME.get(chrom, chrom)
-        genome_seq = genome.get(genome_chrom, '')
+        genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
         if not genome_seq:
             return
 
@@ -1354,7 +1350,6 @@ def correct_rna_end_position(
     strand: str,
     genome: Dict[str, str],
     end: str = '3prime',
-    min_polya_len: int = 5,
     min_homopolymer_len: int = 3,
     variant_aware_rescue: Optional['VariantAwareHomopolymerRescue'] = None,
 ) -> Dict:
@@ -1374,7 +1369,6 @@ def correct_rna_end_position(
         strand: '+' or '-'
         genome: Dict of chromosome sequences (NCBI format keys)
         end: '3prime' or '5prime' - which end to correct
-        min_polya_len: Minimum poly-A length to trigger boundary correction (default 5)
         min_homopolymer_len: Minimum homopolymer run to trigger rescue (default 3)
         variant_aware_rescue: Optional VariantAwareHomopolymerRescue object for
             filtering out likely true variants during mismatch rescue. If provided,
@@ -1406,12 +1400,14 @@ def correct_rna_end_position(
 
     # Apply poly-A boundary detection (only for 3' ends)
     if end == '3prime':
-        polya_result = find_polya_boundary(read, strand, genome, min_polya_len)
+        polya_result = find_polya_boundary(read, strand, genome)
         if polya_result:
             current_pos = polya_result['corrected_pos']
 
     # Apply soft-clip rescue (for local aligners that soft-clip)
-    softclip_result = rescue_softclip_at_homopolymer(read, strand, genome, min_homopolymer_len, end)
+    softclip_result = rescue_softclip_at_homopolymer(
+        read, strand, genome, min_homopolymer_len, end, current_pos=current_pos
+    )
 
     # Apply mismatch rescue (for global aligners that force-align)
     # Use variant-aware rescue if provided
@@ -1424,7 +1420,9 @@ def correct_rna_end_position(
             variant_skipped = True
             mismatch_result = None  # Don't use this rescue
     else:
-        mismatch_result = rescue_mismatch_inside_homopolymer(read, strand, genome, min_homopolymer_len, end)
+        mismatch_result = rescue_mismatch_inside_homopolymer(
+            read, strand, genome, min_homopolymer_len, end, current_pos=current_pos
+        )
 
     # Combine all corrections - use the one that moves end furthest from homopolymer
     # For 3' + strand or 5' - strand (right side): further = higher position
@@ -1457,7 +1455,6 @@ def correct_3prime_position(
     read: pysam.AlignedSegment,
     strand: str,
     genome: Dict[str, str],
-    min_polya_len: int = 5,
     min_homopolymer_len: int = 3
 ) -> Dict:
     """
@@ -1469,7 +1466,7 @@ def correct_3prime_position(
         Dict with original_3prime, corrected_3prime, and correction details.
     """
     result = correct_rna_end_position(
-        read, strand, genome, '3prime', min_polya_len, min_homopolymer_len
+        read, strand, genome, '3prime', min_homopolymer_len
     )
     # Rename keys for backwards compatibility
     return {
@@ -1497,7 +1494,7 @@ def correct_5prime_position(
         Dict with original_5prime, corrected_5prime, and correction details.
     """
     result = correct_rna_end_position(
-        read, strand, genome, '5prime', min_polya_len=0, min_homopolymer_len=min_homopolymer_len
+        read, strand, genome, '5prime', min_homopolymer_len=min_homopolymer_len
     )
     return {
         'original_5prime': result['original_pos'],
@@ -1628,7 +1625,7 @@ def detect_indel_artifacts(
             genome_seq = ''
             if genome:
                 # Get genomic sequence for validation
-                chrom = read.reference_name
+                chrom = standardize_chrom_name(read.reference_name)
                 ref_pos = deletion['ref_pos']
                 genome_seq = fetch_genomic_sequence(
                     genome, chrom, ref_pos - 10, ref_pos + 10

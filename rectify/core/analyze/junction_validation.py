@@ -149,10 +149,15 @@ def check_canonical_splice_motif(
         acceptor_seq = genome.fetch(chrom, acceptor - 2, acceptor).upper()
 
         if strand == '-':
-            # Reverse complement for minus strand
-            donor_seq = _reverse_complement(acceptor_seq)
-            acceptor_seq = _reverse_complement(
+            # Reverse complement for minus strand.
+            # On the minus strand the canonical donor dinucleotide is at the
+            # donor genomic coordinate and the acceptor dinucleotide is at the
+            # acceptor genomic coordinate; both must be reverse-complemented.
+            donor_seq = _reverse_complement(
                 genome.fetch(chrom, donor, donor + 2).upper()
+            )
+            acceptor_seq = _reverse_complement(
+                genome.fetch(chrom, acceptor - 2, acceptor).upper()
             )
 
         return donor_seq in CANONICAL_DONOR_MOTIFS and acceptor_seq in CANONICAL_ACCEPTOR_MOTIFS

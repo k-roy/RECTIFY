@@ -38,6 +38,7 @@ from .analyze import (
     generate_html_report,
     run_genomic_distribution_analysis,
     run_3prime_distribution_analysis,
+    run_5prime_distribution_analysis,
     run_transcript_body_distribution_analysis,
 )
 from .analyze.clustering import annotate_clusters_with_genes
@@ -200,6 +201,23 @@ def run_analyze(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"  Warning: Transcript body distribution analysis failed: {e}")
 
+        # 5' end distribution
+        print(f"\n[Genomic Distribution] Analyzing 5' end distribution by genomic region...")
+        try:
+            dist5_files = run_5prime_distribution_analysis(
+                positions_df,
+                annotation_df,
+                output_dir=str(plots_dir),
+                sample_column=args.sample_column,
+                position_column='five_prime_position',
+                count_column=count_col,
+            )
+            print(f"  Generated {len(dist5_files)} plots/tables")
+        except ImportError as e:
+            print(f"  Warning: Skipping 5' end distribution (missing dependency: {e})")
+        except Exception as e:
+            print(f"  Warning: 5' end distribution analysis failed: {e}")
+
     # Form clusters
     fraction_col = 'fraction' if 'fraction' in positions_df.columns else None
     print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
@@ -333,42 +351,47 @@ def run_analyze(args: argparse.Namespace) -> int:
     if args.run_deseq2:
         print(f"\n[6/9] Running DESeq2 differential expression...")
 
-        # Gene-level
-        print("  Gene-level analysis...")
-        deseq2_gene_results = run_deseq2_gene_level(
-            count_matrix,
-            clusters_df,
-            sample_metadata,
-            reference_condition,
-            n_cpus=args.threads,
-        )
-        for condition, result_df in deseq2_gene_results.items():
-            result_path = tables_dir / f'deseq2_genes_{condition}.tsv'
-            result_df.to_csv(result_path, sep='\t')
-            n_sig = (result_df['padj'] < 0.05).sum()
-            print(f"    {condition}: {n_sig:,} significant genes")
+        # Guard: DESeq2 requires at least 2 distinct conditions
+        _n_conditions = sample_metadata['condition'].nunique()
+        if _n_conditions < 2:
+            print(f"  Warning: DESeq2 requires ≥2 conditions but only {_n_conditions} found. Skipping.")
+        else:
+            # Gene-level
+            print("  Gene-level analysis...")
+            deseq2_gene_results = run_deseq2_gene_level(
+                count_matrix,
+                clusters_df,
+                sample_metadata,
+                reference_condition,
+                n_cpus=args.threads,
+            )
+            for condition, result_df in deseq2_gene_results.items():
+                result_path = tables_dir / f'deseq2_genes_{condition}.tsv'
+                result_df.to_csv(result_path, sep='\t')
+                n_sig = (result_df['padj'] < 0.05).sum()
+                print(f"    {condition}: {n_sig:,} significant genes")
 
-        # Free memory between gene and cluster analyses
-        import gc
-        gc.collect()
+            # Free memory between gene and cluster analyses
+            import gc
+            gc.collect()
 
-        # Cluster-level
-        print("  Cluster-level analysis...")
-        deseq2_cluster_results = run_deseq2_cluster_level(
-            count_matrix,
-            clusters_df,
-            sample_metadata,
-            reference_condition,
-            n_cpus=args.threads,
-        )
-        for condition, result_df in deseq2_cluster_results.items():
-            result_path = tables_dir / f'deseq2_clusters_{condition}.tsv'
-            result_df.to_csv(result_path, sep='\t')
-            n_sig = (result_df['padj'] < 0.05).sum()
-            print(f"    {condition}: {n_sig:,} significant clusters")
+            # Cluster-level
+            print("  Cluster-level analysis...")
+            deseq2_cluster_results = run_deseq2_cluster_level(
+                count_matrix,
+                clusters_df,
+                sample_metadata,
+                reference_condition,
+                n_cpus=args.threads,
+            )
+            for condition, result_df in deseq2_cluster_results.items():
+                result_path = tables_dir / f'deseq2_clusters_{condition}.tsv'
+                result_df.to_csv(result_path, sep='\t')
+                n_sig = (result_df['padj'] < 0.05).sum()
+                print(f"    {condition}: {n_sig:,} significant clusters")
 
-        # Free memory after DESeq2
-        gc.collect()
+            # Free memory after DESeq2
+            gc.collect()
     else:
         print(f"\n[6/9] Skipping DESeq2 (use --run-deseq2 to enable)")
 
@@ -627,7 +650,7 @@ def load_corrected_positions(
 
     # Drop columns not needed downstream to reduce memory usage
     _keep_cols = {'chrom', 'strand', 'corrected_position', sample_column}
-    for _opt in ('fraction', 'alignment_start', 'alignment_end'):
+    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count'):
         if _opt in df.columns:
             _keep_cols.add(_opt)
     _drop_cols = [c for c in df.columns if c not in _keep_cols]
@@ -898,8 +921,8 @@ def _parse_gtf(filepath: str) -> pd.DataFrame:
                 continue
 
             chrom = fields[0]
-            start = int(fields[3])
-            end = int(fields[4])
+            start = int(fields[3]) - 1  # GFF is 1-based inclusive → 0-based half-open
+            end = int(fields[4])        # GFF end is inclusive = 0-based exclusive (no change)
             strand = fields[6]
 
             # Parse attributes - handle both GTF and GFF3 formats
@@ -1181,8 +1204,18 @@ def _run_analyze_manifest(
         return 1
 
     all_sample_ids = [s['sample_id'] for s in samples]
+    all_cluster_ids = clusters_df['cluster_id'].tolist()
+
+    # Ensure every sample is present for every cluster, even with zero counts.
+    # A sample that had no corrected positions mapping to any cluster would
+    # otherwise be absent from count_accumulator entirely, causing DESeq2 to
+    # receive a matrix with wrong dimensions.
+    for cluster_id in all_cluster_ids:
+        for sample_id in all_sample_ids:
+            count_accumulator[cluster_id][sample_id] = count_accumulator[cluster_id].get(sample_id, 0)
+
     count_matrix = pd.DataFrame(count_accumulator).T.fillna(0)
-    # Ensure all samples present as columns
+    # Ensure all samples present as columns (belt-and-suspenders guard)
     for sid in all_sample_ids:
         if sid not in count_matrix.columns:
             count_matrix[sid] = 0.0
@@ -1288,26 +1321,32 @@ def _run_analyze_manifest(
 
     if args.run_deseq2:
         print(f"\n[6/9] Running DESeq2 differential expression...")
-        print("  Gene-level analysis...")
-        deseq2_gene_results = run_deseq2_gene_level(
-            count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
-        for condition, result_df in deseq2_gene_results.items():
-            result_df.to_csv(tables_dir / f'deseq2_genes_{condition}.tsv', sep='\t')
-            n_sig = (result_df['padj'] < 0.05).sum()
-            print(f"    {condition}: {n_sig:,} significant genes")
 
-        import gc
-        gc.collect()
+        # Guard: DESeq2 requires at least 2 distinct conditions
+        _n_conditions = sample_metadata['condition'].nunique()
+        if _n_conditions < 2:
+            print(f"  Warning: DESeq2 requires ≥2 conditions but only {_n_conditions} found. Skipping.")
+        else:
+            print("  Gene-level analysis...")
+            deseq2_gene_results = run_deseq2_gene_level(
+                count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
+            for condition, result_df in deseq2_gene_results.items():
+                result_df.to_csv(tables_dir / f'deseq2_genes_{condition}.tsv', sep='\t')
+                n_sig = (result_df['padj'] < 0.05).sum()
+                print(f"    {condition}: {n_sig:,} significant genes")
 
-        print("  Cluster-level analysis...")
-        deseq2_cluster_results = run_deseq2_cluster_level(
-            count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
-        for condition, result_df in deseq2_cluster_results.items():
-            result_df.to_csv(tables_dir / f'deseq2_clusters_{condition}.tsv', sep='\t')
-            n_sig = (result_df['padj'] < 0.05).sum()
-            print(f"    {condition}: {n_sig:,} significant clusters")
+            import gc
+            gc.collect()
 
-        gc.collect()
+            print("  Cluster-level analysis...")
+            deseq2_cluster_results = run_deseq2_cluster_level(
+                count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
+            for condition, result_df in deseq2_cluster_results.items():
+                result_df.to_csv(tables_dir / f'deseq2_clusters_{condition}.tsv', sep='\t')
+                n_sig = (result_df['padj'] < 0.05).sum()
+                print(f"    {condition}: {n_sig:,} significant clusters")
+
+            gc.collect()
     else:
         print(f"\n[6/9] Skipping DESeq2 (use --run-deseq2 to enable)")
 
@@ -1651,23 +1690,34 @@ def generate_bedgraphs(
         total_reads = len(cond_df)
         rpm_factor = 1e6 / total_reads if normalize_rpm and total_reads > 0 else 1.0
 
-        # Write bedgraph files
+        # Write bedgraph files atomically: write to a temp file first, then
+        # rename into place so that interrupted writes never leave a partial
+        # (corrupt) file at the final output path.
+        import os as _os
         for strand_name, counts_dict in [('plus', plus_counts), ('minus', minus_counts)]:
             output_path = output_dir / f"{condition}_{strand_name}.bedgraph"
+            tmp_path = output_path.with_suffix('.tmp')
 
-            with open(output_path, 'w') as f:
-                f.write(f'track type=bedGraph name="{condition}_{strand_name}" '
-                        f'description="RECTIFY 3\' ends ({strand_name} strand)"\n')
+            try:
+                with open(tmp_path, 'w') as f:
+                    f.write(f'track type=bedGraph name="{condition}_{strand_name}" '
+                            f'description="RECTIFY 3\' ends ({strand_name} strand)"\n')
 
-                for chrom in CHROM_ORDER:
-                    if chrom not in counts_dict:
-                        continue
+                    for chrom in CHROM_ORDER:
+                        if chrom not in counts_dict:
+                            continue
 
-                    for pos in sorted(counts_dict[chrom].keys()):
-                        count = counts_dict[chrom][pos]
-                        value = count * rpm_factor if normalize_rpm else count
-                        start = int(pos) - 1
-                        end = int(pos)
-                        f.write(f"{chrom}\t{start}\t{end}\t{value:.4f}\n")
+                        for pos in sorted(counts_dict[chrom].keys()):
+                            count = counts_dict[chrom][pos]
+                            value = count * rpm_factor if normalize_rpm else count
+                            start = int(pos) - 1
+                            end = int(pos)
+                            f.write(f"{chrom}\t{start}\t{end}\t{value:.4f}\n")
+
+                _os.rename(tmp_path, output_path)
+            except Exception:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise
 
         print(f"    {condition}: {total_reads:,} reads")

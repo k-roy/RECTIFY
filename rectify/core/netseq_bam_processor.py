@@ -133,14 +133,20 @@ def count_terminal_oligo_a_mismatches(
                 md_tag = read.get_tag('MD') if read.has_tag('MD') else None
                 if md_tag:
                     md_str = str(md_tag)
-                    # Count leading mismatches in MD tag
-                    # MD format: "3A5T2" means 3 match, A ref (mismatch), 5 match, T ref...
-                    # A leading letter means mismatch at position 0
+                    # Count leading mismatches in MD tag (minus strand: oligo-A appears as T)
+                    # MD format: "3A5T2" means 3 matches, A mismatch, 5 matches, T mismatch, 2 matches
+                    # "0A0T" means consecutive leading mismatches (0-length match runs between them)
                     i = 0
                     while i < len(md_str):
                         if md_str[i].isdigit():
-                            # Matches - stop counting terminal mismatches
-                            break
+                            # Accumulate full multi-digit number
+                            j = i
+                            while j < len(md_str) and md_str[j].isdigit():
+                                j += 1
+                            run_len = int(md_str[i:j])
+                            if run_len > 0:
+                                break  # Non-zero matches precede mismatches — stop
+                            i = j  # Zero-length run: mismatches are consecutive — continue
                         elif md_str[i].isalpha() and md_str[i] != '^':
                             # Mismatch - check if read base is T
                             if pos_in_read + n_oligo_a_mismatches < len(query_seq):
@@ -185,11 +191,19 @@ def count_terminal_oligo_a_mismatches(
                 md_tag = read.get_tag('MD') if read.has_tag('MD') else None
                 if md_tag:
                     md_str = str(md_tag)
-                    # Count trailing mismatches
+                    # Count trailing mismatches (plus strand: oligo-A appears as A)
+                    # Traverse MD backwards; consecutive terminal mismatches are separated by "0"
                     i = len(md_str) - 1
                     while i >= 0:
                         if md_str[i].isdigit():
-                            break
+                            # Accumulate full multi-digit number (reading rightmost digits first)
+                            j = i
+                            while j >= 0 and md_str[j].isdigit():
+                                j -= 1
+                            run_len = int(md_str[j+1:i+1])
+                            if run_len > 0:
+                                break  # Non-zero matches separate mismatches — stop
+                            i = j  # Zero-length run: mismatches are consecutive — continue
                         elif md_str[i].isalpha() and md_str[i] != '^':
                             idx = pos_in_read - 1 - n_oligo_a_mismatches
                             if idx >= 0:
@@ -255,8 +269,10 @@ def get_netseq_3prime_position(
         n_trimmed = count_terminal_oligo_a_mismatches(read, strand)
         if n_trimmed > 0:
             if strand == '-':
-                # Minus strand: shift rightward (increase position)
-                position += n_trimmed
+                # Minus strand: oligo-A mismatches at the left side of the
+                # alignment push reference_start rightward. Shift leftward
+                # (decrease) to recover the true 3' end position.
+                position -= n_trimmed
             else:
                 # Plus strand: shift leftward (decrease position)
                 position -= n_trimmed
@@ -396,8 +412,10 @@ def process_netseq_read(
     )
 
     # Raw position is before trimming
+    # For minus strand: corrected = raw - n_trimmed  =>  raw = corrected + n_trimmed
+    # For plus strand:  corrected = raw - n_trimmed  =>  raw = corrected + n_trimmed
     if strand == '-':
-        three_prime_raw = three_prime_corrected - n_trimmed
+        three_prime_raw = three_prime_corrected + n_trimmed
     else:
         three_prime_raw = three_prime_corrected + n_trimmed
 

@@ -148,9 +148,9 @@ def classify_full_length_heuristic(
     if tss_positions and record.chrom in tss_positions:
         # Get 5' end position
         if record.strand == '+':
-            five_prime_pos = record.five_prime_corrected
+            five_prime_pos = record.reference_start
         else:
-            five_prime_pos = record.five_prime_corrected
+            five_prime_pos = record.reference_end - 1
 
         # Find nearest TSS
         tss_list = tss_positions[record.chrom]
@@ -385,8 +385,8 @@ def summarize_full_length_classification(
     reason_counts = defaultdict(int)
     for c in classifications.values():
         for reason in c.truncation_reasons:
-            # Extract reason type (before the underscore with value)
-            reason_type = reason.split('_')[0] + '_' + reason.split('_')[1]
+            # Extract reason type (everything before the trailing numeric/value suffix)
+            reason_type = reason.rsplit('_', 1)[0]
             reason_counts[reason_type] += 1
 
     return {
