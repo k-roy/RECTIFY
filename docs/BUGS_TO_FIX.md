@@ -1,10 +1,58 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-04-09 (Round 2 fixed)
+## Last Updated: 2026-04-09 (Validation audit — NEW-061–064 added)
 
 ---
 
 ## Open
+
+---
+
+### NEW-061 (HIGH) — `clip_read_to_corrected_3prime` shrinks N ops instead of eliminating them
+
+When `polya_walkback` produces a corrected_3prime that falls *inside* a near-3' N op (intron artifact), `clip_read_to_corrected_3prime` partially trims the N rather than eliminating it. The walkback position is numerically correct (validated shifts of −45, −72 for cat4_plus_1/2) but a stub N op remains in the rectified CIGAR (1520→1501 bp, 100→40 bp). Any downstream junction caller will report this residual N as a spurious splice junction.
+
+**Root cause:** The clipping loop walks backward consuming `n_ref_clip` reference bases; when it runs out of bases mid-N, it shrinks the N and stops. There is no special handling to detect "target is inside N → snap to junction_start−1."
+
+**Fix (two options):**
+- Option A: In `clip_read_to_corrected_3prime`, detect when walking lands inside an N op and snap the clip to the N's start (fully clip the N and all trailing ops). Update corrected_3prime in the TSV to `junction_start − 1`.
+- Option B: In `bam_processor._run_correction`, when FJF detects a near-3' artifact junction, propagate FJF's `corrected_3prime` (junction_start−1) and do not override it with the walkback position when the walkback lands inside the artifact N span.
+
+**Files:** `rectify/core/bam_processor.py` (`clip_read_to_corrected_3prime`), `rectify/core/false_junction_filter.py`
+**Discovered:** 2026-04-09 validation audit (cat4_plus_1, cat4_plus_2)
+
+---
+
+### NEW-062 (MEDIUM) — `five_prime_rescued` not written to TSV; `correction_applied` omits 5' rescue
+
+When `rescue_3ss_truncation` corrects a read's 5' end, `five_prime_rescued=True` is stored in the result dict (bam_processor.py:277) but never written to any TSV column. The `correction_applied` field for cat3 reads shows only `atract_ambiguity,polya_walkback` — the 5' junction rescue is invisible to downstream consumers. Users cannot identify rescued reads from the TSV without comparing `five_prime_position` against raw alignment coordinates.
+
+**Fix:** Add `five_prime_rescued` (bool) to the TSV header and row in `write_results_tsv`, and append `five_prime_rescued` to `correction_applied` when True.
+
+**Files:** `rectify/core/bam_processor.py:567–613` (`write_results_tsv`)
+**Discovered:** 2026-04-09 validation audit (cat3 reads)
+
+---
+
+### NEW-063 (MEDIUM) — Chimeric reads with 3'-hard-clipped alignment not exempt from poly-A walkback
+
+Reads with XK=1 (chimeric reconstruction) that have a hard-clip at the 3' end are subject to the full polya_walkback pipeline. For cat5_plus_3aligner (100H hard-clip), the unresolved 3' end causes an ambiguity window of 211 bp (positions 9753–9964), producing 5 TSV rows with walkback shifts of 6–185 bp. The correction pipeline has no short-circuit for chimeric reads whose 3' sequence is not present in the query.
+
+**Fix:** In `bam_processor.correct_read_3prime()`, skip polya_walkback (or cap ambiguity window to 0) when the read has a hard-clip at its 3' end (indicates missing sequence; walkback is unanchored).
+
+**Files:** `rectify/core/bam_processor.py` (`correct_read_3prime`), `rectify/core/atract_detector.py`
+**Discovered:** 2026-04-09 validation audit (cat5_plus_3aligner)
+
+---
+
+### NEW-064 (LOW) — `netseq_refinement` listed in `correction_applied` when ambiguity_range=1
+
+When `ambiguity_range == 1`, there is only one candidate position; NET-seq refinement runs but is a no-op. Listing `netseq_refinement` in `correction_applied` is misleading — it implies the NET-seq signal was used to resolve ambiguity when no ambiguity existed. Seen in cat6_minus_single (ambiguity_range=1, fraction=1.0, correction_applied includes `netseq_refinement`).
+
+**Fix:** In `bam_processor.correct_read_3prime()`, only add `netseq_refinement` to `correction_applied` when `ambiguity_range > 1` (i.e., when NET-seq signal was actually consulted to break a tie).
+
+**Files:** `rectify/core/bam_processor.py` (correction_applied assembly)
+**Discovered:** 2026-04-09 validation audit (cat6_minus_single)
 
 ---
 
