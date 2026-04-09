@@ -583,7 +583,7 @@ def fig_multi_aligner_consensus():
     mpb_ex2_w = EX2_W - NOVEL_3SS
     L.append(aligned_block(mpb_ex2_x, y, mpb_ex2_w, BLK_H, "Exon 2", c))
     L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">\u2713 novel GC-AG junction (correct)</text>')
+             f'y="{y + BLK_H//2 + 0}">\u2713 novel GC-AG junction</text>')
     L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
              f'y="{y + BLK_H//2 + 12}">\u2713 clean alignment, no indels</text>')
 
@@ -604,18 +604,19 @@ def fig_multi_aligner_consensus():
 
     # Column headers
     y_hdr = y_sec2 + 20
-    score_cols = [("junction", 555), ("annotated", 610), ("indels", 662), ("5\u2032 cov.", 712), ("score", 748)]
+    score_cols = [("junction", 555), ("annotated", 610), ("indels", 662), ("5\u2032 cov.", 712), ("edit dist.", 748)]
     for label, cx in score_cols:
         L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-weight="600" '
                  f'text-anchor="middle" x="{cx}" y="{y_hdr}">{label}</text>')
 
-    # Score rows — gapmm2 wins (annotated junction trumps indel penalty),
-    # minimap2 middle (soft-clip rescuable), mapPacBio lowest (novel junction
-    # penalized heavily even though it's biologically correct for this read)
+    # Score rows — lower score = better alignment.
+    # mapPacBio wins: correct novel junction, clean, full coverage.
+    # gapmm2 middle: annotated junction but indels penalized.
+    # minimap2 worst: no junction found, 5' soft-clipped.
     scores = [
-        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "4", True),
-        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "2", False),
-        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "1", False),
+        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "1", True),
+        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "3", False),
+        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "5", False),
     ]
 
     for i, (name, color, jn, ann, indels, cov, score, is_best) in enumerate(scores):
@@ -662,15 +663,18 @@ def fig_multi_aligner_consensus():
         L.append(f'<text fill="{cov_color}" font-size="9" font-weight="600" text-anchor="middle" '
                  f'x="712" y="{y + BLK_H//2 + 4}">{cov}</text>')
 
-        # Total score
+        # Edit distance — lower is better
         sc_weight = "700" if is_best else "600"
-        sc_color = PAL["green"] if is_best else PAL["heading"]
+        sc_color = PAL["green"] if is_best else (PAL["red"] if int(score) >= 5 else PAL["heading"])
         L.append(f'<text fill="{sc_color}" font-size="12" font-weight="{sc_weight}" '
                  f'text-anchor="middle" x="748" y="{y + BLK_H//2 + 4}">{score}</text>')
 
         if is_best:
             L.append(f'<text fill="{PAL["green"]}" font-size="9" font-weight="700" '
                      f'x="762" y="{y + BLK_H//2 + 4}">\u2190 best</text>')
+            # Highlight row with subtle background
+            L.append(f'<rect fill="{PAL["green_l"]}" height="{BLK_H + 4}" rx="4" '
+                     f'width="{FIG_W - 24}" x="12" y="{y - 2}" opacity="0.2"/>')
 
     # Final output label
     y_out = y_hdr + 8 + 3 * 30 + 4
