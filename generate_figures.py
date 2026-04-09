@@ -562,8 +562,8 @@ def fig_multi_aligner_consensus():
              f'points="{del_x},{tri_y} {del_x+4},{tri_y+6} {del_x+8},{tri_y}"/>')
     L.append(f'<text fill="{PAL["red"]}" font-size="6" text-anchor="middle" '
              f'x="{del_x+4}" y="{tri_y+13}">del</text>')
-    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">\u2713 annotated GT-AG junction</text>')
+    L.append(f'<text fill="{PAL["orange"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 0}">forces annotated GT-AG junction</text>')
     L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
              f'y="{y + BLK_H//2 + 12}">\u2717 junction-proximal indels</text>')
 
@@ -583,9 +583,9 @@ def fig_multi_aligner_consensus():
     mpb_ex2_w = EX2_W - NOVEL_3SS
     L.append(aligned_block(mpb_ex2_x, y, mpb_ex2_w, BLK_H, "Exon 2", c))
     L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">\u2713 clean alignment, no indels</text>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 12}">\u2717 novel GC-AG junction, not annotated</text>')
+             f'y="{y + BLK_H//2 + 0}">\u2713 novel GC-AG junction (correct)</text>')
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 12}">\u2713 clean alignment, no indels</text>')
 
     # ── Callout ──
     y_note = y + BLK_H + 14
@@ -609,21 +609,14 @@ def fig_multi_aligner_consensus():
         L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-weight="600" '
                  f'text-anchor="middle" x="{cx}" y="{y_hdr}">{label}</text>')
 
-    # Score rows
+    # Score rows — gapmm2 wins (annotated junction trumps indel penalty),
+    # minimap2 middle (soft-clip rescuable), mapPacBio lowest (novel junction
+    # penalized heavily even though it's biologically correct for this read)
     scores = [
-        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "4", False),
-        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "1", False),
-        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "2", False),
+        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "4", True),
+        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "2", False),
+        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "1", False),
     ]
-    # Determine best — gapmm2 wins with annotated junction + full coverage despite indels
-    # Actually: mapPacBio has clean alignment + full coverage but not annotated.
-    # gapmm2 has annotated + full coverage but indels.
-    # For this read, gapmm2's annotated junction outweighs the indel penalty.
-    # But wait — let's think about what RECTIFY actually values most:
-    # annotated canonical junction > novel junction > no junction
-    # So: gapmm2 (annotated, indels) > mapPacBio (novel, clean) > minimap2 (no junction)
-    # gapmm2 wins.
-    scores[0] = ("gapmm2", AC["gapmm2"], "GT-AG", "\u2713", "2 prox.", "full", "4", True)
 
     for i, (name, color, jn, ann, indels, cov, score, is_best) in enumerate(scores):
         y = y_hdr + 8 + i * 30
