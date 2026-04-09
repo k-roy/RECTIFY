@@ -94,7 +94,7 @@ Different aligners make different tradeoffs at splice junctions. RECTIFY runs th
   <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Consensus" width="660">
 </p>
 
-**Scoring criteria:** Rescued alignments are scored by the number of canonical GT-AG splice junctions, matches to annotated junctions in the provided GFF/GTF, and remaining soft-clip length. The alignment with the highest composite score is selected per read and written to the consensus BAM.
+**Scoring criteria:** Rescued alignments are scored by the number of canonical GT-AG splice junctions, matches to annotated junctions in the provided GFF/GTF, and remaining soft-clip length. The alignment with the highest composite score is selected per read and written to the rectified BAM.
 
 ```bash
 # Multi-aligner consensus alignment (default)

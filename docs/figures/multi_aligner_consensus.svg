@@ -1,94 +1,79 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520">
-<rect fill="#ffffff" width="760" height="520"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480">
+<rect fill="#ffffff" width="760" height="480"/>
 <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Multi-Aligner Consensus Pipeline</text>
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">STEP 1  ALIGN WITH MULTIPLE ALIGNERS</text>
-<text fill="#64748b" font-size="10" x="14" y="81">Genome</text>
-<rect fill="#6366f1" height="26" rx="4" width="160" x="100" y="64"/>
-<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="180.0" y="81.0">Exon 1</text>
-<line stroke="#94a3b8" stroke-dasharray="6,4" stroke-width="1.5" x1="260" x2="370" y1="77" y2="77"/>
-<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="315.0" y="70">intron</text>
-<rect fill="#6366f1" height="26" rx="4" width="160" x="370" y="64"/>
-<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="450.0" y="81.0">Exon 2</text>
-<text fill="#3b82f6" font-size="10" font-weight="600" x="14" y="117">minimap2</text>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="100" y="100"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="116.0">Exon 1</text>
-<line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="113" y2="113"/>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="370" y="100"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="116.0">Exon 2</text>
-<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="151">mapPacBio</text>
-<rect fill="#fee2e2" height="26" rx="4" stroke="#dc2626" stroke-dasharray="4,3" stroke-width="1" width="50" x="320" y="134"/>
-<text fill="#dc2626" font-size="9" text-anchor="middle" x="345.0" y="150.0">SC</text>
-<rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="370" y="134"/>
-<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="150.0">Exon 2</text>
-<text fill="#22c55e" font-size="10" font-weight="600" x="14" y="185">gapmm2</text>
-<rect fill="#fee2e2" height="26" rx="4" stroke="#dc2626" stroke-dasharray="4,3" stroke-width="1" width="35" x="100" y="168"/>
-<text fill="#dc2626" font-size="9" text-anchor="middle" x="117.5" y="184.0">SC</text>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="125" x="135" y="168"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="197.5" y="184.0">Exon 1</text>
-<line stroke="#22c55e" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="181" y2="181"/>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="160" x="370" y="168"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="184.0">Exon 2</text>
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="204" y2="204"/>
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="222">STEP 2  RESCUE SOFT-CLIPS THROUGH KNOWN JUNCTIONS</text>
-<text fill="#3b82f6" font-size="10" font-weight="600" x="14" y="255">minimap2</text>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="100" y="238"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="254.0">Exon 1</text>
-<line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="251" y2="251"/>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="370" y="238"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="254.0">Exon 2</text>
-<text fill="#94a3b8" font-size="9" font-weight="600" x="540" y="255">already full</text>
-<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="285">mapPacBio</text>
-<rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="100" y="268"/>
-<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="284.0">Exon 1</text>
-<line stroke="#f59e0b" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="281" y2="281"/>
-<rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="370" y="268"/>
-<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="284.0">Exon 2</text>
-<text fill="#0d9488" font-size="9" font-weight="600" x="540" y="285">✓ rescued</text>
-<text fill="#22c55e" font-size="10" font-weight="600" x="14" y="315">gapmm2</text>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="160" x="100" y="298"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="314.0">Exon 1</text>
-<line stroke="#22c55e" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="311" y2="311"/>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="160" x="370" y="298"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="314.0">Exon 2</text>
-<text fill="#0d9488" font-size="9" font-weight="600" x="540" y="315">✓ rescued</text>
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="330" y2="330"/>
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="348">STEP 3  SCORE EACH ALIGNMENT → SELECT BEST → CONSENSUS BAM</text>
-<text fill="#94a3b8" font-size="8" text-anchor="middle" x="556" y="362">canonical</text>
-<text fill="#94a3b8" font-size="8" text-anchor="middle" x="620" y="362">annotated</text>
-<text fill="#94a3b8" font-size="8" text-anchor="middle" x="684" y="362">soft-clip</text>
-<text fill="#94a3b8" font-size="8" text-anchor="middle" x="730" y="362">score</text>
-<text fill="#3b82f6" font-size="10" font-weight="600" x="14" y="387">minimap2</text>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="100" y="370"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="386.0">Exon 1</text>
-<line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="383" y2="383"/>
-<rect fill="#3b82f6" height="26" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="370" y="370"/>
-<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="386.0">Exon 2</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="556" y="387">2 GT-AG</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="620" y="387">2 annot.</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="684" y="387">0 bp SC</text>
-<text fill="#1e293b" font-size="10" font-weight="700" text-anchor="middle" x="730" y="387">6</text>
-<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="415">mapPacBio</text>
-<rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="100" y="398"/>
-<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="414.0">Exon 1</text>
-<line stroke="#f59e0b" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="411" y2="411"/>
-<rect fill="#f59e0b" height="26" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="160" x="370" y="398"/>
-<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="414.0">Exon 2</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="556" y="415">2 GT-AG</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="620" y="415">2 annot.</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="684" y="415">0 bp SC</text>
-<text fill="#1e293b" font-size="10" font-weight="700" text-anchor="middle" x="730" y="415">6</text>
-<text fill="#22c55e" font-size="10" font-weight="600" x="14" y="443">gapmm2</text>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="160" x="100" y="426"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="442.0">Exon 1</text>
-<line stroke="#22c55e" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="439" y2="439"/>
-<rect fill="#22c55e" height="26" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="160" x="370" y="426"/>
-<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="450.0" y="442.0">Exon 2</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="556" y="443">2 GT-AG</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="620" y="443">1 annot.</text>
-<text fill="#475569" font-size="9" text-anchor="middle" x="684" y="443">0 bp SC</text>
-<text fill="#1e293b" font-size="10" font-weight="700" text-anchor="middle" x="730" y="443">5</text>
-<text fill="#059669" font-size="9" font-weight="700" x="744" y="387">← best</text>
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Multi-Aligner Consensus: Selecting the Optimal Alignment</text>
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="40">SAME READ, THREE ALIGNERS → THREE DIFFERENT RESULTS</text>
+<text fill="#64748b" font-size="10" x="14" y="76">Genome</text>
+<rect fill="#6366f1" height="24" rx="4" width="160" x="100" y="60"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="180.0" y="76.0">Exon 1</text>
+<line stroke="#94a3b8" stroke-dasharray="6,4" stroke-width="1.5" x1="260" x2="370" y1="72" y2="72"/>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="315.0" y="65">intron</text>
+<text fill="#94a3b8" font-size="8" x="263" y="83">GT</text>
+<text fill="#94a3b8" font-size="8" text-anchor="end" x="367" y="83">AG</text>
+<rect fill="#6366f1" height="24" rx="4" width="170" x="370" y="60"/>
+<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="455.0" y="76.0">Exon 2</text>
+<text fill="#3b82f6" font-size="10" font-weight="600" x="14" y="110">minimap2</text>
+<rect fill="#3b82f6" height="24" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="100" y="94"/>
+<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="109.0">Exon 1</text>
+<line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="106" y2="106"/>
+<rect fill="#3b82f6" height="24" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="170" x="370" y="94"/>
+<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="109.0">Exon 2</text>
+<text fill="#94a3b8" font-size="8" x="548" y="110">GT-AG, annotated junction</text>
+<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="142">mapPacBio</text>
+<rect fill="#f59e0b" height="24" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="100" x="160" y="126"/>
+<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="210.0" y="141.0">Exon 1</text>
+<line stroke="#f59e0b" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="138" y2="138"/>
+<rect fill="#f59e0b" height="24" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="170" x="370" y="126"/>
+<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="141.0">Exon 2</text>
+<rect fill="#fee2e2" height="24" rx="4" stroke="#dc2626" stroke-dasharray="4,3" stroke-width="0.8" width="55" x="100" y="126"/>
+<text fill="#dc2626" font-size="8" text-anchor="middle" x="127" y="141">unmapped</text>
+<text fill="#94a3b8" font-size="8" x="548" y="142">GT-AG, but 5′ end truncated</text>
+<text fill="#22c55e" font-size="10" font-weight="600" x="14" y="174">gapmm2</text>
+<rect fill="#22c55e" height="24" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="168" x="100" y="158"/>
+<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="184.0" y="173.0">Exon 1</text>
+<line stroke="#22c55e" stroke-dasharray="5,3" stroke-width="1" x1="268" x2="370" y1="170" y2="170"/>
+<rect fill="#22c55e" height="24" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="170" x="370" y="158"/>
+<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="173.0">Exon 2</text>
+<text fill="#94a3b8" font-size="8" x="548" y="174">shifted junction, not in annotation</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="196" y2="196"/>
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="212">SCORE EACH ALIGNMENT → SELECT BEST PER READ</text>
+<text fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle" x="570" y="230">canonical</text>
+<text fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle" x="635" y="230">annotated</text>
+<text fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle" x="692" y="230">5′ cov.</text>
+<text fill="#94a3b8" font-size="8" font-weight="600" text-anchor="middle" x="738" y="230">score</text>
+<text fill="#3b82f6" font-size="10" font-weight="600" x="14" y="256">minimap2</text>
+<rect fill="#3b82f6" height="24" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="160" x="100" y="240"/>
+<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="180.0" y="255.0">Exon 1</text>
+<line stroke="#3b82f6" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="252" y2="252"/>
+<rect fill="#3b82f6" height="24" opacity="0.18" rx="4" stroke="#3b82f6" stroke-width="1" width="170" x="370" y="240"/>
+<text fill="#3b82f6" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="255.0">Exon 2</text>
+<text fill="#475569" font-size="9" text-anchor="middle" x="570" y="256">1 GT-AG</text>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="635" y="256">1/1</text>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="692" y="256">full</text>
+<text fill="#059669" font-size="11" font-weight="700" text-anchor="middle" x="738" y="256">5</text>
+<text fill="#059669" font-size="9" font-weight="700" x="752" y="256">← best</text>
+<text fill="#f59e0b" font-size="10" font-weight="600" x="14" y="286">mapPacBio</text>
+<rect fill="#f59e0b" height="24" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="100" x="160" y="270"/>
+<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="210.0" y="285.0">Ex 1</text>
+<line stroke="#f59e0b" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="282" y2="282"/>
+<rect fill="#f59e0b" height="24" opacity="0.18" rx="4" stroke="#f59e0b" stroke-width="1" width="170" x="370" y="270"/>
+<text fill="#f59e0b" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="285.0">Exon 2</text>
+<text fill="#475569" font-size="9" text-anchor="middle" x="570" y="286">1 GT-AG</text>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="635" y="286">1/1</text>
+<text fill="#d97706" font-size="9" font-weight="600" text-anchor="middle" x="692" y="286">60%</text>
+<text fill="#475569" font-size="11" font-weight="600" text-anchor="middle" x="738" y="286">3</text>
+<text fill="#22c55e" font-size="10" font-weight="600" x="14" y="316">gapmm2</text>
+<rect fill="#22c55e" height="24" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="168" x="100" y="300"/>
+<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="184.0" y="315.0">Exon 1</text>
+<line stroke="#22c55e" stroke-dasharray="5,3" stroke-width="1" x1="260" x2="370" y1="312" y2="312"/>
+<rect fill="#22c55e" height="24" opacity="0.18" rx="4" stroke="#22c55e" stroke-width="1" width="170" x="370" y="300"/>
+<text fill="#22c55e" font-size="9" font-weight="600" text-anchor="middle" x="455.0" y="315.0">Exon 2</text>
+<text fill="#475569" font-size="9" text-anchor="middle" x="570" y="316">1 GC-AG</text>
+<text fill="#dc2626" font-size="9" font-weight="600" text-anchor="middle" x="635" y="316">0/1</text>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="692" y="316">full</text>
+<text fill="#475569" font-size="11" font-weight="600" text-anchor="middle" x="738" y="316">2</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="336" y2="336"/>
+<text fill="#475569" font-size="10" font-weight="600" text-anchor="middle" x="380" y="354">Best alignment per read → consensus BAM</text>
 </g>
 </svg>
