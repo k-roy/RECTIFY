@@ -68,12 +68,18 @@ poly-T / poly-A region close to the 3' end. The N is absorbed and the
 corrected position walks back past it (plus: corrected < original;
 minus: corrected > original).
 
-| Label | Coords (0-based half-open) | Strand | Spurious N op | dist from 3' end | Shift |
-|---|---|---|---|---|---|
-| `cat4_plus_1` | chrXI:19592–22073 | + | 20527–22047 (1520 bp) | 26 bp | −45 bp |
-| `cat4_plus_2` | chrX:392246–393837 | + | 393725–393825 (100 bp) | 12 bp | −72 bp |
-| `cat4_minus_1` | chrI:128094–129063 | − | 128521–129021 (500 bp) | 427 bp | +3 bp |
-| `cat4_minus_2` | chrIX:76016–77313 | − | 76027–76250 (223 bp) | 11 bp | +11 bp |
+| Label | Coords (0-based half-open) | Strand | Spurious N op | dist from 3' end | Corrected 3' end | Shift | N absorbed? |
+|---|---|---|---|---|---|---|---|
+| `cat4_plus_1` | chrXI:19592–22073 | + | 20527–22047 (1520 bp) | 26 bp | 20526 | −1546 bp | Yes — snapped to junction\_start−1 |
+| `cat4_plus_2` | chrX:392246–393837 | + | 393725–393825 (100 bp) | 12 bp | 393721 | −115 bp | Yes — window clipped to [393721,393724], N excluded |
+| `cat4_minus_1` | chrI:128094–129063 | − | 128521–129021 (500 bp) | 427 bp | 128097 | +3 bp | No — N is 424 bp from 3' end, outside FJF window |
+| `cat4_minus_2` | chrIX:76016–77313 | − | 76027–76250 (223 bp) | 11 bp | 76027 | +11 bp | No — 3' end abuts N boundary; N remains at CIGAR start |
+
+**Notes on Cat4 behavior (post NEW-061 fix):**
+- `cat4_plus_1`: polya_walkback lands inside the N (20527–22047). Snap fires → corrected=20526 (junction\_start−1). N fully absorbed into hard clip.
+- `cat4_plus_2`: polya_walkback lands at 393721 (before N at 393725). Ambiguity window [393721,393836] is clipped to [393721,393724] so NET-seq cannot place signal inside the N. corrected=393721. N fully absorbed.
+- `cat4_minus_1`: N is 424 bp from the 3' end (>50 bp FJF window). Treated as a real junction. Unchanged.
+- `cat4_minus_2`: polya_walkback lands inside the N (76027–76250). Snap fires → corrected=76027 (junction\_start). All leading poly-T M bases consumed. N remains at the left CIGAR boundary (12H 223N …) because the 3' end exactly abuts it.
 
 ---
 

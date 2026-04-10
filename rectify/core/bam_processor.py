@@ -409,18 +409,46 @@ def correct_read_3prime(
                 result['ambiguity_max'] = current_position
             result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
 
-    # NEW-061: If walkback landed inside an artifact N op, snap to the N boundary
-    # so the artifact is fully eliminated from the rectified CIGAR.
+    # NEW-061: Prevent corrected positions from landing inside artifact N op spans.
+    # Two cases handled:
+    #
+    # Case A — walkback landed STRICTLY inside the N: snap to N boundary and
+    # collapse ambiguity to zero so NET-seq has nothing to refine.
+    # Strict < on left: current_position == junction_start means the read abuts
+    # the N correctly and no snap is needed.
+    #
+    # Case B — walkback landed before the N but the ambiguity window extends into
+    # or beyond it: clip the window so NET-seq cannot place signal inside the N.
+    # For + strand, cap ambiguity_max at junction_start - 1.
+    # For − strand, cap ambiguity_min at junction_end.
     if polya_walkback_applied and _artifact_analyses:
         for _art in _artifact_analyses:
-            if _art.junction_start <= current_position < _art.junction_end:
+            if _art.junction_start < current_position < _art.junction_end:
+                # Case A: walkback landed strictly inside the N — snap to the N's
+                # near edge so all poly-A-aligned M bases are consumed.
+                # Plus strand: 3' end is on the right; N is to the left; snap to
+                #   junction_start-1 (last M before N).
+                # Minus strand: 3' end is on the left; N is to the right; snap to
+                #   junction_start (N's left edge; all leading M bases consumed).
                 if strand == '+':
                     current_position = _art.junction_start - 1
-                    result['ambiguity_min'] = current_position
                 else:
-                    current_position = _art.junction_end
-                    result['ambiguity_max'] = current_position
-                result['ambiguity_range'] = abs(current_position - original_position)
+                    current_position = _art.junction_start
+                result['ambiguity_min'] = current_position
+                result['ambiguity_max'] = current_position
+                result['ambiguity_range'] = 0
+                break
+            elif strand == '+' and result['ambiguity_max'] >= _art.junction_start:
+                # Case B: walkback landed before the N but the ambiguity window
+                # extends into or past it — clip max to junction_start-1.
+                result['ambiguity_max'] = _art.junction_start - 1
+                result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
+                break
+            elif strand == '-' and result['ambiguity_min'] <= _art.junction_start:
+                # Case B (minus): ambiguity window extends into the N — clip min
+                # to junction_start so NET-seq stays on the 3' side of the N.
+                result['ambiguity_min'] = _art.junction_start
+                result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
                 break
 
     # Update corrected position (after all position-moving corrections)
