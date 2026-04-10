@@ -1,6 +1,6 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-04-09 (Validation audit — NEW-061–064 added)
+## Last Updated: 2026-04-09 (NEW-061–064 fixed in v2.7.9)
 
 ---
 
@@ -8,7 +8,7 @@
 
 ---
 
-### NEW-061 (HIGH) — `clip_read_to_corrected_3prime` shrinks N ops instead of eliminating them
+### ~~NEW-061 (HIGH) — `clip_read_to_corrected_3prime` shrinks N ops instead of eliminating them — Fixed 2026-04-09 (v2.7.9)~~
 
 When `polya_walkback` produces a corrected_3prime that falls *inside* a near-3' N op (intron artifact), `clip_read_to_corrected_3prime` partially trims the N rather than eliminating it. The walkback position is numerically correct (validated shifts of −45, −72 for cat4_plus_1/2) but a stub N op remains in the rectified CIGAR (1520→1501 bp, 100→40 bp). Any downstream junction caller will report this residual N as a spurious splice junction.
 
@@ -23,7 +23,7 @@ When `polya_walkback` produces a corrected_3prime that falls *inside* a near-3' 
 
 ---
 
-### NEW-062 (MEDIUM) — `five_prime_rescued` not written to TSV; `correction_applied` omits 5' rescue
+### ~~NEW-062 (MEDIUM) — `five_prime_rescued` not written to TSV; `correction_applied` omits 5' rescue — Fixed 2026-04-09 (v2.7.9)~~
 
 When `rescue_3ss_truncation` corrects a read's 5' end, `five_prime_rescued=True` is stored in the result dict (bam_processor.py:277) but never written to any TSV column. The `correction_applied` field for cat3 reads shows only `atract_ambiguity,polya_walkback` — the 5' junction rescue is invisible to downstream consumers. Users cannot identify rescued reads from the TSV without comparing `five_prime_position` against raw alignment coordinates.
 
@@ -34,7 +34,7 @@ When `rescue_3ss_truncation` corrects a read's 5' end, `five_prime_rescued=True`
 
 ---
 
-### NEW-063 (MEDIUM) — Chimeric reads with 3'-hard-clipped alignment not exempt from poly-A walkback
+### ~~NEW-063 (MEDIUM) — Chimeric reads with 3'-hard-clipped alignment not exempt from poly-A walkback — Fixed 2026-04-09 (v2.7.9)~~
 
 Reads with XK=1 (chimeric reconstruction) that have a hard-clip at the 3' end are subject to the full polya_walkback pipeline. For cat5_plus_3aligner (100H hard-clip), the unresolved 3' end causes an ambiguity window of 211 bp (positions 9753–9964), producing 5 TSV rows with walkback shifts of 6–185 bp. The correction pipeline has no short-circuit for chimeric reads whose 3' sequence is not present in the query.
 
@@ -45,7 +45,7 @@ Reads with XK=1 (chimeric reconstruction) that have a hard-clip at the 3' end ar
 
 ---
 
-### NEW-064 (LOW) — `netseq_refinement` listed in `correction_applied` when ambiguity_range=1
+### ~~NEW-064 (LOW) — `netseq_refinement` listed in `correction_applied` when ambiguity_range=1 — Fixed 2026-04-09 (v2.7.9)~~
 
 When `ambiguity_range == 1`, there is only one candidate position; NET-seq refinement runs but is a no-op. Listing `netseq_refinement` in `correction_applied` is misleading — it implies the NET-seq signal was used to resolve ambiguity when no ambiguity existed. Seen in cat6_minus_single (ambiguity_range=1, fraction=1.0, correction_applied includes `netseq_refinement`).
 

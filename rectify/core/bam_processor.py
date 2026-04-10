@@ -212,7 +212,7 @@ def correct_read_3prime(
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
     _genome_ref = _fjf._GenomeDictReference(genome)
-    _real_junctions, _ = _fjf.filter_polya_artifact_junctions(read, _genome_ref, strand)
+    _real_junctions, _artifact_analyses = _fjf.filter_polya_artifact_junctions(read, _genome_ref, strand)
 
     # Module 2F: 3'SS truncation rescue (post-consensus).
     # Corrects five_prime_position for reads truncated or soft-clipped at the
@@ -382,8 +382,18 @@ def correct_read_3prime(
     # NET-seq refinement will use it to select the most likely CPA within that
     # window. ambiguity_range is updated to the max of the atract window and the
     # walk-back distance so the NET-seq refinement guard (range > 0) fires.
+    # NEW-063: Skip poly-A walkback for reads with hard-clipped 3' ends.
+    # The 3' sequence is absent; walkback would explore an unanchored ambiguity window.
+    _has_3prime_hardclip = False
+    if read.cigartuples:
+        _cigar_ops = read.cigartuples
+        if strand == '+' and _cigar_ops[-1][0] == 5:
+            _has_3prime_hardclip = True
+        elif strand == '-' and _cigar_ops[0][0] == 5:
+            _has_3prime_hardclip = True
+
     polya_walkback_applied = False
-    if genome:
+    if genome and not _has_3prime_hardclip:
         wb = indel_corrector.find_polya_boundary(read, strand, genome)
         if wb is not None:
             result['correction_applied'].append('polya_walkback')
@@ -399,6 +409,20 @@ def correct_read_3prime(
                 result['ambiguity_max'] = current_position
             result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
 
+    # NEW-061: If walkback landed inside an artifact N op, snap to the N boundary
+    # so the artifact is fully eliminated from the rectified CIGAR.
+    if polya_walkback_applied and _artifact_analyses:
+        for _art in _artifact_analyses:
+            if _art.junction_start <= current_position < _art.junction_end:
+                if strand == '+':
+                    current_position = _art.junction_start - 1
+                    result['ambiguity_min'] = current_position
+                else:
+                    current_position = _art.junction_end
+                    result['ambiguity_max'] = current_position
+                result['ambiguity_range'] = abs(current_position - original_position)
+                break
+
     # Update corrected position (after all position-moving corrections)
     result['corrected_3prime'] = current_position
 
@@ -412,6 +436,10 @@ def correct_read_3prime(
             # Minus-strand corrections move toward lower coords
             result['ambiguity_min'] = max(0, current_position - result['ambiguity_range'])
             result['ambiguity_max'] = current_position
+
+    # NEW-062: record 5' rescue in correction_applied before any early return.
+    if result.get('five_prime_rescued'):
+        result['correction_applied'].append('five_prime_rescued')
 
     # Module 3: NET-seq refinement (optional)
     # Bundled TSV data is already deconvolved — skip re-deconvolution.
@@ -430,7 +458,8 @@ def correct_read_3prime(
             proportional_split=True,
         )
 
-        result['correction_applied'].append('netseq_refinement')
+        if result['ambiguity_range'] > 1:
+            result['correction_applied'].append('netseq_refinement')
 
         # Build one output row per proportional assignment.
         # For a single dominant peak the list has length 1 (fraction=1.0).
@@ -570,6 +599,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
             'five_prime_position',  # TSS end of the read (v2.6.0)
+            'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
             'alignment_start', 'alignment_end',  # Full read body interval (v2.6.0)
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
@@ -591,6 +621,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 str(result['original_3prime']),
                 str(result['corrected_3prime']),
                 str(result.get('five_prime_position', '')),  # 5' end (TSS)
+                '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
                 str(result.get('alignment_start', '')),  # Read body start
                 str(result.get('alignment_end', '')),  # Read body end (exclusive)
                 str(result['ambiguity_min']),
@@ -1689,6 +1720,7 @@ def process_bam_streaming(
             'read_id', 'chrom', 'strand',
             'original_3prime', 'corrected_3prime',
             'five_prime_position',  # TSS end of the read
+            'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
             'alignment_start', 'alignment_end',  # Full read body interval
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
@@ -1799,6 +1831,7 @@ def _write_results_chunk(fh, results: List[Dict]):
             str(result['original_3prime']),
             str(result['corrected_3prime']),
             str(result.get('five_prime_position', '')),  # 5' end (TSS)
+            '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
             str(result.get('alignment_start', '')),  # Read body start
             str(result.get('alignment_end', '')),  # Read body end (exclusive)
             str(result['ambiguity_min']),
