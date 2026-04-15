@@ -81,5 +81,5 @@ pipeline.plot(signal, 'metagene.png', title='CPA metagene')
 
 ```python
 import rectify
-print(rectify.__version__)  # '2.7.6'
+print(rectify.__version__)  # '0.9.0'
 ```

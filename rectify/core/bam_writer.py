@@ -14,6 +14,7 @@ CIGAR helpers (in-place pysam surgery):
 - ``clip_read_to_corrected_3prime``
 - ``softclip_read_to_corrected_3prime``
 - ``extend_read_5prime_for_junction_rescue``
+- ``softclip_intronic_tail_5prime``   (available but not called from write functions)
 - ``fix_homopolymer_mismatches``  — (deprecated) converts X at homopolymer positions to I/D
 - ``realign_exon_blocks``          — global NW re-alignment of exon blocks with homopolymer scoring
 
@@ -605,27 +606,31 @@ def _normalize_cigar_ops(ops) -> list:
     return [tuple(x) for x in merged]
 
 
-def clip_intronic_tail_5prime(
+def softclip_intronic_tail_5prime(
     read: pysam.AlignedSegment,
     clip_boundary: int,
     strand: str,
 ) -> bool:
-    """Hard-clip intronic bases from the 5' end of a Case 4 intronic-snap read.
+    """Soft-clip intronic bases from the 5' end of an intronic-snap read.
 
-    For reads where the aligner truncated alignment inside an intron (no N-op,
-    no soft clip), ``rescue_3ss_truncation`` Case 4 corrects ``five_prime_position``
-    in the TSV but leaves the BAM CIGAR unchanged.  This function trims the CIGAR
-    so the read ends (minus strand) or starts (plus strand) at ``clip_boundary``
-    (the exon-2-side intron boundary = ``intron_start`` for minus, ``intron_end``
-    for plus), converting the intronic bases to a hard-clip H op.
+    For reads where the aligner mapped into an intron without an N-op,
+    ``rescue_3ss_truncation`` corrects ``five_prime_position`` in the TSV but
+    leaves the BAM CIGAR unchanged.  This function converts the intronic portion
+    to a soft-clip (S) so the read's visible alignment ends at the exon/intron
+    boundary while preserving the sequence data in the BAM record.
+
+    Hard-clips (H) are reserved for poly(A) tails.  5' intronic bases become S
+    so they remain in ``query_sequence`` and are recoverable downstream.
+
+    The SAM convention ``H? S? <alignment ops> S? H?`` is preserved: any
+    pre-existing trailing/leading H is kept in place; the new S op is placed
+    immediately inside it.
 
     Args:
         read:           pysam AlignedSegment — modified in-place.
-        clip_boundary:  Genomic position to clip to.
-                        Minus strand: clip_boundary = intron_start
-                          (read currently ends past this, inside the intron)
-                        Plus strand:  clip_boundary = intron_end
-                          (read currently starts before this, inside the intron)
+        clip_boundary:  Exon-side intron boundary.
+                        Minus strand: ``intron_start`` (first intron base).
+                        Plus strand:  ``intron_end``   (exclusive end of intron).
         strand:         ``'+'`` or ``'-'``.
 
     Returns:
@@ -636,111 +641,315 @@ def clip_intronic_tail_5prime(
     cigar = list(read.cigartuples)
 
     if strand == '-':
-        # The 5' end is at the RIGHT side of the CIGAR.
-        # reference_end is the exclusive right bound.
-        # We want to clip until reference_end <= clip_boundary + 1 (i.e. last
-        # mapped base ≤ clip_boundary), converting excess ops to H.
-        if read.reference_end is None or read.reference_end <= clip_boundary + 1:
-            return False  # already at or before the boundary
+        # The 5' end is at the RIGHT side of the CIGAR (minus strand).
+        # reference_end is exclusive; last mapped base = reference_end - 1.
+        # Goal: soft-clip until reference_end <= clip_boundary.
+        if read.reference_end is None:
+            return False
 
-        # Trim ops from the right until reference_end ≤ clip_boundary + 1
-        clipped_query_bases = 0
-        _ref_consuming = frozenset([0, 2, 3, 7, 8])   # M, D, N, =, X
-        _query_consuming = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
+        soft_clip_bases = 0   # query bases that will become S
+
+        # Step 1: extract any existing trailing H.
+        # H bases are already absent from query_sequence; keep them as H and
+        # re-append after the new S so the CIGAR stays valid (...S H).
+        existing_h = 0
+        while cigar and cigar[-1][0] == 5:
+            existing_h += cigar[-1][1]
+            cigar.pop()
+
+        # Step 2: extract any existing trailing S.
+        # These bases are already in query_sequence — absorb into the new S.
+        existing_s = 0
+        while cigar and cigar[-1][0] == 4:
+            existing_s += cigar[-1][1]
+            cigar.pop()
+
+        # Early exit: nothing to trim and no existing S to re-attach.
+        if existing_s == 0 and (
+                _cigar_ref_end(read.reference_start, cigar) if cigar else 0
+        ) <= clip_boundary:
+            return False
+
+        # Step 3: trim ref-consuming ops from the right until
+        # reference_end <= clip_boundary.
         while cigar:
-            op, length = cigar[-1]
             current_ref_end = _cigar_ref_end(read.reference_start, cigar)
-            if current_ref_end <= clip_boundary + 1:
+            if current_ref_end <= clip_boundary:
                 break
-            excess_ref = current_ref_end - (clip_boundary + 1)
-            if op in _ref_consuming:
+            excess_ref = current_ref_end - clip_boundary
+            op, length = cigar[-1]
+            if op in _REF_CONSUMING:
                 trim = min(length, excess_ref)
-                if op in _query_consuming:
-                    clipped_query_bases += trim
+                if op in _QUERY_CONSUMING:
+                    soft_clip_bases += trim
                 cigar[-1] = (op, length - trim)
                 if cigar[-1][1] == 0:
                     cigar.pop()
-            else:
-                # Query-only op (I=1): trim all, no reference consumed
-                clipped_query_bases += length
+            elif op in (1, 4):  # I or S (safety — extracted above)
+                soft_clip_bases += length
+                cigar.pop()
+            else:               # D / N: ref-only, no query bases
                 cigar.pop()
             if not cigar:
-                return False  # entire read trimmed away
-
-        # Append H for the clipped portion (if any bases were trimmed)
-        if clipped_query_bases > 0:
-            if cigar and cigar[-1][0] == 5:  # merge with existing H
-                cigar[-1] = (5, cigar[-1][1] + clipped_query_bases)
-            else:
-                cigar.append((5, clipped_query_bases))
+                return False
 
         if not cigar:
             return False
 
-        # Trim query_sequence / query_qualities to match the new CIGAR.
-        # Hard-clip (H) bases must NOT be in query_sequence; pysam enforces this.
-        # For minus strand, clipped 5'-end bases sit at the RIGHT of query_sequence.
-        if clipped_query_bases > 0:
-            _seq = read.query_sequence
-            _quals = read.query_qualities
-            if _seq is not None:
-                read.query_sequence  = _seq[:-clipped_query_bases]
-                read.query_qualities = _quals[:-clipped_query_bases] if _quals is not None else None
+        # Step 4: append S (existing + newly soft-clipped), then re-append H.
+        # query_sequence is NOT modified — S bases are already present in it.
+        total_s = existing_s + soft_clip_bases
+        if total_s > 0:
+            cigar.append((4, total_s))
+        if existing_h > 0:
+            cigar.append((5, existing_h))
 
         read.cigartuples = cigar
         return True
 
     else:  # plus strand
         # The 5' end is at the LEFT side of the CIGAR.
-        # reference_start is the inclusive left bound.
-        # We want to clip until reference_start >= clip_boundary.
-        if read.reference_start >= clip_boundary:
+        # Goal: soft-clip until reference_start >= clip_boundary (= intron_end).
+        soft_clip_bases = 0
+
+        # Step 1: extract existing leading H (keep; re-insert before new S).
+        existing_h = 0
+        while cigar and cigar[0][0] == 5:
+            existing_h += cigar[0][1]
+            cigar.pop(0)
+
+        # Step 2: extract existing leading S (absorb into new S).
+        existing_s = 0
+        while cigar and cigar[0][0] == 4:
+            existing_s += cigar[0][1]
+            cigar.pop(0)
+
+        # Early exit: nothing to trim and no existing S to re-attach.
+        if existing_s == 0 and read.reference_start >= clip_boundary:
             return False
 
-        clipped_query_bases = 0
-        _ref_consuming = frozenset([0, 2, 3, 7, 8])
-        _query_consuming = frozenset([0, 1, 4, 7, 8])
+        if not cigar:
+            return False
+
+        # Step 3: trim ref-consuming ops from the left until
+        # reference_start >= clip_boundary.
         ref_pos = read.reference_start
         while cigar:
             op, length = cigar[0]
             if ref_pos >= clip_boundary:
                 break
-            if op in _ref_consuming:
+            if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
-                if op in _query_consuming:
-                    clipped_query_bases += trim
+                if op in _QUERY_CONSUMING:
+                    soft_clip_bases += trim
                 cigar[0] = (op, length - trim)
                 if cigar[0][1] == 0:
                     cigar.pop(0)
                 ref_pos += trim
-            else:
-                clipped_query_bases += length
+            elif op in (1, 4):  # I or S (safety — extracted above)
+                soft_clip_bases += length
+                cigar.pop(0)
+            else:               # H shouldn't appear here after step 1
                 cigar.pop(0)
             if not cigar:
                 return False
 
-        if clipped_query_bases > 0:
-            if cigar and cigar[0][0] == 5:
-                cigar[0] = (5, cigar[0][1] + clipped_query_bases)
-            else:
-                cigar.insert(0, (5, clipped_query_bases))
+        # Step 4: insert H then S at the start; query_sequence unchanged.
+        total_s = existing_s + soft_clip_bases
+        if total_s > 0:
+            cigar.insert(0, (4, total_s))
+        if existing_h > 0:
+            cigar.insert(0, (5, existing_h))
 
         if not cigar:
             return False
 
-        # Trim query_sequence / query_qualities to match the new CIGAR.
-        # Hard-clip (H) bases must NOT be in query_sequence; pysam enforces this.
-        # For plus strand, clipped 5'-end bases sit at the LEFT of query_sequence.
-        if clipped_query_bases > 0:
-            _seq = read.query_sequence
-            _quals = read.query_qualities
-            if _seq is not None:
-                read.query_sequence  = _seq[clipped_query_bases:]
-                read.query_qualities = _quals[clipped_query_bases:] if _quals is not None else None
-
         read.cigartuples = cigar
         read.reference_start = clip_boundary
+        return True
+
+
+def reroute_intronic_tail_5prime_via_junction(
+    read: pysam.AlignedSegment,
+    clip_boundary: int,
+    five_prime_position: int,
+    exon_cigar_str: str,
+    strand: str,
+) -> bool:
+    """Reroute intronic-mapped 5' bases through the splice junction to exon 1.
+
+    For Case 1/2/2b reads where the aligner mapped into an intron without an
+    N-op and without a 5' soft-clip, the TSV ``five_prime_position`` is already
+    correct but the BAM CIGAR still shows the intronic mapping.  This function:
+
+    1. Trims the CIGAR from the 5' end back to ``clip_boundary``
+       (``intron_start`` for ``-``; ``intron_end`` for ``+``), discarding the
+       intronic reference-consuming ops without touching ``query_sequence``.
+    2. Appends (``-``) or prepends (``+``) N(*intron_len*) + exon ops so the
+       same query bases are now assigned to exon-1 reference positions.
+
+    ``query_sequence`` is **not modified** — the intronic query bases are
+    simply reassigned to the exon-1 CIGAR ops.
+
+    A sanity check verifies that the exon ops consume the same number of query
+    bases as the trimmed intronic portion; the read is left unchanged on mismatch.
+
+    Args:
+        read:               pysam AlignedSegment — modified in-place.
+        clip_boundary:      Exon-2–side intron boundary.
+                            Minus strand: ``intron_start``.
+                            Plus strand:  ``intron_end``.
+        five_prime_position: Exon-1–side intron boundary.
+                            Minus strand: ``intron_end``.
+                            Plus strand:  ``intron_start``.
+        exon_cigar_str:     SAM CIGAR string for the exon-1 segment
+                            (from ``five_prime_exon_cigar`` in the TSV).
+        strand:             ``'+'`` or ``'-'``.
+
+    Returns:
+        True if the CIGAR was modified; False if preconditions not met.
+    """
+    if read.is_unmapped or not read.cigartuples or not exon_cigar_str:
+        return False
+    if read.reference_end is None:
+        return False
+
+    try:
+        from .local_aligner import cigar_str_to_ops
+        exon_ops = cigar_str_to_ops(exon_cigar_str)
+    except Exception:
+        return False
+    if not exon_ops:
+        return False
+
+    exon_q_bases = sum(l for op, l in exon_ops if op in _QUERY_CONSUMING)
+    cigar = list(read.cigartuples)
+
+    if strand == '-':
+        if read.reference_end <= clip_boundary:
+            return False  # already at or before boundary
+
+        # Count query bases in the intronic tail (must match exon_ops query span).
+        n_intronic_q = 0
+        tmp = cigar[:]
+        while tmp:
+            cur_end = _cigar_ref_end(read.reference_start, tmp)
+            if cur_end <= clip_boundary:
+                break
+            op, length = tmp[-1]
+            excess = cur_end - clip_boundary
+            if op in _REF_CONSUMING:
+                trim = min(length, excess)
+                if op in _QUERY_CONSUMING:
+                    n_intronic_q += trim
+                tmp[-1] = (op, length - trim)
+                if tmp[-1][1] == 0:
+                    tmp.pop()
+            elif op in _QUERY_CONSUMING:
+                n_intronic_q += length
+                tmp.pop()
+            else:
+                tmp.pop()
+
+        if n_intronic_q != exon_q_bases:
+            return False  # query-length mismatch — don't risk corrupting the read
+
+        # Trim the live CIGAR (no sequence change).
+        while cigar:
+            cur_end = _cigar_ref_end(read.reference_start, cigar)
+            if cur_end <= clip_boundary:
+                break
+            op, length = cigar[-1]
+            excess = cur_end - clip_boundary
+            if op in _REF_CONSUMING:
+                trim = min(length, excess)
+                cigar[-1] = (op, length - trim)
+                if cigar[-1][1] == 0:
+                    cigar.pop()
+            elif op in _QUERY_CONSUMING:
+                cigar.pop()
+            else:
+                cigar.pop()
+            if not cigar:
+                return False
+
+        if not cigar:
+            return False
+
+        intron_len = five_prime_position - _cigar_ref_end(read.reference_start, cigar)
+        if intron_len <= 0:
+            return False
+
+        cigar.append((3, intron_len))   # N
+        cigar.extend(exon_ops)
+        read.cigartuples = cigar
+        return True
+
+    else:  # plus strand
+        if read.reference_start >= clip_boundary:
+            return False
+
+        # Count query bases in the intronic head.
+        n_intronic_q = 0
+        tmp = cigar[:]
+        ref_pos = read.reference_start
+        while tmp:
+            op, length = tmp[0]
+            if ref_pos >= clip_boundary:
+                break
+            if op in _REF_CONSUMING:
+                deficit = clip_boundary - ref_pos
+                trim = min(length, deficit)
+                if op in _QUERY_CONSUMING:
+                    n_intronic_q += trim
+                tmp[0] = (op, length - trim)
+                if tmp[0][1] == 0:
+                    tmp.pop(0)
+                ref_pos += trim
+            elif op in _QUERY_CONSUMING:
+                n_intronic_q += length
+                tmp.pop(0)
+            else:
+                tmp.pop(0)
+
+        if n_intronic_q != exon_q_bases:
+            return False
+
+        # Trim the live CIGAR.
+        ref_pos = read.reference_start
+        while cigar:
+            op, length = cigar[0]
+            if ref_pos >= clip_boundary:
+                break
+            if op in _REF_CONSUMING:
+                deficit = clip_boundary - ref_pos
+                trim = min(length, deficit)
+                cigar[0] = (op, length - trim)
+                if cigar[0][1] == 0:
+                    cigar.pop(0)
+                ref_pos += trim
+            elif op in _QUERY_CONSUMING:
+                cigar.pop(0)
+            else:
+                cigar.pop(0)
+            if not cigar:
+                return False
+
+        # intron_len = clip_boundary (intron_end) − five_prime_position (intron_start)
+        intron_len = clip_boundary - five_prime_position
+        if intron_len <= 0:
+            return False
+
+        exon_ref_span = sum(l for op, l in exon_ops if op in _REF_CONSUMING)
+        new_ref_start = five_prime_position - exon_ref_span
+
+        cigar.insert(0, (3, intron_len))        # N
+        for op_tup in reversed(exon_ops):
+            cigar.insert(0, op_tup)
+
+        read.cigartuples = cigar
+        read.reference_start = new_ref_start
         return True
 
 
@@ -1183,7 +1392,7 @@ def write_corrected_bam(
             if genome is not None:
                 modified |= realign_exon_blocks(read, genome)
 
-            # 5' junction rescue: extend into upstream exon (Cat3 / Cases 1-2).
+            # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
             if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
                 modified |= extend_read_5prime_for_junction_rescue(
                     read,
@@ -1193,12 +1402,19 @@ def write_corrected_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # Case 4 intronic-snap: hard-clip the intronic tail at the 5' end.
-            # Fires when the aligner truncated inside an intron (no soft clip).
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
+            # Fires for reads with no soft-clip but a non-empty five_prime_exon_cigar
+            # (the aligner mapped into the intron using M/X/D ops rather than N).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
-            if _icp >= 0:
-                modified |= clip_intronic_tail_5prime(
-                    read, _icp, correction['strand']
+            _exon_cig = correction.get('five_prime_exon_cigar', '')
+            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
+                    and correction['five_prime_position'] is not None):
+                modified |= reroute_intronic_tail_5prime_via_junction(
+                    read,
+                    clip_boundary=_icp,
+                    five_prime_position=correction['five_prime_position'],
+                    exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
                 )
 
             # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
@@ -1275,7 +1491,7 @@ def write_softclipped_bam(
             if genome is not None:
                 modified |= realign_exon_blocks(read, genome)
 
-            # 5' junction rescue: extend into upstream exon (Cat3 / Cases 1-2).
+            # 5' junction rescue: extend into upstream exon (Cat3).
             if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
                 modified |= extend_read_5prime_for_junction_rescue(
                     read,
@@ -1285,11 +1501,17 @@ def write_softclipped_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # Case 4 intronic-snap: hard-clip the intronic tail at the 5' end.
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
-            if _icp >= 0:
-                modified |= clip_intronic_tail_5prime(
-                    read, _icp, correction['strand']
+            _exon_cig = correction.get('five_prime_exon_cigar', '')
+            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
+                    and correction['five_prime_position'] is not None):
+                modified |= reroute_intronic_tail_5prime_via_junction(
+                    read,
+                    clip_boundary=_icp,
+                    five_prime_position=correction['five_prime_position'],
+                    exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
                 )
 
             # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
@@ -1397,7 +1619,7 @@ def write_dual_bam(
             if genome is not None:
                 shared_modified |= realign_exon_blocks(read, genome)
 
-            # 5' rescue (Cat3 / Cases 1-2) — identical for both BAMs.
+            # 5' rescue (Cat3) — identical for both BAMs.
             if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
                 shared_modified |= extend_read_5prime_for_junction_rescue(
                     read,
@@ -1407,11 +1629,17 @@ def write_dual_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # Case 4 intronic-snap: hard-clip intronic tail — identical for both BAMs.
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
-            if _icp >= 0:
-                shared_modified |= clip_intronic_tail_5prime(
-                    read, _icp, correction['strand']
+            _exon_cig = correction.get('five_prime_exon_cigar', '')
+            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
+                    and correction['five_prime_position'] is not None):
+                shared_modified |= reroute_intronic_tail_5prime_via_junction(
+                    read,
+                    clip_boundary=_icp,
+                    five_prime_position=correction['five_prime_position'],
+                    exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
                 )
 
             # Save state at the divergence point (after shared ops, before 3' ops).

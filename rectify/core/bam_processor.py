@@ -299,26 +299,22 @@ def correct_read_3prime(
                 #   (a) the alignment's 5' end sits inside the rescued intron, AND
                 #   (b) there is no 5' soft-clip to extend via extend_read_5prime.
                 # This covers both Case 4 (intronic_snap, no soft clip) and Case 1/2
-                # rescues where the aligner mapped into the intron with no soft clip.
-                # If a soft clip IS present, bam_writer.extend_read_5prime_for_junction_rescue
-                # handles the CIGAR surgery and the clip is not needed.
-                # Minus strand: clip to intron_start (right end of alignment).
-                # Plus strand:  clip to intron_end   (left end of alignment).
+                # Diagnostic: flag reads whose 5' alignment end falls inside the intron.
+                # five_prime_intron_clip_pos records the exon-side boundary for future
+                # BAM rerouting surgery (converting intronic M ops → N + upstream exon M).
+                # Currently no BAM surgery is performed for these reads — their TSV
+                # five_prime_position is correct and no sequence data is hidden.
                 _rj = _3ss_result.get('rescued_junction')
                 if _rj:
                     _, _intron_start, _intron_end = _rj
                     if strand == '-':
                         _align_5p = (read.reference_end - 1) if read.reference_end else -1
                         _in_intron = _intron_start <= _align_5p < _intron_end
-                        _sc_at_5p = (read.cigartuples[-1][1]
-                                     if read.cigartuples and read.cigartuples[-1][0] == 4 else 0)
-                        _five_prime_intron_clip_pos = _intron_start if (_in_intron and _sc_at_5p == 0) else -1
+                        _five_prime_intron_clip_pos = _intron_start if _in_intron else -1
                     else:
                         _align_5p = read.reference_start
                         _in_intron = _intron_start <= _align_5p < _intron_end
-                        _sc_at_5p = (read.cigartuples[0][1]
-                                     if read.cigartuples and read.cigartuples[0][0] == 4 else 0)
-                        _five_prime_intron_clip_pos = _intron_end if (_in_intron and _sc_at_5p == 0) else -1
+                        _five_prime_intron_clip_pos = _intron_end if _in_intron else -1
                 else:
                     _five_prime_intron_clip_pos = -1
 

@@ -25,7 +25,12 @@ from rectify.utils.splice_motif import (
 from rectify.core.analyze.junction_analysis import ASSDetector
 from rectify.core.aggregate.junctions import filter_junctions, resolve_homopolymer_ambiguity
 from rectify.core.consensus import AlignmentInfo, _rescue_5prime_softclip
-from rectify.core.splice_aware_5prime import rescue_3ss_truncation
+from rectify.core.splice_aware_5prime import (
+    rescue_3ss_truncation,
+    _hp_edit_distance,
+    _ACCEPTOR_PRIORITY_PLUS,
+    _ACCEPTOR_PRIORITY_MINUS,
+)
 
 
 # =============================================================================
@@ -888,3 +893,331 @@ class TestRescue3SSTruncation:
         )
         r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='+')
         assert r['rescue_type'] == 'none'
+
+
+# =============================================================================
+# _hp_edit_distance — homopolymer-aware edit distance
+# =============================================================================
+
+class TestHpEditDistance:
+    """
+    Indels whose base equals an immediate neighbour in the SAME string cost 0.5
+    (Nanopore homopolymer run-length error). All other operations cost 1.0.
+    """
+
+    def test_identical_strings(self):
+        assert _hp_edit_distance('ACGT', 'ACGT') == 0.0
+
+    def test_empty_strings(self):
+        assert _hp_edit_distance('', '') == 0.0
+        assert _hp_edit_distance('', 'A') == 1.0
+        assert _hp_edit_distance('A', '') == 1.0
+
+    def test_substitution_always_full_cost(self):
+        """Substitutions always cost 1.0, even inside a homopolymer."""
+        assert _hp_edit_distance('ACGT', 'ACCT') == 1.0
+        assert _hp_edit_distance('AAAA', 'AABA') == 1.0
+
+    def test_non_run_indel_full_cost(self):
+        """Deletion of a base with NO identical neighbour costs 1.0."""
+        # Delete C from ACGT → AGT; C neighbours are A and G, not C
+        assert _hp_edit_distance('ACGT', 'AGT') == 1.0
+
+    def test_homopolymer_deletion_half_cost(self):
+        """Delete one base from a run of identical bases → cost 0.5."""
+        assert _hp_edit_distance('AAAA', 'AAA') == pytest.approx(0.5)
+        assert _hp_edit_distance('TTTT', 'TTT') == pytest.approx(0.5)
+
+    def test_homopolymer_insertion_half_cost(self):
+        """Insert one base into an existing run → cost 0.5."""
+        assert _hp_edit_distance('AAA', 'AAAA') == pytest.approx(0.5)
+
+    def test_mixed_hp_and_substitution(self):
+        """One hp-indel (0.5) + one substitution (1.0) = 1.5."""
+        # AAACG → AACGT: delete one A from run (0.5) + insert T at end (1.0)
+        assert _hp_edit_distance('AAACG', 'AACGT') == pytest.approx(1.5)
+
+    def test_hp_indel_in_middle_of_run(self):
+        """Single A deletion from AAAACCC → AAACCC is 0.5."""
+        assert _hp_edit_distance('AAAACCC', 'AAACCC') == pytest.approx(0.5)
+
+    def test_two_hp_indels_sum(self):
+        """Two hp indels (one A from A-run, one C from C-run) → 1.0 total."""
+        # 'AACCC' → 'ACC': delete one A (in run of 2: 0.5) + delete one C (in run of 3: 0.5) = 1.0
+        assert _hp_edit_distance('AACCC', 'ACC') == pytest.approx(1.0)
+
+
+# =============================================================================
+# Acceptor priority tables
+# =============================================================================
+
+class TestAcceptorPriority:
+    """
+    _ACCEPTOR_PRIORITY_PLUS:  last 2 bases of intron (genomic, plus strand)
+      AG=0 (canonical) < CG=1 < TG=2 < AT=3 < other=4
+
+    _ACCEPTOR_PRIORITY_MINUS: first 2 bases of intron (genomic, minus strand)
+      CT=0 (RC of AG) < CG=1 < CA=2 (RC of TG) < AT=3 < other=4
+    """
+
+    def test_plus_values(self):
+        assert _ACCEPTOR_PRIORITY_PLUS['AG'] == 0
+        assert _ACCEPTOR_PRIORITY_PLUS['CG'] == 1
+        assert _ACCEPTOR_PRIORITY_PLUS['TG'] == 2
+        assert _ACCEPTOR_PRIORITY_PLUS['AT'] == 3
+
+    def test_plus_ordering(self):
+        p = _ACCEPTOR_PRIORITY_PLUS
+        assert p['AG'] < p['CG'] < p['TG'] < p['AT']
+
+    def test_minus_values(self):
+        assert _ACCEPTOR_PRIORITY_MINUS['CT'] == 0
+        assert _ACCEPTOR_PRIORITY_MINUS['CG'] == 1
+        assert _ACCEPTOR_PRIORITY_MINUS['CA'] == 2
+        assert _ACCEPTOR_PRIORITY_MINUS['AT'] == 3
+
+    def test_minus_ordering(self):
+        m = _ACCEPTOR_PRIORITY_MINUS
+        assert m['CT'] < m['CG'] < m['CA'] < m['AT']
+
+    def test_unknown_dinuc_returns_4_via_get(self):
+        assert _ACCEPTOR_PRIORITY_PLUS.get('NN', 4) == 4
+        assert _ACCEPTOR_PRIORITY_PLUS.get('GG', 4) == 4
+        assert _ACCEPTOR_PRIORITY_MINUS.get('NN', 4) == 4
+        assert _ACCEPTOR_PRIORITY_MINUS.get('AA', 4) == 4
+
+    def test_plus_ag_best(self):
+        ag = _ACCEPTOR_PRIORITY_PLUS['AG']
+        for motif in ('CG', 'TG', 'AT'):
+            assert ag < _ACCEPTOR_PRIORITY_PLUS[motif]
+
+    def test_minus_ct_best(self):
+        ct = _ACCEPTOR_PRIORITY_MINUS['CT']
+        for motif in ('CG', 'CA', 'AT'):
+            assert ct < _ACCEPTOR_PRIORITY_MINUS[motif]
+
+
+# =============================================================================
+# Additional rescue_3ss_truncation cases — v2.9.6/v2.9.8/v2.9.9 logic
+# =============================================================================
+
+class TestRescue3SSTruncationExtended:
+    """
+    Tests for:
+      v2.9.6: dynamic shift range + canonical GT/GC donor preference (plus strand)
+      v2.9.8: ±5 bp baseline; minus strand canonical AC/GC; tuple scoring
+      v2.9.9: hp_edit_distance scoring; 3'SS acceptor tiebreaker
+
+    Each test uses a purpose-built genome dict to isolate the behaviour under test.
+    """
+
+    # ---- ±5 baseline catches a 3-bp offset ----
+
+    def test_plus_offset_junction_rescued(self):
+        """
+        Junction annotated at intron_start=103, but true GT donor is at 100.
+        The ±5 baseline (not the ambiguity run) covers this 3-bp shift.
+        Soft-clip = A*8 matches exon1 (A*100) ending at pos 99.
+        """
+        genome = {'chrO': 'A' * 100 + 'GT' + 'N' * 98 + 'C' * 100}
+        junction = {('chrO', 103, 200)}
+        read = MockRead(
+            reference_name='chrO',
+            reference_start=200,
+            reference_end=250,
+            is_reverse=False,
+            query_sequence='A' * 8 + 'C' * 50,
+            cigartuples=[(4, 8), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junction, strand='+')
+        assert r['rescued'] is True
+        # shift=-3 lands intron_start at 100 (GT canonical); corrected = 99
+        assert r['five_prime_corrected'] == 99
+
+    # ---- Canonical GT donor beats non-canonical AA ----
+
+    def test_plus_canonical_gt_beats_non_canonical(self):
+        """
+        Two junctions; exon1 is A*50 for both → same edit distance for A*8 clip.
+        Junction at intron_start=50 has GT donor (canonical).
+        Junction at intron_start=150 has AA donor (non-canonical).
+        GT should win.
+        """
+        genome = {'chrC': 'A' * 50 + 'GT' + 'N' * 98 + 'AA' + 'N' * 98 + 'A' * 50}
+        junctions = {
+            ('chrC', 50, 150),   # GT donor
+            ('chrC', 150, 250),  # AA donor
+        }
+        read = MockRead(
+            reference_name='chrC',
+            reference_start=150,
+            reference_end=200,
+            is_reverse=False,
+            query_sequence='A' * 8 + 'N' * 50,
+            cigartuples=[(4, 8), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junctions, strand='+')
+        assert r['rescued'] is True
+        assert r['five_prime_corrected'] == 49  # intron_start=50 → corrected=49
+
+    # ---- GC donor is canonical (minor spliceosome) ----
+
+    def test_plus_gc_donor_is_canonical(self):
+        """GC donor is accepted as canonical and preferred over AA."""
+        genome = {'chrGC': 'A' * 50 + 'GC' + 'N' * 98 + 'AA' + 'N' * 98 + 'A' * 50}
+        junctions = {
+            ('chrGC', 50, 150),   # GC donor → canonical
+            ('chrGC', 150, 250),  # AA donor → non-canonical
+        }
+        read = MockRead(
+            reference_name='chrGC',
+            reference_start=150,
+            reference_end=200,
+            is_reverse=False,
+            query_sequence='A' * 8 + 'N' * 50,
+            cigartuples=[(4, 8), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junctions, strand='+')
+        assert r['rescued'] is True
+        assert r['five_prime_corrected'] == 49
+
+    # ---- Minus strand: AC donor canonical (RC of GT) ----
+
+    def test_minus_ac_donor_canonical(self):
+        """
+        Minus strand: genome[intron_end-2:intron_end] = 'AC' is canonical (RC of GT).
+        Two junctions share the same intron_start (both within proximity of align_5prime),
+        but have different intron_ends and thus different 5'SS dinucleotides.
+        AC should win over TT at equal edit distance.
+
+        Genome layout:
+          pos 0-98:   exon2 (3' side; read body) — all C's except dinucs
+          pos 98-99:  'TT' → non-canonical (junction B intron_end=100)
+          pos 100-197: exon-candidate for junction B: G*98
+          pos 198-199: 'AC' → canonical   (junction A intron_end=200)
+          pos 200-297: exon-candidate for junction A: G*98
+        Both junction exons start with 'G'*8 → soft-clip 'G'*8 matches both with ed=0.
+        align_5prime = reference_end - 1 = 99; intron_start=99 for both → dist=0.
+        """
+        genome = {
+            'chrM2': (
+                'C' * 98          # exon2 body (pos 0-97)
+                + 'TT'            # pos 98-99: non-canonical 5'SS for junction_end=100
+                + 'G' * 98        # pos 100-197: exon1 candidate for junction B
+                + 'AC'            # pos 198-199: canonical 5'SS for junction_end=200
+                + 'G' * 98        # pos 200-297: exon1 candidate for junction A
+            )
+        }
+        junctions = {
+            ('chrM2', 99, 200),   # genome[198:200]='AC' → canonical
+            ('chrM2', 99, 100),   # genome[98:100]='TT' → non-canonical
+        }
+        # Minus strand read: align_5prime = reference_end - 1 = 99
+        # dist = intron_start(99) - align_5prime(99) = 0 ≤ junction_proximity_bp ✓
+        # Soft clip at HIGH end (last op) = 'G'*8, matching genome[200:208] and genome[100:108]
+        read = MockRead(
+            reference_name='chrM2',
+            reference_start=10,
+            reference_end=100,
+            is_reverse=True,
+            query_sequence='C' * 82 + 'G' * 8,  # last 8 = soft-clip at 5' (high) end
+            cigartuples=[(0, 82), (4, 8)],
+        )
+        r = rescue_3ss_truncation(read, genome, junctions, strand='-')
+        assert r['rescued'] is True
+        assert r['five_prime_corrected'] == 200  # canonical AC junction (intron_end=200)
+
+    # ---- 3'SS acceptor tiebreaker: AG (priority 0) beats CG (priority 1) ----
+
+    def test_plus_acceptor_ag_beats_cg(self):
+        """
+        Two GT-donor junctions with identical edit distances.
+        Junction 1 ends with AG (3'SS acceptor priority 0).
+        Junction 2 ends with CG (3'SS acceptor priority 1).
+        AG should win.
+
+        Genome:
+          exon1   = A*50           (pos 0-49)
+          intron1 = GT + N*96 + AG (pos 50-149; GT donor, AG acceptor)
+          landing1= A*50           (pos 150-199)
+          intron2 = GT + N*96 + CG (pos 200-299; GT donor, CG acceptor)
+          landing2= A*50           (pos 300-349)
+        """
+        genome = {
+            'chrAcc': (
+                'A' * 50
+                + 'GT' + 'N' * 96 + 'AG'
+                + 'A' * 50
+                + 'GT' + 'N' * 96 + 'CG'
+                + 'A' * 50
+            )
+        }
+        junctions = {
+            ('chrAcc', 50, 150),   # AG acceptor
+            ('chrAcc', 200, 300),  # CG acceptor
+        }
+        read = MockRead(
+            reference_name='chrAcc',
+            reference_start=150,
+            reference_end=200,
+            is_reverse=False,
+            query_sequence='A' * 8 + 'A' * 50,
+            cigartuples=[(4, 8), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junctions, strand='+')
+        assert r['rescued'] is True
+        assert r['five_prime_corrected'] == 49  # AG junction (intron_start=50)
+
+    # ---- hp scoring prefers homopolymer-error match ----
+
+    def test_plus_hp_edit_prefers_hp_match(self):
+        """
+        Soft-clip = 'AAAAAC' (5 A's + C).
+        Two junctions both close to align_5prime (within proximity=10):
+          Junction A (intron_start=100): exon ends at genome[95:101]='AAAAAC'
+            Wait — need exon BEFORE intron_start. genome[95:100]='AAAAC' (4 A's + C).
+            hp_ed('AAAAAC', 'AAAAC') = 0.5 (delete one A from run).
+          Junction B (intron_start=106): exon ends at genome[101:106]='AACCG'.
+            hp_ed('AAAAAC', 'AACCG') = 3 (two subs).
+        Both junctions have GT donors.  Junction A wins (hp_ed=0.5 < 3).
+
+        Genome:
+          pos 0-94:   A*95  (poly-A exon body)
+          pos 95-99:  'AAAAC'  (last 5 = candidate window for junction A at is=100)
+          pos 100-101: 'GT'  (donor for junction A)
+          pos 102-105: 'AACCG'... actually need window for junction B too
+          pos 100-105: 'GTAAC'
+          pos 106-107: 'GT'  (donor for junction B)
+          ...
+        Simpler: put both intron_starts at 100 and 106, both with GT donors.
+        """
+        # exon ends at pos 99 (for junction A) and pos 105 (for junction B)
+        # genome[95:100]='AAAAC' → matches clip 'AAAAAC' with hp_ed=0.5
+        # genome[101:106]='GTAAC' → hp_ed('AAAAAC','GTAAC')=3 (sub G,T;A match,A→A,C match)
+        genome = {
+            'chrHP': (
+                'A' * 95 + 'AAAAC'   # pos 0-99: poly-A exon
+                + 'GT'               # pos 100-101: GT donor for junction A
+                + 'GTAAC'            # pos 102-106: sequence between junctions
+                + 'GT'               # pos 107-108: GT donor for junction B (intron_start=107)
+                + 'N' * 90           # intron body
+                + 'G' * 100          # exon2 (read landing zone): pos 199+
+            )
+        }
+        junctions = {
+            ('chrHP', 100, 190),   # GT at 100; exon candidate = genome[95:100]='AAAAC'
+            ('chrHP', 107, 197),   # GT at 107; exon candidate = genome[102:107]='GTAAC'
+        }
+        # Read starts at 199 (exon2), soft clip 'AAAAAC' must match exon near each intron_start.
+        # dist(jA) = 199 - 190 = 9 ≤ 10 ✓; dist(jB) = 199 - 197 = 2 ≤ 10 ✓
+        read = MockRead(
+            reference_name='chrHP',
+            reference_start=199,
+            reference_end=249,
+            is_reverse=False,
+            query_sequence='AAAAAC' + 'G' * 50,
+            cigartuples=[(4, 6), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junctions, strand='+')
+        assert r['rescued'] is True
+        assert r['five_prime_corrected'] == 99  # junction A: intron_start=100 → corrected=99

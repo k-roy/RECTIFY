@@ -196,6 +196,97 @@ python -m rectify correct ...
 
 ---
 
+## Chunked parallel alignment
+
+For large DRS datasets (> 5 GB FASTQ, multi-hour alignment per aligner), use
+`rectify split` to run alignment as a 2D SLURM array: N chunks × M aligners.
+
+### Overview
+
+```
+rectify split    →  N chunk FASTQs
+SLURM array      →  N × M alignment jobs (one per chunk/aligner pair)
+samtools merge   →  one BAM per aligner (across all chunks)
+rectify consensus →  best-aligner-per-read rectified BAM
+```
+
+### Step 1 — Split and generate scripts
+
+```bash
+rectify split reads.fastq.gz \
+    -n 16 \
+    -o /scratch/chunks/ \
+    --generate-slurm \
+    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --genome /ref/genome.fa.gz \
+    --annotation /ref/genes.gff.gz \
+    --slurm-partition larsms,owners \
+    --slurm-cpus 16 \
+    --slurm-mem 64G \
+    --slurm-time 12:00:00
+```
+
+This writes to `/scratch/chunks/`:
+
+| File | Purpose |
+|------|---------|
+| `wt_rep1_chunk_000_of_016.fastq.gz` … `_015_of_016.fastq.gz` | 16 equal chunk FASTQs |
+| `chunks_manifest.json` | chunk paths in JSON |
+| `run_array_align.sh` | SLURM `--array=0-79` script |
+| `run_merge_and_consensus.sh` | post-array merge + consensus script |
+| `slurm_logs/` | log directory |
+
+### Step 2 — Submit the array
+
+```bash
+sbatch /scratch/chunks/run_array_align.sh
+```
+
+Each task decodes its `SLURM_ARRAY_TASK_ID` (0–79) as:
+
+```bash
+CHUNK_IDX=$(( SLURM_ARRAY_TASK_ID % 16 ))
+ALIGNER_IDX=$(( SLURM_ARRAY_TASK_ID / 16 ))
+```
+
+Tasks run `rectify align --no-consensus` — each produces a single-aligner BAM
+for that chunk. Thread limits (`OMP_NUM_THREADS`, `LOKY_MAX_CPU_COUNT`, etc.)
+are set automatically by the generated script.
+
+### Step 3 — Merge and run consensus
+
+After the array completes:
+
+```bash
+bash /scratch/chunks/run_merge_and_consensus.sh
+```
+
+This script:
+
+1. `samtools merge` — merges all chunk BAMs per aligner into one sorted BAM
+2. `rectify consensus` — runs per-read aligner selection across all merged BAMs
+
+### Scheduler environment variables
+
+The generated scripts use `SLURM_ARRAY_TASK_ID` and `SLURM_CPUS_PER_TASK`.
+For other schedulers, set these equivalents before invoking the array script:
+
+| Scheduler | Task ID variable | CPU variable |
+|-----------|-----------------|--------------|
+| SLURM | `SLURM_ARRAY_TASK_ID` | `SLURM_CPUS_PER_TASK` |
+| UGE/SGE | `SGE_TASK_ID` (1-based) | `NSLOTS` |
+| PBS/Torque | `PBS_ARRAY_INDEX` | `PBS_NUM_PPN` |
+
+For UGE/SGE, the task IDs are 1-based; adjust the decode logic:
+
+```bash
+# UGE wrapper (add before the CHUNK_IDX / ALIGNER_IDX lines):
+SLURM_ARRAY_TASK_ID=$(( SGE_TASK_ID - 1 ))
+SLURM_CPUS_PER_TASK=$NSLOTS
+```
+
+---
+
 ## Troubleshooting
 
 **Job fails immediately with "command not found: rectify"**

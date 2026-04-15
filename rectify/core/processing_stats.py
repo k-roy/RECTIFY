@@ -156,7 +156,7 @@ class ProcessingStats:
                 self.ends_refined_netseq += 1
 
             # Poly(A) length statistics
-            polya_length = result.get('polya_length', 0)
+            polya_length = result.get('polya_length') or 0
             if polya_length > 0:
                 self.reads_with_polya += 1
                 self.polya_length_sum += polya_length
@@ -234,11 +234,13 @@ def write_stats_tsv(stats: ProcessingStats, output_path: str) -> None:
         if processed > 0:
             f.write(f"ends_flagged_ag_mispriming\t{stats.ends_flagged_ag_mispriming}\t{100*stats.ends_flagged_ag_mispriming/processed:.2f}\t3' ends flagged for AG mispriming\n")
 
-        # Confidence section
-        if processed > 0:
-            f.write(f"confidence_high\t{stats.confidence_high}\t{100*stats.confidence_high/processed:.2f}\tHigh confidence assignments\n")
-            f.write(f"confidence_medium\t{stats.confidence_medium}\t{100*stats.confidence_medium/processed:.2f}\tMedium confidence assignments\n")
-            f.write(f"confidence_low\t{stats.confidence_low}\t{100*stats.confidence_low/processed:.2f}\tLow confidence assignments\n")
+        # Confidence section (denominator = total output rows, which can exceed
+        # reads_processed when NET-seq splits one read into multiple assignments)
+        conf_total = stats.confidence_high + stats.confidence_medium + stats.confidence_low
+        if conf_total > 0:
+            f.write(f"confidence_high\t{stats.confidence_high}\t{100*stats.confidence_high/conf_total:.2f}\tHigh confidence assignments\n")
+            f.write(f"confidence_medium\t{stats.confidence_medium}\t{100*stats.confidence_medium/conf_total:.2f}\tMedium confidence assignments\n")
+            f.write(f"confidence_low\t{stats.confidence_low}\t{100*stats.confidence_low/conf_total:.2f}\tLow confidence assignments\n")
 
     logger.info(f"Wrote processing statistics to {output_path}")
 
@@ -306,12 +308,14 @@ def generate_stats_report(stats: ProcessingStats) -> str:
         lines.append(f"  AG mispriming flagged:    {stats.ends_flagged_ag_mispriming:>12,} ({100*stats.ends_flagged_ag_mispriming/processed:>5.1f}%)")
     lines.append("")
 
-    # Confidence
+    # Confidence (denominator = total output rows, which can exceed reads_processed
+    # when NET-seq splits one read into multiple assignments)
+    conf_total = stats.confidence_high + stats.confidence_medium + stats.confidence_low
     lines.append("Final Confidence:")
-    if processed > 0:
-        lines.append(f"  High:                     {stats.confidence_high:>12,} ({100*stats.confidence_high/processed:>5.1f}%)")
-        lines.append(f"  Medium:                   {stats.confidence_medium:>12,} ({100*stats.confidence_medium/processed:>5.1f}%)")
-        lines.append(f"  Low:                      {stats.confidence_low:>12,} ({100*stats.confidence_low/processed:>5.1f}%)")
+    if conf_total > 0:
+        lines.append(f"  High:                     {stats.confidence_high:>12,} ({100*stats.confidence_high/conf_total:>5.1f}%)")
+        lines.append(f"  Medium:                   {stats.confidence_medium:>12,} ({100*stats.confidence_medium/conf_total:>5.1f}%)")
+        lines.append(f"  Low:                      {stats.confidence_low:>12,} ({100*stats.confidence_low/conf_total:>5.1f}%)")
     lines.append("")
     lines.append("=" * 70)
 

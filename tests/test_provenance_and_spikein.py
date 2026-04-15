@@ -137,7 +137,7 @@ class TestCorrectCommandConfig:
             genome=None,
             output=None,
             annotation=None,
-            polya_sequenced=False,
+            dT_primed_cDNA=False,
             skip_atract_check=False,
             skip_ag_check=False,
             skip_polya_trim=False,

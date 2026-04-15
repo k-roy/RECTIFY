@@ -1,10 +1,22 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-04-09 (NEW-061–064 fixed in v2.7.9)
+## Last Updated: 2026-04-11 (Bugs 37, 38, 41, 55 fixed in v0.9.0)
 
 ---
 
 ## Open
+
+---
+
+### NEW-066 (MEDIUM) — uLTRA reuses stale cached database with empty genome, silently produces zero alignments
+
+**File:** `rectify/core/multi_aligner.py`, `run_ultra()` (~line 848)
+
+**Symptom:** uLTRA exits 0 but produces a SAM with only `@SQ` headers and no alignment records. Observed for chunks 0–6 of `wt_by4742_rep1_chunked_20260412` across three separate SLURM runs.
+
+**Root cause:** uLTRA caches its genome index in `{output_bam.stem}_ultra_tmp/database.db`. When the first run fails mid-way (after the `ultra_tmp/` dir is created but before the genome is indexed), the `_tmp_dir` decompressed genome is cleaned up. On retry, uLTRA prints "Database found in directory — using this one" and skips genome indexing. `refs_sequences.fa` is 0 bytes → "Number of ref seqs in fasta: 0" → all chromosomes excluded → zero alignments. `run_ultra()` only checks `sam_path.exists() and sam_path.stat().st_size > 0`, but uLTRA writes a valid-looking SAM with just headers even when it aligned nothing.
+
+**Fix:** After `ultra_out_dir.mkdir()`, check if `database.db` exists but `refs_sequences.fa` is empty or missing — this is the fingerprint of a failed prior indexing run. Remove the stale directory and recreate it so uLTRA re-indexes from scratch. A valid cache (non-empty `refs_sequences.fa`) should be preserved — the index is genome/GTF-derived and is intentionally shared across chunks. Fixed in `multi_aligner.py` `run_ultra()`.
 
 ---
 
@@ -56,39 +68,39 @@ When `ambiguity_range == 1`, there is only one candidate position; NET-seq refin
 
 ---
 
-### Bug 37 (HIGH) — Zero unit tests for `terminal_exon_refiner.py`
+### ~~Bug 37 (HIGH) — Zero unit tests for `terminal_exon_refiner.py` — Fixed 2026-04-11 (v0.9.0)~~
 
-The module (1690 lines, multiple coordinate-sensitive code paths including Bugs 29, 33, 35) has no dedicated test file. Highest-priority test gap.
+The module (1690 lines, multiple coordinate-sensitive code paths including Bugs 29, 33, 35) had no dedicated test file. Highest-priority test gap.
 
-**Fix:** Add `tests/test_terminal_exon_refiner.py` covering at minimum: 3'SS boundary detection (both strands), truncated-read detection, and GFF-derived coordinate loading.
-**File:** `rectify/core/terminal_exon_refiner.py`
-
----
-
-### Bug 38 (HIGH) — `consensus.py` alignment selection only indirectly tested
-
-Core per-read consensus selection logic is exercised only through two peripheral tests (`test_xr_flag.py`, `test_gapmm2_seq_restore.py`). Tie-breaking, penalty scoring, and multi-aligner merging have no direct unit tests.
-
-**Fix:** Add `tests/test_consensus_selection.py` with synthetic multi-aligner BAM fixtures.
-**File:** `rectify/core/consensus.py`
+**Fix:** Added `tests/test_terminal_exon_refiner.py` with 51 tests covering: `SpliceSiteIndex` add/lookup/nearby, `load_splice_sites_from_gff` (plus and minus strand coordinate conversion, GFF position conflicts), `merge_splice_indices`, `detect_junction_truncated_reads` (both strands), `detect_partial_junction_crossings`, `get_soft_clip_info`, `simple_align`, `detect_mismatch_clusters`. Real-data class (`TestLoadSpliceSitesFromBundledGff`, `TestWithRealBam`) validates known S. cerevisiae intron positions (YAL030W, YAL001C) against the bundled R64-5-1 GFF and wt_by4742_rep1 BAM.
+**File:** `tests/test_terminal_exon_refiner.py`
 
 ---
 
-### Bug 41 (MEDIUM) — Trained `--polya-model` is never used
+### ~~Bug 38 (HIGH) — `consensus.py` alignment selection only indirectly tested — Fixed 2026-04-11 (v0.9.0)~~
 
-`--polya-model` flag, model training pipeline, and `load_model()` infrastructure exist, but `polya_model_path` is captured in config and then discarded. The hardcoded 80% A-richness threshold is always applied regardless.
+Core per-read consensus selection logic was exercised only through two peripheral tests (`test_xr_flag.py`, `test_gapmm2_seq_restore.py`). Tie-breaking, penalty scoring, and multi-aligner merging had no direct unit tests.
 
-**Fix:** Wire `polya_model_path` through `bam_processor.correct_read_3prime()`, or remove the flag with a deprecation notice.
-**File:** `rectify/core/polya_model.py`, `rectify/core/correct_command.py:173-175`
+**Fix:** Added `tests/test_consensus_selection.py` with 40 tests covering: `extract_junctions_from_cigar` (multi-intron, soft-clip vs N op), `check_canonical_splice_sites` (GT/AG, GC/AG, non-canonical, real YAL030W intron), `score_alignment` (5' clip penalty −2/base, A-tract depth cap at 10, 3' clip penalty), `select_best_alignment` (winner selection, `was_5prime_rescued` flag, tiebreaker by annotated junction count / 3' agreement, `confidence` levels). Real-data class validates against wt_by4742_rep1 BAM at the YAL030W locus.
+**File:** `tests/test_consensus_selection.py`
 
 ---
 
-### Bug 55 (MEDIUM) — Several APA clustering parameters not CLI-configurable
+### ~~Bug 41 (MEDIUM) — Trained `--polya-model` is never used — Fixed 2026-04-11 (v0.9.0)~~
 
-`DEFAULT_MIN_PEAK_SEPARATION = 5`, `DEFAULT_MAX_CLUSTER_RADIUS = 10`, and `DEFAULT_MIN_SAMPLES = 2` have no corresponding CLI arguments. (`DEFAULT_CLUSTER_DISTANCE` and `DEFAULT_MIN_READS` are already exposed as `--cluster-distance` and `--min-reads`.) No signal smoothing before peak calling; single-read outliers in sparse regions can be called as peaks.
+`--polya-model` flag, model training pipeline, and `load_model()` infrastructure existed, but `polya_model_path` was captured in config and then discarded. The hardcoded 80% A-richness threshold was always applied regardless.
 
-**Fix:** Expose the three remaining constants via CLI (`--min-peak-sep`, `--max-cluster-radius`, `--min-cluster-samples`); apply Gaussian smoothing (σ = 2–3 bp) before peak calling.
-**File:** `rectify/core/analyze/clustering.py:26-31`, `rectify/core/analyze_command.py`
+**Fix:** Wired `polya_model_path` through `bam_processor.correct_read_3prime()` (both streaming and parallel modes). Added `pt_tag`, `polya_score`, and `polya_source` columns to `corrected_3ends.tsv`. Added `rectify tag-polya` subcommand for retroactive annotation of aligned BAMs. Added unaligned dorado BAM auto-detection and tag-preserving alignment pipeline in `preprocess.py`.
+**Files:** `rectify/core/bam_processor.py`, `rectify/core/correct_command.py`, `rectify/core/tag_polya_command.py`, `rectify/core/preprocess.py`, `rectify/cli.py`
+
+---
+
+### ~~Bug 55 (MEDIUM) — Several APA clustering parameters not CLI-configurable — Fixed 2026-04-11 (v0.9.0)~~
+
+`DEFAULT_MIN_PEAK_SEPARATION = 5`, `DEFAULT_MAX_CLUSTER_RADIUS = 10`, and `DEFAULT_MIN_SAMPLES = 2` had no corresponding CLI arguments.
+
+**Fix:** Added `--min-peak-sep`, `--max-cluster-radius`, `--min-cluster-samples` to `create_analyze_parser()`. Both clustering call sites (single-sample and manifest mode) dispatch to `cluster_cpa_sites_adaptive()` when any non-default value is provided; otherwise fall through to the existing fixed-distance `cluster_cpa_sites()`.
+**Files:** `rectify/core/analyze_command.py`
 
 ---
 

@@ -766,6 +766,8 @@ def simple_align(query: str, target: str, max_mismatches: int = None) -> Tuple[i
                 if mismatches > max_mismatches:
                     break
 
+        if mismatches > max_mismatches:
+            continue
         score = len(query) - mismatches
         if score > best_score:
             best_score = score

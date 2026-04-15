@@ -280,15 +280,17 @@ def correct_5prime_for_splicing(
         if overlapping_introns:
             # Find the most relevant intron (closest to 5' end)
             if strand == '+':
-                # For plus strand, we want the intron that starts closest to the 5' end
-                # and shift to the downstream exon (higher coordinate)
+                # For plus strand, the 5' end (TSS) is at low coordinates.
+                # If it lands inside an intron, correct to the last base of the
+                # upstream exon: intron_start - 1.
                 best_intron = min(overlapping_introns, key=lambda x: x['intron_start'])
-                corrected_pos = best_intron['downstream_exon_start']
+                corrected_pos = best_intron['intron_start'] - 1
             else:
-                # For minus strand, we want the intron that ends closest to the 5' end
-                # and shift to the upstream exon (lower coordinate)
+                # For minus strand, the 5' end (TSS) is at high coordinates.
+                # If it lands inside an intron, correct to the first base of the
+                # downstream exon: intron_end.
                 best_intron = max(overlapping_introns, key=lambda x: x['intron_end'])
-                corrected_pos = best_intron['upstream_exon_end'] - 1
+                corrected_pos = best_intron['intron_end']
 
             result.starts_in_intron = True
             result.five_prime_corrected = corrected_pos
@@ -453,6 +455,99 @@ def _extract_5prime_terminal_error_seq(
     return ""
 
 
+def _extract_5prime_deletion_bridged_seq(
+    read: pysam.AlignedSegment,
+    scan_query_bp: int = 50,
+    min_deletion_ref_bp: int = 15,
+) -> str:
+    """Return query bases stranded past a large deletion near the 5' end.
+
+    When the aligner bridges the exon-2/intron boundary using a large D-op
+    (instead of an N-op or soft-clip), the bases between the 5' end and the
+    deletion map to intronic reference but originate from exon 1.  The
+    sliding-window mismatch scan in :func:`_extract_5prime_terminal_error_seq`
+    misses these reads because the = (exact-match) ops against intronic sequence
+    have zero error rate, even though the alignment is wrong.
+
+    This function recognises the pattern:
+        [5' end] …= (=|X|I)* D(≥min_deletion_ref_bp) [rest of read]
+    and returns the query bases from the 5' end up to (but not including) the
+    large D-op.  Those bases become ``rescue_seq`` for exon-1 local alignment.
+
+    Parameters
+    ----------
+    scan_query_bp:
+        Maximum query bases to scan from the 5' end before giving up.
+    min_deletion_ref_bp:
+        Minimum D-op length (reference bases deleted) to consider a "bridging"
+        deletion.  Small D ops (1–2 bp) are routine nanopore alignment noise.
+
+    Returns
+    -------
+    str
+        Query sequence bases from the 5' end to the bridging deletion, or ``""``
+        if no such pattern is found.
+    """
+    if not read.cigartuples or not read.query_sequence:
+        return ''
+
+    ct = read.cigartuples
+    query_seq = read.query_sequence
+    n_query = len(query_seq)
+
+    _qc = frozenset([0, 1, 4, 7, 8])   # ops that consume query: M, I, S, =, X
+
+    if read.is_reverse:
+        # 5' end is at the right (high query index); iterate CIGAR from right.
+        query_bases_scanned = 0
+        for op, length in reversed(ct):
+            if op == 5:          # H: skip (not in query_sequence)
+                continue
+            if op == 3:          # N: existing splice junction — stop
+                break
+            if op == 2:          # D: check size
+                if length >= min_deletion_ref_bp and query_bases_scanned > 0:
+                    return query_seq[n_query - query_bases_scanned:]
+                # Small D: not a bridge candidate; keep scanning
+            elif op in _qc:
+                query_bases_scanned += length
+                if query_bases_scanned >= scan_query_bp:
+                    break
+    else:
+        # 5' end is at the left (low query index); iterate CIGAR from left.
+        query_bases_scanned = 0
+        for op, length in ct:
+            if op == 5:
+                continue
+            if op == 3:
+                break
+            if op == 2:
+                if length >= min_deletion_ref_bp and query_bases_scanned > 0:
+                    return query_seq[:query_bases_scanned]
+            elif op in _qc:
+                query_bases_scanned += length
+                if query_bases_scanned >= scan_query_bp:
+                    break
+
+    return ''
+
+
+def _get_n_op_intervals(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
+    """Return (start, end) genomic intervals for every N-op (intron skip) in the CIGAR."""
+    intervals: List[Tuple[int, int]] = []
+    if not read.cigartuples or read.reference_start is None:
+        return intervals
+    pos = read.reference_start
+    for op, length in read.cigartuples:
+        if op == 3:   # N — intron skip
+            intervals.append((pos, pos + length))
+            pos += length
+        elif op in (0, 2, 7, 8):  # M, D, =, X — consume reference
+            pos += length
+        # I (1), S (4), H (5), P (6) do not consume reference
+    return intervals
+
+
 def _edit_distance(s1: str, s2: str) -> int:
     """Simple edit distance (Levenshtein) for short sequences."""
     n, m = len(s1), len(s2)
@@ -469,6 +564,65 @@ def _edit_distance(s1: str, s2: str) -> int:
                         prev + (0 if s1[i - 1] == s2[j - 1] else 1))
             prev = temp
     return dp[m]
+
+
+def _hp_edit_distance(s1: str, s2: str) -> float:
+    """Edit distance with 0.5 penalty for indels within homopolymer runs.
+
+    Nanopore sequencers under/over-call homopolymer run lengths.  A deletion
+    or insertion of a base that is part of a run of identical bases (i.e. the
+    indel base matches its immediate neighbour in the same sequence) is given
+    half the normal gap penalty (0.5 instead of 1.0).  Substitutions always
+    cost 1.0 regardless of context.
+
+    A base is considered part of a homopolymer run if it equals either the
+    preceding or the following character in the *same* string.
+    """
+    n, m = len(s1), len(s2)
+    if n == 0:
+        return float(m)
+    if m == 0:
+        return float(n)
+
+    def _del_cost(i: int) -> float:
+        """Cost to delete s1[i-1] (gap in s2)."""
+        c = s1[i - 1]
+        if (i >= 2 and s1[i - 2] == c) or (i < n and s1[i] == c):
+            return 0.5
+        return 1.0
+
+    def _ins_cost(j: int) -> float:
+        """Cost to insert s2[j-1] (gap in s1)."""
+        c = s2[j - 1]
+        if (j >= 2 and s2[j - 2] == c) or (j < m and s2[j] == c):
+            return 0.5
+        return 1.0
+
+    # 2-D DP (sequences are short, so O(n*m) space is fine)
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        dp[i][0] = dp[i - 1][0] + _del_cost(i)
+    for j in range(1, m + 1):
+        dp[0][j] = dp[0][j - 1] + _ins_cost(j)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if s1[i - 1] == s2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = min(
+                    dp[i - 1][j - 1] + 1.0,   # substitution
+                    dp[i - 1][j] + _del_cost(i),
+                    dp[i][j - 1] + _ins_cost(j),
+                )
+    return dp[n][m]
+
+
+# 3'SS acceptor dinucleotide priority (lower = more canonical).
+# Plus strand:  last 2 bases of intron before exon 2 (genome[intron_end-2:intron_end])
+# Minus strand: first 2 bases of intron (genome[intron_start:intron_start+2]),
+#               which is the RC of the RNA-level 3'SS motif.
+_ACCEPTOR_PRIORITY_PLUS  = {'AG': 0, 'CG': 1, 'TG': 2, 'AT': 3}
+_ACCEPTOR_PRIORITY_MINUS = {'CT': 0, 'CG': 1, 'CA': 2, 'AT': 3}
 
 
 def rescue_3ss_truncation(
@@ -576,44 +730,216 @@ def rescue_3ss_truncation(
             rescue_seq = terminal_seq
             rescue_type_candidate = "mpb_mismatch"
 
+    # Case 2b: large-deletion bridge (only if no explicit soft-clip and no mismatch region)
+    # Fires when the aligner used a large D-op to bridge from exon 2 to a region
+    # inside the intron, leaving clean = ops near the 5' end.  The mismatch-rate
+    # scanner misses this because the = ops have zero error rate against intron
+    # reference, but the bases actually originate from exon 1.
+    if not rescue_seq:
+        deletion_bridged_seq = _extract_5prime_deletion_bridged_seq(read)
+        if deletion_bridged_seq:
+            rescue_seq = deletion_bridged_seq
+            rescue_type_candidate = "deletion_bridge"
+
     # --- Try sequence-based rescue against each candidate junction ---
-    best_ed = -1
+    best_ed: float = -1.0
     best_junction = None
     best_five_prime_corrected = align_5prime
+    best_is_canonical = False    # tiebreaker 1: canonical GT/GC donor
+    best_in_amb = False          # tiebreaker 2: shift within ambiguity window
+    best_shift_abs = 999         # tiebreaker 3: smallest |shift|
+    best_acceptor_priority = 4   # tiebreaker 4: 3'SS quality (AG=0..AT=3..other=4)
+
+    # Splice-site boundary ambiguity: when bases flanking a donor/acceptor are
+    # repeated (homopolymer runs, tandem dinucleotides, etc.), the local aligner
+    # cannot distinguish the correct intron start/end from nearby positions.
+    # For each candidate junction we sample a range of shifts derived from the
+    # *actual* run-length of matching bases on each side of the boundary:
+    #
+    #   right-of-boundary run  → how far right the junction can slide without
+    #                            changing the sequence context (intron side)
+    #   left-of-boundary run   → how far left the junction can slide (exon side)
+    #
+    # Constraining the search to this data-driven range prevents spurious matches
+    # far from the junction (e.g. when exon1-end + intron-start looks identical
+    # to intron-end + exon2-start — both windows could give edit_distance=0).
+    # A minimum of ±1 is always included to handle coordinate-system off-by-one
+    # errors (e.g. 1-based GFF vs 0-based half-open).  Canonical GT-AG is
+    # preferred over non-canonical among tied candidates; smaller |shift| is the
+    # final tiebreaker to preserve the annotated position when all else is equal.
+    _MAX_SS_SHIFT = 15  # hard cap regardless of run length
 
     if rescue_seq:
         rescue_len = len(rescue_seq)
+        _gs = len(genome_seq)
         for j_entry in candidate_junctions:
             j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
             if j_chrom != chrom:
                 continue
 
             if strand == '+':
-                # Upstream intron: intron_end must be at or just before align_5prime
+                # Upstream intron: intron_end must be at or just before align_5prime.
+                # When mapPacBio extends into the intron, align_5prime < intron_end
+                # (dist < 0) — allow rescue if alignment starts inside the intron
+                # (intron_start < align_5prime < intron_end), not completely before it.
                 dist = align_5prime - intron_end
-                if dist < 0 or dist > junction_proximity_bp:
+                if dist < 0:
+                    if align_5prime <= intron_start:
+                        continue  # alignment is upstream of intron entirely — skip
+                    dist = 0  # treat as touching the boundary
+                elif dist > junction_proximity_bp:
                     continue
-                # Exon1 end: last rescue_len bases before the intron donor
-                exon_end_start = intron_start - rescue_len
-                if exon_end_start < 0:
+                # Dynamic shift range from run-length at the annotated donor:
+                #   r_amb = consecutive intron bases (going right) equal to last exon base
+                #   l_amb = consecutive exon bases (going left) equal to first intron base
+                # These tell us how many positions the junction can genuinely slide in
+                # each direction while keeping the same alignment score.
+                if 0 < intron_start < _gs:
+                    _leb = genome_seq[intron_start - 1].upper()  # last exon base
+                    _fib = genome_seq[intron_start].upper()      # first intron base
+                    _r_amb = 0
+                    while (_r_amb < _MAX_SS_SHIFT and intron_start + _r_amb < _gs
+                           and genome_seq[intron_start + _r_amb].upper() == _leb):
+                        _r_amb += 1
+                    _l_amb = 0
+                    while (_l_amb < _MAX_SS_SHIFT and intron_start - 1 - _l_amb >= 0
+                           and genome_seq[intron_start - 1 - _l_amb].upper() == _fib):
+                        _l_amb += 1
+                else:
+                    _r_amb = _l_amb = 0
+                # Wide range for discovery (catches imprecise annotations / aligners),
+                # at least ±5 bp regardless of local ambiguity.
+                _shift_lo = -max(5, _l_amb)
+                _shift_hi =  max(5, _r_amb)
+
+                # 3'SS acceptor quality for this junction (fixed; used as outer tiebreaker).
+                # Plus strand: last 2 bases of intron = genome[intron_end-2:intron_end]
+                _acc_di = genome_seq[intron_end - 2:intron_end].upper() if intron_end >= 2 else 'NN'
+                _acceptor_priority = _ACCEPTOR_PRIORITY_PLUS.get(_acc_di, 4)
+
+                _best_local_ed: float = rescue_len + 1
+                _best_local_canonical = False
+                _best_in_amb = False
+                _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
+                exon_seq = ""
+                _eff_intron_start = intron_start
+
+                for _shift in range(_shift_lo, _shift_hi + 1):
+                    _eff_start = intron_start + _shift
+                    if _eff_start <= 0 or _eff_start + 2 > _gs:
+                        continue
+                    # Canonical 5'SS donors: GT (major spliceosome) or GC (minor)
+                    _donor_ok = genome_seq[_eff_start:_eff_start + 2].upper() in ('GT', 'GC')
+                    # Whether this shift is within the natural sequence-ambiguity window
+                    _in_amb = (-_l_amb <= _shift <= _r_amb)
+                    for _off in range(junction_proximity_bp + 1):
+                        _es = _eff_start - rescue_len - _off
+                        if _es < 0:
+                            continue
+                        _cand = genome_seq[_es:_eff_start - _off].upper()
+                        if len(_cand) < rescue_len:
+                            continue
+                        _ed = _hp_edit_distance(rescue_seq.upper(), _cand)
+                        _shift_abs = abs(_shift)
+                        # Two-phase scoring (lower tuple = better):
+                        #   Phase 1 — discovery: minimise edit distance across wide range
+                        #   Phase 2 — refinement: prefer canonical donor, then within
+                        #             the ambiguity window, then smallest |shift|
+                        _cur  = (not _donor_ok, not _in_amb, _shift_abs)
+                        _best = (not _best_local_canonical, not _best_in_amb,
+                                 _best_local_shift_abs)
+                        if _ed < _best_local_ed or (
+                                _ed == _best_local_ed and _cur < _best):
+                            _best_local_ed = _ed
+                            _best_local_canonical = _donor_ok
+                            _best_in_amb = _in_amb
+                            _best_local_shift_abs = _shift_abs
+                            exon_seq = _cand
+                            _eff_intron_start = _eff_start
+
+                if not exon_seq:
                     continue
-                exon_seq = genome_seq[exon_end_start:intron_start].upper()
             else:
-                # Minus strand: upstream intron (in transcript) has intron_start ≥ reference_end
+                # Minus strand: upstream intron (in transcript) has intron_start ≥ align_5prime.
+                # When mapPacBio extends into the intron, align_5prime > intron_start
+                # (dist < 0) — allow rescue if alignment ends inside the intron
+                # (intron_start < align_5prime < intron_end), not completely past it.
                 dist = intron_start - align_5prime
-                if dist < 0 or dist > junction_proximity_bp:
+                if dist < 0:
+                    if align_5prime >= intron_end:
+                        continue  # alignment is downstream of intron entirely — skip
+                    dist = 0  # treat as touching the boundary
+                elif dist > junction_proximity_bp:
                     continue
-                # Exon1 end (upstream in transcript = right of intron_end in genome):
-                # The BAM stores minus-strand sequence as RC of RNA, so the right soft-clip
-                # equals genome_seq[intron_end:intron_end+rescue_len] directly.
-                exon_seq = genome_seq[intron_end:intron_end + rescue_len].upper()
-                if len(exon_seq) < rescue_len:
+                # Dynamic shift range for the minus-strand 5'SS boundary at intron_end:
+                #   r_amb = consecutive exon bases (right of intron_end) equal to last intron base
+                #   l_amb = consecutive intron bases (left of intron_end) equal to first exon base
+                # Canonical 5'SS dinucleotide in genomic (minus) orientation: AC (= RC of GT).
+                if 0 < intron_end <= _gs:
+                    _lib = genome_seq[intron_end - 1].upper()                        # last intron base (genomic right)
+                    _feb = genome_seq[intron_end].upper() if intron_end < _gs else 'N'  # first exon base
+                    _r_amb = 0
+                    while (_r_amb < _MAX_SS_SHIFT and intron_end + _r_amb < _gs
+                           and genome_seq[intron_end + _r_amb].upper() == _lib):
+                        _r_amb += 1
+                    _l_amb = 0
+                    while (_l_amb < _MAX_SS_SHIFT and intron_end - 1 - _l_amb >= 0
+                           and genome_seq[intron_end - 1 - _l_amb].upper() == _feb):
+                        _l_amb += 1
+                else:
+                    _r_amb = _l_amb = 0
+                # Wide range for discovery (catches imprecise annotations / aligners),
+                # at least ±5 bp regardless of local ambiguity.
+                _shift_lo = -max(5, _l_amb)
+                _shift_hi = max(5, _r_amb)
+
+                # 3'SS acceptor quality for this junction (fixed; used as outer tiebreaker).
+                # Minus strand: first 2 bases of intron (genomic) = RC of RNA-level 3'SS motif.
+                _acc_di = genome_seq[intron_start:intron_start + 2].upper() if intron_start + 2 <= _gs else 'NN'
+                _acceptor_priority = _ACCEPTOR_PRIORITY_MINUS.get(_acc_di, 4)
+
+                _best_local_ed: float = rescue_len + 1
+                _best_local_canonical = False
+                _best_in_amb = False
+                _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
+                exon_seq = ""
+                _eff_intron_end = intron_end
+
+                for _shift in range(_shift_lo, _shift_hi + 1):
+                    _eff_end = intron_end + _shift
+                    if _eff_end - 2 < 0 or _eff_end > _gs:
+                        continue
+                    # Canonical 5'SS on minus strand in genomic orientation:
+                    # AC (RC of GT, major spliceosome) or GC (RC of GC, minor)
+                    _donor_ok = genome_seq[_eff_end - 2:_eff_end].upper() in ('AC', 'GC')
+                    # Whether this shift is within the natural sequence-ambiguity window
+                    _in_amb = (-_l_amb <= _shift <= _r_amb)
+                    for _off in range(junction_proximity_bp + 1):
+                        _cs = _eff_end + _off
+                        _cand = genome_seq[_cs:_cs + rescue_len].upper()
+                        if len(_cand) < rescue_len:
+                            continue
+                        _ed = _hp_edit_distance(rescue_seq.upper(), _cand)
+                        _shift_abs = abs(_shift)
+                        _cur  = (not _donor_ok, not _in_amb, _shift_abs)
+                        _best = (not _best_local_canonical, not _best_in_amb,
+                                 _best_local_shift_abs)
+                        if _ed < _best_local_ed or (
+                                _ed == _best_local_ed and _cur < _best):
+                            _best_local_ed = _ed
+                            _best_local_canonical = _donor_ok
+                            _best_in_amb = _in_amb
+                            _best_local_shift_abs = _shift_abs
+                            exon_seq = _cand
+                            _eff_intron_end = _eff_end
+
+                if not exon_seq:
                     continue
 
             if len(exon_seq) < rescue_len:
                 continue
 
-            ed_exon = _edit_distance(rescue_seq.upper(), exon_seq)
+            ed_exon = _hp_edit_distance(rescue_seq.upper(), exon_seq)
             # Compare against intronic sequence to avoid rescuing reads that match
             # the intron equally well.  Nanopore homopolymer undercalling means a
             # fixed edit-distance threshold is too strict; instead we rescue when
@@ -627,7 +953,7 @@ def rescue_3ss_truncation(
                 # Intronic sequence: the first rescue_len bases after the 3'SS
                 intron_cmp_seq = genome_seq[intron_start:intron_start + rescue_len].upper()
             if len(intron_cmp_seq) == rescue_len:
-                ed_intron = _edit_distance(rescue_seq.upper(), intron_cmp_seq)
+                ed_intron = _hp_edit_distance(rescue_seq.upper(), intron_cmp_seq)
                 # Rescue if: perfect exon match, OR exon edit-dist is ≥30% better
                 # than intron edit-dist (comparative threshold, not absolute)
                 rescue_ok = (ed_exon == 0) or (ed_intron > 0 and ed_exon < ed_intron * 0.70)
@@ -635,16 +961,45 @@ def rescue_3ss_truncation(
                 # Near chromosome boundary — fall back to absolute threshold
                 rescue_ok = (ed_exon / rescue_len <= max_edit_frac)
             if rescue_ok:
-                if best_ed == -1 or ed_exon < best_ed:
+                # Full tiebreaking tuple (lower = better):
+                #   1. edit distance (hp-aware, float)
+                #   2. canonical 5'SS donor (GT/GC plus, AC/GC minus)
+                #   3. shift within sequence-ambiguity window
+                #   4. smallest |shift| from annotated position
+                #   5. 3'SS acceptor quality: AG=0, CG=1, TG=2, AT=3, other=4
+                _cur_outer  = (ed_exon, not _best_local_canonical, not _best_in_amb,
+                               _best_local_shift_abs, _acceptor_priority)
+                _best_outer = (best_ed, not best_is_canonical, not best_in_amb,
+                               best_shift_abs, best_acceptor_priority)
+                _overall_update = (best_ed < 0 or _cur_outer < _best_outer)
+                if _overall_update:
                     best_ed = ed_exon
-                    best_junction = (j_chrom, intron_start, intron_end)
-                    # Update 5' end: upstream boundary of the intron (= end of exon1)
+                    best_is_canonical = _best_local_canonical
+                    best_in_amb = _best_in_amb
+                    best_shift_abs = _best_local_shift_abs
+                    best_acceptor_priority = _acceptor_priority
+                    # Update 5' end using the effective donor/acceptor position
                     if strand == '+':
-                        best_five_prime_corrected = intron_start - 1
+                        best_junction = (j_chrom, _eff_intron_start, intron_end)
+                        best_five_prime_corrected = _eff_intron_start - 1
                     else:
-                        best_five_prime_corrected = intron_end
+                        best_junction = (j_chrom, intron_start, _eff_intron_end)
+                        best_five_prime_corrected = _eff_intron_end
 
         if best_junction is not None:
+            # Compute local alignment CIGAR for the exon portion so that
+            # bam_writer can emit M/I/D ops instead of a flat nM block.
+            _j_chrom, _intron_start, _intron_end = best_junction
+            _exon_cigar_str = ''
+            try:
+                from .local_aligner import align_clip_to_exon, cigar_ops_to_str
+                _cigar_ops, _ = align_clip_to_exon(
+                    rescue_seq, genome_seq,
+                    _intron_start, _intron_end, strand,
+                )
+                _exon_cigar_str = cigar_ops_to_str(_cigar_ops)
+            except Exception as _e:
+                logger.debug("Local alignment failed for read %s: %s", read.query_name, _e)
             return {
                 'rescued': True,
                 'rescue_type': rescue_type_candidate,
@@ -652,6 +1007,49 @@ def rescue_3ss_truncation(
                 'rescued_junction': best_junction,
                 'edit_distance': best_ed,
                 'query_bp': len(rescue_seq),
+                'five_prime_exon_cigar': _exon_cigar_str,
+            }
+
+    # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
+    # Fires when sequence-based rescue (Cases 1–2) produced no rescue_seq but
+    # align_5prime landed inside [intron_start, intron_end).  This happens when an
+    # aligner (minimap2, mapPacBio, gapmm2, …) uses D-ops, mismatches, or plain
+    # truncation instead of an N-op, leaving the 5' end deep inside the intron.
+    # We snap five_prime_corrected to the exon-1-side boundary (intron_end for minus,
+    # intron_start for plus) — the nearest annotated splice donor site.
+    # Only fires if no existing N-op in the CIGAR already covers this intron
+    # (prevents double-rescue for reads that have a correct but off-by-a-few-bp N).
+    if not rescue_seq:
+        _n_intervals = _get_n_op_intervals(read)
+        for j_entry in candidate_junctions:
+            j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
+            if j_chrom != chrom:
+                continue
+            # Condition: align_5prime inside [intron_start, intron_end).
+            # intron_start is inclusive: a read whose rightmost base IS intron_start
+            # (reference_end = intron_start + 1 for minus strand) is mapping into
+            # the intron and must be snapped.
+            if not (intron_start <= align_5prime < intron_end):
+                continue
+            # Skip if an existing N-op already approximates this intron
+            already_has_n = any(
+                abs(ns - intron_start) <= junction_proximity_bp and
+                abs(ne - intron_end) <= junction_proximity_bp
+                for ns, ne in _n_intervals
+            )
+            if already_has_n:
+                continue
+            # Snap to exon-1-side boundary
+            snap_pos = intron_end if strand == '-' else intron_start
+            intronic_depth = (align_5prime - intron_start) if strand == '-' else (intron_end - align_5prime)
+            return {
+                'rescued': True,
+                'rescue_type': 'intronic_snap',
+                'five_prime_corrected': snap_pos,
+                'rescued_junction': (j_chrom, intron_start, intron_end),
+                'edit_distance': -1,
+                'query_bp': intronic_depth,
+                'five_prime_exon_cigar': '',
             }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
@@ -671,6 +1069,7 @@ def rescue_3ss_truncation(
                 'rescued_junction': (j_chrom, intron_start, intron_end),
                 'edit_distance': -1,
                 'query_bp': 0,
+                'five_prime_exon_cigar': '',
             }
 
     return _no_rescue(read, strand)
@@ -690,6 +1089,7 @@ def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:
         'rescued_junction': None,
         'edit_distance': -1,
         'query_bp': 0,
+        'five_prime_exon_cigar': '',
     }
 
 
@@ -724,7 +1124,7 @@ def validate_5prime_correction():
     print(f"  Starts in intron: {result1.starts_in_intron}")
     print(f"  Correction: {result1.correction_bp} bp")
     print(f"  Reason: {result1.correction_reason}")
-    if result1.starts_in_intron and result1.five_prime_corrected == 1000:
+    if result1.starts_in_intron and result1.five_prime_corrected == 999:
         print("  PASSED")
     else:
         print("  FAILED")
@@ -753,7 +1153,7 @@ def validate_5prime_correction():
     print(f"  Corrected 5' end: {result3.five_prime_corrected}")
     print(f"  Starts in intron: {result3.starts_in_intron}")
     print(f"  Correction: {result3.correction_bp} bp")
-    if result3.starts_in_intron and result3.five_prime_corrected == 2099:
+    if result3.starts_in_intron and result3.five_prime_corrected == 2100:
         print("  PASSED")
     else:
         print("  FAILED")

@@ -96,17 +96,27 @@ This correction is especially critical for detecting true 3' ends in regions whe
 
 ### 4. Multi-Aligner Rectification: Selecting the Optimal Junction Set
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY runs three aligners in parallel (**minimap2**, **mapPacBio**, **gapmm2**), applies soft-clip rescue to all outputs, scores each alignment by canonical splice sites and annotation matches, and selects the optimal rectified alignment per read.
+Different aligners make different tradeoffs at splice junctions. RECTIFY solves this in three stages:
+
+**Stage 1 — Per-aligner rectification:** `rectify correct` is applied independently to each aligner's BAM (minimap2, mapPacBio, gapmm2). Every correction module (3' walk-back, 5' junction rescue, soft-clip rescue, false-junction filter) runs on each aligner's output, producing a separate corrected TSV per aligner.
+
+**Stage 2 — Consensus selection:** The per-aligner corrected TSVs are merged by `rectify consensus`, which selects the winning aligner per read using post-rectification features (in priority order): (1) `five_prime_rescued` — prefer the aligner where Cat3 5' rescue fired; (2) `confidence` — high > medium > low; (3) corrected_3′ agreement — prefer positions agreed on by most aligners; (4) alignment span — prefer wider reference span; (5) `n_junctions` — prefer more completely spliced.
+
+**Stage 3 — Chimeric reconstruction:** For reads where two or more aligners each uniquely contribute a junction not present in the other's corrected output, `rectify consensus` can optionally stitch the complementary junctions into a single chimeric alignment — recovering reads that no single aligner handles completely.
 
 <p align="center">
   <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Rectification Pipeline" width="680">
 </p>
 
-**Scoring criteria:** Each alignment is scored by (1) number of GT-AG canonical junctions, (2) matches to annotated junctions in the provided GFF/GTF, and (3) remaining soft-clip length. The highest-scoring alignment is written to the output BAM.
-
 ```bash
-# Multi-aligner rectification (default, DRS-optimized)
-rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
+# Align and rectify with all three aligners (default, DRS-optimized)
+rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned_dir/
+
+# Merge per-aligner corrected TSVs into a single consensus result
+rectify consensus minimap2:aligned_dir/minimap2/corrected_3ends.tsv \
+                  mapPacBio:aligned_dir/mapPacBio/corrected_3ends.tsv \
+                  gapmm2:aligned_dir/gapmm2/corrected_3ends.tsv \
+                  -o corrected_3ends.tsv
 
 # Single-aligner mode (faster, less accurate)
 rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
@@ -118,7 +128,7 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 
 | Feature | Benefit |
 |:--------|:--------|
-| **Multi-Aligner Rectification** | Runs minimap2, mapPacBio, gapmm2, scores each alignment, and selects the optimal rectified result per read |
+| **Multi-Aligner Rectification** | Rectifies each aligner independently, then selects the winning aligner per read using post-rectification features (5' rescue > confidence > agreement > span > junctions); optionally stitches complementary junctions from two aligners (chimeric reconstruction) |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through known splice junctions |
 | **3' End Walk-Back** | Walks backward from soft-clip boundary to recover true CPA site, transparently absorbing indels, T sequencing errors, and spurious splice junctions (N ops) in a single pass |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |

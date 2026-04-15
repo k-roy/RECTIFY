@@ -594,13 +594,26 @@ def build_chimeric_cigar(
                             gap, "D" if ev.op == 2 else "N", cur_ref, ev.r_end,
                         )
                     else:
-                        # M/=/X event: gap must be a separate skip bridge.
-                        chimeric_ops.append((3, gap))  # op 3 = N (skip/intron)
-                        logger.debug(
-                            "Inserted %d-bp N bridge between chimeric segments "
-                            "(prev ref=%d, next ref=%d)",
-                            gap, cur_ref, ev.r_start,
-                        )
+                        # M/=/X event: gap requires a separate bridge op.
+                        # Small gaps (≤ MAX_STITCH_DELETION) at chimeric stitch
+                        # points are almost certainly artefactual deletions, not
+                        # genuine intron skips.  Use D (op 2) so they render as
+                        # deletions in IGV rather than as phantom introns.
+                        _MAX_STITCH_DELETION = 10
+                        if gap <= _MAX_STITCH_DELETION:
+                            chimeric_ops.append((2, gap))  # D (deletion)
+                            logger.debug(
+                                "Inserted %d-bp D bridge at chimeric stitch "
+                                "(prev ref=%d, next ref=%d)",
+                                gap, cur_ref, ev.r_start,
+                            )
+                        else:
+                            chimeric_ops.append((3, gap))  # N (genuine intron skip)
+                            logger.debug(
+                                "Inserted %d-bp N bridge between chimeric segments "
+                                "(prev ref=%d, next ref=%d)",
+                                gap, cur_ref, ev.r_start,
+                            )
                 elif ev.r_start < cur_ref:
                     # Reference regression: chimeric assembly is geometrically
                     # invalid (two segments map to overlapping reference regions).

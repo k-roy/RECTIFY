@@ -28,15 +28,51 @@ _CS_TOK_RE = re.compile(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-
 _INTRON_LEN_RE = re.compile(r'[0-9]+')
 
 # Maximum wall-clock seconds to wait for any single aligner subprocess.
-# uLTRA and deSALT on a large genome can take 30–60 min; 7200 s (2 h) is a
-# safe upper bound before treating a run as hung.
-ALIGNER_TIMEOUT = 7200
+# mapPacBio on 9.7M nanopore reads needs ~3 h; uLTRA/deSALT ~30-60 min.
+# Set to 6 h as a safe upper bound before treating a run as hung.
+ALIGNER_TIMEOUT = 21600
 
 from ..utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
 
 from rectify.core.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
 
 logger = logging.getLogger(__name__)
+
+import os as _os
+import platform as _platform
+
+
+def _get_vendored_binary(name: str) -> Optional[str]:
+    """Return path to a vendored binary bundled at rectify/data/bin/<os>_<arch>/<name>.
+
+    Returns None if no matching binary exists or it is not executable.
+    """
+    system = _platform.system().lower()
+    machine = _platform.machine().lower()
+    if machine == 'arm64':
+        machine = 'aarch64'
+
+    try:
+        import importlib.resources as _res
+        data_pkg = _res.files('rectify').joinpath('data')
+        bin_path = data_pkg.joinpath('bin', f'{system}_{machine}', name)
+        with _res.as_file(bin_path) as p:
+            candidate = str(p)
+    except (AttributeError, TypeError, FileNotFoundError):
+        here = Path(__file__).parent.parent
+        candidate = str(here / 'data' / 'bin' / f'{system}_{machine}' / name)
+
+    if _os.path.isfile(candidate) and _os.access(candidate, _os.X_OK):
+        logger.debug(f"Using vendored {name}: {candidate}")
+        return candidate
+
+    logger.debug(f"No vendored {name} for {system}/{machine} at {candidate}")
+    return None
+
+
+def _get_vendored_desalt() -> Optional[str]:
+    """Return path to the vendored deSALT binary, or None if unavailable."""
+    return _get_vendored_binary('deSALT')
 
 
 @dataclass
@@ -345,6 +381,7 @@ def run_map_pacbio(
         'fastareadlen=100000',  # Belt-and-suspenders: also patched in mapPacBio.sh default
         'intronlen=50',         # Convert large deletions to introns
         'minratio=0.4',
+        '-Xmx32g',              # Cap BBTools Java heap at 32 GB to prevent OOM killing neighbours
     ]
 
     if extra_args:
@@ -649,6 +686,122 @@ def run_gapmm2(
     return str(output_bam)
 
 
+def _dedup_gtf_attrs(attr_str: str) -> str:
+    """Remove duplicate attribute keys from a GTF attribute string.
+
+    SGD GTFs repeat ``transcript_id`` on mRNA lines (once for the gene
+    name, once for a RefSeq/SGD accession).  gffutils rejects these with
+    a ``ValueError: more than one value`` when building its database.
+    Keep the *first* occurrence of each key.
+    """
+    import re
+    seen: set = set()
+    parts: list = []
+    for m in re.finditer(r'(\w+)\s+"([^"]+)"', attr_str):
+        key = m.group(1)
+        if key not in seen:
+            seen.add(key)
+            parts.append(f'{key} "{m.group(2)}"')
+    return '; '.join(parts) + ';' if parts else attr_str
+
+
+def _subtract_introns_gtf(tx_start: int, tx_end: int, intron_list: list) -> list:
+    """Return exon intervals (1-based closed) by subtracting introns from a transcript span."""
+    if not intron_list:
+        return [(tx_start, tx_end)]
+    exons = []
+    pos = tx_start
+    for i_start, i_end in sorted(intron_list):
+        if i_start > pos:
+            exons.append((pos, i_start - 1))
+        pos = max(pos, i_end + 1)
+    if pos <= tx_end:
+        exons.append((pos, tx_end))
+    return exons
+
+
+def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
+    """Convert an SGD-style GTF to a uLTRA-compatible GTF.
+
+    SGD GTFs use ``mRNA`` instead of ``transcript`` and lack ``exon``
+    features entirely.  uLTRA requires ``gene``, ``transcript``, and
+    ``exon`` in column 3.
+
+    SGD naming convention (critical for intron–transcript matching):
+    - ``mRNA`` lines carry ``transcript_id "YAL030W"`` (gene name) and
+      ``Name "YAL030W_id001"`` (isoform name).
+    - ``intron`` and ``CDS`` lines carry ``transcript_id "YAL030W_id001"``
+      which equals the mRNA's ``Name`` field, not its ``transcript_id``.
+
+    Changes applied:
+    - ``mRNA`` feature → ``transcript``
+    - ``exon`` features derived from transcript span minus any ``intron``
+      intervals matched via the mRNA ``Name`` attribute
+
+    The result is written to *out_path* and can be cached alongside the
+    source GTF for repeated use.
+    """
+    import re
+    import collections
+
+    def _get_attr(attr_str: str, key: str) -> str:
+        m = re.search(rf'{key} "([^"]+)"', attr_str)
+        return m.group(1) if m else ''
+
+    # First pass: collect transcript records (keyed by Name) and introns
+    # (keyed by transcript_id, which equals the mRNA Name in SGD GTFs).
+    transcripts: dict = {}   # isoform_name → list of 9 GTF fields
+    introns: dict = collections.defaultdict(list)  # isoform_name → [(start, end)]
+    gene_lines: list = []
+
+    with open(gtf_path) as fh:
+        for line in fh:
+            if line.startswith('#'):
+                gene_lines.append(line)
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 9:
+                continue
+            feature = parts[2]
+            if feature == 'gene':
+                gene_lines.append(line)
+            elif feature in ('mRNA', 'transcript'):
+                # Key by Name (isoform ID) so introns can be joined later.
+                # Fall back to transcript_id if Name is absent.
+                name = _get_attr(parts[8], 'Name') or _get_attr(parts[8], 'transcript_id')
+                if name:
+                    transcripts[name] = parts
+            elif feature == 'intron':
+                tid = _get_attr(parts[8], 'transcript_id')
+                if tid:
+                    introns[tid].append((int(parts[3]), int(parts[4])))
+
+    with open(out_path, 'w') as fh:
+        for line in gene_lines:
+            fh.write(line)
+        for name, parts in transcripts.items():
+            tx_start = int(parts[3])
+            tx_end = int(parts[4])
+            clean_attrs = _dedup_gtf_attrs(parts[8])
+            # uLTRA requires transcript_id != gene_id.  SGD GTFs use the gene
+            # name for both, so replace transcript_id with the isoform Name.
+            clean_attrs = re.sub(r'transcript_id "[^"]+"', f'transcript_id "{name}"',
+                                 clean_attrs, count=1)
+            # Write transcript line
+            tx_parts = parts[:]
+            tx_parts[2] = 'transcript'
+            tx_parts[8] = clean_attrs
+            fh.write('\t'.join(tx_parts) + '\n')
+            # Derive exon intervals: transcript span minus introns for this isoform
+            for ex_start, ex_end in _subtract_introns_gtf(tx_start, tx_end, introns.get(name, [])):
+                ex_parts = parts[:]
+                ex_parts[2] = 'exon'
+                ex_parts[3] = str(ex_start)
+                ex_parts[4] = str(ex_end)
+                ex_parts[8] = clean_attrs
+                fh.write('\t'.join(ex_parts) + '\n')
+
+
 def run_ultra(
     reads_path: str,
     genome_path: str,
@@ -684,9 +837,37 @@ def run_ultra(
     if not ultra_path:
         raise FileNotFoundError("uLTRA not found in PATH")
 
+    # Ensure namfinder is available — uLTRA calls it as a subprocess.
+    # If not on PATH, prepend the vendored binary's directory to the env.
+    _extra_env: Optional[dict] = None
+    if not shutil.which('namfinder'):
+        vendored_namfinder = _get_vendored_binary('namfinder')
+        if vendored_namfinder:
+            logger.info(f"namfinder not in PATH; using vendored binary: {vendored_namfinder}")
+            import os as _os2
+            _extra_env = _os2.environ.copy()
+            _extra_env['PATH'] = str(Path(vendored_namfinder).parent) + _os2.pathsep + _extra_env.get('PATH', '')
+        else:
+            raise FileNotFoundError(
+                "namfinder not found in PATH and no vendored binary available. "
+                "Install with: conda install -c bioconda namfinder"
+            )
+
     # uLTRA writes to an output directory; the SAM lives at <out_dir>/<prefix>.sam
     ultra_out_dir = output_bam.parent / f"{output_bam.stem}_ultra_tmp"
     ultra_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # If a prior run left a corrupted cache (refs_sequences.fa empty or missing),
+    # remove the stale database so uLTRA re-indexes from scratch.  A valid cache
+    # (non-empty refs_sequences.fa) is intentionally preserved — the index is
+    # genome/GTF-derived and can be shared across chunks.
+    _refs_fa = ultra_out_dir / 'refs_sequences.fa'
+    _db = ultra_out_dir / 'database.db'
+    if _db.exists() and (not _refs_fa.exists() or _refs_fa.stat().st_size == 0):
+        logger.warning(f"uLTRA: stale/empty cache detected in {ultra_out_dir}; removing to force re-index")
+        import shutil as _shutil_pre
+        _shutil_pre.rmtree(ultra_out_dir)
+        ultra_out_dir.mkdir(parents=True, exist_ok=True)
     prefix = "ultra"
 
     # uLTRA does not support gzipped inputs and requires GTF (not GFF) format.
@@ -738,6 +919,31 @@ def run_ultra(
             f_out.write(f_in.read())
         ann_path = str(ann_dest)
 
+    # Normalize GTF for uLTRA if it lacks 'exon' features (e.g. SGD-style GTFs
+    # use 'mRNA' instead of 'transcript' and omit exon lines entirely).
+    # Cache the normalized GTF alongside the source so it is only built once.
+    _needs_norm = False
+    with open(ann_path) as _fh:
+        for _line in _fh:
+            if _line.startswith('#'):
+                continue
+            _parts = _line.split('\t')
+            if len(_parts) >= 3 and _parts[2] == 'exon':
+                break
+        else:
+            _needs_norm = True
+
+    if _needs_norm:
+        _ann_p = Path(ann_path)
+        _norm_gtf = _ann_p.parent / (_ann_p.stem + '.ultra_norm.gtf')
+        # Rebuild cache if source GTF is newer than the cached normalized GTF
+        if not _norm_gtf.exists() or _ann_p.stat().st_mtime > _norm_gtf.stat().st_mtime:
+            logger.info(f"uLTRA: normalizing GTF (mRNA→transcript, deriving exons) → {_norm_gtf}")
+            _normalize_gtf_for_ultra(ann_path, str(_norm_gtf))
+        else:
+            logger.info(f"uLTRA: using cached normalized GTF at {_norm_gtf}")
+        ann_path = str(_norm_gtf)
+
     # uLTRA pipeline = index + align in one step
     # --disable_infer: skip gffutils gene-boundary inference (avoids crash on complex GFFs)
     cmd = [
@@ -757,7 +963,8 @@ def run_ultra(
 
     logger.info(f"Running uLTRA: {' '.join(cmd[:6])}...")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT,
+                            env=_extra_env)  # _extra_env is None (inherit) or has namfinder prepended
 
     # Clean up decompressed temp files
     if _tmp_dir:
@@ -874,7 +1081,13 @@ def run_desalt(
 
     desalt_exec = shutil.which('deSALT')
     if not desalt_exec:
-        raise FileNotFoundError("deSALT not found in PATH")
+        # Fall back to vendored binary bundled with the package
+        desalt_exec = _get_vendored_desalt()
+    if not desalt_exec:
+        raise FileNotFoundError(
+            "deSALT not found in PATH and no compatible vendored binary available. "
+            "Install with: rectify install-aligners --desalt"
+        )
 
     # Resolve index directory
     if index_path:

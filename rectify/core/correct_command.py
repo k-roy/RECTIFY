@@ -193,16 +193,25 @@ def validate_inputs(args) -> dict:
     genome_path = getattr(args, '_genome_path', getattr(args, 'genome', None))
     annotation_path = getattr(args, '_annotation_path', getattr(args, 'annotation', None))
 
+    # dT-primed cDNA flag enables AG mispriming detection (a cDNA-synthesis artifact).
+    # Poly(A) trimming and indel correction are always enabled — the poly-A tail is
+    # present in both DRS and dT-primed cDNA reads and always requires correction.
+    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+
     config = {
         'bam_path': bam_path,
         'genome_path': genome_path,
         'annotation_path': annotation_path,
         'output_path': args.output,
         'apply_atract': not args.skip_atract_check,
-        'apply_ag_mispriming': not args.skip_ag_check,
+        # AG mispriming: reverse-transcriptase slippage at AG runs — cDNA-specific artifact.
+        # Disabled for DRS (default); enabled only when --dT-primed-cDNA is set.
+        'apply_ag_mispriming': is_dt_primed and not args.skip_ag_check,
         'ag_threshold': getattr(args, 'ag_threshold', 0.65),
-        'apply_polya_trim': False,  # Default False
-        'apply_indel_correction': False,  # Default False
+        # Poly(A) trimming and indel correction: always enabled — poly-A is present
+        # in the read sequence for both DRS and dT-primed cDNA protocols.
+        'apply_polya_trim': not args.skip_polya_trim,
+        'apply_indel_correction': not args.skip_indel_correction,
         'netseq_dir': getattr(args, '_resolved_netseq_dir', getattr(args, 'netseq_dir', None)),
         'netseq_samples': getattr(args, 'netseq_samples', None),
         'polya_model_path': getattr(args, 'polya_model', None),
@@ -215,11 +224,6 @@ def validate_inputs(args) -> dict:
         'softclipped_bam': getattr(args, 'softclipped_bam', None),
         'bedgraph_prefix': getattr(args, 'bedgraph_prefix', None),
     }
-
-    # Enable poly(A) corrections if --polya-sequenced flag set
-    if args.polya_sequenced:
-        config['apply_polya_trim'] = not args.skip_polya_trim
-        config['apply_indel_correction'] = not args.skip_indel_correction
 
     return config
 
@@ -298,8 +302,16 @@ def run(args):
         bam_to_process = str(config['bam_path'])
         spikein_stats = {}
         if config['filter_spikein']:
-            filtered_bam = str(config['output_path']).replace('.tsv', '_spikein_filtered.bam')
-            spikein_report = str(config['output_path']).replace('.tsv', '_spikein_report.txt')
+            # Derive output names from the input BAM stem, not the TSV path.
+            # e.g. wt_by4742_rep1.consensus.sorted.bam → wt_by4742_rep1.spikein_filtered.bam
+            _bam_stem = Path(str(config['bam_path'])).stem
+            for _sfx in ('.consensus.sorted', '.consensus', '.rectified', '.sorted'):
+                if _bam_stem.endswith(_sfx):
+                    _bam_stem = _bam_stem[:-len(_sfx)]
+                    break
+            _out_dir = Path(str(config['output_path'])).parent
+            filtered_bam = str(_out_dir / f"{_bam_stem}.spikein_filtered.bam")
+            spikein_report = str(_out_dir / f"{_bam_stem}.spikein_report.txt")
             logger.info(f"Filtering spike-in reads ({', '.join(config['filter_spikein'])})...")
             _t_spikein = _time.perf_counter()
             spikein_stats = filter_spikein_reads(
@@ -344,23 +356,51 @@ def run(args):
 
         # Choose processing mode
         _t_proc = _time.perf_counter()
+        _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
+
         if streaming_mode:
-            # Streaming mode - memory efficient for large BAMs
-            chunk_size = getattr(args, 'chunk_size', 10000)
-            stats = bam_processor.process_bam_streaming(
-                bam_path=bam_to_process,
-                genome_path=str(config['genome_path']),
-                output_path=str(config['output_path']),
-                chunk_size=chunk_size,
-                apply_atract=config['apply_atract'],
-                apply_ag_mispriming=config['apply_ag_mispriming'],
-                ag_threshold=config['ag_threshold'],
-                apply_polya_trim=config['apply_polya_trim'],
-                apply_indel_correction=config['apply_indel_correction'],
-                netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
-                annotated_junctions=annotated_junctions,
-                gene_interval_trees=gene_interval_trees,
-            )
+            if n_threads > 1:
+                # Parallel streaming: region workers + stream output to disk
+                # Best for large BAMs (> ~5M reads) — combines parallel throughput
+                # with constant memory usage.
+                variant_output_path = None
+                if config['variant_aware'] and config['output_path']:
+                    variant_output_path = str(config['output_path']).replace('.tsv', '_potential_variants.tsv')
+                stats = bam_processor.process_bam_streaming_parallel(
+                    bam_path=bam_to_process,
+                    genome_path=str(config['genome_path']),
+                    output_path=str(config['output_path']),
+                    n_threads=n_threads,
+                    apply_atract=config['apply_atract'],
+                    apply_ag_mispriming=config['apply_ag_mispriming'],
+                    ag_threshold=config['ag_threshold'],
+                    apply_polya_trim=config['apply_polya_trim'],
+                    apply_indel_correction=config['apply_indel_correction'],
+                    netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
+                    variant_aware=config['variant_aware'],
+                    variant_output_path=variant_output_path,
+                    annotated_junctions=annotated_junctions,
+                    gene_interval_trees=gene_interval_trees,
+                    polya_model_path=_polya_model_path,
+                )
+            else:
+                # Single-threaded streaming for single-core or debugging
+                chunk_size = getattr(args, 'chunk_size', 10000)
+                stats = bam_processor.process_bam_streaming(
+                    bam_path=bam_to_process,
+                    genome_path=str(config['genome_path']),
+                    output_path=str(config['output_path']),
+                    chunk_size=chunk_size,
+                    apply_atract=config['apply_atract'],
+                    apply_ag_mispriming=config['apply_ag_mispriming'],
+                    ag_threshold=config['ag_threshold'],
+                    apply_polya_trim=config['apply_polya_trim'],
+                    apply_indel_correction=config['apply_indel_correction'],
+                    netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
+                    annotated_junctions=annotated_junctions,
+                    gene_interval_trees=gene_interval_trees,
+                    polya_model_path=_polya_model_path,
+                )
             report = generate_stats_report(stats)
         else:
             # Standard parallel processing
@@ -386,6 +426,7 @@ def run(args):
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
                 gene_interval_trees=gene_interval_trees,
+                polya_model_path=_polya_model_path,
             )
             report = generate_stats_report(stats)
 
@@ -432,8 +473,54 @@ def run(args):
             logger.info(f"  Sorted and indexed {config['output_bam']}")
             logger.info(f"[TIMING] Poly(A) BAM trim: {_time.perf_counter() - _t_bam:.1f}s")
 
-        # Write fully-corrected BAM if requested (hard-clips aligned poly-A regions)
-        if config.get('corrected_bam') and config.get('output_path'):
+        # Write corrected BAMs (hard-clip and/or soft-clip).
+        # When both are requested, use write_dual_bam for a single-pass read of the input BAM.
+        _want_hc = bool(config.get('corrected_bam') and config.get('output_path'))
+        _want_sc = bool(config.get('softclipped_bam') and config.get('output_path'))
+
+        # Load genome once for homopolymer CIGAR surgery in BAM writers.
+        _genome_for_bam = None
+        if config.get('genome_path'):
+            try:
+                _genome_for_bam = genome_utils.load_genome(str(config['genome_path']))
+            except Exception as _e:
+                logger.warning(f"Could not load genome for homopolymer BAM surgery: {_e}")
+
+        if _want_hc and _want_sc:
+            _t_cbam = _time.perf_counter()
+            _unsorted_bam  = str(config['corrected_bam'])  + '.unsorted.bam'
+            _unsorted_sbam = str(config['softclipped_bam']) + '.unsorted.bam'
+            logger.info(
+                f"Writing hardclip + softclip BAMs in single pass "
+                f"({config['corrected_bam']}, {config['softclipped_bam']})..."
+            )
+            cbam_stats, sbam_stats = bam_processor.write_dual_bam(
+                str(bam_to_process),
+                str(config['output_path']),
+                _unsorted_bam,
+                _unsorted_sbam,
+                genome=_genome_for_bam,
+            )
+            logger.info(
+                f"  Hardclip: total={cbam_stats['total']:,}  "
+                f"clipped={cbam_stats['clipped']:,}  unchanged={cbam_stats['unchanged']:,}"
+            )
+            logger.info(
+                f"  Softclip: total={sbam_stats['total']:,}  "
+                f"clipped={sbam_stats['clipped']:,}  unchanged={sbam_stats['unchanged']:,}"
+            )
+            import os as _os
+            for _unsorted, _final in [
+                (_unsorted_bam,  config['corrected_bam']),
+                (_unsorted_sbam, config['softclipped_bam']),
+            ]:
+                pysam.sort('-o', str(_final), _unsorted)
+                pysam.index(str(_final))
+                _os.unlink(_unsorted)
+                logger.info(f"  Sorted and indexed {_final}")
+            logger.info(f"[TIMING] Dual BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
+
+        elif _want_hc:
             import subprocess as _subprocess
             _t_cbam = _time.perf_counter()
             _unsorted_bam = str(config['corrected_bam']) + '.unsorted.bam'
@@ -442,24 +529,21 @@ def run(args):
                 str(bam_to_process),
                 str(config['output_path']),
                 _unsorted_bam,
+                genome=_genome_for_bam,
             )
             logger.info(
                 f"  Reads written: {cbam_stats['total']:,}  "
                 f"clipped: {cbam_stats['clipped']:,}  "
                 f"unchanged: {cbam_stats['unchanged']:,}"
             )
-            # Sort and index so the BAM is immediately usable in IGV
             pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
             pysam.index(str(config['corrected_bam']))
             import os as _os
             _os.unlink(_unsorted_bam)
-            logger.info(
-                f"  Sorted and indexed {config['corrected_bam']}"
-            )
+            logger.info(f"  Sorted and indexed {config['corrected_bam']}")
             logger.info(f"[TIMING] Corrected BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
 
-        # Write soft-clipped BAM if requested (poly-A bases retained but soft-clipped)
-        if config.get('softclipped_bam') and config.get('output_path'):
+        elif _want_sc:
             _t_sbam = _time.perf_counter()
             _unsorted_sbam = str(config['softclipped_bam']) + '.unsorted.bam'
             logger.info(f"Writing soft-clipped BAM to {config['softclipped_bam']}...")
@@ -467,6 +551,7 @@ def run(args):
                 str(bam_to_process),
                 str(config['output_path']),
                 _unsorted_sbam,
+                genome=_genome_for_bam,
             )
             logger.info(
                 f"  Reads written: {sbam_stats['total']:,}  "
@@ -479,6 +564,48 @@ def run(args):
             _os.unlink(_unsorted_sbam)
             logger.info(f"  Sorted and indexed {config['softclipped_bam']}")
             logger.info(f"[TIMING] Soft-clipped BAM write: {_time.perf_counter() - _t_sbam:.1f}s")
+
+        # Write NET-seq-assigned bedgraph for Cat6 reads (rectified_ambiguous_pA_netseq_assigned)
+        # Automatically produced whenever a corrected or soft-clipped BAM is written.
+        if (config.get('corrected_bam') or config.get('softclipped_bam')) and config.get('output_path'):
+            _t_nbg = _time.perf_counter()
+            # Derive prefix from the corrected BAM path (or softclipped if no corrected)
+            _bam_for_prefix = config.get('corrected_bam') or config.get('softclipped_bam')
+            _bam_stem = Path(str(_bam_for_prefix)).stem  # e.g. "rectified"
+            _bam_dir  = Path(str(_bam_for_prefix)).parent
+            _nbg_prefix = str(_bam_dir / f"{_bam_stem}_ambiguous_pA_netseq_assigned")
+            logger.info(f"Writing NET-seq assigned bedgraph (prefix: {_nbg_prefix})...")
+            try:
+                _nbg_counts = bam_processor.write_netseq_assigned_bedgraph(
+                    str(config['output_path']),
+                    _nbg_prefix,
+                )
+                logger.info(
+                    f"  NET-seq bedgraph: plus={_nbg_counts.get('plus', 0):,} pos, "
+                    f"minus={_nbg_counts.get('minus', 0):,} pos"
+                )
+            except Exception as _nbg_exc:
+                logger.warning(f"Failed to write NET-seq assigned bedgraph: {_nbg_exc}")
+            logger.info(f"[TIMING] NET-seq assigned bedgraph: {_time.perf_counter() - _t_nbg:.1f}s")
+
+            # Write general corrected-3'-end bedgraph for ALL reads (Cat1–6).
+            # Uses the 'fraction' column so Cat6 multi-peak rows contribute fractional
+            # values; all other reads contribute 1.0.
+            _t_c3bg = _time.perf_counter()
+            _c3bg_prefix = str(_bam_dir / f"{_bam_stem}_corrected_3ends")
+            logger.info(f"Writing corrected-3'-end bedgraph (prefix: {_c3bg_prefix})...")
+            try:
+                _c3bg_counts = bam_processor.write_corrected_3ends_bedgraph(
+                    str(config['output_path']),
+                    _c3bg_prefix,
+                )
+                logger.info(
+                    f"  Corrected-3'-end bedgraph: plus={_c3bg_counts.get('plus', 0):,} pos, "
+                    f"minus={_c3bg_counts.get('minus', 0):,} pos"
+                )
+            except Exception as _c3bg_exc:
+                logger.warning(f"Failed to write corrected-3'-end bedgraph: {_c3bg_exc}")
+            logger.info(f"[TIMING] Corrected-3'-end bedgraph: {_time.perf_counter() - _t_c3bg:.1f}s")
 
         # Write NET-seq bedgraph files if requested
         if config.get('bedgraph_prefix') and config.get('output_path'):
@@ -565,7 +692,8 @@ if __name__ == '__main__':
     parser.add_argument('--genome', type=Path, required=True)
     parser.add_argument('--annotation', type=Path)
     parser.add_argument('-o', '--output', type=Path)
-    parser.add_argument('--polya-sequenced', action='store_true')
+    parser.add_argument('--dT-primed-cDNA', dest='dT_primed_cDNA', action='store_true')
+    parser.add_argument('--polya-sequenced', dest='dT_primed_cDNA', action='store_true')  # deprecated
     parser.add_argument('--skip-atract-check', action='store_true')
     parser.add_argument('--skip-ag-check', action='store_true')
     parser.add_argument('--skip-polya-trim', action='store_true')

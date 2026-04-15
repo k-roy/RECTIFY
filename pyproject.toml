@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rectify-rna"
-version = "2.7.8"
+version = "0.9.0"
 description = "RNA 5' and 3' End Correction Tool with Intron Refinement and Ambiguity Resolution"
 authors = [
     {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}
@@ -12,7 +12,13 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
-keywords = ["RNA", "3-prime-end", "polyadenylation", "RNA-seq", "genomics"]
+keywords = [
+    "RNA", "3-prime-end", "polyadenylation", "RNA-seq", "genomics",
+    "nanopore", "direct RNA sequencing", "long-read",
+    "Oxford Nanopore", "Oxford Nanopore Technologies", "ONT",
+    "cleavage site", "splice junction", "multi-aligner",
+    "NET-seq", "native elongating transcript sequencing",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -94,22 +100,20 @@ rectify = [
     "data/*.tsv.gz",
     "data/genomes/**/*.gz",
     "data/motif_databases/*.meme",
-    "data/validation_reads.bam",
-    "data/validation_reads.bam.bai",
-    "data/validation_reads.fastq.gz",
+    "data/output/validation_reads.bam",
+    "data/output/validation_reads.bam.bai",
+    "data/output/validation_reads.fastq.gz",
+    "data/output/validation_reads_igv.html",
+    "data/output/aligners/*.bam",
+    "data/output/aligners/*.bai",
+    "data/output/rectified/*.bam",
+    "data/output/rectified/*.bai",
+    "data/output/rectified/*.bedgraph",
     "data/VALIDATION_READS.md",
-    "data/rectified.bam",
-    "data/rectified.bam.bai",
-    "data/rectified_softclip.bam",
-    "data/rectified_softclip.bam.bai",
-    "data/minimap2.bam",
-    "data/minimap2.bam.bai",
-    "data/mapPacBio.bam",
-    "data/mapPacBio.bam.bai",
-    "data/gapmm2.bam",
-    "data/gapmm2.bam.bai",
-    "data/aligners/*.bam",
-    "data/aligners/*.bai",
+    "data/corrected_3ends.tsv",
+    "data/corrected_3ends_stats.tsv",
+    "data/corrected_3ends_index.bed.gz",
+    "data/bin/**/*",
 ]
 
 [tool.pytest.ini_options]

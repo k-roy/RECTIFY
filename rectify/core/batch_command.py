@@ -408,8 +408,8 @@ def _build_sample_cmd(sample: Dict[str, str], sample_output: Path, args) -> List
         cmd.extend(['--annotation', str(args.annotation)])
     if getattr(args, 'organism', None):
         cmd.extend(['--organism', args.organism])
-    if getattr(args, 'polya_sequenced', False):
-        cmd.append('--polya-sequenced')
+    if getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False):
+        cmd.append('--dT-primed-cDNA')
     if getattr(args, 'aligner', None):
         cmd.extend(['--aligner', args.aligner])
     if getattr(args, 'netseq_dir', None):
@@ -558,8 +558,8 @@ def generate_slurm_scripts(
     extra_args = []
     if getattr(args, 'organism', None):
         extra_args.append(f'--organism "{args.organism}"')
-    if getattr(args, 'polya_sequenced', False):
-        extra_args.append('--polya-sequenced')
+    if getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False):
+        extra_args.append('--dT-primed-cDNA')
     if getattr(args, 'aligner', None):
         extra_args.append(f'--aligner {args.aligner}')
     if getattr(args, 'netseq_dir', None):
@@ -1134,9 +1134,16 @@ Manifest format (TSV):
     )
 
     rectify_group.add_argument(
-        '--polya-sequenced',
+        '--dT-primed-cDNA',
+        dest='dT_primed_cDNA',
         action='store_true',
-        help='Poly(A) tail was sequenced'
+        help='Input is dT-primed cDNA (QuantSeq, etc.) — poly(A) not in read'
+    )
+    rectify_group.add_argument(
+        '--polya-sequenced',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        help=argparse.SUPPRESS,  # Deprecated alias
     )
 
     rectify_group.add_argument(

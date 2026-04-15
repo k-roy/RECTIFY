@@ -235,6 +235,168 @@ def run_minimap2_alignment(
         raise RuntimeError(f"Alignment failed: {e}")
 
 
+def _bam_is_unaligned(bam_path: Path, sample_reads: int = 200) -> bool:
+    """
+    Quickly determine whether a BAM file contains unmapped (unaligned) reads.
+
+    Samples the first `sample_reads` primary reads.  If all of them are
+    unmapped, the BAM is treated as an unaligned dorado BAM that needs
+    alignment.  A single mapped read is enough to conclude the BAM is already
+    aligned (avoids false positives from BAMs where a few reads genuinely have
+    no alignment but most do).
+
+    Args:
+        bam_path: Path to BAM file
+        sample_reads: Number of reads to inspect
+
+    Returns:
+        True if the BAM appears to be unaligned
+    """
+    try:
+        import pysam
+        n_checked = 0
+        with pysam.AlignmentFile(str(bam_path), 'rb', check_sq=False) as bam:
+            for read in bam:
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if not read.is_unmapped:
+                    return False  # Found a mapped read — BAM is aligned
+                n_checked += 1
+                if n_checked >= sample_reads:
+                    break
+        return n_checked > 0  # All sampled reads were unmapped → unaligned BAM
+    except Exception:
+        return False  # If we can't tell, assume aligned to avoid re-alignment
+
+
+def align_ubam_to_genome(
+    ubam_path: Path,
+    genome_path: Path,
+    output_bam: Path,
+    preset: str = 'splice:hq',
+    threads: int = 4,
+    verbose: bool = True,
+) -> Path:
+    """
+    Align an unaligned dorado BAM to the genome, preserving all aux tags.
+
+    Uses the pipeline:
+        samtools fastq -T '*' input.bam | minimap2 -y ... genome.fasta -
+
+    The -T '*' flag in samtools fastq copies ALL aux tags (including pt:i) to
+    the FASTQ comment field.  The -y flag in minimap2 propagates those FASTQ
+    comment tags back into the aligned SAM/BAM output.
+
+    Args:
+        ubam_path: Path to unaligned BAM file
+        genome_path: Path to reference genome FASTA
+        output_bam: Path for output aligned BAM
+        preset: minimap2 preset
+        threads: Number of threads
+        verbose: Print progress
+
+    Returns:
+        Path to sorted, indexed output BAM
+
+    Raises:
+        RuntimeError: If samtools or minimap2 is not available
+    """
+    if not check_samtools_installed():
+        raise RuntimeError(
+            "samtools not found. Install with: conda install -c bioconda samtools"
+        )
+    if not check_minimap2_installed():
+        raise RuntimeError(
+            "minimap2 not found. Install with: conda install -c bioconda minimap2"
+        )
+
+    if verbose:
+        print(f"Aligning unaligned BAM with tag preservation...")
+        print(f"  Input:     {ubam_path}")
+        print(f"  Reference: {genome_path}")
+        print(f"  Output:    {output_bam}")
+
+    # samtools fastq -T '*' threads the pt:i tag (and all others) into the
+    # FASTQ comment.  minimap2 -y writes those comments back as SAM tags.
+    fastq_cmd = [
+        'samtools', 'fastq',
+        '-T', '*',          # copy all aux tags to FASTQ comment
+        '-@', str(threads),
+        str(ubam_path),
+    ]
+
+    mm2_cmd = [
+        'minimap2',
+        '-ax', preset,
+        '-uf',              # forward strand only (direct RNA)
+        '-k14',
+        '--MD',
+        '-y',               # propagate FASTQ comment tags to SAM output
+        '--secondary=no',
+        '-t', str(threads),
+        str(genome_path),
+        '-',                # read from stdin (piped from samtools fastq)
+    ]
+
+    sort_cmd = [
+        'samtools', 'sort',
+        '-@', str(threads),
+        '-o', str(output_bam),
+    ]
+
+    try:
+        proc_fq = subprocess.Popen(
+            fastq_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        proc_mm2 = subprocess.Popen(
+            mm2_cmd,
+            stdin=proc_fq.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        proc_fq.stdout.close()  # allow proc_fq to receive SIGPIPE if mm2 exits
+
+        proc_sort = subprocess.Popen(
+            sort_cmd,
+            stdin=proc_mm2.stdout,
+            stderr=subprocess.PIPE,
+        )
+        proc_mm2.stdout.close()
+
+        _, sort_err = proc_sort.communicate()
+        mm2_ret = proc_mm2.wait()
+        fq_ret = proc_fq.wait()
+
+        if fq_ret != 0:
+            raise RuntimeError(
+                f"samtools fastq failed (exit {fq_ret}): "
+                f"{proc_fq.stderr.read().decode()}"
+            )
+        if mm2_ret != 0:
+            raise RuntimeError(
+                f"minimap2 failed (exit {mm2_ret}): "
+                f"{proc_mm2.stderr.read().decode()}"
+            )
+        if proc_sort.returncode != 0:
+            raise RuntimeError(
+                f"samtools sort failed: {sort_err.decode()}"
+            )
+
+        # Index the aligned BAM
+        subprocess.run(
+            ['samtools', 'index', '-@', str(threads), str(output_bam)],
+            check=True
+        )
+
+        if verbose:
+            print(f"  Aligned BAM written: {output_bam}")
+
+        return output_bam
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Alignment pipeline failed: {e}")
+
+
 def prepare_input(
     input_path: Path,
     genome_path: Optional[Path] = None,
@@ -269,8 +431,31 @@ def prepare_input(
         )
 
     if input_type == 'bam':
+        # Detect whether this is an unaligned (dorado) BAM or an aligned BAM.
+        # An unaligned BAM has no mapped reads; we need to align it, preserving
+        # aux tags (including pt:i) via samtools fastq -T '*' | minimap2 -y.
+        if _bam_is_unaligned(input_path):
+            if verbose:
+                print(f"Input is an unaligned BAM (dorado output): {input_path}")
+                print("Will align with tag preservation (pt:i threaded through).")
+            if genome_path is None:
+                raise ValueError(
+                    "Genome required to align an unaligned BAM. "
+                    "Provide --genome or --organism."
+                )
+            if output_dir is None:
+                output_dir = input_path.parent
+            output_bam = output_dir / f"{input_path.stem}.aligned.bam"
+            bam_path = align_ubam_to_genome(
+                ubam_path=input_path,
+                genome_path=genome_path,
+                output_bam=output_bam,
+                threads=threads,
+                verbose=verbose,
+            )
+            return bam_path, 'bam'
         if verbose:
-            print(f"Input is BAM file: {input_path}")
+            print(f"Input is aligned BAM file: {input_path}")
         return input_path, 'bam'
 
     # FASTQ input - need to align

@@ -380,6 +380,14 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 
 **No open bugs remaining** — see `docs/BUGS_TO_FIX.md`.
 
+**v3.0.1 (2026-04-15):** `clip_intronic_tail_5prime` — off-by-one fix + trailing-I/S stripping + existing-H handling + `_MIN_SC_FOR_JUNCTION_EXTENSION` guard:
+- **Off-by-one fix (minus strand)**: Exit condition changed from `<= clip_boundary + 1` → `<= clip_boundary`. Previously reads ending at `reference_end = intron_start + 1` (last mapped base = `intron_start` = first intron base) were left unclipped, appearing as red T→C mismatches in IGV. Now they are trimmed so the last mapped base is `intron_start - 1` (last exon base).
+- **Trailing I/S stripping**: Before the main ref-consuming trim loop, `clip_intronic_tail_5prime` now explicitly strips trailing I (insertion) and S (soft-clip) ops from the 5' end. These bases lie at/past the intron boundary and were silently left in the CIGAR under the old code when `reference_end` was already at the boundary.
+- **Existing H handling**: Any pre-existing trailing H op is extracted before processing and merged back at the end. This prevents double-counting query bases that were already removed from `query_sequence` in a prior call.
+- **`_MIN_SC_FOR_JUNCTION_EXTENSION = 3`**: New module-level constant in `bam_writer.py`. All three write functions (`write_corrected_bam`, `write_softclipped_bam`, `write_dual_bam`) now only call `extend_read_5prime_for_junction_rescue` when the 5' soft clip is ≥ 3 bp. Reads with 1-2 bp soft clips fall through to `clip_intronic_tail_5prime` instead, preventing spurious Cat3 exon-N-exon CIGAR surgery on single-base alignment artefacts. An `_extended` flag prevents `clip_intronic_tail_5prime` from undoing a successful Cat3 extension.
+- **`bam_processor.py` `_sc_at_5p == 0` restriction removed**: `five_prime_intron_clip_pos` is now set for ALL `_in_intron` reads regardless of whether a soft clip is present at the 5' end. Reads with small soft clips now get the clip applied rather than being directed to Cat3 extension.
+- Impact: zero reads with last base at intron_start (X mismatch), zero trailing I ops at boundary, 292 reads properly clipped to `ref_end = intron_start` (last base = last exon base); all 2,073 reads pass CIGAR/sequence-length validation.
+
 **v3.0.0 (2026-04-15):** `clip_intronic_tail_5prime` — BAM sequence trimming fix + generalised intron-clip trigger:
 - `clip_intronic_tail_5prime` in `bam_writer.py` now trims `query_sequence` and `query_qualities` to match the new CIGAR after adding H ops. Previously only the CIGAR was updated, leaving `query_sequence` too long → pysam wrote malformed BAM records → `samtools sort: truncated file` error and silent loss of all intronic-snap clip corrections.
   - Minus strand (clip from right): `read.query_sequence = seq[:-clipped_query_bases]`

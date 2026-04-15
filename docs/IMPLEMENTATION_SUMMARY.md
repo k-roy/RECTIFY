@@ -1,6 +1,6 @@
 # RECTIFY Implementation Summary
 
-**Version:** 2.7.6
+**Version:** 0.9.0
 **Date:** 2026-04-03
 **Status:** Production — All 27 bugs fixed, 435 tests passing
 

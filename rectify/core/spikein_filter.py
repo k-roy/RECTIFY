@@ -674,40 +674,65 @@ class SpikeInFilter:
                     return gname, sig
             return None
 
+        # ── Pass 1: classify only reads at spike-in loci (fast, locus-restricted) ──
+        # Fetch reads from each locus, classify by 3' UTR k-mer, collect spike-in
+        # query names.  Reads elsewhere are never examined — no false-positive risk.
+        spikein_qnames: set = set()
+        ambiguous_qnames: set = set()
+
+        bam_locus = pysam.AlignmentFile(input_bam, 'rb')
+        for (chroms, lstart, lend, gene_name, sig) in sig_loci:
+            for chrom_name in chroms:
+                try:
+                    for read in bam_locus.fetch(chrom_name, lstart, lend):
+                        if read.is_unmapped:
+                            continue
+                        classification, _ = self.classify_read_by_3utr(read)
+                        if classification == 'spikein':
+                            spikein_qnames.add(read.query_name)
+                            stats['spikein_reads'] += 1
+                            stats['by_gene'][gene_name] = stats['by_gene'].get(gene_name, 0) + 1
+                        elif classification == 'ambiguous':
+                            ambiguous_qnames.add(read.query_name)
+                            stats['ambiguous_reads'] += 1
+                except ValueError:
+                    # chrom not in BAM (e.g. chrom_alt mismatch) — skip silently
+                    pass
+        bam_locus.close()
+
+        print(
+            f"  Locus scan: {stats['spikein_reads']:,} spike-in, "
+            f"{stats['ambiguous_reads']:,} ambiguous read names identified"
+        )
+
+        # Reset per-read counters — pass 2 will recount from the full BAM stream
+        # (pass 1 counts were over locus fetches which may include duplicates
+        # for reads spanning multiple fetched loci)
+        stats['spikein_reads'] = 0
+        stats['ambiguous_reads'] = 0
+        stats['endogenous_reads'] = 0
+        for gene_name in stats['by_gene']:
+            stats['by_gene'][gene_name] = 0
+
+        # ── Pass 2: stream full BAM, drop spike-in read names (O(1) set lookup) ──
         bam_in = pysam.AlignmentFile(input_bam, 'rb')
         bam_out = pysam.AlignmentFile(output_bam, 'wb', template=bam_in)
 
         for read in bam_in:
             stats['total_reads'] += 1
+            qname = read.query_name
 
-            locus_match = _read_overlaps_locus(read)
-
-            if locus_match is None:
-                # Not from a spike-in locus — keep unconditionally (zero false-positive risk)
+            if qname in spikein_qnames:
+                stats['spikein_reads'] += 1
+            elif qname in ambiguous_qnames:
+                stats['ambiguous_reads'] += 1
+                if keep_ambiguous:
+                    bam_out.write(read)
+                    stats['kept_reads'] += 1
+            else:
                 bam_out.write(read)
                 stats['endogenous_reads'] += 1
                 stats['kept_reads'] += 1
-            else:
-                gene_name, sig = locus_match
-                classification, _ = self.classify_read_by_3utr(read)
-
-                if classification == 'spikein':
-                    stats['spikein_reads'] += 1
-                    stats['by_gene'][gene_name] = stats['by_gene'].get(gene_name, 0) + 1
-                elif classification == 'endogenous':
-                    stats['endogenous_reads'] += 1
-                    bam_out.write(read)
-                    stats['kept_reads'] += 1
-                else:  # ambiguous
-                    stats['ambiguous_reads'] += 1
-                    if keep_ambiguous:
-                        bam_out.write(read)
-                        stats['kept_reads'] += 1
-
-            if stats['total_reads'] % 100000 == 0:
-                print(f"  Processed {stats['total_reads']:,} reads, "
-                      f"filtered {stats['spikein_reads']:,} spike-in, "
-                      f"{stats['ambiguous_reads']:,} ambiguous")
 
         bam_in.close()
         bam_out.close()

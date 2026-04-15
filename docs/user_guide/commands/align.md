@@ -108,9 +108,28 @@ Key flags:
 
 ---
 
+## Parallel alignment (large datasets)
+
+For datasets where a single 5-aligner run exceeds available wall time, use
+`rectify split` to divide the FASTQ into N chunks and run each (chunk, aligner)
+pair as a SLURM array task. See [`rectify split`](split.md) for the complete workflow.
+
+```bash
+# Quick summary: 16 chunks × 5 aligners = 80 array tasks
+rectify split reads.fastq.gz -n 16 -o chunks/ \
+    --generate-slurm \
+    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --genome genome.fa --annotation genes.gff
+sbatch chunks/run_array_align.sh          # submit 80-task array
+bash  chunks/run_merge_and_consensus.sh   # run after array completes
+```
+
+---
+
 ## Notes
 
 - The junction BED file is cached as `annotation.junc.bed` in the output directory on first run
 - deSALT has a known output-duplication bug; RECTIFY deduplicates on (read_name, flag, chrom, pos, cigar) automatically
+- deSALT: a pre-built Linux/x86_64 binary (v1.5.6) is bundled with RECTIFY and used automatically when `deSALT` is not on `PATH`. Use `rectify install-aligners --desalt` to install to `~/.rectify/bin/` for other platforms.
 - uLTRA requires an uncompressed genome FASTA; RECTIFY decompresses gzipped genomes to a temp file automatically
 - Dorado RNA004 basecalled reads use `U` instead of `T`; RECTIFY normalizes `U→T` before passing to mapPacBio

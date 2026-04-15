@@ -28,6 +28,7 @@ Author: Kevin R. Roy
 import logging
 import os
 import hashlib
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
@@ -97,6 +98,14 @@ class AlignmentInfo:
     # real exon sequence means the aligner stopped before the true 3' end.
     # Complementary to the A-tract depth penalty (which catches going too far INTO poly(A)).
     effective_three_prime_clip: int = 0
+
+    # Mismatches + indels within junction_window_bp of any splice junction.
+    # Cleaner aligners (mapPacBio) score 0; aligners with forced errors near
+    # junctions (minimap2, gapmm2) accumulate a penalty here.
+    # Float because homopolymer-context errors are weighted 0.5 (nanopore DRS
+    # commonly undercalls homopolymer lengths, making such errors less diagnostic
+    # of misalignment than non-homopolymer mismatches).
+    junction_proximity_errors: float = 0.0
 
     # Flags
     has_false_3prime_junction: bool = False
@@ -683,6 +692,101 @@ def _get_effective_3prime_clip(
     return max(three_clip, three_clip + terminal_end)
 
 
+def _is_homopolymer_position(ref_seq: str, rp: int, min_run: int = 3) -> bool:
+    """Return True if reference position rp is within a homopolymer run >= min_run."""
+    if rp < 0 or rp >= len(ref_seq):
+        return False
+    base = ref_seq[rp].upper()
+    if base == 'N':
+        return False
+    left = rp
+    while left > 0 and ref_seq[left - 1].upper() == base:
+        left -= 1
+    right = rp + 1
+    while right < len(ref_seq) and ref_seq[right].upper() == base:
+        right += 1
+    return (right - left) >= min_run
+
+
+def _count_junction_proximity_errors(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    junction_window_bp: int = 5,
+) -> float:
+    """
+    Count mismatches and indels within junction_window_bp of any splice junction.
+
+    For each N operation (intron), inspect the `junction_window_bp` aligned
+    bases on the exon side of both junction boundaries.  Errors (mismatches,
+    insertions, deletions) in those windows indicate an aligner that placed
+    indels or mismatches right at the junction rather than resolving the
+    splice cleanly.
+
+    Insertions are attributed to the preceding aligned reference position;
+    deletions are attributed to their reference position directly.
+
+    Errors at homopolymer reference positions are weighted 0.5 instead of 1.0.
+    Nanopore DRS commonly undercalls homopolymer lengths; such errors are
+    sequencing artifacts rather than evidence of misalignment.
+
+    Returns:
+        Total weighted error count summed across all junction-proximal windows.
+    """
+    if not read.cigartuples or not read.query_sequence:
+        return 0
+
+    chrom = read.reference_name
+    if not chrom or chrom not in genome:
+        return 0
+
+    junctions = extract_junctions_from_cigar(read)
+    if not junctions:
+        return 0
+
+    ref_seq = genome[chrom]
+    query_seq = read.query_sequence
+
+    # Build set of reference positions within junction_window_bp of any boundary.
+    prox: set = set()
+    for junc_start, junc_end in junctions:
+        for rp in range(max(0, junc_start - junction_window_bp), junc_start):
+            prox.add(rp)
+        for rp in range(junc_end, min(len(ref_seq), junc_end + junction_window_bp)):
+            prox.add(rp)
+
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return 0
+
+    errors: float = 0.0
+    prev_rp: Optional[int] = None
+
+    for qp, rp in pairs:
+        if rp is None and qp is not None:
+            # Insertion into read — attribute to preceding ref position
+            if prev_rp is not None and prev_rp in prox:
+                weight = 0.5 if _is_homopolymer_position(ref_seq, prev_rp) else 1.0
+                errors += weight
+        elif qp is None and rp is not None:
+            # Deletion from read
+            if rp in prox:
+                weight = 0.5 if _is_homopolymer_position(ref_seq, rp) else 1.0
+                errors += weight
+            prev_rp = rp
+        elif qp is not None and rp is not None:
+            # Aligned pair — check for mismatch
+            if rp in prox and rp < len(ref_seq):
+                ref_b = ref_seq[rp].upper()
+                read_b = query_seq[qp].upper()
+                if ref_b != 'N' and read_b != ref_b:
+                    weight = 0.5 if _is_homopolymer_position(ref_seq, rp) else 1.0
+                    errors += weight
+            prev_rp = rp
+
+    return errors
+
+
 def score_alignment(
     alignment: AlignmentInfo,
     genome: Dict[str, str],
@@ -748,6 +852,15 @@ def score_alignment(
     # Same -2/base scale as the 5' penalty; capped at 10 to avoid overwhelming junction scores.
     if alignment.effective_three_prime_clip > 0:
         score -= min(alignment.effective_three_prime_clip * 2, 10)
+
+    # Junction-proximity mismatch/indel penalty: penalize aligners that place
+    # errors right at splice junction boundaries.  -1 per proximal error, capped
+    # at 10 to avoid overwhelming the junction/clip scores.  This favors aligners
+    # (e.g. mapPacBio) that produce clean junctions with no forced errors in the
+    # flanking exon sequence, relative to those (e.g. minimap2, gapmm2) that
+    # accumulate mismatches/indels within a few bp of each junction.
+    if alignment.junction_proximity_errors > 0:
+        score -= min(alignment.junction_proximity_errors, 10)
 
     # NOTE: Canonical junction motifs (GT-AG) and annotated junction matches are
     # deliberately not scored here. They are used only as tiebreakers in
@@ -846,6 +959,10 @@ def extract_alignment_info(
         except Exception:
             pass  # Non-fatal; raw position used
 
+    # Count mismatches/indels within 5 bp of each junction boundary.
+    # Used by score_alignment() to prefer aligners with clean junction handling.
+    junction_prox_errors = _count_junction_proximity_errors(read, genome)
+
     return AlignmentInfo(
         read_id=read.query_name,
         aligner=aligner,
@@ -866,6 +983,7 @@ def extract_alignment_info(
         three_prime_atract_depth=atract_depth,
         canonical_count=canonical,
         non_canonical_count=non_canonical,
+        junction_proximity_errors=junction_prox_errors,
         has_false_3prime_junction=False,  # Not used; walk back handles this
     )
 
@@ -1032,6 +1150,18 @@ def _filtered_read_iterator(bam: pysam.AlignmentFile):
             yield read
 
 
+def _natural_sort_key(s: str) -> list:
+    """Key for natural (version) sort matching samtools queryname:natural order.
+
+    Samtools natural sort compares runs of digits as integers rather than
+    lexicographically.  Example: ``98297e97`` sorts before ``0633141e``
+    because 98297 < 633141, even though ``'9' > '0'`` lexicographically.
+    The K-way merge must use the same ordering as the BAM iterators so that
+    reads present in only a subset of aligners do not desynchronise the merge.
+    """
+    return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', s)]
+
+
 def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     """
     K-way merge across name-sorted BAMs, yielding all alignments per read.
@@ -1055,7 +1185,8 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     try:
         while any(r is not None for r in current_reads.values()):
             min_read_id = min(
-                r.query_name for r in current_reads.values() if r is not None
+                (r.query_name for r in current_reads.values() if r is not None),
+                key=_natural_sort_key,
             )
             group = {}
             for aligner in list(current_reads.keys()):

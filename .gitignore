@@ -108,3 +108,36 @@ rectify_new_files/
 
 # MkDocs site build
 site/
+
+# Development test runs (large alignment/correction outputs, not for version control)
+dev_runs/
+
+# Large reference data (downloaded separately, not for version control)
+rectify/data/*.fsa
+rectify/data/*.fsa.fai
+rectify/data/*.gff
+rectify/data/*.gtf
+rectify/data/*.junc.bed
+rectify/data/desalt_index/
+rectify/data/genomes/
+
+# Auto-generated provenance and output data (not source)
+rectify/data/README.md
+rectify/data/PROVENANCE.json
+rectify/data/corrected_3ends.tsv
+rectify/data/corrected_3ends_stats.tsv
+rectify/data/corrected_3ends_index.bed.gz
+rectify/data/output/rectified/*.bedgraph
+
+# Production-scale aligner outputs (large, not bundled validation data)
+rectify/data/output/aligners/*.bam
+rectify/data/output/aligners/*.bam.bai
+rectify/data/output/aligners/*.namesorted.bam
+rectify/data/output/aligners/*.paf
+rectify/data/output/aligners/*.bedgraph
+rectify/data/output/aligners/*_junctions.bed
+rectify/data/output/aligners/uLTRA_ultra_tmp/
+# Re-include the validation_reads-prefixed files (small, bundled test data)
+!rectify/data/output/aligners/validation_reads.*.bam
+!rectify/data/output/aligners/validation_reads.*.bam.bai
+!rectify/data/output/aligners/annotation.junc.bed

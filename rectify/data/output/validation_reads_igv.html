@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IGV Links — RECTIFY Validation Reads</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 2rem; color: #1a1a1a; background: #fafafa; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.3rem; }
+  p.subtitle { color: #666; margin-top: 0; font-size: 0.9rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 2px solid #e0e0e0; padding-bottom: 0.3rem; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+  th, td { text-align: left; padding: 6px 12px; border: 1px solid #ddd; font-size: 0.88rem; }
+  th { background: #f0f0f0; font-weight: 600; }
+  tr:hover { background: #f5f8ff; }
+  a.igv { color: #0969da; text-decoration: none; font-weight: 500; }
+  a.igv:hover { text-decoration: underline; }
+  .tag { display: inline-block; font-size: 0.75rem; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .plus  { background: #dff0d8; color: #3c763d; }
+  .minus { background: #f2dede; color: #a94442; }
+  code { background: #eee; padding: 1px 4px; border-radius: 3px; font-size: 0.85rem; }
+  .note { background: #fff8e1; border-left: 3px solid #f9a825; padding: 0.6rem 1rem; margin-bottom: 1.5rem; font-size: 0.88rem; }
+  td.detail { color: #555; font-size: 0.82rem; }
+</style>
+</head>
+<body>
+
+<h1>IGV Links — RECTIFY Validation Reads</h1>
+<p class="subtitle">32 reads from <code>wt_by4742_rep1.bam</code> (S. cerevisiae, direct RNA nanopore) — all eight correction categories</p>
+
+<div class="note">
+  <strong>Prerequisite:</strong> In IGV, enable the HTTP server via
+  <em>View &rarr; Preferences &rarr; Advanced &rarr; Enable port</em> (default 60151).
+  Load <code>validation_reads.bam</code> (and optionally <code>rectified/rectified_pA_hardclip.bam</code> or <code>rectified/rectified_pA_softclip.bam</code>) and select the <em>S. cerevisiae (sacCer3)</em> genome.
+  <br><br>
+  <strong>Corrected 3′-end bedgraphs (all categories):</strong> Load
+  <code>rectified/rectified_pA_hardclip_corrected_3ends.plus.bedgraph</code> and
+  <code>rectified/rectified_pA_hardclip_corrected_3ends.minus.bedgraph</code> to see
+  corrected 3′-end signal for all 32 reads (Cat1–8). These tracks show a single signal peak
+  at the corrected position for each read.
+  The <code>ambiguous_pA_netseq_assigned</code> bedgraphs cover <strong>only</strong> Cat8
+  (NET-seq weighted) reads — use the <code>corrected_3ends</code> tracks to verify Cat1–7 positions.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 1 — poly-A walkback (<code>cat1_indel</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads ending in genomic A-tracts; corrected 3′ end shifts <strong>inward</strong> (+ strand: leftward; − strand: rightward).
+Focused view is ±100 bp around the original 3′ end.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Shift</th><th>Focused (3′ ±100 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat1_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">−4 bp (3′ at 508793)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:508693-508893">chrVIII:508693-508893</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:508599-508794">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat1_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">−3 bp (3′ at 22849)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIX:22749-22949">chrIX:22749-22949</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIX:22544-22850">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat1_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">+6 bp (3′ at 9855)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:9755-9955">chrII:9755-9955</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:9855-10533">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat1_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">+4 bp (3′ at 9813)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:9713-9913">chrII:9713-9913</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:9813-10539">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 2 — soft-clip rescue at homopolymer (<code>cat2_softclip</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Aligner stopped inside a T-tract; soft-clipped bases match downstream reference. Corrected 3′ end shifts <strong>outward</strong>.
+All four reads have T-tract boundaries. Focused view is ±100 bp around the corrected 3′ end.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Shift / corrected 3′</th><th>Homopolymer</th><th>Focused (corrected ±100 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat2_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">+12 bp → 69844</td>
+    <td class="detail">T</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:69744-69944">chrI:69744-69944</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:68707-69845">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat2_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">+9 bp → 199929</td>
+    <td class="detail">T</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:199829-200029">chrI:199829-200029</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:198764-199930">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat2_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">−12 bp → 65610</td>
+    <td class="detail">T</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:65510-65710">chrI:65510-65710</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:65610-66228">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat2_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">−11 bp → 128102</td>
+    <td class="detail">T</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:128002-128202">chrI:128002-128202</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:128102-129052">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 3 — 5′ junction rescue (<code>cat3_junction</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads where the aligner's 5′ end is truncated at or inside an annotated 3′ splice site.
+Four aligners (minimap2, gapmm2, deSALT, uLTRA) produce a 5′ soft-clip; mapPacBio may extend into
+the intron without soft-clipping. The 5′ end is rescued to the exon boundary using the affine-gap
+semi-global aligner. Focused view is ±100 bp around the raw 5′ end / splice junction.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>5′ soft-clip</th><th>Raw 5′ end</th><th>Focused (5′ end ±100 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat3_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">10S</td>
+    <td class="detail">168808 (reference_start); intron 168424–168808 upstream</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168708-168908">chrII:168708-168908</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168808-169462">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat3_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">22S</td>
+    <td class="detail">142618 (reference_start)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:142518-142718">chrI:142518-142718</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:142618-143383">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat3_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">— (mapPacBio extends into intron; mpb_mismatch path)</td>
+    <td class="detail">900766 (reference_end−1); intron 900767–901193 upstream</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900717-901243">chrXV:900717-901243</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900071-900767">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat3_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">25S</td>
+    <td class="detail">366502 (reference_end−1)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:366402-366602">chrII:366402-366602</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:365845-366503">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 4 — false N op near 3′ end (<code>cat4_false_junc</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Spurious intron (N CIGAR op) inserted by the aligner in the poly-T/A region near the 3′ end. Corrected 3′ end walks back past the N; for cat4_plus_1 and cat4_minus_2 the N is fully absorbed.
+Focused view spans the spurious N op with ±50 bp padding.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Spurious N op</th><th>N absorbed?</th><th>Corrected 3′</th><th>Focused (N ±50 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat4_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrXI:20527–22047 (1520 bp)</td>
+    <td class="detail">Yes — snapped to 20526</td>
+    <td class="detail">20526</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXI:20477-22097">chrXI:20477-22097</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXI:19592-22073">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat4_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrX:393725–393825 (100 bp)</td>
+    <td class="detail">Yes — window clipped to [393721,393724]</td>
+    <td class="detail">393721</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrX:393675-393875">chrX:393675-393875</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrX:392246-393837">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat4_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrI:128521–129021 (500 bp)</td>
+    <td class="detail">No — N is 424 bp from 3′</td>
+    <td class="detail">128097</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:128471-129071">chrI:128471-129071</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrI:128094-129063">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat4_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrIX:76027–76250 (223 bp)</td>
+    <td class="detail">No — N remains at CIGAR start (12H 223N …)</td>
+    <td class="detail">76027</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIX:75977-76300">chrIX:75977-76300</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIX:76016-77313">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 5 — chimeric reconstruction (<code>cat5_chimeric</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads spanning a two-intron gene where each aligner only finds one GT-AG intron (tag <code>XK=1</code>).
+Source alignment has one N op; chimeric consensus would add the complementary aligner's intron.
+Tests verify <code>XA</code>, <code>XK</code>, <code>XS</code> tags and N op in source CIGAR.
+Views span the full read ±50 bp.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Locus</th><th>Aligners (XA)</th><th>Source intron</th><th>Complementary intron</th><th>Full Span ±50 bp</th></tr>
+
+  <tr>
+    <td><code>cat5_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrV</td>
+    <td class="detail">minimap2, mapPacBio</td>
+    <td class="detail">423590–423951 (mapPacBio)</td>
+    <td class="detail">424421–425030 (minimap2)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrV:423527-424492">chrV:423527-424492</a></td>
+  </tr>
+  <tr>
+    <td><code>cat5_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrII</td>
+    <td class="detail">minimap2, mapPacBio</td>
+    <td class="detail">332875–333386 (minimap2)</td>
+    <td class="detail">334050–334122 (mapPacBio)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:332772-334097">chrII:332772-334097</a></td>
+  </tr>
+  <tr>
+    <td><code>cat5_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrVII</td>
+    <td class="detail">minimap2, gapmm2</td>
+    <td class="detail">437941–438397 (gapmm2)</td>
+    <td class="detail">436480–437396 (minimap2)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:436405-438453">chrVII:436405-438453</a></td>
+  </tr>
+  <tr>
+    <td><code>cat5_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrIII</td>
+    <td class="detail">mapPacBio, gapmm2</td>
+    <td class="detail">177906–178213 (mapPacBio)</td>
+    <td class="detail">176709–177362 (gapmm2)</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:176656-178288">chrIII:176656-178288</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 6 — simple chimeric / single-aligner intron rescue (<code>cat6_chimeric</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads where mapPacBio (annotation-agnostic) correctly spans the 5′ intron while minimap2 and
+gapmm2 soft-clip the same region. Stored in the BAM using the mapPacBio alignment (<code>XU=1</code>),
+making the junction directly visible. Focused view is ±50 bp around the intron.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Intron (mapPacBio)</th><th>mm2 soft-clip</th><th>Focused (intron ±50 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat6_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrII:125154–125270 (116 bp)</td>
+    <td class="detail">14S</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:125104-125320">chrII:125104-125320</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:125140-126197">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat6_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">chrII:168424–168808 (384 bp)</td>
+    <td class="detail">20S</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168374-168858">chrII:168374-168858</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168401-169493">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat6_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrII:60193–60697 (504 bp)</td>
+    <td class="detail">9S</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:60143-60747">chrII:60143-60747</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:59701-60769">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat6_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">chrIV:307333–307765 (432 bp)</td>
+    <td class="detail">31S</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:307283-307815">chrIV:307283-307815</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:306811-307796">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 7 — Non-canonical, unannotated splice junctions (<code>cat7_alt_splice</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads with a single biologically-plausible but non-canonical splice junction aligned by mapPacBio (annotation-agnostic).
+Focused view is ±200 bp around the junction. Motif = {5′SS}-{3′SS} on RNA strand.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Gene</th><th>Junction / Motif</th><th>Focused (junction ±200 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat7_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td>YCR012W (chrIII)</td>
+    <td class="detail">138856–138946 (90 bp) · <strong>GT-AT</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:138656-138946">chrIII:138656-138946</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:137716-139164">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat7_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td>— (chrXII)</td>
+    <td class="detail">595736–595852 (116 bp) · <strong>GC-AT</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:595536-596052">chrXII:595536-596052</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:593396-599029">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat7_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td>YBR101C (chrII)</td>
+    <td class="detail">443720–443833 (113 bp) · <strong>GT-CG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:443520-444033">chrII:443520-444033</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:442949-444728">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat7_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td>YGR192C (chrVII)</td>
+    <td class="detail">882352–882702 (350 bp) · <strong>GC-AT</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:882152-882902">chrVII:882152-882902</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:882287-883838">full</a></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 8 — NET-seq A-tract refinement (<code>cat8_netseq_refine</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads ending in A-tracts at positions with NET-seq signal; fractional weights assigned across nearby peaks.
+Focused view is ±100 bp around the corrected 3′ end.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Expected output</th><th>Focused (3′ ±100 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat8_plus_single</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">1 row, fraction=1.0</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:299958-300158">chrII:299958-300158</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:297998-300059">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat8_plus_multi</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td class="detail">primary 3′ at chrIV:234059 (G); fractions sum=1.0</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:233959-234159">chrIV:233959-234159</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:232523-234067">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat8_minus_single</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">1 row, fraction=1.0</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:1169525-1169725">chrIV:1169525-1169725</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIV:1169625-1172005">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat8_minus_multi</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td class="detail">primary 3′ at chrVIII:100520 (A ref); fractions sum=1.0</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:100405-100620">chrVIII:100405-100620</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:100505-101004">full</a></td>
+  </tr>
+</table>
+
+</body>
+</html>

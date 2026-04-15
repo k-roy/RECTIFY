@@ -61,9 +61,9 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     aligner_group.add_argument(
         '--aligners',
         nargs='+',
-        choices=['minimap2', 'mapPacBio', 'gapmm2', 'all'],
+        choices=['minimap2', 'mapPacBio', 'gapmm2', 'all', 'none'],
         default=['all'],
-        help='Default aligners for 3\' end correction (default: all)'
+        help='Default aligners for 3\' end correction. Use "none" to run only --junction-aligners (default: all)'
     )
 
     aligner_group.add_argument(
@@ -250,7 +250,9 @@ def run_align(args: argparse.Namespace) -> int:
 
     # Expand 'all' to list of aligners, then append any junction-mode aligners
     aligners = list(args.aligners)
-    if 'all' in aligners:
+    if 'none' in aligners:
+        aligners = []
+    elif 'all' in aligners:
         aligners = ['minimap2', 'mapPacBio', 'gapmm2']
 
     junction_aligners = getattr(args, 'junction_aligners', []) or []

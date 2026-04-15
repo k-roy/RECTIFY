@@ -161,6 +161,8 @@ def find_polya_boundary(
                         genome_base = genome_seq[ref_pos].upper()
                         aligned_positions.append((None, ref_pos, None, genome_base))
                     ref_pos += 1
+            elif op == 3:  # N (intron skip) - consumes reference only, not read
+                ref_pos += length
 
         if not aligned_positions:
             return None
@@ -170,7 +172,40 @@ def find_polya_boundary(
         raw_3prime = read.reference_end - 1
         true_cpa_ref_pos = None
 
-        for i in range(len(aligned_positions) - 1, -1, -1):
+        # Pre-scan: detect poly-A over-calling artifacts near the 3' end.
+        # When the alignment ends in a poly-A context (last real aligned position has
+        # gb='A') AND a large deletion (≥ _MIN_LARGE_DEL bp) exists within
+        # _POLY_NOISE_WINDOW bp of raw_3prime, the aligner likely over-extended the
+        # poly-A tail alignment and used a deletion to bridge back to the next exon
+        # match. Restricting the backward scan to before such deletions prevents
+        # stopping at a coincidental non-A match in the poly-A noise zone.
+        _POLY_NOISE_WINDOW = 50
+        _MIN_LARGE_DEL = 5
+
+        scan_end_idx = len(aligned_positions)
+        _last_gb = None
+        for _ap in reversed(aligned_positions):
+            if _ap[0] is not None:
+                _last_gb = _ap[3]
+                break
+        if _last_gb == 'A':
+            _i = len(aligned_positions) - 1
+            while _i >= 0:
+                _rp, _refp, _rb, _gb = aligned_positions[_i]
+                if _refp is not None and raw_3prime - _refp > _POLY_NOISE_WINDOW:
+                    break
+                if _rp is None:  # deletion entry
+                    # Find the start of this deletion block (scan left)
+                    _j = _i
+                    while _j > 0 and aligned_positions[_j - 1][0] is None:
+                        _j -= 1
+                    if _i - _j + 1 >= _MIN_LARGE_DEL:
+                        scan_end_idx = _j  # restrict backward scan to before this deletion
+                    _i = _j - 1
+                else:
+                    _i -= 1
+
+        for i in range(scan_end_idx - 1, -1, -1):
             rp, refp, rb, gb = aligned_positions[i]
             if rp is None:  # Skip deletions
                 continue
@@ -203,6 +238,7 @@ def find_polya_boundary(
 
         # Build aligned positions
         aligned_positions = []
+        first_n_start = None  # ref_pos of first N-op (intron) boundary, if any
 
         for op, length in cigar:
             if op == 4:  # Soft-clip
@@ -223,6 +259,10 @@ def find_polya_boundary(
                         genome_base = genome_seq[ref_pos].upper()
                         aligned_positions.append((None, ref_pos, None, genome_base))
                     ref_pos += 1
+            elif op == 3:  # N (intron skip) - consumes reference only, not read
+                if first_n_start is None:
+                    first_n_start = ref_pos  # record first intron boundary
+                ref_pos += length
 
         if not aligned_positions:
             return None
@@ -232,7 +272,55 @@ def find_polya_boundary(
         raw_3prime = read.reference_start
         true_cpa_ref_pos = None
 
-        for i in range(len(aligned_positions)):
+        # Do not cross N-op (intron) boundaries: the poly-A walkback is only valid
+        # within the 3' terminal exon block. For minus-strand reads, this is the
+        # leftmost exon (positions before the first N op). Crossing an N op would
+        # find a spurious match in the next exon (e.g. seq[12]='G'==genome[76251]='G'
+        # for a read with 11M223N, where all 11M are T=T and the first exon-2 base
+        # happens to match the read base right after the intron).
+        if first_n_start is not None:
+            scan_limit = next(
+                (i for i, (rp, refp, rb, gb) in enumerate(aligned_positions)
+                 if refp is not None and refp >= first_n_start),
+                len(aligned_positions)
+            )
+        else:
+            scan_limit = len(aligned_positions)
+
+        # Pre-scan: detect poly-A over-calling artifacts near the 3' end.
+        # When the alignment starts in a poly-T context (first real aligned position has
+        # gb='T', i.e. the RNA 3' end is inside the poly-A/T zone) AND a large deletion
+        # (≥ _MIN_LARGE_DEL bp) exists within _POLY_NOISE_WINDOW bp of raw_3prime, the
+        # aligner likely over-extended the poly-A alignment and used a deletion to bridge
+        # back to the next exon match. Starting the forward scan from after such deletions
+        # prevents stopping at a coincidental non-T match in the poly-A noise zone.
+        _POLY_NOISE_WINDOW = 50
+        _MIN_LARGE_DEL = 5
+
+        scan_start_idx = 0
+        _first_gb = None
+        for _ap in aligned_positions[:scan_limit]:
+            if _ap[0] is not None:
+                _first_gb = _ap[3]
+                break
+        if _first_gb == 'T':
+            _i = 0
+            while _i < scan_limit:
+                _rp, _refp, _rb, _gb = aligned_positions[_i]
+                if _refp is not None and _refp - raw_3prime > _POLY_NOISE_WINDOW:
+                    break
+                if _rp is None:  # deletion entry
+                    # Find the end of this deletion block (scan right)
+                    _j = _i
+                    while _j < scan_limit - 1 and aligned_positions[_j + 1][0] is None:
+                        _j += 1
+                    if _j - _i + 1 >= _MIN_LARGE_DEL:
+                        scan_start_idx = _j + 1  # start forward scan from after this deletion
+                    _i = _j + 1
+                else:
+                    _i += 1
+
+        for i in range(scan_start_idx, scan_limit):
             rp, refp, rb, gb = aligned_positions[i]
             if rp is None:  # Skip deletions
                 continue
@@ -240,6 +328,18 @@ def find_polya_boundary(
             if rb == gb and gb != 'T':
                 true_cpa_ref_pos = refp
                 break
+
+        # If the scan found no non-T match before the N-op boundary, and the
+        # pre-N block ends in poly-T, use the N-op start as the CPA. The intron
+        # boundary is the natural exon-end, so the CPA is the first intron position.
+        if true_cpa_ref_pos is None and first_n_start is not None and scan_limit > 0:
+            last_pre_n = next(
+                (aligned_positions[k] for k in range(scan_limit - 1, -1, -1)
+                 if aligned_positions[k][0] is not None),
+                None
+            )
+            if last_pre_n is not None and last_pre_n[3] == 'T':
+                true_cpa_ref_pos = first_n_start
 
         if true_cpa_ref_pos is not None:
             polya_len = true_cpa_ref_pos - raw_3prime
@@ -532,6 +632,13 @@ def rescue_softclip_at_homopolymer(
         rescued_bases = []
         match_start = raw_pos + homopolymer_extension + 1
 
+        # Track consecutive A's to distinguish poly-A tail from genomic A's.
+        # A single A (or short run < min_homopolymer_len) can be real genomic
+        # sequence; only a run >= min_homopolymer_len signals the poly-A tail.
+        # When the threshold is reached, roll back any A's already rescued in
+        # this consecutive run.
+        consecutive_a = 0
+
         for i in range(softclip_len):
             ref_pos = match_start + i
             if ref_pos >= len(genome_seq):
@@ -540,13 +647,42 @@ def rescue_softclip_at_homopolymer(
             ref_base = genome_seq[ref_pos].upper()
             softclip_base = softclip_seq[i]
 
-            # Check if soft-clipped base matches reference
-            if softclip_base == ref_base:
-                rescued_count += 1
-                rescued_bases.append(softclip_base)
+            if softclip_base == 'A':
+                consecutive_a += 1
+                if consecutive_a >= min_homopolymer_len:
+                    # Poly-A tail detected — roll back the A's already rescued
+                    # in this consecutive run (all but the triggering one).
+                    n_rollback = consecutive_a - 1
+                    rescued_count -= n_rollback
+                    del rescued_bases[-n_rollback:]
+                    break
+                # Short A run: rescue this base if it matches reference
+                if softclip_base == ref_base:
+                    rescued_count += 1
+                    rescued_bases.append(softclip_base)
+                else:
+                    break
             else:
-                # Mismatch - stop rescue
-                # But only accept rescue if we got at least 1 base
+                consecutive_a = 0
+                # Check if soft-clipped base matches reference
+                if softclip_base == ref_base:
+                    rescued_count += 1
+                    rescued_bases.append(softclip_base)
+                else:
+                    break
+
+        if rescued_count == 0:
+            return None
+
+        # Strip trailing rescued A's: the corrected 3' end must not be a genomic A
+        # (which would be indistinguishable from poly-A tail).
+        while rescued_count > 0:
+            outer_pos = raw_pos + homopolymer_extension + rescued_count
+            if outer_pos < len(genome_seq) and genome_seq[outer_pos].upper() == 'A':
+                rescued_count -= 1
+                if rescued_bases:
+                    rescued_bases.pop()
+            else:
                 break
 
         if rescued_count == 0:
@@ -620,6 +756,11 @@ def rescue_softclip_at_homopolymer(
         match_start = raw_pos - homopolymer_extension - 1
 
         # Walk through soft-clip BACKWARDS (from alignment boundary outward)
+        # Track consecutive T's to distinguish poly-T (=poly-A tail in BAM) from
+        # genomic T's. A run >= min_homopolymer_len signals the poly-T tail; roll
+        # back any T's already rescued in that consecutive run.
+        consecutive_t = 0
+
         for i in range(softclip_len):
             ref_pos = match_start - i
             if ref_pos < 0:
@@ -629,12 +770,47 @@ def rescue_softclip_at_homopolymer(
             # Soft-clip bases: walk from right to left (alignment boundary outward)
             softclip_base = softclip_seq[softclip_len - 1 - i]
 
-            # Check if soft-clipped base matches reference
-            if softclip_base == ref_base:
-                rescued_count += 1
-                rescued_bases.append(softclip_base)
+            # For minus-strand DRS reads, the poly-A tail appears as poly-T in
+            # the BAM.  A short T run can be real genomic sequence; only a run
+            # >= min_homopolymer_len signals the poly-T tail.
+            if softclip_base == 'T':
+                consecutive_t += 1
+                if consecutive_t >= min_homopolymer_len:
+                    # Poly-T tail detected — roll back the T's already rescued
+                    # in this consecutive run.
+                    n_rollback = consecutive_t - 1
+                    rescued_count -= n_rollback
+                    del rescued_bases[-n_rollback:]
+                    break
+                # Short T run: rescue this base if it matches reference
+                if softclip_base == ref_base:
+                    rescued_count += 1
+                    rescued_bases.append(softclip_base)
+                else:
+                    break
             else:
-                # Mismatch - stop rescue
+                consecutive_t = 0
+                # Check if soft-clipped base matches reference
+                if softclip_base == ref_base:
+                    rescued_count += 1
+                    rescued_bases.append(softclip_base)
+                else:
+                    break
+
+        if rescued_count == 0:
+            return None
+
+        # Strip trailing rescued T's from the outward end: the corrected 3' end must
+        # not be a genomic T (which on minus strand = RNA A, indistinguishable from
+        # poly-A tail). rescued_bases is ordered [innermost, outermost]; the outermost
+        # is rescued_bases[-1], at reference position raw_pos - homopolymer_extension - rescued_count.
+        while rescued_count > 0:
+            outer_pos = raw_pos - homopolymer_extension - rescued_count
+            if outer_pos >= 0 and genome_seq[outer_pos].upper() == 'T':
+                rescued_count -= 1
+                if rescued_bases:
+                    rescued_bases.pop()
+            else:
                 break
 
         if rescued_count == 0:
@@ -752,6 +928,8 @@ def rescue_mismatch_inside_homopolymer(
                     genome_base = genome_seq[ref_pos].upper()
                     aligned_positions.append((None, ref_pos, None, genome_base))
                 ref_pos += 1
+        elif op == 3:  # N (intron skip) - consumes reference only, not read
+            ref_pos += length
 
     if not aligned_positions:
         return None
@@ -1006,6 +1184,8 @@ class VariantAwareHomopolymerRescue:
             elif op == 1:  # Insertion
                 read_pos += length
             elif op == 2:  # Deletion
+                ref_pos += length
+            elif op == 3:  # N (intron skip) - consumes reference only, not read
                 ref_pos += length
 
         if not aligned_positions:

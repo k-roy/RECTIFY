@@ -5,6 +5,52 @@ All notable changes to RECTIFY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] — 2026-04-12
+
+### Fixed
+
+- **Cat2 soft-clip rescue stops at poly-A tail bases** (`core/indel_corrector.py`): `rescue_softclip_at_homopolymer()` now halts rescue when it encounters an `A` base in the soft-clip (plus strand) or a `T` base (minus strand). Previously it would match poly-A tail bases to genomic A-runs, causing the corrected 3' position to be shifted downstream into the poly-A tail. Fixes shifted corrected positions for affected Cat2 reads (e.g. +10→+9, -17→-10, -12→-11 in validation set).
+
+- **`extend_read_3prime_for_softclip_rescue()`** (`core/bam_writer.py`): new function converts the 3' soft-clip of a Cat2-rescued read from `{M}S` to `{D}D{M}M{poly-A}H|S`, making the true RNA 3' end visible in IGV. The deletion operations represent the skipped reference homopolymer; the match operations represent the rescued genomic bases.
+
+- **Cat2 rescue metadata in TSV** (`core/bam_processor.py`): three new columns written to `corrected_3ends.tsv` — `sc_homopolymer_extension` (bases skipped in reference homopolymer), `sc_rescued_seq` (rescued bases), `sc_original_softclip_len` (original soft-clip length before rescue).
+
+- **Bundled BAMs renamed** (`rectify/data/`): `rectified.bam` → `rectified_pA_hardclip.bam`; `rectified_softclip.bam` → `rectified_pA_softclip.bam`. Names now reflect the poly-A handling mode rather than the correction step.
+
+---
+
+## [2.9.0] — 2026-04-12
+
+### Added
+
+- **`rectify split`** (`core/split_command.py`): splits a FASTQ/FASTQ.GZ into N equal chunks at read boundaries using round-robin interleaving, giving each chunk an even read-length distribution. `--generate-slurm` writes `run_array_align.sh` (SLURM `--array=0-{N×M-1}`) and `run_merge_and_consensus.sh` alongside the chunk files. Task IDs decode to `(chunk_idx, aligner)` via modulo/division; thread limits (`OMP_NUM_THREADS`, `LOKY_MAX_CPU_COUNT`, etc.) are set automatically.
+
+- **`rectify consensus`** (`core/consensus_command.py`): runs consensus aligner selection on pre-built per-aligner BAMs. Accepts `aligner:path` positional arguments (e.g. `minimap2:sample.minimap2.sorted.bam`). Used as the final step after `samtools merge` in the chunked-alignment workflow. Writes a coordinate-sorted, indexed, MD-tagged `<prefix>.consensus.bam`.
+
+- **`rectify install-aligners`** (`core/install_aligners_command.py`): downloads and installs external aligners. `--check` reports PATH availability of all five aligners including the vendored deSALT binary. `--all` installs everything possible. `--desalt` copies the vendored Linux/x86_64 binary to `~/.rectify/bin/` or builds from GitHub source for other platforms. `--minimap2` downloads the pre-built Linux/x86_64 release binary. `--gapmm2`/`--ultra` install via pip.
+
+- **Vendored deSALT binary** (`rectify/data/bin/linux_x86_64/deSALT`): deSALT v1.5.6 (bioconda build `h577a1d6_7`, 837 KB, glibc 2.6.32+) is bundled with the package. `_get_vendored_desalt()` in `multi_aligner.py` resolves the binary automatically when `deSALT` is not on `PATH`, matching platform and architecture. Error message now points to `rectify install-aligners --desalt` for unsupported platforms.
+
+---
+
+## [Unreleased] — v2.9.0-dev
+
+### Added
+
+- **Poly(A) evidence tracking** (`core/bam_processor.py`, `core/correct_command.py`): `corrected_3ends.tsv` now includes three new columns — `pt_tag` (dorado signal-level poly(A) estimate, integer or empty), `polya_score` (poly(A) model confidence 0–1, four decimal places, empty if model not loaded), and `polya_source` (`'pt_tag'` | `'model'` | `'none'`). Both streaming and parallel BAM processing modes accept `--polya-model`; model is loaded once and applied to all reads.
+
+- **`rectify tag-polya` subcommand** (`cli.py`, `core/tag_polya_command.py`): retroactively annotates an aligned BAM with `ps:f` (poly(A) model score) and optionally `pt:i` (when absent). Preserves pre-existing dorado `pt:i` values.
+
+- **Unaligned dorado BAM auto-detection** (`core/preprocess.py`): when the user supplies an unaligned BAM (all primary reads unmapped, as produced by `dorado basecall`), `prepare_input()` automatically routes to `align_ubam_to_genome()` which runs `samtools fastq -T '*' | minimap2 -y | samtools sort` to preserve aux tags (including `pt:i`) through alignment.
+
+- **`--max-cluster-radius`, `--min-peak-sep`, `--min-cluster-samples` CLI flags** (`core/analyze_command.py`): the three remaining APA clustering constants are now user-configurable. Passing any non-default value activates `cluster_cpa_sites_adaptive()` (valley-based) in place of the fixed-distance `cluster_cpa_sites()`.
+
+- **`tests/test_terminal_exon_refiner.py`** (Bug 37): 51 tests covering `SpliceSiteIndex`, `load_splice_sites_from_gff` (plus/minus strand coordinate conversion, GFF position conflicts), `merge_splice_indices`, `detect_junction_truncated_reads`, `detect_partial_junction_crossings`, `get_soft_clip_info`, `simple_align`, `detect_mismatch_clusters`. Real-data classes validate YAL030W and YAL001C intron positions from the bundled R64-5-1 GFF and wt_by4742_rep1 BAM.
+
+- **`tests/test_consensus_selection.py`** (Bug 38): 40 tests covering `extract_junctions_from_cigar`, `check_canonical_splice_sites` (GT/AG, GC/AG, real YAL030W intron), `score_alignment` (5' clip −2/base, A-tract depth cap, 3' clip penalty), `select_best_alignment` (winner selection, `was_5prime_rescued`, tiebreakers, confidence levels). Real-data class validates junction extraction and aligner selection at the YAL030W locus.
+
+---
+
 ## [2.7.8] - 2026-04-09
 
 ### Fixed

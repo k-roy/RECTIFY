@@ -28,11 +28,11 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # QuantSeq (oligo-dT short-read)
-  rectify correct quantseq.bam --genome sacCer3.fa --annotation genes.gtf --polya-sequenced -o corrected.tsv
+  # QuantSeq or dT-primed cDNA (poly-A is NOT sequenced — oligo-dT primes at poly-A start)
+  rectify correct quantseq.bam --genome sacCer3.fa --annotation genes.gtf --dT-primed-cDNA -o corrected.tsv
 
-  # Nanopore direct RNA-seq with NET-seq refinement
-  rectify correct nanopore.bam --genome sacCer3.fa --annotation genes.gtf --polya-sequenced \\
+  # Nanopore direct RNA-seq with NET-seq refinement (poly-A IS sequenced)
+  rectify correct nanopore.bam --genome sacCer3.fa --annotation genes.gtf \\
           --aligner minimap2 --netseq-dir bigwigs/ -o corrected.tsv
 
   # Train poly(A) model
@@ -95,10 +95,19 @@ Citation:
     # Technology flags
     tech_group = correct_parser.add_argument_group('Technology settings')
     tech_group.add_argument(
-        '--polya-sequenced',
+        '--dT-primed-cDNA',
+        dest='dT_primed_cDNA',
         action='store_true',
-        help='Poly(A) tail IS sequenced (enables poly(A) trimming and indel correction). '
-             'Use for: nanopore direct RNA, Helicos, QuantSeq, etc.'
+        help='Input was generated with oligo-dT priming (QuantSeq, dT-primed cDNA). '
+             'The poly(A) tail is NOT in the read. Enables indel artifact correction '
+             'and poly(A) trimming modules designed for this protocol. '
+             'For nanopore direct RNA-seq the poly(A) tail IS sequenced — do NOT use this flag.'
+    )
+    tech_group.add_argument(
+        '--polya-sequenced',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
     )
 
     tech_group.add_argument(
@@ -135,13 +144,13 @@ Citation:
     module_group.add_argument(
         '--skip-polya-trim',
         action='store_true',
-        help='Skip poly(A) tail trimming (even if --polya-sequenced)'
+        help='Skip poly(A) tail trimming (even if --dT-primed-cDNA)'
     )
 
     module_group.add_argument(
         '--skip-indel-correction',
         action='store_true',
-        help='Skip indel artifact correction (even if --polya-sequenced)'
+        help='Skip indel artifact correction (even if --dT-primed-cDNA)'
     )
 
     module_group.add_argument(
@@ -161,6 +170,15 @@ Citation:
         '--polya-model',
         type=Path,
         help='Pre-trained poly(A) tail model (JSON). If not provided, uses built-in model.'
+    )
+    polya_group.add_argument(
+        '--min-polya-score',
+        type=float,
+        default=None,
+        metavar='SCORE',
+        help='Minimum poly(A) model confidence score (0-1) to write to polya_pass column. '
+             'Reads below this threshold are flagged polya_pass=0 but still written to output. '
+             'Requires --polya-model or --dT-primed-cDNA to compute scores.'
     )
 
     # NET-seq refinement
@@ -211,7 +229,7 @@ Citation:
         help='Write a poly(A)-trimmed BAM alongside the corrected TSV. '
              'The 3\' poly(A) soft-clip is removed from each read; all '
              'other alignment fields and BAM tags are preserved unchanged. '
-             'Requires --polya-sequenced.'
+             'Requires --dT-primed-cDNA.'
     )
 
     output_group.add_argument(
@@ -333,6 +351,56 @@ Citation:
     )
 
     train_parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose logging'
+    )
+
+    # =========================================================================
+    # tag-polya command
+    # =========================================================================
+    tag_polya_parser = subparsers.add_parser(
+        'tag-polya',
+        help='Add pt:i and ps:f poly(A) tags to an existing aligned BAM',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Score the 3\' soft-clip of each read using the poly(A) model and write '
+            'two BAM auxiliary tags: ps:f (RECTIFY poly(A) confidence score, 0-1) and, '
+            'when pt:i is absent, pt:i (sequence-based tail length estimate). '
+            'Existing dorado pt:i values are never overwritten. '
+            'Use this command to retroactively annotate BAMs produced before dorado '
+            'pt:i support, or processed through pipelines that strip aux tags.'
+        )
+    )
+
+    tag_polya_parser.add_argument(
+        'bam',
+        type=Path,
+        help='Input aligned BAM file'
+    )
+
+    tag_polya_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        required=True,
+        help='Output BAM file with poly(A) tags added'
+    )
+
+    tag_polya_parser.add_argument(
+        '--polya-model',
+        type=Path,
+        default=None,
+        help='Pre-trained poly(A) model JSON (default: built-in model)'
+    )
+
+    tag_polya_parser.add_argument(
+        '--threads',
+        type=int,
+        default=4,
+        help='Threads for BAM compression'
+    )
+
+    tag_polya_parser.add_argument(
         '--verbose',
         action='store_true',
         help='Verbose logging'
@@ -505,6 +573,24 @@ Citation:
     create_align_parser(subparsers)
 
     # =========================================================================
+    # split command (FASTQ chunker for parallel array alignment)
+    # =========================================================================
+    from .core.split_command import create_split_parser
+    create_split_parser(subparsers)
+
+    # =========================================================================
+    # install-aligners command (download/compile external aligners)
+    # =========================================================================
+    from .core.install_aligners_command import create_install_aligners_parser
+    create_install_aligners_parser(subparsers)
+
+    # =========================================================================
+    # consensus command (aligner selection on pre-built BAMs)
+    # =========================================================================
+    from .core.consensus_command import create_consensus_parser
+    create_consensus_parser(subparsers)
+
+    # =========================================================================
     # extract command (per-read BAM to TSV)
     # =========================================================================
     from .core.extract_command import create_extract_parser
@@ -608,6 +694,57 @@ Manifest format (TSV):
              '(use if you already have a rectified.bam or consensus.bam)'
     )
 
+    run_parser.add_argument(
+        '--chunked-alignment',
+        dest='chunked_alignment',
+        action='store_true',
+        default=False,
+        help=(
+            'Generate scheduler array scripts for chunked parallel alignment instead of '
+            'running alignment inline. Auto-sizes chunks from --target-reads-per-chunk. '
+            'Run bash submit_pipeline.sh to launch the generated dependency chain.'
+        )
+    )
+    run_parser.add_argument(
+        '--target-reads-per-chunk',
+        dest='target_reads_per_chunk',
+        type=int,
+        default=500_000,
+        metavar='READS',
+        help='Target reads per alignment chunk when --chunked-alignment is set (default: 500000)'
+    )
+    run_parser.add_argument(
+        '--scheduler',
+        choices=['slurm', 'uge', 'pbs'],
+        default='slurm',
+        help='Target scheduler for generated script headers (default: slurm)'
+    )
+    run_parser.add_argument(
+        '--uge-queue',
+        default='long.q',
+        help='UGE/SGE queue name (used with --scheduler uge)'
+    )
+    run_parser.add_argument(
+        '--uge-pe',
+        default='smp',
+        help='UGE/SGE parallel environment (used with --scheduler uge)'
+    )
+    run_parser.add_argument(
+        '--pbs-queue',
+        default='workq',
+        help='PBS/Torque queue name (used with --scheduler pbs)'
+    )
+    run_parser.add_argument(
+        '--python-path',
+        default=None,
+        help='Explicit path to conda Python for generated scripts (default: sys.executable)'
+    )
+    run_parser.add_argument(
+        '--rectify-src',
+        default=None,
+        help='Path to RECTIFY source checkout for generated scripts (default: auto-detected)'
+    )
+
     # Organism / bundled reference
     run_parser.add_argument(
         '--organism',
@@ -649,11 +786,20 @@ Manifest format (TSV):
     )
 
     run_parser.add_argument(
-        '--no-polya-sequenced',
+        '--dT-primed-cDNA',
+        dest='dT_primed_cDNA',
         action='store_true',
         default=False,
-        help='Disable poly(A) trimming and indel correction '
-             '(use for protocols where the poly(A) tail is not sequenced)'
+        help='Input is dT-primed cDNA (QuantSeq, etc.) — poly(A) NOT in read. '
+             'Enables indel artifact correction and poly(A) trimming modules. '
+             'By default run-all assumes nanopore direct RNA (poly-A IS in read).'
+    )
+    run_parser.add_argument(
+        '--no-polya-sequenced',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        default=False,
+        help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
     )
 
     # Optional analysis arguments
@@ -718,23 +864,38 @@ Manifest format (TSV):
         '--junction-aligners',
         nargs='+',
         choices=['uLTRA', 'deSALT'],
-        default=[],
+        default=['uLTRA', 'deSALT'],
         metavar='ALIGNER',
         help=(
-            'Opt-in junction-mode aligners to add to the consensus pool '
+            'Junction-mode aligners to include in the consensus pool '
             '(choices: uLTRA, deSALT). Requires --annotation. '
-            'Value is unknown/untested — benchmark before using in production.'
+            'Default: both uLTRA and deSALT. Pass --junction-aligners "" to disable.'
         )
+    )
+
+    run_parser.add_argument(
+        '--no-junction-aligners',
+        dest='junction_aligners',
+        action='store_const',
+        const=[],
+        help='Disable uLTRA and deSALT (use only minimap2 + mapPacBio + gapmm2).'
     )
 
     run_parser.add_argument(
         '--chimeric-consensus',
         action='store_true',
-        default=False,
+        default=True,
         help=(
             'Use chimeric consensus selection: independently pick the best aligner '
-            'for each read segment. Experimental — not validated for production.'
+            'for each read segment. Enabled by default. Use --no-chimeric-consensus to disable.'
         )
+    )
+
+    run_parser.add_argument(
+        '--no-chimeric-consensus',
+        dest='chimeric_consensus',
+        action='store_false',
+        help='Disable chimeric consensus selection (use single-best-aligner mode).'
     )
 
     run_parser.add_argument(
@@ -802,6 +963,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'train-polya':
         from .core import train_polya_command
         train_polya_command.run(args)
+    elif args.command == 'tag-polya':
+        from .core import tag_polya_command
+        sys.exit(tag_polya_command.run(args))
     elif args.command == 'validate':
         from .core import validate_command
         validate_command.run(args)
@@ -826,6 +990,15 @@ def main(argv: Optional[list] = None):
     elif args.command == 'align':
         from .core import align_command
         align_command.run(args)
+    elif args.command == 'split':
+        from .core import split_command
+        split_command.run(args)
+    elif args.command == 'consensus':
+        from .core import consensus_command
+        consensus_command.run(args)
+    elif args.command == 'install-aligners':
+        from .core import install_aligners_command
+        install_aligners_command.run(args)
     elif args.command == 'extract':
         from .core import extract_command
         extract_command.run(args)

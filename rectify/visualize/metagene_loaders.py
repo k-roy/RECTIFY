@@ -180,15 +180,15 @@ def loci_from_tsv(
     df = pd.read_csv(tsv_path, sep=sep, usecols=usecols, comment=comment)
 
     loci = []
-    for _, row in df.iterrows():
+    for row in df.itertuples(index=False):
         locus = {
-            'chrom': row[chrom_col],
-            'strand': row[strand_col],
-            'center': int(row[center_col]),
+            'chrom': getattr(row, chrom_col),
+            'strand': getattr(row, strand_col),
+            'center': int(getattr(row, center_col)),
         }
         if additional_cols:
             for col in additional_cols:
-                locus[col] = row[col]
+                locus[col] = getattr(row, col)
         loci.append(locus)
 
     return loci
@@ -230,14 +230,14 @@ def loci_from_bed(
     center_key = center.lower()
 
     loci = []
-    for _, row in df.iterrows():
+    for row in df.itertuples(index=False):
         try:
-            bed_start = int(row['start'])
-            bed_end = int(row['end'])
-        except (ValueError, KeyError):
+            bed_start = int(row.start)
+            bed_end = int(row.end)
+        except (ValueError, AttributeError):
             continue
 
-        strand = row.get('strand', default_strand) if has_strand else default_strand
+        strand = (row.strand if has_strand else default_strand)
         if strand not in ('+', '-'):
             strand = default_strand
 
@@ -253,14 +253,14 @@ def loci_from_bed(
             )
 
         locus: Dict = {
-            'chrom': row['chrom'],
+            'chrom': row.chrom,
             'strand': strand,
             'center': c,
             'feature_start': bed_start,
             'feature_end': bed_end,
         }
-        if 'name' in row and pd.notna(row['name']):
-            locus['name'] = row['name']
+        if hasattr(row, 'name') and pd.notna(row.name):
+            locus['name'] = row.name
         loci.append(locus)
 
     return loci
