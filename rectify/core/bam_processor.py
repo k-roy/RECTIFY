@@ -32,7 +32,8 @@ from . import indel_corrector
 from . import netseq_refiner
 from .indel_corrector import VariantAwareHomopolymerRescue
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
-from ..utils.genome import load_genome, standardize_chrom_name
+from ..utils.genome import load_genome, standardize_chrom_name, reverse_complement
+from .polya_model import PolyAModel, load_model as load_polya_model
 from ..utils.alignment import (
     extract_junctions_simple,
     extract_soft_clips,
@@ -41,6 +42,26 @@ from ..utils.alignment import (
 from .splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
 from . import false_junction_filter as _fjf
 from ..slurm import get_available_cpus
+
+# BAM writing and CIGAR surgery — imported here so callers that import from
+# bam_processor continue to work unchanged.
+from .bam_writer import (  # noqa: F401  (re-exported)
+    clip_read_to_corrected_3prime,
+    softclip_read_to_corrected_3prime,
+    extend_read_5prime_for_junction_rescue,
+    fix_homopolymer_mismatches,
+    realign_exon_blocks,
+    _load_corrections_from_tsv,
+    write_dual_bam,
+    write_corrected_bam,
+    write_softclipped_bam,
+    write_polya_trimmed_bam,
+    write_netseq_assigned_bedgraph,
+    write_corrected_3ends_bedgraph,
+)
+
+# Position index — imported here for the same backwards-compat reason.
+from .position_index import write_position_index  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +190,7 @@ def correct_read_3prime(
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
+    polya_model: Optional[PolyAModel] = None,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -187,6 +209,48 @@ def correct_read_3prime(
     Returns:
         Dict with correction results
     """
+    # Skip chimeric reads — they have already been reconstructed by multi_aligner
+    # and must not be re-corrected (XK=1 flag set by consensus.py).
+    try:
+        if read.get_tag('XK') == 1:
+            original_position, strand = get_read_3prime_position(read)
+            if original_position is None:
+                return []
+            chrom = read.reference_name
+            chrom_std = standardize_chrom_name(chrom)
+            five_prime_position = get_read_5prime_position(read, strand)
+            if five_prime_position is None:
+                return []
+            return [{
+                'read_id': read.query_name,
+                'chrom': chrom_std,
+                'strand': strand,
+                'original_3prime': original_position,
+                'corrected_3prime': original_position,
+                'five_prime_position': five_prime_position,
+                'five_prime_rescued': False,
+                'alignment_start': read.reference_start,
+                'alignment_end': read.reference_end,
+                'ambiguity_min': original_position,
+                'ambiguity_max': original_position,
+                'ambiguity_range': 0,
+                'correction_category': None,
+                'correction_applied': [],
+                'polya_length': 0,
+                'aligned_a_length': 0,
+                'soft_clip_a_length': 0,
+                'atract_ambiguity': None,
+                'fraction': 1.0,
+                'mapq': read.mapping_quality,
+                'confidence': 'chimeric',
+                'qc_flags': '',
+                'pt_tag': None,
+                'polya_score': None,
+                'polya_source': 'none',
+            }]
+    except KeyError:
+        pass
+
     # Get original position and strand
     original_position, strand = get_read_3prime_position(read)
     if original_position is None:
@@ -208,6 +272,8 @@ def correct_read_3prime(
         five_prime_rescued = read.get_tag('XR') == 1
     except KeyError:
         five_prime_rescued = False
+    _five_prime_exon_cigar = ''      # set by 3'SS rescue when local alignment succeeds
+    _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -228,6 +294,33 @@ def correct_read_3prime(
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
+                _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
+                # Record the exon-side intron boundary for BAM hard-clip when:
+                #   (a) the alignment's 5' end sits inside the rescued intron, AND
+                #   (b) there is no 5' soft-clip to extend via extend_read_5prime.
+                # This covers both Case 4 (intronic_snap, no soft clip) and Case 1/2
+                # rescues where the aligner mapped into the intron with no soft clip.
+                # If a soft clip IS present, bam_writer.extend_read_5prime_for_junction_rescue
+                # handles the CIGAR surgery and the clip is not needed.
+                # Minus strand: clip to intron_start (right end of alignment).
+                # Plus strand:  clip to intron_end   (left end of alignment).
+                _rj = _3ss_result.get('rescued_junction')
+                if _rj:
+                    _, _intron_start, _intron_end = _rj
+                    if strand == '-':
+                        _align_5p = (read.reference_end - 1) if read.reference_end else -1
+                        _in_intron = _intron_start <= _align_5p < _intron_end
+                        _sc_at_5p = (read.cigartuples[-1][1]
+                                     if read.cigartuples and read.cigartuples[-1][0] == 4 else 0)
+                        _five_prime_intron_clip_pos = _intron_start if (_in_intron and _sc_at_5p == 0) else -1
+                    else:
+                        _align_5p = read.reference_start
+                        _in_intron = _intron_start <= _align_5p < _intron_end
+                        _sc_at_5p = (read.cigartuples[0][1]
+                                     if read.cigartuples and read.cigartuples[0][0] == 4 else 0)
+                        _five_prime_intron_clip_pos = _intron_end if (_in_intron and _sc_at_5p == 0) else -1
+                else:
+                    _five_prime_intron_clip_pos = -1
 
     # Extract splice junctions from CIGAR
     junctions = extract_junctions_simple(read)
@@ -250,6 +343,34 @@ def correct_read_3prime(
     else:
         five_prime_soft_clip_len = right_clip_length
         three_prime_soft_clip_len = left_clip_length
+
+    # Extract 3' soft-clip sequence for poly(A) model scoring.
+    # Iterate the clip list rather than recomputing — seq is already present.
+    _three_prime_clip_seq = None
+    for _clip in soft_clips_list:
+        if (strand == '+' and _clip['side'] == 'right') or \
+                (strand == '-' and _clip['side'] == 'left'):
+            _three_prime_clip_seq = _clip.get('seq')
+            break
+
+    # Read pt:i BAM tag (dorado signal-level poly(A) length estimate, if present).
+    # Never absent from DRS reads processed by dorado >= 0.5; None otherwise.
+    try:
+        _pt_tag = read.get_tag('pt')
+    except KeyError:
+        _pt_tag = None
+
+    # Score 3' soft-clip against the poly(A) model when one is provided.
+    # For minus-strand reads the soft-clip is in genomic (anti-sense) orientation;
+    # reverse-complement to RNA (5'→3') orientation before scoring.
+    _polya_score = None
+    if polya_model is not None and _three_prime_clip_seq:
+        _seq_to_score = _three_prime_clip_seq
+        if strand == '-':
+            _seq_to_score = reverse_complement(_three_prime_clip_seq)
+        _polya_score = round(
+            polya_model.score_sequence(_seq_to_score.upper())['confidence'], 4
+        )
 
     # Initialize result (use standardized chromosome name for output)
     result = {
@@ -275,6 +396,20 @@ def correct_read_3prime(
         'three_prime_soft_clip_length': three_prime_soft_clip_len,
         'mapq': read.mapping_quality,
         'five_prime_rescued': five_prime_rescued,
+        'five_prime_exon_cigar': _five_prime_exon_cigar,
+        # -1 = not applicable; ≥0 = genomic boundary to hard-clip intronic tail to
+        'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
+        # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
+        'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
+        'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op
+        'sc_original_softclip_len': 0,   # original 3' soft-clip length
+        # Poly(A) evidence (v2.9.0)
+        'pt_tag': _pt_tag,
+        'polya_score': _polya_score,
+        'polya_source': (
+            'pt_tag' if _pt_tag is not None else
+            ('model' if _polya_score is not None else 'none')
+        ),
     }
 
     # Per-read gene attribution via read body overlap
@@ -371,6 +506,58 @@ def correct_read_3prime(
                 result['qc_flags'].append('LIKELY_VARIANT')
                 result['variant_confidence'] = var_rescue_result['variant_confidence']
 
+    # NEW-063 / NEW-068: Detect hard-clipped 3' end before Modules 2G and 2E.
+    # Hard-clip means the 3' sequence is absent; both softclip rescue and poly-A
+    # walkback would explore an unanchored region and must be skipped.
+    _has_3prime_hardclip = False
+    if read.cigartuples:
+        _cigar_ops = read.cigartuples
+        if strand == '+' and _cigar_ops[-1][0] == 5:
+            _has_3prime_hardclip = True
+        elif strand == '-' and _cigar_ops[0][0] == 5:
+            _has_3prime_hardclip = True
+
+    # Module 2G: Soft-clip rescue at homopolymer boundaries.
+    # When the basecaller under-calls a homopolymer the aligner may end the
+    # alignment inside the run and leave downstream matching bases as a 3' soft-
+    # clip.  rescue_softclip_at_homopolymer() detects this pattern (homopolymer
+    # at the alignment boundary + soft-clipped bases that match the reference
+    # downstream) and extends the 3' end OUTWARD.
+    #
+    # This correction is mutually exclusive with poly-A walk-back (Module 2E),
+    # which moves the 3' end INWARD.  If this module fires we skip walk-back.
+    #
+    # Minimum soft-clip length guard: single-base soft-clips are common
+    # basecalling artifacts that should not override polya_walkback.  Only
+    # attempt rescue when the 3' soft-clip is ≥ 3 bases.
+    _3prime_sc_len = 0
+    if read.cigartuples:
+        if strand == '+' and read.cigartuples[-1][0] == 4:
+            _3prime_sc_len = read.cigartuples[-1][1]
+        elif strand == '-' and read.cigartuples[0][0] == 4:
+            _3prime_sc_len = read.cigartuples[0][1]
+
+    softclip_rescue_applied = False
+    if genome and not _has_3prime_hardclip and _3prime_sc_len >= 3:
+        _sc_result = indel_corrector.rescue_softclip_at_homopolymer(
+            read, strand, genome, end='3prime'
+        )
+        if _sc_result is not None:
+            result['correction_applied'].append('softclip_rescue')
+            current_position = _sc_result['corrected_pos']
+            softclip_rescue_applied = True
+            # Store CIGAR surgery metadata so bam_writer can extend the alignment.
+            result['sc_homopolymer_extension'] = _sc_result['homopolymer_extension']
+            result['sc_rescued_seq'] = _sc_result['rescued_seq']
+            result['sc_original_softclip_len'] = _3prime_sc_len
+            # The soft-clip bases matched the reference exactly: the corrected
+            # position is definitive.  Reset ambiguity to zero so that NET-seq
+            # refinement (which handles positional ambiguity, not sequence
+            # evidence) does not override the rescue.
+            result['ambiguity_min'] = current_position
+            result['ambiguity_max'] = current_position
+            result['ambiguity_range'] = 0
+
     # Module 2E: Poly-A walk-back — genome-aware correction for reads where the
     # poly-A tail aligned to a short genomic A-run, shifting the apparent 3' end
     # into the run. find_polya_boundary() walks backwards from the mapped 3' end
@@ -382,18 +569,10 @@ def correct_read_3prime(
     # NET-seq refinement will use it to select the most likely CPA within that
     # window. ambiguity_range is updated to the max of the atract window and the
     # walk-back distance so the NET-seq refinement guard (range > 0) fires.
-    # NEW-063: Skip poly-A walkback for reads with hard-clipped 3' ends.
-    # The 3' sequence is absent; walkback would explore an unanchored ambiguity window.
-    _has_3prime_hardclip = False
-    if read.cigartuples:
-        _cigar_ops = read.cigartuples
-        if strand == '+' and _cigar_ops[-1][0] == 5:
-            _has_3prime_hardclip = True
-        elif strand == '-' and _cigar_ops[0][0] == 5:
-            _has_3prime_hardclip = True
-
+    # NEW-068: Skip poly-A walkback when softclip rescue (Module 2G) already
+    # corrected this end — the two modules move in opposite directions.
     polya_walkback_applied = False
-    if genome and not _has_3prime_hardclip:
+    if genome and not _has_3prime_hardclip and not softclip_rescue_applied:
         wb = indel_corrector.find_polya_boundary(read, strand, genome)
         if wb is not None:
             result['correction_applied'].append('polya_walkback')
@@ -451,6 +630,49 @@ def correct_read_3prime(
                 result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
                 break
 
+    # NEW-073: Prevent poly-A walkback from crossing real (annotated) splice
+    # junctions.  The existing guard (lines above) only covers artifact N-ops;
+    # it misses the case where the 3' end lies in the *last exon* and the
+    # walk-back retreats past the intron boundary into the preceding intron
+    # (which can have long genomic A-runs on the reference).
+    #
+    # For + strand: the nearest intron whose right edge (intron_end) is <=
+    #   original_position is the boundary.  Clip ambiguity_min there.
+    # For − strand: the nearest intron whose left edge (intron_start) is >=
+    #   original_position is the boundary.  Clip ambiguity_max there.
+    if polya_walkback_applied and _real_junctions:
+        if strand == '+':
+            # All introns that are completely to the left of original_position
+            left_introns = [(s, e) for s, e in _real_junctions if e <= original_position]
+            if left_introns:
+                nearest_intron_end = max(e for s, e in left_introns)
+                if current_position < nearest_intron_end:
+                    # Walkback crossed into the intron — snap to intron end,
+                    # preserve ambiguity only within the valid exonic range.
+                    current_position = nearest_intron_end
+                    result['ambiguity_min'] = nearest_intron_end
+                    result['ambiguity_max'] = original_position
+                    result['ambiguity_range'] = original_position - nearest_intron_end
+                elif result['ambiguity_min'] < nearest_intron_end:
+                    # Ambiguity window extends into the intron — clip min.
+                    result['ambiguity_min'] = nearest_intron_end
+                    result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
+        else:  # minus strand
+            # All introns that are completely to the right of original_position
+            right_introns = [(s, e) for s, e in _real_junctions if s >= original_position]
+            if right_introns:
+                nearest_intron_start = min(s for s, e in right_introns)
+                if current_position > nearest_intron_start:
+                    # Walkback crossed into the intron — snap to intron start.
+                    current_position = nearest_intron_start
+                    result['ambiguity_min'] = original_position
+                    result['ambiguity_max'] = nearest_intron_start
+                    result['ambiguity_range'] = nearest_intron_start - original_position
+                elif result['ambiguity_max'] > nearest_intron_start:
+                    # Ambiguity window extends into the intron — clip max.
+                    result['ambiguity_max'] = nearest_intron_start
+                    result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
+
     # Update corrected position (after all position-moving corrections)
     result['corrected_3prime'] = current_position
 
@@ -486,8 +708,41 @@ def correct_read_3prime(
             proportional_split=True,
         )
 
-        if result['ambiguity_range'] > 1:
+        if result['ambiguity_range'] > 0:
             result['correction_applied'].append('netseq_refinement')
+
+        # NEW-065: When poly-A walkback was applied, NET-seq must not assign
+        # the corrected 3' end to a poly-A base (plus strand: 'A';
+        # minus strand reference: 'T').  The walkback anchor (current_position)
+        # is the first non-A/T base and is always a safe position.
+        #
+        # Filter out any assignment at a poly-A base.  If at least one non-A/T
+        # assignment remains, renormalise those fractions and use them.  If all
+        # assignments are at poly-A bases, fall back to the walkback anchor
+        # (fraction=1.0).
+        if polya_walkback_applied and genome and assignments and chrom_std in genome:
+            polya_base = 'A' if strand == '+' else 'T'
+            chrom_seq = genome[chrom_std]
+            filtered_assignments = [
+                a for a in assignments
+                if a['assigned_position'] < len(chrom_seq)
+                and chrom_seq[a['assigned_position']].upper() != polya_base
+            ]
+            if not filtered_assignments:
+                # All peaks were at poly-A bases — fall back to walkback anchor.
+                assignments = [{
+                    'assigned_position': current_position,
+                    'fraction': 1.0,
+                    'confidence': 'low',
+                    'method': 'polya_walkback_fallback',
+                    'peak_signal': 0.0,
+                }]
+            else:
+                # Re-normalise fractions after removing poly-A positions.
+                total_frac = sum(a['fraction'] for a in filtered_assignments)
+                for a in filtered_assignments:
+                    a['fraction'] = a['fraction'] / total_frac
+                assignments = filtered_assignments
 
         # Build one output row per proportional assignment.
         # For a single dominant peak the list has length 1 (fraction=1.0).
@@ -628,6 +883,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'original_3prime', 'corrected_3prime',
             'five_prime_position',  # TSS end of the read (v2.6.0)
             'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
+            'five_prime_exon_cigar',  # SAM CIGAR for exon segment of Cat3 rescue (v2.8.0)
             'alignment_start', 'alignment_end',  # Full read body interval (v2.6.0)
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
@@ -637,11 +893,20 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'mapq',  # Mapping quality (v2.7.0)
             'correction_applied', 'confidence', 'qc_flags', 'fraction',
             'gene_id',  # Per-read gene attribution (optional)
+            'pt_tag',      # dorado pt:i signal-level poly(A) length (blank if absent) (v2.9.0)
+            'polya_score', # poly(A) model confidence 0-1 (blank if no model) (v2.9.0)
+            'polya_source',  # 'pt_tag' | 'model' | 'none' (v2.9.0)
+            'sc_homopolymer_extension',  # Cat2: under-called homopolymer bases (v2.9.1)
+            'sc_rescued_seq',            # Cat2: non-poly-A bases matched to ref (v2.9.1)
+            'sc_original_softclip_len',  # Cat2: original 3' soft-clip length (v2.9.1)
+            'five_prime_intron_clip_pos',  # Case 4: exon-side intron boundary for BAM hard-clip (-1 if N/A)
         ]
         f.write('\t'.join(header) + '\n')
 
         # Write results
         for result in results:
+            _pt = result.get('pt_tag')
+            _ps = result.get('polya_score')
             row = [
                 result['read_id'],
                 result['chrom'],
@@ -650,6 +915,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 str(result['corrected_3prime']),
                 str(result.get('five_prime_position', '')),  # 5' end (TSS)
                 '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
+                result.get('five_prime_exon_cigar') or '',  # exon CIGAR for Cat3
                 str(result.get('alignment_start', '')),  # Read body start
                 str(result.get('alignment_end', '')),  # Read body end (exclusive)
                 str(result['ambiguity_min']),
@@ -668,551 +934,17 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 ','.join(result['qc_flags']),
                 f"{result.get('fraction', 1.0):.6f}",
                 result.get('gene_id') or '',  # Per-read gene attribution (empty if not computed)
+                str(_pt) if _pt is not None else '',
+                f'{_ps:.4f}' if _ps is not None else '',
+                result.get('polya_source', 'none'),
+                str(result.get('sc_homopolymer_extension', 0)),  # Cat2 CIGAR surgery
+                result.get('sc_rescued_seq', ''),
+                str(result.get('sc_original_softclip_len', 0)),
+                str(result.get('five_prime_intron_clip_pos', -1)),  # Case 4 BAM clip
             ]
             f.write('\t'.join(row) + '\n')
 
     print(f"  Wrote {len(results):,} corrected positions")
-
-
-# ---------------------------------------------------------------------------
-# CIGAR op classification constants (used by clip_read_to_corrected_3prime)
-# ---------------------------------------------------------------------------
-# Ops that advance the reference coordinate
-_REF_CONSUMING: frozenset = frozenset([0, 2, 3, 7, 8])   # M, D, N, =, X
-# Ops that consume stored query bases (i.e. present in query_sequence)
-_QUERY_CONSUMING: frozenset = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
-# Note: H (5) is excluded from both — hard-clipped bases are NOT in query_sequence.
-
-
-def clip_read_to_corrected_3prime(
-    read: pysam.AlignedSegment,
-    corrected_3prime: int,
-    strand: str,
-) -> bool:
-    """
-    Hard-clip *read* in-place so its 3' alignment boundary matches *corrected_3prime*.
-
-    For + strand reads the 3' boundary is ``reference_end - 1`` (rightmost ref base).
-    For − strand reads it is ``reference_start`` (leftmost ref base, which is the 3'
-    end for reverse-strand RNA).
-
-    Bases removed from the CIGAR are converted to a single trailing / leading H
-    (hard-clip) op and deleted from the stored query sequence and quality array.
-    Any existing soft-clip at the clipped end is subsumed into the new hard clip.
-
-    If *corrected_3prime* equals the current boundary the read is unchanged and
-    False is returned.  Unmapped reads, reads without CIGAR, and reads where the
-    corrected position would leave an empty alignment are also left unchanged.
-
-    Args:
-        read:             pysam AlignedSegment — modified in-place.
-        corrected_3prime: Target 3' reference coordinate (0-based, inclusive).
-        strand:           '+' or '-'.
-
-    Returns:
-        True if clipping was applied; False otherwise.
-    """
-    cigar = list(read.cigartuples or [])
-    if not cigar or read.is_unmapped:
-        return False
-
-    seq   = read.query_sequence
-    quals = read.query_qualities  # numpy uint8 array or None
-
-    if strand == '+':
-        current_end = read.reference_end - 1  # 0-based inclusive right boundary
-        if corrected_3prime >= current_end:
-            return False  # no clipping needed
-
-        n_ref_clip = current_end - corrected_3prime  # reference bases to remove
-
-        n_query_remove = 0
-
-        # 1. Strip trailing soft-clips: their bases ARE in query_sequence.
-        while cigar and cigar[-1][0] == 4:  # S
-            n_query_remove += cigar.pop()[1]
-
-        # 2. Strip trailing hard-clips: their bases are NOT in query_sequence.
-        while cigar and cigar[-1][0] == 5:  # H
-            cigar.pop()
-
-        # 3. Walk CIGAR ops from the right, removing n_ref_clip reference bases.
-        n_ref_removed = 0
-        while cigar and n_ref_removed < n_ref_clip:
-            op, length = cigar[-1]
-            ref_in_op   = length if op in _REF_CONSUMING  else 0
-            query_in_op = length if op in _QUERY_CONSUMING else 0
-            need        = n_ref_clip - n_ref_removed
-
-            if ref_in_op <= need:
-                cigar.pop()
-                n_ref_removed  += ref_in_op
-                n_query_remove += query_in_op
-            else:
-                # Partial removal: trim `need` reference positions from this op.
-                cigar[-1] = (op, length - need)
-                n_ref_removed  += need
-                n_query_remove += need if op in _QUERY_CONSUMING else 0
-                break
-
-        if not cigar:
-            return False  # degenerate: entire alignment clipped
-
-        # 4. Append hard-clip for removed query bases (if any).
-        if n_query_remove > 0:
-            cigar.append((5, n_query_remove))
-
-        # 5. Apply to read.  Set sequence before qualities (setting seq resets quals).
-        if n_query_remove > 0 and seq is not None:
-            new_seq  = seq[:-n_query_remove]
-            new_qual = quals[:-n_query_remove] if quals is not None else None
-            read.query_sequence  = new_seq
-            read.query_qualities = new_qual
-        read.cigartuples = cigar
-        return True
-
-    else:  # minus strand — clip from the left (remove 3' bases at low coordinates)
-        current_start = read.reference_start  # 0-based inclusive left boundary
-        if corrected_3prime <= current_start:
-            return False
-
-        n_ref_clip = corrected_3prime - current_start
-
-        n_query_remove = 0
-
-        # 1. Strip leading soft-clips.
-        while cigar and cigar[0][0] == 4:  # S
-            n_query_remove += cigar.pop(0)[1]
-
-        # 2. Strip leading hard-clips.
-        while cigar and cigar[0][0] == 5:  # H
-            cigar.pop(0)
-
-        # 3. Walk CIGAR ops from the left.
-        n_ref_removed = 0
-        while cigar and n_ref_removed < n_ref_clip:
-            op, length = cigar[0]
-            ref_in_op   = length if op in _REF_CONSUMING  else 0
-            query_in_op = length if op in _QUERY_CONSUMING else 0
-            need        = n_ref_clip - n_ref_removed
-
-            if ref_in_op <= need:
-                cigar.pop(0)
-                n_ref_removed  += ref_in_op
-                n_query_remove += query_in_op
-            else:
-                cigar[0] = (op, length - need)
-                n_ref_removed  += need
-                n_query_remove += need if op in _QUERY_CONSUMING else 0
-                break
-
-        if not cigar:
-            return False
-
-        # 4. Prepend hard-clip for removed query bases.
-        if n_query_remove > 0:
-            cigar.insert(0, (5, n_query_remove))
-
-        # 5. Apply to read; also shift reference_start for minus strand clips.
-        if n_query_remove > 0 and seq is not None:
-            new_seq  = seq[n_query_remove:]
-            new_qual = quals[n_query_remove:] if quals is not None else None
-            read.query_sequence  = new_seq
-            read.query_qualities = new_qual
-        read.cigartuples     = cigar
-        read.reference_start = current_start + n_ref_removed
-        return True
-
-
-def write_corrected_bam(
-    input_bam_path: str,
-    corrected_tsv_path: str,
-    output_bam_path: str,
-) -> Dict[str, int]:
-    """
-    Write a new BAM with every read hard-clipped at its corrected 3' end.
-
-    Reads per-read corrections from *corrected_tsv_path* (the TSV produced by
-    ``rectify correct``) and applies CIGAR-level hard-clipping via
-    :func:`clip_read_to_corrected_3prime`.  The corrected position is the
-    ``corrected_3prime`` column; only the first row per read is used (covers
-    NET-seq multi-peak Cat6 reads where all rows share the same dominant position).
-
-    Reads absent from the TSV (unmapped, secondary, supplementary) are written
-    unchanged.  The output BAM preserves the same header as the input.
-
-    Caller is responsible for sorting and indexing the output BAM if needed
-    (e.g. ``pysam.sort()`` / ``pysam.index()``).
-
-    Args:
-        input_bam_path:      Path to the original input BAM.
-        corrected_tsv_path:  Path to the corrected_3ends.tsv from ``rectify correct``.
-        output_bam_path:     Destination BAM path.  Overwritten if it exists.
-
-    Returns:
-        Dict with summary counts:
-            ``'total'``     — total reads written
-            ``'clipped'``   — reads whose CIGAR was modified
-            ``'unchanged'`` — reads written without modification
-    """
-    # Load corrections: read_id -> (corrected_3prime, strand)
-    corrections: Dict[str, tuple] = {}
-    try:
-        with open(corrected_tsv_path) as _f:
-            hdr = _f.readline().strip().split('\t')
-            try:
-                i_id     = hdr.index('read_id')
-                i_pos    = hdr.index('corrected_3prime')
-                i_strand = hdr.index('strand')
-            except ValueError as exc:
-                raise ValueError(
-                    f"Required column missing in {corrected_tsv_path}: {exc}"
-                ) from exc
-            for line in _f:
-                parts = line.rstrip('\n').split('\t')
-                if len(parts) <= max(i_id, i_pos, i_strand):
-                    continue
-                rid = parts[i_id]
-                if rid in corrections:
-                    continue  # keep first (dominant) row only
-                try:
-                    corrections[rid] = (int(parts[i_pos]), parts[i_strand])
-                except (ValueError, IndexError):
-                    pass
-    except OSError as exc:
-        raise OSError(
-            f"Cannot read corrected TSV {corrected_tsv_path}: {exc}"
-        ) from exc
-
-    logger.info(
-        "write_corrected_bam: loaded %d corrected positions from %s",
-        len(corrections), corrected_tsv_path,
-    )
-
-    stats: Dict[str, int] = {'total': 0, 'clipped': 0, 'unchanged': 0}
-
-    with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header) as bam_out:
-
-        for read in bam_in:
-            stats['total'] += 1
-
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            correction = corrections.get(read.query_name)
-            if correction is None:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            corrected_pos, strand = correction
-            clipped = clip_read_to_corrected_3prime(read, corrected_pos, strand)
-
-            bam_out.write(read)
-            if clipped:
-                stats['clipped'] += 1
-            else:
-                stats['unchanged'] += 1
-
-    return stats
-
-
-def softclip_read_to_corrected_3prime(
-    read: pysam.AlignedSegment,
-    corrected_3prime: int,
-    strand: str,
-) -> bool:
-    """
-    Soft-clip *read* in-place so its 3' alignment boundary matches *corrected_3prime*.
-
-    Identical logic to :func:`clip_read_to_corrected_3prime` except that removed
-    query bases are replaced with a ``S`` (soft-clip) op rather than an ``H``
-    (hard-clip) op.  The bases remain in ``query_sequence`` and are visible in IGV
-    when "Show soft-clipped bases" is enabled, making the poly(A) tail location
-    apparent without affecting pileup or coverage tracks.
-
-    ``reference_start`` is updated for minus-strand reads exactly as in the hard-clip
-    path (soft-clips do not consume reference, so the first aligned base moves).
-
-    Returns True if soft-clipping was applied; False otherwise.
-    """
-    cigar = list(read.cigartuples or [])
-    if not cigar or read.is_unmapped:
-        return False
-
-    seq   = read.query_sequence
-    quals = read.query_qualities
-
-    if strand == '+':
-        current_end = read.reference_end - 1
-        if corrected_3prime >= current_end:
-            return False
-
-        n_ref_clip    = current_end - corrected_3prime
-        n_query_remove = 0
-
-        # 1. Absorb trailing soft-clips into the new soft-clip.
-        while cigar and cigar[-1][0] == 4:   # S
-            n_query_remove += cigar.pop()[1]
-        # 2. Strip trailing hard-clips (not in sequence; discard silently).
-        while cigar and cigar[-1][0] == 5:   # H
-            cigar.pop()
-
-        # 3. Walk CIGAR from right, accounting for n_ref_clip reference bases.
-        n_ref_removed = 0
-        while cigar and n_ref_removed < n_ref_clip:
-            op, length = cigar[-1]
-            ref_in_op   = length if op in _REF_CONSUMING  else 0
-            query_in_op = length if op in _QUERY_CONSUMING else 0
-            need        = n_ref_clip - n_ref_removed
-            if ref_in_op <= need:
-                cigar.pop()
-                n_ref_removed  += ref_in_op
-                n_query_remove += query_in_op
-            else:
-                cigar[-1] = (op, length - need)
-                n_ref_removed  += need
-                n_query_remove += need if op in _QUERY_CONSUMING else 0
-                break
-
-        if not cigar:
-            return False
-
-        # 4. Append soft-clip (sequence stays in read).
-        if n_query_remove > 0:
-            cigar.append((4, n_query_remove))  # S, not H
-        read.cigartuples = cigar
-        return True
-
-    else:  # minus strand — clip from the left
-        current_start = read.reference_start
-        if corrected_3prime <= current_start:
-            return False
-
-        n_ref_clip    = corrected_3prime - current_start
-        n_query_remove = 0
-
-        # 1. Absorb leading soft-clips.
-        while cigar and cigar[0][0] == 4:   # S
-            n_query_remove += cigar.pop(0)[1]
-        # 2. Strip leading hard-clips.
-        while cigar and cigar[0][0] == 5:   # H
-            cigar.pop(0)
-
-        # 3. Walk CIGAR from left.
-        n_ref_removed = 0
-        while cigar and n_ref_removed < n_ref_clip:
-            op, length = cigar[0]
-            ref_in_op   = length if op in _REF_CONSUMING  else 0
-            query_in_op = length if op in _QUERY_CONSUMING else 0
-            need        = n_ref_clip - n_ref_removed
-            if ref_in_op <= need:
-                cigar.pop(0)
-                n_ref_removed  += ref_in_op
-                n_query_remove += query_in_op
-            else:
-                cigar[0] = (op, length - need)
-                n_ref_removed  += need
-                n_query_remove += need if op in _QUERY_CONSUMING else 0
-                break
-
-        if not cigar:
-            return False
-
-        # 4. Prepend soft-clip (sequence stays in read).
-        if n_query_remove > 0:
-            cigar.insert(0, (4, n_query_remove))  # S, not H
-        read.cigartuples     = cigar
-        read.reference_start = current_start + n_ref_removed
-        return True
-
-
-def write_softclipped_bam(
-    input_bam_path: str,
-    corrected_tsv_path: str,
-    output_bam_path: str,
-) -> Dict[str, int]:
-    """
-    Write a new BAM with every read soft-clipped at its corrected 3' end.
-
-    Identical to :func:`write_corrected_bam` except clipping uses
-    :func:`softclip_read_to_corrected_3prime` (``S`` ops, bases retained in
-    query sequence) rather than hard-clip (``H`` ops, bases removed).  The
-    poly(A) tail bases remain visible in IGV when soft-clip display is enabled.
-    """
-    corrections: Dict[str, tuple] = {}
-    try:
-        with open(corrected_tsv_path) as _f:
-            hdr = _f.readline().strip().split('\t')
-            try:
-                i_id     = hdr.index('read_id')
-                i_pos    = hdr.index('corrected_3prime')
-                i_strand = hdr.index('strand')
-            except ValueError as exc:
-                raise ValueError(
-                    f"Required column missing in {corrected_tsv_path}: {exc}"
-                ) from exc
-            for line in _f:
-                parts = line.rstrip('\n').split('\t')
-                if len(parts) <= max(i_id, i_pos, i_strand):
-                    continue
-                rid = parts[i_id]
-                if rid in corrections:
-                    continue
-                try:
-                    corrections[rid] = (int(parts[i_pos]), parts[i_strand])
-                except (ValueError, IndexError):
-                    pass
-    except OSError as exc:
-        raise OSError(
-            f"Cannot read corrected TSV {corrected_tsv_path}: {exc}"
-        ) from exc
-
-    logger.info(
-        "write_softclipped_bam: loaded %d corrected positions from %s",
-        len(corrections), corrected_tsv_path,
-    )
-
-    stats: Dict[str, int] = {'total': 0, 'clipped': 0, 'unchanged': 0}
-
-    with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header) as bam_out:
-
-        for read in bam_in:
-            stats['total'] += 1
-
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            correction = corrections.get(read.query_name)
-            if correction is None:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            corrected_pos, strand = correction
-            clipped = softclip_read_to_corrected_3prime(read, corrected_pos, strand)
-
-            bam_out.write(read)
-            if clipped:
-                stats['clipped'] += 1
-            else:
-                stats['unchanged'] += 1
-
-    return stats
-
-
-def write_polya_trimmed_bam(
-    input_bam_path: str,
-    output_bam_path: str,
-    threshold: float = 0.8,
-) -> Dict[str, int]:
-    """
-    Write a new BAM with 3' poly(A) soft-clips removed from each read.
-
-    Iterates all reads (including secondary and supplementary) from
-    *input_bam_path*, strips the RNA-3' poly(A) soft-clip from primary reads
-    that pass the A-richness threshold, and writes every read to
-    *output_bam_path*.  Header and all BAM tags are preserved unchanged.
-
-    Secondary and supplementary reads are written as-is without trimming
-    because their soft-clips may have different semantics and their 3' end
-    is not independently defined.
-
-    Args:
-        input_bam_path:  Path to input BAM (sorted, indexed or not).
-        output_bam_path: Destination BAM path.  Will be overwritten if it
-                         exists.  Caller is responsible for sorting/indexing
-                         the output if needed.
-        threshold:       Minimum A (plus) or T (minus) fraction required to
-                         consider a 3' soft-clip a poly(A) tail (default 0.8).
-
-    Returns:
-        Dict with summary counts:
-            'total'        — total reads written
-            'trimmed'      — reads whose poly(A) tail was removed
-            'bases_trimmed'— total bases removed across all reads
-    """
-    from .polya_trimmer import trim_polya_from_bam_read
-
-    stats = {'total': 0, 'trimmed': 0, 'bases_trimmed': 0}
-
-    with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header) as bam_out:
-
-        for read in bam_in:
-            stats['total'] += 1
-
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                bam_out.write(read)
-                continue
-
-            strand = '-' if read.is_reverse else '+'
-            read, n_trimmed = trim_polya_from_bam_read(read, strand, threshold=threshold)
-
-            if n_trimmed > 0:
-                stats['trimmed']       += 1
-                stats['bases_trimmed'] += n_trimmed
-
-            bam_out.write(read)
-
-    return stats
-
-
-def write_position_index(results_or_path, output_tsv_path: str):
-    """
-    Write a compact position index (chrom, corrected_3prime, strand -> count).
-
-    Args:
-        results_or_path: List of result dicts, OR a path to an existing TSV file
-        output_tsv_path: Path to the main corrected TSV; index path is derived from it
-    """
-    from collections import defaultdict
-    import gzip as _gzip
-
-    # Derive index path: replace .tsv or .tsv.gz with _index.bed.gz
-    _base = str(output_tsv_path)
-    if _base.endswith('.tsv.gz'):
-        _index_path = _base[:-len('.tsv.gz')] + '_index.bed.gz'
-    elif _base.endswith('.tsv'):
-        _index_path = _base[:-len('.tsv')] + '_index.bed.gz'
-    else:
-        _index_path = _base + '_index.bed.gz'
-
-    pos_counts = defaultdict(float)
-
-    if isinstance(results_or_path, (str, Path)):
-        # Load from existing TSV
-        import pandas as pd
-        # Try with fraction; fall back if column missing
-        try:
-            _df2 = pd.read_csv(str(results_or_path), sep='\t',
-                               usecols=['chrom', 'corrected_3prime', 'strand', 'fraction'])
-            for _, row in _df2.iterrows():
-                pos_counts[(row['chrom'], row['corrected_3prime'], row['strand'])] += float(row.get('fraction', 1.0))
-        except (ValueError, KeyError):
-            _df2 = pd.read_csv(str(results_or_path), sep='\t',
-                               usecols=['chrom', 'corrected_3prime', 'strand'])
-            for _, row in _df2.iterrows():
-                pos_counts[(row['chrom'], row['corrected_3prime'], row['strand'])] += 1.0
-    else:
-        # List of result dicts
-        for r in results_or_path:
-            key = (r['chrom'], r['corrected_3prime'], r['strand'])
-            pos_counts[key] += float(r.get('fraction', 1.0))
-
-    # Write gzip-compressed TSV sorted by (chrom, corrected_3prime, strand)
-    with _gzip.open(_index_path, 'wt') as f:
-        f.write('chrom\tcorrected_3prime\tstrand\tcount\n')
-        for (chrom, pos, strand), count in sorted(pos_counts.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
-            f.write(f'{chrom}\t{pos}\t{strand}\t{count:.6f}\n')
-
-    logger.info(f"Position index written to {_index_path}")
 
 
 def generate_summary_report(results: List[Dict]) -> str:
@@ -1372,12 +1104,17 @@ def find_coverage_gaps(
 def get_processing_regions(
     bam_path: str,
     min_gap_size: int = 10000,
-    max_region_size: int = 500000
+    max_region_size: int = 100000
 ) -> List[Tuple[str, int, int]]:
     """
     Get list of regions for parallel processing.
 
     Splits large chromosomes at coverage gaps to create balanced work units.
+    Each region is capped at max_region_size reference bases to limit per-worker
+    result list size and prevent OOM when many workers run in parallel.
+    The 100k default limits peak worker memory to ~150 MB on a 1552x-coverage
+    nanopore DRS yeast dataset (vs ~1 GB at 500k). Workers with very high
+    local coverage (e.g. RPL genes at 50x) stay under ~300 MB.
 
     Args:
         bam_path: Path to BAM file
@@ -1406,8 +1143,14 @@ def get_processing_regions(
         gaps = find_coverage_gaps(bam_path, chrom, min_gap_size)
 
         if not gaps:
-            # No gaps found, process as single region
-            regions.append((chrom, 0, chrom_len))
+            # No gaps found — split uniformly by coordinate so workers don't
+            # accumulate millions of reads in one list.
+            n_sub = max(1, (chrom_len + max_region_size - 1) // max_region_size)
+            sub_size = chrom_len // n_sub
+            for i in range(n_sub):
+                sub_start = i * sub_size
+                sub_end = chrom_len if i == n_sub - 1 else (i + 1) * sub_size
+                regions.append((chrom, sub_start, sub_end))
             continue
 
         # Create regions between gaps
@@ -1437,6 +1180,7 @@ def _process_region_worker(
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
+    polya_model: Optional[PolyAModel] = None,
 ) -> List[Dict]:
     """
     Worker function to process a single region.
@@ -1470,6 +1214,13 @@ def _process_region_worker(
             # Skip unmapped/secondary/supplementary
             if read.is_unmapped or read.is_secondary or read.is_supplementary:
                 continue
+            # Boundary deduplication: when a chromosome is split by coordinate
+            # (not by a coverage gap), pysam.fetch returns reads that *overlap*
+            # [start, end), so a read spanning a sub-region boundary would be
+            # processed by both workers.  Only process reads that START in this
+            # region — reads starting before 'start' belong to the previous worker.
+            if read.reference_start < start:
+                continue
 
             # Apply corrections
             read_results = correct_read_3prime(
@@ -1484,6 +1235,7 @@ def _process_region_worker(
                 variant_aware_rescue=variant_aware_rescue,
                 annotated_junctions=annotated_junctions,
                 gene_interval_trees=gene_interval_trees,
+                polya_model=polya_model,
             )
             results.extend(read_results)
 
@@ -1514,6 +1266,7 @@ def process_bam_file_parallel(
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
+    polya_model_path: Optional[str] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -1550,6 +1303,11 @@ def process_bam_file_parallel(
     # Load genome (shared across workers via fork)
     logger.info(f"Loading genome from {genome_path}...")
     genome = load_genome(genome_path)
+
+    # Load poly(A) model if provided (once, shared across all workers via fork)
+    polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
+    if polya_model is not None:
+        logger.info(f"Loaded poly(A) model from {polya_model_path}")
 
     # Run variant-aware scan if enabled (first pass)
     variant_aware_rescue = None
@@ -1602,6 +1360,7 @@ def process_bam_file_parallel(
                 netseq_dir, variant_aware_rescue,
                 annotated_junctions,
                 gene_interval_trees,
+                polya_model,
             )
             all_results.extend(results)
 
@@ -1640,6 +1399,7 @@ def process_bam_file_parallel(
         variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
         gene_interval_trees=gene_interval_trees,
+        polya_model=polya_model,
     )
 
     all_results = []
@@ -1699,6 +1459,7 @@ def process_bam_streaming(
     show_progress: bool = True,
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
+    polya_model_path: Optional[str] = None,
 ) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
@@ -1728,6 +1489,11 @@ def process_bam_streaming(
         logger.info(f"Loading NET-seq data from {netseq_dir}...")
         netseq_loader = _load_netseq(netseq_dir)
 
+    # Load poly(A) model if provided
+    polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
+    if polya_model is not None:
+        logger.info(f"Loaded poly(A) model from {polya_model_path}")
+
     # Initialize comprehensive stats
     stats = ProcessingStats()
 
@@ -1749,6 +1515,7 @@ def process_bam_streaming(
             'original_3prime', 'corrected_3prime',
             'five_prime_position',  # TSS end of the read
             'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
+            'five_prime_exon_cigar',  # SAM CIGAR for exon segment of Cat3 rescue (v2.8.0)
             'alignment_start', 'alignment_end',  # Full read body interval
             'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
             'polya_length',  # Total observed poly(A) tail length
@@ -1758,12 +1525,23 @@ def process_bam_streaming(
             'mapq',  # Mapping quality
             'correction_applied', 'confidence', 'qc_flags', 'fraction',
             'gene_id',  # Per-read gene attribution (optional)
+            'pt_tag',      # dorado pt:i signal-level poly(A) length (blank if absent) (v2.9.0)
+            'polya_score', # poly(A) model confidence 0-1 (blank if no model) (v2.9.0)
+            'polya_source',  # 'pt_tag' | 'model' | 'none' (v2.9.0)
+            'sc_homopolymer_extension',  # Cat2: under-called homopolymer bases (v2.9.1)
+            'sc_rescued_seq',            # Cat2: non-poly-A bases matched to ref (v2.9.1)
+            'sc_original_softclip_len',  # Cat2: original 3' soft-clip length (v2.9.1)
         ]
         out_fh.write('\t'.join(header) + '\n')
 
         # Open BAM
         bam = pysam.AlignmentFile(bam_path, 'rb')
         chunk = []
+        _progress_interval = 100000  # Log every N reads
+        _next_progress = _progress_interval
+        import time as _time
+        _t_start = _time.monotonic()
+        _t_last = _t_start
 
         try:
             for read in bam:
@@ -1790,6 +1568,7 @@ def process_bam_streaming(
                     netseq_loader=netseq_loader,
                     annotated_junctions=annotated_junctions,
                     gene_interval_trees=gene_interval_trees,
+                    polya_model=polya_model,
                 )
                 chunk.extend(read_results)
 
@@ -1803,8 +1582,16 @@ def process_bam_streaming(
                     _write_results_chunk(out_fh, chunk)
                     chunk = []
 
-                    if show_progress and stats.reads_processed % 100000 == 0:
-                        logger.info(f"  Processed {stats.reads_processed:,} reads...")
+                # Progress log: fires every _progress_interval BAM reads (not rows)
+                if show_progress and stats.total_reads_in_bam >= _next_progress:
+                    _t_now = _time.monotonic()
+                    _elapsed = _t_now - _t_start
+                    _rate_per_min = (stats.total_reads_in_bam / _elapsed * 60) if _elapsed > 0 else 0
+                    logger.info(
+                        f"  Processed {stats.total_reads_in_bam:,} reads  "
+                        f"({_rate_per_min / 1000:.0f}k reads/min, {_elapsed / 60:.1f} min elapsed)"
+                    )
+                    _next_progress += _progress_interval
 
             # Write remaining
             if chunk:
@@ -1849,9 +1636,198 @@ def process_bam_streaming(
     return stats
 
 
+def process_bam_streaming_parallel(
+    bam_path: str,
+    genome_path: str,
+    output_path: str,
+    n_threads: int = 0,
+    apply_atract: bool = True,
+    apply_ag_mispriming: bool = False,
+    ag_threshold: float = 0.65,
+    apply_polya_trim: bool = False,
+    apply_indel_correction: bool = False,
+    netseq_dir: Optional[str] = None,
+    show_progress: bool = True,
+    variant_aware: bool = False,
+    variant_output_path: Optional[str] = None,
+    annotated_junctions: Optional[set] = None,
+    gene_interval_trees: Optional[Dict] = None,
+    polya_model_path: Optional[str] = None,
+    min_gap_size: int = 10000,
+) -> ProcessingStats:
+    """
+    Process BAM file with parallel region workers and streaming output.
+
+    Combines the memory efficiency of process_bam_streaming (results written
+    immediately, not accumulated in RAM) with the throughput of
+    process_bam_file_parallel (multiple worker processes).
+
+    Regions are computed from genomic coverage gaps (same as
+    process_bam_file_parallel). Each worker processes one region and returns
+    its results; the main thread writes each batch to disk as it arrives.
+
+    Args:
+        bam_path: Input BAM path
+        genome_path: Genome FASTA path
+        output_path: Output TSV path (supports .gz compression)
+        n_threads: Worker processes (0 = auto-detect from SLURM/system)
+        apply_*: Correction module flags
+        netseq_dir: Optional NET-seq BigWig directory
+        show_progress: Log reads/min progress
+        variant_aware: Enable variant-aware homopolymer rescue (two-pass)
+        variant_output_path: Optional path to write potential variants TSV
+
+    Returns:
+        ProcessingStats object
+    """
+    import time as _time
+
+    if n_threads <= 0:
+        n_threads = get_available_cpus()
+
+    logger.info(f"Using {n_threads} worker(s) for parallel streaming processing")
+
+    # Load genome once — shared across workers via fork
+    logger.info(f"Loading genome from {genome_path}...")
+    genome = load_genome(genome_path)
+
+    # Load poly(A) model once (shared via fork)
+    polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
+    if polya_model is not None:
+        logger.info(f"Loaded poly(A) model from {polya_model_path}")
+
+    # Variant-aware first pass (single-threaded pre-scan)
+    variant_aware_rescue = None
+    if variant_aware:
+        variant_aware_rescue = run_variant_aware_scan(
+            bam_path=bam_path,
+            genome=genome,
+            min_variant_fraction=0.8,
+            min_reads_for_variant_call=5,
+            output_variants_path=variant_output_path,
+        )
+
+    # Count total reads and filtered reads for stats (pre-scan, single-threaded)
+    stats = ProcessingStats()
+    logger.info("Counting reads in BAM file...")
+    _bam_prescan = pysam.AlignmentFile(bam_path, 'rb')
+    for _r in _bam_prescan:
+        stats.total_reads_in_bam += 1
+        if _r.is_unmapped:
+            stats.reads_unmapped += 1
+        elif _r.is_secondary:
+            stats.reads_secondary += 1
+        elif _r.is_supplementary:
+            stats.reads_supplementary += 1
+    _bam_prescan.close()
+    logger.info(f"  Total reads: {stats.total_reads_in_bam:,}")
+
+    # Compute genomic regions
+    logger.info("Identifying processing regions...")
+    regions = get_processing_regions(bam_path, min_gap_size=min_gap_size)
+    logger.info(f"  {len(regions)} regions across {n_threads} workers")
+    _pos_counts: dict = {}
+    _t_start = _time.monotonic()
+    _next_progress = 100000
+
+    worker_func = partial(
+        _process_region_worker,
+        bam_path=bam_path,
+        genome=genome,
+        apply_atract=apply_atract,
+        apply_ag_mispriming=apply_ag_mispriming,
+        ag_threshold=ag_threshold,
+        apply_polya_trim=apply_polya_trim,
+        apply_indel_correction=apply_indel_correction,
+        netseq_dir=netseq_dir,
+        variant_aware_rescue=variant_aware_rescue,
+        annotated_junctions=annotated_junctions,
+        gene_interval_trees=gene_interval_trees,
+        polya_model=polya_model,
+    )
+
+    # Build the TSV header (identical to process_bam_streaming)
+    _header = [
+        'read_id', 'chrom', 'strand',
+        'original_3prime', 'corrected_3prime',
+        'five_prime_position', 'five_prime_rescued', 'five_prime_exon_cigar',
+        'alignment_start', 'alignment_end',
+        'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
+        'polya_length', 'aligned_a_length', 'soft_clip_a_length',
+        'junctions', 'n_junctions',
+        'five_prime_soft_clip_length', 'three_prime_soft_clip_length',
+        'mapq', 'correction_applied', 'confidence', 'qc_flags', 'fraction',
+        'gene_id', 'pt_tag', 'polya_score', 'polya_source',
+        'sc_homopolymer_extension', 'sc_rescued_seq', 'sc_original_softclip_len',
+        'five_prime_intron_clip_pos',
+    ]
+
+    if output_path.endswith('.gz'):
+        out_fh = gzip.open(output_path, 'wt')
+    else:
+        out_fh = open(output_path, 'w')
+
+    _failed = False
+    try:
+        out_fh.write('\t'.join(_header) + '\n')
+
+        with Pool(n_threads) as pool:
+            for region_results in pool.imap_unordered(worker_func, regions):
+                _write_results_chunk(out_fh, region_results)
+
+                for result in region_results:
+                    stats.update_from_result(result)
+                    _pos_counts.setdefault(
+                        (result['chrom'], result['corrected_3prime'], result['strand']), 0.0
+                    )
+                    _pos_counts[(result['chrom'], result['corrected_3prime'], result['strand'])] += float(result.get('fraction', 1.0))
+
+                if show_progress and stats.reads_processed >= _next_progress:
+                    _elapsed = _time.monotonic() - _t_start
+                    _rate = (stats.reads_processed / _elapsed * 60) if _elapsed > 0 else 0
+                    logger.info(
+                        f"  Processed {stats.reads_processed:,} reads  "
+                        f"({_rate / 1000:.0f}k reads/min, {_elapsed / 60:.1f} min elapsed)"
+                    )
+                    _next_progress += 100000
+
+    except Exception:
+        _failed = True
+        raise
+    finally:
+        out_fh.close()
+        if _failed:
+            _partial = Path(output_path)
+            if _partial.exists():
+                _partial.unlink()
+                logger.warning(f"Removed partial output after error: {output_path}")
+
+    logger.info(f"Completed processing {stats.reads_processed:,} reads")
+    logger.info(f"  Output written to {output_path}")
+
+    # Write compact position index
+    _base = str(output_path)
+    if _base.endswith('.tsv.gz'):
+        _index_path = _base[:-len('.tsv.gz')] + '_index.bed.gz'
+    elif _base.endswith('.tsv'):
+        _index_path = _base[:-len('.tsv')] + '_index.bed.gz'
+    else:
+        _index_path = _base + '_index.bed.gz'
+
+    with gzip.open(_index_path, 'wt') as _idx_fh:
+        _idx_fh.write('chrom\tcorrected_3prime\tstrand\tcount\n')
+        for (chrom, pos, strand), count in sorted(_pos_counts.items(), key=lambda x: (x[0][0], x[0][1])):
+            _idx_fh.write(f'{chrom}\t{pos}\t{strand}\t{count:.6f}\n')
+    logger.info(f"Position index written to {_index_path}")
+
+    return stats
+
+
 def _write_results_chunk(fh, results: List[Dict]):
     """Write a chunk of results to file handle."""
     for result in results:
+        _pt = result.get('pt_tag')
+        _ps = result.get('polya_score')
         row = [
             result['read_id'],
             result['chrom'],
@@ -1860,6 +1836,7 @@ def _write_results_chunk(fh, results: List[Dict]):
             str(result['corrected_3prime']),
             str(result.get('five_prime_position', '')),  # 5' end (TSS)
             '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
+            result.get('five_prime_exon_cigar') or '',  # exon CIGAR for Cat3
             str(result.get('alignment_start', '')),  # Read body start
             str(result.get('alignment_end', '')),  # Read body end (exclusive)
             str(result['ambiguity_min']),
@@ -1878,6 +1855,13 @@ def _write_results_chunk(fh, results: List[Dict]):
             ','.join(result['qc_flags']),
             f"{result.get('fraction', 1.0):.6f}",
             result.get('gene_id') or '',  # Per-read gene attribution (empty if not computed)
+            str(_pt) if _pt is not None else '',
+            f'{_ps:.4f}' if _ps is not None else '',
+            result.get('polya_source', 'none'),
+            str(result.get('sc_homopolymer_extension', 0)),  # Cat2 CIGAR surgery
+            result.get('sc_rescued_seq', ''),
+            str(result.get('sc_original_softclip_len', 0)),
+            str(result.get('five_prime_intron_clip_pos', -1)),  # Case 4 BAM clip
         ]
         fh.write('\t'.join(row) + '\n')
 
