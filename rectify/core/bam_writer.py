@@ -883,7 +883,15 @@ def reroute_intronic_tail_5prime_via_junction(
 
         cigar.append((3, intron_len))   # N
         cigar.extend(exon_ops)
-        read.cigartuples = cigar
+        # Merge consecutive N ops (can arise when an existing N is partially
+        # trimmed and a new N is appended — e.g. Case 5 n_boundary_adjust).
+        merged: list = []
+        for _op, _l in cigar:
+            if merged and merged[-1][0] == _op == 3:
+                merged[-1] = (3, merged[-1][1] + _l)
+            else:
+                merged.append((_op, _l))
+        read.cigartuples = merged
         return True
 
     else:  # plus strand
@@ -947,6 +955,16 @@ def reroute_intronic_tail_5prime_via_junction(
         cigar.insert(0, (3, intron_len))        # N
         for op_tup in reversed(exon_ops):
             cigar.insert(0, op_tup)
+
+        # Merge consecutive N ops (Case 5 n_boundary_adjust: existing N may abut
+        # the newly prepended N when the N's exon-2 start is used as clip_boundary).
+        merged_p: list = []
+        for _op, _l in cigar:
+            if merged_p and merged_p[-1][0] == _op == 3:
+                merged_p[-1] = (3, merged_p[-1][1] + _l)
+            else:
+                merged_p.append((_op, _l))
+        cigar = merged_p
 
         read.cigartuples = cigar
         read.reference_start = new_ref_start
@@ -1042,7 +1060,15 @@ def extend_read_5prime_for_junction_rescue(
 
         # ref bases consumed by exon ops
         _ref_consuming_exon = frozenset([0, 2, 7, 8])  # M, D, =, X
+        _query_consuming_exon = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
         exon_ref_span = sum(l for op, l in exon_ops if op in _ref_consuming_exon)
+        exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
+        # Guard: exon_ops must not consume more query bases than the soft-clip.
+        # If they do (local aligner artefact, e.g. one extra M from a D at the
+        # boundary), fall back to a flat M so the BAM record stays valid.
+        if exon_query_span != actual_sc:
+            exon_ops = [(0, actual_sc)]
+            exon_ref_span = actual_sc
         # New reference_start = five_prime_position - exon_ref_span + 1
         new_ref_start = five_prime_position - exon_ref_span + 1
 
@@ -1072,6 +1098,11 @@ def extend_read_5prime_for_junction_rescue(
 
         if exon_ops is None:
             exon_ops = [(0, n)]  # flat M fallback
+
+        _query_consuming_exon = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
+        exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
+        if exon_query_span != actual_sc:
+            exon_ops = [(0, actual_sc)]
 
         if intron_len <= 0:
             for op_tup in exon_ops:
