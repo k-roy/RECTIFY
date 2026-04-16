@@ -205,12 +205,40 @@ def find_polya_boundary(
                 else:
                     _i -= 1
 
+        # Guard: how many left-context positions to inspect for poly-A tail pattern.
+        # If all K positions to the left of a candidate stop have rb='A' AND at least
+        # one has gb≠'A' (poly-A tail mismatched to non-A genomic sequence), the
+        # candidate stop is a coincidental match at the poly-A/exon boundary rather
+        # than the true exon end — skip it and continue scanning leftward.
+        _POLYA_TAIL_CTX_K = 4
+
         for i in range(scan_end_idx - 1, -1, -1):
             rp, refp, rb, gb = aligned_positions[i]
             if rp is None:  # Skip deletions
                 continue
             # Check: do genome and read agree on a non-A base?
             if rb == gb and gb != 'A':
+                # Poly-A tail context guard: inspect K positions to the left.
+                # If all K are rb='A' with at least one gb≠'A' mismatch, this
+                # is a false stop (e.g., trailing T from poly-A tail coincidentally
+                # matching a genomic T).
+                _ctx_all_a = True
+                _ctx_has_mismatch = False
+                _ctx_n = 0
+                for _j in range(i - 1, -1, -1):
+                    _jrp, _, _jrb, _jgb = aligned_positions[_j]
+                    if _jrp is None:
+                        continue  # skip deletions
+                    if _jrb != 'A':
+                        _ctx_all_a = False
+                        break
+                    if _jgb != 'A':
+                        _ctx_has_mismatch = True
+                    _ctx_n += 1
+                    if _ctx_n >= _POLYA_TAIL_CTX_K:
+                        break
+                if _ctx_n >= _POLYA_TAIL_CTX_K and _ctx_all_a and _ctx_has_mismatch:
+                    continue  # false stop — poly-A tail context; keep scanning left
                 true_cpa_ref_pos = refp
                 break
 
@@ -320,12 +348,36 @@ def find_polya_boundary(
                 else:
                     _i += 1
 
+        # Guard: same poly-A tail context check as for + strand, but mirrored.
+        # For - strand the poly-A tail appears as T's in the read.  If all K
+        # positions to the RIGHT of a candidate stop have rb='T' AND at least one
+        # has gb≠'T' (poly-T tail mismatched to non-T genomic sequence), skip.
+        _POLYT_TAIL_CTX_K = 4
+
         for i in range(scan_start_idx, scan_limit):
             rp, refp, rb, gb = aligned_positions[i]
             if rp is None:  # Skip deletions
                 continue
             # Check: do genome and read agree on a non-T base?
             if rb == gb and gb != 'T':
+                # Poly-T tail context guard: inspect K positions to the right.
+                _ctx_all_t = True
+                _ctx_has_mismatch = False
+                _ctx_n = 0
+                for _j in range(i + 1, scan_limit):
+                    _jrp, _, _jrb, _jgb = aligned_positions[_j]
+                    if _jrp is None:
+                        continue
+                    if _jrb != 'T':
+                        _ctx_all_t = False
+                        break
+                    if _jgb != 'T':
+                        _ctx_has_mismatch = True
+                    _ctx_n += 1
+                    if _ctx_n >= _POLYT_TAIL_CTX_K:
+                        break
+                if _ctx_n >= _POLYT_TAIL_CTX_K and _ctx_all_t and _ctx_has_mismatch:
+                    continue  # false stop — poly-T tail context; keep scanning right
                 true_cpa_ref_pos = refp
                 break
 

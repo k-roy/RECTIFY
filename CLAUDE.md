@@ -380,6 +380,20 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 
 **No open bugs remaining** — see `docs/BUGS_TO_FIX.md`.
 
+**v3.0.3 (2026-04-16):** `find_polya_boundary` — poly-A tail trailing-base false-stop guard:
+- `find_polya_boundary` in `indel_corrector.py` now detects false stops where the trailing base of a poly-A tail (e.g., a T at the very end of `...AAAAAAAAAAAAAAAAT`) coincidentally matches a genomic base (T=T) at the alignment boundary, causing the backward scan to stop prematurely at the poly-A/exon junction rather than continuing to the true exon body.
+- Fix (plus strand): Before accepting a candidate stop (`rb==gb, gb!='A'`), inspect the K=4 positions to the left. If all K have `rb='A'` AND at least one has `gb≠'A'` (unmistakably poly-A tail context), the candidate is skipped and scanning continues leftward.
+- Fix (minus strand): Symmetric check — inspect K=4 positions to the right; if all have `rb='T'` AND at least one has `gb≠'T'`, continue scanning rightward.
+- Root cause in cat6_plus_2 (RPL19B, ba761413): alignment ends `...AAAAAAAAAAAAAAAAT` at 169492 (T=T exact match). The 14 A-positions before it (169478–169491) all have `rb='A'` with several mismatches (`gb≠'A'`) — pure poly-A tail. With the guard, the scan continues to 169476 (G=G, true exon end). `corrected_3prime` moves 16 bp upstream from 169492 to 169476; NET-seq refinement stays at 169476 (signal=75.0). Bedgraph now shows signal at 169476 rather than 169491.
+- All 659 tests pass.
+
+**v3.0.2 (2026-04-16):** `clip_read_to_corrected_3prime` / `softclip_read_to_corrected_3prime` — terminal D/N stripping:
+- Both functions now strip trailing D/N ops (plus strand) or leading D/N ops (minus strand) that are left dangling after the CIGAR walk loop. The bug arose when `corrected_3prime` fell within a deletion span: the loop removed all query-consuming ops to the right of the D (satisfying `n_ref_removed >= n_ref_clip`) and exited before reaching the D, then appended `H`/`S` directly after it, producing invalid CIGAR strings like `4D6H`.
+- Example: read 299e1402 (chrII plus strand) CIGAR previously ended `5X3=4D6H` — a terminal deletion before a hard-clip that violated SAM spec. Now the 4D is stripped before the H is appended.
+- Root cause: `corrected_3prime` from `find_polya_boundary` can land inside a deletion span (a reference position with no corresponding query base), which is a valid CPA but requires CIGAR surgery to snap to the last real query base.
+- Fix applied in four locations: `clip_read_to_corrected_3prime` (plus + minus strand paths) and `softclip_read_to_corrected_3prime` (plus + minus strand paths).
+- New test file: `tests/test_bam_writer.py` (11 tests covering normal clipping, terminal-D stripping, in-deletion-span corrected positions, and N-op stripping for spliced reads).
+
 **v3.0.1 (2026-04-15):** `clip_intronic_tail_5prime` — off-by-one fix + trailing-I/S stripping + existing-H handling + `_MIN_SC_FOR_JUNCTION_EXTENSION` guard:
 - **Off-by-one fix (minus strand)**: Exit condition changed from `<= clip_boundary + 1` → `<= clip_boundary`. Previously reads ending at `reference_end = intron_start + 1` (last mapped base = `intron_start` = first intron base) were left unclipped, appearing as red T→C mismatches in IGV. Now they are trimmed so the last mapped base is `intron_start - 1` (last exon base).
 - **Trailing I/S stripping**: Before the main ref-consuming trim loop, `clip_intronic_tail_5prime` now explicitly strips trailing I (insertion) and S (soft-clip) ops from the 5' end. These bases lie at/past the intron boundary and were silently left in the CIGAR under the old code when `reference_end` was already at the boundary.
