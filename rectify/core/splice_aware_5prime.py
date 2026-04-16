@@ -344,192 +344,227 @@ def _get_5prime_softclip_len(read: pysam.AlignedSegment) -> int:
         return first_len if first_op == 4 else 0
 
 
-def _extract_5prime_terminal_error_seq(
+def _extract_5prime_rescue_seq(
     read: pysam.AlignedSegment,
-    genome: Dict[str, str],
-    five_clip: int,
-    scan_bp: int = 25,
-    window: int = 8,
-    error_threshold: float = 0.40,
-    min_errors: int = 2,
+    genome_seq: str = '',
+    scan_ref_bp: int = 50,
 ) -> str:
-    """Return query bytes from the terminal mismatch/indel region at the 5' end.
+    """Unified 5'-end rescue sequence extractor.
 
-    mapPacBio forces mismatches/indels at splice junction boundaries instead of
-    producing a soft-clip. This function detects that region using the same
-    greedy sliding-window scan used in consensus._get_effective_5prime_clip,
-    then returns the actual query bytes so they can be matched against the
-    upstream exon sequence.
+    Scans up to ``scan_ref_bp`` reference bases from the 5' alignment end and
+    returns query bases from the 5' end up to and including the **last**
+    imperfect alignment position in that window.
 
-    Returns empty string when no terminal error region is found or when the
-    read is a zero-clip/zero-error truncation (no sequence to rescue with).
-    """
-    if not read.query_sequence or not read.cigartuples:
-        return ""
+    **Trigger**: any S (soft-clip), X (mismatch), I (insertion), or D (deletion
+    of any size) op detected in the CIGAR.  For reads that use M ops instead of
+    =/X (e.g. mapPacBio), a reference-vs-query comparison is performed when
+    ``genome_seq`` is provided; mismatching M positions are treated as imperfect.
 
-    chrom = read.reference_name
-    if not chrom or chrom not in genome:
-        return ""
+    **Clipping to last error**: clean = ops beyond the last imperfect position
+    are excluded, preventing correctly-aligned exon-2 tail bases from inflating
+    edit distance in the downstream junction-matching step.
 
-    ref_seq = genome[chrom]
-    query_seq = read.query_sequence
-    query_len = len(query_seq)
+    Stops at N ops (existing splice junctions).
+    Returns ``''`` if no imperfect op is found within the scan window.
 
-    try:
-        pairs = read.get_aligned_pairs()
-    except Exception:
-        return ""
-
-    errors: List[int] = []
-    if read.is_reverse:
-        cutoff_qp = query_len - 1 - five_clip
-        for qp, rp in reversed(pairs):
-            if qp is None:
-                continue
-            if qp > cutoff_qp:
-                continue
-            if len(errors) >= scan_bp:
-                break
-            if rp is None:
-                errors.append(1)
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                read_b = query_seq[qp].upper()
-                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
-            else:
-                errors.append(0)
-    else:
-        cutoff_qp = five_clip
-        for qp, rp in pairs:
-            if qp is None:
-                continue
-            if qp < cutoff_qp:
-                continue
-            if len(errors) >= scan_bp:
-                break
-            if rp is None:
-                errors.append(1)
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                read_b = query_seq[qp].upper()
-                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
-            else:
-                errors.append(0)
-
-    if len(errors) < window:
-        return ""
-
-    # Greedy scan: extend terminal boundary while leading windows are high-error
-    terminal_end = 0
-    for i in range(len(errors) - window + 1):
-        w = errors[i:i + window]
-        if sum(w) / window >= error_threshold:
-            terminal_end = i + window
-        else:
-            break
-
-    if terminal_end == 0 or sum(errors[:terminal_end]) < min_errors:
-        return ""
-
-    # Clip back to the last actual error position so that clean bases at the
-    # tail of the sliding window (overshoot) are excluded.  Without this, the
-    # extracted sequence would contain correctly-aligned bases that inflate the
-    # edit distance and prevent a valid rescue match.
-    last_err_idx = max((i for i, e in enumerate(errors[:terminal_end]) if e), default=-1)
-    if last_err_idx < 0:
-        return ""
-    terminal_end = last_err_idx + 1
-
-    # Extract the corresponding query bytes
-    if not read.is_reverse:
-        region_start = five_clip
-        region_end = five_clip + terminal_end
-        if region_end <= query_len:
-            return query_seq[region_start:region_end]
-    else:
-        region_end = query_len - five_clip
-        region_start = region_end - terminal_end
-        if region_start >= 0:
-            return query_seq[region_start:region_end]
-
-    return ""
-
-
-def _extract_5prime_deletion_bridged_seq(
-    read: pysam.AlignedSegment,
-    scan_query_bp: int = 50,
-    min_deletion_ref_bp: int = 15,
-) -> str:
-    """Return query bases stranded past a large deletion near the 5' end.
-
-    When the aligner bridges the exon-2/intron boundary using a large D-op
-    (instead of an N-op or soft-clip), the bases between the 5' end and the
-    deletion map to intronic reference but originate from exon 1.  The
-    sliding-window mismatch scan in :func:`_extract_5prime_terminal_error_seq`
-    misses these reads because the = (exact-match) ops against intronic sequence
-    have zero error rate, even though the alignment is wrong.
-
-    This function recognises the pattern:
-        [5' end] …= (=|X|I)* D(≥min_deletion_ref_bp) [rest of read]
-    and returns the query bases from the 5' end up to (but not including) the
-    large D-op.  Those bases become ``rescue_seq`` for exon-1 local alignment.
-
-    Parameters
-    ----------
-    scan_query_bp:
-        Maximum query bases to scan from the 5' end before giving up.
-    min_deletion_ref_bp:
-        Minimum D-op length (reference bases deleted) to consider a "bridging"
-        deletion.  Small D ops (1–2 bp) are routine nanopore alignment noise.
-
-    Returns
-    -------
-    str
-        Query sequence bases from the 5' end to the bridging deletion, or ``""``
-        if no such pattern is found.
+    Replaces three earlier helpers:
+        - ``_extract_5prime_terminal_error_seq``  (Case 2 mismatch scan)
+        - ``_extract_5prime_deletion_bridged_seq`` (Case 2b large-D scan)
+        and the explicit soft-clip slice (Case 1) in ``rescue_3ss_truncation``.
     """
     if not read.cigartuples or not read.query_sequence:
         return ''
 
-    ct = read.cigartuples
     query_seq = read.query_sequence
     n_query = len(query_seq)
+    _qc = frozenset([0, 1, 4, 7, 8])              # M, I, S, =, X (consume query)
+    _rc = frozenset([0, 2, 7, 8])                  # M, D, =, X (consume reference)
+    _explicit_imperfect = frozenset([1, 2, 4, 8])  # I, D, S, X (unambiguously bad)
 
-    _qc = frozenset([0, 1, 4, 7, 8])   # ops that consume query: M, I, S, =, X
+    # --- Phase 1: CIGAR-based detection (I, D, S, X ops) ---
+    # Iterate from the 5' end of the read (reversed CIGAR for minus strand).
+    query_collected = 0   # query bases accumulated from 5' end
+    ref_scanned = 0       # reference bases consumed (determines scan window)
+    last_imp_q = 0        # query bases at the EXCLUSIVE end of last imperfect op
+    found_explicit = False
+    has_m_ops = False     # any M op seen (may need genome fallback)
+
+    ops = reversed(read.cigartuples) if read.is_reverse else iter(read.cigartuples)
+    for op, length in ops:
+        if op == 5:   # H: not in query_sequence
+            continue
+        if op == 3:   # N: existing splice junction — stop
+            break
+        n_qb = length if op in _qc else 0
+        n_rb = length if op in _rc else 0
+        if op in _explicit_imperfect:
+            found_explicit = True
+            last_imp_q = query_collected + n_qb  # exclusive end (includes this op)
+        if op == 0:
+            has_m_ops = True
+        query_collected += n_qb
+        ref_scanned += n_rb
+        if ref_scanned >= scan_ref_bp:
+            break
+
+    if found_explicit and last_imp_q > 0:
+        if read.is_reverse:
+            return query_seq[n_query - last_imp_q:]
+        else:
+            return query_seq[:last_imp_q]
+
+    # --- Phase 2: M-op fallback (mapPacBio uses M instead of =/X) ---
+    # Only runs when Phase 1 found no explicit imperfect ops but M ops are present.
+    if not has_m_ops or not genome_seq:
+        return ''
+
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return ''
+
+    gs = len(genome_seq)
+    ref_count = 0
+    last_imp_qp = -1  # query index of last mismatching position
 
     if read.is_reverse:
-        # 5' end is at the right (high query index); iterate CIGAR from right.
-        query_bases_scanned = 0
-        for op, length in reversed(ct):
-            if op == 5:          # H: skip (not in query_sequence)
-                continue
-            if op == 3:          # N: existing splice junction — stop
+        for qp, rp in reversed(pairs):
+            if rp is not None:
+                ref_count += 1
+            if qp is None:
+                continue  # D op: no query base
+            if rp is None:
+                last_imp_qp = qp  # I/S: imperfect
+            elif rp < gs:
+                gb = genome_seq[rp].upper()
+                rb = query_seq[qp].upper()
+                if gb != 'N' and rb != gb:
+                    last_imp_qp = qp
+            if ref_count >= scan_ref_bp:
                 break
-            if op == 2:          # D: check size
-                if length >= min_deletion_ref_bp and query_bases_scanned > 0:
-                    return query_seq[n_query - query_bases_scanned:]
-                # Small D: not a bridge candidate; keep scanning
-            elif op in _qc:
-                query_bases_scanned += length
-                if query_bases_scanned >= scan_query_bp:
-                    break
     else:
-        # 5' end is at the left (low query index); iterate CIGAR from left.
-        query_bases_scanned = 0
-        for op, length in ct:
+        for qp, rp in pairs:
+            if rp is not None:
+                ref_count += 1
+            if qp is None:
+                continue
+            if rp is None:
+                last_imp_qp = qp
+            elif rp < gs:
+                gb = genome_seq[rp].upper()
+                rb = query_seq[qp].upper()
+                if gb != 'N' and rb != gb:
+                    last_imp_qp = qp
+            if ref_count >= scan_ref_bp:
+                break
+
+    if last_imp_qp < 0:
+        return ''
+
+    if read.is_reverse:
+        # last_imp_qp is the query index; for minus strand the 5' end is at the
+        # right of query_seq.  We want all bases from last_imp_qp to the right end.
+        return query_seq[last_imp_qp:]
+    else:
+        return query_seq[:last_imp_qp + 1]
+
+
+def _get_intronic_query_bases(
+    read: pysam.AlignedSegment,
+    clip_boundary: int,
+    strand: str,
+) -> str:
+    """Return query bases that map to the intron-side of ``clip_boundary``.
+
+    Iterates the CIGAR from the 5' end (reversed for minus strand) and
+    accumulates query bases for every op whose reference span lies entirely
+    at or beyond ``clip_boundary`` (i.e., inside the intron or at the exact
+    boundary).  For an op that partially crosses the boundary only the
+    proportional intronic slice is included.  Stops at N ops.
+
+    For minus strand ``clip_boundary`` is ``intron_start`` (low ref coord);
+    for plus strand it is ``intron_end`` (high ref coord).
+
+    These bases are used by :func:`rescue_3ss_truncation` to drive the
+    local alignment for the exon-1 CIGAR, ensuring the exon CIGAR has
+    exactly as many query-consuming bases as the CIGAR trimming step in
+    :func:`~rectify.core.bam_writer.reroute_intronic_tail_5prime_via_junction`
+    will remove.
+    """
+    if not read.cigartuples or not read.query_sequence:
+        return ''
+
+    query_seq = read.query_sequence
+    n_query = len(query_seq)
+    _qc = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X — consume query
+    _rc = frozenset([0, 2, 7, 8])      # M, D, =, X — consume reference
+
+    query_bases = 0
+
+    if strand == '-':
+        ref_pos = read.reference_end
+        if ref_pos is None:
+            return ''
+        for op, length in reversed(read.cigartuples):
+            if op == 5:   # H: skip
+                continue
+            if op == 3:   # N: stop
+                break
+            n_qb = length if op in _qc else 0
+            n_rb = length if op in _rc else 0
+            if n_rb > 0:
+                new_ref = ref_pos - n_rb
+                if new_ref >= clip_boundary:
+                    # Entirely inside intron
+                    query_bases += n_qb
+                    ref_pos = new_ref
+                elif ref_pos > clip_boundary:
+                    # Partially crosses boundary: include only the intronic slice
+                    overlap_rb = ref_pos - clip_boundary
+                    overlap_qb = round(n_qb * overlap_rb / n_rb) if n_qb else 0
+                    query_bases += overlap_qb
+                    break
+                else:
+                    break  # Entirely in exon 2
+            else:
+                # Query-only op (I/S): attach to the current ref position.
+                # Use strict > so that insertions exactly AT clip_boundary are
+                # excluded — the reroute trimmer also excludes them (its loop
+                # breaks when cur_end <= clip_boundary, before consuming the
+                # boundary insertion).
+                if ref_pos > clip_boundary:
+                    query_bases += n_qb
+    else:
+        ref_pos = read.reference_start
+        for op, length in read.cigartuples:
             if op == 5:
                 continue
             if op == 3:
                 break
-            if op == 2:
-                if length >= min_deletion_ref_bp and query_bases_scanned > 0:
-                    return query_seq[:query_bases_scanned]
-            elif op in _qc:
-                query_bases_scanned += length
-                if query_bases_scanned >= scan_query_bp:
+            n_qb = length if op in _qc else 0
+            n_rb = length if op in _rc else 0
+            if n_rb > 0:
+                new_ref = ref_pos + n_rb
+                if new_ref <= clip_boundary:
+                    query_bases += n_qb
+                    ref_pos = new_ref
+                elif ref_pos < clip_boundary:
+                    overlap_rb = clip_boundary - ref_pos
+                    overlap_qb = round(n_qb * overlap_rb / n_rb) if n_qb else 0
+                    query_bases += overlap_qb
                     break
+                else:
+                    break
+            else:
+                if ref_pos <= clip_boundary:
+                    query_bases += n_qb
 
-    return ''
+    if query_bases == 0:
+        return ''
+    if strand == '-':
+        return query_seq[n_query - query_bases:]
+    else:
+        return query_seq[:query_bases]
 
 
 def _get_n_op_intervals(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
@@ -632,33 +667,39 @@ def rescue_3ss_truncation(
     strand: Optional[str] = None,
     max_edit_frac: float = 0.2,
     junction_proximity_bp: int = 10,
-    scan_bp: int = 25,
-    window: int = 8,
-    error_threshold: float = 0.40,
-    min_errors: int = 2,
+    scan_bp: int = 50,
 ) -> Dict:
-    """Rescue reads truncated or soft-clipped at the exon 2 / 3' splice site boundary.
+    """Rescue reads truncated or mis-aligned at the exon 2 / 3' splice site boundary.
 
-    Handles three cases in priority order:
+    **General approach**: for any read whose 5' alignment end is near (within
+    ``junction_proximity_bp`` bp of) a known 3'SS, or whose 5' end falls inside
+    an annotated intron, extract the terminal query bases that show any alignment
+    imperfection (S, X, I, D of any size) and attempt re-alignment against the
+    upstream exon 1 sequence.
 
-    1. **Soft-clip** — explicit S operation at the 5' end (minimap2, gapmm2, uLTRA):
-       Clip sequence is compared against the upstream exon end across each candidate
-       junction. Identical to the consensus-time _rescue_5prime_softclip logic.
+    Even a single mismatch or 1 bp intronic overlap is sufficient to trigger
+    realignment — the downstream edit-distance check against both exon and intron
+    sequence filters false positives.
 
-    2. **mapPacBio forced-mismatch / indel** — no explicit soft-clip but terminal
-       alignment errors at the 5' end (mapPacBio encodes junction boundary errors
-       as mismatches/indels rather than S operations):
-       The terminal error bytes are extracted with the same greedy sliding-window
-       scan as consensus._get_effective_5prime_clip and compared to the upstream exon.
+    Cases handled (in priority order):
 
-    3. **Zero-clip / zero-error truncation** — alignment starts at or within
-       `junction_proximity_bp` of a known 3'SS with no clipped or mismatched bases:
-       No sequence evidence is available; the rescue is recorded as a proximity hit
-       (`rescue_type = 'proximity'`) without changing the attributed 5' position.
+    1. **Any terminal imperfection** (S / X / I / D) within ``scan_bp`` ref bases
+       of the 5' end: query bases from the 5' end up to and including the last
+       imperfect position are extracted and aligned to each candidate junction's
+       exon-1 sequence.  Covers soft-clip (Case 1), mapPacBio forced mismatches
+       (Case 2), deletion-bridged alignments (Case 2b), single-bp boundary
+       mismatches, and small indels.
 
-    Candidate junction pool should contain (chrom, intron_start, intron_end) tuples
-    from annotated junctions UNION any novel junctions observed in the first-pass
-    alignment (rectified BAM CIGAR junctions + per-aligner BAMs if available).
+    2. **Intronic snap** (Case 4): if sequence-based rescue produced no match but
+       the 5' alignment end is strictly inside an annotated intron (and no N-op
+       already covers it), the corrected position is snapped to the exon-1-side
+       boundary.  Fires as a fallback after failed sequence rescue, e.g. when the
+       terminal region has only 1 mismatched base that does not align to any
+       known exon-1 sequence.
+
+    3. **Proximity-only** (Case 3): alignment ends within ``junction_proximity_bp``
+       of a 3'SS but has no imperfect op and is not inside the intron.  Records
+       the junction hit without changing the 5' position.
 
     Args:
         read: pysam AlignedSegment (from rectified BAM)
@@ -668,19 +709,17 @@ def rescue_3ss_truncation(
         max_edit_frac: Edit distance / rescue_seq_len threshold for sequence match
         junction_proximity_bp: Max bp between alignment 5' end and intron edge
             to attempt rescue (both sequence-based and proximity-only)
-        scan_bp / window / error_threshold / min_errors: Parameters for MPB
-            terminal error detection (same semantics as _get_effective_5prime_clip)
+        scan_bp: Reference bases to scan from the 5' end for imperfect-op detection
 
     Returns:
         Dict with keys:
-            'rescued'            bool   — True for sequence-confirmed rescue (cases 1 & 2)
-            'rescue_type'        str    — 'softclip' | 'mpb_mismatch' | 'proximity' | 'none'
-            'five_prime_corrected' int  — Updated 5' genomic position (upstream exon end)
-                                          for 'softclip' and 'mpb_mismatch'; raw 5' end
-                                          for 'proximity' and 'none'
-            'rescued_junction'   tuple  — (chrom, intron_start, intron_end) or None
-            'edit_distance'      int    — Edit distance for sequence-based rescues; -1 otherwise
-            'query_bp'           int    — Length of rescue sequence used; 0 for proximity
+            'rescued'              bool  — True for sequence-confirmed rescue
+            'rescue_type'          str   — 'softclip' | 'mpb_mismatch' | 'intronic_snap'
+                                           | 'proximity' | 'none'
+            'five_prime_corrected' int   — Updated 5' genomic position
+            'rescued_junction'     tuple — (chrom, intron_start, intron_end) or None
+            'edit_distance'        float — HP-weighted edit distance; -1 for non-seq rescues
+            'query_bp'             int   — Length of rescue sequence used; 0 for proximity
     """
     if strand is None:
         strand = '-' if read.is_reverse else '+'
@@ -707,39 +746,26 @@ def rescue_3ss_truncation(
             return _no_rescue(read, strand)
         align_5prime = read.reference_end - 1
 
-    # --- Collect rescue sequence (priority: soft-clip > MPB terminal errors) ---
-    rescue_seq = ""
-    rescue_type_candidate = "none"
+    # --- Collect rescue sequence ---
+    # General approach: scan scan_bp reference bases from the 5' end; any imperfect
+    # alignment op (S, X, I, D of any size, or M-mismatch if genome is available)
+    # triggers extraction of all query bases up to and including the last imperfect
+    # position.  Clean exon-2 bases at the tail of the window are excluded to
+    # prevent inflating edit distance in the junction-matching step.
+    rescue_seq = _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp)
+    rescue_type_candidate = (
+        "softclip" if (five_clip > 0 and rescue_seq)
+        else ("mpb_mismatch" if rescue_seq else "none")
+    )
 
-    # Case 1: explicit soft-clip
-    if five_clip > 0 and read.query_sequence:
-        if not read.is_reverse:
-            rescue_seq = read.query_sequence[:five_clip]
-        else:
-            rescue_seq = read.query_sequence[-five_clip:]
-        rescue_type_candidate = "softclip"
-
-    # Case 2: MPB forced-mismatch terminal region (only if no explicit soft-clip)
-    if not rescue_seq:
-        terminal_seq = _extract_5prime_terminal_error_seq(
-            read, genome, five_clip,
-            scan_bp=scan_bp, window=window,
-            error_threshold=error_threshold, min_errors=min_errors,
-        )
-        if terminal_seq:
-            rescue_seq = terminal_seq
-            rescue_type_candidate = "mpb_mismatch"
-
-    # Case 2b: large-deletion bridge (only if no explicit soft-clip and no mismatch region)
-    # Fires when the aligner used a large D-op to bridge from exon 2 to a region
-    # inside the intron, leaving clean = ops near the 5' end.  The mismatch-rate
-    # scanner misses this because the = ops have zero error rate against intron
-    # reference, but the bases actually originate from exon 1.
-    if not rescue_seq:
-        deletion_bridged_seq = _extract_5prime_deletion_bridged_seq(read)
-        if deletion_bridged_seq:
-            rescue_seq = deletion_bridged_seq
-            rescue_type_candidate = "deletion_bridge"
+    # When a soft clip is present, the rescue sequence IS the soft-clipped bases
+    # (exon sequence not aligned by the aligner).  The scan_bp extension can pull in
+    # aligned bases beyond the soft clip that map INSIDE the intron; including those
+    # intron-internal bases contaminates the exon-matching step and causes wrong
+    # shifts to score better than the correct exon boundary.  Truncate to the
+    # soft-clip length to prevent this.
+    if five_clip > 0 and rescue_seq and len(rescue_seq) > five_clip:
+        rescue_seq = rescue_seq[:five_clip]
 
     # --- Try sequence-based rescue against each candidate junction ---
     best_ed: float = -1.0
@@ -832,7 +858,13 @@ def rescue_3ss_truncation(
                     _donor_ok = genome_seq[_eff_start:_eff_start + 2].upper() in ('GT', 'GC')
                     # Whether this shift is within the natural sequence-ambiguity window
                     _in_amb = (-_l_amb <= _shift <= _r_amb)
-                    for _off in range(junction_proximity_bp + 1):
+                    # Cap _off when dist > 0: alignment is already past the intron_end
+                    # (in exon-2); sliding the window further left than dist bp would
+                    # reach exon-1 sequences that belong to a different, closer junction.
+                    # When dist == 0 (alignment inside the intron) the full range is
+                    # needed to back the window up to where the read body actually starts.
+                    _off_limit = min(junction_proximity_bp, dist) if dist > 0 else junction_proximity_bp
+                    for _off in range(_off_limit + 1):
                         _es = _eff_start - rescue_len - _off
                         if _es < 0:
                             continue
@@ -914,7 +946,8 @@ def rescue_3ss_truncation(
                     _donor_ok = genome_seq[_eff_end - 2:_eff_end].upper() in ('AC', 'GC')
                     # Whether this shift is within the natural sequence-ambiguity window
                     _in_amb = (-_l_amb <= _shift <= _r_amb)
-                    for _off in range(junction_proximity_bp + 1):
+                    _off_limit = min(junction_proximity_bp, dist) if dist > 0 else junction_proximity_bp
+                    for _off in range(_off_limit + 1):
                         _cs = _eff_end + _off
                         _cand = genome_seq[_cs:_cs + rescue_len].upper()
                         if len(_cand) < rescue_len:
@@ -989,12 +1022,24 @@ def rescue_3ss_truncation(
         if best_junction is not None:
             # Compute local alignment CIGAR for the exon portion so that
             # bam_writer can emit M/I/D ops instead of a flat nM block.
+            #
+            # IMPORTANT: use the ACTUAL intronic query bases (bases that map
+            # to positions inside the intron) rather than the full rescue_seq.
+            # rescue_seq may include exon-2 bases beyond the intron boundary
+            # when a downstream imperfect op (e.g. an I/D inside exon 2)
+            # pushed the last_imp_q cursor further than the true intron edge.
+            # Passing too many bases to align_clip_to_exon produces a CIGAR
+            # with more query-consuming ops than the BAM surgery step will
+            # actually trim, causing the reroute sanity check to fail.
             _j_chrom, _intron_start, _intron_end = best_junction
+            _clip_bd = _intron_start if strand == '-' else _intron_end
+            _intronic_seq = _get_intronic_query_bases(read, _clip_bd, strand)
+            _align_seq = _intronic_seq if _intronic_seq else rescue_seq
             _exon_cigar_str = ''
             try:
                 from .local_aligner import align_clip_to_exon, cigar_ops_to_str
                 _cigar_ops, _ = align_clip_to_exon(
-                    rescue_seq, genome_seq,
+                    _align_seq, genome_seq,
                     _intron_start, _intron_end, strand,
                 )
                 _exon_cigar_str = cigar_ops_to_str(_cigar_ops)
@@ -1011,46 +1056,58 @@ def rescue_3ss_truncation(
             }
 
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
-    # Fires when sequence-based rescue (Cases 1–2) produced no rescue_seq but
-    # align_5prime landed inside [intron_start, intron_end).  This happens when an
-    # aligner (minimap2, mapPacBio, gapmm2, …) uses D-ops, mismatches, or plain
-    # truncation instead of an N-op, leaving the 5' end deep inside the intron.
-    # We snap five_prime_corrected to the exon-1-side boundary (intron_end for minus,
-    # intron_start for plus) — the nearest annotated splice donor site.
+    # Fires as a fallback when:
+    #   (a) no rescue_seq was extracted (all = ops, completely clean intronic match), OR
+    #   (b) rescue_seq was extracted but no candidate junction produced a sequence match.
+    # Even a single mismatch (1 bp rescue_seq) that fails the edit-distance check
+    # should still be corrected via snap — the position is demonstrably wrong.
     # Only fires if no existing N-op in the CIGAR already covers this intron
     # (prevents double-rescue for reads that have a correct but off-by-a-few-bp N).
-    if not rescue_seq:
-        _n_intervals = _get_n_op_intervals(read)
-        for j_entry in candidate_junctions:
-            j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
-            if j_chrom != chrom:
-                continue
-            # Condition: align_5prime inside [intron_start, intron_end).
-            # intron_start is inclusive: a read whose rightmost base IS intron_start
-            # (reference_end = intron_start + 1 for minus strand) is mapping into
-            # the intron and must be snapped.
-            if not (intron_start <= align_5prime < intron_end):
-                continue
-            # Skip if an existing N-op already approximates this intron
-            already_has_n = any(
-                abs(ns - intron_start) <= junction_proximity_bp and
-                abs(ne - intron_end) <= junction_proximity_bp
-                for ns, ne in _n_intervals
-            )
-            if already_has_n:
-                continue
-            # Snap to exon-1-side boundary
-            snap_pos = intron_end if strand == '-' else intron_start
-            intronic_depth = (align_5prime - intron_start) if strand == '-' else (intron_end - align_5prime)
-            return {
-                'rescued': True,
-                'rescue_type': 'intronic_snap',
-                'five_prime_corrected': snap_pos,
-                'rescued_junction': (j_chrom, intron_start, intron_end),
-                'edit_distance': -1,
-                'query_bp': intronic_depth,
-                'five_prime_exon_cigar': '',
-            }
+    _n_intervals = _get_n_op_intervals(read)
+    for j_entry in candidate_junctions:
+        j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
+        if j_chrom != chrom:
+            continue
+        # Condition: align_5prime inside [intron_start, intron_end).
+        # intron_start is inclusive: a read whose rightmost base IS intron_start
+        # (reference_end = intron_start + 1 for minus strand) is mapping into
+        # the intron and must be snapped.
+        if not (intron_start <= align_5prime < intron_end):
+            continue
+        # Skip if an existing N-op already approximates this intron
+        already_has_n = any(
+            abs(ns - intron_start) <= junction_proximity_bp and
+            abs(ne - intron_end) <= junction_proximity_bp
+            for ns, ne in _n_intervals
+        )
+        if already_has_n:
+            continue
+        # Snap to exon-1-side boundary
+        snap_pos = intron_end if strand == '-' else intron_start
+        intronic_depth = (align_5prime - intron_start) if strand == '-' else (intron_end - align_5prime)
+        # Compute exon CIGAR so bam_writer can reroute the intronic tail.
+        _clip_bd4 = intron_start if strand == '-' else intron_end
+        _intronic_seq4 = _get_intronic_query_bases(read, _clip_bd4, strand)
+        _exon_cigar_str4 = ''
+        if _intronic_seq4:
+            try:
+                from .local_aligner import align_clip_to_exon, cigar_ops_to_str
+                _cigar_ops4, _ = align_clip_to_exon(
+                    _intronic_seq4, genome_seq, intron_start, intron_end, strand,
+                )
+                _exon_cigar_str4 = cigar_ops_to_str(_cigar_ops4)
+            except Exception as _e4:
+                logger.debug("Case 4 local alignment failed for read %s: %s",
+                             read.query_name, _e4)
+        return {
+            'rescued': True,
+            'rescue_type': 'intronic_snap',
+            'five_prime_corrected': snap_pos,
+            'rescued_junction': (j_chrom, intron_start, intron_end),
+            'edit_distance': -1,
+            'query_bp': intronic_depth,
+            'five_prime_exon_cigar': _exon_cigar_str4,
+        }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
     for j_entry in candidate_junctions:

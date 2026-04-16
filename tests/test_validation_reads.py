@@ -157,6 +157,11 @@ class TestBamIntegrity:
     def test_bam_has_32_reads(self, raw_reads):
         assert len(raw_reads) == 32, f'Expected 32 reads, got {len(raw_reads)}'
 
+    def test_correction_has_32_reads(self, corrected):
+        """Every read must survive the correction pipeline (no silent drops)."""
+        assert len(corrected) == 32, \
+            f'Expected 32 reads in corrected output, got {len(corrected)}'
+
     def test_all_labels_present(self, raw_reads):
         expected = {
             'cat1_plus_1', 'cat1_plus_2', 'cat1_minus_1', 'cat1_minus_2',
@@ -219,7 +224,13 @@ class TestBamIntegrity:
 # ---------------------------------------------------------------------------
 
 class TestCategory1IndelCorrection:
-    """Walk-back must shift the corrected 3' end away from the raw alignment boundary."""
+    """Walk-back must shift the corrected 3' end away from the raw alignment boundary.
+
+    cat1_plus_1  chrVIII:508599–508794  +  A-tract walk-back (−4 bp)
+    cat1_plus_2  chrIX:22544–22850      +  A-tract walk-back (−3 bp)
+    cat1_minus_1 chrII:9855–10533       −  A-tract walk-back (+6 bp)
+    cat1_minus_2 chrII:9813–10539       −  A-tract walk-back (+4 bp)
+    """
 
     @pytest.mark.parametrize('label,strand', [
         ('cat1_plus_1', '+'),
@@ -242,6 +253,23 @@ class TestCategory1IndelCorrection:
         else:
             assert corrected_pos > original, \
                 f'{label}: minus-strand correction should walk forward (corrected > original)'
+
+    @pytest.mark.parametrize('label,expected_3prime', [
+        # Exact corrected_3prime values from rectify correct on wt_by4742_rep1 validation reads.
+        # polya_walkback + NET-seq refinement; values are deterministic.
+        ('cat1_plus_1',  508789),   # chrVIII walk-back −4 bp from raw 508793
+        ('cat1_plus_2',  22846),    # chrIX walk-back −3 bp from raw 22849; homopolymer_rescue
+        ('cat1_minus_1', 9861),     # chrII walk-forward +6 bp from raw 9855
+        ('cat1_minus_2', 9817),     # chrII walk-forward +4 bp from raw 9813
+    ])
+    def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        got = int(row['corrected_3prime'])
+        assert got == expected_3prime, \
+            f'{label}: corrected_3prime should be {expected_3prime}, got {got}'
 
 
 class TestCategory2SoftClipRescue:
@@ -271,6 +299,23 @@ class TestCategory2SoftClipRescue:
         else:
             assert corrected_pos < original, \
                 f'{label}: minus-strand soft-clip rescue should shift outward (corrected < original)'
+
+    @pytest.mark.parametrize('label,expected_3prime', [
+        # Exact corrected_3prime values from soft-clip rescue on wt_by4742_rep1 validation reads.
+        # rescue_softclip_at_homopolymer then terminal-A strip; values are deterministic.
+        ('cat2_plus_1',  69844),    # chrI +12 bp rescue; T-homopolymer 10D + 2M(GC)
+        ('cat2_plus_2',  199929),   # chrI +9 bp rescue; T-homopolymer 8D + 1M(G) strip 1A
+        ('cat2_minus_1', 65610),    # chrI −12 bp rescue; T-homopolymer 8D + 4M(ATAA)
+        ('cat2_minus_2', 128102),   # chrI −11 bp rescue; T-homopolymer 10D + 1M(A) strip 1T
+    ])
+    def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        got = int(row['corrected_3prime'])
+        assert got == expected_3prime, \
+            f'{label}: corrected_3prime should be {expected_3prime}, got {got}'
 
 
 class TestCategory3JunctionRescue:
@@ -370,9 +415,32 @@ class TestCategory3JunctionRescue:
         assert any(c.isdigit() for c in cigar) and any(c.isalpha() for c in cigar), \
             f'{label}: five_prime_exon_cigar is not a valid CIGAR: {cigar!r}'
 
+    @pytest.mark.parametrize('label', [
+        'cat3_plus_1', 'cat3_plus_2', 'cat3_minus_1', 'cat3_minus_2',
+    ])
+    def test_correction_applied_includes_five_prime_rescued(self, corrected, raw_reads, label):
+        """correction_applied must include 'five_prime_rescued' for all Cat3 reads."""
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        applied = row.get('correction_applied', '')
+        assert 'five_prime_rescued' in applied, \
+            f'{label}: correction_applied should include "five_prime_rescued", got {applied!r}'
+
 
 class TestCategory4FalseJunction:
-    """False N ops near 3' end must be absorbed; corrected position walks back past them."""
+    """False N ops near 3' end must be absorbed; corrected position walks back past them.
+
+    cat4_plus_1  chrXI:19592–22073  +  N op 20527–22047 (1520 bp, 26 bp from 3' end)
+                                        polya_walkback + NET-seq → 22070 (post-N exon is polyA)
+    cat4_plus_2  chrX:392246–393837 +  N op 393725–393825 (100 bp, 12 bp from 3' end)
+                                        window-clipped → 393721
+    cat4_minus_1 chrI:128094–129063 −  N op 128521–129021 (500 bp, 427 bp from 3' end)
+                                        N outside FJF window; treated as real junction → 128098
+    cat4_minus_2 chrIX:76016–77313  −  N op 76027–76250 (223 bp, 11 bp from 3' end)
+                                        snap fires → 76027
+    """
 
     @pytest.mark.parametrize('label,strand', [
         ('cat4_plus_1', '+'),
@@ -395,6 +463,36 @@ class TestCategory4FalseJunction:
         else:
             assert corrected_pos > original, \
                 f'{label}: minus-strand walk-back should give corrected > original'
+
+    @pytest.mark.parametrize('label,expected_3prime', [
+        # Exact corrected_3prime values. cat4_plus_1 lands at 22070 via A-tract
+        # ambiguity + NET-seq (post-N exon is polyA; N-snap to 20526 does not fire
+        # because the walkback does not enter the N).
+        ('cat4_plus_1',  22070),
+        ('cat4_plus_2',  393721),   # window-clipped to exclude artifact N
+        ('cat4_minus_1', 128098),   # N far from 3' end; normal walkback
+        ('cat4_minus_2', 76027),    # snap to intron_start (3' end abuts N)
+    ])
+    def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        got = int(row['corrected_3prime'])
+        assert got == expected_3prime, \
+            f'{label}: corrected_3prime should be {expected_3prime}, got {got}'
+
+    @pytest.mark.parametrize('label', [
+        'cat4_plus_1', 'cat4_plus_2', 'cat4_minus_1', 'cat4_minus_2',
+    ])
+    def test_has_one_junction(self, corrected, raw_reads, label):
+        """All Cat4 reads retain exactly one junction in the output."""
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        assert int(row['n_junctions']) == 1, \
+            f'{label}: expected n_junctions=1, got {row["n_junctions"]}'
 
 
 class TestCategory5ChimericReconstruction:
@@ -484,6 +582,26 @@ class TestCategory6SimpleChimeric:
             clip_5p = cigar[0][1] if cigar[0][0] == 4 else 0
         assert clip_5p == 0, \
             f'{label}: mapPacBio source should have no 5\' soft-clip, got {clip_5p}S'
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_no_five_prime_rescue(self, corrected, raw_reads, label):
+        """Cat6 reads span the 5' intron already; no 5' rescue should fire."""
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        assert row.get('five_prime_rescued', '0') == '0', \
+            f'{label}: five_prime_rescued should be 0 for Cat6 reads'
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_has_one_junction(self, corrected, raw_reads, label):
+        """Cat6 reads have the intron in the source BAM, so n_junctions=1."""
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'Read {label} not in correction output')
+        assert int(row['n_junctions']) == 1, \
+            f'{label}: expected n_junctions=1, got {row["n_junctions"]}'
 
 
 class TestCategory8NetseqRefinement:

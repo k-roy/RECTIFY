@@ -1402,7 +1402,7 @@ def write_corrected_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
             # Fires for reads with no soft-clip but a non-empty five_prime_exon_cigar
             # (the aligner mapped into the intron using M/X/D ops rather than N).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
@@ -1414,6 +1414,15 @@ def write_corrected_bam(
                     clip_boundary=_icp,
                     five_prime_position=correction['five_prime_position'],
                     exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
+                )
+            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
+                # Fallback: no exon CIGAR available (local alignment failed or
+                # intronic sequence too short).  Soft-clip the intronic tail at
+                # clip_boundary so the alignment ends at the exon/intron boundary.
+                modified |= softclip_intronic_tail_5prime(
+                    read,
+                    clip_boundary=_icp,
                     strand=correction['strand'],
                 )
 
@@ -1501,7 +1510,7 @@ def write_softclipped_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
             _exon_cig = correction.get('five_prime_exon_cigar', '')
             if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
@@ -1511,6 +1520,12 @@ def write_softclipped_bam(
                     clip_boundary=_icp,
                     five_prime_position=correction['five_prime_position'],
                     exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
+                )
+            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
+                modified |= softclip_intronic_tail_5prime(
+                    read,
+                    clip_boundary=_icp,
                     strand=correction['strand'],
                 )
 
@@ -1629,7 +1644,7 @@ def write_dual_bam(
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
                 )
 
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b).
+            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
             _icp = correction.get('five_prime_intron_clip_pos', -1)
             _exon_cig = correction.get('five_prime_exon_cigar', '')
             if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
@@ -1639,6 +1654,12 @@ def write_dual_bam(
                     clip_boundary=_icp,
                     five_prime_position=correction['five_prime_position'],
                     exon_cigar_str=_exon_cig,
+                    strand=correction['strand'],
+                )
+            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
+                shared_modified |= softclip_intronic_tail_5prime(
+                    read,
+                    clip_boundary=_icp,
                     strand=correction['strand'],
                 )
 
