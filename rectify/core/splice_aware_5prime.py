@@ -508,8 +508,17 @@ def _get_intronic_query_bases(
         for op, length in reversed(read.cigartuples):
             if op == 5:   # H: skip
                 continue
-            if op == 3:   # N: stop
-                break
+            if op == 3:   # N op
+                # A false junction entirely above clip_boundary (both ends inside
+                # the intron) should be passed through rather than stopping — the
+                # aligner placed a spurious small junction inside the target intron.
+                # Only stop if the N spans below clip_boundary (real exon boundary).
+                new_ref = ref_pos - length
+                if new_ref >= clip_boundary:
+                    ref_pos = new_ref   # pass through: N inside intron
+                    continue
+                else:
+                    break               # N crosses exon/intron boundary — stop
             n_qb = length if op in _qc else 0
             n_rb = length if op in _rc else 0
             if n_rb > 0:
@@ -540,7 +549,13 @@ def _get_intronic_query_bases(
             if op == 5:
                 continue
             if op == 3:
-                break
+                # Pass through false junctions entirely below clip_boundary
+                new_ref = ref_pos + length
+                if new_ref <= clip_boundary:
+                    ref_pos = new_ref
+                    continue
+                else:
+                    break
             n_qb = length if op in _qc else 0
             n_rb = length if op in _rc else 0
             if n_rb > 0:
