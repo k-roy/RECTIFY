@@ -1304,6 +1304,122 @@ def extend_read_3prime_for_softclip_rescue(
         return True
 
 
+def _hardclip_trailing_a_run(
+    read: pysam.AlignedSegment,
+    strand: str,
+) -> bool:
+    """
+    Additional hard-clip step for the poly(A) hard-clip BAM.
+
+    After the main ``clip_read_to_corrected_3prime`` call, genomic A-rich
+    regions at the RNA 3' end (e.g. A-rich 3' UTRs) may remain in the
+    alignment.  These are indistinguishable from poly(A) tail in the read
+    sequence, so the hard-clip BAM removes them to show only the unambiguous
+    exon body.
+
+    For − strand: counts consecutive leading T's in the BAM sequence (= A's
+    in RNA orientation), walks the CIGAR to compute the corresponding
+    reference offset, and calls :func:`clip_read_to_corrected_3prime` for
+    the extra clip.
+    For + strand: counts trailing A's and clips symmetrically.
+
+    This step is applied to the *hard-clip* BAM only.  The soft-clip BAM
+    retains genomic A's as aligned bases because they are part of the
+    transcript sequence (relevant for comparing sequence- vs. signal-based
+    poly(A) length estimates).
+
+    Returns True if additional clipping was applied; False otherwise.
+    """
+    if read.is_unmapped or not read.cigartuples or not read.query_sequence:
+        return False
+
+    seq   = read.query_sequence
+    cigar = list(read.cigartuples)
+
+    if strand == '-':
+        # Count leading T's in BAM seq (= A's in RNA = trailing poly-A zone).
+        n_t = 0
+        for ch in seq:
+            if ch.upper() == 'T':
+                n_t += 1
+            else:
+                break
+        if n_t == 0:
+            return False
+
+        # Walk CIGAR from left, consuming n_t query bases, tracking ref_pos.
+        # H ops do not appear in query_sequence and are skipped.
+        ref_pos    = read.reference_start
+        q_consumed = 0
+        for op, length in cigar:
+            if op == 5:          # H — not in query_sequence
+                continue
+            if op in (0, 7, 8):  # M, =, X — both ref and query
+                step = min(length, n_t - q_consumed)
+                q_consumed += step
+                ref_pos    += step
+                if q_consumed >= n_t:
+                    break
+            elif op == 1:        # I — query only
+                step = min(length, n_t - q_consumed)
+                q_consumed += step
+                if q_consumed >= n_t:
+                    break
+            elif op == 4:        # S — query only (unlikely in HC path but guard)
+                step = min(length, n_t - q_consumed)
+                q_consumed += step
+                if q_consumed >= n_t:
+                    break
+            elif op in (2, 3):   # D, N — ref only, advance ref without query
+                ref_pos += length
+
+        new_3prime = ref_pos
+        if new_3prime <= read.reference_start:
+            return False
+        return clip_read_to_corrected_3prime(read, new_3prime, strand)
+
+    else:  # plus strand
+        # Count trailing A's in BAM seq (= A's in RNA = trailing poly-A zone).
+        n_a = 0
+        for ch in reversed(seq):
+            if ch.upper() == 'A':
+                n_a += 1
+            else:
+                break
+        if n_a == 0:
+            return False
+
+        # Walk CIGAR from right, consuming n_a query bases, tracking ref offset.
+        ref_end    = read.reference_end - 1  # 0-based inclusive right boundary
+        q_consumed = 0
+        for op, length in reversed(cigar):
+            if op == 5:          # H
+                continue
+            if op in (0, 7, 8):  # M, =, X
+                step = min(length, n_a - q_consumed)
+                q_consumed += step
+                ref_end    -= step
+                if q_consumed >= n_a:
+                    break
+            elif op == 1:        # I
+                step = min(length, n_a - q_consumed)
+                q_consumed += step
+                if q_consumed >= n_a:
+                    break
+            elif op == 4:        # S
+                step = min(length, n_a - q_consumed)
+                q_consumed += step
+                if q_consumed >= n_a:
+                    break
+            elif op in (2, 3):   # D, N
+                ref_end -= length
+
+        new_3prime = ref_end
+        if new_3prime >= read.reference_end - 1:
+            return False
+        return clip_read_to_corrected_3prime(read, new_3prime, strand)
+
+
 def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
     """
     Parse a corrected TSV and return a per-read correction dict.
@@ -1502,6 +1618,12 @@ def write_corrected_bam(
             modified |= clip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
+
+            # Additional hard-clip: remove any trailing genomic A-run at the 3' end.
+            # After the main correction, A-rich 3' UTR regions are indistinguishable
+            # from poly(A) tail in the read sequence and are clipped away here.
+            # Not applied to the soft-clip BAM, which retains them as aligned bases.
+            modified |= _hardclip_trailing_a_run(read, correction['strand'])
 
             # Tag the final corrected 3' end so it is readable in IGV / samtools view.
             # cp:i: = corrected 3' end position, 0-based inclusive reference coordinate.
@@ -1752,6 +1874,11 @@ def write_dual_bam(
             hc_modified |= clip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
+            # Additional hard-clip: remove any trailing genomic A-run at the 3' end.
+            # Genomic A-rich 3' UTR regions are indistinguishable from poly(A) tail
+            # in the read sequence; hard-clip removes them for an unambiguous view.
+            # The soft-clip path below does NOT apply this — it retains them as aligned.
+            hc_modified |= _hardclip_trailing_a_run(read, correction['strand'])
             read.set_tag('cp', correction['corrected_3prime'])
             bam_hc.write(read)
             if hc_modified:
