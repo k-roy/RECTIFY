@@ -21,7 +21,7 @@ from pathlib import Path
 
 def get_validation_bam() -> Path:
     """Return path to the bundled validation BAM."""
-    data_dir = Path(__file__).parent.parent / 'rectify' / 'data' / 'output'
+    data_dir = Path(__file__).parent.parent / 'rectify' / 'data' / 'validation'
     bam = data_dir / 'validation_reads.bam'
     if not bam.exists():
         pytest.skip(f'Validation BAM not found: {bam}')
