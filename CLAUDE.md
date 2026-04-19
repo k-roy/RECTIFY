@@ -413,7 +413,7 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - `rescue_softclip_at_homopolymer` now stops at `A` (plus strand) or `T` (minus strand) in the soft-clip, preventing poly-A tail bases from matching genomic A-runs. Fixes shifted corrected positions for cat2_plus_2 (+10→+9), cat2_minus_1 (-17→-10), cat2_minus_2 (-12→-11).
 - New `extend_read_3prime_for_softclip_rescue()` in `bam_writer.py`: converts the 3' soft-clip to `{D}D{M}M{poly-A}H|S`, making the true RNA 3' end visible in IGV.
 - Cat2 rescue metadata (`sc_homopolymer_extension`, `sc_rescued_seq`, `sc_original_softclip_len`) now written to corrected_3ends.tsv and read back by bam_writer.
-- Bundled BAMs renamed: `rectified.bam` → `rectified_pA_hardclip.bam`; `rectified_softclip.bam` → `rectified_pA_softclip.bam`.
+- Bundled BAMs renamed: `rectified.bam` → `rectified_corrected_3end.bam`; `rectified_softclip.bam` → `rectified_pA_tail_trimmed.bam`.
 
 **v2.9.7 (2026-04-14):** `_iter_name_grouped_bams` — natural sort K-way merge fix:
 - The K-way merge in `consensus.py` used Python `min()` (lexicographic) to pick the next read ID, but the name-sorted BAMs use `SS:queryname:natural` (samtools natural sort, digit runs compared as integers). For UUID-format read names, these orderings diverge: `98297e97` (key=98297) sorts BEFORE `0633141e` (key=633141) in natural sort, but AFTER it lexicographically ('9' > '0').

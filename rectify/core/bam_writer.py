@@ -1170,10 +1170,10 @@ def extend_read_3prime_for_softclip_rescue(
     * **Minus strand** (3' is leftmost): prepend ``{poly_a}S|H {D}D {M}M``
       and shift ``reference_start`` leftward by ``D + M``.
 
-    In *hard_clip* mode (the default, for ``rectified_pA_hardclip.bam``), the
+    In *hard_clip* mode (the default, for ``rectified_corrected_3end.bam``), the
     poly-A/T tail bases are removed from ``query_sequence`` and encoded as ``H``
     so they are invisible in IGV pileups.  In soft-clip mode (for
-    ``rectified_pA_softclip.bam``), the tail remains in the sequence as ``S``.
+    ``rectified_pA_tail_trimmed.bam``), the tail remains in the sequence as ``S``.
 
     Args:
         read:                  pysam AlignedSegment — modified in-place.
@@ -1761,9 +1761,9 @@ def write_dual_bam(
 
     The two output BAMs differ only in how the 3' poly(A) region is encoded:
 
-    * *hardclip* (``rectified_pA_hardclip.bam``): poly(A) bases removed from
+    * *hardclip* (``rectified_corrected_3end.bam``): poly(A) bases removed from
       ``query_sequence`` and stored as ``H`` ops — invisible in IGV pileups.
-    * *softclip* (``rectified_pA_softclip.bam``): poly(A) bases retained in
+    * *softclip* (``rectified_pA_tail_trimmed.bam``): poly(A) bases retained in
       ``query_sequence`` and stored as ``S`` ops — visible in IGV when
       "Show soft-clipped bases" is enabled.
 

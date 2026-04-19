@@ -53,8 +53,8 @@ Note: "Shift" is outward (away from the gene body). For + strand reads
 
 CIGAR surgery (v0.9.1): `extend_read_3prime_for_softclip_rescue()` converts the
 3' soft-clip to `{D}D {M}M {poly-A}S|H`, making the true RNA end visible in IGV.
-The bundled corrected BAMs are `rectified_pA_hardclip.bam` and
-`rectified_pA_softclip.bam` (renamed from `rectified.bam` / `rectified_softclip.bam`
+The bundled corrected BAMs are `rectified_corrected_3end.bam` and
+`rectified_pA_tail_trimmed.bam` (renamed from `rectified.bam` / `rectified_softclip.bam`
 in v0.9.1 to convey poly-A tail handling).
 
 Rescue guard (v0.9.2): The soft-clip rescue guard now uses a consecutive-run

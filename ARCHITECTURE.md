@@ -70,8 +70,8 @@ Dorado-aligned BAM (with pt:i: tags)
     │                      ⑦ NET-seq refinement (optional, resolves ambiguous windows)
     │                      ⑧ Spike-in read filtering
     │   Output BAMs (written via --write-corrected-bam / --write-softclipped-bam):
-    │     rectified_pA_hardclip.bam  — poly(A) region hard-clipped at corrected_3prime
-    │     rectified_pA_softclip.bam  — poly(A) region soft-clipped (bases retained)
+    │     rectified_corrected_3end.bam  — poly(A) region hard-clipped at corrected_3prime
+    │     rectified_pA_tail_trimmed.bam  — poly(A) region soft-clipped (bases retained)
     │   cp:i: tag on every output read = corrected 3' end (0-based, inclusive)
     ▼
     corrected_3ends.tsv           per-read corrected positions; each row is one read
@@ -93,7 +93,7 @@ Dorado-aligned BAM (with pt:i: tags)
     │   reference_start is unchanged (left S ops do not consume reference).
     │   Reads absent from metadata (polya_len=0) are written unchanged.
     ▼
-    rectified_pA_softclip_full.bam  — softclip BAM with full poly(A) tail restored
+    rectified_pA_tail_soft_clipped.bam  — softclip BAM with full poly(A) tail restored
                                       for IGV visualization of tail length and position
     │
     ▼

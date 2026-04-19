@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Cat2 rescue metadata in TSV** (`core/bam_processor.py`): three new columns written to `corrected_3ends.tsv` — `sc_homopolymer_extension` (bases skipped in reference homopolymer), `sc_rescued_seq` (rescued bases), `sc_original_softclip_len` (original soft-clip length before rescue).
 
-- **Bundled BAMs renamed** (`rectify/data/`): `rectified.bam` → `rectified_pA_hardclip.bam`; `rectified_softclip.bam` → `rectified_pA_softclip.bam`. Names now reflect the poly-A handling mode rather than the correction step.
+- **Bundled BAMs renamed** (`rectify/data/`): `rectified.bam` → `rectified_corrected_3end.bam`; `rectified_softclip.bam` → `rectified_pA_tail_trimmed.bam`. Names now reflect the poly-A handling mode rather than the correction step.
 
 ---
 

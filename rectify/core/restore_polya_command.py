@@ -3,7 +3,7 @@
 Restore poly(A) + adapter bases as soft-clips in the rectified soft-clip BAM.
 
 After DRS pre-trimming (drs_trim_command.py) and rectify correct, the
-rectified_pA_softclip.bam contains soft-clipped bases only from the
+rectified_pA_tail_trimmed.bam contains soft-clipped bases only from the
 correction pipeline (e.g., residual poly-A from indel correction). The
 original poly(A) tail + adapter stub that was trimmed before alignment is
 absent from the BAM.
@@ -135,7 +135,7 @@ def _restore_read_polya(
     Modifies `read` in-place.
 
     Args:
-        read:                 pysam.AlignedSegment from rectified_pA_softclip.bam.
+        read:                 pysam.AlignedSegment from rectified_pA_tail_trimmed.bam.
         trimmed_3prime_seq:   Poly(A)+adapter sequence in RNA 5'->3' orientation.
         trimmed_3prime_quals: Quality scores matching trimmed_3prime_seq (RNA order).
 
@@ -206,7 +206,7 @@ def restore_polya_softclips(
 ) -> Dict:
     """Add trimmed poly(A)+adapter bases back as soft-clip ops.
 
-    Reads rectified_pA_softclip.bam, looks up each read's trimmed poly(A)
+    Reads rectified_pA_tail_trimmed.bam, looks up each read's trimmed poly(A)
     metadata, and appends (plus strand) or prepends (minus strand) the
     original poly(A)+adapter bases as soft-clip ops. Writes to a new BAM.
 
@@ -214,9 +214,9 @@ def restore_polya_softclips(
     trimmed) are written unchanged.
 
     Args:
-        softclip_bam_path:  rectified_pA_softclip.bam from `rectify correct`.
+        softclip_bam_path:  rectified_pA_tail_trimmed.bam from `rectify correct`.
         metadata_path:      Parquet or TSV from `rectify trim-polya`.
-        output_bam_path:    Destination BAM (rectified_pA_softclip_full.bam).
+        output_bam_path:    Destination BAM (rectified_pA_tail_soft_clipped.bam).
         threads:            pysam thread count.
 
     Returns:

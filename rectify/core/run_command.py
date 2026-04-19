@@ -298,8 +298,8 @@ def _run_correction(
         if _stem.endswith(_sfx):
             _stem = _stem[:-len(_sfx)]
             break
-    corrected_bam_path   = output_dir / f"{_stem}.rectified_pA_hardclip.bam"
-    softclipped_bam_path = output_dir / f"{_stem}.rectified_pA_softclip.bam"
+    corrected_bam_path   = output_dir / f"{_stem}.rectified_corrected_3end.bam"
+    softclipped_bam_path = output_dir / f"{_stem}.rectified_pA_tail_trimmed.bam"
 
     correct_args = argparse.Namespace(
         input=bam_path,
