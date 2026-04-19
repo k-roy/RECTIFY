@@ -22,22 +22,45 @@ Direct RNA-seq, QuantSeq, Helicos, PacBio Iso-Seq) and then performs
 differential 3' end usage analysis across conditions.
 
 ```
-FASTQ / BAM
+Dorado-aligned BAM (with pt:i: tags)
     │
     ▼
-[Step 0: Alignment]        multi-aligner rectification pipeline
+[Step 1: DRS Poly(A) Pre-Trim]     rectify trim-polya
+    │   Scans each read in RNA 5'→3' orientation:
+    │     Pass 0: strip adapter stub via regex T[CT]{0,10}$ at 3' end
+    │     Pass 1: scan pure-A tail upstream (default: strict mode, 0% error rate)
+    │     Pass 2: iterative peel for stubs with A-basecalling errors at boundary
+    │   Reads with polya_len=0 are passed through unchanged (not in metadata).
+    │   Metadata columns: read_id, strand, polya_len, adapter_seq,
+    │     adapter_pass (0/1/2), pt_tag, trimmed_3prime_seq, seq lengths
+    ▼
+    <sample>.bam  (unaligned, RNA-oriented, poly(A)+adapter removed)
+    <sample>_polya_trim_metadata.parquet
+    │
+    │  samtools fastq → <sample>_trimmed.fastq.gz
+    │
+    ▼
+[Step 2: Alignment]        multi-aligner rectification pipeline
     │                      Tier 1 (default): minimap2 + mapPacBio + gapmm2
     │                      Tier 2 (opt-in):  + deSALT, + uLTRA
     │                      All enabled aligners run in parallel subprocesses.
-    │                      Chimeric consensus selection per read:
-    │                        find sync-points where aligners agree →
-    │                        score each inter-sync segment independently →
-    │                        stitch best segment from each aligner
     ▼
-    <sample>.rectified.bam
+    <sample>.<aligner>.bam  (one per aligner, name-sorted)
     │
     ▼
-[Step 1: Correction]       per-read 3' and 5' end correction
+[Step 3: Consensus]        per-read aligner selection    rectify consensus
+    │                      Score each aligner's alignment:
+    │                        junction quality, 3' poly(A) penalty,
+    │                        5' terminal error penalty, annotated junction bonus
+    │                      Winner written to consensus BAM with tags:
+    │                        XA = winning aligner name
+    │                        XC = confidence (high/medium/low)
+    │                        XN = number of aligners in agreement
+    ▼
+    <sample>.consensus.bam
+    │
+    ▼
+[Step 4: Correction]       per-read 3' and 5' end correction    rectify correct
     │                      ① A-tract ambiguity detection (universal)
     │                      ② AG mispriming screen (oligo-dT only)
     │                      ③ Poly(A) tail trimming (if sequenced)
@@ -46,6 +69,10 @@ FASTQ / BAM
     │                      ⑥ 5' soft-clip junction rescue
     │                      ⑦ NET-seq refinement (optional, resolves ambiguous windows)
     │                      ⑧ Spike-in read filtering
+    │   Output BAMs (written via --write-corrected-bam / --write-softclipped-bam):
+    │     rectified_pA_hardclip.bam  — poly(A) region hard-clipped at corrected_3prime
+    │     rectified_pA_softclip.bam  — poly(A) region soft-clipped (bases retained)
+    │   cp:i: tag on every output read = corrected 3' end (0-based, inclusive)
     ▼
     corrected_3ends.tsv           per-read corrected positions; each row is one read
                                   columns include: chrom, strand, original_3prime,
@@ -57,6 +84,17 @@ FASTQ / BAM
                                   manifest-mode analysis to skip re-reading every read.
     <sample>.stats.tsv            per-sample QC report (reads processed, corrections
                                   applied per module, confidence distribution)
+    │
+    ▼
+[Step 5: Restore Softclip]  re-attach trimmed poly(A)+adapter    rectify restore-softclip
+    │   For each read present in the trim metadata (Step 1):
+    │     + strand: append trimmed_3prime_seq to right of query; extend trailing S op
+    │     − strand: prepend RC(trimmed_3prime_seq) to left of query; extend leading S op
+    │   reference_start is unchanged (left S ops do not consume reference).
+    │   Reads absent from metadata (polya_len=0) are written unchanged.
+    ▼
+    rectified_pA_softclip_full.bam  — softclip BAM with full poly(A) tail restored
+                                      for IGV visualization of tail length and position
     │
     ▼
 [Step 2: Analysis]         multi-sample downstream analysis
@@ -97,8 +135,11 @@ FASTQ / BAM
     plots/
 ```
 
-Steps 0–2 are orchestrated by `rectify run-all`. Each step can also be
-invoked independently through its own subcommand.
+Steps -1 through 2 cover the full DRS pipeline. Steps 0–2 are orchestrated
+by `rectify run-all`. For DRS data, Step -1 (`trim-polya`) should be run
+first on the Dorado-aligned BAM, then Step 4 (`restore-softclip`) applied
+after correction to re-attach the trimmed poly(A) to the softclip BAM. Each
+step can also be invoked independently through its own subcommand.
 
 ---
 
@@ -109,10 +150,13 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 
 | Subcommand | Module | Purpose |
 |---|---|---|
-| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 0–2) |
-| `align` | `core/align_command.py` | Multi-aligner alignment only (Step 0) |
-| `correct` | `core/correct_command.py` | 3' end correction only (Step 1) |
-| `analyze` | `core/analyze_command.py` | Downstream analysis only (Step 2) |
+| `trim-polya` | `core/drs_trim_command.py` | **Step 1 (DRS)** — trim poly(A) tail + adapter from Dorado-aligned BAM; writes unaligned BAM + metadata parquet |
+| `align` | `core/align_command.py` | **Step 2** — multi-aligner alignment from FASTQ |
+| `consensus` | `core/consensus_command.py` | **Step 3** — per-read aligner selection from pre-built per-aligner BAMs; writes XA/XC/XN tags |
+| `correct` | `core/correct_command.py` | **Step 4** — 3' end correction; writes cp:i: tag on every output read |
+| `restore-softclip` | `core/restore_polya_command.py` | **Step 5 (DRS)** — re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization |
+| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 2–6) |
+| `analyze` | `core/analyze_command.py` | **Step 6** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
 | `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
 | `train-polya` | `core/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
 | `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |

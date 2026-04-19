@@ -278,7 +278,25 @@ def calculate_atract_ambiguity(
     tract_end = tract_info['tract_end']
     tract_length = tract_info['tract_length']
 
-    # Calculate ambiguity window based on expected shift
+    # If the position is not within an A/T-tract, there is no poly(A) alignment
+    # ambiguity.  Poly(A) tails can only shift the apparent 3' end WITHIN a
+    # genomic A/T-run; a read whose 3' end is already at a non-A (non-T for
+    # minus strand) base is unambiguous — NET-seq must never be applied here,
+    # because the ambiguity window would extend into the gene body.
+    if tract_length == 0:
+        return {
+            'ambiguity_min': position,
+            'ambiguity_max': position,
+            'ambiguity_range': 0,
+            'tract_start': position,
+            'tract_end': position,
+            'tract_length': 0,
+            'has_ambiguity': False,
+            'downstream_a_count': downstream_a_count,
+            'expected_shift': 0.0,
+        }
+
+    # Calculate ambiguity window based on expected shift.
     if strand == '+':
         # + strand: poly-A shifts position RIGHTWARD (downstream)
         # True CPA is LEFTWARD (upstream) by expected_shift

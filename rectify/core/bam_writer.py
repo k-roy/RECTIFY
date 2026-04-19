@@ -114,6 +114,16 @@ def clip_read_to_corrected_3prime(
         if not cigar:
             return False  # degenerate: entire alignment clipped
 
+        # 3.5. Strip any trailing D/N ops left dangling by the walk loop.
+        # This occurs when corrected_3prime falls inside a deletion/intron span:
+        # the loop removes all query-consuming ops past the D/N (satisfying
+        # n_ref_removed >= n_ref_clip) and exits before reaching the D/N, leaving
+        # it as the rightmost op.  D/N before H is invalid SAM.
+        while cigar and cigar[-1][0] in (2, 3):  # D=2, N=3
+            cigar.pop()
+        if not cigar:
+            return False
+
         # 4. Append hard-clip for removed query bases (if any).
         if n_query_remove > 0:
             cigar.append((5, n_query_remove))
@@ -162,6 +172,12 @@ def clip_read_to_corrected_3prime(
                 n_query_remove += need if op in _QUERY_CONSUMING else 0
                 break
 
+        if not cigar:
+            return False
+
+        # 3.5. Strip leading D/N ops dangling after the walk (minus strand).
+        while cigar and cigar[0][0] in (2, 3):  # D=2, N=3
+            cigar.pop(0)
         if not cigar:
             return False
 
@@ -241,6 +257,12 @@ def softclip_read_to_corrected_3prime(
         if not cigar:
             return False
 
+        # 3.5. Strip trailing D/N dangling after the walk (plus strand softclip).
+        while cigar and cigar[-1][0] in (2, 3):  # D=2, N=3
+            cigar.pop()
+        if not cigar:
+            return False
+
         # 4. Append soft-clip (sequence stays in read).
         if n_query_remove > 0:
             cigar.append((4, n_query_remove))  # S, not H
@@ -279,6 +301,12 @@ def softclip_read_to_corrected_3prime(
                 n_query_remove += need if op in _QUERY_CONSUMING else 0
                 break
 
+        if not cigar:
+            return False
+
+        # 3.5. Strip leading D/N dangling after the walk (minus strand softclip).
+        while cigar and cigar[0][0] in (2, 3):  # D=2, N=3
+            cigar.pop(0)
         if not cigar:
             return False
 
@@ -1475,6 +1503,13 @@ def write_corrected_bam(
                 read, correction['corrected_3prime'], correction['strand']
             )
 
+            # Tag the final corrected 3' end so it is readable in IGV / samtools view.
+            # cp:i: = corrected 3' end position, 0-based inclusive reference coordinate.
+            # This equals reference_start (minus strand) or reference_end-1 (plus strand)
+            # after clipping, but is written explicitly so it is visible even for reads
+            # where no correction was applied (corrected == original).
+            read.set_tag('cp', correction['corrected_3prime'])
+
             bam_out.write(read)
             if modified:
                 stats['clipped'] += 1
@@ -1576,6 +1611,8 @@ def write_softclipped_bam(
             modified |= softclip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
+
+            read.set_tag('cp', correction['corrected_3prime'])
 
             bam_out.write(read)
             if modified:
@@ -1715,6 +1752,7 @@ def write_dual_bam(
             hc_modified |= clip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
+            read.set_tag('cp', correction['corrected_3prime'])
             bam_hc.write(read)
             if hc_modified:
                 hc_stats['clipped'] += 1
@@ -1741,6 +1779,7 @@ def write_dual_bam(
             sc_modified |= softclip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
+            read.set_tag('cp', correction['corrected_3prime'])
             bam_sc.write(read)
             if sc_modified:
                 sc_stats['clipped'] += 1

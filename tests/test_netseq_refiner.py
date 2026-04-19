@@ -283,25 +283,50 @@ class TestRefineWithNetseq:
         assert result['n_peaks'] >= 1
 
     def test_refine_no_signal(self):
-        """Test refinement with no NET-seq signal."""
+        """Test refinement with no NET-seq signal — plus strand falls back to corrected anchor."""
         loader = Mock()
         # Window: 1000-1005, expanded to 995-1010 = 15 positions
         loader.get_signal.return_value = np.zeros(15)  # All zeros
 
+        # Plus strand: ambiguity_min == original_position (corrected anchor = leftmost).
         result = netseq_refiner.refine_with_netseq(
             loader,
             chrom='chrI',
             ambiguity_min=1000,
             ambiguity_max=1005,
             strand='+',
-            original_position=1005,
+            original_position=1000,  # corrected anchor = ambiguity_min for plus strand
             proportional_split=False,  # Use winner-take-all mode
         )
 
-        # Should fall back to leftmost position
+        # Should fall back to the corrected anchor (original_position).
         assert result['refined_position'] == 1000
         assert result['confidence'] == 'low'
-        assert result['method'] == 'leftmost'
+        assert result['method'] == 'no_signal_fallback'
+
+    def test_refine_no_signal_minus_strand(self):
+        """Test refinement with no NET-seq signal — minus strand falls back to corrected anchor."""
+        loader = Mock()
+        # Window: 1000-1005, expanded to 995-1010 = 15 positions
+        loader.get_signal.return_value = np.zeros(15)
+
+        # Minus strand: ambiguity_max == original_position (corrected anchor = rightmost).
+        result = netseq_refiner.refine_with_netseq(
+            loader,
+            chrom='chrI',
+            ambiguity_min=1000,
+            ambiguity_max=1005,
+            strand='-',
+            original_position=1005,  # corrected anchor = ambiguity_max for minus strand
+            proportional_split=False,
+        )
+
+        # Must NOT return ambiguity_min (1000, deep in poly-T tail).
+        # Must return corrected anchor = original_position = 1005.
+        assert result['refined_position'] == 1005
+        assert result['confidence'] == 'low'
+        assert result['method'] == 'no_signal_fallback'
+        assert result['shift_from_original'] == 0
 
     def test_refine_proportional_split(self):
         """Test proportional splitting mode."""
@@ -333,17 +358,18 @@ class TestRefineWithNetseq:
         assert abs(total_fraction - 1.0) < 0.01
 
     def test_refine_no_signal_proportional(self):
-        """Test proportional mode with no signal falls back to leftmost."""
+        """Test proportional mode with no signal falls back to corrected anchor (plus strand)."""
         loader = Mock()
         loader.get_signal.return_value = np.zeros(15)
 
+        # Plus strand: original_position = corrected anchor = ambiguity_min.
         result = netseq_refiner.refine_with_netseq(
             loader,
             chrom='chrI',
             ambiguity_min=1000,
             ambiguity_max=1005,
             strand='+',
-            original_position=1005,
+            original_position=1000,  # corrected anchor = ambiguity_min for plus strand
             proportional_split=True,
         )
 
@@ -351,7 +377,31 @@ class TestRefineWithNetseq:
         assert len(result) == 1
         assert result[0]['assigned_position'] == 1000
         assert result[0]['confidence'] == 'low'
-        assert result[0]['method'] == 'leftmost'
+        assert result[0]['method'] == 'no_signal_fallback'
+
+    def test_refine_no_signal_proportional_minus_strand(self):
+        """Test proportional mode with no signal falls back to corrected anchor (minus strand)."""
+        loader = Mock()
+        loader.get_signal.return_value = np.zeros(15)
+
+        # Minus strand: original_position = corrected anchor = ambiguity_max.
+        # The old bug returned ambiguity_min (1000) = uncorrected poly-T start.
+        result = netseq_refiner.refine_with_netseq(
+            loader,
+            chrom='chrI',
+            ambiguity_min=1000,
+            ambiguity_max=1005,
+            strand='-',
+            original_position=1005,  # corrected anchor = ambiguity_max for minus strand
+            proportional_split=True,
+        )
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        # Must return 1005 (corrected anchor), NOT 1000 (poly-T tail start).
+        assert result[0]['assigned_position'] == 1005
+        assert result[0]['confidence'] == 'low'
+        assert result[0]['method'] == 'no_signal_fallback'
 
 
 class TestBatchProcessing:
@@ -532,5 +582,5 @@ class TestEdgeCases:
         )
 
         assert 'refined_position' in result
-        # With no signal, should use leftmost
-        assert result['refined_position'] == 1000
+        # With no signal, should fall back to the corrected anchor (original_position).
+        assert result['refined_position'] == 1500

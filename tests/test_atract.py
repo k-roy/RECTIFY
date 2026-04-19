@@ -26,21 +26,28 @@ MOCK_GENOME = {
 class TestCalculateAtractAmbiguity:
     """Test calculate_atract_ambiguity function."""
 
-    def test_low_acount_plus_strand(self):
-        """Test position with few downstream A's (+ strand)."""
-        # position=1010 is the last aligned base (0-based inclusive).
-        # Downstream window = [1011, 1020]: G,A,T,C,G,A,T,C,G,A → 3 A's.
+    def test_non_atract_position_no_ambiguity(self):
+        """Position NOT in an A-tract must return has_ambiguity=False regardless of downstream A-count.
+
+        Key invariant: poly(A) tail alignment can only shift positions within genomic
+        A/T-runs.  A read whose 3' end is already at a non-A genomic base is
+        unambiguous — NET-seq must not be applied, as the ambiguity window would
+        otherwise extend into the gene body.
+
+        position=1010 is 'C' in the ATCG repeat region — not in an A-tract.
+        Downstream window [1011,1020] has 3 A's, but those belong to a downstream
+        tract, not the current position.
+        """
         result = atract_detector.calculate_atract_ambiguity(
             MOCK_GENOME, 'chrI', 1010, '+', downstream_bp=10
         )
 
-        assert result['downstream_a_count'] == 3
-        assert result['expected_shift'] == 0.4  # From config for 3A
-        # ambiguity_min = int(1010 - 0.4) = 1009
-        assert result['ambiguity_min'] == 1009
+        assert result['downstream_a_count'] == 3   # still computed (diagnostic)
+        assert result['has_ambiguity'] is False     # position is non-A → no ambiguity
+        assert result['ambiguity_min'] == 1010
         assert result['ambiguity_max'] == 1010
-        assert result['ambiguity_range'] == 1
-        assert result['has_ambiguity']
+        assert result['ambiguity_range'] == 0
+        assert result['expected_shift'] == 0.0
 
     def test_high_acount_plus_strand(self):
         """Test position with 10 downstream A's (+ strand)."""

@@ -606,24 +606,29 @@ def refine_with_netseq(
     ]
 
     # Handle no peaks case
+    # Fall back to the corrected anchor (original_position = current_position from
+    # bam_processor), NOT ambiguity_min.  For plus strand, ambiguity_min ==
+    # original_position, so the two are equivalent.  For minus strand,
+    # ambiguity_min = uncorrected BAM position (deep in the poly-T tail) while
+    # original_position = corrected anchor — returning ambiguity_min was wrong.
     if not window_peaks:
         if proportional_split:
             return [{
-                'assigned_position': ambiguity_min,
+                'assigned_position': original_position,
                 'fraction': 1.0,
                 'confidence': 'low',
-                'method': 'leftmost',
+                'method': 'no_signal_fallback',
                 'peak_signal': 0.0,
                 'n_peaks': 0,
             }]
         else:
             return {
-                'refined_position': ambiguity_min,
+                'refined_position': original_position,
                 'confidence': 'low',
-                'method': 'leftmost',
+                'method': 'no_signal_fallback',
                 'peak_signal': 0.0,
                 'n_peaks': 0,
-                'shift_from_original': ambiguity_min - original_position,
+                'shift_from_original': 0,
             }
 
     # Proportional splitting

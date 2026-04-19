@@ -675,12 +675,15 @@ def correct_read_3prime(
     # Update ambiguity window for indel/rescue corrections that moved the position
     # but did NOT set the window themselves (i.e. polya_walkback was not applied).
     if current_position != original_position and not polya_walkback_applied:
+        # Mirror the walkback window logic (lines 579-584): the NET-seq window
+        # spans [corrected_anchor, uncorrected_position] for each strand.
+        # Plus strand:  correction moves LEFT  → ambiguity_min = current (left), max = original (right)
+        # Minus strand: correction moves RIGHT → ambiguity_min = original (left), max = current (right)
         if strand == '+':
-            result['ambiguity_min'] = max(0, current_position - result['ambiguity_range'])
-            result['ambiguity_max'] = current_position
+            result['ambiguity_min'] = current_position
+            result['ambiguity_max'] = original_position
         else:
-            # Minus-strand corrections move toward lower coords
-            result['ambiguity_min'] = max(0, current_position - result['ambiguity_range'])
+            result['ambiguity_min'] = original_position
             result['ambiguity_max'] = current_position
 
     # NEW-062: record 5' rescue in correction_applied before any early return.

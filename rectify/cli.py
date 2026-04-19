@@ -609,6 +609,77 @@ Citation:
     add_netseq_parser(subparsers)
 
     # =========================================================================
+    # trim-polya command (DRS poly(A)+adapter pre-trimming)
+    # =========================================================================
+    trim_polya_parser = subparsers.add_parser(
+        'trim-polya',
+        help='Trim poly(A) tail + adapter from DRS BAM before alignment',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    trim_polya_parser.add_argument(
+        'input_bam',
+        help='Input Dorado-aligned BAM (with pt:i: tags)',
+    )
+    trim_polya_parser.add_argument(
+        '-o', '--output-dir',
+        dest='output_dir',
+        required=True,
+        help='Output directory for trimmed BAM and metadata parquet',
+    )
+    trim_polya_parser.add_argument(
+        '--adapter-window',
+        type=int,
+        default=150,
+        help='Bases from 3\' end to search for poly(A)+adapter',
+    )
+    trim_polya_parser.add_argument(
+        '--max-error-rate',
+        type=float,
+        default=0.0,
+        help='Max cumulative non-A fraction for poly(A) scan (default 0.0 = strict pure-A)',
+    )
+    trim_polya_parser.add_argument(
+        '--max-consecutive-non-a',
+        type=int,
+        default=1,
+        dest='max_consecutive_non_a',
+        help=(
+            'Stop poly(A) scan after this many consecutive non-A bases (default 1 = '
+            'stop at 2+ consecutive). Prevents consuming upstream gene-body sequence '
+            'even when --max-error-rate > 0.'
+        ),
+    )
+    trim_polya_parser.add_argument(
+        '--tsv',
+        action='store_true',
+        default=False,
+        help='Write metadata as TSV instead of parquet',
+    )
+
+    # =========================================================================
+    # restore-softclip command (add back trimmed poly(A) as soft-clip)
+    # =========================================================================
+    restore_sc_parser = subparsers.add_parser(
+        'restore-softclip',
+        help='Restore trimmed poly(A)+adapter bases as soft-clips in corrected BAM',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    restore_sc_parser.add_argument(
+        'softclip_bam',
+        help='Soft-clipped corrected BAM from rectify correct',
+    )
+    restore_sc_parser.add_argument(
+        '--trim-metadata',
+        required=True,
+        help='Parquet or TSV metadata from rectify trim-polya',
+    )
+    restore_sc_parser.add_argument(
+        '-o', '--output',
+        required=True,
+        help='Output BAM path',
+    )
+
+    # =========================================================================
     # run-all command (all-in-one: correct + analyze)
     # =========================================================================
     run_parser = subparsers.add_parser(
@@ -1005,6 +1076,12 @@ def main(argv: Optional[list] = None):
     elif args.command == 'netseq':
         from .core import netseq_command
         sys.exit(netseq_command.run_netseq(args))
+    elif args.command == 'trim-polya':
+        from .core import drs_trim_command
+        sys.exit(drs_trim_command.run(args))
+    elif args.command == 'restore-softclip':
+        from .core import restore_polya_command
+        sys.exit(restore_polya_command.run(args))
     else:
         parser.print_help()
         sys.exit(1)

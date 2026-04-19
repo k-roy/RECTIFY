@@ -181,17 +181,26 @@ For organisms with nascent RNA (NET-seq) data, RECTIFY resolves remaining ambigu
 
 ## Commands Reference
 
+**DRS full pipeline (Steps 1–5):**
+
+| Step | Command | Purpose |
+|:-----|:--------|:--------|
+| 1 | `rectify trim-polya` | Trim poly(A) tail + adapter stub from Dorado-aligned BAM; writes unaligned BAM + per-read metadata parquet |
+| 2 | `rectify align` | Align trimmed FASTQ with multiple aligners (minimap2, mapPacBio, gapmm2, deSALT, uLTRA) |
+| 3 | `rectify consensus` | Select best aligner per read; tags: XA (winner), XC (confidence), XN (agreement count) |
+| 4 | `rectify correct` | Correct 3' ends (indel correction + A-tract resolution + junction rescue); writes cp:i: tag |
+| 5 | `rectify restore-softclip` | Re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization of tail lengths |
+
+**Other commands:**
+
 | Command | Purpose |
 |:--------|:--------|
-| `rectify correct` | Correct 3' end positions (indel correction + A-tract resolution) |
 | `rectify analyze` | Downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
 | `rectify extract` | Extract per-read 5'/3' ends and junctions to TSV |
 | `rectify aggregate` | Group reads into 3'/5'/junction dataset files |
-| `rectify align` | Align FASTQ with multi-aligner rectification |
 | `rectify netseq` | Process NET-seq BAM files (3' extraction + deconvolution) |
-| `rectify run` | Full pipeline: align (if FASTQ) → correct → analyze |
-| `rectify run-all` | Full pipeline with provenance tracking and step-skip |
+| `rectify run-all` | Full pipeline (Steps 2–6) with provenance tracking and step-skip |
 
 <details>
 <summary><b>Usage examples</b></summary>

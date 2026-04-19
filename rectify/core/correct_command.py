@@ -132,41 +132,27 @@ def validate_inputs(args) -> dict:
         # Use resolved annotation path (from bundled or custom)
         pass
 
-    # Resolve NET-seq directory (organism bundled data or custom)
+    # Resolve NET-seq directory.
+    # NET-seq refinement in 'rectify correct' is DISABLED by default.
+    # It is only enabled when the user explicitly passes --netseq-dir.
+    #
+    # Rationale: auto-loading bundled NET-seq during BAM correction
+    # caused widespread CPA mis-assignment.  The bundled yeast signal
+    # is noisy in many loci (Pol II contamination, multi-mapper signal)
+    # and pushes CPA positions far from where the DRS coverage boundary
+    # indicates they should be.  NET-seq-based refinement is reserved for
+    # the 3' end analysis step where signal quality can be assessed
+    # independently.
     resolved_netseq_dir = None
     if getattr(args, 'netseq_dir', None):
-        # Custom dir provided - validate it exists
+        # Custom dir provided — validate it exists
         if not args.netseq_dir.exists():
             errors.append(f"NET-seq directory not found: {args.netseq_dir}")
         elif not args.netseq_dir.is_dir():
             errors.append(f"NET-seq path is not a directory: {args.netseq_dir}")
         else:
             resolved_netseq_dir = args.netseq_dir
-    else:
-        # Try to use organism for bundled NET-seq data
-        if not organism and genome_path:
-            # Auto-detect from files
-            organism = detect_organism(genome_path, annotation_path)
-            if organism:
-                logging.info(f"Auto-detected organism: {organism}")
-
-        if organism:
-            try:
-                result = ensure_netseq_data(
-                    organism,
-                    auto_download=True,
-                    verbose=True
-                )
-                # ensure_netseq_data returns 'bundled' for organisms with
-                # pre-deconvolved TSV data included in the package.
-                # Encode organism so bam_processor workers can self-load.
-                if result == 'bundled':
-                    resolved_netseq_dir = f'bundled:{organism}'
-                else:
-                    resolved_netseq_dir = result
-            except Exception as e:
-                logging.warning(f"Could not load bundled NET-seq data: {e}")
-                logging.warning("Continuing without NET-seq refinement.")
+            logging.info(f"NET-seq refinement ENABLED (explicit --netseq-dir)")
 
     # Store resolved path for later use
     args._resolved_netseq_dir = resolved_netseq_dir
