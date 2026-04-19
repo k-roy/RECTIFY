@@ -494,7 +494,7 @@ def run(args) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_stem = input_bam.stem
+    sample_stem = getattr(args, 'prefix', None) or input_bam.stem
     output_bam = output_dir / f"{sample_stem}.bam"
     use_tsv = getattr(args, 'tsv', False)
     meta_ext = '.tsv' if use_tsv else '.parquet'

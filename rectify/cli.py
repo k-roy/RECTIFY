@@ -650,6 +650,11 @@ Citation:
         ),
     )
     trim_polya_parser.add_argument(
+        '--prefix',
+        default=None,
+        help='Output file prefix (default: derived from input BAM stem)',
+    )
+    trim_polya_parser.add_argument(
         '--tsv',
         action='store_true',
         default=False,

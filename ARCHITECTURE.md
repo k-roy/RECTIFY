@@ -179,6 +179,86 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 
 ---
 
+## Module call graph
+
+The diagrams below show which modules are orchestrators (call others) and which are
+leaf implementations. Rendered natively on GitHub; paste into
+[mermaid.live](https://mermaid.live) to preview locally.
+
+### CLI dispatch and pipeline orchestration
+
+```mermaid
+flowchart TD
+    CLI["<b>cli.py</b><br/><i>entry point</i>"]
+
+    subgraph orchestrators["Orchestrators"]
+        RC["run_command.py<br/><i>rectify run-all</i>"]
+        BC["batch_command.py<br/><i>rectify batch</i>"]
+    end
+
+    subgraph commands["Step Commands"]
+        TC["drs_trim_command.py<br/><i>rectify trim-polya</i>"]
+        AL["align_command.py<br/><i>rectify align</i>"]
+        CC["correct_command.py<br/><i>rectify correct</i>"]
+        RSC["restore_polya_command.py<br/><i>rectify restore-softclip</i>"]
+        AC["analyze_command.py<br/><i>rectify analyze</i>"]
+    end
+
+    subgraph utilities["Other Subcommands"]
+        EX["export_command.py<br/>extract_command.py<br/>aggregate_command.py<br/>netseq_command.py<br/>validate_command.py<br/>train_polya_command.py"]
+    end
+
+    CLI --> orchestrators
+    CLI --> commands
+    CLI --> utilities
+
+    RC -->|"Step 0 (DRS)"| TC
+    RC -->|"Step 1"| AL
+    RC -->|"Step 2"| CC
+    RC -->|"Step 3 (DRS)"| RSC
+    RC -->|"Step 4"| AC
+
+    BC -->|"per-sample parallel"| CC
+```
+
+### Correction engine and analysis internals
+
+```mermaid
+flowchart TD
+    CC["correct_command.py"] --> BP["<b>bam_processor.py</b><br/><i>correction hub</i>"]
+
+    BP --> MOD1["atract_detector.py<br/><i>① A-tract ambiguity</i>"]
+    BP --> MOD2["ag_mispriming.py<br/><i>② AG mispriming<br/>oligo-dT only</i>"]
+    BP --> MOD3["polya_trimmer.py<br/><i>③ poly(A) trimming</i>"]
+    BP --> MOD4["indel_corrector.py<br/><i>④ indel correction<br/>⑦ soft-clip rescue</i>"]
+    BP --> MOD5["false_junction_filter.py<br/><i>⑤ false junction filter</i>"]
+    BP --> MOD6["splice_aware_5prime.py<br/><i>⑥ 5' junction rescue</i>"]
+    BP --> MOD7["netseq_refiner.py<br/><i>⑧ NET-seq refinement</i>"]
+    BP --> MOD8["spikein_filter.py<br/><i>⑨ spike-in filter</i>"]
+    BP --> BW["bam_writer.py<br/><i>BAM / bedgraph output</i>"]
+
+    subgraph alignment["align_command.py internals"]
+        MA["multi_aligner.py<br/><i>minimap2 · mapPacBio<br/>gapmm2 · deSALT · uLTRA</i>"]
+        CS["consensus.py<br/><i>per-read aligner selection</i>"]
+        CHM["chimeric_consensus.py<br/><i>sync-point stitching</i>"]
+        MA --> CS
+        MA --> CHM
+    end
+
+    subgraph analysis["analyze_command.py internals"]
+        CLU["analyze/clustering.py"]
+        GA["analyze/gene_attribution.py"]
+        DE["analyze/deseq2.py"]
+        SA["analyze/shift_analysis.py"]
+        APA["analyze/apa_detection.py"]
+        MD["analyze/motif_discovery.py"]
+        GO["analyze/go_enrichment.py"]
+        GD["analyze/genomic_distribution.py"]
+    end
+```
+
+---
+
 ## Directory structure
 
 ```
