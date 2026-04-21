@@ -2,8 +2,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="370" viewBox="0 0 760 370">
 <rect fill="#ffffff" width="760" height="370"/>
 <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">3′ End Indel Correction</text>
-<text fill="#dc2626" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">BEFORE CORRECTION</text>
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">3′ End Walk-Back: Recovering the True CPA Site</text>
+<text fill="#dc2626" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">ALIGNED READ (pre-trimmed, poly(A) already removed)</text>
 <text fill="#64748b" font-size="10" x="14" y="86">Genome</text>
 <rect fill="#f3e8ff" height="24" rx="3" width="26" x="70" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="83" y="86">C</text>
 <rect fill="#dcfce7" height="24" rx="3" width="26" x="96" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="109" y="86">A</text>
@@ -20,13 +20,13 @@
 <rect fill="#dcfce7" height="24" rx="3" width="26" x="382" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395" y="86">A</text>
 <rect fill="#dcfce7" height="24" rx="3" width="26" x="408" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="421" y="86">A</text>
 <rect fill="#dcfce7" height="24" rx="3" width="26" x="434" y="70" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="447" y="86">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="460" y="70" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="473" y="86">G</text>
+<rect fill="#dbeafe" height="24" rx="3" width="26" x="460" y="70" stroke="#d97706" stroke-width="1.2"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="473" y="86">G</text>
 <rect fill="#ffedd5" height="24" rx="3" width="26" x="486" y="70" stroke="#d97706" stroke-width="1.2"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="499" y="86">T</text>
 <rect fill="#f3e8ff" height="24" rx="3" width="26" x="512" y="70" stroke="#d97706" stroke-width="1.2"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="525" y="86">C</text>
-<path d="M200,69 L200,64 L486,64 L486,69" fill="none" stroke="#059669" stroke-width="1" opacity="0.6"/>
-<text fill="#059669" font-size="8.5" text-anchor="middle" x="343.0" y="60">genomic A-tract</text>
-<path d="M486,69 L486,64 L538,64 L538,69" fill="none" stroke="#d97706" stroke-width="1" opacity="0.6"/>
-<text fill="#d97706" font-size="8.5" text-anchor="middle" x="512.0" y="60">non-A</text>
+<path d="M200,69 L200,64 L460,64 L460,69" fill="none" stroke="#059669" stroke-width="1" opacity="0.6"/>
+<text fill="#059669" font-size="8.5" text-anchor="middle" x="330.0" y="60">genomic A-tract</text>
+<path d="M460,69 L460,64 L538,64 L538,69" fill="none" stroke="#d97706" stroke-width="1" opacity="0.6"/>
+<text fill="#d97706" font-size="8.5" text-anchor="middle" x="499.0" y="60">non-A</text>
 <line stroke="#059669" stroke-width="2" x1="200" x2="200" y1="56" y2="70"/>
 <text fill="#059669" font-size="9" font-weight="600" text-anchor="end" x="195" y="52">CPA site</text>
 <text fill="#64748b" font-size="10" x="14" y="136">Read</text>
@@ -35,32 +35,25 @@
 <rect fill="#dbeafe" height="24" rx="3" width="26" x="122" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="135" y="136">G</text>
 <rect fill="#ffedd5" height="24" rx="3" width="26" x="148" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="161" y="136">T</text>
 <rect fill="#f3e8ff" height="24" rx="3" width="26" x="174" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="187" y="136">C</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="200" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="226" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="252" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="265" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="278" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="291" y="136">A</text>
-<rect fill="#fee2e2" height="24" rx="3" width="26" x="304" y="120" stroke="#dc2626" stroke-width="1.2"/><text fill="#dc2626" font-size="11" font-weight="600" text-anchor="middle" x="317" y="136">-</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="330" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="343" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="356" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="369" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="382" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395" y="136">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="408" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="421" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="200" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="226" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="252" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="265" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="278" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="291" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="304" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="317" y="136">A</text>
+<rect fill="#fee2e2" height="24" rx="3" width="26" x="330" y="120" stroke="#dc2626" stroke-width="1.2"/><text fill="#dc2626" font-size="11" font-weight="600" text-anchor="middle" x="343" y="136">-</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="356" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="369" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="382" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395" y="136">A</text>
+<rect fill="#dcfce7" height="24" rx="3" width="26" x="408" y="120" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="421" y="136">A</text>
 <rect fill="#fef3c7" height="24" rx="3" width="26" x="434" y="120" stroke="#d97706" stroke-width="1.2"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="447" y="136">T</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="460" y="120" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="473" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="486" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="499" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="512" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="525" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="538" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="551" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="564" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="577" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="590" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="603" y="136">A</text>
-<rect fill="#bfdbfe" height="24" rx="3" width="26" x="616" y="120" stroke="#1d4ed8" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="629" y="136">A</text>
-<path d="M200,145 L200,150 L486,150 L486,145" fill="none" stroke="#2563eb" stroke-width="1" opacity="0.6"/>
-<text fill="#2563eb" font-size="8.5" text-anchor="middle" x="343.0" y="162">poly(A) extended into A-tract (with deletion + T error)</text>
-<path d="M486,119 L486,114 L642,114 L642,119" fill="none" stroke="#1d4ed8" stroke-width="1" opacity="0.6"/>
-<text fill="#1d4ed8" font-size="8.5" text-anchor="middle" x="564.0" y="110">soft-clipped tail</text>
+<path d="M200,145 L200,150 L460,150 L460,145" fill="none" stroke="#94a3b8" stroke-width="1" opacity="0.6"/>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="330.0" y="162">read extends past CPA into A-tract (del + T error from pre-trim)</text>
+<line stroke="#dc2626" stroke-width="2" x1="460" x2="460" y1="116" y2="148"/>
+<text fill="#dc2626" font-size="9" font-weight="600" x="465" y="112">apparent 3′ end</text>
 <line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="174" y2="174"/>
-<text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="192">AFTER CORRECTION</text>
-<line stroke="#2563eb" stroke-width="1.5" x1="616" x2="204" y1="210" y2="210"/>
+<text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="192">AFTER WALK-BACK</text>
+<line stroke="#2563eb" stroke-width="1.5" x1="434" x2="204" y1="210" y2="210"/>
 <polygon fill="#2563eb" points="204,210 211,206.5 211,213.5"/>
-<text fill="#2563eb" font-size="9" text-anchor="middle" x="410.0" y="201">walk back: skip A’s, deletion, T error → stop at C</text>
+<text fill="#2563eb" font-size="9" text-anchor="middle" x="319.0" y="201">walk back: skip A’s, deletion, T error → stop at C</text>
 <text fill="#64748b" font-size="10" x="14" y="250">Corrected</text>
 <rect fill="#f3e8ff" height="24" rx="3" width="26" x="70" y="234" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="83" y="250">C</text>
 <rect fill="#dcfce7" height="24" rx="3" width="26" x="96" y="234" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="109" y="250">A</text>
@@ -68,25 +61,7 @@
 <rect fill="#ffedd5" height="24" rx="3" width="26" x="148" y="234" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="161" y="250">T</text>
 <rect fill="#f3e8ff" height="24" rx="3" width="26" x="174" y="234" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="187" y="250">C</text>
 <line stroke="#059669" stroke-width="2" x1="200" x2="200" y1="226" y2="262"/>
-<text fill="#059669" font-size="9" font-weight="600" x="205" y="222">true 3′ end</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="200" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="213" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="226" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="239" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="252" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="265" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="278" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="291" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="304" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="317" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="330" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="343" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="356" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="369" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="382" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="408" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="421" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="434" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="447" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="460" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="473" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="486" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="499" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="512" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="525" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="538" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="551" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="564" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="577" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="590" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="603" y="250">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="616" y="234" stroke="#2563eb" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="629" y="250">A</text>
-<path d="M200,259 L200,264 L642,264 L642,259" fill="none" stroke="#2563eb" stroke-width="1" opacity="0.6"/>
-<text fill="#2563eb" font-size="8.5" text-anchor="middle" x="421.0" y="276">poly(A) tail (all A’s + deletions + T errors + soft-clipped A’s)</text>
+<text fill="#059669" font-size="9" font-weight="600" x="205" y="222">true 3′ end (CPA)</text>
+<text fill="#94a3b8" font-size="9" font-style="italic" x="208" y="280">poly(A) was removed during pre-trimming; CPA position recorded in corrected TSV</text>
 </g>
 </svg>

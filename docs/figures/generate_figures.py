@@ -222,72 +222,81 @@ def rescued_block(x, y, w, h, label):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fig_indel_correction():
+    """
+    3' End Walk-Back on a pre-trimmed read.  After poly(A) pre-trimming,
+    the read ends near the CPA site but the aligner may still misplace the
+    3' end within the genomic A-tract (indels, T basecalling error).
+    Walk-back resolves the true CPA position using genome context.
+    """
     H = 370
     X0 = 70  # base start x
     L = []
     L.append(svg_open(H))
-    L.append(fig_title("3\u2032 End Indel Correction"))
+    L.append(fig_title("3\u2032 End Walk-Back: Recovering the True CPA Site"))
 
     # -- BEFORE --
     y_sec = 42
-    L.append(section_head("BEFORE CORRECTION", y_sec, PAL["red"]))
+    L.append(section_head("ALIGNED READ (pre-trimmed, poly(A) already removed)", y_sec, PAL["red"]))
 
-    # Genome row — extra room for CPA marker above
+    # Genome row
+    # Genome: C A G T C | A A A A A G A A A A | G T C
+    #         0 1 2 3 4   5 6 7 8 9 10 11 12 13 14   15 16 17
+    # CPA site is at position 5 (first A of the A-tract)
     y_g = y_sec + 28
     L.append(row_label("Genome", y_g + BH // 2 + 4))
     genome = list("CAGTCAAAAAGAAAAGTC")
     for i, b in enumerate(genome):
         hf = None
         hb = None
-        if 5 <= i <= 15 and b == "A":
+        if 5 <= i <= 14 and b == "A":
             hb = PAL["green"]
         if i == 10 and b == "G":
             hb = PAL["red"]
             hf = PAL["red_l"]
-        if i >= 16:
+        if i >= 15:
             hb = PAL["orange"]
         L.append(base(X0 + i * BW, y_g, b, hf, hb))
 
     # Brackets above genome
-    L.append(brace_above(X0 + 5 * BW, X0 + 16 * BW, y_g - 1, PAL["green"], "genomic A-tract"))
-    L.append(brace_above(X0 + 16 * BW, X0 + 18 * BW, y_g - 1, PAL["orange"], "non-A"))
+    L.append(brace_above(X0 + 5 * BW, X0 + 15 * BW, y_g - 1, PAL["green"], "genomic A-tract"))
+    L.append(brace_above(X0 + 15 * BW, X0 + 18 * BW, y_g - 1, PAL["orange"], "non-A"))
 
-    # CPA site marker — positioned below brackets, above genome row
+    # CPA site marker
     cpa_x = X0 + 5 * BW
     L.append(vert_marker(cpa_x, y_g - 14, y_g, PAL["green"], "CPA site", "left"))
 
-    # Read row
+    # Read row — pre-trimmed read aligned to genome
+    # After pre-trimming: read ends with ...CAGTCAAAAAT (T is ambiguous base)
+    # Aligner places: CAGTC matches, then AAAA aligns into A-tract,
+    # then deletion at G (pos 10), then AAA aligns to second A-tract,
+    # then T mismatches against A (pos 14)
     y_r = y_g + 50
     L.append(row_label("Read", y_r + BH // 2 + 4))
-    transcript = list("CAGTC")
-    for i, b in enumerate(transcript):
+    # Transcript body: CAGTC
+    for i, b in enumerate(list("CAGTC")):
         L.append(base(X0 + i * BW, y_r, b))
 
-    # Aligned A's with blue tint (poly(A) extending into A-tract)
-    for i in range(4):
-        L.append(base(X0 + (5 + i) * BW, y_r, "A", PAL["blue_l"], PAL["blue"]))
+    # A's aligned into first A-tract
+    for i in range(5):
+        L.append(base(X0 + (5 + i) * BW, y_r, "A"))
 
-    # Deletion
-    L.append(base(X0 + 9 * BW, y_r, "-", PAL["red_l"], PAL["red"]))
+    # Deletion at position 10 (G in genome)
+    L.append(base(X0 + 10 * BW, y_r, "-", PAL["red_l"], PAL["red"]))
 
-    # More aligned A's
-    for i in range(4):
-        L.append(base(X0 + (10 + i) * BW, y_r, "A", PAL["blue_l"], PAL["blue"]))
+    # A's aligned into second A-tract
+    for i in range(3):
+        L.append(base(X0 + (11 + i) * BW, y_r, "A"))
 
-    # T error
+    # T basecalling error (was poly(A), pre-trimmer left it)
     L.append(base(X0 + 14 * BW, y_r, "T", PAL["orange_l"], PAL["orange"]))
 
-    # Another A
-    L.append(base(X0 + 15 * BW, y_r, "A", PAL["blue_l"], PAL["blue"]))
-
-    # Soft-clipped poly(A) tail
-    for i in range(6):
-        L.append(base(X0 + (16 + i) * BW, y_r, "A", "#bfdbfe", "#1d4ed8"))
-
     # Labels
-    L.append(brace_below(X0 + 5 * BW, X0 + 16 * BW, y_r + BH + 1, PAL["blue"],
-                          "poly(A) extended into A-tract (with deletion + T error)"))
-    L.append(brace_above(X0 + 16 * BW, X0 + 22 * BW, y_r - 1, "#1d4ed8", "soft-clipped tail"))
+    L.append(brace_below(X0 + 5 * BW, X0 + 15 * BW, y_r + BH + 1, PAL["muted"],
+                          "read extends past CPA into A-tract (del + T error from pre-trim)"))
+
+    # Apparent vs true 3' end markers
+    app_x = X0 + 15 * BW
+    L.append(vert_marker(app_x, y_r - 4, y_r + BH + 4, PAL["red"], "apparent 3\u2032 end", "right"))
 
     # -- DIVIDER --
     y_div = y_r + BH + 30
@@ -295,11 +304,11 @@ def fig_indel_correction():
 
     # -- AFTER --
     y_sec2 = y_div + 18
-    L.append(section_head("AFTER CORRECTION", y_sec2, PAL["green"]))
+    L.append(section_head("AFTER WALK-BACK", y_sec2, PAL["green"]))
 
     # Walk-back arrow
     y_arrow = y_sec2 + 18
-    arrow_r = X0 + 21 * BW
+    arrow_r = X0 + 14 * BW
     arrow_l = cpa_x + 4
     L.append(h_arrow(arrow_r, arrow_l, y_arrow, PAL["blue"],
                      "walk back: skip A\u2019s, deletion, T error \u2192 stop at C"))
@@ -311,13 +320,12 @@ def fig_indel_correction():
         L.append(base(X0 + i * BW, y_c, b))
 
     # Green marker at true 3' end
-    L.append(vert_marker(cpa_x, y_c - 8, y_c + BH + 4, PAL["green"], "true 3\u2032 end"))
+    L.append(vert_marker(cpa_x, y_c - 8, y_c + BH + 4, PAL["green"], "true 3\u2032 end (CPA)"))
 
-    # Poly(A) tail -- clean
-    for i in range(17):
-        L.append(base(cpa_x + i * BW, y_c, "A", PAL["blue_l"], PAL["blue"]))
-    L.append(brace_below(cpa_x, cpa_x + 17 * BW, y_c + BH + 1, PAL["blue"],
-                          "poly(A) tail (all A\u2019s + deletions + T errors + soft-clipped A\u2019s)"))
+    # Note: no poly(A) to show — it was already trimmed
+    L.append(f'<text fill="{PAL["muted"]}" font-size="9" font-style="italic" '
+             f'x="{cpa_x + 8}" y="{y_c + BH + 22}">'
+             f'poly(A) was removed during pre-trimming; CPA position recorded in corrected TSV</text>')
 
     L.append(svg_close())
     return "\n".join(L)
@@ -414,61 +422,145 @@ def fig_softclip_rescue():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fig_5prime_junction():
-    H = 310
-    BLK_H = 30
+    """
+    Two-panel figure for Section 2: Unified 5' End and Junction Correction.
+    Part 1 — Cat3: 5' soft-clip junction rescue (before/after).
+    Part 2 — Module 2H: Post-consensus N-op junction refinement (before/after).
+    """
+    H = 560
+    BLK_H = 26
     L = []
     L.append(svg_open(H))
-    L.append(fig_title("5\u2032 End Correction: Junction Soft-Clips"))
+    L.append(fig_title("Unified 5\u2032 End and Junction Correction"))
 
-    # -- BEFORE --
-    y_sec = 42
-    L.append(section_head("BEFORE CORRECTION", y_sec, PAL["red"]))
+    # ════════════════════════════════════════════════════════════════
+    # PART 1 — Cat3: 5' Soft-Clip Junction Rescue
+    # ════════════════════════════════════════════════════════════════
+    y_sec = 40
+    L.append(section_head("PART 1 \u2014 5\u2032 SOFT-CLIP JUNCTION RESCUE (Cat3)", y_sec, PAL["blue"]))
 
     # Genome
     y_g = y_sec + 22
     L.append(row_label("Genome", y_g + BLK_H // 2 + 4))
-    L.append(exon(90, y_g, 180, BLK_H, "Exon 1"))
-    L.append(intron(270, 390, y_g + BLK_H // 2))
-    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="273" y="{y_g + BLK_H - 1}">GT</text>')
-    L.append(f'<text fill="{PAL["muted"]}" font-size="8" text-anchor="end" x="387" y="{y_g + BLK_H - 1}">AG</text>')
-    L.append(exon(390, y_g, 180, BLK_H, "Exon 2"))
+    L.append(exon(90, y_g, 160, BLK_H, "Exon 1"))
+    L.append(intron(250, 370, y_g + BLK_H // 2))
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="253" y="{y_g + BLK_H - 1}">GT</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" text-anchor="end" x="367" y="{y_g + BLK_H - 1}">AG</text>')
+    L.append(exon(370, y_g, 160, BLK_H, "Exon 2"))
 
-    # Read (with soft-clip)
-    y_r = y_g + 48
+    # Read with soft-clip (BEFORE)
+    y_r = y_g + 38
     L.append(row_label("Read", y_r + BLK_H // 2 + 4))
-    L.append(softclip_block(220, y_r, 170, BLK_H, "soft-clipped bases"))
-    L.append(aligned_block(390, y_r, 180, BLK_H, "aligned to Exon 2"))
+    L.append(softclip_block(170, y_r, 200, BLK_H, "soft-clipped (matches Exon 1)"))
+    L.append(aligned_block(370, y_r, 160, BLK_H, "aligned to Exon 2", PAL["exon"]))
+    # Annotation: NW alignment
+    L.append(f'<text fill="{PAL["blue"]}" font-size="8" font-style="italic" '
+             f'x="{540}" y="{y_r + BLK_H//2 - 2}">semi-global NW alignment</text>')
+    L.append(f'<text fill="{PAL["blue"]}" font-size="8" font-style="italic" '
+             f'x="{540}" y="{y_r + BLK_H//2 + 10}">places bases in Exon 1</text>')
 
-    # Annotation
-    sc_mid = 220 + 85
-    L.append(f'<text fill="{PAL["red"]}" font-size="9" text-anchor="middle" '
-             f'x="{sc_mid}" y="{y_r + BLK_H + 14}">these bases match Exon 1</text>')
-    arr_y = y_r + BLK_H + 20
-    L.append(f'<line stroke="{PAL["red"]}" stroke-width="1.2" x1="228" x2="382" y1="{arr_y}" y2="{arr_y}"/>')
-    L.append(f'<polygon fill="{PAL["red"]}" points="228,{arr_y} 235,{arr_y-3} 235,{arr_y+3}"/>')
-    L.append(f'<polygon fill="{PAL["red"]}" points="382,{arr_y} 375,{arr_y-3} 375,{arr_y+3}"/>')
+    # Arrow showing rescue
+    y_arr1 = y_r + BLK_H + 10
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-width="1.5" stroke-dasharray="4,3" '
+             f'x1="270" x2="170" y1="{y_arr1}" y2="{y_arr1}"/>')
+    L.append(f'<polygon fill="{PAL["teal"]}" points="170,{y_arr1} 177,{y_arr1-3.5} 177,{y_arr1+3.5}"/>')
+    L.append(f'<text fill="{PAL["teal"]}" font-size="8" font-weight="600" '
+             f'x="280" y="{y_arr1 + 4}">rescue \u2192 Exon 1</text>')
 
-    # -- DIVIDER --
-    y_div = arr_y + 18
+    # Corrected read (AFTER)
+    y_c = y_arr1 + 14
+    L.append(row_label("Corrected", y_c + BLK_H // 2 + 4))
+    L.append(rescued_block(100, y_c, 150, BLK_H, "rescued \u2192 Exon 1"))
+    L.append(intron(250, 370, y_c + BLK_H // 2, "N (splice)"))
+    L.append(aligned_block(370, y_c, 160, BLK_H, "Exon 2", PAL["exon"]))
+    L.append(f'<text fill="{PAL["green"]}" font-size="9" font-weight="600" '
+             f'x="{540}" y="{y_c + BLK_H//2 + 4}">\u2713 true 5\u2032 end recovered</text>')
+
+    # ════════════════════════════════════════════════════════════════
+    # DIVIDER between panels
+    # ════════════════════════════════════════════════════════════════
+    y_div = y_c + BLK_H + 18
     L.append(hdivider(y_div))
 
-    # -- AFTER --
-    y_sec2 = y_div + 18
-    L.append(section_head("AFTER CORRECTION", y_sec2, PAL["green"]))
+    # ════════════════════════════════════════════════════════════════
+    # PART 2 — Module 2H: Post-Consensus N-Op Junction Refinement
+    # ════════════════════════════════════════════════════════════════
+    y_sec2 = y_div + 16
+    L.append(section_head("PART 2 \u2014 N-OP JUNCTION REFINEMENT (Module 2H)", y_sec2, PAL["teal"]))
 
-    # Genome 2
+    # Genome with two candidate junctions
     y_g2 = y_sec2 + 22
     L.append(row_label("Genome", y_g2 + BLK_H // 2 + 4))
-    L.append(exon(90, y_g2, 180, BLK_H, "Exon 1"))
-    L.append(intron(270, 390, y_g2 + BLK_H // 2))
-    L.append(exon(390, y_g2, 180, BLK_H, "Exon 2"))
+    L.append(exon(90, y_g2, 140, BLK_H, "Exon 1"))
+    # Show two possible introns: annotated (dashed) and true (solid candidate)
+    ann_int_x1 = 230  # annotated junction 5'SS
+    ann_int_x2 = 380  # annotated junction 3'SS
+    true_int_x1 = 240  # true junction 5'SS (shifted)
+    true_int_x2 = 370  # true junction 3'SS (shifted)
+    L.append(intron(ann_int_x1, ann_int_x2, y_g2 + BLK_H // 2))
+    L.append(f'<text fill="{PAL["muted"]}" font-size="7" x="{ann_int_x1 + 2}" '
+             f'y="{y_g2 + BLK_H - 1}">GT</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="7" text-anchor="end" '
+             f'x="{ann_int_x2 - 2}" y="{y_g2 + BLK_H - 1}">AG</text>')
+    L.append(exon(380, y_g2, 150, BLK_H, "Exon 2"))
 
-    # Corrected read
-    y_c = y_g2 + 44
-    L.append(row_label("Corrected", y_c + BLK_H // 2 + 4))
-    L.append(rescued_block(100, y_c, 170, BLK_H, "rescued \u2192 Exon 1"))
-    L.append(intron(270, 390, y_c + BLK_H // 2, "N (splice)"))
-    L.append(aligned_block(390, y_c, 180, BLK_H, "Exon 2"))
+    # Read BEFORE (aligned to annotated junction, but with mismatches)
+    y_r2 = y_g2 + 38
+    L.append(row_label("Read", y_r2 + BLK_H // 2 + 4))
+    L.append(aligned_block(90, y_r2, 140, BLK_H, "Exon 1", PAL["exon"]))
+    # N-op at annotated position
+    L.append(f'<line stroke="{PAL["muted"]}" stroke-dasharray="5,3" stroke-width="1.2" '
+             f'x1="{ann_int_x1}" x2="{ann_int_x2}" y1="{y_r2+BLK_H//2}" y2="{y_r2+BLK_H//2}"/>')
+    L.append(aligned_block(380, y_r2, 150, BLK_H, "Exon 2", PAL["exon"]))
+    # Mismatch indicators at junction boundaries
+    for dx in [-8, -4, 4, 8]:
+        mx = ann_int_x2 + dx
+        L.append(f'<rect fill="{PAL["red"]}" width="3" height="3" rx="1" '
+                 f'x="{mx}" y="{y_r2 + BLK_H + 2}" opacity="0.7"/>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="7" text-anchor="middle" '
+             f'x="{ann_int_x2}" y="{y_r2 + BLK_H + 14}">junction-proximal mismatches</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'x="540" y="{y_r2 + BLK_H//2 + 4}">annotated N-op</text>')
+
+    # Arrow showing re-scoring
+    y_arr2 = y_r2 + BLK_H + 22
+    L.append(f'<text fill="{PAL["teal"]}" font-size="8" font-weight="600" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_arr2 + 4}">'
+             f'HP-aware re-scoring: sequence match > stability > GT-AG > annotation > shift</text>')
+
+    # Read AFTER (junction shifted to true position)
+    y_c2 = y_arr2 + 14
+    L.append(row_label("Corrected", y_c2 + BLK_H // 2 + 4))
+    L.append(aligned_block(90, y_c2, 150, BLK_H, "Exon 1", PAL["exon"]))
+    # N-op at refined position (shifted)
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-dasharray="5,3" stroke-width="1.5" '
+             f'x1="{true_int_x1}" x2="{true_int_x2}" y1="{y_c2+BLK_H//2}" y2="{y_c2+BLK_H//2}"/>')
+    L.append(f'<text fill="{PAL["teal"]}" font-size="7" font-weight="600" '
+             f'x="{true_int_x1 + 2}" y="{y_c2 + BLK_H - 1}">GT</text>')
+    L.append(f'<text fill="{PAL["teal"]}" font-size="7" font-weight="600" '
+             f'text-anchor="end" x="{true_int_x2 - 2}" y="{y_c2 + BLK_H - 1}">AG</text>')
+    L.append(aligned_block(370, y_c2, 160, BLK_H, "Exon 2", PAL["exon"]))
+
+    # Show boundary shift arrows
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-width="1" '
+             f'x1="{ann_int_x1}" x2="{true_int_x1}" '
+             f'y1="{y_c2 - 4}" y2="{y_c2 - 4}"/>')
+    L.append(f'<polygon fill="{PAL["teal"]}" points="{true_int_x1},{y_c2-4} '
+             f'{true_int_x1-4},{y_c2-7} {true_int_x1-4},{y_c2-1}"/>')
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-width="1" '
+             f'x1="{ann_int_x2}" x2="{true_int_x2}" '
+             f'y1="{y_c2 - 4}" y2="{y_c2 - 4}"/>')
+    L.append(f'<polygon fill="{PAL["teal"]}" points="{true_int_x2},{y_c2-4} '
+             f'{true_int_x2+4},{y_c2-7} {true_int_x2+4},{y_c2-1}"/>')
+
+    L.append(f'<text fill="{PAL["green"]}" font-size="9" font-weight="600" '
+             f'x="540" y="{y_c2 + BLK_H//2 + 4}">\u2713 sequence-optimal junction</text>')
+
+    # Priority note
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_c2 + BLK_H + 18}">'
+             f'sequence evidence always overrides annotation; '
+             f'fast path skips reads already at annotated canonical junctions</text>')
 
     L.append(svg_close())
     return "\n".join(L)
@@ -480,208 +572,451 @@ def fig_5prime_junction():
 
 def fig_multi_aligner_consensus():
     """
-    Same read, three aligners, three different structural decisions:
-      - mapPacBio: clean alignment to annotated junction (wins)
-      - minimap2: soft-clips the entire 5' end of the read (no Exon 1)
-      - gapmm2: forces annotated junction but with junction-proximal indels
-      - mapPacBio: discovers a novel alternative junction (diff 5'SS & 3'SS)
+    Three-stage multi-aligner rectification pipeline matching the README:
+      Stage 1 — Per-aligner rectification (3 parallel lanes)
+      Stage 2 — Consensus selection (priority chain)
+      Stage 3 — Chimeric reconstruction (optional)
     """
-    H = 530
-    BLK_H = 24
-    ROW_SP = 38
+    H = 680
+    BLK_H = 22
     L = []
     L.append(svg_open(H))
-    L.append(fig_title("Multi-Aligner Consensus: Selecting the Optimal Alignment"))
-
-    # Genome reference coordinates
-    # Exon 1: 120-280, Intron: 280-390, Exon 2: 390-540
-    EX1_X, EX1_W = 120, 160
-    EX2_X, EX2_W = 390, 150
-    INT_X1, INT_X2 = 280, 390
+    L.append(fig_title("Multi-Aligner Rectification Pipeline"))
 
     # Aligner colors
-    AC = {"minimap2": "#3b82f6", "gapmm2": "#22c55e", "mapPacBio": "#f59e0b"}
+    AC = {"minimap2": "#3b82f6", "mapPacBio": "#f59e0b", "gapmm2": "#22c55e"}
+    ALIGNERS = ["minimap2", "mapPacBio", "gapmm2"]
 
-    # Junction shift for mapPacBio's novel junction
-    NOVEL_5SS = 10
-    NOVEL_3SS = 8
+    # Layout constants
+    LANE_X = 100          # left edge of lane blocks
+    LANE_W = 180          # width of each lane
+    LANE_GAP = 20         # gap between lanes
+    CMD_H = 26            # height of command boxes
+    TSV_H = 20            # height of TSV output boxes
 
-    # ── SAME READ, THREE DIFFERENT STRUCTURAL DECISIONS ──
+    def lane_x(i):
+        return LANE_X + i * (LANE_W + LANE_GAP)
+
+    def cmd_box(x, y, w, h, label, color):
+        """Rounded command/process box."""
+        return (
+            f'<rect fill="{color}" height="{h}" rx="5" width="{w}" '
+            f'x="{x}" y="{y}" opacity="0.15"/>\n'
+            f'<rect fill="none" height="{h}" rx="5" width="{w}" '
+            f'x="{x}" y="{y}" stroke="{color}" stroke-width="1.2"/>\n'
+            f'<text fill="{color}" font-size="9" font-weight="600" '
+            f'text-anchor="middle" x="{x + w/2}" y="{y + h/2 + 3.5}">{label}</text>'
+        )
+
+    def tsv_box(x, y, w, h, label, color):
+        """File output box (smaller, muted fill)."""
+        return (
+            f'<rect fill="{color}" height="{h}" rx="3" width="{w}" '
+            f'x="{x}" y="{y}" opacity="0.10"/>\n'
+            f'<rect fill="none" height="{h}" rx="3" width="{w}" '
+            f'x="{x}" y="{y}" stroke="{color}" stroke-width="0.8"/>\n'
+            f'<text fill="{color}" font-size="8" font-weight="600" '
+            f'text-anchor="middle" x="{x + w/2}" y="{y + h/2 + 3}">{label}</text>'
+        )
+
+    def v_arrow(x, y1, y2, color):
+        """Vertical downward arrow."""
+        return (
+            f'<line stroke="{color}" stroke-width="1.3" x1="{x}" x2="{x}" '
+            f'y1="{y1}" y2="{y2}"/>\n'
+            f'<polygon fill="{color}" points="{x},{y2} {x-3.5},{y2-6} {x+3.5},{y2-6}"/>'
+        )
+
+    # ════════════════════════════════════════════════════════════════
+    # STAGE 1 — Per-aligner rectification
+    # ════════════════════════════════════════════════════════════════
+    y_sec1 = 40
+    L.append(section_head("STAGE 1 \u2014 PER-ALIGNER RECTIFICATION", y_sec1, PAL["blue"]))
+
+    # BAM inputs
+    y_bam = y_sec1 + 20
+    for i, aligner in enumerate(ALIGNERS):
+        cx = lane_x(i)
+        c = AC[aligner]
+        # Aligner name
+        L.append(f'<text fill="{c}" font-size="10" font-weight="700" '
+                 f'text-anchor="middle" x="{cx + LANE_W/2}" y="{y_bam + 4}">{aligner}</text>')
+        # BAM box
+        y_box = y_bam + 10
+        L.append(tsv_box(cx, y_box, LANE_W, TSV_H, f"{aligner}.bam", c))
+        # Arrow down to rectify correct
+        L.append(v_arrow(cx + LANE_W/2, y_box + TSV_H, y_box + TSV_H + 16, c))
+        # rectify correct box
+        y_cmd = y_box + TSV_H + 16
+        L.append(cmd_box(cx, y_cmd, LANE_W, CMD_H, "rectify correct", c))
+        # Arrow down to corrected TSV
+        L.append(v_arrow(cx + LANE_W/2, y_cmd + CMD_H, y_cmd + CMD_H + 16, c))
+        # corrected_3ends.tsv output
+        y_tsv = y_cmd + CMD_H + 16
+        L.append(tsv_box(cx, y_tsv, LANE_W, TSV_H, "corrected_3ends.tsv", c))
+
+    # Side annotation — what rectify correct does (right-aligned to fit)
+    ann_x = FIG_W - 12
+    y_ann = y_bam + 10 + TSV_H + 16
+    L.append(f'<text fill="{PAL["muted"]}" font-size="7.5" font-style="italic" '
+             f'text-anchor="end" x="{ann_x}" y="{y_ann + 6}">3\u2032 walk-back</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="7.5" font-style="italic" '
+             f'text-anchor="end" x="{ann_x}" y="{y_ann + 16}">5\u2032 junction rescue</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="7.5" font-style="italic" '
+             f'text-anchor="end" x="{ann_x}" y="{y_ann + 26}">soft-clip rescue</text>')
+
+    # ════════════════════════════════════════════════════════════════
+    # STAGE 2 — Consensus selection
+    # ════════════════════════════════════════════════════════════════
+    y_tsv_bottom = y_bam + 10 + TSV_H + 16 + CMD_H + 16 + TSV_H
+    y_div1 = y_tsv_bottom + 16
+    L.append(hdivider(y_div1))
+    y_sec2 = y_div1 + 14
+    L.append(section_head("STAGE 2 \u2014 CONSENSUS SELECTION", y_sec2, PAL["green"]))
+
+    # Converging arrows from 3 TSVs into central consensus box
+    y_conv = y_sec2 + 18
+    cons_w = 260
+    cons_x = (FIG_W - cons_w) / 2
+    cons_y = y_conv + 26
+
+    # Draw converging lines from each lane's TSV to the consensus box
+    for i in range(3):
+        src_x = lane_x(i) + LANE_W / 2
+        dst_x = cons_x + cons_w / 2
+        # Diagonal line from TSV bottom to consensus top
+        L.append(f'<line stroke="{AC[ALIGNERS[i]]}" stroke-width="1.2" '
+                 f'x1="{src_x}" x2="{dst_x}" y1="{y_conv}" y2="{cons_y}" opacity="0.5"/>')
+
+    # Arrow head at consensus box
+    mid_x = cons_x + cons_w / 2
+    L.append(f'<polygon fill="{PAL["green"]}" points="{mid_x},{cons_y} '
+             f'{mid_x-4},{cons_y-7} {mid_x+4},{cons_y-7}"/>')
+
+    # rectify consensus box (wider, more prominent)
+    L.append(cmd_box(cons_x, cons_y, cons_w, CMD_H + 4, "rectify consensus", PAL["green"]))
+
+    # Priority chain below the consensus box
+    y_pri = cons_y + CMD_H + 4 + 14
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="600" '
+             f'text-anchor="middle" x="{FIG_W/2}" y="{y_pri}">per-read winner selection (priority order):</text>')
+
+    # Priority items as a horizontal chain with arrows
+    y_chain = y_pri + 16
+    priorities = ["5\u2032 rescued", "confidence", "3\u2032 agreement", "span", "n_junctions"]
+    # Calculate total width
+    pri_widths = [68, 70, 82, 42, 72]
+    pri_gap = 8
+    total_pri_w = sum(pri_widths) + (len(priorities) - 1) * pri_gap
+    px = (FIG_W - total_pri_w) / 2
+    pri_h = 20
+
+    for idx, (pri, pw) in enumerate(zip(priorities, pri_widths)):
+        # Numbered priority box
+        is_first = (idx == 0)
+        fill_op = "0.12" if not is_first else "0.20"
+        bdr = PAL["green"] if is_first else PAL["heading"]
+        tc = PAL["green"] if is_first else PAL["heading"]
+        L.append(
+            f'<rect fill="{bdr}" height="{pri_h}" rx="10" width="{pw}" '
+            f'x="{px}" y="{y_chain}" opacity="{fill_op}"/>\n'
+            f'<rect fill="none" height="{pri_h}" rx="10" width="{pw}" '
+            f'x="{px}" y="{y_chain}" stroke="{bdr}" stroke-width="0.8"/>\n'
+            f'<text fill="{tc}" font-size="8" font-weight="600" '
+            f'text-anchor="middle" x="{px + pw/2}" y="{y_chain + pri_h/2 + 3}">{pri}</text>'
+        )
+        # Arrow between items
+        if idx < len(priorities) - 1:
+            ax1 = px + pw + 1
+            ax2 = ax1 + pri_gap - 2
+            ay = y_chain + pri_h / 2
+            L.append(f'<line stroke="{PAL["muted"]}" stroke-width="1" '
+                     f'x1="{ax1}" x2="{ax2}" y1="{ay}" y2="{ay}"/>')
+            L.append(f'<polygon fill="{PAL["muted"]}" points="{ax2},{ay} '
+                     f'{ax2-4},{ay-2.5} {ax2-4},{ay+2.5}"/>')
+        px += pw + pri_gap
+
+    # Arrow from consensus to output
+    y_out_arr = y_chain + pri_h + 10
+    L.append(v_arrow(FIG_W/2, y_out_arr, y_out_arr + 18, PAL["green"]))
+
+    # Output: consensus corrected_3ends.tsv
+    y_out = y_out_arr + 18
+    out_w = 200
+    out_x = (FIG_W - out_w) / 2
+    L.append(tsv_box(out_x, y_out, out_w, TSV_H + 2, "corrected_3ends.tsv (consensus)", PAL["green"]))
+
+    # XA/XC/XN tags annotation
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'x="{out_x + out_w + 10}" y="{y_out + (TSV_H+2)/2 + 3}">'
+             f'tags: XA (winner), XC (confidence), XN (agreement)</text>')
+
+    # ════════════════════════════════════════════════════════════════
+    # STAGE 3 — Chimeric reconstruction (optional)
+    # ════════════════════════════════════════════════════════════════
+    y_div2 = y_out + TSV_H + 2 + 16
+    L.append(hdivider(y_div2))
+    y_sec3 = y_div2 + 14
+    L.append(section_head("STAGE 3 \u2014 CHIMERIC RECONSTRUCTION (optional)", y_sec3, PAL["teal"]))
+
+    # Show two aligners each contributing a unique junction
+    # Genome: Exon A -- intron1 -- Exon B -- intron2 -- Exon C (3 exons, 2 junctions)
+    EXA_X, EXA_W = 90, 110
+    EXB_X, EXB_W = 250, 100
+    EXC_X, EXC_W = 410, 110
+    y_gen = y_sec3 + 20
+    L.append(row_label("Genome", y_gen + BLK_H//2 + 4, x=14))
+    L.append(exon(EXA_X, y_gen, EXA_W, BLK_H, "Exon A"))
+    L.append(intron(EXA_X + EXA_W, EXB_X, y_gen + BLK_H//2, "intron 1"))
+    L.append(exon(EXB_X, y_gen, EXB_W, BLK_H, "Exon B"))
+    L.append(intron(EXB_X + EXB_W, EXC_X, y_gen + BLK_H//2, "intron 2"))
+    L.append(exon(EXC_X, y_gen, EXC_W, BLK_H, "Exon C"))
+
+    # Aligner 1 (minimap2): has junction 1 (A-B) but misses junction 2
+    y_a1 = y_gen + 32
+    c1 = AC["minimap2"]
+    L.append(f'<text fill="{c1}" font-size="9" font-weight="600" x="14" '
+             f'y="{y_a1 + BLK_H//2 + 3}">minimap2</text>')
+    L.append(aligned_block(EXA_X, y_a1, EXA_W, BLK_H, "A", c1))
+    L.append(f'<line stroke="{c1}" stroke-dasharray="4,3" stroke-width="1" '
+             f'x1="{EXA_X+EXA_W}" x2="{EXB_X}" y1="{y_a1+BLK_H//2}" y2="{y_a1+BLK_H//2}"/>')
+    # B + C merged (no junction 2 found)
+    L.append(aligned_block(EXB_X, y_a1, EXB_W + (EXC_X - EXB_X - EXB_W) + EXC_W, BLK_H, "B + C (unspliced)", c1))
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EXC_X + EXC_W + 10}" '
+             f'y="{y_a1 + BLK_H//2 - 2}">\u2713 junction 1</text>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EXC_X + EXC_W + 10}" '
+             f'y="{y_a1 + BLK_H//2 + 10}">\u2717 junction 2</text>')
+
+    # Aligner 2 (mapPacBio): misses junction 1 but has junction 2
+    y_a2 = y_a1 + BLK_H + 8
+    c2 = AC["mapPacBio"]
+    L.append(f'<text fill="{c2}" font-size="9" font-weight="600" x="14" '
+             f'y="{y_a2 + BLK_H//2 + 3}">mapPacBio</text>')
+    # A + B merged (no junction 1 found)
+    L.append(aligned_block(EXA_X, y_a2, EXA_W + (EXB_X - EXA_X - EXA_W) + EXB_W, BLK_H, "A + B (unspliced)", c2))
+    L.append(f'<line stroke="{c2}" stroke-dasharray="4,3" stroke-width="1" '
+             f'x1="{EXB_X+EXB_W}" x2="{EXC_X}" y1="{y_a2+BLK_H//2}" y2="{y_a2+BLK_H//2}"/>')
+    L.append(aligned_block(EXC_X, y_a2, EXC_W, BLK_H, "C", c2))
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EXC_X + EXC_W + 10}" '
+             f'y="{y_a2 + BLK_H//2 - 2}">\u2717 junction 1</text>')
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EXC_X + EXC_W + 10}" '
+             f'y="{y_a2 + BLK_H//2 + 10}">\u2713 junction 2</text>')
+
+    # Arrow down to chimeric result
+    y_arrow_ch = y_a2 + BLK_H + 6
+    L.append(v_arrow(FIG_W/2, y_arrow_ch, y_arrow_ch + 16, PAL["teal"]))
+    L.append(f'<text fill="{PAL["teal"]}" font-size="8" font-weight="600" '
+             f'x="{FIG_W/2 + 8}" y="{y_arrow_ch + 10}">stitch</text>')
+
+    # Chimeric result: all three exons properly spliced
+    y_ch = y_arrow_ch + 16
+    L.append(f'<text fill="{PAL["teal"]}" font-size="9" font-weight="600" x="14" '
+             f'y="{y_ch + BLK_H//2 + 3}">chimeric</text>')
+    L.append(rescued_block(EXA_X, y_ch, EXA_W, BLK_H, "A"))
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-dasharray="4,3" stroke-width="1.2" '
+             f'x1="{EXA_X+EXA_W}" x2="{EXB_X}" y1="{y_ch+BLK_H//2}" y2="{y_ch+BLK_H//2}"/>')
+    L.append(rescued_block(EXB_X, y_ch, EXB_W, BLK_H, "B"))
+    L.append(f'<line stroke="{PAL["teal"]}" stroke-dasharray="4,3" stroke-width="1.2" '
+             f'x1="{EXB_X+EXB_W}" x2="{EXC_X}" y1="{y_ch+BLK_H//2}" y2="{y_ch+BLK_H//2}"/>')
+    L.append(rescued_block(EXC_X, y_ch, EXC_W, BLK_H, "C"))
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" font-weight="600" x="{EXC_X + EXC_W + 10}" '
+             f'y="{y_ch + BLK_H//2 + 3}">\u2713 both junctions recovered</text>')
+
+    L.append(svg_close())
+    return "\n".join(L)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Figure 6: DRS Poly(A) Pre-Trimming
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fig_polya_pretrim():
+    """
+    Illustrates the two-pass poly(A) + adapter trimming algorithm used by
+    `rectify trim-polya` before re-alignment.  The trimmer is deliberately
+    conservative: Pass 0 strips the adapter stub, Pass 1 strips only
+    consecutive pure A's from the 3' end, stopping at the first non-A base.
+    The ambiguous boundary (terminal T that could be genomic or a seq error)
+    is left for the post-alignment walk-back step to resolve.
+    """
+    H = 390
+    X0 = 70   # left margin for bases
+    L = []
+    L.append(svg_open(H))
+    L.append(fig_title("DRS Poly(A) Pre-Trimming"))
+
+    # ── Color shortcuts ──
+    ADAPTER_F = PAL["orange_l"]
+    ADAPTER_B = PAL["orange"]
+    POLYA_F   = PAL["blue_l"]
+    POLYA_B   = PAL["blue"]
+    AMB_F     = "#fef9c3"       # soft yellow for ambiguous base
+    AMB_B     = "#ca8a04"       # darker yellow border
+    BODY_C    = PAL["exon"]     # indigo for transcript body block
+
+    # ── Sequence layout ──
+    # Read in RNA 5'→3': [transcript body]...C T G A A A A A T A A A A [adapter]
+    # The T between the A-tracts could be a basecalling error in the tail,
+    # or the last genomic base before the CPA site.
+    BODY_BLK_W = 160           # wide block representing transcript body
+    body_tail  = list("CTG")   # last 3 genomic body bases
+    a_tract    = list("AAAAA") # genomic A-tract / remaining tail A's
+    amb_t      = "T"           # ambiguous base (seq error or genomic?)
+    pure_a     = list("AAAA")  # pure poly(A) tail (will be trimmed)
+    adapter    = list("TCT")   # adapter stub
+
+    n_body   = len(body_tail)
+    n_atract = len(a_tract)
+    n_pure   = len(pure_a)
+    n_adapt  = len(adapter)
+
+    bx_body  = X0 + BODY_BLK_W + 4
+    bx_at    = bx_body + n_body * BW
+    bx_t     = bx_at + n_atract * BW
+    bx_pure  = bx_t + BW
+    bx_adapt = bx_pure + n_pure * BW
+
+    # ── Helper: draw bases with optional fading ──
+    def bases_row(x, y, seq, fill, border, text_c, fade=False):
+        parts = []
+        op = ' opacity="0.25"' if fade else ""
+        for i, b in enumerate(seq):
+            parts.append(
+                f'<rect fill="{fill}" height="{BH}" rx="{BR}" width="{BW}" '
+                f'x="{x + i*BW}" y="{y}" stroke="{border}" stroke-width="0.7"{op}/>'
+                f'<text fill="{text_c}" font-size="11" font-weight="600" text-anchor="middle" '
+                f'x="{x + i*BW + BW//2}" y="{y + BH//2 + 4}"{op}>{b}</text>'
+            )
+        return "\n".join(parts)
+
+    def draw_read(y, fade_adapter=False, fade_pure=False):
+        parts = []
+        # Transcript body block
+        parts.append(aligned_block(X0, y, BODY_BLK_W, BH, "transcript body", BODY_C))
+        # Last body bases (always visible)
+        for i, b in enumerate(body_tail):
+            parts.append(base(bx_body + i*BW, y, b))
+        # Genomic A-tract (always visible)
+        parts.append(bases_row(bx_at, y, a_tract, POLYA_F, POLYA_B, POLYA_B))
+        # Ambiguous T (always visible — highlighted)
+        parts.append(
+            f'<rect fill="{AMB_F}" height="{BH}" rx="{BR}" width="{BW}" '
+            f'x="{bx_t}" y="{y}" stroke="{AMB_B}" stroke-width="1.2"/>'
+            f'<text fill="{AMB_B}" font-size="11" font-weight="700" text-anchor="middle" '
+            f'x="{bx_t + BW//2}" y="{y + BH//2 + 4}">T</text>'
+        )
+        # Pure poly(A) (may be faded)
+        parts.append(bases_row(bx_pure, y, pure_a, POLYA_F, POLYA_B, POLYA_B, fade=fade_pure))
+        # Adapter stub (may be faded)
+        parts.append(bases_row(bx_adapt, y, adapter, ADAPTER_F, ADAPTER_B, ADAPTER_B, fade=fade_adapter))
+        return "\n".join(parts)
+
+    # ════════════════════════════════════════════════════════════════
+    # Section 1: RAW DRS READ
+    # ════════════════════════════════════════════════════════════════
     y_sec = 40
-    L.append(section_head("SAME READ, THREE ALIGNERS \u2192 THREE DIFFERENT STRUCTURES", y_sec))
+    L.append(section_head("RAW DRS READ (RNA 5\u2032 \u2192 3\u2032)", y_sec))
 
-    # Genome annotation
-    y_g = y_sec + 24
-    L.append(row_label("Genome", y_g + BLK_H // 2 + 4))
-    L.append(exon(EX1_X, y_g, EX1_W, BLK_H, "Exon 1"))
-    L.append(intron(INT_X1, INT_X2, y_g + BLK_H // 2))
-    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="{INT_X1+4}" y="{y_g + BLK_H - 2}">GT</text>')
-    L.append(f'<text fill="{PAL["muted"]}" font-size="8" text-anchor="end" x="{INT_X2-4}" y="{y_g + BLK_H - 2}">AG</text>')
-    L.append(exon(EX2_X, y_g, EX2_W, BLK_H, "Exon 2"))
+    y_r = y_sec + 20
+    L.append(row_label("Read", y_r + BH//2 + 4, x=14))
+    L.append(draw_read(y_r))
 
-    # ── minimap2: Soft-clips the entire 5' end of the read ──
-    # minimap2 fails to split the read across the junction for this read.
-    # It aligns Exon 2 cleanly but soft-clips everything upstream (Exon 1 bases).
-    # The soft-clip is at the 5' end of the read — a valid terminal position.
-    y = y_g + 40
-    c = AC["minimap2"]
-    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">minimap2</text>')
-    # Soft-clipped Exon 1 region (entire 5' end of read)
-    L.append(f'<rect fill="{PAL["red_l"]}" height="{BLK_H}" rx="4" '
-             f'stroke="{PAL["red"]}" stroke-dasharray="4,2" stroke-width="0.8" opacity="0.6" '
-             f'width="{EX1_W}" x="{EX1_X}" y="{y}"/>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="8" font-style="italic" text-anchor="middle" '
-             f'x="{EX1_X + EX1_W//2}" y="{y + BLK_H//2 + 3}">soft-clipped</text>')
-    # No junction — minimap2 didn't find the splice
-    # Exon 2 aligned directly
-    L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", c))
-    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">\u2717 no junction found</text>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 12}">\u2717 5\u2032 end entirely soft-clipped</text>')
+    # Braces below: poly(A) tail spans from first A-tract through pure A's
+    L.append(brace_below(bx_at, bx_pure + n_pure * BW, y_r + BH + 1, POLYA_B,
+                          "poly(A) tail (includes genomic A-tract)"))
+    L.append(brace_below(bx_adapt, bx_adapt + n_adapt * BW, y_r + BH + 1, ADAPTER_B,
+                          "adapter stub"))
 
-    # ── gapmm2: Annotated junction, but junction-proximal indels ──
-    # gapmm2 forces the read onto the annotated splice site coordinates,
-    # but introduces small insertions/deletions near the junction to make it fit.
-    y += ROW_SP + 4
-    c = AC["gapmm2"]
-    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">gapmm2</text>')
-    L.append(aligned_block(EX1_X, y, EX1_W, BLK_H, "Exon 1", c))
-    L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
-             f'x1="{INT_X1}" x2="{INT_X2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
-    L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", c))
-    # Indel markers — small triangles below the junction boundaries
-    tri_y = y + BLK_H
-    ins_x = INT_X1 - 4
-    L.append(f'<polygon fill="{PAL["red"]}" opacity="0.8" '
-             f'points="{ins_x},{tri_y} {ins_x+4},{tri_y+6} {ins_x+8},{tri_y}"/>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="6" text-anchor="middle" '
-             f'x="{ins_x+4}" y="{tri_y+13}">ins</text>')
-    del_x = EX2_X + 2
-    L.append(f'<polygon fill="{PAL["red"]}" opacity="0.8" '
-             f'points="{del_x},{tri_y} {del_x+4},{tri_y+6} {del_x+8},{tri_y}"/>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="6" text-anchor="middle" '
-             f'x="{del_x+4}" y="{tri_y+13}">del</text>')
-    L.append(f'<text fill="{PAL["orange"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">forces annotated GT-AG junction</text>')
-    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 12}">\u2717 junction-proximal indels</text>')
+    # Mark the ambiguous T
+    L.append(f'<text fill="{AMB_B}" font-size="7" font-weight="600" '
+             f'text-anchor="middle" x="{bx_t + BW//2}" y="{y_r - 4}">seq error or genomic?</text>')
 
-    # ── mapPacBio: Novel alternative junction (different 5'SS and 3'SS) ──
-    y += ROW_SP + 18  # extra space for gapmm2's indel markers
-    c = AC["mapPacBio"]
-    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">mapPacBio</text>')
-    # Exon 1 extends further (5'SS shifted into intron)
-    mpb_ex1_w = EX1_W + NOVEL_5SS
-    L.append(aligned_block(EX1_X, y, mpb_ex1_w, BLK_H, "Exon 1", c))
-    # Junction from shifted positions
-    mpb_int_x1 = INT_X1 + NOVEL_5SS
-    mpb_int_x2 = INT_X2 + NOVEL_3SS
-    L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
-             f'x1="{mpb_int_x1}" x2="{mpb_int_x2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
-    mpb_ex2_x = EX2_X + NOVEL_3SS
-    mpb_ex2_w = EX2_W - NOVEL_3SS
-    L.append(aligned_block(mpb_ex2_x, y, mpb_ex2_w, BLK_H, "Exon 2", c))
-    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 0}">\u2713 novel GC-AG junction</text>')
-    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
-             f'y="{y + BLK_H//2 + 12}">\u2713 clean alignment, no indels</text>')
+    # 5'/3' labels
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="{X0 - 18}" '
+             f'y="{y_r + BH//2 + 3}">5\u2032</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="{bx_adapt + n_adapt*BW + 6}" '
+             f'y="{y_r + BH//2 + 3}">3\u2032</text>')
 
-    # ── Callout ──
-    y_note = y + BLK_H + 14
-    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-style="italic" '
-             f'text-anchor="middle" x="{FIG_W//2}" y="{y_note}">'
-             f'Each aligner makes different structural decisions \u2014 '
-             f'scoring selects the best overall alignment per read</text>')
-
-    # ── DIVIDER ──
-    y_div = y_note + 12
+    # ════════════════════════════════════════════════════════════════
+    # Section 2: TWO-PASS TRIMMING
+    # ════════════════════════════════════════════════════════════════
+    y_div = y_r + BH + 40
     L.append(hdivider(y_div))
-
-    # ── SCORE AND SELECT ──
     y_sec2 = y_div + 16
-    L.append(section_head("SCORE EACH ALIGNMENT \u2192 SELECT BEST PER READ", y_sec2))
+    L.append(section_head("TWO-PASS TRIMMING", y_sec2))
 
-    # Column headers
-    y_hdr = y_sec2 + 20
-    score_cols = [("junction", 555), ("annotated", 610), ("indels", 662), ("5\u2032 cov.", 712), ("edit dist.", 748)]
-    for label, cx in score_cols:
-        L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-weight="600" '
-                 f'text-anchor="middle" x="{cx}" y="{y_hdr}">{label}</text>')
+    # ── Pass 0: Adapter stub removal ──
+    y_p0 = y_sec2 + 22
+    L.append(f'<text fill="{ADAPTER_B}" font-size="9" font-weight="700" '
+             f'x="14" y="{y_p0 + BH//2 + 4}">Pass 0</text>')
+    L.append(draw_read(y_p0, fade_adapter=True))
+    # Strikethrough on adapter
+    L.append(f'<line stroke="{PAL["red"]}" stroke-width="2" '
+             f'x1="{bx_adapt - 2}" x2="{bx_adapt + n_adapt*BW + 2}" '
+             f'y1="{y_p0 + BH//2}" y2="{y_p0 + BH//2}" opacity="0.6"/>')
+    L.append(f'<text fill="{ADAPTER_B}" font-size="8" font-style="italic" '
+             f'x="{bx_adapt + n_adapt*BW + 8}" y="{y_p0 + BH//2 + 3}">'
+             f'strip T[CT]{{0,10}}$</text>')
 
-    # Score rows — lower score = better alignment.
-    # mapPacBio wins: correct novel junction, clean, full coverage.
-    # gapmm2 middle: annotated junction but indels penalized.
-    # minimap2 worst: no junction found, 5' soft-clipped.
-    scores = [
-        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "1", True),
-        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "3", False),
-        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "5", False),
-    ]
+    # ── Pass 1: Pure-A scan (stop at first non-A) ──
+    y_p1 = y_p0 + BH + 22
+    L.append(f'<text fill="{POLYA_B}" font-size="9" font-weight="700" '
+             f'x="14" y="{y_p1 + BH//2 + 4}">Pass 1</text>')
+    L.append(draw_read(y_p1, fade_adapter=True, fade_pure=True))
+    # Strikethrough on adapter (already gone) + pure poly(A)
+    L.append(f'<line stroke="{PAL["red"]}" stroke-width="2" '
+             f'x1="{bx_adapt - 2}" x2="{bx_adapt + n_adapt*BW + 2}" '
+             f'y1="{y_p1 + BH//2}" y2="{y_p1 + BH//2}" opacity="0.3"/>')
+    L.append(f'<line stroke="{PAL["red"]}" stroke-width="2" '
+             f'x1="{bx_pure - 2}" x2="{bx_pure + n_pure*BW + 2}" '
+             f'y1="{y_p1 + BH//2}" y2="{y_p1 + BH//2}" opacity="0.6"/>')
+    # Scan arrow (leftward from 3' end toward T)
+    scan_y = y_p1 - 6
+    L.append(h_arrow(bx_pure + n_pure*BW - 4, bx_t + BW + 4, scan_y, POLYA_B,
+                      "scan \u2190 (pure A only)"))
+    # Stop marker at T
+    L.append(f'<line stroke="{AMB_B}" stroke-width="2" '
+             f'x1="{bx_t + BW + 2}" x2="{bx_t + BW + 2}" '
+             f'y1="{y_p1 - 2}" y2="{y_p1 + BH + 2}"/>')
+    L.append(f'<text fill="{AMB_B}" font-size="8" font-weight="600" '
+             f'x="{bx_pure + n_pure*BW + 8}" y="{y_p1 + BH//2 + 3}">'
+             f'stops at T \u2014 left for walk-back</text>')
 
-    for i, (name, color, jn, ann, indels, cov, score, is_best) in enumerate(scores):
-        y = y_hdr + 8 + i * 30
-        L.append(f'<text fill="{color}" font-size="10" font-weight="600" x="14" '
-                 f'y="{y + BLK_H//2 + 4}">{name}</text>')
+    # ════════════════════════════════════════════════════════════════
+    # Section 3: TRIMMED OUTPUT
+    # ════════════════════════════════════════════════════════════════
+    y_div2 = y_p1 + BH + 18
+    L.append(hdivider(y_div2))
+    y_sec3 = y_div2 + 16
+    L.append(section_head("TRIMMED READ (for re-alignment)", y_sec3, PAL["green"]))
 
-        # Compact alignment bars
-        bar_x = 120
-        if name == "minimap2":
-            # Soft-clipped Exon 1 + Exon 2 only
-            L.append(f'<rect fill="{PAL["red_l"]}" height="{BLK_H}" rx="3" '
-                     f'stroke="{PAL["red"]}" stroke-dasharray="3,2" stroke-width="0.6" opacity="0.4" '
-                     f'width="{EX1_W}" x="{bar_x}" y="{y}"/>')
-            L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", color))
-        elif name == "gapmm2":
-            L.append(aligned_block(bar_x, y, EX1_W, BLK_H, "Exon 1", color))
-            L.append(f'<line stroke="{color}" stroke-dasharray="5,3" stroke-width="1" '
-                     f'x1="{INT_X1}" x2="{INT_X2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
-            L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", color))
-            # Tiny indel marks
-            L.append(f'<polygon fill="{PAL["red"]}" opacity="0.6" '
-                     f'points="{INT_X1-2},{y+BLK_H} {INT_X1+1},{y+BLK_H+3} {INT_X1+4},{y+BLK_H}"/>')
-            L.append(f'<polygon fill="{PAL["red"]}" opacity="0.6" '
-                     f'points="{EX2_X+1},{y+BLK_H} {EX2_X+4},{y+BLK_H+3} {EX2_X+7},{y+BLK_H}"/>')
-        elif name == "mapPacBio":
-            L.append(aligned_block(bar_x, y, EX1_W + NOVEL_5SS, BLK_H, "Exon 1", color))
-            L.append(f'<line stroke="{color}" stroke-dasharray="5,3" stroke-width="1" '
-                     f'x1="{INT_X1 + NOVEL_5SS}" x2="{INT_X2 + NOVEL_3SS}" '
-                     f'y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
-            L.append(aligned_block(EX2_X + NOVEL_3SS, y, EX2_W - NOVEL_3SS, BLK_H, "Exon 2", color))
-
-        # Score values
-        jn_color = PAL["green"] if jn == "GT-AG" else (PAL["orange"] if jn == "GC-AG" else PAL["muted"])
-        L.append(f'<text fill="{jn_color}" font-size="9" text-anchor="middle" '
-                 f'x="555" y="{y + BLK_H//2 + 4}">{jn}</text>')
-        ann_color = PAL["green"] if ann == "\u2713" else (PAL["red"] if ann == "\u2717" else PAL["muted"])
-        L.append(f'<text fill="{ann_color}" font-size="10" font-weight="600" text-anchor="middle" '
-                 f'x="610" y="{y + BLK_H//2 + 4}">{ann}</text>')
-        indel_color = PAL["green"] if indels == "none" else PAL["red"]
-        L.append(f'<text fill="{indel_color}" font-size="9" font-weight="600" text-anchor="middle" '
-                 f'x="662" y="{y + BLK_H//2 + 4}">{indels}</text>')
-        cov_color = PAL["green"] if cov == "full" else PAL["red"]
-        L.append(f'<text fill="{cov_color}" font-size="9" font-weight="600" text-anchor="middle" '
-                 f'x="712" y="{y + BLK_H//2 + 4}">{cov}</text>')
-
-        # Edit distance — lower is better
-        sc_weight = "700" if is_best else "600"
-        sc_color = PAL["green"] if is_best else (PAL["red"] if int(score) >= 5 else PAL["heading"])
-        L.append(f'<text fill="{sc_color}" font-size="12" font-weight="{sc_weight}" '
-                 f'text-anchor="middle" x="748" y="{y + BLK_H//2 + 4}">{score}</text>')
-
-        if is_best:
-            L.append(f'<text fill="{PAL["green"]}" font-size="9" font-weight="700" '
-                     f'x="762" y="{y + BLK_H//2 + 4}">\u2190 best</text>')
-            # Highlight row with subtle background
-            L.append(f'<rect fill="{PAL["green_l"]}" height="{BLK_H + 4}" rx="4" '
-                     f'width="{FIG_W - 24}" x="12" y="{y - 2}" opacity="0.2"/>')
-
-    # Final output label
-    y_out = y_hdr + 8 + 3 * 30 + 4
-    L.append(hdivider(y_out))
-    L.append(f'<text fill="{PAL["heading"]}" font-size="10" font-weight="600" '
-             f'text-anchor="middle" x="{FIG_W//2}" y="{y_out + 18}">'
-             f'Best alignment per read \u2192 consensus BAM</text>')
+    y_out = y_sec3 + 20
+    L.append(row_label("Output", y_out + BH//2 + 4, x=14))
+    # Transcript body block
+    L.append(aligned_block(X0, y_out, BODY_BLK_W, BH, "transcript body", BODY_C))
+    # Body bases (kept)
+    for i, b in enumerate(body_tail):
+        L.append(base(bx_body + i*BW, y_out, b))
+    # A-tract (kept — could be genomic)
+    L.append(bases_row(bx_at, y_out, a_tract, POLYA_F, POLYA_B, POLYA_B))
+    # Ambiguous T (kept)
+    L.append(
+        f'<rect fill="{AMB_F}" height="{BH}" rx="{BR}" width="{BW}" '
+        f'x="{bx_t}" y="{y_out}" stroke="{AMB_B}" stroke-width="1.2"/>'
+        f'<text fill="{AMB_B}" font-size="11" font-weight="700" text-anchor="middle" '
+        f'x="{bx_t + BW//2}" y="{y_out + BH//2 + 4}">T</text>'
+    )
+    # Checkmark + note
+    L.append(f'<text fill="{PAL["green"]}" font-size="10" font-weight="700" '
+             f'x="{bx_t + BW + 10}" y="{y_out + BH//2 + 0}">'
+             f'\u2713 ready for alignment</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'x="{bx_t + BW + 10}" y="{y_out + BH//2 + 12}">'
+             f'ambiguous T resolved by 3\u2032 walk-back after alignment</text>')
+    # Metadata note
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_out + BH + 22}">'
+             f'tail length, adapter sequence, and pass number saved to metadata parquet</text>')
 
     L.append(svg_close())
     return "\n".join(L)
@@ -692,6 +1027,12 @@ def fig_multi_aligner_consensus():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fig_false_junction_walkback():
+    """
+    False Junction Walk-Back on a pre-trimmed read.  When a pre-trimmed read
+    is re-aligned, the aligner may introduce a spurious N-op (splice junction)
+    to jump between two separated A-tracts, shifting the apparent 3' end
+    downstream.  Walk-back absorbs the false N and recovers the true CPA.
+    """
     H = 360
     X0 = 70
     GAP_W = 50
@@ -701,9 +1042,9 @@ def fig_false_junction_walkback():
 
     # -- BEFORE --
     y_sec = 42
-    L.append(section_head("BEFORE CORRECTION", y_sec, PAL["red"]))
+    L.append(section_head("ALIGNED READ (pre-trimmed, poly(A) already removed)", y_sec, PAL["red"]))
 
-    # Genome row — extra room for CPA marker + brackets above
+    # Genome row: GTC | AAAA | --gap-- | AAAA | GTC
     y_g = y_sec + 28
     L.append(row_label("Genome", y_g + BH // 2 + 4))
 
@@ -715,7 +1056,7 @@ def fig_false_junction_walkback():
     for i in range(4):
         L.append(base(a1_start + i * BW, y_g, "A", None, PAL["green"]))
 
-    # Gap
+    # Gap (genomic region between two A-tracts)
     gap_x1 = a1_start + 4 * BW
     gap_x2 = gap_x1 + GAP_W
     L.append(f'<line stroke="{PAL["muted"]}" stroke-dasharray="5,3" stroke-width="1.5" '
@@ -735,20 +1076,23 @@ def fig_false_junction_walkback():
     L.append(brace_above(a1_start, a1_start + 4 * BW, y_g - 1, PAL["green"], "A-tract"))
     L.append(brace_above(a2_start, a2_start + 4 * BW, y_g - 1, PAL["green"], "A-tract"))
 
-    # CPA marker — positioned below brackets
+    # CPA marker
     L.append(vert_marker(a1_start, y_g - 14, y_g, PAL["green"], "true CPA", "left"))
 
-    # Read row
+    # Read row — pre-trimmed read with false N-op
+    # The pre-trimmed read has ...GTCAAAAAT
+    # Aligner jumped from first A-tract to second via false N-op to accommodate the T
     y_r = y_g + 50
     L.append(row_label("Read", y_r + BH // 2 + 4))
 
     for i, b in enumerate(left_seq):
         L.append(base(X0 + i * BW, y_r, b))
 
+    # A's in first A-tract
     for i in range(4):
-        L.append(base(a1_start + i * BW, y_r, "A", PAL["blue_l"], PAL["blue"]))
+        L.append(base(a1_start + i * BW, y_r, "A"))
 
-    # FALSE JUNCTION -- red N box
+    # FALSE JUNCTION (N op) — aligner skipped the gap
     fj_x = gap_x1
     L.append(f'<rect fill="{PAL["red_l"]}" height="{BH}" rx="{BR}" '
              f'stroke="{PAL["red"]}" stroke-width="1.5" width="{GAP_W}" '
@@ -756,16 +1100,19 @@ def fig_false_junction_walkback():
     L.append(f'<text fill="{PAL["red"]}" font-size="10" font-weight="700" '
              f'text-anchor="middle" x="{fj_x + GAP_W // 2}" y="{y_r + BH // 2 + 4}">N</text>')
 
-    for i in range(4):
-        L.append(base(a2_start + i * BW, y_r, "A", PAL["blue_l"], PAL["blue"]))
-
-    sc_start = a2_start + 4 * BW
+    # A's in second A-tract
     for i in range(3):
-        L.append(base(sc_start + i * BW, y_r, "A", "#bfdbfe", "#1d4ed8"))
-    L.append(brace_above(sc_start, sc_start + 3 * BW, y_r - 1, "#1d4ed8", "soft-clip"))
+        L.append(base(a2_start + i * BW, y_r, "A"))
+
+    # Terminal T (ambiguous base from pre-trimmer)
+    L.append(base(a2_start + 3 * BW, y_r, "T", PAL["orange_l"], PAL["orange"]))
 
     L.append(f'<text fill="{PAL["red"]}" font-size="9" font-weight="600" '
              f'text-anchor="middle" x="{fj_x + GAP_W // 2}" y="{y_r + BH + 14}">false N op</text>')
+
+    # Apparent 3' end marker
+    app_x = a2_start + 4 * BW
+    L.append(vert_marker(app_x, y_r - 4, y_r + BH + 4, PAL["red"], "apparent 3\u2032 end", "right"))
 
     # -- DIVIDER --
     y_div = y_r + BH + 26
@@ -773,26 +1120,25 @@ def fig_false_junction_walkback():
 
     # -- AFTER --
     y_sec2 = y_div + 18
-    L.append(section_head("AFTER CORRECTION", y_sec2, PAL["green"]))
+    L.append(section_head("AFTER WALK-BACK", y_sec2, PAL["green"]))
 
     y_arrow = y_sec2 + 18
-    arrow_r = sc_start + 2 * BW
+    arrow_r = a2_start + 3 * BW
     arrow_l = a1_start + 4
     L.append(h_arrow(arrow_r, arrow_l, y_arrow, PAL["blue"],
-                     "walk back: eat A\u2019s, discard N"))
+                     "walk back: skip A\u2019s + T error, discard false N"))
 
     y_c = y_arrow + 24
     L.append(row_label("Corrected", y_c + BH // 2 + 4))
     for i, b in enumerate(left_seq):
         L.append(base(X0 + i * BW, y_c, b))
 
-    L.append(vert_marker(a1_start, y_c - 8, y_c + BH + 4, PAL["green"], "correct 3\u2032 end"))
+    L.append(vert_marker(a1_start, y_c - 8, y_c + BH + 4, PAL["green"], "true 3\u2032 end (CPA)"))
 
-    tail_n = 4 + 4 + 3
-    for i in range(tail_n):
-        L.append(base(a1_start + i * BW, y_c, "A", PAL["blue_l"], PAL["blue"]))
-    L.append(brace_below(a1_start, a1_start + tail_n * BW, y_c + BH + 1, PAL["blue"],
-                          "poly(A) tail (false N discarded)"))
+    # Note
+    L.append(f'<text fill="{PAL["muted"]}" font-size="9" font-style="italic" '
+             f'x="{a1_start + 8}" y="{y_c + BH + 22}">'
+             f'false N-op discarded; CPA position recorded in corrected TSV</text>')
 
     L.append(svg_close())
     return "\n".join(L)
@@ -809,6 +1155,7 @@ if __name__ == "__main__":
         "5prime_junction_rescue": fig_5prime_junction,
         "multi_aligner_consensus": fig_multi_aligner_consensus,
         "false_junction_walkback": fig_false_junction_walkback,
+        "polya_pretrim":          fig_polya_pretrim,
     }
     for name, fn in figures.items():
         svg_path = os.path.join(OUTDIR, f"{name}.svg")
