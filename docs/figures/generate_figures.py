@@ -479,82 +479,209 @@ def fig_5prime_junction():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fig_multi_aligner_consensus():
-    H = 400
-    BLK_H = 26
+    """
+    Same read, three aligners, three different structural decisions:
+      - mapPacBio: clean alignment to annotated junction (wins)
+      - minimap2: soft-clips the entire 5' end of the read (no Exon 1)
+      - gapmm2: forces annotated junction but with junction-proximal indels
+      - mapPacBio: discovers a novel alternative junction (diff 5'SS & 3'SS)
+    """
+    H = 530
+    BLK_H = 24
+    ROW_SP = 38
     L = []
     L.append(svg_open(H))
-    L.append(fig_title("Multi-Aligner Consensus Pipeline"))
+    L.append(fig_title("Multi-Aligner Consensus: Selecting the Optimal Alignment"))
 
-    # -- STEP 1 --
-    y_sec = 42
-    L.append(section_head("STEP 1  ALIGN WITH MULTIPLE ALIGNERS", y_sec))
+    # Genome reference coordinates
+    # Exon 1: 120-280, Intron: 280-390, Exon 2: 390-540
+    EX1_X, EX1_W = 120, 160
+    EX2_X, EX2_W = 390, 150
+    INT_X1, INT_X2 = 280, 390
 
-    # Genome reference
-    y_g = y_sec + 22
+    # Aligner colors
+    AC = {"minimap2": "#3b82f6", "gapmm2": "#22c55e", "mapPacBio": "#f59e0b"}
+
+    # Junction shift for mapPacBio's novel junction
+    NOVEL_5SS = 10
+    NOVEL_3SS = 8
+
+    # ── SAME READ, THREE DIFFERENT STRUCTURAL DECISIONS ──
+    y_sec = 40
+    L.append(section_head("SAME READ, THREE ALIGNERS \u2192 THREE DIFFERENT STRUCTURES", y_sec))
+
+    # Genome annotation
+    y_g = y_sec + 24
     L.append(row_label("Genome", y_g + BLK_H // 2 + 4))
-    L.append(exon(100, y_g, 160, BLK_H, "Exon 1"))
-    L.append(intron(260, 370, y_g + BLK_H // 2))
-    L.append(exon(370, y_g, 160, BLK_H, "Exon 2"))
+    L.append(exon(EX1_X, y_g, EX1_W, BLK_H, "Exon 1"))
+    L.append(intron(INT_X1, INT_X2, y_g + BLK_H // 2))
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" x="{INT_X1+4}" y="{y_g + BLK_H - 2}">GT</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" text-anchor="end" x="{INT_X2-4}" y="{y_g + BLK_H - 2}">AG</text>')
+    L.append(exon(EX2_X, y_g, EX2_W, BLK_H, "Exon 2"))
 
-    # Aligner rows
-    aligner_colors = {"minimap2": "#3b82f6", "mapPacBio": "#f59e0b", "gapmm2": "#22c55e"}
-    aligner_configs = [
-        ("minimap2",   "full"),
-        ("mapPacBio",  "sc_5p"),
-        ("gapmm2",     "sc_3p"),
+    # ── minimap2: Soft-clips the entire 5' end of the read ──
+    # minimap2 fails to split the read across the junction for this read.
+    # It aligns Exon 2 cleanly but soft-clips everything upstream (Exon 1 bases).
+    # The soft-clip is at the 5' end of the read — a valid terminal position.
+    y = y_g + 40
+    c = AC["minimap2"]
+    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">minimap2</text>')
+    # Soft-clipped Exon 1 region (entire 5' end of read)
+    L.append(f'<rect fill="{PAL["red_l"]}" height="{BLK_H}" rx="4" '
+             f'stroke="{PAL["red"]}" stroke-dasharray="4,2" stroke-width="0.8" opacity="0.6" '
+             f'width="{EX1_W}" x="{EX1_X}" y="{y}"/>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" font-style="italic" text-anchor="middle" '
+             f'x="{EX1_X + EX1_W//2}" y="{y + BLK_H//2 + 3}">soft-clipped</text>')
+    # No junction — minimap2 didn't find the splice
+    # Exon 2 aligned directly
+    L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", c))
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 0}">\u2717 no junction found</text>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 12}">\u2717 5\u2032 end entirely soft-clipped</text>')
+
+    # ── gapmm2: Annotated junction, but junction-proximal indels ──
+    # gapmm2 forces the read onto the annotated splice site coordinates,
+    # but introduces small insertions/deletions near the junction to make it fit.
+    y += ROW_SP + 4
+    c = AC["gapmm2"]
+    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">gapmm2</text>')
+    L.append(aligned_block(EX1_X, y, EX1_W, BLK_H, "Exon 1", c))
+    L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
+             f'x1="{INT_X1}" x2="{INT_X2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
+    L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", c))
+    # Indel markers — small triangles below the junction boundaries
+    tri_y = y + BLK_H
+    ins_x = INT_X1 - 4
+    L.append(f'<polygon fill="{PAL["red"]}" opacity="0.8" '
+             f'points="{ins_x},{tri_y} {ins_x+4},{tri_y+6} {ins_x+8},{tri_y}"/>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="6" text-anchor="middle" '
+             f'x="{ins_x+4}" y="{tri_y+13}">ins</text>')
+    del_x = EX2_X + 2
+    L.append(f'<polygon fill="{PAL["red"]}" opacity="0.8" '
+             f'points="{del_x},{tri_y} {del_x+4},{tri_y+6} {del_x+8},{tri_y}"/>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="6" text-anchor="middle" '
+             f'x="{del_x+4}" y="{tri_y+13}">del</text>')
+    L.append(f'<text fill="{PAL["orange"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 0}">forces annotated GT-AG junction</text>')
+    L.append(f'<text fill="{PAL["red"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 12}">\u2717 junction-proximal indels</text>')
+
+    # ── mapPacBio: Novel alternative junction (different 5'SS and 3'SS) ──
+    y += ROW_SP + 18  # extra space for gapmm2's indel markers
+    c = AC["mapPacBio"]
+    L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H//2 + 4}">mapPacBio</text>')
+    # Exon 1 extends further (5'SS shifted into intron)
+    mpb_ex1_w = EX1_W + NOVEL_5SS
+    L.append(aligned_block(EX1_X, y, mpb_ex1_w, BLK_H, "Exon 1", c))
+    # Junction from shifted positions
+    mpb_int_x1 = INT_X1 + NOVEL_5SS
+    mpb_int_x2 = INT_X2 + NOVEL_3SS
+    L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
+             f'x1="{mpb_int_x1}" x2="{mpb_int_x2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
+    mpb_ex2_x = EX2_X + NOVEL_3SS
+    mpb_ex2_w = EX2_W - NOVEL_3SS
+    L.append(aligned_block(mpb_ex2_x, y, mpb_ex2_w, BLK_H, "Exon 2", c))
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 0}">\u2713 novel GC-AG junction</text>')
+    L.append(f'<text fill="{PAL["green"]}" font-size="8" x="{EX2_X + EX2_W + 8}" '
+             f'y="{y + BLK_H//2 + 12}">\u2713 clean alignment, no indels</text>')
+
+    # ── Callout ──
+    y_note = y + BLK_H + 14
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-style="italic" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_note}">'
+             f'Each aligner makes different structural decisions \u2014 '
+             f'scoring selects the best overall alignment per read</text>')
+
+    # ── DIVIDER ──
+    y_div = y_note + 12
+    L.append(hdivider(y_div))
+
+    # ── SCORE AND SELECT ──
+    y_sec2 = y_div + 16
+    L.append(section_head("SCORE EACH ALIGNMENT \u2192 SELECT BEST PER READ", y_sec2))
+
+    # Column headers
+    y_hdr = y_sec2 + 20
+    score_cols = [("junction", 555), ("annotated", 610), ("indels", 662), ("5\u2032 cov.", 712), ("edit dist.", 748)]
+    for label, cx in score_cols:
+        L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-weight="600" '
+                 f'text-anchor="middle" x="{cx}" y="{y_hdr}">{label}</text>')
+
+    # Score rows — lower score = better alignment.
+    # mapPacBio wins: correct novel junction, clean, full coverage.
+    # gapmm2 middle: annotated junction but indels penalized.
+    # minimap2 worst: no junction found, 5' soft-clipped.
+    scores = [
+        ("mapPacBio",  AC["mapPacBio"],  "GC-AG", "\u2717", "none",    "full",  "1", True),
+        ("gapmm2",     AC["gapmm2"],     "GT-AG", "\u2713", "2 prox.", "full",  "3", False),
+        ("minimap2",   AC["minimap2"],   "\u2014",  "\u2014",  "none",   "none",  "5", False),
     ]
 
-    for i, (name, mode) in enumerate(aligner_configs):
-        y = y_g + 38 + i * 36
-        c = aligner_colors[name]
-        L.append(f'<text fill="{c}" font-size="10" font-weight="600" x="14" y="{y + BLK_H // 2 + 4}">{name}</text>')
+    for i, (name, color, jn, ann, indels, cov, score, is_best) in enumerate(scores):
+        y = y_hdr + 8 + i * 30
+        L.append(f'<text fill="{color}" font-size="10" font-weight="600" x="14" '
+                 f'y="{y + BLK_H//2 + 4}">{name}</text>')
 
-        if mode == "full":
-            L.append(aligned_block(100, y, 160, BLK_H, "Exon 1", c))
-            L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
-                     f'x1="260" x2="370" y1="{y + BLK_H // 2}" y2="{y + BLK_H // 2}"/>')
-            L.append(aligned_block(370, y, 160, BLK_H, "Exon 2", c))
-        elif mode == "sc_5p":
-            L.append(softclip_block(320, y, 50, BLK_H, "SC"))
-            L.append(aligned_block(370, y, 160, BLK_H, "Exon 2", c))
-        elif mode == "sc_3p":
-            L.append(softclip_block(100, y, 35, BLK_H, "SC"))
-            L.append(aligned_block(135, y, 125, BLK_H, "Exon 1", c))
-            L.append(f'<line stroke="{c}" stroke-dasharray="5,3" stroke-width="1" '
-                     f'x1="260" x2="370" y1="{y + BLK_H // 2}" y2="{y + BLK_H // 2}"/>')
-            L.append(aligned_block(370, y, 160, BLK_H, "Exon 2", c))
+        # Compact alignment bars
+        bar_x = 120
+        if name == "minimap2":
+            # Soft-clipped Exon 1 + Exon 2 only
+            L.append(f'<rect fill="{PAL["red_l"]}" height="{BLK_H}" rx="3" '
+                     f'stroke="{PAL["red"]}" stroke-dasharray="3,2" stroke-width="0.6" opacity="0.4" '
+                     f'width="{EX1_W}" x="{bar_x}" y="{y}"/>')
+            L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", color))
+        elif name == "gapmm2":
+            L.append(aligned_block(bar_x, y, EX1_W, BLK_H, "Exon 1", color))
+            L.append(f'<line stroke="{color}" stroke-dasharray="5,3" stroke-width="1" '
+                     f'x1="{INT_X1}" x2="{INT_X2}" y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
+            L.append(aligned_block(EX2_X, y, EX2_W, BLK_H, "Exon 2", color))
+            # Tiny indel marks
+            L.append(f'<polygon fill="{PAL["red"]}" opacity="0.6" '
+                     f'points="{INT_X1-2},{y+BLK_H} {INT_X1+1},{y+BLK_H+3} {INT_X1+4},{y+BLK_H}"/>')
+            L.append(f'<polygon fill="{PAL["red"]}" opacity="0.6" '
+                     f'points="{EX2_X+1},{y+BLK_H} {EX2_X+4},{y+BLK_H+3} {EX2_X+7},{y+BLK_H}"/>')
+        elif name == "mapPacBio":
+            L.append(aligned_block(bar_x, y, EX1_W + NOVEL_5SS, BLK_H, "Exon 1", color))
+            L.append(f'<line stroke="{color}" stroke-dasharray="5,3" stroke-width="1" '
+                     f'x1="{INT_X1 + NOVEL_5SS}" x2="{INT_X2 + NOVEL_3SS}" '
+                     f'y1="{y+BLK_H//2}" y2="{y+BLK_H//2}"/>')
+            L.append(aligned_block(EX2_X + NOVEL_3SS, y, EX2_W - NOVEL_3SS, BLK_H, "Exon 2", color))
 
-    # -- STEP 2 --
-    y_s2 = y_g + 38 + 3 * 36 + 10
-    L.append(hdivider(y_s2 - 4))
-    L.append(section_head("STEP 2  RESCUE SOFT-CLIPS THROUGH KNOWN JUNCTIONS", y_s2 + 14))
+        # Score values
+        jn_color = PAL["green"] if jn == "GT-AG" else (PAL["orange"] if jn == "GC-AG" else PAL["muted"])
+        L.append(f'<text fill="{jn_color}" font-size="9" text-anchor="middle" '
+                 f'x="555" y="{y + BLK_H//2 + 4}">{jn}</text>')
+        ann_color = PAL["green"] if ann == "\u2713" else (PAL["red"] if ann == "\u2717" else PAL["muted"])
+        L.append(f'<text fill="{ann_color}" font-size="10" font-weight="600" text-anchor="middle" '
+                 f'x="610" y="{y + BLK_H//2 + 4}">{ann}</text>')
+        indel_color = PAL["green"] if indels == "none" else PAL["red"]
+        L.append(f'<text fill="{indel_color}" font-size="9" font-weight="600" text-anchor="middle" '
+                 f'x="662" y="{y + BLK_H//2 + 4}">{indels}</text>')
+        cov_color = PAL["green"] if cov == "full" else PAL["red"]
+        L.append(f'<text fill="{cov_color}" font-size="9" font-weight="600" text-anchor="middle" '
+                 f'x="712" y="{y + BLK_H//2 + 4}">{cov}</text>')
 
-    y_g2 = y_s2 + 34
-    L.append(row_label("Genome", y_g2 + BLK_H // 2 + 4))
-    L.append(exon(100, y_g2, 160, BLK_H, "Exon 1"))
-    L.append(intron(260, 370, y_g2 + BLK_H // 2))
-    L.append(exon(370, y_g2, 160, BLK_H, "Exon 2"))
+        # Edit distance — lower is better
+        sc_weight = "700" if is_best else "600"
+        sc_color = PAL["green"] if is_best else (PAL["red"] if int(score) >= 5 else PAL["heading"])
+        L.append(f'<text fill="{sc_color}" font-size="12" font-weight="{sc_weight}" '
+                 f'text-anchor="middle" x="748" y="{y + BLK_H//2 + 4}">{score}</text>')
 
-    rescued_data = [
-        ("minimap2",   "#3b82f6", False),
-        ("mapPacBio",  "#f59e0b", True),
-        ("gapmm2",     "#22c55e", True),
-    ]
-    for i, (name, color, was_rescued) in enumerate(rescued_data):
-        y = y_g2 + 34 + i * 32
-        L.append(f'<text fill="{color}" font-size="10" font-weight="600" x="14" y="{y + BLK_H // 2 + 4}">{name}</text>')
-        L.append(aligned_block(100, y, 160, BLK_H, "Exon 1", color))
-        L.append(f'<line stroke="{color}" stroke-dasharray="5,3" stroke-width="1" '
-                 f'x1="260" x2="370" y1="{y + BLK_H // 2}" y2="{y + BLK_H // 2}"/>')
-        L.append(aligned_block(370, y, 160, BLK_H, "Exon 2", color))
-        if was_rescued:
-            L.append(f'<text fill="{PAL["teal"]}" font-size="10" font-weight="600" '
-                     f'x="540" y="{y + BLK_H // 2 + 4}">\u2713 rescued</text>')
+        if is_best:
+            L.append(f'<text fill="{PAL["green"]}" font-size="9" font-weight="700" '
+                     f'x="762" y="{y + BLK_H//2 + 4}">\u2190 best</text>')
+            # Highlight row with subtle background
+            L.append(f'<rect fill="{PAL["green_l"]}" height="{BLK_H + 4}" rx="4" '
+                     f'width="{FIG_W - 24}" x="12" y="{y - 2}" opacity="0.2"/>')
 
-    # -- STEP 3 --
-    y_s3 = y_g2 + 34 + 3 * 32 + 10
-    L.append(hdivider(y_s3 - 4))
-    L.append(section_head("STEP 3  SCORE \u2192 SELECT BEST PER READ \u2192 CONSENSUS BAM", y_s3 + 14))
+    # Final output label
+    y_out = y_hdr + 8 + 3 * 30 + 4
+    L.append(hdivider(y_out))
+    L.append(f'<text fill="{PAL["heading"]}" font-size="10" font-weight="600" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_out + 18}">'
+             f'Best alignment per read \u2192 consensus BAM</text>')
 
     L.append(svg_close())
     return "\n".join(L)

@@ -14,7 +14,7 @@
 
 ## Overview
 
-Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving four intertwined problems: spurious 3' ends created by poly(A) tail artifacts (indels and false splice junctions), soft-clipped 5' bases that actually align upstream of splice sites, homopolymer-driven soft-clipping at 3' ends, and conflicting junction calls between different aligners. **RECTIFY** solves all four through multi-aligner rectification, artifact-aware corrections, and optional NET-seq refinement, delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
+Nanopore direct RNA sequencing offers unprecedented read lengths, but accurate transcript structure mapping requires solving five intertwined problems: poly(A) tails that mislead aligners into spurious splice junctions and indels (requiring pre-trimming for DRS data), residual 3' end artifacts in A-tract regions, imprecise 5' ends and junction boundaries from soft-clipping, homopolymer-driven 3' soft-clipping at CPA sites, and conflicting junction calls between aligners. **RECTIFY** solves all five through pre-alignment poly(A) removal, multi-aligner rectification, artifact-aware corrections, sequence-evidence-first junction refinement, and optional NET-seq refinement — delivering nucleotide-precision 5' and 3' end coordinates and splice junction sets.
 
 **Use RECTIFY when you need:**
 - Accurate cleavage and polyadenylation (CPA) site mapping from DRS data
@@ -48,7 +48,7 @@ conda install -c conda-forge -c bioconda rectify-rna
 rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 
 # Full pipeline: alignment → correction → analysis
-rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+rectify run-all reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 
 # Process NET-seq data (nascent RNA 3' ends)
 rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
@@ -58,7 +58,23 @@ rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
 
 ## How It Works
 
-RECTIFY reconstructs true RNA 3' and 5' ends through four sequential corrections, each addressing a specific alignment artifact.
+RECTIFY reconstructs true RNA 3' and 5' ends through a pre-alignment trimming step and four sequential corrections, each addressing a specific alignment artifact.
+
+### 0. DRS Pre-Trimming: Removing Poly(A) Tails Before Alignment
+
+For direct RNA sequencing (DRS), poly(A) tails are present in the read sequence. When left untrimmed, they mislead aligners into creating spurious splice junctions and indels as aligners try to force-align A-rich tail bases against genomic A-tracts — the very artifacts that downstream correction modules must then repair. **RECTIFY eliminates the source** with `rectify trim-polya`, which strips the poly(A) tail and adapter stub before re-alignment, producing clean reads that align correctly.
+
+<p align="center">
+  <img src="docs/figures/polya_pretrim.png" alt="DRS Poly(A) Pre-Trimming" width="680">
+</p>
+
+The trimmer uses a three-pass algorithm in RNA 5'→3' orientation:
+
+- **Pass 0** — Adapter stub removal: regex `T[CT]{0,10}$` strips the 3'-terminal adapter stub in a single scan.
+- **Pass 1** — Pure-A tail scan: slides leftward from the stripped boundary counting consecutive A-rich bases (strict mode: 0% non-A allowed) to locate the poly(A) / transcript body junction.
+- **Pass 2** — Iterative peel: handles ambiguous boundaries where Nanopore basecalling errors (T calls within the tail) confuse the pure scan; peels the tail one base at a time until A-richness drops below threshold.
+
+Reads with no detectable tail pass through unchanged. Output: an **unaligned BAM** with poly(A)-free reads for re-alignment, plus a **per-read metadata parquet** recording tail length, adapter sequence, and pass number — used by `rectify restore-softclip` (Step 4) to re-attach the original tail to the IGV softclip BAM for tail-length visualization.
 
 ### 1. 3' End Walk-Back: Recovering the True CPA Site
 
@@ -76,17 +92,23 @@ When poly(A) tails align to genomic A-tracts, aligners introduce indels and spur
   <img src="docs/figures/false_junction_walkback.png" alt="False Junction Walk-Back" width="680">
 </p>
 
-### 2. 5' End Junction Rescue: Recovering Soft-Clipped Bases at Splice Sites
+### 2. Unified 5' End and Junction Correction: Rescue and N-Op Refinement
 
-Nanopore reads that begin near a splice junction frequently have their 5'-most bases soft-clipped rather than placed in the upstream exon. RECTIFY identifies these soft-clipped sequences, locates the nearest annotated donor site, and extends the alignment through the intron to recover the true transcription start position.
+RECTIFY applies two complementary modules that together deliver nucleotide-precision 5' ends and splice junction boundaries.
+
+**Part 1 — 5' Soft-Clip Junction Rescue (Cat3):** Nanopore reads that begin near a splice junction frequently have their 5'-most bases soft-clipped rather than placed in the upstream exon, because the short exon fragment is too ambiguous for the aligner to place confidently. RECTIFY identifies these soft-clipped sequences, locates the nearest annotated donor site, performs a semi-global Needleman-Wunsch alignment (affine gap, Gotoh 1982) between the soft-clip bases and the upstream exon reference, and extends the alignment through the intron with a proper M/I/D CIGAR — recovering the true transcription start position with per-base resolution.
+
+**Part 2 — Post-Consensus N-Op Junction Refinement (Module 2H):** After consensus aligner selection, every N-op (splice junction) in every read is re-scored. For each N-op, RECTIFY collects all candidate junctions within a search radius and scores each with a homopolymer-aware semi-global alignment: the rescue sequence (bases downstream of the current N-op split) is aligned left-anchored to the candidate intron end, with HP-aware linear gap costs (HP deletions cost 0.5, non-HP deletions 1.0, insertions 1.25). The winner is selected by strict priority: sequence match score first, then current-junction stability (equal-scoring candidates that match the existing N-op are never displaced), then canonical GT-AG motif, then annotation status, then boundary shift distance — **sequence evidence always overrides annotation**.
 
 <p align="center">
-  <img src="docs/figures/5prime_junction_rescue.png" alt="5' End Junction Rescue" width="680">
+  <img src="docs/figures/5prime_junction_rescue.png" alt="Unified 5' End and Junction Correction" width="680">
 </p>
 
-### 3. Soft-Clip Rescue: Recovering 5' Bases at Homopolymer Boundaries
+A fast path skips scoring for reads already at an annotated canonical-tier-0 junction, providing a 255× speedup. The `max_boundary_shift` parameter (default 50 bp) prevents false matches from junctions in neighbouring genes; `search_radius` (default 5000 bp) controls candidate discovery.
 
-Nanopore basecallers systematically under-call homopolymer runs. At CPA sites with upstream T-rich regions, this causes the aligner to soft-clip non-T bases rather than place them in the correct exon. RECTIFY identifies soft-clipped sequences, skips remaining reference homopolymer bases, and matches them to downstream reference positions.
+### 3. 3' End Soft-Clip Rescue at Homopolymer Boundaries
+
+Nanopore basecallers systematically under-call homopolymer runs. At cleavage and polyadenylation (CPA) sites with upstream T-rich genomic regions, this causes the aligner to terminate the alignment prematurely, soft-clipping non-T bases that actually belong to the transcript body. RECTIFY identifies soft-clipped sequences, skips remaining reference homopolymer bases, and matches them to downstream reference positions.
 
 <p align="center">
   <img src="docs/figures/softclip_rescue.png" alt="Soft-Clip Rescue at Homopolymer Boundaries" width="680">
@@ -128,8 +150,9 @@ rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.ba
 
 | Feature | Benefit |
 |:--------|:--------|
+| **DRS Poly(A) Pre-Trimming** | Three-pass algorithm (adapter stub strip → pure-A scan → iterative peel) removes poly(A) + adapter before re-alignment; tail lengths and adapter sequences stored in metadata parquet for downstream restoration |
 | **Multi-Aligner Rectification** | Rectifies each aligner independently, then selects the winning aligner per read using post-rectification features (5' rescue > confidence > agreement > span > junctions); optionally stitches complementary junctions from two aligners (chimeric reconstruction) |
-| **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through known splice junctions |
+| **Unified 5' Rescue and Junction Refinement** | Cat3 rescues 5'-soft-clipped reads via semi-global NW alignment to the upstream exon; Module 2H refines every N-op boundary post-consensus using homopolymer-aware split-alignment where sequence evidence always overrides annotation |
 | **3' End Walk-Back** | Walks backward from soft-clip boundary to recover true CPA site, transparently absorbing indels, T sequencing errors, and spurious splice junctions (N ops) in a single pass |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
 | **Poly(A) Measurement** | Reports tail length including both aligned and soft-clipped bases |
@@ -227,7 +250,7 @@ rectify analyze corrected.tsv --annotation genes.gtf --output-dir results/
 rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 # Complete pipeline from reads to differential expression
-rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+rectify run-all reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 
 # Process NET-seq data (nascent RNA 3' ends for A-tract refinement)
 rectify netseq netseq.bam --genome genome.fa --gff genes.gff -o netseq_output/
