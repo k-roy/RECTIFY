@@ -25,7 +25,7 @@
 <body>
 
 <h1>IGV Links — RECTIFY Validation Reads</h1>
-<p class="subtitle">32 reads from <code>wt_by4742_rep1.bam</code> (S. cerevisiae, direct RNA nanopore) — all eight correction categories</p>
+<p class="subtitle">36 reads from <code>wt_by4742_rep1.bam</code> and <code>rpl19b_rpl20b_drs.bam</code> (S. cerevisiae, direct RNA nanopore) — nine correction categories</p>
 
 <div class="note">
   <strong>Prerequisite:</strong> In IGV, enable the HTTP server via
@@ -35,10 +35,10 @@
   <strong>Corrected 3′-end bedgraphs (all categories):</strong> Load
   <code>rectified/rectified_corrected_3end_corrected_3ends.plus.bedgraph</code> and
   <code>rectified/rectified_corrected_3end_corrected_3ends.minus.bedgraph</code> to see
-  corrected 3′-end signal for all 32 reads (Cat1–8). These tracks show a single signal peak
+  corrected 3′-end signal for all 36 reads (Cat1–9). These tracks show a single signal peak
   at the corrected position for each read.
-  The <code>ambiguous_pA_netseq_assigned</code> bedgraphs cover <strong>only</strong> Cat8
-  (NET-seq weighted) reads — use the <code>corrected_3ends</code> tracks to verify Cat1–7 positions.
+  Cat9 reads have N-ops refined by Module 2H — load <code>rectified/rectified_corrected_3end.bam</code>
+  alongside <code>validation_reads.bam</code> to see the junction boundary shift.
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -371,6 +371,55 @@ Focused view is ±100 bp around the corrected 3′ end.</p>
     <td class="detail">primary 3′ at chrVIII:100520 (A ref); fractions sum=1.0</td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:100405-100620">chrVIII:100405-100620</a></td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVIII:100505-101004">full</a></td>
+  </tr>
+</table>
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Category 9 — junction N-op boundary refinement (<code>cat9_junction_refine</code>)</h2>
+<p style="font-size:0.88rem; color:#555;">Reads where the consensus aligner placed the intron boundary a few bp off from the true GT-AG splice site.
+Module 2H (<code>--aligner-bams</code> + <code>--annotation</code>) rescores all candidate junctions within 5 kb
+using HP-aware split alignment and corrects the N-op boundaries. Load <strong>both</strong>
+<code>validation_reads.bam</code> (wrong boundary) and <code>rectified/rectified_corrected_3end.bam</code>
+(corrected) to see the shift. Focused view is ±200 bp around the corrected junction.</p>
+<table>
+  <tr><th>Label</th><th>Strand</th><th>Gene</th><th>Wrong N-op → Corrected</th><th>Motif</th><th>Focused (junction ±200 bp)</th><th>Full Span</th></tr>
+
+  <tr>
+    <td><code>cat9_plus_1</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td>RPL26B (chrVII)</td>
+    <td class="detail">555824–556304 → 555830–556307</td>
+    <td class="detail"><strong>GT-AG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:555630-556507">chrVII:555630-556507</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:555803-556805">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat9_plus_2</code></td>
+    <td><span class="tag plus">+</span></td>
+    <td>RPL30 (chrVII)</td>
+    <td class="detail">439089–439324 → 439093–439323</td>
+    <td class="detail"><strong>GT-AG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:438893-439523">chrVII:438893-439523</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:439070-439799">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat9_minus_1</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td>RPL20B (chrXV)</td>
+    <td class="detail">900758–901189 → 900767–901193</td>
+    <td class="detail"><strong>GT-AG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900567-901393">chrXV:900567-901393</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900174-901206">full</a></td>
+  </tr>
+  <tr>
+    <td><code>cat9_minus_2</code></td>
+    <td><span class="tag minus">−</span></td>
+    <td>RPL20B (chrXV)</td>
+    <td class="detail">900757–901189 → 900767–901193</td>
+    <td class="detail"><strong>GT-AG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900567-901393">chrXV:900567-901393</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXV:900138-901206">full</a></td>
   </tr>
 </table>
 

@@ -16,7 +16,7 @@ from scipy.stats import expon
 from pathlib import Path
 
 # Output directory
-OUTPUT_DIR = Path("/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/docs/figures")
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "docs/figures"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -168,7 +168,7 @@ def create_spreading_visualization():
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {output_path}")
 
-    alt_path = Path("/oak/stanford/groups/larsms/Users/kevinroy/software/rectify") / "oligo_a_spreading.png"
+    alt_path = Path(__file__).resolve().parent.parent / "oligo_a_spreading.png"
     plt.savefig(alt_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {alt_path}")
 
@@ -312,7 +312,7 @@ def create_deconvolution_visualization():
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {output_path}")
 
-    alt_path = Path("/oak/stanford/groups/larsms/Users/kevinroy/software/rectify") / "oligo_a_deconvolution.png"
+    alt_path = Path(__file__).resolve().parent.parent / "oligo_a_deconvolution.png"
     plt.savefig(alt_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {alt_path}")
 
@@ -446,7 +446,7 @@ def create_adaptive_clustering_visualization():
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {output_path}")
 
-    alt_path = Path("/oak/stanford/groups/larsms/Users/kevinroy/software/rectify") / "adaptive_clustering.png"
+    alt_path = Path(__file__).resolve().parent.parent / "adaptive_clustering.png"
     plt.savefig(alt_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {alt_path}")
 

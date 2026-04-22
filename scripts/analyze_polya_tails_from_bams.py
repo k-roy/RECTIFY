@@ -20,9 +20,9 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 
-# Paths
-BASE_DIR = Path("/oak/stanford/groups/larsms/Users/kevinroy")
-RECTIFY_DIR = BASE_DIR / "software/rectify"
+# Paths — configure for your environment
+BASE_DIR = Path("/path/to/your/data")  # set to your data root
+RECTIFY_DIR = Path(__file__).resolve().parent.parent  # repo root (auto-detected)
 GENOME_PATH = BASE_DIR / "scripts_and_keyfiles/by_project/common_reference_files/MAGESTIC_background_strain.fasta"
 
 # WT BY4742 Nanopore BAMs (to define CPA sites)

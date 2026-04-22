@@ -168,11 +168,11 @@ Script: `minimap2_run/run_combined_analysis.sh` (manifest mode, 16 GB RAM)
 
 ---
 
-## Key file locations (Sherlock)
+## Key file locations
 
 | Resource | Path |
 |----------|------|
-| rectify source | `/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/` |
+| rectify source | *(your local clone)* |
 | roadblocks run dir | `projects/roadblocks/rectify_alpha_output/minimap2_run/` |
 | CUT/SUT/XUT GFFs | `common/annotation_files/non_coding_rna/` |
 | Generic SLURM profile | `rectify/slurm_profiles/slurm_generic.yaml` |

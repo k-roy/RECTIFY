@@ -44,7 +44,7 @@ rectify run \
     --Scer \
     --reference wt \
     -o results/ \
-    --profile slurm_profiles/sherlock_larsms.yaml
+    --profile slurm_profiles/hpc_cpu.yaml
 ```
 
 ---

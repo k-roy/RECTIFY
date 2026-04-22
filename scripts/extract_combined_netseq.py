@@ -104,7 +104,7 @@ def combine_bigwigs(bigwig_files, output_path, min_signal=5.0):
 
 if __name__ == "__main__":
     # All WT NET-seq datasets
-    base_dir = "/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/processed_data/bigwig/reprocessed"
+    base_dir = "/path/to/bigwig/reprocessed"  # set to your bigwig directory
 
     bigwig_pairs = [
         (f"{base_dir}/netseq_2011_WT.plus.bw", f"{base_dir}/netseq_2011_WT.minus.bw"),
@@ -112,6 +112,6 @@ if __name__ == "__main__":
         (f"{base_dir}/netseq_2022_wt2.plus.bw", f"{base_dir}/netseq_2022_wt2.minus.bw"),
     ]
 
-    output = "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/saccharomyces_cerevisiae_netseq_wt.tsv.gz"
+    output = str(Path(__file__).resolve().parent.parent / "rectify/data/saccharomyces_cerevisiae_netseq_wt.tsv.gz")
 
     combine_bigwigs(bigwig_pairs, output, min_signal=5.0)

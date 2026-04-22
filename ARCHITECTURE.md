@@ -67,8 +67,9 @@ Dorado-aligned BAM (with pt:i: tags)
     │                      ④ Indel artifact correction
     │                      ⑤ False junction filtering (poly(A)-artifact N-ops)
     │                      ⑥ 5' soft-clip junction rescue
-    │                      ⑦ NET-seq refinement (optional, resolves ambiguous windows)
-    │                      ⑧ Spike-in read filtering
+    │                      ⑦ N-op junction refinement (Module 2H)
+    │                      ⑧ NET-seq refinement (optional, resolves ambiguous windows)
+    │                      ⑨ Spike-in read filtering
     │   Output BAMs (written via --write-corrected-bam / --write-softclipped-bam):
     │     rectified_corrected_3end.bam  — poly(A) region hard-clipped at corrected_3prime
     │     rectified_pA_tail_trimmed.bam  — poly(A) region soft-clipped (bases retained)
@@ -135,8 +136,8 @@ Dorado-aligned BAM (with pt:i: tags)
     plots/
 ```
 
-Steps -1 through 2 cover the full DRS pipeline. Steps 0–2 are orchestrated
-by `rectify run-all`. For DRS data, Step -1 (`trim-polya`) should be run
+Steps 0–5 cover the full DRS pipeline. Steps 0–5 can be run end-to-end
+via `rectify run-all`. For DRS data, Step 0 (`trim-polya`) should be run
 first on the Dorado-aligned BAM, then Step 4 (`restore-softclip`) applied
 after correction to re-attach the trimmed poly(A) to the softclip BAM. Each
 step can also be invoked independently through its own subcommand.
@@ -155,7 +156,7 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 | `consensus` | `core/consensus_command.py` | **Step 2** — per-read aligner selection from pre-built per-aligner BAMs; writes XA/XC/XN tags |
 | `correct` | `core/correct_command.py` | **Step 3** — 3' end correction; writes cp:i: tag on every output read |
 | `restore-softclip` | `core/restore_polya_command.py` | **Step 4 (DRS only)** — re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization |
-| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 2–6) |
+| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 0–5) |
 | `analyze` | `core/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
 | `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
 | `train-polya` | `core/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
@@ -233,8 +234,9 @@ flowchart TD
     BP --> MOD4["indel_corrector.py<br/><i>④ indel correction<br/>⑦ soft-clip rescue</i>"]
     BP --> MOD5["false_junction_filter.py<br/><i>⑤ false junction filter</i>"]
     BP --> MOD6["splice_aware_5prime.py<br/><i>⑥ 5' junction rescue</i>"]
-    BP --> MOD7["netseq_refiner.py<br/><i>⑧ NET-seq refinement</i>"]
-    BP --> MOD8["spikein_filter.py<br/><i>⑨ spike-in filter</i>"]
+    BP --> MOD7["junction_refiner.py<br/><i>⑦ N-op junction refinement<br/>(Module 2H)</i>"]
+    BP --> MOD8["netseq_refiner.py<br/><i>⑧ NET-seq refinement</i>"]
+    BP --> MOD9["spikein_filter.py<br/><i>⑨ spike-in filter</i>"]
     BP --> BW["bam_writer.py<br/><i>BAM / bedgraph output</i>"]
 
     subgraph alignment["align_command.py internals"]
@@ -270,9 +272,9 @@ rectify/                              ← git repo root
 │   ├── cli.py                        argparse entry point; dispatches subcommands
 │   ├── config.py                     all constants (chroms, thresholds, shifts)
 │   ├── slurm.py                      HPC utilities: thread limits, scratch staging
-│   ├── slurm_profiles/               YAML configs for Sherlock partitions
-│   │   ├── sherlock_larsms.yaml      CPU partition (streaming + scratch on by default)
-│   │   └── sherlock_gpu.yaml         GPU partition
+│   ├── slurm_profiles/               YAML configs for HPC partitions
+│   │   ├── hpc_cpu.yaml              CPU partition (streaming + scratch on by default)
+│   │   └── hpc_gpu.yaml              GPU partition
 │   ├── provenance.py                 SHA-256 provenance tracking; skip-if-unchanged logic
 │   │
 │   ├── core/                         pipeline step implementations
@@ -300,6 +302,7 @@ rectify/                              ← git repo root
 │   │   ├── netseq_command.py         `rectify netseq` CLI
 │   │   ├── netseq_bam_processor.py   NET-seq BAM → 3' end TSV
 │   │   ├── netseq_output.py          NET-seq output formatting
+│   │   ├── junction_refiner.py       post-consensus N-op junction refinement (Module 2H)
 │   │   ├── terminal_exon_refiner.py  terminal exon boundary refinement
 │   │   ├── spikein_filter.py         spike-in construct detection and filtering
 │   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
@@ -532,14 +535,28 @@ Correction modules are called in this order:
    to the nearest upstream exon boundary. Uses both annotated junctions and
    real junctions observed in the read's own CIGAR string.
 
-7. **`netseq_refiner.py`** — For reads whose corrected position falls in
+7. **`junction_refiner.py`** — Post-consensus N-op junction refinement
+   (Module 2H). For every N-op (splice junction) in every read, collects
+   all candidate junctions within a search radius and scores each using
+   `_score_hp_anchored`: a left-anchored HP-aware semi-global DP that aligns
+   the rescue sequence (bases downstream of the split point) to the candidate
+   intron end. HP-aware linear gap costs (del=0.5 in HP runs ≥ 4 bp, del=1.0
+   otherwise, ins=1.25) reflect Nanopore's homopolymer dropout profile.
+   Tiebreaker priority: score → is_alt (current junction preferred at equal
+   score, preventing spurious displacement) → canonical GT-AG tier →
+   annotation status → boundary shift distance. Fast path skips scoring for
+   reads already at an annotated canonical-tier-0 junction.
+   `max_boundary_shift` (default 50 bp) prevents false matches from junctions
+   in neighbouring genes.
+
+8. **`netseq_refiner.py`** — For reads whose corrected position falls in
    an ambiguous window: queries NET-seq signal, deconvolves the PSF spread
    caused by short poly(A) tails in NET-seq, and re-assigns reads
    proportionally to deconvolved peak intensities. Converts positional
    uncertainty into a probabilistic split across the most likely true CPA
    sites. Requires NET-seq bigWig or TSV data.
 
-8. **`spikein_filter.py`** — Detects and removes reads from synthetic
+9. **`spikein_filter.py`** — Detects and removes reads from synthetic
    spike-in constructs by comparing 3' UTR sequence to the genomic
    reference; spike-ins have a synthetic 3' UTR not present in the genome.
 

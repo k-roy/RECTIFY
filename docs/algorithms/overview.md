@@ -23,6 +23,10 @@ Input: FASTQ or BAM
 ┌───────────────────────────────────────────────────────────────┐
 │  Stage 2: Correction (per read)                               │
 │                                                               │
+│   N-op refinement (Module 2H)                                 │
+│   ├─ Junction re-scoring (HP-aware split-alignment)           │
+│   └─ [--junction-penalty-table] empirical HP costs (optional) │
+│                                                               │
 │   5' end                                                      │
 │   ├─ Junction rescue (soft-clip → upstream exon matching)     │
 │   └─ 3'SS truncation rescue                                   │
@@ -65,6 +69,53 @@ Input: FASTQ or BAM
 | [NET-seq Refinement](netseq_refinement.md) | NNLS deconvolution of oligo(A)-spreading |
 | [Adaptive Clustering](adaptive_clustering.md) | Valley-based CPA site grouping |
 | [APA Detection](apa_detection.md) | Alternative polyadenylation isoform quantification |
+
+---
+
+## Empirical HP penalty calibration
+
+Module 2H (N-op junction refinement) scores candidates using per-HP-length deletion and insertion
+costs. The defaults are heuristic constants derived from known Nanopore error behaviour. For
+production runs, these can be replaced with empirically derived values using
+`empirical_cigar_error_profiler.py`.
+
+### How the profiler works
+
+1. **Multi-aligner agreement** — for each read present in all aligner BAMs, find genomic intervals
+   that every aligner classifies as exonic (non-N-op). Within these agreed exonic regions, collect
+   per-position CIGAR ops from all aligners.
+
+2. **Consensus op calling** — a position is emitted only if all sequence-bearing aligners (those
+   with `query_sequence`) agree on the same op type (M/D/X/I). Aligners without a stored query
+   sequence (e.g. gapmm2, which uses explicit `=`/`X` CIGAR ops) contribute to D/I/X counts but
+   abstain from M calls, which require per-base sequence comparison.
+
+3. **HP context lookup** — for each agreed op, the reference homopolymer run length at that
+   position is recorded using the same `_hp_run_length()` used by Module 2H.
+
+4. **Rate and penalty computation** — error rates per (op, HP length) are computed across all
+   observed positions; the penalty table normalises so that `sub(HP=1) = 1.0` (reference), then
+   `penalty(op, hp) = rate(sub, HP=1) / rate(op, hp)`. Higher error rate → lower penalty
+   (the operation is more expected and should be discounted in scoring).
+
+### Key empirical finding (wt_by4742_rep1, 100K reads)
+
+| HP length | del rate | empirical penalty | heuristic penalty |
+|-----------|----------|-------------------|-------------------|
+| 1         | ~2.4%    | 1.00              | 1.00              |
+| 4         | ~5.8%    | 0.41              | 0.50              |
+| 8         | ~19.7%   | 0.12              | 0.25              |
+
+The current heuristic step-function (`del_hp=0.5` for HP≥4) is systematically ~2× too strict:
+long homopolymer deletions are even cheaper than assumed. The empirical table corrects this
+per-HP-length with sub-1% CV across dataset chunks, indicating stable estimates from ~50K reads.
+
+### Integration with Module 2H
+
+`HpPenaltyTable` (in `junction_refiner.py`) wraps the `penalty_scores.tsv` output. It is
+threaded through `_score_hp_anchored` and `_hp_edit_distance` as an optional argument; when
+`None`, existing heuristic behaviour is unchanged. Load via `--junction-penalty-table PATH` in
+`rectify correct`.
 
 ---
 

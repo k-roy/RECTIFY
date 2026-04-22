@@ -1216,8 +1216,8 @@ def _generate_chunked_pipeline(args) -> int:
         rectify_src = str(Path(__file__).resolve().parent.parent.parent)
 
     target_reads = getattr(args, 'target_reads_per_chunk', split_command.DEFAULT_TARGET_READS)
-    slurm_partition = getattr(args, 'slurm_partition', 'larsms,owners')
-    slurm_account   = getattr(args, 'slurm_account', 'larsms')
+    slurm_partition = getattr(args, 'slurm_partition', None)
+    slurm_account   = getattr(args, 'slurm_account', None)
     uge_queue       = getattr(args, 'uge_queue', 'long.q')
     uge_pe          = getattr(args, 'uge_pe', 'smp')
     pbs_queue       = getattr(args, 'pbs_queue', 'workq')

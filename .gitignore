@@ -98,6 +98,10 @@ scratch/
 temp/
 *.log
 
+# Institution-specific / local SLURM profiles (not for public repo)
+rectify/slurm_profiles/local_*.yaml
+rectify/slurm_profiles/site_*.yaml
+
 # Beta deployment staging (managed separately via beta worktree)
 rectify_beta_deploy/
 rectify_new_files/

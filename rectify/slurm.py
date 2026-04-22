@@ -7,16 +7,16 @@ filesystem staging to optimize performance on HPC clusters.
 
 ## Thread limits (CRITICAL)
 
-Setting thread limits prevents account bans on Sherlock. Libraries like
+Setting thread limits prevents account bans on HPC clusters. Libraries like
 numpy, sklearn, and pydeseq2 auto-spawn threads that can exceed SLURM
 allocation if not constrained. Always call set_thread_limits() before
 importing numpy or sklearn.
 
 ## Scratch staging
 
-On Sherlock, $SCRATCH has ~75 GB/s bandwidth vs Oak's shared NFS. Staging
-large BAMs to $SCRATCH before correction significantly reduces wall time and
-avoids I/O contention across concurrent array tasks.
+On HPC systems, $SCRATCH typically provides high-bandwidth local storage.
+Staging large BAMs to $SCRATCH before correction significantly reduces wall
+time and avoids I/O contention across concurrent array tasks.
 
 Recommended pattern in SLURM scripts::
 
@@ -147,8 +147,8 @@ def get_scratch_dir() -> Optional[Path]:
     Return the best available high-bandwidth scratch directory for this job.
 
     Priority order (first that exists wins):
-      1. $SCRATCH       — Preferred: persistent per-user scratch (Sherlock, Hoffman2,
-                          TACC). BAM files survive for post-job inspection and job
+      1. $SCRATCH       — Preferred: persistent per-user scratch (Hoffman2, TACC,
+                          and similar HPC systems). BAM files survive for post-job inspection and job
                           resumption. Auto-purged after ~90 days.
       2. $SLURM_TMPDIR  — Node-local tmpdir on some SLURM clusters.
       3. $TMPDIR        — POSIX generic; auto-cleaned at job end (not stable).

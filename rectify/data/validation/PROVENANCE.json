@@ -5,7 +5,7 @@
   "runs": [
     {
       "timestamp": "2026-04-11T17:36:00.417609",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -29,7 +29,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -84,7 +84,7 @@
     },
     {
       "timestamp": "2026-04-11T17:50:36.963423",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -108,7 +108,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -163,7 +163,7 @@
     },
     {
       "timestamp": "2026-04-12T10:00:55.621975",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -187,7 +187,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -242,7 +242,7 @@
     },
     {
       "timestamp": "2026-04-12T11:01:46.978614",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -266,7 +266,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -321,7 +321,7 @@
     },
     {
       "timestamp": "2026-04-12T11:14:23.470854",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -345,7 +345,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -400,7 +400,7 @@
     },
     {
       "timestamp": "2026-04-12T12:41:18.706703",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -424,7 +424,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -479,7 +479,7 @@
     },
     {
       "timestamp": "2026-04-12T12:54:26.337371",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -503,7 +503,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -558,7 +558,7 @@
     },
     {
       "timestamp": "2026-04-12T15:12:57.091403",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -582,7 +582,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -637,7 +637,7 @@
     },
     {
       "timestamp": "2026-04-13T10:34:36.350334",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -661,7 +661,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -716,7 +716,7 @@
     },
     {
       "timestamp": "2026-04-13T10:46:12.009961",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -740,7 +740,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -795,7 +795,7 @@
     },
     {
       "timestamp": "2026-04-14T07:10:22.476468",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -819,7 +819,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -874,7 +874,7 @@
     },
     {
       "timestamp": "2026-04-14T07:38:39.311773",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -898,7 +898,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -953,7 +953,7 @@
     },
     {
       "timestamp": "2026-04-14T07:41:32.031301",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -977,7 +977,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1032,7 +1032,7 @@
     },
     {
       "timestamp": "2026-04-14T07:42:18.819530",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -1056,7 +1056,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1111,7 +1111,7 @@
     },
     {
       "timestamp": "2026-04-14T07:54:46.851920",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --dT-primed-cDNA --output-bam rectify/data/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/rectified/rectified_pA_softclip.bam -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -1135,7 +1135,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1190,7 +1190,7 @@
     },
     {
       "timestamp": "2026-04-14T14:53:44.225474",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/output/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --write-corrected-bam rectify/data/output/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/output/rectified/rectified_pA_softclip.bam --write-bedgraph rectify/data/output/rectified/rectified_pA_hardclip -o rectify/data/corrected_3ends.tsv",
+      "command": "rectify correct rectify/data/output/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --write-corrected-bam rectify/data/output/rectified/rectified_pA_hardclip.bam --write-softclipped-bam rectify/data/output/rectified/rectified_pA_softclip.bam --write-bedgraph rectify/data/output/rectified/rectified_pA_hardclip -o rectify/data/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/output/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -1214,7 +1214,7 @@
         "bedgraph_prefix": "rectify/data/output/rectified/rectified_pA_hardclip"
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1269,7 +1269,7 @@
     },
     {
       "timestamp": "2026-04-14T17:44:55.415543",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/output/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --netseq-dir rectify/data -o rectify/data/corrected_3ends.tsv --report rectify/data/corrected_3ends_stats.tsv --threads 4",
+      "command": "rectify correct rectify/data/output/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --netseq-dir rectify/data -o rectify/data/corrected_3ends.tsv --report rectify/data/corrected_3ends_stats.tsv --threads 4",
       "config": {
         "bam_path": "rectify/data/output/validation_reads.bam",
         "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
@@ -1293,7 +1293,7 @@
         "bedgraph_prefix": null
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1348,7 +1348,7 @@
     },
     {
       "timestamp": "2026-04-16T09:42:41.586497",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/output/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/output/aligners/validation_reads.rectified.bam --write-softclipped-bam rectify/data/output/aligners/validation_reads.rectified_softclip.bam --write-bedgraph rectify/data/output/aligners/validation_reads.rectified -j 8",
+      "command": "rectify correct rectify/data/output/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/output/aligners/validation_reads.rectified.bam --write-softclipped-bam rectify/data/output/aligners/validation_reads.rectified_softclip.bam --write-bedgraph rectify/data/output/aligners/validation_reads.rectified -j 8",
       "config": {
         "bam_path": "rectify/data/output/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -1372,7 +1372,7 @@
         "bedgraph_prefix": "rectify/data/output/aligners/validation_reads.rectified"
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1427,7 +1427,7 @@
     },
     {
       "timestamp": "2026-04-16T11:11:11.772822",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/output/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/output/aligners/validation_reads.rectified.bam --write-softclipped-bam rectify/data/output/aligners/validation_reads.rectified_softclip.bam --write-bedgraph rectify/data/output/aligners/validation_reads.rectified",
+      "command": "rectify correct rectify/data/output/validation_reads.bam --Scer --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz -o rectify/data/corrected_3ends.tsv --write-corrected-bam rectify/data/output/aligners/validation_reads.rectified.bam --write-softclipped-bam rectify/data/output/aligners/validation_reads.rectified_softclip.bam --write-bedgraph rectify/data/output/aligners/validation_reads.rectified",
       "config": {
         "bam_path": "rectify/data/output/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -1451,7 +1451,7 @@
         "bedgraph_prefix": "rectify/data/output/aligners/validation_reads.rectified"
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "rectify",
       "outputs": [
         {
           "path": "rectify/data/corrected_3ends.tsv",
@@ -1503,58 +1503,144 @@
           "generated_by_run": 18
         }
       ]
+    },
+    {
+      "timestamp": "2026-04-21T12:42:05.376066",
+      "command": "rectify correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 -o rectify/data/validation/corrected_3ends.tsv",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_3ends.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 0.65,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": null,
+        "softclipped_bam": null,
+        "bedgraph_prefix": null,
+        "aligner_bams": [],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null
+      },
+      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
+      "working_dir": "rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_3ends.tsv",
+          "name": "corrected_3ends.tsv",
+          "size_bytes": 7296,
+          "modified": "2026-04-21T12:42:07",
+          "md5": "b7eb0bce26634f1505d180377948cc0f",
+          "generated_by_run": 19,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "eaa44d703b062d14f89aa227a26b1b7e"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 29,
+              "ends_ambiguous_atract": 22,
+              "ends_corrected_indel": 4,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 20,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 22,
+              "polya_length_sum": 87,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "ends_ag_high_confidence": 0,
+              "ends_ag_medium_confidence": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 7
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_3ends_stats.tsv",
+          "name": "corrected_3ends_stats.tsv",
+          "size_bytes": 1160,
+          "modified": "2026-04-21T12:42:07",
+          "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
+          "generated_by_run": 19
+        }
+      ]
     }
   ],
   "files": {
     "corrected_3ends.tsv": {
-      "path": "rectify/data/corrected_3ends.tsv",
+      "path": "rectify/data/validation/corrected_3ends.tsv",
       "name": "corrected_3ends.tsv",
-      "size_bytes": 6982,
-      "modified": "2026-04-16T11:11:40",
-      "md5": "db2961351092f4bd9256ece8f93a4a7d",
-      "generated_by_run": 18,
+      "size_bytes": 7296,
+      "modified": "2026-04-21T12:42:07",
+      "md5": "b7eb0bce26634f1505d180377948cc0f",
+      "generated_by_run": 19,
       "source_files": [
         {
-          "path": "rectify/data/output/validation_reads.bam",
-          "md5": "3592d1fc2ebc5e40458ef4213b567029"
+          "path": "rectify/data/validation/validation_reads.bam",
+          "md5": "eaa44d703b062d14f89aa227a26b1b7e"
         }
       ],
       "metadata": {
         "stats": {
-          "total_reads_in_bam": 32,
+          "total_reads_in_bam": 36,
           "reads_unmapped": 0,
           "reads_secondary": 0,
           "reads_supplementary": 0,
           "spikein_reads_filtered": 0,
-          "reads_processed": 32,
-          "ends_with_downstream_A": 26,
+          "reads_processed": 36,
+          "ends_with_downstream_A": 29,
           "ends_ambiguous_atract": 22,
-          "ends_corrected_indel": 3,
+          "ends_corrected_indel": 4,
           "ends_corrected_false_junction": 0,
-          "ends_shifted_atract_walking": 26,
-          "ends_refined_netseq": 22,
-          "ends_five_prime_rescued": 4,
-          "reads_with_polya": 27,
-          "polya_length_sum": 98,
+          "ends_shifted_atract_walking": 20,
+          "ends_refined_netseq": 0,
+          "ends_five_prime_rescued": 6,
+          "reads_with_polya": 22,
+          "polya_length_sum": 87,
           "polya_length_max": 25,
           "ends_flagged_ag_mispriming": 0,
           "ends_ag_high_confidence": 0,
           "ends_ag_medium_confidence": 0,
-          "confidence_high": 14,
+          "confidence_high": 32,
           "confidence_medium": 0,
-          "confidence_low": 18,
-          "total_position_shifts": 1
+          "confidence_low": 4,
+          "total_position_shifts": 7
         }
       }
     },
     "corrected_3ends_stats.tsv": {
-      "path": "rectify/data/corrected_3ends_stats.tsv",
+      "path": "rectify/data/validation/corrected_3ends_stats.tsv",
       "name": "corrected_3ends_stats.tsv",
-      "size_bytes": 1161,
-      "modified": "2026-04-16T11:11:40",
-      "md5": "8d3811fdedfc3fa4b134ee0c24b154fb",
-      "generated_by_run": 18
+      "size_bytes": 1160,
+      "modified": "2026-04-21T12:42:07",
+      "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
+      "generated_by_run": 19
     }
   },
-  "last_updated": "2026-04-16T11:11:40.645415"
+  "last_updated": "2026-04-21T12:42:07.209433"
 }

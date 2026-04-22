@@ -40,10 +40,10 @@ Three profiles are included in `rectify/slurm_profiles/`:
 | Profile | Purpose |
 |---------|---------|
 | `slurm_generic.yaml` | **Start here.** Generic template with all options documented. |
-| `sherlock_larsms.yaml` | Stanford Sherlock `larsms` partition (lab-specific). |
-| `sherlock_gpu.yaml` | Stanford Sherlock GPU partition (lab-specific). |
+| `hpc_cpu.yaml` | Generic CPU partition template (use_scratch, streaming on by default). |
+| `hpc_gpu.yaml` | Generic GPU partition template. |
 
-For any cluster other than Stanford Sherlock, start with `slurm_generic.yaml`.
+For most clusters, start with `slurm_generic.yaml` or `hpc_cpu.yaml`.
 
 ---
 
@@ -220,7 +220,7 @@ rectify split reads.fastq.gz \
     --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
     --genome /ref/genome.fa.gz \
     --annotation /ref/genes.gff.gz \
-    --slurm-partition larsms,owners \
+    --slurm-partition my-partition \
     --slurm-cpus 16 \
     --slurm-mem 64G \
     --slurm-time 12:00:00

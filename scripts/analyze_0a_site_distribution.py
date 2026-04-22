@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 
-# Paths
-BASE_DIR = Path("/oak/stanford/groups/larsms/Users/kevinroy")
-RECTIFY_DIR = BASE_DIR / "software/rectify"
+# Paths — configure for your environment
+BASE_DIR = Path("/path/to/your/data")  # set to your data root
+RECTIFY_DIR = Path(__file__).resolve().parent.parent  # repo root (auto-detected)
 GENOME_PATH = BASE_DIR / "common/reference_genomes/MAGESTIC_background_strain.fasta"
 NETSEQ_PATH = RECTIFY_DIR / "rectify/data/saccharomyces_cerevisiae_netseq_pan.tsv.gz"
 

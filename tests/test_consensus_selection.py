@@ -12,6 +12,7 @@ Covers:
 """
 
 import gzip
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -412,9 +413,8 @@ class TestSelectBestAlignment:
 # ---------------------------------------------------------------------------
 
 _REAL_BAM = Path(
-    '/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/'
-    'intermediate_data/nanopore/inhouse_by4742_dst1_4nqo/'
-    'wt_by4742_rep1.sorted.bam'
+    # Set RECTIFY_TEST_BAM env var or place file at this path for real-data tests
+    os.environ.get('RECTIFY_TEST_BAM', '/path/to/wt_by4742_rep1.sorted.bam')
 )
 _real_bam = pytest.mark.skipif(not _REAL_BAM.exists(), reason='Real BAM not available')
 

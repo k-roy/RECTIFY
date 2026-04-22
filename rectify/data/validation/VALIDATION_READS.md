@@ -1,8 +1,9 @@
 # RECTIFY Validation Reads — Reference
 
-`validation_reads.bam` contains 32 real reads from `wt_by4742_rep1.bam`
-(S. cerevisiae wild-type, direct RNA nanopore) covering eight correction
-categories with 4 reads each (2 plus-strand, 2 minus-strand). Each read carries:
+`validation_reads.bam` contains 36 real reads from `wt_by4742_rep1.bam`
+and `rpl19b_rpl20b_drs.bam` (S. cerevisiae wild-type, direct RNA nanopore)
+covering nine correction categories with 4 reads each (2 plus-strand,
+2 minus-strand). Each read carries:
 
 - **XV**: label (e.g. `cat1_plus_1`) — used as primary key in tests
 - **XG**: category name (e.g. `cat1_indel`)
@@ -231,6 +232,56 @@ rows with fractions in (0, 1) summing to 1.0.
 | `cat8_plus_multi` | chrIV:232523–234067 | + | primary corrected_3prime at non-A base (chrIV:234059=G); fractions sum=1.0 |
 | `cat8_minus_single` | chrIV:1169625–1172005 | − | 1 row, fraction=1.0 |
 | `cat8_minus_multi` | chrVIII:100505–101004 | − | primary corrected_3prime at non-T base (chrVIII:100520=A ref); fractions sum=1.0 |
+
+---
+
+## Category 9 — N-op junction boundary refinement (`cat9_junction_refine`)
+
+Module 2H (`junction_refiner.py`) corrects imprecise splice junction boundaries
+in the consensus read. Activated only when **both** `--aligner-bams` and
+`--annotation` are passed to `rectify correct`. For each N-op, the refiner
+scores all candidate junctions within `--junction-search-radius` using an
+HP-aware semi-global DP and replaces the N-op boundaries with the best-scoring
+candidate. The standard validation run (`rectify correct` without
+`--aligner-bams`) leaves these junctions uncorrected; the Cat9 test class
+(`TestCategory9JunctionRefinement`) supplies the aligner BAMs explicitly.
+
+All four reads carry `XG=cat9_junction_refine`. Sources:
+- Plus-strand reads (`cat9_plus_1`, `cat9_plus_2`): extracted from
+  `wt_by4742_rep1_chunk_000_of_016.mapPacBio.bam`
+  (mapPacBio alignment chosen as the "wrong boundary" consensus source).
+- Minus-strand reads (`cat9_minus_1`, `cat9_minus_2`): extracted from
+  `rpl19b_rpl20b.consensus.bam` (RPL19B/RPL20B dev run).
+
+| Label | Read ID prefix | Coords (0-based half-open) | Strand | Wrong N-op (consensus) | Corrected N-op |
+|---|---|---|---|---|---|
+| `cat9_plus_1`  | `00a1c9b3` | chrVII:~555803–556805 | + | (555824, 556304) | **555830–556307** |
+| `cat9_plus_2`  | `00a1e01e` | chrVII:~438983–439482 | + | (439089, 439324) | **439093–439323** |
+| `cat9_minus_1` | `0b3b593b` | chrXV:~900174–901206  | − | (900760, 901191) | **900767–901193** |
+| `cat9_minus_2` | `d3357db5` | chrXV:~900138–901206  | − | (900760, 901192) | **900767–901193** |
+
+**Notes:**
+- `cat9_plus_1`: Module 2H refines the mapPacBio junction (555824,556304) to
+  (555830,556307) using aligner-BAM candidate evidence. Passes `polya_walkback`.
+- `cat9_plus_2`: Module 2H refines (439089,439324) → (439093,439323), the
+  consensus among minimap2/gapmm2/uLTRA in the small validation BAMs.
+  Also applies `atract_ambiguity` + `polya_walkback`.
+- `cat9_minus_1` / `cat9_minus_2`: Both minus-strand reads also receive Cat3
+  5' soft-clip rescue (`five_prime_rescued`), which reports the same corrected
+  intron_end = 901193. Without aligner BAMs, Cat3 alone gives 900758-901189
+  (wrong); with aligner BAMs, Module 2H + Cat3 give the correct 900767-901193.
+
+**Aligner BAM coverage (validation set):**
+
+| Aligner | cat9_plus_1 | cat9_plus_2 | cat9_minus_1 | cat9_minus_2 |
+|---------|:-----------:|:-----------:|:------------:|:------------:|
+| minimap2 | ✓ | ✓ | ✓ | ✓ |
+| gapmm2   | ✓ | ✓ | ✓ | ✓ |
+| mapPacBio | ✓ | ✓ | ✓ | ✓ |
+| deSALT   | ✓ | ✓ | ✓ | ✓ |
+| uLTRA    | ✓ | ✓ | ✗ | ✗ |
+
+(uLTRA had no output for the RPL19B/RPL20B dev run; plus-strand reads only.)
 
 ---
 

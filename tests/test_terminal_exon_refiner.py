@@ -15,6 +15,7 @@ Covers:
 
 import io
 import gzip
+import os
 import struct
 import tempfile
 import textwrap
@@ -519,9 +520,8 @@ def _bundled_gff() -> str:
 
 # Real wt_by4742_rep1 BAM — present on Oak but not in CI
 _REAL_BAM = _Path(
-    '/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/'
-    'intermediate_data/nanopore/inhouse_by4742_dst1_4nqo/'
-    'wt_by4742_rep1.sorted.bam'
+    # Set RECTIFY_TEST_BAM env var or place file at this path for real-data tests
+    os.environ.get('RECTIFY_TEST_BAM', '/path/to/wt_by4742_rep1.sorted.bam')
 )
 _real_bam = pytest.mark.skipif(not _REAL_BAM.exists(), reason='Real BAM not available')
 

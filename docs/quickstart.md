@@ -151,7 +151,7 @@ rectify run \
     --Scer \
     --reference wt \
     -o results/ \
-    --profile rectify/slurm_profiles/sherlock_larsms.yaml
+    --profile rectify/slurm_profiles/hpc_cpu.yaml
 ```
 
 This generates `results/slurm/rectify_batch_correct.sh` (array job, one task per sample) and `results/slurm/rectify_batch_analyze.sh` (combined analysis, submitted after array). See the [HPC / SLURM guide](user_guide/hpc_slurm.md) for details.

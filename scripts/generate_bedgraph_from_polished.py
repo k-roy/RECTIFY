@@ -142,12 +142,12 @@ def main():
 
     # Set defaults if not provided
     if args.input_dir is None:
-        input_dir = Path("/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/processed_data/polished_3prime")
+        input_dir = Path("/path/to/polished_3prime")  # set with --input-dir or configure here
     else:
         input_dir = Path(args.input_dir)
 
     if args.output_dir is None:
-        output_dir = Path("/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/processed_data/bedgraph/nanopore_polished")
+        output_dir = Path("/path/to/bedgraph/nanopore_polished")  # set with --output-dir or configure here
     else:
         output_dir = Path(args.output_dir)
 

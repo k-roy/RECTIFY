@@ -131,5 +131,5 @@ For GO enrichment analysis in `rectify analyze`. Tab-separated with `gene_id` an
 Configuration for SLURM job submission via `rectify run --profile` or `rectify batch --profile`. See the [HPC / SLURM guide](hpc_slurm.md) for the full profile format.
 
 ```
---profile slurm_profiles/sherlock_larsms.yaml
+--profile slurm_profiles/hpc_cpu.yaml
 ```

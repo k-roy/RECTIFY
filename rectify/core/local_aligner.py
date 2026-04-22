@@ -380,6 +380,98 @@ def _align_left_anchored(
     return _compress(ops), ref_consumed
 
 
+def score_left_anchored(query: str, ref: str) -> Tuple[float, int]:
+    """Return the best affine-gap score and ref_consumed for a left-anchored
+    semi-global alignment of *query* against *ref*.
+
+    Runs the same DP as :func:`_align_left_anchored` but returns only the
+    score and the number of reference bases consumed at the optimal end column
+    (the soft-clip boundary), without tracing back the full CIGAR.
+
+    This is used by the junction refiner's tier-1 scoring step: for each
+    candidate 5'SS ``je``, align ``rescue[k:]`` against ``g[je:je+buffer]``
+    to find the best (score, ref_consumed) pair.  ``ref_consumed`` tells us
+    how many exon-1 bases were confidently matched before noise begins —
+    bases beyond that are soft-clipped.
+
+    Args:
+        query: Query sequence (rescue suffix in BAM orientation).
+        ref:   Reference sequence starting at intron_end / the first exon-1 base.
+
+    Returns:
+        ``(best_score, ref_consumed)`` where *best_score* is the Gotoh affine
+        score at the optimal free-suffix end column and *ref_consumed* is the
+        number of ref bases consumed (= soft-clip boundary).
+    """
+    Q, R = len(query), len(ref)
+    if Q == 0:
+        return 0.0, 0
+    if R == 0:
+        # All query bases become insertions; score = gap_open + Q * gap_extend
+        return _GAP_OPEN + Q * _GAP_EXTEND, 0
+
+    H  = [[_NEG_INF] * (R + 1) for _ in range(Q + 1)]
+    D  = [[_NEG_INF] * (R + 1) for _ in range(Q + 1)]
+    I_ = [[_NEG_INF] * (R + 1) for _ in range(Q + 1)]
+
+    H[0][0] = 0.0
+    for j in range(1, R + 1):
+        D[0][j] = _GAP_OPEN + j * _GAP_EXTEND
+    for i in range(1, Q + 1):
+        I_[i][0] = _GAP_OPEN + i * _GAP_EXTEND
+
+    for i in range(1, Q + 1):
+        qi = query[i - 1].upper()
+        for j in range(1, R + 1):
+            s = _MATCH if qi == ref[j - 1].upper() else _MISMATCH
+
+            best_h = max(H[i-1][j-1], D[i-1][j-1], I_[i-1][j-1])
+            H[i][j] = best_h + s if best_h > _NEG_INF else _NEG_INF
+
+            d_open = H[i][j-1] + _GAP_OPEN + _GAP_EXTEND if H[i][j-1] > _NEG_INF else _NEG_INF
+            d_ext  = D[i][j-1] + _GAP_EXTEND if D[i][j-1] > _NEG_INF else _NEG_INF
+            D[i][j] = max(d_open, d_ext)
+
+            i_open = H[i-1][j] + _GAP_OPEN + _GAP_EXTEND if H[i-1][j] > _NEG_INF else _NEG_INF
+            i_ext  = I_[i-1][j] + _GAP_EXTEND if I_[i-1][j] > _NEG_INF else _NEG_INF
+            I_[i][j] = max(i_open, i_ext)
+
+    # Free-suffix: best end column across all j in [0, R]
+    j_best = max(range(R + 1), key=lambda j: max(H[Q][j], D[Q][j], I_[Q][j]))
+    best_score = max(H[Q][j_best], D[Q][j_best], I_[Q][j_best])
+
+    return best_score, j_best
+
+
+def affine_score_to_edit_distance(score: float, query_len: int) -> float:
+    """Convert an affine-gap alignment score to an approximate edit distance.
+
+    The affine score uses match=+2, mismatch=-4, gap_open=-4, gap_extend=-1.
+    A perfect alignment of *query_len* bases scores ``query_len * MATCH``.
+
+    We normalize to ``[0, query_len]`` where 0 = perfect match and
+    *query_len* = completely unrelated sequences:
+
+        edit_dist = (perfect_score - score) / (MATCH - MISMATCH)
+                  = (query_len * 2 - score) / 6
+
+    This is comparable to the hp_edit_distance values used in tier-2 gap
+    scoring, allowing the two scores to be added meaningfully.
+
+    Args:
+        score:      Output of :func:`score_left_anchored`.
+        query_len:  Number of query bases used in the alignment.
+
+    Returns:
+        Float edit distance in [0, query_len].
+    """
+    if query_len == 0:
+        return 0.0
+    perfect = query_len * _MATCH
+    # Clamp: score can't exceed perfect, but allow slightly better (no penalty)
+    return max(0.0, (perfect - score) / (_MATCH - _MISMATCH))
+
+
 # ---------------------------------------------------------------------------
 # Homopolymer-aware global alignment (exon block realignment)
 # ---------------------------------------------------------------------------

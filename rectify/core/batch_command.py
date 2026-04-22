@@ -127,8 +127,8 @@ echo "Finished: $(date)"
 '''
 
 # Scratch staging block — inserted when use_scratch=True in the profile.
-# $SCRATCH on Sherlock has ~75 GB/s vs Oak NFS; staging BAMs here reduces
-# wall time and eliminates I/O contention across concurrent array tasks.
+# $SCRATCH on HPC clusters provides high-bandwidth local storage; staging BAMs here
+# reduces wall time and eliminates I/O contention across concurrent array tasks.
 # BAMs are staged (copied) because they are accessed non-sequentially during
 # correction; FASTQ inputs are left on Oak (read once, sequentially).
 _SCRATCH_SETUP_BLOCK = '''\
@@ -440,7 +440,7 @@ def load_slurm_profile(profile_path: Path) -> Dict:
     Load SLURM settings from a YAML or JSON profile file.
 
     YAML profile example (my_cluster.yaml):
-        partition: larsms,owners
+        partition: my-partition
         time: "4:00:00"    # MUST quote HH:MM:SS — bare colons parse as sexagesimal
         mem: 32G
         cpus: 8
@@ -699,7 +699,7 @@ def _run_slurm_mode(
     if should_submit and not partition:
         print(
             "ERROR: --submit requires --partition to be set. "
-            "Specify a partition (e.g. --partition larsms,owners) or omit --submit "
+            "Specify a partition (e.g. --partition my-partition) or omit --submit "
             "and run the generated scripts manually.",
             file=sys.stderr,
         )

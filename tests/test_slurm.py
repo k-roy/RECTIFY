@@ -104,14 +104,14 @@ class TestGetSlurmInfo:
         monkeypatch.setenv('SLURM_JOB_ID', '12345')
         monkeypatch.setenv('SLURM_CPUS_PER_TASK', '16')
         monkeypatch.setenv('SLURM_ARRAY_TASK_ID', '3')
-        monkeypatch.setenv('SLURM_JOB_PARTITION', 'larsms')
+        monkeypatch.setenv('SLURM_JOB_PARTITION', 'test-partition')
 
         info = get_slurm_info()
 
         assert info['job_id'] == '12345'
         assert info['cpus'] == '16'
         assert info['array_task_id'] == '3'
-        assert info['partition'] == 'larsms'
+        assert info['partition'] == 'test-partition'
 
     def test_returns_empty_outside_slurm(self, monkeypatch):
         """Should return empty dict when not in SLURM job."""

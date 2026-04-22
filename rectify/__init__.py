@@ -21,9 +21,9 @@ Author: Kevin R. Roy
 License: MIT
 """
 
-__version__ = "0.9.0"
+__version__ = "3.1.0"
 __author__ = "Kevin R. Roy"
-__email__ = "kevinroy@stanford.edu"
+__email__ = "kevinrjroy@gmail.com"
 
 from . import core, utils, slurm
 from .slurm import get_available_cpus, set_thread_limits, is_slurm_job

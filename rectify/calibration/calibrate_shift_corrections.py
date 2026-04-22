@@ -72,7 +72,7 @@ from rectify.utils.genome import reverse_complement  # noqa: F401 (re-used below
 
 # Default S. cerevisiae yeast config (roadblocks project)
 YEAST_DEFAULTS = {
-    'bam_dir': '/scratch/users/kevinroy/roadblocks_reprocess/aligned_softclip',
+    'bam_dir': '/path/to/aligned_softclip',             # set to local path
     'samples': {
         'WT_2022_rep1': 'netseq_2022_wt1_bbmap.bam',
         'WT_2022_rep2': 'netseq_2022_wt2_bbmap.bam',
@@ -80,9 +80,9 @@ YEAST_DEFAULTS = {
         'WT_2022_rep4': 'netseq_2022_wt4_trimmed_bbmap.bam',
         'WT_2011':      'netseq_2011_WT_bbmap_correct.bam',
     },
-    'clusters': '/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/processed_data/clusters_adaptive/pa_clusters_adaptive.tsv',
-    'genome':   '/oak/stanford/groups/larsms/Users/kevinroy/common/reference_genomes/S288C_reference_genome_R64-5-1_20240529/S288C_reference_sequence_R64-5-1_20240529.chrnames.fsa',
-    'output_dir': '/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/processed_data/softclip_analysis',
+    'clusters': '/path/to/pa_clusters_adaptive.tsv',        # set to local path
+    'genome':   '/path/to/S288C_reference_sequence.chrnames.fsa',  # set to local path
+    'output_dir': '/path/to/softclip_analysis',             # set to local path
     'top_n': 5000,
     # Chromosome name mapping: standard name → BAM contig name
     'chrom_to_bam': {

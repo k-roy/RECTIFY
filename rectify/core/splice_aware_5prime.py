@@ -779,8 +779,19 @@ def rescue_3ss_truncation(
     # intron-internal bases contaminates the exon-matching step and causes wrong
     # shifts to score better than the correct exon boundary.  Truncate to the
     # soft-clip length to prevent this.
+    #
+    # IMPORTANT: for minus-strand reads, _extract_5prime_rescue_seq returns
+    # query_seq[n - last_imp_q:] — the RIGHTMOST last_imp_q bases of query_seq.
+    # The soft-clip occupies the RIGHTMOST five_clip of those bases (it is the
+    # 5'-end of the RNA = trailing end of the BAM query sequence for is_reverse).
+    # Truncating with [:five_clip] would take the LEFTMOST bases (aligned exon-2
+    # body) instead.  Use [-five_clip:] for minus strand so the slice selects the
+    # actual soft-clipped sequence.
     if five_clip > 0 and rescue_seq and len(rescue_seq) > five_clip:
-        rescue_seq = rescue_seq[:five_clip]
+        if strand == '-':
+            rescue_seq = rescue_seq[-five_clip:]
+        else:
+            rescue_seq = rescue_seq[:five_clip]
 
     # --- Try sequence-based rescue against each candidate junction ---
     best_ed: float = -1.0

@@ -40,7 +40,7 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── Resource specs per aligner (empirically validated on Sherlock) ──────────
+# ── Resource specs per aligner (empirically validated on HPC clusters) ──────
 # mapPacBio uses -Xmx32g; heap does not shrink with input size.
 MPB_CORES   = 8
 MPB_MEM_GB  = 40      # 32 GB heap + 8 GB OS/JVM overhead
@@ -141,13 +141,13 @@ Examples:
     )
     script_group.add_argument(
         '--python-path',
-        default='/home/groups/larsms/users/kevinroy/anaconda3/bin/python',
-        help='Explicit path to conda Python'
+        default='python',
+        help='Explicit path to Python interpreter (default: python on PATH)'
     )
     script_group.add_argument(
         '--rectify-src',
-        default='/oak/stanford/groups/larsms/Users/kevinroy/software/rectify',
-        help='Path to RECTIFY source checkout (used as working directory)'
+        default='.',
+        help='Path to RECTIFY source checkout (used as working directory; default: current dir)'
     )
 
     # Scheduler selection
@@ -157,9 +157,9 @@ Examples:
         help='Target scheduler for generated script headers'
     )
     # SLURM
-    sched_group.add_argument('--slurm-partition', default='larsms,owners',
+    sched_group.add_argument('--slurm-partition', default=None,
                              help='SLURM partition(s)')
-    sched_group.add_argument('--slurm-account', default='larsms',
+    sched_group.add_argument('--slurm-account', default=None,
                              help='SLURM account')
     # UGE/SGE
     sched_group.add_argument('--uge-queue', default='long.q',
@@ -276,8 +276,8 @@ def _slurm_headers(
     mem_gb: int,
     time: str,
     log_pattern: str,
-    partition: str = 'larsms,owners',
-    account: str = 'larsms',
+    partition: Optional[str] = None,
+    account: Optional[str] = None,
     is_array: bool = True,
 ) -> str:
     array_line = f'#SBATCH --array=0-{n_tasks - 1}' if is_array else ''
@@ -343,7 +343,7 @@ def _pbs_headers(
 def _scheduler_headers(
     scheduler: str, job_name: str, n_tasks: int, cores: int, mem_gb: int,
     time: str, log_dir: str, log_pattern: str,
-    slurm_partition: str = 'larsms,owners', slurm_account: str = 'larsms',
+    slurm_partition: Optional[str] = None, slurm_account: Optional[str] = None,
     uge_queue: str = 'long.q', uge_pe: str = 'smp',
     pbs_queue: str = 'workq', is_array: bool = True,
 ) -> str:
@@ -728,14 +728,12 @@ def _generate_scripts(
 
     genome_str = str(args.genome.resolve()) if args.genome else '# REQUIRED: set --genome'
     annot_str  = str(args.annotation.resolve()) if args.annotation else '# REQUIRED: set --annotation'
-    python_path = getattr(args, 'python_path',
-                          '/home/groups/larsms/users/kevinroy/anaconda3/bin/python')
-    rectify_src = getattr(args, 'rectify_src',
-                          '/oak/stanford/groups/larsms/Users/kevinroy/software/rectify')
+    python_path = getattr(args, 'python_path', 'python')
+    rectify_src = getattr(args, 'rectify_src', '.')
 
     scheduler = getattr(args, 'scheduler', 'slurm')
-    slurm_partition = getattr(args, 'slurm_partition', 'larsms,owners')
-    slurm_account   = getattr(args, 'slurm_account', 'larsms')
+    slurm_partition = getattr(args, 'slurm_partition', None)
+    slurm_account   = getattr(args, 'slurm_account', None)
     uge_queue       = getattr(args, 'uge_queue', 'long.q')
     uge_pe          = getattr(args, 'uge_pe', 'smp')
     pbs_queue       = getattr(args, 'pbs_queue', 'workq')
@@ -830,8 +828,8 @@ def generate_alignment_scripts(
     scheduler: str = 'slurm',
     other_aligners: Optional[List[str]] = None,
     skip_map_pacbio: bool = False,
-    slurm_partition: str = 'larsms,owners',
-    slurm_account: str = 'larsms',
+    slurm_partition: Optional[str] = None,
+    slurm_account: Optional[str] = None,
     uge_queue: str = 'long.q',
     uge_pe: str = 'smp',
     pbs_queue: str = 'workq',

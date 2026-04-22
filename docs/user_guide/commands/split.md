@@ -30,7 +30,7 @@ rectify split reads.fastq.gz \
     --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
     --genome /ref/genome.fa.gz \
     --annotation /ref/genes.gff.gz \
-    --slurm-partition larsms,owners \
+    --slurm-partition my-partition \
     --slurm-cpus 16 \
     --slurm-mem 64G \
     --slurm-time 12:00:00
@@ -57,8 +57,8 @@ rectify split reads.fastq.gz \
 | `--genome` | — | Reference genome path (written into generated scripts) |
 | `--annotation` | — | Annotation GFF/GTF path |
 | `--aligners` | minimap2 mapPacBio gapmm2 | Aligners to include in array job |
-| `--slurm-partition` | larsms,owners | SLURM partition(s) |
-| `--slurm-account` | larsms | SLURM account |
+| `--slurm-partition` | — | SLURM partition(s) |
+| `--slurm-account` | — | SLURM account |
 | `--slurm-cpus` | 16 | CPUs per array task |
 | `--slurm-mem` | 64G | Memory per array task |
 | `--slurm-time` | 12:00:00 | Time limit per array task |

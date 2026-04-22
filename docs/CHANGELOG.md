@@ -5,6 +5,18 @@ All notable changes to RECTIFY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-04-21
+
+### Fixed
+
+- **`_score_junction` degenerate k=L case** (`core/junction_refiner.py`): the k-loop previously ran `range(L+1)`, where k=L gives an empty `rescue[L:]`, making the score 0.0 for every candidate regardless of junction quality — a completely non-discriminating case that caused the wrong junction to win whenever candidates tied at 0.0. Fixed by changing to `range(L)` so `q1 = rescue[k:]` always contains at least one base.
+
+- **`refine_read_junctions` stability tiebreaker** (`core/junction_refiner.py`): added `is_alt` as the second element of the candidate tuple (after `score`, before `canonical_tier`). `is_alt=0` when the candidate matches the current N-op boundaries exactly; `is_alt=1` otherwise. This prevents equal-scoring candidates from spuriously displacing already-correct junctions — critical when multiple candidates share the same `intron_end` (e.g. TFC3 annotated junction and a nearby alternative both score 0.0 at the same `je`).
+
+- **Impact**: 9 previously failing tests in `tests/test_junction_refiner.py` now pass. All 698 tests pass (4 skipped). Key reads fixed: RPL20B read `0b3b593b` now correctly refined from `[900758,901189)` to `[900767,901193)`; TFC3 annotated reads no longer displaced by same-score alternative at `[150989,151096)`.
+
+---
+
 ## [2.9.1] — 2026-04-12
 
 ### Fixed
@@ -181,7 +193,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **M13 — No partition check before `--submit`** (`batch_command.py`): `run_batch_command()` now returns an error immediately if `--submit` is requested without `--partition`, preventing silent submission to the cluster default partition.
 
-- **M14 — Cluster-specific example paths in public docstrings** (`batch_command.py`, `cli.py`, `run_command.py`): Replaced `sherlock_larsms.yaml` / `rectify/slurm_profiles/sherlock_larsms.yaml` in usage examples with the generic `my_cluster.yaml`.
+- **M14 — Cluster-specific example paths in public docstrings** (`batch_command.py`, `cli.py`, `run_command.py`): Replaced cluster-specific profile names in usage examples with the generic `my_cluster.yaml`.
 
 - **M15 — Silent gene attribution drop in APA isoform building** (`analyze/apa_detection.py`): `build_apa_isoforms()` now logs a WARNING when more than 10% of input records lack gene attribution, with the exact count and fraction.
 
@@ -393,7 +405,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Infrastructure ported from beta**:
   - `junction_validator.py`: Cross-sample junction validation with configurable thresholds
   - `slurm.py`: CPU detection, thread limits, scratch staging utilities
-  - Sherlock SLURM profile (`sherlock_larsms.yaml`) with `use_scratch: true` and
+  - HPC SLURM profile (`hpc_cpu.yaml`) with `use_scratch: true` and
     `streaming: true` defaults
 
 ## [2.1.0] - 2026-03-16

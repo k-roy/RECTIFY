@@ -290,7 +290,7 @@ plots/drs_adapter_analysis/
 
 ```bash
 # Full run: 100k reads per dataset (4 datasets × 100k = 400k total)
-PYTHON="/home/groups/larsms/users/kevinroy/anaconda3/envs/roadblocks_viz/bin/python"
+PYTHON="python"  # use your environment's Python
 $PYTHON analyze_drs_adapter.py
 
 # Regenerate HTML report after re-running analysis

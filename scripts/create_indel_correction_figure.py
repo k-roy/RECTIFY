@@ -388,7 +388,7 @@ ax4.text(1.2, 0.7, '-', ha='center', va='center', fontsize=12,
 ax4.text(1.8, 0.7, 'Minus strand: Poly(A) extends LEFT -> Correct by shifting RIGHT (+)',
          ha='left', va='center', fontsize=10)
 
-plt.savefig('/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/docs/figures/indel_correction.png',
+plt.savefig(Path(__file__).resolve().parent.parent / 'docs/figures/indel_correction.png',
             dpi=150, bbox_inches='tight', facecolor='white')
 plt.close()
 

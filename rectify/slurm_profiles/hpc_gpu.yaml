@@ -1,5 +1,5 @@
-# RECTIFY SLURM Profile — Sherlock GPU partition
-# Usage: rectify batch --manifest manifest.tsv ... --profile sherlock_gpu.yaml
+# RECTIFY SLURM Profile — GPU partition (generic HPC template)
+# Usage: rectify batch --manifest manifest.tsv ... --profile hpc_gpu.yaml
 
 partition: gpu
 time: "8:00:00"

@@ -186,6 +186,59 @@ The `rectify analyze` command produces:
 
 ---
 
+## Empirical Junction Penalty Calibration (Optional)
+
+The homopolymer-aware scoring in Module 2H (N-op junction refinement) uses per-HP-length cost
+values for deletions and insertions. By default these are heuristic constants
+(`del=1.0`, `del_hp=0.5 at HP≥4`, `ins=1.25`). For best accuracy, these can be replaced with
+values derived empirically from your own sequencing run using the bundled profiler script.
+
+### Why calibrate?
+
+Nanopore deletion rates increase steeply with homopolymer run length — but the exact shape depends
+on pore chemistry (R9.4 vs R10.4), basecaller version, and organism A/T content. The profiler
+finds genomic regions where **all aligners independently agree** on the same CIGAR operation
+(multi-aligner consensus on exonic positions), giving high-confidence error observations free of
+alignment artifacts. The resulting penalty table is specific to your sequencing run.
+
+### Step 1 — Profile your dataset
+
+```bash
+python common/scripts/nanopore/empirical_cigar_error_profiler.py \
+    --run-dir dev_runs/MY_SAMPLE_chunked/ \
+    --reference common/reference_genomes/MAGESTIC_background_strain.fasta \
+    --output-dir error_profile/MY_SAMPLE/
+```
+
+For chunked data the profiler auto-discovers all chunk BAMs and processes them sequentially,
+accumulating counts in a single tally. A 100K-read run takes ~5 minutes; a full dataset (~10M
+reads across 16 chunks) takes ~30–60 minutes on an interactive node.
+
+The output directory contains:
+
+| File | Description |
+|------|-------------|
+| `error_counts.tsv` | Raw counts: op × base × HP length |
+| `error_rates.tsv` | Error rate per (op, HP length), pooled across bases |
+| `penalty_scores.tsv` | Penalty table for direct plug-in to junction scoring |
+| `plots/error_rate_vs_hp_length.png` | Empirical vs heuristic curve |
+
+### Step 2 — Use the penalty table in rectify correct
+
+```bash
+rectify correct consensus.bam \
+    --genome genome.fa \
+    --annotation genes.gff \
+    --aligner-bams minimap2.bam mapPacBio.bam deSALT.bam uLTRA.bam gapmm2.bam \
+    --junction-penalty-table error_profile/MY_SAMPLE/penalty_scores.tsv \
+    -o corrected/
+```
+
+If `--junction-penalty-table` is omitted, the heuristic constants are used unchanged —
+existing behaviour is fully preserved.
+
+---
+
 ## NET-seq Refinement (Optional)
 
 For organisms with nascent RNA (NET-seq) data, RECTIFY resolves remaining ambiguity within A-tracts. NET-seq samples RNA still attached to polymerase, providing a reference for true CPA positions. Since nascent RNA is oligo-adenylated post-capture, RECTIFY uses NNLS deconvolution with a point-spread function derived from 5000+ zero-A calibration sites to recover true CPA positions.

@@ -18,19 +18,18 @@ Single-sample runs skip them by design (`run_deseq2 = n_samples > 1`).
 
 ## HPC I/O: always stage through $SCRATCH
 
-**Never run correction I/O directly on Oak in a SLURM array job.**
+**Never run correction I/O directly on shared NFS storage in a SLURM array job.**
 
-Oak is NFS-backed shared storage. Running 20 concurrent array tasks each
-streaming a 7 GB BAM through Oak causes severe I/O contention and inflates
-wall time 2–3×. On Sherlock, `$SCRATCH` provides ~75 GB/s aggregate
-bandwidth and is node-local to each task.
+NFS-backed shared storage under concurrent load causes severe I/O contention and
+inflates wall time 2–3×. On HPC clusters, `$SCRATCH` provides high-bandwidth
+local storage and is node-local to each task.
 
 ### Pattern (Python pipeline)
 
 `run_command._run_single_sample()` handles this automatically:
 
 ```python
-from rectify.slurm import make_job_scratch_dir, sync_to_oak
+from rectify.slurm import make_job_scratch_dir, sync_outputs
 
 scratch = make_job_scratch_dir('rectify_single')  # None if no scratch
 work_dir = scratch if scratch else output_dir
@@ -38,22 +37,22 @@ work_dir = scratch if scratch else output_dir
 # ... all alignment + correction + analysis writes to work_dir ...
 
 if scratch:
-    sync_to_oak(scratch, output_dir)   # rsync everything back
+    sync_outputs(scratch, output_dir)  # rsync everything back
     shutil.rmtree(scratch)
 ```
 
 ### Pattern (generated SLURM scripts)
 
 `batch_command.generate_slurm_scripts()` inserts staging blocks when
-`use_scratch=True` in the profile (default in `sherlock_larsms.yaml`):
+`use_scratch=True` in the profile (default in `hpc_cpu.yaml`):
 
 - BAM inputs are `cp`'d to `$SCRATCH` before `rectify correct`
-- FASTQ inputs are left on Oak (read sequentially once, no benefit to staging)
-- All outputs are `rsync`'d back to Oak after correction
+- FASTQ inputs are left on the source filesystem (read sequentially once, no benefit to staging)
+- All outputs are `rsync`'d back to the output directory after correction
 
 ### $SCRATCH caveats
 
-- Auto-purged after **90 days** on Sherlock — final outputs must land on Oak
+- Auto-purged after **90 days** on most HPC clusters — final outputs must land on persistent storage
 - Not shared across nodes — do not use `$L_SCRATCH` for multi-node jobs
 - `make_job_scratch_dir()` uses `$SCRATCH` → `$SLURM_TMPDIR` → `$TMPDIR` priority
 
@@ -71,7 +70,7 @@ With `--streaming` (`process_bam_streaming`), reads are processed and
 written one chunk at a time (default 10,000 reads/chunk). Peak RSS drops
 to ~4–5 GB regardless of BAM size.
 
-**Always use `--streaming` in SLURM jobs.** The `sherlock_larsms.yaml`
+**Always use `--streaming` in SLURM jobs.** The `hpc_cpu.yaml`
 profile sets `streaming: true` by default.
 
 ---
@@ -316,8 +315,8 @@ rectify/
 ├── rectify/
 │   ├── slurm.py              # CPU detection, thread limits, scratch utilities
 │   ├── slurm_profiles/
-│   │   ├── sherlock_larsms.yaml  # Standard CPU partition (use_scratch, streaming on)
-│   │   └── sherlock_gpu.yaml     # GPU partition
+│   │   ├── hpc_cpu.yaml          # Standard CPU partition (use_scratch, streaming on)
+│   │   └── hpc_gpu.yaml          # GPU partition
 │   ├── core/
 │   │   ├── run_command.py    # Active run-all dispatcher (single + multi-sample)
 │   │   ├── batch_command.py  # Generates SLURM array scripts; reads profile YAMLs
@@ -377,6 +376,40 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - Bug 38 (HIGH): `tests/test_consensus_selection.py` added (40 tests, real wt_by4742_rep1 data)
 - Bug 41 (MEDIUM): `--polya-model` wired through correction pipeline; `pt_tag`/`polya_score`/`polya_source` columns in TSV; `rectify tag-polya` subcommand; unaligned dorado BAM auto-detection
 - Bug 55 (MEDIUM): `--max-cluster-radius`, `--min-peak-sep`, `--min-cluster-samples` added to `analyze` subparser
+
+**v3.1.3 (2026-04-21):** `--aligner-bams` `aligner:path` prefix stripping bug fix:
+- `correct_command.py` `_strip_aligner_prefix()`: new private helper that strips the `aligner:` prefix (e.g. `"minimap2:/path/to/file.bam"` → `"/path/to/file.bam"`) before storing BAM paths in `config['aligner_bams']`. Without the fix, pysam received `"minimap2:/path/..."` as a URL scheme → "[Errno 93] Protocol not supported" → 0 novel junctions loaded from aligner BAMs.
+- Root cause: `--aligner-bams` accepts the same `aligner:path` format as `rectify consensus`, but `collect_junctions_from_bam` needs a plain file path. The prefix was never stripped before pysam.
+- Impact: With the fix, `rectify correct --aligner-bams minimap2:/path gapmm2:/path` loads all aligner-specific novel junctions into the pool (377 vs 362 for the validation dataset). Previously annotation-only junctions were used even when aligner BAMs were specified.
+- `_strip_aligner_prefix` checks `'/' not in prefix` to distinguish aligner names from Windows-style drive letters (future-proofing); plain paths without `:` pass through unchanged.
+
+**v3.1.2 (2026-04-21):** Cat9 validation reads added (Module 2H junction refinement):
+- `validation_reads.bam` expanded from 32 → 36 reads; aligner BAMs updated to 36 reads each (uLTRA/deSALT stay at 34/36 due to dev-run coverage).
+- Four Cat9 reads: `cat9_plus_1` (00a1c9b3, chrVII:555824→555830, +), `cat9_plus_2` (00a1e01e, chrVII:439089→439093, +), `cat9_minus_1` (0b3b593b, chrXV:900760→900767, −), `cat9_minus_2` (d3357db5, chrXV:900760→900767, −). Each has `XG=cat9_junction_refine`.
+- `TestCategory9JunctionRefinement` class in `tests/test_validation_reads.py`: `corrected_with_aligner_bams` fixture runs `rectify correct --aligner-bams --annotation`; verifies corrected junction ≠ wrong junction for all 4 reads.
+- `TestBamIntegrity` updated: 32→36 reads, cat9 labels added to `test_all_labels_present`, `cat9→cat9_junction_refine` in `test_category_tags`, cat9 added to `test_strand_balance`.
+- Bundled validation outputs regenerated: `corrected_3ends.tsv`, rectified BAMs, PROVENANCE.json all updated to reflect 36 reads.
+
+**v3.1.1 (2026-04-21):** `_score_junction` + `refine_read_junctions` — two correctness fixes:
+- **`range(L)` fix**: the k-loop in `_score_junction` previously ran `range(L+1)`. At k=L, `q1 = rescue[L:]` is empty → `_score_hp_anchored` returns 0.0 for every candidate regardless of junction quality. All candidates tied at 0.0, making selection arbitrary. Changed to `range(L)`: q1 always has ≥1 base; scoring is always discriminating.
+- **`is_alt` tiebreaker in `refine_read_junctions`**: added `is_alt` (0 if candidate = current N-op, 1 otherwise) as the second tuple element after `score`. When multiple candidates tie (e.g. two junctions share the same `intron_end` and both score 0.0), the existing junction is preferred over alternatives, preventing spurious displacement of already-correct reads.
+- **Tests**: 9 previously failing tests now pass; all 41 tests in `test_junction_refiner.py` pass. Total suite: 698 tests pass, 4 skipped. Key reads: RPL20B `0b3b593b` corrected to `[900767,901193)`; TFC3 annotated junction stable against alternative `[150989,151096)`.
+
+**v3.1.0 (2026-04-20):** Module 2H — post-consensus N-op junction refinement (`junction_refiner.py`):
+- New module `rectify/core/junction_refiner.py`: for every N-op in every consensus read, tests all candidate junctions within a search radius and replaces imprecise N-op boundaries with the best sequence-supported junction.
+- Scoring is **sequence-first**: hp_score (split-alignment with homopolymer-aware edit distance) is the primary criterion; canonical GT-AG and annotated status are tie-breakers only. Annotation NEVER overrides a better-scoring junction.
+- Split-alignment: query window of ±W bp around the current N-op split point; query split can slide ±max_slide bp; scores both exon2 and exon1 genomic context simultaneously.
+- Fast path: reads already at an annotated canonical-tier-0 junction skip scoring entirely (255× speedup over naive approach).
+- `max_boundary_shift=50`: prevents false-positive matches from junctions in neighbouring genes. The `search_radius=5000` discovers candidates; `max_boundary_shift` constrains individual endpoint shifts.
+- CIGAR surgery encodes boundary changes as I/D ops (not M adjustments) to preserve both ref and query spans. MD/cs tags stripped from modified reads to avoid pysam arithmetic errors on CentOS 7.
+- Wired into `rectify correct` via `--aligner-bams`; also exposes `--junction-hp-pen`, `--junction-search-radius`, `--junction-window`, `--junction-max-slide`, `--junction-max-boundary-shift`.
+- Key fixed reads: b2c4d195 (27S → 426N+exon1), f6590560 (422N1M1D1M → 426N2M), 0b3b593b (431N wrong boundaries → 430N correct exon1 end).
+- 41 tests in `tests/test_junction_refiner.py` covering RPL20B, GCR1, TFC3, RPL22B, SRC1. (9 were failing at initial merge; fixed in v3.1.1.)
+
+**v3.0.4 (2026-04-20):** `rescue_3ss_truncation` — minus-strand soft-clip truncation bug fix:
+- `_extract_5prime_rescue_seq` returns `query_seq[n - last_imp_q:]` for minus-strand reads (the rightmost portion). The truncation to `five_clip` bases was using `[:five_clip]` (leftmost), taking aligned exon2 body instead of the actual soft-clip bases.
+- Fix: `rescue_seq[-five_clip:]` for minus strand, `rescue_seq[:five_clip]` for plus strand (unchanged).
+- Impact: b2c4d195 (27S), 7bf94550 (1S), f6590560 (2S), 08f6ddf7 (5S) all now correctly rescued to `five_prime_corrected=901193`. Previously all fell through to `rescue_type='proximity'` with `rescued=False`.
 
 **No open bugs remaining** — see `docs/BUGS_TO_FIX.md`.
 

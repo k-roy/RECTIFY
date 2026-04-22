@@ -27,6 +27,22 @@ from ..utils import genome as genome_utils
 from ..utils.provenance import init_provenance
 
 
+def _strip_aligner_prefix(bam_entry: str) -> str:
+    """Strip optional ``aligner:`` prefix from a BAM path entry.
+
+    ``--aligner-bams`` accepts both plain paths and ``aligner:path`` pairs
+    (the same format used by ``rectify consensus``).  When the prefix is
+    present (e.g. ``"minimap2:/path/to/file.bam"``), the aligner-name
+    portion is not needed for junction pool construction and must be
+    stripped so pysam receives a valid file path.
+    """
+    if ':' in bam_entry:
+        prefix, _, rest = bam_entry.partition(':')
+        if '/' not in prefix:   # aligner names never contain path separators
+            return rest
+    return bam_entry
+
+
 def setup_logging(verbose: bool = False):
     """Configure logging for command execution."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -209,6 +225,14 @@ def validate_inputs(args) -> dict:
         'corrected_bam': getattr(args, 'corrected_bam', None),
         'softclipped_bam': getattr(args, 'softclipped_bam', None),
         'bedgraph_prefix': getattr(args, 'bedgraph_prefix', None),
+        # Junction refinement (Module 2H)
+        'aligner_bams':              [_strip_aligner_prefix(str(p)) for p in getattr(args, 'aligner_bams', []) or []],
+        'junction_hp_pen':           getattr(args, 'junction_hp_pen', 0.25),
+        'junction_search_radius':    getattr(args, 'junction_search_radius', 5000),
+        'junction_window':           getattr(args, 'junction_window', 15),
+        'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
+        'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
+        'junction_penalty_table':    getattr(args, 'junction_penalty_table', None),
     }
 
     return config
@@ -265,6 +289,8 @@ def run(args):
     logger.info(f"  Variant-aware rescue:  {'ENABLED' if config['variant_aware'] else 'DISABLED'}")
     logger.info(f"  NET-seq refinement:    {'ENABLED' if config['netseq_dir'] else 'DISABLED'}")
     logger.info(f"  Spike-in filter:       {'ENABLED (' + ','.join(config['filter_spikein']) + ')' if config['filter_spikein'] else 'DISABLED'}")
+    _n_abams = len(config.get('aligner_bams', []))
+    logger.info(f"  Junction refinement:   {'ENABLED (' + str(_n_abams) + ' aligner BAMs)' if _n_abams else 'DISABLED (pass --aligner-bams to enable)'}")
     logger.info("")
 
     # Initialize provenance tracking
@@ -309,6 +335,69 @@ def run(args):
             bam_to_process = filtered_bam
             logger.info(f"  Spike-in reads removed: {spikein_stats.get('spikein_reads', 0):,}")
             logger.info(f"[TIMING] Spike-in filter: {_time.perf_counter() - _t_spikein:.1f}s")
+
+        # Module 2H: Junction N-op boundary refinement (optional pre-processing step).
+        # When --aligner-bams are provided, replace imprecise N-op boundaries in the
+        # consensus BAM with the best-supported candidate junction using split-alignment
+        # scoring with homopolymer-aware edit distance.
+        if config.get('aligner_bams') and config.get('annotation_path'):
+            _t_refine = _time.perf_counter()
+            logger.info("Module 2H: Junction N-op boundary refinement...")
+            try:
+                from .junction_refiner import refine_bam_junctions
+                from .consensus import load_annotated_junctions as _load_annot_j
+
+                _annot_j = _load_annot_j(str(config['annotation_path']))
+                _bam_stem = Path(bam_to_process).stem
+                for _sfx in ('.consensus.sorted', '.consensus', '.rectified', '.sorted'):
+                    if _bam_stem.endswith(_sfx):
+                        _bam_stem = _bam_stem[:-len(_sfx)]
+                        break
+                _out_dir = Path(str(config['output_path'])).parent
+                # Include a short unique ID so concurrent runs on the same sample
+                # don't collide on the intermediate file.
+                import uuid as _uuid
+                _run_id = _uuid.uuid4().hex[:8]
+                _refined_bam = str(_out_dir / f"{_bam_stem}.junction_refined_{_run_id}.bam")
+
+                from ..utils.genome import load_genome as _load_genome_for_refine
+                _refine_genome = _load_genome_for_refine(str(config['genome_path']))
+
+                _refine_stats = refine_bam_junctions(
+                    input_bam=bam_to_process,
+                    output_bam=_refined_bam,
+                    aligner_bams=config['aligner_bams'],
+                    annotated_junctions=_annot_j,
+                    genome=_refine_genome,
+                    hp_pen=config['junction_hp_pen'],
+                    W=config['junction_window'],
+                    max_slide=config['junction_max_slide'],
+                    search_radius=config['junction_search_radius'],
+                    max_boundary_shift=config['junction_max_boundary_shift'],
+                    boundary_error_window=config.get('junction_boundary_error_window', 10),
+                    sort_and_index=True,
+                    penalty_table_path=config.get('junction_penalty_table'),
+                )
+                bam_to_process = _refined_bam
+                logger.info(
+                    "  Junction refinement: %d reads with N-ops, %d refined, %d unchanged",
+                    _refine_stats['n_op_reads'], _refine_stats['refined'],
+                    _refine_stats['unchanged'],
+                )
+                logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
+            except Exception as _exc:
+                logger.warning(
+                    "Module 2H junction refinement failed (non-fatal, continuing): %s", _exc
+                )
+            finally:
+                # Explicitly release the genome dict to free ~500 MB RAM
+                # before the main correction loads its own copy.
+                try:
+                    del _refine_genome
+                except NameError:
+                    pass
+                import gc as _gc
+                _gc.collect()
 
         # Load annotated junctions for Module 2F (3'SS truncation rescue).
         # Without these, only reads whose own CIGAR contains an N operation near
@@ -654,6 +743,18 @@ def run(args):
                 provenance.add_output_file(stats_path)
             provenance.save()
             logger.info(f"Provenance saved to {provenance.output_dir}")
+
+        # Clean up the intermediate junction_refined BAM (temporary file).
+        # It's no longer needed once the main correction has completed.
+        if config.get('aligner_bams'):
+            try:
+                import os as _os
+                for _ext in ('', '.bai'):
+                    _tmp = bam_to_process + _ext
+                    if _os.path.exists(_tmp) and 'junction_refined_' in _tmp:
+                        _os.remove(_tmp)
+            except Exception:
+                pass  # non-fatal if cleanup fails
 
         logger.info("")
         logger.info("=" * 70)

@@ -1,5 +1,5 @@
 """
-Validation test suite for the 32 bundled RECTIFY example reads.
+Validation test suite for the 36 bundled RECTIFY example reads.
 
 Runs rectify correction on each read and asserts that the expected correction
 was applied for each of the eight categories. This serves as both a regression
@@ -149,18 +149,70 @@ def corrected_all_rows(bam_path, genome_path, annotation_path, tmp_path_factory)
     return run_correction_all_rows(bam_path, genome_path, annotation_path, tmp)
 
 
+def run_correction_with_aligner_bams(
+    bam_path: Path, genome_path: Path, annotation_path: Path, tmp_path: Path
+) -> dict:
+    """
+    Run ``rectify correct`` with ``--aligner-bams`` so Module 2H fires.
+
+    Discovers the per-aligner BAMs in the ``aligners/`` subdirectory next to
+    *bam_path*.  Returns a dict keyed by read_id (first row per read_id).
+    """
+    import subprocess, sys, csv
+
+    aligner_dir = bam_path.parent / 'aligners'
+    aligner_args = []
+    for aligner in ['minimap2', 'gapmm2', 'mapPacBio', 'deSALT', 'uLTRA']:
+        p = aligner_dir / f'validation_reads.{aligner}.bam'
+        if p.exists():
+            aligner_args.extend(['--aligner-bams', f'{aligner}:{p}'])
+
+    if not aligner_args:
+        pytest.skip('No aligner BAMs found alongside validation BAM')
+    if annotation_path is None:
+        pytest.skip('Bundled annotation not available; Module 2H requires --annotation')
+
+    out_tsv = tmp_path / 'corrected_with_aligners.tsv'
+    cmd = [
+        sys.executable, '-m', 'rectify.cli', 'correct',
+        str(bam_path),
+        '--genome', str(genome_path),
+        '--annotation', str(annotation_path),
+        *aligner_args,
+        '-o', str(out_tsv),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f'rectify correct --aligner-bams failed:\n{result.stderr}')
+
+    rows = {}
+    with open(out_tsv) as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            rid = row['read_id']
+            if rid not in rows:
+                rows[rid] = row
+    return rows
+
+
+@pytest.fixture(scope='module')
+def corrected_with_aligner_bams(bam_path, genome_path, annotation_path, tmp_path_factory):
+    tmp = tmp_path_factory.mktemp('correction_aligners')
+    return run_correction_with_aligner_bams(bam_path, genome_path, annotation_path, tmp)
+
+
 # ---------------------------------------------------------------------------
 # Structural tests — verify bundled BAM is intact
 # ---------------------------------------------------------------------------
 
 class TestBamIntegrity:
-    def test_bam_has_32_reads(self, raw_reads):
-        assert len(raw_reads) == 32, f'Expected 32 reads, got {len(raw_reads)}'
+    def test_bam_has_36_reads(self, raw_reads):
+        assert len(raw_reads) == 36, f'Expected 36 reads, got {len(raw_reads)}'
 
-    def test_correction_has_32_reads(self, corrected):
+    def test_correction_has_36_reads(self, corrected):
         """Every read must survive the correction pipeline (no silent drops)."""
-        assert len(corrected) == 32, \
-            f'Expected 32 reads in corrected output, got {len(corrected)}'
+        assert len(corrected) == 36, \
+            f'Expected 36 reads in corrected output, got {len(corrected)}'
 
     def test_all_labels_present(self, raw_reads):
         expected = {
@@ -181,6 +233,9 @@ class TestBamIntegrity:
             # Cat8: NET-seq A-tract refinement (formerly Cat6).
             'cat8_plus_single', 'cat8_plus_multi',
             'cat8_minus_single', 'cat8_minus_multi',
+            # Cat9: Module 2H N-op junction boundary refinement (requires --aligner-bams).
+            'cat9_plus_1', 'cat9_plus_2',
+            'cat9_minus_1', 'cat9_minus_2',
         }
         assert set(raw_reads.keys()) == expected
 
@@ -194,6 +249,7 @@ class TestBamIntegrity:
             'cat6': 'cat6_chimeric',
             'cat7': 'cat7_alt_splice',
             'cat8': 'cat8_netseq_refine',
+            'cat9': 'cat9_junction_refine',
         }
         for label, read in raw_reads.items():
             prefix = label[:4]
@@ -201,7 +257,7 @@ class TestBamIntegrity:
                 f'{label}: expected XG={cat_map[prefix]}, got {read.get_tag("XG")}'
 
     def test_strand_balance(self, raw_reads):
-        for cat in ['cat1', 'cat2', 'cat3', 'cat4', 'cat5', 'cat6', 'cat7', 'cat8']:
+        for cat in ['cat1', 'cat2', 'cat3', 'cat4', 'cat5', 'cat6', 'cat7', 'cat8', 'cat9']:
             cat_reads = {k: v for k, v in raw_reads.items() if k.startswith(cat)}
             plus = sum(1 for r in cat_reads.values() if not r.is_reverse)
             minus = sum(1 for r in cat_reads.values() if r.is_reverse)
@@ -746,3 +802,99 @@ class TestCategory7AltSplice:
         rescued = row.get('five_prime_rescued', '0')
         assert str(rescued) in ('0', '', 'False', 'nan'), \
             f'{label}: five_prime_rescued should not be set, got {rescued!r}'
+
+
+class TestCategory9JunctionRefinement:
+    """Module 2H: N-op junction boundary correction via ``--aligner-bams``.
+
+    When aligner BAMs are supplied alongside ``--annotation``, Module 2H
+    (``junction_refiner.py``) re-scores all candidate splice junctions and
+    replaces imprecise N-op boundaries in the consensus read.
+
+    Input N-ops (wrong boundaries in consensus BAM):
+
+      cat9_plus_1  (00a1c9b3) chrVII:+ (555824, 556304) intron length 480
+      cat9_plus_2  (00a1e01e) chrVII:+ (439089, 439324) intron length 235
+      cat9_minus_1 (0b3b593b) chrXV:−  (900760, 901191) intron length 431
+      cat9_minus_2 (d3357db5) chrXV:−  (900760, 901192) intron length 432
+
+    Expected junctions after Module 2H (derived from aligner-BAM candidate pool):
+
+      cat9_plus_1  → 555830-556307
+      cat9_plus_2  → 439093-439323
+      cat9_minus_1 → 900767-901193
+      cat9_minus_2 → 900767-901193
+
+    The minus-strand reads additionally receive Cat3 5' soft-clip rescue
+    (``five_prime_rescued``), which reports the same intron_end boundary.
+    """
+
+    LABELS = ['cat9_plus_1', 'cat9_plus_2', 'cat9_minus_1', 'cat9_minus_2']
+
+    # Junctions present in the raw consensus BAM (before Module 2H correction)
+    RAW_JUNCTIONS = {
+        'cat9_plus_1':  '555824-556304',
+        'cat9_plus_2':  '439089-439324',
+        'cat9_minus_1': '900760-901191',
+        'cat9_minus_2': '900760-901192',
+    }
+
+    # Junctions after Module 2H + downstream correction (with aligner BAMs)
+    CORRECTED_JUNCTIONS = {
+        'cat9_plus_1':  '555830-556307',
+        'cat9_plus_2':  '439093-439323',
+        'cat9_minus_1': '900767-901193',
+        'cat9_minus_2': '900767-901193',
+    }
+
+    def test_all_present(self, raw_reads):
+        for label in self.LABELS:
+            assert label in raw_reads, f'Cat9 read {label} missing from validation BAM'
+
+    def test_xg_tag(self, raw_reads):
+        for label in self.LABELS:
+            r = raw_reads[label]
+            assert r.get_tag('XG') == 'cat9_junction_refine', \
+                f'{label}: expected XG=cat9_junction_refine, got {r.get_tag("XG")}'
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_raw_junction_in_consensus_bam(self, raw_reads, label):
+        """Consensus BAM encodes the WRONG N-op boundaries before correction."""
+        r = raw_reads[label]
+        n_ops = [
+            (r.reference_start + sum(l for op, l in r.cigartuples[:i]),
+             r.reference_start + sum(l for op, l in r.cigartuples[:i]) + length)
+            for i, (op, length) in enumerate(r.cigartuples)
+            if op == 3
+        ]
+        js, je = self.RAW_JUNCTIONS[label].split('-')
+        assert any(ns == int(js) and ne == int(je) for ns, ne in n_ops), \
+            f'{label}: expected raw N-op ({js},{je}) in CIGAR, got {n_ops}'
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_junction_corrected_with_aligner_bams(
+        self, corrected_with_aligner_bams, raw_reads, label
+    ):
+        """With ``--aligner-bams``, Module 2H corrects the N-op to the expected junction."""
+        read = raw_reads[label]
+        row = corrected_with_aligner_bams.get(read.query_name)
+        if row is None:
+            pytest.skip(f'{label} not in correction output')
+        junctions = row.get('junctions', '')
+        expected = self.CORRECTED_JUNCTIONS[label]
+        assert expected in junctions, \
+            f'{label}: expected corrected junction {expected!r} in junctions={junctions!r}'
+
+    @pytest.mark.parametrize('label', LABELS)
+    def test_junction_not_corrected_without_aligner_bams(self, corrected, raw_reads, label):
+        """Without ``--aligner-bams``, Module 2H is inactive; junction stays wrong."""
+        read = raw_reads[label]
+        row = corrected.get(read.query_name)
+        if row is None:
+            pytest.skip(f'{label} not in correction output')
+        junctions = row.get('junctions', '')
+        expected_corrected = self.CORRECTED_JUNCTIONS[label]
+        assert expected_corrected not in junctions, (
+            f'{label}: junction should NOT be {expected_corrected!r} without --aligner-bams; '
+            f'got {junctions!r}'
+        )

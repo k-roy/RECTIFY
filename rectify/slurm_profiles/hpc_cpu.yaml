@@ -1,10 +1,10 @@
-# RECTIFY SLURM Profile — Sherlock larsms partition
-# Usage: rectify batch --manifest manifest.tsv --Scer --profile sherlock_larsms.yaml -o results/
+# RECTIFY SLURM Profile — CPU partition (generic HPC template)
+# Usage: rectify batch --manifest manifest.tsv --Scer --profile hpc_cpu.yaml -o results/
 #
 # Profile options are merged with CLI args; CLI args take precedence.
 # To submit automatically after script generation: set submit: true
 
-partition: larsms,owners
+partition: cpu          # Replace with your cluster's partition name
 time: "8:00:00"        # 8h: sufficient for largest BAMs (~7 GB, ~50 min correction)
 mem: 128G              # 128G: ~4x peak RSS observed for 7 GB BAM in streaming mode
 cpus: 8                # 8T: halves parallel workers vs 16T, key to avoiding OOM

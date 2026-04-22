@@ -27,9 +27,9 @@ from rectify.utils.genome import load_genome
 
 def main():
     # Paths
-    bam_path = "/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/intermediate_data/nanopore/PRJNA1229592_cpa_depletion/wt_rep1.sorted.bam"
-    genome_path = "/oak/stanford/groups/larsms/Users/kevinroy/common/reference_genomes/S288C_reference_genome_R64-5-1_20240529/S288C_reference_sequence_R64-5-1_20240529.chrnames.fsa"
-    output_dir = Path("/oak/stanford/groups/larsms/Users/kevinroy/projects/roadblocks/intermediate_data/nanopore/PRJNA1229592_cpa_depletion/variant_aware_test")
+    bam_path = "/path/to/wt_rep1.sorted.bam"                       # set to your BAM
+    genome_path = "/path/to/S288C_reference_sequence.chrnames.fsa"   # set to your genome
+    output_dir = Path("/path/to/variant_aware_test")                 # set to your output dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     variants_path = output_dir / "potential_variants.tsv"

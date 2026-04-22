@@ -1,0 +1,1549 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Post-Consensus Junction Refinement for RECTIFY
+
+For every N-op (intron skip) in every consensus read, this module tests all
+candidate junctions within a search radius and selects the best-supported one
+using a split-alignment scoring approach with homopolymer-aware edit distance.
+
+Motivation:
+    Aligners sometimes place splice junctions imprecisely — a few bp off from
+    the true exon/intron boundary, or at a non-canonical GT-AG site when a
+    nearby canonical one exists.  Because the consensus step picks the "best"
+    aligner for each read independently, the chosen aligner may have placed
+    an N-op with slightly wrong boundaries.
+
+    This step normalises all N-op boundaries to the best-supported candidate
+    junction by scoring each option using a split-alignment: the query sequence
+    window around the current N-op split point is tested against every candidate
+    junction's genomic context, with the split point allowed to slide ±max_slide
+    query bases to account for boundary absorption errors.
+
+Scoring priority (lower tuple = better):
+    1. hp_score:       split-alignment score with homopolymer-aware edit distance
+                       — PRIMARY criterion; a junction with a better sequence score
+                       always wins, regardless of canonicality or annotation status
+    2. is_alt:         0 if candidate matches the current N-op boundaries exactly,
+                       1 otherwise — equal-scoring ties broken in favour of the
+                       existing junction to avoid spurious displacement
+    3. canonical_tier: 0 = GT+AG (both canonical), 1 = one canonical, 2 = neither
+                       — tie-breaker only when scores are identical
+    4. annotated:      0 = junction in annotated set, 1 = novel
+                       — tie-breaker; annotation never overrides sequence evidence
+    5. abs_delta:      prefer smallest boundary shift from current N-op
+
+Algorithm:
+    For each N-op [ns, ne) in a read, with query split point q_split:
+    1. Collect all candidate junctions [js, je) within search_radius
+    2. For each candidate [js, je), try all k in [0, len(rescue) - 1]:
+         score(k) = _score_hp_anchored(rescue[k:], g[je : je+buf])  # intron_end-anchored
+    3. Best score for this candidate = min_k score(k)
+    4. Select overall best by (score, is_alt, canonical_tier, annotated, abs_delta)
+    5. If the winner differs from the current N-op, replace it in the CIGAR
+
+Author: Kevin R. Roy
+Email: kevinrjroy@gmail.com
+Date: 2026-04-20
+"""
+
+from __future__ import annotations
+
+import csv
+import logging
+import re
+from typing import Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
+
+import pysam
+
+from ..utils.genome import standardize_chrom_name
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+Junction = Tuple[str, int, int]   # (chrom, intron_start, intron_end)
+
+# CIGAR op constants
+_M = 0   # alignment match (M)
+_I = 1   # insertion to reference
+_D = 2   # deletion from reference
+_N = 3   # intron skip
+_S = 4   # soft clip
+_H = 5   # hard clip
+_EQ = 7  # sequence match (=)
+_X = 8   # sequence mismatch (X)
+
+_QUERY_CONSUMING = frozenset([_M, _I, _S, _EQ, _X])
+_REF_CONSUMING   = frozenset([_M, _D, _EQ, _X])
+
+
+# ---------------------------------------------------------------------------
+# Homopolymer-aware edit distance
+# ---------------------------------------------------------------------------
+
+def _hp_run_length(seq: str, pos: int) -> int:
+    """Return the length of the homopolymer run containing position *pos*."""
+    c = seq[pos]
+    left = pos
+    while left > 0 and seq[left - 1] == c:
+        left -= 1
+    right = pos
+    while right < len(seq) - 1 and seq[right + 1] == c:
+        right += 1
+    return right - left + 1
+
+
+class HpPenaltyTable:
+    """Empirical per-HP-run-length penalty table for Nanopore error scoring.
+
+    Loaded from the TSV output of ``empirical_cigar_error_profiler.py``
+    (``penalty_scores.tsv``), which has columns:
+    ``op_type``, ``hp_length``, ``penalty``.
+
+    ``op_type`` values: ``del``, ``ins``, ``sub`` (sub is always 1.0).
+
+    Usage::
+
+        table = HpPenaltyTable.from_tsv('penalty_scores.tsv')
+        cost = table.del_cost(hp_run_length)   # 0..inf (lower = cheaper)
+        cost = table.ins_cost(hp_run_length)
+
+    When ``del_cost`` or ``ins_cost`` is used as a *penalty multiplier*
+    (≤1 means discounted), the caller multiplies the raw base cost by this
+    value.  But for compatibility with the existing scoring functions, the
+    table stores costs already normalized so that ``del_cost(hp=1) == 1.0``
+    and ``ins_cost(hp=1) == default_ins`` (matching the existing heuristic
+    baseline).
+    """
+
+    def __init__(
+        self,
+        del_table: Dict[int, float],
+        ins_table: Dict[int, float],
+        default_ins: float = 1.25,
+    ) -> None:
+        self._del: Dict[int, float] = del_table
+        self._ins: Dict[int, float] = ins_table
+        self._default_ins = default_ins
+        self._del_max_hp = max(del_table.keys()) if del_table else 1
+        self._ins_max_hp = max(ins_table.keys()) if ins_table else 1
+
+    @classmethod
+    def from_tsv(
+        cls,
+        path: str,
+        min_count: int = 100,
+        default_ins: float = 1.25,
+    ) -> "HpPenaltyTable":
+        """Load a penalty table from ``penalty_scores.tsv``.
+
+        Rows where the underlying count is below *min_count* are skipped
+        (insufficient data → fall back to heuristic for that HP length).
+
+        Args:
+            path:        Path to ``penalty_scores.tsv``.
+            min_count:   Minimum observation count to trust a row.
+            default_ins: Fallback insertion cost for HP lengths with sparse
+                         data.  Defaults to 1.25 (current heuristic).
+
+        Returns:
+            HpPenaltyTable instance.
+        """
+        del_table: Dict[int, float] = {}
+        ins_table: Dict[int, float] = {}
+
+        with open(path, newline='') as fh:
+            reader = csv.DictReader(fh, delimiter='\t')
+            for row in reader:
+                op = row.get('op_type', '').strip()
+                try:
+                    hp = int(row['hp_length'])
+                    # Support both 'penalty' and 'penalty_score' column names
+                    penalty = float(row.get('penalty_score') or row.get('penalty') or 0)
+                    # Support both 'count' and 'count_total' column names
+                    # Use float() first so "450780.0" (from pandas CSV) parses correctly
+                    count = int(float(row.get('count_total') or row.get('count') or 0))
+                except (KeyError, ValueError):
+                    continue
+                if count < min_count:
+                    continue
+                # Support both short ('D'/'I') and long ('del'/'ins') op_type names
+                if op in ('D', 'del'):
+                    del_table[hp] = penalty
+                elif op in ('I', 'ins'):
+                    ins_table[hp] = penalty
+
+        if not del_table:
+            raise ValueError(
+                f"HpPenaltyTable: no 'del' rows with count >= {min_count} "
+                f"found in {path}"
+            )
+        return cls(del_table, ins_table, default_ins=default_ins)
+
+    def del_cost(self, hp: int) -> float:
+        """Deletion cost for a ref position in a homopolymer run of *hp* bases.
+
+        Returns the penalty value for the given run length, clamped to the
+        last table entry for run lengths beyond the maximum observed.
+        Penalty values < 1.0 mean the deletion is cheaper (expected for long HPs).
+        """
+        if hp in self._del:
+            return self._del[hp]
+        if hp > self._del_max_hp:
+            return self._del[self._del_max_hp]
+        # HP shorter than minimum table entry (shouldn't happen if table has hp=1)
+        return self._del.get(1, 1.0)
+
+    def ins_cost(self, hp: int) -> float:
+        """Insertion cost for a position in a homopolymer run of *hp* bases.
+
+        Falls back to *default_ins* (1.25) for HP lengths with sparse data.
+        """
+        if hp in self._ins:
+            return self._ins[hp]
+        if hp > self._ins_max_hp:
+            return self._ins.get(self._ins_max_hp, self._default_ins)
+        return self._default_ins
+
+
+def _hp_edit_distance(
+    s1: str,
+    s2: str,
+    hp_pen: float = 0.25,   # retained for API compat; not used by new formula
+    min_run: int = 4,
+    base_pen: float = 0.5,
+    del_scale: float = 1.0,
+    ins_scale: float = 0.7,
+    penalty_table: Optional[HpPenaltyTable] = None,
+) -> float:
+    """Edit distance calibrated to the Nanopore error profile.
+
+    Nanopore sequencing has an asymmetric error distribution:
+    - Deletions: most common (~5%+, especially in homopolymers)
+    - Substitutions: moderate (~2-3%)
+    - Insertions: least common (~2-3%, lower than deletions)
+
+    **Penalty model:**
+
+    Substitutions always cost 1.0 (no context dependence).
+
+    Deletions (gap in s2 = removing a base from s1):
+        Cost = del_scale × base_indel_cost(s1, pos)
+        where base_indel_cost = base_pen × min_run / run_length for run ≥ min_run,
+        else 1.0.  del_scale=1.0 by default (deletions are the most common error,
+        so we don't further discount them beyond the hp-run adjustment).
+
+    Insertions (gap in s1 = adding a base from s2 to query):
+        Cost = ins_scale × base_indel_cost(s2, pos)
+        ins_scale=0.7 reflects that insertions are less common than deletions
+        but more common than substitutions.  A non-hp insertion costs 0.7;
+        a hp insertion (run ≥ min_run) costs 0.7 × base_pen × min_run / run.
+
+    **Homopolymer run discount:**
+
+    - Run length < *min_run* (default 4): no discount — short runs are within
+      the pore's resolving power (R9.4 k-mer ~5 bp, R10.4 ~10 bp).
+    - Run length ≥ *min_run*: discounted by base_pen × min_run / run_length.
+      Longer runs are harder to count, so errors cost less.
+
+    Examples (del_scale=1.0, ins_scale=0.7, min_run=4, base_pen=0.5):
+
+    ============  ======  ======  =======
+    context       del     ins     sub
+    ============  ======  ======  =======
+    non-hp        1.00    0.70    1.00
+    run=4         0.50    0.35    1.00
+    run=5         0.40    0.28    1.00
+    run=8         0.25    0.18    1.00
+    ============  ======  ======  =======
+
+    The ``hp_pen`` parameter is retained for API compatibility but ignored.
+
+    Args:
+        s1:            Query sequence.
+        s2:            Reference sequence.
+        hp_pen:        Ignored (API compatibility only).
+        min_run:       Minimum homopolymer run length to activate the discount.
+        base_pen:      Penalty at exactly *min_run* length; scales down for longer.
+        del_scale:     Multiplier for deletion costs (default 1.0).
+        ins_scale:     Multiplier for insertion costs (default 0.7).
+        penalty_table: Optional empirical penalty table from
+                       ``HpPenaltyTable.from_tsv()``.  When provided, overrides
+                       the heuristic formula for del/ins costs.
+
+    Returns:
+        Float edit distance.
+    """
+    n, m = len(s1), len(s2)
+    if n == 0:
+        if penalty_table is not None:
+            return float(m) * penalty_table.ins_cost(1)
+        return float(m) * ins_scale   # all insertions
+    if m == 0:
+        if penalty_table is not None:
+            return float(n) * penalty_table.del_cost(1)
+        return float(n) * del_scale   # all deletions
+
+    def _base_indel_cost(seq: str, pos: int) -> float:
+        run = _hp_run_length(seq, pos)
+        return base_pen * min_run / run if run >= min_run else 1.0
+
+    if penalty_table is not None:
+        def _del_cost(i: int) -> float:
+            run = _hp_run_length(s1, i - 1)
+            return penalty_table.del_cost(run)
+
+        def _ins_cost(j: int) -> float:
+            run = _hp_run_length(s2, j - 1)
+            return penalty_table.ins_cost(run)
+    else:
+        def _del_cost(i: int) -> float:
+            """Cost to delete s1[i-1] (gap in s2 = s1 base missing from reference)."""
+            return del_scale * _base_indel_cost(s1, i - 1)
+
+        def _ins_cost(j: int) -> float:
+            """Cost to insert s2[j-1] (gap in s1 = extra base in reference)."""
+            return ins_scale * _base_indel_cost(s2, j - 1)
+
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        dp[i][0] = dp[i - 1][0] + _del_cost(i)
+    for j in range(1, m + 1):
+        dp[0][j] = dp[0][j - 1] + _ins_cost(j)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if s1[i - 1] == s2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = min(
+                    dp[i - 1][j - 1] + 1.0,       # substitution
+                    dp[i - 1][j]     + _del_cost(i),  # deletion from s1
+                    dp[i][j - 1]     + _ins_cost(j),  # insertion into s1
+                )
+    return dp[n][m]
+
+
+# ---------------------------------------------------------------------------
+# Splice-site canonicality
+# ---------------------------------------------------------------------------
+
+# Plus-strand: intron starts GT, ends AG
+# Minus-strand (genomic orientation): intron starts CT (RC of AG), ends AC (RC of GT)
+_CANONICAL_5SS_PLUS  = frozenset(['GT', 'GC'])   # donor dinucleotide (intron_start:+2)
+_CANONICAL_5SS_MINUS = frozenset(['AC', 'GC'])   # genomic = RC of donor
+
+# 3'SS acceptor quality hierarchy based on yeast splicing observations.
+# In RNA orientation (reading the intron 5'→3'):
+#   Tier 0: YAG (Y = pyrimidine: C or T) — most common and highest-efficiency
+#   Tier 1: RAG (R = purine: A or G)
+#   Tier 2: NBG (N = any, B = C/G/T) — non-canonical but observed in yeast
+#   Tier 3: NAT — very rare non-canonical
+#   Tier 4: other
+#
+# Genomic representation (+ strand): RC of RNA acceptor
+# + strand: last 2/3 bases of intron = intron_end-2:intron_end
+# - strand: first 2/3 bases of intron = intron_start:intron_start+3
+#
+# The 3-base genomic context needed for full YAG/RAG/NBG classification:
+#   Plus strand (last 3 of intron):  s[-3:] in RNA = g[intron_end-3:intron_end]
+#   Minus strand (first 3 of intron): s[0:3] in RNA = RC(g[intron_start:intron_start+3])
+_3SS_CANONICAL_PLUS  = frozenset(['AG'])   # YAG/RAG both end in AG; use dinucleotide for tier 0
+_3SS_CANONICAL_MINUS = frozenset(['CT'])   # RC(AG) = CT
+
+# 3'SS quality tiers for tiebreaking (lower = better).
+# Keyed on the 3-base RNA sequence (last 3 of intron in RNA orientation).
+# YAG: CAG, TAG → 0
+# RAG: AAG, GAG → 1
+# NBG: T/C/G/A + C/G/T + G → 2
+# NAT: NAT patterns → 3
+# other → 4
+
+def _3ss_tier_from_rna_trinucleotide(tri: str) -> int:
+    """Return 3'SS quality tier (0=best) from the RNA-orientation 3-nt intron tail."""
+    if len(tri) < 3:
+        return 4
+    b1, b2, b3 = tri[0], tri[1], tri[2]
+    if b3 == 'G':
+        if b2 == 'A':
+            if b1 in ('C', 'T'):   # YAG
+                return 0
+            if b1 in ('A', 'G'):   # RAG
+                return 1
+            return 2  # NAG
+        if b2 in ('G', 'C', 'T'):   # NBG (B = not A)
+            return 2
+    if b3 == 'T' and b2 == 'A':     # NAT
+        return 3
+    return 4
+
+
+def _canonical_tier(
+    intron_start: int,
+    intron_end: int,
+    genome_seq: str,
+    strand: str,
+) -> int:
+    """Return splice-site quality tier (0=best): considers 5'SS GT-AG and 3'SS YAG hierarchy.
+
+    Returns the combined tier:
+      0 — 5'SS GT/GC AND 3'SS YAG (canonical)
+      1 — 5'SS GT/GC AND 3'SS RAG
+      2 — 5'SS GT/GC AND 3'SS NBG, OR non-canonical 5'SS with YAG
+      3 — various semi-canonical combinations
+      4 — non-canonical at both sites
+    """
+    gs = len(genome_seq)
+    if strand == '+':
+        di5  = genome_seq[intron_start:intron_start + 2].upper() if intron_start + 2 <= gs else 'NN'
+        tri3 = genome_seq[intron_end - 3:intron_end].upper() if intron_end >= 3 else 'NNN'
+        ok5  = di5 in _CANONICAL_5SS_PLUS
+        t3   = _3ss_tier_from_rna_trinucleotide(tri3)
+    else:
+        # Minus strand: 5'SS is at intron_end (genomic), 3'SS at intron_start
+        di5  = genome_seq[intron_end - 2:intron_end].upper() if intron_end >= 2 else 'NN'
+        # 3'SS trinucleotide in RNA = RC of g[intron_start:intron_start+3]
+        tri3_genomic = genome_seq[intron_start:intron_start + 3].upper() if intron_start + 3 <= gs else 'NNN'
+        tri3_rna     = tri3_genomic[::-1].translate(str.maketrans('ACGT', 'TGCA'))
+        ok5 = di5 in _CANONICAL_5SS_MINUS
+        t3  = _3ss_tier_from_rna_trinucleotide(tri3_rna)
+
+    # Combined tier: 5'SS canonical and 3'SS quality
+    if ok5:
+        return t3          # 0=YAG, 1=RAG, 2=NBG, 3=NAT, 4=other
+    else:
+        return 4 + t3      # non-canonical 5'SS: always worse than any canonical 5'SS
+
+
+# ---------------------------------------------------------------------------
+# Junction pool construction
+# ---------------------------------------------------------------------------
+
+def collect_junctions_from_bam(
+    bam_path: str,
+    chrom_filter: Optional[str] = None,
+) -> Set[Tuple[str, int, int]]:
+    """Extract all N-op intervals from a BAM file.
+
+    Args:
+        bam_path:     Path to sorted, indexed BAM.
+        chrom_filter: If given, only include junctions on this chromosome.
+
+    Returns:
+        Set of (chrom, intron_start, intron_end) tuples (0-based half-open).
+    """
+    junctions: Set[Tuple[str, int, int]] = set()
+    try:
+        with pysam.AlignmentFile(bam_path, 'rb') as bam:
+            for read in bam:
+                if read.is_unmapped or not read.cigartuples:
+                    continue
+                chrom = standardize_chrom_name(read.reference_name)
+                if chrom_filter and chrom != chrom_filter:
+                    continue
+                pos = read.reference_start
+                for op, length in read.cigartuples:
+                    if op == _N:
+                        junctions.add((chrom, pos, pos + length))
+                    if op in _REF_CONSUMING:
+                        pos += length
+    except Exception as exc:
+        logger.warning("collect_junctions_from_bam(%s): %s", bam_path, exc)
+    return junctions
+
+
+def build_junction_pool(
+    aligner_bams: List[str],
+    annotated_junctions: Set[Tuple],
+    chrom_filter: Optional[str] = None,
+) -> Tuple[Set[Junction], Set[Junction]]:
+    """Build union of annotated + per-aligner junctions.
+
+    Args:
+        aligner_bams:         Paths to per-aligner BAMs (pre-consensus).
+        annotated_junctions:  Set of (chrom, start, end[, strand]) tuples from
+                              ``load_annotated_junctions()``.
+        chrom_filter:         Optional chromosome to restrict to.
+
+    Returns:
+        (all_junctions, annotated_set) where annotated_set is the normalised
+        3-tuple subset of annotated_junctions for fast membership testing.
+    """
+    # Normalise annotated junctions to 3-tuples (drop optional strand element)
+    annot_3: Set[Junction] = set()
+    for j in annotated_junctions:
+        if len(j) >= 3:
+            chrom = standardize_chrom_name(str(j[0]))
+            if chrom_filter and chrom != chrom_filter:
+                continue
+            annot_3.add((chrom, int(j[1]), int(j[2])))
+
+    all_j: Set[Junction] = set(annot_3)
+
+    for bam_path in aligner_bams:
+        novel = collect_junctions_from_bam(bam_path, chrom_filter=chrom_filter)
+        all_j.update(novel)
+
+    logger.debug(
+        "build_junction_pool: %d annotated, %d novel, %d total",
+        len(annot_3), len(all_j) - len(annot_3), len(all_j),
+    )
+    return all_j, annot_3
+
+
+# ---------------------------------------------------------------------------
+# Interval index for fast radius lookup
+# ---------------------------------------------------------------------------
+
+def _build_junction_index(
+    junctions: Set[Junction],
+) -> Dict[str, List[Tuple[int, int]]]:
+    """Build per-chromosome sorted list of (intron_start, intron_end) pairs."""
+    idx: Dict[str, List[Tuple[int, int]]] = {}
+    for chrom, js, je in junctions:
+        idx.setdefault(chrom, []).append((js, je))
+    for chrom in idx:
+        idx[chrom].sort()
+    return idx
+
+
+def _candidates_near(
+    idx: Dict[str, List[Tuple[int, int]]],
+    chrom: str,
+    ns: int,
+    ne: int,
+    radius: int,
+    start_radius: Optional[int] = None,
+    end_radius: Optional[int] = None,
+) -> List[Tuple[int, int]]:
+    """Return all (js, je) near (ns, ne) on *chrom*.
+
+    Args:
+        idx:           Junction index from _build_junction_index.
+        chrom:         Chromosome name.
+        ns:            Current intron start.
+        ne:            Current intron end.
+        radius:        Discovery radius for intron_start (bp).  Used when
+                       *start_radius* is not supplied.  Also serves as the
+                       upper bound for scanning the sorted list.
+        start_radius:  Maximum allowed shift of intron_start (bp).  When
+                       supplied, only candidates with |js - ns| ≤ start_radius
+                       are returned.  Defaults to *radius*.
+        end_radius:    Maximum allowed shift of intron_end (bp).  When
+                       supplied, only candidates with |je - ne| ≤ end_radius
+                       are returned.  Defaults to *radius*.
+
+    Separating *radius* from *start_radius*/*end_radius* allows a large
+    discovery window (e.g. 5000 bp) for annotated junctions while keeping the
+    boundary-shift constraints tight (e.g. 50 bp) to avoid pairing the current
+    N-op with junctions from neighbouring genes that happen to score well due
+    to sequence coincidence.
+    """
+    if start_radius is None:
+        start_radius = radius
+    if end_radius is None:
+        end_radius = radius
+
+    entries = idx.get(chrom, [])
+    results = []
+    for js, je in entries:
+        if js > ns + radius:
+            break
+        if js >= ns - radius and abs(js - ns) <= start_radius and abs(je - ne) <= end_radius:
+            results.append((js, je))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Core scoring: HP-aware semi-global alignment helper
+# ---------------------------------------------------------------------------
+
+def _score_hp_anchored(
+    query: str,
+    ref: str,
+    sub: float = 1.0,
+    del_normal: float = 1.0,
+    del_hp: float = 0.5,
+    ins: float = 1.25,
+    hp_min_run: int = 4,
+    penalty_table: Optional[HpPenaltyTable] = None,
+) -> float:
+    """Left-anchored HP-aware semi-global alignment.
+
+    Aligns *query* to *ref* with the left end of *ref* fixed (no free prefix)
+    and the right suffix of *ref* free (any unmatched trailing ref bases cost
+    nothing).  Returns the minimum total edit cost over all possible ref end
+    positions.
+
+    For intron_start-proximal alignment (anchor the last query base to
+    ``intron_start - 1``), call with reversed sequences::
+
+        _score_hp_anchored(query[::-1], ref[::-1])
+
+    Costs (per base):
+
+    * substitution : ``sub``         (default 1.0)
+    * deletion     : ``del_normal``  (default 1.0), or ``del_hp`` (default 0.5)
+                     if the ref base lies within a homopolymer run of length
+                     >= ``hp_min_run`` in *ref* (reflects Nanopore HP dropout).
+                     Overridden per-HP-length when *penalty_table* is provided.
+    * insertion    : ``ins``         (default 1.25 — insertions are rarer than
+                     HP deletions in Nanopore data).
+                     Overridden per-HP-length when *penalty_table* is provided.
+
+    Args:
+        penalty_table: Optional empirical penalty table.  When provided, the
+                       per-position del/ins costs are looked up from the table
+                       rather than computed from the heuristic step function.
+    """
+    Q, R = len(query), len(ref)
+    if Q == 0:
+        return 0.0
+    if R == 0:
+        if penalty_table is not None:
+            return Q * penalty_table.ins_cost(1)
+        return Q * ins  # all insertions, no ref to match
+
+    # Precompute per-position deletion cost for each ref base
+    del_costs: List[float] = []
+    for j in range(R):
+        base = ref[j]
+        run = 1
+        k = j - 1
+        while k >= 0 and ref[k] == base:
+            run += 1
+            k -= 1
+        k = j + 1
+        while k < R and ref[k] == base:
+            run += 1
+            k += 1
+        if penalty_table is not None:
+            del_costs.append(penalty_table.del_cost(run))
+        else:
+            del_costs.append(del_hp if run >= hp_min_run else del_normal)
+
+    # Insertion cost: use table lookup for first query base HP context when table provided.
+    # For the DP, we need per-query-position ins cost; we approximate using the HP
+    # context of each query base.
+    if penalty_table is not None:
+        ins_costs: List[float] = [
+            penalty_table.ins_cost(_hp_run_length(query, i)) for i in range(Q)
+        ]
+    else:
+        ins_costs = [ins] * Q
+
+    INF = float('inf')
+    # One-row rolling DP (space O(R))
+    prev = [INF] * (R + 1)
+    prev[0] = 0.0
+    for j in range(1, R + 1):
+        prev[j] = prev[j - 1] + del_costs[j - 1]  # leading ref deletions
+
+    for i in range(1, Q + 1):
+        curr = [INF] * (R + 1)
+        curr[0] = i * ins_costs[i - 1]  # i query insertions with no ref consumed
+        qi = query[i - 1].upper()
+        for j in range(1, R + 1):
+            cost_sub = 0.0 if qi == ref[j - 1].upper() else sub
+            diag  = prev[j - 1] + cost_sub        # match / mismatch
+            above = prev[j]     + ins_costs[i - 1]  # insertion (query base, no ref)
+            left  = curr[j - 1] + del_costs[j - 1]  # deletion (ref base, no query)
+            curr[j] = min(diag, above, left)
+        prev = curr
+
+    return min(prev)  # free right suffix: best end column over all j in [0, R]
+
+
+# ---------------------------------------------------------------------------
+# Core scoring: bilateral anchor + rescue alignment
+# ---------------------------------------------------------------------------
+
+def _score_junction(
+    query: str,
+    q_split: int,
+    intron_start: int,
+    intron_end: int,
+    genome_seq: str,
+    hp_pen: float,
+    W: int,            # kept for API compatibility; ignored by this implementation
+    max_slide: int,    # kept for API compatibility; ignored by this implementation
+    current_ns: int = -1,  # current N-op intron_start (anchor ref position for tier 2)
+    penalty_table: Optional[HpPenaltyTable] = None,
+) -> Tuple[float, int]:
+    """Score a candidate junction using HP-aware intron_end-anchored alignment.
+
+    **Algorithm:**
+
+    For each ``k`` in ``[0, len(rescue)]``:
+
+    * **Tier 1 — intron_end-anchored**: align ``rescue[k:]`` left-anchored to
+      ``g[intron_end : intron_end+buf]`` using :func:`_score_hp_anchored`.
+      The free right suffix of the ref soft-clips any terminal noise without
+      penalty.  Asks: "does the suffix of rescue start cleanly at intron_end?"
+
+    * ``score(k) = t1(k)``; best ``k`` minimises this.
+
+    For the correct junction, ``rescue[k*:]`` starts perfectly at ``intron_end``
+    (score=0).  Any wrong ``intron_end`` forces a mismatch or indel → score>0.
+
+    Args:
+        query:        Full BAM query sequence.
+        q_split:      Current query index of the exon2/intron boundary.
+        intron_start: Candidate intron start (0-based, = js); unused by scorer.
+        intron_end:   Candidate intron end (0-based, exclusive, = je).
+        genome_seq:   Full chromosome sequence.
+        hp_pen:       Unused (retained for API compatibility).
+        W:            Unused (retained for API compatibility).
+        max_slide:    Unused (retained for API compatibility).
+        current_ns:   Unused (retained for API compatibility).
+
+    Returns:
+        ``(best_score, 0)`` where ``best_score`` is ``min_k t1(k)``.
+    """
+    gs = len(genome_seq)
+
+    # Cap rescue length: only the first ~30 bp are needed to identify the junction.
+    _MAX_RESCUE = 30
+    rescue = query[q_split : q_split + _MAX_RESCUE].upper()
+    L = len(rescue)
+
+    if L == 0:
+        return 0.0, 0
+
+    # Reference for tier-1: sequence starting at intron_end (exon after the intron).
+    _EXON1_BUFFER = max(L + 20, 50)
+    ref_exon1 = genome_seq[intron_end : min(gs, intron_end + _EXON1_BUFFER)].upper()
+
+    best_score = float("inf")
+
+    for k in range(L):
+        # Tier-1: intron_end-anchored HP-edit.
+        # rescue[k:] must start at intron_end; extra ref bases beyond it are free.
+        # k stops at L-1 so q1 always has ≥1 base; k=L would give empty q1 (0.0 for
+        # all candidates regardless of junction quality, a degenerate non-discriminating case).
+        q1 = rescue[k:]
+        score = _score_hp_anchored(q1, ref_exon1[: max(len(q1) + 5, 20)],
+                                   penalty_table=penalty_table)
+
+        if score < best_score:
+            best_score = score
+            if best_score == 0.0:
+                break  # perfect match; can't improve
+
+    return best_score, 0
+
+
+def _score_junction_fallback(
+    query: str, q_split: int, intron_start: int, intron_end: int,
+    genome_seq: str, hp_pen: float,
+    penalty_table: Optional[HpPenaltyTable] = None,
+) -> float:
+    """Simple edit-distance fallback when local_aligner is unavailable."""
+    gs = len(genome_seq)
+    rescue = query[q_split:].upper()
+    L = len(rescue)
+    if L == 0:
+        return 0.0
+    best = float('inf')
+    for k in range(L + 1):
+        ref_gap = genome_seq[max(0, intron_start - k): intron_start].upper()
+        ref_ex1 = genome_seq[intron_end: min(gs, intron_end + L - k)].upper()
+        ed2 = _hp_edit_distance(rescue[:k], ref_gap, hp_pen,
+                                penalty_table=penalty_table) if rescue[:k] or ref_gap else 0.0
+        ed1 = _hp_edit_distance(rescue[k:], ref_ex1, hp_pen,
+                                penalty_table=penalty_table) if rescue[k:] or ref_ex1 else 0.0
+        best = min(best, ed2 + ed1)
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Per-read N-op refinement
+# ---------------------------------------------------------------------------
+
+def _iter_n_ops(
+    read: pysam.AlignedSegment,
+) -> Iterator[Tuple[int, int, int, int]]:
+    """Yield (cigar_idx, ref_start, ref_end, q_split) for each N-op.
+
+    q_split = number of query-consuming bases consumed before this N-op,
+    counting only bases from aligned (reference-consuming) regions and their
+    adjacent soft-clips.  Leading H/S ops are excluded; trailing S at the 5'
+    RNA end (right side for is_reverse reads) are included after the last
+    ref-consuming op.
+
+    H ops never appear in query_sequence and are always skipped.
+    S ops at the start of the CIGAR (before any reference-consuming op) are
+    leading soft-clips and do NOT count toward q_split.
+    S ops after at least one ref-consuming op (trailing in genomic terms) DO
+    count toward q_split.
+    """
+    q_pos = 0
+    r_pos = read.reference_start
+    seen_ref_op = False   # True once at least one ref-consuming op has been processed
+
+    for i, (op, length) in enumerate(read.cigartuples):
+        if op == _H:
+            continue  # H never in query_sequence; skip entirely
+        if op == _N:
+            yield i, r_pos, r_pos + length, q_pos
+        if op in _REF_CONSUMING:
+            r_pos += length
+            seen_ref_op = True
+        if op in _QUERY_CONSUMING and op != _S:
+            q_pos += length
+        elif op == _S:
+            # Count soft-clip only if we have already seen a reference-consuming op
+            # (i.e., this is NOT a leading soft-clip)
+            if seen_ref_op:
+                q_pos += length
+
+
+def _has_boundary_error(
+    cigartuples: List[Tuple[int, int]],
+    intron_start: int,
+    intron_end: int,
+    ref_start: int,
+    window: int,
+) -> bool:
+    """Return True if there is an X (mismatch) or I/D (indel) op within
+    *window* reference bases of either the intron_start or intron_end boundary.
+
+    This is used as a pre-filter for junction refinement: only reads with
+    alignment evidence of a boundary problem (noisy bases near the splice site)
+    benefit from re-scoring; clean M-op alignments indicate the aligner was
+    already confident.
+
+    Args:
+        cigartuples:  Read CIGAR tuples.
+        intron_start: Left boundary of the N-op (0-based).
+        intron_end:   Right boundary of the N-op (0-based, exclusive).
+        ref_start:    Read reference_start.
+        window:       Reference distance from either boundary to search.
+
+    Returns:
+        True if any X, I, or D op falls within *window* bp of intron_start or
+        intron_end; False otherwise.
+    """
+    if not cigartuples:
+        return False
+
+    # Ops of interest: X (mismatch), I (insertion), D (deletion)
+    _error_ops = frozenset([_D, _I, _X])
+    _ref_ops   = frozenset([_M, _D, _EQ, _X])  # ops that advance ref pos
+
+    ref_pos = ref_start
+    for op, length in cigartuples:
+        if op == _H:
+            continue
+        if op == _N:
+            ref_pos += length
+            continue
+        if op in _error_ops:
+            # The reference span of this op is [ref_pos, ref_pos + ref_len)
+            ref_len = length if op in _ref_ops else 0
+            op_end  = ref_pos + ref_len  # exclusive
+
+            # Check proximity to intron_start
+            if ref_pos <= intron_start + window and op_end >= intron_start - window:
+                return True
+            # Check proximity to intron_end
+            if ref_pos <= intron_end + window and op_end >= intron_end - window:
+                return True
+        if op in _ref_ops:
+            ref_pos += length
+        # S/I: don't advance ref
+
+    return False
+
+
+def refine_read_junctions(
+    read: pysam.AlignedSegment,
+    all_junctions_idx: Dict[str, List[Tuple[int, int]]],
+    annotated_set: Set[Junction],
+    genome_seq: str,
+    strand: str,
+    hp_pen: float = 0.25,
+    W: int = 15,
+    max_slide: int = 10,
+    search_radius: int = 5000,
+    max_boundary_shift: int = 50,
+    boundary_error_window: int = 10,
+    penalty_table: Optional[HpPenaltyTable] = None,
+) -> List[Tuple[int, int, int, int, int]]:
+    """Find improved junctions for all N-ops in a read.
+
+    Args:
+        read:                 pysam AlignedSegment (not modified).
+        all_junctions_idx:    Output of _build_junction_index.
+        annotated_set:        Set of (chrom, js, je) for annotated junctions.
+        genome_seq:           Full chromosome sequence.
+        strand:               '+' or '-'.
+        hp_pen:               Homopolymer indel penalty.
+        W:                    Edit-distance window half-width (bp).
+        max_slide:            Max query split displacement.
+        search_radius:        Discovery radius for finding candidate junctions
+                              (bp).  Large values ensure annotated junctions from
+                              adjacent isoforms are included.
+        max_boundary_shift:   Maximum allowed shift of either intron boundary
+                              (bp).  Candidates where |new_ns - old_ns| or
+                              |new_ne - old_ne| exceeds this threshold are
+                              excluded.  Prevents pairing with junctions from
+                              neighbouring genes that happen to score well due to
+                              sequence coincidence in noisy Nanopore reads.
+        boundary_error_window: Only refine N-ops that have at least one
+                              mismatch (X) or indel (I/D) op within this many
+                              reference bases of either junction boundary.
+                              Reads with clean M-op alignments at the boundary
+                              are already correctly placed and don't need
+                              refinement.  Set to 0 to disable this filter and
+                              score every N-op.
+
+    Returns:
+        List of (cigar_idx, old_start, old_end, new_start, new_end) for each
+        N-op that should be updated.  Empty if no changes needed.
+    """
+    if not read.cigartuples or read.is_unmapped:
+        return []
+
+    chrom = standardize_chrom_name(read.reference_name)
+    q = read.query_sequence
+    if not q:
+        return []
+
+    replacements = []
+
+    for cigar_idx, ns, ne, q_split in _iter_n_ops(read):
+        # Filter: only score junctions where there is alignment evidence of a
+        # boundary problem — an X (mismatch) or I/D (indel) op within
+        # boundary_error_window reference bases of either junction endpoint.
+        # Clean M-op alignments at the boundary indicate the aligner was
+        # confident; noisy boundaries are the cases that benefit from refinement.
+        if boundary_error_window > 0 and not _has_boundary_error(
+            read.cigartuples, ns, ne,
+            read.reference_start, boundary_error_window,
+        ):
+            continue
+        # Use search_radius to discover candidates (finds annotated junctions from
+        # adjacent isoforms), but constrain each endpoint to max_boundary_shift to
+        # avoid pairing with junctions from entirely different genes.
+        candidates = _candidates_near(
+            all_junctions_idx, chrom, ns, ne,
+            radius=search_radius,
+            start_radius=max_boundary_shift,
+            end_radius=max_boundary_shift,
+        )
+        if not candidates:
+            continue
+
+        # All candidates are scored; canonical/annotated status is used ONLY as
+        # a tie-breaker when sequence scores are identical — never to prefer a
+        # worse-scoring junction over a better one.
+        # (A non-canonical junction with ed=0 always beats canonical with ed=3.)
+
+        best_tuple = None   # (score, is_alt, tier, is_novel, abs_delta, js, je, delta)
+
+        for js, je in candidates:
+            if je <= js:
+                continue
+
+            score, delta = _score_junction(
+                q, q_split, js, je, genome_seq,
+                hp_pen=hp_pen, W=W, max_slide=max_slide,
+                current_ns=ns,   # anchor: current N-op start = exon2 boundary
+                penalty_table=penalty_table,
+            )
+
+            # Tie-breakers (only matter when score is identical):
+            is_alt   = 0 if (js == ns and je == ne) else 1  # current junction preferred
+            tier     = _canonical_tier(js, je, genome_seq, strand)
+            is_novel = 0 if (chrom, js, je) in annotated_set else 1
+
+            # Scoring priority (lower = better):
+            #   1. hp_score  — split-alignment edit distance (sequence evidence)
+            #   2. is_alt    — current junction preferred over alternatives at equal score
+            #   3. tier      — canonical GT-AG preferred over non-canonical
+            #   4. is_novel  — annotated preferred over novel
+            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only)
+            candidate_tuple = (score, is_alt, tier, is_novel, abs(delta), js, je, delta)
+            if best_tuple is None or candidate_tuple < best_tuple:
+                best_tuple = candidate_tuple
+
+        if best_tuple is None:
+            continue
+
+        # best_tuple = (score, is_alt, tier, is_novel, abs_delta, js, je, delta)
+        _, _, _, _, _, new_js, new_je, _ = best_tuple
+
+        # Only emit a replacement if the junction actually changes.
+        if new_js != ns or new_je != ne:
+            replacements.append((cigar_idx, ns, ne, new_js, new_je))
+
+    return replacements
+
+
+# ---------------------------------------------------------------------------
+# CIGAR surgery: apply junction replacement
+# ---------------------------------------------------------------------------
+
+def _apply_junction_replacement(
+    read: pysam.AlignedSegment,
+    cigar_idx: int,
+    old_ns: int,
+    old_ne: int,
+    new_ns: int,
+    new_ne: int,
+    genome_seq: str,
+    strand: str,
+    hp_pen: float,
+    W: int,
+) -> bool:
+    """Replace one N-op in-place and re-align flanking exon CIGAR ops.
+
+    The flanking exon ops (query bases that overlap the boundary difference)
+    are trimmed and re-emitted as M ops against the new junction.  The
+    reference_start is updated if the leftmost exon changes.
+
+    Args:
+        read:       Modified in-place.
+        cigar_idx:  Index of the N-op in read.cigartuples.
+        old_ns/ne:  Current intron coordinates.
+        new_ns/ne:  Replacement intron coordinates.
+        genome_seq: Full chromosome sequence.
+        strand:     '+' or '-'.
+        hp_pen:     For local realignment (not used directly here).
+        W:          Window for CIGAR reconstruction.
+
+    Returns:
+        True if CIGAR was modified.
+    """
+    from .local_aligner import align_clip_to_exon, cigar_ops_to_str, cigar_str_to_ops
+
+    cigar = list(read.cigartuples)
+    q = read.query_sequence
+    if not cigar or not q:
+        return False
+
+    # Delta in intron boundaries
+    delta_start = new_ns - old_ns   # positive = intron grew on left (ate exon2 bases)
+    delta_end   = new_ne - old_ne   # positive = intron shrunk on right (exon1 got more)
+
+    new_cigar = list(cigar)
+    new_ref_start = read.reference_start
+
+    # --- Fix intron start boundary ---
+    # If delta_start > 0: intron_start moved right → exon2 gained |delta_start| ref bases
+    #                      (need to add M ops before N from exon2 query bases absorbed in old N)
+    # If delta_start < 0: intron_start moved left → exon2 lost |delta_start| ref bases
+    #                      (trim those bases from the last exon2 op before N)
+    #
+    # --- Fix intron end boundary ---
+    # If delta_end > 0: intron_end moved right → exon1 lost |delta_end| ref bases
+    # If delta_end < 0: intron_end moved left → exon1 gained |delta_end| ref bases
+
+    # Replace just the N length; flanking ops are handled via re-query alignment.
+    # Simple approach: update N length and adjust adjacent M/D/X ops by the deltas.
+    # For the exon2 side (left of N, index cigar_idx-1):
+    #   shrink/grow the last M-consuming op
+    # For the exon1 side (right of N, index cigar_idx+1):
+    #   shrink/grow the first M-consuming op
+
+    new_n_len = new_ne - new_ns
+    if new_n_len <= 0:
+        return False
+
+    # Guard: refuse replacements with unreasonably large boundary shifts.
+    # Legitimate junction corrections are at most a few bp off; large deltas
+    # indicate a mis-matched junction pair (e.g., an annotated junction from a
+    # completely different gene that happens to be within search_radius).
+    _MAX_BOUNDARY_SHIFT = 50  # bp
+    if abs(delta_start) > _MAX_BOUNDARY_SHIFT or abs(delta_end) > _MAX_BOUNDARY_SHIFT:
+        logger.debug(
+            "_apply_junction_replacement: boundary shift too large "
+            "(delta_start=%d, delta_end=%d) for read %s — skipping",
+            delta_start, delta_end, read.query_name,
+        )
+        return False
+
+    new_cigar[cigar_idx] = (_N, new_n_len)
+
+    # --- Adjust exon2 flank ---
+    # The challenge: M ops consume both ref AND query, so we can't simply shrink/grow
+    # an M without disturbing the query span.  Instead we insert boundary ops:
+    #
+    #   delta_start > 0  (N start moved right; intron gave d ref bases to exon2)
+    #     → those d ref positions had NO query bases (they were in the N)
+    #     → encode as D(d) at the right edge of exon2: M(m)D(d)N(L')
+    #     → ref: +d from D ✓;  query: unchanged ✓
+    #
+    #   delta_start < 0  (N start moved left; exon2 lost d ref bases into intron)
+    #     → those d query bases that were in exon2 M are now "inside" the intron
+    #     → encode as I(d) at the right edge of exon2 (before N): M(m-d)I(d)N(L')
+    #     → ref: -d from shrunk M ✓;  query: unchanged (M loses d, I gains d) ✓
+    # Track N-op index explicitly through inserts (do NOT search — reads may have
+    # multiple N-ops, and a search could match the wrong one).
+    n_idx = cigar_idx  # starts at original position; updated as inserts shift it
+
+    if delta_start != 0:
+        d = abs(delta_start)
+        # Find the last ref-consuming op before n_idx
+        ins_k = -1
+        for k in range(n_idx - 1, -1, -1):
+            if new_cigar[k][0] in _REF_CONSUMING:
+                ins_k = k
+                break
+        if ins_k < 0:
+            return False  # no ref-consuming op found before N
+
+        op_k, len_k = new_cigar[ins_k]
+
+        if delta_start > 0:
+            # Exon2 gained d ref bases from the intron.  Encode as D(d) before N.
+            new_cigar.insert(n_idx, (_D, d))
+            n_idx += 1  # N shifted right by 1 due to insert
+        else:
+            # delta_start < 0: exon2 lost d ref bases into intron.
+            # Walk backward from n_idx-1, consuming d ref bases (may span multiple ops).
+            remaining_ref = d
+            absorbed_q = 0
+            ops_start = n_idx  # exclusive start: we remove ops in [ops_start, n_idx)
+            leftover_op2: Optional[Tuple[int, int]] = None
+
+            for k in range(n_idx - 1, -1, -1):
+                op_k2, len_k2 = new_cigar[k]
+                if op_k2 in _REF_CONSUMING:
+                    if remaining_ref <= 0:
+                        break
+                    take_ref = min(len_k2, remaining_ref)
+                    take_q   = take_ref if op_k2 in _QUERY_CONSUMING else 0
+                    absorbed_q += take_q
+                    remaining_ref -= take_ref
+                    if take_ref < len_k2:
+                        leftover_op2 = (op_k2, len_k2 - take_ref)
+                        ops_start = k
+                        break
+                    else:
+                        ops_start = k
+                elif op_k2 in _QUERY_CONSUMING:
+                    absorbed_q += len_k2
+                    ops_start = k
+
+            if remaining_ref > 0:
+                return False
+
+            # Remove consumed ops
+            del new_cigar[ops_start: n_idx]
+            n_idx = ops_start  # N shifted left
+            if leftover_op2 is not None:
+                new_cigar.insert(n_idx, leftover_op2)
+                n_idx += 1
+            # Append I(absorbed_q) right before N
+            if absorbed_q > 0:
+                new_cigar.insert(n_idx, (_I, absorbed_q))
+                n_idx += 1
+
+    # --- Adjust exon1 flank ---
+    #   delta_end > 0  (N end moved right; exon1 lost d ref bases into intron)
+    #     → those d query bases from exon1 M can't just vanish
+    #     → encode as I(d) at the left edge of exon1: N(L')I(d)M(m-d)
+    #     → ref: M loses d ✓;  query: unchanged (M loses d, I gains d) ✓
+    #
+    #   delta_end < 0  (N end moved left; exon1 gained d ref bases from intron)
+    #     → those d positions had NO query bases (they were in the N)
+    #     → encode as D(d) at the left edge of exon1: N(L')D(d)M(m)
+    #     → ref: +d from D ✓;  query: unchanged ✓
+    if delta_end != 0:
+        d = abs(delta_end)
+
+        if delta_end > 0:
+            # Exon1 lost d ref bases into the intron.  Those bases were previously
+            # aligned (M/=/X ops) and carried query bases with them.  We need to:
+            #   1. Remove d ref-consuming bases from the start of exon1 (may span
+            #      multiple ops, along with any I ops interleaved between them).
+            #   2. Prepend I(absorbed_query) to preserve the query span.
+            # Walk forward from n_idx+1, consuming ops until d ref bases absorbed.
+            remaining_ref = d
+            absorbed_q = 0
+            ops_to_remove_end = n_idx + 1  # exclusive end index of consumed ops
+            leftover_op: Optional[Tuple[int, int]] = None  # partial op remainder
+
+            for k in range(n_idx + 1, len(new_cigar)):
+                op_k, len_k = new_cigar[k]
+                if op_k in _REF_CONSUMING:
+                    if remaining_ref <= 0:
+                        break
+                    take_ref = min(len_k, remaining_ref)
+                    take_q   = take_ref if op_k in _QUERY_CONSUMING else 0
+                    absorbed_q += take_q
+                    remaining_ref -= take_ref
+                    if take_ref < len_k:
+                        # Partial consumption — save the remainder
+                        leftover_op = (op_k, len_k - take_ref)
+                        ops_to_remove_end = k + 1
+                        break
+                    else:
+                        ops_to_remove_end = k + 1
+                elif op_k in _QUERY_CONSUMING:
+                    # I/S op interleaved with ref ops: absorb its query bases too
+                    absorbed_q += len_k
+                    ops_to_remove_end = k + 1
+
+            if remaining_ref > 0:
+                # Could not absorb all d ref bases (exon1 too short)
+                return False
+
+            # Remove consumed ops, optionally re-insert leftover
+            del new_cigar[n_idx + 1: ops_to_remove_end]
+            if leftover_op is not None:
+                new_cigar.insert(n_idx + 1, leftover_op)
+            # Prepend I(absorbed_q) right after N to preserve query span
+            if absorbed_q > 0:
+                new_cigar.insert(n_idx + 1, (_I, absorbed_q))
+
+        else:
+            # Exon1 gained |d| ref bases from the intron.  Those bases had NO
+            # query counterpart (they were in the N-op).  Encode as D(d).
+            new_cigar.insert(n_idx + 1, (_D, d))
+
+    # Validate: total ref span must be preserved (sum ref ops + N = constant)
+    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING | {_N})
+    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING | {_N})
+    if old_ref_span != new_ref_span:
+        logger.debug(
+            "refine_junction: ref span mismatch (%d → %d) for read %s; skipping",
+            old_ref_span, new_ref_span, read.query_name,
+        )
+        return False
+
+    # Validate: total query span unchanged
+    old_q_span = sum(l for op, l in cigar     if op in _QUERY_CONSUMING)
+    new_q_span = sum(l for op, l in new_cigar if op in _QUERY_CONSUMING)
+    if old_q_span != new_q_span:
+        logger.debug(
+            "refine_junction: query span mismatch (%d → %d) for read %s; skipping",
+            old_q_span, new_q_span, read.query_name,
+        )
+        return False
+
+    read.cigartuples = new_cigar
+    if new_ref_start != read.reference_start:
+        read.reference_start = new_ref_start
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Batch BAM refinement
+# ---------------------------------------------------------------------------
+
+def refine_bam_junctions(
+    input_bam: str,
+    output_bam: str,
+    aligner_bams: List[str],
+    annotated_junctions: Set[Tuple],
+    genome: Dict[str, str],
+    hp_pen: float = 0.25,
+    W: int = 15,
+    max_slide: int = 10,
+    search_radius: int = 5000,
+    max_boundary_shift: int = 50,
+    boundary_error_window: int = 10,
+    sort_and_index: bool = True,
+    penalty_table_path: Optional[str] = None,
+) -> Dict[str, int]:
+    """Refine all N-op junctions in a BAM file.
+
+    Writes a new BAM with improved N-op boundaries.  Reads without N-ops,
+    or where no better junction is found, are passed through unchanged.
+
+    Args:
+        input_bam:            Path to input consensus BAM.
+        output_bam:           Path to write refined BAM.
+        aligner_bams:         Per-aligner BAM paths for junction pool.
+        annotated_junctions:  From ``load_annotated_junctions()``.
+        genome:               Dict mapping chrom → sequence.
+        hp_pen:               Homopolymer penalty (tunable).
+        W:                    Edit-distance window half-width.
+        max_slide:            Max query split slide distance.
+        max_boundary_shift:   Max allowed shift of either intron boundary (bp).
+                              Prevents false-positive matches from junctions
+                              in adjacent genes within search_radius.
+        search_radius:        Junction search radius (bp).
+        sort_and_index:       Sort and index the output BAM when True.
+        penalty_table_path:   Optional path to ``penalty_scores.tsv`` produced
+                              by ``empirical_cigar_error_profiler.py``.  When
+                              provided, overrides the heuristic del/ins cost
+                              step-function with empirical per-HP-length values.
+
+    Returns:
+        Stats dict with keys: total, n_op_reads, refined, unchanged, errors.
+    """
+    penalty_table: Optional[HpPenaltyTable] = None
+    if penalty_table_path:
+        try:
+            penalty_table = HpPenaltyTable.from_tsv(penalty_table_path)
+            logger.info(
+                "refine_bam_junctions: loaded empirical penalty table from %s",
+                penalty_table_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "refine_bam_junctions: failed to load penalty table from %s: %s "
+                "— falling back to heuristic scoring",
+                penalty_table_path, exc,
+            )
+    stats = dict(total=0, n_op_reads=0, refined=0, unchanged=0, errors=0)
+
+    # Build junction pool and index
+    all_junctions, annotated_set = build_junction_pool(
+        aligner_bams, annotated_junctions,
+    )
+    junctions_idx = _build_junction_index(all_junctions)
+
+    logger.info(
+        "refine_bam_junctions: pool has %d junctions (%d annotated)",
+        len(all_junctions), len(annotated_set),
+    )
+
+    with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
+         pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
+
+        for read in bam_in:
+            stats['total'] += 1
+            if read.is_unmapped or not read.cigartuples:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            # Only process reads with at least one N-op
+            if not any(op == _N for op, _ in read.cigartuples):
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            stats['n_op_reads'] += 1
+            strand = '-' if read.is_reverse else '+'
+            chrom = standardize_chrom_name(read.reference_name)
+            genome_seq = genome.get(chrom, '')
+            if not genome_seq:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            try:
+                replacements = refine_read_junctions(
+                    read, junctions_idx, annotated_set, genome_seq, strand,
+                    hp_pen=hp_pen, W=W, max_slide=max_slide,
+                    search_radius=search_radius,
+                    max_boundary_shift=max_boundary_shift,
+                    boundary_error_window=boundary_error_window,
+                    penalty_table=penalty_table,
+                )
+            except Exception as exc:
+                logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
+                bam_out.write(read)
+                stats['errors'] += 1
+                continue
+
+            if not replacements:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            # Apply replacements (process in reverse CIGAR order to preserve indices).
+            # Work on a fresh copy to avoid in-place mutation of pysam's internal
+            # C-level AlignedSegment object, which can cause heap corruption when
+            # cigartuples and reference_start are modified during BAM iteration.
+            try:
+                modified_read = read.__copy__()
+            except Exception:
+                # Fallback: write unchanged if copy fails
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            any_applied = False
+            for cigar_idx, old_ns, old_ne, new_ns, new_ne in sorted(
+                replacements, key=lambda r: -r[0]
+            ):
+                try:
+                    applied = _apply_junction_replacement(
+                        modified_read, cigar_idx, old_ns, old_ne, new_ns, new_ne,
+                        genome_seq, strand, hp_pen, W,
+                    )
+                    any_applied = any_applied or applied
+                except Exception as exc:
+                    logger.debug(
+                        "_apply_junction_replacement failed for %s: %s",
+                        read.query_name, exc,
+                    )
+
+            if any_applied:
+                # Strip MD and cs tags from modified reads: the CIGAR has been
+                # changed (boundary D/I ops inserted) so the MD string is now
+                # invalid.  Without MD, downstream tools (pysam indel corrector)
+                # skip MD-based processing, which is correct.  Also strip cs
+                # (cigar string in cs notation) for the same reason.
+                try:
+                    modified_read.set_tags([
+                        t for t in modified_read.tags if t[0] not in ('MD', 'cs')
+                    ])
+                except Exception:
+                    pass
+
+            bam_out.write(modified_read)
+            if any_applied:
+                stats['refined'] += 1
+            else:
+                stats['unchanged'] += 1
+
+    if sort_and_index:
+        try:
+            _sort_and_index(output_bam)
+        except Exception as exc:
+            logger.warning("refine_bam_junctions: sort/index failed: %s", exc)
+
+    logger.info(
+        "refine_bam_junctions done: %d total, %d with N-ops, %d refined, %d unchanged, %d errors",
+        stats['total'], stats['n_op_reads'], stats['refined'],
+        stats['unchanged'], stats['errors'],
+    )
+    return stats
+
+
+def _sort_and_index(bam_path: str) -> None:
+    """Sort and index a BAM file using samtools via subprocess.
+
+    Uses subprocess (not pysam.sort/pysam.index) to avoid heap corruption
+    bugs in pysam's C-level sort on CentOS 7 / older glibc.
+    """
+    import os
+    import subprocess
+    tmp = bam_path + '.tmp.bam'
+    subprocess.run(
+        ['samtools', 'sort', '-o', tmp, bam_path],
+        check=True, capture_output=True,
+    )
+    os.replace(tmp, bam_path)
+    subprocess.run(
+        ['samtools', 'index', bam_path],
+        check=True, capture_output=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tuning harness
+# ---------------------------------------------------------------------------
+
+def evaluate_hp_pen_values(
+    input_bam: str,
+    aligner_bams: List[str],
+    annotated_junctions: Set[Tuple],
+    genome: Dict[str, str],
+    ground_truth_junctions: List[Tuple[str, int, int]],
+    hp_pen_values: Optional[List[float]] = None,
+    W: int = 15,
+    max_slide: int = 10,
+    search_radius: int = 5000,
+) -> List[Dict]:
+    """Evaluate multiple hp_pen values against a ground-truth junction set.
+
+    For each hp_pen, counts:
+    - true_positive:  correct reads that stay at the ground-truth junction
+    - false_negative: correct reads incorrectly moved away
+    - true_corrected: reads with wrong N-ops moved to ground-truth
+    - false_corrected: reads with wrong N-ops moved to a different wrong junction
+
+    Args:
+        input_bam:               Consensus BAM to evaluate.
+        aligner_bams:            Per-aligner BAMs for pool construction.
+        annotated_junctions:     Full annotated junction set.
+        genome:                  Chromosome sequences.
+        ground_truth_junctions:  List of (chrom, intron_start, intron_end).
+        hp_pen_values:           List of penalty values to test.
+        W, max_slide, search_radius: Scoring parameters.
+
+    Returns:
+        List of result dicts, one per hp_pen value.
+    """
+    if hp_pen_values is None:
+        hp_pen_values = [0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0]
+
+    all_junctions, annotated_set = build_junction_pool(aligner_bams, annotated_junctions)
+    junctions_idx = _build_junction_index(all_junctions)
+    gt_set = set((c, s, e) for c, s, e in ground_truth_junctions)
+
+    results = []
+    for pen in hp_pen_values:
+        tp = fn = tc = fc = no_n = 0
+        delta_distribution: Dict[int, int] = {}
+
+        with pysam.AlignmentFile(input_bam, 'rb') as bam:
+            for read in bam:
+                if read.is_unmapped or not read.cigartuples:
+                    continue
+                n_ops = [(ns, ne) for _, ns, ne in [
+                    (i, r, r + l)
+                    for i, (op, l) in enumerate(read.cigartuples)
+                    for r in [_n_op_ref_start(read, i)]
+                    if op == _N
+                ]]
+                if not n_ops:
+                    no_n += 1
+                    continue
+
+                strand = '-' if read.is_reverse else '+'
+                chrom = standardize_chrom_name(read.reference_name)
+                genome_seq = genome.get(chrom, '')
+                if not genome_seq:
+                    continue
+
+                replacements = refine_read_junctions(
+                    read, junctions_idx, annotated_set, genome_seq, strand,
+                    hp_pen=pen, W=W, max_slide=max_slide,
+                    search_radius=search_radius,
+                )
+
+                rep_map = {(old_ns, old_ne): (new_ns, new_ne)
+                           for _, old_ns, old_ne, new_ns, new_ne in replacements}
+
+                for ns, ne in n_ops:
+                    currently_gt = (chrom, ns, ne) in gt_set
+                    if (ns, ne) in rep_map:
+                        new_ns, new_ne = rep_map[(ns, ne)]
+                        delta = (new_ns - ns) + (new_ne - ne)
+                        delta_distribution[delta] = delta_distribution.get(delta, 0) + 1
+                        if (chrom, new_ns, new_ne) in gt_set:
+                            tc += 1
+                        else:
+                            fc += 1
+                    else:
+                        if currently_gt:
+                            tp += 1
+                        # wrong junction not corrected: counted in analysis separately
+
+        results.append({
+            'hp_pen': pen,
+            'true_positive': tp,
+            'false_negative': fn,
+            'true_corrected': tc,
+            'false_corrected': fc,
+            'delta_distribution': delta_distribution,
+        })
+        logger.info(
+            "hp_pen=%.2f: TP=%d FN=%d TC=%d FC=%d",
+            pen, tp, fn, tc, fc,
+        )
+
+    return results
+
+
+def _n_op_ref_start(read: pysam.AlignedSegment, target_idx: int) -> int:
+    """Return reference position at start of N-op at cigar index target_idx."""
+    pos = read.reference_start
+    for i, (op, length) in enumerate(read.cigartuples):
+        if i == target_idx:
+            return pos
+        if op in _REF_CONSUMING:
+            pos += length
+    return pos

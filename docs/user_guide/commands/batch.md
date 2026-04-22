@@ -21,14 +21,14 @@ rectify batch \
     --Scer \
     --reference wt \
     -o results/ \
-    --profile slurm_profiles/sherlock_larsms.yaml
+    --profile slurm_profiles/hpc_cpu.yaml
 
 # Generate and immediately submit
 rectify batch \
     --manifest manifest.tsv \
     --Scer \
     -o results/ \
-    --profile slurm_profiles/sherlock_larsms.yaml \
+    --profile slurm_profiles/hpc_cpu.yaml \
     --submit
 ```
 
@@ -59,7 +59,7 @@ A SLURM array job with one task per sample:
 #!/bin/bash
 #SBATCH --job-name=rectify_correct
 #SBATCH --array=0-3             # 0 to N-1 samples
-#SBATCH --partition=larsms,owners
+#SBATCH --partition=my-partition
 #SBATCH --time=8:00:00
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=8
@@ -80,9 +80,9 @@ cp /data/sample_${SLURM_ARRAY_TASK_ID}.bam $SCRATCH_DIR/
 rectify correct $SCRATCH_DIR/sample.bam --Scer --streaming \
     -o results/sample_${SLURM_ARRAY_TASK_ID}/
 
-# Sync outputs back to Oak
+# Sync outputs back to long-term storage
 rsync -a results/sample_${SLURM_ARRAY_TASK_ID}/ \
-    /oak/results/sample_${SLURM_ARRAY_TASK_ID}/
+    /storage/results/sample_${SLURM_ARRAY_TASK_ID}/
 rm -rf $SCRATCH_DIR
 ```
 
@@ -93,7 +93,7 @@ Submitted with `--dependency=afterok:<array_job_id>`:
 ```bash
 #!/bin/bash
 #SBATCH --job-name=rectify_analyze
-#SBATCH --partition=larsms,owners
+#SBATCH --partition=my-partition
 #SBATCH --time=4:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=8
@@ -112,7 +112,7 @@ rectify analyze /dev/null \
 ## SLURM profile format
 
 ```yaml
-partition: larsms,owners   # SLURM partition(s)
+partition: my-partition    # SLURM partition(s)
 time: "8:00:00"            # Wall time
 mem: 128G                  # Memory per task
 cpus: 8                    # CPUs per task

@@ -307,6 +307,81 @@ Citation:
         help='Number of reads per output chunk in streaming mode (default: 10000)'
     )
 
+    # Junction refinement options
+    junc_group = correct_parser.add_argument_group('Junction refinement')
+    junc_group.add_argument(
+        '--aligner-bams',
+        nargs='+',
+        type=Path,
+        metavar='BAM',
+        default=[],
+        help='Per-aligner BAM files (from rectify align) used to build the '
+             'junction candidate pool for N-op boundary refinement. When '
+             'provided, every N-op in the consensus BAM is scored against all '
+             'candidate junctions within --junction-search-radius bp and '
+             'replaced with the best-supported junction (canonical GT-AG > '
+             'annotated > highest split-alignment score). Improves junction '
+             'accuracy for reads where the chosen aligner placed the intron '
+             'boundary a few bp off from the true splice site.'
+    )
+    junc_group.add_argument(
+        '--junction-hp-pen',
+        type=float,
+        default=0.25,
+        metavar='FLOAT',
+        help='Homopolymer indel penalty for junction scoring (0 < value ≤ 1.0). '
+             'Lower values are more tolerant of poly-T/A undercalling errors near '
+             'splice sites. Default 0.25 is recommended for Nanopore DRS data.'
+    )
+    junc_group.add_argument(
+        '--junction-search-radius',
+        type=int,
+        default=5000,
+        metavar='BP',
+        help='Search radius (bp) around each N-op for candidate junction lookup '
+             '(default: 5000). Covers the longest known yeast intron (~1 kb) '
+             'with ample margin.'
+    )
+    junc_group.add_argument(
+        '--junction-window',
+        type=int,
+        default=15,
+        metavar='BP',
+        help='Edit-distance window half-width for split-alignment scoring '
+             '(default: 15 bp on each side of the junction).'
+    )
+    junc_group.add_argument(
+        '--junction-max-slide',
+        type=int,
+        default=10,
+        metavar='BP',
+        help='Maximum query split displacement for split-alignment scoring '
+             '(default: ±10 bp).'
+    )
+    junc_group.add_argument(
+        '--junction-max-boundary-shift',
+        dest='junction_max_boundary_shift',
+        type=int,
+        default=50,
+        metavar='BP',
+        help='Maximum allowed shift of either intron boundary when applying a '
+             'junction replacement (default: 50 bp).  Candidates whose '
+             'intron_start or intron_end differs from the current N-op by more '
+             'than this threshold are excluded, preventing false-positive '
+             'matches from junctions in neighbouring genes.'
+    )
+    junc_group.add_argument(
+        '--junction-penalty-table',
+        dest='junction_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to empirical penalty table (penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py.  When provided, overrides the '
+             'heuristic del/ins cost step-function with per-HP-length values '
+             'derived from multi-aligner agreement on this dataset.  Recommended '
+             'for fine-tuning junction scoring to the specific sequencing run.'
+    )
+
     # =========================================================================
     # train-polya command
     # =========================================================================

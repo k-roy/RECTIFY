@@ -10,7 +10,7 @@
 
 RECTIFY is a fully-implemented RNA 5'/3' end correction framework for direct RNA nanopore sequencing. The core pipeline (`run-all`) runs a 5-aligner consensus alignment, corrects 3' end artifacts, filters spike-ins, and (with ≥2 samples) performs CPA clustering, DESeq2 differential expression, and APA shift analysis.
 
-All development work from rectify-beta has been fully ported. The pipeline runs on Sherlock HPC via `rectify run-all` with scratch staging and streaming mode enabled by default.
+All development work from rectify-beta has been fully ported. The pipeline runs on HPC clusters via `rectify run-all` with scratch staging and streaming mode enabled by default.
 
 ---
 
@@ -74,7 +74,7 @@ Input: FASTQ (direct RNA nanopore)
 | `core/analyze_command.py` | `analyze` subcommand |
 | `core/analyze/` | Analysis modules (DESeq2, APA shift, distribution, etc.) |
 | `slurm.py` | CPU detection, thread limits, `$SCRATCH` utilities |
-| `slurm_profiles/sherlock_larsms.yaml` | Standard CPU partition profile (use_scratch, streaming on) |
+| `slurm_profiles/hpc_cpu.yaml` | Standard CPU partition profile (use_scratch, streaming on) |
 
 ---
 
@@ -107,7 +107,7 @@ The default parallel path (`process_bam_file_parallel`) holds all corrected read
 
 With `--streaming` (`process_bam_streaming`), reads are processed and written one chunk at a time (default 10,000 reads/chunk). Peak RSS drops to ~4–5 GB regardless of BAM size.
 
-**Always use `--streaming` in SLURM jobs.** The `sherlock_larsms.yaml` profile sets `streaming: true` by default.
+**Always use `--streaming` in SLURM jobs.** The `hpc_cpu.yaml` profile sets `streaming: true` by default.
 
 > **Known bug (fixed 2026-03-30):** `process_bam_streaming()` called `correct_read_3prime()` which returns `List[Dict]`, then passed the list directly to `stats.update_from_result()` which expected a single `Dict`. Fixed: use `.extend()` and iterate for stats.
 
@@ -344,7 +344,7 @@ deSALT's `-G` flag (GTF/GFF annotation) causes a SIGSEGV in its GTF parser when 
 435 passing, 0 failing (as of 2026-04-03)
 ```
 
-Run from `/oak/stanford/groups/larsms/Users/kevinroy/software/rectify`:
+Run from the repo root:
 
 ```bash
 python -m pytest tests/ -q
@@ -362,27 +362,26 @@ python -m pytest tests/ -q
 ## SLURM Batch Configuration
 
 ### Current Batch Script
-Generated via `rectify batch` using the `sherlock_larsms.yaml` profile. Scripts are output to the project's `slurm/` directory.
+Generated via `rectify batch` using the `hpc_cpu.yaml` profile. Scripts are output to the project's `slurm/` directory.
 
 **Key features:**
-- Stages input FASTQ from OAK → `$SCRATCH` before running (75 GB/s local SSD vs. ~1-5 GB/s OAK NFS)
+- Stages input BAMs from persistent storage → `$SCRATCH` before running (high-bandwidth local I/O)
 - Runs all I/O (5-aligner BAMs, rectified BAM, correction outputs) on `$SCRATCH`
-- Copies final outputs back to OAK via `rsync` after completion
+- Copies final outputs back to persistent storage via `rsync` after completion
 - Cleans up `$SCRATCH` regardless of exit code
 
-**Current resource allocation:**
-- `--mem=48G` ← **needs to be increased to 96G** (5-aligner mode hits 48G limit)
+**Recommended resource allocation:**
+- `--mem=96G` (5-aligner mode; 48G may OOM)
 - `--cpus-per-task=16`
 - `--time=4:00:00`
-- `--partition=larsms,owners`
+- `--partition=<your-partition>`
 
-### Conda Environment
+### Python Environment
 ```bash
-PYTHON="/home/groups/larsms/users/kevinroy/anaconda3/envs/rectify/bin/python3"
-export PATH="/home/groups/larsms/users/kevinroy/anaconda3/envs/rectify/bin:$PATH"
+PYTHON="python"  # or full path to your conda/venv Python
 ```
 
-Includes: pysam, numpy, tqdm, uLTRA (`/home/users/kevinroy/.local/bin/uLTRA`), namfinder (required by uLTRA)
+Requires: pysam, numpy, tqdm; optional aligners: uLTRA (requires namfinder)
 
 ---
 
@@ -396,7 +395,7 @@ rectify run-all reads.fastq.gz --Scer -o results/
 rectify run-all reads.fastq.gz --Scer \
     --parallel-aligners \
     --junction-aligners uLTRA deSALT \
-    --ultra-path /home/users/kevinroy/.local/bin/uLTRA \
+    --ultra-path /path/to/uLTRA \
     --filter-spikein ENO2 \
     --threads 16 \
     -o results/
@@ -404,7 +403,7 @@ rectify run-all reads.fastq.gz --Scer \
 # Multi-sample via manifest
 rectify run-all --manifest samples.tsv --Scer \
     --parallel-aligners --junction-aligners uLTRA deSALT \
-    --ultra-path /home/users/kevinroy/.local/bin/uLTRA \
+    --ultra-path /path/to/uLTRA \
     --filter-spikein ENO2 --threads 16 \
     -o results/
 ```
@@ -448,7 +447,7 @@ rectify run-all --manifest samples.tsv --Scer \
 - [x] **Position index (`corrected_3ends_index.bed.gz`)** — `write_position_index()` ported and wired in all three `bam_processor.py` output paths *(done 2026-04-01)*
 - [x] **Column pruning in `load_corrected_positions()`** — drops non-essential columns after load; chunked-loading threshold lowered to 500 MB *(done 2026-04-01)*
 - [x] **Case-insensitive `--reference` matching** — case-insensitive lookup against available conditions with fallback warning *(done 2026-04-01)*
-- [x] **`--streaming` as default in SLURM** — `sherlock_larsms.yaml` sets `streaming: true` *(done 2026-04-01)*
+- [x] **`--streaming` as default in SLURM** — `hpc_cpu.yaml` sets `streaming: true` *(done 2026-04-01)*
 - [x] **False junction filter (`false_junction_filter.py`)** — poly(A)-artifact N operations detected and removed; `n_false_junctions` + `five_prime_rescued` columns in TSV output *(done 2026-04-01)*
 - [x] **Exon 2 / 3'SS truncation rescue** — post-consensus module in `splice_aware_5prime.py`; rescues reads truncated at the 3' splice site boundary even when no soft-clip sequence is present; uses annotated junctions ∪ novel junctions from all aligners' first pass; see Validation Suite §2 for design detail. (done — `splice_aware_5prime.py` wired into `bam_processor.py` as Module 2F)
 - [ ] Extend validation from chrI → full genome

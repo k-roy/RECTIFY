@@ -11,9 +11,9 @@
 
 | Aligner | Version | Location | Status |
 |---------|---------|----------|--------|
-| **minimap2** | 2.28 | `/home/groups/larsms/users/kevinroy/anaconda3/bin/minimap2` | ✅ Ready |
-| **uLTRA** | 0.1 | `/home/users/kevinroy/.local/bin/uLTRA` | ✅ Ready |
-| **deSALT** | 1.5.6 | `/home/users/kevinroy/bin/deSALT` | ✅ Ready |
+| **minimap2** | 2.28 | system PATH | ✅ Ready |
+| **uLTRA** | 0.1 | system PATH | ✅ Ready |
+| **deSALT** | 1.5.6 | system PATH | ✅ Ready |
 
 ### ❌ Installation Issues
 

@@ -273,7 +273,7 @@ class TestSlurmProfile:
         from rectify.core.batch_command import load_slurm_profile
 
         profile_data = {
-            "partition": "larsms,owners",
+            "partition": "my-partition",
             "time": "4:00:00",
             "mem": "32G",
             "cpus": 8,
@@ -282,7 +282,7 @@ class TestSlurmProfile:
         profile_path.write_text(json.dumps(profile_data))
 
         profile = load_slurm_profile(profile_path)
-        assert profile["partition"] == "larsms,owners"
+        assert profile["partition"] == "my-partition"
         assert profile["time"] == "4:00:00"
         assert profile["cpus"] == 8
 
@@ -300,7 +300,7 @@ class TestSlurmProfile:
 
         # Find bundled profile
         import rectify
-        profile_path = Path(rectify.__file__).parent / 'slurm_profiles' / 'sherlock_larsms.yaml'
+        profile_path = Path(rectify.__file__).parent / 'slurm_profiles' / 'hpc_cpu.yaml'
 
         if not profile_path.exists():
             pytest.skip(f"Bundled profile not found: {profile_path}")
@@ -322,19 +322,19 @@ class TestSlurmProfile:
 
         from rectify.core.batch_command import load_slurm_profile
 
-        content = 'partition: larsms,owners\ntime: "4:00:00"\nmem: 32G\ncpus: 8\n'
+        content = 'partition: my-partition\ntime: "4:00:00"\nmem: 32G\ncpus: 8\n'
         profile_path = tmp_path / "test.yaml"
         profile_path.write_text(content)
 
         profile = load_slurm_profile(profile_path)
         assert profile["time"] == "4:00:00"
-        assert profile["partition"] == "larsms,owners"
+        assert profile["partition"] == "my-partition"
 
     def test_invalid_extension_raises(self, tmp_path):
         from rectify.core.batch_command import load_slurm_profile
 
         profile_path = tmp_path / "test.txt"
-        profile_path.write_text("partition: larsms")
+        profile_path.write_text("partition: my-partition")
         with pytest.raises(ValueError, match="Profile must be"):
             load_slurm_profile(profile_path)
 
