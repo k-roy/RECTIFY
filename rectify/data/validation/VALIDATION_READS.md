@@ -102,13 +102,13 @@ minus: corrected > original).
 
 | Label | Coords (0-based half-open) | Strand | Spurious N op | dist from 3' end | Corrected 3' end | Shift |
 |---|---|---|---|---|---|---|
-| `cat4_plus_1` | chrXI:19592–22073 | + | 20527–22047 (1520 bp) | 26 bp | 22070 | −3 bp |
+| `cat4_plus_1` | chrXI:19592–22073 | + | 20527–22047 (1520 bp) | 26 bp | 22072 | 0 bp |
 | `cat4_plus_2` | chrX:392246–393837 | + | 393725–393825 (100 bp) | 12 bp | 393721 | −115 bp |
 | `cat4_minus_1` | chrI:128094–129063 | − | 128521–129021 (500 bp) | 427 bp | 128098 | +4 bp |
 | `cat4_minus_2` | chrIX:76016–77313 | − | 76027–76250 (223 bp) | 11 bp | 76027 | +11 bp |
 
 **Notes on Cat4 behavior:**
-- `cat4_plus_1`: The post-N exon (22047–22073) is `AAAAAAAAAAAAAAAAAAAAAAAATC`. polya_walkback + NET-seq places the corrected 3' end at 22070 (inside the poly-A run). The N-snap does not fire because the walkback does not enter the N region. `n_junctions=1` (N retained as a reported junction).
+- `cat4_plus_1`: The post-N exon (22047–22073) is `AAAAAAAAAAAAAAAAAAAAAAAATC`. Without NET-seq, `polya_walkback` is not triggered because position 22072 is `C` (non-A), so `correction_applied=none` and `corrected_3prime=22072=original_3prime`. `n_junctions=1` (N retained as a reported junction). With NET-seq enabled (`--netseq-dir`), the signal places the corrected 3' end at 22070 (inside the poly-A run); the N-snap does not fire because the walkback does not enter the N region.
 - `cat4_plus_2`: polya_walkback lands at 393721 (before N at 393725). Ambiguity window [393721,393836] is clipped to [393721,393724] so NET-seq cannot place signal inside the N. corrected=393721. `n_junctions=1`.
 - `cat4_minus_1`: N is far from the 3' end (outside FJF window). Treated as a real junction. Normal polya_walkback + NET-seq → 128098. `n_junctions=1`.
 - `cat4_minus_2`: polya_walkback lands inside the N (76027–76250). Snap fires → corrected=76027 (junction_start). All leading poly-T M bases consumed. N remains at the left CIGAR boundary. `n_junctions=1`.
@@ -226,12 +226,22 @@ are assigned fractional weights across nearby A-tract peaks. Single-peak reads
 produce exactly 1 output row with `fraction=1.0`; multi-peak reads produce ≥2
 rows with fractions in (0, 1) summing to 1.0.
 
-| Label | Coords | Strand | Expected output |
-|---|---|---|---|
-| `cat8_plus_single` | chrII:297998–300059 | + | 1 row, fraction=1.0 |
-| `cat8_plus_multi` | chrIV:232523–234067 | + | primary corrected_3prime at non-A base (chrIV:234059=G); fractions sum=1.0 |
-| `cat8_minus_single` | chrIV:1169625–1172005 | − | 1 row, fraction=1.0 |
-| `cat8_minus_multi` | chrVIII:100505–101004 | − | primary corrected_3prime at non-T base (chrVIII:100520=A ref); fractions sum=1.0 |
+**Note on bundled output:** NET-seq refinement in `rectify correct` is
+**opt-in** — it requires an explicit `--netseq-dir` argument (auto-loading
+the bundled signal was disabled because yeast NET-seq is noisy at many loci
+and caused widespread CPA mis-assignment). The bundled `corrected_3ends.tsv`
+is generated **without** NET-seq, so both multi reads show 1 row with
+`correction_applied=atract_ambiguity,polya_walkback` and `fraction=1.0`.
+The `TestCategory8::test_multi_peak_polya_anchor` tests are marked `skip`
+for this reason. To see multi-peak fractional output, pass
+`--netseq-dir bundled:saccharomyces_cerevisiae` (or a custom BigWig dir).
+
+| Label | Coords | Strand | Expected output (with NET-seq) | Bundled output (no NET-seq) |
+|---|---|---|---|---|
+| `cat8_plus_single` | chrII:297998–300059 | + | 1 row, fraction=1.0 | 1 row, fraction=1.0 |
+| `cat8_plus_multi` | chrIV:232523–234067 | + | primary corrected_3prime at non-A base (chrIV:234059=G); fractions sum=1.0 | 1 row, corrected_3prime=234059, fraction=1.0 |
+| `cat8_minus_single` | chrIV:1169625–1172005 | − | 1 row, fraction=1.0 | 1 row, fraction=1.0 |
+| `cat8_minus_multi` | chrVIII:100505–101004 | − | primary corrected_3prime at non-T base (chrVIII:100520=A ref); fractions sum=1.0 | 1 row, corrected_3prime=100520, fraction=1.0 |
 
 ---
 
@@ -278,10 +288,12 @@ All four reads carry `XG=cat9_junction_refine`. Sources:
 | minimap2 | ✓ | ✓ | ✓ | ✓ |
 | gapmm2   | ✓ | ✓ | ✓ | ✓ |
 | mapPacBio | ✓ | ✓ | ✓ | ✓ |
-| deSALT   | ✓ | ✓ | ✓ | ✓ |
+| deSALT   | ✗ | ✗ | ✓ | ✓ |
 | uLTRA    | ✓ | ✓ | ✗ | ✗ |
 
-(uLTRA had no output for the RPL19B/RPL20B dev run; plus-strand reads only.)
+(deSALT did not align cat9_plus_1 or cat9_plus_2 in the validation BAM; Module 2H
+still corrects these reads correctly via the other four aligners.
+uLTRA had no output for the RPL19B/RPL20B dev run; plus-strand reads only.)
 
 ---
 
