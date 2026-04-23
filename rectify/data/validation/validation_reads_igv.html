@@ -30,7 +30,10 @@
 <div class="note">
   <strong>Prerequisite:</strong> In IGV, enable the HTTP server via
   <em>View &rarr; Preferences &rarr; Advanced &rarr; Enable port</em> (default 60151).
-  Load <code>validation_reads.bam</code> (and optionally <code>rectified/rectified_corrected_3end.bam</code> or <code>rectified/rectified_pA_tail_trimmed.bam</code>) and select the <em>S. cerevisiae (sacCer3)</em> genome.
+  Load <code>validation_reads.bam</code> (and optionally <code>rectified/rectified_corrected_3end.bam</code>,
+  <code>rectified/rectified_pA_tail_trimmed.bam</code>, or <code>rectified/rectified_pA_tail_soft_clipped.bam</code>)
+  and select the <em>S. cerevisiae (sacCer3)</em> genome.
+  The soft-clipped BAM restores the full poly(A) tail and adapter stub as soft-clips so the complete Dorado read is visible in IGV.
   <br><br>
   <strong>Corrected 3′-end bedgraphs (all categories):</strong> Load
   <code>rectified/rectified_corrected_3end_corrected_3ends.plus.bedgraph</code> and
@@ -273,18 +276,18 @@ making the junction directly visible. Focused view is ±50 bp around the intron.
   <tr>
     <td><code>cat6_plus_2</code></td>
     <td><span class="tag plus">+</span></td>
-    <td class="detail">chrII:168424–168808 (384 bp)</td>
-    <td class="detail">20S</td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168374-168858">chrII:168374-168858</a></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:168401-169493">full</a></td>
+    <td class="detail">chrII:45644–45977 (333 bp)</td>
+    <td class="detail">36S</td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:45594-46027">chrII:45594-46027</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:45602-46437">full</a></td>
   </tr>
   <tr>
     <td><code>cat6_minus_1</code></td>
     <td><span class="tag minus">−</span></td>
     <td class="detail">chrII:60193–60697 (504 bp)</td>
-    <td class="detail">9S</td>
+    <td class="detail">47S</td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:60143-60747">chrII:60143-60747</a></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:59701-60769">full</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrII:59706-60750">full</a></td>
   </tr>
   <tr>
     <td><code>cat6_minus_2</code></td>
@@ -307,17 +310,17 @@ Focused view is ±200 bp around the junction. Motif = {5′SS}-{3′SS} on RNA s
     <td><code>cat7_plus_1</code></td>
     <td><span class="tag plus">+</span></td>
     <td>YCR012W (chrIII)</td>
-    <td class="detail">138856–138946 (90 bp) · <strong>GT-AT</strong></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:138656-138946">chrIII:138656-138946</a></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:137716-139164">full</a></td>
+    <td class="detail">138864–138952 (88 bp) · <strong>AC-AG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:138664-139152">chrIII:138664-139152</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:137716-139153">full</a></td>
   </tr>
   <tr>
     <td><code>cat7_plus_2</code></td>
     <td><span class="tag plus">+</span></td>
     <td>— (chrXII)</td>
-    <td class="detail">595736–595852 (116 bp) · <strong>GC-AT</strong></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:595536-596052">chrXII:595536-596052</a></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:593396-599029">full</a></td>
+    <td class="detail">595739–595853 (114 bp) · <strong>CA-TT</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:595539-596053">chrXII:595539-596053</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrXII:593396-599002">full</a></td>
   </tr>
   <tr>
     <td><code>cat7_minus_1</code></td>
@@ -330,10 +333,10 @@ Focused view is ±200 bp around the junction. Motif = {5′SS}-{3′SS} on RNA s
   <tr>
     <td><code>cat7_minus_2</code></td>
     <td><span class="tag minus">−</span></td>
-    <td>YGR192C (chrVII)</td>
-    <td class="detail">882352–882702 (350 bp) · <strong>GC-AT</strong></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:882152-882902">chrVII:882152-882902</a></td>
-    <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:882287-883838">full</a></td>
+    <td>YCL009C (chrIII)</td>
+    <td class="detail">104435–104495 (60 bp) · <strong>GT-CG</strong></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:104235-104695">chrIII:104235-104695</a></td>
+    <td><a class="igv" href="http://localhost:60151/goto?locus=chrIII:104356-105561">full</a></td>
   </tr>
 </table>
 
@@ -389,7 +392,7 @@ using HP-aware split alignment and corrects the N-op boundaries. Load <strong>bo
     <td><code>cat9_plus_1</code></td>
     <td><span class="tag plus">+</span></td>
     <td>RPL26B (chrVII)</td>
-    <td class="detail">555824–556304 → 555830–556307</td>
+    <td class="detail">555825–556304 → 555830–556307</td>
     <td class="detail"><strong>GT-AG</strong></td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:555630-556507">chrVII:555630-556507</a></td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:555803-556805">full</a></td>
@@ -398,7 +401,7 @@ using HP-aware split alignment and corrects the N-op boundaries. Load <strong>bo
     <td><code>cat9_plus_2</code></td>
     <td><span class="tag plus">+</span></td>
     <td>RPL30 (chrVII)</td>
-    <td class="detail">439089–439324 → 439093–439323</td>
+    <td class="detail">439089–439321 → 439093–439323</td>
     <td class="detail"><strong>GT-AG</strong></td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:438893-439523">chrVII:438893-439523</a></td>
     <td><a class="igv" href="http://localhost:60151/goto?locus=chrVII:439070-439799">full</a></td>

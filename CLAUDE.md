@@ -14,6 +14,33 @@ is provided.
 **DESeq2, motif discovery, and GO enrichment only run in multi-sample mode.**
 Single-sample runs skip them by design (`run_deseq2 = n_samples > 1`).
 
+### DRS workflow: `--drs` flag
+
+For Dorado direct RNA-seq BAMs, pass `--drs` to `run-all`:
+
+```bash
+rectify run-all sample_dorado.bam --drs --Scer -o results/sample/
+```
+
+This automatically inserts two DRS-specific steps around the standard pipeline:
+
+| Step | Action | Implementation |
+|------|--------|----------------|
+| **0** | Poly(A)+adapter pre-trimming | `trim_drs_bam_polya()` → `samtools fastq -T pt` |
+| 1 | Multi-aligner alignment | (normal, on trimmed FASTQ) |
+| 2 | Correction | (normal) |
+| 3 | Analysis | (normal) |
+| **4** | Restore poly(A) as soft-clips | `restore_polya_softclips()` |
+
+**Key implementation details:**
+- DRS Steps 0 and 4 run in **both** single-sample (`_run_single_sample`) and multi-sample manifest (`_process_one_sample`) paths
+- Single-sample: trimmed FASTQ written to `$SCRATCH/drs_trim/`; trim metadata parquet to Oak output dir (persistent, needed for Step 4)
+- Multi-sample: trimmed FASTQ and temp BAM written to `<sample_output>/drs_trim/`; metadata parquet to `<sample_output>/`
+- `--drs` has no effect on FASTQ inputs (assumed already trimmed)
+- `softclipped_bam` path for Step 4 is inferred from the trimmed FASTQ stem (stripping `_trimmed`/`.fastq`/`.gz`): `{stem}.rectified_pA_tail_trimmed.bam`
+- Single-sample Steps 0 and 4 are recorded in the provenance tracker as `drs_trim` and `drs_restore`
+- Multi-sample Step 4 restore is non-fatal: failure is logged but the sample still returns success
+
 ---
 
 ## HPC I/O: always stage through $SCRATCH
@@ -133,6 +160,57 @@ Module 2G (`rescue_softclip_at_homopolymer`) runs for all protocols.  It
 detects 3' soft-clips ≥ 3 bp adjacent to a genomic homopolymer and extends
 the 3' end outward.  It takes priority over poly-A walk-back (Module 2E) to
 prevent opposite-direction corrections from cancelling.
+
+---
+
+## DRS-trimmed FASTQ: strip auxiliary tags before alignment
+
+`trim_drs_bam_polya()` + `samtools fastq -T pt` produces FASTQ with tab-separated
+auxiliary tags embedded in the read header, e.g.:
+
+```
+@6c606d1b-2310-4292-a285-d519fbd52502	pt:i:25
+```
+
+**Problem:** gapmm2 runs minimap2 to produce a PAF, then looks up each query
+sequence by name using `query_idx.seq(paf[0])`. minimap2 strips everything after
+the first whitespace when building the read name in the PAF, so `paf[0]` = just
+the UUID. But mappy's sequence index retains the full header including the tab
+and `pt:i:N` suffix, so `query_idx.seq(UUID)` returns `None` →
+`TypeError: object of type 'NoneType' has no len()`.
+
+**Fix:** Strip auxiliary tags from FASTQ headers before passing to gapmm2 (or any
+aligner that round-trips through PAF):
+
+```python
+clean_header = "@" + read_id + "\n"  # keep UUID only
+```
+
+**mapPacBio** has a different problem: it embeds `pt:i:N` into the READ NAME of
+the aligned BAM.  The exact separator depends on processing stage:
+
+- **Direct mapPacBio output** (before `samtools sort`): space-separated,
+  `UUID pt:i:25`.  This is the format in live production data handled by
+  `consensus.py` and `corrected_consensus.py`.
+- **After `samtools sort/merge`**: samtools converts the space to an
+  underscore (BAM spec forbids spaces in QNAME), yielding `UUID_pt:i:25`.
+  This is the format found in merged dev-run BAMs and the sorted validation
+  aligner BAMs.
+
+Use whichever form is present:
+
+```python
+# Direct mapPacBio output (pre-sort):
+if " pt:i:" in name:
+    clean = name.split(" pt:i:")[0]
+
+# Merged / sorted BAMs:
+if "_pt:i:" in name:
+    clean = name.split("_pt:i:")[0]
+```
+
+This has been encountered multiple times when extracting validation reads from
+DRS-trimmed dev-run outputs.
 
 ---
 
@@ -376,6 +454,74 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - Bug 38 (HIGH): `tests/test_consensus_selection.py` added (40 tests, real wt_by4742_rep1 data)
 - Bug 41 (MEDIUM): `--polya-model` wired through correction pipeline; `pt_tag`/`polya_score`/`polya_source` columns in TSV; `rectify tag-polya` subcommand; unaligned dorado BAM auto-detection
 - Bug 55 (MEDIUM): `--max-cluster-radius`, `--min-peak-sep`, `--min-cluster-samples` added to `analyze` subparser
+
+**v3.1.7 (2026-04-21):** `refine_read_junctions` — bilateral t2, no-candidate-guard policy, canonical HP prior:
+
+- **No candidate guards**: All junctions in the candidate pool are scored; non-canonical, non-annotated (novel) alternatives are no longer filtered out before scoring. The previous guard (`if is_alt==1 and tier>=4 and is_novel==1: continue`) was removed because it would silently discard reads that genuinely belong at non-canonical junctions — e.g. when many reads from the same splice isoform all score perfectly at a novel non-canonical site. Annotation and canonical tier remain as TIE-BREAKERS only, never as gates. This policy is PERMANENT and must not be re-introduced.
+
+- **Bilateral t2 scoring**: `_score_junction` now uses `score(k) = t1(k) + t2(k)` where:
+  - `t1(k) = _score_hp_anchored(rescue[k:],       g[je      : je+buf ])` — intron_end-anchored
+  - `t2(k) = _score_hp_anchored(rescue[:k][::-1], g[je-buf  : je     ][::-1])` — intron_end-proximal
+  Both anchored to `intron_end` (je). t2 prevents degenerate k=L-1 coincidental single-base matches from scoring 0 at the wrong junction without any pre-filtering.
+
+- **Canonical HP prior** (replaces `int(score)` floor binning): when the current N-op is non-canonical (`tier_beats_alt=True`), canonical-tier alternatives (tier < 4) receive a 0.5 edit-distance discount (`_CANONICAL_HP_PRIOR = 0.5`). This equals one Nanopore HP deletion equivalent — the expected noise floor — and ensures canonical junctions win within the noise floor regardless of which penalty table (default or empirical) is in use. Non-canonical alternatives must exceed the canonical score by >0.5 to win. The old `int(score)` floor was fragile: it worked only when both scores happened to fall in the same [n,n+1) integer bucket, which fails when the empirical del_cost(1)≈0.43 and scores straddle an integer boundary.
+
+- **Impact**: all 146 tests pass with both default and empirical penalty table (`penalty_scores.tsv`); all 4 cat9 reads correctly refined with `--junction-penalty-table`.
+
+**v3.2.2 (2026-04-22):** Validation dataset fully certified for production — XV/XG tag fix + aligner BAM N-op correction:
+- **Root cause**: `rebuild_aligner_bams_cat679.py` (v3.2.0) sourced replacement read alignments from `validation_reads.bam` before that BAM's replacement reads had proper N-ops. Additionally, the 3 replacement reads (f8050895, 7d5e8dc2, 72557a9a) were missing XV and XG auxiliary tags because they were inserted with full UUIDs while the source (stale BAM) had 8-char prefix names — the tag-copy logic couldn't match them.
+- **XV/XG tag fix**: both tags are now present on all 36 reads in `validation_reads.bam`. XV (read label, e.g. `cat6_plus_2`) is required by `load_reads()` in the test fixture; XG (category, e.g. `cat6_chimeric`) drives category-level test assertions.
+- **N-op fix for aligner BAMs**: `dev_runs/wt_by4742_rep1_drs_trim_20260417/fix_replacement_read_cigars.py` re-sourced correct alignments directly from dev run BAMs — `wt_by4742_rep1_drs_trim_20260417` (mapPacBio) and `wt_by4742_rep1_chunked_20260412` (deSALT/gapmm2/minimap2/uLTRA) — preserving full UUID QNAMEs from aligner BAMs and stripping `_pt:i:N` suffixes when matching. Correct N-op intervals: f8050895 all-aligners (45644–45977); 7d5e8dc2 mapPacBio-only (60193–60697); 72557a9a mapPacBio-only (104435–104495).
+- **Full pipeline re-run**: `corrected_3ends.tsv` (36 rows: 32 high + 4 chimeric), `rectified_corrected_3end.bam`, `rectified_pA_tail_trimmed.bam`, `rectified_pA_tail_soft_clipped.bam` all regenerated from the fixed validation_reads.bam.
+- **Independent certification**: 4 independent agent reviews (sequence-level genomic context, structural checks, category-specific assertions, cross-agent consensus) all confirmed 36/36 PASS. Cat1/Cat2 shifts match VALIDATION_READS.md exactly; Cat3 five_prime_rescued=1; Cat4 n_junctions=1; Cat5 correction=none+chimeric; Cat6/7 XU=1; Cat9 junction refinement corrects all 4 reads.
+- All 708 tests pass.
+
+**v3.2.1 (2026-04-22):** `rescue_3ss_truncation` — soft-clip exon CIGAR body-borrowing fix:
+- `_get_intronic_query_bases` includes one extra body base when the alignment ends exactly at `intron_start` (boundary straddle: last M op's final ref base == intron_start). For soft-clip rescues this produced a CIGAR with one more query-consuming op than `five_prime_soft_clip_length` (e.g. `14M1D9M` for 79f61403, query_span=23 vs soft_clip=22). The `bam_writer` guard then fell back to a flat `22M` block, applying wrong exon geometry in IGV.
+- Fix: for `rescue_type_candidate == 'softclip'`, use `rescue_seq` (exactly the soft-clip, already truncated to `five_clip` bases) as `_align_seq` instead of `_intronic_seq`. For `mpb_mismatch` rescues `_intronic_seq` is still used (it correctly excludes exon-2 body bases beyond the intron boundary).
+- Impact: 79f61403 (`cat3_plus_2`, YAL003W) now correctly produces `14M1D7M1D1M` (query_span=22) instead of flat `22M`; exon geometry in IGV matches mapPacBio alignment. 28ea9379 (`cat3_minus_2`, YBR062C) was unaffected (its `_intronic_seq` was already empty in the current validation data).
+- All 708 tests pass.
+
+**v3.2.0 (2026-04-22):** Validation aligner BAMs rebuilt to match `validation_reads.bam` after DRS rebuild (v3.1.8):
+- The DRS rebuild (v3.1.8) replaced 3 old Cat6/Cat7 reads in `validation_reads.bam` but did NOT update the individual aligner BAMs (`aligners/validation_reads.*.bam`). All 5 aligner BAMs still contained the old reads (ba761413, 64f4da08, 5c59f0bc) and lacked the replacements (f8050895, 7d5e8dc2, 72557a9a).
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams_cat679.py` removes the 3 old reads from each aligner BAM and adds the 3 new reads. NOTE: this script sourced alignments from `validation_reads.bam` which at the time also lacked N-ops for the replacement reads — the N-ops were fixed in a subsequent pass by `fix_replacement_read_cigars.py` (see v3.2.2).
+- This inconsistency did not break any tests (Cat6 tests use only the basic `corrected` fixture; Cat9 tests use `--aligner-bams` but Cat9 reads were not changed). It was confusing because ba761413 appeared in IGV from aligner BAMs but not from the main rectify list.
+- All 708 tests pass.
+
+**v3.1.9 (2026-04-22):** `rectified_pA_tail_soft_clipped.bam` added as default Step 4 output; sort+index added to both Step 4 code paths:
+- `run_command.py` Step 4 in both `_process_one_sample` (multi-sample) and `_run_single_sample` (single-sample): after `restore_polya_softclips()` completes, the output BAM is now sorted (via `pysam.sort`) and indexed (via `pysam.index`). Without sort+index, the BAM was written unsorted and had no `.bai` — unusable in IGV/samtools.
+- Multi-sample path also gained the missing `threads=getattr(args,'threads',4)` argument to `restore_polya_softclips()`.
+- Bundled validation data: `rectified_pA_tail_soft_clipped.bam` generated from `rectified_pA_tail_trimmed.bam` + `wt_by4742_rep1_polya_trim_metadata.parquet`. 32/36 reads have poly-A/adapter soft-clips restored; 3 replacement reads (f8050895, 7d5e8dc2, 72557a9a) have no trim metadata (new UUIDs) and are left unchanged.
+- `TestPolyASoftClippedBam` added to `tests/test_validation_reads.py` (4 tests): checks 36 primary reads, coordinate-sorted+indexed, reads-with-metadata have ≥1 soft-clip base, replacement reads present.
+- All 708 tests pass.
+
+**v3.1.8 (2026-04-22):** Validation reads updated to DRS pre-trim mapPacBio alignments for Cat6/Cat7/Cat9:
+- `validation_reads.bam`: all 12 Cat6/Cat7/Cat9 reads now use DRS-trimmed mapPacBio alignments. Three reads replaced entirely because their pre-DRS mapPacBio alignments lost the N op after DRS trimming: `ba761413→f8050895` (cat6_plus_2, chrII:45644–45977), `64f4da08→7d5e8dc2` (cat6_minus_1, same intron 60193–60697), `5c59f0bc→72557a9a` (cat7_minus_2, chrIII:104435–104495). Nine reads updated in place (same UUID, DRS-trimmed alignment with shifted junction boundaries).
+- BAM header reduced to 16 nuclear chromosomes only (chrI–chrXVI); `chrmt`/`chrMito` removed.
+- `corrected_3ends.tsv` and rectified BAMs regenerated from DRS-trimmed validation set.
+- Test updates: Cat7 `EXPECTED_JUNCTIONS` updated (cat7_plus_1: 138856→138864 start; cat7_plus_2: 595736→595739; cat7_minus_2: 882352-882702→104435-104495 new read); Cat9 `RAW_JUNCTIONS` updated for plus-strand reads (cat9_plus_1: 555824→555825; cat9_plus_2: 439324→439321). Minus-strand raw junctions unchanged (test formula coincidentally gives same values via insertion-length counting artifact).
+- Root cause of mapPacBio BAM unmapped-duplicate issue documented: mapPacBio emits unmapped (flag=4) copies of reads alongside the primary alignment; these pass `not is_secondary and not is_supplementary` checks and must be explicitly skipped with `read.is_unmapped` guard.
+- All 704 tests pass.
+
+**v3.1.6 (2026-04-21):** DRS pre-trimming integrated as default Step 0+4 in `run-all`:
+- `--drs` flag added to `rectify run-all` (cli.py). When set with a BAM input, Step 0 (`trim_drs_bam_polya`) runs before alignment and Step 4 (`restore_polya_softclips`) runs after correction. FASTQ inputs are unaffected.
+- `_run_single_sample()` docstring updated to list all 5 steps (0–4).
+- `ARCHITECTURE.md` updated: mermaid diagram corrected (Step 3=analysis, Step 4=restore-softclip), `run-all` description expanded with DRS wiring details, `junction_refiner.py` added to directory listing and Layer 4 narrative (Module 2H, ⑦).
+- `README.md` accuracy fixes: `rectify run` → `rectify run-all` (command didn't exist); Module 2H scoring description updated (W/max_slide unused, HP-anchored semi-global DP replacing "split-alignment"); tiebreaker priority corrected (score → canonical → annotation → shift, not score → shift → canonical → annotation).
+- `junction_refiner.py` `_score_junction` docstring Returns line corrected to match tier-1-only implementation (`min_k t1(k)` not `t1+t2`).
+
+**v3.1.5 (2026-04-21):** `process_bam_streaming_parallel` — two-level checkpoint/resume for `rectify correct`:
+- New `--checkpoint-dir DIR` flag (performance group in `cli.py`). Has no effect without `--streaming`.
+- **Scan-phase checkpoint**: after `run_variant_aware_scan` (~30–60 min), the `VariantAwareHomopolymerRescue` object is pickled to `<checkpoint_dir>/rescue_scan.pkl`. On resume the pickle is loaded and the scan is skipped entirely.
+- **Region-phase checkpointing**: after each region batch completes, a `region_NNNN.done` sentinel file is written to the checkpoint dir. On resume, done regions are filtered from `_regions_to_run` and `_orig_idxs`; the partial output TSV is opened in append mode; the header line is not re-written; `_rebuild_pos_counts_from_partial` re-reads the partial TSV to restore `_pos_counts` for the final position index.
+- **Map function**: `pool.imap` (ordered) is used when `checkpoint_dir` is set so that `_batch_num → _orig_idxs[_batch_num]` is stable; `pool.imap_unordered` is used otherwise (unchanged).
+- **Failure behaviour**: when `--checkpoint-dir` is set, partial output and sentinels are preserved on failure (warning logged) instead of being deleted. Re-running the identical command resumes from the last completed region.
+- Wired through `correct_command.py` via `getattr(args, 'checkpoint_dir', None)`.
+
+**v3.1.4 (2026-04-21):** `refine_read_junctions` — candidate guard + adaptive tie-break scoring:
+- **Candidate guard**: non-canonical (tier ≥ 4) AND non-annotated (novel) junctions are now excluded as replacement candidates during scoring. They were previously considered and could "win" by scoring 0.0 (aligner placed a non-canonical junction with a perfect split-alignment score), then get blocked by a post-selection guard that fired `continue` on the N-op, skipping all other candidates including the correct annotated GT-AG junction. The guard is now applied during candidate selection instead: `if is_alt==1 and tier>=4 and is_novel==1: continue`.
+- **Adaptive tie-break ordering**: when the current N-op junction is non-canonical (tier ≥ 4), the scoring tuple uses `(score, tier, is_alt, ...)` so a canonical alternative wins at equal edit-distance. When the current junction is acceptably canonical (tier < 4), the tuple uses `(score, is_alt, tier, ...)` so the current junction is preferred at equal score (prevents displacing correctly-placed reads at annotated non-GT-AG junctions like TFC3's RAG site). Controlled by `tier_beats_alt = current_tier >= 4`.
+- **Impact**: `cat9_plus_2` (read 00a1e01e, chrVII RPL30, current non-canonical GA-GG tier=6) now correctly refined to annotated GT-AG (439093,439323). TFC3 reads at annotated RAG 3'SS (151006,151096, tier=1) remain stable against the nearby YAG alternative (150989,151096, tier=0). All 704 tests pass.
 
 **v3.1.3 (2026-04-21):** `--aligner-bams` `aligner:path` prefix stripping bug fix:
 - `correct_command.py` `_strip_aligner_prefix()`: new private helper that strips the `aligner:` prefix (e.g. `"minimap2:/path/to/file.bam"` → `"/path/to/file.bam"`) before storing BAM paths in `config['aligner_bams']`. Without the fix, pysam received `"minimap2:/path/..."` as a URL scheme → "[Errno 93] Protocol not supported" → 0 novel junctions loaded from aligner BAMs.
