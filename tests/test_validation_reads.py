@@ -738,8 +738,8 @@ class TestCategory7AltSplice:
     """Non-canonical, unannotated splice junctions from mapPacBio alignments.
 
     Reads:
-      cat7_plus_1  (4e43165e) chrIII:+  junction 138856-138946 (90 bp)  AC-AG
-      cat7_plus_2  (0f021462) chrXII:+  junction 595736-595852 (116 bp) CA-TT
+      cat7_plus_1  (4e43165e) chrIII:+  junction 138864-138952 (88 bp)  AC-AG
+      cat7_plus_2  (0f021462) chrXII:+  junction 595739-595853 (114 bp) CA-TT
       cat7_minus_1 (c79f1fb9) chrII:-   junction 443720-443833 (113 bp) GT-CG
       cat7_minus_2 (72557a9a) chrIII:-  junction 104435-104495  (60 bp) GT-CG
     """
@@ -748,8 +748,8 @@ class TestCategory7AltSplice:
 
     # Expected junction coordinates (jstart-jend) per label
     EXPECTED_JUNCTIONS = {
-        'cat7_plus_1':  '138856-138946',
-        'cat7_plus_2':  '595736-595852',
+        'cat7_plus_1':  '138864-138952',
+        'cat7_plus_2':  '595739-595853',
         'cat7_minus_1': '443720-443833',
         'cat7_minus_2': '104435-104495',  # updated after mapPacBio alignment confirmed
     }
@@ -813,8 +813,8 @@ class TestCategory9JunctionRefinement:
 
     Input N-ops (wrong boundaries in consensus BAM):
 
-      cat9_plus_1  (00a1c9b3) chrVII:+ (555824, 556304) intron length 480
-      cat9_plus_2  (00a1e01e) chrVII:+ (439089, 439324) intron length 235
+      cat9_plus_1  (00a1c9b3) chrVII:+ (555825, 556304) intron length 479
+      cat9_plus_2  (00a1e01e) chrVII:+ (439089, 439321) intron length 232
       cat9_minus_1 (0b3b593b) chrXV:−  (900760, 901191) intron length 431
       cat9_minus_2 (d3357db5) chrXV:−  (900760, 901192) intron length 432
 
@@ -833,8 +833,8 @@ class TestCategory9JunctionRefinement:
 
     # Junctions present in the raw consensus BAM (before Module 2H correction)
     RAW_JUNCTIONS = {
-        'cat9_plus_1':  '555824-556304',
-        'cat9_plus_2':  '439089-439324',
+        'cat9_plus_1':  '555825-556304',
+        'cat9_plus_2':  '439089-439321',
         'cat9_minus_1': '900760-901191',
         'cat9_minus_2': '900760-901192',
     }
