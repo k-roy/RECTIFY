@@ -268,6 +268,11 @@ For organisms with nascent RNA (NET-seq) data, RECTIFY resolves remaining ambigu
 | 4 *(DRS only)* | `rectify restore-softclip` | Re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization of tail lengths |
 | 5 | `rectify analyze` | Downstream analysis (CPA clustering, DESeq2, GO enrichment, motif discovery) |
 
+**For DRS data, Steps 0 and 4 run automatically** when you pass `--drs` to `rectify run-all`:
+```bash
+rectify run-all sample_dorado.bam --drs --Scer -o results/sample/
+```
+
 For oligo-dT cDNA sequencing, skip Steps 0 and 4 — start at Step 1 directly from your FASTQ.
 
 **Other commands:**

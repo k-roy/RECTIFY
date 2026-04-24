@@ -924,7 +924,8 @@ def attempt_5prime_refinement(
             # Original CIGAR with soft-clip replaced by match + intron + match
             # This is simplified - full implementation would rebuild entire CIGAR
             intron_length = abs(intron_end - intron_start)
-            result.refined_cigar = f"{len(clip['sequence'])}M{intron_length}N{read.cigarstring.replace(f'{clip['length']}S', '')}"
+            clip_str = "%dS" % clip['length']
+            result.refined_cigar = f"{len(clip['sequence'])}M{intron_length}N{read.cigarstring.replace(clip_str, '')}"
 
             return result
 

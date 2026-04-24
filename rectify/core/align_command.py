@@ -61,9 +61,13 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     aligner_group.add_argument(
         '--aligners',
         nargs='+',
-        choices=['minimap2', 'mapPacBio', 'gapmm2', 'all', 'none'],
+        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa', 'all', 'none'],
         default=['all'],
-        help='Default aligners for 3\' end correction. Use "none" to run only --junction-aligners (default: all)'
+        help=(
+            'Aligners for 3\' end correction. "all" = minimap2 + mapPacBio + gapmm2 '
+            '(long reads). For Illumina/Aviti short reads use: --aligners bbmap bwa. '
+            'Use "none" to run only --junction-aligners. (default: all)'
+        )
     )
 
     aligner_group.add_argument(
@@ -106,6 +110,18 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--mapPacBio-path',
         default='mapPacBio.sh',
         help='Path to mapPacBio.sh script'
+    )
+
+    aligner_group.add_argument(
+        '--bbmap-path',
+        default='bbmap.sh',
+        help='Path to bbmap.sh script (for short-read alignment)'
+    )
+
+    aligner_group.add_argument(
+        '--bwa-path',
+        default='bwa',
+        help='Path to bwa executable (for short-read alignment)'
     )
 
     aligner_group.add_argument(
@@ -267,6 +283,8 @@ def run_align(args: argparse.Namespace) -> int:
         run_gapmm2,
         run_ultra,
         run_desalt,
+        run_bbmap,
+        run_bwa_mem,
         check_aligner_available,
     )
 
@@ -302,6 +320,10 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = getattr(args, 'ultra_path', 'uLTRA')
         elif aligner == 'deSALT':
             exec_path = getattr(args, 'desalt_path', 'deSALT')
+        elif aligner == 'bbmap':
+            exec_path = getattr(args, 'bbmap_path', 'bbmap.sh')
+        elif aligner == 'bwa':
+            exec_path = getattr(args, 'bwa_path', 'bwa')
         else:
             logger.warning(f"Unknown aligner: {aligner}")
             return aligner, None
@@ -372,9 +394,33 @@ def run_align(args: argparse.Namespace) -> int:
                     annotation_path=str(args.annotation) if args.annotation else None,
                     threads=n_threads,
                 )
+            elif aligner == 'bbmap':
+                run_bbmap(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                )
+            elif aligner == 'bwa':
+                run_bwa_mem(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                )
 
             _elapsed = _time.perf_counter() - _t_aligner
             logger.info(f"{aligner} complete: {output_bam} [{_elapsed:.1f}s]")
+            # Index immediately after creation so downstream code (per-aligner
+            # correction, name-sort reads) can use pysam.fetch().  Indexing here
+            # also ensures the BAM is fully flushed to the parallel filesystem
+            # before any subsequent reader opens it.
+            try:
+                import pysam as _pysam_idx
+                _pysam_idx.index(str(output_bam))
+            except Exception as _idx_err:
+                logger.warning(f"{aligner}: BAM indexing failed ({_idx_err}); "
+                                "downstream correction may be skipped")
             return aligner, str(output_bam)
 
         except Exception as e:
@@ -431,6 +477,19 @@ def run_align(args: argparse.Namespace) -> int:
         logger.info(f"  {aligner}: {status}")
         if bam_path:
             logger.info(f"    Output: {bam_path}")
+
+    # Validate outputs: check each reported BAM actually exists and is non-empty.
+    # Aligners (especially deSALT) can fail silently, leaving 0-byte files.
+    for aligner, bam_path in list(results.items()):
+        if bam_path is None:
+            continue
+        p = Path(bam_path)
+        if not p.exists() or p.stat().st_size == 0:
+            logger.warning(
+                f"{aligner}: output BAM is missing or empty ({bam_path}); "
+                "treating as failed"
+            )
+            results[aligner] = None
 
     # Check if we should run consensus selection
     successful_aligners = {k: v for k, v in results.items() if v}
@@ -522,6 +581,7 @@ def run_align(args: argparse.Namespace) -> int:
             output_bam=str(rectified_bam),
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
+            checkpoint_dir=getattr(args, 'checkpoint_dir', None),
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")
 

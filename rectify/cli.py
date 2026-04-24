@@ -307,22 +307,56 @@ Citation:
         help='Number of reads per output chunk in streaming mode (default: 10000)'
     )
 
+    perf_group.add_argument(
+        '--checkpoint-dir',
+        type=str,
+        default=None,
+        metavar='DIR',
+        help='Directory to store per-region checkpoint sentinels and the variant-scan pickle. '
+             'When set, a failed run can be resumed: completed regions are skipped, '
+             'the variant scan is reloaded from disk, and the partial output TSV is '
+             'appended to rather than overwritten. Has no effect without --streaming.'
+    )
+    perf_group.add_argument(
+        '--variant-scan-cache',
+        type=str,
+        default=None,
+        metavar='PKL',
+        help='Path to a pre-computed variant scan pickle produced by `rectify prescan`. '
+             'Skips the Pass 1 all-reads scan (Module 2D) and loads the '
+             'VariantAwareHomopolymerRescue object directly. Use when running per-chunk '
+             'correction with a shared scan built from the merged BAM.'
+    )
+    perf_group.add_argument(
+        '--junction-pool-cache',
+        type=str,
+        default=None,
+        metavar='PKL',
+        help='Path to a pre-computed junction pool pickle produced by `rectify prescan`. '
+             'Skips the aligner-BAM junction collection step (Module 2H) and loads the '
+             'pool directly. The pickle must contain keys "all_junctions" and '
+             '"annotated_set". Use when running per-chunk correction with a shared pool '
+             'built from all aligner BAMs.'
+    )
+
     # Junction refinement options
     junc_group = correct_parser.add_argument_group('Junction refinement')
     junc_group.add_argument(
         '--aligner-bams',
-        nargs='+',
+        action='append',
         type=Path,
         metavar='BAM',
         default=[],
-        help='Per-aligner BAM files (from rectify align) used to build the '
-             'junction candidate pool for N-op boundary refinement. When '
-             'provided, every N-op in the consensus BAM is scored against all '
-             'candidate junctions within --junction-search-radius bp and '
-             'replaced with the best-supported junction (canonical GT-AG > '
-             'annotated > highest split-alignment score). Improves junction '
-             'accuracy for reads where the chosen aligner placed the intron '
-             'boundary a few bp off from the true splice site.'
+        help='Per-aligner BAM file for junction candidate pool construction '
+             '(repeat the flag for each aligner: --aligner-bams minimap2.bam '
+             '--aligner-bams gapmm2.bam ...). Accepts plain paths or '
+             '\'aligner:path\' pairs. When provided, every N-op in the '
+             'consensus BAM is scored against all candidate junctions within '
+             '--junction-search-radius bp and replaced with the best-supported '
+             'junction (canonical GT-AG > annotated > highest split-alignment '
+             'score). Improves junction accuracy for reads where the chosen '
+             'aligner placed the intron boundary a few bp off from the true '
+             'splice site.'
     )
     junc_group.add_argument(
         '--junction-hp-pen',
@@ -380,6 +414,17 @@ Citation:
              'heuristic del/ins cost step-function with per-HP-length values '
              'derived from multi-aligner agreement on this dataset.  Recommended '
              'for fine-tuning junction scoring to the specific sequencing run.'
+    )
+    junc_group.add_argument(
+        '--str-penalty-table',
+        dest='str_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to STR penalty table (str_penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py --str-repeat.  When provided '
+             'alongside --junction-penalty-table, dinucleotide/trinucleotide '
+             'repeat contexts (e.g. TATATA→TATA slippage) are scored with '
+             'empirical STR-specific penalties instead of the HP=1 baseline.'
     )
 
     # =========================================================================
@@ -672,6 +717,12 @@ Citation:
     create_extract_parser(subparsers)
 
     # =========================================================================
+    # prescan command (pre-compute variant scan + junction pool for chunked correction)
+    # =========================================================================
+    from .core.prescan_command import create_prescan_parser
+    create_prescan_parser(subparsers)
+
+    # =========================================================================
     # aggregate command (3' ends, 5' ends, junctions)
     # =========================================================================
     from .core.aggregate_command import create_aggregate_parser
@@ -774,6 +825,9 @@ Examples:
   # Single sample with explicit references
   rectify run-all sample.fastq.gz --genome genome.fa --annotation genes.gff -o results/sample/
 
+  # DRS: Dorado-aligned BAM — poly(A) trim (Step 0) + restore soft-clips (Step 4)
+  rectify run-all sample_dorado.bam --drs --Scer -o results/sample/
+
   # Single sample from pre-aligned BAM (skips alignment)
   rectify run-all sample.bam --Scer -o results/sample/
 
@@ -836,6 +890,19 @@ Manifest format (TSV):
         type=Path,
         metavar='PROFILE_YAML',
         help='SLURM profile YAML for cluster submission (see rectify/slurm_profiles/)'
+    )
+
+    run_parser.add_argument(
+        '--drs',
+        action='store_true',
+        default=False,
+        dest='drs',
+        help=(
+            'Input is a Dorado direct RNA-seq BAM. Automatically runs '
+            'poly(A)+adapter pre-trimming (Step 0) before alignment and '
+            'restores trimmed bases as soft-clips (Step 4) after correction. '
+            'Has no effect on FASTQ inputs (assumed already trimmed).'
+        ),
     )
 
     run_parser.add_argument(
@@ -1135,6 +1202,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'aggregate':
         from .core import aggregate_command
         aggregate_command.run(args)
+    elif args.command == 'prescan':
+        from .core import prescan_command
+        sys.exit(prescan_command.run(args))
     elif args.command == 'test':
         from .core import test_command
         sys.exit(test_command.run(args))

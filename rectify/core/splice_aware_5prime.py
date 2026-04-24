@@ -627,6 +627,26 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
 
     A base is considered part of a homopolymer run if it equals either the
     preceding or the following character in the *same* string.
+
+    Empirical calibration note
+    --------------------------
+    The 0.5 HP indel penalty is a heuristic step-function (HP=1→1.0,
+    HP≥2→0.5).  Empirical data from ``empirical_cigar_error_profiler.py``
+    shows base-class- and length-specific costs that differ substantially:
+
+        HP=8 A/T del cost ≈ 0.13   (this function gives 0.5)
+        HP=8 C/G del cost ≈ 0.77   (this function gives 0.5)
+        HP=1 non-STR del cost ≈ 0.58  (this function gives 1.0)
+
+    To use empirical penalties here, pass a ``junction_refiner.HpPenaltyTable``
+    and replace ``_del_cost``/``_ins_cost`` with
+    ``table.del_cost(hp_run_length(s1, i-1), s1[i-1])`` and similarly for
+    insertions.  The 3'SS rescue context (exon sequence vs intron boundary)
+    makes the local HP run length in ``s1`` the relevant quantity, not the
+    genome-wide run length.  This upgrade has not been implemented because
+    the 3'SS rescue path (Module Cat3) is invoked with short sequences where
+    the heuristic is adequate; revisit if Cat3 false-positives appear at
+    long A/T HP exon-ends.
     """
     n, m = len(s1), len(s2)
     if n == 0:
@@ -1060,7 +1080,20 @@ def rescue_3ss_truncation(
             _j_chrom, _intron_start, _intron_end = best_junction
             _clip_bd = _intron_start if strand == '-' else _intron_end
             _intronic_seq = _get_intronic_query_bases(read, _clip_bd, strand)
-            _align_seq = _intronic_seq if _intronic_seq else rescue_seq
+            # For soft-clip rescues, rescue_seq has already been truncated to
+            # exactly the soft-clip bases (lines above).  _intronic_seq can
+            # include one extra body base when the alignment ends exactly at
+            # intron_start (the boundary straddle: last M op's final ref base
+            # == intron_start), producing a CIGAR with one more query-consuming
+            # op than five_prime_soft_clip_length.  The bam_writer guard would
+            # then fall back to a flat M block (wrong geometry).  Use rescue_seq
+            # directly for soft-clip rescues to keep query span == soft-clip len.
+            # For mpb_mismatch rescues _intronic_seq correctly excludes exon-2
+            # body bases beyond the intron, so keep the original logic there.
+            if rescue_type_candidate == 'softclip':
+                _align_seq = rescue_seq
+            else:
+                _align_seq = _intronic_seq if _intronic_seq else rescue_seq
             _exon_cigar_str = ''
             try:
                 from .local_aligner import align_clip_to_exon, cigar_ops_to_str
@@ -1114,6 +1147,47 @@ def rescue_3ss_truncation(
         # Compute exon CIGAR so bam_writer can reroute the intronic tail.
         _clip_bd4 = intron_start if strand == '-' else intron_end
         _intronic_seq4 = _get_intronic_query_bases(read, _clip_bd4, strand)
+
+        # Guard: compare the intronic query bases against both the intron
+        # reference (at align_5prime) and the exon-1 reference (at intron_end)
+        # using HP-aware edit distance.  For a spliced mRNA mis-aligned into the
+        # intron, the exon-1 sequence is the better match → snap is correct.
+        # For an unspliced pre-mRNA, the intron sequence is the better match →
+        # snap would be wrong, so skip this junction.
+        # Also skip when rescue_seq is empty (no imperfect ops = the alignment
+        # is clean inside the intron = the bases genuinely belong there).
+        if _intronic_seq4:
+            _n4 = len(_intronic_seq4)
+            if strand == '-':
+                # Intron reference: the intronic query bases span [intron_start,
+                # align_5prime] in genomic coords; use intron_start as anchor.
+                _intron_ref4 = genome_seq[intron_start : intron_start + _n4].upper()
+                # Exon-1 reference: just past the 5'SS boundary.
+                _exon_ref4 = genome_seq[intron_end : intron_end + _n4].upper()
+            else:
+                # Plus strand: intronic bases span [align_5prime, intron_end).
+                _intron_ref4 = genome_seq[align_5prime : align_5prime + _n4].upper()
+                # Exon-1 reference: just before the 5'SS boundary.
+                _exon_ref4 = genome_seq[
+                    max(0, intron_start - _n4) : intron_start
+                ].upper()
+            _seq4_upper = _intronic_seq4.upper()
+            if len(_intron_ref4) == _n4 and len(_exon_ref4) == _n4:
+                _ed_intron4 = _hp_edit_distance(_seq4_upper, _intron_ref4)
+                _ed_exon4 = _hp_edit_distance(_seq4_upper, _exon_ref4)
+                # Snap only when exon-1 is strictly a better match; ties favour
+                # keeping the read in the intron (unspliced interpretation).
+                if _ed_intron4 <= _ed_exon4:
+                    continue  # Sequence belongs in intron → unspliced, skip snap
+            elif not rescue_seq:
+                # Cannot compare (boundary conditions) but alignment is clean →
+                # conservatively treat as unspliced and skip the snap.
+                continue
+        elif not rescue_seq:
+            # _intronic_seq4 is empty AND no terminal errors: completely clean
+            # alignment inside the intron → sequence belongs there → skip snap.
+            continue
+
         _exon_cigar_str4 = ''
         if _intronic_seq4:
             try:

@@ -32,6 +32,33 @@ Scoring (affine gap, Gotoh 1982):
   multiple gap-open events expensive, so e.g. 3D scores -7 while three separate
   1D ops separated by matches score -9 or worse.
 
+Empirical Calibration Notes
+----------------------------
+Two parameters in ``align_exon_block_global`` are currently fixed heuristics:
+
+  homo_mismatch = -2.0  (reduced mismatch cost at HP positions, default)
+  min_run       =  3    (HP run length threshold to apply homo_mismatch)
+
+These could be tuned using the empirical substitution rates from
+``empirical_cigar_error_profiler.py``.  The profiler's ``X`` (substitution)
+rows give base-class-specific sub rates per HP length; the corresponding
+mismatch score would be::
+
+    sub_rate(base_class, hp) / sub_rate(base_class, hp=1) * _MISMATCH
+
+In practice, empirical sub rates are nearly flat with HP length (the dominant
+HP error is deletion, not substitution), so ``homo_mismatch=-2`` is a
+reasonable approximation.  Re-evaluate if a future dataset shows systematic
+mismatch enrichment at HP positions.
+
+The gap scoring constants (_GAP_OPEN, _GAP_EXTEND) define a linear cost per
+gap length.  The HP-context del costs from ``HpPenaltyTable`` use a different
+model (per-position cost as a function of HP run length, not gap length).  These
+are not directly interchangeable.  If HP-specific gap costs are needed here,
+the DP would need to be restructured to look up del cost per ref position rather
+than per gap-event.  See ``junction_refiner._score_hp_anchored`` for the
+per-position HP del cost model.
+
 Author: Kevin R. Roy
 Date: 2026-04-11
 """

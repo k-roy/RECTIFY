@@ -140,6 +140,7 @@ def _run_alignment(
     ultra_path: str = 'uLTRA',
     desalt_path: str = 'deSALT',
     mapPacBio_chunks: int = 1,
+    checkpoint_dir: Optional[str] = None,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing rectified.bam.
@@ -162,7 +163,7 @@ def _run_alignment(
     if not rectified_bam.exists() and _legacy_bam.exists():
         rectified_bam = _legacy_bam
 
-    if rectified_bam.exists():
+    if _validate_bam_integrity(rectified_bam):
         print(f"    Skipping alignment — rectified.bam exists: {rectified_bam}")
         per_aligner_bams = _collect_per_aligner_bams(sample_id, sample_output_dir)
         return per_aligner_bams, rectified_bam
@@ -198,6 +199,7 @@ def _run_alignment(
         sort=True,
         index=True,
         verbose=False,
+        checkpoint_dir=checkpoint_dir,
     )
 
     # Temporarily hide scheduler array env vars so consensus.py runs in
@@ -255,6 +257,35 @@ def _bam_has_md_tags(bam_path: Path) -> bool:
     except Exception as e:
         logger.warning(f"Could not check MD tags: {e}")
     return False
+
+
+def _validate_bam_integrity(bam_path: Path) -> bool:
+    """
+    Validate BAM file integrity before reuse.
+
+    Returns True only if:
+    - BAM file exists
+    - BAM index (.bai) exists
+    - samtools quickcheck passes
+
+    Prevents reuse of corrupt or truncated BAMs from prior crashed runs.
+    """
+    if not bam_path.exists():
+        return False
+
+    # Check for .bai index (required for pysam.fetch)
+    bai_path = Path(str(bam_path) + '.bai')
+    alt_bai = bam_path.with_suffix('.bam.bai')
+    if not bai_path.exists() and not alt_bai.exists():
+        return False
+
+    # Run samtools quickcheck to detect truncation/corruption
+    result = _subprocess.run(
+        ['samtools', 'quickcheck', str(bam_path)],
+        capture_output=True,
+        timeout=30,
+    )
+    return result.returncode == 0
 
 
 def _run_correction(
@@ -368,15 +399,50 @@ def _run_correction_per_aligner(
         aligner_output_dir.mkdir(exist_ok=True)
         tsv_path = aligner_output_dir / 'corrected_3ends.tsv'
 
+        # Validate TSV file exists and is readable (not truncated/corrupt)
+        _tsv_valid = False
         if tsv_path.exists():
+            try:
+                import pandas as pd
+                _df = pd.read_csv(tsv_path, sep='\t', nrows=1)
+                _tsv_valid = len(_df) > 0
+            except Exception:
+                _tsv_valid = False
+
+        if _tsv_valid:
             print(f"    [{aligner_name}] Skipping — TSV exists: {tsv_path}")
             per_aligner_tsvs[aligner_name] = tsv_path
             continue
 
         print(f"    [{aligner_name}] Correcting {bam_path.name}...")
+        # rectify correct uses pysam.fetch() which requires a coordinate-sorted,
+        # indexed BAM.  Aligners that sort internally (uLTRA, deSALT) have a .bai
+        # placed by align_command.py; aligners that emit unsorted output
+        # (mapPacBio, minimap2, gapmm2) do not.  Sort + index to a temp file when
+        # the .bai is absent, then clean up after correction.
+        sorted_bam: Optional[Path] = None
+        correction_bam = bam_path
+        bai_path = Path(str(bam_path) + '.bai')
+        if not bai_path.exists():
+            try:
+                import pysam as _pysam
+                sorted_bam = bam_path.with_suffix('.coord_sorted.bam')
+                print(f"    [{aligner_name}] Coordinate-sorting for correction...")
+                _pysam.sort('-m', '1G', '-o', str(sorted_bam), str(bam_path))
+                _pysam.index(str(sorted_bam))
+                correction_bam = sorted_bam
+            except Exception as _sort_exc:
+                print(
+                    f"    WARNING: [{aligner_name}] sort failed ({_sort_exc}); "
+                    "skipping correction",
+                    file=sys.stderr,
+                )
+                if sorted_bam is not None and sorted_bam.exists():
+                    sorted_bam.unlink(missing_ok=True)
+                continue
         try:
             _run_correction(
-                bam_path=bam_path,
+                bam_path=correction_bam,
                 output_dir=aligner_output_dir,
                 genome_path=genome_path,
                 annotation_path=annotation_path,
@@ -387,7 +453,11 @@ def _run_correction_per_aligner(
                 f"    WARNING: [{aligner_name}] correction failed: {exc}",
                 file=sys.stderr,
             )
-            continue
+        finally:
+            if sorted_bam is not None:
+                sorted_bam.unlink(missing_ok=True)
+                sorted_bai = Path(str(sorted_bam) + '.bai')
+                sorted_bai.unlink(missing_ok=True)
 
         if tsv_path.exists():
             per_aligner_tsvs[aligner_name] = tsv_path
@@ -496,6 +566,8 @@ def _run_analysis(
         no_bedgraph=False,
         bedgraph_dir=None,
         no_genomic_distribution=False,
+        # TSS clustering window (75 bp for DRS — 5' ends noisier than 3' ends)
+        tss_cluster_distance=75,
         # Manifest mode (not used in single-file path)
         manifest=None,
         # Motif windows
@@ -546,10 +618,12 @@ def _run_analysis_manifest(
         include_mito=False,
         exclude_rdna=True,
         include_rdna=False,
-        # Manifest mode disables bedgraph/genomic distribution (no combined positions_df)
-        no_bedgraph=True,
+        # Bedgraph and genomic distribution now run per-condition in manifest mode
+        no_bedgraph=False,
         bedgraph_dir=None,
-        no_genomic_distribution=True,
+        no_genomic_distribution=False,
+        # TSS clustering window (75 bp for DRS — 5' ends are noisier than 3' ends)
+        tss_cluster_distance=75,
         # Motif windows
         motif_upstream=100,
         motif_downstream=50,
@@ -662,7 +736,8 @@ def _process_one_sample(
     args,
 ) -> Tuple[str, int]:
     """
-    Process one sample: alignment (if needed) → correction.
+    Process one sample: [DRS trim →] alignment (if needed) → correction [→ DRS restore].
+    DRS steps 0 and 4 run only when ``args.drs`` is True and the input is a BAM.
     Returns (sample_id, returncode).  Called from threads.
     """
     import re
@@ -686,6 +761,49 @@ def _process_one_sample(
             input_type = detect_input_type(input_path)
 
             bam_to_correct = input_path
+            drs_metadata_path: Optional[Path] = None
+
+            # ── DRS Step 0: Poly(A)+adapter pre-trimming ────────────────────
+            if getattr(args, 'drs', False) and input_type not in ('fastq', 'fastq.gz'):
+                import subprocess as _subprocess
+                from .drs_trim_command import trim_drs_bam_polya
+
+                _drs_dir = sample_output / 'drs_trim'
+                _drs_dir.mkdir(parents=True, exist_ok=True)
+                _trimmed_bam   = _drs_dir / f"{input_path.stem}.bam"
+                drs_metadata_path = sample_output / f"{input_path.stem}_polya_trim_metadata.parquet"
+                _trimmed_fastq = _drs_dir / f"{input_path.stem}_trimmed.fastq.gz"
+
+                print(f"  [{sample_id}] DRS poly(A) trimming…", flush=True)
+                try:
+                    _trim_stats = trim_drs_bam_polya(
+                        input_bam_path=str(input_path),
+                        output_bam_path=str(_trimmed_bam),
+                        metadata_path=str(drs_metadata_path),
+                        threads=getattr(args, 'threads', 4),
+                    )
+                    _n_total   = _trim_stats.get('total', 0)
+                    _n_trimmed = _trim_stats.get('trimmed', 0)
+                    log.write(
+                        f"DRS trim: {_n_trimmed:,}/{_n_total:,} reads trimmed\n"
+                    )
+                    _subprocess.run(
+                        [
+                            'samtools', 'fastq', '-T', 'pt',
+                            '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
+                            '-0', str(_trimmed_fastq),
+                            str(_trimmed_bam),
+                        ],
+                        check=True,
+                        stdout=_subprocess.DEVNULL,
+                        stderr=_subprocess.DEVNULL,
+                    )
+                    input_path = _trimmed_fastq
+                    input_type = 'fastq.gz'
+                    log.write(f"DRS trim FASTQ: {_trimmed_fastq}\n")
+                except Exception as e:
+                    log.write(f"DRS trim failed: {e}\n")
+                    return sample_id, 1
 
             if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
                 print(f"  [{sample_id}] Aligning…", flush=True)
@@ -696,8 +814,24 @@ def _process_one_sample(
                     _align_out.mkdir(parents=True, exist_ok=True)
                 else:
                     _align_out = sample_output
+
+                # Create a per-sample scratch dir for the consensus sort step.
+                # This routes pysam.sort I/O to high-bandwidth scratch storage,
+                # preventing NFS write hangs when output is on shared Oak NFS.
+                from ..slurm import make_job_scratch_dir as _mks_consensus
+                import shutil as _shutil_consensus
+                _use_scratch = getattr(args, 'use_scratch', True)
+                _consensus_ckpt_dir: Optional[str] = None
+                _consensus_ckpt_path = None
+                if _use_scratch:
+                    _consensus_ckpt_path = _mks_consensus(
+                        f'rectify_consensus_{sample_id[:12]}'
+                    )
+                    if _consensus_ckpt_path:
+                        _consensus_ckpt_dir = str(_consensus_ckpt_path)
+
                 try:
-                    bam_to_correct = _run_alignment(
+                    _, bam_to_correct = _run_alignment(
                         input_path=input_path,
                         sample_id=sample_id,
                         sample_output_dir=_align_out,
@@ -710,39 +844,89 @@ def _process_one_sample(
                         ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
                         desalt_path=getattr(args, 'desalt_path', 'deSALT'),
                         mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
+                        checkpoint_dir=_consensus_ckpt_dir,
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
                     log.write(f"Alignment failed: {e}\n")
                     return sample_id, 1
+                finally:
+                    # Clean up consensus scratch dir (batch BAMs already removed
+                    # inside run_consensus_selection after copy to Oak)
+                    if _consensus_ckpt_path and _consensus_ckpt_path.exists():
+                        _shutil_consensus.rmtree(_consensus_ckpt_path, ignore_errors=True)
             elif input_type in ('fastq', 'fastq.gz'):
                 # FASTQ but alignment skipped — look for existing rectified.bam
                 rectified_bam = _rectified_bam_path(sample_id, sample_output)
                 _legacy_bam = sample_output / f"{sample_id}.consensus.bam"
                 if not rectified_bam.exists() and _legacy_bam.exists():
                     rectified_bam = _legacy_bam
-                if rectified_bam.exists():
+                if _validate_bam_integrity(rectified_bam):
                     bam_to_correct = rectified_bam
                     log.write(f"Using existing rectified.bam: {rectified_bam}\n")
                 else:
                     log.write(
-                        f"ERROR: --skip-alignment set but no rectified.bam found: {rectified_bam}\n"
+                        f"ERROR: --skip-alignment set but no valid rectified.bam found: {rectified_bam}\n"
                     )
                     return sample_id, 1
 
             print(f"  [{sample_id}] Correcting 3' ends…", flush=True)
+            # Stage correction I/O through $SCRATCH when available to avoid
+            # NFS write hangs (position index gzip, large TSV writes under load).
+            from ..slurm import make_job_scratch_dir, sync_to_oak as _sync_to_oak
+            import shutil as _shutil_corr
+            _use_scratch = getattr(args, 'use_scratch', True)
+            _corr_scratch = make_job_scratch_dir(f'rectify_{sample_id}') if _use_scratch else None
+            _corr_work = _corr_scratch if _corr_scratch else sample_output
             try:
                 _run_correction(
                     bam_path=bam_to_correct,
-                    output_dir=sample_output,
+                    output_dir=_corr_work,
                     genome_path=genome_path,
                     annotation_path=annotation_path,
                     args=args,
                 )
+                if _corr_scratch:
+                    _sync_to_oak(_corr_scratch, sample_output)
                 log.write("Correction complete\n")
             except Exception as e:
                 log.write(f"Correction failed: {e}\n")
                 return sample_id, 1
+            finally:
+                # Always clean up scratch directory, whether sync succeeded or failed
+                if _corr_scratch and _corr_scratch.exists():
+                    _shutil_corr.rmtree(_corr_scratch, ignore_errors=True)
+
+            # ── DRS Step 4: Restore poly(A)+adapter as soft-clips ───────────
+            if getattr(args, 'drs', False) and drs_metadata_path and drs_metadata_path.exists():
+                from .restore_polya_command import restore_polya_softclips
+
+                _stem = input_path.stem.replace('_trimmed', '').replace('.fastq', '').replace('.gz', '')
+                _softclipped_bam = sample_output / f"{_stem}.rectified_pA_tail_trimmed.bam"
+                if _softclipped_bam.exists():
+                    _restored_bam = sample_output / f"{_stem}.rectified_pA_tail_soft_clipped.bam"
+                    print(f"  [{sample_id}] DRS poly(A) soft-clip restore…", flush=True)
+                    try:
+                        _sc_stats = restore_polya_softclips(
+                            softclip_bam_path=str(_softclipped_bam),
+                            metadata_path=str(drs_metadata_path),
+                            output_bam_path=str(_restored_bam),
+                            threads=getattr(args, 'threads', 4),
+                        )
+                        # Sort and index the restored BAM
+                        import pysam as _pysam_sc
+                        _restored_tmp = str(_restored_bam) + '.sort_tmp.bam'
+                        _pysam_sc.sort('-o', _restored_tmp, str(_restored_bam))
+                        _restored_bam.unlink(missing_ok=True)
+                        Path(_restored_tmp).rename(_restored_bam)
+                        _pysam_sc.index(str(_restored_bam))
+                        log.write(f"DRS restore: {_sc_stats.get('restored', 0):,} reads restored\n")
+                    except Exception as e:
+                        log.write(f"DRS restore failed (non-fatal): {e}\n")
+                else:
+                    log.write(
+                        f"DRS restore skipped — softclipped BAM not found: {_softclipped_bam}\n"
+                    )
 
         return sample_id, 0
 
@@ -795,7 +979,8 @@ def _run_multi_sample(args) -> int:
 
     # ── Stage 1: align + correct in parallel ────────────────────────────────
     n_cpus = _get_available_cpus()
-    threads_per_sample = getattr(args, 'threads', 4)
+    _t = getattr(args, 'threads', 0)
+    threads_per_sample = _t if _t > 0 else 4  # 0 = auto-detect, default 4
     n_workers = max(1, n_cpus // threads_per_sample)
 
     print(f"[Stage 1/3] Aligning and correcting ({n_workers} parallel workers)...")
@@ -902,10 +1087,11 @@ def _run_multi_sample(args) -> int:
 def _run_single_sample(args) -> int:
     """
     Single-sample pipeline:
-      Step 0 (if FASTQ): multi-aligner alignment → rectified.bam
-      Step 1: correction → corrected_3ends.tsv
-      Step 2: analysis (no DESeq2 — single sample)
-      Step 3 (if GFF): junction aggregation
+      Step 0 (DRS BAM + --drs): poly(A)+adapter pre-trimming → trimmed FASTQ
+      Step 1 (if FASTQ input): multi-aligner alignment → rectified.bam
+      Step 2: correction → corrected_3ends.tsv
+      Step 3: analysis (no DESeq2 — single sample)
+      Step 4 (DRS + --drs): restore trimmed poly(A) as soft-clips
     """
     _resolve_reference_paths(args)
 
@@ -964,18 +1150,76 @@ def _run_single_sample(args) -> int:
     # ── Provenance tracker ───────────────────────────────────────────────────
     # scratch_root/oak_root mapping ensures all sidecar JSON keys use canonical
     # Oak paths — so step_is_current() works on re-runs regardless of $SCRATCH.
-    from ..provenance import ProvenanceTracker
-    _cmd_string = ' '.join(sys.argv)
-    tracker = ProvenanceTracker(
-        output_dir=output_dir,
-        command_string=_cmd_string,
-        scratch_root=scratch_dir,
-        oak_root=output_dir if scratch_dir else None,
-    )
+    from ..utils.provenance import ProvenanceTracker
+    tracker = ProvenanceTracker(output_dir=output_dir)
+    tracker.set_command(sys.argv)
 
-    # ── Step 0: Alignment ────────────────────────────────────────────────────
     import time as _time
     _pipeline_start = _time.perf_counter()
+
+    # ── Step 0 (DRS only): Poly(A)+adapter pre-trimming ─────────────────────
+    # When --drs is set and the input is a Dorado-aligned BAM, strip the
+    # poly(A) tail and adapter stub before re-alignment.  The trimmed reads
+    # are written as an unaligned BAM (preserving the pt:i: tag) and then
+    # converted to FASTQ so the alignment step can run normally.
+    # The metadata parquet is kept on Oak so Step 4 can restore the soft-clips.
+    drs_mode = getattr(args, 'drs', False)
+    drs_metadata_path: Optional[Path] = None
+
+    if drs_mode and input_type not in ('fastq', 'fastq.gz'):
+        from .drs_trim_command import trim_drs_bam_polya
+        import subprocess as _subprocess
+
+        _sample_stem = input_path.stem
+        _drs_dir = work_dir / 'drs_trim'
+        _drs_dir.mkdir(parents=True, exist_ok=True)
+
+        _trimmed_bam    = _drs_dir / f"{_sample_stem}.bam"
+        drs_metadata_path = output_dir / f"{_sample_stem}_polya_trim_metadata.parquet"
+        _trimmed_fastq  = _drs_dir / f"{_sample_stem}_trimmed.fastq.gz"
+
+        print(f"\n[Step 0] DRS poly(A)+adapter pre-trimming...")
+        print("-" * 50)
+        _t0_drs = _time.perf_counter()
+
+        _trim_stats = trim_drs_bam_polya(
+            input_bam_path=str(input_path),
+            output_bam_path=str(_trimmed_bam),
+            metadata_path=str(drs_metadata_path),
+            threads=getattr(args, 'threads', 4),
+        )
+        _n_total   = _trim_stats.get('total', 0)
+        _n_trimmed = _trim_stats.get('trimmed', 0)
+        print(
+            f"  Trimmed {_n_trimmed:,} / {_n_total:,} reads "
+            f"({100 * _n_trimmed / max(_n_total, 1):.1f}%)"
+        )
+
+        # Convert trimmed unaligned BAM → FASTQ, writing pt:i: tag into the
+        # comment field so downstream BAM records retain it after alignment.
+        _subprocess.run(
+            [
+                'samtools', 'fastq', '-T', 'pt',
+                '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
+                '-0', str(_trimmed_fastq),
+                str(_trimmed_bam),
+            ],
+            check=True,
+        )
+
+        print(f"  FASTQ written: {_trimmed_fastq}")
+        print(f"[TIMING] DRS trim: {_time.perf_counter() - _t0_drs:.1f}s")
+        tracker.record_step(
+            'drs_trim',
+            input_files=[input_path],
+            output_files=[_trimmed_bam, drs_metadata_path],
+        )
+
+        # Re-classify as FASTQ so the alignment step proceeds on trimmed reads.
+        input_path = _trimmed_fastq
+        input_type = 'fastq.gz'
+
+    # ── Step 0/1: Alignment ───────────────────────────────────────────────────
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
         print(f"\n[Step 1/3] Aligning with triple-aligner...")
@@ -983,6 +1227,11 @@ def _run_single_sample(args) -> int:
         _t0 = _time.perf_counter()
         # Align to bam_dir if specified; otherwise use work_dir (scratch if available)
         align_output_dir = bam_dir if bam_dir else work_dir
+        # When --bam-dir forces output to a potentially NFS-backed path, route
+        # the consensus sort through scratch to avoid pysam.sort NFS hang.
+        _single_ckpt_dir: Optional[str] = None
+        if bam_dir and scratch_dir:
+            _single_ckpt_dir = str(scratch_dir / 'consensus_ckpt')
         per_aligner_bams, bam_to_correct = _run_alignment(
             input_path=input_path,
             sample_id=sample_id,
@@ -996,6 +1245,7 @@ def _run_single_sample(args) -> int:
             ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
             desalt_path=getattr(args, 'desalt_path', 'deSALT'),
             mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
+            checkpoint_dir=_single_ckpt_dir,
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
@@ -1007,7 +1257,7 @@ def _run_single_sample(args) -> int:
         _legacy_bam = output_dir / f"{sample_id}.consensus.bam"
         if not rectified_bam.exists() and _legacy_bam.exists():
             rectified_bam = _legacy_bam
-        if rectified_bam.exists():
+        if _validate_bam_integrity(rectified_bam):
             print(f"\n[Step 1/3] Alignment — using existing rectified.bam")
             if scratch_dir:
                 # Stage existing BAM to scratch
@@ -1170,6 +1420,45 @@ def _run_single_sample(args) -> int:
         sync_to_oak(scratch_dir, output_dir, exclude_aligner_bams=_exclude_aligner)
         print(f"[TIMING] Sync to Oak: {_time.perf_counter() - _t0:.1f}s")
         _shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    # ── Step 4 (DRS only): Restore poly(A)+adapter as soft-clips ─────────────
+    # The softclipped BAM produced by rectify correct has the poly(A) region
+    # soft-clipped at the corrected 3' end.  Restore the original trimmed bases
+    # (from Step 0 metadata) so the full tail is visible in IGV.
+    if drs_mode and drs_metadata_path and drs_metadata_path.exists():
+        from .restore_polya_command import restore_polya_softclips
+        _orig_stem = Path(args.input).stem
+        _softclipped_bam = output_dir / f"{_orig_stem}.rectified_pA_tail_trimmed.bam"
+        if _softclipped_bam.exists():
+            _restored_bam = output_dir / f"{_orig_stem}.rectified_pA_tail_soft_clipped.bam"
+            print(f"\n[Step 4] DRS poly(A) soft-clip restoration...")
+            print("-" * 50)
+            _t0_sc = _time.perf_counter()
+            _sc_stats = restore_polya_softclips(
+                softclip_bam_path=str(_softclipped_bam),
+                metadata_path=str(drs_metadata_path),
+                output_bam_path=str(_restored_bam),
+                threads=getattr(args, 'threads', 4),
+            )
+            import pysam as _pysam_sc
+            _restored_tmp = str(_restored_bam) + '.sort_tmp.bam'
+            _pysam_sc.sort('-o', _restored_tmp, str(_restored_bam))
+            _restored_bam.unlink(missing_ok=True)
+            Path(_restored_tmp).rename(_restored_bam)
+            _pysam_sc.index(str(_restored_bam))
+            print(f"  Restored: {_sc_stats.get('restored', 0):,} reads")
+            print(f"[TIMING] DRS restore: {_time.perf_counter() - _t0_sc:.1f}s")
+            tracker.record_step(
+                'drs_restore',
+                input_files=[_softclipped_bam, drs_metadata_path],
+                output_files=[_restored_bam],
+            )
+        else:
+            print(
+                f"\n[Step 4] DRS soft-clip restoration skipped "
+                f"— softclipped BAM not found: {_softclipped_bam}",
+                file=sys.stderr,
+            )
 
     # ── Provenance manifest ───────────────────────────────────────────────────
     manifest_path = tracker.write_manifest()

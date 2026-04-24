@@ -1162,6 +1162,23 @@ def _natural_sort_key(s: str) -> list:
     return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', s)]
 
 
+def _normalize_bam_read_name(name: str) -> str:
+    """Strip mapPacBio's pt:i:N suffix from BAM read names.
+
+    mapPacBio embeds the poly-A tail length from the FASTQ auxiliary tag
+    directly into the BAM read name as a space-separated suffix: 'UUID pt:i:25'.
+    All other aligners use just the bare UUID.  This function normalizes the name
+    so that the K-way merge groups mapPacBio reads with their counterparts from
+    other aligners instead of treating them as entirely separate reads.
+
+    Note: the separator is a space character, not an underscore.
+    """
+    idx = name.find(' pt:i:')
+    if idx != -1:
+        return name[:idx]
+    return name
+
+
 def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     """
     K-way merge across name-sorted BAMs, yielding all alignments per read.
@@ -1184,14 +1201,17 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
 
     try:
         while any(r is not None for r in current_reads.values()):
+            # Use normalized names as the merge key so mapPacBio's UUID_pt:i:N
+            # reads group with bare UUID reads from other aligners.
             min_read_id = min(
-                (r.query_name for r in current_reads.values() if r is not None),
+                (_normalize_bam_read_name(r.query_name)
+                 for r in current_reads.values() if r is not None),
                 key=_natural_sort_key,
             )
             group = {}
             for aligner in list(current_reads.keys()):
                 read = current_reads[aligner]
-                if read is not None and read.query_name == min_read_id:
+                if read is not None and _normalize_bam_read_name(read.query_name) == min_read_id:
                     group[aligner] = read
                     try:
                         current_reads[aligner] = next(iterators[aligner])
@@ -1269,8 +1289,10 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             chimeric_result = select_best_chimeric(aligner_reads, genome, annotated_junctions)
 
             # Pick a template read with a valid sequence (gapmm2 yields None).
-            # Verify sequence length matches the chimeric CIGAR's query length
-            # to prevent the "CIGAR and query sequence lengths differ" crash.
+            # Pass 1: prefer a read whose sequence length matches the chimeric CIGAR
+            # query length (prevents "CIGAR and query sequence lengths differ" crash).
+            # Pass 2 (fallback): accept any read with a sequence; the CIGAR may be
+            # slightly wrong in length, but losing the read entirely is worse.
             query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
             expected_len = sum(
                 length for op, length in chimeric_result.chimeric_cigar if op in query_ops
@@ -1281,6 +1303,12 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 if seq is not None and (expected_len == 0 or len(seq) == expected_len):
                     template = r
                     break
+            if template is None:
+                # Fallback: accept any read with a sequence even if length mismatches.
+                for r in aligner_reads.values():
+                    if r.query_sequence is not None:
+                        template = r
+                        break
             if template is None:
                 logger.warning(
                     f"No valid template read for chimeric assembly of '{read_id}'; skipping"
@@ -1295,6 +1323,22 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 header=out_bam.header,
             )
             out_read.flag &= ~0x900  # enforce primary
+
+            # Validate CIGAR/sequence consistency.  The Pass-2 fallback above can
+            # produce a mismatched template whose sequence length differs from the
+            # chimeric CIGAR query span; pysam writes it silently but samtools sort
+            # then crashes with "truncated file".  Drop the read rather than corrupt
+            # the output BAM.
+            if out_read.query_sequence is not None and out_read.cigartuples is not None:
+                _q_ops = {0, 1, 4, 7, 8}  # M I S = X
+                _cig_span = sum(l for op, l in out_read.cigartuples if op in _q_ops)
+                if _cig_span != len(out_read.query_sequence):
+                    logger.warning(
+                        f"Chimeric read '{read_id}' CIGAR/sequence mismatch "
+                        f"(cigar_query_span={_cig_span}, "
+                        f"seq_len={len(out_read.query_sequence)}); dropping read"
+                    )
+                    continue
 
             if chimeric_result.confidence == 'high':
                 stats['consensus_high'] += 1
@@ -1335,6 +1379,12 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 # supplementary (0x800) bits so the winning record is always primary.
                 best_read.flag &= ~0x900
 
+                # Normalize mapPacBio's 'UUID pt:i:N' read name to bare UUID so all
+                # downstream tools see a consistent read name regardless of which
+                # aligner won the consensus selection.
+                if ' pt:i:' in (best_read.query_name or ''):
+                    best_read.query_name = _normalize_bam_read_name(best_read.query_name)
+
                 # gapmm2 PAF→BAM conversion does not preserve read sequences;
                 # restore SEQ from another aligner's record for the same read.
                 if best_read.query_sequence is None:
@@ -1361,6 +1411,7 @@ def run_consensus_selection(
     slurm_array_task: Optional[int] = None,
     slurm_array_total: Optional[int] = None,
     use_chimeric: bool = False,
+    checkpoint_dir: Optional[str] = None,
 ) -> Dict[str, int]:
     """
     Run consensus selection across multiple BAM files.
@@ -1460,12 +1511,6 @@ def run_consensus_selection(
         output_bam = f"{base}.task{slurm_array_task}{ext}"
         logger.info(f"SLURM array task {slurm_array_task}: writing to {output_bam}")
 
-    # Open output BAM
-    out_bam = pysam.AlignmentFile(
-        output_bam, 'wb',
-        header=pysam.AlignmentHeader.from_dict(header)
-    )
-
     # Initialize stats
     stats = {
         'total_reads': 0,
@@ -1480,6 +1525,80 @@ def run_consensus_selection(
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
 
+    # ── Checkpoint setup ─────────────────────────────────────────────────────
+    # When checkpoint_dir is set:
+    #   - Per-batch BAMs are written to checkpoint_dir/consensus_batch_NNNNNN.bam
+    #   - A sentinel .done file marks each completed batch
+    #   - consensus_checkpoint.json stores stats for resume
+    #   - Final coordinate-sort + index run on checkpoint_dir (scratch), then
+    #     the sorted BAM is copied to output_bam (Oak) to avoid NFS write hangs
+    # When checkpoint_dir is None: original single-file behaviour (may hang on Oak NFS)
+    _bam_header = pysam.AlignmentHeader.from_dict(header)  # reused for per-batch opens
+    _batch_bam_paths: List[str] = []
+    n_reads_to_skip = 0
+    _ckpt_batch_num = 0
+
+    def _write_ckpt_json() -> None:
+        import json as _json
+        ckpt = {
+            'n_batches': _ckpt_batch_num,
+            'total_reads_processed': stats['total_reads'],
+            'stats': {
+                k: (dict(v) if isinstance(v, defaultdict) else v)
+                for k, v in stats.items()
+                if k != 'by_aligner_combo'  # frozenset keys not JSON-serialisable
+            },
+        }
+        _p = os.path.join(checkpoint_dir, 'consensus_checkpoint.json')
+        with open(_p, 'w') as _f:
+            _json.dump(ckpt, _f, indent=2)
+
+    if checkpoint_dir:
+        import glob as _glob, json as _json_ckpt
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Collect completed batches from a previous (interrupted) run
+        _done_files = sorted(_glob.glob(
+            os.path.join(checkpoint_dir, 'consensus_batch_*.done')
+        ))
+        for _df in _done_files:
+            _bam_f = _df.replace('.done', '.bam')
+            if os.path.exists(_bam_f):
+                _batch_bam_paths.append(_bam_f)
+        _ckpt_batch_num = len(_batch_bam_paths)
+
+        # Restore stats from checkpoint JSON if present
+        _ckpt_json_path = os.path.join(checkpoint_dir, 'consensus_checkpoint.json')
+        if _ckpt_batch_num > 0 and os.path.exists(_ckpt_json_path):
+            with open(_ckpt_json_path) as _f:
+                _ckpt_data = _json_ckpt.load(_f)
+            # Use stored total_reads_processed as authoritative skip count
+            n_reads_to_skip = _ckpt_data.get('total_reads_processed',
+                                              _ckpt_batch_num * batch_size)
+            _saved = _ckpt_data.get('stats', {})
+            for _k, _v in _saved.items():
+                if _k in stats:
+                    if isinstance(stats[_k], defaultdict) and isinstance(_v, dict):
+                        stats[_k].update(_v)
+                    else:
+                        stats[_k] = _v
+            logger.info(
+                f"Resuming consensus from checkpoint: {_ckpt_batch_num} batches done, "
+                f"{n_reads_to_skip} reads to skip"
+            )
+        elif _ckpt_batch_num > 0:
+            # No JSON but .done files exist → all completed batches are full
+            n_reads_to_skip = _ckpt_batch_num * batch_size
+            logger.info(
+                f"Resuming consensus (no checkpoint JSON): "
+                f"{_ckpt_batch_num} batches done, skipping {n_reads_to_skip} reads"
+            )
+
+        out_bam = None  # opened lazily at the start of each new batch
+    else:
+        # Original behaviour: single output file opened for the whole run
+        out_bam = pysam.AlignmentFile(output_bam, 'wb', header=_bam_header)
+
     try:
         # Stream through name-sorted BAMs
         _t_stream = _time.perf_counter()
@@ -1488,11 +1607,14 @@ def run_consensus_selection(
             logger.info(
                 f"  SLURM array filter: task {slurm_array_task}/{slurm_array_total}"
             )
+        if checkpoint_dir and n_reads_to_skip > 0:
+            logger.info(f"  Skipping {n_reads_to_skip} already-processed reads (resume)")
 
         # Accumulate batches for processing
         read_batch = []
         raw_read_batch = []
         n_batches = 0
+        _n_skipped = 0  # reads skipped for checkpoint resume
 
         for read_id, aligner_reads in _iter_name_grouped_bams(sorted_bam_paths):
             # SLURM array filtering
@@ -1501,12 +1623,31 @@ def run_consensus_selection(
                     stats['reads_skipped_slurm_filter'] += 1
                     continue
 
+            # Skip already-checkpointed reads on resume
+            if _n_skipped < n_reads_to_skip:
+                _n_skipped += 1
+                continue
+
             stats['total_reads'] += 1
 
-            # Extract alignment info for scoring
-            alignments = {}
-            for aligner, read in aligner_reads.items():
-                alignments[aligner] = extract_alignment_info(read, aligner, genome)
+            # Lazily open the current batch BAM when the first read of a new batch arrives
+            if checkpoint_dir and out_bam is None:
+                _cur_batch_path = os.path.join(
+                    checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.bam'
+                )
+                out_bam = pysam.AlignmentFile(_cur_batch_path, 'wb', header=_bam_header)
+
+            # Extract alignment info for scoring (non-chimeric path only).
+            # select_best_chimeric operates directly on raw pysam reads; it never
+            # consults AlignmentInfo objects.  Calling extract_alignment_info in
+            # chimeric mode costs 1M expensive pysam operations for nothing.
+            if not use_chimeric:
+                alignments = {
+                    aligner: extract_alignment_info(read, aligner, genome)
+                    for aligner, read in aligner_reads.items()
+                }
+            else:
+                alignments = {}  # unused by _process_and_write_batch in chimeric mode
 
             read_batch.append((read_id, alignments))
             raw_read_batch.append((read_id, aligner_reads))
@@ -1522,29 +1663,66 @@ def run_consensus_selection(
                 raw_read_batch = []
                 n_batches += 1
 
+                if checkpoint_dir:
+                    out_bam.close()
+                    _sentinel = os.path.join(
+                        checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.done'
+                    )
+                    open(_sentinel, 'w').close()
+                    _batch_bam_paths.append(_cur_batch_path)
+                    _ckpt_batch_num += 1
+                    out_bam = None  # will be lazily opened for next batch
+                    _write_ckpt_json()
+                    logger.info(
+                        f"  Checkpoint: batch {_ckpt_batch_num} written "
+                        f"({stats['total_reads']:,} reads total)"
+                    )
+
                 if stats['total_reads'] % 100000 == 0:
                     logger.info(f"  Processed {stats['total_reads']:,} reads...")
 
         # Process remaining reads
         if read_batch:
+            if checkpoint_dir and out_bam is None:
+                _cur_batch_path = os.path.join(
+                    checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.bam'
+                )
+                out_bam = pysam.AlignmentFile(_cur_batch_path, 'wb', header=_bam_header)
             _process_and_write_batch(
                 read_batch, raw_read_batch, genome,
                 annotated_junctions, out_bam, stats,
                 use_chimeric=use_chimeric,
             )
             n_batches += 1
+            if checkpoint_dir:
+                out_bam.close()
+                _sentinel = os.path.join(
+                    checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.done'
+                )
+                open(_sentinel, 'w').close()
+                _batch_bam_paths.append(_cur_batch_path)
+                _ckpt_batch_num += 1
+                out_bam = None
+                _write_ckpt_json()
 
     except Exception:
-        out_bam.close()
-        # Remove partial output BAM so callers don't see an incomplete file
-        try:
-            os.unlink(output_bam)
-        except OSError:
-            pass
+        if out_bam is not None:
+            try:
+                out_bam.close()
+            except Exception:
+                pass
+        if not checkpoint_dir:
+            # Remove partial output BAM so callers don't see an incomplete file
+            try:
+                os.unlink(output_bam)
+            except OSError:
+                pass
+        # With checkpoint_dir: leave batch files intact for resume
         raise
 
-    # Close output
-    out_bam.close()
+    # Close output (non-checkpoint path)
+    if out_bam is not None:
+        out_bam.close()
     logger.info(f"[TIMING] Streaming ({stats['total_reads']:,} reads, {n_batches} batches): {_time.perf_counter() - _t_stream:.1f}s")
     if stats['total_reads'] > 0:
         _reads_per_sec = stats['total_reads'] / max(_time.perf_counter() - _t_stream, 0.001)
@@ -1553,10 +1731,79 @@ def run_consensus_selection(
     # Sort output by coordinate and index
     _t_sort = _time.perf_counter()
     logger.info("Coordinate-sorting output BAM...")
-    sorted_output = output_bam.replace('.bam', '.sorted.bam')
-    pysam.sort('-m', '1G', '-o', sorted_output, output_bam)
-    os.replace(sorted_output, output_bam)
-    pysam.index(output_bam)
+    if checkpoint_dir:
+        # ── Scratch-based sort: merge all batch BAMs on scratch, sort, index,
+        #    then copy the final sorted BAM to output_bam (Oak).
+        #    This avoids pysam.sort writing directly to Oak NFS which can hang
+        #    under concurrent array-job I/O load.
+        import shutil as _shutil_sort
+        _merged_path = os.path.join(checkpoint_dir, 'consensus_merged.bam')
+        _sorted_path = os.path.join(checkpoint_dir, 'consensus_sorted.bam')
+
+        if not _batch_bam_paths:
+            # No reads processed at all — write an empty coordinate-sorted BAM
+            _empty = pysam.AlignmentFile(_sorted_path, 'wb', header=_bam_header)
+            _empty.close()
+        elif len(_batch_bam_paths) == 1:
+            pysam.sort('-m', '2G', '-o', _sorted_path, _batch_bam_paths[0])
+        else:
+            # Concatenate (samtools cat) then coordinate-sort
+            pysam.cat('-o', _merged_path, *_batch_bam_paths)
+            pysam.sort('-m', '2G', '-o', _sorted_path, _merged_path)
+            try:
+                os.unlink(_merged_path)
+            except OSError:
+                pass
+
+        pysam.index(_sorted_path)
+
+        # Copy sorted BAM + index to Oak output path
+        _shutil_sort.copy2(_sorted_path, output_bam)
+        _bai_src = _sorted_path + '.bai'
+        if os.path.exists(_bai_src):
+            _shutil_sort.copy2(_bai_src, output_bam + '.bai')
+
+        # Clean up scratch sort files
+        for _p in (_sorted_path, _bai_src):
+            try:
+                os.unlink(_p)
+            except OSError:
+                pass
+        # Clean up per-batch BAMs (already merged+sorted)
+        for _b in _batch_bam_paths:
+            try:
+                os.unlink(_b)
+            except OSError:
+                pass
+    else:
+        # Original behaviour: sort in-place at output_bam location
+        # Pre-sort validation: sample first 1000 records to detect CIGAR/sequence mismatches
+        # (avoid expensive sort failure on corrupt BAM written by batch writer)
+        _mismatch_count = 0
+        try:
+            with pysam.AlignmentFile(output_bam, 'rb') as _check_bam:
+                for _i, _r in enumerate(_check_bam.fetch(until_eof=True)):
+                    if _i >= 1000:
+                        break
+                    if _r.query_sequence is not None and _r.cigartuples is not None:
+                        _q_ops = {0, 1, 4, 7, 8}  # M I S = X
+                        _cig_span = sum(l for op, l in _r.cigartuples if op in _q_ops)
+                        if _cig_span != len(_r.query_sequence):
+                            _mismatch_count += 1
+            if _mismatch_count > 0:
+                raise RuntimeError(
+                    f"Pre-sort validation failed: {_mismatch_count}/1000 sampled reads have "
+                    f"CIGAR/sequence length mismatches in {output_bam} — BAM is corrupt/truncated"
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Pre-sort CIGAR validation skipped: {e}")
+
+        sorted_output = output_bam.replace('.bam', '.sorted.bam')
+        pysam.sort('-m', '1G', '-o', sorted_output, output_bam)
+        os.replace(sorted_output, output_bam)
+        pysam.index(output_bam)
     logger.info(f"[TIMING] Coordinate-sort + index: {_time.perf_counter() - _t_sort:.1f}s")
 
     # Log summary

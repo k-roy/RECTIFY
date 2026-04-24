@@ -46,6 +46,24 @@ def _parse_junctions(junc_str) -> frozenset:
     return frozenset(result)
 
 
+def _normalize_read_id(read_id_series: "pd.Series") -> "pd.Series":
+    """Strip mapPacBio's pt:i:N suffix from read IDs so all aligners share a common key.
+
+    mapPacBio embeds the FASTQ header's auxiliary tag verbatim into the BAM read
+    name as a space-separated suffix: 'UUID pt:i:25'.  All other aligners strip
+    the suffix and use just 'UUID'.  Without normalization, merge_corrected_tsvs
+    treats these as different reads, producing ~50% logical duplicates in the merged
+    output.
+
+    Note: the separator is a space character, not an underscore.
+    """
+    mask = read_id_series.str.contains(' pt:i:', na=False, regex=False)
+    if mask.any():
+        read_id_series = read_id_series.copy()
+        read_id_series[mask] = read_id_series[mask].str.split(' pt:i:').str[0]
+    return read_id_series
+
+
 def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
     """Load one per-aligner TSV, returning None on failure."""
     if not tsv_path.exists():
@@ -57,6 +75,8 @@ def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
             logger.warning("Empty per-aligner TSV, skipping: %s", tsv_path)
             return None
         df['_aligner'] = aligner_name
+        if 'read_id' in df.columns:
+            df['read_id'] = _normalize_read_id(df['read_id'])
         return df
     except Exception as exc:
         logger.warning("Failed to load %s: %s", tsv_path, exc)

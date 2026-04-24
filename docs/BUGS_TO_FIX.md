@@ -1,10 +1,157 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-04-11 (Bugs 37, 38, 41, 55 fixed in v0.9.0)
+## Last Updated: 2026-04-22 (NEW-067 through NEW-074 added from job 22314279 post-mortem)
 
 ---
 
 ## Open
+
+---
+
+### NEW-074 (MEDIUM) — `consensus.py`: `shutil.copy2()` to NFS without `os.fsync()` risks partial writes
+
+**File:** `rectify/core/consensus.py` (~line 1761)
+
+**Symptom:** Sorted BAM copied from local scratch to NFS Oak with `shutil.copy2()`. Under NFS load, OS buffers the write; if the job crashes or the NFS connection drops before the buffer flushes, the destination BAM is silently truncated. Downstream readers crash with "truncated file".
+
+**Fix:**
+```python
+shutil.copy2(src, dst)
+with open(dst, 'r+b') as f:
+    os.fsync(f.fileno())
+```
+Apply to both the sorted BAM copy and the `.bai` copy at the same location. Alternatively, switch to `rsync` (already used in `sync_to_oak()`) which performs checksum-verified transfer.
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-073 (MEDIUM) — `bam_processor.py`: 17× redundant full BAM scans before correction begins
+
+**File:** `rectify/core/bam_processor.py` (lines 1335, 1352, 1768)
+
+**Symptom:** Three independent full BAM scans run before any correction worker starts:
+1. Line 1335: full linear scan for read-flag stats (`ProcessingStats`)
+2. Line 1352: calls `get_processing_regions()` → `find_coverage_gaps()` → one `bam.fetch(chrom)` scan per chromosome (16 scans for yeast)
+3. Line 1768: another full linear scan for the variant-aware prescan
+
+For a 200k-read yeast BAM this consumes ~47 min of wall time before correction starts, contributing to the observed 6h timeout.
+
+**Fix:** Add `prescan_bam_once(bam_path)` that performs a single `bam.fetch(until_eof=True)` pass, simultaneously accumulating flag stats, building per-chromosome coverage intervals for gap-finding, and optionally running `VariantAwareHomopolymerRescue.scan_read()` when variant-aware mode is enabled. Call this once before spawning workers; remove the redundant scans.
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279); estimated ~47 min wall time savings per sample
+
+---
+
+### NEW-072 (MEDIUM) — `multi_aligner.py`: deSALT sort subprocess `stderr=PIPE` with no reader thread risks deadlock
+
+**File:** `rectify/core/multi_aligner.py` (lines 1154–1161, `run_desalt()`)
+
+**Symptom:** `sort_proc` spawned with `stderr=PIPE` (or inheriting parent stderr). If samtools sort writes ≥64 KB of warnings, the OS pipe buffer fills; since no thread drains it, `sort_proc.communicate()` deadlocks. (The minimap2 path already has a drain thread at lines 209–216; deSALT does not.)
+
+**Note:** mapPacBio was already fixed (`stderr=subprocess.DEVNULL` with explanatory comment). This affects deSALT and uLTRA only.
+
+**Fix:** Add a daemon stderr-drain thread matching the minimap2 pattern (lines 209–216):
+```python
+desalt_stderr_chunks = []
+def _drain_stderr():
+    desalt_stderr_chunks.append(sort_proc.stderr.read())
+drain_thread = threading.Thread(target=_drain_stderr, daemon=True)
+drain_thread.start()
+sort_proc.wait()
+drain_thread.join()
+```
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-071 (MEDIUM) — `run_command.py`: `stderr=DEVNULL` on samtools fastq hides error context
+
+**File:** `rectify/core/run_command.py` (line 751, DRS trim → FASTQ conversion)
+
+**Symptom:** `subprocess.run(['samtools', 'fastq', ...], check=True, stderr=subprocess.DEVNULL)`. If samtools fails, `check=True` raises `CalledProcessError` (error is caught), but all samtools stderr is discarded, making the failure impossible to diagnose. Line 1157 (same operation in single-sample path) correctly omits `DEVNULL` — only line 751 is affected.
+
+**Fix:** Remove `stderr=subprocess.DEVNULL`. Capture or let stderr propagate; `check=True` already raises on non-zero exit.
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-070 (MEDIUM) — `run_command.py`: non-atomic `unlink()` + `rename()` instead of `Path.replace()`
+
+**File:** `rectify/core/run_command.py` (lines 878–879, 1403–1404)
+
+**Symptom:** Two locations use:
+```python
+_restored_bam.unlink(missing_ok=True)
+Path(_restored_tmp).rename(_restored_bam)
+```
+If a crash or SIGKILL occurs between the two operations, `_restored_bam` is permanently absent (data loss). On NFS, `rename()` across directories can also fail.
+
+**Fix:** Replace with the atomic POSIX `replace()` call:
+```python
+Path(_restored_tmp).replace(_restored_bam)
+```
+`Path.replace()` is atomic on POSIX filesystems and handles the unlink+rename as a single syscall.
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-069 (HIGH) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check
+
+**File:** `rectify/core/consensus.py` (lines 1667, 1698)
+
+**Symptom:** After each batch BAM is written and `out_bam.close()` is called, the `.done` sentinel file is written immediately. If the batch BAM is corrupt (CIGAR/seq mismatch, partial write), the sentinel marks it complete. On resume, `pysam.cat()` or `pysam.sort()` reads the corrupt batch BAM and crashes.
+
+**Fix:** Before writing the sentinel, call `_validate_bam_cigar(_cur_batch_path, sample_size=1000)` (the same function added for pre-sort validation). If validation fails, log the error and do NOT write the sentinel — the batch will be re-written on resume. A simple file-size check (`os.path.getsize > 0`) is insufficient: CIGAR-corrupted BAMs have non-zero size.
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-068 (HIGH) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop
+
+**File:** `rectify/core/multi_aligner.py` (after aligner loop, ~line 1267)
+
+**Symptom:** When all aligners are tried in a loop, exceptions are caught and logged per-aligner (`logger.error(f"Aligner {aligner} failed: {e}")`), but the function returns `results` with however many aligners succeeded — including zero. The caller receives an empty dict with no indication that minimap2 (the required baseline aligner) failed. Downstream consensus selection runs with no aligners and silently produces no output.
+
+**Fix:** After the aligner loop, assert that minimap2 succeeded:
+```python
+if 'minimap2' not in results:
+    raise RuntimeError(
+        f"minimap2 (required baseline aligner) failed — "
+        f"cannot proceed with consensus selection. "
+        f"Succeeded: {list(results.keys())}"
+    )
+```
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+
+---
+
+### NEW-067 (HIGH) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure
+
+**File:** `rectify/core/align_command.py` (lines 576–579)
+
+**Symptom:** Current code:
+```python
+calmd_bam.replace(rectified_bam)          # destructive rename
+_sp.run(['samtools', 'index', str(rectified_bam)], check=True)   # might fail
+```
+If `samtools index` fails (disk full, permissions, samtools crash), `rectified_bam` exists without a `.bai`. Downstream tools requiring an index fail with "index not found", and the skip-logic in `run_command.py` (now using `_validate_bam_integrity()`) will correctly detect the missing `.bai` and re-run alignment — but the original `calmd_bam` has been destroyed, so alignment must restart from scratch.
+
+**Fix:** Create the index first on the temp BAM, then do two atomic renames:
+```python
+if result.returncode == 0 and calmd_bam.stat().st_size > 0:
+    _sp.run(['samtools', 'index', str(calmd_bam)], check=True)
+    calmd_bam.replace(rectified_bam)
+    Path(str(calmd_bam) + '.bai').replace(Path(str(rectified_bam) + '.bai'))
+    logger.info("  MD tags added successfully")
+```
+
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279); not present in squishy-waddling-stream.md
 
 ---
 

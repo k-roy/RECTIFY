@@ -314,6 +314,16 @@ def _run_deseq2(
     # Run DESeq2 normalization and dispersion estimation
     dds.deseq2()
 
+    # pydeseq2 converts underscores to hyphens in factor levels (e.g. wt_by4742 → wt-by4742).
+    # Build a mapping from original condition names to their transformed versions in dds.obs.
+    orig_to_dds = {}
+    for orig in metadata['condition'].unique():
+        transformed = orig.replace('_', '-')
+        if transformed in dds.obs['condition'].values:
+            orig_to_dds[orig] = transformed
+        else:
+            orig_to_dds[orig] = orig  # no transformation occurred
+
     # Get all conditions
     conditions = metadata['condition'].unique()
     treatment_conditions = [c for c in conditions if c != reference_condition]
@@ -321,11 +331,10 @@ def _run_deseq2(
     results = {}
     for treatment in treatment_conditions:
         try:
-            # Extract results for this contrast
+            # Extract results for this contrast (use transformed names for dds.obs lookup)
             stat_res = DeseqStats(
                 dds,
-                n_cpus=n_cpus,
-                contrast=["condition", treatment, reference_condition],
+                contrast=["condition", orig_to_dds[treatment], orig_to_dds[reference_condition]],
             )
             stat_res.summary()
 

@@ -4,19 +4,21 @@ BAM output writers for RECTIFY.
 
 Handles CIGAR surgery and BAM writing for all correction categories:
 
-- ``write_dual_bam``        — single-pass writer for both hardclip + softclip BAMs (preferred)
-- ``write_corrected_bam``  — hard-clips 3' end; extends 5' for Cat3
-- ``write_softclipped_bam`` — soft-clips 3' end; extends 5' for Cat3
-- ``write_polya_trimmed_bam`` — strips 3' poly(A) soft-clips
-- ``write_netseq_assigned_bedgraph`` — Cat6 fractional position bedgraph
+Write functions (preferred entry points):
+- ``write_dual_bam``                  — single-pass writer for both hardclip + softclip BAMs
+- ``write_corrected_bam``             — hard-clips 3' end; extends 5' for Cat3
+- ``write_softclipped_bam``           — soft-clips 3' end; extends 5' for Cat3
+- ``write_polya_trimmed_bam``         — strips 3' poly(A) soft-clips
+- ``write_netseq_assigned_bedgraph``  — Cat6 fractional position bedgraph
 
-CIGAR helpers (in-place pysam surgery):
-- ``clip_read_to_corrected_3prime``
-- ``softclip_read_to_corrected_3prime``
-- ``extend_read_5prime_for_junction_rescue``
-- ``softclip_intronic_tail_5prime``   (available but not called from write functions)
-- ``fix_homopolymer_mismatches``  — (deprecated) converts X at homopolymer positions to I/D
-- ``realign_exon_blocks``          — global NW re-alignment of exon blocks with homopolymer scoring
+CIGAR helpers (called from write functions above):
+- ``clip_read_to_corrected_3prime``          — hard-clip 3' end to corrected position
+- ``softclip_read_to_corrected_3prime``      — soft-clip 3' end to corrected position
+- ``extend_read_5prime_for_junction_rescue`` — Cat3: extend 5' into upstream exon via N op
+- ``extend_read_3prime_for_softclip_rescue`` — Cat2: convert 3' soft-clip to D+M+H at homopolymer
+- ``softclip_intronic_tail_5prime``          — hard-clip 5' end to exon boundary when 5' falls in intron
+- ``fix_homopolymer_mismatches``             — (deprecated) converts X at HP positions to I/D
+- ``realign_exon_blocks``                    — global NW re-alignment of exon blocks with HP scoring
 
 Author: Kevin R. Roy
 Date: 2026-03-09

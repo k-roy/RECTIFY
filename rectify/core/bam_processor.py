@@ -2,12 +2,22 @@
 """
 BAM processing pipeline for RECTIFY.
 
-This module orchestrates the full correction workflow:
-1. A-tract ambiguity detection (universal)
-2. AG mispriming screening (for oligo-dT)
-3. Poly(A) tail trimming (when poly(A) sequenced)
-4. Indel artifact correction (when poly(A) sequenced)
-5. NET-seq refinement (optional)
+This module orchestrates the per-read correction workflow (``correct_read_3prime``).
+Modules are labelled by their internal ID; execution order is as listed.
+
+  2E pre-pass  — filter poly(A)-artifact junctions before 5' rescue
+  2F           — 3'SS truncation rescue (Cat3: extend 5' end to nearest splice donor)
+  2A           — AG mispriming filter (dT-primed cDNA only; pass ``--dT-primed-cDNA``)
+  2B           — poly(A) tail detection / trimming (all protocols with sequenced poly-A)
+  2C           — indel artifact correction (genome-vs-query HP comparison)
+  2D           — variant-aware homopolymer rescue (enabled by default)
+  2G           — soft-clip rescue at 3' homopolymer boundaries (all protocols)
+  2E           — poly-A walk-back: genome-aware 3' end correction (all protocols)
+  NET-seq      — fractional position refinement (optional, NET-seq experiments only)
+
+Note: DRS poly(A) pre-trimming (Step 0, ``drs_trim_command.trim_drs_bam_polya``) and
+poly(A) tail restoration (Step 4, ``restore_polya_command.restore_polya_softclips``)
+are orchestrated by ``run_command._run_single_sample``, NOT by this module.
 
 Supports parallel processing via:
 - Per-chromosome parallelization for small genomes (e.g., yeast)
@@ -1266,6 +1276,7 @@ def process_bam_file_parallel(
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
+    variant_scan_cache: Optional[str] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -1308,16 +1319,24 @@ def process_bam_file_parallel(
     if polya_model is not None:
         logger.info(f"Loaded poly(A) model from {polya_model_path}")
 
-    # Run variant-aware scan if enabled (first pass)
+    # Run variant-aware scan if enabled (first pass).
+    # When variant_scan_cache points to a pre-built pickle (from `rectify prescan`),
+    # load it directly and skip the scan — used for chunked correction pipelines.
+    import pickle as _pickle
     variant_aware_rescue = None
     if variant_aware:
-        variant_aware_rescue = run_variant_aware_scan(
-            bam_path=bam_path,
-            genome=genome,
-            min_variant_fraction=0.8,
-            min_reads_for_variant_call=5,
-            output_variants_path=variant_output_path,
-        )
+        if variant_scan_cache and Path(variant_scan_cache).exists():
+            logger.info(f"Loading pre-computed variant scan from cache: {variant_scan_cache}")
+            with open(variant_scan_cache, 'rb') as _f:
+                variant_aware_rescue = _pickle.load(_f)
+        else:
+            variant_aware_rescue = run_variant_aware_scan(
+                bam_path=bam_path,
+                genome=genome,
+                min_variant_fraction=0.8,
+                min_reads_for_variant_call=5,
+                output_variants_path=variant_output_path,
+            )
 
     # Count total reads and filtered reads for stats
     stats = ProcessingStats()
@@ -1635,6 +1654,35 @@ def process_bam_streaming(
     return stats
 
 
+def _rebuild_pos_counts_from_partial(output_path: str, pos_counts: dict) -> int:
+    """Re-read an existing partial output TSV to rebuild pos_counts. Returns read count."""
+    n = 0
+    try:
+        with open(output_path, 'r') as f:
+            header = f.readline().strip().split('\t')
+            try:
+                ci = header.index('chrom')
+                pi = header.index('corrected_3prime')
+                si = header.index('strand')
+                fi = header.index('fraction')
+            except ValueError:
+                return 0
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) <= max(ci, pi, si, fi):
+                    continue
+                try:
+                    key = (parts[ci], int(parts[pi]), parts[si])
+                    frac = float(parts[fi]) if parts[fi].strip() else 1.0
+                    pos_counts[key] = pos_counts.get(key, 0.0) + frac
+                    n += 1
+                except (ValueError, IndexError):
+                    pass
+    except OSError:
+        pass
+    return n
+
+
 def process_bam_streaming_parallel(
     bam_path: str,
     genome_path: str,
@@ -1653,6 +1701,8 @@ def process_bam_streaming_parallel(
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     min_gap_size: int = 10000,
+    checkpoint_dir: Optional[str] = None,
+    variant_scan_cache: Optional[str] = None,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
@@ -1695,16 +1745,39 @@ def process_bam_streaming_parallel(
     if polya_model is not None:
         logger.info(f"Loaded poly(A) model from {polya_model_path}")
 
-    # Variant-aware first pass (single-threaded pre-scan)
+    # Checkpoint directory setup
+    import pickle as _pickle
+    _chk_dir = Path(checkpoint_dir) if checkpoint_dir else None
+    if _chk_dir:
+        _chk_dir.mkdir(parents=True, exist_ok=True)
+    _rescue_pkl = (_chk_dir / 'rescue_scan.pkl') if _chk_dir else None
+
+    # Variant-aware first pass (single-threaded pre-scan).
+    # Priority: (1) variant_scan_cache from `rectify prescan` (chunked pipelines),
+    #           (2) checkpoint pkl from a prior streaming run (resume),
+    #           (3) run the scan fresh.
     variant_aware_rescue = None
     if variant_aware:
-        variant_aware_rescue = run_variant_aware_scan(
-            bam_path=bam_path,
-            genome=genome,
-            min_variant_fraction=0.8,
-            min_reads_for_variant_call=5,
-            output_variants_path=variant_output_path,
-        )
+        if variant_scan_cache and Path(variant_scan_cache).exists():
+            logger.info(f"Loading pre-computed variant scan from cache: {variant_scan_cache}")
+            with open(variant_scan_cache, 'rb') as _f:
+                variant_aware_rescue = _pickle.load(_f)
+        elif _rescue_pkl and _rescue_pkl.exists():
+            logger.info(f"Loading pre-computed variant scan from checkpoint: {_rescue_pkl}")
+            with open(_rescue_pkl, 'rb') as _f:
+                variant_aware_rescue = _pickle.load(_f)
+        else:
+            variant_aware_rescue = run_variant_aware_scan(
+                bam_path=bam_path,
+                genome=genome,
+                min_variant_fraction=0.8,
+                min_reads_for_variant_call=5,
+                output_variants_path=variant_output_path,
+            )
+            if _rescue_pkl:
+                with open(_rescue_pkl, 'wb') as _f:
+                    _pickle.dump(variant_aware_rescue, _f, protocol=_pickle.HIGHEST_PROTOCOL)
+                logger.info(f"Scan checkpoint saved: {_rescue_pkl}")
 
     # Count total reads and filtered reads for stats (pre-scan, single-threaded)
     stats = ProcessingStats()
@@ -1728,6 +1801,24 @@ def process_bam_streaming_parallel(
     _pos_counts: dict = {}
     _t_start = _time.monotonic()
     _next_progress = 100000
+
+    # Checkpoint: find already-completed regions
+    _done_region_idxs: set = set()
+    if _chk_dir:
+        for _sf in _chk_dir.glob('region_*.done'):
+            try:
+                _done_region_idxs.add(int(_sf.stem.split('_')[1]))
+            except (ValueError, IndexError):
+                pass
+        if _done_region_idxs:
+            logger.info(
+                f"Checkpoint: {len(_done_region_idxs)}/{len(regions)} regions already done, resuming..."
+            )
+            _n_partial = _rebuild_pos_counts_from_partial(output_path, _pos_counts)
+            logger.info(f"  Rebuilt pos_counts from {_n_partial:,} rows in partial output")
+
+    _regions_to_run = [r for i, r in enumerate(regions) if i not in _done_region_idxs]
+    _orig_idxs = [i for i, _r in enumerate(regions) if i not in _done_region_idxs]
 
     worker_func = partial(
         _process_region_worker,
@@ -1761,17 +1852,21 @@ def process_bam_streaming_parallel(
         'five_prime_intron_clip_pos',
     ]
 
+    _resuming = bool(_done_region_idxs) and Path(output_path).exists()
     if output_path.endswith('.gz'):
-        out_fh = gzip.open(output_path, 'wt')
+        out_fh = gzip.open(output_path, 'at' if _resuming else 'wt')
     else:
-        out_fh = open(output_path, 'w')
+        out_fh = open(output_path, 'a' if _resuming else 'w')
 
     _failed = False
     try:
-        out_fh.write('\t'.join(_header) + '\n')
+        if not _resuming:
+            out_fh.write('\t'.join(_header) + '\n')
 
+        _map_fn = 'imap' if _chk_dir else 'imap_unordered'
         with Pool(n_threads) as pool:
-            for region_results in pool.imap_unordered(worker_func, regions):
+            _iter = getattr(pool, _map_fn)(worker_func, _regions_to_run)
+            for _batch_num, region_results in enumerate(_iter):
                 _write_results_chunk(out_fh, region_results)
 
                 for result in region_results:
@@ -1780,6 +1875,10 @@ def process_bam_streaming_parallel(
                         (result['chrom'], result['corrected_3prime'], result['strand']), 0.0
                     )
                     _pos_counts[(result['chrom'], result['corrected_3prime'], result['strand'])] += float(result.get('fraction', 1.0))
+
+                if _chk_dir:
+                    orig_idx = _orig_idxs[_batch_num]
+                    (_chk_dir / f'region_{orig_idx:04d}.done').touch()
 
                 if show_progress and stats.reads_processed >= _next_progress:
                     _elapsed = _time.monotonic() - _t_start
@@ -1795,11 +1894,15 @@ def process_bam_streaming_parallel(
         raise
     finally:
         out_fh.close()
-        if _failed:
+        if _failed and not _chk_dir:
             _partial = Path(output_path)
             if _partial.exists():
                 _partial.unlink()
                 logger.warning(f"Removed partial output after error: {output_path}")
+        elif _failed and _chk_dir:
+            logger.warning(
+                f"Processing failed — partial output preserved for checkpoint resume: {output_path}"
+            )
 
     logger.info(f"Completed processing {stats.reads_processed:,} reads")
     logger.info(f"  Output written to {output_path}")

@@ -162,6 +162,42 @@ class ProvenanceTracker:
         except:
             return 'error'
 
+    def record_step(self, step_name: str, input_files=None, output_files=None):
+        """
+        Record a pipeline step with its inputs and outputs.
+
+        Args:
+            step_name: Name of the pipeline step (e.g. 'align', 'correct', 'drs_trim')
+            input_files: List of input file paths for this step
+            output_files: List of output file paths produced by this step
+        """
+        step_record = {
+            'step': step_name,
+            'timestamp': datetime.now().isoformat(),
+        }
+        if self.current_run.get('steps') is None:
+            self.current_run['steps'] = []
+        self.current_run['steps'].append(step_record)
+
+        # Record output files in the master file list
+        for filepath in (output_files or []):
+            self.add_output_file(Path(filepath))
+
+    def register_staged(self, staged_path, original_path):
+        """
+        Register a mapping from a staged (scratch) path to its canonical Oak path.
+
+        Used so that provenance records use canonical persistent paths rather
+        than ephemeral scratch paths that disappear after the job ends.
+
+        Args:
+            staged_path: Path on scratch ($SCRATCH) where the file was staged
+            original_path: Canonical path on Oak (persistent storage)
+        """
+        if not hasattr(self, '_staged_map'):
+            self._staged_map = {}
+        self._staged_map[str(staged_path)] = str(original_path)
+
     def save(self):
         """Save provenance to output directory."""
         self.output_dir.mkdir(parents=True, exist_ok=True)

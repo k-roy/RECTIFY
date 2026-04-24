@@ -213,11 +213,11 @@ flowchart TD
     CLI --> commands
     CLI --> utilities
 
-    RC -->|"Step 0 (DRS)"| TC
+    RC -->|"Step 0 (--drs BAM)"| TC
     RC -->|"Step 1"| AL
     RC -->|"Step 2"| CC
-    RC -->|"Step 3 (DRS)"| RSC
-    RC -->|"Step 4"| AC
+    RC -->|"Step 3"| AC
+    RC -->|"Step 4 (--drs)"| RSC
 
     BC -->|"per-sample parallel"| CC
 ```
@@ -438,6 +438,13 @@ In multi-sample mode, correction runs per-sample in parallel, then analysis
 runs once across all corrected outputs. DESeq2, GO enrichment, and motif
 discovery only fire in multi-sample mode (need multiple conditions for
 statistics). Also resolves bundled genome/annotation paths transparently.
+
+When `--drs` is passed with a BAM input, `_run_single_sample()` automatically
+inserts Step 0 (`trim_drs_bam_polya` → `samtools fastq -T pt`) before alignment
+and Step 4 (`restore_polya_softclips`) after correction. The poly(A) trim
+metadata parquet is written to the Oak output directory so it survives
+`$SCRATCH` purge; the trimmed FASTQ is written to `$SCRATCH/drs_trim/` for
+alignment I/O.
 
 **`core/batch_command.py`** — Parallel batch correction across samples.
 In interactive mode, auto-sizes a `ThreadPoolExecutor` to available CPUs

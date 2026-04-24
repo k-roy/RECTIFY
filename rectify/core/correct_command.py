@@ -233,6 +233,11 @@ def validate_inputs(args) -> dict:
         'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
         'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
         'junction_penalty_table':    getattr(args, 'junction_penalty_table', None),
+        'str_penalty_table':         getattr(args, 'str_penalty_table', None),
+        # Pre-computed cache paths from `rectify prescan` (chunked correction pipelines).
+        # When set, skip the corresponding first-pass computation and load from disk.
+        'variant_scan_cache':        getattr(args, 'variant_scan_cache', None),
+        'junction_pool_cache':       getattr(args, 'junction_pool_cache', None),
     }
 
     return config
@@ -287,10 +292,16 @@ def run(args):
     logger.info(f"  Poly(A) trimming:      {'ENABLED' if config['apply_polya_trim'] else 'DISABLED'}")
     logger.info(f"  Indel correction:      {'ENABLED' if config['apply_indel_correction'] else 'DISABLED'}")
     logger.info(f"  Variant-aware rescue:  {'ENABLED' if config['variant_aware'] else 'DISABLED'}")
+    if config.get('variant_scan_cache'):
+        logger.info(f"    Variant scan cache:  {config['variant_scan_cache']}")
     logger.info(f"  NET-seq refinement:    {'ENABLED' if config['netseq_dir'] else 'DISABLED'}")
     logger.info(f"  Spike-in filter:       {'ENABLED (' + ','.join(config['filter_spikein']) + ')' if config['filter_spikein'] else 'DISABLED'}")
     _n_abams = len(config.get('aligner_bams', []))
-    logger.info(f"  Junction refinement:   {'ENABLED (' + str(_n_abams) + ' aligner BAMs)' if _n_abams else 'DISABLED (pass --aligner-bams to enable)'}")
+    _jpool_cache = config.get('junction_pool_cache')
+    if _jpool_cache:
+        logger.info(f"  Junction refinement:   ENABLED (pre-built pool cache: {_jpool_cache})")
+    else:
+        logger.info(f"  Junction refinement:   {'ENABLED (' + str(_n_abams) + ' aligner BAMs)' if _n_abams else 'DISABLED (pass --aligner-bams to enable)'}")
     logger.info("")
 
     # Initialize provenance tracking
@@ -337,10 +348,13 @@ def run(args):
             logger.info(f"[TIMING] Spike-in filter: {_time.perf_counter() - _t_spikein:.1f}s")
 
         # Module 2H: Junction N-op boundary refinement (optional pre-processing step).
-        # When --aligner-bams are provided, replace imprecise N-op boundaries in the
-        # consensus BAM with the best-supported candidate junction using split-alignment
-        # scoring with homopolymer-aware edit distance.
-        if config.get('aligner_bams') and config.get('annotation_path'):
+        # When --aligner-bams are provided (or a --junction-pool-cache pkl), replace
+        # imprecise N-op boundaries in the consensus BAM with the best-supported
+        # candidate junction using split-alignment scoring with homopolymer-aware
+        # edit distance.
+        _junction_pool_cache = config.get('junction_pool_cache')
+        _run_2h = (config.get('aligner_bams') or _junction_pool_cache) and config.get('annotation_path')
+        if _run_2h:
             _t_refine = _time.perf_counter()
             logger.info("Module 2H: Junction N-op boundary refinement...")
             try:
@@ -363,6 +377,21 @@ def run(args):
                 from ..utils.genome import load_genome as _load_genome_for_refine
                 _refine_genome = _load_genome_for_refine(str(config['genome_path']))
 
+                # Load pre-built junction pool from cache if available.
+                _prebuilt_pool = None
+                _prebuilt_annot_set = None
+                if _junction_pool_cache and Path(_junction_pool_cache).exists():
+                    import pickle as _pkl
+                    logger.info(f"  Loading pre-built junction pool from cache: {_junction_pool_cache}")
+                    with open(_junction_pool_cache, 'rb') as _pf:
+                        _pool_data = _pkl.load(_pf)
+                    _prebuilt_pool = _pool_data['all_junctions']
+                    _prebuilt_annot_set = _pool_data['annotated_set']
+                    logger.info(
+                        "  Pre-built pool: %d junctions (%d annotated)",
+                        len(_prebuilt_pool), len(_prebuilt_annot_set),
+                    )
+
                 _refine_stats = refine_bam_junctions(
                     input_bam=bam_to_process,
                     output_bam=_refined_bam,
@@ -377,6 +406,9 @@ def run(args):
                     boundary_error_window=config.get('junction_boundary_error_window', 10),
                     sort_and_index=True,
                     penalty_table_path=config.get('junction_penalty_table'),
+                    str_penalty_table_path=config.get('str_penalty_table'),
+                    prebuilt_junction_pool=_prebuilt_pool,
+                    prebuilt_annotated_set=_prebuilt_annot_set,
                 )
                 bam_to_process = _refined_bam
                 logger.info(
@@ -457,6 +489,8 @@ def run(args):
                     annotated_junctions=annotated_junctions,
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
+                    checkpoint_dir=getattr(args, 'checkpoint_dir', None),
+                    variant_scan_cache=config.get('variant_scan_cache'),
                 )
             else:
                 # Single-threaded streaming for single-core or debugging
@@ -502,6 +536,7 @@ def run(args):
                 annotated_junctions=annotated_junctions,
                 gene_interval_trees=gene_interval_trees,
                 polya_model_path=_polya_model_path,
+                variant_scan_cache=config.get('variant_scan_cache'),
             )
             report = generate_stats_report(stats)
 

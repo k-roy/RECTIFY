@@ -1,13 +1,15 @@
 """
 Multi-aligner alignment pipeline for RECTIFY.
 
-Runs multiple aligners (minimap2, mapPacBio, gapmm2) on the same reads
-and provides utilities for consensus analysis.
+Runs multiple aligners (minimap2, mapPacBio, gapmm2, bbmap, bwa) on the
+same reads and provides utilities for consensus analysis.
 
 Strategy:
 - minimap2: Fast seed-and-chain baseline with junction annotation support
 - mapPacBio: BBTools long-read aligner with splice-aware mode
 - gapmm2: minimap2 wrapper with terminal exon refinement
+- bbmap: BBTools short-read splice-aware aligner (Illumina/Aviti; intronlen=20)
+- bwa: BWA-MEM short-read aligner (Illumina/Aviti; not splice-aware)
 
 Junction annotations are used to IMPROVE alignment quality but scoring
 remains BLIND to annotations (novel junctions can still be detected).
@@ -102,6 +104,16 @@ class MultiAlignerConfig:
         name="gapmm2",
         enabled=True,
         path="gapmm2"
+    ))
+    bbmap: AlignerConfig = field(default_factory=lambda: AlignerConfig(
+        name="bbmap",
+        enabled=False,  # Opt-in: only appropriate for short reads (Illumina/Aviti)
+        path="bbmap.sh"
+    ))
+    bwa_mem: AlignerConfig = field(default_factory=lambda: AlignerConfig(
+        name="bwa",
+        enabled=False,  # Opt-in: only appropriate for short reads (Illumina/Aviti)
+        path="bwa"
     ))
 
     # Junction annotation options
@@ -455,6 +467,205 @@ def run_map_pacbio(
     mpb_split_fq.unlink(missing_ok=True)
 
     logger.info("mapPacBio complete: %s", output_bam)
+    return str(output_bam)
+
+
+def run_bbmap(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    extra_args: Optional[List[str]] = None,
+) -> str:
+    """Run vanilla BBMap for short-read splice-aware alignment (Illumina/Aviti).
+
+    Uses intronlen=20 so any reference gap ≥20 bp is encoded as an N-op
+    (intron skip) rather than a D-op (deletion).  This is critical for
+    rectify's junction_refiner, which scans for N-ops.
+
+    Unlike mapPacBio, this invokes align2.BBMap (not align2.BBMapPacBio),
+    which is tuned for short reads and does not apply the PacBio-specific
+    long-read chunking logic.  The bbmap_index directory is shared with
+    mapPacBio (same BBTools suite, same reference build).
+
+    Args:
+        reads_path: Path to FASTQ (or FASTQ.GZ)
+        genome_path: Path to genome FASTA
+        output_bam: Path for output BAM
+        threads: Number of threads
+        extra_args: Additional bbmap.sh arguments
+
+    Returns:
+        Path to output BAM (name-sorted)
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    bbmap_path = shutil.which('bbmap.sh')
+    if not bbmap_path:
+        raise FileNotFoundError("bbmap.sh not found in PATH")
+
+    sam_path = output_bam.with_suffix('.sam')
+    bbmap_index_dir = Path(genome_path).parent / 'bbmap_index'
+    bbmap_index_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        bbmap_path,
+        f'ref={genome_path}',
+        f'in={reads_path}',
+        f'out={sam_path}',
+        f'threads={threads}',
+        f'path={bbmap_index_dir}',
+        'intronlen=20',      # Gaps ≥20 bp → N-op (intron skip) in CIGAR
+        'maxindel=100000',   # Allow yeast-scale introns (up to ~1 kb)
+        'minratio=0.56',     # Default short-read sensitivity
+        'ambiguous=best',
+        '-Xmx32g',
+    ]
+
+    if extra_args:
+        cmd.extend(extra_args)
+
+    logger.info("Running bbmap: %s", ' '.join(cmd[:5]) + '...')
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    if result.returncode != 0:
+        raise RuntimeError(f"bbmap failed: {result.stderr[-1000:]}")
+
+    # SAM → name-sorted BAM (same pattern as mapPacBio)
+    view_proc = subprocess.Popen(
+        ['samtools', 'view', '-bS', str(sam_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
+        stdin=view_proc.stdout,
+        stderr=subprocess.PIPE,
+    )
+    view_proc.stdout.close()
+    try:
+        _, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+        if sort_proc.returncode != 0:
+            raise RuntimeError(
+                f"samtools sort (bbmap) failed: {sort_stderr.decode(errors='replace')}"
+            )
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        sort_proc.communicate()
+        view_proc.communicate()
+        raise RuntimeError("samtools sort (bbmap) timed out")
+    finally:
+        sam_path.unlink(missing_ok=True)
+
+    view_proc.wait()
+    if view_proc.returncode not in (0, -9):
+        raise RuntimeError(
+            f"samtools view (bbmap) failed with exit code {view_proc.returncode}"
+        )
+
+    logger.info("bbmap complete: %s", output_bam)
+    return str(output_bam)
+
+
+def run_bwa_mem(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    extra_args: Optional[List[str]] = None,
+) -> str:
+    """Run BWA-MEM for short-read alignment (Illumina/Aviti).
+
+    BWA-MEM is not splice-aware: intron-spanning reads are split into
+    supplementary alignments rather than getting a single N-op CIGAR.
+    For 3'-end sequencing data (QuantSeq, MACE-seq) where reads are
+    predominantly in UTRs, this is acceptable — the multi-aligner
+    consensus will prefer bbmap over bwa for the minority of reads that
+    span introns.
+
+    A BWA index is built automatically the first time, alongside the
+    genome FASTA.
+
+    Args:
+        reads_path: Path to FASTQ (or FASTQ.GZ)
+        genome_path: Path to genome FASTA
+        output_bam: Path for output BAM
+        threads: Number of threads
+        extra_args: Additional bwa mem arguments
+
+    Returns:
+        Path to output BAM (name-sorted)
+    """
+    import threading as _threading
+
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    bwa_path = shutil.which('bwa')
+    if not bwa_path:
+        raise FileNotFoundError("bwa not found in PATH")
+
+    # Build BWA index if not present (index files sit next to the FASTA)
+    bwt_path = Path(str(genome_path) + '.bwt')
+    if not bwt_path.exists():
+        logger.info("Building BWA index: %s (one-time, ~1 min for yeast)", genome_path)
+        idx_result = subprocess.run(
+            ['bwa', 'index', str(genome_path)],
+            capture_output=True, text=True,
+        )
+        if idx_result.returncode != 0:
+            raise RuntimeError(f"bwa index failed: {idx_result.stderr[-500:]}")
+        logger.info("BWA index built: %s", genome_path)
+
+    cmd = [
+        bwa_path, 'mem',
+        '-t', str(threads),
+        '-M',   # Mark split-hit secondary alignments (samtools-compatible)
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend([str(genome_path), str(reads_path)])
+
+    logger.info("Running bwa mem: %s", ' '.join(cmd[:6]) + '...')
+
+    bwa_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
+        stdin=bwa_proc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    bwa_proc.stdout.close()
+
+    bwa_stderr_chunks: list = []
+    def _drain_bwa_stderr():
+        bwa_stderr_chunks.append(bwa_proc.stderr.read())
+    drain_thread = _threading.Thread(target=_drain_bwa_stderr, daemon=True)
+    drain_thread.start()
+
+    try:
+        _, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        bwa_proc.kill()
+        sort_proc.communicate()
+        raise RuntimeError("bwa mem / samtools sort timed out")
+    finally:
+        drain_thread.join()
+
+    bwa_proc.wait()
+    if bwa_proc.returncode != 0:
+        bwa_err = bwa_stderr_chunks[0].decode(errors='replace') if bwa_stderr_chunks else ''
+        raise RuntimeError(
+            f"bwa mem failed (exit {bwa_proc.returncode}): {bwa_err[-500:]}"
+        )
+    if sort_proc.returncode != 0:
+        raise RuntimeError(
+            f"samtools sort (bwa mem) failed: {sort_stderr.decode(errors='replace')}"
+        )
+
+    logger.info("bwa mem complete: %s", output_bam)
     return str(output_bam)
 
 
@@ -1140,9 +1351,13 @@ def run_desalt(
     for sidecar in tmp_file.parent.glob(f"{tmp_file.name}*"):
         sidecar.unlink(missing_ok=True)
     if result.returncode != 0:
+        # Clean up the 0-byte SAM file deSALT leaves behind on crash, so it
+        # doesn't get picked up as valid output in downstream tools.
+        sam_path.unlink(missing_ok=True)
         raise RuntimeError(f"deSALT failed: {result.stderr}")
 
     if not sam_path.exists() or sam_path.stat().st_size == 0:
+        sam_path.unlink(missing_ok=True)
         raise RuntimeError(f"deSALT produced no output at {sam_path}")
 
     # Convert SAM → coordinate-sorted BAM, then deduplicate
@@ -1221,6 +1436,10 @@ def run_multi_aligner(
             aligners.append('mapPacBio')
         if config.gapmm2.enabled:
             aligners.append('gapmm2')
+        if config.bbmap.enabled:
+            aligners.append('bbmap')
+        if config.bwa_mem.enabled:
+            aligners.append('bwa')
 
     for aligner in aligners:
         output_bam = output_dir / f"{sample_name}.{aligner}.sorted.bam"
@@ -1252,6 +1471,22 @@ def run_multi_aligner(
                     output_bam=str(output_bam),
                     threads=threads,
                     extra_args=config.gapmm2.extra_args
+                )
+            elif aligner == 'bbmap':
+                results['bbmap'] = run_bbmap(
+                    reads_path=reads_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
+                    extra_args=config.bbmap.extra_args
+                )
+            elif aligner == 'bwa':
+                results['bwa'] = run_bwa_mem(
+                    reads_path=reads_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
+                    extra_args=config.bwa_mem.extra_args
                 )
             else:
                 logger.warning(f"Unknown aligner: {aligner}")
