@@ -407,13 +407,100 @@ rectify/
 │   │   ├── split_command.py          # rectify split — FASTQ chunker for SLURM arrays
 │   │   ├── consensus_command.py      # rectify consensus — aligner selection on pre-built BAMs
 │   │   └── install_aligners_command.py  # rectify install-aligners — download/compile aligners
-│   ├── data/
+│   ├── data/                             # Bundled reference data — use --Scer to activate
+│   │   ├── S288C_reference_sequence_R64-5-1_20240529.fsa     # S. cerevisiae genome FASTA
+│   │   ├── S288C_reference_sequence_R64-5-1_20240529.fsa.fai # samtools FASTA index
+│   │   ├── S288C_reference_sequence_R64-5-1_20240529.pkl     # pre-loaded genome dict (fast)
+│   │   ├── saccharomyces_cerevisiae_R64-5-1_20240529.gff     # S. cerevisiae gene annotation
+│   │   ├── saccharomyces_cerevisiae_R64-5-1_20240529.gtf     # GTF version of same annotation
+│   │   ├── saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed  # pre-built junction BED for minimap2 --junc-bed
+│   │   ├── saccharomyces_cerevisiae_atract_netseq.tsv.gz     # A-tract NET-seq signal (yeast)
+│   │   ├── saccharomyces_cerevisiae_netseq_pan.tsv.gz        # Pan NET-seq table
+│   │   ├── saccharomyces_cerevisiae_netseq_wt.tsv.gz         # WT-only NET-seq table
+│   │   ├── models/                                            # Poly-A model weights
+│   │   ├── motif_databases/                                   # JASPAR-format motif databases
+│   │   ├── validation/                                        # Bundled validation reads + TSVs
+│   │   ├── genomes/saccharomyces_cerevisiae/                  # GFF.GZ copy (for rectify prescan)
+│   │   │   └── saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz
 │   │   └── bin/
 │   │       └── linux_x86_64/
 │   │           └── deSALT            # Vendored deSALT v1.5.6 binary (773 KB)
 │   └── ...
 └── CLAUDE.md                         # This file
 ```
+
+### Using bundled data directly
+
+When `--Scer` (or `--organism saccharomyces_cerevisiae`) is passed, these paths
+are resolved automatically.  To reference them explicitly (e.g., in `rectify prescan`
+or test scripts):
+
+```python
+import rectify
+from pathlib import Path
+DATA = Path(rectify.__file__).parent / 'data'
+
+GENOME     = DATA / 'S288C_reference_sequence_R64-5-1_20240529.fsa'
+ANNOTATION = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.gff'
+JUNC_BED   = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed'
+```
+
+Or from a shell script:
+```bash
+RECTIFY_DATA=$(python -c "import rectify; from pathlib import Path; print(Path(rectify.__file__).parent / 'data')")
+GENOME=$RECTIFY_DATA/S288C_reference_sequence_R64-5-1_20240529.fsa
+ANNOTATION=$RECTIFY_DATA/saccharomyces_cerevisiae_R64-5-1_20240529.gff
+```
+
+---
+
+## Empirical Penalty Tables (`--junction-penalty-table`)
+
+Production tables are in
+`common/scripts/nanopore/error_profile_20260422/` (generated 2026-04-22).
+
+### Format: AT/CG base-class split
+
+`penalty_scores.tsv` groups reference bases into two classes: **AT** and **CG**.
+This matters because AT runs have ~10–20% higher deletion rates than CG runs at the
+same HP length (Nanopore pore-ratcheting asymmetry).
+
+Columns: `op_type`, `base_class`, `hp_length`, `rate_mean`, `count_total`,
+`penalty_score`, `low_count`.
+
+Key numbers:
+
+| op_type | base_class | HP=1 penalty | HP=4 penalty | HP=8 penalty |
+|---------|------------|:------------:|:------------:|:------------:|
+| D       | AT         | 0.37         | 0.33         | 0.28         |
+| D       | CG         | 0.58         | 0.42         | 0.37         |
+| X       | AT         | 1.00 (ref)   | 1.55         | 10.0 (cap)   |
+| X       | CG         | 1.00 (ref)   | 2.56         | 10.0 (cap)   |
+
+Insertions: all `low_count=True`, treat all as 10.0.
+
+### Usage
+
+```bash
+rectify correct \
+    --junction-penalty-table .../error_profile_20260422/penalty_scores.tsv \
+    --str-penalty-table      .../error_profile_20260422/str_penalty_scores.tsv \
+    ...
+```
+
+### Regeneration
+
+See `common/scripts/nanopore/PENALTY_TABLE.md` for the full regeneration command,
+known caveats (deSALT failures on chunks 2/11/15), and diagnostic plot instructions.
+
+### Design notes
+
+- Isotonic smoothing ensures deletion penalties are monotone non-decreasing with HP length.
+- `low_count=True` rows (count < 100) should not be used as reliable estimates.
+- Tables are S. cerevisiae R10.4.1-specific — regenerate for other organisms/chemistries.
+- The `_CANONICAL_HP_PRIOR = 0.5` in `junction_refiner.py` was calibrated so that one
+  HP deletion (del_cost ≈ 0.37–0.58 at HP=1) gives canonical junctions the tie-breaking
+  advantage. This works correctly with both default heuristics and empirical tables.
 
 ---
 
@@ -467,6 +554,17 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - **Canonical HP prior** (replaces `int(score)` floor binning): when the current N-op is non-canonical (`tier_beats_alt=True`), canonical-tier alternatives (tier < 4) receive a 0.5 edit-distance discount (`_CANONICAL_HP_PRIOR = 0.5`). This equals one Nanopore HP deletion equivalent — the expected noise floor — and ensures canonical junctions win within the noise floor regardless of which penalty table (default or empirical) is in use. Non-canonical alternatives must exceed the canonical score by >0.5 to win. The old `int(score)` floor was fragile: it worked only when both scores happened to fall in the same [n,n+1) integer bucket, which fails when the empirical del_cost(1)≈0.43 and scores straddle an integer boundary.
 
 - **Impact**: all 146 tests pass with both default and empirical penalty table (`penalty_scores.tsv`); all 4 cat9 reads correctly refined with `--junction-penalty-table`.
+
+**v3.2.3 (2026-04-24):** Validation read sequences synced to DRS-trimmed run for Cat5-9:
+- **Root cause (v3.1.8 partial update)**: `update_validation_drs.py`'s "update in place" path updated CIGAR/N-op boundaries from the DRS-trimmed mapPacBio run but left read *sequences* from the old chunked-consensus BAM. This caused visual discrepancies in IGV between `rectified_corrected_3end.bam` (corrected from chunked sequences) and `validation_reads.mapPacBio.bam` (aligner BAM with DRS sequences). cat5_minus_1 retained `SEQ='*'` from the gapmm2 PAF issue (fix was never committed).
+- **Fix**: targeted 9-read update preserving all XV/XG/XU tags and MD/cs/NM stripped:
+  - cat5_minus_1: filled 561-base chimeric sequence from chunked consensus (chimeric CIGAR qlen=561; cannot use DRS mapPacBio seqlen=538 without breaking the chimeric structure)
+  - cat6_plus_1, cat6_minus_2: seq+CIGAR+start from DRS mapPacBio merged BAM
+  - cat7_minus_1, cat7_plus_1, cat7_plus_2: same
+  - cat9_plus_1, cat9_plus_2, cat9_minus_1: from DRS per-chunk mapPacBio BAMs
+  - **Cat1–4, Cat8 intentionally kept on chunked sequences**: a full swap to DRS-trimmed caused Cat4 reads to map to wrong genomic regions (minimap2 DRS alignment chose a different locus for cat4_plus_1: 19589 vs expected 22072), and Cat1–2 reads no longer exhibited the indel/soft-clip artifacts required for their validation scenarios.
+- **Test updates**: Cat7 EXPECTED_JUNCTIONS shifted 3–8 bp (cat7_plus_1: 138856→138864, cat7_plus_2: 595736→595739); Cat9 RAW_JUNCTIONS shifted 1–3 bp (cat9_plus_1 start: 555824→555825; cat9_plus_2 end: 439324→439321) — same GT-AG annotated junctions, same correction outcomes.
+- All 110 tests pass (3 skipped).
 
 **v3.2.2 (2026-04-22):** Validation dataset fully certified for production — XV/XG tag fix + aligner BAM N-op correction:
 - **Root cause**: `rebuild_aligner_bams_cat679.py` (v3.2.0) sourced replacement read alignments from `validation_reads.bam` before that BAM's replacement reads had proper N-ops. Additionally, the 3 replacement reads (f8050895, 7d5e8dc2, 72557a9a) were missing XV and XG auxiliary tags because they were inserted with full UUIDs while the source (stale BAM) had 8-char prefix names — the tag-copy logic couldn't match them.
