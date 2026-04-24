@@ -13,6 +13,83 @@ covering nine correction categories with 4 reads each (2 plus-strand,
 
 ---
 
+## Sequence Provenance
+
+All 36 reads originate from a single DRS Dorado-called BAM:
+`projects/roadblocks/raw_data/nanopore/inhouse_by4742_dst1_4nqo_ski7/wt_by4742_rep1.bam`.
+
+`validation_reads_dorado_source.bam` (same directory) is an immutable archive
+containing all 36 reads exactly as they appear in that Dorado BAM (XV/XG tags
+added; sequences, CIGARs, and all other fields verbatim).
+
+### Why sequences in `validation_reads.bam` differ from the Dorado raw
+
+The table below shows three length columns:
+- **Dorado**: raw basecalled length from `validation_reads_dorado_source.bam`
+- **DRS-trim**: length after `rectify trim-polya` (poly-A removed; from `wt_by4742_rep1_polya_trim_metadata.parquet`)
+- **val_bam**: length stored in `validation_reads.bam`
+
+For **Cat6/7/9** reads, `val_bam == DRS-trim` (exact match): these reads use the
+DRS poly-A–trimmed mapPacBio alignments, which preserve the non-canonical or
+alternative splice junctions required for their test scenarios.
+
+For **Cat1–5/Cat8** reads, `val_bam != DRS-trim`: these reads retain their poly-A
+tail and use sequences from the chunked pipeline
+(`wt_by4742_rep1_chunked_20260412`), which was basecalled from the same raw
+data but may produce slightly different sequence lengths at read ends. The
+chunked sequences are required because:
+- **Cat1/2**: DRS-trimmed versions lose the A-tract indel / soft-clip artifacts
+- **Cat4**: DRS poly-A trimming removes the false N-op near the 3′ end; also
+  the DRS-trimmed reads map to wrong genomic loci for two Cat4 reads
+- **Cat5**: DRS-trimmed `cat5_minus_1` (538 bp) is too short to span both introns
+  needed for the chimeric CIGAR (requires 561 bp)
+- **Cat3/Cat8**: same source group; DRS-trimmed would work but was kept consistent
+
+| Label | UUID | Dorado | DRS-trim | val_bam | seq source |
+|---|---|---:|---:|---:|---|
+| cat1_plus_1   | 9747f421 | 201  | 183  | 197  | chunked aligner (minimap2 merged) |
+| cat1_plus_2   | 0821dc9e | 306  | 301  | 306  | chunked aligner (minimap2 merged) |
+| cat1_minus_1  | 058438bb | 686  | 671  | 689  | chunked aligner (minimap2 merged) |
+| cat1_minus_2  | 4e5e6eee | 736  | 721  | 737  | chunked aligner (minimap2 merged) |
+| cat2_plus_1   | 6ad42e7a | 1133 | 1117 | 1133 | chunked aligner (minimap2 merged) |
+| cat2_plus_2   | 5bd31a5e | 1172 | 1158 | 1167 | chunked aligner (minimap2 merged) |
+| cat2_minus_1  | 8786c81f | 612  | 603  | 611  | chunked aligner (minimap2 merged) |
+| cat2_minus_2  | 9dbd37bf | 908  | 905  | 881  | chunked aligner (minimap2 merged) |
+| cat3_plus_1   | 0a28167d | 679  | 658  | 682  | chunked aligner (minimap2 merged) |
+| cat3_plus_2   | 79f61403 | 791  | 777  | 802  | chunked aligner (minimap2 merged) |
+| cat3_minus_1  | ac4db6da | 709  | 706  | 711  | chunked aligner (minimap2 merged) |
+| cat3_minus_2  | 28ea9379 | 686  | 671  | 695  | chunked aligner (minimap2 merged) |
+| cat4_plus_1   | 22e25c29 | 921  | 900  | 941  | chunked aligner (minimap2 merged) |
+| cat4_plus_2   | 09b04cdd | 1479 | 1464 | 1472 | chunked aligner (minimap2 merged) |
+| cat4_minus_1  | b956f764 | 457  | 434  | 471  | chunked aligner (minimap2 merged) |
+| cat4_minus_2  | a9706bbe | 1078 | 1066 | 1074 | chunked aligner (minimap2 merged) |
+| cat5_plus_1   | 040195ff | 512  | 490  | 513  | chunked aligner (minimap2 merged) |
+| cat5_plus_2   | 4d1e5c19 | 678  | 658  | 671  | chunked aligner (minimap2 merged) |
+| cat5_minus_1  | 8f86cb34 | 565  | 538  | 561  | chunked consensus (chimeric, 561 bp) |
+| cat5_minus_2  | 02165816 | 572  | 568  | 565  | chunked aligner (minimap2 merged) |
+| cat6_plus_1   | 875a773c | 936  | 920  | 920  | DRS mapPacBio merged (trimmed) |
+| cat6_plus_2   | f8050895 | 508  | 495  | 495  | DRS mapPacBio merged (trimmed) |
+| cat6_minus_1  | 7d5e8dc2 | 525  | 510  | 510  | DRS mapPacBio merged (trimmed) |
+| cat6_minus_2  | 322d880c | 557  | 545  | 545  | DRS mapPacBio merged (trimmed) |
+| cat7_plus_1   | 4e43165e | 1340 | 1330 | 1330 | DRS mapPacBio merged (trimmed) |
+| cat7_plus_2   | 0f021462 | 5441 | 5439 | 5439 | DRS mapPacBio merged (trimmed) |
+| cat7_minus_1  | c79f1fb9 | 1629 | 1611 | 1611 | DRS mapPacBio merged (trimmed) |
+| cat7_minus_2  | 72557a9a | 1130 | 1128 | 1128 | DRS mapPacBio merged (trimmed) |
+| cat8_plus_single  | a0f7d856 | 2035 | 2007 | 2062 | chunked aligner (minimap2 merged) |
+| cat8_plus_multi   | 0e41776e | 1494 | 1490 | 1537 | chunked aligner (minimap2 merged) |
+| cat8_minus_single | 0d9b33c7 | 2383 | 2369 | 2372 | chunked aligner (minimap2 merged) |
+| cat8_minus_multi  | 0b6b91ea | 496  | 480  | 511  | chunked aligner (minimap2 merged) |
+| cat9_plus_1   | 00a1c9b3 | 495  | 486  | 486  | DRS mapPacBio merged (trimmed) |
+| cat9_plus_2   | 00a1e01e | 497  | 496  | 496  | DRS mapPacBio merged (trimmed) |
+| cat9_minus_1  | 0b3b593b | 612  | 602  | 602  | DRS mapPacBio merged (trimmed) |
+| cat9_minus_2  | d3357db5 | 641  | 640  | 640  | DRS mapPacBio merged (trimmed) |
+
+**Scripts:**
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/fix_validation_seqs_v3.2.3.py` — Apr 24 2026 targeted fix (cat5_minus_1 fill + cat6/7/9 seq+CIGAR update from DRS mapPacBio)
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams_v2.py` — rebuilds all 5 aligner BAMs to match `validation_reads.bam` sequences
+
+---
+
 ## Category 1 — polya_walkback (`cat1_indel`)
 
 Reads end in genomic A-tracts; the aligner's 3' boundary is shifted inward
@@ -194,22 +271,26 @@ These test that RECTIFY preserves genuine alternative splice junctions during
 Motif notation: `{5'SS dinucleotide}-{3'SS dinucleotide}` on the RNA strand.
 All reads carry `XG=cat7_alt_splice`, `XU=1` (single aligner: mapPacBio).
 
-| Label | Coords | Strand | Gene region | Junction (intron) | Motif | Read ID prefix |
+| Label | Coords (0-based half-open) | Strand | Gene region | Junction (intron) | Motif | Read ID prefix |
 |---|---|---|---|---|---|---|
-| `cat7_plus_1` | chrIII:137716–139164 | + | YCR012W | 138856–138946 (90 bp) | **GT-AT** | `4e43165e` |
-| `cat7_plus_2` | chrXII:593396–599029 | + | — | 595736–595852 (116 bp) | **GC-AT** | `0f021462` |
-| `cat7_minus_1` | chrII:442949–444728 | − | YBR101C | 443720–443833 (113 bp) | **GT-CG** | `c79f1fb9` |
-| `cat7_minus_2` | chrVII:882287–883838 | − | YGR192C | 882352–882702 (350 bp) | **GC-AT** | `5c59f0bc` |
+| `cat7_plus_1`  | chrIII:137716–139153  | + | YCR012W | 138864–138952 (88 bp)  | **AC-AG** | `4e43165e` |
+| `cat7_plus_2`  | chrXII:593396–599002  | + | —       | 595739–595853 (114 bp) | **CA-TT** | `0f021462` |
+| `cat7_minus_1` | chrII:442997–444727   | − | YBR101C | 443720–443833 (113 bp) | **GT-CG** | `c79f1fb9` |
+| `cat7_minus_2` | chrIII:104356–105561  | − | —       | 104435–104495 (60 bp)  | **GT-CG** | `72557a9a` |
+
+Motif notation: `{5'SS dinucleotide}-{3'SS dinucleotide}` on the RNA strand
+(for minus-strand reads the genomic strand reads as the reverse complement).
 
 **Biological rationale for motif choices:**
-- **GT-AT**: canonical GT donor (standard U2 5'SS), non-canonical AT acceptor
-- **GC-AT**: canonical GC donor (known U2 alternative), non-canonical AT acceptor
-- **GT-CG**: canonical GT donor, CG acceptor (documented in rare yeast transcripts)
+- **AC-AG** (cat7_plus_1): non-canonical AC donor, AG acceptor
+- **CA-TT** (cat7_plus_2): non-canonical CA donor, TT acceptor
+- **GT-CG** (cat7_minus_1, cat7_minus_2): canonical GT donor, non-canonical CG
+  acceptor (documented in rare yeast transcripts)
 
 **Source BAM:** `wt_by4742_rep1.mapPacBio.bam` from
-`dev_runs/wt_by4742_rep1_chunked_20260412/merged/`. mapPacBio was chosen
-over minimap2 because minimap2 applies GT-AG splice bonuses that bias
-junction detection toward canonical motifs.
+`dev_runs/wt_by4742_rep1_drs_trim_20260417/merged/` (DRS poly-A–trimmed run).
+mapPacBio was chosen over minimap2 because minimap2 applies GT-AG splice bonuses
+that bias junction detection toward canonical motifs.
 
 **Expected correction output:**
 - `n_junctions = 1` for all four reads
@@ -299,8 +380,23 @@ uLTRA had no output for the RPL19B/RPL20B dev run; plus-strand reads only.)
 
 ## Regenerating the BAM
 
-All reads are sourced from `wt_by4742_rep1.bam`. If the validation BAM needs
-to be rebuilt, use the read names stored in the XV tags as query names to
-`samtools view` the source BAM, then re-apply the XV/XG/XK/XA/XS tags with
-a pysam script. The selection criteria for each category are documented in
-the session transcript.
+All reads originate from `wt_by4742_rep1.bam` (DRS Dorado BAM). The immutable
+archive `validation_reads_dorado_source.bam` (same directory) preserves the raw
+Dorado sequences and CIGARs for all 36 reads.
+
+To rebuild `validation_reads.bam` from scratch:
+1. Extract reads by UUID from `validation_reads_dorado_source.bam`
+2. For Cat6/7/9: replace seq+CIGAR from DRS mapPacBio merged BAM
+   (`dev_runs/wt_by4742_rep1_drs_trim_20260417/merged/wt_by4742_rep1.mapPacBio.bam`)
+3. For Cat1–5/Cat8: replace seq+CIGAR from chunked merged BAMs
+   (`dev_runs/wt_by4742_rep1_chunked_20260412/merged/wt_by4742_rep1.*.bam`)
+4. Re-apply XV/XG/XK/XA/XS tags
+
+Reference scripts:
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/fix_validation_seqs_v3.2.3.py`
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams_v2.py`
+
+To rebuild the 5 aligner BAMs after updating `validation_reads.bam`:
+```bash
+python dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams_v2.py
+```
