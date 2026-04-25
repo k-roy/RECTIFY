@@ -38,10 +38,10 @@ from rectify.core.junction_refiner import (
 
 GENOME_PATH = RECTIFY_ROOT / "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
 ANNOT_PATH  = RECTIFY_ROOT / "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz"
-CONSENSUS_BAM = RECTIFY_ROOT / "dev_runs/rpl19b_rpl20b_drs_trim_20260418/consensus/rpl19b_rpl20b.consensus.bam"
+CONSENSUS_BAM = RECTIFY_ROOT / "dev_runs/rpl19b_rpl20b/consensus/rpl19b_rpl20b.consensus.bam"
 
 # Per-aligner BAMs for RPL20B test dataset
-ALIGN_DIR = RECTIFY_ROOT / "dev_runs/rpl19b_rpl20b_drs_trim_20260418/align"
+ALIGN_DIR = RECTIFY_ROOT / "dev_runs/rpl19b_rpl20b/align"
 ALIGNER_BAMS_RPL = [
     str(ALIGN_DIR / "rpl19b_rpl20b.minimap2.bam"),
     str(ALIGN_DIR / "rpl19b_rpl20b.gapmm2.bam"),

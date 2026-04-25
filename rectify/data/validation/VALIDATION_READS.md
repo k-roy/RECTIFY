@@ -33,12 +33,16 @@ For **Cat6/7/9** reads, `val_bam == DRS-trim` (exact match): these reads use the
 DRS poly-A–trimmed mapPacBio alignments, which preserve the non-canonical or
 alternative splice junctions required for their test scenarios.
 
-For **Cat1–5/Cat8** reads, `val_bam != DRS-trim`: these reads retain their poly-A
+For **Cat1/Cat2** reads, `val_bam == DRS-trim`: these reads are taken directly
+from the DRS-trimmed minimap2 alignments (`wt_by4742_rep1_drs_trim_20260417`).
+They were chosen because they exhibit the A-tract indel (`cat1_indel`) and
+soft-clip rescue (`cat2_softclip`) correction scenarios despite poly-A trimming.
+
+For **Cat3–5/Cat8** reads, `val_bam != DRS-trim`: these reads retain their poly-A
 tail and use sequences from the chunked pipeline
 (`wt_by4742_rep1_chunked_20260412`), which was basecalled from the same raw
 data but may produce slightly different sequence lengths at read ends. The
 chunked sequences are required because:
-- **Cat1/2**: DRS-trimmed versions lose the A-tract indel / soft-clip artifacts
 - **Cat4**: DRS poly-A trimming removes the false N-op near the 3′ end; also
   the DRS-trimmed reads map to wrong genomic loci for two Cat4 reads
 - **Cat5**: DRS-trimmed `cat5_minus_1` (538 bp) is too short to span both introns
@@ -47,14 +51,14 @@ chunked sequences are required because:
 
 | Label | UUID | Dorado | DRS-trim | val_bam | seq source |
 |---|---|---:|---:|---:|---|
-| cat1_plus_1   | 9747f421 | 201  | 183  | 197  | chunked aligner (minimap2 merged) |
-| cat1_plus_2   | 0821dc9e | 306  | 301  | 306  | chunked aligner (minimap2 merged) |
-| cat1_minus_1  | 058438bb | 686  | 671  | 689  | chunked aligner (minimap2 merged) |
-| cat1_minus_2  | 4e5e6eee | 736  | 721  | 737  | chunked aligner (minimap2 merged) |
-| cat2_plus_1   | 6ad42e7a | 1133 | 1117 | 1133 | chunked aligner (minimap2 merged) |
-| cat2_plus_2   | 5bd31a5e | 1172 | 1158 | 1167 | chunked aligner (minimap2 merged) |
-| cat2_minus_1  | 8786c81f | 612  | 603  | 611  | chunked aligner (minimap2 merged) |
-| cat2_minus_2  | 9dbd37bf | 908  | 905  | 881  | chunked aligner (minimap2 merged) |
+| cat1_plus_1   | 0cb5a111 | n/a  | 167  | 167  | DRS minimap2 merged (trimmed) |
+| cat1_plus_2   | a146838d | n/a  | 426  | 426  | DRS minimap2 merged (trimmed) |
+| cat1_minus_1  | 77b392d9 | n/a  | 719  | 719  | DRS minimap2 merged (trimmed) |
+| cat1_minus_2  | 34ba198b | n/a  | 611  | 611  | DRS minimap2 merged (trimmed) |
+| cat2_plus_1   | 61b0c014 | n/a  | 374  | 374  | DRS minimap2 merged (trimmed) |
+| cat2_plus_2   | 88953e9c | n/a  | 761  | 761  | DRS minimap2 merged (trimmed) |
+| cat2_minus_1  | b313b50d | n/a  | 643  | 643  | DRS minimap2 merged (trimmed) |
+| cat2_minus_2  | 9dbd37bf | 908  | 905  | 905  | DRS minimap2 merged (trimmed) |
 | cat3_plus_1   | 0a28167d | 679  | 658  | 682  | chunked aligner (minimap2 merged) |
 | cat3_plus_2   | 79f61403 | 791  | 777  | 802  | chunked aligner (minimap2 merged) |
 | cat3_minus_1  | ac4db6da | 709  | 706  | 711  | chunked aligner (minimap2 merged) |
@@ -86,7 +90,10 @@ chunked sequences are required because:
 
 **Scripts:**
 - `dev_runs/wt_by4742_rep1_drs_trim_20260417/fix_validation_seqs_v3.2.3.py` — Apr 24 2026 targeted fix (cat5_minus_1 fill + cat6/7/9 seq+CIGAR update from DRS mapPacBio)
-- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams_v2.py` — rebuilds all 5 aligner BAMs to match `validation_reads.bam` sequences
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/replace_cat1_reads.py` — replaces 4 Cat1 reads with DRS minimap2 reads showing `indel_correction`
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/replace_cat2_reads.py` — replaces 3 Cat2 reads with DRS minimap2 reads showing `softclip_rescue`
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_from_committed.py` — rebuilds `validation_reads.bam` (Cat1/Cat2 from DRS run, Cat3–9 from committed git)
+- `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams.py` — rebuilds all 5 aligner BAMs consistently
 
 ---
 
@@ -96,12 +103,12 @@ Reads end in genomic A-tracts; the aligner's 3' boundary is shifted inward
 (plus: left; minus: right) by polya_walkback. All four reads confirmed to
 produce `corrected_3prime != original_3prime` after `rectify correct`.
 
-| Label | Coords (0-based half-open) | Strand | Shift |
-|---|---|---|---|
-| `cat1_plus_1` | chrVIII:508599–508794 | + | −4 bp |
-| `cat1_plus_2` | chrIX:22544–22850 | + | −3 bp |
-| `cat1_minus_1` | chrII:9855–10533 | − | +6 bp |
-| `cat1_minus_2` | chrII:9813–10539 | − | +4 bp |
+| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift |
+|---|---|---|---|---|---|
+| `cat1_plus_1` | 0cb5a111 | chrXIV:10435–10611 | + | 10610→10594 | −16 bp |
+| `cat1_plus_2` | a146838d | chrI:31118–31546   | + | 31545→31541 | −4 bp |
+| `cat1_minus_1` | 77b392d9 | chrII:9831–10558   | − | 9831→9834  | +3 bp |
+| `cat1_minus_2` | 34ba198b | chrXII:15348–15964 | − | 15348→15351 | +3 bp |
 
 ---
 
@@ -115,12 +122,12 @@ and matches the soft-clipped bases to the downstream reference sequence.
 The corrected position shifts **outward** (corrected > original for +,
 corrected < original for −).
 
-| Label | Coords (0-based half-open) | Strand | Shift | Homopolymer base | D op | M op |
-|---|---|---|---|---|---|---|
-| `cat2_plus_1`  | chrI:68707–69833   | + | +12 bp | T | 10 | GC (2 bp) |
-| `cat2_plus_2`  | chrI:198764–199921 | + | +9 bp  | T |  8 | G (1 bp)    |
-| `cat2_minus_1` | chrI:65622–66228   | − | −12 bp | T |  8 | ATAA (4 bp) |
-| `cat2_minus_2` | chrI:128113–129052 | − | −11 bp | T | 10 | A (1 bp)    |
+| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift | HP base | D op | M op |
+|---|---|---|---|---|---|---|---|---|
+| `cat2_plus_1`  | 61b0c014 | chrI:23362–23727   | + | 23726→23737 | +11 bp | T | 9 | TT (2 bp)    |
+| `cat2_plus_2`  | 88953e9c | chrVI:7832–8602    | + | 8601→8605   | +4 bp  | T | 1 | AGT (3 bp)   |
+| `cat2_minus_1` | b313b50d | chrV:195–829       | − | 195→187     | −8 bp  | T | 3 | CCTAG (5 bp) |
+| `cat2_minus_2` | 9dbd37bf | chrI:128112–129052 | − | 128112→128102 | −10 bp | T | 9 | A (1 bp)     |
 
 Note: "Shift" is outward (away from the gene body). For + strand reads
 `corrected_3prime = original_3prime + shift`; for − strand reads
@@ -413,14 +420,14 @@ expected for direct RNA-seq.
 
 | Label | UUID | Strand | Raw len | 5′ terminal 50 bp (RNA 5′→3′) | 3′ terminal 50 bp (RNA 5′→3′) |
 |---|---|---|---:|---|---|
-| `cat1_plus_1`  | 9747f421 | + | 201  | `CAATGGCACAAGAGAGGAAGACGAATTCAAAATGGATGGCATCGGGATTA` | `AGTAATAAATGATGAACGATTTCGTTACCTCGGTAAAAAAAAAAAAAAAA` |
-| `cat1_plus_2`  | 0821dc9e | + | 306  | `GAGACATGAAGCACCCCTTGTCTTTTTTGGAAGGGAGAAATTTGTAATAT` | `CATTTCATCCAAAAAAATAAAAAAAAAAAATCCAAATATTAAGCTAAATC` |
-| `cat1_minus_1` | 058438bb | − | 686  | `AGGCCTACGCTTACGGCACCCCAAAGCTTACTTGAAACAAATCTTACTTT` | `TATACTTATTATCGCCTTTCGTTTATCTGTATTTGTTAAAAAAAAAAAAA` |
-| `cat1_minus_2` | 4e5e6eee | − | 736  | `AGGCGTACGTTTACGGCACCCCAAAGCTTACTTGAAACAAATCTTACTTT` | `TATGCTCCAACTTGTGTAGTGAAAGAGATTTTTTGCTAAAAAAAAAAAAA` |
-| `cat2_plus_1`  | 6ad42e7a | + | 1133 | `TATATCATTTAAGGGGCGGAGGACGAAGAGGACGGACCCGAGATCATCCG` | `CGCTACCATACGTACAACTTTTTTTTTTTTTTTTGCAAAAAAAAAAAAAA` |
-| `cat2_plus_2`  | 5bd31a5e | + | 1172 | `GCAAAAATACTCACTTTCAGCTCGTACCGGCATTTTTATTATTTGTCAAA` | `GCTGGTCCCATTCGAAGAACCTTTTTTTTTTTTTTTTGAAAAAAAAAAAA` |
-| `cat2_minus_1` | 8786c81f | − | 612  | `AGACTATTTCTCGGATTCTCACTCATTTAAGAAGGTTGACCAAAGATAGC` | `CTAAATATACTTATATTACATTTGCATAGAATTACAAAATTATAAAAAAA` |
-| `cat2_minus_2` | 9dbd37bf | − | 908  | `ACGACAGCAAATAGATGCGTAAGCACACACGGTATGGATGTGTTGAAGCT` | `ATTCATCATATTTGTATCATATATTTTTATAGCACCAAAAATGCAATAAA` |
+| `cat1_plus_1`  | 0cb5a111 | + | 167  | `TATTTACAGTATGTATTTGTATGTTTATACATGCATAACGTAATAATGTG` | `TTTAAAGTTAAACTTTAGACTATGTCTAATAAAAATAAAAAAAAAAAAAT` |
+| `cat1_plus_2`  | a146838d | + | 426  | `ATACATATATATATATATATATATGGCTGCTGACAGATATTCTGCA` | `CACACACATATATATATATATAGGAAGTAGCTCAACAGTCACCGAAAAAG` |
+| `cat1_minus_1` | 77b392d9 | − | 719  | `ATTTTTTCACTACACAGTAACGTGTGTATATTTTTAACAAATACAGATAG` | `ATACTAAGGGTGCTGTGAACGTACGCCTATTATCCAACCATAGACCGTCT` |
+| `cat1_minus_2` | 34ba198b | − | 611  | `CCTTTCCTCTCCACTTGTATTTTCTAGAGGTTTCCACTATTTCATGAACT` | `TGGTCATGAGCAGAAGGATCTGGTACACGGTAGATAAAGCATATTTGAGT` |
+| `cat2_plus_1`  | 61b0c014 | + | 374  | `AATACTAGTGCAAAAGAATTCGAATAAATATAAAAGAACAAGGAGGATTA` | `TTCGAAGTGTTGTTTGCAGGATATAAATCAAAAAAAAAAAAAAATTAAAT` |
+| `cat2_plus_2`  | 88953e9c | + | 761  | `CAGAAGAAAACGCATACCGCAGCGGAATCCTTAAATAATAAGTGATTTTA` | `GCTATAACGTAAAACAATGTAGAATATATCTAATACCTCACGGTTTAGTG` |
+| `cat2_minus_1` | b313b50d | − | 643  | `CCTAGAAAAAATTTCTTACAATATACTATAACTACACAATACATAATGAT` | `TCGTCCCAGTTCAAAAAGTACTGCAGCACCTCTGTCTTCGATTCACGCAG` |
+| `cat2_minus_2` | 9dbd37bf | − | 905  | `ATTGCATTTTTGGTGCTATAAAAATATATGATACAAATATGATGAATCAT` | `AGCTTCAACACATCCATACCGTGTGTGCTTACGCATCTATTTGCTGTCGT` |
 | `cat3_plus_1`  | 0a28167d | + | 679  | `GAGGAAAAATGGCTAACTTGCGTACTCAAAAGAGACTTGCCGCTTCTGTT` | `TATATATGTTTTATTTCTCTAAAATGTACCAAATACAAAAAAAAAAAAAA` |
 | `cat3_plus_2`  | 79f61403 | + | 791  | `GGCTGACAAGTCATCATTGAAGGTACTGCTGTTTCTCAAGCTGACGTCAC` | `TATAAAGAATCGTGTTTATTAATTGAATTTATTCCGGGAAAAAAAAAAAA` |
 | `cat3_minus_1` | ac4db6da | − | 709  | `TTTAAGCAAAGAAAAATGGCTCATTTTAAAGAATACCAAGTCATTGGTCG` | `TGTCATGCCATGTATCTTTACAAAATCCAGGGTCCATAGCGGGTAACAAA` |

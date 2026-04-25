@@ -282,10 +282,10 @@ class TestBamIntegrity:
 class TestCategory1IndelCorrection:
     """Walk-back must shift the corrected 3' end away from the raw alignment boundary.
 
-    cat1_plus_1  chrVIII:508599–508794  +  A-tract walk-back (−4 bp)
-    cat1_plus_2  chrIX:22544–22850      +  A-tract walk-back (−3 bp)
-    cat1_minus_1 chrII:9855–10533       −  A-tract walk-back (+6 bp)
-    cat1_minus_2 chrII:9813–10539       −  A-tract walk-back (+4 bp)
+    cat1_plus_1  chrXIV:10435–10611  +  A-tract walk-back (−16 bp)
+    cat1_plus_2  chrI:31118–31546    +  A-tract walk-back (−4 bp)
+    cat1_minus_1 chrII:9831–10558    −  A-tract walk-back (+3 bp)
+    cat1_minus_2 chrXII:15348–15964  −  A-tract walk-back (+3 bp)
     """
 
     @pytest.mark.parametrize('label,strand', [
@@ -311,12 +311,12 @@ class TestCategory1IndelCorrection:
                 f'{label}: minus-strand correction should walk forward (corrected > original)'
 
     @pytest.mark.parametrize('label,expected_3prime', [
-        # Exact corrected_3prime values from rectify correct on wt_by4742_rep1 validation reads.
-        # polya_walkback + NET-seq refinement; values are deterministic.
-        ('cat1_plus_1',  508789),   # chrVIII walk-back −4 bp from raw 508793
-        ('cat1_plus_2',  22846),    # chrIX walk-back −3 bp from raw 22849; homopolymer_rescue
-        ('cat1_minus_1', 9861),     # chrII walk-forward +6 bp from raw 9855
-        ('cat1_minus_2', 9817),     # chrII walk-forward +4 bp from raw 9813
+        # Exact corrected_3prime values from rectify correct on wt_by4742_rep1 DRS validation reads.
+        # atract_ambiguity + indel_correction + polya_walkback; values are deterministic.
+        ('cat1_plus_1',  10594),    # chrXIV walk-back −16 bp from raw 10610
+        ('cat1_plus_2',  31541),    # chrI walk-back −4 bp from raw 31545
+        ('cat1_minus_1', 9834),     # chrII walk-forward +3 bp from raw 9831
+        ('cat1_minus_2', 15351),    # chrXII walk-forward +3 bp from raw 15348
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]
@@ -332,6 +332,11 @@ class TestCategory2SoftClipRescue:
     """
     Corrected position should shift OUTWARD (away from gene body) by ≥1 bp.
     Plus strand: corrected > original.  Minus strand: corrected < original.
+
+    cat2_plus_1  (61b0c014) chrI+   23726→23737  softclip_rescue +11 bp
+    cat2_plus_2  (88953e9c) chrVI+   8601→8605   softclip_rescue +4 bp
+    cat2_minus_1 (b313b50d) chrV-     195→187    softclip_rescue -8 bp
+    cat2_minus_2 (9dbd37bf) chrI-  128112→128102 softclip_rescue -10 bp
     """
 
     @pytest.mark.parametrize('label,strand', [
@@ -357,12 +362,12 @@ class TestCategory2SoftClipRescue:
                 f'{label}: minus-strand soft-clip rescue should shift outward (corrected < original)'
 
     @pytest.mark.parametrize('label,expected_3prime', [
-        # Exact corrected_3prime values from soft-clip rescue on wt_by4742_rep1 validation reads.
-        # rescue_softclip_at_homopolymer then terminal-A strip; values are deterministic.
-        ('cat2_plus_1',  69844),    # chrI +12 bp rescue; T-homopolymer 10D + 2M(GC)
-        ('cat2_plus_2',  199929),   # chrI +9 bp rescue; T-homopolymer 8D + 1M(G) strip 1A
-        ('cat2_minus_1', 65610),    # chrI −12 bp rescue; T-homopolymer 8D + 4M(ATAA)
-        ('cat2_minus_2', 128102),   # chrI −11 bp rescue; T-homopolymer 10D + 1M(A) strip 1T
+        # Exact corrected_3prime values from soft-clip rescue on wt_by4742_rep1 DRS reads.
+        # rescue_softclip_at_homopolymer; values are deterministic.
+        ('cat2_plus_1',  23737),    # chrI +11 bp rescue (61b0c014)
+        ('cat2_plus_2',  8605),     # chrVI +4 bp rescue (88953e9c)
+        ('cat2_minus_1', 187),      # chrV -8 bp rescue (b313b50d)
+        ('cat2_minus_2', 128102),   # chrI -10 bp rescue (9dbd37bf)
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]

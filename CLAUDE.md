@@ -555,6 +555,13 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 
 - **Impact**: all 146 tests pass with both default and empirical penalty table (`penalty_scores.tsv`); all 4 cat9 reads correctly refined with `--junction-penalty-table`.
 
+**v3.2.5 (2026-04-24):** Validation Cat1/Cat2 reads replaced with DRS-trimmed examples showing actual correction artifacts:
+- **Cat1** (4 reads): replaced old chunked-pipeline reads (9747f421/0821dc9e/058438bb/4e5e6eee, chrVIII/chrIX) with DRS minimap2 reads (0cb5a111/a146838d/77b392d9/34ba198b, chrXIV/chrI/chrII/chrXII) that genuinely show `atract_ambiguity,indel_correction,polya_walkback`. Shifts: −16, −4, +3, +3 bp.
+- **Cat2** (3 reads replaced, 9dbd37bf kept): replaced old chunked reads (6ad42e7a/5bd31a5e/8786c81f, chrI) with DRS minimap2 reads (61b0c014/88953e9c/b313b50d, chrI/chrVI/chrV) that genuinely show `softclip_rescue`. Shifts: +11, +4, −8 bp; sc_rescued_seq: TT/AGT/CCTAG.
+- **Rebuild method**: `replace_cat1_reads.py` + `replace_cat2_reads.py` sourced from `wt_by4742_rep1_drs_trim_20260417` merged BAMs. In-place pysam BAM rebuild corrupted Cat4/Cat6/Cat7/Cat9 reads (N ops lost, CIGARs changed). Fixed by `rebuild_from_committed.py` which merged Cat1/Cat2 from working tree with Cat3–9 from `git HEAD`. Same fix applied to all 5 aligner BAMs via `rebuild_aligner_bams.py`. See CAUTION below.
+- **CAUTION — in-place pysam rebuild**: The `read→.tmp→pysam.sort→overwrite` pattern silently converts `=`/`X` CIGAR ops to `M` and repositions reads when the source BAM uses mixed CIGAR op styles. Always verify N-ops and read IDs for ALL categories after any BAM rebuild, not just the target category.
+- Test updates: Cat1 expected positions changed (chrVIII/chrIX→chrXIV/chrI/chrII/chrXII); Cat2 expected positions changed (chrI→chrI/chrVI/chrV). All 708 tests pass.
+
 **v3.2.3 (2026-04-24):** Validation read sequences synced to DRS-trimmed run for Cat5-9:
 - **Root cause (v3.1.8 partial update)**: `update_validation_drs.py`'s "update in place" path updated CIGAR/N-op boundaries from the DRS-trimmed mapPacBio run but left read *sequences* from the old chunked-consensus BAM. This caused visual discrepancies in IGV between `rectified_corrected_3end.bam` (corrected from chunked sequences) and `validation_reads.mapPacBio.bam` (aligner BAM with DRS sequences). cat5_minus_1 retained `SEQ='*'` from the gapmm2 PAF issue (fix was never committed).
 - **Fix**: targeted 9-read update preserving all XV/XG/XU tags and MD/cs/NM stripped:

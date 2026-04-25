@@ -116,33 +116,42 @@ Nanopore basecallers systematically under-call homopolymer runs. At cleavage and
 
 This correction is especially critical for detecting true 3' ends in regions where weak basecalling and homopolymer under-calling create false soft-clip boundaries.
 
-### 4. Multi-Aligner Rectification: Selecting the Optimal Junction Set
+### 4. Multi-Aligner Consensus: Selecting the Best Alignment Before Correction
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY solves this in three stages:
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs all three aligners in parallel, scores each aligner's output per read using lightweight pre-correction signals, selects the best aligner per read, and then runs `rectify correct` **once** on the resulting consensus BAM. Selecting the best alignment *before* correction reduces the work that junction refinement and 5' rescue need to do — a well-placed alignment requires fewer interventions.
 
-**Stage 1 — Per-aligner rectification:** `rectify correct` is applied independently to each aligner's BAM (minimap2, mapPacBio, gapmm2). Every correction module (3' walk-back, 5' junction rescue, soft-clip rescue, false-junction filter) runs on each aligner's output, producing a separate corrected TSV per aligner.
+**Pre-consensus scoring** (`rectify align` / `rectify consensus`) evaluates each aligner's raw BAM record using four signals, computed without MD tags using genome sequence alone:
 
-**Stage 2 — Consensus selection:** The per-aligner corrected TSVs are merged by `rectify consensus`, which selects the winning aligner per read using post-rectification features (in priority order): (1) `five_prime_rescued` — prefer the aligner where Cat3 5' rescue fired; (2) `confidence` — high > medium > low; (3) corrected_3′ agreement — prefer positions agreed on by most aligners; (4) alignment span — prefer wider reference span; (5) `n_junctions` — prefer more completely spliced.
+| Signal | Penalty | Purpose |
+|--------|---------|---------|
+| Effective 5' clip (unrescued) | −2 per base | Penalises aligners that soft-clip upstream exon bases; waived if the clip sequence matches the upstream exon end (sequence-based rescue) |
+| A-tract depth | −1 per downstream A (capped 10) | Prefers aligners that land closest to the true CPA site |
+| Non-poly(A) 3' terminal errors | −2 per base (capped 10) | Penalises aligners that stop before the true 3' end |
+| Junction-proximity errors | −1 per mismatch/indel within 5 bp of each splice site (capped 10) | Favours aligners that produce clean junction boundaries (e.g. mapPacBio) |
 
-**Stage 3 — Chimeric reconstruction:** For reads where two or more aligners each uniquely contribute a junction not present in the other's corrected output, `rectify consensus` can optionally stitch the complementary junctions into a single chimeric alignment — recovering reads that no single aligner handles completely.
+The 5' clip rescue used here is a lightweight single-pass check (sequence within edit threshold of upstream exon); the full multi-junction, shift-aware rescue in `splice_aware_5prime.py` runs later in `rectify correct`. The A-tract pre-correction likewise uses a genome-only estimate; the full MD-tag-dependent indel walk-back runs in `rectify correct`.
+
+**Tiebreakers** (in order): highest junction score → most canonical GT-AG junctions → most annotated junction matches → majority 3' position vote across aligners → wider reference span.
+
+**Chimeric reconstruction:** With `--chimeric-consensus`, reads where two aligners each uniquely contribute a junction not present in the other are stitched into a single chimeric alignment at "sync points" where all aligners agree.
 
 <p align="center">
-  <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Rectification Pipeline" width="680">
+  <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-Aligner Consensus Pipeline" width="680">
 </p>
 
 ```bash
-# Align and rectify with all three aligners (default, DRS-optimized)
+# Align with all three aligners, score and select per read → consensus BAM
 rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned_dir/
 
-# Merge per-aligner corrected TSVs into a single consensus result
-rectify consensus minimap2:aligned_dir/minimap2/corrected_3ends.tsv \
-                  mapPacBio:aligned_dir/mapPacBio/corrected_3ends.tsv \
-                  gapmm2:aligned_dir/gapmm2/corrected_3ends.tsv \
-                  -o corrected_3ends.tsv
+# Correct the consensus BAM (junction refinement, 5' rescue, walk-back, etc.)
+rectify correct aligned_dir/consensus.bam --genome genome.fa --annotation genes.gff \
+    -o corrected_3ends.tsv
 
-# Single-aligner mode (faster, less accurate)
-rectify align reads.fastq.gz --genome genome.fa --aligner minimap2 -o aligned.bam
+# Or run the full pipeline end-to-end
+rectify run-all reads.fastq.gz --genome genome.fa --annotation genes.gff -o results/
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a detailed description of the pre-consensus scoring pipeline and the full module sequence inside `rectify correct`.
 
 ---
 

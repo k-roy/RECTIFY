@@ -859,7 +859,10 @@ def rescue_3ss_truncation(
                     if align_5prime <= intron_start:
                         continue  # alignment is upstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
-                elif dist > junction_proximity_bp:
+                elif dist > junction_proximity_bp + five_clip:
+                    # Soft-clip bases extend the read toward the junction; only
+                    # filter out junctions that are farther than proximity_bp
+                    # even accounting for the unaligned clip length.
                     continue
                 # Dynamic shift range from run-length at the annotated donor:
                 #   r_amb = consecutive intron bases (going right) equal to last exon base
@@ -889,7 +892,26 @@ def rescue_3ss_truncation(
                 _acc_di = genome_seq[intron_end - 2:intron_end].upper() if intron_end >= 2 else 'NN'
                 _acceptor_priority = _ACCEPTOR_PRIORITY_PLUS.get(_acc_di, 4)
 
-                _best_local_ed: float = rescue_len + 1
+                # When the alignment's 5' end is inside the intron (dist==0 and
+                # align_5prime < intron_end), only query bases mapped to intron
+                # positions are candidates for exon-1 sequence.  Bases mapped to
+                # exon-2 positions (>= intron_end) are NOT exon-1 sequence and must
+                # not participate in candidate scoring — they inflate edit distance
+                # against wrong windows and can cause false rescues to shifted donors.
+                # Upper bound: intron_end - align_5prime reference positions (1 query
+                # base per non-deletion ref base, so this slightly over-counts in the
+                # presence of deletions, which is safe).
+                if dist == 0 and align_5prime < intron_end:
+                    _n_intr = intron_end - align_5prime
+                    _rseq = rescue_seq[:_n_intr] if _n_intr < rescue_len else rescue_seq
+                    _rlen = len(_rseq)
+                else:
+                    _rseq = rescue_seq
+                    _rlen = rescue_len
+                if not _rseq:
+                    continue
+
+                _best_local_ed: float = _rlen + 1
                 _best_local_canonical = False
                 _best_in_amb = False
                 _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
@@ -911,13 +933,13 @@ def rescue_3ss_truncation(
                     # needed to back the window up to where the read body actually starts.
                     _off_limit = min(junction_proximity_bp, dist) if dist > 0 else junction_proximity_bp
                     for _off in range(_off_limit + 1):
-                        _es = _eff_start - rescue_len - _off
+                        _es = _eff_start - _rlen - _off
                         if _es < 0:
                             continue
                         _cand = genome_seq[_es:_eff_start - _off].upper()
-                        if len(_cand) < rescue_len:
+                        if len(_cand) < _rlen:
                             continue
-                        _ed = _hp_edit_distance(rescue_seq.upper(), _cand)
+                        _ed = _hp_edit_distance(_rseq.upper(), _cand)
                         _shift_abs = abs(_shift)
                         # Two-phase scoring (lower tuple = better):
                         #   Phase 1 — discovery: minimise edit distance across wide range
@@ -947,7 +969,10 @@ def rescue_3ss_truncation(
                     if align_5prime >= intron_end:
                         continue  # alignment is downstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
-                elif dist > junction_proximity_bp:
+                elif dist > junction_proximity_bp + five_clip:
+                    # Soft-clip bases extend the read toward the junction; only
+                    # filter out junctions that are farther than proximity_bp
+                    # even accounting for the unaligned clip length.
                     continue
                 # Dynamic shift range for the minus-strand 5'SS boundary at intron_end:
                 #   r_amb = consecutive exon bases (right of intron_end) equal to last intron base
@@ -976,7 +1001,24 @@ def rescue_3ss_truncation(
                 _acc_di = genome_seq[intron_start:intron_start + 2].upper() if intron_start + 2 <= _gs else 'NN'
                 _acceptor_priority = _ACCEPTOR_PRIORITY_MINUS.get(_acc_di, 4)
 
-                _best_local_ed: float = rescue_len + 1
+                # Symmetric guard for minus strand: when align_5prime is inside the
+                # intron (dist==0 and align_5prime > intron_start), only query bases
+                # mapped to intron positions (< align_5prime in genomic coords, i.e.
+                # > intron_start) are candidates for exon-1 sequence.  The right end
+                # of the rescue_seq (minus strand 5' = rightmost query bases) may
+                # extend into exon-2 territory (positions <= intron_start); those
+                # bases must not participate in candidate scoring.
+                if dist == 0 and align_5prime > intron_start:
+                    _n_intr = align_5prime - intron_start
+                    _rseq = rescue_seq[-_n_intr:] if _n_intr < rescue_len else rescue_seq
+                    _rlen = len(_rseq)
+                else:
+                    _rseq = rescue_seq
+                    _rlen = rescue_len
+                if not _rseq:
+                    continue
+
+                _best_local_ed: float = _rlen + 1
                 _best_local_canonical = False
                 _best_in_amb = False
                 _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
@@ -995,10 +1037,10 @@ def rescue_3ss_truncation(
                     _off_limit = min(junction_proximity_bp, dist) if dist > 0 else junction_proximity_bp
                     for _off in range(_off_limit + 1):
                         _cs = _eff_end + _off
-                        _cand = genome_seq[_cs:_cs + rescue_len].upper()
-                        if len(_cand) < rescue_len:
+                        _cand = genome_seq[_cs:_cs + _rlen].upper()
+                        if len(_cand) < _rlen:
                             continue
-                        _ed = _hp_edit_distance(rescue_seq.upper(), _cand)
+                        _ed = _hp_edit_distance(_rseq.upper(), _cand)
                         _shift_abs = abs(_shift)
                         _cur  = (not _donor_ok, not _in_amb, _shift_abs)
                         _best = (not _best_local_canonical, not _best_in_amb,
@@ -1015,30 +1057,30 @@ def rescue_3ss_truncation(
                 if not exon_seq:
                     continue
 
-            if len(exon_seq) < rescue_len:
+            if len(exon_seq) < _rlen:
                 continue
 
-            ed_exon = _hp_edit_distance(rescue_seq.upper(), exon_seq)
+            ed_exon = _hp_edit_distance(_rseq.upper(), exon_seq)
             # Compare against intronic sequence to avoid rescuing reads that match
             # the intron equally well.  Nanopore homopolymer undercalling means a
             # fixed edit-distance threshold is too strict; instead we rescue when
             # the exon match is ≥30% better than the intron match.
             if strand == '+':
-                # Intronic sequence: the last rescue_len bases before the 3'SS
+                # Intronic sequence: the last _rlen bases before the 3'SS
                 # (i.e. just inside the intron from the splice-acceptor site)
-                _ic_start = intron_end - rescue_len
+                _ic_start = intron_end - _rlen
                 intron_cmp_seq = genome_seq[max(0, _ic_start):intron_end].upper()
             else:
-                # Intronic sequence: the first rescue_len bases after the 3'SS
-                intron_cmp_seq = genome_seq[intron_start:intron_start + rescue_len].upper()
-            if len(intron_cmp_seq) == rescue_len:
-                ed_intron = _hp_edit_distance(rescue_seq.upper(), intron_cmp_seq)
+                # Intronic sequence: the first _rlen bases after the 3'SS
+                intron_cmp_seq = genome_seq[intron_start:intron_start + _rlen].upper()
+            if len(intron_cmp_seq) == _rlen:
+                ed_intron = _hp_edit_distance(_rseq.upper(), intron_cmp_seq)
                 # Rescue if: perfect exon match, OR exon edit-dist is ≥30% better
                 # than intron edit-dist (comparative threshold, not absolute)
                 rescue_ok = (ed_exon == 0) or (ed_intron > 0 and ed_exon < ed_intron * 0.70)
             else:
                 # Near chromosome boundary — fall back to absolute threshold
-                rescue_ok = (ed_exon / rescue_len <= max_edit_frac)
+                rescue_ok = (ed_exon / _rlen <= max_edit_frac)
             if rescue_ok:
                 # Full tiebreaking tuple (lower = better):
                 #   1. edit distance (hp-aware, float)

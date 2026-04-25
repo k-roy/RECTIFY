@@ -5,14 +5,14 @@ reads_secondary	0	0.00	Secondary alignments (skipped)
 reads_supplementary	0	0.00	Supplementary alignments (skipped)
 spikein_reads_filtered	0	0.00	Spike-in reads filtered
 reads_processed	36	100.00	Reads with 3' ends corrected
-ends_with_downstream_A	30	83.33	3' ends with >=1 A in downstream 10bp window
+ends_with_downstream_A	31	86.11	3' ends with >=1 A in downstream 10bp window
 ends_ambiguous_atract	16	44.44	3' ends in A-tract (ambiguity range > 0)
-ends_corrected_indel	4	11.11	3' ends corrected for indel artifacts
+ends_corrected_indel	9	25.00	3' ends corrected for indel artifacts
 ends_shifted_atract_walking	17	47.22	3' ends shifted by A-tract walking
 ends_refined_netseq	0	0.00	3' ends refined by NET-seq
 total_position_shifts	4	11.11	Total 3' ends with position changed
-reads_with_polya	19	52.78	Reads with detected poly(A) tail
-polya_length_mean	4.4	-	Mean poly(A) tail length (bp)
+reads_with_polya	17	47.22	Reads with detected poly(A) tail
+polya_length_mean	3.1	-	Mean poly(A) tail length (bp)
 polya_length_max	25	-	Maximum poly(A) tail length (bp)
 ends_flagged_ag_mispriming	0	0.00	3' ends flagged for AG mispriming
 confidence_high	32	88.89	High confidence assignments
