@@ -1,165 +1,566 @@
 # RECTIFY Architecture
 
-This document describes the full processing pipeline from raw DRS BAM to
-corrected 3' and 5' end coordinates, with emphasis on the pre-consensus
-scoring pass and the correction modules in `rectify correct`.
+## What is this document?
+
+This is a narrative architecture guide for developers, collaborators, and
+automated agents. It covers the pipeline design, module responsibilities,
+and data flow at a level deeper than the README but focused on the "why" —
+not a function-by-function reference.
+
+For auto-generated API reference (every public function, parameter, and
+return type), see the ReadTheDocs site built from docstrings:
+[rectify-rna.readthedocs.io](https://rectify-rna.readthedocs.io).
+RTD answers *what does this function do?* — this document answers
+*how do the modules fit together?*
 
 ---
 
-## End-to-End Pipeline
+## Pipeline overview
+
+RECTIFY corrects systematic errors in poly(A)-tailed RNA-seq data (nanopore
+Direct RNA-seq, QuantSeq, Helicos, PacBio Iso-Seq) and then performs
+differential 3' end usage analysis across conditions.
 
 ```
-Dorado BAM (DRS)
-      │
-      ▼  rectify trim-polya  (Step 0 — DRS only)
-      │  ┌──────────────────────────────────────────────┐
-      │  │ Three-pass poly(A) + adapter removal          │
-      │  │ Output: unaligned BAM  +  metadata.parquet   │
-      │  └──────────────────────────────────────────────┘
-      │
-      ▼  samtools fastq  →  trimmed.fastq.gz
-      │
-      ▼  rectify align  (Step 1)
-      │  ┌──────────────────────────────────────────────┐
-      │  │ Phase 1: mapPacBio alone (all threads)        │
-      │  │ Phase 2: minimap2 + gapmm2 in parallel        │
-      │  │                                               │
-      │  │ Per aligner BAM → extract AlignmentInfo:      │
-      │  │   • effective 5' clip  (MD-free, genome-only) │
-      │  │   • 5' clip rescue     (single-pass, scoring) │
-      │  │   • A-tract 3' depth   (genome-only estimate) │
-      │  │   • 3' terminal errors (non-poly-A clip)      │
-      │  │   • junction-proximity errors                 │
-      │  │                                               │
-      │  │ Composite score → select best aligner per read│
-      │  │ Tiebreakers: canonical GT-AG → annotated →   │
-      │  │              majority 3' vote → wider span    │
-      │  │                                               │
-      │  │ Output: consensus.bam  (winning aligner BAM   │
-      │  │         record + MD tags via samtools calmd)  │
-      │  └──────────────────────────────────────────────┘
-      │
-      ▼  rectify correct  (Step 2)
-      │  ┌──────────────────────────────────────────────┐
-      │  │  Per-read correction modules (in order):      │
-      │  │                                               │
-      │  │  Module 2H — N-op junction refinement         │
-      │  │  Module 2G — 3' soft-clip HP rescue           │
-      │  │  Module 2E — A-tract ambiguity (walk-back)    │
-      │  │  Module 2B — Poly(A) trimming                 │
-      │  │  Module 2C — Indel artifact correction        │
-      │  │  Module 2F — 5' junction rescue (Cat3/Cat4)   │
-      │  │  Module FJF — False junction filter           │
-      │  │  Module AG  — AG-mispriming (dT-cDNA only)    │
-      │  │  Module NET — NET-seq refinement (optional)   │
-      │  │                                               │
-      │  │  Output: corrected_3ends.tsv                  │
-      │  │          rectified_corrected_3end.bam         │
-      │  │          rectified_pA_tail_trimmed.bam        │
-      │  └──────────────────────────────────────────────┘
-      │
-      ▼  rectify restore-softclip  (Step 3 — DRS only)
-         ┌──────────────────────────────────────────────┐
-         │ Re-attaches trimmed poly(A) tail as soft-clip │
-         │ using per-read tail lengths from metadata.parquet│
-         │ Output: rectified_pA_tail_soft_clipped.bam   │
-         └──────────────────────────────────────────────┘
+Dorado-aligned BAM (with pt:i: tags)
+    │
+    ▼
+[Step 0: DRS Poly(A) Pre-Trim]     rectify trim-polya
+    │   Scans each read in RNA 5'→3' orientation:
+    │     Pass 0: strip adapter stub via regex T[CT]{0,10}$ at 3' end
+    │     Pass 1: scan pure-A tail upstream (default: strict mode, 0% error rate)
+    │     Pass 2: iterative peel for stubs with A-basecalling errors at boundary
+    │   Reads with polya_len=0 are passed through unchanged (not in metadata).
+    │   Metadata columns: read_id, strand, polya_len, adapter_seq,
+    │     adapter_pass (0/1/2), pt_tag, trimmed_3prime_seq, seq lengths
+    ▼
+    <sample>.bam  (unaligned, RNA-oriented, poly(A)+adapter removed)
+    <sample>_polya_trim_metadata.parquet
+    │
+    │  samtools fastq → <sample>_trimmed.fastq.gz
+    │
+    ▼
+[Step 1: Alignment]        multi-aligner rectification pipeline
+    │                      Tier 1 (default): minimap2 + mapPacBio + gapmm2
+    │                      Tier 2 (opt-in):  + deSALT, + uLTRA
+    │
+    │  Phase 1: mapPacBio alone (all threads)
+    │  Phase 2: minimap2 + gapmm2 in parallel
+    │
+    │  Per aligner BAM → extract AlignmentInfo:
+    │    • effective 5' clip  (MD-free, genome-only)
+    │    • 5' clip rescue     (single-pass, scoring only — no position change)
+    │    • A-tract 3' depth   (genome-only estimate)
+    │    • 3' terminal errors (non-poly-A clip)
+    │    • junction-proximity errors
+    │
+    │  Composite score → select best aligner per read
+    │  Tiebreakers: canonical GT-AG → annotated →
+    │               majority 3' vote → wider span
+    ▼
+    <sample>.<aligner>.bam  (one per aligner, name-sorted)
+    │
+    ▼
+[Step 2: Consensus]        per-read aligner selection    rectify consensus
+    │                      Score each aligner's alignment:
+    │                        junction quality, 3' poly(A) penalty,
+    │                        5' terminal error penalty, annotated junction bonus
+    │                      Winner written to consensus BAM with tags:
+    │                        XA = winning aligner name
+    │                        XC = confidence (high/medium/low)
+    │                        XN = number of aligners in agreement
+    ▼
+    <sample>.consensus.bam
+    │
+    ▼
+[Step 3: Correction]       per-read 3' and 5' end correction    rectify correct
+    │                      ① A-tract ambiguity detection (universal)
+    │                      ② AG mispriming screen (oligo-dT only)
+    │                      ③ Poly(A) tail trimming (if sequenced)
+    │                      ④ Indel artifact correction
+    │                      ⑤ False junction filtering (poly(A)-artifact N-ops)
+    │                      ⑥ 5' soft-clip junction rescue
+    │                      ⑦ N-op junction refinement (Module 2H)
+    │                      ⑧ NET-seq refinement (optional, resolves ambiguous windows)
+    │                      ⑨ Spike-in read filtering
+    │   Output BAMs (written via --write-corrected-bam / --write-softclipped-bam):
+    │     rectified_corrected_3end.bam  — poly(A) region hard-clipped at corrected_3prime
+    │     rectified_pA_tail_trimmed.bam  — poly(A) region soft-clipped (bases retained)
+    │   cp:i: tag on every output read = corrected 3' end (0-based, inclusive)
+    ▼
+    corrected_3ends.tsv           per-read corrected positions; each row is one read
+                                  columns include: chrom, strand, original_3prime,
+                                  corrected_3prime, five_prime_position, polya_length,
+                                  junctions_str, n_junctions, confidence, …
+    corrected_3ends_index.bed.gz  position-count summary: one row per unique
+                                  (chrom, corrected_3prime, strand) with read count.
+                                  ~300× smaller than the per-read TSV; used by
+                                  manifest-mode analysis to skip re-reading every read.
+    <sample>.stats.tsv            per-sample QC report (reads processed, corrections
+                                  applied per module, confidence distribution)
+    │
+    ▼
+[Step 4 (DRS only): Restore Softclip]  re-attach trimmed poly(A)+adapter    rectify restore-softclip
+    │   For each read present in the trim metadata (Step 0):
+    │     + strand: append trimmed_3prime_seq to right of query; extend trailing S op
+    │     − strand: prepend RC(trimmed_3prime_seq) to left of query; extend leading S op
+    │   reference_start is unchanged (left S ops do not consume reference).
+    │   Reads absent from metadata (polya_len=0) are written unchanged.
+    ▼
+    rectified_pA_tail_soft_clipped.bam  — softclip BAM with full poly(A) tail restored
+                                      for IGV visualization of tail length and position
+    │
+    ▼
+[Step 5: Analysis]         multi-sample downstream analysis
+    │                      ① CPA site clustering
+    │                      ② Gene attribution (which gene owns each cluster?)
+    │                      ③ DESeq2 differential usage (multi-sample only):
+    │                           — cluster level: per-CPA-site read counts
+    │                           — gene level: summed CPA counts across all clusters
+    │                           each produces deseq2_{clusters,genes}_{condition}.tsv
+    │                      ④ 3' UTR shift analysis: gene-level weighted-mean CPA
+    │                           position shift in bp between conditions — detects
+    │                           global 3' UTR lengthening/shortening per gene
+    │                      ⑤ APA isoform detection: read-level grouping by
+    │                           (gene, junction signature, 3' cluster) to identify
+    │                           distinct isoforms and proximal:distal usage ratios
+    │                      ⑥ De novo motif discovery: STREME/MEME on sequences
+    │                           around DESeq2-enriched (padj<0.05, log2FC>1) and
+    │                           -depleted (log2FC<-1) CPA clusters — identifies
+    │                           differential poly(A) signal or downstream elements
+    │                      ⑦ GO enrichment: Fisher's exact test on genes with
+    │                           significantly increased or decreased CPA cluster
+    │                           usage (padj<0.05, |log2FC|>1 at gene level)
+    │                      ⑧ Genomic region distribution (three analyses):
+    │                           — 3' end distribution: classify corrected 3' end
+    │                             positions by feature (3'UTR > snoRNA > CUT >
+    │                             SUT/XUT > 5'UTR/CDS > antisense > intergenic)
+    │                           — 5' end distribution: classify corrected 5' end
+    │                             positions by the same feature hierarchy
+    │                           — Transcript body distribution: classify each read
+    │                             by the biotype of the feature its full alignment
+    │                             span (alignment_start → alignment_end) overlaps most
+    ▼
+    cpa_clusters.tsv
+    deseq2_genes_{condition}.tsv
+    deseq2_clusters_{condition}.tsv
+    shift_analysis_{condition}.tsv
+    go_enrichment_{up,down}_{condition}.tsv
+    plots/
+```
+
+Steps 0–5 cover the full DRS pipeline. Steps 0–5 can be run end-to-end
+via `rectify run-all`. For DRS data, Step 0 (`trim-polya`) should be run
+first on the Dorado-aligned BAM, then Step 4 (`restore-softclip`) applied
+after correction to re-attach the trimmed poly(A) to the softclip BAM. Each
+step can also be invoked independently through its own subcommand.
+
+---
+
+## CLI subcommand dispatch
+
+Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
+`create_*_parser()` → dispatches to the corresponding `*_command.py`.
+
+| Subcommand | Module | Purpose |
+|---|---|---|
+| `trim-polya` | `core/drs_trim_command.py` | **Step 0 (DRS only)** — trim poly(A) tail + adapter from Dorado-aligned BAM; writes unaligned BAM + metadata parquet |
+| `align` | `core/align_command.py` | **Step 1** — multi-aligner alignment from FASTQ |
+| `consensus` | `core/consensus_command.py` | **Step 2** — per-read aligner selection from pre-built per-aligner BAMs; writes XA/XC/XN tags |
+| `correct` | `core/correct_command.py` | **Step 3** — 3' end correction; writes cp:i: tag on every output read |
+| `restore-softclip` | `core/restore_polya_command.py` | **Step 4 (DRS only)** — re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization |
+| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 0–5) |
+| `analyze` | `core/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
+| `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
+| `train-polya` | `core/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
+| `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
+| `export` | `core/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
+| `extract` | `core/extract_command.py` | Extract per-read info from BAM to TSV |
+| `netseq` | `core/netseq_command.py` | Process NET-seq BAM files with deconvolution |
+| `aggregate` | `core/aggregate_command.py` | Aggregate reads into CPA / TSS / junction datasets |
+
+> **Note on `train-polya`:** Run once per sequencing technology/chemistry to
+> fit A-richness thresholds. Operates on reads mapping to control sites that
+> have zero downstream genomic A's — any A-rich soft-clipped sequence at such
+> sites must be a genuine poly(A) tail, not a genomic artifact. Outputs a JSON
+> model loaded by `rectify correct --polya-model`. Bundled models for common
+> platforms are included; re-run only when adapting to a new chemistry.
+
+> **Note on `validate`:** Optional post-correction QC. Compares corrected 3'
+> end positions against NET-seq bigWig files or a known-CPA-positions TSV and
+> reports accuracy improvement over raw positions. Used during development and
+> benchmarking; not needed for routine production runs.
+
+---
+
+## Module call graph
+
+The diagrams below show which modules are orchestrators (call others) and which are
+leaf implementations. Rendered natively on GitHub; paste into
+[mermaid.live](https://mermaid.live) to preview locally.
+
+### CLI dispatch and pipeline orchestration
+
+```mermaid
+flowchart TD
+    CLI["<b>cli.py</b><br/><i>entry point</i>"]
+
+    subgraph orchestrators["Orchestrators"]
+        RC["run_command.py<br/><i>rectify run-all</i>"]
+        BC["batch_command.py<br/><i>rectify batch</i>"]
+    end
+
+    subgraph commands["Step Commands"]
+        TC["drs_trim_command.py<br/><i>rectify trim-polya</i>"]
+        AL["align_command.py<br/><i>rectify align</i>"]
+        CC["correct_command.py<br/><i>rectify correct</i>"]
+        RSC["restore_polya_command.py<br/><i>rectify restore-softclip</i>"]
+        AC["analyze_command.py<br/><i>rectify analyze</i>"]
+    end
+
+    subgraph utilities["Other Subcommands"]
+        EX["export_command.py<br/>extract_command.py<br/>aggregate_command.py<br/>netseq_command.py<br/>validate_command.py<br/>train_polya_command.py"]
+    end
+
+    CLI --> orchestrators
+    CLI --> commands
+    CLI --> utilities
+
+    RC -->|"Step 0 (--drs BAM)"| TC
+    RC -->|"Step 1"| AL
+    RC -->|"Step 2"| CC
+    RC -->|"Step 3"| AC
+    RC -->|"Step 4 (--drs)"| RSC
+
+    BC -->|"per-sample parallel"| CC
+```
+
+### Correction engine and analysis internals
+
+```mermaid
+flowchart TD
+    CC["correct_command.py"] --> BP["<b>bam_processor.py</b><br/><i>correction hub</i>"]
+
+    BP --> MOD1["atract_detector.py<br/><i>① A-tract ambiguity</i>"]
+    BP --> MOD2["ag_mispriming.py<br/><i>② AG mispriming<br/>oligo-dT only</i>"]
+    BP --> MOD3["polya_trimmer.py<br/><i>③ poly(A) trimming</i>"]
+    BP --> MOD4["indel_corrector.py<br/><i>④ indel correction<br/>⑦ soft-clip rescue</i>"]
+    BP --> MOD5["false_junction_filter.py<br/><i>⑤ false junction filter</i>"]
+    BP --> MOD6["splice_aware_5prime.py<br/><i>⑥ 5' junction rescue</i>"]
+    BP --> MOD7["junction_refiner.py<br/><i>⑦ N-op junction refinement<br/>(Module 2H)</i>"]
+    BP --> MOD8["netseq_refiner.py<br/><i>⑧ NET-seq refinement</i>"]
+    BP --> MOD9["spikein_filter.py<br/><i>⑨ spike-in filter</i>"]
+    BP --> BW["bam_writer.py<br/><i>BAM / bedgraph output</i>"]
+
+    subgraph alignment["align_command.py internals"]
+        MA["multi_aligner.py<br/><i>minimap2 · mapPacBio<br/>gapmm2 · deSALT · uLTRA</i>"]
+        CS["consensus.py<br/><i>per-read aligner selection</i>"]
+        CHM["chimeric_consensus.py<br/><i>sync-point stitching</i>"]
+        MA --> CS
+        MA --> CHM
+    end
+
+    subgraph analysis["analyze_command.py internals"]
+        CLU["analyze/clustering.py"]
+        GA["analyze/gene_attribution.py"]
+        DE["analyze/deseq2.py"]
+        SA["analyze/shift_analysis.py"]
+        APA["analyze/apa_detection.py"]
+        MD["analyze/motif_discovery.py"]
+        GO["analyze/go_enrichment.py"]
+        GD["analyze/genomic_distribution.py"]
+    end
 ```
 
 ---
 
-## Step 1: Pre-Consensus Scoring (`rectify align` / `rectify consensus`)
+## Directory structure
 
-### Motivation
+```
+rectify/                              ← git repo root
+├── rectify/                          ← importable Python package
+│   │
+│   ├── __init__.py                   version string, public API re-exports
+│   ├── __main__.py                   allows `python -m rectify`
+│   ├── cli.py                        argparse entry point; dispatches subcommands
+│   ├── config.py                     all constants (chroms, thresholds, shifts)
+│   ├── slurm.py                      HPC utilities: thread limits, scratch staging
+│   ├── slurm_profiles/               YAML configs for HPC partitions
+│   │   ├── hpc_cpu.yaml              CPU partition (streaming + scratch on by default)
+│   │   └── hpc_gpu.yaml              GPU partition
+│   ├── provenance.py                 SHA-256 provenance tracking; skip-if-unchanged logic
+│   │
+│   ├── core/                         pipeline step implementations
+│   │   │
+│   │   ├── run_command.py            Step 0+1+2 orchestrator (the "run-all" dispatcher)
+│   │   ├── align_command.py          Step 0 CLI wrapper
+│   │   ├── correct_command.py        Step 1 CLI wrapper
+│   │   ├── analyze_command.py        Step 2 CLI wrapper + GFF/GTF parsing
+│   │   ├── batch_command.py          parallel/SLURM batch correction
+│   │   │
+│   │   ├── multi_aligner.py          Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
+│   │   ├── chimeric_consensus.py     chimeric alignment stitching from sync-points
+│   │   ├── consensus.py              per-read optimal aligner selection (non-chimeric fallback)
+│   │   ├── bam_processor.py          correction pipeline orchestrator (Steps 1①–⑧)
+│   │   │
+│   │   ├── atract_detector.py        A-tract boundary detection + ambiguity window
+│   │   ├── ag_mispriming.py          AG-richness mispriming screen (Roy & Chanfreau 2019)
+│   │   ├── polya_trimmer.py          poly(A) tail detection and trimming
+│   │   ├── polya_model.py            JSON poly(A) model (A-richness thresholds)
+│   │   ├── indel_corrector.py        indel artifact correction; variant-aware rescue
+│   │   ├── false_junction_filter.py  poly(A)-artifact N-op (splice junction) removal
+│   │   ├── splice_aware_5prime.py    5' soft-clip junction rescue (intron-displaced TSS)
+│   │   ├── netseq_refiner.py         NET-seq NNLS deconvolution for CPA localization
+│   │   ├── netseq_deconvolution.py   low-level NNLS / PSF math
+│   │   ├── netseq_command.py         `rectify netseq` CLI
+│   │   ├── netseq_bam_processor.py   NET-seq BAM → 3' end TSV
+│   │   ├── netseq_output.py          NET-seq output formatting
+│   │   ├── junction_refiner.py       post-consensus N-op junction refinement (Module 2H)
+│   │   ├── terminal_exon_refiner.py  terminal exon boundary refinement
+│   │   ├── spikein_filter.py         spike-in construct detection and filtering
+│   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
+│   │   ├── junction_validator.py     cross-sample COMPASS-style junction validation
+│   │   ├── mpb_split_reads.py        mapPacBio long-read splitting and stitching
+│   │   ├── preprocess.py             input detection (FASTQ vs BAM), bundled genome prep
+│   │   ├── unified_record.py         unified read record dataclass
+│   │   ├── processing_stats.py       per-sample QC stat accumulation and reporting
+│   │   ├── export_command.py         bedGraph/bigWig export
+│   │   ├── extract_command.py        per-read BAM → TSV extraction
+│   │   ├── validate_command.py       correction validation vs NET-seq / known sites
+│   │   ├── train_polya_command.py    poly(A) model training
+│   │   ├── aggregate_command.py      3'/5'/junction aggregation dispatcher
+│   │   │
+│   │   ├── analyze/                  downstream statistical analysis modules
+│   │   │   ├── clustering.py         CPA site clustering (fixed-distance + adaptive)
+│   │   │   ├── gene_attribution.py   read-body attribution of 3' clusters to genes
+│   │   │   ├── deseq2.py             DESeq2 differential cluster + gene usage
+│   │   │   ├── shift_analysis.py     3' UTR shift scoring and visualization
+│   │   │   ├── apa_detection.py      APA isoform quantification (Isosceles-style)
+│   │   │   ├── motif_discovery.py    de novo motif discovery via STREME/MEME
+│   │   │   ├── go_enrichment.py      GO enrichment via Fisher's exact test
+│   │   │   ├── genomic_distribution.py   read classification by genomic feature
+│   │   │   ├── junction_analysis.py  splice junction statistics
+│   │   │   ├── junction_validation.py    annotation-based junction validation
+│   │   │   ├── deconvolution.py      generalized deconvolution utilities
+│   │   │   ├── pan_mutant_refiner.py pan-mutant NET-seq CPA refinement
+│   │   │   ├── atract_refiner.py     A-tract-aware CPA position refinement
+│   │   │   ├── heatmap.py            heatmap visualization of cluster usage
+│   │   │   ├── pca.py                PCA of per-sample cluster counts
+│   │   │   └── summary.py            per-run summary statistics
+│   │   │
+│   │   ├── aggregate/                per-end aggregation (output of `rectify aggregate`)
+│   │   │   ├── three_prime.py        cluster by 3' CPA end; attribute to gene via read body
+│   │   │   ├── five_prime.py         cluster by 5' TSS end; Bambu-style full-length filter
+│   │   │   └── junctions.py          aggregate splice junctions with partial evidence
+│   │   │
+│   │   └── classify/
+│   │       └── full_length_classifier.py   Bambu-style full-length vs truncated classifier
+│   │
+│   ├── utils/                        shared low-level utilities
+│   │   ├── genome.py                 load_genome(), fetch_genomic_sequence(), A-tract utils
+│   │   ├── alignment.py              CIGAR parsing, soft-clip extraction, coordinate ops
+│   │   ├── chromosome.py             chromosome name normalization helpers
+│   │   ├── stats.py                  confidence scoring, QC metrics
+│   │   ├── junction_bed.py           minimap2 junction BED generation from annotation
+│   │   ├── splice_motif.py           GT-AG and other splice site motif scoring
+│   │   └── provenance.py             (re-exports from rectify.provenance)
+│   │
+│   ├── visualize/                    plotting layer
+│   │   ├── config.py                 plot-wide style constants (colors, fonts, DPI)
+│   │   ├── figure_utils.py           shared figure helpers (axes, colorbars, layout)
+│   │   ├── gene_track.py             gene structure panel (box-arrow CDS glyphs)
+│   │   ├── coverage.py               BAM coverage extraction and filled-area plots
+│   │   ├── metagene.py               metagene signal aggregation (PositionIndex)
+│   │   ├── metagene_loaders.py       convenience loaders for metagene workflows
+│   │   ├── multi_track.py            multi-panel genome browser layout
+│   │   ├── read_browser.py           stacked read browser (LineCollection-based)
+│   │   ├── ridge.py                  ridge/joy-division plots of CPA distributions
+│   │   └── vep_panels.py             variant effect prediction visualization panels
+│   │
+│   ├── data/                         bundled reference data
+│   │   ├── __init__.py               data-loading API (ensure_reference_data(), etc.)
+│   │   ├── genomes/saccharomyces_cerevisiae/
+│   │   │   ├── S288C_reference_sequence_R64-5-1_20240529.fsa.gz   genome FASTA (bgzipped)
+│   │   │   ├── *.fai, *.gzi, *.pkl                                 index and pickle cache
+│   │   │   ├── S288C_reference_sequence_R64-5-1_20240529.ncbi.gz   NCBI-named version (legacy)
+│   │   │   ├── saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz   gene annotation (GFF3)
+│   │   │   ├── go_annotations.tsv.gz                               SGD GO term assignments
+│   │   │   └── bbmap_index/                                        mapPacBio index
+│   │   ├── saccharomyces_cerevisiae_netseq_wt.tsv.gz               WT NET-seq reference
+│   │   ├── saccharomyces_cerevisiae_netseq_pan.tsv.gz              pan-mutant NET-seq reference
+│   │   ├── saccharomyces_cerevisiae_atract_netseq.tsv.gz           A-tract NET-seq reference
+│   │   ├── motif_databases/                                        MEME-format motif databases
+│   │   ├── models/                                                  trained poly(A) models (JSON)
+│   │   ├── validation/                                              bundled validation reads + TSVs
+│   │   │   ├── validation_reads.bam / .bai                          36 test reads for CI
+│   │   │   ├── corrected_3ends.tsv                                  expected correction output
+│   │   │   ├── aligners/                                            per-aligner test BAMs
+│   │   │   │   └── validation_reads.{minimap2,mapPacBio,gapmm2,deSALT,uLTRA}.bam
+│   │   │   └── rectified/                                           rectified output BAMs
+│   │   │       ├── rectified_corrected_3end.bam                     hard-clipped at corrected_3prime
+│   │   │       ├── rectified_pA_tail_trimmed.bam                    poly(A) soft-clipped
+│   │   │       └── rectified_pA_tail_soft_clipped.bam               full tail restored (DRS Step 4)
+│   │
+│   ├── calibration/
+│   │   └── calibrate_shift_corrections.py   derive A-count→shift table from NET-seq data
+│   │
+│   └── scripts/                      one-off database construction scripts
+│       ├── build_pan_mutant_netseq_database.py   build pan-mutant NET-seq TSV
+│       └── create_atract_netseq_reference.py     build A-tract NET-seq TSV
+│
+├── tests/                            pytest suite (~25 test files, one per module)
+├── docs/                             MkDocs source for RTD
+│   └── ARCHITECTURE.md               this file
+├── conda-recipe/                     conda-forge recipe (meta.yaml)
+├── examples/                         usage notebooks and scripts
+├── scripts/                          helper shell/Python scripts (not part of package)
+├── slurm_profiles/ → rectify/slurm_profiles/  (profiles live inside the package)
+├── pyproject.toml                    pip packaging metadata + dependency list
+├── mkdocs.yml                        ReadTheDocs / MkDocs configuration
+├── CLAUDE.md                         AI agent / developer context
+└── README.md                         user-facing overview
+```
 
-The key insight driving this design is: **it is cheaper to select the right
+---
+
+## Layer-by-layer module descriptions
+
+### Layer 1: Entry point
+
+**`cli.py`** — Builds the top-level `argparse` parser and 11 subparsers.
+Each subparser delegates to a `create_*_parser()` function in the
+corresponding `*_command.py`. No business logic lives here.
+
+**`config.py`** — Single source of truth for all numeric constants:
+chromosome name maps (chrI ↔ NCBI), A-count→expected-shift calibration
+table, poly(A) detection thresholds, NET-seq signal thresholds, indel
+detection windows. Import from here; never hard-code thresholds elsewhere.
+
+**`slurm.py`** — SLURM-aware utilities called at process startup (before
+numpy is imported): `set_thread_limits()` sets `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and `LOKY_MAX_CPU_COUNT` to
+prevent thread oversubscription. Also provides `make_job_scratch_dir()` and
+`sync_to_oak()` for scratch-staging patterns.
+
+**`provenance.py`** — Lightweight Snakemake-style provenance: SHA-256
+hashes input/output files and writes sidecar `.provenance.json`. The
+`step_needed()` method enables skip-if-unchanged logic without Snakemake.
+
+---
+
+### Layer 2: Pipeline orchestration
+
+**`core/run_command.py`** — The full end-to-end orchestrator. Handles
+single-sample (FASTQ or BAM input) and multi-sample (manifest TSV) modes.
+In multi-sample mode, correction runs per-sample in parallel, then analysis
+runs once across all corrected outputs. DESeq2, GO enrichment, and motif
+discovery only fire in multi-sample mode (need multiple conditions for
+statistics). Also resolves bundled genome/annotation paths transparently.
+
+When `--drs` is passed with a BAM input, `_run_single_sample()` automatically
+inserts Step 0 (`trim_drs_bam_polya` → `samtools fastq -T pt`) before alignment
+and Step 4 (`restore_polya_softclips`) after correction. The poly(A) trim
+metadata parquet is written to the Oak output directory so it survives
+`$SCRATCH` purge; the trimmed FASTQ is written to `$SCRATCH/drs_trim/` for
+alignment I/O.
+
+**`core/batch_command.py`** — Parallel batch correction across samples.
+In interactive mode, auto-sizes a `ThreadPoolExecutor` to available CPUs
+and runs `rectify correct` per sample in parallel. In HPC mode, reads a
+profile YAML and generates array job scripts. Generated scripts include a
+portable scheduler abstraction block that normalises CPU count, job ID, and
+task ID from SLURM (`$SLURM_CPUS_PER_TASK`), PBS/Torque (`$PBS_NUM_PPN`),
+and UGE/SGE (`$NSLOTS`) environment variables, so the same script body
+works on all three schedulers without modification.
+
+**`core/align_command.py`** — Thin CLI wrapper around `multi_aligner.py`.
+
+**`core/correct_command.py`** — Step 1 orchestrator: validates inputs,
+sets thread limits, calls `bam_processor.process_bam_file_parallel()` or
+`process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
+
+**`core/analyze_command.py`** — Step 2 orchestrator: parses GFF/GTF,
+calls analysis modules in sequence, writes all output TSVs and plots.
+Handles both single-sample (no DESeq2) and manifest mode (full analysis).
+
+---
+
+### Layer 3: Alignment (Steps 1–2)
+
+**`core/multi_aligner.py`** — Runs all enabled aligners in parallel
+subprocesses. Tier 1 (default): minimap2, mapPacBio, gapmm2. Tier 2
+(opt-in via `--aligners`): deSALT (high-sensitivity splice aligner) and
+uLTRA (annotation-guided graph aligner, requires GTF). Each aligner
+produces a sorted, indexed BAM. Junction annotations from GFF are passed
+to minimap2 via `--junc-bed` to improve splice site accuracy while keeping
+scoring annotation-blind (novel junctions are still discoverable). Returns
+per-aligner BAM paths.
+
+**`core/chimeric_consensus.py`** — Chimeric rectification: finds "sync
+points" where two or more aligners agree on query→reference mapping, then
+scores segments between sync points independently. The best segment from
+each aligner can be combined into one chimeric alignment. This is the key
+innovation that handles DRS reads where no single aligner wins everywhere:
+one may handle the 5' splice-through better, another the 3' poly(A)
+boundary.
+
+**`core/consensus.py`** — Simpler per-read optimal selection (non-chimeric):
+scores each aligner's full alignment and picks the best one. Used as
+fallback when chimeric stitching is disabled or sync points are not found.
+
+**`core/mpb_split_reads.py`** — mapPacBio can fail on reads >100 kb.
+Splits long reads, aligns each chunk, then stitches the resulting BAMs
+back together with corrected CIGAR strings.
+
+#### Pre-consensus scoring: what happens to each read before selection
+
+The key insight driving the design is: **it is cheaper to select the right
 alignment before correction than to correct a bad alignment after the fact**.
-Choosing the aligner that already has the cleanest junction boundaries and the
-3' end closest to the true CPA site means that `rectify correct` — especially
-the expensive junction refinement step (Module 2H) — encounters fewer reads
-that need intervention, and the interventions it does make are less dramatic.
-
-### What happens to each read before selection
-
 `extract_alignment_info()` in `consensus.py` is called for every read from
 every aligner's BAM. It computes five signals from the raw alignment using
 genome sequence alone (no MD tags required at this stage):
 
-#### Signal 1 — Effective 5' clip (`_get_effective_5prime_clip`)
-
-Scans up to 20 bp from the 5' end of the alignment for terminal imperfections:
-
+**Signal 1 — Effective 5' clip (`_get_effective_5prime_clip`):**
+Scans up to 20 bp from the 5' end for terminal imperfections.
 - **Explicit soft-clip** (minimap2, gapmm2): the `S` op length in the CIGAR.
 - **mapPacBio forced-mismatch region**: mapPacBio deliberately forces
   mismatches rather than soft-clipping at splice junction boundaries.
-  `_get_effective_5prime_clip` scans the terminal aligned bases using a
-  greedy sliding-window scan and extends the effective clip length to include
-  any contiguous terminal mismatch/indel region.
+  `_get_effective_5prime_clip` extends the effective clip length to include
+  any contiguous terminal mismatch/indel region. Both representations are
+  treated identically in scoring — this levels the playing field between
+  aligners that soft-clip and those that force mismatches.
 
-Both representations are treated identically in scoring. This levels the
-playing field between aligners that soft-clip and those that force mismatches.
-
-The extracted terminal sequence (`five_prime_softclip_seq` for explicit clips,
-`effective_five_prime_clip_seq` for MPB mismatch regions) is used as the
-rescue sequence in Signal 2.
-
-#### Signal 2 — 5' soft-clip rescue (`_rescue_5prime_softclip`)
-
-For each read with a non-zero effective 5' clip, a lightweight sequence-based
-rescue is attempted:
-
-1. Collect all candidate junctions for this read (annotated + all aligners'
-   observed junctions from this read group).
-2. For each candidate junction within `junction_proximity_bp` of the
-   alignment's 5' end: extract the upstream exon-1 sequence window and compute
-   the edit distance against the rescue sequence.
-3. If `edit_distance / clip_length ≤ max_edit_frac` (default 20%): **rescue
-   fires** — the 5' clip penalty is waived entirely for this aligner.
+**Signal 2 — 5' soft-clip rescue (`_rescue_5prime_softclip`):**
+For each read with a non-zero effective 5' clip, a lightweight rescue is attempted:
+1. Collect all candidate junctions (annotated + all aligners' observed junctions).
+2. For each candidate within `junction_proximity_bp` of the alignment's 5' end:
+   compute edit distance against the upstream exon-1 sequence window.
+3. If `edit_distance / clip_length ≤ max_edit_frac` (default 20%): rescue fires —
+   the 5' clip penalty is waived for this aligner.
 
 This is a simplified, single-pass version of the full rescue in
-`splice_aware_5prime.py`. It does not perform the shift-aware, HP-weighted,
-ambiguity-resolving rescue that runs later in `rectify correct`. Its sole
-purpose here is to avoid penalising aligners that correctly identified an
-intron but could not align the upstream exon fragment — a penalty that would
-cause the selection to unfairly prefer aligners that avoided the junction
-entirely.
+`splice_aware_5prime.py`. Its sole purpose is to avoid penalising aligners
+that correctly identified an intron but could not align the upstream exon
+fragment. **It does not change positions or CIGARs** — it only affects
+the alignment's score for the purposes of aligner selection.
 
-**Important:** the rescue result here does **not** change the read's position
-or CIGAR. It only affects the alignment's score for the purposes of aligner
-selection.
-
-#### Signal 3 — A-tract 3' depth (`calculate_atract_ambiguity`)
-
+**Signal 3 — A-tract 3' depth (`calculate_atract_ambiguity`):**
 Using genome sequence, estimates how far the aligner's 3' end is from the
-true CPA site in A-tract regions. The `downstream_a_count` (number of A's
-downstream of the raw 3' end, within 10 bp) quantifies how deep into the
-A-tract the aligner landed. Penalty: −1 per downstream A, capped at 10.
+true CPA site in A-tract regions. `downstream_a_count` (A's downstream of
+the raw 3' end within 10 bp) quantifies how deep into the A-tract the aligner
+landed. Penalty: −1 per downstream A, capped at 10. The full MD-tag-dependent
+walk-back correction runs later in `rectify correct` (Module 2C/2E).
 
-This pre-estimate uses genome sequence only. The full MD-tag-dependent
-walk-back correction runs in `rectify correct` (Module 2E/2C).
-
-A pre-corrected `corrected_3prime` position is also computed (genome-only,
-best-guess) and used as a tiebreaker in `select_best_alignment` to prefer
-aligners that agree with the majority 3' position.
-
-#### Signal 4 — 3' non-poly(A) terminal errors (`_get_effective_3prime_clip`)
-
+**Signal 4 — 3' non-poly(A) terminal errors (`_get_effective_3prime_clip`):**
 Scans the 3' terminal region for non-A/T errors — mismatches or indels that
-are NOT part of a poly(A) tail. These indicate the aligner stopped before the
-true transcript end. Penalty: −2 per base, capped at 10.
+are NOT part of a poly(A) tail. Penalty: −2 per base, capped at 10.
 
-#### Signal 5 — Junction-proximity errors (`_count_junction_proximity_errors`)
+**Signal 5 — Junction-proximity errors (`_count_junction_proximity_errors`):**
+For each N-op, counts mismatches and indels within 5 bp of each junction
+boundary. Penalty: −1 per error, capped at 10. This favours aligners that
+produce clean junction handling (mapPacBio is typically best here).
 
-For each N-op (splice junction) in the read, counts mismatches and indels
-within 5 bp of each junction boundary. Penalty: −1 per error, capped at 10.
-
-This signal favours aligners that produce clean junction handling (mapPacBio
-is typically best here). An aligner that places junction boundaries with
-forced mismatches immediately flanking the N-op will score worse than one
-that produces clean M-ops up to the splice site.
-
-### Composite score and selection
-
+**Composite score:**
 ```
 score = − 2 × effective_5prime_clip     (0 if rescued)
         − 1 × atract_depth              (capped at 10)
@@ -167,98 +568,72 @@ score = − 2 × effective_5prime_clip     (0 if rescued)
         − 1 × junction_proximity_errors (capped at 10)
 ```
 
-**Tiebreakers** (applied in order when scores are equal):
-
+**Tiebreakers** (in order when scores are equal):
 1. Most canonical GT-AG junctions
 2. Most annotated junction matches
 3. Majority vote on `corrected_3prime` (genome-only estimate)
 4. Wider reference span (more of the transcript covered)
 
 The winning aligner's raw BAM record is written to `consensus.bam`. MD tags
-are then added via `samtools calmd` to enable the MD-dependent modules in
+are added via `samtools calmd` to enable the MD-dependent modules in
 `rectify correct`.
 
 ---
 
-## Step 2: Correction Modules (`rectify correct`)
+### Layer 4: Correction (Step 3)
 
-`rectify correct` processes the consensus BAM read by read, applying modules
-in a fixed order. The order matters: some modules update the read's coordinate
-and CIGAR, and later modules operate on the updated state.
+**`core/bam_processor.py`** — The correction pipeline hub. Reads the BAM,
+dispatches per-read correction through modules ①–⑧ in sequence, and writes
+results. Supports two execution modes:
+- `process_bam_file_parallel()`: per-chromosome parallelism, accumulates
+  all results in memory before writing (use for small genomes or low RAM).
+- `process_bam_streaming()`: 10,000-read chunks, writes incrementally.
+  Peak RAM ~4–5 GB regardless of BAM size. **Use this for SLURM jobs.**
 
-### Module 2H — N-Op Junction Refinement (`junction_refiner.py`)
+Correction modules are called in this order:
 
-**When:** First, before any 3' or 5' end corrections.
+**① `atract_detector.py`** — Counts A's (or T's for minus strand) in the
+downstream genomic window, looks up expected alignment shift from the
+calibration table in `config.py`, and computes an `ambiguity_min`/
+`ambiguity_max` window. This correction is UNIVERSAL — it applies to
+all poly(A)-tailed RNA-seq, not just direct RNA.
 
-**What:** For every N-op (splice junction) in every read, tests all candidate
-junctions within `search_radius` (default 5000 bp) and replaces imprecise
-N-op boundaries with the best sequence-supported junction.
+**② `ag_mispriming.py`** — For oligo-dT libraries: screens downstream
+sequence for AG-richness. High AG-richness flags a read as likely
+internally primed (misprimed on a genomic A/G run). The original
+RECTIFY algorithm from Roy & Chanfreau 2019.
 
-**Scoring:** HP-aware split-alignment. The rescue sequence (bases downstream
-of the current N-op split point in transcript orientation) is split at every
-candidate `k ∈ [0, L)` and both halves scored against the flanking exon
-genomic context:
+**③ `polya_trimmer.py`** — For reads that directly sequence the poly(A)
+tail: detects A-rich soft-clipped sequence, calculates `polya_length`,
+and back-calculates the pre-tail cleavage position. Uses a trained
+model (JSON) for A-richness thresholds.
 
-```
-t1(k) = hp_score(rescue[k:],       genome[intron_end  : intron_end + buf])
-t2(k) = hp_score(rescue[:k][::-1], genome[intron_end - buf : intron_end][::-1])
-total(k) = t1(k) + t2(k)
-```
-
-HP-aware edit distance: indels within a homopolymer run cost 0.5; non-HP
-indels and substitutions cost 1.0. When the current N-op is non-canonical
-(tier ≥ 4), canonical-tier alternatives receive a 0.5 discount
-(`_CANONICAL_HP_PRIOR`) — equal to the expected noise floor for one Nanopore
-HP deletion.
-
-**Priority:** sequence score first → current-junction stability (equal-scoring
-candidates never displace an already-correct junction) → canonical GT-AG →
-annotated → smallest boundary shift. **Annotation never overrides a
-better-scoring junction.**
-
-**Fast path:** Reads already at an annotated canonical-tier-0 junction skip
-scoring entirely (255× speedup).
-
-**Requires:** `--aligner-bams` to supply per-aligner BAMs for novel junction
-discovery.
-
-### Module 2G — 3' Soft-Clip Rescue at Homopolymer Boundaries (`rescue_softclip_at_homopolymer`)
-
-Homopolymer under-calling causes aligners to terminate early and soft-clip
-non-T/non-A bases that belong to the transcript body. Extends the 3' end
-through remaining homopolymer reference bases to match downstream sequence.
-
-### Module 2E — A-Tract Ambiguity Detection (`calculate_atract_ambiguity`)
-
-Full MD-tag-dependent A-tract correction. Refines the genome-only pre-estimate
-from consensus scoring using per-base mismatch information from the MD tag.
-
-### Module 2B — Poly(A) Trimming
-
-Trims poly(A) tail bases from the alignment. For DRS data these were stripped
-before alignment; this module handles residual cases.
-
-### Module 2C — Indel Artifact Correction (`find_polya_boundary`)
-
-Walk-back algorithm: scans backward from the soft-clip boundary position,
-skipping A's, deletions, T sequencing errors, and N-ops, until the first
-unambiguous non-A/T genome–read agreement. This recovers the true CPA site
-even when the aligner has spread poly(A) signal across genomic A-runs or
-introduced spurious junctions to reach downstream A-tracts.
-
-Key guards:
+**④ `indel_corrector.py` (Module 2C)** — Detects deletion/insertion artifacts
+that arise when aligners force-align poly(A) tails to genomic A-tracts.
+The `find_polya_boundary` walk-back algorithm scans backward from the
+soft-clip boundary, skipping A's, deletions, T sequencing errors, and N-ops,
+until the first unambiguous non-A/T genome–read agreement. Key guards:
 - **Large-deletion pre-scan:** detects over-calling artifacts where a large
-  deletion bridges a poly-A over-extension back to the exon body.
+  deletion (≥5 bp within 50 bp of 3' end) bridges a poly-A over-extension
+  back to the exon body, when the alignment starts in a poly-T/poly-A context.
 - **N-op boundary guard (minus strand):** stops the forward scan at the first
   N-op boundary, preventing the scan from crossing into an earlier exon.
 - **Trailing-base false-stop guard:** if the last base of a poly-A tail
-  coincidentally matches a genomic base, the scan continues rather than
-  stopping prematurely.
+  coincidentally matches a genomic base (e.g. terminal T=T), and the
+  K=4 positions before it are all poly-A context, the scan continues rather
+  than stopping prematurely.
+The `VariantAwareHomopolymerRescue` class also handles cases where a SNP in
+an A-tract could be misinterpreted as an artifact.
 
-### Module 2F — 5' Junction Rescue (`rescue_3ss_truncation` in `splice_aware_5prime.py`)
+**⑤ `false_junction_filter.py`** — Removes spurious N operations (introns)
+in CIGAR strings near the 3' end that arise from poly(A) tail misalignment
+to distant A-tracts. A junction is flagged if it is within a configurable
+window of the 3' end AND the downstream region is highly A-rich.
 
-Full Cat3 / Cat4 rescue, using the HP-weighted, shift-aware algorithm with
-ambiguity-window detection. Four cases handled in priority order:
+**⑥ `splice_aware_5prime.py` (Module 2F)** — Full Cat3 / Cat4 5' junction
+rescue. When the first exon is short, aligners may place the read's 5' end
+within an annotated intron rather than at the true TSS. Four cases handled
+in priority order:
 
 | Case | Trigger | Action |
 |------|---------|--------|
@@ -269,65 +644,56 @@ ambiguity-window detection. Four cases handled in priority order:
 
 The proximity threshold for Cases 1/2/3 is extended by the soft-clip length
 (`dist > junction_proximity_bp + five_clip`), so reads whose soft-clipped
-bases reach across the junction boundary are not filtered out by the distance
-check.
+bases reach across the junction boundary are not filtered by the distance check.
 
-### Module FJF — False Junction Filter (`false_junction_filter.py`)
+**⑦ `junction_refiner.py` (Module 2H)** — Post-consensus N-op junction
+refinement. For every N-op in every read, collects all candidate junctions
+within `search_radius` (default 5000 bp) and scores each using HP-aware
+split-alignment. The rescue sequence (bases downstream of the N-op split
+point in transcript orientation) is split at every candidate `k ∈ [0, L)`:
 
-Detects and removes poly(A)-artifact junctions: N-ops where the bases flanking
-the junction boundary are A-rich (characteristic of poly(A) tail misalignment).
+```
+t1(k) = hp_score(rescue[k:],       genome[intron_end  : intron_end + buf])
+t2(k) = hp_score(rescue[:k][::-1], genome[intron_end - buf : intron_end][::-1])
+score(k) = t1(k) + t2(k)        # minimise over k
+```
 
-### Module AG — AG-Mispriming Detection (dT-primed cDNA only)
+HP-aware linear costs: del=0.5 within a homopolymer run ≥4 bp (reflecting
+Nanopore HP dropout), del=1.0 otherwise, ins=1.25, sub=1.0. When the current
+N-op is non-canonical (tier ≥ 4), canonical-tier alternatives receive a 0.5
+discount (`_CANONICAL_HP_PRIOR`) equal to the expected noise floor for one
+Nanopore HP deletion.
 
-Detects reverse-transcriptase slippage artifacts at internal AG-rich sequences.
-Disabled for DRS data (enabled with `--dT-primed-cDNA`).
+Tiebreaker priority: sequence score → current-junction stability (equal-scoring
+candidates never displace an already-correct junction) → canonical GT-AG →
+annotated → smallest boundary shift. **Annotation never overrides a
+better-scoring junction.**
 
-### Module NET — NET-seq Refinement (optional)
+Fast path: reads already at an annotated canonical-tier-0 junction skip
+scoring entirely (255× speedup). Requires `--aligner-bams` for novel
+junction discovery.
 
-NNLS deconvolution using a reference NET-seq signal to refine 3' end positions
-at multi-peak loci. Enabled with `--netseq`.
+**⑧ `netseq_refiner.py`** — For reads whose corrected position falls in an
+ambiguous window: queries NET-seq signal, deconvolves the PSF spread caused
+by short poly(A) tails in NET-seq, and re-assigns reads proportionally to
+deconvolved peak intensities. Converts positional uncertainty into a
+probabilistic split across the most likely true CPA sites. Requires
+NET-seq bigWig or TSV data.
 
----
+**⑨ `spikein_filter.py`** — Detects and removes reads from synthetic
+spike-in constructs by comparing 3' UTR sequence to the genomic
+reference; spike-ins have a synthetic 3' UTR not present in the genome.
 
-## Key Design Decisions
+Support modules called by `bam_processor`:
+- **`polya_model.py`** — Loads/saves the JSON poly(A) model.
+- **`terminal_exon_refiner.py`** — Refines terminal exon boundaries.
+- **`junction_validator.py`** — Cross-sample COMPASS-style junction
+  validation: aggregates junctions across samples, applies minimum-support
+  and splice-motif filters, then downgrades low-confidence junctions.
+- **`exclusion_regions.py`** — Reads a BED blacklist and marks reads
+  overlapping excluded regions.
 
-### Why score before correcting?
-
-Consensus scoring is fast (genome-only, no MD tags) and run in parallel across
-aligners. Running the full correction pipeline on all three aligner BAMs and
-comparing outputs would be 3× slower and would not necessarily produce a better
-winner selection — the lightweight pre-signals are sufficient to identify the
-best-aligned read. The correction modules then operate on a cleaner starting
-point, with fewer errors to fix.
-
-### Why does Module 2H run first?
-
-Junction refinement (2H) needs the N-op boundaries to be as accurate as
-possible before the 5' end rescue (2F) attempts to snap reads to the exon-1
-boundary. If 2F ran first with a poorly-placed N-op, it might snap to the
-wrong exon boundary. Running 2H first ensures the N-op positions are as
-accurate as the sequence evidence allows before 2F uses them as targets.
-
-### Why does the 5' rescue in consensus scoring NOT change positions?
-
-The rescue in `score_alignment` (`_rescue_5prime_softclip`) is a scoring
-heuristic only — it waives the clip penalty for aligners that found a correct
-junction but could not fully align the upstream exon end. Position changes
-are deferred to `rectify correct` (Module 2F), which runs the full
-shift-aware, HP-weighted rescue with proper CIGAR surgery.
-
-### Unspliced pre-mRNA guard (Case 4)
-
-Case 4 (intronic snap) fires when a read's 5' end is inside an annotated
-intron. Without a guard, this would incorrectly snap the 5' end of unspliced
-pre-mRNA reads to the exon-1 boundary. The guard compares the intronic query
-bases against both the intron reference and the exon-1 reference using HP-aware
-edit distance: snap only fires when the exon-1 match is strictly better (ties
-favour the unspliced interpretation, keeping the read in the intron).
-
----
-
-## Implementation Files
+#### Implementation file reference
 
 | File | Responsibility |
 |------|---------------|
@@ -341,3 +707,278 @@ favour the unspliced interpretation, keeping the read in the intron).
 | `bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue |
 | `local_aligner.py` | Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR |
 | `atract_detector.py` | A-tract ambiguity calculation (genome-only, used pre-consensus) |
+
+---
+
+### Layer 5: Analysis (Step 5)
+
+**`core/analyze/clustering.py`** — Groups corrected 3' positions into CPA
+site clusters. Two algorithms:
+- Fixed-distance (default, `--cluster-distance 25`): reads within 25 bp
+  on the same strand are merged. O(n log n).
+- Adaptive valley-based (`--adaptive-clustering`): finds valleys in the
+  read-depth histogram to split clusters at natural breakpoints.
+After clustering, `annotate_clusters_with_genes()` uses an IntervalTree to
+attribute each cluster to the gene whose 3' region it falls in.
+
+**`core/analyze/gene_attribution.py`** — Attributes 3' end clusters to
+genes based on read bodies (not just proximity). For each cluster, tallies
+what fraction of reads whose 3' end falls in the cluster also have their
+read body overlapping a given CDS/ncRNA feature. This handles the common
+case of two adjacent genes where the read bodies disambiguate which gene
+the 3' end belongs to.
+
+**`core/analyze/deseq2.py`** — Wraps pyDESeq2 for differential CPA usage.
+Runs two independent analyses per condition pair:
+- **Cluster level**: per-CPA-site read counts across samples → identifies
+  which individual CPA sites are gained or lost between conditions.
+  Output: `deseq2_clusters_{condition}.tsv`
+- **Gene level**: CPA counts summed across all clusters within each gene →
+  identifies genes whose overall 3' end usage changes.
+  Output: `deseq2_genes_{condition}.tsv`
+Both analyses output padj, log2FoldChange, and baseMean columns. Results
+from the cluster-level analysis feed motif discovery; gene-level results
+feed GO enrichment.
+
+**`core/analyze/shift_analysis.py`** — Gene-level 3' UTR shift scoring.
+For each gene, computes the weighted mean CPA position (weights = read
+counts per cluster) in condition A and condition B, and reports the
+difference in bp. A positive shift means the 3' ends moved downstream
+(3' UTR lengthening); negative means upstream (3' UTR shortening). This
+is a single scalar per gene — it summarizes the overall directionality of
+CPA redistribution without specifying which isoforms are responsible.
+
+**`core/analyze/apa_detection.py`** — Read-level APA isoform detection
+(Isosceles-style). Where shift analysis gives one number per gene, APA
+detection identifies *which isoforms* drive the change. Groups reads by
+the triplet `(gene, junction_signature, 3' cluster)` — reads with the
+same gene body splicing pattern and the same CPA cluster are counted as
+one isoform. Computes proximal:distal CPA usage ratio and flags genes
+where this ratio changes between conditions.
+
+**`core/analyze/motif_discovery.py`** — De novo motif discovery via STREME
+or MEME. Operates on DESeq2 cluster-level results: extracts sequences from
+±100/50 bp windows around enriched CPA clusters (padj<0.05, log2FC>1) and
+depleted clusters (log2FC<−1), then runs motif discovery on each set. This
+identifies poly(A) signals, downstream elements, or other sequence features
+that distinguish gained from lost CPA sites. Writes MEME-format output and
+a summary TSV per condition.
+
+**`core/analyze/go_enrichment.py`** — GO term enrichment via Fisher's exact
+test. Operates on DESeq2 gene-level results: collects genes with
+significantly increased CPA usage (padj<0.05, log2FC>1) and genes with
+significantly decreased usage (log2FC<−1) separately, then tests for GO
+term over-representation in each set.
+
+**`core/analyze/genomic_distribution.py`** — Three complementary distribution
+analyses, each producing a horizontal bar chart across conditions:
+- **3' end distribution**: classifies each corrected 3' end *position* by
+  the genomic feature it falls in. Priority order: 3'UTR > snoRNA±300bp >
+  CUTs > SUTs/XUTs > 5'UTR/CDS > antisense CDS > intergenic.
+- **5' end distribution**: classifies each corrected 5' end *position*
+  (`five_prime_position`) by the same genomic feature hierarchy.
+- **Transcript body distribution**: classifies each *read* by the RNA
+  biotype of the feature whose bp overlap its full alignment span is greatest.
+
+Other analysis modules: `junction_analysis.py` (splice stats),
+`junction_validation.py` (annotation-based validation), `heatmap.py`
+(cluster usage heatmaps), `pca.py` (PCA of count matrix), `summary.py`
+(run-level summary statistics), `pan_mutant_refiner.py` (pan-mutant
+NET-seq CPA refinement), `atract_refiner.py` (A-tract-aware refinement),
+`deconvolution.py` (generalized NNLS math).
+
+---
+
+### Layer 6: Utilities
+
+**`utils/genome.py`** — `load_genome()`: reads a FASTA (gzipped or plain),
+normalizes all chromosome names to chrI/chrII/… format at load time using
+`standardize_chrom_name()` (which maps NCBI `ref|NC_001133|` → `chrI`), and
+caches as a pickle for fast subsequent loads. All downstream code receives a
+`{chrI: sequence, ...}` dict and never needs NCBI-format lookups.
+Also provides `fetch_genomic_sequence()`, `reverse_complement()`,
+`get_downstream_sequence()`, and A-tract detection helpers.
+
+**`utils/alignment.py`** — CIGAR operation parsing: `extract_junctions_simple()`
+(splice-aware N-op extraction), `extract_soft_clips()`, `get_cigar_stats()`,
+`format_junctions_string()`. All use 0-based coordinates consistent with pysam.
+
+**`utils/chromosome.py`** — `standardize_chrom_name()` and friends; called
+by `load_genome()` at load time so translation is a one-time cost.
+
+**`utils/stats.py`** — `calculate_confidence()` assigns high/medium/low
+confidence labels based on the number of corrections applied, degree of
+ambiguity, and NET-seq agreement.
+
+**`utils/junction_bed.py`** — Generates the junction BED file from GFF
+annotation for `minimap2 --junc-bed`. Cached per sample.
+
+**`utils/splice_motif.py`** — GT-AG, AT-AC, and other splice site motif
+classification. Used as a tiebreaker in consensus scoring (deliberately
+excluded from primary score to avoid penalizing novel junctions).
+
+---
+
+### Layer 7: Visualization
+
+All plots use matplotlib. Visualization modules are stateless — callers
+pass DataFrames and axes, modules draw and return.
+
+**`visualize/metagene.py`** — `PositionIndex`: O(1) read-depth lookups
+using a `{chrom: {strand: {position: count}}}` dict. Supports per-locus
+normalization, percentile capping, and trimmed-mean aggregation across
+loci. `MetagenePipeline` provides a one-call interface for the full
+metagene workflow including strand verification.
+
+**`visualize/gene_track.py`** — Draws gene structure panels with pentagon/
+arrow CDS glyphs indicating strand. Handles overlapping genes via vertical
+staggering. Supports both common names and systematic names.
+
+**`visualize/coverage.py`** — Extracts coverage from BAM files and draws
+strand-specific filled-area plots.
+
+**`visualize/read_browser.py`** — Stacked read browser using
+`LineCollection` for batch rendering (~6 draw calls for 400 reads vs
+2000 `Line2D` objects). Supports junction-spanning reads (exon blocks
+connected by thin intron lines).
+
+**`visualize/ridge.py`** — Ridge/joy-division plots of CPA position
+distributions per gene or cluster, useful for showing condition-specific
+shifts in 3' end usage.
+
+**`visualize/multi_track.py`** — Multi-panel genome browser layout
+combining coverage, gene track, and read browser panels with shared
+x-axis.
+
+**`visualize/metagene_loaders.py`** — Convenience loaders that build a
+`PositionIndex` from corrected TSV files.
+
+**`visualize/figure_utils.py`** — Shared helpers: axis formatting,
+colorbar placement, figure sizing, color palette definitions.
+
+**`visualize/vep_panels.py`** — Variant effect prediction visualization:
+per-variant effect score panels aligned to genomic tracks.
+
+---
+
+## Bundled data
+
+The package ships with reference data for *Saccharomyces cerevisiae* (S288C
+R64-5-1). Other organisms require user-supplied files.
+
+| File | Purpose |
+|---|---|
+| `genomes/saccharomyces_cerevisiae/*.fsa.gz` | Genome FASTA (bgzipped, indexed) |
+| `genomes/saccharomyces_cerevisiae/*.pkl` | Pickle cache for fast genome loading |
+| `genomes/saccharomyces_cerevisiae/*.gff.gz` | GFF3 gene annotation |
+| `genomes/saccharomyces_cerevisiae/go_annotations.tsv.gz` | SGD GO term assignments |
+| `genomes/saccharomyces_cerevisiae/bbmap_index/` | mapPacBio alignment index |
+| `netseq_wt.tsv.gz` | Wild-type NET-seq 3' end reference (for refinement) |
+| `netseq_pan.tsv.gz` | Pan-mutant NET-seq reference (broader coverage) |
+| `atract_netseq.tsv.gz` | A-tract-focused NET-seq reference (highest resolution at A-tracts) |
+| `motif_databases/` | MEME-format poly(A) signal motif databases |
+| `models/` | Trained poly(A) tail JSON models |
+| `validation/validation_reads.bam` | 36 test reads for CI/regression testing |
+| `validation/corrected_3ends.tsv` | Expected correction output for CI comparison |
+| `validation/aligners/*.bam` | Per-aligner test BAMs (minimap2, mapPacBio, gapmm2, deSALT, uLTRA) |
+| `validation/rectified/*.bam` | Rectified output BAMs (corrected, trimmed, soft-clipped) |
+
+---
+
+## Coordinate conventions
+
+All coordinates are **0-based, half-open** (pysam / BED convention).
+
+| Strand | 5' end (TSS) | 3' end (CPA) |
+|---|---|---|
+| `+` | `read.reference_start` | `read.reference_end - 1` |
+| `-` | `read.reference_end - 1` | `read.reference_start` |
+
+GFF/GTF files are 1-based inclusive. When loading:
+```python
+start = int(fields[3]) - 1   # GFF 1-based → 0-based
+end   = int(fields[4])        # 1-based inclusive → 0-based exclusive (half-open)
+```
+
+Chromosome names are normalized to `chrI`, `chrII`, … at genome load time
+in `load_genome()`. NCBI-format names (`ref|NC_001133|`) in FASTA headers
+are converted transparently; all downstream code uses the canonical format.
+
+---
+
+## Key design decisions
+
+**Why score before correcting?**
+Consensus scoring is fast (genome-only, no MD tags) and runs in parallel
+across aligners. Running the full correction pipeline on all aligner BAMs
+and comparing outputs would be 3× slower and would not produce a better
+winner — the five lightweight signals are sufficient to identify the best
+alignment. The correction modules then operate on a cleaner starting point.
+
+**Why does Module 2H (junction refinement) run first?**
+Module 2H needs N-op boundaries to be as accurate as possible before the
+5' end rescue (Module 2F) attempts to snap reads to the exon-1 boundary.
+If 2F ran first with a poorly-placed N-op, it might snap to the wrong exon
+boundary. Running 2H first ensures N-op positions are as accurate as the
+sequence evidence allows before 2F uses them as targets.
+
+**Why does the rescue in consensus scoring not change positions?**
+`_rescue_5prime_softclip` in `score_alignment` is a scoring heuristic only
+— it waives the clip penalty for aligners that found a correct junction
+but could not fully align the upstream exon end. Position changes are deferred
+to `rectify correct` (Module 2F), which runs the full shift-aware, HP-weighted
+rescue with proper CIGAR surgery.
+
+**Unspliced pre-mRNA guard (Module 2F Case 4):**
+Case 4 (intronic snap) fires when a read's 5' end is inside an annotated
+intron. Without a guard, this would incorrectly snap the 5' end of unspliced
+pre-mRNA reads to the exon-1 boundary. The guard compares the intronic query
+bases against both the intron reference and the exon-1 reference using HP-aware
+edit distance: snap only fires when the exon-1 match is strictly better (ties
+favour the unspliced interpretation, keeping the read in the intron).
+
+**No candidate guards in Module 2H:**
+All junctions in the candidate pool are scored; non-canonical, non-annotated
+(novel) alternatives are never filtered before scoring. The previous guard
+silently discarded reads that genuinely belong at non-canonical junctions
+(e.g. when many reads from the same splice isoform all score perfectly at a
+novel non-canonical site). Annotation and canonical tier remain as
+TIE-BREAKERS only, never as gates.
+
+---
+
+## Key design principles
+
+**1. Universal A-tract correction, technology-specific stack.**
+The A-tract ambiguity correction in `atract_detector.py` applies to every
+poly(A)-tailed technology. Technology-specific corrections (AG mispriming
+for oligo-dT, poly(A) trimming for direct RNA) stack on top and are
+enabled/disabled by flags.
+
+**2. Annotation-aware but annotation-blind scoring.**
+Junction BED files are passed to aligners to improve splice site detection,
+but the primary alignment scoring does not reward canonical GT-AG motifs.
+GT-AG scoring is used only as a tiebreaker between otherwise-equal alignments.
+This ensures novel splice sites are not penalized.
+
+**3. Memory-efficient streaming for large datasets.**
+`--streaming` mode processes reads in 10,000-read chunks with O(1) peak RAM
+relative to BAM size. The `corrected_3ends_index.bed.gz` position count file
+(~300× smaller than per-read TSV) further accelerates multi-sample analysis
+by making Pass 1 and Pass 2 near-instant.
+
+**4. HPC-aware from the start.**
+Thread limits are set before numpy is imported. Scratch staging is built
+into `run_command.py`. SLURM profile YAMLs live inside the package.
+All SLURM scripts generated by `batch_command.py` include explicit conda
+Python paths (no `conda activate`).
+
+**5. Provenance tracking without Snakemake.**
+Every output file gets a sidecar `.provenance.json` with SHA-256 hashes
+of its inputs. `step_needed()` enables skip-if-unchanged re-runs without
+requiring a workflow manager.
+
+**6. Single genome normalization point.**
+All FASTA chromosome name translation happens in `load_genome()` and never
+again inside the pipeline. Any `CHROM_TO_GENOME` / `GENOME_TO_CHROM` lookup
+outside of `load_genome()` is dead code (legacy from pre-2.x).
