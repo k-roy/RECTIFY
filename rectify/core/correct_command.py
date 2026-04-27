@@ -702,7 +702,12 @@ def run(args):
             # Uses the 'fraction' column so Cat6 multi-peak rows contribute fractional
             # values; all other reads contribute 1.0.
             _t_c3bg = _time.perf_counter()
-            _c3bg_prefix = str(_bam_dir / f"{_bam_stem}_corrected_3ends")
+            # Use TSV stem ("corrected_3ends") so the name doesn't depend on
+            # whatever the BAM happens to be called (avoids redundant names
+            # like "rectified_corrected_3end_corrected_3ends" when the BAM
+            # already contains "_corrected_3end" in its stem).
+            _tsv_stem = Path(str(config['output_path'])).stem
+            _c3bg_prefix = str(_bam_dir / _tsv_stem)
             logger.info(f"Writing corrected-3'-end bedgraph (prefix: {_c3bg_prefix})...")
             try:
                 _c3bg_counts = bam_processor.write_corrected_3ends_bedgraph(
