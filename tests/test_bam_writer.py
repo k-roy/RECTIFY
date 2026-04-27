@@ -264,3 +264,90 @@ class TestSoftclipRead:
         assert not _has_terminal_D_or_N(read, '-'), (
             f'Leading D/N in softclip minus result: {_cigar_str(read)}'
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: trailing/leading I stripping (v3.2.7)
+# ---------------------------------------------------------------------------
+
+class TestTrailingInsertionStripping:
+    """
+    An alignment cannot end (hard-clip path) or have a trailing/leading I
+    immediately adjacent to a soft-clip (soft-clip path) — the insertion bases
+    must be absorbed into the clip op.
+
+    Pattern: CIGAR ends in ...MIM and we clip to remove the last M.
+    After the walk the rightmost op is I; it must be absorbed.
+    """
+
+    def test_clip_trailing_insertion_plus(self):
+        """Plus strand hard-clip: trailing I must be absorbed into H.
+
+        CIGAR 10M2I5M, start=1000, ref_end=1015, current_end=1014.
+        Clip to corrected_3prime=1009 (remove last 5 ref bases of the 5M block).
+        After the walk the 5M is gone; the 2I is now the rightmost op.
+        Expected result: 10M7H (I absorbed), NOT 10M2I5H.
+        """
+        # CIGAR: 10M 2I 5M  →  clip last 5 ref bases  →  expect 10M7H (not 10M2I5H)
+        seq = 'A' * 10 + 'T' * 2 + 'C' * 5
+        read = _make_read('chrI', 1000,
+                          [(0, 10), (1, 2), (0, 5)],
+                          '+', seq)
+        clipped = clip_read_to_corrected_3prime(read, 1009, '+')
+        assert clipped
+        cigar = list(read.cigartuples)
+        # Last op must be H (hard-clip), not I or M+I
+        assert cigar[-1][0] == 5, f'Expected H at end, got {_cigar_str(read)}'
+        # I must not appear adjacent to H
+        assert not any(op == 1 for op, _ in cigar[:-1][-1:]), (
+            f'Trailing I before H in: {_cigar_str(read)}'
+        )
+        # Sequence length must match new CIGAR query span
+        query_span = sum(l for op, l in cigar if op in (0, 1, 4, 7, 8))
+        assert len(read.query_sequence) == query_span, (
+            f'seq len {len(read.query_sequence)} != query span {query_span}'
+        )
+
+    def test_clip_leading_insertion_minus(self):
+        """Minus strand hard-clip: leading I must be absorbed into H."""
+        # CIGAR: 5M 2I 10M  →  clip first 5 ref bases from left  →  expect H for 7
+        seq = 'C' * 5 + 'T' * 2 + 'A' * 10
+        read = _make_read('chrI', 1000,
+                          [(0, 5), (1, 2), (0, 10)],
+                          '-', seq)
+        clipped = clip_read_to_corrected_3prime(read, 1005, '-')
+        assert clipped
+        cigar = list(read.cigartuples)
+        assert cigar[0][0] == 5, f'Expected leading H, got {_cigar_str(read)}'
+        assert not any(op == 1 for op, _ in cigar[1:2]), (
+            f'Leading I after H in: {_cigar_str(read)}'
+        )
+        query_span = sum(l for op, l in cigar if op in (0, 1, 4, 7, 8))
+        assert len(read.query_sequence) == query_span
+
+    def test_softclip_trailing_insertion_plus(self):
+        """Plus strand soft-clip: trailing I must be absorbed into S."""
+        seq = 'A' * 10 + 'T' * 2 + 'C' * 5
+        read = _make_read('chrI', 1000,
+                          [(0, 10), (1, 2), (0, 5)],
+                          '+', seq)
+        clipped = softclip_read_to_corrected_3prime(read, 1009, '+')
+        assert clipped
+        cigar = list(read.cigartuples)
+        assert cigar[-1][0] == 4, f'Expected trailing S, got {_cigar_str(read)}'
+        # No I adjacent to the S
+        if len(cigar) >= 2:
+            assert cigar[-2][0] != 1, f'I immediately before S in: {_cigar_str(read)}'
+
+    def test_softclip_leading_insertion_minus(self):
+        """Minus strand soft-clip: leading I must be absorbed into S."""
+        seq = 'C' * 5 + 'T' * 2 + 'A' * 10
+        read = _make_read('chrI', 1000,
+                          [(0, 5), (1, 2), (0, 10)],
+                          '-', seq)
+        clipped = softclip_read_to_corrected_3prime(read, 1005, '-')
+        assert clipped
+        cigar = list(read.cigartuples)
+        assert cigar[0][0] == 4, f'Expected leading S, got {_cigar_str(read)}'
+        if len(cigar) >= 2:
+            assert cigar[1][0] != 1, f'I immediately after leading S in: {_cigar_str(read)}'

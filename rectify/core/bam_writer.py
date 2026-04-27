@@ -116,13 +116,16 @@ def clip_read_to_corrected_3prime(
         if not cigar:
             return False  # degenerate: entire alignment clipped
 
-        # 3.5. Strip any trailing D/N ops left dangling by the walk loop.
-        # This occurs when corrected_3prime falls inside a deletion/intron span:
-        # the loop removes all query-consuming ops past the D/N (satisfying
-        # n_ref_removed >= n_ref_clip) and exits before reaching the D/N, leaving
-        # it as the rightmost op.  D/N before H is invalid SAM.
-        while cigar and cigar[-1][0] in (2, 3):  # D=2, N=3
-            cigar.pop()
+        # 3.5. Strip trailing D/N/I ops left dangling by the walk loop.
+        # D/N: corrected_3prime falls inside a deletion/intron span — D/N before H
+        #      is invalid SAM.
+        # I:   corrected_3prime falls immediately after an insertion — I before H is
+        #      invalid (an alignment cannot end in an insertion; absorb those query
+        #      bases into the hard-clip).
+        while cigar and cigar[-1][0] in (1, 2, 3):  # I=1, D=2, N=3
+            op, length = cigar.pop()
+            if op == 1:  # I is query-consuming
+                n_query_remove += length
         if not cigar:
             return False
 
@@ -177,9 +180,12 @@ def clip_read_to_corrected_3prime(
         if not cigar:
             return False
 
-        # 3.5. Strip leading D/N ops dangling after the walk (minus strand).
-        while cigar and cigar[0][0] in (2, 3):  # D=2, N=3
-            cigar.pop(0)
+        # 3.5. Strip leading D/N/I ops dangling after the walk (minus strand).
+        # I: absorb into hard-clip; D/N: invalid at start of CIGAR.
+        while cigar and cigar[0][0] in (1, 2, 3):  # I=1, D=2, N=3
+            op, length = cigar.pop(0)
+            if op == 1:
+                n_query_remove += length
         if not cigar:
             return False
 
@@ -259,9 +265,13 @@ def softclip_read_to_corrected_3prime(
         if not cigar:
             return False
 
-        # 3.5. Strip trailing D/N dangling after the walk (plus strand softclip).
-        while cigar and cigar[-1][0] in (2, 3):  # D=2, N=3
-            cigar.pop()
+        # 3.5. Strip trailing D/N/I dangling after the walk (plus strand softclip).
+        # I: absorb into soft-clip (query bases kept in sequence).
+        # D/N: invalid immediately before a soft-clip.
+        while cigar and cigar[-1][0] in (1, 2, 3):  # I=1, D=2, N=3
+            op, length = cigar.pop()
+            if op == 1:
+                n_query_remove += length
         if not cigar:
             return False
 
@@ -306,9 +316,13 @@ def softclip_read_to_corrected_3prime(
         if not cigar:
             return False
 
-        # 3.5. Strip leading D/N dangling after the walk (minus strand softclip).
-        while cigar and cigar[0][0] in (2, 3):  # D=2, N=3
-            cigar.pop(0)
+        # 3.5. Strip leading D/N/I dangling after the walk (minus strand softclip).
+        # I: absorb into soft-clip (query bases kept in sequence).
+        # D/N: invalid immediately after a leading soft-clip.
+        while cigar and cigar[0][0] in (1, 2, 3):  # I=1, D=2, N=3
+            op, length = cigar.pop(0)
+            if op == 1:
+                n_query_remove += length
         if not cigar:
             return False
 

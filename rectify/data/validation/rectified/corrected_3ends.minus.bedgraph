@@ -1,4 +1,4 @@
-track type=bedGraph name="rectified_corrected_3end_corrected_3ends.minus" description="rectified_corrected_3end_corrected_3ends.minus"
+track type=bedGraph name="corrected_3ends.minus" description="corrected_3ends.minus"
 chrI	128098	128099	1.0000
 chrI	128102	128103	1.0000
 chrII	9834	9835	1.0000
