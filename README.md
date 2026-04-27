@@ -70,9 +70,9 @@ For direct RNA sequencing (DRS), poly(A) tails are present in the read sequence.
 
 The trimmer uses a three-pass algorithm in RNA 5'→3' orientation:
 
-- **Pass 0** — Adapter stub removal: regex `T[CT]{0,10}$` strips the 3'-terminal adapter stub in a single scan.
-- **Pass 1** — Pure-A tail scan: slides leftward from the stripped boundary counting consecutive A-rich bases (strict mode: 0% non-A allowed) to locate the poly(A) / transcript body junction.
-- **Pass 2** — Iterative peel: handles ambiguous boundaries where Nanopore basecalling errors (T calls within the tail) confuse the pure scan; peels the tail one base at a time until A-richness drops below threshold.
+- **Pass 0** — Clean path: Dorado has already stripped the adapter; the read ends cleanly in poly(A). A right-to-left scan finds the tail boundary directly.
+- **Pass 1** — Adapter stub removal: regex `T[CT]{0,10}$` detects a residual adapter stub at the 3' end, strips it, then scans for the poly(A) boundary in the remaining sequence.
+- **Pass 2** — Iterative peel: handles adapter stubs where A-basecalling errors within the stub confuse the regex; peels the suspected stub one base at a time until a clean poly(A) tail is exposed.
 
 Reads with no detectable tail pass through unchanged. Output: an **unaligned BAM** with poly(A)-free reads for re-alignment, plus a **per-read metadata parquet** recording tail length, adapter sequence, and pass number — used by `rectify restore-softclip` (Step 4) to re-attach the original tail to the IGV softclip BAM for tail-length visualization.
 
@@ -160,7 +160,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a detailed description of t
 | Feature | Benefit |
 |:--------|:--------|
 | **DRS Poly(A) Pre-Trimming** | Three-pass algorithm (adapter stub strip → pure-A scan → iterative peel) removes poly(A) + adapter before re-alignment; tail lengths and adapter sequences stored in metadata parquet for downstream restoration |
-| **Multi-Aligner Rectification** | Rectifies each aligner independently, then selects the winning aligner per read using post-rectification features (5' rescue > confidence > agreement > span > junctions); optionally stitches complementary junctions from two aligners (chimeric reconstruction) |
+| **Multi-Aligner Rectification** | Scores each aligner's raw BAM per read using pre-correction signals (5' clip penalty, A-tract depth, junction-proximity errors), selects the winner before correction runs, then optionally stitches complementary junctions from two aligners (chimeric reconstruction) |
 | **Unified 5' Rescue and Junction Refinement** | Cat3 rescues 5'-soft-clipped reads via semi-global NW alignment to the upstream exon; Module 2H refines every N-op boundary post-consensus using homopolymer-aware split-alignment where sequence evidence always overrides annotation |
 | **3' End Walk-Back** | Walks backward from soft-clip boundary to recover true CPA site, transparently absorbing indels, T sequencing errors, and spurious splice junctions (N ops) in a single pass |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
@@ -213,11 +213,13 @@ alignment artifacts. The resulting penalty table is specific to your sequencing 
 ### Step 1 — Profile your dataset
 
 ```bash
-python common/scripts/nanopore/empirical_cigar_error_profiler.py \
+python empirical_cigar_error_profiler.py \
     --run-dir dev_runs/MY_SAMPLE_chunked/ \
-    --reference common/reference_genomes/MAGESTIC_background_strain.fasta \
+    --reference /path/to/genome.fa \
     --output-dir error_profile/MY_SAMPLE/
 ```
+
+> The profiler script (`empirical_cigar_error_profiler.py`) is distributed separately; see [docs/JUNCTION_SHIFT_FDR.md](docs/JUNCTION_SHIFT_FDR.md) for the methodology and a download link.
 
 For chunked data the profiler auto-discovers all chunk BAMs and processes them sequentially,
 accumulating counts in a single tally. A 100K-read run takes ~5 minutes; a full dataset (~10M
