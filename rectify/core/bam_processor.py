@@ -1192,7 +1192,7 @@ def _process_region_worker(
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     tmp_dir: Optional[str] = None,
-    max_reads_for_variant_rescue: int = 5000,
+    max_reads_for_variant_rescue: int = 500,
 ) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
@@ -1315,7 +1315,7 @@ def process_bam_file_parallel(
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
-    max_reads_for_variant_rescue: int = 5000,
+    max_reads_for_variant_rescue: int = 500,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -1744,7 +1744,7 @@ def process_bam_streaming_parallel(
     min_gap_size: int = 10000,
     checkpoint_dir: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
-    max_reads_for_variant_rescue: int = 5000,
+    max_reads_for_variant_rescue: int = 500,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
