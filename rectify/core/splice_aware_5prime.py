@@ -654,35 +654,42 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
     if m == 0:
         return float(n)
 
-    def _del_cost(i: int) -> float:
-        """Cost to delete s1[i-1] (gap in s2)."""
-        c = s1[i - 1]
-        if (i >= 2 and s1[i - 2] == c) or (i < n and s1[i] == c):
-            return 0.5
-        return 1.0
-
-    def _ins_cost(j: int) -> float:
-        """Cost to insert s2[j-1] (gap in s1)."""
-        c = s2[j - 1]
-        if (j >= 2 and s2[j - 2] == c) or (j < m and s2[j] == c):
-            return 0.5
-        return 1.0
+    # Pre-compute HP indel costs for each position in s1 and s2.
+    # del_costs[i-1] = cost to delete s1[i-1]; ins_costs[j-1] = cost to insert s2[j-1].
+    # A base is "in a homopolymer run" if it equals the preceding or following character
+    # in the same string.  Mirrors the original _del_cost/_ins_cost closures exactly:
+    #   _del_cost(i):  c=s1[i-1]; hp if (i>=2 and s1[i-2]==c) or (i<n and s1[i]==c)
+    #   _ins_cost(j):  c=s2[j-1]; hp if (j>=2 and s2[j-2]==c) or (j<m and s2[j]==c)
+    # Pre-computing avoids Python closure calls inside the O(n*m) DP inner loop, which
+    # was the dominant cost (15M+ calls per read with long soft clips).
+    del_costs = [
+        0.5 if (i >= 2 and s1[i - 2] == s1[i - 1]) or (i < n and s1[i - 1] == s1[i]) else 1.0
+        for i in range(1, n + 1)
+    ]
+    ins_costs = [
+        0.5 if (j >= 2 and s2[j - 2] == s2[j - 1]) or (j < m and s2[j - 1] == s2[j]) else 1.0
+        for j in range(1, m + 1)
+    ]
 
     # 2-D DP (sequences are short, so O(n*m) space is fine)
     dp = [[0.0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0] + _del_cost(i)
+        dp[i][0] = dp[i - 1][0] + del_costs[i - 1]
     for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1] + _ins_cost(j)
+        dp[0][j] = dp[0][j - 1] + ins_costs[j - 1]
     for i in range(1, n + 1):
+        dp_i = dp[i]
+        dp_im1 = dp[i - 1]
+        dc = del_costs[i - 1]
+        s1c = s1[i - 1]
         for j in range(1, m + 1):
-            if s1[i - 1] == s2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
+            if s1c == s2[j - 1]:
+                dp_i[j] = dp_im1[j - 1]
             else:
-                dp[i][j] = min(
-                    dp[i - 1][j - 1] + 1.0,   # substitution
-                    dp[i - 1][j] + _del_cost(i),
-                    dp[i][j - 1] + _ins_cost(j),
+                dp_i[j] = min(
+                    dp_im1[j - 1] + 1.0,   # substitution
+                    dp_im1[j] + dc,
+                    dp_i[j - 1] + ins_costs[j - 1],
                 )
     return dp[n][m]
 
