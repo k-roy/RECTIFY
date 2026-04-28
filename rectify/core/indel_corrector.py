@@ -126,6 +126,32 @@ def find_polya_boundary(
 
     # CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5
 
+    # Early exit: check if 3' end is at a poly-A/poly-T homopolymer boundary.
+    # Most reads do NOT end at a homopolymer, so skipping the expensive
+    # O(read_length) CIGAR walk for those reads dramatically reduces CPU and
+    # Python allocator pressure.  For the rDNA locus (~78k long reads all
+    # ending at the poly-A IGS), this alone saves minutes of CPU time.
+    _MIN_HP_LEN = 4
+    if strand == '+':
+        _raw_3p = read.reference_end - 1
+        # Check a small window around the 3' end for poly-A
+        _w_start = max(0, _raw_3p - 1)
+        _w_end = min(len(genome_seq), _raw_3p + _MIN_HP_LEN + 1)
+        _hp_window = genome_seq[_w_start:_w_end].upper()
+        if 'A' * _MIN_HP_LEN not in _hp_window:
+            return None
+    # No early exit for minus strand: the genome at a minus-strand CPA site
+    # may have A's (not T's), since the read carries the poly-A as T's
+    # (reverse-complement of the RNA poly-A tail).  The forward scan detects
+    # poly-A by comparing read T's against genomic A's (rb != gb), so genomic
+    # T content is not a reliable proxy for whether a correction is needed.
+
+    # Limit aligned_positions to the vicinity of the 3' end.  Poly-A walk-backs
+    # are always local (< ~500 bp).  Building the full list for a 10 kb rDNA read
+    # creates ~1 MB of Python heap fragmentation per read; across 78k rDNA reads
+    # this causes the process to balloon to 70+ GB RSS.
+    _MAX_POLYA_SCAN_DEPTH = 1000
+
     if strand == '+':
         # For + strand, 3' end is at right side
         # Walk BACKWARDS from 3' end to find first non-A agreement
@@ -139,7 +165,10 @@ def find_polya_boundary(
 
         # Build list of aligned positions with both read and ref bases
         # (read_pos, ref_pos, read_base, genome_base)
+        # Only collect positions within _MAX_POLYA_SCAN_DEPTH of the 3' end;
+        # the CIGAR is still traversed fully to keep read_pos/ref_pos correct.
         aligned_positions = []
+        _scan_start_ref = max(0, read.reference_end - 1 - _MAX_POLYA_SCAN_DEPTH)
 
         for op, length in cigar:
             if op == 4:  # Soft-clip
@@ -147,9 +176,10 @@ def find_polya_boundary(
             elif op == 0 or op == 7 or op == 8:  # M, =, X - match/mismatch
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
-                        genome_base = genome_seq[ref_pos].upper()
-                        aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                        if ref_pos >= _scan_start_ref:
+                            read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
+                            genome_base = genome_seq[ref_pos].upper()
+                            aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
                     read_pos += 1
                     ref_pos += 1
             elif op == 1:  # Insertion - consumes query only
@@ -158,8 +188,9 @@ def find_polya_boundary(
                 # Mark deletions (read has no base, genome has base)
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        genome_base = genome_seq[ref_pos].upper()
-                        aligned_positions.append((None, ref_pos, None, genome_base))
+                        if ref_pos >= _scan_start_ref:
+                            genome_base = genome_seq[ref_pos].upper()
+                            aligned_positions.append((None, ref_pos, None, genome_base))
                     ref_pos += 1
             elif op == 3:  # N (intron skip) - consumes reference only, not read
                 ref_pos += length
@@ -264,9 +295,10 @@ def find_polya_boundary(
         if cigar[0][0] == 4:
             read_pos = cigar[0][1]
 
-        # Build aligned positions
+        # Build aligned positions (only near the 3' end)
         aligned_positions = []
         first_n_start = None  # ref_pos of first N-op (intron) boundary, if any
+        _scan_end_ref = read.reference_start + _MAX_POLYA_SCAN_DEPTH
 
         for op, length in cigar:
             if op == 4:  # Soft-clip
@@ -274,9 +306,10 @@ def find_polya_boundary(
             elif op == 0 or op == 7 or op == 8:  # M, =, X
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
-                        genome_base = genome_seq[ref_pos].upper()
-                        aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                        if ref_pos <= _scan_end_ref:
+                            read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
+                            genome_base = genome_seq[ref_pos].upper()
+                            aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
                     read_pos += 1
                     ref_pos += 1
             elif op == 1:  # Insertion
@@ -284,8 +317,9 @@ def find_polya_boundary(
             elif op == 2:  # Deletion
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        genome_base = genome_seq[ref_pos].upper()
-                        aligned_positions.append((None, ref_pos, None, genome_base))
+                        if ref_pos <= _scan_end_ref:
+                            genome_base = genome_seq[ref_pos].upper()
+                            aligned_positions.append((None, ref_pos, None, genome_base))
                     ref_pos += 1
             elif op == 3:  # N (intron skip) - consumes reference only, not read
                 if first_n_start is None:
