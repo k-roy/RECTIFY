@@ -54,6 +54,7 @@ Updated: 2026-03-26 - Added variant-aware two-pass homopolymer rescue
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field
+import array as _array_mod
 import pysam
 
 from ..config import (
@@ -65,6 +66,27 @@ from ..config import (
 from ..utils.alignment import extract_deletions, extract_insertions
 from ..utils.genome import fetch_genomic_sequence, standardize_chrom_name
 from ..config import CHROM_TO_GENOME
+
+
+# =============================================================================
+# Pre-allocated scratch buffers for find_polya_boundary()
+# =============================================================================
+# Reused across calls to avoid Python allocator fragmentation from allocating
+# and freeing ~1000 tuples per rDNA read × 78k rDNA reads.  array.array uses
+# a contiguous C buffer with no per-element Python object; memory is fixed at
+# module-import time.  Safe for multiprocessing (each process has its own copy)
+# and for single-threaded streaming (--threads 1).
+#
+#   _sc_rp[i]   = read_pos; -1 signals a deletion (no read base)
+#   _sc_refp[i] = ref_pos
+#   _sc_rb[i]   = read base as ASCII ord (0 for deletions)
+#   _sc_gb[i]   = genome base as ASCII ord (always set)
+
+_POLYA_SCRATCH_N = 1200  # slightly more than _MAX_POLYA_SCAN_DEPTH (1000)
+_sc_rp   = _array_mod.array('i', [0] * _POLYA_SCRATCH_N)
+_sc_refp = _array_mod.array('i', [0] * _POLYA_SCRATCH_N)
+_sc_rb   = _array_mod.array('B', [0] * _POLYA_SCRATCH_N)
+_sc_gb   = _array_mod.array('B', [0] * _POLYA_SCRATCH_N)
 
 
 # =============================================================================
@@ -146,10 +168,10 @@ def find_polya_boundary(
     # poly-A by comparing read T's against genomic A's (rb != gb), so genomic
     # T content is not a reliable proxy for whether a correction is needed.
 
-    # Limit aligned_positions to the vicinity of the 3' end.  Poly-A walk-backs
-    # are always local (< ~500 bp).  Building the full list for a 10 kb rDNA read
-    # creates ~1 MB of Python heap fragmentation per read; across 78k rDNA reads
-    # this causes the process to balloon to 70+ GB RSS.
+    # Limit the scan to the vicinity of the 3' end.  Poly-A walk-backs are
+    # always local (< ~500 bp).  The scratch arrays (_sc_*) are pre-allocated
+    # at module level (_POLYA_SCRATCH_N slots) to avoid per-call Python heap
+    # allocation — a 70+ GB RSS regression on the rDNA locus (78k long reads).
     _MAX_POLYA_SCAN_DEPTH = 1000
 
     if strand == '+':
@@ -163,11 +185,10 @@ def find_polya_boundary(
         if cigar[0][0] == 4:
             read_pos = cigar[0][1]
 
-        # Build list of aligned positions with both read and ref bases
-        # (read_pos, ref_pos, read_base, genome_base)
-        # Only collect positions within _MAX_POLYA_SCAN_DEPTH of the 3' end;
-        # the CIGAR is still traversed fully to keep read_pos/ref_pos correct.
-        aligned_positions = []
+        # Fill module-level scratch arrays instead of building a list of tuples.
+        # This eliminates per-call Python heap allocation (the main source of
+        # allocator fragmentation on the rDNA locus with 78k long reads).
+        _n = 0
         _scan_start_ref = max(0, read.reference_end - 1 - _MAX_POLYA_SCAN_DEPTH)
 
         for op, length in cigar:
@@ -176,26 +197,30 @@ def find_polya_boundary(
             elif op == 0 or op == 7 or op == 8:  # M, =, X - match/mismatch
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        if ref_pos >= _scan_start_ref:
-                            read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
-                            genome_base = genome_seq[ref_pos].upper()
-                            aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                        if ref_pos >= _scan_start_ref and _n < _POLYA_SCRATCH_N:
+                            _sc_rp[_n] = read_pos
+                            _sc_refp[_n] = ref_pos
+                            _sc_rb[_n] = ord(seq[read_pos].upper()) if read_pos < len(seq) else 78  # 78 = ord('N')
+                            _sc_gb[_n] = ord(genome_seq[ref_pos])  # genome already uppercase
+                            _n += 1
                     read_pos += 1
                     ref_pos += 1
             elif op == 1:  # Insertion - consumes query only
                 read_pos += length
             elif op == 2:  # Deletion - consumes reference only
-                # Mark deletions (read has no base, genome has base)
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        if ref_pos >= _scan_start_ref:
-                            genome_base = genome_seq[ref_pos].upper()
-                            aligned_positions.append((None, ref_pos, None, genome_base))
+                        if ref_pos >= _scan_start_ref and _n < _POLYA_SCRATCH_N:
+                            _sc_rp[_n] = -1   # -1 signals deletion
+                            _sc_refp[_n] = ref_pos
+                            _sc_rb[_n] = 0
+                            _sc_gb[_n] = ord(genome_seq[ref_pos])
+                            _n += 1
                     ref_pos += 1
             elif op == 3:  # N (intron skip) - consumes reference only, not read
                 ref_pos += length
 
-        if not aligned_positions:
+        if _n == 0:
             return None
 
         # Walk BACKWARDS from the 3' end (last aligned position)
@@ -213,22 +238,23 @@ def find_polya_boundary(
         _POLY_NOISE_WINDOW = 50
         _MIN_LARGE_DEL = 5
 
-        scan_end_idx = len(aligned_positions)
+        scan_end_idx = _n
         _last_gb = None
-        for _ap in reversed(aligned_positions):
-            if _ap[0] is not None:
-                _last_gb = _ap[3]
+        for _k in range(_n - 1, -1, -1):
+            if _sc_rp[_k] != -1:
+                _last_gb = chr(_sc_gb[_k])
                 break
         if _last_gb == 'A':
-            _i = len(aligned_positions) - 1
+            _i = _n - 1
             while _i >= 0:
-                _rp, _refp, _rb, _gb = aligned_positions[_i]
-                if _refp is not None and raw_3prime - _refp > _POLY_NOISE_WINDOW:
+                _refp_i = _sc_refp[_i]
+                _rp_i = _sc_rp[_i]
+                if raw_3prime - _refp_i > _POLY_NOISE_WINDOW:
                     break
-                if _rp is None:  # deletion entry
+                if _rp_i == -1:  # deletion entry
                     # Find the start of this deletion block (scan left)
                     _j = _i
-                    while _j > 0 and aligned_positions[_j - 1][0] is None:
+                    while _j > 0 and _sc_rp[_j - 1] == -1:
                         _j -= 1
                     if _i - _j + 1 >= _MIN_LARGE_DEL:
                         scan_end_idx = _j  # restrict backward scan to before this deletion
@@ -244,9 +270,12 @@ def find_polya_boundary(
         _POLYA_TAIL_CTX_K = 4
 
         for i in range(scan_end_idx - 1, -1, -1):
-            rp, refp, rb, gb = aligned_positions[i]
-            if rp is None:  # Skip deletions
+            rp = _sc_rp[i]
+            if rp == -1:  # Skip deletions
                 continue
+            refp = _sc_refp[i]
+            rb = chr(_sc_rb[i])
+            gb = chr(_sc_gb[i])
             # Check: do genome and read agree on a non-A base?
             if rb == gb and gb != 'A':
                 # Poly-A tail context guard: inspect K positions to the left.
@@ -257,9 +286,11 @@ def find_polya_boundary(
                 _ctx_has_mismatch = False
                 _ctx_n = 0
                 for _j in range(i - 1, -1, -1):
-                    _jrp, _, _jrb, _jgb = aligned_positions[_j]
-                    if _jrp is None:
+                    _jrp = _sc_rp[_j]
+                    if _jrp == -1:
                         continue  # skip deletions
+                    _jrb = chr(_sc_rb[_j])
+                    _jgb = chr(_sc_gb[_j])
                     if _jrb != 'A':
                         _ctx_all_a = False
                         break
@@ -295,8 +326,8 @@ def find_polya_boundary(
         if cigar[0][0] == 4:
             read_pos = cigar[0][1]
 
-        # Build aligned positions (only near the 3' end)
-        aligned_positions = []
+        # Fill scratch arrays (same logic as + strand, but from left end).
+        _n = 0
         first_n_start = None  # ref_pos of first N-op (intron) boundary, if any
         _scan_end_ref = read.reference_start + _MAX_POLYA_SCAN_DEPTH
 
@@ -306,10 +337,12 @@ def find_polya_boundary(
             elif op == 0 or op == 7 or op == 8:  # M, =, X
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        if ref_pos <= _scan_end_ref:
-                            read_base = seq[read_pos].upper() if read_pos < len(seq) else 'N'
-                            genome_base = genome_seq[ref_pos].upper()
-                            aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                        if ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
+                            _sc_rp[_n] = read_pos
+                            _sc_refp[_n] = ref_pos
+                            _sc_rb[_n] = ord(seq[read_pos].upper()) if read_pos < len(seq) else 78
+                            _sc_gb[_n] = ord(genome_seq[ref_pos])
+                            _n += 1
                     read_pos += 1
                     ref_pos += 1
             elif op == 1:  # Insertion
@@ -317,16 +350,19 @@ def find_polya_boundary(
             elif op == 2:  # Deletion
                 for i in range(length):
                     if ref_pos < len(genome_seq):
-                        if ref_pos <= _scan_end_ref:
-                            genome_base = genome_seq[ref_pos].upper()
-                            aligned_positions.append((None, ref_pos, None, genome_base))
+                        if ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
+                            _sc_rp[_n] = -1
+                            _sc_refp[_n] = ref_pos
+                            _sc_rb[_n] = 0
+                            _sc_gb[_n] = ord(genome_seq[ref_pos])
+                            _n += 1
                     ref_pos += 1
             elif op == 3:  # N (intron skip) - consumes reference only, not read
                 if first_n_start is None:
                     first_n_start = ref_pos  # record first intron boundary
                 ref_pos += length
 
-        if not aligned_positions:
+        if _n == 0:
             return None
 
         # Walk FORWARD from the 3' end (first aligned position)
@@ -341,13 +377,13 @@ def find_polya_boundary(
         # for a read with 11M223N, where all 11M are T=T and the first exon-2 base
         # happens to match the read base right after the intron).
         if first_n_start is not None:
-            scan_limit = next(
-                (i for i, (rp, refp, rb, gb) in enumerate(aligned_positions)
-                 if refp is not None and refp >= first_n_start),
-                len(aligned_positions)
-            )
+            scan_limit = _n
+            for _k in range(_n):
+                if _sc_refp[_k] >= first_n_start:
+                    scan_limit = _k
+                    break
         else:
-            scan_limit = len(aligned_positions)
+            scan_limit = _n
 
         # Pre-scan: detect poly-A over-calling artifacts near the 3' end.
         # When the alignment starts in a poly-T context (first real aligned position has
@@ -361,20 +397,21 @@ def find_polya_boundary(
 
         scan_start_idx = 0
         _first_gb = None
-        for _ap in aligned_positions[:scan_limit]:
-            if _ap[0] is not None:
-                _first_gb = _ap[3]
+        for _k in range(scan_limit):
+            if _sc_rp[_k] != -1:
+                _first_gb = chr(_sc_gb[_k])
                 break
         if _first_gb == 'T':
             _i = 0
             while _i < scan_limit:
-                _rp, _refp, _rb, _gb = aligned_positions[_i]
-                if _refp is not None and _refp - raw_3prime > _POLY_NOISE_WINDOW:
+                _rp_i = _sc_rp[_i]
+                _refp_i = _sc_refp[_i]
+                if _refp_i - raw_3prime > _POLY_NOISE_WINDOW:
                     break
-                if _rp is None:  # deletion entry
+                if _rp_i == -1:  # deletion entry
                     # Find the end of this deletion block (scan right)
                     _j = _i
-                    while _j < scan_limit - 1 and aligned_positions[_j + 1][0] is None:
+                    while _j < scan_limit - 1 and _sc_rp[_j + 1] == -1:
                         _j += 1
                     if _j - _i + 1 >= _MIN_LARGE_DEL:
                         scan_start_idx = _j + 1  # start forward scan from after this deletion
@@ -389,9 +426,12 @@ def find_polya_boundary(
         _POLYT_TAIL_CTX_K = 4
 
         for i in range(scan_start_idx, scan_limit):
-            rp, refp, rb, gb = aligned_positions[i]
-            if rp is None:  # Skip deletions
+            rp = _sc_rp[i]
+            if rp == -1:  # Skip deletions
                 continue
+            refp = _sc_refp[i]
+            rb = chr(_sc_rb[i])
+            gb = chr(_sc_gb[i])
             # Check: do genome and read agree on a non-T base?
             if rb == gb and gb != 'T':
                 # Poly-T tail context guard: inspect K positions to the right.
@@ -399,9 +439,11 @@ def find_polya_boundary(
                 _ctx_has_mismatch = False
                 _ctx_n = 0
                 for _j in range(i + 1, scan_limit):
-                    _jrp, _, _jrb, _jgb = aligned_positions[_j]
-                    if _jrp is None:
+                    _jrp = _sc_rp[_j]
+                    if _jrp == -1:
                         continue
+                    _jrb = chr(_sc_rb[_j])
+                    _jgb = chr(_sc_gb[_j])
                     if _jrb != 'T':
                         _ctx_all_t = False
                         break
@@ -419,12 +461,12 @@ def find_polya_boundary(
         # pre-N block ends in poly-T, use the N-op start as the CPA. The intron
         # boundary is the natural exon-end, so the CPA is the first intron position.
         if true_cpa_ref_pos is None and first_n_start is not None and scan_limit > 0:
-            last_pre_n = next(
-                (aligned_positions[k] for k in range(scan_limit - 1, -1, -1)
-                 if aligned_positions[k][0] is not None),
-                None
-            )
-            if last_pre_n is not None and last_pre_n[3] == 'T':
+            _last_pre_n_gb = None
+            for _k in range(scan_limit - 1, -1, -1):
+                if _sc_rp[_k] != -1:
+                    _last_pre_n_gb = chr(_sc_gb[_k])
+                    break
+            if _last_pre_n_gb == 'T':
                 true_cpa_ref_pos = first_n_start
 
         if true_cpa_ref_pos is not None:
