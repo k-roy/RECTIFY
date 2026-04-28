@@ -29,6 +29,7 @@ Date: 2026-03-24
 
 from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
+import array as _array_mod
 import pysam
 
 from ..utils.genome import standardize_chrom_name
@@ -616,6 +617,26 @@ def _edit_distance(s1: str, s2: str) -> int:
     return dp[m]
 
 
+# ---------------------------------------------------------------------------
+# Pre-allocated scratch buffers for _hp_edit_distance.
+#
+# Python's arena allocator never returns claimed arenas to the OS.  Each call
+# to _hp_edit_distance previously allocated a 2D list-of-lists DP table
+# (~1 MB for 192×192 sequences) plus two cost lists — all GC'd between calls
+# but leaving arenas partially occupied.  With ~20% of reads triggering
+# rescue_3ss_truncation × 6k calls/read × 37k floats/call, the arena pool
+# grows to tens of GB and never shrinks.
+#
+# Fix: single module-level flat array.array buffers reused on every call.
+# No Python heap allocation inside _hp_edit_distance at all.
+# ---------------------------------------------------------------------------
+_HP_ED_MAX_LEN = 200          # sequences longer than this are truncated
+_HP_ED_STRIDE  = _HP_ED_MAX_LEN + 1          # row stride (m+1 dimension)
+_hp_ed_dp  = _array_mod.array('d', [0.0] * _HP_ED_STRIDE * _HP_ED_STRIDE)
+_hp_ed_del = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
+_hp_ed_ins = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
+
+
 def _hp_edit_distance(s1: str, s2: str) -> float:
     """Edit distance with 0.5 penalty for indels within homopolymer runs.
 
@@ -648,50 +669,57 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
     the heuristic is adequate; revisit if Cat3 false-positives appear at
     long A/T HP exon-ends.
     """
-    n, m = len(s1), len(s2)
+    # Truncate to the pre-allocated buffer size (splice-site rescue does not
+    # benefit from more than ~200 bp of context).
+    n = len(s1)
+    m = len(s2)
+    if n > _HP_ED_MAX_LEN:
+        n = _HP_ED_MAX_LEN
+        s1 = s1[:n]
+    if m > _HP_ED_MAX_LEN:
+        m = _HP_ED_MAX_LEN
+        s2 = s2[:m]
     if n == 0:
         return float(m)
     if m == 0:
         return float(n)
 
-    # Pre-compute HP indel costs for each position in s1 and s2.
-    # del_costs[i-1] = cost to delete s1[i-1]; ins_costs[j-1] = cost to insert s2[j-1].
-    # A base is "in a homopolymer run" if it equals the preceding or following character
-    # in the same string.  Mirrors the original _del_cost/_ins_cost closures exactly:
-    #   _del_cost(i):  c=s1[i-1]; hp if (i>=2 and s1[i-2]==c) or (i<n and s1[i]==c)
-    #   _ins_cost(j):  c=s2[j-1]; hp if (j>=2 and s2[j-2]==c) or (j<m and s2[j]==c)
-    # Pre-computing avoids Python closure calls inside the O(n*m) DP inner loop, which
-    # was the dominant cost (15M+ calls per read with long soft clips).
-    del_costs = [
-        0.5 if (i >= 2 and s1[i - 2] == s1[i - 1]) or (i < n and s1[i - 1] == s1[i]) else 1.0
-        for i in range(1, n + 1)
-    ]
-    ins_costs = [
-        0.5 if (j >= 2 and s2[j - 2] == s2[j - 1]) or (j < m and s2[j - 1] == s2[j]) else 1.0
-        for j in range(1, m + 1)
-    ]
-
-    # 2-D DP (sequences are short, so O(n*m) space is fine)
-    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    # Fill HP-cost arrays in-place (no allocation).
+    # _hp_ed_del[i-1] = cost to delete s1[i-1] (0.5 if in HP run, else 1.0).
+    # _hp_ed_ins[j-1] = cost to insert s2[j-1].
     for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0] + del_costs[i - 1]
+        _hp_ed_del[i - 1] = (
+            0.5 if (i >= 2 and s1[i - 2] == s1[i - 1]) or (i < n and s1[i - 1] == s1[i])
+            else 1.0
+        )
     for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1] + ins_costs[j - 1]
+        _hp_ed_ins[j - 1] = (
+            0.5 if (j >= 2 and s2[j - 2] == s2[j - 1]) or (j < m and s2[j - 1] == s2[j])
+            else 1.0
+        )
+
+    # 2-D DP using flat pre-allocated array.  Index: dp[i][j] = _hp_ed_dp[i*S + j].
+    _S = _HP_ED_STRIDE
+    _dp = _hp_ed_dp
+    _dp[0] = 0.0
+    for j in range(1, m + 1):
+        _dp[j] = _dp[j - 1] + _hp_ed_ins[j - 1]
     for i in range(1, n + 1):
-        dp_i = dp[i]
-        dp_im1 = dp[i - 1]
-        dc = del_costs[i - 1]
-        s1c = s1[i - 1]
+        _row  = i * _S
+        _prev = _row - _S
+        dc    = _hp_ed_del[i - 1]
+        s1c   = s1[i - 1]
+        _dp[_row] = _dp[_prev] + dc
         for j in range(1, m + 1):
             if s1c == s2[j - 1]:
-                dp_i[j] = dp_im1[j - 1]
+                _dp[_row + j] = _dp[_prev + j - 1]
             else:
-                dp_i[j] = min(
-                    dp_im1[j - 1] + 1.0,   # substitution
-                    dp_im1[j] + dc,
-                    dp_i[j - 1] + ins_costs[j - 1],
+                _dp[_row + j] = min(
+                    _dp[_prev + j - 1] + 1.0,        # substitution
+                    _dp[_prev + j]     + dc,           # deletion
+                    _dp[_row  + j - 1] + _hp_ed_ins[j - 1],  # insertion
                 )
-    return dp[n][m]
+    return _dp[n * _S + m]
 
 
 # 3'SS acceptor dinucleotide priority (lower = more canonical).
