@@ -952,7 +952,32 @@ def rescue_mismatch_inside_homopolymer(
     # - 5' end: + strand = left side, - strand = right side
     use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
 
-    # Build aligned positions (same for both sides)
+    # Fast path: check homopolymer boundary BEFORE building aligned_positions.
+    # Most reads (especially in high-depth repetitive regions like rDNA) do not
+    # end at homopolymer boundaries, so this early exit avoids an O(read_length)
+    # CIGAR walk for the vast majority of reads.
+    if use_right_side:
+        raw_pos = current_pos if current_pos is not None else (read.reference_end - 1)
+        if raw_pos is None:
+            return None
+        boundary_end = min(len(genome_seq), raw_pos + min_homopolymer_len + 1)
+        boundary_seq = genome_seq[raw_pos:boundary_end].upper()
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+        homopolymer_base = boundary_seq[0]
+        if not all(b == homopolymer_base for b in boundary_seq[:min_homopolymer_len]):
+            return None  # Not at a homopolymer boundary - skip expensive CIGAR walk
+    else:
+        raw_pos = current_pos if current_pos is not None else read.reference_start
+        boundary_start = max(0, raw_pos - min_homopolymer_len)
+        boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
+        if len(boundary_seq) < min_homopolymer_len:
+            return None
+        homopolymer_base = boundary_seq[-1]
+        if not all(b == homopolymer_base for b in boundary_seq[-min_homopolymer_len:]):
+            return None  # Not at a homopolymer boundary - skip expensive CIGAR walk
+
+    # Build aligned positions (only reached when at a homopolymer boundary)
     ref_pos = read.reference_start
     read_pos = 0
 
@@ -987,22 +1012,6 @@ def rescue_mismatch_inside_homopolymer(
         return None
 
     if use_right_side:
-        # Right side: position at reference_end - 1, walk backwards
-        # Use prior corrected position if provided, otherwise fall back to BAM raw.
-        raw_pos = current_pos if current_pos is not None else (read.reference_end - 1)
-
-        # Check if we're inside a homopolymer at the boundary
-        boundary_end = min(len(genome_seq), raw_pos + min_homopolymer_len + 1)
-        boundary_seq = genome_seq[raw_pos:boundary_end].upper()
-
-        if len(boundary_seq) < min_homopolymer_len:
-            return None
-
-        # Check if the position is inside a homopolymer
-        homopolymer_base = boundary_seq[0]
-        if not all(b == homopolymer_base for b in boundary_seq[:min_homopolymer_len]):
-            return None  # Not inside a homopolymer
-
         # Walk BACKWARDS from end looking for non-homopolymer bases in the READ
         rescued_count = 0
         rescued_bases = []
@@ -1037,22 +1046,6 @@ def rescue_mismatch_inside_homopolymer(
         }
 
     else:  # use_left_side
-        # Left side: position at reference_start, walk forwards
-        # Use prior corrected position if provided, otherwise fall back to BAM raw.
-        raw_pos = current_pos if current_pos is not None else read.reference_start
-
-        # Check if we're inside a homopolymer at the boundary
-        boundary_start = max(0, raw_pos - min_homopolymer_len)
-        boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
-
-        if len(boundary_seq) < min_homopolymer_len:
-            return None
-
-        # Check if the position is inside a homopolymer
-        homopolymer_base = boundary_seq[-1]
-        if not all(b == homopolymer_base for b in boundary_seq[-min_homopolymer_len:]):
-            return None  # Not inside a homopolymer
-
         # Walk FORWARD from end looking for non-homopolymer bases in the READ
         rescued_count = 0
         rescued_bases = []
@@ -1155,6 +1148,7 @@ class VariantAwareHomopolymerRescue:
         min_reads_for_variant_call: int = 5,
         min_homopolymer_len: int = 4,  # Increased from 3 for safety
         max_rescue_bases: int = 3,      # Limit rescue to 3bp max
+        max_reads_per_coordinate: int = 1000,  # Cap reads per position for scan
     ):
         """
         Initialize variant-aware rescue.
@@ -1168,11 +1162,16 @@ class VariantAwareHomopolymerRescue:
                 (default 4, increased from 3 for safety)
             max_rescue_bases: Maximum bases to rescue in one operation (default 3,
                 nanopore under-calling rarely exceeds this)
+            max_reads_per_coordinate: Cap on reads counted per variant position
+                during scanning (default 1000). Prevents over-processing of
+                high-depth regions like rDNA. 1000 is ~200x the min_reads_for_variant_call
+                threshold, so variant calls remain fully reliable.
         """
         self.min_variant_fraction = min_variant_fraction
         self.min_reads_for_variant_call = min_reads_for_variant_call
         self.min_homopolymer_len = min_homopolymer_len
         self.max_rescue_bases = max_rescue_bases
+        self.max_reads_per_coordinate = max_reads_per_coordinate
 
         # Position frequency tracking: (chrom, position) -> MismatchFrequency
         self._mismatch_freq: Dict[Tuple[str, int], MismatchFrequency] = {}
@@ -1215,7 +1214,29 @@ class VariantAwareHomopolymerRescue:
         # Determine which side to examine
         use_right_side = (strand == '+' and end == '3prime') or (strand == '-' and end == '5prime')
 
-        # Build aligned positions
+        # Fast path: check homopolymer boundary BEFORE building aligned_positions.
+        # Most reads do not end at homopolymer boundaries; this avoids an O(read_length)
+        # CIGAR walk for the vast majority, especially in high-depth repetitive regions.
+        if use_right_side:
+            raw_pos = read.reference_end - 1
+            boundary_end = min(len(genome_seq), raw_pos + self.min_homopolymer_len + 1)
+            boundary_seq = genome_seq[raw_pos:boundary_end].upper()
+            if len(boundary_seq) < self.min_homopolymer_len:
+                return
+            homopolymer_base = boundary_seq[0]
+            if not all(b == homopolymer_base for b in boundary_seq[:self.min_homopolymer_len]):
+                return  # Not at a homopolymer boundary - skip expensive CIGAR walk
+        else:
+            raw_pos = read.reference_start
+            boundary_start = max(0, raw_pos - self.min_homopolymer_len)
+            boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
+            if len(boundary_seq) < self.min_homopolymer_len:
+                return
+            homopolymer_base = boundary_seq[-1]
+            if not all(b == homopolymer_base for b in boundary_seq[-self.min_homopolymer_len:]):
+                return  # Not at a homopolymer boundary - skip expensive CIGAR walk
+
+        # Build aligned positions (only reached when at a homopolymer boundary)
         ref_pos = read.reference_start
         read_pos = 0
         if cigar[0][0] == 4:  # Skip soft-clip at start
@@ -1245,19 +1266,6 @@ class VariantAwareHomopolymerRescue:
 
         # Find positions inside homopolymers where read has non-homopolymer base
         if use_right_side:
-            raw_pos = read.reference_end - 1
-
-            # Check if we're at/near a homopolymer
-            boundary_end = min(len(genome_seq), raw_pos + self.min_homopolymer_len + 1)
-            boundary_seq = genome_seq[raw_pos:boundary_end].upper()
-
-            if len(boundary_seq) < self.min_homopolymer_len:
-                return
-
-            homopolymer_base = boundary_seq[0]
-            if not all(b == homopolymer_base for b in boundary_seq[:self.min_homopolymer_len]):
-                return  # Not inside a homopolymer
-
             # Walk backwards looking for mismatches
             for i in range(len(aligned_positions) - 1, -1, -1):
                 rp, refp, rb, gb = aligned_positions[i]
@@ -1275,8 +1283,12 @@ class VariantAwareHomopolymerRescue:
                             homopolymer_base=homopolymer_base
                         )
 
-                    self._mismatch_freq[key].total_reads += 1
-                    self._mismatch_freq[key].mismatch_counts[rb] += 1
+                    # Cap reads per coordinate: 1000 is far above the
+                    # min_reads_for_variant_call threshold (default 5),
+                    # so variant calls remain fully reliable.
+                    if self._mismatch_freq[key].total_reads < self.max_reads_per_coordinate:
+                        self._mismatch_freq[key].total_reads += 1
+                        self._mismatch_freq[key].mismatch_counts[rb] += 1
                     break  # Only record first mismatch
 
                 # Stop if we've moved past homopolymer region
@@ -1284,18 +1296,6 @@ class VariantAwareHomopolymerRescue:
                     break
 
         else:  # left side
-            raw_pos = read.reference_start
-
-            boundary_start = max(0, raw_pos - self.min_homopolymer_len)
-            boundary_seq = genome_seq[boundary_start:raw_pos + 1].upper()
-
-            if len(boundary_seq) < self.min_homopolymer_len:
-                return
-
-            homopolymer_base = boundary_seq[-1]
-            if not all(b == homopolymer_base for b in boundary_seq[-self.min_homopolymer_len:]):
-                return
-
             # Walk forward looking for mismatches
             for i in range(len(aligned_positions)):
                 rp, refp, rb, gb = aligned_positions[i]
@@ -1312,8 +1312,9 @@ class VariantAwareHomopolymerRescue:
                             homopolymer_base=homopolymer_base
                         )
 
-                    self._mismatch_freq[key].total_reads += 1
-                    self._mismatch_freq[key].mismatch_counts[rb] += 1
+                    if self._mismatch_freq[key].total_reads < self.max_reads_per_coordinate:
+                        self._mismatch_freq[key].total_reads += 1
+                        self._mismatch_freq[key].mismatch_counts[rb] += 1
                     break
 
                 if gb != homopolymer_base:
