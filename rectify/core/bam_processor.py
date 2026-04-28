@@ -1192,6 +1192,7 @@ def _process_region_worker(
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     tmp_dir: Optional[str] = None,
+    max_reads_for_variant_rescue: int = 5000,
 ) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
@@ -1233,6 +1234,7 @@ def _process_region_worker(
     if netseq_dir:
         netseq_loader = _load_netseq(netseq_dir)
 
+    _rescue_reads_count = 0
     try:
         for read in bam.fetch(chrom, start, end):
             # Skip unmapped/secondary/supplementary
@@ -1246,6 +1248,19 @@ def _process_region_worker(
             if read.reference_start < start:
                 continue
 
+            # Cap variant-aware rescue for high-depth regions (e.g. rDNA).
+            # After max_reads_for_variant_rescue reads the variant dictionary is
+            # already well-populated (min_reads_for_variant_call=5), so further
+            # scan updates waste CPU.  Remaining reads fall back to plain rescue.
+            if variant_aware_rescue is not None:
+                if _rescue_reads_count < max_reads_for_variant_rescue:
+                    _local_rescue = variant_aware_rescue
+                    _rescue_reads_count += 1
+                else:
+                    _local_rescue = None
+            else:
+                _local_rescue = None
+
             # Apply corrections
             read_results = correct_read_3prime(
                 read,
@@ -1256,7 +1271,7 @@ def _process_region_worker(
                 apply_polya_trim=apply_polya_trim,
                 apply_indel_correction=apply_indel_correction,
                 netseq_loader=netseq_loader,
-                variant_aware_rescue=variant_aware_rescue,
+                variant_aware_rescue=_local_rescue,
                 annotated_junctions=annotated_junctions,
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
@@ -1300,6 +1315,7 @@ def process_bam_file_parallel(
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
+    max_reads_for_variant_rescue: int = 5000,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -1402,6 +1418,7 @@ def process_bam_file_parallel(
                 annotated_junctions,
                 gene_interval_trees,
                 polya_model,
+                max_reads_for_variant_rescue=max_reads_for_variant_rescue,
             )
             all_results.extend(results)
 
@@ -1441,6 +1458,7 @@ def process_bam_file_parallel(
         annotated_junctions=annotated_junctions,
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
+        max_reads_for_variant_rescue=max_reads_for_variant_rescue,
     )
 
     all_results = []
@@ -1726,6 +1744,7 @@ def process_bam_streaming_parallel(
     min_gap_size: int = 10000,
     checkpoint_dir: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
+    max_reads_for_variant_rescue: int = 5000,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
@@ -1869,6 +1888,7 @@ def process_bam_streaming_parallel(
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
         tmp_dir=_tmp_dir,
+        max_reads_for_variant_rescue=max_reads_for_variant_rescue,
     )
 
     # Build the TSV header (identical to process_bam_streaming)
