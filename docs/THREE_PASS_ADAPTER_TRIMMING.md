@@ -87,14 +87,14 @@ sequence, not adapter.
 **Trigger:** After the regex attempt and `_scan_polya()`, `polya_len < min_polya`
 **and** the last base of the window is not `'A'`.
 
-**Situation:** A basecalling error inside the stub introduces a G (or other non-T/C
-base), breaking the regex pattern entirely. For example:
+**Situation:** A basecalling error inside the adapter stub introduces a non-T/C base,
+breaking the regex pattern entirely. For example, a T→G miscall in the stub:
 
 ```
   True:    ...GCUAAGCAAAAAAAAAAAAAAATCTTCT
   Called:  ...GCUAAGCAAAAAAAAAAAAAAATCGTCT
                                       ^
-                                    A→G miscall
+                                    T→G miscall in adapter stub
 ```
 
 The G makes `T[CT]{0,10}$` fail — `TCGTCT` contains G so the regex cannot match.
