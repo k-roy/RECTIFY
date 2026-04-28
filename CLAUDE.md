@@ -163,7 +163,12 @@ prevent opposite-direction corrections from cancelling.
 
 ---
 
-## DRS-trimmed FASTQ: strip auxiliary tags before alignment
+## gapmm2: cleaned FASTQ required (DRS auxiliary tags + duplicate UUIDs)
+
+`run_gapmm2()` in `multi_aligner.py` always writes a cleaned, deduplicated FASTQ
+before calling gapmm2.  Two separate issues require this:
+
+### Issue 1: DRS auxiliary-tag headers
 
 `trim_drs_bam_polya()` + `samtools fastq -T pt` produces FASTQ with tab-separated
 auxiliary tags embedded in the read header, e.g.:
@@ -172,19 +177,62 @@ auxiliary tags embedded in the read header, e.g.:
 @6c606d1b-2310-4292-a285-d519fbd52502	pt:i:25
 ```
 
-**Problem:** gapmm2 runs minimap2 to produce a PAF, then looks up each query
-sequence by name using `query_idx.seq(paf[0])`. minimap2 strips everything after
-the first whitespace when building the read name in the PAF, so `paf[0]` = just
-the UUID. But mappy's sequence index retains the full header including the tab
-and `pt:i:N` suffix, so `query_idx.seq(UUID)` returns `None` →
-`TypeError: object of type 'NoneType' has no len()`.
+gapmm2 runs minimap2 to produce a PAF, then looks up each aligned read's sequence
+via `query_idx.seq(paf[0])`.  minimap2 strips everything after the first whitespace
+→ `paf[0]` = bare UUID.  mappy 2.30 also strips tabs when indexing, so in practice
+both names match.  We strip tags anyway for robustness.
 
-**Fix:** Strip auxiliary tags from FASTQ headers before passing to gapmm2 (or any
-aligner that round-trips through PAF):
+### Issue 2: Duplicate UUIDs with empty sequences (root cause of TypeError crash)
+
+DRS-trimmed FASTQs from Dorado contain a small number of reads (~1–2%) with
+**duplicate UUIDs**: one entry has an empty sequence (a Dorado placeholder) and
+one has the real sequence.  When mappy builds its index from a FASTQ containing
+duplicate read names, `seq(name)` returns `None` for **both** entries, regardless
+of whether they have real sequences.  This causes a `TypeError` in gapmm2's
+refinement loop (`len(None)` at `align.py:883`), which crashes gapmm2 after
+processing only the reads before the first duplicate — typically ~22k out of 695k.
+
+**Diagnosis:** The crash is deterministic (same UUID every run); the output PAF
+has exactly N lines, where N is the number of aligned reads before the first
+duplicate UUID appears in minimap2's output stream.
+
+**Fix (in `run_gapmm2`):** Always write a cleaned FASTQ that:
+1. Strips DRS auxiliary tags from read names (`@UUID\tpt:i:N` → `@UUID`)
+2. Skips reads with empty sequences
+3. Skips subsequent occurrences of the same UUID (deduplicates)
 
 ```python
-clean_header = "@" + read_id + "\n"  # keep UUID only
+seen_uuids: set = set()
+with opener(reads_path, 'rt') as src, open(tmp_fastq, 'w') as dst:
+    while True:
+        header = src.readline()
+        if not header:
+            break
+        seq  = src.readline()
+        plus = src.readline()
+        qual = src.readline()
+        clean_name = header[1:].split()[0]  # strip DRS tags
+        seq_stripped = seq.rstrip()
+        if not seq_stripped:
+            continue  # skip empty-seq placeholders
+        if clean_name in seen_uuids:
+            continue  # skip duplicate UUIDs
+        seen_uuids.add(clean_name)
+        dst.write(f'@{clean_name}\n{seq}{plus}{qual}')
 ```
+
+### gapmm2 PAF → BAM: sequence injection required
+
+gapmm2 outputs PAF format only (no SAM/BAM).  PAF does not carry query sequences.
+`_paf_to_bam()` must inject sequences from the FASTQ into each BAM record:
+
+- Load `{uuid: (fwd_seq, fwd_qual)}` dict from the ORIGINAL FASTQ (not the
+  cleaned temp FASTQ) using `_load_fastq_sequences()`, which strips DRS tags
+  for key matching
+- For minus-strand reads: `query_sequence = _reverse_complement(fwd_seq)`,
+  `query_qualities = array(fwd_qual)[::-1]` (pysam expects alignment orientation)
+- For reads where `cigar_qlen != len(fwd_seq)`: skip the record (gapmm2
+  cs-overrun bug: ~0.02% of reads have cs tags that over-consume query bases)
 
 **mapPacBio** has a different problem: it embeds `pt:i:N` into the READ NAME of
 the aligned BAM.  The exact separator depends on processing stage:

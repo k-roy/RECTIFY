@@ -17,6 +17,7 @@ remains BLIND to annotations (novel junctions can still be detected).
 Author: Kevin R. Roy
 """
 
+import gzip
 import re
 import subprocess
 import logging
@@ -28,6 +29,42 @@ from dataclasses import dataclass, field
 # Pre-compiled regexes for gapmm2 PAF cs-tag parsing (avoid per-call recompilation)
 _CS_TOK_RE = re.compile(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-9]+[a-z]{2}')
 _INTRON_LEN_RE = re.compile(r'[0-9]+')
+
+# Reverse-complement table for sequence injection into gapmm2 BAM records.
+_RC_TABLE = str.maketrans('ACGTacgtNn', 'TGCAtgcaNn')
+
+
+def _reverse_complement(seq: str) -> str:
+    return seq.translate(_RC_TABLE)[::-1]
+
+
+def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
+    """Load read sequences and Phred quality strings from a FASTQ file.
+
+    Handles plain and gzip-compressed FASTQ.  Strips DRS auxiliary tags
+    (e.g. ``pt:i:25``) that samtools fastq embeds in the read name after a
+    tab or space, so the returned keys are bare UUIDs that match the query
+    names minimap2 writes into PAF (minimap2 truncates the name at the first
+    whitespace).
+
+    Returns:
+        {read_name: (sequence, qual_string)}  — forward (5'→3') orientation.
+    """
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+    seqs: Dict[str, Tuple[str, str]] = {}
+    with opener(reads_path, 'rt') as fh:
+        while True:
+            header = fh.readline()
+            if not header:
+                break
+            seq = fh.readline().rstrip()
+            fh.readline()            # discard '+' line
+            qual = fh.readline().rstrip()
+            # Strip leading '@', then take only the part before any whitespace
+            # to match minimap2's PAF query-name truncation behaviour.
+            read_name = header[1:].split()[0]
+            seqs[read_name] = (seq, qual)
+    return seqs
 
 # Maximum wall-clock seconds to wait for any single aligner subprocess.
 # mapPacBio on 9.7M nanopore reads needs ~3 h; uLTRA/deSALT ~30-60 min.
@@ -726,14 +763,37 @@ def _cs_long_to_cigar(cs: str, query_len: int, query_start: int, query_end: int,
     return ''.join(f'{length}{chr(ord("MIDNSHP=X"[op]))}' for op, length in ops)
 
 
-def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int = 8):
+def _paf_to_bam(
+    paf_path: Path,
+    output_bam: Path,
+    genome_path: str,
+    reads_path: Optional[str] = None,
+    threads: int = 8,
+):
     """Convert gapmm2 PAF output (with cs tags) to a sorted, indexed BAM.
 
     gapmm2 only supports PAF/GFF3 output, not SAM. This function converts
     its PAF (which includes long-form cs tags) to BAM via pysam so the
     consensus selection module can work with it normally.
+
+    Args:
+        paf_path: Path to the gapmm2 PAF file.
+        output_bam: Destination BAM path (name-sorted, indexed).
+        genome_path: Genome FASTA (must have a .fai companion).
+        reads_path: Optional path to the FASTQ that was aligned.  When
+            provided, sequences and base qualities are injected into every
+            BAM record (required for ``rectify correct`` downstream).
+            DRS headers with ``pt:i:N`` suffixes are stripped automatically
+            so name look-ups match the bare UUIDs in the PAF.
+        threads: samtools sort thread count.
     """
     import pysam
+
+    seq_dict: Dict[str, Tuple[str, str]] = {}
+    if reads_path is not None:
+        logger.info(f"Loading read sequences for gapmm2 BAM from {reads_path}")
+        seq_dict = _load_fastq_sequences(reads_path)
+        logger.info(f"  Loaded {len(seq_dict):,} sequences")
 
     # Load chromosome lengths from genome FASTA index (fast: reads .fai, not full FASTA)
     chrom_lengths = {}
@@ -818,11 +878,42 @@ def _paf_to_bam(paf_path: Path, output_bam: Path, genome_path: str, threads: int
                     seg.set_tag('NM', nm_tag)
                 seg.set_tag('cs', cs_tag)
 
+                # Inject sequence and qualities from FASTQ when available.
+                # pysam expects query_sequence in alignment orientation:
+                # plus-strand → forward FASTQ sequence; minus-strand → rev-comp.
+                if seq_dict:
+                    entry = seq_dict.get(read_name)
+                    if entry is not None:
+                        fwd_seq, fwd_qual = entry
+                        # Validate CIGAR query-length against the actual sequence.
+                        # gapmm2 occasionally emits cs tags that over-consume 1–4
+                        # query bases past query_end (gapmm2 bug). If the CIGAR
+                        # query length != len(fwd_seq), pysam will reject the record.
+                        # Skip these reads rather than attempt surgery on the CIGAR.
+                        cigar_qlen = sum(
+                            n for n, op in (
+                                (int(c[:-1]), c[-1])
+                                for c in
+                                re.findall(r'\d+[MIDNSHP=X]', cigar_str)
+                            )
+                            if op in 'MISX='
+                        )
+                        if cigar_qlen != len(fwd_seq):
+                            n_skipped += 1
+                            continue
+                        if strand == '-':
+                            seg.query_sequence = _reverse_complement(fwd_seq)
+                            seg.query_qualities = pysam.qualitystring_to_array(fwd_qual)[::-1]
+                        else:
+                            seg.query_sequence = fwd_seq
+                            seg.query_qualities = pysam.qualitystring_to_array(fwd_qual)
+
                 out_bam.write(seg)
 
     if n_skipped > 0:
         logger.warning(
-            f"Skipped {n_skipped} gapmm2 records with invalid positions in {paf_path.name}"
+            f"Skipped {n_skipped} gapmm2 records (invalid position or cs/seq length mismatch) "
+            f"in {paf_path.name}"
         )
 
     # Name-sort the unsorted BAM
@@ -856,6 +947,8 @@ def run_gapmm2(
     Returns:
         Path to output BAM file
     """
+    import tempfile
+
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
@@ -863,6 +956,62 @@ def run_gapmm2(
     gapmm2_path = shutil.which('gapmm2')
     if not gapmm2_path:
         raise FileNotFoundError("gapmm2 not found in PATH")
+
+    # gapmm2 builds a mappy sequence index from the FASTQ and looks up each
+    # aligned read's sequence by PAF query name via query_idx.seq(name).
+    # Two issues require a cleaned FASTQ to be written before passing to gapmm2:
+    #
+    # 1. DRS auxiliary-tag headers: `samtools fastq -T pt` produces headers like
+    #    "@UUID\tpt:i:25".  minimap2 truncates at the first whitespace → PAF has
+    #    bare UUID.  mappy strips tabs similarly, so seq() works in practice.
+    #    We strip tags anyway for robustness.
+    #
+    # 2. Duplicate UUIDs with empty sequences: DRS-trimmed FASTQs occasionally
+    #    contain two entries for the same UUID — one with an empty sequence (the
+    #    dorado placeholder) and one with the real sequence.  When mappy indexes
+    #    a FASTQ with duplicate names, seq() returns None for BOTH entries,
+    #    causing a TypeError in gapmm2's refinement loop.  Fix: skip reads with
+    #    empty sequences and skip any UUID seen more than once.
+    #
+    # We always write a cleaned FASTQ for gapmm2 to handle both issues.
+    reads_input = reads_path
+    tmp_fastq = None
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+
+    logger.info("Preparing deduplicated FASTQ for gapmm2 compatibility")
+    tmp_fq = tempfile.NamedTemporaryFile(
+        suffix='.fastq', dir=output_bam.parent, delete=False
+    )
+    tmp_fastq = Path(tmp_fq.name)
+    seen_uuids: set = set()
+    n_skipped_empty = 0
+    n_skipped_dup = 0
+    with opener(reads_path, 'rt') as src, open(tmp_fastq, 'w') as dst:
+        while True:
+            header = src.readline()
+            if not header:
+                break
+            seq  = src.readline()
+            plus = src.readline()
+            qual = src.readline()
+            # Bare UUID (strip DRS auxiliary tags after tab/space)
+            clean_name = header[1:].split()[0]
+            seq_stripped = seq.rstrip()
+            if not seq_stripped:
+                # Skip reads with empty sequences (dorado placeholders)
+                n_skipped_empty += 1
+                continue
+            if clean_name in seen_uuids:
+                # Skip duplicate UUIDs — mappy returns None for duplicates
+                n_skipped_dup += 1
+                continue
+            seen_uuids.add(clean_name)
+            dst.write(f'@{clean_name}\n{seq}{plus}{qual}')
+    reads_input = str(tmp_fastq)
+    logger.info(
+        f"  Cleaned FASTQ: {len(seen_uuids)} reads written, "
+        f"{n_skipped_empty} empty-seq skipped, {n_skipped_dup} duplicate-UUID skipped"
+    )
 
     # gapmm2 outputs PAF natively — name it .paf (not .sam)
     paf_path = output_bam.with_suffix('.paf')
@@ -874,7 +1023,7 @@ def run_gapmm2(
         '-i', '5000',  # Max intron size
         '-o', str(paf_path),
         genome_path,
-        reads_path,
+        reads_input,
     ]
 
     if extra_args:
@@ -882,16 +1031,23 @@ def run_gapmm2(
 
     logger.info(f"Running gapmm2: {' '.join(cmd[:5])}...")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    finally:
+        if tmp_fastq is not None and tmp_fastq.exists():
+            tmp_fastq.unlink()
+
     if result.returncode != 0:
         raise RuntimeError(f"gapmm2 failed: {result.stderr}")
 
     if not paf_path.exists() or paf_path.stat().st_size == 0:
         raise RuntimeError(f"gapmm2 produced empty PAF: {paf_path}")
 
-    # Convert PAF → sorted BAM (gapmm2 has no SAM output mode)
+    # Convert PAF → sorted BAM (gapmm2 has no SAM output mode).
+    # Pass the original reads_path (with pt:i tags intact) so _paf_to_bam can
+    # look up sequences using stripped names (_load_fastq_sequences strips them).
     logger.info(f"Converting gapmm2 PAF to BAM: {output_bam}")
-    _paf_to_bam(paf_path, output_bam, genome_path, threads=threads)
+    _paf_to_bam(paf_path, output_bam, genome_path, reads_path=reads_path, threads=threads)
 
     logger.info(f"gapmm2 complete: {output_bam}")
     return str(output_bam)
