@@ -1053,24 +1053,36 @@ def rescue_mismatch_inside_homopolymer(
         if not all(b == homopolymer_base for b in boundary_seq[-min_homopolymer_len:]):
             return None  # Not at a homopolymer boundary - skip expensive CIGAR walk
 
-    # Build aligned positions (only reached when at a homopolymer boundary)
+    # Fill scratch arrays with positions near the relevant end only.
+    # Homopolymer walks stop at the first non-HP base — always within a few
+    # hundred bp of the end — so _MAX_POLYA_SCAN_DEPTH covers all real cases.
+    _MAX_POLYA_SCAN_DEPTH = 1000
+    if use_right_side:
+        _scan_start_ref = max(0, raw_pos - _MAX_POLYA_SCAN_DEPTH)
+        _scan_end_ref = len(genome_seq)
+    else:
+        _scan_start_ref = 0
+        _scan_end_ref = raw_pos + _MAX_POLYA_SCAN_DEPTH
+
     ref_pos = read.reference_start
     read_pos = 0
 
-    # Skip soft-clip at start if present
     if cigar[0][0] == 4:
         read_pos = cigar[0][1]
 
-    aligned_positions = []
+    _n = 0
     for op, length in cigar:
         if op == 4:  # Soft-clip
             continue
         elif op == 0 or op == 7 or op == 8:  # M, =, X
             for i in range(length):
                 if ref_pos < len(genome_seq) and read_pos < len(seq):
-                    read_base = seq[read_pos].upper()
-                    genome_base = genome_seq[ref_pos].upper()
-                    aligned_positions.append((read_pos, ref_pos, read_base, genome_base))
+                    if ref_pos >= _scan_start_ref and ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
+                        _sc_rp[_n] = read_pos
+                        _sc_refp[_n] = ref_pos
+                        _sc_rb[_n] = ord(seq[read_pos].upper())
+                        _sc_gb[_n] = ord(genome_seq[ref_pos])  # already uppercase
+                        _n += 1
                 read_pos += 1
                 ref_pos += 1
         elif op == 1:  # Insertion
@@ -1078,14 +1090,20 @@ def rescue_mismatch_inside_homopolymer(
         elif op == 2:  # Deletion
             for i in range(length):
                 if ref_pos < len(genome_seq):
-                    genome_base = genome_seq[ref_pos].upper()
-                    aligned_positions.append((None, ref_pos, None, genome_base))
+                    if ref_pos >= _scan_start_ref and ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
+                        _sc_rp[_n] = -1
+                        _sc_refp[_n] = ref_pos
+                        _sc_rb[_n] = 0
+                        _sc_gb[_n] = ord(genome_seq[ref_pos])
+                        _n += 1
                 ref_pos += 1
         elif op == 3:  # N (intron skip) - consumes reference only, not read
             ref_pos += length
 
-    if not aligned_positions:
+    if _n == 0:
         return None
+
+    _hp_ord = ord(homopolymer_base)
 
     if use_right_side:
         # Walk BACKWARDS from end looking for non-homopolymer bases in the READ
@@ -1093,20 +1111,21 @@ def rescue_mismatch_inside_homopolymer(
         rescued_bases = []
         new_pos = raw_pos
 
-        for i in range(len(aligned_positions) - 1, -1, -1):
-            rp, refp, rb, gb = aligned_positions[i]
-            if rp is None:  # Skip deletions
+        for i in range(_n - 1, -1, -1):
+            rp = _sc_rp[i]
+            if rp == -1:  # Skip deletions
                 continue
+            refp = _sc_refp[i]
+            rb_ord = _sc_rb[i]
+            gb_ord = _sc_gb[i]
 
-            # If read base is NOT the homopolymer base, it's likely the true end
-            if rb != homopolymer_base:
+            if rb_ord != _hp_ord:
                 new_pos = refp
                 rescued_count = raw_pos - refp
-                rescued_bases.append(rb)
+                rescued_bases.append(chr(rb_ord))
                 break
 
-            # If we've moved past the homopolymer region in the genome, stop
-            if gb != homopolymer_base:
+            if gb_ord != _hp_ord:
                 break
 
         if rescued_count == 0:
@@ -1127,20 +1146,21 @@ def rescue_mismatch_inside_homopolymer(
         rescued_bases = []
         new_pos = raw_pos
 
-        for i in range(len(aligned_positions)):
-            rp, refp, rb, gb = aligned_positions[i]
-            if rp is None:  # Skip deletions
+        for i in range(_n):
+            rp = _sc_rp[i]
+            if rp == -1:  # Skip deletions
                 continue
+            refp = _sc_refp[i]
+            rb_ord = _sc_rb[i]
+            gb_ord = _sc_gb[i]
 
-            # If read base is NOT the homopolymer base, it's likely the true end
-            if rb != homopolymer_base:
+            if rb_ord != _hp_ord:
                 new_pos = refp
                 rescued_count = refp - raw_pos
-                rescued_bases.append(rb)
+                rescued_bases.append(chr(rb_ord))
                 break
 
-            # If we've moved past the homopolymer region in the genome, stop
-            if gb != homopolymer_base:
+            if gb_ord != _hp_ord:
                 break
 
         if rescued_count == 0:
