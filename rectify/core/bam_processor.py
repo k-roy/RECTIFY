@@ -32,6 +32,7 @@ from multiprocessing import Pool
 from functools import partial
 import gzip
 import logging
+import os
 import pysam
 from pathlib import Path
 
@@ -1190,7 +1191,8 @@ def _process_region_worker(
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
-) -> List[Dict]:
+    tmp_dir: Optional[str] = None,
+) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
 
@@ -1203,10 +1205,23 @@ def _process_region_worker(
         apply_*: Correction module flags
         netseq_dir: Optional NET-seq BigWig directory
         variant_aware_rescue: Optional variant-aware rescue object (from first pass)
+        tmp_dir: If set, pickle results to a temp file in this directory and
+            return the file path string instead of the results list.  This
+            avoids the OS pipe-buffer-full deadlock that occurs when a very
+            large region (e.g. rDNA) produces hundreds of MB of results — a
+            pipe write blocks when the buffer is full, causing a deadlock
+            between the worker (waiting to finish the write) and the main
+            process (waiting for the complete pickle before it starts reading).
+            A file write goes to the OS page cache and returns immediately
+            regardless of result size.
 
     Returns:
-        List of correction result dicts for reads in region
+        List of correction result dicts for reads in region, or a file path
+        string if tmp_dir is set.
     """
+    import pickle as _pickle
+    import tempfile as _tempfile
+
     chrom, start, end = region
     results = []
 
@@ -1252,6 +1267,14 @@ def _process_region_worker(
         bam.close()
         if netseq_loader:
             netseq_loader.close()
+
+    if tmp_dir is not None:
+        # Write to a temp file; return just the path string through the pipe.
+        # This avoids the pipe-buffer-full deadlock for large regions.
+        fd, tmp_path = _tempfile.mkstemp(suffix='.pkl', dir=tmp_dir)
+        with os.fdopen(fd, 'wb') as _fh:
+            _pickle.dump(results, _fh, protocol=_pickle.HIGHEST_PROTOCOL)
+        return tmp_path
 
     return results
 
@@ -1820,6 +1843,17 @@ def process_bam_streaming_parallel(
     _regions_to_run = [r for i, r in enumerate(regions) if i not in _done_region_idxs]
     _orig_idxs = [i for i, _r in enumerate(regions) if i not in _done_region_idxs]
 
+    # Use a shared temp directory so workers can offload large results to disk
+    # instead of sending them through the multiprocessing pipe.  This prevents
+    # the pipe-buffer-full deadlock that occurs on high-coverage regions (e.g.
+    # rDNA): a pipe write blocks when the OS buffer is full, and since the main
+    # process is also blocked waiting for the complete pickle, neither side can
+    # make progress.  Workers write their results to a temp .pkl file and return
+    # only the path string; the main process loads and deletes each file.
+    import tempfile as _tempfile
+    import pickle as _pickle
+    _tmp_dir = _tempfile.mkdtemp(prefix='rectify_region_')
+
     worker_func = partial(
         _process_region_worker,
         bam_path=bam_path,
@@ -1834,6 +1868,7 @@ def process_bam_streaming_parallel(
         annotated_junctions=annotated_junctions,
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
+        tmp_dir=_tmp_dir,
     )
 
     # Build the TSV header (identical to process_bam_streaming)
@@ -1866,7 +1901,15 @@ def process_bam_streaming_parallel(
         _map_fn = 'imap' if _chk_dir else 'imap_unordered'
         with Pool(n_threads) as pool:
             _iter = getattr(pool, _map_fn)(worker_func, _regions_to_run)
-            for _batch_num, region_results in enumerate(_iter):
+            for _batch_num, _worker_ret in enumerate(_iter):
+                # Workers return a temp-file path (str) when tmp_dir is set.
+                # Load the pickle and delete the file immediately to free space.
+                if isinstance(_worker_ret, str):
+                    with open(_worker_ret, 'rb') as _pkl_fh:
+                        region_results = _pickle.load(_pkl_fh)
+                    os.unlink(_worker_ret)
+                else:
+                    region_results = _worker_ret
                 _write_results_chunk(out_fh, region_results)
 
                 for result in region_results:
@@ -1894,6 +1937,12 @@ def process_bam_streaming_parallel(
         raise
     finally:
         out_fh.close()
+        # Clean up temp dir (any leftover .pkl files from failed workers)
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(_tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
         if _failed and not _chk_dir:
             _partial = Path(output_path)
             if _partial.exists():
