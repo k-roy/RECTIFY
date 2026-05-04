@@ -401,7 +401,28 @@ def find_polya_boundary(
             if _sc_rp[_k] != -1:
                 _first_gb = chr(_sc_gb[_k])
                 break
-        if _first_gb == 'T':
+
+        # Determine the poly-A genomic base for this CPA site.
+        # Case 1 (canonical): genomic poly-T on plus strand (gb='T') — the minus-strand
+        #   RNA body has A's (complement of T), which after RC appear as T's in the BAM,
+        #   matching the genomic T's.  Walk forward through T=T matches.
+        # Case 2: genomic poly-A on plus strand (gb='A') — the minus-strand RNA body has
+        #   T's (complement of A), which after RC appear as A's in the BAM, matching the
+        #   genomic A's.  Walk forward through A=A matches.
+        # If neither, the alignment does not start in a poly-A/T context; no correction.
+        if _first_gb not in ('A', 'T'):
+            return None
+
+        # Both Case 1 (genomic poly-T, gb='T') and Case 2 (genomic poly-A, gb='A')
+        # represent the poly-T tail's footprint on the genome.  A single CPA site can
+        # span both: e.g. a poly-T tail may align to a genomic poly-A run (A=A matches)
+        # immediately followed by a genomic poly-T run (T=T matches) before reaching
+        # the exon body.  The true CPA is the first position where gb ∉ {'A','T'} and
+        # rb==gb — i.e. where both read and genome agree on a non-poly base.
+        # _polya_gb is kept for the large-deletion pre-scan below.
+        _polya_gb = _first_gb
+
+        if _first_gb in ('A', 'T'):
             _i = 0
             while _i < scan_limit:
                 _rp_i = _sc_rp[_i]
@@ -419,10 +440,13 @@ def find_polya_boundary(
                 else:
                     _i += 1
 
-        # Guard: same poly-A tail context check as for + strand, but mirrored.
-        # For - strand the poly-A tail appears as T's in the read.  If all K
-        # positions to the RIGHT of a candidate stop have rb='T' AND at least one
-        # has gb≠'T' (poly-T tail mismatched to non-T genomic sequence), skip.
+        # Guard: poly-T tail context check.
+        # If all K positions to the RIGHT of a candidate stop have rb ∈ {'A','T'}
+        # (still in poly-T tail territory) AND at least one has gb≠rb (genome
+        # disagrees with the poly base — mismatch in poly-T zone), this candidate
+        # is a false stop.  Skip it and keep scanning right.
+        # Covers both Case 1 (rb='T', mismatched to genomic non-T) and Case 2
+        # (rb='A', mismatched to genomic non-A).
         _POLYT_TAIL_CTX_K = 4
 
         for i in range(scan_start_idx, scan_limit):
@@ -432,10 +456,12 @@ def find_polya_boundary(
             refp = _sc_refp[i]
             rb = chr(_sc_rb[i])
             gb = chr(_sc_gb[i])
-            # Check: do genome and read agree on a non-T base?
-            if rb == gb and gb != 'T':
-                # Poly-T tail context guard: inspect K positions to the right.
-                _ctx_all_t = True
+            # Check: do genome and read agree on a non-poly-A/T base?
+            # Exit when rb==gb AND the base is neither 'A' nor 'T' — i.e. we have
+            # left both the poly-A (Case 2) and poly-T (Case 1) tail zones.
+            if rb == gb and gb not in ('A', 'T'):
+                # Poly tail context guard: inspect K positions to the right.
+                _ctx_all_polya = True
                 _ctx_has_mismatch = False
                 _ctx_n = 0
                 for _j in range(i + 1, scan_limit):
@@ -444,21 +470,21 @@ def find_polya_boundary(
                         continue
                     _jrb = chr(_sc_rb[_j])
                     _jgb = chr(_sc_gb[_j])
-                    if _jrb != 'T':
-                        _ctx_all_t = False
+                    if _jrb not in ('A', 'T'):
+                        _ctx_all_polya = False
                         break
-                    if _jgb != 'T':
+                    if _jgb != _jrb:
                         _ctx_has_mismatch = True
                     _ctx_n += 1
                     if _ctx_n >= _POLYT_TAIL_CTX_K:
                         break
-                if _ctx_n >= _POLYT_TAIL_CTX_K and _ctx_all_t and _ctx_has_mismatch:
-                    continue  # false stop — poly-T tail context; keep scanning right
+                if _ctx_n >= _POLYT_TAIL_CTX_K and _ctx_all_polya and _ctx_has_mismatch:
+                    continue  # false stop — poly tail context; keep scanning right
                 true_cpa_ref_pos = refp
                 break
 
-        # If the scan found no non-T match before the N-op boundary, and the
-        # pre-N block ends in poly-T, use the N-op start as the CPA. The intron
+        # If the scan found no non-polya-gb match before the N-op boundary, and the
+        # pre-N block ends in _polya_gb, use the N-op start as the CPA. The intron
         # boundary is the natural exon-end, so the CPA is the first intron position.
         if true_cpa_ref_pos is None and first_n_start is not None and scan_limit > 0:
             _last_pre_n_gb = None
@@ -466,7 +492,7 @@ def find_polya_boundary(
                 if _sc_rp[_k] != -1:
                     _last_pre_n_gb = chr(_sc_gb[_k])
                     break
-            if _last_pre_n_gb == 'T':
+            if _last_pre_n_gb in ('A', 'T'):
                 true_cpa_ref_pos = first_n_start
 
         if true_cpa_ref_pos is not None:

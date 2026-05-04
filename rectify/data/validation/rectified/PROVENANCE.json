@@ -1,886 +1,16 @@
 {
-  "directory": "rectify/data/validation/rectified",
+  "directory": "/tmp/regen_validation_3008",
   "description": "RECTIFY corrected 3' end positions",
-  "created": "2026-04-19T11:29:44.605584",
+  "created": "2026-05-04T15:44:48.923675",
   "runs": [
     {
-      "timestamp": "2026-04-19T11:29:44.605595",
-      "command": "rectify correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 6496,
-          "modified": "2026-04-19T11:29:46",
-          "md5": "cb1918a9838fcce282f72bcb437957e5",
-          "generated_by_run": 0,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "3592d1fc2ebc5e40458ef4213b567029"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 32,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 32,
-              "ends_with_downstream_A": 26,
-              "ends_ambiguous_atract": 19,
-              "ends_corrected_indel": 3,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 19,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 4,
-              "reads_with_polya": 21,
-              "polya_length_sum": 86,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 28,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 5
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1159,
-          "modified": "2026-04-19T11:29:46",
-          "md5": "fdfd7a1965ebb291edfa113ec9bb385a",
-          "generated_by_run": 0
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-20T22:47:11.435980",
-      "command": "rectify correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "~",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 6496,
-          "modified": "2026-04-20T22:47:13",
-          "md5": "cb1918a9838fcce282f72bcb437957e5",
-          "generated_by_run": 1,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "3592d1fc2ebc5e40458ef4213b567029"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 32,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 32,
-              "ends_with_downstream_A": 26,
-              "ends_ambiguous_atract": 19,
-              "ends_corrected_indel": 3,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 19,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 4,
-              "reads_with_polya": 21,
-              "polya_length_sum": 86,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 28,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 5
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1159,
-          "modified": "2026-04-20T22:47:13",
-          "md5": "fdfd7a1965ebb291edfa113ec9bb385a",
-          "generated_by_run": 1
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-21T12:41:40.018908",
-      "command": "rectify correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --write-bedgraph rectify/data/validation/rectified/rectified_corrected_3end",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": "rectify/data/validation/rectified/rectified_corrected_3end",
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7296,
-          "modified": "2026-04-21T12:41:41",
-          "md5": "b7eb0bce26634f1505d180377948cc0f",
-          "generated_by_run": 2,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "eaa44d703b062d14f89aa227a26b1b7e"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 22,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 20,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 22,
-              "polya_length_sum": 87,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 7
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-21T12:41:41",
-          "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
-          "generated_by_run": 2
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-21T16:46:57.911503",
-      "command": "rectify correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 --aligner-bams minimap2:rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams gapmm2:rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams mapPacBio:rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams deSALT:rectify/data/validation/aligners/validation_reads.deSALT.bam --aligner-bams uLTRA:rectify/data/validation/aligners/validation_reads.uLTRA.bam -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --write-bedgraph rectify/data/validation/rectified/rectified_corrected_3end",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": "rectify/data/validation/rectified/rectified_corrected_3end",
-        "aligner_bams": [
-          "rectify/data/validation/aligners/validation_reads.uLTRA.bam"
-        ],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "~",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7296,
-          "modified": "2026-04-21T16:47:00",
-          "md5": "927ce52d2b299d8a0427b6ce8035f700",
-          "generated_by_run": 3,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "eaa44d703b062d14f89aa227a26b1b7e"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 22,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 20,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 22,
-              "polya_length_sum": 87,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 7
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-21T16:47:00",
-          "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
-          "generated_by_run": 3
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-21T16:54:32.502053",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam --genome /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 --aligner-bams minimap2:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams gapmm2:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams mapPacBio:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams deSALT:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.deSALT.bam --aligner-bams uLTRA:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.uLTRA.bam -o /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --write-bedgraph /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end",
-      "config": {
-        "bam_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam",
-        "genome_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end",
-        "aligner_bams": [
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.minimap2.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.gapmm2.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.deSALT.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.uLTRA.bam"
-        ],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy",
-      "outputs": [
-        {
-          "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7296,
-          "modified": "2026-04-21T16:54:34",
-          "md5": "f8e8b8932182890b0959739d4a5bb2b8",
-          "generated_by_run": 4,
-          "source_files": [
-            {
-              "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam",
-              "md5": "eaa44d703b062d14f89aa227a26b1b7e"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 22,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 20,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 22,
-              "polya_length_sum": 87,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 7
-            }
-          }
-        },
-        {
-          "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-21T16:54:35",
-          "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
-          "generated_by_run": 4
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-21T16:56:44.209997",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam --genome /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 --aligner-bams minimap2:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams gapmm2:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams mapPacBio:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams deSALT:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.deSALT.bam --aligner-bams uLTRA:/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.uLTRA.bam -o /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --write-bedgraph /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end",
-      "config": {
-        "bam_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam",
-        "genome_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/rectified_corrected_3end",
-        "aligner_bams": [
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.minimap2.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.gapmm2.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.deSALT.bam",
-          "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/aligners/validation_reads.uLTRA.bam"
-        ],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy",
-      "outputs": [
-        {
-          "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7296,
-          "modified": "2026-04-21T16:56:46",
-          "md5": "ece0add1f61407521cc168ccd623c9b1",
-          "generated_by_run": 5,
-          "source_files": [
-            {
-              "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/validation_reads.bam",
-              "md5": "eaa44d703b062d14f89aa227a26b1b7e"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 22,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 20,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 22,
-              "polya_length_sum": 87,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 7
-            }
-          }
-        },
-        {
-          "path": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-21T16:56:46",
-          "md5": "8c319fcf2ae1b1a67393fbf9b6014102",
-          "generated_by_run": 5
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-22T10:46:48.386639",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7054,
-          "modified": "2026-04-22T10:46:50",
-          "md5": "818422623a6ed0341d36507d98d341b6",
-          "generated_by_run": 6,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "294c5213de39698300a04cb8a1bc9c35"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 30,
-              "ends_ambiguous_atract": 16,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 17,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 4,
-              "reads_with_polya": 19,
-              "polya_length_sum": 84,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 4
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-22T10:46:50",
-          "md5": "fd549a0372893f9850d79ce40fd1c9b1",
-          "generated_by_run": 6
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-22T16:21:05.385067",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/validation/rectified/corrected_3ends.tsv --threads 8",
+      "timestamp": "2026-05-04T15:44:48.923686",
+      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --write-corrected-bam /tmp/regen_validation_3008/rectified_corrected_3end.bam --write-softclipped-bam /tmp/regen_validation_3008/rectified_pA_tail_trimmed.bam -o /tmp/regen_validation_3008/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
         "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 8,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": null,
-        "softclipped_bam": null,
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 6149,
-          "modified": "2026-04-22T16:21:07",
-          "md5": "42d63e03d26648506711c83973aa6697",
-          "generated_by_run": 7,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "dffd8bd9dfc4ed0d337976e350cc6cdb"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 38,
-              "reads_unmapped": 5,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 33,
-              "ends_with_downstream_A": 32,
-              "ends_ambiguous_atract": 2,
-              "ends_corrected_indel": 1,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 3,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 9,
-              "reads_with_polya": 4,
-              "polya_length_sum": 17,
-              "polya_length_max": 10,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 33,
-              "confidence_medium": 0,
-              "confidence_low": 0,
-              "total_position_shifts": 0
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1153,
-          "modified": "2026-04-22T16:21:07",
-          "md5": "83b24b878ac2053f7696e985a0d88d9b",
-          "generated_by_run": 7
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-22T16:22:13.758253",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --threads 8",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
-        "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 8,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 6149,
-          "modified": "2026-04-22T16:22:15",
-          "md5": "42d63e03d26648506711c83973aa6697",
-          "generated_by_run": 8,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "dffd8bd9dfc4ed0d337976e350cc6cdb"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 38,
-              "reads_unmapped": 5,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 33,
-              "ends_with_downstream_A": 32,
-              "ends_ambiguous_atract": 2,
-              "ends_corrected_indel": 1,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 3,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 9,
-              "reads_with_polya": 4,
-              "polya_length_sum": 17,
-              "polya_length_max": 10,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 33,
-              "confidence_medium": 0,
-              "confidence_low": 0,
-              "total_position_shifts": 0
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1153,
-          "modified": "2026-04-22T16:22:15",
-          "md5": "83b24b878ac2053f7696e985a0d88d9b",
-          "generated_by_run": 8
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-22T16:45:52.541145",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --threads 8",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
-        "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 8,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7233,
-          "modified": "2026-04-22T16:45:54",
-          "md5": "5d18cfd9cfb23d292cc7ae60e2e012c6",
-          "generated_by_run": 9,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "d0c5d05013992be4ccc0dfb55e5297c0"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 20,
-              "ends_corrected_indel": 3,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 19,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 7,
-              "reads_with_polya": 22,
-              "polya_length_sum": 115,
-              "polya_length_max": 29,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 6
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1159,
-          "modified": "2026-04-22T16:45:56",
-          "md5": "f045818cb1fd5f1f0726f301a22c35fb",
-          "generated_by_run": 9
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-24T09:10:30.948727",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --Scer -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --output-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
-        "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
+        "output_path": "/tmp/regen_validation_3008/corrected_3ends.tsv",
         "apply_atract": true,
         "apply_ag_mispriming": false,
         "ag_threshold": 0.65,
@@ -893,9 +23,9 @@
         "verbose": false,
         "variant_aware": true,
         "filter_spikein": null,
-        "output_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": null,
+        "output_bam": null,
+        "corrected_bam": "/tmp/regen_validation_3008/rectified_corrected_3end.bam",
+        "softclipped_bam": "/tmp/regen_validation_3008/rectified_pA_tail_trimmed.bam",
         "bedgraph_prefix": null,
         "aligner_bams": [],
         "junction_hp_pen": 0.25,
@@ -906,295 +36,24 @@
         "junction_penalty_table": null,
         "str_penalty_table": null,
         "variant_scan_cache": null,
-        "junction_pool_cache": null
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "min_mapq": 0
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
       "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
       "outputs": [
         {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
+          "path": "/tmp/regen_validation_3008/corrected_3ends.tsv",
           "name": "corrected_3ends.tsv",
-          "size_bytes": 7247,
-          "modified": "2026-04-24T09:10:32",
-          "md5": "90b409a357a8f44df92967898de49383",
-          "generated_by_run": 10,
+          "size_bytes": 7068,
+          "modified": "2026-05-04T15:44:50.686621",
+          "md5": "5d9a0884ab25e514a6b6cedd29d0c6f9",
+          "generated_by_run": 0,
           "source_files": [
             {
               "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "f30f510c2a307a289b4dde26d4c8cd9a"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 29,
-              "ends_ambiguous_atract": 20,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 19,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 21,
-              "polya_length_sum": 86,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 6
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-24T09:10:33",
-          "md5": "37d53186a675ea22b2479a343fe02187",
-          "generated_by_run": 10
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-24T12:45:04.220860",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam --threads 8",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
-        "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 8,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null,
-        "variant_scan_cache": null,
-        "junction_pool_cache": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7170,
-          "modified": "2026-04-24T12:45:05",
-          "md5": "de2353759c2e4a630014d6cf079c3d59",
-          "generated_by_run": 11,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "d9d43394a7f46fcb1a75e1748466d8a8"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 30,
-              "ends_ambiguous_atract": 16,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 17,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 19,
-              "polya_length_sum": 84,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 4
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-24T12:45:05",
-          "md5": "fd549a0372893f9850d79ce40fd1c9b1",
-          "generated_by_run": 11
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-24T15:46:49.281398",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --threads 8 -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
-        "annotation_path": "rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 8,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null,
-        "variant_scan_cache": null,
-        "junction_pool_cache": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7170,
-          "modified": "2026-04-24T15:46:51",
-          "md5": "de2353759c2e4a630014d6cf079c3d59",
-          "generated_by_run": 12,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "d9d43394a7f46fcb1a75e1748466d8a8"
-            }
-          ],
-          "metadata": {
-            "stats": {
-              "total_reads_in_bam": 36,
-              "reads_unmapped": 0,
-              "reads_secondary": 0,
-              "reads_supplementary": 0,
-              "spikein_reads_filtered": 0,
-              "reads_processed": 36,
-              "ends_with_downstream_A": 30,
-              "ends_ambiguous_atract": 16,
-              "ends_corrected_indel": 4,
-              "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 17,
-              "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 19,
-              "polya_length_sum": 84,
-              "polya_length_max": 25,
-              "ends_flagged_ag_mispriming": 0,
-              "ends_ag_high_confidence": 0,
-              "ends_ag_medium_confidence": 0,
-              "confidence_high": 32,
-              "confidence_medium": 0,
-              "confidence_low": 4,
-              "total_position_shifts": 4
-            }
-          }
-        },
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
-          "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-24T15:46:51",
-          "md5": "fd549a0372893f9850d79ce40fd1c9b1",
-          "generated_by_run": 12
-        }
-      ]
-    },
-    {
-      "timestamp": "2026-04-24T18:50:28.432888",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --threads 4 --aligner-bams minimap2:rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams gapmm2:rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams mapPacBio:rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams deSALT:rectify/data/validation/aligners/validation_reads.deSALT.bam --aligner-bams uLTRA:rectify/data/validation/aligners/validation_reads.uLTRA.bam -o rectify/data/validation/rectified/corrected_3ends.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-      "config": {
-        "bam_path": "rectify/data/validation/validation_reads.bam",
-        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
-        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
-        "output_path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-        "apply_atract": true,
-        "apply_ag_mispriming": false,
-        "ag_threshold": 0.65,
-        "apply_polya_trim": true,
-        "apply_indel_correction": true,
-        "netseq_dir": null,
-        "netseq_samples": null,
-        "polya_model_path": null,
-        "threads": 4,
-        "verbose": false,
-        "variant_aware": true,
-        "filter_spikein": null,
-        "output_bam": null,
-        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
-        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
-        "bedgraph_prefix": null,
-        "aligner_bams": [
-          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
-          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
-          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
-          "rectify/data/validation/aligners/validation_reads.deSALT.bam",
-          "rectify/data/validation/aligners/validation_reads.uLTRA.bam"
-        ],
-        "junction_hp_pen": 0.25,
-        "junction_search_radius": 5000,
-        "junction_window": 15,
-        "junction_max_slide": 10,
-        "junction_max_boundary_shift": 50,
-        "junction_penalty_table": null,
-        "str_penalty_table": null,
-        "variant_scan_cache": null,
-        "junction_pool_cache": null
-      },
-      "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
-      "outputs": [
-        {
-          "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
-          "name": "corrected_3ends.tsv",
-          "size_bytes": 7198,
-          "modified": "2026-04-24T18:50:31",
-          "md5": "de2ea9bc8196b56c612ad43451583411",
-          "generated_by_run": 13,
-          "source_files": [
-            {
-              "path": "rectify/data/validation/validation_reads.bam",
-              "md5": "5d3f7076c1e35360949af2c0cf36850c"
+              "md5": "0feac93167df40260118cdc143b376a7"
             }
           ],
           "metadata": {
@@ -1207,13 +66,13 @@
               "reads_processed": 36,
               "ends_with_downstream_A": 31,
               "ends_ambiguous_atract": 16,
-              "ends_corrected_indel": 9,
+              "ends_corrected_indel": 7,
               "ends_corrected_false_junction": 0,
-              "ends_shifted_atract_walking": 17,
+              "ends_shifted_atract_walking": 9,
               "ends_refined_netseq": 0,
-              "ends_five_prime_rescued": 6,
-              "reads_with_polya": 17,
-              "polya_length_sum": 52,
+              "ends_five_prime_rescued": 7,
+              "reads_with_polya": 13,
+              "polya_length_sum": 48,
               "polya_length_max": 25,
               "ends_flagged_ag_mispriming": 0,
               "ends_ag_high_confidence": 0,
@@ -1221,33 +80,33 @@
               "confidence_high": 32,
               "confidence_medium": 0,
               "confidence_low": 4,
-              "total_position_shifts": 4
+              "total_position_shifts": 8
             }
           }
         },
         {
-          "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
+          "path": "/tmp/regen_validation_3008/corrected_3ends_stats.tsv",
           "name": "corrected_3ends_stats.tsv",
-          "size_bytes": 1160,
-          "modified": "2026-04-24T18:50:31",
-          "md5": "00a6f67775b481f350189db8fbd170ee",
-          "generated_by_run": 13
+          "size_bytes": 1960,
+          "modified": "2026-05-04T15:44:50.687621",
+          "md5": "dab3493380fb5f6d4bec9ce042c5b695",
+          "generated_by_run": 0
         }
       ]
     }
   ],
   "files": {
     "corrected_3ends.tsv": {
-      "path": "rectify/data/validation/rectified/corrected_3ends.tsv",
+      "path": "/tmp/regen_validation_3008/corrected_3ends.tsv",
       "name": "corrected_3ends.tsv",
-      "size_bytes": 7198,
-      "modified": "2026-04-24T18:50:31",
-      "md5": "de2ea9bc8196b56c612ad43451583411",
-      "generated_by_run": 13,
+      "size_bytes": 7068,
+      "modified": "2026-05-04T15:44:50.686621",
+      "md5": "5d9a0884ab25e514a6b6cedd29d0c6f9",
+      "generated_by_run": 0,
       "source_files": [
         {
           "path": "rectify/data/validation/validation_reads.bam",
-          "md5": "5d3f7076c1e35360949af2c0cf36850c"
+          "md5": "0feac93167df40260118cdc143b376a7"
         }
       ],
       "metadata": {
@@ -1260,13 +119,13 @@
           "reads_processed": 36,
           "ends_with_downstream_A": 31,
           "ends_ambiguous_atract": 16,
-          "ends_corrected_indel": 9,
+          "ends_corrected_indel": 7,
           "ends_corrected_false_junction": 0,
-          "ends_shifted_atract_walking": 17,
+          "ends_shifted_atract_walking": 9,
           "ends_refined_netseq": 0,
-          "ends_five_prime_rescued": 6,
-          "reads_with_polya": 17,
-          "polya_length_sum": 52,
+          "ends_five_prime_rescued": 7,
+          "reads_with_polya": 13,
+          "polya_length_sum": 48,
           "polya_length_max": 25,
           "ends_flagged_ag_mispriming": 0,
           "ends_ag_high_confidence": 0,
@@ -1274,18 +133,18 @@
           "confidence_high": 32,
           "confidence_medium": 0,
           "confidence_low": 4,
-          "total_position_shifts": 4
+          "total_position_shifts": 8
         }
       }
     },
     "corrected_3ends_stats.tsv": {
-      "path": "rectify/data/validation/rectified/corrected_3ends_stats.tsv",
+      "path": "/tmp/regen_validation_3008/corrected_3ends_stats.tsv",
       "name": "corrected_3ends_stats.tsv",
-      "size_bytes": 1160,
-      "modified": "2026-04-24T18:50:31",
-      "md5": "00a6f67775b481f350189db8fbd170ee",
-      "generated_by_run": 13
+      "size_bytes": 1960,
+      "modified": "2026-05-04T15:44:50.687621",
+      "md5": "dab3493380fb5f6d4bec9ce042c5b695",
+      "generated_by_run": 0
     }
   },
-  "last_updated": "2026-04-24T18:50:31.849002"
+  "last_updated": "2026-05-04T15:44:50.719386"
 }
