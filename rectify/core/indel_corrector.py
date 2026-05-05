@@ -244,7 +244,7 @@ def find_polya_boundary(
             if _sc_rp[_k] != -1:
                 _last_gb = chr(_sc_gb[_k])
                 break
-        if _last_gb == 'A':
+        if _last_gb in ('A', 'T'):
             _i = _n - 1
             while _i >= 0:
                 _refp_i = _sc_refp[_i]
@@ -263,10 +263,9 @@ def find_polya_boundary(
                     _i -= 1
 
         # Guard: how many left-context positions to inspect for poly-A tail pattern.
-        # If all K positions to the left of a candidate stop have rb='A' AND at least
-        # one has gb≠'A' (poly-A tail mismatched to non-A genomic sequence), the
-        # candidate stop is a coincidental match at the poly-A/exon boundary rather
-        # than the true exon end — skip it and continue scanning leftward.
+        # If all K positions to the left of a candidate stop have rb ∈ {'A','T'} AND at
+        # least one has gb≠rb (mismatch in the poly zone), the candidate stop is a
+        # false stop in the poly-A zone — skip it and continue scanning leftward.
         _POLYA_TAIL_CTX_K = 4
 
         for i in range(scan_end_idx - 1, -1, -1):
@@ -276,13 +275,16 @@ def find_polya_boundary(
             refp = _sc_refp[i]
             rb = chr(_sc_rb[i])
             gb = chr(_sc_gb[i])
-            # Check: do genome and read agree on a non-A base?
-            if rb == gb and gb != 'A':
+            # Check: do genome and read agree on a non-A/T base?
+            # Stop only at C or G: both A=A and T=T can arise from a miscalled
+            # poly-A base (A miscalled as T → BAM T=T match on a genomic T) and
+            # are therefore ambiguous.  C or G in the read can only come from the
+            # exon body, never from a poly-A tail under any reasonable error model.
+            if rb == gb and gb not in ('A', 'T'):
                 # Poly-A tail context guard: inspect K positions to the left.
-                # If all K are rb='A' with at least one gb≠'A' mismatch, this
-                # is a false stop (e.g., trailing T from poly-A tail coincidentally
-                # matching a genomic T).
-                _ctx_all_a = True
+                # If all K are rb ∈ {'A','T'} with at least one gb≠rb mismatch,
+                # this is a false stop in the poly-A zone — keep scanning left.
+                _ctx_all_polya = True
                 _ctx_has_mismatch = False
                 _ctx_n = 0
                 for _j in range(i - 1, -1, -1):
@@ -291,15 +293,15 @@ def find_polya_boundary(
                         continue  # skip deletions
                     _jrb = chr(_sc_rb[_j])
                     _jgb = chr(_sc_gb[_j])
-                    if _jrb != 'A':
-                        _ctx_all_a = False
+                    if _jrb not in ('A', 'T'):
+                        _ctx_all_polya = False
                         break
-                    if _jgb != 'A':
+                    if _jgb != _jrb:
                         _ctx_has_mismatch = True
                     _ctx_n += 1
                     if _ctx_n >= _POLYA_TAIL_CTX_K:
                         break
-                if _ctx_n >= _POLYA_TAIL_CTX_K and _ctx_all_a and _ctx_has_mismatch:
+                if _ctx_n >= _POLYA_TAIL_CTX_K and _ctx_all_polya and _ctx_has_mismatch:
                     continue  # false stop — poly-A tail context; keep scanning left
                 true_cpa_ref_pos = refp
                 break

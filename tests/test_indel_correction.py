@@ -4,9 +4,203 @@ Tests for indel artifact correction module.
 """
 
 import pytest
+import pysam
 from unittest.mock import Mock, patch
 from rectify.core import indel_corrector
 from rectify import config
+
+
+# ---------------------------------------------------------------------------
+# Helpers for find_polya_boundary unit tests
+# ---------------------------------------------------------------------------
+
+def _make_read(chrom, start, cigar_tuples, strand, seq):
+    """Build a minimal pysam.AlignedSegment for unit testing."""
+    hdr = pysam.AlignmentHeader.from_dict({
+        'HD': {'VN': '1.6'},
+        'SQ': [{'SN': chrom, 'LN': 3_000_000}],
+    })
+    r = pysam.AlignedSegment(hdr)
+    r.query_name = 'test'
+    r.reference_name = chrom
+    r.reference_start = start
+    r.cigartuples = cigar_tuples
+    r.is_reverse = (strand == '-')
+    r.is_unmapped = False
+    r.is_secondary = False
+    r.is_supplementary = False
+    r.mapping_quality = 60
+    r.query_sequence = seq
+    return r
+
+
+class TestFindPolyABoundary:
+    """
+    Unit tests for find_polya_boundary (Module 2E).
+
+    Regression coverage for the A/T hybrid zone fix: both A=A and T=T matches
+    in the poly-A zone are ambiguous (a poly-A base miscalled as T produces a
+    T=T match on a genomic T).  Only C=C or G=G is unambiguous evidence of the
+    exon body.  The exit condition must be gb not in ('A','T') for both strands.
+    """
+
+    # ------------------------------------------------------------------
+    # Plus strand: T=T false stop regression
+    # ------------------------------------------------------------------
+
+    def test_plus_strand_skips_T_match_before_true_CPA(self):
+        """
+        Plus strand: genomic sequence has a T immediately inside the poly-A zone.
+        A miscalled poly-A base (A→T basecall) produces a T=T match at that T.
+        find_polya_boundary must skip the T=T match and stop at the first C/G.
+
+        Genome layout (exon body then poly-A zone then T-gap then more A's then CPA):
+          exon_body: GCGCGCGC (pos 0–7)
+          poly-A:    AAAAAAAAATAAAAC (pos 8–22)
+                              ↑           ↑
+                          T at pos 16   TRUE CPA at pos 22
+
+        The read maps from pos 0 to pos 22 (23M).  Raw 3' = pos 22.
+        Walking backward:
+          pos 22: C=C (exon body) but that's the 3' end, not useful.
+
+        Better layout — exon then a long poly-A run with embedded T then CPA:
+          pos:  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14
+          gb:   G   C   A   A   A   A   T   A   A   A   A   A   A   A   C
+                ↑                   ↑                               ↑
+             exon body          T inside poly-A zone             TRUE CPA at 14
+
+        Read: 15M, seq matches genome exactly.
+        Raw 3' = pos 14 (ref_end - 1 = 14).
+        Early-exit check: window around pos 14 = genome[13:20] = 'CAAAAAA...' → 'AAAA' present ✓.
+        Backward scan: pos 14 = C=C → but polya_len = 14 - 14 = 0, so returns None.
+
+        Adjust: place CPA further right so polya_len > 0:
+          exon: G (pos 0)
+          poly: AAAAAATAAAAC (pos 1–12)  → CPA at pos 12 (C)
+          raw 3prime = 12, corrected = 12, polya_len = 0 → None again.
+
+        The function returns None when corrected_pos == raw_3prime (polya_len = 0).
+        We need the 3' end of the read to be PAST the true CPA (in the poly-A zone).
+
+        Correct setup: read ends INSIDE the poly-A zone, true CPA is to the LEFT:
+          pos:  0   1   2   3   4   5   6   7   8   9  10  11
+          gb:   G   A   A   A   A   T   A   A   A   A   A   C
+          read ends at pos 11 (ref_end=12, raw_3prime=11).
+          But pos 11 = C=C — the read ends right at the true CPA.  Still polya_len=0.
+
+        The bug manifests when the aligner slides the 3' END PAST the true CPA
+        and into the poly-A zone:
+          True CPA = pos 0 (G=G, exon body)
+          Read ends at pos 8 (raw_3prime = 8, inside poly-A zone)
+          Backward scan: at pos 5 we see T=T (a miscalled poly-A A), gb='T'.
+            Old condition: T ≠ 'A' → stop at pos 5. Wrong.
+            Fix: T ∈ ('A','T') → skip; continue to pos 0 (G=G) → correct.
+
+        Layout:
+          pos:  0  1  2  3  4  5  6  7  8
+          gb:   G  A  A  A  A  T  A  A  A   ← early-exit check: window near pos 8
+                                              genome[7:13] = 'AAAxxx' needs 'AAAA'
+        Make genome long enough for early-exit to pass:
+          genome = 'G' + 'AAAATAAAAAAA' + 'C' * 100
+          read:  9M from pos 0, seq = 'GAAAATAAA', raw_3prime = 8
+          Backward scan from pos 8 (A):
+            pos 8: A — skip (not C/G match)
+            pos 7: A — skip
+            pos 6: A — skip
+            pos 5: T — read has T, genome has T → T=T.
+              OLD: gb='T' != 'A' and rb==gb → STOP at 5 (wrong)
+              FIX: T ∈ ('A','T') → skip
+            pos 4: A — skip
+            pos 3: A — skip
+            pos 2: A — skip
+            pos 1: A — skip
+            pos 0: G — read has G, genome has G → G=G, not in ('A','T') → STOP at 0 ✓
+        """
+        # genome: G then AAAA T AAAAAAA then padding
+        genome_str = 'GAAAATAAAAAAA' + 'C' * 100
+        genome = {'chrFake': genome_str}
+        # read: 9M from pos 0, seq matches genome at 0..8 = 'GAAAATAAA'
+        seq = genome_str[:9]   # 'GAAAATAAA'
+        read = _make_read('chrFake', 0, [(0, 9)], '+', seq)
+        # raw_3prime = ref_end - 1 = 8 (inside poly-A zone)
+        # early-exit: window around pos 8 includes 'AAAA' ✓
+        result = indel_corrector.find_polya_boundary(read, '+', genome)
+        assert result is not None, "Should detect poly-A artifact (T=T false stop bug)"
+        assert result['corrected_pos'] == 0, (
+            f"Expected CPA at pos 0 (G=G exon body), got {result['corrected_pos']}"
+        )
+
+    def test_plus_strand_canonical_stops_at_G(self):
+        """
+        Plus strand: clean poly-A zone (no embedded T), stops at first G/C exon base.
+        Exon body G at pos 0, pure poly-A run, read ends in the middle of the A-run
+        so the early-exit window sees ≥4 consecutive A's.
+        """
+        # genome: G then 20 A's — read ends at pos 6 (middle of A-run)
+        # early-exit window around pos 6: genome[5:12] = 'AAAAAAA' → has 'AAAA' ✓
+        genome_str = 'G' + 'A' * 20 + 'C' * 100
+        genome = {'chrFake': genome_str}
+        seq = genome_str[:7]   # 'GAAAAAA', read ends at pos 6
+        read = _make_read('chrFake', 0, [(0, 7)], '+', seq)
+        result = indel_corrector.find_polya_boundary(read, '+', genome)
+        assert result is not None
+        assert result['corrected_pos'] == 0  # G=G exon body
+
+    # ------------------------------------------------------------------
+    # Minus strand: A=A false stop regression (the cat1_minus_1 bug)
+    # ------------------------------------------------------------------
+
+    def test_minus_strand_skips_A_match_before_true_CPA(self):
+        """
+        Minus strand regression: cat1_minus_1 pattern.
+
+        Genome (plus strand):
+          pos: 0  1  2  3  4  5  6  7  8
+          gb:  A  T  T  T  T  T  T  T  C
+               ↑ A at pos 0 is inside the poly-T zone (just before the T-run).
+                                        ↑ TRUE CPA (first non-A/T)
+
+        The minus-strand poly-A tail aligns as T's in BAM.  The aligner places
+        the 3' end at pos 0 (reference_start=0).  Walking forward:
+          pos 0: rb='A', gb='A' → A=A match — false stop under old gb != 'T'.
+          pos 1–7: rb='T', gb='T' → T=T matches.
+          pos 8: rb='C', gb='C' → first C=C match → TRUE CPA.
+
+        With old exit condition gb != 'T': stops at pos 0 (A≠T, rb==gb) → wrong.
+        With fix gb not in ('A','T'): skips pos 0 and T-run, stops at pos 8 → correct.
+        """
+        genome = {'chrFake': 'ATTTTTTTC' + 'C' * 100}
+        # Minus-strand read, reference_start=0, 9M
+        # BAM seq = plus-strand sequence (for = ops, rb == gb)
+        seq = 'ATTTTTTTC'
+        read = _make_read('chrFake', 0, [(0, 9)], '-', seq)
+        result = indel_corrector.find_polya_boundary(read, '-', genome)
+        assert result is not None, "Should detect poly-A artifact"
+        assert result['corrected_pos'] == 8, (
+            f"Expected CPA at pos 8 (first C), got {result['corrected_pos']}"
+        )
+
+    def test_minus_strand_canonical_T_only_zone(self):
+        """
+        Minus strand: canonical case — pure T-zone, stops at first C.
+        """
+        genome = {'chrFake': 'TTTTTC' + 'C' * 100}
+        seq = 'TTTTTC'
+        read = _make_read('chrFake', 0, [(0, 6)], '-', seq)
+        result = indel_corrector.find_polya_boundary(read, '-', genome)
+        assert result is not None
+        assert result['corrected_pos'] == 5
+
+    def test_minus_strand_no_correction_when_starts_in_exon(self):
+        """
+        Minus strand: alignment starts in exon body (gb='G'), no correction.
+        """
+        genome = {'chrFake': 'GCGCGCGC' + 'C' * 100}
+        seq = 'GCGCGCGC'
+        read = _make_read('chrFake', 0, [(0, 8)], '-', seq)
+        result = indel_corrector.find_polya_boundary(read, '-', genome)
+        assert result is None
 
 
 class TestIsAtractDeletion:
