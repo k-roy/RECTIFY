@@ -15,6 +15,16 @@ Accepts BAMs as "aligner:path" pairs, e.g.:
       --annotation genes.gff \\
       -o outdir/
 
+Short-read (Illumina / QuantSeq) correct-before-consensus workflow:
+  rectify align --short-read --no-consensus sample.fastq.gz --Scer -o outdir/
+  rectify correct --short-read --dT-primed-cDNA outdir/sample.bbmap.bam --write-corrected-bam outdir/sample.bbmap.corrected.bam -o outdir/sample.bbmap.corrected_3ends.tsv
+  rectify correct --short-read --dT-primed-cDNA outdir/sample.bwa.bam --write-corrected-bam outdir/sample.bwa.corrected.bam -o outdir/sample.bwa.corrected_3ends.tsv
+  rectify consensus \\
+      bbmap:outdir/sample.bbmap.corrected.bam \\
+      bwa:outdir/sample.bwa.corrected.bam \\
+      --genome genome.fa --annotation genes.gff \\
+      -o outdir/
+
 Output: <outdir>/<prefix>.consensus.bam (coordinate-sorted, indexed, MD-tagged)
 
 Author: Kevin R. Roy
@@ -54,7 +64,7 @@ Examples:
         metavar='ALIGNER:BAM',
         help=(
             'Per-aligner BAM files in "aligner:path" format. '
-            'Accepted aligner names: minimap2, mapPacBio, gapmm2, uLTRA, deSALT.'
+            'Accepted aligner names: minimap2, mapPacBio, gapmm2, uLTRA, deSALT (long-read); bbmap, bwa (short-read).'
         )
     )
 
@@ -100,6 +110,17 @@ Examples:
         help='Verbose logging'
     )
 
+    parser.add_argument(
+        '--no-bedgraph',
+        action='store_true',
+        default=False,
+        help=(
+            'Skip bedGraph/bigWig generation after consensus selection. '
+            'By default, strand-specific 3\' and 5\' end coverage files are written '
+            'from corrected_3ends.tsv if it is present in the output directory.'
+        )
+    )
+
     return parser
 
 
@@ -110,7 +131,7 @@ def _parse_bam_args(bam_args: list) -> dict:
     Raises ValueError for malformed or missing entries.
     """
     result = {}
-    valid_aligners = {'minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT'}
+    valid_aligners = {'minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa'}
     for token in bam_args:
         if ':' not in token:
             raise ValueError(
@@ -126,6 +147,53 @@ def _parse_bam_args(bam_args: list) -> dict:
             raise FileNotFoundError(f"BAM file not found for {aligner}: {bam_path}")
         result[aligner] = str(bam_path)
     return result
+
+
+def _generate_bedgraphs(output_dir: Path, prefix: str, genome: dict) -> None:
+    """
+    Write strand-specific 3' and 5' end bigWig (or bedGraph) files from corrected_3ends.tsv.
+
+    Looks for corrected_3ends.tsv in output_dir (written by run_final_merge before consensus
+    is called). Generates four files per run:
+      {prefix}.3prime.plus.bw / {prefix}.3prime.minus.bw
+      {prefix}.5prime.plus.bw / {prefix}.5prime.minus.bw
+    Falls back to .bedgraph if pyBigWig is not available.
+    """
+    import pandas as pd
+    from .export_command import aggregate_positions, write_bigwig, write_bedgraph, HAS_PYBIGWIG
+
+    tsv_path = output_dir / 'corrected_3ends.tsv'
+    if not tsv_path.exists():
+        logger.warning(
+            f"corrected_3ends.tsv not found in {output_dir} — skipping bedgraph generation"
+        )
+        return
+
+    logger.info(f"Generating end-coverage tracks from {tsv_path}")
+    df = pd.read_csv(tsv_path, sep='\t', index_col=False)
+    logger.info(f"  Loaded {len(df):,} reads")
+
+    chrom_sizes = {chrom: len(seq) for chrom, seq in genome.items()}
+
+    ext = '.bw' if HAS_PYBIGWIG else '.bedgraph'
+    write_fn = write_bigwig if HAS_PYBIGWIG else write_bedgraph
+    fmt = 'bigWig' if HAS_PYBIGWIG else 'bedGraph'
+    logger.info(f"  Output format: {fmt}")
+
+    for end_type, col in [('3prime', 'corrected_3prime'), ('5prime', 'five_prime_position')]:
+        if col not in df.columns:
+            logger.warning(f"  Column {col!r} not in TSV — skipping {end_type} tracks")
+            continue
+        # Filter out sentinel / missing values (-1, NaN)
+        sub = df[df[col].notna() & (df[col] >= 0)]
+        if len(sub) == 0:
+            logger.warning(f"  No valid positions for {col} — skipping {end_type} tracks")
+            continue
+        counts = aggregate_positions(sub, position_col=col)
+        for strand, strand_label in [('+', 'plus'), ('-', 'minus')]:
+            out_path = output_dir / f"{prefix}.{end_type}.{strand_label}{ext}"
+            n = write_fn(counts, out_path, strand, chrom_sizes)
+            logger.info(f"  {end_type} {strand_label}: {n:,} positions → {out_path.name}")
 
 
 def run_consensus(args: argparse.Namespace) -> int:
@@ -161,7 +229,7 @@ def run_consensus(args: argparse.Namespace) -> int:
     if not prefix:
         first_bam = Path(list(bam_paths.values())[0])
         name = first_bam.name
-        for aligner in ('minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT'):
+        for aligner in ('minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa'):
             suffix = f'.{aligner}.sorted.bam'
             if name.endswith(suffix):
                 prefix = name[:-len(suffix)]
@@ -254,6 +322,22 @@ def run_consensus(args: argparse.Namespace) -> int:
     logger.info(f"  High confidence: {stats.get('consensus_high', 'N/A')}")
     logger.info(f"  5' rescued: {stats.get('5prime_rescued', 'N/A')}")
 
+    # Write aligner stats TSV and HTML report
+    try:
+        from .processing_stats import write_consensus_stats_tsv
+        stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
+        write_consensus_stats_tsv(stats, str(stats_tsv))
+    except Exception as _e:
+        logger.warning(f"Could not write consensus stats TSV: {_e}")
+
+    try:
+        from .analyze.summary import generate_consensus_html_report
+        report_html = args.output_dir / f"{prefix}.consensus_report.html"
+        generate_consensus_html_report(stats, str(report_html), sample_name=prefix)
+        logger.info(f"Consensus report: {report_html}")
+    except Exception as _e:
+        logger.warning(f"Could not write consensus HTML report: {_e}")
+
     # Add MD tags
     logger.info("Adding MD tags with samtools calmd...")
     try:
@@ -278,6 +362,14 @@ def run_consensus(args: argparse.Namespace) -> int:
         logger.warning(f"  samtools calmd error: {e}; proceeding without MD tags")
 
     logger.info(f"Output: {output_bam}")
+
+    # Generate strand-specific 3' and 5' end coverage tracks from corrected_3ends.tsv
+    if not getattr(args, 'no_bedgraph', False):
+        try:
+            _generate_bedgraphs(args.output_dir, prefix, genome)
+        except Exception as e:
+            logger.warning(f"Bedgraph generation failed (non-fatal): {e}")
+
     return 0
 
 
