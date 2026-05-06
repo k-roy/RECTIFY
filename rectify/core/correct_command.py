@@ -58,10 +58,48 @@ def validate_inputs(args) -> dict:
     """
     Validate input files and arguments.
 
-    Handles preprocessing of FASTQ files and bundled genomes.
+    Handles preprocessing of FASTQ files and bundled genomes, resolves
+    protocol flags, and assembles the correction config dict consumed by
+    ``bam_processor.process_bam_file_parallel`` /
+    ``process_bam_streaming_parallel``.
+
+    Protocol flags:
+        ``--dT-primed-cDNA`` (or deprecated alias ``--polya-sequenced``):
+            Enables AG-mispriming detection (Module AG).  Poly(A) trimming
+            and indel correction are always enabled regardless of this flag.
+        ``--short-read``:
+            Disables poly(A)-tail modules that require a sequenced poly(A) tail
+            (``apply_polya_trim``, ``apply_indel_correction``).
+            A-tract walk-back (``apply_atract``) is NOT disabled — CSP internal
+            priming causes the poly-A complement to align into downstream genomic
+            A-runs, shifting the 3' end rightward; the genomic walk-back corrects
+            this regardless of read length.
+            AG mispriming (``apply_ag_mispriming``) is also NOT disabled when
+            ``--dT-primed-cDNA`` is set — QuantSeq is the primary use case.
+            Use for Illumina/Aviti ≤150 bp data.
 
     Returns:
-        Dict with validated paths and settings
+        Dict with the following keys:
+
+        Paths:
+            ``bam_path``, ``genome_path``, ``annotation_path``,
+            ``output_path``, ``output_bam``, ``corrected_bam``,
+            ``softclipped_bam``, ``bedgraph_prefix``,
+            ``polya_model_path``, ``netseq_dir``,
+            ``junction_penalty_table``, ``str_penalty_table``,
+            ``variant_scan_cache``, ``junction_pool_cache``
+
+        Module flags (bool):
+            ``apply_atract``, ``apply_ag_mispriming``,
+            ``apply_polya_trim``, ``apply_indel_correction``,
+            ``variant_aware``, ``filter_spikein``
+
+        Parameters:
+            ``ag_threshold``, ``netseq_samples``, ``threads``,
+            ``verbose``, ``aligner_bams``,
+            ``junction_hp_pen``, ``junction_search_radius``,
+            ``junction_window``, ``junction_max_slide``,
+            ``junction_max_boundary_shift``
     """
     from .preprocess import detect_input_type, prepare_input, prepare_bundled_genome
     from ..data import (
@@ -199,21 +237,38 @@ def validate_inputs(args) -> dict:
     # Poly(A) trimming and indel correction are always enabled — the poly-A tail is
     # present in both DRS and dT-primed cDNA reads and always requires correction.
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    # Short-read mode (Illumina/Aviti): no poly(A) tail in reads; disable all
+    # modules that assume a poly(A) soft-clip or A-tract walk-back.
+    is_short_read = getattr(args, 'short_read', False)
 
     config = {
         'bam_path': bam_path,
         'genome_path': genome_path,
         'annotation_path': annotation_path,
         'output_path': args.output,
+        # A-tract: detects reads whose 3' end has slid into a genomic A/T-run, and walks
+        # the position back to the first non-A (non-T for minus strand) base upstream.
+        # Uses genomic reference sequence — does NOT require a sequenced poly(A) tail.
+        # Enabled for short reads: CSP internal priming causes poly-A complement T's to
+        # reverse-complement into A's that align into downstream genomic A-runs, shifting
+        # the reported 3' end rightward.  The same genomic walk-back corrects this.
         'apply_atract': not args.skip_atract_check,
-        # AG mispriming: reverse-transcriptase slippage at AG runs — cDNA-specific artifact.
-        # Disabled for DRS (default); enabled only when --dT-primed-cDNA is set.
+        # AG mispriming: oligo-dT mispriming onto genomic A/G-rich regions creates false 3' ends.
+        # Disabled for DRS (default) — direct RNA sequencing has no priming step, so no
+        # mispriming artifact is possible.
+        # Enabled when --dT-primed-cDNA is set (QuantSeq / oligo-dT cDNA), regardless of
+        # --short-read: the module checks DOWNSTREAM GENOMIC SEQUENCE at the reported 3' end
+        # via get_downstream_sequence() — it does not inspect read sequence — so it works
+        # correctly for both short and long reads.  In fact, short-read (QuantSeq) data is
+        # the primary use case: the reads stop at the cleavage site and the AG-rich context
+        # is only detectable from the genome, not from the reads.
         'apply_ag_mispriming': is_dt_primed and not args.skip_ag_check,
         'ag_threshold': getattr(args, 'ag_threshold', 0.65),
-        # Poly(A) trimming and indel correction: always enabled — poly-A is present
-        # in the read sequence for both DRS and dT-primed cDNA protocols.
-        'apply_polya_trim': not args.skip_polya_trim,
-        'apply_indel_correction': not args.skip_indel_correction,
+        # Poly(A) trimming and indel correction: always enabled for long reads — poly-A
+        # is present in the read sequence for both DRS and dT-primed cDNA protocols.
+        # Disabled for short reads (no poly-A tail).
+        'apply_polya_trim': not args.skip_polya_trim and not is_short_read,
+        'apply_indel_correction': not args.skip_indel_correction and not is_short_read,
         'netseq_dir': getattr(args, '_resolved_netseq_dir', getattr(args, 'netseq_dir', None)),
         'netseq_samples': getattr(args, 'netseq_samples', None),
         'polya_model_path': getattr(args, 'polya_model', None),
@@ -238,6 +293,17 @@ def validate_inputs(args) -> dict:
         # When set, skip the corresponding first-pass computation and load from disk.
         'variant_scan_cache':        getattr(args, 'variant_scan_cache', None),
         'junction_pool_cache':       getattr(args, 'junction_pool_cache', None),
+        # Antisense protocol flag: when True, gene strand = opposite of read strand.
+        # Passed through to correct_read_3prime to flip 3' end assignment.
+        'dt_primed_cDNA': is_dt_primed,
+        # Minimum MAPQ filter: reads with mapping_quality < min_mapq are skipped.
+        # Default 0 = no filter. Use 1 to exclude MAPQ=0 multi-mapping reads.
+        'min_mapq': getattr(args, 'min_mapq', 0),
+        # Minimum aligned length filter: reads where reference_length < min_aligned_length
+        # are skipped. Removes reads with very short alignments to low-complexity sequence
+        # (e.g. T-tract alignments with only 10-20 bp of unique context).
+        # Default 0 = no filter. Use 30 for QuantSeq REV short-read data.
+        'min_aligned_length': getattr(args, 'min_aligned_length', 0),
     }
 
     return config
@@ -275,6 +341,8 @@ def run(args):
     # Validate inputs
     logger.info("Validating inputs...")
     config = validate_inputs(args)
+    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    is_short_read = getattr(args, 'short_read', False)
 
     # Log configuration
     logger.info("Configuration:")
@@ -284,6 +352,8 @@ def run(args):
     logger.info(f"  Threads:               {n_threads}")
     streaming_mode = getattr(args, 'streaming', False)
     logger.info(f"  Streaming mode:        {'ENABLED' if streaming_mode else 'DISABLED'}")
+    if is_short_read:
+        logger.info(f"  Protocol:              short-read (poly(A) modules disabled)")
     logger.info("")
 
     logger.info("Correction modules:")
@@ -409,6 +479,8 @@ def run(args):
                     str_penalty_table_path=config.get('str_penalty_table'),
                     prebuilt_junction_pool=_prebuilt_pool,
                     prebuilt_annotated_set=_prebuilt_annot_set,
+                    sort_threads=config.get('threads', 1),
+                    n_workers=config.get('threads', 1),
                 )
                 bam_to_process = _refined_bam
                 logger.info(
@@ -464,6 +536,7 @@ def run(args):
         # Choose processing mode
         _t_proc = _time.perf_counter()
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
+        _protocol = 'dt_cdna' if is_dt_primed else 'drs'
 
         if streaming_mode:
             if n_threads > 1:
@@ -491,6 +564,9 @@ def run(args):
                     polya_model_path=_polya_model_path,
                     checkpoint_dir=getattr(args, 'checkpoint_dir', None),
                     variant_scan_cache=config.get('variant_scan_cache'),
+                    dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    min_mapq=config.get('min_mapq', 0),
+                    min_aligned_length=config.get('min_aligned_length', 0),
                 )
             else:
                 # Single-threaded streaming for single-core or debugging
@@ -509,8 +585,11 @@ def run(args):
                     annotated_junctions=annotated_junctions,
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
+                    dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    min_mapq=config.get('min_mapq', 0),
+                    min_aligned_length=config.get('min_aligned_length', 0),
                 )
-            report = generate_stats_report(stats)
+            report = generate_stats_report(stats, protocol=_protocol)
         else:
             # Standard parallel processing
             # Determine variant output path
@@ -537,8 +616,11 @@ def run(args):
                 gene_interval_trees=gene_interval_trees,
                 polya_model_path=_polya_model_path,
                 variant_scan_cache=config.get('variant_scan_cache'),
+                dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                min_mapq=config.get('min_mapq', 0),
+                min_aligned_length=config.get('min_aligned_length', 0),
             )
-            report = generate_stats_report(stats)
+            report = generate_stats_report(stats, protocol=_protocol)
 
         logger.info(f"[TIMING] BAM processing: {_time.perf_counter() - _t_proc:.1f}s")
 
@@ -551,7 +633,7 @@ def run(args):
             stats_path = str(config['output_path']).replace('.tsv', '_stats.tsv')
             if stats_path == str(config['output_path']):
                 stats_path = str(config['output_path']) + '_stats.tsv'
-            write_stats_tsv(stats, stats_path)
+            write_stats_tsv(stats, stats_path, protocol=_protocol)
             logger.info(f"Wrote processing statistics to {stats_path}")
 
         # Generate summary report
@@ -702,15 +784,15 @@ def run(args):
             # Uses the 'fraction' column so Cat6 multi-peak rows contribute fractional
             # values; all other reads contribute 1.0.
             _t_c3bg = _time.perf_counter()
-            # Use TSV stem ("corrected_3ends") so the name doesn't depend on
+            # Use TSV stem ("corrected_reads") so the name doesn't depend on
             # whatever the BAM happens to be called (avoids redundant names
-            # like "rectified_corrected_3end_corrected_3ends" when the BAM
+            # like "rectified_corrected_3end_corrected_reads" when the BAM
             # already contains "_corrected_3end" in its stem).
             _tsv_stem = Path(str(config['output_path'])).stem
             _c3bg_prefix = str(_bam_dir / _tsv_stem)
             logger.info(f"Writing corrected-3'-end bedgraph (prefix: {_c3bg_prefix})...")
             try:
-                _c3bg_counts = bam_processor.write_corrected_3ends_bedgraph(
+                _c3bg_counts = bam_processor.write_corrected_reads_bedgraph(
                     str(config['output_path']),
                     _c3bg_prefix,
                 )

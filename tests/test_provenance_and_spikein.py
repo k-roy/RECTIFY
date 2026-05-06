@@ -75,7 +75,7 @@ class TestProvenanceTracker:
 
         tracker = ProvenanceTracker(tmp_path)
         # Write a dummy file so add_output_file doesn't skip it
-        dummy = tmp_path / "corrected_3ends.tsv"
+        dummy = tmp_path / "corrected_reads.tsv"
         dummy.write_text("read_id\tcorrected_3prime\n")
 
         tracker.add_output_file(

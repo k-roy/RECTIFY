@@ -452,7 +452,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     # --- Run rectify correct ------------------------------------------------
-    tsv_path = out_dir / 'corrected_3ends.tsv'
+    tsv_path = out_dir / 'corrected_reads.tsv'
     cmd = _rectify(
         'correct',
         str(bam),

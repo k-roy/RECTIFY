@@ -17,8 +17,8 @@ Accepts BAMs as "aligner:path" pairs, e.g.:
 
 Short-read (Illumina / QuantSeq) correct-before-consensus workflow:
   rectify align --short-read --no-consensus sample.fastq.gz --Scer -o outdir/
-  rectify correct --short-read --dT-primed-cDNA outdir/sample.bbmap.bam --write-corrected-bam outdir/sample.bbmap.corrected.bam -o outdir/sample.bbmap.corrected_3ends.tsv
-  rectify correct --short-read --dT-primed-cDNA outdir/sample.bwa.bam --write-corrected-bam outdir/sample.bwa.corrected.bam -o outdir/sample.bwa.corrected_3ends.tsv
+  rectify correct --short-read --dT-primed-cDNA outdir/sample.bbmap.bam --write-corrected-bam outdir/sample.bbmap.corrected.bam -o outdir/sample.bbmap.corrected_reads.tsv
+  rectify correct --short-read --dT-primed-cDNA outdir/sample.bwa.bam --write-corrected-bam outdir/sample.bwa.corrected.bam -o outdir/sample.bwa.corrected_reads.tsv
   rectify consensus \\
       bbmap:outdir/sample.bbmap.corrected.bam \\
       bwa:outdir/sample.bwa.corrected.bam \\
@@ -117,7 +117,7 @@ Examples:
         help=(
             'Skip bedGraph/bigWig generation after consensus selection. '
             'By default, strand-specific 3\' and 5\' end coverage files are written '
-            'from corrected_3ends.tsv if it is present in the output directory.'
+            'from corrected_reads.tsv if it is present in the output directory.'
         )
     )
 
@@ -151,9 +151,9 @@ def _parse_bam_args(bam_args: list) -> dict:
 
 def _generate_bedgraphs(output_dir: Path, prefix: str, genome: dict) -> None:
     """
-    Write strand-specific 3' and 5' end bigWig (or bedGraph) files from corrected_3ends.tsv.
+    Write strand-specific 3' and 5' end bigWig (or bedGraph) files from corrected_reads.tsv.
 
-    Looks for corrected_3ends.tsv in output_dir (written by run_final_merge before consensus
+    Looks for corrected_reads.tsv in output_dir (written by run_final_merge before consensus
     is called). Generates four files per run:
       {prefix}.3prime.plus.bw / {prefix}.3prime.minus.bw
       {prefix}.5prime.plus.bw / {prefix}.5prime.minus.bw
@@ -162,10 +162,10 @@ def _generate_bedgraphs(output_dir: Path, prefix: str, genome: dict) -> None:
     import pandas as pd
     from .export_command import aggregate_positions, write_bigwig, write_bedgraph, HAS_PYBIGWIG
 
-    tsv_path = output_dir / 'corrected_3ends.tsv'
+    tsv_path = output_dir / 'corrected_reads.tsv'
     if not tsv_path.exists():
         logger.warning(
-            f"corrected_3ends.tsv not found in {output_dir} — skipping bedgraph generation"
+            f"corrected_reads.tsv not found in {output_dir} — skipping bedgraph generation"
         )
         return
 
@@ -363,7 +363,7 @@ def run_consensus(args: argparse.Namespace) -> int:
 
     logger.info(f"Output: {output_bam}")
 
-    # Generate strand-specific 3' and 5' end coverage tracks from corrected_3ends.tsv
+    # Generate strand-specific 3' and 5' end coverage tracks from corrected_reads.tsv
     if not getattr(args, 'no_bedgraph', False):
         try:
             _generate_bedgraphs(args.output_dir, prefix, genome)

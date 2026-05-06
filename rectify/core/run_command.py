@@ -135,19 +135,22 @@ def _run_alignment(
     annotation_path: Optional[Path],
     threads: int,
     parallel_aligners: bool = False,
+    base_aligners: Optional[List[str]] = None,
     junction_aligners: Optional[List[str]] = None,
     chimeric_consensus: bool = True,
     ultra_path: str = 'uLTRA',
     desalt_path: str = 'deSALT',
     mapPacBio_chunks: int = 1,
     checkpoint_dir: Optional[str] = None,
+    short_read: bool = False,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing rectified.bam.
 
-    Default aligners: minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT (all five),
-    with chimeric consensus enabled by default. Pass junction_aligners=[] and
-    chimeric_consensus=False to revert to single-best-aligner mode.
+    Default aligners: minimap2 + mapPacBio + gapmm2 (long-read Tier 1).
+    Pass base_aligners to restrict or change the set (e.g. ['mapPacBio']).
+    Pass short_read=True to use bbmap + bwa instead of the long-read panel.
+    Pass junction_aligners=[] to disable uLTRA + deSALT.
 
     Skips automatically if the rectified.bam already exists — safe to re-run.
 
@@ -168,8 +171,14 @@ def _run_alignment(
         per_aligner_bams = _collect_per_aligner_bams(sample_id, sample_output_dir)
         return per_aligner_bams, rectified_bam
 
+    if base_aligners is not None:
+        _base_aligners = base_aligners
+    elif short_read:
+        _base_aligners = ['bbmap', 'bwa']
+    else:
+        _base_aligners = ['minimap2', 'mapPacBio', 'gapmm2']
     _junction_aligners = junction_aligners or []
-    all_aligners = ['minimap2', 'mapPacBio', 'gapmm2'] + _junction_aligners
+    all_aligners = _base_aligners + _junction_aligners
     aligner_desc = ' + '.join(all_aligners)
     print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
     from .align_command import run_align
@@ -180,7 +189,8 @@ def _run_alignment(
         output_dir=sample_output_dir,
         annotation=annotation_path,
         threads=threads,
-        aligners=['all'],
+        aligners=_base_aligners,
+        short_read=short_read,
         junction_aligners=_junction_aligners,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
@@ -296,12 +306,12 @@ def _run_correction(
     args,
 ) -> Path:
     """
-    Run rectify correct on a BAM, writing corrected_3ends.tsv into output_dir.
+    Run rectify correct on a BAM, writing corrected_reads.tsv into output_dir.
     Returns path to the corrected TSV.
     """
     from . import correct_command
 
-    corrected_tsv = output_dir / 'corrected_3ends.tsv'
+    corrected_tsv = output_dir / 'corrected_reads.tsv'
 
     # Indel correction and variant-aware rescue require MD tags in the BAM.
     # Disable them gracefully when MD tags are absent (e.g. rectified BAMs
@@ -330,7 +340,10 @@ def _run_correction(
             _stem = _stem[:-len(_sfx)]
             break
     corrected_bam_path   = output_dir / f"{_stem}.rectified_corrected_3end.bam"
-    softclipped_bam_path = output_dir / f"{_stem}.rectified_pA_tail_trimmed.bam"
+    softclipped_bam_path = (
+        output_dir / f"{_stem}.rectified_pA_tail_trimmed.bam"
+        if getattr(args, 'write_softclip_bam', False) else None
+    )
 
     correct_args = argparse.Namespace(
         input=bam_path,
@@ -360,6 +373,8 @@ def _run_correction(
         report=report_path,
         max_downstream_a=20,
         chunk_size=getattr(args, 'chunk_size', 10000),
+        junction_penalty_table=getattr(args, 'junction_penalty_table', None),
+        str_penalty_table=getattr(args, 'str_penalty_table', None),
         debug=False,
         verbose=False,
     )
@@ -387,7 +402,7 @@ def _run_correction_per_aligner(
 
     Returns
     -------
-    Dict mapping aligner name → corrected_3ends.tsv path for each aligner
+    Dict mapping aligner name → corrected_reads.tsv path for each aligner
     whose correction succeeded.
     """
     per_aligner_dir = output_dir / 'per_aligner_corrected'
@@ -397,7 +412,7 @@ def _run_correction_per_aligner(
     for aligner_name, bam_path in per_aligner_bams.items():
         aligner_output_dir = per_aligner_dir / aligner_name
         aligner_output_dir.mkdir(exist_ok=True)
-        tsv_path = aligner_output_dir / 'corrected_3ends.tsv'
+        tsv_path = aligner_output_dir / 'corrected_reads.tsv'
 
         # Validate TSV file exists and is readable (not truncated/corrupt)
         _tsv_valid = False
@@ -488,12 +503,12 @@ def _combine_corrected_tsvs(
 
     combined_dir = output_dir / 'combined'
     combined_dir.mkdir(parents=True, exist_ok=True)
-    combined_tsv = combined_dir / 'corrected_3ends_combined.tsv'
+    combined_tsv = combined_dir / 'corrected_reads_combined.tsv'
 
     dfs = []
     missing = []
     for sample in samples:
-        tsv_path = output_dir / sample['sample_id'] / 'corrected_3ends.tsv'
+        tsv_path = output_dir / sample['sample_id'] / 'corrected_reads.tsv'
         if not tsv_path.exists():
             missing.append(sample['sample_id'])
             print(f"  WARNING: {tsv_path} not found, skipping", file=sys.stderr)
@@ -789,7 +804,7 @@ def _process_one_sample(
                     )
                     _subprocess.run(
                         [
-                            'samtools', 'fastq', '-T', 'pt',
+                            'samtools', 'fastq',
                             '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
                             '-0', str(_trimmed_fastq),
                             str(_trimmed_bam),
@@ -831,7 +846,7 @@ def _process_one_sample(
                         _consensus_ckpt_dir = str(_consensus_ckpt_path)
 
                 try:
-                    _, bam_to_correct = _run_alignment(
+                    _sample_per_aligner_bams, bam_to_correct = _run_alignment(
                         input_path=input_path,
                         sample_id=sample_id,
                         sample_output_dir=_align_out,
@@ -839,12 +854,14 @@ def _process_one_sample(
                         annotation_path=annotation_path,
                         threads=getattr(args, 'threads', 4),
                         parallel_aligners=getattr(args, 'parallel_aligners', False),
+                        base_aligners=getattr(args, 'base_aligners', None),
                         junction_aligners=getattr(args, 'junction_aligners', []),
                         chimeric_consensus=getattr(args, 'chimeric_consensus', True),
                         ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
                         desalt_path=getattr(args, 'desalt_path', 'deSALT'),
                         mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
                         checkpoint_dir=_consensus_ckpt_dir,
+                        short_read=getattr(args, 'short_read', False),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -898,22 +915,25 @@ def _process_one_sample(
                     _shutil_corr.rmtree(_corr_scratch, ignore_errors=True)
 
             # ── DRS Step 4: Restore poly(A)+adapter as soft-clips ───────────
-            if getattr(args, 'drs', False) and drs_metadata_path and drs_metadata_path.exists():
+            if (getattr(args, 'drs', False)
+                    and getattr(args, 'write_polya_bam', False)
+                    and drs_metadata_path and drs_metadata_path.exists()):
                 from .restore_polya_command import restore_polya_softclips
 
-                _stem = input_path.stem.replace('_trimmed', '').replace('.fastq', '').replace('.gz', '')
-                _softclipped_bam = sample_output / f"{_stem}.rectified_pA_tail_trimmed.bam"
-                if _softclipped_bam.exists():
-                    _restored_bam = sample_output / f"{_stem}.rectified_pA_tail_soft_clipped.bam"
+                _corrected_tsv = sample_output / 'corrected_reads.tsv'
+                _restored_bam = sample_output / f"{sample_id}.corrected_polya.bam"
+                _aligner_bams = {k: str(v) for k, v in _sample_per_aligner_bams.items()
+                                 if Path(str(v)).exists()}
+                if _corrected_tsv.exists() and _aligner_bams:
                     print(f"  [{sample_id}] DRS poly(A) soft-clip restore…", flush=True)
                     try:
                         _sc_stats = restore_polya_softclips(
-                            softclip_bam_path=str(_softclipped_bam),
+                            corrected_tsv_path=str(_corrected_tsv),
+                            aligner_bam_paths=_aligner_bams,
                             metadata_path=str(drs_metadata_path),
                             output_bam_path=str(_restored_bam),
                             threads=getattr(args, 'threads', 4),
                         )
-                        # Sort and index the restored BAM
                         import pysam as _pysam_sc
                         _restored_tmp = str(_restored_bam) + '.sort_tmp.bam'
                         _pysam_sc.sort('-o', _restored_tmp, str(_restored_bam))
@@ -925,7 +945,7 @@ def _process_one_sample(
                         log.write(f"DRS restore failed (non-fatal): {e}\n")
                 else:
                     log.write(
-                        f"DRS restore skipped — softclipped BAM not found: {_softclipped_bam}\n"
+                        f"DRS restore skipped — corrected TSV or aligner BAMs not found\n"
                     )
 
         return sample_id, 0
@@ -1039,7 +1059,7 @@ def _run_multi_sample(args) -> int:
     for s in successful_samples:
         row = {
             'sample_id': s['sample_id'],
-            'path': str(output_dir / s['sample_id'] / 'corrected_3ends.tsv'),
+            'path': str(output_dir / s['sample_id'] / 'corrected_reads.tsv'),
         }
         if 'condition' in s:
             row['condition'] = s.get('condition', '')
@@ -1071,7 +1091,7 @@ def _run_multi_sample(args) -> int:
     print(f"\nOutput directory: {output_dir}")
     print("\nPer-sample outputs:")
     for s in successful_samples:
-        print(f"  {output_dir}/{s['sample_id']}/corrected_3ends.tsv")
+        print(f"  {output_dir}/{s['sample_id']}/corrected_reads.tsv")
     print(f"\nCombined analysis: {combined_dir}/")
     print(f"  DESeq2 results:  {combined_dir}/tables/deseq2_genes_*.tsv")
     print(f"  HTML report:     {combined_dir}/report.html")
@@ -1089,7 +1109,7 @@ def _run_single_sample(args) -> int:
     Single-sample pipeline:
       Step 0 (DRS BAM + --drs): poly(A)+adapter pre-trimming → trimmed FASTQ
       Step 1 (if FASTQ input): multi-aligner alignment → rectified.bam
-      Step 2: correction → corrected_3ends.tsv
+      Step 2: correction → corrected_reads.tsv
       Step 3: analysis (no DESeq2 — single sample)
       Step 4 (DRS + --drs): restore trimmed poly(A) as soft-clips
     """
@@ -1195,11 +1215,14 @@ def _run_single_sample(args) -> int:
             f"({100 * _n_trimmed / max(_n_total, 1):.1f}%)"
         )
 
-        # Convert trimmed unaligned BAM → FASTQ, writing pt:i: tag into the
-        # comment field so downstream BAM records retain it after alignment.
+        # Convert trimmed unaligned BAM → FASTQ.
+        # Do NOT use -T pt: embedding the pt:i:N tag in the read name causes
+        # mapPacBio to write it as a suffix (UUID_pt:i:N), creating duplicate
+        # read IDs and breaking parquet lookups. Poly-A lengths are stored in
+        # the parquet metadata; the FASTQ read name must be the bare UUID only.
         _subprocess.run(
             [
-                'samtools', 'fastq', '-T', 'pt',
+                'samtools', 'fastq',
                 '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
                 '-0', str(_trimmed_fastq),
                 str(_trimmed_bam),
@@ -1240,12 +1263,14 @@ def _run_single_sample(args) -> int:
             annotation_path=annotation_path,
             threads=getattr(args, 'threads', 4),
             parallel_aligners=getattr(args, 'parallel_aligners', False),
+            base_aligners=getattr(args, 'base_aligners', None),
             junction_aligners=getattr(args, 'junction_aligners', []),
             chimeric_consensus=getattr(args, 'chimeric_consensus', True),
             ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
             desalt_path=getattr(args, 'desalt_path', 'deSALT'),
             mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
             checkpoint_dir=_single_ckpt_dir,
+            short_read=getattr(args, 'short_read', False),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
@@ -1299,7 +1324,7 @@ def _run_single_sample(args) -> int:
     try:
         if per_aligner_bams:
             # New workflow: correct each aligner's BAM independently, then merge.
-            # The final corrected_3ends.tsv is selected from post-correction features
+            # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
             from .corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
@@ -1315,10 +1340,22 @@ def _run_single_sample(args) -> int:
                 _per_aligner_dir = work_dir / 'per_aligner_corrected'
                 _summary_tsv = _per_aligner_dir / 'comparison_summary.tsv'
                 print(f"    Merging {len(per_aligner_tsvs)} per-aligner TSVs...")
+                # Load junction overhang table if provided
+                _jot_path = getattr(args, 'junction_overhang_table', None)
+                _overhang_table = None
+                if _jot_path:
+                    from rectify.core.calibrate_junction_overhang import OverhangTable as _OT
+                    try:
+                        _overhang_table = _OT.from_tsv(_jot_path)
+                        print(f"    Junction overhang filter: {_jot_path}")
+                    except Exception as _e:
+                        print(f"    WARNING: Could not load overhang table {_jot_path}: {_e}",
+                              file=sys.stderr)
                 corrected_tsv = merge_corrected_tsvs(
                     per_aligner_tsvs=per_aligner_tsvs,
-                    output_tsv=work_dir / 'corrected_3ends.tsv',
+                    output_tsv=work_dir / 'corrected_reads.tsv',
                     summary_tsv=_summary_tsv,
+                    overhang_table=_overhang_table,
                 )
                 # Identify Cat5 candidates (reads where aligners contribute unique introns)
                 _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
@@ -1421,21 +1458,25 @@ def _run_single_sample(args) -> int:
         print(f"[TIMING] Sync to Oak: {_time.perf_counter() - _t0:.1f}s")
         _shutil.rmtree(scratch_dir, ignore_errors=True)
 
-    # ── Step 4 (DRS only): Restore poly(A)+adapter as soft-clips ─────────────
-    # The softclipped BAM produced by rectify correct has the poly(A) region
-    # soft-clipped at the corrected 3' end.  Restore the original trimmed bases
-    # (from Step 0 metadata) so the full tail is visible in IGV.
-    if drs_mode and drs_metadata_path and drs_metadata_path.exists():
+    # ── Step 4 (DRS only, opt-in): Restore poly(A) from winning aligner's raw BAM ─
+    # Pulls each read from the winning aligner's raw (pre-correction) BAM and
+    # re-attaches the original Dorado poly(A) tail from parquet as a 3' soft clip.
+    # The result (corrected_polya.bam) shows the full read as Dorado called it;
+    # compare against corrected.bam in IGV to see exactly what Rectify changed.
+    if (drs_mode and getattr(args, 'write_polya_bam', False)
+            and drs_metadata_path and drs_metadata_path.exists()):
         from .restore_polya_command import restore_polya_softclips
         _orig_stem = Path(args.input).stem
-        _softclipped_bam = output_dir / f"{_orig_stem}.rectified_pA_tail_trimmed.bam"
-        if _softclipped_bam.exists():
-            _restored_bam = output_dir / f"{_orig_stem}.rectified_pA_tail_soft_clipped.bam"
-            print(f"\n[Step 4] DRS poly(A) soft-clip restoration...")
+        _restored_bam = output_dir / f"{_orig_stem}.corrected_polya.bam"
+        _aligner_bams_for_restore = {k: str(v) for k, v in per_aligner_bams.items()
+                                     if Path(str(v)).exists()}
+        if corrected_tsv and Path(corrected_tsv).exists() and _aligner_bams_for_restore:
+            print(f"\n[Step 4] DRS poly(A) restoration from winning aligner raw BAMs...")
             print("-" * 50)
             _t0_sc = _time.perf_counter()
             _sc_stats = restore_polya_softclips(
-                softclip_bam_path=str(_softclipped_bam),
+                corrected_tsv_path=str(corrected_tsv),
+                aligner_bam_paths=_aligner_bams_for_restore,
                 metadata_path=str(drs_metadata_path),
                 output_bam_path=str(_restored_bam),
                 threads=getattr(args, 'threads', 4),
@@ -1450,13 +1491,13 @@ def _run_single_sample(args) -> int:
             print(f"[TIMING] DRS restore: {_time.perf_counter() - _t0_sc:.1f}s")
             tracker.record_step(
                 'drs_restore',
-                input_files=[_softclipped_bam, drs_metadata_path],
+                input_files=list(_aligner_bams_for_restore.values()) + [str(drs_metadata_path)],
                 output_files=[_restored_bam],
             )
         else:
             print(
-                f"\n[Step 4] DRS soft-clip restoration skipped "
-                f"— softclipped BAM not found: {_softclipped_bam}",
+                f"\n[Step 4] DRS poly(A) restoration skipped "
+                f"— corrected TSV or aligner BAMs not found",
                 file=sys.stderr,
             )
 
@@ -2047,6 +2088,21 @@ echo "Done: $(date)"
         sample_ids_arr   = ' '.join(f'"{sid}"' for sid, _ in all_samples_for_correct)
         consensus_bams_arr = ' '.join(f'"{bam}"' for _, bam in all_samples_for_correct)
 
+        # Penalty table flags for generated rectify correct calls
+        import shlex as _shlex
+        _jpt = getattr(args, 'junction_penalty_table', None)
+        _spt = getattr(args, 'str_penalty_table', None)
+        _penalty_flags = ''
+        if _jpt:
+            _penalty_flags += f'    --junction-penalty-table {_shlex.quote(str(_jpt))} \\\\\n'
+        if _spt:
+            _penalty_flags += f'    --str-penalty-table {_shlex.quote(str(_spt))} \\\\\n'
+
+        _softclip_correct_flag = (
+            '    --write-softclipped-bam "$SAMPLE_OUTDIR/${SAMPLE_ID}.rectified_pA_tail_trimmed.bam" \\\\\n'
+            if getattr(args, 'write_softclip_bam', False) else ''
+        )
+
         correct_array_content = f"""#!/bin/bash
 # RECTIFY — correction array (one task per sample)
 # Generated by: rectify run-all --chunked-alignment --manifest
@@ -2098,7 +2154,7 @@ $PYTHON -m rectify correct \\
     "$BAM" \\
     {_genome_flag()} \\
     {_annot_flag()} \\
-    -o "$SAMPLE_OUTDIR/corrected_3ends.tsv" \\
+{_penalty_flags}{_softclip_correct_flag}    -o "$SAMPLE_OUTDIR/corrected_reads.tsv" \\
     --streaming \\
     --threads $RECTIFY_CPUS
 
@@ -2160,7 +2216,7 @@ echo "Done: $(date)"
         for s in samples:
             row = {
                 'sample_id': s['sample_id'],
-                'path': str(output_dir / s['sample_id'] / 'corrected_3ends.tsv'),
+                'path': str(output_dir / s['sample_id'] / 'corrected_reads.tsv'),
             }
             if 'condition' in s:
                 row['condition'] = s['condition']

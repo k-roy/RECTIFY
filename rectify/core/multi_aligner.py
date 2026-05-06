@@ -1,15 +1,25 @@
 """
 Multi-aligner alignment pipeline for RECTIFY.
 
-Runs multiple aligners (minimap2, mapPacBio, gapmm2, bbmap, bwa) on the
-same reads and provides utilities for consensus analysis.
+Runs multiple aligners on the same reads and provides utilities for consensus
+analysis.  Aligners are grouped into three tiers by read type:
 
-Strategy:
-- minimap2: Fast seed-and-chain baseline with junction annotation support
-- mapPacBio: BBTools long-read aligner with splice-aware mode
-- gapmm2: minimap2 wrapper with terminal exon refinement
-- bbmap: BBTools short-read splice-aware aligner (Illumina/Aviti; intronlen=20)
-- bwa: BWA-MEM short-read aligner (Illumina/Aviti; not splice-aware)
+Tier 1 — Long-read (default, nanopore direct RNA-seq / dT-primed cDNA):
+  - minimap2:   Fast seed-and-chain baseline with junction annotation support
+                (`--junc-bed` improves splice-junction accuracy)
+  - mapPacBio:  BBTools long-read aligner with splice-aware mode
+  - gapmm2:     minimap2 wrapper with terminal-exon homopolymer refinement
+
+Tier 2 — Long-read, opt-in (`--tier2-aligners deSALT uLTRA`):
+  - deSALT:     High-sensitivity splice aligner; vendored binary bundled for
+                Linux x86_64 (`rectify/data/bin/linux_x86_64/deSALT`)
+  - uLTRA:      Annotation-guided aligner; requires `--annotation` GFF/GTF
+
+Short-read mode (`--short-read`, Illumina/Aviti ≤150 bp):
+  - bbmap:      BBTools splice-aware aligner (`intronlen=20` for short introns)
+  - bwa:        BWA-MEM aligner (not splice-aware; use bbmap for spliced data)
+  When `--short-read` is active the Tier 1 long-read panel is replaced by
+  bbmap + bwa, and poly(A)-tail modules are disabled.
 
 Junction annotations are used to IMPROVE alignment quality but scoring
 remains BLIND to annotations (novel junctions can still be detected).
@@ -36,6 +46,43 @@ _RC_TABLE = str.maketrans('ACGTacgtNn', 'TGCAtgcaNn')
 
 def _reverse_complement(seq: str) -> str:
     return seq.translate(_RC_TABLE)[::-1]
+
+
+def _clean_fastq(reads_path: Path, output_dir: Path) -> Path:
+    """Write a deduplicated, tag-stripped FASTQ suitable for deSALT and gapmm2.
+
+    Strips DRS auxiliary tags from read names, skips reads with empty sequences
+    (Dorado placeholders), and skips duplicate UUIDs.  Returns the path to the
+    temporary FASTQ file; the caller is responsible for deleting it.
+    """
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+    tmp_fq = _tempfile.NamedTemporaryFile(suffix='.fastq', dir=output_dir, delete=False)
+    tmp_path = Path(tmp_fq.name)
+    seen_uuids: set = set()
+    n_skipped_empty = 0
+    n_skipped_dup = 0
+    with opener(reads_path, 'rt') as src, open(tmp_path, 'w') as dst:
+        while True:
+            header = src.readline()
+            if not header:
+                break
+            seq  = src.readline()
+            plus = src.readline()
+            qual = src.readline()
+            clean_name = header[1:].split()[0]
+            if not seq.rstrip():
+                n_skipped_empty += 1
+                continue
+            if clean_name in seen_uuids:
+                n_skipped_dup += 1
+                continue
+            seen_uuids.add(clean_name)
+            dst.write(f'@{clean_name}\n{seq}{plus}{qual}')
+    logger.info(
+        f"  Cleaned FASTQ: {len(seen_uuids)} reads written, "
+        f"{n_skipped_empty} empty-seq skipped, {n_skipped_dup} duplicate-UUID skipped"
+    )
+    return tmp_path
 
 
 def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
@@ -79,6 +126,7 @@ logger = logging.getLogger(__name__)
 
 import os as _os
 import platform as _platform
+import tempfile as _tempfile
 
 
 def _get_vendored_binary(name: str) -> Optional[str]:
@@ -279,6 +327,7 @@ def run_minimap2(
     if sort_proc.returncode != 0:
         raise RuntimeError(f"samtools sort failed: {stderr.decode()}")
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"minimap2 complete: {output_bam}")
     return str(output_bam)
 
@@ -331,6 +380,38 @@ def _merge_bams(input_bams: List[str], output_bam: str, threads: int = 1) -> Non
         Path(tmp).unlink(missing_ok=True)
         raise RuntimeError(f"samtools merge failed: {result.stderr}")
     Path(tmp).rename(output_bam)
+
+
+def _apply_calmd_eq(bam_path: Path, genome_path: str, threads: int = 1) -> None:
+    """Convert M CIGAR ops to =/X in-place using ``samtools calmd -e``.
+
+    Processes the BAM in place: writes to a ``.calmd_tmp.bam`` sidecar, then
+    atomically renames it over the original.  Works on both coordinate-sorted
+    and name-sorted BAMs.  Running on a BAM that already has =/X is safe and
+    idempotent.
+
+    Args:
+        bam_path: Path to the BAM to convert (modified in-place).
+        genome_path: Reference FASTA (must have a companion ``.fai`` index).
+        threads: samtools thread count (passed as ``-@``).
+    """
+    tmp = bam_path.with_suffix('.calmd_tmp.bam')
+    try:
+        with open(tmp, 'wb') as out_fh:
+            result = subprocess.run(
+                ['samtools', 'calmd', '-e', '-b', f'-@{threads}', str(bam_path), genome_path],
+                stdout=out_fh,
+                stderr=subprocess.PIPE,
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"samtools calmd failed for {bam_path.name}: "
+                f"{result.stderr.decode(errors='replace')[-500:]}"
+            )
+        tmp.rename(bam_path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def run_map_pacbio(
@@ -386,6 +467,7 @@ def run_map_pacbio(
                 n_chunks, output_bam,
             )
             _merge_bams([str(p) for p in chunk_bams], str(output_bam), threads=threads)
+            _apply_calmd_eq(output_bam, genome_path, threads=threads)
             logger.info("mapPacBio merge complete: %s", output_bam)
             return str(output_bam)
         else:
@@ -492,6 +574,27 @@ def run_map_pacbio(
     if view_proc.returncode not in (0, -9):  # -9 = SIGKILL on normal exit path
         raise RuntimeError(f"samtools view (mapPacBio) failed with exit code {view_proc.returncode}")
 
+    # ── Strip mapPacBio _pt:i:N suffix from QNAMEs (Read ID Purity Policy) ──
+    # mapPacBio appends its poly-A call to the QNAME (e.g. "UUID pt:i:25" in
+    # native SAM, "UUID_pt:i:25" after samtools sort converts spaces to
+    # underscores per SAM spec).  Strip it here so all downstream consumers
+    # (bam_processor, corrected_reads.tsv, corrected_consensus.bam) see only
+    # bare UUIDs — consistent with every other aligner and the parquet metadata.
+    _pt_fixed = output_bam.with_suffix('.ptfix.bam')
+    _n_stripped = 0
+    with pysam.AlignmentFile(str(output_bam), 'rb') as _src, \
+         pysam.AlignmentFile(str(_pt_fixed), 'wb', header=_src.header) as _dst:
+        for _read in _src:
+            _qn = _read.query_name or ''
+            if '_pt:i:' in _qn:
+                _read.query_name = _qn.split('_pt:i:')[0]
+                _n_stripped += 1
+            _dst.write(_read)
+    output_bam.unlink()
+    _pt_fixed.rename(output_bam)
+    if _n_stripped:
+        logger.info("mapPacBio: stripped _pt:i:N suffix from %d QNAMEs", _n_stripped)
+
     # ── Stitch split mapPacBio chunks back into full-read alignments ──
     if mpb_n_split > 0:
         mpb_pre_stitch = output_bam.with_suffix('.pre_stitch.bam')
@@ -503,6 +606,7 @@ def run_map_pacbio(
         mpb_pre_stitch.unlink(missing_ok=True)
     mpb_split_fq.unlink(missing_ok=True)
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("mapPacBio complete: %s", output_bam)
     return str(output_bam)
 
@@ -601,6 +705,7 @@ def run_bbmap(
             f"samtools view (bbmap) failed with exit code {view_proc.returncode}"
         )
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bbmap complete: %s", output_bam)
     return str(output_bam)
 
@@ -702,6 +807,7 @@ def run_bwa_mem(
             f"samtools sort (bwa mem) failed: {sort_stderr.decode(errors='replace')}"
         )
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bwa mem complete: %s", output_bam)
     return str(output_bam)
 
@@ -947,8 +1053,6 @@ def run_gapmm2(
     Returns:
         Path to output BAM file
     """
-    import tempfile
-
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
@@ -972,46 +1076,9 @@ def run_gapmm2(
     #    a FASTQ with duplicate names, seq() returns None for BOTH entries,
     #    causing a TypeError in gapmm2's refinement loop.  Fix: skip reads with
     #    empty sequences and skip any UUID seen more than once.
-    #
-    # We always write a cleaned FASTQ for gapmm2 to handle both issues.
-    reads_input = reads_path
-    tmp_fastq = None
-    opener = gzip.open if str(reads_path).endswith('.gz') else open
-
     logger.info("Preparing deduplicated FASTQ for gapmm2 compatibility")
-    tmp_fq = tempfile.NamedTemporaryFile(
-        suffix='.fastq', dir=output_bam.parent, delete=False
-    )
-    tmp_fastq = Path(tmp_fq.name)
-    seen_uuids: set = set()
-    n_skipped_empty = 0
-    n_skipped_dup = 0
-    with opener(reads_path, 'rt') as src, open(tmp_fastq, 'w') as dst:
-        while True:
-            header = src.readline()
-            if not header:
-                break
-            seq  = src.readline()
-            plus = src.readline()
-            qual = src.readline()
-            # Bare UUID (strip DRS auxiliary tags after tab/space)
-            clean_name = header[1:].split()[0]
-            seq_stripped = seq.rstrip()
-            if not seq_stripped:
-                # Skip reads with empty sequences (dorado placeholders)
-                n_skipped_empty += 1
-                continue
-            if clean_name in seen_uuids:
-                # Skip duplicate UUIDs — mappy returns None for duplicates
-                n_skipped_dup += 1
-                continue
-            seen_uuids.add(clean_name)
-            dst.write(f'@{clean_name}\n{seq}{plus}{qual}')
+    tmp_fastq = _clean_fastq(reads_path, output_bam.parent)
     reads_input = str(tmp_fastq)
-    logger.info(
-        f"  Cleaned FASTQ: {len(seen_uuids)} reads written, "
-        f"{n_skipped_empty} empty-seq skipped, {n_skipped_dup} duplicate-UUID skipped"
-    )
 
     # gapmm2 outputs PAF natively — name it .paf (not .sam)
     paf_path = output_bam.with_suffix('.paf')
@@ -1034,8 +1101,7 @@ def run_gapmm2(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
     finally:
-        if tmp_fastq is not None and tmp_fastq.exists():
-            tmp_fastq.unlink()
+        tmp_fastq.unlink(missing_ok=True)
 
     if result.returncode != 0:
         raise RuntimeError(f"gapmm2 failed: {result.stderr}")
@@ -1049,6 +1115,7 @@ def run_gapmm2(
     logger.info(f"Converting gapmm2 PAF to BAM: {output_bam}")
     _paf_to_bam(paf_path, output_bam, genome_path, reads_path=reads_path, threads=threads)
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"gapmm2 complete: {output_bam}")
     return str(output_bam)
 
@@ -1194,9 +1261,6 @@ def run_ultra(
     Returns:
         Path to output BAM file
     """
-    import gzip
-    import tempfile
-
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1211,9 +1275,8 @@ def run_ultra(
         vendored_namfinder = _get_vendored_binary('namfinder')
         if vendored_namfinder:
             logger.info(f"namfinder not in PATH; using vendored binary: {vendored_namfinder}")
-            import os as _os2
-            _extra_env = _os2.environ.copy()
-            _extra_env['PATH'] = str(Path(vendored_namfinder).parent) + _os2.pathsep + _extra_env.get('PATH', '')
+            _extra_env = _os.environ.copy()
+            _extra_env['PATH'] = str(Path(vendored_namfinder).parent) + _os.pathsep + _extra_env.get('PATH', '')
         else:
             raise FileNotFoundError(
                 "namfinder not found in PATH and no vendored binary available. "
@@ -1271,7 +1334,7 @@ def run_ultra(
 
     # Decompress genome if gzipped (uLTRA cannot read gzip FASTA)
     if _is_gzipped(genome_path):
-        _tmp_dir = tempfile.mkdtemp(prefix='ultra_decomp_')
+        _tmp_dir = _tempfile.mkdtemp(prefix='ultra_decomp_')
         ref_dest = Path(_tmp_dir) / Path(genome_path).stem
         with gzip.open(genome_path, 'rb') as f_in, open(ref_dest, 'wb') as f_out:
             f_out.write(f_in.read())
@@ -1280,7 +1343,7 @@ def run_ultra(
     # Decompress annotation if gzipped GTF
     if _is_gzipped(ann_path):
         if _tmp_dir is None:
-            _tmp_dir = tempfile.mkdtemp(prefix='ultra_decomp_')
+            _tmp_dir = _tempfile.mkdtemp(prefix='ultra_decomp_')
         ann_dest = Path(_tmp_dir) / Path(ann_path).stem
         with gzip.open(ann_path, 'rb') as f_in, open(ann_dest, 'wb') as f_out:
             f_out.write(f_in.read())
@@ -1371,6 +1434,7 @@ def run_ultra(
     import shutil as _shutil
     _shutil.rmtree(ultra_out_dir, ignore_errors=True)
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"uLTRA complete: {output_bam}")
     return str(output_bam)
 
@@ -1472,12 +1536,19 @@ def run_desalt(
                 f"Build it with: deSALT index <genome.fa> {candidates[0]}"
             )
 
+    # deSALT v1.5.6 silently misparses gzipped FASTQ (reads binary gz header as
+    # plain text, producing garbage "reads" and exit code 0) and stops at the
+    # first empty-sequence record (Dorado placeholder reads in DRS-trimmed FASTQs).
+    # Apply the same cleaning as run_gapmm2(): decompress if needed, strip DRS
+    # auxiliary tags from read names, skip empty-sequence and duplicate UUID records.
+    logger.info("Preparing deduplicated FASTQ for deSALT compatibility")
+    tmp_cleaned_fastq = _clean_fastq(reads_path, output_bam.parent)
+    reads_input = str(tmp_cleaned_fastq)
+
     sam_path = output_bam.with_suffix('.sam')
     # deSALT requires its -f tmp file on a local (non-NFS) filesystem to avoid
     # "double free or corruption" crashes caused by memory-mapping over NFS.
-    import tempfile as _tmpmod
-    import os as _os
-    tmp_file = Path(_tmpmod.gettempdir()) / f"desalt_tmp_{_os.getpid()}_{output_bam.stem}.bin"
+    tmp_file = Path(_tempfile.gettempdir()) / f"desalt_tmp_{_os.getpid()}_{output_bam.stem}.bin"
 
     cmd = [
         desalt_exec, 'aln',
@@ -1493,7 +1564,7 @@ def run_desalt(
     if extra_args:
         cmd.extend(extra_args)
 
-    cmd.extend([str(index_dir), reads_path])
+    cmd.extend([str(index_dir), reads_input])
 
     logger.info(f"Running deSALT: {' '.join(cmd[:6])}...")
 
@@ -1506,6 +1577,7 @@ def run_desalt(
     tmp_file.unlink(missing_ok=True)
     for sidecar in tmp_file.parent.glob(f"{tmp_file.name}*"):
         sidecar.unlink(missing_ok=True)
+    tmp_cleaned_fastq.unlink(missing_ok=True)
     if result.returncode != 0:
         # Clean up the 0-byte SAM file deSALT leaves behind on crash, so it
         # doesn't get picked up as valid output in downstream tools.
@@ -1545,6 +1617,7 @@ def run_desalt(
     _dedup_desalt_bam(raw_bam, output_bam, threads=threads)
     raw_bam.unlink(missing_ok=True)
 
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"deSALT complete: {output_bam}")
     return str(output_bam)
 

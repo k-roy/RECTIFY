@@ -365,6 +365,12 @@ def fix_homopolymer_mismatches(
     unchanged.
 
     Returns True if at least one X was converted, False otherwise.
+
+    .. deprecated::
+        This function is no longer called by any write path.  It is
+        superseded by ``realign_exon_blocks``, which performs global
+        NW re-alignment with HP-aware scoring.  Retained for reference
+        only; do not use in new code.
     """
     if not read.cigartuples or not read.query_sequence:
         return False
@@ -1541,7 +1547,7 @@ def write_corrected_bam(
 
     Args:
         input_bam_path:      Path to the original input BAM.
-        corrected_tsv_path:  Path to the corrected_3ends.tsv from ``rectify correct``.
+        corrected_tsv_path:  Path to the corrected_reads.tsv from ``rectify correct``.
         output_bam_path:     Destination BAM path.  Overwritten if it exists.
         genome:              Optional pre-loaded genome dict for homopolymer surgery.
 
@@ -1791,7 +1797,7 @@ def write_dual_bam(
 
     Args:
         input_bam_path:       Path to the original input BAM.
-        corrected_tsv_path:   Path to the corrected_3ends.tsv from ``rectify correct``.
+        corrected_tsv_path:   Path to the corrected_reads.tsv from ``rectify correct``.
         output_hardclip_path: Destination BAM path for the hardclip variant.
         output_softclip_path: Destination BAM path for the softclip variant.
         genome:               Optional pre-loaded genome dict for homopolymer surgery.
@@ -2009,7 +2015,7 @@ def write_netseq_assigned_bedgraph(
     factor is meaningless for the subset of NET-seq-assigned reads.
 
     Args:
-        corrected_tsv_path: Path to ``corrected_3ends.tsv`` produced by
+        corrected_tsv_path: Path to ``corrected_reads.tsv`` produced by
             ``rectify correct``.
         output_prefix: Path prefix for output bedGraph files (no extension).
 
@@ -2089,7 +2095,7 @@ def write_netseq_assigned_bedgraph(
     return result_counts
 
 
-def write_corrected_3ends_bedgraph(
+def write_corrected_reads_bedgraph(
     corrected_tsv_path: str,
     output_prefix: str,
 ) -> Dict[str, int]:
@@ -2152,7 +2158,7 @@ def write_corrected_3ends_bedgraph(
 
     if n_rows == 0:
         logger.info(
-            "write_corrected_3ends_bedgraph: no rows in %s; "
+            "write_corrected_reads_bedgraph: no rows in %s; "
             "bedgraph files not written.",
             corrected_tsv_path,
         )

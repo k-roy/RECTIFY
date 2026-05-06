@@ -6,7 +6,7 @@ After DRS pre-trimming (drs_trim_command.py), alignment (all aligners), per-alig
 correction, and consensus selection, this module produces corrected_polya.bam for
 IGV validation. For each read:
 
-  1. Look up the winning aligner from corrected_3ends.tsv (winning_aligner column).
+  1. Look up the winning aligner from corrected_reads.tsv (winning_aligner column).
   2. Fetch that read's record from the winning aligner's RAW (pre-correction) BAM.
   3. Append the original Dorado-called poly(A)+adapter sequence from the parquet
      trim metadata as a 3' soft clip.
@@ -206,7 +206,7 @@ def restore_polya_softclips(
     """Reconstruct full Dorado reads by pulling winning aligner's raw BAM record
     and restoring the original poly(A) tail from parquet trim metadata.
 
-    For each read in corrected_3ends.tsv:
+    For each read in corrected_reads.tsv:
       1. Read the winning_aligner column to find which raw BAM to pull from.
       2. Fetch that read's record from the winning aligner's raw (pre-correction) BAM.
       3. Append the Dorado-called poly(A)+adapter sequence from parquet as a 3' soft clip.
@@ -215,7 +215,7 @@ def restore_polya_softclips(
     Compare against corrected.bam in IGV to see exactly what Rectify changed.
 
     Args:
-        corrected_tsv_path:  corrected_3ends.tsv with winning_aligner column.
+        corrected_tsv_path:  corrected_reads.tsv with winning_aligner column.
         aligner_bam_paths:   dict mapping aligner name → path to raw aligner BAM.
         metadata_path:       Parquet from `rectify trim-polya`.
         output_bam_path:     Destination BAM (corrected_polya.bam).
@@ -245,7 +245,7 @@ def restore_polya_softclips(
     tsv = pd.read_csv(corrected_tsv_path, sep='\t', usecols=lambda c: c in ('read_id', 'winning_aligner'))
     if 'winning_aligner' not in tsv.columns:
         raise ValueError(
-            f"corrected_3ends.tsv at {corrected_tsv_path} has no winning_aligner column. "
+            f"corrected_reads.tsv at {corrected_tsv_path} has no winning_aligner column. "
             "Re-run rectify consensus / run-all to regenerate with the updated corrected_consensus.py."
         )
     read_to_aligner: Dict[str, str] = dict(zip(tsv['read_id'], tsv['winning_aligner']))

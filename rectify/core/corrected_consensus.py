@@ -2,7 +2,7 @@
 corrected_consensus.py — Select winning aligner per read across per-aligner corrected outputs.
 
 For each read, selects the winning aligner's full corrected result from N per-aligner
-corrected_3ends.tsv files.  The winning aligner's corrected BAM record is then used
+corrected_reads.tsv files.  The winning aligner's corrected BAM record is then used
 downstream for the consensus corrected BAM — meaning the entire read is taken from the
 winner (5' junction rescue, intron corrections, and 3' CPA position).
 
@@ -573,7 +573,7 @@ def merge_corrected_tsvs(
     overhang_table: Optional[OverhangTable] = None,
 ) -> Path:
     """
-    Merge N per-aligner corrected TSVs into a single corrected_3ends.tsv.
+    Merge N per-aligner corrected TSVs into a single corrected_reads.tsv.
 
     Winner selection (when *per_aligner_corrected_bams* is provided):
 
@@ -602,9 +602,9 @@ def merge_corrected_tsvs(
     Parameters
     ----------
     per_aligner_tsvs:
-        Mapping from aligner name to corrected_3ends.tsv path.
+        Mapping from aligner name to corrected_reads.tsv path.
     output_tsv:
-        Destination path for the merged corrected_3ends.tsv.
+        Destination path for the merged corrected_reads.tsv.
     summary_tsv:
         Optional path for a per-read aligner comparison table.
     per_aligner_corrected_bams:
@@ -846,13 +846,13 @@ def identify_cat5_candidates(
     neither aligner alone produces the complete splice pattern.
 
     Junctions here are taken from the ``junctions`` column of each
-    corrected_3ends.tsv (post-correction, so Cat3-rescued junctions are included
+    corrected_reads.tsv (post-correction, so Cat3-rescued junctions are included
     and false N-ops absorbed by Cat4 are excluded).
 
     Parameters
     ----------
     per_aligner_tsvs:
-        Mapping from aligner name to corrected_3ends.tsv path.
+        Mapping from aligner name to corrected_reads.tsv path.
     output_tsv:
         Optional path to write the candidate table.
 

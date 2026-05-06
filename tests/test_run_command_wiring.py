@@ -33,7 +33,7 @@ class TestRunCommandAnalyzeArgWiring:
     def _make_run_all_args(self, tmp_path):
         """Simulate what run_command.run() does when building analyze_args."""
         # This mirrors the exact Namespace construction in run_command.py
-        corrected_tsv = tmp_path / 'corrected_3ends.tsv'
+        corrected_tsv = tmp_path / 'corrected_reads.tsv'
         output_dir = tmp_path
         genome_path = None
         annotation_path = None

@@ -68,7 +68,7 @@ from .bam_writer import (  # noqa: F401  (re-exported)
     write_softclipped_bam,
     write_polya_trimmed_bam,
     write_netseq_assigned_bedgraph,
-    write_corrected_3ends_bedgraph,
+    write_corrected_reads_bedgraph,
 )
 
 # Position index — imported here for the same backwards-compat reason.
@@ -202,6 +202,7 @@ def correct_read_3prime(
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
+    dt_primed_cDNA: bool = False,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -227,6 +228,14 @@ def correct_read_3prime(
             original_position, strand = get_read_3prime_position(read)
             if original_position is None:
                 return []
+            if dt_primed_cDNA:
+                # Antisense protocol: gene strand is opposite of read strand
+                if read.is_reverse:
+                    strand = '+'
+                    original_position = (read.reference_end - 1) if read.reference_end else original_position
+                else:
+                    strand = '-'
+                    original_position = read.reference_start
             chrom = read.reference_name
             chrom_std = standardize_chrom_name(chrom)
             five_prime_position = get_read_5prime_position(read, strand)
@@ -267,6 +276,17 @@ def correct_read_3prime(
     if original_position is None:
         logger.warning(f"Could not compute 3' position for read {read.query_name}, skipping")
         return []
+    if dt_primed_cDNA:
+        # Antisense protocol (e.g. QuantSeq REV): reads are antisense to mRNA.
+        # Gene strand is the opposite of read strand; CPA is at the opposite end.
+        if read.is_reverse:
+            # is_reverse=True → gene is plus-strand → CPA at rightmost aligned base
+            strand = '+'
+            original_position = (read.reference_end - 1) if read.reference_end else original_position
+        else:
+            # is_reverse=False → gene is minus-strand → CPA at leftmost aligned base
+            strand = '-'
+            original_position = read.reference_start
     chrom = read.reference_name
 
     # Standardize chromosome name
@@ -797,7 +817,8 @@ def process_bam_file(
     apply_indel_correction: bool = False,
     netseq_dir: Optional[str] = None,
     output_path: Optional[str] = None,
-    max_reads: Optional[int] = None
+    max_reads: Optional[int] = None,
+    dt_primed_cDNA: bool = False,
 ) -> List[Dict]:
     """
     Process BAM file and apply all corrections.
@@ -852,7 +873,8 @@ def process_bam_file(
                 apply_ag_mispriming=apply_ag_mispriming,
                 apply_polya_trim=apply_polya_trim,
                 apply_indel_correction=apply_indel_correction,
-                netseq_loader=netseq_loader
+                netseq_loader=netseq_loader,
+                dt_primed_cDNA=dt_primed_cDNA,
             )
 
             results.extend(read_results)
@@ -1193,6 +1215,9 @@ def _process_region_worker(
     polya_model: Optional[PolyAModel] = None,
     tmp_dir: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
+    dt_primed_cDNA: bool = False,
+    min_mapq: int = 0,
+    min_aligned_length: int = 0,
 ) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
@@ -1240,6 +1265,13 @@ def _process_region_worker(
             # Skip unmapped/secondary/supplementary
             if read.is_unmapped or read.is_secondary or read.is_supplementary:
                 continue
+            # Skip low-MAPQ reads (e.g. multi-mapping reads at MAPQ=0)
+            if min_mapq > 0 and read.mapping_quality < min_mapq:
+                continue
+            # Skip reads with insufficient aligned length (e.g. reads mapping
+            # only to a low-complexity T-tract with almost no unique sequence)
+            if min_aligned_length > 0 and (read.reference_length or 0) < min_aligned_length:
+                continue
             # Boundary deduplication: when a chromosome is split by coordinate
             # (not by a coverage gap), pysam.fetch returns reads that *overlap*
             # [start, end), so a read spanning a sub-region boundary would be
@@ -1275,6 +1307,7 @@ def _process_region_worker(
                 annotated_junctions=annotated_junctions,
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
+                dt_primed_cDNA=dt_primed_cDNA,
             )
             results.extend(read_results)
 
@@ -1316,6 +1349,9 @@ def process_bam_file_parallel(
     polya_model_path: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
+    dt_primed_cDNA: bool = False,
+    min_mapq: int = 0,
+    min_aligned_length: int = 0,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -1419,6 +1455,9 @@ def process_bam_file_parallel(
                 gene_interval_trees,
                 polya_model,
                 max_reads_for_variant_rescue=max_reads_for_variant_rescue,
+                dt_primed_cDNA=dt_primed_cDNA,
+                min_mapq=min_mapq,
+                min_aligned_length=min_aligned_length,
             )
             all_results.extend(results)
 
@@ -1459,6 +1498,9 @@ def process_bam_file_parallel(
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
+        dt_primed_cDNA=dt_primed_cDNA,
+        min_mapq=min_mapq,
+        min_aligned_length=min_aligned_length,
     )
 
     all_results = []
@@ -1519,6 +1561,9 @@ def process_bam_streaming(
     annotated_junctions: Optional[set] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
+    dt_primed_cDNA: bool = False,
+    min_mapq: int = 0,
+    min_aligned_length: int = 0,
 ) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
@@ -1616,6 +1661,10 @@ def process_bam_streaming(
                 if read.is_supplementary:
                     stats.reads_supplementary += 1
                     continue
+                if min_mapq > 0 and read.mapping_quality < min_mapq:
+                    continue
+                if min_aligned_length > 0 and (read.reference_length or 0) < min_aligned_length:
+                    continue
 
                 read_results = correct_read_3prime(
                     read, genome,
@@ -1628,6 +1677,7 @@ def process_bam_streaming(
                     annotated_junctions=annotated_junctions,
                     gene_interval_trees=gene_interval_trees,
                     polya_model=polya_model,
+                    dt_primed_cDNA=dt_primed_cDNA,
                 )
                 chunk.extend(read_results)
 
@@ -1745,6 +1795,9 @@ def process_bam_streaming_parallel(
     checkpoint_dir: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
+    dt_primed_cDNA: bool = False,
+    min_mapq: int = 0,
+    min_aligned_length: int = 0,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
@@ -1889,6 +1942,9 @@ def process_bam_streaming_parallel(
         polya_model=polya_model,
         tmp_dir=_tmp_dir,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
+        dt_primed_cDNA=dt_primed_cDNA,
+        min_mapq=min_mapq,
+        min_aligned_length=min_aligned_length,
     )
 
     # Build the TSV header (identical to process_bam_streaming)

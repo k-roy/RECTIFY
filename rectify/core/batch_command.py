@@ -115,7 +115,7 @@ $PYTHON -m rectify correct \\
     "${{WORK_INPUT}}" \\
     --genome "{genome}" \\
     --annotation "{annotation}" \\
-    -o "${{WORK_OUTPUT_DIR}}/corrected_3ends.tsv" \\
+    -o "${{WORK_OUTPUT_DIR}}/corrected_reads.tsv" \\
     --threads $RECTIFY_CPUS \\
     {extra_args}
 
@@ -228,7 +228,7 @@ output_dir = Path("{output_dir}")
 
 dfs = []
 for sample_id, input_path in samples:
-    tsv = output_dir / sample_id / "corrected_3ends.tsv"
+    tsv = output_dir / sample_id / "corrected_reads.tsv"
     if not tsv.exists():
         print(f"WARNING: {{tsv}} not found, skipping", file=sys.stderr)
         continue
@@ -242,7 +242,7 @@ if not dfs:
     sys.exit(1)
 
 combined = pd.concat(dfs, ignore_index=True)
-combined_tsv = output_dir / "combined" / "corrected_3ends_combined.tsv"
+combined_tsv = output_dir / "combined" / "corrected_reads_combined.tsv"
 combined.to_csv(combined_tsv, sep="\\t", index=False)
 print(f"Combined: {{len(dfs)}} samples, {{len(combined):,}} reads -> {{combined_tsv}}")
 PYEOF
@@ -250,7 +250,7 @@ PYEOF
 # ── Step 2: Run combined analysis ─────────────────────────────────────────
 echo "Running combined analysis..."
 $PYTHON -m rectify analyze \\
-    "$COMBINED_DIR/corrected_3ends_combined.tsv" \\
+    "$COMBINED_DIR/corrected_reads_combined.tsv" \\
     --annotation "{annotation}" \\
     --genome "{genome}" \\
     -o "$COMBINED_DIR" \\
@@ -395,7 +395,7 @@ def _build_sample_cmd(sample: Dict[str, str], sample_output: Path, args) -> List
     and runs a single shared analyze step for cross-sample DESeq2.
     """
     input_path = sample.get('bam_path', sample.get('path'))
-    corrected_tsv = sample_output / 'corrected_3ends.tsv'
+    corrected_tsv = sample_output / 'corrected_reads.tsv'
 
     cmd = [
         sys.executable, '-m', 'rectify', 'correct',

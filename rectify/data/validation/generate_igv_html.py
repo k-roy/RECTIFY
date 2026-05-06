@@ -3,7 +3,7 @@
 generate_igv_html.py — regenerate validation_reads_igv.html from live data.
 
 Reads validation_reads.bam (read spans, CIGAR N-ops, tags) and
-corrected_3ends.tsv (original/corrected positions, junction strings)
+corrected_reads.tsv (original/corrected positions, junction strings)
 to compute all IGV loci automatically.
 
 Run:
@@ -19,7 +19,7 @@ from pathlib import Path
 
 VAL_DIR   = Path(__file__).parent
 BAM_PATH  = VAL_DIR / "validation_reads.bam"
-TSV_PATH  = VAL_DIR / "corrected_3ends.tsv"
+TSV_PATH  = VAL_DIR / "corrected_reads.tsv"
 HTML_PATH = VAL_DIR / "validation_reads_igv.html"
 IGV_PORT  = 60151
 
@@ -406,8 +406,8 @@ HTML = """\
   The soft-clipped BAM restores the full poly(A) tail and adapter stub as soft-clips so the complete Dorado read is visible in IGV.
   <br><br>
   <strong>Corrected 3′-end bedgraphs (all categories):</strong> Load
-  <code>rectified/corrected_3ends.plus.bedgraph</code> and
-  <code>rectified/corrected_3ends.minus.bedgraph</code> to see
+  <code>rectified/corrected_reads.plus.bedgraph</code> and
+  <code>rectified/corrected_reads.minus.bedgraph</code> to see
   corrected 3′-end signal for all 36 reads (Cat1–9). These tracks show a single signal peak
   at the corrected position for each read.
   Cat9 reads have N-ops refined by Module 2H — load <code>rectified/rectified_corrected_3end.bam</code>

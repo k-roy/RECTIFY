@@ -188,6 +188,18 @@ Citation:
              '(MAPQ=0), which is recommended for dT-primed-cDNA data where '
              'internally-primed reads from repetitive T-rich regions are common.'
     )
+    module_group.add_argument(
+        '--min-aligned-length',
+        type=int,
+        default=0,
+        metavar='BP',
+        help='Minimum number of reference bases consumed by the alignment '
+             '(reference_length) to include a read. Reads with fewer aligned '
+             'bases are skipped before correction. Default: 0 (no filter). '
+             'Use --min-aligned-length 30 for dT-primed-cDNA short-read data '
+             'to remove reads that align only to low-complexity T-tracts with '
+             'insufficient unique sequence context.'
+    )
 
     # Poly(A) model
     polya_group = correct_parser.add_argument_group('Poly(A) tail model')
@@ -821,7 +833,7 @@ Citation:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog="""
 Example:
-  rectify restore-softclip corrected_3ends.tsv \\
+  rectify restore-softclip corrected_reads.tsv \\
       --aligner-bams minimap2:/path/to/minimap2.bam mapPacBio:/path/to/mapPacBio.bam \\
       --trim-metadata polya_trim_metadata.parquet \\
       -o corrected_polya.bam
@@ -829,7 +841,7 @@ Example:
     )
     restore_sc_parser.add_argument(
         'corrected_tsv',
-        help='corrected_3ends.tsv produced by rectify correct (must contain winning_aligner column)',
+        help='corrected_reads.tsv produced by rectify correct (must contain winning_aligner column)',
     )
     restore_sc_parser.add_argument(
         '--aligner-bams',
