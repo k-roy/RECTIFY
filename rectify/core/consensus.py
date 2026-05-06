@@ -58,7 +58,6 @@ class AlignmentInfo:
     reference_start: int
     reference_end: int
     cigar_string: str
-    mapq: int
 
     # Junction information
     junctions: List[Tuple[int, int]] = field(default_factory=list)  # (start, end) pairs
@@ -123,6 +122,7 @@ class ConsensusResult:
     # Consensus metrics
     n_aligners_agree: int = 0  # Number of aligners with same junctions
     n_tied_score: int = 1      # Number of aligners with equal top junction score
+    tied_aligners: List[str] = field(default_factory=list)  # All aligners tied for top score
     confidence: str = ""  # 'high', 'medium', 'low'
 
     # Rescue info
@@ -375,6 +375,17 @@ def _rescue_5prime_softclip(
     genome_seq = genome[chrom]
     clip_seq_upper = clip_seq.upper()  # Hoist out of per-junction loop
 
+    # Cap clip length to avoid O(clip_len²) edit_distance for very long soft-clips
+    # (e.g. uLTRA reads with 200bp+ clips: 200²=40k ops/junction → 50²=2.5k ops, 16×).
+    # Take the portion nearest the alignment 5' boundary (most informative for junction matching).
+    _MAX_RESCUE_SEQ = 50
+    if clip_len > _MAX_RESCUE_SEQ:
+        if alignment.strand == '+':
+            clip_seq_upper = clip_seq_upper[-_MAX_RESCUE_SEQ:]
+        else:
+            clip_seq_upper = clip_seq_upper[:_MAX_RESCUE_SEQ]
+        clip_len = _MAX_RESCUE_SEQ
+
     if alignment.strand == '+':
         # 5' alignment start = leftmost mapped base
         align_5prime = alignment.reference_start
@@ -430,6 +441,137 @@ def _rescue_5prime_softclip(
     return False
 
 
+def _cigar_terminal_errors(
+    cigartuples,
+    query_seq: str,
+    ref_seq: str,
+    ref_start: int,
+    clip_len: int,
+    scan_from_right: bool,
+    scan_bp: int,
+    polya_base: str = '',
+) -> List[int]:
+    """Build error array for the first scan_bp aligned bases near one end.
+
+    Replaces ``read.get_aligned_pairs()`` for terminal-clip scanning.  Walking
+    the CIGAR directly avoids allocating a full O(read_length) list of tuples
+    and supports early termination after ``scan_bp`` positions.
+
+    Args:
+        cigartuples:     read.cigartuples
+        query_seq:       read.query_sequence
+        ref_seq:         genome[chrom]
+        ref_start:       read.reference_start
+        clip_len:        soft-clip length to skip (five_clip or three_clip)
+        scan_from_right: True  → scan from high genomic coords (5' for − strand,
+                                  3' for + strand).
+                         False → scan from low genomic coords (5' for + strand,
+                                  3' for − strand).
+        scan_bp:         maximum error positions to collect before stopping.
+        polya_base:      if non-empty ('A' or 'T'), insertions/mismatches of this
+                         base are counted as 0 errors (poly-A filter for 3' end).
+    """
+    errors: List[int] = []
+    if not cigartuples or not query_seq or not ref_seq:
+        return errors
+
+    ref_len = len(ref_seq)
+    query_len = len(query_seq)
+
+    if not scan_from_right:
+        # Forward walk: scan left→right, skipping the first clip_len query bases.
+        ref_pos = ref_start
+        query_pos = 0
+        for op, length in cigartuples:
+            if len(errors) >= scan_bp:
+                break
+            if op == 5:                              # H: no bases consumed
+                pass
+            elif op == 4:                            # S: query only, skip
+                query_pos += length
+            elif op in (0, 7, 8):                    # M, =, X: both consumed
+                skip_n = max(0, clip_len - query_pos)  # bases still in left clip
+                for i in range(skip_n, length):
+                    if len(errors) >= scan_bp:
+                        break
+                    rp = ref_pos + i
+                    qp = query_pos + i
+                    if rp < ref_len:
+                        ref_b = ref_seq[rp].upper()
+                        read_b = query_seq[qp].upper()
+                        if polya_base and read_b == polya_base:
+                            errors.append(0)
+                        else:
+                            errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+                    else:
+                        errors.append(0)
+                query_pos += length
+                ref_pos += length
+            elif op == 1:                            # I: query only (insertion)
+                for i in range(length):
+                    qp = query_pos + i
+                    if qp >= clip_len and len(errors) < scan_bp:
+                        read_b = query_seq[qp].upper()
+                        if polya_base and read_b == polya_base:
+                            errors.append(0)
+                        else:
+                            errors.append(1)
+                query_pos += length
+            elif op in (2, 3):                       # D, N: ref only
+                ref_pos += length
+    else:
+        # Reversed walk: scan right→left, skipping the last clip_len query bases.
+        # Pre-compute reference_end by a quick forward pass over CIGAR.
+        ref_pos = ref_start
+        for op, length in cigartuples:
+            if op in (0, 2, 3, 7, 8):               # ops that consume reference
+                ref_pos += length
+        # ref_pos is now reference_end (exclusive)
+
+        query_pos = query_len
+        cutoff_qp = query_len - 1 - clip_len        # last aligned pos before right clip
+
+        for op, length in reversed(cigartuples):
+            if len(errors) >= scan_bp:
+                break
+            if op == 5:                              # H
+                pass
+            elif op == 4:                            # S: right-side soft-clip
+                query_pos -= length
+            elif op in (0, 7, 8):                    # M, =, X
+                skip_n = max(0, query_pos - 1 - cutoff_qp)  # bases still in right clip
+                for i in range(skip_n, length):
+                    if len(errors) >= scan_bp:
+                        break
+                    qp = query_pos - 1 - i
+                    rp = ref_pos - 1 - i
+                    if 0 <= rp < ref_len:
+                        ref_b = ref_seq[rp].upper()
+                        read_b = query_seq[qp].upper()
+                        if polya_base and read_b == polya_base:
+                            errors.append(0)
+                        else:
+                            errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
+                    else:
+                        errors.append(0)
+                query_pos -= length
+                ref_pos -= length
+            elif op == 1:                            # I: insertion
+                for i in range(length):
+                    qp = query_pos - 1 - i
+                    if qp <= cutoff_qp and len(errors) < scan_bp:
+                        read_b = query_seq[qp].upper()
+                        if polya_base and read_b == polya_base:
+                            errors.append(0)
+                        else:
+                            errors.append(1)
+                query_pos -= length
+            elif op in (2, 3):                       # D, N
+                ref_pos -= length
+
+    return errors
+
+
 def _get_effective_5prime_clip(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -481,58 +623,18 @@ def _get_effective_5prime_clip(
         return five_clip
 
     ref_seq = genome[chrom]
-    query_seq = read.query_sequence
-    query_len = len(query_seq)
 
-    try:
-        pairs = read.get_aligned_pairs()
-    except Exception as e:
-        logger.warning(
-            "_get_effective_5prime_clip: get_aligned_pairs failed for read %s: %s",
-            getattr(read, "query_name", "<unknown>"),
-            e,
-        )
-        return five_clip
-
-    # Build error array for the first `scan_bp` aligned bases from the 5' end.
-    # Skip explicit soft-clip positions; only examine the true aligned region.
-    errors: List[int] = []
-    if read.is_reverse:
-        # 5' end is at high query coordinates; scan backward from cutoff
-        cutoff_qp = query_len - 1 - five_clip  # last pos inside aligned region
-        for qp, rp in reversed(pairs):
-            if qp is None:
-                continue
-            if qp > cutoff_qp:
-                continue  # still in soft-clip region
-            if len(errors) >= scan_bp:
-                break
-            if rp is None:
-                errors.append(1)  # insertion into read = mismatch-equivalent
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                read_b = query_seq[qp].upper()
-                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
-            else:
-                errors.append(0)
-    else:
-        # 5' end is at low query coordinates; scan forward from cutoff
-        cutoff_qp = five_clip  # first pos inside aligned region
-        for qp, rp in pairs:
-            if qp is None:
-                continue
-            if qp < cutoff_qp:
-                continue  # still in soft-clip region
-            if len(errors) >= scan_bp:
-                break
-            if rp is None:
-                errors.append(1)
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                read_b = query_seq[qp].upper()
-                errors.append(1 if (ref_b != 'N' and read_b != ref_b) else 0)
-            else:
-                errors.append(0)
+    # Build error array using CIGAR walk (avoids O(read_length) get_aligned_pairs call).
+    # scan_from_right=True for minus strand (5' is at high genomic coords).
+    errors = _cigar_terminal_errors(
+        read.cigartuples,
+        read.query_sequence,
+        ref_seq,
+        read.reference_start,
+        clip_len=five_clip,
+        scan_from_right=read.is_reverse,
+        scan_bp=scan_bp,
+    )
 
     if len(errors) < window:
         return five_clip
@@ -610,64 +712,24 @@ def _get_effective_3prime_clip(
         return three_clip
 
     ref_seq = genome[chrom]
-    query_seq = read.query_sequence
-    query_len = len(query_seq)
 
     # Poly(A) base in read coordinates:
     # - Plus strand: A in query = expected at 3' end (poly(A) tail)
     # - Minus strand: poly(A) tail is stored as poly(T) in the reverse-complemented BAM query
     polya_base = 'T' if read.is_reverse else 'A'
 
-    try:
-        pairs = read.get_aligned_pairs()
-    except Exception:
-        return three_clip
-
-    # Build error array for the first `scan_bp` aligned bases from the 3' end.
-    # Scan inward (3' → 5') and flag only non-poly(A) errors.
-    errors: List[int] = []
-    if read.is_reverse:
-        # 3' RNA end is at the LEFT (low query positions) for minus strand.
-        # Explicit 3' clip occupies query_seq[:three_clip]; scan just inside.
-        cutoff_qp = three_clip  # first pos inside aligned region
-        for qp, rp in pairs:
-            if qp is None:
-                continue
-            if qp < cutoff_qp:
-                continue
-            if len(errors) >= scan_bp:
-                break
-            read_b = query_seq[qp].upper()
-            if rp is None:
-                # Insertion — count as error only if not a poly(A)-base insertion
-                errors.append(0 if read_b == polya_base else 1)
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                is_mismatch = ref_b != 'N' and read_b != ref_b
-                # Only count non-polyA mismatches
-                errors.append(1 if (is_mismatch and read_b != polya_base) else 0)
-            else:
-                errors.append(0)
-    else:
-        # 3' RNA end is at the RIGHT (high query positions) for plus strand.
-        # Explicit 3' clip occupies query_seq[-three_clip:]; scan just inside.
-        cutoff_qp = query_len - 1 - three_clip  # last pos inside aligned region
-        for qp, rp in reversed(pairs):
-            if qp is None:
-                continue
-            if qp > cutoff_qp:
-                continue
-            if len(errors) >= scan_bp:
-                break
-            read_b = query_seq[qp].upper()
-            if rp is None:
-                errors.append(0 if read_b == polya_base else 1)
-            elif rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                is_mismatch = ref_b != 'N' and read_b != ref_b
-                errors.append(1 if (is_mismatch and read_b != polya_base) else 0)
-            else:
-                errors.append(0)
+    # Build error array using CIGAR walk (avoids O(read_length) get_aligned_pairs call).
+    # scan_from_right=True for plus strand (3' is at high genomic coords).
+    errors = _cigar_terminal_errors(
+        read.cigartuples,
+        read.query_sequence,
+        ref_seq,
+        read.reference_start,
+        clip_len=three_clip,
+        scan_from_right=not read.is_reverse,
+        scan_bp=scan_bp,
+        polya_base=polya_base,
+    )
 
     if len(errors) < window:
         return three_clip
@@ -754,35 +816,46 @@ def _count_junction_proximity_errors(
         for rp in range(junc_end, min(len(ref_seq), junc_end + junction_window_bp)):
             prox.add(rp)
 
-    try:
-        pairs = read.get_aligned_pairs()
-    except Exception:
-        return 0
-
+    ref_len = len(ref_seq)
     errors: float = 0.0
+    ref_pos = read.reference_start
+    query_pos = 0
     prev_rp: Optional[int] = None
 
-    for qp, rp in pairs:
-        if rp is None and qp is not None:
-            # Insertion into read — attribute to preceding ref position
+    for op, length in read.cigartuples:
+        if op == 5:    # H: hard-clip — no bases consumed
+            pass
+        elif op == 4:  # S: soft-clip — query only
+            query_pos += length
+        elif op in (0, 7, 8):  # M, =, X: both consumed
+            for i in range(length):
+                rp = ref_pos + i
+                qp = query_pos + i
+                if rp in prox and rp < ref_len:
+                    ref_b = ref_seq[rp].upper()
+                    read_b = query_seq[qp].upper()
+                    if ref_b != 'N' and read_b != ref_b:
+                        weight = 0.5 if _is_homopolymer_position(ref_seq, rp) else 1.0
+                        errors += weight
+                prev_rp = rp
+            query_pos += length
+            ref_pos += length
+        elif op == 1:  # I: insertion — attribute to preceding ref position
             if prev_rp is not None and prev_rp in prox:
                 weight = 0.5 if _is_homopolymer_position(ref_seq, prev_rp) else 1.0
                 errors += weight
-        elif qp is None and rp is not None:
-            # Deletion from read
-            if rp in prox:
-                weight = 0.5 if _is_homopolymer_position(ref_seq, rp) else 1.0
-                errors += weight
-            prev_rp = rp
-        elif qp is not None and rp is not None:
-            # Aligned pair — check for mismatch
-            if rp in prox and rp < len(ref_seq):
-                ref_b = ref_seq[rp].upper()
-                read_b = query_seq[qp].upper()
-                if ref_b != 'N' and read_b != ref_b:
+            query_pos += length
+        elif op == 2:  # D: deletion
+            for i in range(length):
+                rp = ref_pos + i
+                if rp in prox:
                     weight = 0.5 if _is_homopolymer_position(ref_seq, rp) else 1.0
                     errors += weight
-            prev_rp = rp
+                prev_rp = rp
+            ref_pos += length
+        elif op == 3:  # N: intron skip
+            prev_rp = ref_pos + length - 1
+            ref_pos += length
 
     return errors
 
@@ -798,15 +871,20 @@ def score_alignment(
     Scoring factors:
     - 5' soft-clip penalty: -2 per unexplained clipped base; 0 if sequence-rescue
       confirms the aligner found an intron but could not align the upstream exon end
-    - 3' A-tract depth penalty: -1 per downstream A (capped at 10)
+    - 3' non-poly(A) terminal error penalty: -2 per non-A/T base in trailing
+      soft-clip or terminal mismatch region (indicates missed exon coverage)
+    - Junction proximity errors: -1 per mismatch/indel within 5 bp of a junction
 
     Neither canonical splice site motifs (GT/AG) nor annotated junction
     matches are scored here, to avoid biasing against novel junctions.
     Both are used only as tiebreakers in select_best_alignment().
 
-    Note: False 3' junctions from poly(A) artifacts are handled by the
-    walk back correction step, which eats through aligned A's and discards
-    spurious N operations to find the true CPA site.
+    Note: 3' raw endpoint proximity to the CPA is deliberately NOT scored.
+    Aligners maximise their own score without knowing where the poly-A tail
+    begins; find_polya_boundary() assigns the true CPA regardless of where
+    the aligner stopped.  Penalising deeper 3' extension would disfavour
+    aligners (e.g. mapPacBio) that correctly resolve HP insertions at the
+    exon/poly-A boundary.
 
     Args:
         alignment: AlignmentInfo for this aligner
@@ -841,10 +919,15 @@ def score_alignment(
         if not clip_rescued:
             score -= effective_clip * 2
 
-    # 3' A-tract depth penalty (prefer alignments landing closer to the true CPA).
-    # Each downstream A the aligner runs into costs 1 point — same scale as 5' penalty
-    # per base, but capped at 10 to avoid overwhelming junction scoring.
-    score -= min(alignment.three_prime_atract_depth, 10)
+    # NOTE: three_prime_atract_depth is intentionally NOT used for scoring.
+    # Aligners do not know or care whether a 3' A-run is genomically encoded or
+    # poly(A) tail — they simply maximise alignment score.  An aligner that extends
+    # further into the A-rich 3'UTR (e.g. mapPacBio resolving an HP insertion to
+    # reach the last non-A exon base) is MORE informative, not worse.
+    # find_polya_boundary() correctly assigns the CPA regardless of where the raw
+    # alignment ends — it walks back from the raw 3' end to the last non-A exon base.
+    # Penalising raw 3' endpoint proximity would disfavour the most accurate aligner
+    # and is the wrong criterion for consensus selection.
 
     # 3' non-poly(A) terminal error penalty: penalizes aligners that stop before the
     # true 3' end. Aligners should only soft-clip the poly(A) tail; non-A/T clipping or
@@ -971,7 +1054,6 @@ def extract_alignment_info(
         reference_start=read.reference_start,
         reference_end=read.reference_end,
         cigar_string=read.cigarstring or "",
-        mapq=read.mapping_quality,
         junctions=junctions,
         five_prime_softclip=five_clip,
         three_prime_softclip=three_clip,
@@ -1099,6 +1181,7 @@ def select_best_alignment(
         aligners_compared=list(alignments.keys()),
         n_aligners_agree=n_agree,
         n_tied_score=len(tied_aligners),
+        tied_aligners=tied_aligners,
         confidence=confidence,
         was_5prime_rescued=was_rescued,
         false_junction_removed=False,  # Not tracked; walk back correction handles this
@@ -1166,14 +1249,19 @@ def _normalize_bam_read_name(name: str) -> str:
     """Strip mapPacBio's pt:i:N suffix from BAM read names.
 
     mapPacBio embeds the poly-A tail length from the FASTQ auxiliary tag
-    directly into the BAM read name as a space-separated suffix: 'UUID pt:i:25'.
-    All other aligners use just the bare UUID.  This function normalizes the name
-    so that the K-way merge groups mapPacBio reads with their counterparts from
-    other aligners instead of treating them as entirely separate reads.
+    directly into the BAM read name.  The separator depends on processing stage:
 
-    Note: the separator is a space character, not an underscore.
+    - Space-separated ('UUID pt:i:25'): direct mapPacBio output, before samtools sort.
+    - Underscore-separated ('UUID_pt:i:25'): after samtools sort (BAM spec forbids
+      spaces in QNAME, so samtools converts the space to underscore).
+
+    Both forms must be stripped so that the K-way merge correctly groups mapPacBio
+    reads with their counterparts from other aligners.
     """
     idx = name.find(' pt:i:')
+    if idx != -1:
+        return name[:idx]
+    idx = name.find('_pt:i:')
     if idx != -1:
         return name[:idx]
     return name
@@ -1212,11 +1300,31 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
             for aligner in list(current_reads.keys()):
                 read = current_reads[aligner]
                 if read is not None and _normalize_bam_read_name(read.query_name) == min_read_id:
-                    group[aligner] = read
+                    # Drain ALL same-name records from this aligner (handles the
+                    # rare case where mapPacBio emits two primary alignments for
+                    # the same read, e.g. a truncated exon-1-only alignment plus
+                    # the full spliced alignment).  Among duplicates, prefer the
+                    # alignment with the most N-ops (most complete splice chain),
+                    # then highest MAPQ.
+                    candidates = [read]
                     try:
-                        current_reads[aligner] = next(iterators[aligner])
+                        nxt = next(iterators[aligner])
+                        while (nxt is not None
+                               and _normalize_bam_read_name(nxt.query_name) == min_read_id):
+                            candidates.append(nxt)
+                            nxt = next(iterators[aligner])
+                        current_reads[aligner] = nxt
                     except StopIteration:
                         current_reads[aligner] = None
+                    if len(candidates) == 1:
+                        group[aligner] = candidates[0]
+                    else:
+                        def _n_ops(r: pysam.AlignedSegment) -> int:
+                            return sum(1 for op, _ in (r.cigartuples or []) if op == 3)
+                        group[aligner] = max(
+                            candidates,
+                            key=lambda r: _n_ops(r),
+                        )
             yield min_read_id, group
     finally:
         for bam in bams.values():
@@ -1379,10 +1487,11 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 # supplementary (0x800) bits so the winning record is always primary.
                 best_read.flag &= ~0x900
 
-                # Normalize mapPacBio's 'UUID pt:i:N' read name to bare UUID so all
-                # downstream tools see a consistent read name regardless of which
-                # aligner won the consensus selection.
-                if ' pt:i:' in (best_read.query_name or ''):
+                # Normalize mapPacBio's 'UUID pt:i:N' / 'UUID_pt:i:N' read name to bare
+                # UUID so all downstream tools see a consistent read name regardless of
+                # which aligner won the consensus selection.
+                qn = best_read.query_name or ''
+                if ' pt:i:' in qn or '_pt:i:' in qn:
                     best_read.query_name = _normalize_bam_read_name(best_read.query_name)
 
                 # gapmm2 PAF→BAM conversion does not preserve read sequences;
@@ -1393,6 +1502,8 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 best_read.set_tag('XA', result.best_aligner)
                 best_read.set_tag('XC', result.confidence)
                 best_read.set_tag('XN', result.n_aligners_agree)
+                if result.tied_aligners:
+                    best_read.set_tag('Xt', ','.join(sorted(result.tied_aligners)))
                 if result.was_5prime_rescued:
                     best_read.set_tag('XR', 1)
                 if result.false_junction_removed:

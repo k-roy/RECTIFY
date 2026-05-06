@@ -86,7 +86,6 @@ def _make_alignment_info(
         reference_start=start,
         reference_end=end,
         cigar_string='100M',
-        mapq=60,
         junctions=junctions,
         five_prime_softclip=five_prime_softclip,
         three_prime_softclip=three_prime_softclip,
@@ -248,19 +247,22 @@ class TestScoreAlignment:
         score = score_alignment(al, self._genome())
         assert score == -10.0  # 5 bases × -2
 
-    def test_atract_depth_penalty_capped_at_10(self):
+    def test_atract_depth_does_not_affect_score(self):
+        # three_prime_atract_depth is intentionally not scored: aligners do not
+        # know or care where the poly-A tail begins, and find_polya_boundary()
+        # assigns the true CPA regardless of raw 3' endpoint.
         al = _make_alignment_info(effective_five_prime_clip=0,
                                    three_prime_atract_depth=15,
                                    effective_three_prime_clip=0)
         score = score_alignment(al, self._genome())
-        assert score == -10.0  # capped at 10
+        assert score == 0.0
 
-    def test_atract_depth_penalty_uncapped_below_10(self):
+    def test_atract_depth_ignored_at_any_value(self):
         al = _make_alignment_info(effective_five_prime_clip=0,
                                    three_prime_atract_depth=7,
                                    effective_three_prime_clip=0)
         score = score_alignment(al, self._genome())
-        assert score == -7.0
+        assert score == 0.0
 
     def test_three_prime_clip_penalty_minus_2_per_base_capped_at_10(self):
         al = _make_alignment_info(effective_five_prime_clip=0,
@@ -281,8 +283,8 @@ class TestScoreAlignment:
                                    three_prime_atract_depth=4,
                                    effective_three_prime_clip=2)
         score = score_alignment(al, self._genome())
-        # 5' penalty: 3 × -2 = -6; atract: -4; 3' clip: 2 × -2 = -4 → total -14
-        assert score == -14.0
+        # 5' penalty: 3 × -2 = -6; atract: not scored; 3' clip: 2 × -2 = -4 → total -10
+        assert score == -10.0
 
     def test_score_written_back_to_alignment(self):
         al = _make_alignment_info(effective_five_prime_clip=2,
