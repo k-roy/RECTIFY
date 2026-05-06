@@ -1010,6 +1010,18 @@ Manifest format (TSV):
         help='Target scheduler for generated script headers (default: slurm)'
     )
     run_parser.add_argument(
+        '--slurm-partition',
+        default=None,
+        dest='slurm_partition',
+        help='SLURM partition(s) for generated scripts (used with --scheduler slurm)'
+    )
+    run_parser.add_argument(
+        '--slurm-account',
+        default=None,
+        dest='slurm_account',
+        help='SLURM account for generated scripts (used with --scheduler slurm)'
+    )
+    run_parser.add_argument(
         '--uge-queue',
         default='long.q',
         help='UGE/SGE queue name (used with --scheduler uge)'

@@ -1981,7 +1981,9 @@ echo "Done: $(date)"
             _write_script(split_script, split_content)
             sample_split_scripts[sample_id] = split_script
 
-            # Alignment scripts in chunks_dir
+            # Alignment + correction scripts in chunks_dir (correct-first pipeline)
+            _jpt = getattr(args, 'junction_penalty_table', None) or ''
+            _spt = getattr(args, 'str_penalty_table', None) or ''
             align_scripts = split_command.generate_alignment_scripts(
                 n_chunks=n_chunks,
                 sample_prefix=prefix,
@@ -1998,80 +2000,126 @@ echo "Done: $(date)"
                 uge_queue=uge_queue,
                 uge_pe=uge_pe,
                 pbs_queue=pbs_queue,
+                junction_penalty_table=str(_jpt) if _jpt else '',
+                str_penalty_table=str(_spt) if _spt else '',
             )
 
-            # Per-sample submit_pipeline.sh (split → align → merge)
-            # Does NOT include correct+analyze — that is a combined array step later
-            consensus_bam = chunks_dir / 'consensus' / f'{prefix}.consensus.bam'
-            mpb_script    = align_scripts['mpb']
-            others_script = align_scripts['others']
-            merge_script  = align_scripts['merge']
+            # Per-sample submit_sample_alignment.sh — correct-first pipeline:
+            # split → align (mpb + others) → merge_aligners → prescan
+            #   → correct_* (per aligner) → chunk_merge → final_merge
+            # Echoes the final_merge job ID as the last line for submit_all.sh.
+            corrected_bam = chunks_dir / 'final' / f'{prefix}.corrected_reads.tsv'
+            mpb_script          = align_scripts['mpb']
+            others_script       = align_scripts['others']
+            merge_aligners_script = align_scripts['merge_aligners']
+            prescan_script      = align_scripts['prescan']
+            correct_scripts     = align_scripts['correct']   # dict {aligner: Path}
+            chunk_merge_script  = align_scripts['chunk_merge']
+            final_merge_script  = align_scripts['final_merge']
 
             if scheduler == 'slurm':
                 sub_lines = [
                     '#!/bin/bash',
-                    f'# Submit alignment pipeline for {sample_id}',
+                    f'# Submit correct-first pipeline for {sample_id}',
+                    f'# Order: split → align → merge_aligners → prescan → correct_* → chunk_merge → final_merge',
+                    f'# Diagnostic output goes to stderr; only the final SLURM job ID is written to stdout.',
                     '',
                     f'SPLIT_JOB={_submit_no_dep(split_script)}',
-                    f'echo "  [{sample_id}] Split: $SPLIT_JOB"',
+                    f'echo "  [{sample_id}] Split: $SPLIT_JOB" >&2',
                 ]
                 if mpb_script:
                     sub_lines += [
                         f'MPB_JOB=$(sbatch --dependency=afterok:$SPLIT_JOB {mpb_script} | awk \'{{print $4}}\')',
+                        f'echo "  [{sample_id}] mapPacBio: $MPB_JOB" >&2',
                     ]
                 sub_lines += [
                     f'OTHERS_JOB=$(sbatch --dependency=afterok:$SPLIT_JOB {others_script} | awk \'{{print $4}}\')',
+                    f'echo "  [{sample_id}] Others: $OTHERS_JOB" >&2',
                 ]
-                if mpb_script:
+                align_dep = '--dependency=afterok:$MPB_JOB:$OTHERS_JOB' if mpb_script else '--dependency=afterok:$OTHERS_JOB'
+                sub_lines += [
+                    f'MERGE_ALIGNERS_JOB=$(sbatch {align_dep} {merge_aligners_script} | awk \'{{print $4}}\')',
+                    f'echo "  [{sample_id}] MergeAligners: $MERGE_ALIGNERS_JOB" >&2',
+                    f'PRESCAN_JOB=$(sbatch --dependency=afterok:$MERGE_ALIGNERS_JOB {prescan_script} | awk \'{{print $4}}\')',
+                    f'echo "  [{sample_id}] Prescan: $PRESCAN_JOB" >&2',
+                ]
+                correct_vars = []
+                for aligner, cscript in correct_scripts.items():
+                    var = f'CORRECT_{aligner.upper()}_JOB'
                     sub_lines += [
-                        f'MERGE_JOB=$(sbatch --dependency=afterok:$MPB_JOB:$OTHERS_JOB {merge_script} | awk \'{{print $4}}\')',
+                        f'{var}=$(sbatch --dependency=afterok:$PRESCAN_JOB {cscript} | awk \'{{print $4}}\')',
+                        f'echo "  [{sample_id}] Correct_{aligner}: ${{{var}}}" >&2',
                     ]
-                else:
-                    sub_lines += [
-                        f'MERGE_JOB=$(sbatch --dependency=afterok:$OTHERS_JOB {merge_script} | awk \'{{print $4}}\')',
-                    ]
-                sub_lines += ['echo $MERGE_JOB']  # Print merge job ID so submit_all.sh can capture it
+                    correct_vars.append(f'${{{var}}}')
+                correct_dep = ':'.join(correct_vars)
+                sub_lines += [
+                    f'CHUNK_MERGE_JOB=$(sbatch --dependency=afterok:{correct_dep} {chunk_merge_script} | awk \'{{print $4}}\')',
+                    f'echo "  [{sample_id}] ChunkMerge: $CHUNK_MERGE_JOB" >&2',
+                    f'FINAL_MERGE_JOB=$(sbatch --dependency=afterok:$CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $4}}\')',
+                    f'echo "  [{sample_id}] FinalMerge: $FINAL_MERGE_JOB" >&2',
+                    'echo $FINAL_MERGE_JOB',  # only stdout: bare job ID captured by submit_all.sh
+                ]
             elif scheduler == 'uge':
                 sub_lines = [
                     '#!/bin/bash',
-                    f'# Submit alignment pipeline for {sample_id}',
+                    f'# Submit correct-first pipeline for {sample_id}',
                     '',
                     f'SPLIT_JOB={_submit_no_dep(split_script)}',
                 ]
                 if mpb_script:
                     sub_lines += [f'MPB_JOB=$(qsub -hold_jid $SPLIT_JOB {mpb_script} | awk \'{{print $3}}\')']
                 sub_lines += [f'OTHERS_JOB=$(qsub -hold_jid $SPLIT_JOB {others_script} | awk \'{{print $3}}\')']
-                if mpb_script:
-                    sub_lines += [f'MERGE_JOB=$(qsub -hold_jid $MPB_JOB,$OTHERS_JOB {merge_script} | awk \'{{print $3}}\')']
-                else:
-                    sub_lines += [f'MERGE_JOB=$(qsub -hold_jid $OTHERS_JOB {merge_script} | awk \'{{print $3}}\')']
-                sub_lines += ['echo $MERGE_JOB']
+                align_hold = '$MPB_JOB,$OTHERS_JOB' if mpb_script else '$OTHERS_JOB'
+                sub_lines += [
+                    f'MERGE_ALIGNERS_JOB=$(qsub -hold_jid {align_hold} {merge_aligners_script} | awk \'{{print $3}}\')',
+                    f'PRESCAN_JOB=$(qsub -hold_jid $MERGE_ALIGNERS_JOB {prescan_script} | awk \'{{print $3}}\')',
+                ]
+                correct_vars = []
+                for aligner, cscript in correct_scripts.items():
+                    var = f'CORRECT_{aligner.upper()}_JOB'
+                    sub_lines += [f'{var}=$(qsub -hold_jid $PRESCAN_JOB {cscript} | awk \'{{print $3}}\')']
+                    correct_vars.append(f'${{{var}}}')
+                correct_hold = ','.join(correct_vars)
+                sub_lines += [
+                    f'CHUNK_MERGE_JOB=$(qsub -hold_jid {correct_hold} {chunk_merge_script} | awk \'{{print $3}}\')',
+                    f'FINAL_MERGE_JOB=$(qsub -hold_jid $CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $3}}\')',
+                    'echo $FINAL_MERGE_JOB',
+                ]
             else:  # pbs
                 sub_lines = [
                     '#!/bin/bash',
-                    f'# Submit alignment pipeline for {sample_id}',
+                    f'# Submit correct-first pipeline for {sample_id}',
                     '',
                     f'SPLIT_JOB={_submit_no_dep(split_script)}',
                 ]
                 if mpb_script:
                     sub_lines += [f'MPB_JOB=$(qsub -W depend=afterok:$SPLIT_JOB {mpb_script})']
                 sub_lines += [f'OTHERS_JOB=$(qsub -W depend=afterok:$SPLIT_JOB {others_script})']
-                if mpb_script:
-                    sub_lines += [f'MERGE_JOB=$(qsub -W depend=afterok:$MPB_JOB:$OTHERS_JOB {merge_script})']
-                else:
-                    sub_lines += [f'MERGE_JOB=$(qsub -W depend=afterok:$OTHERS_JOB {merge_script})']
-                sub_lines += ['echo $MERGE_JOB']
+                align_dep_pbs = '$MPB_JOB:$OTHERS_JOB' if mpb_script else '$OTHERS_JOB'
+                sub_lines += [
+                    f'MERGE_ALIGNERS_JOB=$(qsub -W depend=afterok:{align_dep_pbs} {merge_aligners_script})',
+                    f'PRESCAN_JOB=$(qsub -W depend=afterok:$MERGE_ALIGNERS_JOB {prescan_script})',
+                ]
+                correct_vars = []
+                for aligner, cscript in correct_scripts.items():
+                    var = f'CORRECT_{aligner.upper()}_JOB'
+                    sub_lines += [f'{var}=$(qsub -W depend=afterok:$PRESCAN_JOB {cscript})']
+                    correct_vars.append(f'${{{var}}}')
+                correct_dep_pbs = ':'.join(correct_vars)
+                sub_lines += [
+                    f'CHUNK_MERGE_JOB=$(qsub -W depend=afterok:{correct_dep_pbs} {chunk_merge_script})',
+                    f'FINAL_MERGE_JOB=$(qsub -W depend=afterok:$CHUNK_MERGE_JOB {final_merge_script})',
+                    'echo $FINAL_MERGE_JOB',
+                ]
 
             sample_submit = sample_dir / 'submit_sample_alignment.sh'
             _write_script(sample_submit, '\n'.join(sub_lines) + '\n')
-            sample_submit_pipelines[sample_id] = (sample_submit, consensus_bam)
+            sample_submit_pipelines[sample_id] = (sample_submit, corrected_bam)
 
-        # ── Correction array script ────────────────────────────────────────
-        # Covers both FASTQ samples (consensus BAM) and BAM samples (direct)
+        # ── Correction array script (BAM samples only) ────────────────────
+        # FASTQ samples already include correction in their per-sample correct-first pipeline.
+        # BAM samples bypass alignment entirely and go straight to correction here.
         all_samples_for_correct = []
-        for s in fastq_samples:
-            _, consensus_bam = sample_submit_pipelines[s['sample_id']]
-            all_samples_for_correct.append((s['sample_id'], consensus_bam))
         for s in bam_samples:
             all_samples_for_correct.append(
                 (s['sample_id'], Path(s.get('path', s.get('bam_path', ''))))
@@ -2235,38 +2283,52 @@ echo "Done: $(date)"
         if scheduler == 'slurm':
             submit_all_lines = [
                 '#!/bin/bash',
-                '# Submit all per-sample alignment chains, then correction array, then analysis',
+                '# Submit all per-sample correct-first pipelines, then analysis',
                 '# Generated by: rectify run-all --chunked-alignment --manifest',
+                '# Each per-sample script echoes its final SLURM job ID to stdout.',
                 '',
-                '# ── Per-sample alignment (all run in parallel) ────────────────────',
-                'MERGE_JOBS=""',
+                '# ── Per-sample pipelines (all submitted in parallel) ──────────────',
+                'FINAL_JOBS=""',
             ]
             for sid, (sample_submit, _) in sample_submit_pipelines.items():
-                var = f'MERGE_{sid.replace("-", "_").replace(".", "_")}'
+                var = f'FINAL_{sid.replace("-", "_").replace(".", "_")}'
                 submit_all_lines += [
                     f'{var}=$(bash {sample_submit})',
-                    f'echo "  [{sid}] merge job: ${{{var}}}"',
-                    f'MERGE_JOBS="${{MERGE_JOBS}}:${{{var}}}"',
+                    f'echo "  [{sid}] final_merge job: ${{{var}}}"',
+                    f'FINAL_JOBS="${{FINAL_JOBS}}:${{{var}}}"',
                 ]
-            # BAM samples: no alignment needed — correct_array can start immediately
+            # BAM-only samples still use a global correction array
             if bam_samples and not fastq_samples:
                 submit_all_lines += [
                     '',
-                    '# ── Correction array (no alignment dependency for BAM-only manifest) ─',
+                    '# ── Correction array (BAM-only manifest, no alignment dependency) ─',
                     f'CORRECT_JOB=$(sbatch {correct_array_script} | awk \'{{print $4}}\')',
+                    'echo "Correction array: $CORRECT_JOB"',
+                    '',
+                    '# ── Analysis (after correction) ──────────────────────────────────',
+                    f'ANALYZE_JOB=$(sbatch --dependency=afterok:$CORRECT_JOB {analyze_script} | awk \'{{print $4}}\')',
                 ]
-            else:
+            elif bam_samples:
+                # Mixed FASTQ+BAM: wait for both per-sample finals and BAM correction
                 submit_all_lines += [
                     '',
-                    '# ── Correction array (after all merge jobs complete) ─────────────────',
-                    'MERGE_JOBS="${MERGE_JOBS#:}"  # strip leading colon',
-                    f'CORRECT_JOB=$(sbatch --dependency=afterok:$MERGE_JOBS {correct_array_script} | awk \'{{print $4}}\')',
+                    '# ── Correction array for BAM samples ─────────────────────────────',
+                    'FINAL_JOBS="${FINAL_JOBS#:}"  # strip leading colon',
+                    f'CORRECT_JOB=$(sbatch --dependency=afterok:$FINAL_JOBS {correct_array_script} | awk \'{{print $4}}\')',
+                    'echo "Correction array: $CORRECT_JOB"',
+                    '',
+                    '# ── Analysis (after all jobs complete) ───────────────────────────',
+                    f'ANALYZE_JOB=$(sbatch --dependency=afterok:$CORRECT_JOB {analyze_script} | awk \'{{print $4}}\')',
+                ]
+            else:
+                # FASTQ-only: no global correction needed — analysis after per-sample final_merge
+                submit_all_lines += [
+                    '',
+                    '# ── Analysis (after all per-sample pipelines complete) ────────────',
+                    'FINAL_JOBS="${FINAL_JOBS#:}"  # strip leading colon',
+                    f'ANALYZE_JOB=$(sbatch --dependency=afterok:$FINAL_JOBS {analyze_script} | awk \'{{print $4}}\')',
                 ]
             submit_all_lines += [
-                'echo "Correction array: $CORRECT_JOB"',
-                '',
-                '# ── Analysis (after all corrections complete) ────────────────────────',
-                f'ANALYZE_JOB=$(sbatch --dependency=afterok:$CORRECT_JOB {analyze_script} | awk \'{{print $4}}\')',
                 'echo "Analysis: $ANALYZE_JOB"',
                 'echo ""',
                 'echo "Full pipeline submitted. Monitor with: squeue -u $USER"',
@@ -2274,54 +2336,66 @@ echo "Done: $(date)"
         elif scheduler == 'uge':
             submit_all_lines = [
                 '#!/bin/bash',
-                '# Submit all per-sample alignment chains, then correction array, then analysis',
+                '# Submit all per-sample correct-first pipelines, then analysis',
                 '',
-                'MERGE_JOBS=""',
+                'FINAL_JOBS=""',
             ]
             for sid, (sample_submit, _) in sample_submit_pipelines.items():
-                var = f'MERGE_{sid.replace("-", "_").replace(".", "_")}'
+                var = f'FINAL_{sid.replace("-", "_").replace(".", "_")}'
                 submit_all_lines += [
                     f'{var}=$(bash {sample_submit})',
-                    f'MERGE_JOBS="${{MERGE_JOBS}},${{{var}}}"',
+                    f'FINAL_JOBS="${{FINAL_JOBS}},${{{var}}}"',
                 ]
             if bam_samples and not fastq_samples:
                 submit_all_lines += [
                     f'CORRECT_JOB=$(qsub {correct_array_script} | awk \'{{print $3}}\')',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\')',
+                ]
+            elif bam_samples:
+                submit_all_lines += [
+                    'FINAL_JOBS="${FINAL_JOBS#,}"',
+                    f'CORRECT_JOB=$(qsub -hold_jid $FINAL_JOBS {correct_array_script} | awk \'{{print $3}}\')',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\')',
                 ]
             else:
                 submit_all_lines += [
-                    'MERGE_JOBS="${MERGE_JOBS#,}"',
-                    f'CORRECT_JOB=$(qsub -hold_jid $MERGE_JOBS {correct_array_script} | awk \'{{print $3}}\')',
+                    'FINAL_JOBS="${FINAL_JOBS#,}"',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $FINAL_JOBS {analyze_script} | awk \'{{print $3}}\')',
                 ]
             submit_all_lines += [
-                'echo "Correction array: $CORRECT_JOB"',
-                f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\')',
                 'echo "Analysis: $ANALYZE_JOB"',
                 'echo "Pipeline submitted. Monitor with: qstat -u $USER"',
             ]
         else:  # pbs
             submit_all_lines = [
                 '#!/bin/bash',
-                '# Submit all per-sample alignment chains, then correction array, then analysis',
+                '# Submit all per-sample correct-first pipelines, then analysis',
                 '',
-                'MERGE_JOBS=""',
+                'FINAL_JOBS=""',
             ]
             for sid, (sample_submit, _) in sample_submit_pipelines.items():
-                var = f'MERGE_{sid.replace("-", "_").replace(".", "_")}'
+                var = f'FINAL_{sid.replace("-", "_").replace(".", "_")}'
                 submit_all_lines += [
                     f'{var}=$(bash {sample_submit})',
-                    f'MERGE_JOBS="${{MERGE_JOBS}}:${{{var}}}"',
+                    f'FINAL_JOBS="${{FINAL_JOBS}}:${{{var}}}"',
                 ]
             if bam_samples and not fastq_samples:
-                submit_all_lines += [f'CORRECT_JOB=$(qsub {correct_array_script})']
+                submit_all_lines += [
+                    f'CORRECT_JOB=$(qsub {correct_array_script})',
+                    f'ANALYZE_JOB=$(qsub -W depend=afterok:$CORRECT_JOB {analyze_script})',
+                ]
+            elif bam_samples:
+                submit_all_lines += [
+                    'FINAL_JOBS="${FINAL_JOBS#:}"',
+                    f'CORRECT_JOB=$(qsub -W depend=afterok:$FINAL_JOBS {correct_array_script})',
+                    f'ANALYZE_JOB=$(qsub -W depend=afterok:$CORRECT_JOB {analyze_script})',
+                ]
             else:
                 submit_all_lines += [
-                    'MERGE_JOBS="${MERGE_JOBS#:}"',
-                    f'CORRECT_JOB=$(qsub -W depend=afterok:$MERGE_JOBS {correct_array_script})',
+                    'FINAL_JOBS="${FINAL_JOBS#:}"',
+                    f'ANALYZE_JOB=$(qsub -W depend=afterok:$FINAL_JOBS {analyze_script})',
                 ]
             submit_all_lines += [
-                'echo "Correction array: $CORRECT_JOB"',
-                f'ANALYZE_JOB=$(qsub -W depend=afterok:$CORRECT_JOB {analyze_script})',
                 'echo "Analysis: $ANALYZE_JOB"',
                 'echo "Pipeline submitted. Monitor with: qstat -u $USER"',
             ]
@@ -2329,13 +2403,13 @@ echo "Done: $(date)"
         submit_all = output_dir / 'submit_all.sh'
         _write_script(submit_all, '\n'.join(submit_all_lines) + '\n')
 
-        print("\nGenerated multi-sample chunked-alignment pipeline scripts:")
+        print("\nGenerated multi-sample correct-first pipeline scripts:")
         for sid in [s['sample_id'] for s in fastq_samples]:
             print(f"  [{sid}] {sample_split_scripts[sid]}")
             print(f"  [{sid}] {sample_submit_pipelines[sid][0]}")
         if bam_samples:
-            print(f"  {len(bam_samples)} BAM sample(s): direct to correction (no alignment)")
-        print(f"  Correction array: {correct_array_script}")
+            print(f"  {len(bam_samples)} BAM sample(s): direct to correction")
+            print(f"  Correction array: {correct_array_script}")
         print(f"  Analysis:         {analyze_script}")
         print(f"\nTo launch the full pipeline:")
         print(f"  bash {submit_all}")
