@@ -109,6 +109,19 @@ Citation:
         action='store_true',
         help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
     )
+    tech_group.add_argument(
+        '--short-read',
+        dest='short_read',
+        action='store_true',
+        default=False,
+        help=(
+            'Input is short-read data (Illumina/Aviti ≤150 bp). Disables '
+            'poly(A)-tail trimming, A-tract correction, and indel modules '
+            '(which assume a poly(A) soft-clip). Use with `rectify align '
+            '--short-read` to select bbmap + bwa instead of the long-read '
+            'aligner panel.'
+        ),
+    )
 
     tech_group.add_argument(
         '--aligner',
@@ -162,6 +175,18 @@ Citation:
              'variants (not basecalling errors), then only rescues at '
              'low-frequency positions. Potential variants are written to '
              '*_potential_variants.tsv for review.'
+    )
+
+    module_group.add_argument(
+        '--min-mapq',
+        type=int,
+        default=0,
+        metavar='MAPQ',
+        help='Minimum mapping quality (MAPQ) to include a read. Reads with '
+             'MAPQ < MIN_MAPQ are skipped before any correction. Default: 0 '
+             '(no filter). Use --min-mapq 1 to exclude multi-mapping reads '
+             '(MAPQ=0), which is recommended for dT-primed-cDNA data where '
+             'internally-primed reads from repetitive T-rich regions are common.'
     )
 
     # Poly(A) model
@@ -794,10 +819,28 @@ Citation:
         'restore-softclip',
         help='Restore trimmed poly(A)+adapter bases as soft-clips in corrected BAM',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog="""
+Example:
+  rectify restore-softclip corrected_3ends.tsv \\
+      --aligner-bams minimap2:/path/to/minimap2.bam mapPacBio:/path/to/mapPacBio.bam \\
+      --trim-metadata polya_trim_metadata.parquet \\
+      -o corrected_polya.bam
+        """
     )
     restore_sc_parser.add_argument(
-        'softclip_bam',
-        help='Soft-clipped corrected BAM from rectify correct',
+        'corrected_tsv',
+        help='corrected_3ends.tsv produced by rectify correct (must contain winning_aligner column)',
+    )
+    restore_sc_parser.add_argument(
+        '--aligner-bams',
+        nargs='+',
+        default=[],
+        metavar='ALIGNER:BAM',
+        help=(
+            'Per-aligner raw BAM files in "aligner:path" format. '
+            'Used to pull the winning aligner\'s raw record for each read. '
+            'Accepted aligners: minimap2, mapPacBio, gapmm2, uLTRA, deSALT.'
+        ),
     )
     restore_sc_parser.add_argument(
         '--trim-metadata',
@@ -808,6 +851,12 @@ Citation:
         '-o', '--output',
         required=True,
         help='Output BAM path',
+    )
+    restore_sc_parser.add_argument(
+        '--threads',
+        type=int,
+        default=1,
+        help='pysam thread count',
     )
 
     # =========================================================================
@@ -902,6 +951,17 @@ Manifest format (TSV):
             'poly(A)+adapter pre-trimming (Step 0) before alignment and '
             'restores trimmed bases as soft-clips (Step 4) after correction. '
             'Has no effect on FASTQ inputs (assumed already trimmed).'
+        ),
+    )
+    run_parser.add_argument(
+        '--short-read',
+        dest='short_read',
+        action='store_true',
+        default=False,
+        help=(
+            'Input is short-read data (Illumina/Aviti ≤150 bp). Uses bbmap + bwa '
+            'instead of the long-read aligner panel (minimap2/mapPacBio/gapmm2) and '
+            'disables poly(A)-tail trimming, A-tract correction, and indel modules.'
         ),
     )
 
@@ -1079,15 +1139,29 @@ Manifest format (TSV):
     )
 
     run_parser.add_argument(
+        '--base-aligners',
+        nargs='+',
+        choices=['minimap2', 'mapPacBio', 'gapmm2'],
+        default=['minimap2', 'mapPacBio', 'gapmm2'],
+        metavar='ALIGNER',
+        dest='base_aligners',
+        help=(
+            'General-purpose aligners for the consensus pool '
+            '(choices: minimap2, mapPacBio, gapmm2). '
+            'Default: all three. Example: --base-aligners mapPacBio gapmm2'
+        )
+    )
+
+    run_parser.add_argument(
         '--junction-aligners',
         nargs='+',
         choices=['uLTRA', 'deSALT'],
         default=['uLTRA', 'deSALT'],
         metavar='ALIGNER',
         help=(
-            'Junction-mode aligners to include in the consensus pool '
+            'Junction-aware aligners for the consensus pool '
             '(choices: uLTRA, deSALT). Requires --annotation. '
-            'Default: both uLTRA and deSALT. Pass --junction-aligners "" to disable.'
+            'Default: both uLTRA and deSALT. Pass --no-junction-aligners to disable.'
         )
     )
 
@@ -1096,7 +1170,7 @@ Manifest format (TSV):
         dest='junction_aligners',
         action='store_const',
         const=[],
-        help='Disable uLTRA and deSALT (use only minimap2 + mapPacBio + gapmm2).'
+        help='Disable uLTRA and deSALT (use only the --base-aligners set).'
     )
 
     run_parser.add_argument(
@@ -1160,6 +1234,63 @@ Manifest format (TSV):
         action='store_true',
         default=False,
         help='Stage I/O through $SCRATCH for better performance'
+    )
+
+    run_parser.add_argument(
+        '--junction-penalty-table',
+        dest='junction_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to empirical HP-context penalty table (penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py. Passed through to rectify correct. '
+             'Overrides heuristic del/ins costs with per-HP-length values derived from '
+             'multi-aligner agreement on this dataset.'
+    )
+
+    run_parser.add_argument(
+        '--str-penalty-table',
+        dest='str_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to STR penalty table (str_penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py --str-repeat. Passed through to '
+             'rectify correct alongside --junction-penalty-table.'
+    )
+
+    run_parser.add_argument(
+        '--junction-overhang-table',
+        dest='junction_overhang_table',
+        default=None,
+        metavar='PATH',
+        help='Path to empirical junction overhang table (overhang_table.tsv) produced by '
+             'rectify/core/calibrate_junction_overhang.py. When provided, aligner×read '
+             'pairs whose intron junctions lack sufficient flanking overhang for their '
+             'intron size are penalised (sorted last) during winner selection. Short introns '
+             '(< 500 bp) with high cross-read support are exempt from strict filtering. '
+             'If absent, all junctions are treated as plausible regardless of overhang. '
+             'Use OverhangTable.default() behaviour by passing the path to a pre-calibrated '
+             'table, or generate one from a completed reference run with '
+             'calibrate_junction_overhang.py.'
+    )
+
+    run_parser.add_argument(
+        '--write-softclip-bam',
+        action='store_true',
+        default=False,
+        dest='write_softclip_bam',
+        help='Write a soft-clipped corrected BAM alongside the primary hard-clipped BAM. '
+             'Cat2 soft-clip rescue bases are visible in IGV with "Show soft-clipped bases" '
+             'enabled. Off by default — useful for QC/debugging Cat2 rescues only.'
+    )
+
+    run_parser.add_argument(
+        '--write-polya-bam',
+        action='store_true',
+        default=False,
+        dest='write_polya_bam',
+        help='Write a BAM with the original poly(A) tail restored from the DRS trim '
+             'parquet metadata as a 3\' soft clip. Off by default — useful for visually '
+             'validating poly(A) tail handling in IGV. Has no effect without --drs.'
     )
 
     return parser

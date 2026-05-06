@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Restore poly(A) + adapter bases as soft-clips in the rectified soft-clip BAM.
+Restore poly(A) + adapter bases as soft-clips using the winning aligner's raw BAM.
 
-After DRS pre-trimming (drs_trim_command.py) and rectify correct, the
-rectified_pA_tail_trimmed.bam contains soft-clipped bases only from the
-correction pipeline (e.g., residual poly-A from indel correction). The
-original poly(A) tail + adapter stub that was trimmed before alignment is
-absent from the BAM.
+After DRS pre-trimming (drs_trim_command.py), alignment (all aligners), per-aligner
+correction, and consensus selection, this module produces corrected_polya.bam for
+IGV validation. For each read:
 
-This module adds those trimmed bases BACK as soft-clip ops so the full
-poly(A) + adapter is visible in IGV ("Show soft-clipped bases") and available
-for downstream analysis.
+  1. Look up the winning aligner from corrected_3ends.tsv (winning_aligner column).
+  2. Fetch that read's record from the winning aligner's RAW (pre-correction) BAM.
+  3. Append the original Dorado-called poly(A)+adapter sequence from the parquet
+     trim metadata as a 3' soft clip.
+
+The result shows the full read exactly as Dorado sequenced it (raw alignment +
+poly-A tail), enabling direct IGV comparison against corrected.bam to see
+precisely what Rectify changed.
 
 Strandedness:
   Plus strand (is_reverse=False):
@@ -24,11 +27,6 @@ Strandedness:
     reverse_complement(trimmed_3prime_seq) to the left; extend or add a
     leading S op. reference_start is NOT changed (left S ops do not consume
     reference coordinates).
-
-Existing soft-clips from the correction pipeline are preserved:
-  - Plus strand: existing trailing S is extended with the new bases.
-  - Minus strand: existing leading S is extended with the new bases.
-  - The opposite-end S ops (e.g., 5' soft-clip on plus strand) are untouched.
 
 Author: Kevin R. Roy
 Date: 2026-04-17
@@ -199,83 +197,123 @@ def _restore_read_polya(
 
 
 def restore_polya_softclips(
-    softclip_bam_path: str,
+    corrected_tsv_path: str,
+    aligner_bam_paths: Dict[str, str],
     metadata_path: str,
     output_bam_path: str,
     threads: int = 1,
 ) -> Dict:
-    """Add trimmed poly(A)+adapter bases back as soft-clip ops.
+    """Reconstruct full Dorado reads by pulling winning aligner's raw BAM record
+    and restoring the original poly(A) tail from parquet trim metadata.
 
-    Reads rectified_pA_tail_trimmed.bam, looks up each read's trimmed poly(A)
-    metadata, and appends (plus strand) or prepends (minus strand) the
-    original poly(A)+adapter bases as soft-clip ops. Writes to a new BAM.
+    For each read in corrected_3ends.tsv:
+      1. Read the winning_aligner column to find which raw BAM to pull from.
+      2. Fetch that read's record from the winning aligner's raw (pre-correction) BAM.
+      3. Append the Dorado-called poly(A)+adapter sequence from parquet as a 3' soft clip.
 
-    Reads without metadata (e.g., supplementary, reads where nothing was
-    trimmed) are written unchanged.
+    The output (corrected_polya.bam) shows the full read as Dorado sequenced it.
+    Compare against corrected.bam in IGV to see exactly what Rectify changed.
 
     Args:
-        softclip_bam_path:  rectified_pA_tail_trimmed.bam from `rectify correct`.
-        metadata_path:      Parquet or TSV from `rectify trim-polya`.
-        output_bam_path:    Destination BAM (rectified_pA_tail_soft_clipped.bam).
-        threads:            pysam thread count.
+        corrected_tsv_path:  corrected_3ends.tsv with winning_aligner column.
+        aligner_bam_paths:   dict mapping aligner name → path to raw aligner BAM.
+        metadata_path:       Parquet from `rectify trim-polya`.
+        output_bam_path:     Destination BAM (corrected_polya.bam).
+        threads:             pysam thread count.
 
     Returns:
-        Stats dict: total, restored, unchanged, skipped_no_meta, skipped_no_trim.
+        Stats dict: total, restored, unchanged, skipped_no_meta, skipped_no_trim,
+                    skipped_no_aligner_bam, skipped_no_read.
     """
+    import pandas as pd
+
     stats: Dict = {
         'total': 0,
         'restored': 0,
         'unchanged': 0,
         'skipped_no_meta': 0,
         'skipped_no_trim': 0,
+        'skipped_no_aligner_bam': 0,
+        'skipped_no_read': 0,
     }
 
     print(f"Loading trim metadata from: {metadata_path}")
     metadata = load_trim_metadata(Path(metadata_path))
     print(f"  Loaded {len(metadata):,} read records")
 
-    with pysam.AlignmentFile(softclip_bam_path, 'rb', threads=threads) as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header, threads=threads) as bam_out:
+    print(f"Loading corrected TSV from: {corrected_tsv_path}")
+    tsv = pd.read_csv(corrected_tsv_path, sep='\t', usecols=lambda c: c in ('read_id', 'winning_aligner'))
+    if 'winning_aligner' not in tsv.columns:
+        raise ValueError(
+            f"corrected_3ends.tsv at {corrected_tsv_path} has no winning_aligner column. "
+            "Re-run rectify consensus / run-all to regenerate with the updated corrected_consensus.py."
+        )
+    read_to_aligner: Dict[str, str] = dict(zip(tsv['read_id'], tsv['winning_aligner']))
+    print(f"  {len(read_to_aligner):,} reads, {len(set(read_to_aligner.values()))} aligners")
 
-        for read in bam_in:
-            stats['total'] += 1
+    # Build index: aligner → set of read_ids that aligner won
+    from collections import defaultdict
+    aligner_to_reads: Dict[str, set] = defaultdict(set)
+    for read_id, aligner in read_to_aligner.items():
+        aligner_to_reads[aligner].add(read_id)
 
-            meta = metadata.get(read.query_name)
-            if meta is None:
-                bam_out.write(read)
-                stats['skipped_no_meta'] += 1
+    # Use the first available raw BAM to get the BAM header for output
+    header_bam_path = next(iter(aligner_bam_paths.values()))
+    with pysam.AlignmentFile(str(header_bam_path), 'rb', threads=threads) as _hdr:
+        header = _hdr.header.to_dict()
+
+    with pysam.AlignmentFile(output_bam_path, 'wb', header=header, threads=threads) as bam_out:
+        for aligner_name, winning_read_ids in aligner_to_reads.items():
+            raw_bam_path = aligner_bam_paths.get(aligner_name)
+            if not raw_bam_path or not Path(str(raw_bam_path)).exists():
+                logger.warning("Raw BAM not found for aligner %s — skipping %d reads",
+                               aligner_name, len(winning_read_ids))
+                stats['skipped_no_aligner_bam'] += len(winning_read_ids)
                 continue
 
-            trimmed_seq = str(meta.get('trimmed_3prime_seq', '') or '')
-            if not trimmed_seq:
-                bam_out.write(read)
-                stats['skipped_no_trim'] += 1
-                continue
+            with pysam.AlignmentFile(str(raw_bam_path), 'rb', threads=threads) as bam_in:
+                for read in bam_in:
+                    if read.query_name not in winning_read_ids:
+                        continue
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                        continue
 
-            # Parse quality scores from stored comma-separated string
-            raw_quals = meta.get('trimmed_3prime_quals', '')
-            if isinstance(raw_quals, list):
-                trimmed_quals = [int(q) for q in raw_quals]
-            elif isinstance(raw_quals, str) and raw_quals:
-                try:
-                    trimmed_quals = [int(q) for q in raw_quals.split(',')]
-                except ValueError:
-                    trimmed_quals = []
-            else:
-                trimmed_quals = []
+                    stats['total'] += 1
+                    meta = metadata.get(read.query_name)
+                    if meta is None:
+                        bam_out.write(read)
+                        stats['skipped_no_meta'] += 1
+                        continue
 
-            modified = _restore_read_polya(read, trimmed_seq, trimmed_quals)
-            if modified:
-                stats['restored'] += 1
-            else:
-                stats['unchanged'] += 1
-            bam_out.write(read)
+                    trimmed_seq = str(meta.get('trimmed_3prime_seq', '') or '')
+                    if not trimmed_seq:
+                        bam_out.write(read)
+                        stats['skipped_no_trim'] += 1
+                        continue
+
+                    raw_quals = meta.get('trimmed_3prime_quals', '')
+                    if isinstance(raw_quals, list):
+                        trimmed_quals = [int(q) for q in raw_quals]
+                    elif isinstance(raw_quals, str) and raw_quals:
+                        try:
+                            trimmed_quals = [int(q) for q in raw_quals.split(',')]
+                        except ValueError:
+                            trimmed_quals = []
+                    else:
+                        trimmed_quals = []
+
+                    modified = _restore_read_polya(read, trimmed_seq, trimmed_quals)
+                    if modified:
+                        stats['restored'] += 1
+                    else:
+                        stats['unchanged'] += 1
+                    bam_out.write(read)
 
     logger.info(
         "restore_polya_softclips: total=%d restored=%d unchanged=%d "
-        "skipped_no_meta=%d skipped_no_trim=%d",
+        "skipped_no_meta=%d skipped_no_trim=%d skipped_no_aligner_bam=%d",
         stats['total'], stats['restored'], stats['unchanged'],
-        stats['skipped_no_meta'], stats['skipped_no_trim'],
+        stats['skipped_no_meta'], stats['skipped_no_trim'], stats['skipped_no_aligner_bam'],
     )
     return stats
 
@@ -289,10 +327,22 @@ def run(args) -> int:
     """Entry point called from rectify/cli.py for `rectify restore-softclip`."""
     import sys
 
-    softclip_bam = Path(args.softclip_bam)
-    if not softclip_bam.exists():
-        print(f"ERROR: Soft-clip BAM not found: {softclip_bam}", file=sys.stderr)
+    corrected_tsv = Path(args.corrected_tsv)
+    if not corrected_tsv.exists():
+        print(f"ERROR: Corrected TSV not found: {corrected_tsv}", file=sys.stderr)
         return 1
+
+    # Parse aligner:path pairs from --aligner-bams
+    aligner_bam_paths: Dict[str, str] = {}
+    for token in getattr(args, 'aligner_bams', []):
+        if ':' not in token:
+            print(
+                f"ERROR: --aligner-bams must be in 'aligner:path' format, got: {token!r}",
+                file=sys.stderr,
+            )
+            return 1
+        aligner, bam_path = token.split(':', 1)
+        aligner_bam_paths[aligner] = bam_path
 
     metadata_path = Path(args.trim_metadata)
     if not metadata_path.exists():
@@ -308,14 +358,17 @@ def run(args) -> int:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Soft-clip BAM: {softclip_bam}")
+    print(f"Corrected TSV: {corrected_tsv}")
+    print(f"Aligner BAMs:  {aligner_bam_paths}")
     print(f"Trim metadata: {metadata_path}")
     print(f"Output BAM:    {output_path}")
 
     stats = restore_polya_softclips(
-        softclip_bam_path=str(softclip_bam),
+        corrected_tsv_path=str(corrected_tsv),
+        aligner_bam_paths=aligner_bam_paths,
         metadata_path=str(metadata_path),
         output_bam_path=str(output_path),
+        threads=getattr(args, 'threads', 1),
     )
 
     print(f"\nRestore summary:")
