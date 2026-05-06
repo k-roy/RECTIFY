@@ -280,12 +280,17 @@ class TestBamIntegrity:
 # ---------------------------------------------------------------------------
 
 class TestCategory1IndelCorrection:
-    """Walk-back must shift the corrected 3' end away from the raw alignment boundary.
+    """Indel correction module must fire for each read; position shift is allowed to be zero.
 
-    cat1_plus_1  chrXIV:10435–10611  +  A-tract walk-back (−16 bp)
-    cat1_plus_2  chrI:31118–31546    +  A-tract walk-back (−4 bp)
-    cat1_minus_1 chrII:9831–10558    −  A-tract walk-back (+3 bp)
-    cat1_minus_2 chrXII:15348–15964  −  A-tract walk-back (+3 bp)
+    After removing the three_prime_atract_depth consensus penalty, mapPacBio wins these
+    reads and already extends to the genomically-encoded A-run before rectify runs.
+    indel_correction is still applied, but net 3' position shift may be zero for reads
+    where mapPacBio pre-corrected the alignment.
+
+    cat1_plus_1  chrXIV:10435–10611  +  indel_correction (no net shift; mapPacBio pre-corrected)
+    cat1_plus_2  chrI:31118–31546    +  indel_correction (no net shift; mapPacBio pre-corrected)
+    cat1_minus_1 chrII:9826–10558    −  indel_correction (+1 bp)
+    cat1_minus_2 chrXII:15346–15964  −  indel_correction (no net shift; mapPacBio pre-corrected)
     """
 
     @pytest.mark.parametrize('label,strand', [
@@ -301,22 +306,27 @@ class TestCategory1IndelCorrection:
             pytest.skip(f'Read {label} not in correction output')
         original = int(row['original_3prime'])
         corrected_pos = int(row['corrected_3prime'])
-        assert original != corrected_pos, \
-            f'{label}: corrected_3prime should differ from original ({original})'
-        if strand == '+':
-            assert corrected_pos < original, \
-                f'{label}: plus-strand correction should walk back (corrected < original)'
+        applied = row.get('correction_applied', 'none')
+        if original == corrected_pos:
+            # mapPacBio consensus already resolved the 3' end before rectify runs;
+            # verify indel_correction was at least applied even with no net position shift.
+            assert 'indel_correction' in applied, \
+                f'{label}: no position shift and indel_correction not in correction_applied (got: {applied})'
         else:
-            assert corrected_pos > original, \
-                f'{label}: minus-strand correction should walk forward (corrected > original)'
+            if strand == '+':
+                assert corrected_pos < original, \
+                    f'{label}: plus-strand correction should walk back (corrected < original)'
+            else:
+                assert corrected_pos > original, \
+                    f'{label}: minus-strand correction should walk forward (corrected > original)'
 
     @pytest.mark.parametrize('label,expected_3prime', [
         # Exact corrected_3prime values from rectify correct on wt_by4742_rep1 DRS validation reads.
-        # atract_ambiguity + indel_correction + polya_walkback; values are deterministic.
-        ('cat1_plus_1',  10594),    # chrXIV walk-back −16 bp from raw 10610
-        ('cat1_plus_2',  31541),    # chrI walk-back −4 bp from raw 31545
-        ('cat1_minus_1', 9834),     # chrII walk-forward +3 bp from raw 9831
-        ('cat1_minus_2', 15351),    # chrXII walk-forward +3 bp from raw 15348
+        # three_prime_atract_depth penalty removed; mapPacBio pre-corrects 3 of 4 reads.
+        ('cat1_plus_1',  10611),    # chrXIV no net shift; indel_correction applied
+        ('cat1_plus_2',  31546),    # chrI no net shift; indel_correction applied
+        ('cat1_minus_1', 9827),     # chrII indel correction +1 bp from raw 9826
+        ('cat1_minus_2', 15346),    # chrXII no net shift; indel_correction applied
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]
