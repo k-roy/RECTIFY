@@ -223,26 +223,16 @@ def run_analyze(args: argparse.Namespace) -> int:
     _max_radius = getattr(args, 'max_cluster_radius', 10)
     _min_peak_sep = getattr(args, 'min_peak_sep', 5)
     _min_cluster_samples = getattr(args, 'min_cluster_samples', 2)
-    _use_adaptive = (_max_radius != 10 or _min_peak_sep != 5 or _min_cluster_samples != 2)
 
-    if _use_adaptive:
-        print(f"\n[2/9] Forming CPA clusters (adaptive, radius={_max_radius}bp, "
-              f"min_peak_sep={_min_peak_sep}bp, min_samples={_min_cluster_samples})...")
-        clusters_df = cluster_cpa_sites_adaptive(
-            positions_df,
-            max_cluster_radius=_max_radius,
-            min_peak_separation=_min_peak_sep,
-            min_reads=args.min_reads,
-            count_col=count_col,
-        )
-    else:
-        print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
-        clusters_df = cluster_cpa_sites(
-            positions_df,
-            cluster_distance=args.cluster_distance,
-            min_reads=args.min_reads,
-            count_col=count_col,
-        )
+    print(f"\n[2/9] Forming CPA clusters (adaptive, radius={_max_radius}bp, "
+          f"min_peak_sep={_min_peak_sep}bp, min_samples={_min_cluster_samples})...")
+    clusters_df = cluster_cpa_sites_adaptive(
+        positions_df,
+        max_cluster_radius=_max_radius,
+        min_peak_separation=_min_peak_sep,
+        min_reads=args.min_reads,
+        count_col=count_col,
+    )
     print(f"  Formed {len(clusters_df):,} clusters")
 
     # Annotate with genes (annotation_df already loaded above if provided)
@@ -1084,6 +1074,7 @@ def _run_analyze_manifest(
     print(f"\n[1/9] Aggregating positions across {len(samples)} samples (Pass 1)...")
 
     all_pos_dfs = []
+    _medium_risk_positions: set = set()  # (chrom, strand, pos) with AG_RICH_MEDIUM reads
     for s in samples:
         sample_id = s['sample_id']
         tsv_path = s['path']
@@ -1108,15 +1099,37 @@ def _run_analyze_manifest(
             print(f"  WARNING: No position column in {tsv_path}, skipping.")
             continue
 
+        _has_qc = 'qc_flags' in _header.columns
         _usecols = ['chrom', 'strand', _pos_col]
+        if _has_qc:
+            _usecols.append('qc_flags')
         _agg = defaultdict(float)
+        _n_high_filtered = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            # Filter out AG_RICH_HIGH reads (definite internal priming artifacts)
+            if _has_qc:
+                _high_mask = _chunk['qc_flags'].str.contains('AG_RICH_HIGH', na=False)
+                _n_high_filtered += int(_high_mask.sum())
+                # Track medium-risk positions before filtering them out
+                _med_mask = _chunk['qc_flags'].str.contains('AG_RICH_MEDIUM', na=False) & ~_high_mask
+                _med_chunk = _chunk.loc[_med_mask]
+                _med_chunk_norm = _med_chunk.copy()
+                _med_chunk_norm['chrom'] = _med_chunk_norm['chrom'].map(
+                    lambda x: normalize_chromosome(x, chrom_format))
+                for _chrom, _st, _pos in zip(
+                    _med_chunk_norm['chrom'], _med_chunk_norm['strand'], _med_chunk_norm[_pos_col]
+                ):
+                    _medium_risk_positions.add((_chrom, _st, int(_pos)))
+                _chunk = _chunk.loc[~_high_mask]
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             # Vectorized groupby (~20-50x faster than itertuples+dict for large chunks)
             for (chrom, strand, pos), cnt in (
                 _chunk.groupby(['chrom', 'strand', _pos_col], sort=False).size().items()
             ):
                 _agg[(chrom, strand, pos)] += float(cnt)
+
+        if _has_qc and _n_high_filtered > 0:
+            print(f"  {sample_id}: filtered {_n_high_filtered:,} AG_RICH_HIGH reads")
 
         if not _agg:
             print(f"  WARNING: No positions found in {tsv_path}, skipping.")
@@ -1163,26 +1176,16 @@ def _run_analyze_manifest(
     _max_radius = getattr(args, 'max_cluster_radius', 10)
     _min_peak_sep = getattr(args, 'min_peak_sep', 5)
     _min_cluster_samples = getattr(args, 'min_cluster_samples', 2)
-    _use_adaptive = (_max_radius != 10 or _min_peak_sep != 5 or _min_cluster_samples != 2)
 
-    if _use_adaptive:
-        print(f"\n[2/9] Forming CPA clusters (adaptive, radius={_max_radius}bp, "
-              f"min_peak_sep={_min_peak_sep}bp, min_samples={_min_cluster_samples})...")
-        clusters_df = cluster_cpa_sites_adaptive(
-            positions_agg,
-            max_cluster_radius=_max_radius,
-            min_peak_separation=_min_peak_sep,
-            min_reads=args.min_reads,
-            count_col=count_col,
-        )
-    else:
-        print(f"\n[2/9] Forming CPA clusters (distance={args.cluster_distance}bp)...")
-        clusters_df = cluster_cpa_sites(
-            positions_agg,
-            cluster_distance=args.cluster_distance,
-            min_reads=args.min_reads,
-            count_col=count_col,
-        )
+    print(f"\n[2/9] Forming CPA clusters (adaptive, radius={_max_radius}bp, "
+          f"min_peak_sep={_min_peak_sep}bp, min_samples={_min_cluster_samples})...")
+    clusters_df = cluster_cpa_sites_adaptive(
+        positions_agg,
+        max_cluster_radius=_max_radius,
+        min_peak_separation=_min_peak_sep,
+        min_reads=args.min_reads,
+        count_col=count_col,
+    )
     print(f"  Formed {len(clusters_df):,} clusters")
 
     if args.annotation and annotation_df is not None:
@@ -1190,6 +1193,24 @@ def _run_analyze_manifest(
         clusters_df = annotate_clusters_with_genes(clusters_df, annotation_df)
         n_annotated = clusters_df['gene_id'].notna().sum()
         print(f"  Annotated {n_annotated:,} clusters ({100*n_annotated/len(clusters_df):.1f}%)")
+
+    # Flag clusters that contain any AG_RICH_MEDIUM reads (soft warning)
+    if _medium_risk_positions:
+        # cluster_cpa_sites() produces columns named 'start' and 'end'
+        _cs_col = 'start' if 'start' in clusters_df.columns else 'cluster_start'
+        _ce_col = 'end' if 'end' in clusters_df.columns else 'cluster_end'
+        # Use vectorized interval lookup instead of row-apply for speed
+        _med_set = _medium_risk_positions
+        _flags = []
+        for _, _row in clusters_df.iterrows():
+            _chrom, _strand = _row['chrom'], _row['strand']
+            _start, _end = int(_row[_cs_col]), int(_row[_ce_col])
+            _flags.append(any((_chrom, _strand, p) in _med_set for p in range(_start, _end + 1)))
+        clusters_df['has_medium_ag_risk'] = _flags
+        _n_med = sum(_flags)
+        print(f"  Flagged {_n_med:,} clusters containing AG_RICH_MEDIUM reads ({100*_n_med/len(clusters_df):.1f}%)")
+    else:
+        clusters_df['has_medium_ag_risk'] = False
 
     clusters_path = output_dir / 'cpa_clusters.tsv'
     clusters_df.to_csv(clusters_path, sep='\t', index=False)
@@ -1364,14 +1385,20 @@ def _run_analyze_manifest(
 
         _has_fraction = 'fraction' in _header.columns
         _has_tss = 'five_prime_position' in _header.columns
+        _has_qc_p2 = 'qc_flags' in _header.columns
         _usecols = ['chrom', 'strand', _pos_col]
         if _has_fraction:
             _usecols.append('fraction')
         if _has_tss:
             _usecols.append('five_prime_position')
+        if _has_qc_p2:
+            _usecols.append('qc_flags')
 
         n_assigned = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            # Filter out AG_RICH_HIGH reads (must not contribute to cluster counts)
+            if _has_qc_p2:
+                _chunk = _chunk.loc[~_chunk['qc_flags'].str.contains('AG_RICH_HIGH', na=False)]
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             weights = _chunk['fraction'].values if _has_fraction else None
 
