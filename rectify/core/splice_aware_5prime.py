@@ -760,7 +760,7 @@ def rescue_3ss_truncation(
        (Case 2), deletion-bridged alignments (Case 2b), single-bp boundary
        mismatches, and small indels.
 
-    2. **Intronic snap** (Case 4): if sequence-based rescue produced no match but
+    4. **Intronic snap** (Case 4): if sequence-based rescue produced no match but
        the 5' alignment end is strictly inside an annotated intron (and no N-op
        already covers it), the corrected position is snapped to the exon-1-side
        boundary.  Fires as a fallback after failed sequence rescue, e.g. when the
@@ -857,6 +857,15 @@ def rescue_3ss_truncation(
     best_shift_abs = 999         # tiebreaker 3: smallest |shift|
     best_acceptor_priority = 4   # tiebreaker 4: 3'SS quality (AG=0..AT=3..other=4)
 
+    # Forced-snap fallback for the mapPacBio terminal-D overshoot pattern.
+    # When the distance gate detects _n_match AND _leading_del (N-op proves the
+    # read already spans the intron, but terminal D ops push align_5prime past
+    # intron_end), we record the candidate junction here.  If all sequence-based
+    # rescue attempts fail (garbled post-N query bases mismatch exon-1), we snap
+    # directly to intron_end/-start based solely on the N-op evidence.
+    _forced_snap_junction: Optional[Tuple[str, int, int]] = None
+    _forced_snap_n_err: float = float('inf')  # N-op boundary error for best candidate
+
     # Splice-site boundary ambiguity: when bases flanking a donor/acceptor are
     # repeated (homopolymer runs, tandem dinucleotides, etc.), the local aligner
     # cannot distinguish the correct intron start/end from nearby positions.
@@ -876,6 +885,15 @@ def rescue_3ss_truncation(
     # final tiebreaker to preserve the annotated position when all else is equal.
     _MAX_SS_SHIFT = 15  # hard cap regardless of run length
 
+    # Pre-compute N-op intervals from the CIGAR.  Used in two places:
+    # 1. Distance gate (below): when a read already has an N-op that matches a
+    #    candidate junction, terminal D/I ops on the exon-1 side can push
+    #    align_5prime past intron_end and trigger the "downstream of intron"
+    #    skip.  We suppress that skip for reads whose CIGAR proves they span
+    #    the intron (mapPacBio 10I1M15D pattern, Bug 2 fix).
+    # 2. Case 4 intronic-snap (below): already used here.
+    _n_intervals = _get_n_op_intervals(read)
+
     if rescue_seq:
         rescue_len = len(rescue_seq)
         _gs = len(genome_seq)
@@ -891,9 +909,55 @@ def rescue_3ss_truncation(
                 # (intron_start < align_5prime < intron_end), not completely before it.
                 dist = align_5prime - intron_end
                 if dist < 0:
-                    if align_5prime <= intron_start:
+                    # If the read already has an N-op for this junction AND has
+                    # terminal D ops at the 5' end (mapPacBio artifact: D ops push
+                    # align_5prime left of intron_start), suppress the skip so we
+                    # can rescue the mangled exon-1 boundary.
+                    # We do NOT suppress for correctly-aligned reads (Cat6) whose
+                    # exon-1 alignment is clean (no leading D at the 5' end).
+                    _n_match = any(
+                        abs(ns - intron_start) <= junction_proximity_bp
+                        and abs(ne - intron_end) <= junction_proximity_bp
+                        for ns, ne in _n_intervals
+                    )
+                    _leading_del = False
+                    if _n_match:
+                        # Collect first ≤3 non-H ops from the 5' end (plus strand:
+                        # left end of CIGAR).
+                        _5p_ops: List[int] = []
+                        for _op, _ in (read.cigartuples or []):
+                            if _op == 5:   continue   # H: not in query
+                            _5p_ops.append(_op)
+                            if len(_5p_ops) >= 3:
+                                break
+                        # Pattern 1 (terminal D): CIGAR starts D … — mapPacBio
+                        # inserts D ops that push align_5prime left of intron_start.
+                        if _5p_ops and _5p_ops[0] == 2:
+                            _leading_del = True
+                        # Pattern 2 (D between match and N): CIGAR starts =/M/X D N —
+                        # mapPacBio misses a few exon bases, encoding them as deletions
+                        # between the terminal match block and the intron N-op.
+                        elif (len(_5p_ops) >= 3
+                              and _5p_ops[0] in (0, 7, 8)   # M / = / X
+                              and _5p_ops[1] == 2            # D
+                              and _5p_ops[2] == 3):          # N
+                            _leading_del = True
+                    if not (_n_match and _leading_del) and align_5prime <= intron_start:
                         continue  # alignment is upstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
+                    # Track this junction as a forced-snap candidate (mapPacBio
+                    # terminal-D overshoot: N-op proves the read spans the intron,
+                    # but garbled post-N query bases will likely fail sequence rescue).
+                    if _n_match and _leading_del:
+                        _n_err = min(
+                            abs(ns - intron_start) + abs(ne - intron_end)
+                            for ns, ne in _n_intervals
+                            if abs(ns - intron_start) <= junction_proximity_bp
+                            and abs(ne - intron_end) <= junction_proximity_bp
+                        )
+                        if _n_err < _forced_snap_n_err:
+                            _forced_snap_n_err = _n_err
+                            _forced_snap_junction = (j_chrom, intron_start, intron_end)
                 elif dist > junction_proximity_bp + five_clip:
                     # Soft-clip bases extend the read toward the junction; only
                     # filter out junctions that are farther than proximity_bp
@@ -1001,9 +1065,56 @@ def rescue_3ss_truncation(
                 # (intron_start < align_5prime < intron_end), not completely past it.
                 dist = intron_start - align_5prime
                 if dist < 0:
-                    if align_5prime >= intron_end:
+                    # If the read already has an N-op for this junction AND has
+                    # terminal D ops at the 5' end (mapPacBio artifact: the D ops
+                    # push reference_end — and thus align_5prime — past intron_end),
+                    # suppress the skip so we can rescue the mangled exon-1 boundary.
+                    # We do NOT suppress for correctly-aligned reads (Cat6) whose
+                    # exon-1 alignment is clean (no trailing D at the 5' end).
+                    _n_match = any(
+                        abs(ns - intron_start) <= junction_proximity_bp
+                        and abs(ne - intron_end) <= junction_proximity_bp
+                        for ns, ne in _n_intervals
+                    )
+                    _leading_del = False
+                    if _n_match:
+                        # Collect first ≤3 non-H ops from the 5' end (minus strand:
+                        # right end of CIGAR, so iterate reversed).
+                        _5p_ops_m: List[int] = []
+                        for _op, _ in reversed(read.cigartuples or []):
+                            if _op == 5:   continue   # H: not in query
+                            _5p_ops_m.append(_op)
+                            if len(_5p_ops_m) >= 3:
+                                break
+                        # Pattern 1 (terminal D): reversed CIGAR starts D … — mapPacBio
+                        # inserts D ops that push reference_end — and thus align_5prime
+                        # — past intron_end.
+                        if _5p_ops_m and _5p_ops_m[0] == 2:
+                            _leading_del = True
+                        # Pattern 2 (D between match and N): reversed CIGAR is =/M/X D N
+                        # — mapPacBio puts a few deleted exon bases between the terminal
+                        # match block and the intron N-op (e.g. CIGAR …304N5D11=).
+                        elif (len(_5p_ops_m) >= 3
+                              and _5p_ops_m[0] in (0, 7, 8)   # M / = / X
+                              and _5p_ops_m[1] == 2            # D
+                              and _5p_ops_m[2] == 3):          # N
+                            _leading_del = True
+                    if not (_n_match and _leading_del) and align_5prime >= intron_end:
                         continue  # alignment is downstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
+                    # Track this junction as a forced-snap candidate (mapPacBio
+                    # terminal-D overshoot: N-op proves the read spans the intron,
+                    # but garbled post-N query bases will likely fail sequence rescue).
+                    if _n_match and _leading_del:
+                        _n_err = min(
+                            abs(ns - intron_start) + abs(ne - intron_end)
+                            for ns, ne in _n_intervals
+                            if abs(ns - intron_start) <= junction_proximity_bp
+                            and abs(ne - intron_end) <= junction_proximity_bp
+                        )
+                        if _n_err < _forced_snap_n_err:
+                            _forced_snap_n_err = _n_err
+                            _forced_snap_junction = (j_chrom, intron_start, intron_end)
                 elif dist > junction_proximity_bp + five_clip:
                     # Soft-clip bases extend the read toward the junction; only
                     # filter out junctions that are farther than proximity_bp
@@ -1191,6 +1302,27 @@ def rescue_3ss_truncation(
                 'five_prime_exon_cigar': _exon_cigar_str,
             }
 
+    # --- Case 4.5: forced N-op snap for mapPacBio terminal-D overshoot ---
+    # Fires when the distance gate confirmed _n_match AND _leading_del (the N-op
+    # proves the read spans the intron, but terminal D ops push align_5prime past
+    # intron_end on minus strand / before intron_start on plus strand), AND the
+    # sequence rescue loop above failed to find a matching junction (garbled
+    # post-N query bases from mapPacBio's intronic insertion distribution).
+    # We trust the N-op evidence and snap directly to the intron boundary.
+    # rescue_type='n_op_snap'; edit_distance=-1 signals no sequence comparison.
+    if _forced_snap_junction is not None and best_junction is None:
+        _fj_chrom, _fj_intron_start, _fj_intron_end = _forced_snap_junction
+        _snap_pos = _fj_intron_end if strand == '-' else _fj_intron_start - 1
+        return {
+            'rescued': True,
+            'rescue_type': 'n_op_snap',
+            'five_prime_corrected': _snap_pos,
+            'rescued_junction': _forced_snap_junction,
+            'edit_distance': -1,
+            'query_bp': 0,
+            'five_prime_exon_cigar': '',
+        }
+
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
     # Fires as a fallback when:
     #   (a) no rescue_seq was extracted (all = ops, completely clean intronic match), OR
@@ -1199,7 +1331,7 @@ def rescue_3ss_truncation(
     # should still be corrected via snap — the position is demonstrably wrong.
     # Only fires if no existing N-op in the CIGAR already covers this intron
     # (prevents double-rescue for reads that have a correct but off-by-a-few-bp N).
-    _n_intervals = _get_n_op_intervals(read)
+    # _n_intervals already computed above (before the sequence-rescue loop).
     for j_entry in candidate_junctions:
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:

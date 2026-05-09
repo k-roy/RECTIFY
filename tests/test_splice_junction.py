@@ -450,7 +450,6 @@ class TestRescue5PrimeSoftclip:
             reference_start=reference_start,
             reference_end=reference_end,
             cigar_string='10S90M',
-            mapq=60,
             five_prime_softclip_seq=clip_seq,
             five_prime_softclip=len(clip_seq),
         )
@@ -619,7 +618,6 @@ class TestMPBRescue:
             reference_start=reference_start,
             reference_end=reference_end,
             cigar_string='100M',
-            mapq=60,
             five_prime_softclip=0,
             five_prime_softclip_seq='',
             effective_five_prime_clip=len(effective_seq),
@@ -658,7 +656,6 @@ class TestMPBRescue:
             reference_start=200,
             reference_end=300,
             cigar_string='10S90M',
-            mapq=60,
             five_prime_softclip=10,
             five_prime_softclip_seq='A' * 10,      # matches → rescued
             effective_five_prime_clip=12,
@@ -678,7 +675,6 @@ class TestMPBRescue:
             reference_start=200,
             reference_end=300,
             cigar_string='10S90M',
-            mapq=60,
             five_prime_softclip=10,
             five_prime_softclip_seq='C' * 10,  # would fail
             effective_five_prime_clip=10,
@@ -701,7 +697,6 @@ class TestMPBRescue:
             reference_start=200,
             reference_end=300,
             cigar_string='100M',
-            mapq=60,
             five_prime_softclip=0,
             five_prime_softclip_seq='',
             effective_five_prime_clip=0,
@@ -879,6 +874,88 @@ class TestRescue3SSTruncation:
         assert r['rescue_type'] == 'softclip'
         # five_prime_corrected = intron_end = 200
         assert r['five_prime_corrected'] == 200
+
+    # ---- Bug 3: n_op_snap — mapPacBio terminal-D overshoot ----
+    #
+    # Pattern 1 (original): CIGAR ends …N I M D (minus strand reversed: D M I N …)
+    #   Terminal D at the 5' end after M and I ops pushes reference_end past intron_end.
+    #
+    # Pattern 2 (de69692f): CIGAR ends …N D = (minus strand reversed: = D N …)
+    #   D between the N-op and the terminal match block.
+    #   mapPacBio emits a few deleted exon bases between the intron skip and the
+    #   terminal match, so align_5prime ends up past intron_end but _leading_del was
+    #   not detected under the old code.
+    #
+    # Both patterns should fire n_op_snap and snap to intron_end (minus strand).
+    # The genome for these tests: 'A'*100 (exon1) + 'N'*100 (intron) + 'G'*100 (exon2).
+    # The N-op in these reads spans the intron [100, 200).
+    # Pool junction is the same: ('chrT', 100, 200) → intron_end = 200.
+
+    def test_minus_n_op_snap_pattern1_terminal_d(self):
+        """Bug 3 Pattern 1 (original): reversed CIGAR starts D M I N …
+        Terminal D at 5' end → _leading_del=True → n_op_snap fires."""
+        # CIGAR: 50M 100N 10I 1M 15D  (minus strand; 5' = right end)
+        # reversed: D(15), M(1), I(10), N(100), M(50)
+        # D(15) is first → _leading_del=True
+        # ref_start: M(50) at 50..100; N(100) at 100..200; D(15) at 200..215
+        # ref_end = 215; align_5prime = 214 > intron_end=200 → dist<0
+        # All-N query so sequence rescue fails → n_op_snap fires
+        q_len = 50 + 10 + 1  # M + I + M (D/N don't consume query)
+        read = MockRead(
+            reference_name='chrT',
+            reference_start=50,
+            reference_end=215,   # 50+50+100+15 = 215
+            is_reverse=True,
+            query_sequence='N' * q_len,
+            cigartuples=[(0, 50), (3, 100), (1, 10), (0, 1), (2, 15)],
+        )
+        r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='-')
+        assert r['rescued'] is True, r
+        assert r['rescue_type'] == 'n_op_snap', r
+        assert r['five_prime_corrected'] == 200, r
+
+    def test_minus_n_op_snap_pattern2_d_between_n_and_match(self):
+        """Bug 3 Pattern 2 (de69692f): reversed CIGAR starts = D N …
+        D sits between the terminal match and the N-op.
+        Under the old code _leading_del was False (= caused an early break).
+        The fix detects = D N and sets _leading_del=True → n_op_snap fires."""
+        # CIGAR: 50M 100N 5D 11=  (minus strand)
+        # reversed: =(11), D(5), N(100), M(50)
+        # =(11) → don't break (new code), D(5) → _leading_del=True
+        # ref_start=50; M(50): 50..100; N(100): 100..200; D(5): 200..205; =(11): 205..216
+        # ref_end=216; align_5prime=215 > intron_end=200 → dist<0
+        # All-N query so sequence rescue fails → n_op_snap fires
+        q_len = 50 + 11  # M + = (D/N don't consume query)
+        read = MockRead(
+            reference_name='chrT',
+            reference_start=50,
+            reference_end=216,   # 50+50+100+5+11 = 216
+            is_reverse=True,
+            query_sequence='N' * q_len,
+            cigartuples=[(0, 50), (3, 100), (2, 5), (7, 11)],
+        )
+        r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='-')
+        assert r['rescued'] is True, r
+        assert r['rescue_type'] == 'n_op_snap', r
+        assert r['five_prime_corrected'] == 200, r
+
+    def test_minus_clean_5prime_no_snap(self):
+        """Clean 5' end with an N-op that places align_5prime past intron_end
+        but no D near the N-op → no n_op_snap (read is correctly aligned past
+        the intron, not a mapPacBio overshoot)."""
+        # CIGAR: 50M 100N 16= (minus strand; reversed: =(16), N(100), M(50))
+        # No D at all → _leading_del=False → junction is skipped
+        q_len = 50 + 16
+        read = MockRead(
+            reference_name='chrT',
+            reference_start=50,
+            reference_end=216,
+            is_reverse=True,
+            query_sequence='N' * q_len,
+            cigartuples=[(0, 50), (3, 100), (7, 16)],
+        )
+        r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='-')
+        assert r['rescue_type'] != 'n_op_snap', r
 
     # ---- Missing chrom ----
 
