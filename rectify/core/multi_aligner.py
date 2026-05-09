@@ -580,6 +580,7 @@ def run_map_pacbio(
     # underscores per SAM spec).  Strip it here so all downstream consumers
     # (bam_processor, corrected_reads.tsv, corrected_consensus.bam) see only
     # bare UUIDs — consistent with every other aligner and the parquet metadata.
+    import pysam
     _pt_fixed = output_bam.with_suffix('.ptfix.bam')
     _n_stripped = 0
     with pysam.AlignmentFile(str(output_bam), 'rb') as _src, \
