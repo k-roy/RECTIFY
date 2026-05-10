@@ -647,7 +647,13 @@ def refine_with_netseq(
             refined_position = best_peak['position']
             peak_signal = best_peak['signal']
         else:
-            refined_position = ambiguity_min
+            # Defensive fallback: use original_position (corrected anchor), NOT
+            # ambiguity_min.  For minus strand, ambiguity_min is the uncorrected
+            # BAM position deep in the poly-T tail; original_position is the
+            # corrected anchor from bam_processor.  This branch is currently
+            # unreachable (window_peaks non-empty → select_best_peak always
+            # returns a peak), but must be correct if the flow is ever refactored.
+            refined_position = original_position
             peak_signal = 0.0
             method = 'leftmost'
 

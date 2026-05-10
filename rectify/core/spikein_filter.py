@@ -540,17 +540,30 @@ class SpikeInFilter:
         """
         Classify a read using soft-clip analysis.
 
-        Classification logic:
-        1. Long soft-clip with synthetic 3' UTR + poly-A → spike-in
-        2. Long soft-clip with genomic 3' UTR + poly-A → endogenous
-        3. Short soft-clip with only poly-A → endogenous (3' UTR aligned to reference)
-        4. No poly-A soft-clip → ambiguous (internal read)
+        Five classification branches (in evaluation order):
+
+        1. No sequence, no CIGAR, no right soft-clip, clip < 5 bp, or
+           A-fraction < 50% → ``('ambiguous', '')``
+        2. Extractable 3' UTR (≥ 15 bp before poly-A) → delegates to
+           ``classify_read_fast()``, which returns ``'spikein'``,
+           ``'endogenous'``, or ``'ambiguous'`` based on synthetic-core vs
+           genomic-core match counts.
+        3. Short clip (≤ 20 bp) with high poly-A fraction (> 70%) →
+           ``('endogenous', gene_name)``.  The 3' UTR has aligned to the
+           reference; only the poly-A tail is soft-clipped.
+        4. Intermediate clip with ≥ ``min_cores`` (2) synthetic-core matches
+           in the raw soft-clip sequence and < ``min_cores`` genomic matches
+           → ``('spikein', gene_name)``.
+        5. Intermediate clip without strong synthetic signal → ``('endogenous',
+           gene_name)`` (absence of synthetic cores, not positive genomic
+           evidence).
 
         Args:
             read: pysam AlignedSegment
 
         Returns:
-            Tuple of (classification, gene_name)
+            Tuple of (classification, gene_name) where classification is one
+            of ``'spikein'``, ``'endogenous'``, or ``'ambiguous'``.
         """
         seq = read.query_sequence
         if not seq:

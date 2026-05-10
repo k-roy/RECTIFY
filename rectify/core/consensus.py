@@ -2007,8 +2007,9 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int, s
 
             feature_type = parts[2].lower()
 
-            # Look for intron features
-            if feature_type == 'intron':
+            # Look for intron features — match any subtype (intron,
+            # five_prime_UTR_intron, three_prime_UTR_intron, etc.)
+            if 'intron' in feature_type:
                 chrom = standardize_chrom_name(parts[0])
                 start = int(parts[3]) - 1  # Convert to 0-based
                 end = int(parts[4])  # Already exclusive in GFF end

@@ -60,7 +60,10 @@ def aggregate_positions(
         group_cols = []
 
     group_by = ['chrom', position_col, 'strand'] + group_cols
-    counts = df.groupby(group_by).size().reset_index(name='count')
+    if 'n_reads' in df.columns:
+        counts = df.groupby(group_by)['n_reads'].sum().reset_index(name='count')
+    else:
+        counts = df.groupby(group_by).size().reset_index(name='count')
     counts.rename(columns={position_col: 'position'}, inplace=True)
 
     return counts
