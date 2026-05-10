@@ -258,6 +258,109 @@ def generate_html_report(
     return output_path
 
 
+def generate_consensus_html_report(
+    stats: dict,
+    output_path: str,
+    sample_name: str = '',
+) -> str:
+    """Generate a standalone HTML report for consensus aligner selection stats.
+
+    Args:
+        stats:       Stats dict returned by run_consensus_selection().
+        output_path: Path to write the HTML file.
+        sample_name: Optional sample / prefix label shown in the title.
+
+    Returns:
+        Path to the generated HTML file.
+    """
+    total     = stats.get('total_reads', 0)
+    by_aligner = dict(stats.get('by_aligner', {}))
+    high      = stats.get('consensus_high', 0)
+    medium    = stats.get('consensus_medium', 0)
+    low       = stats.get('consensus_low', 0)
+    rescued   = stats.get('5prime_rescued', 0)
+    tied      = stats.get('tied_score', 0)
+    chimeric  = stats.get('chimeric_reads', 0)
+
+    def _pct(n: int) -> str:
+        return f"{100.0 * n / total:.1f}%" if total else "—"
+
+    title = f"RECTIFY Consensus Report"
+    if sample_name:
+        title += f" — {sample_name}"
+
+    # Build aligner rows
+    aligner_rows = ""
+    for aligner, count in sorted(by_aligner.items(), key=lambda x: -x[1]):
+        aligner_rows += (
+            f"<tr><td>{aligner}</td><td>{count:,}</td>"
+            f"<td>{_pct(count)}</td></tr>\n"
+        )
+
+    # Build summary rows
+    summary_rows = (
+        f"<tr><td>Total reads</td><td>{total:,}</td><td>100%</td></tr>\n"
+        f"<tr><td>High confidence</td><td>{high:,}</td><td>{_pct(high)}</td></tr>\n"
+        f"<tr><td>Medium confidence</td><td>{medium:,}</td><td>{_pct(medium)}</td></tr>\n"
+        f"<tr><td>Low confidence</td><td>{low:,}</td><td>{_pct(low)}</td></tr>\n"
+        f"<tr><td>5′ splice rescued</td><td>{rescued:,}</td><td>{_pct(rescued)}</td></tr>\n"
+        f"<tr><td>Tiebreaker used</td><td>{tied:,}</td><td>{_pct(tied)}</td></tr>\n"
+    )
+    if chimeric:
+        summary_rows += (
+            f"<tr><td>Chimeric reads</td><td>{chimeric:,}</td>"
+            f"<td>{_pct(chimeric)}</td></tr>\n"
+        )
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+  body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+  .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 20px;
+               border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+  h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+  h2 {{ color: #34495e; margin-top: 30px; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+  th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+  th {{ background: #3498db; color: white; }}
+  tr:nth-child(even) {{ background: #f2f2f2; }}
+  .timestamp {{ color: #7f8c8d; font-size: 12px; text-align: right; }}
+  .winner {{ font-weight: bold; color: #27ae60; }}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>{title}</h1>
+<p class="timestamp">Generated: {ts}</p>
+
+<h2>Aligner Win Distribution</h2>
+<table>
+  <tr><th>Aligner</th><th>Reads Won</th><th>Percent</th></tr>
+  {aligner_rows}
+</table>
+
+<h2>Selection Summary</h2>
+<table>
+  <tr><th>Metric</th><th>Count</th><th>Percent of Total</th></tr>
+  {summary_rows}
+</table>
+
+</div>
+</body>
+</html>
+"""
+
+    with open(output_path, 'w') as fh:
+        fh.write(html)
+
+    return output_path
+
+
 def create_excel_report(
     summary_df: pd.DataFrame,
     deseq2_gene_results: Dict[str, pd.DataFrame],

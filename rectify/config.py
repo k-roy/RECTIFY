@@ -216,17 +216,41 @@ NETSEQ_PEAK_SHAPE_7PLUS_A = (0.92, 0.85) # Severe rightward spread (deconvolutio
 NETSEQ_DECONV_REGULARIZATION: float = 0.01
 
 # =============================================================================
-# AG Mispriming Parameters (from original RECTIFY)
+# AG Mispriming Parameters (Roy & Chanfreau 2019 weighted scheme)
 # =============================================================================
+#
+# Original RECTIFY A/G filtering as described in Roy & Chanfreau 2019
+# (PMID 31128237). The oligo-dT primer is 19 nt long, so the scoring window
+# is exactly 19 bp downstream of the reported 3' end.
+#
+# Scoring weights (positions are 0-based):
+#   A at positions 0-5  (first 6 bp):  weight = 2
+#   A at positions 6-18 (next 13 bp):  weight = 1
+#   G at any position   (all 19 bp):   weight = 0.5
+# Maximum possible score = 6×2 + 13×1 + 19×0.5 = 34.5 (pure A/G 19-mer)
+#
+# Threshold: score > 15 → likely internal priming artifact
 
-# Window size for AG-richness calculation
-AG_RICHNESS_WINDOW: int = 50  # bp downstream
+# Window size matching the oligo-dT19 primer length
+AG_RICHNESS_WINDOW: int = 19  # bp downstream
 
-# AG content threshold for flagging likely mispriming
-AG_RICHNESS_THRESHOLD: float = 0.65  # 65% A+G content
+# Weighted score threshold for flagging likely mispriming (Youden-optimal, validated by DRS)
+# Optimized against rRNA-internal (true positives) vs non-internal (true negatives) in
+# QuantSeq REV WT data, validated by DRS cross-chemistry comparison (Roy & Chanfreau 2019).
+# At threshold 17: sensitivity=50.4% for rRNA-internal, FPR=6.6% for non-internal (J=0.438).
+# DRS rRNA-internal above threshold: 0.6% vs QuantSeq 50.4% — 84x chemistry-specific enrichment.
+# Note: max possible score = 25.0 (pure A 19-mer: 6×2 + 13×1). The scale ends at 25, not 34.5.
+AG_RICHNESS_SCORE_THRESHOLD: float = 17.0  # score > 17 → AG_RICH_MEDIUM (cluster flagged)
+
+# High-confidence threshold — set equal to SCORE_THRESHOLD to use a single optimized cutoff.
+# Reads above this threshold are excluded from cluster counts (definite internal priming).
+AG_RICHNESS_HIGH_THRESHOLD: float = 17.0  # score > 17 → AG_RICH_HIGH (read excluded)
 
 # Minimum window size if near chromosome end
-AG_RICHNESS_MIN_WINDOW: int = 20  # bp
+AG_RICHNESS_MIN_WINDOW: int = 10  # bp (half of primer length)
+
+# Legacy fraction-based threshold — kept for backward compatibility only
+AG_RICHNESS_THRESHOLD: float = AG_RICHNESS_SCORE_THRESHOLD / 34.5  # ~0.49
 
 # =============================================================================
 # Helper Functions

@@ -20,27 +20,57 @@ Date: 2026-03-09
 from typing import Dict, Optional
 from collections import Counter
 
-from ..config import AG_RICHNESS_WINDOW, AG_RICHNESS_THRESHOLD, AG_RICHNESS_MIN_WINDOW
+from ..config import (
+    AG_RICHNESS_WINDOW, AG_RICHNESS_SCORE_THRESHOLD, AG_RICHNESS_HIGH_THRESHOLD,
+    AG_RICHNESS_MIN_WINDOW, AG_RICHNESS_THRESHOLD,
+)
 from ..utils.genome import get_downstream_sequence, clamp_position
 
 
 def calculate_ag_content(sequence: str) -> float:
     """
-    Calculate AG-richness of sequence.
-
-    Args:
-        sequence: DNA sequence (case-insensitive)
+    Calculate unweighted AG-richness of sequence.
 
     Returns:
         Fraction of A+G bases (0.0-1.0)
     """
     if len(sequence) == 0:
         return 0.0
-
     sequence = sequence.upper()
-    ag_count = sequence.count('A') + sequence.count('G')
+    return (sequence.count('A') + sequence.count('G')) / len(sequence)
 
-    return ag_count / len(sequence)
+
+def calculate_weighted_ag_score(sequence: str) -> float:
+    """
+    Compute the weighted A/G internal-priming score from Roy & Chanfreau 2019.
+
+    The oligo-dT19 primer is 19 nt long.  A's proximal to the priming site
+    contribute more to false priming than distal A's; G's also promote
+    oligo-dT hybridisation but with lower efficiency.
+
+    Weights (0-based position within the 19 bp window):
+        A at positions 0-5  (first 6 bp):  2 points each
+        A at positions 6-18 (next 13 bp):  1 point each
+        G at any position   (all 19 bp):   0.5 points each
+
+    Maximum possible score = 6×2 + 13×1 + 19×0.5 = 34.5 (pure A+G 19-mer)
+    Threshold > 15 → likely internal priming artifact.
+
+    Args:
+        sequence: Up to 19 bp downstream sequence (case-insensitive).
+                  Shorter sequences are scored over their actual length.
+
+    Returns:
+        Weighted score (float ≥ 0.0)
+    """
+    seq = sequence.upper()
+    score = 0.0
+    for i, base in enumerate(seq):
+        if base == 'A':
+            score += 2.0 if i < 6 else 1.0
+        elif base == 'G':
+            score += 0.5
+    return score
 
 
 def screen_ag_mispriming(
@@ -49,38 +79,33 @@ def screen_ag_mispriming(
     position: int,
     strand: str,
     window: int = AG_RICHNESS_WINDOW,
-    threshold: float = AG_RICHNESS_THRESHOLD,
+    threshold: float = AG_RICHNESS_SCORE_THRESHOLD,
     min_window: int = AG_RICHNESS_MIN_WINDOW
 ) -> Dict:
     """
     Screen for AG mispriming at a putative poly(A) site.
 
-    Checks the downstream region for elevated AG-richness, which indicates
-    likely internal priming on A/G-rich genomic sequence rather than true
-    polyadenylation.
+    Implements the weighted A/G scoring scheme from Roy & Chanfreau 2019
+    (PMID 31128237) using a 19 bp downstream window matching the oligo-dT19
+    primer.  A score > 15 indicates likely internal priming.
 
     Args:
         genome: Genome dict from load_genome()
         chrom: Chromosome name (standard format)
         position: Putative pA site position (0-based)
         strand: Gene strand ('+' or '-')
-        window: Size of downstream window to check (default: 50bp)
-        threshold: AG-richness threshold for flagging (default: 0.65)
-        min_window: Minimum window size required (default: 20bp)
+        window: Downstream window size (default: 19 bp, matching oligo-dT19)
+        threshold: Weighted score threshold for flagging (default: 15.0)
+        min_window: Minimum window size required near chromosome ends (default: 10 bp)
 
     Returns:
         Dict with:
-            - ag_content: AG-richness in downstream window (0.0-1.0)
-            - is_likely_misprimed: True if AG content >= threshold
-            - confidence: 'high' (>=0.75), 'medium' (>=0.65), or 'low' (<0.65)
-            - window_size: Actual window size used (may be less than requested near chrom end)
+            - ag_score: Weighted A/G score in downstream window
+            - ag_content: Unweighted AG fraction (for backward compatibility)
+            - is_likely_misprimed: True if ag_score > threshold
+            - confidence: 'high' (>22), 'medium' (>15), or 'low' (≤15)
+            - window_size: Actual window size used
             - base_composition: Dict with counts of A, T, G, C
-
-    Example:
-        For a position with 70% AG content downstream:
-        - ag_content = 0.70
-        - is_likely_misprimed = True (if threshold is 0.65)
-        - confidence = 'medium'
     """
     # Get downstream sequence
     downstream_seq = get_downstream_sequence(genome, chrom, position, strand, window)
@@ -89,8 +114,8 @@ def screen_ag_mispriming(
     actual_window = len(downstream_seq)
 
     if actual_window < min_window:
-        # Insufficient sequence (near chromosome end)
         return {
+            'ag_score': None,
             'ag_content': None,
             'is_likely_misprimed': False,
             'confidence': 'low',
@@ -99,16 +124,19 @@ def screen_ag_mispriming(
             'insufficient_data': True,
         }
 
-    # Calculate AG-richness
+    # Weighted score (Roy & Chanfreau 2019)
+    ag_score = calculate_weighted_ag_score(downstream_seq)
+
+    # Unweighted fraction (backward compatibility)
     ag_content = calculate_ag_content(downstream_seq)
 
     # Determine if likely misprimed
-    is_misprimed = ag_content >= threshold
+    is_misprimed = ag_score > threshold
 
-    # Assign confidence
-    if ag_content >= 0.75:
+    # Assign confidence based on weighted score
+    if ag_score > AG_RICHNESS_HIGH_THRESHOLD:
         confidence = 'high'
-    elif ag_content >= threshold:
+    elif ag_score > threshold:
         confidence = 'medium'
     else:
         confidence = 'low'
@@ -118,6 +146,7 @@ def screen_ag_mispriming(
     base_counts = Counter(seq_upper)
 
     return {
+        'ag_score': ag_score,
         'ag_content': ag_content,
         'is_likely_misprimed': is_misprimed,
         'confidence': confidence,
@@ -131,7 +160,7 @@ def screen_ag_mispriming_batch(
     genome: Dict[str, str],
     positions: list,
     window: int = AG_RICHNESS_WINDOW,
-    threshold: float = AG_RICHNESS_THRESHOLD
+    threshold: float = AG_RICHNESS_SCORE_THRESHOLD
 ) -> list:
     """
     Screen batch of positions for AG mispriming.
@@ -190,12 +219,14 @@ def calculate_ag_statistics(ag_results: list) -> Dict:
             'total': len(ag_results),
             'likely_misprimed': 0,
             'mispriming_rate': 0.0,
+            'mean_ag_score': None,
             'mean_ag_content': None,
             'by_confidence': {},
             'insufficient_data': len(ag_results),
         }
 
-    ag_contents = [r['ag_content'] for r in valid_results]
+    ag_scores = [r['ag_score'] for r in valid_results if r.get('ag_score') is not None]
+    ag_contents = [r['ag_content'] for r in valid_results if r.get('ag_content') is not None]
     misprimed_count = sum(1 for r in valid_results if r['is_likely_misprimed'])
     confidences = [r['confidence'] for r in valid_results]
 
@@ -204,9 +235,12 @@ def calculate_ag_statistics(ag_results: list) -> Dict:
         'valid': len(valid_results),
         'likely_misprimed': misprimed_count,
         'mispriming_rate': misprimed_count / len(valid_results),
-        'mean_ag_content': np.mean(ag_contents),
-        'median_ag_content': np.median(ag_contents),
-        'max_ag_content': max(ag_contents),
+        'mean_ag_score': np.mean(ag_scores) if ag_scores else None,
+        'median_ag_score': np.median(ag_scores) if ag_scores else None,
+        'max_ag_score': max(ag_scores) if ag_scores else None,
+        'mean_ag_content': np.mean(ag_contents) if ag_contents else None,
+        'median_ag_content': np.median(ag_contents) if ag_contents else None,
+        'max_ag_content': max(ag_contents) if ag_contents else None,
         'by_confidence': dict(Counter(confidences)),
         'insufficient_data': len(ag_results) - len(valid_results),
     }
@@ -236,11 +270,13 @@ def format_ag_report(stats: Dict) -> str:
         report.append(f"  Likely misprimed:       {stats['likely_misprimed']:,} ({stats['mispriming_rate']:.1%})")
         report.append("")
 
-        report.append("AG Content:")
+        report.append("AG Score (Roy & Chanfreau 2019 weighted, max=34.5):")
+        if stats.get('mean_ag_score') is not None:
+            report.append(f"  Mean:                   {stats['mean_ag_score']:.2f}")
+            report.append(f"  Median:                 {stats['median_ag_score']:.2f}")
+            report.append(f"  Maximum:                {stats['max_ag_score']:.2f}")
         if stats.get('mean_ag_content') is not None:
-            report.append(f"  Mean:                   {stats['mean_ag_content']:.1%}")
-            report.append(f"  Median:                 {stats['median_ag_content']:.1%}")
-            report.append(f"  Maximum:                {stats['max_ag_content']:.1%}")
+            report.append(f"  Mean AG fraction:       {stats['mean_ag_content']:.1%}")
         report.append("")
 
         report.append("Confidence Levels:")
@@ -262,6 +298,11 @@ def format_ag_report(stats: Dict) -> str:
 def get_ag_qc_flag(ag_result: Dict) -> str:
     """
     Get QC flag for AG mispriming result.
+
+    Flags reflect the weighted A/G score from Roy & Chanfreau 2019:
+      AG_RICH_HIGH   — score > 17.0 (Youden-optimal threshold, validated by DRS)
+      AG_RICH_MEDIUM — score > 17.0 (same threshold; MEDIUM = HIGH when thresholds are equal)
+      PASS           — score ≤ 15.0 (likely true poly(A) site)
 
     Args:
         ag_result: Result dict from screen_ag_mispriming()

@@ -102,11 +102,66 @@ import logging
 import re
 from typing import Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
 
+import numpy as _np
 import pysam
 
 from ..utils.genome import standardize_chrom_name
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional Numba JIT for the DP inner loop
+# ---------------------------------------------------------------------------
+# When numba is installed, _score_hp_dp_numba() compiles the rolling NW DP
+# to native machine code (~86x faster than pure Python).  cache=True writes
+# the compiled bytecode to __pycache__/, so compilation (~1.2 s) only happens
+# once per environment.  Falls back to the pure-Python DP when unavailable.
+
+try:
+    import numba as _numba
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    _NUMBA_AVAILABLE = False
+
+if _NUMBA_AVAILABLE:
+    @_numba.njit(cache=True)
+    def _score_hp_dp_numba(
+        q_arr: _np.ndarray,      # uint8 array of uppercased ASCII codes, length Q
+        r_arr: _np.ndarray,      # uint8 array of uppercased ASCII codes, length R
+        del_costs_arr: _np.ndarray,  # float64[R] per-position deletion costs
+        ins_costs_arr: _np.ndarray,  # float64[Q] per-position insertion costs
+    ) -> float:
+        """Numba-compiled rolling NW DP for HP-aware semi-global alignment.
+
+        Semantics are identical to the pure-Python loop in _score_hp_anchored:
+        left end of ref is fixed (no free prefix), right suffix of ref is free.
+        Returns the minimum total cost over all possible ref end positions.
+        """
+        Q = len(q_arr)
+        R = len(r_arr)
+        INF = 1e18
+        prev = _np.full(R + 1, INF)
+        prev[0] = 0.0
+        for j in range(1, R + 1):
+            prev[j] = prev[j - 1] + del_costs_arr[j - 1]
+        for i in range(1, Q + 1):
+            curr = _np.full(R + 1, INF)
+            curr[0] = _np.float64(i) * ins_costs_arr[i - 1]
+            qi = q_arr[i - 1]
+            ic = ins_costs_arr[i - 1]
+            for j in range(1, R + 1):
+                cost_sub = 0.0 if qi == r_arr[j - 1] else 1.0
+                d = prev[j - 1] + cost_sub
+                a = prev[j]     + ic
+                l = curr[j - 1] + del_costs_arr[j - 1]
+                val = d
+                if a < val:
+                    val = a
+                if l < val:
+                    val = l
+                curr[j] = val
+            prev = curr
+        return prev.min()
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -181,6 +236,65 @@ def _str_repeat_info(
                 best_unit = min(unit[i:] + unit[:i] for i in range(unit_len))
 
     return (best_unit, best_copies) if best_unit is not None else (None, 0)
+
+
+def _precompute_del_costs(
+    ref: str,
+    genome_seq: Optional[str],
+    ref_genome_start: int,
+    ref_genome_rev: bool,
+    penalty_table: Optional['HpPenaltyTable'],
+    hp_min_run: int = 4,
+    del_normal: float = 1.0,
+    del_hp: float = 0.5,
+) -> List[float]:
+    """Precompute per-position deletion costs for a reference sequence.
+
+    Extracted from :func:`_score_hp_anchored` so callers that score the same
+    reference window multiple times (e.g. the k-loop in :func:`_score_junction`)
+    can compute these costs once and reuse them across all calls.
+
+    Args:
+        ref:              Reference sequence (already sliced/reversed as needed).
+        genome_seq:       Full chromosome sequence, or None.
+        ref_genome_start: Index in *genome_seq* corresponding to ref[0].
+        ref_genome_rev:   True when *ref* is reversed; position j maps to
+                          ``ref_genome_start - j`` in the genome.
+        penalty_table:    Optional empirical penalty table.
+        hp_min_run:       Minimum run length for HP discount.
+        del_normal:       Normal (non-HP) deletion cost.
+        del_hp:           HP deletion cost.
+
+    Returns:
+        List of length ``len(ref)`` with per-position deletion costs.
+    """
+    R = len(ref)
+    del_costs: List[float] = []
+    for j in range(R):
+        base = ref[j]
+        gp = (ref_genome_start - j) if ref_genome_rev else (ref_genome_start + j)
+        if genome_seq is not None and 0 <= gp < len(genome_seq):
+            run = _hp_run_length(genome_seq, gp)
+            g_base = genome_seq[gp]
+        else:
+            run = 1
+            kk = j - 1
+            while kk >= 0 and ref[kk] == base:
+                run += 1; kk -= 1
+            kk = j + 1
+            while kk < R and ref[kk] == base:
+                run += 1; kk += 1
+            g_base = base
+        if penalty_table is not None:
+            if run == 1 and genome_seq is not None and 0 <= gp < len(genome_seq):
+                su, sc = _str_repeat_info(genome_seq, gp)
+                if su is not None:
+                    del_costs.append(penalty_table.str_del_cost(su, sc))
+                    continue
+            del_costs.append(penalty_table.del_cost(run, g_base))
+        else:
+            del_costs.append(del_hp if run >= hp_min_run else del_normal)
+    return del_costs
 
 
 class HpPenaltyTable:
@@ -724,6 +838,7 @@ def _score_hp_anchored(
     genome_seq: Optional[str] = None,
     ref_genome_start: int = 0,
     ref_genome_rev: bool = False,
+    precomputed_del_costs: Optional[List[float]] = None,
 ) -> float:
     """Left-anchored HP-aware semi-global alignment.
 
@@ -771,31 +886,15 @@ def _score_hp_anchored(
 
     # Precompute per-position deletion cost for each ref base.
     # When genome_seq is provided: use full-genome HP run lengths and STR context.
-    del_costs: List[float] = []
-    for j in range(R):
-        base = ref[j]
-        gp = (ref_genome_start - j) if ref_genome_rev else (ref_genome_start + j)
-        if genome_seq is not None and 0 <= gp < len(genome_seq):
-            run = _hp_run_length(genome_seq, gp)
-            g_base = genome_seq[gp]
-        else:
-            run = 1
-            k = j - 1
-            while k >= 0 and ref[k] == base:
-                run += 1; k -= 1
-            k = j + 1
-            while k < R and ref[k] == base:
-                run += 1; k += 1
-            g_base = base
-        if penalty_table is not None:
-            if run == 1 and genome_seq is not None and 0 <= gp < len(genome_seq):
-                su, sc = _str_repeat_info(genome_seq, gp)
-                if su is not None:
-                    del_costs.append(penalty_table.str_del_cost(su, sc))
-                    continue
-            del_costs.append(penalty_table.del_cost(run, g_base))
-        else:
-            del_costs.append(del_hp if run >= hp_min_run else del_normal)
+    # Callers may supply precomputed_del_costs to skip this work when scoring the
+    # same reference window multiple times (e.g. the k-loop in _score_junction).
+    if precomputed_del_costs is not None:
+        del_costs = precomputed_del_costs
+    else:
+        del_costs = _precompute_del_costs(
+            ref, genome_seq, ref_genome_start, ref_genome_rev,
+            penalty_table, hp_min_run, del_normal, del_hp,
+        )
 
     # Insertion cost: use table lookup for first query base HP context when table provided.
     # For the DP, we need per-query-position ins cost; we approximate using the HP
@@ -806,6 +905,14 @@ def _score_hp_anchored(
         ]
     else:
         ins_costs = [ins] * Q
+
+    # Fast path: use Numba JIT when available.
+    if _NUMBA_AVAILABLE:
+        q_arr = _np.frombuffer(query.upper().encode('ascii'), dtype=_np.uint8)
+        r_arr = _np.frombuffer(ref.upper().encode('ascii'), dtype=_np.uint8)
+        dc_arr = _np.array(del_costs, dtype=_np.float64)
+        ic_arr = _np.array(ins_costs, dtype=_np.float64)
+        return float(_score_hp_dp_numba(q_arr, r_arr, dc_arr, ic_arr))
 
     INF = float('inf')
     # One-row rolling DP (space O(R))
@@ -900,6 +1007,18 @@ def _score_junction(
     ref_intron_end = genome_seq[max(0, intron_end - _BUF) : intron_end].upper()
     ref_intron_end_rev = ref_intron_end[::-1]
 
+    # Precompute per-position deletion costs for the two fixed reference windows.
+    # del_costs depend only on the ref sequence and genome position, not on the
+    # query, so they are identical across all k values in the loop below.
+    # Computing them once here and passing them in avoids ~58 redundant scans of
+    # _hp_run_length / _str_repeat_info per junction call.
+    del_costs_fwd = _precompute_del_costs(
+        ref_exon2_start, genome_seq, intron_end, False, penalty_table,
+    )
+    del_costs_rev = _precompute_del_costs(
+        ref_intron_end_rev, genome_seq, intron_end - 1, True, penalty_table,
+    )
+
     best_score = float("inf")
 
     for k in range(L):
@@ -908,6 +1027,7 @@ def _score_junction(
         t1 = _score_hp_anchored(
             q1, ref_exon2_start, penalty_table=penalty_table,
             genome_seq=genome_seq, ref_genome_start=intron_end,
+            precomputed_del_costs=del_costs_fwd,
         )
 
         # Tier-2: rescue[:k] must end cleanly at intron_end - 1 (last intronic base).
@@ -917,6 +1037,7 @@ def _score_junction(
                 rescue[:k][::-1], ref_intron_end_rev, penalty_table=penalty_table,
                 genome_seq=genome_seq, ref_genome_start=intron_end - 1,
                 ref_genome_rev=True,
+                precomputed_del_costs=del_costs_rev,
             )
         else:
             t2 = 0.0
@@ -1076,8 +1197,10 @@ def refine_read_junctions(
         genome_seq:           Full chromosome sequence.
         strand:               '+' or '-'.
         hp_pen:               Homopolymer indel penalty.
-        W:                    Edit-distance window half-width (bp).
-        max_slide:            Max query split displacement.
+        W:                    Retained for API compatibility; unused by the
+                              current HP-anchored semi-global implementation.
+        max_slide:            Retained for API compatibility; unused by the
+                              current HP-anchored semi-global implementation.
         search_radius:        Discovery radius for finding candidate junctions
                               (bp).  Large values ensure annotated junctions from
                               adjacent isoforms are included.
@@ -1115,11 +1238,17 @@ def refine_read_junctions(
         # boundary_error_window reference bases of either junction endpoint.
         # Clean M-op alignments at the boundary indicate the aligner was
         # confident; noisy boundaries are the cases that benefit from refinement.
+        # Exception: non-canonical junctions (tier >= 4, e.g. GG/AT donor) are
+        # ALWAYS scored regardless of boundary cleanliness — the aligner can
+        # produce a locally-optimal but canonically-wrong split with no nearby
+        # errors (e.g. 54= leading into a GG donor), and these are exactly the
+        # cases that need correction.
         if boundary_error_window > 0 and not _has_boundary_error(
             read.cigartuples, ns, ne,
             read.reference_start, boundary_error_window,
         ):
-            continue
+            if _canonical_tier(ns, ne, genome_seq, strand) < 4:
+                continue
         # Use search_radius to discover candidates (finds annotated junctions from
         # adjacent isoforms), but constrain each endpoint to max_boundary_shift to
         # avoid pairing with junctions from entirely different genes.
@@ -1455,6 +1584,299 @@ def _apply_junction_replacement(
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers for sequential and parallel BAM processing
+# ---------------------------------------------------------------------------
+
+def _apply_replacements_to_read(
+    read: pysam.AlignedSegment,
+    replacements: list,
+    genome_seq: str,
+    strand: str,
+    hp_pen: float,
+    W: int,
+) -> Tuple[pysam.AlignedSegment, bool]:
+    """Apply junction replacements to *read* and return (modified_read, any_applied).
+
+    Returns the original *read* unchanged if no replacements apply or if the
+    copy fails.
+    """
+    try:
+        modified_read = read.__copy__()
+    except Exception:
+        return read, False
+
+    any_applied = False
+    for cigar_idx, old_ns, old_ne, new_ns, new_ne in sorted(
+        replacements, key=lambda r: -r[0]
+    ):
+        try:
+            applied = _apply_junction_replacement(
+                modified_read, cigar_idx, old_ns, old_ne, new_ns, new_ne,
+                genome_seq, strand, hp_pen, W,
+            )
+            any_applied = any_applied or applied
+        except Exception as exc:
+            logger.debug(
+                "_apply_junction_replacement failed for %s: %s",
+                read.query_name, exc,
+            )
+
+    if any_applied:
+        # Strip MD and cs tags from modified reads: the CIGAR has been
+        # changed (boundary D/I ops inserted) so the MD string is now
+        # invalid.  Without MD, downstream tools (pysam indel corrector)
+        # skip MD-based processing, which is correct.  Also strip cs
+        # (cigar string in cs notation) for the same reason.
+        try:
+            modified_read.set_tags([
+                t for t in modified_read.tags if t[0] not in ('MD', 'cs')
+            ])
+        except Exception:
+            pass
+
+    return modified_read, any_applied
+
+
+def _run_sequential(
+    input_bam: str,
+    output_bam: str,
+    genome: Dict[str, str],
+    junctions_idx: Dict,
+    annotated_set: Set,
+    stats: Dict[str, int],
+    hp_pen: float,
+    W: int,
+    max_slide: int,
+    search_radius: int,
+    max_boundary_shift: int,
+    boundary_error_window: int,
+    penalty_table: Optional[HpPenaltyTable],
+) -> None:
+    """Single-threaded sequential junction refinement (original code path)."""
+    with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
+         pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
+
+        for read in bam_in:
+            stats['total'] += 1
+            if read.is_unmapped or not read.cigartuples:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            if not any(op == _N for op, _ in read.cigartuples):
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            stats['n_op_reads'] += 1
+            strand = '-' if read.is_reverse else '+'
+            chrom = standardize_chrom_name(read.reference_name)
+            genome_seq = genome.get(chrom, '')
+            if not genome_seq:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            try:
+                replacements = refine_read_junctions(
+                    read, junctions_idx, annotated_set, genome_seq, strand,
+                    hp_pen=hp_pen, W=W, max_slide=max_slide,
+                    search_radius=search_radius,
+                    max_boundary_shift=max_boundary_shift,
+                    boundary_error_window=boundary_error_window,
+                    penalty_table=penalty_table,
+                )
+            except Exception as exc:
+                logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
+                bam_out.write(read)
+                stats['errors'] += 1
+                continue
+
+            if not replacements:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+
+            modified_read, any_applied = _apply_replacements_to_read(
+                read, replacements, genome_seq, strand, hp_pen, W,
+            )
+            bam_out.write(modified_read)
+            if any_applied:
+                stats['refined'] += 1
+            else:
+                stats['unchanged'] += 1
+
+
+def _run_parallel(
+    input_bam: str,
+    output_bam: str,
+    genome: Dict[str, str],
+    junctions_idx: Dict,
+    annotated_set: Set,
+    stats: Dict[str, int],
+    hp_pen: float,
+    W: int,
+    max_slide: int,
+    search_radius: int,
+    max_boundary_shift: int,
+    boundary_error_window: int,
+    penalty_table: Optional[HpPenaltyTable],
+    n_workers: int,
+    batch_size: int,
+) -> None:
+    """Parallel junction refinement using multiprocessing.Pool (Linux fork).
+
+    Phase 1: Read all reads; write pass-throughs immediately; collect N-op
+             reads as SAM strings.
+    Phase 2: Process N-op batches in parallel workers (fork-inherited state).
+    Phase 3: Apply replacements in main process and write to output BAM.
+    """
+    import multiprocessing as mp
+
+    # Phase 1: separate pass-through reads from N-op reads, write pass-throughs
+    n_op_sams: List[str] = []
+    with pysam.AlignmentFile(input_bam, 'rb') as bam_in:
+        header_dict = bam_in.header.to_dict()
+        for read in bam_in:
+            stats['total'] += 1
+            if (read.is_unmapped or not read.cigartuples
+                    or not any(op == _N for op, _ in read.cigartuples)):
+                stats['unchanged'] += 1
+                continue
+            stats['n_op_reads'] += 1
+            n_op_sams.append(read.to_string())
+
+    if not n_op_sams:
+        # No N-op reads: just copy the BAM
+        with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
+             pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
+            for read in bam_in:
+                bam_out.write(read)
+        return
+
+    # Populate worker state before Pool() creation so workers inherit it via fork
+    _WORKER_POOL_STATE.clear()
+    _WORKER_POOL_STATE['header'] = pysam.AlignmentHeader.from_dict(header_dict)
+    _WORKER_POOL_STATE['junctions_idx'] = junctions_idx
+    _WORKER_POOL_STATE['annotated_set'] = annotated_set
+    _WORKER_POOL_STATE['genome'] = genome
+    _WORKER_POOL_STATE['kwargs'] = {
+        'hp_pen': hp_pen, 'W': W, 'max_slide': max_slide,
+        'search_radius': search_radius,
+        'max_boundary_shift': max_boundary_shift,
+        'boundary_error_window': boundary_error_window,
+        'penalty_table': penalty_table,
+    }
+
+    # Trigger numba JIT compilation before forking so workers inherit compiled code
+    if _NUMBA_AVAILABLE:
+        _warmup_numba_dp()
+
+    bam_hdr = pysam.AlignmentHeader.from_dict(header_dict)
+    batches = [n_op_sams[i:i + batch_size] for i in range(0, len(n_op_sams), batch_size)]
+    all_results: List[Tuple[str, List]] = []
+
+    # Phase 2: parallel scoring
+    with mp.Pool(n_workers) as pool:
+        for batch_results in pool.imap_unordered(_refine_read_batch, batches):
+            all_results.extend(batch_results)
+
+    _WORKER_POOL_STATE.clear()
+
+    # Phase 3: write all output (pass-throughs first, then N-op results)
+    with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
+         pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
+
+        # Write pass-through reads from input
+        for read in bam_in:
+            if (read.is_unmapped or not read.cigartuples
+                    or not any(op == _N for op, _ in read.cigartuples)):
+                bam_out.write(read)
+
+        # Write N-op reads with replacements applied
+        for sam_str, replacements in all_results:
+            read = pysam.AlignedSegment.fromstring(sam_str, bam_hdr)
+            if not replacements:
+                bam_out.write(read)
+                stats['unchanged'] += 1
+                continue
+            chrom = standardize_chrom_name(read.reference_name)
+            genome_seq = genome.get(chrom, '')
+            strand = '-' if read.is_reverse else '+'
+            modified_read, any_applied = _apply_replacements_to_read(
+                read, replacements, genome_seq, strand, hp_pen, W,
+            )
+            bam_out.write(modified_read)
+            if any_applied:
+                stats['refined'] += 1
+            else:
+                stats['unchanged'] += 1
+
+
+def _warmup_numba_dp() -> None:
+    """Trigger Numba JIT compilation with a tiny dummy call.
+
+    Called before Pool() creation so forked workers inherit the compiled
+    function from cache rather than recompiling independently.
+    """
+    if not _NUMBA_AVAILABLE:
+        return
+    import numpy as np
+    q = np.array([65, 84], dtype=np.uint8)   # "AT"
+    r = np.array([65, 84, 65], dtype=np.uint8)  # "ATA"
+    dc = np.array([0.5, 1.0, 0.5], dtype=np.float64)
+    ic = np.array([1.25, 1.25], dtype=np.float64)
+    _score_hp_dp_numba(q, r, dc, ic)
+
+
+# ---------------------------------------------------------------------------
+# Parallel worker state (populated by refine_bam_junctions before Pool fork)
+# ---------------------------------------------------------------------------
+# On Linux the default multiprocessing start method is 'fork'.  Worker
+# processes inherit the parent's memory via copy-on-write, so large objects
+# (genome dict, junctions_idx, penalty_table) are shared at zero cost without
+# pickling.  _WORKER_POOL_STATE is populated in the parent before Pool() is
+# created and cleared after the pool exits.
+
+_WORKER_POOL_STATE: dict = {}
+
+
+def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
+    """Process a batch of N-op SAM records in a worker process.
+
+    Reads *sam_strings*, calls :func:`refine_read_junctions` on each, and
+    returns ``(sam_str, replacements)`` pairs.  All shared state
+    (junctions_idx, annotated_set, genome, header, scoring kwargs) is
+    inherited from the parent via fork() and stored in
+    :data:`_WORKER_POOL_STATE`.
+    """
+    state = _WORKER_POOL_STATE
+    header = state['header']
+    junctions_idx = state['junctions_idx']
+    annotated_set = state['annotated_set']
+    genome = state['genome']
+    kw = state['kwargs']
+
+    results: List[Tuple[str, List]] = []
+    for sam_str in sam_strings:
+        try:
+            read = pysam.AlignedSegment.fromstring(sam_str, header)
+            chrom = standardize_chrom_name(read.reference_name)
+            genome_seq = genome.get(chrom, '')
+            if not genome_seq:
+                results.append((sam_str, []))
+                continue
+            strand = '-' if read.is_reverse else '+'
+            replacements = refine_read_junctions(
+                read, junctions_idx, annotated_set, genome_seq, strand, **kw
+            )
+            results.append((sam_str, replacements))
+        except Exception:
+            results.append((sam_str, []))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Batch BAM refinement
 # ---------------------------------------------------------------------------
 
@@ -1475,6 +1897,9 @@ def refine_bam_junctions(
     str_penalty_table_path: Optional[str] = None,
     prebuilt_junction_pool: Optional[Set] = None,
     prebuilt_annotated_set: Optional[Set] = None,
+    sort_threads: int = 1,
+    n_workers: int = 1,
+    batch_size: int = 200,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1488,8 +1913,10 @@ def refine_bam_junctions(
         annotated_junctions:  From ``load_annotated_junctions()``.
         genome:               Dict mapping chrom → sequence.
         hp_pen:               Homopolymer penalty (tunable).
-        W:                    Edit-distance window half-width.
-        max_slide:            Max query split slide distance.
+        W:                    Retained for API compatibility; unused by the
+                              current HP-anchored semi-global implementation.
+        max_slide:            Retained for API compatibility; unused by the
+                              current HP-anchored semi-global implementation.
         max_boundary_shift:   Max allowed shift of either intron boundary (bp).
                               Prevents false-positive matches from junctions
                               in adjacent genes within search_radius.
@@ -1539,101 +1966,22 @@ def refine_bam_junctions(
         )
     junctions_idx = _build_junction_index(all_junctions)
 
-    with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
-
-        for read in bam_in:
-            stats['total'] += 1
-            if read.is_unmapped or not read.cigartuples:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            # Only process reads with at least one N-op
-            if not any(op == _N for op, _ in read.cigartuples):
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            stats['n_op_reads'] += 1
-            strand = '-' if read.is_reverse else '+'
-            chrom = standardize_chrom_name(read.reference_name)
-            genome_seq = genome.get(chrom, '')
-            if not genome_seq:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            try:
-                replacements = refine_read_junctions(
-                    read, junctions_idx, annotated_set, genome_seq, strand,
-                    hp_pen=hp_pen, W=W, max_slide=max_slide,
-                    search_radius=search_radius,
-                    max_boundary_shift=max_boundary_shift,
-                    boundary_error_window=boundary_error_window,
-                    penalty_table=penalty_table,
-                )
-            except Exception as exc:
-                logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
-                bam_out.write(read)
-                stats['errors'] += 1
-                continue
-
-            if not replacements:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            # Apply replacements (process in reverse CIGAR order to preserve indices).
-            # Work on a fresh copy to avoid in-place mutation of pysam's internal
-            # C-level AlignedSegment object, which can cause heap corruption when
-            # cigartuples and reference_start are modified during BAM iteration.
-            try:
-                modified_read = read.__copy__()
-            except Exception:
-                # Fallback: write unchanged if copy fails
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            any_applied = False
-            for cigar_idx, old_ns, old_ne, new_ns, new_ne in sorted(
-                replacements, key=lambda r: -r[0]
-            ):
-                try:
-                    applied = _apply_junction_replacement(
-                        modified_read, cigar_idx, old_ns, old_ne, new_ns, new_ne,
-                        genome_seq, strand, hp_pen, W,
-                    )
-                    any_applied = any_applied or applied
-                except Exception as exc:
-                    logger.debug(
-                        "_apply_junction_replacement failed for %s: %s",
-                        read.query_name, exc,
-                    )
-
-            if any_applied:
-                # Strip MD and cs tags from modified reads: the CIGAR has been
-                # changed (boundary D/I ops inserted) so the MD string is now
-                # invalid.  Without MD, downstream tools (pysam indel corrector)
-                # skip MD-based processing, which is correct.  Also strip cs
-                # (cigar string in cs notation) for the same reason.
-                try:
-                    modified_read.set_tags([
-                        t for t in modified_read.tags if t[0] not in ('MD', 'cs')
-                    ])
-                except Exception:
-                    pass
-
-            bam_out.write(modified_read)
-            if any_applied:
-                stats['refined'] += 1
-            else:
-                stats['unchanged'] += 1
+    if n_workers > 1:
+        _run_parallel(
+            input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
+            hp_pen, W, max_slide, search_radius, max_boundary_shift,
+            boundary_error_window, penalty_table, n_workers, batch_size,
+        )
+    else:
+        _run_sequential(
+            input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
+            hp_pen, W, max_slide, search_radius, max_boundary_shift,
+            boundary_error_window, penalty_table,
+        )
 
     if sort_and_index:
         try:
-            _sort_and_index(output_bam)
+            _sort_and_index(output_bam, n_threads=sort_threads)
         except Exception as exc:
             logger.warning("refine_bam_junctions: sort/index failed: %s", exc)
 
@@ -1645,22 +1993,27 @@ def refine_bam_junctions(
     return stats
 
 
-def _sort_and_index(bam_path: str) -> None:
+def _sort_and_index(bam_path: str, n_threads: int = 1) -> None:
     """Sort and index a BAM file using samtools via subprocess.
 
     Uses subprocess (not pysam.sort/pysam.index) to avoid heap corruption
     bugs in pysam's C-level sort on CentOS 7 / older glibc.
+
+    Args:
+        bam_path:  Path to the BAM file to sort and index in place.
+        n_threads: Number of threads to pass to ``samtools sort`` and
+                   ``samtools index`` via ``-@``.  Defaults to 1.
     """
     import os
     import subprocess
     tmp = bam_path + '.tmp.bam'
     subprocess.run(
-        ['samtools', 'sort', '-o', tmp, bam_path],
+        ['samtools', 'sort', f'-@{n_threads}', '-o', tmp, bam_path],
         check=True, capture_output=True,
     )
     os.replace(tmp, bam_path)
     subprocess.run(
-        ['samtools', 'index', bam_path],
+        ['samtools', 'index', f'-@{n_threads}', bam_path],
         check=True, capture_output=True,
     )
 

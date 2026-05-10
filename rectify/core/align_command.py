@@ -56,6 +56,19 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help='Output directory for BAM files'
     )
 
+    # Protocol flag
+    parser.add_argument(
+        '--short-read',
+        dest='short_read',
+        action='store_true',
+        default=False,
+        help=(
+            'Input is short-read data (Illumina/Aviti ≤150 bp). When set, "all" '
+            'expands to bbmap + bwa instead of minimap2 + mapPacBio + gapmm2. '
+            'Ignored if --aligners is specified explicitly.'
+        ),
+    )
+
     # Aligner selection
     aligner_group = parser.add_argument_group('Aligner selection')
     aligner_group.add_argument(
@@ -64,9 +77,9 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa', 'all', 'none'],
         default=['all'],
         help=(
-            'Aligners for 3\' end correction. "all" = minimap2 + mapPacBio + gapmm2 '
-            '(long reads). For Illumina/Aviti short reads use: --aligners bbmap bwa. '
-            'Use "none" to run only --junction-aligners. (default: all)'
+            'Aligners to run. "all" = minimap2 + mapPacBio + gapmm2 (long-read, default); '
+            'with --short-read "all" = bbmap + bwa. '
+            'Use "none" to run only --junction-aligners (deSALT/uLTRA). (default: all)'
         )
     )
 
@@ -269,7 +282,10 @@ def run_align(args: argparse.Namespace) -> int:
     if 'none' in aligners:
         aligners = []
     elif 'all' in aligners:
-        aligners = ['minimap2', 'mapPacBio', 'gapmm2']
+        if getattr(args, 'short_read', False):
+            aligners = ['bbmap', 'bwa']
+        else:
+            aligners = ['minimap2', 'mapPacBio', 'gapmm2']
 
     junction_aligners = getattr(args, 'junction_aligners', []) or []
     for ja in junction_aligners:
@@ -589,6 +605,22 @@ def run_align(args: argparse.Namespace) -> int:
         logger.info(f"  High confidence: {stats['consensus_high']} reads")
         logger.info(f"  5' rescued: {stats['5prime_rescued']} reads")
         logger.info(f"[TIMING] Aligner selection total (incl. genome/junctions): {_time.perf_counter() - _t_consensus_start:.1f}s")
+
+        # Write aligner stats TSV and HTML report alongside the rectified BAM
+        try:
+            from .processing_stats import write_consensus_stats_tsv
+            _stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
+            write_consensus_stats_tsv(stats, str(_stats_tsv))
+        except Exception as _e:
+            logger.warning(f"Could not write consensus stats TSV: {_e}")
+
+        try:
+            from .analyze.summary import generate_consensus_html_report
+            _report_html = args.output_dir / f"{prefix}.consensus_report.html"
+            generate_consensus_html_report(stats, str(_report_html), sample_name=prefix)
+            logger.info(f"Consensus report: {_report_html}")
+        except Exception as _e:
+            logger.warning(f"Could not write consensus HTML report: {_e}")
 
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")

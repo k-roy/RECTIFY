@@ -30,6 +30,7 @@ Date: 2026-03-09
 from typing import Dict, List, Optional, Tuple, Union
 from multiprocessing import Pool
 from functools import partial
+import bisect as _bisect
 import gzip
 import logging
 import os
@@ -75,6 +76,38 @@ from .bam_writer import (  # noqa: F401  (re-exported)
 from .position_index import write_position_index  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
+
+# Search radius (bp) used when pre-filtering pool junctions near a read's 5' end
+# before passing them to rescue_3ss_truncation.  Must be ≥ the junction_proximity_bp
+# default (5000 bp) used inside rescue_3ss_truncation, plus the maximum intron length
+# (yeast: ~1 kb) to also capture minus-strand junctions sorted by intron_start.
+_POOL_SEARCH_RADIUS = 10000
+
+
+def _build_pool_chrom_index(
+    pool_junctions: Optional[set],
+) -> Optional[Dict[str, List[Tuple[int, int]]]]:
+    """Build a per-chromosome sorted index for fast bisect-based pool lookup.
+
+    Returns a dict mapping each standardised chromosome name to a list of
+    (intron_start, intron_end) tuples sorted by intron_start.  Returns None
+    if pool_junctions is None or empty.
+
+    Call once before starting BAM processing; pass the result as
+    ``pool_chrom_index`` to the process_bam_* and correct_read_3prime functions.
+    """
+    if not pool_junctions:
+        return None
+    index: Dict[str, List[Tuple[int, int]]] = {}
+    for entry in pool_junctions:
+        chrom_raw, intron_start, intron_end = entry
+        chrom = standardize_chrom_name(chrom_raw)
+        if chrom not in index:
+            index[chrom] = []
+        index[chrom].append((intron_start, intron_end))
+    for chrom in index:
+        index[chrom].sort()
+    return index
 
 
 def _load_netseq(netseq_dir: str) -> 'netseq_refiner.NetseqLoader':
@@ -200,6 +233,7 @@ def correct_read_3prime(
     netseq_loader: Optional[netseq_refiner.NetseqLoader] = None,
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
+    pool_chrom_index: Optional[Dict] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     dt_primed_cDNA: bool = False,
@@ -314,12 +348,25 @@ def correct_read_3prime(
     # Module 2F: 3'SS truncation rescue (post-consensus).
     # Corrects five_prime_position for reads truncated or soft-clipped at the
     # exon 2 / 3' splice site boundary.
-    if annotated_junctions or _real_junctions:
+    if annotated_junctions or _real_junctions or pool_chrom_index:
         _ss_junctions: set = set()
         if annotated_junctions:
             _ss_junctions.update(annotated_junctions)
         for _js, _je in _real_junctions:
             _ss_junctions.add((chrom_std, _js, _je))
+        # Add pool junctions (novel + annotated from prescan) near this read's 5' end.
+        # Pool may contain novel junctions absent from the GFF annotation.
+        # Use a bisect-indexed lookup to avoid iterating all 200k+ pool entries per read.
+        if pool_chrom_index:
+            _pool_entries = pool_chrom_index.get(chrom_std)
+            if _pool_entries:
+                _lo = _bisect.bisect_left(_pool_entries,
+                                          (five_prime_position - _POOL_SEARCH_RADIUS,))
+                _hi = _bisect.bisect_right(_pool_entries,
+                                           (five_prime_position + _POOL_SEARCH_RADIUS,
+                                            10 ** 9))
+                for _pjs, _pje in _pool_entries[_lo:_hi]:
+                    _ss_junctions.add((chrom_std, _pjs, _pje))
         if _ss_junctions:
             _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
             if _3ss_result['rescued']:
@@ -1211,6 +1258,7 @@ def _process_region_worker(
     netseq_dir: Optional[str] = None,
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
+    pool_chrom_index: Optional[Dict] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     tmp_dir: Optional[str] = None,
@@ -1305,6 +1353,7 @@ def _process_region_worker(
                 netseq_loader=netseq_loader,
                 variant_aware_rescue=_local_rescue,
                 annotated_junctions=annotated_junctions,
+                pool_chrom_index=pool_chrom_index,
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
                 dt_primed_cDNA=dt_primed_cDNA,
@@ -1345,6 +1394,7 @@ def process_bam_file_parallel(
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
+    pool_chrom_index: Optional[Dict] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
@@ -1452,6 +1502,7 @@ def process_bam_file_parallel(
                 apply_polya_trim, apply_indel_correction,
                 netseq_dir, variant_aware_rescue,
                 annotated_junctions,
+                pool_chrom_index,
                 gene_interval_trees,
                 polya_model,
                 max_reads_for_variant_rescue=max_reads_for_variant_rescue,
@@ -1495,6 +1546,7 @@ def process_bam_file_parallel(
         netseq_dir=netseq_dir,
         variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
+        pool_chrom_index=pool_chrom_index,
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
@@ -1559,6 +1611,7 @@ def process_bam_streaming(
     netseq_dir: Optional[str] = None,
     show_progress: bool = True,
     annotated_junctions: Optional[set] = None,
+    pool_chrom_index: Optional[Dict] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     dt_primed_cDNA: bool = False,
@@ -1675,6 +1728,7 @@ def process_bam_streaming(
                     apply_indel_correction=apply_indel_correction,
                     netseq_loader=netseq_loader,
                     annotated_junctions=annotated_junctions,
+                    pool_chrom_index=pool_chrom_index,
                     gene_interval_trees=gene_interval_trees,
                     polya_model=polya_model,
                     dt_primed_cDNA=dt_primed_cDNA,
@@ -1789,6 +1843,7 @@ def process_bam_streaming_parallel(
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
+    pool_chrom_index: Optional[Dict] = None,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     min_gap_size: int = 10000,
@@ -1938,6 +1993,7 @@ def process_bam_streaming_parallel(
         netseq_dir=netseq_dir,
         variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
+        pool_chrom_index=pool_chrom_index,
         gene_interval_trees=gene_interval_trees,
         polya_model=polya_model,
         tmp_dir=_tmp_dir,

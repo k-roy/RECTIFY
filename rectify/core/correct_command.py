@@ -237,6 +237,10 @@ def validate_inputs(args) -> dict:
     # Poly(A) trimming and indel correction are always enabled — the poly-A tail is
     # present in both DRS and dT-primed cDNA reads and always requires correction.
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    # ONT PCR-cDNA (e.g. SQK-PCB114): same strand convention as DRS (no flip);
+    # poly-A tail IS present as a 3' soft-clip from minimap2 alignment.
+    # AG mispriming disabled (no oligo-dT priming step).
+    is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     # Short-read mode (Illumina/Aviti): no poly(A) tail in reads; disable all
     # modules that assume a poly(A) soft-clip or A-tract walk-back.
     is_short_read = getattr(args, 'short_read', False)
@@ -296,6 +300,10 @@ def validate_inputs(args) -> dict:
         # Antisense protocol flag: when True, gene strand = opposite of read strand.
         # Passed through to correct_read_3prime to flip 3' end assignment.
         'dt_primed_cDNA': is_dt_primed,
+        # ONT PCR-cDNA flag: same strand convention as DRS (no strand flip).
+        # Poly-A IS in the read as a right soft-clip; AG mispriming is disabled.
+        # Used for stats protocol label only — no bam_processor behaviour changes needed.
+        'ont_cDNA': is_ont_cdna,
         # Minimum MAPQ filter: reads with mapping_quality < min_mapq are skipped.
         # Default 0 = no filter. Use 1 to exclude MAPQ=0 multi-mapping reads.
         'min_mapq': getattr(args, 'min_mapq', 0),
@@ -342,6 +350,7 @@ def run(args):
     logger.info("Validating inputs...")
     config = validate_inputs(args)
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     is_short_read = getattr(args, 'short_read', False)
 
     # Log configuration
@@ -424,6 +433,9 @@ def run(args):
         # edit distance.
         _junction_pool_cache = config.get('junction_pool_cache')
         _run_2h = (config.get('aligner_bams') or _junction_pool_cache) and config.get('annotation_path')
+        # Per-chromosome sorted junction index for Module 2F pool lookup.
+        # Built from the prescan pool if available; otherwise None (GFF-only mode).
+        _pool_chrom_index = None
         if _run_2h:
             _t_refine = _time.perf_counter()
             logger.info("Module 2H: Junction N-op boundary refinement...")
@@ -461,6 +473,10 @@ def run(args):
                         "  Pre-built pool: %d junctions (%d annotated)",
                         len(_prebuilt_pool), len(_prebuilt_annot_set),
                     )
+
+                # Build bisect index for Module 2F pool lookup (novel junction rescue).
+                # This is built once here and passed to all process_bam_* calls below.
+                _pool_chrom_index = bam_processor._build_pool_chrom_index(_prebuilt_pool)
 
                 _refine_stats = refine_bam_junctions(
                     input_bam=bam_to_process,
@@ -536,7 +552,7 @@ def run(args):
         # Choose processing mode
         _t_proc = _time.perf_counter()
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
-        _protocol = 'dt_cdna' if is_dt_primed else 'drs'
+        _protocol = 'dt_cdna' if is_dt_primed else ('ont_cdna' if is_ont_cdna else 'drs')
 
         if streaming_mode:
             if n_threads > 1:
@@ -545,7 +561,12 @@ def run(args):
                 # with constant memory usage.
                 variant_output_path = None
                 if config['variant_aware'] and config['output_path']:
-                    variant_output_path = str(config['output_path']).replace('.tsv', '_potential_variants.tsv')
+                    _op = str(config['output_path'])
+                    if _op.endswith('.tsv'):
+                        variant_output_path = _op.replace('.tsv', '_potential_variants.tsv')
+                    else:
+                        # output_path is a directory — place variant TSV inside it
+                        variant_output_path = str(Path(_op) / 'corrected_3ends_potential_variants.tsv')
                 stats = bam_processor.process_bam_streaming_parallel(
                     bam_path=bam_to_process,
                     genome_path=str(config['genome_path']),
@@ -560,6 +581,7 @@ def run(args):
                     variant_aware=config['variant_aware'],
                     variant_output_path=variant_output_path,
                     annotated_junctions=annotated_junctions,
+                    pool_chrom_index=_pool_chrom_index,
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     checkpoint_dir=getattr(args, 'checkpoint_dir', None),
@@ -583,6 +605,7 @@ def run(args):
                     apply_indel_correction=config['apply_indel_correction'],
                     netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
                     annotated_junctions=annotated_junctions,
+                    pool_chrom_index=_pool_chrom_index,
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
@@ -595,7 +618,11 @@ def run(args):
             # Determine variant output path
             variant_output_path = None
             if config['variant_aware'] and config['output_path']:
-                variant_output_path = str(config['output_path']).replace('.tsv', '_potential_variants.tsv')
+                _op = str(config['output_path'])
+                if _op.endswith('.tsv'):
+                    variant_output_path = _op.replace('.tsv', '_potential_variants.tsv')
+                else:
+                    variant_output_path = str(Path(_op) / 'corrected_3ends_potential_variants.tsv')
 
             results, stats = bam_processor.process_bam_file_parallel(
                 bam_path=bam_to_process,
@@ -613,6 +640,7 @@ def run(args):
                 variant_aware=config['variant_aware'],
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
+                pool_chrom_index=_pool_chrom_index,
                 gene_interval_trees=gene_interval_trees,
                 polya_model_path=_polya_model_path,
                 variant_scan_cache=config.get('variant_scan_cache'),

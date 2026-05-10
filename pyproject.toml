@@ -48,6 +48,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Speed up Module 2H junction refinement DP by ~50× (requires LLVM):
+#   pip install "rectify-rna[performance]"  or  conda install numba
+performance = [
+    "numba>=0.55.0",
+]
 # External binary tools — cannot be installed via pip; use conda/mamba:
 #   mamba install -c bioconda minimap2 bbmap gapmm2 samtools htslib desalt meme
 aligners = [
