@@ -17,7 +17,7 @@
 <polygon fill="#3b82f6" points="190.0,148 186.5,142 193.5,142"/>
 <rect fill="#3b82f6" height="20" rx="3" width="180" x="100" y="148" opacity="0.10"/>
 <rect fill="none" height="20" rx="3" width="180" x="100" y="148" stroke="#3b82f6" stroke-width="0.8"/>
-<text fill="#3b82f6" font-size="8" font-weight="600" text-anchor="middle" x="190.0" y="161.0">corrected_3ends.tsv</text>
+<text fill="#3b82f6" font-size="8" font-weight="600" text-anchor="middle" x="190.0" y="161.0">corrected BAM + 3′ ends TSV</text>
 <text fill="#f59e0b" font-size="10" font-weight="700" text-anchor="middle" x="390.0" y="64">mapPacBio</text>
 <rect fill="#f59e0b" height="20" rx="3" width="180" x="300" y="70" opacity="0.10"/>
 <rect fill="none" height="20" rx="3" width="180" x="300" y="70" stroke="#f59e0b" stroke-width="0.8"/>
@@ -31,7 +31,7 @@
 <polygon fill="#f59e0b" points="390.0,148 386.5,142 393.5,142"/>
 <rect fill="#f59e0b" height="20" rx="3" width="180" x="300" y="148" opacity="0.10"/>
 <rect fill="none" height="20" rx="3" width="180" x="300" y="148" stroke="#f59e0b" stroke-width="0.8"/>
-<text fill="#f59e0b" font-size="8" font-weight="600" text-anchor="middle" x="390.0" y="161.0">corrected_3ends.tsv</text>
+<text fill="#f59e0b" font-size="8" font-weight="600" text-anchor="middle" x="390.0" y="161.0">corrected BAM + 3′ ends TSV</text>
 <text fill="#22c55e" font-size="10" font-weight="700" text-anchor="middle" x="590.0" y="64">gapmm2</text>
 <rect fill="#22c55e" height="20" rx="3" width="180" x="500" y="70" opacity="0.10"/>
 <rect fill="none" height="20" rx="3" width="180" x="500" y="70" stroke="#22c55e" stroke-width="0.8"/>
@@ -45,10 +45,13 @@
 <polygon fill="#22c55e" points="590.0,148 586.5,142 593.5,142"/>
 <rect fill="#22c55e" height="20" rx="3" width="180" x="500" y="148" opacity="0.10"/>
 <rect fill="none" height="20" rx="3" width="180" x="500" y="148" stroke="#22c55e" stroke-width="0.8"/>
-<text fill="#22c55e" font-size="8" font-weight="600" text-anchor="middle" x="590.0" y="161.0">corrected_3ends.tsv</text>
-<text fill="#94a3b8" font-size="7.5" font-style="italic" text-anchor="end" x="748" y="112">3′ walk-back</text>
-<text fill="#94a3b8" font-size="7.5" font-style="italic" text-anchor="end" x="748" y="122">5′ junction rescue</text>
-<text fill="#94a3b8" font-size="7.5" font-style="italic" text-anchor="end" x="748" y="132">soft-clip rescue</text>
+<text fill="#22c55e" font-size="8" font-weight="600" text-anchor="middle" x="590.0" y="161.0">corrected BAM + 3′ ends TSV</text>
+<!-- Stage 1 annotations: show all three correction types prominently -->
+<text fill="#475569" font-size="7.5" font-weight="600" text-anchor="end" x="88" y="112">each aligner</text>
+<text fill="#475569" font-size="7.5" font-weight="600" text-anchor="end" x="88" y="122">independently:</text>
+<text fill="#0d9488" font-size="7.5" font-style="italic" text-anchor="end" x="88" y="136">5′ junction rescue</text>
+<text fill="#2563eb" font-size="7.5" font-style="italic" text-anchor="end" x="88" y="146">3′ walk-back</text>
+<text fill="#d97706" font-size="7.5" font-style="italic" text-anchor="end" x="88" y="156">soft-clip rescue</text>
 <line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="184" y2="184"/>
 <text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="198">STAGE 2 — CONSENSUS SELECTION</text>
 <line stroke="#3b82f6" stroke-width="1.2" x1="190.0" x2="380.0" y1="216" y2="242" opacity="0.5"/>
@@ -84,10 +87,10 @@
 <text fill="#475569" font-size="8" font-weight="600" text-anchor="middle" x="527.0" y="315.0">n_junctions</text>
 <line stroke="#059669" stroke-width="1.3" x1="380.0" x2="380.0" y1="332" y2="350"/>
 <polygon fill="#059669" points="380.0,350 376.5,344 383.5,344"/>
-<rect fill="#059669" height="22" rx="3" width="200" x="280.0" y="350" opacity="0.10"/>
-<rect fill="none" height="22" rx="3" width="200" x="280.0" y="350" stroke="#059669" stroke-width="0.8"/>
-<text fill="#059669" font-size="8" font-weight="600" text-anchor="middle" x="380.0" y="364.0">corrected_3ends.tsv (consensus)</text>
-<text fill="#94a3b8" font-size="8" font-style="italic" x="490.0" y="364.0">tags: XA (winner), XC (confidence), XN (agreement)</text>
+<rect fill="#059669" height="22" rx="3" width="260" x="250.0" y="350" opacity="0.10"/>
+<rect fill="none" height="22" rx="3" width="260" x="250.0" y="350" stroke="#059669" stroke-width="0.8"/>
+<text fill="#059669" font-size="8" font-weight="600" text-anchor="middle" x="380.0" y="364.0">consensus BAM + corrected 3′ ends TSV</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" x="518.0" y="364.0">tags: XA, XC, XN</text>
 <line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="388" y2="388"/>
 <text fill="#0d9488" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="402">STAGE 3 — CHIMERIC RECONSTRUCTION (optional)</text>
 <text fill="#64748b" font-size="10" x="14" y="437">Genome</text>

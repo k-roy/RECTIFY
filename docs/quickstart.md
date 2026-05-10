@@ -12,7 +12,7 @@ If you are working with *S. cerevisiae*, RECTIFY bundles everything you need: ge
 pip install rectify-rna
 
 # From FASTQ (RECTIFY aligns + corrects)
-rectify run reads.fastq.gz --Scer -o results/
+rectify run-all reads.fastq.gz --Scer -o results/
 
 # From pre-aligned BAM (correction only)
 rectify correct reads.bam --Scer -o results/corrected.tsv
@@ -34,7 +34,7 @@ results/
 
 ```bash
 # Align + correct with custom genome and annotation
-rectify run reads.fastq.gz \
+rectify run-all reads.fastq.gz \
     --genome genome.fa.gz \
     --annotation genes.gff.gz \
     -o results/
@@ -45,6 +45,35 @@ rectify correct reads.bam \
     --annotation genes.gff.gz \
     -o results/corrected.tsv
 ```
+
+---
+
+## Direct RNA sequencing (DRS) workflow
+
+For Dorado direct RNA-seq BAMs, use `--drs` with `rectify run-all`. This activates two DRS-specific steps around the standard pipeline:
+
+| Step | Description |
+|------|-------------|
+| **Step 0** (DRS only) | `rectify trim-polya` — 3-pass poly(A) + adapter trimming |
+| **Step 1** | Multi-aligner alignment (minimap2, mapPacBio, gapmm2, uLTRA, deSALT) |
+| **Step 2** | `rectify correct` — post-consensus correction on winning aligner's BAM |
+| **Step 3** | `rectify analyze` |
+| **Step 4** (DRS only) | `rectify restore-softclip` — re-attaches poly(A) as soft-clips for IGV |
+
+```bash
+# Single DRS sample (Dorado BAM input)
+rectify run-all sample_dorado.bam --drs --Scer -o results/sample/
+
+# Multi-sample DRS via manifest
+rectify run-all \
+    --manifest manifest.tsv \
+    --drs \
+    --Scer \
+    --reference wt \
+    -o results/
+```
+
+`--drs` has no effect on FASTQ inputs (assumed already trimmed).
 
 ---
 
@@ -63,7 +92,7 @@ ko_rep2	/data/ko_rep2.fastq.gz	ko
 Run the full pipeline:
 
 ```bash
-rectify run \
+rectify run-all \
     --manifest manifest.tsv \
     --Scer \
     --reference wt \
@@ -146,7 +175,7 @@ For *S. cerevisiae*, bundled WT NET-seq is auto-detected by `--Scer`. Provide cu
 For large experiments, generate a SLURM array job script:
 
 ```bash
-rectify run \
+rectify run-all \
     --manifest manifest.tsv \
     --Scer \
     --reference wt \

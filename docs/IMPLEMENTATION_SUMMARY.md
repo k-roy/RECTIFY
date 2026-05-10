@@ -17,7 +17,12 @@ All development work from rectify-beta has been fully ported. The pipeline runs 
 ## Architecture Overview
 
 ```
-Input: FASTQ (direct RNA nanopore)
+Input: Dorado BAM (--drs) or FASTQ
+   │
+   ▼ (--drs only)
+[Step 0] Poly(A) + Adapter Pre-Trimming (trim_polya_command.py)
+   │   rectify trim-polya: 3-pass poly(A) + adapter trimming
+   │   → unaligned BAM + metadata parquet
    │
    ▼
 [Step 1] 5-Aligner Consensus (multi_aligner.py + consensus.py)
@@ -28,22 +33,30 @@ Input: FASTQ (direct RNA nanopore)
    └── deSALT       (de novo splice detection, de novo mode only — annotation-
                      guided mode disabled due to SIGSEGV in yeast GTF parser)
         │
-        ▼ Per-read scoring:
+        ▼ Per-read scoring on RAW (uncorrected) BAMs:
         ├── 5' effective clip penalty (-2/bp): max(explicit soft-clip,
         │   terminal mismatch/indel region for mapPacBio fairness)
         ├── 5' junction rescue: sequence-match to upstream exon → no penalty
         ├── 3' A-tract depth penalty (-1/downstream A, capped at 10)
         ├── 3' non-polyA terminal error penalty (-2/bp, capped at 10):
         │   aligners that stop before true 3' end with non-A content penalized
-        └── Tiebreakers: canonical GT-AG motifs, annotated junction support,
-            majority 3' position vote across aligners
+        ├── Junction-proximity errors (-1/error, capped at 10)
+        └── Tiebreakers (in order): canonical GT-AG count → annotated junction
+            count → majority 3' position vote → wider span
    │
    ▼
-[Step 2] 3' End Correction (bam_processor.py)
-   ├── A-tract ambiguity walk-back (universal)
-   ├── Indel artifact correction (deletion artifacts in poly(A) alignment)
-   ├── False junction removal (N operations in poly(A) tail → discarded)
-   ├── Poly(A) tail length measurement
+[Step 2] 3' End + Junction Correction (rectify correct → bam_processor.py)
+   │   Runs ONCE post-consensus on the winning aligner's BAM.
+   │   Module order: 2E pre → 2F → 2A → 2B → 2C → 2D → 2G → 2E main → 2H → NET-seq → spike-in
+   ├── 2E (pre): A-tract ambiguity labelling
+   ├── 2F: Cat3 5' junction rescue — full CIGAR surgery (splice_aware_5prime.py)
+   ├── 2A/2B/2C/2D: Poly(A) walk-back, indel correction, soft-clip rescue
+   ├── 2G: 3' end soft-clip rescue at homopolymer boundaries
+   ├── 2E (main): A-tract ambiguity resolution
+   ├── 2H: Post-consensus N-op junction refinement (junction_refiner.py)
+   │       Uses --aligner-bams as a candidate junction pool only; scoring is
+   │       sequence-first (HP-aware edit distance); GT-AG/annotation are tiebreakers
+   ├── NET-seq: NET-seq-guided 3' end refinement
    └── Spike-in filtering (ENO2 k-mer matching)
    │
    ▼
@@ -53,6 +66,10 @@ Input: FASTQ (direct RNA nanopore)
    ├── APA shift analysis
    ├── Genomic distribution, motif discovery, GO enrichment
    └── HTML report generation
+   │
+   ▼ (--drs only)
+[Step 4] Restore Poly(A) as Soft-Clips (restore_softclip_command.py)
+       rectify restore-softclip: re-attaches poly(A) as soft-clips for IGV
 ```
 
 ---
@@ -412,20 +429,21 @@ rectify run-all --manifest samples.tsv --Scer \
 
 ## Scoring Summary (consensus.py)
 
-| Penalty | Value | Notes |
-|---------|-------|-------|
+| Signal | Value | Notes |
+|--------|-------|-------|
 | 5' unrescued clip | −2/bp | Applied to `effective_five_prime_clip` |
 | 5' rescued clip | 0 | Soft-clipped bases match upstream exon |
 | 3' A-tract depth | −1/downstream A | Capped at −10 |
 | 3' non-polyA terminal | −2/bp | Non-A/T terminal errors, capped at −10 |
+| Junction-proximity errors | −1/error | Capped at −10 |
 | Canonical GT-AG | tiebreaker only | Not counted in primary score |
 | Annotated junction | tiebreaker only | Not counted in primary score |
 
-**Tiebreaker order:**
-1. Fewer unrescued 5' clips (uses `effective_five_prime_clip`)
-2. Majority 3' position vote across aligners
-3. Canonical splice site count
-4. Annotated junction count
+**Tiebreaker order** (applied only when primary scores are equal):
+1. Canonical GT-AG junction count (more is better)
+2. Annotated junction count (more is better)
+3. Majority 3' position vote across aligners
+4. Wider alignment span
 
 ---
 

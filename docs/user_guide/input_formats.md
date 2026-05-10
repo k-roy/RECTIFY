@@ -2,9 +2,9 @@
 
 ## Reads
 
-RECTIFY accepts reads in two formats:
+RECTIFY accepts reads in three formats:
 
-### BAM
+### BAM (aligned)
 
 Pre-aligned BAM files. Used directly by `rectify correct` (no re-alignment). Must be sorted and indexed.
 
@@ -12,16 +12,21 @@ Pre-aligned BAM files. Used directly by `rectify correct` (no re-alignment). Mus
 rectify correct reads.bam --genome genome.fa -o corrected.tsv
 ```
 
-### FASTQ / FASTQ.GZ
+### BAM (unaligned, DRS only)
 
-Unaligned reads. `rectify run` and `rectify align` will align these using the multi-aligner consensus pipeline before correction.
+Unaligned BAM produced by Dorado for direct RNA-seq (DRS). Pass `--drs` to `rectify run-all` to enable the DRS workflow: Step 0 runs `rectify trim-polya` (3-pass poly(A) + adapter trimming) on the unaligned BAM before multi-aligner alignment, and Step 4 runs `rectify restore-softclip` after correction to restore the poly(A) tail as soft-clips.
 
 ```bash
-rectify run reads.fastq.gz --genome genome.fa --annotation genes.gff -o results/
+rectify run-all sample_dorado.bam --drs --Scer -o results/sample/
 ```
 
-!!! tip
-    Pass `--skip-alignment` to `rectify run` if you have a FASTQ but want to skip alignment (unusual).
+### FASTQ / FASTQ.GZ
+
+Unaligned reads (already trimmed, or non-DRS). `rectify run-all` and `rectify align` will align these using the multi-aligner consensus pipeline before correction. When `--drs` is set, FASTQ inputs are assumed already trimmed and the DRS trim step is skipped.
+
+```bash
+rectify run-all reads.fastq.gz --genome genome.fa --annotation genes.gff -o results/
+```
 
 ---
 
@@ -102,7 +107,7 @@ ko_rep2	/data/ko_rep2.fastq.gz	ko
 ```
 
 !!! tip
-    The `--reference` flag to `rectify run` / `rectify analyze` is matched **case-insensitively** against the `condition` column, so `--reference wt` will match `WT`, `Wt`, `wt`.
+    The `--reference` flag to `rectify run-all` / `rectify analyze` is matched **case-insensitively** against the `condition` column, so `--reference wt` will match `WT`, `Wt`, `wt`.
 
 ---
 
@@ -128,7 +133,7 @@ For GO enrichment analysis in `rectify analyze`. Tab-separated with `gene_id` an
 
 ## SLURM profile (YAML)
 
-Configuration for SLURM job submission via `rectify run --profile` or `rectify batch --profile`. See the [HPC / SLURM guide](hpc_slurm.md) for the full profile format.
+Configuration for SLURM job submission via `rectify run-all --profile` or `rectify batch --profile`. See the [HPC / SLURM guide](hpc_slurm.md) for the full profile format.
 
 ```
 --profile slurm_profiles/hpc_cpu.yaml

@@ -4,10 +4,9 @@ RECTIFY rescues two types of soft-clipped bases that represent real sequence but
 
 ---
 
-## 1. 5' Junction Rescue
+## 1. 5' Junction Rescue (Module 2F)
 
-**Implementation:** `rectify/core/splice_aware_5prime.py`
-**Also in:** `rectify/core/consensus.py` — `_rescue_5prime_softclip()`
+**Implementation:** `rectify/core/splice_aware_5prime.py` — `rescue_3ss_truncation()`
 
 ### The problem
 
@@ -26,25 +25,27 @@ Read:  [ATGGG]ACGT...
 
 ### RECTIFY's solution
 
-For each read with a 5' soft-clip:
+Full CIGAR surgery for 5' junction rescue runs **post-consensus** (not during consensus). During consensus, only a lightweight proximity check is performed. The full rescue (`rescue_3ss_truncation`) runs after aligner selection on the consensus read set.
+
+For each read with a 5' soft-clip near a splice junction:
 
 1. Look up the nearest annotated splice junction upstream of the alignment start
 2. Fetch the upstream exon sequence (the last N bp, where N = soft-clip length)
-3. Align the soft-clipped sequence against the exon sequence using edit distance
-4. If edit distance ≤ 20% mismatches: extend the alignment to the exon boundary
+3. Align the soft-clipped sequence against the exon sequence using semi-global NW (affine gap, Gotoh 1982) via `local_aligner.py`
+4. If the alignment is within edit-distance threshold: extend the alignment to the exon boundary and record the `five_prime_exon_cigar` (v2.8.0)
 
 ```python
-def _rescue_5prime_softclip(read, genome, annotated_junctions):
+def rescue_3ss_truncation(read, genome, annotated_junctions):
     """
-    Sequence-based 5' soft-clip rescue.
+    Post-consensus 5' soft-clip rescue at 3' splice sites.
 
-    Returns extended five_prime_position if rescued, else original.
+    Returns rescue dict including five_prime_exon_cigar if rescued, else rescued=False.
     """
 ```
 
 ### Scoring in consensus selection
 
-During multi-aligner consensus, soft-clipped 5' bases are penalized at **−2 bp per effective clip**. After rescue, the effective clip is the remaining unrescued length. An aligner with fewer unrescued soft-clips scores higher.
+During multi-aligner consensus, soft-clipped 5' bases are penalized at **−2 bp per effective clip**. This lightweight score drives aligner selection only; full CIGAR surgery for the rescued exon segment runs post-consensus.
 
 ---
 
@@ -75,16 +76,6 @@ def rescue_softclip_at_homopolymer(read, strand, genome, max_rescue_len=10):
     Extend 3' end past reference homopolymer to include matching soft-clipped bases.
     """
 ```
-
----
-
-## 3. 3'SS Truncation Rescue
-
-**Implementation:** `rectify/core/bam_processor.py` — Module 2F
-
-Some reads are truncated or soft-clipped at the 3' splice site (the exon 2 / 3'SS boundary). RECTIFY identifies these by checking for a canonical AG dinucleotide at the alignment start and attempts to extend the 5' alignment upstream to the annotated 3'SS.
-
-This runs post-consensus on reads with real (non-poly-A-artifact) junctions.
 
 ---
 

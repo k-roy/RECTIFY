@@ -13,7 +13,7 @@ Use either flag:
 --organism yeast    # Long form (also accepts: saccharomyces_cerevisiae)
 ```
 
-Both flags are recognized by `rectify correct`, `rectify run`, `rectify align`, `rectify analyze`, and `rectify netseq`.
+Both flags are recognized by `rectify correct`, `rectify run-all`, `rectify align`, `rectify analyze`, and `rectify netseq`.
 
 ---
 
@@ -21,13 +21,11 @@ Both flags are recognized by `rectify correct`, `rectify run`, `rectify align`, 
 
 | Data | Source | Notes |
 |------|--------|-------|
-| **Genome** | *S. cerevisiae* S288C R64-5-1 | FASTA (gzipped); includes all 16 chromosomes + mitochondria |
-| **Gene annotations** | SGD (Saccharomyces Genome Database) | GFF format; 6,000+ genes, UTRs, introns |
-| **GO annotations** | SGD GO slim | 5,000+ gene–GO term associations |
-| **WT NET-seq** | Published dataset | Strand-specific BigWig; pre-deconvolved |
-| **A-tract CPA sites** | Pre-computed | 64K known CPA sites in A-tract regions (for model validation) |
-| **Poly(A) model** | Trained on yeast WT | JSON; used by `rectify correct` for A-richness scoring |
-| **Spike-in sequences** | ENO2 k-mers | Used by `--filter-spikein` |
+| **Genome** | *S. cerevisiae* S288C R64-5-1 | FASTA (`.fsa`); includes all 16 chromosomes + mitochondria |
+| **Gene annotations** | SGD (Saccharomyces Genome Database) | GFF and GTF formats; 6,000+ genes, UTRs, introns |
+| **Junction BED** | Derived from annotations | Pre-built for minimap2 `--junc-bed`; improves splice accuracy |
+| **WT NET-seq** | Published dataset | Pre-aggregated TSV tables (A-tract, pan, and WT-only); used for A-tract ambiguity resolution |
+| **Poly(A) model** | Trained on yeast WT | Model weights; used by `rectify correct` for poly(A) scoring |
 
 ### Bundled data location
 
@@ -35,20 +33,34 @@ Data lives in the `rectify/data/` directory inside the installed package:
 
 ```
 rectify/data/
-├── genomes/
-│   └── saccharomyces_cerevisiae/
-│       ├── sacCer3.fa.gz           # Genome FASTA
-│       ├── SGD_genes.gff.gz        # Gene annotations
-│       └── bbmap_index/            # Pre-built BBMap index for mapPacBio
-├── models/
-│   └── polya_tail_model.json       # Trained poly(A) model
-├── go_annotations/
-│   └── yeast_go_annotations.tsv.gz
-├── netseq/
-│   ├── wt_plus.bw                  # WT NET-seq (+ strand)
-│   └── wt_minus.bw                 # WT NET-seq (- strand)
-└── atract_sites/
-    └── yeast_atract_cpa_sites.tsv.gz  # 64K pre-computed CPA positions
+├── S288C_reference_sequence_R64-5-1_20240529.fsa       # Genome FASTA (S288C R64-5-1)
+├── S288C_reference_sequence_R64-5-1_20240529.fsa.fai   # samtools FASTA index
+├── S288C_reference_sequence_R64-5-1_20240529.pkl       # Pre-loaded genome dict (fast access)
+├── saccharomyces_cerevisiae_R64-5-1_20240529.gff       # Gene annotations (GFF)
+├── saccharomyces_cerevisiae_R64-5-1_20240529.gtf       # Gene annotations (GTF)
+├── saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed  # Pre-built junction BED for minimap2 --junc-bed
+├── saccharomyces_cerevisiae_atract_netseq.tsv.gz       # A-tract NET-seq signal table
+├── saccharomyces_cerevisiae_netseq_pan.tsv.gz          # Pan NET-seq table
+├── saccharomyces_cerevisiae_netseq_wt.tsv.gz           # WT NET-seq table
+├── models/                                              # Poly(A) model weights
+├── motif_databases/                                     # JASPAR-format motif databases
+├── genomes/saccharomyces_cerevisiae/
+│   └── saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz  # GFF.GZ copy (for rectify prescan)
+└── bin/
+    └── linux_x86_64/
+        └── deSALT                                       # Vendored deSALT v1.5.6 binary
+```
+
+To reference bundled data paths programmatically:
+
+```python
+import rectify
+from pathlib import Path
+DATA = Path(rectify.__file__).parent / 'data'
+
+GENOME     = DATA / 'S288C_reference_sequence_R64-5-1_20240529.fsa'
+ANNOTATION = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.gff'
+JUNC_BED   = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed'
 ```
 
 ---
@@ -71,9 +83,9 @@ If your BAM uses a different naming scheme, RECTIFY normalizes chromosome names 
 
 ## NET-seq data
 
-The bundled WT NET-seq is used by `rectify correct` for **A-tract ambiguity resolution** when `--Scer` is set. It represents WT (BY4742) nascent RNA 3' end positions, deconvolved from oligo(A)-spreading artifacts.
+The bundled WT NET-seq is used by `rectify correct` for **A-tract ambiguity resolution** when `--Scer` is set. It represents WT (BY4742) nascent RNA 3' end positions in pre-aggregated TSV table format (`saccharomyces_cerevisiae_netseq_wt.tsv.gz`, `saccharomyces_cerevisiae_netseq_pan.tsv.gz`, `saccharomyces_cerevisiae_atract_netseq.tsv.gz`).
 
-For mutant conditions or custom NET-seq, provide your own BigWigs:
+For mutant conditions or custom NET-seq, provide your own BigWig directory:
 
 ```bash
 rectify correct reads.bam \
@@ -89,7 +101,7 @@ rectify correct reads.bam \
 For non-yeast organisms, provide all reference files explicitly:
 
 ```bash
-rectify run reads.fastq.gz \
+rectify run-all reads.fastq.gz \
     --genome /path/to/genome.fa.gz \
     --annotation /path/to/genes.gff.gz \
     --go-annotations /path/to/go.tsv.gz \

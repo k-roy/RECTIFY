@@ -62,7 +62,7 @@ rectify split reads.fastq.gz \
 | `--slurm-cpus` | 16 | CPUs per array task |
 | `--slurm-mem` | 64G | Memory per array task |
 | `--slurm-time` | 12:00:00 | Time limit per array task |
-| `--python-path` | conda base | Explicit path to Python interpreter |
+| `--python-path` | `python` | Explicit path to Python interpreter |
 
 ---
 

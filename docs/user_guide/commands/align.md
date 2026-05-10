@@ -78,12 +78,13 @@ rectify align reads.fastq.gz --Scer --aligner minimap2 -o aligned.bam
 
 ## Consensus scoring
 
-Per read, RECTIFY scores each aligner's output on:
+Per read, RECTIFY scores each aligner's output on five signals:
 
-1. **5' soft-clip penalty** — sequence-based: aligns clipped bases against upstream exon (edit distance ≤ 20% mismatches); rescued clips carry no penalty
-2. **3' A-tract depth penalty** — penalizes aligners that land further into downstream A-tracts
-3. **Canonical GT-AG splice sites** — more canonical junctions = higher score
-4. **Annotated junction support** — bonus for junctions matching the provided annotation
+1. **Effective 5' clip penalty** — −2 per unrescued bp of 5' soft-clip
+2. **5' rescue attempt** — clipped bases are aligned (NW) against the upstream exon; a successful rescue cancels the 5' clip penalty
+3. **A-tract 3' depth** — −1 per A extending into a downstream A-tract, capped at 10
+4. **3' non-poly(A) terminal errors** — −2 per non-poly(A) base error at the 3' end, capped at 10
+5. **Junction-proximity errors** — −1 per error within a window around splice junctions, capped at 10
 
 The aligner with the highest composite score is written to the output BAM.
 

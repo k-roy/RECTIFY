@@ -69,14 +69,17 @@ Also note: the C/T pattern at positions 2+ does **not** require invoking model c
 
 ## 4. Adapter Detection Algorithm
 
-### 4.1 Overview: Two-Pass Approach
+### 4.1 Overview: Three-Pass Approach
 
 ```
 Input: 3′-oriented read sequence (last 150 bp window)
 
-Pass 0 (no regex needed): Dorado already removed adapter → poly(A) runs to end of read
-Pass 1: regex T[CT]{0,10}$ detects residual stub
-Pass 2: iterative peel rescues stubs with A-basecalling errors
+Pass 0 (clean path): Dorado already removed adapter → poly(A) runs to end of read;
+                     regex finds nothing, scan proceeds directly on the full sequence
+Pass 1 (regex stub): regex T[CT]{0,10}$ detects residual adapter stub, strips it,
+                     then scans what remains for poly(A)
+Pass 2 (iterative peel): stubs where basecalling errors break the regex are rescued
+                          by peeling 1–15 bases from the right until poly(A) is found
 ```
 
 ### 4.2 Constants

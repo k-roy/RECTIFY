@@ -7,8 +7,10 @@ This command is the final step in the chunked parallel alignment workflow: after
 BAMs simultaneously, scores each aligner's alignment per read, and writes the
 best-aligner-per-read result to a single rectified BAM.
 
-It uses the same scoring logic as `rectify align`: 5' soft-clip quality, 3' A-tract
-depth, canonical GT-AG splice sites, and annotated junction bonuses.
+It uses the same scoring logic as `rectify align`: effective 5' clip penalty (−2 per bp),
+5' rescue attempt via NW alignment to the upstream exon, A-tract 3' depth (−1 per A, capped
+at 10), 3' non-poly(A) terminal errors (−2 per bp, capped at 10), and junction-proximity
+errors (−1 per error, capped at 10).
 
 ---
 

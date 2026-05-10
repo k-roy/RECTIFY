@@ -1,7 +1,7 @@
 # Workshop: Running RECTIFY Tests with GitHub Copilot Agent
 
-RECTIFY is pre-installed on the Hoffman2 cluster. Your VS Code should already
-be connected to Hoffman2 via the Remote-SSH extension. The Copilot agent runs
+RECTIFY is pre-installed on the workshop cluster. Your VS Code should already
+be connected to the cluster via the Remote-SSH extension. The Copilot agent runs
 commands directly on the cluster in your integrated terminal.
 
 ---
@@ -49,13 +49,13 @@ Once the test completes, the output directory contains:
 
 ```
 ~/rectify_test/
-├── corrected_3ends.tsv       # per-read correction results
-├── corrected_3ends_stats.tsv # processing statistics
-├── rectified.bam             # hard-clipped corrected BAM
-├── rectified.bam.bai
-├── rectified_softclip.bam    # soft-clipped BAM (poly-A bases visible in IGV)
-├── rectified_softclip.bam.bai
-├── minimap2.bam              # raw aligner output
+├── corrected_3ends.tsv            # per-read correction results
+├── corrected_3ends_stats.tsv      # processing statistics
+├── rectified_corrected_3end.bam   # hard-clipped corrected BAM
+├── rectified_corrected_3end.bam.bai
+├── rectified_pA_tail_trimmed.bam  # soft-clipped BAM (poly-A bases visible in IGV)
+├── rectified_pA_tail_trimmed.bam.bai
+├── minimap2.bam                   # raw aligner output
 ├── minimap2.bam.bai
 ├── mapPacBio.bam
 └── gapmm2.bam

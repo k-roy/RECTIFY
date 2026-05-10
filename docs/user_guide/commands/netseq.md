@@ -1,6 +1,6 @@
 # rectify netseq
 
-Process NET-seq BAM files: extract 3' end positions, apply oligo(A)-spreading deconvolution, and write strand-specific BigWig files.
+Optional refinement step. Process NET-seq BAM files: extract 3' end positions, apply oligo(A)-spreading deconvolution, and write strand-specific BigWig files for use with `--netseq-table` in `rectify correct`.
 
 ---
 

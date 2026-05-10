@@ -91,6 +91,42 @@ Flagged reads receive the `AG_RICH` QC flag. They are still reported but should 
 
 ---
 
+## Post-consensus N-op junction refinement (Module 2H)
+
+**Implementation:** `rectify/core/junction_refiner.py` — `refine_read_junctions()`
+
+Module 2H runs **post-consensus** on the selected consensus read set. For every N-op in every read, it tests all candidate junctions within a search radius and replaces imprecise N-op boundaries with the best sequence-supported alternative.
+
+### Scoring: sequence-first, canonical/annotated as tie-breakers only
+
+Scoring is **HP-aware edit distance primary**. Canonical GT-AG status and annotated-junction status are tie-breakers only — annotation NEVER overrides a better-scoring junction. The scoring tuple (lower = better) is:
+
+```
+(hp_edit_score, canonical_tier, is_alternative, ...)
+```
+
+When the current N-op is non-canonical (tier ≥ 4), a canonical-tier alternative receives a 0.5 edit-distance discount (`_CANONICAL_HP_PRIOR = 0.5`) — equivalent to one expected Nanopore HP deletion — so canonical junctions win within the sequencing noise floor.
+
+### `--aligner-bams`: candidate junction pool, not per-aligner correction
+
+`--aligner-bams` provides a **pool of candidate junction coordinates** collected from all aligner BAMs. Module 2H scores every junction in this pool against each read using HP-aware edit distance. The aligner BAMs do not drive per-aligner correction; they expand the candidate set beyond annotated junctions.
+
+### No-candidate-guard policy (PERMANENT)
+
+All junctions in the candidate pool are scored. Non-canonical, non-annotated (novel) alternatives are **not filtered out** before scoring. A novel non-canonical junction can win only if it has a strictly better HP-aware edit-distance score than all canonical and annotated alternatives. Annotation and canonical tier operate as tie-breakers, never as gates. This policy must not be reversed.
+
+### Fast path
+
+Reads already at an annotated canonical-tier-0 junction skip scoring entirely (identical junction coordinates at both boundaries), providing a substantial speedup on typical datasets where most reads are at correct annotated GT-AG junctions.
+
+---
+
+## Cat3 5' junction rescue: full CIGAR surgery is post-consensus
+
+Module 2F (`rescue_3ss_truncation` in `splice_aware_5prime.py`) performs full exon CIGAR surgery **post-consensus**, not during aligner consensus selection. During consensus, only a lightweight 5' soft-clip proximity check is used to score aligners. The full semi-global NW alignment (`local_aligner.py`, affine gap Gotoh 1982) that generates the `five_prime_exon_cigar` column runs after the consensus read is selected.
+
+---
+
 ## See also
 
 - [3' End Indel Correction](3prime_indel_correction.md) — the walk-back algorithm

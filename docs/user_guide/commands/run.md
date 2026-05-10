@@ -1,4 +1,4 @@
-# rectify run
+# rectify run-all
 
 Full end-to-end pipeline: align (if FASTQ) → correct → analyze.
 
@@ -10,36 +10,39 @@ This is the recommended entry point for most workflows. It handles single sample
 
 ```bash
 # Single sample
-rectify run <input> [options] -o <output_dir>
+rectify run-all <input> [options] -o <output_dir>
 
 # Multi-sample (manifest)
-rectify run --manifest manifest.tsv [options] -o <output_dir>
+rectify run-all --manifest manifest.tsv [options] -o <output_dir>
 ```
 
 ## Examples
 
 ```bash
 # Single sample — bundled yeast data
-rectify run reads.fastq.gz --Scer -o results/
+rectify run-all reads.fastq.gz --Scer -o results/
 
 # Single sample — pre-aligned BAM
-rectify run reads.bam --Scer -o results/
+rectify run-all reads.bam --Scer -o results/
 
 # Custom genome
-rectify run reads.fastq.gz \
+rectify run-all reads.fastq.gz \
     --genome genome.fa.gz \
     --annotation genes.gff.gz \
     -o results/
 
+# DRS workflow (Dorado direct RNA BAM)
+rectify run-all sample_dorado.bam --drs --Scer -o results/
+
 # Multi-sample differential expression
-rectify run \
+rectify run-all \
     --manifest manifest.tsv \
     --Scer \
     --reference wt \
     -o results/
 
 # Multi-sample with SLURM array jobs
-rectify run \
+rectify run-all \
     --manifest manifest.tsv \
     --Scer \
     --reference wt \
@@ -78,6 +81,7 @@ rectify run \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--skip-alignment` | off | Skip alignment step (FASTQ input with pre-aligned BAM) |
+| `--drs` | off | Enable DRS workflow: adds Step 0 poly(A)+adapter trimming before alignment and Step 4 soft-clip restore after correction (BAM input only) |
 | `--no-polya-sequenced` | off | Disable poly(A) trimming and indel correction |
 | `--reference` | auto | Reference condition for DESeq2 (case-insensitive) |
 
@@ -91,7 +95,7 @@ rectify run \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--aligner` | minimap2 | Primary aligner (`minimap2`, `star`, `bowtie2`, `bwa`) |
+| `--aligner` | minimap2 | Primary aligner (`minimap2`, `mapPacBio`, `gapmm2`) |
 | `--junction-aligners` | — | Optional junction-mode aligners: `uLTRA`, `deSALT` |
 | `--parallel-aligners` | off | Run multiple aligners in parallel |
 | `--chimeric-consensus` | off | Use chimeric CIGAR assembly (experimental) |
@@ -129,28 +133,37 @@ rectify run \
 
 ## Pipeline steps
 
-### Single sample
+### Single sample (standard)
 
 ```
-0. Alignment (skipped if BAM provided)
+1. Alignment (skipped if BAM provided)
    ├─ minimap2 (splice-aware, junction-annotated)
    ├─ mapPacBio (PacBio RNA mode)
    ├─ gapmm2 (gap-aware variant)
    └─ Consensus selection by junction scoring
 
-1. Correction
-   ├─ Poly(A) trimming (if --polya-sequenced)
+2. Correction (rectify correct — post-consensus, on winning aligner's BAM)
    ├─ Indel artifact correction (walk-back)
-   ├─ False junction removal
    ├─ A-tract ambiguity detection
-   ├─ Soft-clip rescue
+   ├─ Soft-clip rescue (Module 2G)
+   ├─ Junction refinement (Module 2H — requires --aligner-bams)
    ├─ NET-seq refinement (if available)
    └─ Spike-in filtering
 
-2. Output
+3. Analysis (rectify analyze)
    ├─ corrected_3ends.tsv
    ├─ corrected_3ends_index.bed.gz
    └─ processing_stats.tsv
+```
+
+### Single sample (DRS — with `--drs`)
+
+```
+0. Poly(A) + adapter trimming (rectify trim-polya — 3-pass)
+1. Alignment (same as above, on trimmed FASTQ)
+2. Correction (rectify correct — post-consensus)
+3. Analysis (rectify analyze)
+4. Restore poly(A) as soft-clips (rectify restore-softclip — for IGV)
 ```
 
 ### Multi-sample (`--manifest`)

@@ -1,6 +1,8 @@
 # NET-seq Refinement
 
-For reads in A-tract regions where the walk-back algorithm cannot uniquely resolve the true CPA position, RECTIFY uses NET-seq (Native Elongating Transcript sequencing) data to guide the final position assignment.
+NET-seq refinement is an **optional** post-correction step that snaps 3' ends to NET-seq signal peaks within a search window. It is only active when `--netseq-table` is provided; without it the step is skipped entirely.
+
+NET-seq runs as the final refinement step, after all main 3' end correction modules (2E pre → 2F → 2A → 2B → 2C → 2D → 2G → 2E main → 2H) have completed. For reads in A-tract regions where the walk-back algorithm cannot uniquely resolve the true CPA position, NET-seq signal is used to guide the final position assignment.
 
 **Implementation:** `rectify/core/netseq_refiner.py`, `rectify/core/netseq_deconvolution.py`
 

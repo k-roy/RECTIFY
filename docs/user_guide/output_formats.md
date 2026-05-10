@@ -11,15 +11,17 @@ The primary per-read output. One row per read.
 | `read_id` | str | Read name from BAM |
 | `chrom` | str | Chromosome (UCSC format, e.g. `chrI`) |
 | `strand` | str | `+` or `-` |
-| `original_position` | int | Raw 3' end before correction (0-based) |
-| `corrected_position` | int | Corrected 3' end after walk-back (0-based) |
-| `shift` | int | `corrected - original` (negative = shifted upstream) |
+| `original_3prime` | int | Raw 3' end before correction (0-based) |
+| `corrected_3prime` | int | Corrected 3' end after walk-back (0-based) |
+| `correction_modules` | str | Comma-separated list of modules that modified this read |
 | `confidence` | str | `HIGH`, `MEDIUM`, or `LOW` |
 | `polya_length` | int | Total poly(A) tail length (aligned + soft-clipped A's) |
-| `polya_aligned` | int | Poly(A) bases within the aligned region |
-| `polya_softclip` | int | Poly(A) bases in soft-clipped tail |
-| `five_prime_position` | int | Corrected 5' end (0-based) |
-| `n_junctions` | int | Number of splice junctions |
+| `polya_source` | str | Source of poly(A) length estimate (`aligned`, `softclip`, `pt_tag`, etc.) |
+| `five_prime_rescued` | int | `1` if 5' end was rescued by Cat3 splice-site truncation rescue |
+| `five_prime_exon_cigar` | str | SAM CIGAR string for the rescued exon segment (e.g. `8M1D3M`); empty if no rescue |
+| `sc_homopolymer_extension` | int | Number of bases extended into genomic homopolymer (Module 2G) |
+| `sc_rescued_seq` | str | Soft-clipped sequence rescued by Module 2G |
+| `sc_original_softclip_len` | int | Original soft-clip length before Module 2G rescue |
 | `best_aligner` | str | Winning aligner from consensus selection |
 | `qc_flags` | str | `PASS`, `AG_RICH`, `ATRACT_AMBIGUOUS`, `LOW_MAPQ`, etc. |
 
@@ -38,6 +40,19 @@ A pre-aggregated position count file — approximately 300× smaller than the fu
 | `corrected_3prime` | Corrected 3' end position (0-based) |
 | `strand` | `+` or `-` |
 | `count` | Number of reads at this position |
+
+---
+
+### BAM outputs from `rectify correct`
+
+| File | Description |
+|------|-------------|
+| `rectified_corrected_3end.bam` | Corrected BAM with reads hard-clipped to the corrected 3' end |
+| `rectified_pA_tail_trimmed.bam` | Soft-clipped BAM showing the poly(A) tail as soft-clips at the 3' end |
+| `rectified_pA_tail_soft_clipped.bam` | DRS Step 4 output: poly(A) tail restored as soft-clips after `rectify restore-softclip` |
+
+!!! note "DRS Step 4"
+    `rectified_pA_tail_soft_clipped.bam` is produced only when `--drs` is passed to `rectify run-all`. It is written by Step 4 (`rectify restore-softclip`) and is sorted and indexed.
 
 ---
 

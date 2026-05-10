@@ -23,20 +23,22 @@ Input: FASTQ or BAM
 ┌───────────────────────────────────────────────────────────────┐
 │  Stage 2: Correction (per read)                               │
 │                                                               │
+│   5' end                                                      │
+│   ├─ Junction rescue (soft-clip → upstream exon matching)     │
+│   └─ 3'SS truncation rescue (Module 2F)                       │
+│                                                               │
+│   3' end                                                      │
+│   ├─ A-tract ambiguity detection                              │
+│   ├─ Poly(A) trimming (--dT-primed-cDNA)                      │
+│   ├─ Indel artifact correction (walk-back algorithm)          │
+│   ├─ False junction removal                                   │
+│   ├─ 3' soft-clip rescue at homopolymer boundaries (Module 2G)│
+│   └─ AG-mispriming screening                                  │
+│                                                               │
 │   N-op refinement (Module 2H)                                 │
 │   ├─ Junction re-scoring (HP-aware split-alignment)           │
 │   └─ [--junction-penalty-table] empirical HP costs (optional) │
 │                                                               │
-│   5' end                                                      │
-│   ├─ Junction rescue (soft-clip → upstream exon matching)     │
-│   └─ 3'SS truncation rescue                                   │
-│                                                               │
-│   3' end                                                      │
-│   ├─ Poly(A) trimming (--polya-sequenced)                     │
-│   ├─ False junction removal                                   │
-│   ├─ Indel artifact correction (walk-back algorithm)          │
-│   ├─ A-tract ambiguity detection                              │
-│   ├─ AG-mispriming screening                                  │
 │   └─ NET-seq refinement (NNLS deconvolution, optional)        │
 │                                                               │
 │   Output: corrected_3ends.tsv + corrected_3ends_index.bed.gz  │

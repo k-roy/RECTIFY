@@ -2,7 +2,7 @@
 
 Downstream analysis: CPA clustering, DESeq2, APA detection, GO enrichment, and motif discovery.
 
-Usually called automatically by `rectify run --manifest`. Call directly when you have already corrected all samples and want to re-run analysis.
+Usually called automatically by `rectify run-all --manifest`. Call directly when you have already corrected all samples and want to re-run analysis.
 
 ---
 

@@ -13,7 +13,7 @@ rectify <command> [options]
 | Command | Description |
 |:--------|:------------|
 | [`rectify correct`](correct.md) | Correct 3' end positions (indel correction, A-tract resolution) |
-| [`rectify run`](run.md) | Full pipeline: align (if FASTQ) → correct → analyze |
+| [`rectify run-all`](run.md) | Full pipeline: align (if FASTQ) → correct → analyze |
 | [`rectify align`](align.md) | Multi-aligner consensus alignment (DRS-optimized) |
 | [`rectify split`](split.md) | Split FASTQ into N equal chunks for parallel SLURM array alignment |
 | [`rectify consensus`](consensus.md) | Aligner selection on pre-built per-aligner BAMs (post-merge step) |
@@ -34,7 +34,7 @@ rectify <command> [options]
 ### Single sample (FASTQ → corrected TSV)
 
 ```bash
-rectify run reads.fastq.gz --Scer -o results/
+rectify run-all reads.fastq.gz --Scer -o results/
 ```
 
 ### Single sample (BAM already aligned)
@@ -46,7 +46,7 @@ rectify correct reads.bam --Scer -o results/corrected.tsv
 ### Multi-sample with differential expression
 
 ```bash
-rectify run --manifest manifest.tsv --Scer --reference wt -o results/
+rectify run-all --manifest manifest.tsv --Scer --reference wt -o results/
 ```
 
 ### Align only (for custom downstream use)

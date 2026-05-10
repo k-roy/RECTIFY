@@ -24,7 +24,7 @@ This adds `matplotlib` and `seaborn` for genome browser figures, metagene plots,
 The conda install also brings in the [MEME Suite](https://meme-suite.org/) for motif discovery:
 
 ```bash
-conda install -c conda-forge -c bioconda rectify-rna
+conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna
 ```
 
 ## From source
@@ -46,7 +46,7 @@ pytest
 
 ## External aligners
 
-`rectify align` and `rectify run` require one or more of the following aligners to be on your `PATH`:
+`rectify align` and `rectify run-all` require one or more of the following aligners to be on your `PATH`:
 
 | Aligner | Required? | Install | Notes |
 |---------|-----------|---------|-------|
@@ -121,7 +121,7 @@ rectify --version
 # RECTIFY 0.9.0
 
 rectify --help
-# Usage: rectify [correct|run|align|split|consensus|analyze|export|extract|aggregate|netseq|validate|train-polya|batch|install-aligners] ...
+# Usage: rectify [correct|run-all|align|split|consensus|analyze|export|extract|aggregate|netseq|validate|train-polya|batch|install-aligners] ...
 
 # Check aligner availability
 rectify install-aligners --check

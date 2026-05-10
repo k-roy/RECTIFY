@@ -142,6 +142,11 @@ nav:
     - NET-seq Refinement: algorithms/netseq_refinement.md
     - Adaptive Clustering: algorithms/adaptive_clustering.md
     - APA Detection: algorithms/apa_detection.md
+  - Technical Notes:
+    - Empirical HP Penalty Scoring: EMPIRICAL_HP_PENALTY_SCORING.md
+    - Junction-Shift FDR: JUNCTION_SHIFT_FDR.md
+    - DRS 5' End Limitations: DRS_FIVE_PRIME_END_LIMITATIONS.md
+    - Three-Pass Adapter Trimming: THREE_PASS_ADAPTER_TRIMMING.md
   - Coordinate System: coordinate_system.md
   - API Reference:
     - Overview: api/index.md

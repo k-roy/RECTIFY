@@ -19,7 +19,7 @@ ko_rep2	/data/ko_rep2.fastq.gz	ko
 Pass it with `--manifest`:
 
 ```bash
-rectify run \
+rectify run-all \
     --manifest manifest.tsv \
     --Scer \
     --reference wt \
@@ -30,7 +30,7 @@ rectify run \
 
 ## End-to-end workflow
 
-`rectify run --manifest` runs the complete pipeline:
+`rectify run-all --manifest` runs the complete pipeline:
 
 ```
 For each sample (parallel):
@@ -76,7 +76,7 @@ RECTIFY never loads all samples at once. For 21 samples / 150M reads, peak RAM i
 
 **Three memory tiers:**
 
-1. **Column pruning** — on load, only `chrom`, `strand`, `corrected_position` are retained; all other columns are dropped immediately
+1. **Column pruning** — on load, only `chrom`, `strand`, `corrected_3prime` are retained; all other columns are dropped immediately
 
 2. **Two-pass streaming**:
     - *Pass 1*: each sample's TSV is read sequentially; positions aggregated to unique (chrom, strand, pos) → counts; combined for clustering

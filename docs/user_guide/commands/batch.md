@@ -2,7 +2,7 @@
 
 Generate SLURM array job scripts for multi-sample processing on HPC clusters.
 
-This command creates ready-to-submit SLURM scripts — one array job for per-sample correction, one follow-up job for combined analysis. It is also called internally by `rectify run --profile`.
+This command creates ready-to-submit SLURM scripts — one array job for per-sample correction, one follow-up job for combined analysis. It is also called internally by `rectify run-all --profile`.
 
 ---
 

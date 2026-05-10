@@ -120,6 +120,7 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 ## Notes
 
 - For FASTQ input, pre-align first with `rectify align`, then pass the BAM to `rectify correct`
-- To run alignment + correction in one step, use `rectify run`
+- To run alignment + correction in one step, use `rectify run-all`
+- `rectify correct` runs post-consensus on the winning aligner's BAM; use `--aligner-bams` to supply per-aligner BAMs as a junction candidate pool for Module 2H (post-consensus N-op refinement)
 - `--streaming` is recommended for BAMs larger than 2 GB; it is the default in the bundled SLURM profiles
 - The output index file (`_index.bed.gz`) is used by manifest-mode analysis; generate it for all samples before running `rectify analyze --manifest`

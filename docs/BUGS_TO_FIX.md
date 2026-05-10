@@ -99,7 +99,7 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ---
 
-### NEW-069 (HIGH) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check
+### NEW-069 (MEDIUM) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check
 
 **File:** `rectify/core/consensus.py` (lines 1667, 1698)
 
@@ -111,7 +111,7 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ---
 
-### NEW-068 (HIGH) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop
+### NEW-068 (MEDIUM) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop
 
 **File:** `rectify/core/multi_aligner.py` (after aligner loop, ~line 1267)
 
@@ -131,7 +131,7 @@ if 'minimap2' not in results:
 
 ---
 
-### NEW-067 (HIGH) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure
+### NEW-067 (MEDIUM) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure
 
 **File:** `rectify/core/align_command.py` (lines 576–579)
 

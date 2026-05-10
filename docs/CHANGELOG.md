@@ -5,6 +5,16 @@ All notable changes to RECTIFY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [unreleased]
+
+### Fixed
+
+- **`rescue_3ss_truncation` Bug 3: mapPacBio terminal-D overshoot, Pattern 2** (`core/splice_aware_5prime.py`): added `_leading_del` detection for CIGAR pattern `… N D =` (reversed 5' ops: `= D N`), where mapPacBio encodes a few missed exon bases as deletions between the terminal match block and the intron N-op. The new `_5p_ops` collector reads up to 3 non-H ops from the 5' end; `_leading_del=True` fires when `op[0] ∈ {M,=,X}`, `op[1]==D`, `op[2]==N`. Pattern 1 (plain terminal D at 5' end, `op[0]==D`) was already handled but is now detected via the same collector for consistency. When both `_n_match` and `_leading_del`, the junction is recorded as `_forced_snap_junction`; `n_op_snap` fires if all sequence-based rescue attempts fail. Verified on real read `de69692f-04e9` (chrII minus strand, N-op `[89132,89436)`): `five_prime_corrected=89440`.
+
+- Three new regression tests in `TestRescue3SSTruncation`: `test_minus_n_op_snap_pattern1_terminal_d`, `test_minus_n_op_snap_pattern2_d_between_n_and_match`, `test_minus_clean_5prime_no_snap`.
+
+---
+
 ## [0.9.0] — 2026-04-21
 
 ### Fixed
@@ -478,3 +488,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rectify correct`: Main correction pipeline
 - `rectify train-polya`: (stub) Train poly(A) model
 - `rectify validate`: (stub) Validate corrections
+
+## [3.2.5] - 2026-04-24
+
+### Changed
+- Validation Cat1/Cat2 reads replaced with DRS-trimmed examples showing genuine correction artifacts
+- Cat1 (4 reads): DRS minimap2 reads on chrXIV/chrI/chrII/chrXII with `atract_ambiguity,indel_correction,polya_walkback`; shifts: −16, −4, +3, +3 bp
+- Cat2 (3 replaced, 9dbd37bf kept): DRS minimap2 reads on chrI/chrVI/chrV with `softclip_rescue`; shifts: +11, +4, −8 bp
+- **708 tests passing** (Cat1/Cat2 expected positions updated to new chromosomes/positions)
+
+## [3.2.3] - 2026-04-24
+
+### Fixed
+- Validation reads Cat5–9 sequences synced to DRS-trimmed run (v3.1.8 updated CIGAR/boundaries but left old chunked sequences)
+- cat5_minus_1 `SEQ='*'` filled with chunked consensus sequence (chimeric CIGAR incompatible with DRS seqlen)
+- Cat6/Cat7/Cat9 sequences + CIGAR from DRS mapPacBio merged BAM
+
+## [3.2.2] - 2026-04-22
+
+### Fixed
+- XV/XG tag fix: both tags now present on all 36 reads in `validation_reads.bam`; XV required by test fixture, XG drives category assertions
+- N-op fix for 3 replacement reads (f8050895, 7d5e8dc2, 72557a9a) re-sourced directly from dev run BAMs; correct intervals: f8050895 all-aligners (45644–45977), 7d5e8dc2 mapPacBio-only (60193–60697), 72557a9a mapPacBio-only (104435–104495)
+- Full pipeline re-run: `corrected_3ends.tsv`, rectified BAMs, `rectified_pA_tail_soft_clipped.bam` all regenerated from fixed dataset
+- Independent certification: 4 independent agent reviews confirmed 36/36 PASS
+
+## [3.2.1] - 2026-04-22
+
+### Fixed
+- `rescue_3ss_truncation` soft-clip exon CIGAR body-borrowing: for `softclip` rescues, use `rescue_seq` (exact soft-clip) instead of `_intronic_seq` as alignment query; cat3_plus_2 (79f61403, YAL003W) now produces `14M1D7M1D1M` instead of flat `22M`
+
+## [3.2.0] - 2026-04-22
+
+### Fixed
+- Validation aligner BAMs rebuilt (5 BAMs) after DRS rebuild removed 3 old Cat6/Cat7 reads but left aligner BAMs stale
+
+## [3.1.9] - 2026-04-22
+
+### Added
+- `rectified_pA_tail_soft_clipped.bam` generated as default Step 4 output
+- Sort + index added to both `_process_one_sample` and `_run_single_sample` Step 4 code paths (previously written unsorted/unindexed, unusable in IGV)
+- `TestPolyASoftClippedBam` added (4 tests)
+
+## [3.1.8] - 2026-04-22
+
+### Changed
+- Validation Cat6/Cat7/Cat9 (12 reads) updated to DRS pre-trim mapPacBio alignments
+- 3 reads replaced entirely (pre-DRS alignments lost N-op after trimming): ba761413→f8050895, 64f4da08→7d5e8dc2, 5c59f0bc→72557a9a
+- BAM header reduced to 16 nuclear chromosomes (chrI–chrXVI)
+
+## [3.1.7] - 2026-04-21
+
+### Changed
+- Module 2H `refine_read_junctions`: bilateral t2 scoring — `score(k) = t1(k) + t2(k)`, both anchored to `intron_end`; eliminates degenerate k=L-1 coincidental single-base matches
+- **No candidate guards (permanent policy)**: removed `if is_alt==1 and tier>=4 and is_novel==1: continue`; annotation/canonical tier are tiebreakers only, never gates
+- Canonical HP prior (`_CANONICAL_HP_PRIOR = 0.5`): replaces fragile `int(score)` floor; canonical junctions win within one Nanopore HP deletion noise floor regardless of penalty table
+
+## [3.1.6] - 2026-04-21
+
+### Added
+- `--drs` flag wired into `rectify run-all` (cli.py); enables Step 0 (poly-A pre-trim) and Step 4 (poly-A restore) for Dorado BAM inputs
+
+### Fixed
+- ARCHITECTURE.md mermaid diagram: Step 3=analysis, Step 4=restore-softclip (was Step 4=analysis, Step 5=restore)
+- README.md: `rectify run` → `rectify run-all`; Module 2H scoring description updated to HP-anchored semi-global DP
+
+## [3.1.5] - 2026-04-21
+
+### Added
+- `--checkpoint-dir DIR` flag for `rectify correct --streaming`; two-level checkpoint/resume: scan-phase pickle + per-region `.done` sentinels
+
+## [3.1.4] - 2026-04-21
+
+### Fixed
+- Module 2H candidate guard: non-canonical + non-annotated alternatives excluded during candidate *selection* instead of post-selection (preventing spurious wins)
+- Adaptive tiebreak ordering: `(score, tier, is_alt, ...)` when current junction is non-canonical; `(score, is_alt, tier, ...)` when canonical
+
+## [3.1.3] - 2026-04-21
+
+### Fixed
+- `--aligner-bams` `aligner:path` prefix stripping: `_strip_aligner_prefix()` removes `minimap2:` etc. before pysam path lookup; previously caused "Protocol not supported" error
+
+## [3.1.2] - 2026-04-21
+
+### Added
+- Cat9 validation reads (4 reads): Module 2H junction refinement test cases; `TestCategory9JunctionRefinement`
+- `validation_reads.bam` expanded 32 → 36 reads; all 5 aligner BAMs updated
+
+## [3.1.1] - 2026-04-21
+
+### Fixed
+- `_score_junction` k-loop `range(L+1)` → `range(L)`: eliminates degenerate k=L empty-query scores
+- `is_alt` tiebreaker: existing junction preferred over equal-scoring alternatives
+
+## [3.1.0] - 2026-04-20
+
+### Added
+- **Module 2H** (`junction_refiner.py`): post-consensus N-op junction refinement
+  - HP-aware split-alignment scores all candidates within `search_radius`; canonical/annotated are tiebreakers only
+  - Fast path: tier-0 annotated canonical reads skip scoring (255× speedup)
+  - CIGAR surgery encodes boundary changes as I/D ops; MD/cs tags stripped
+  - Wired into `rectify correct` via `--aligner-bams`
+  - Flags: `--junction-hp-pen`, `--junction-search-radius`, `--junction-window`, `--junction-max-slide`, `--junction-max-boundary-shift`
+  - 41 tests in `tests/test_junction_refiner.py`
+
+## [3.0.4] - 2026-04-20
+
+### Fixed
+- `rescue_3ss_truncation` minus-strand soft-clip truncation: `rescue_seq[-five_clip:]` (was `[:five_clip]`); fixes Cases 1/2 where rightmost bases are the actual soft-clip
+
+## [3.0.3] - 2026-04-16
+
+### Fixed
+- `find_polya_boundary` trailing-base false-stop guard: before accepting a stop where terminal base matches genome, check K=4 upstream positions; if all poly-A context, continue scanning
+
+## [3.0.2] - 2026-04-16
+
+### Fixed
+- `clip_read_to_corrected_3prime` / `softclip_read_to_corrected_3prime`: strip trailing D/N ops (plus strand) or leading D/N ops (minus strand) before appending H/S clip; fixes `4D6H` invalid CIGAR when corrected position falls inside deletion span
+- `tests/test_bam_writer.py` added (11 tests)
+
+## [3.0.1] - 2026-04-15
+
+### Fixed
+- `clip_intronic_tail_5prime` off-by-one (minus strand): `<= clip_boundary + 1` → `<= clip_boundary`
+- Trailing I/S stripping at 5' end before main trim loop
+- Existing H preservation: pre-existing H extracted and merged back after surgery
+- `_MIN_SC_FOR_JUNCTION_EXTENSION = 3`: 1–2 bp soft clips fall through to intronic-tail clip instead of spurious Cat3 extension
+
+## [3.0.0] - 2026-04-15
+
+### Fixed
+- `clip_intronic_tail_5prime`: `query_sequence` and `query_qualities` now trimmed to match new CIGAR; previously only CIGAR updated → malformed BAM records → `samtools sort: truncated file`
+- `five_prime_intron_clip_pos` assignment generalised to all rescues (Cases 1/2/4) where alignment falls inside rescued intron with no soft clip

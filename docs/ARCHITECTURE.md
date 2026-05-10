@@ -61,19 +61,14 @@ Dorado-aligned BAM (with pt:i: tags)
     <sample>.<aligner>.bam  (one per aligner, name-sorted)
     │
     ▼
-[Step 2: Consensus]        per-read aligner selection    rectify consensus
-    │                      Score each aligner's alignment:
-    │                        junction quality, 3' poly(A) penalty,
-    │                        5' terminal error penalty, annotated junction bonus
-    │                      Winner written to consensus BAM with tags:
-    │                        XA = winning aligner name
-    │                        XC = confidence (high/medium/low)
-    │                        XN = number of aligners in agreement
-    ▼
-    <sample>.consensus.bam
-    │
-    ▼
-[Step 3: Correction]       per-read 3' and 5' end correction    rectify correct
+[Step 2: Correction per aligner]   rectify correct × N aligners
+    │   Run the full correction pipeline independently on EACH per-aligner BAM.
+    │   Corrections are computed on a per-aligner basis so that the consensus step
+    │   can select winners using post-correction features (five_prime_rescued,
+    │   confidence, 3' agreement) — which are normalized across aligners —
+    │   rather than raw alignment scores (MAPQ, AS, soft-clip length), which
+    │   are not cross-comparable because aligners differ fundamentally in how
+    │   they represent soft-clips, mismatches, and junction boundaries.
     │                      ① A-tract ambiguity detection (universal)
     │                      ② AG mispriming screen (oligo-dT only)
     │                      ③ Poly(A) tail trimming (if sequenced)
@@ -83,32 +78,45 @@ Dorado-aligned BAM (with pt:i: tags)
     │                      ⑦ N-op junction refinement (Module 2H)
     │                      ⑧ NET-seq refinement (optional, resolves ambiguous windows)
     │                      ⑨ Spike-in read filtering
-    │   Output BAMs (written via --write-corrected-bam / --write-softclipped-bam):
-    │     rectified_corrected_3end.bam  — poly(A) region hard-clipped at corrected_3prime
-    │     rectified_pA_tail_trimmed.bam  — poly(A) region soft-clipped (bases retained)
-    │   cp:i: tag on every output read = corrected 3' end (0-based, inclusive)
     ▼
-    corrected_3ends.tsv           per-read corrected positions; each row is one read
+    per_aligner_corrected/{aligner}/corrected_3ends.tsv   (one per aligner)
+    per_aligner_corrected/{aligner}/corrected.bam         (one per aligner, opt-in)
+    │
+    ▼
+[Step 3: Consensus]        select best corrected output per read    corrected_consensus.py
+    │   For each read, selects the winning aligner from the per-aligner corrected TSVs.
+    │   Selection criteria (in priority order):
+    │     1. five_prime_rescued   — prefer aligner where Cat3 rescue fired (1 > 0)
+    │     2. confidence           — prefer 'high' > 'medium' > 'low'
+    │     3. corrected_3prime agreement — prefer position agreed on by most aligners
+    │     4. alignment span       — prefer wider alignment
+    │     5. n_junctions          — prefer more junctions (more completely spliced)
+    │   Winner's corrected row is kept; winning aligner name written to XA tag.
+    ▼
+    corrected_3ends.tsv           merged per-read corrected positions (winning aligner only)
                                   columns include: chrom, strand, original_3prime,
                                   corrected_3prime, five_prime_position, polya_length,
-                                  junctions_str, n_junctions, confidence, …
+                                  junctions_str, n_junctions, confidence, winning_aligner, …
     corrected_3ends_index.bed.gz  position-count summary: one row per unique
                                   (chrom, corrected_3prime, strand) with read count.
                                   ~300× smaller than the per-read TSV; used by
                                   manifest-mode analysis to skip re-reading every read.
-    <sample>.stats.tsv            per-sample QC report (reads processed, corrections
-                                  applied per module, confidence distribution)
+    corrected.bam                 consensus BAM: winning aligner's corrected read per read_id
+    <sample>.stats.tsv            per-sample QC report
     │
     ▼
-[Step 4 (DRS only): Restore Softclip]  re-attach trimmed poly(A)+adapter    rectify restore-softclip
-    │   For each read present in the trim metadata (Step 0):
+[Step 4 (DRS only, opt-in): Restore poly(A) tail]    rectify restore-softclip  [--write-polya-bam]
+    │   For each read, look up the winning aligner's RAW (pre-correction) BAM record
+    │   and the parquet trim metadata (Step 0) for that read_id.
+    │   Re-attach the original Dorado-called poly(A)+adapter sequence as a 3' soft clip:
     │     + strand: append trimmed_3prime_seq to right of query; extend trailing S op
     │     − strand: prepend RC(trimmed_3prime_seq) to left of query; extend leading S op
-    │   reference_start is unchanged (left S ops do not consume reference).
-    │   Reads absent from metadata (polya_len=0) are written unchanged.
+    │   The result shows the full read exactly as Dorado sequenced it, enabling
+    │   direct IGV comparison against corrected.bam to validate what Rectify changed.
+    │   Off by default — use --write-polya-bam for QC/validation only.
     ▼
-    rectified_pA_tail_soft_clipped.bam  — softclip BAM with full poly(A) tail restored
-                                      for IGV visualization of tail length and position
+    corrected_polya.bam  — winning aligner's raw read + poly(A) tail restored from parquet
+                           compare against corrected.bam to see exactly what Rectify changed
     │
     ▼
 [Step 5: Analysis]         multi-sample downstream analysis
@@ -166,9 +174,9 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 |---|---|---|
 | `trim-polya` | `core/drs_trim_command.py` | **Step 0 (DRS only)** — trim poly(A) tail + adapter from Dorado-aligned BAM; writes unaligned BAM + metadata parquet |
 | `align` | `core/align_command.py` | **Step 1** — multi-aligner alignment from FASTQ |
-| `consensus` | `core/consensus_command.py` | **Step 2** — per-read aligner selection from pre-built per-aligner BAMs; writes XA/XC/XN tags |
-| `correct` | `core/correct_command.py` | **Step 3** — 3' end correction; writes cp:i: tag on every output read |
-| `restore-softclip` | `core/restore_polya_command.py` | **Step 4 (DRS only)** — re-attach trimmed poly(A)+adapter to softclip BAM for IGV visualization |
+| `correct` | `core/correct_command.py` | **Step 2** — 3' end correction per aligner; writes cp:i: tag on every output read |
+| `consensus` | `core/consensus_command.py` | **Step 3** — select best corrected output per read from per-aligner corrected TSVs; uses post-correction features (five_prime_rescued, confidence, 3' agreement) |
+| `restore-softclip` | `core/restore_polya_command.py` | **Step 4 (DRS only, opt-in)** — reconstruct full Dorado read by pulling winning aligner's raw BAM record and restoring poly(A) from parquet as soft clip; for IGV validation only |
 | `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 0–5) |
 | `analyze` | `core/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
 | `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
@@ -228,9 +236,10 @@ flowchart TD
 
     RC -->|"Step 0 (--drs BAM)"| TC
     RC -->|"Step 1"| AL
-    RC -->|"Step 2"| CC
-    RC -->|"Step 3"| AC
-    RC -->|"Step 4 (--drs)"| RSC
+    RC -->|"Step 2 (per aligner)"| CC
+    RC -->|"Step 3 (merge corrected)"| CON
+    RC -->|"Step 4 (--drs --write-polya-bam)"| RSC
+    RC -->|"Step 5"| AC
 
     BC -->|"per-sample parallel"| CC
 ```
@@ -292,16 +301,16 @@ rectify/                              ← git repo root
 │   │
 │   ├── core/                         pipeline step implementations
 │   │   │
-│   │   ├── run_command.py            Step 0+1+2 orchestrator (the "run-all" dispatcher)
-│   │   ├── align_command.py          Step 0 CLI wrapper
-│   │   ├── correct_command.py        Step 1 CLI wrapper
-│   │   ├── analyze_command.py        Step 2 CLI wrapper + GFF/GTF parsing
+│   │   ├── run_command.py            Steps 0–5 orchestrator (the "run-all" dispatcher)
+│   │   ├── align_command.py          Step 1 CLI wrapper
+│   │   ├── correct_command.py        Step 2 CLI wrapper
+│   │   ├── analyze_command.py        Step 3 CLI wrapper + GFF/GTF parsing
 │   │   ├── batch_command.py          parallel/SLURM batch correction
 │   │   │
 │   │   ├── multi_aligner.py          Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
 │   │   ├── chimeric_consensus.py     chimeric alignment stitching from sync-points
 │   │   ├── consensus.py              per-read optimal aligner selection (non-chimeric fallback)
-│   │   ├── bam_processor.py          correction pipeline orchestrator (Steps 1①–⑧)
+│   │   ├── bam_processor.py          correction pipeline orchestrator (Step 2①–⑨)
 │   │   │
 │   │   ├── atract_detector.py        A-tract boundary detection + ambiguity window
 │   │   ├── ag_mispriming.py          AG-richness mispriming screen (Roy & Chanfreau 2019)
@@ -475,17 +484,17 @@ works on all three schedulers without modification.
 
 **`core/align_command.py`** — Thin CLI wrapper around `multi_aligner.py`.
 
-**`core/correct_command.py`** — Step 1 orchestrator: validates inputs,
+**`core/correct_command.py`** — Step 2 orchestrator: validates inputs,
 sets thread limits, calls `bam_processor.process_bam_file_parallel()` or
 `process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
 
-**`core/analyze_command.py`** — Step 2 orchestrator: parses GFF/GTF,
+**`core/analyze_command.py`** — Step 3 orchestrator: parses GFF/GTF,
 calls analysis modules in sequence, writes all output TSVs and plots.
 Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
 ---
 
-### Layer 3: Alignment (Steps 1–2)
+### Layer 3: Alignment (Step 1)
 
 **`core/multi_aligner.py`** — Runs all enabled aligners in parallel
 subprocesses. Tier 1 (default): minimap2, mapPacBio, gapmm2. Tier 2
@@ -908,19 +917,38 @@ are converted transparently; all downstream code uses the canonical format.
 
 ## Key design decisions
 
-**Why score before correcting?**
-Consensus scoring is fast (genome-only, no MD tags) and runs in parallel
-across aligners. Running the full correction pipeline on all aligner BAMs
-and comparing outputs would be 3× slower and would not produce a better
-winner — the five lightweight signals are sufficient to identify the best
-alignment. The correction modules then operate on a cleaner starting point.
+**Why correct before consensus?**
+Raw alignment scores (MAPQ, AS tag, soft-clip length, junction-proximity
+errors) are not cross-comparable across aligners. Aligners differ
+fundamentally in how they represent ambiguous regions: some soft-clip at
+junction boundaries, others force mismatches, others extend globally into
+poly(A) tracts. An aligner that soft-clips aggressively will always appear
+to have fewer terminal errors than one that aligns to the same position using
+mismatches — even if their underlying 3' end calls are identical.
 
-**Why does Module 2H (junction refinement) run first?**
-Module 2H needs N-op boundaries to be as accurate as possible before the
-5' end rescue (Module 2F) attempts to snap reads to the exon-1 boundary.
-If 2F ran first with a poorly-placed N-op, it might snap to the wrong exon
-boundary. Running 2H first ensures N-op positions are as accurate as the
-sequence evidence allows before 2F uses them as targets.
+Running `rectify correct` independently on each aligner's BAM first produces
+post-correction features (`five_prime_rescued`, `confidence`, corrected 3'
+position agreement) that are produced by the same correction pipeline
+regardless of input aligner. These features are directly comparable across
+aligners and reliably identify which aligner produced the best starting
+point for each individual read. The consensus step then selects winners
+using these normalized signals rather than raw alignment scores.
+
+The lightweight pre-correction scoring signals in `consensus.py`
+(`_get_effective_5prime_clip`, `_rescue_5prime_softclip`, etc.) are retained
+as the scoring mechanism used by the standalone `rectify consensus` subcommand,
+which operates on raw alignment BAMs without per-aligner correction.
+They are NOT used in the `run-all` pipeline, which uses the correct-first approach.
+
+**Why does Module 2H (junction refinement) run after Module 2F?**
+Module 2F (5' junction rescue) runs before Module 2H (N-op refinement).
+2F resolves Cat3/Cat4 5' end truncations by snapping soft-clipped or
+misplaced 5' ends to the correct exon-1 boundary; this can shift N-op
+positions as CIGAR surgery adjusts the read's leading edge. Module 2H
+then operates on the post-2F N-op coordinates, refining all remaining
+junction boundaries using HP-aware split-alignment. Running 2H after
+2F ensures N-op boundaries already corrected by 2F are not moved again
+by junction refinement scoring.
 
 **Why does the rescue in consensus scoring not change positions?**
 `_rescue_5prime_softclip` in `score_alignment` is a scoring heuristic only
@@ -937,13 +965,14 @@ bases against both the intron reference and the exon-1 reference using HP-aware
 edit distance: snap only fires when the exon-1 match is strictly better (ties
 favour the unspliced interpretation, keeping the read in the intron).
 
-**No candidate guards in Module 2H:**
+**No candidate guards in Module 2H (permanent policy, v3.1.7+):**
 All junctions in the candidate pool are scored; non-canonical, non-annotated
 (novel) alternatives are never filtered before scoring. The previous guard
-silently discarded reads that genuinely belong at non-canonical junctions
-(e.g. when many reads from the same splice isoform all score perfectly at a
-novel non-canonical site). Annotation and canonical tier remain as
-TIE-BREAKERS only, never as gates.
+(`if is_alt==1 and tier>=4 and is_novel==1: continue`) silently discarded reads
+that genuinely belong at non-canonical junctions (e.g. when many reads from the
+same splice isoform all score perfectly at a novel non-canonical site). Annotation
+and canonical tier remain as TIE-BREAKERS only, never as gates. **This policy is
+permanent and must not be re-introduced.**
 
 ---
 

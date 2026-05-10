@@ -70,9 +70,9 @@ For direct RNA sequencing (DRS), poly(A) tails are present in the read sequence.
 
 The trimmer uses a three-pass algorithm in RNA 5'→3' orientation:
 
-- **Pass 0** — Adapter stub removal: regex `T[CT]{0,10}$` strips the 3'-terminal adapter stub in a single scan.
-- **Pass 1** — Pure-A tail scan: slides leftward from the stripped boundary counting consecutive A-rich bases (strict mode: 0% non-A allowed) to locate the poly(A) / transcript body junction.
-- **Pass 2** — Iterative peel: handles ambiguous boundaries where Nanopore basecalling errors (T calls within the tail) confuse the pure scan; peels the tail one base at a time until A-richness drops below threshold.
+- **Pass 0** — Clean path: fast scan that returns the trimmed read when no adapter stub is present.
+- **Pass 1** — Adapter stub detection: regex `T[CT]{0,10}$` identifies the 3'-terminal adapter stub in a single scan.
+- **Pass 2** — Iterative peel: handles ambiguous boundaries where Nanopore basecalling errors scramble the stub sequence; peels the tail one base at a time until A-richness drops below threshold.
 
 Reads with no detectable tail pass through unchanged. Output: an **unaligned BAM** with poly(A)-free reads for re-alignment, plus a **per-read metadata parquet** recording tail length, adapter sequence, and pass number — used by `rectify restore-softclip` (Step 4) to re-attach the original tail to the IGV softclip BAM for tail-length visualization.
 

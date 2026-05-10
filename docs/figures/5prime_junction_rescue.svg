@@ -68,6 +68,6 @@
 <line stroke="#0d9488" stroke-width="1" x1="380" x2="370" y1="328" y2="328"/>
 <polygon fill="#0d9488" points="370,328 374,325 374,331"/>
 <text fill="#059669" font-size="9" font-weight="600" x="540" y="349">✓ sequence-optimal junction</text>
-<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="376">sequence evidence always overrides annotation; fast path skips reads already at annotated canonical junctions</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="376">sequence evidence always overrides annotation; only N-ops with a mismatch or indel within 10 bp of the junction boundary are re-scored (clean alignments are skipped)</text>
 </g>
 </svg>

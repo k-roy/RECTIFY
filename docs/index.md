@@ -20,7 +20,7 @@ Precision transcript structure mapping for direct RNA nanopore sequencing. RECTI
 | Feature | Description |
 |:--------|:------------|
 | **Multi-Aligner Consensus** | Runs minimap2, pbmm2, gapmm2 (optionally uLTRA + deSALT) and selects best junction set per read |
-| **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through annotated splice junctions |
+| **3' End Soft-Clip Rescue** | Rescues 3' soft-clipped bases at homopolymer boundaries by extending the 3' end outward |
 | **3' End Indel Correction** | Walk-back algorithm fixes alignment artifacts where poly(A) tails land on genomic A-tracts |
 | **False Junction Handling** | Removes spurious N-operations created by poly(A) tail alignment into downstream A-tracts |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
@@ -44,7 +44,7 @@ pip install rectify-rna
 rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 
 # Full pipeline: correct + multi-sample analysis
-rectify run reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+rectify run-all reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
 ```
 
 See the [Quick Start guide](quickstart.md) for a step-by-step walkthrough.
@@ -68,6 +68,21 @@ For organisms with NET-seq data (bundled for yeast), RECTIFY resolves remaining 
 ### 4. Adaptive Clustering and Differential Expression
 
 After correction, CPA sites are clustered using a valley-based algorithm, and DESeq2 is run at both gene and cluster resolution. Cluster-level analysis detects isoform-specific changes that gene-level counts would miss.
+
+---
+
+## Technical Documentation
+
+In-depth documentation on scoring methods, error models, and design decisions.
+
+| Document | Description |
+|:---------|:------------|
+| [Empirical HP Penalty Scoring](EMPIRICAL_HP_PENALTY_SCORING.md) | How the homopolymer-context penalty table is derived from Nanopore data; AT/CG asymmetry; why heuristics underperform |
+| [Junction-Shift FDR](JUNCTION_SHIFT_FDR.md) | Risk model for HP-context junction-shift false positives; uses empirical rates as inputs |
+| [DRS 5' End Limitations](DRS_FIVE_PRIME_END_LIMITATIONS.md) | Known limitations of direct RNA-seq 5' end mapping |
+| [Three-Pass Adapter Trimming](THREE_PASS_ADAPTER_TRIMMING.md) | Poly(A)+adapter pre-trimming strategy for DRS reads |
+| [Aligner Recommendations](ALIGNER_RECOMMENDATIONS.md) | When to use each aligner and expected win rates on yeast DRS data |
+| [Algorithm Overview](algorithms/overview.md) | Stage-by-stage pipeline diagram and module descriptions |
 
 ---
 

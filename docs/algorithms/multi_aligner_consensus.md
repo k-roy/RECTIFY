@@ -42,11 +42,11 @@ Each aligner's output is represented as an `AlignmentInfo` dataclass. The compos
 
 ```python
 score = (
-    - 2 * effective_5prime_clip    # Unrescued 5' soft-clips
-    - 1 * downstream_a_count       # A-tract depth penalty (capped at 10)
-    - 2 * terminal_errors          # Non-A errors near 3' end (capped at 10)
-    + canonical_junction_bonus     # +1 per canonical GT-AG junction
-    + annotated_junction_bonus     # +2 per junction matching annotation
+    - 2 * effective_5prime_clip    # Unrescued 5' soft-clips (-2/bp)
+    - 1 * downstream_a_count       # A-tract depth penalty (-1/A, capped at 10)
+    - 2 * terminal_errors          # Non-poly(A) terminal errors near 3' end (-2/bp, capped at 10)
+    # NOTE: canonical GT-AG and annotated junction counts are tiebreakers only,
+    # not additive components of the primary score.
 )
 ```
 
@@ -69,7 +69,11 @@ class AlignmentInfo:
 
 ### mapPacBio effective clip correction
 
-mapPacBio forces mismatches at splice junction boundaries (a deliberate design choice for accuracy). This inflates the apparent 3' soft-clip length. RECTIFY uses `effective_three_prime_clip` to subtract these forced-mismatch bases from the penalty.
+mapPacBio forces mismatches at splice junction boundaries instead of soft-clipping (a deliberate design choice). This makes its 5' junction representation functionally equivalent to a soft-clip but encoded differently in CIGAR. `effective_five_prime_clip` normalises this so mapPacBio is scored fairly against aligners that do soft-clip.
+
+### 3' non-poly(A) terminal error penalty
+
+`effective_three_prime_clip` captures non-A (plus strand) or non-T (minus strand) terminal errors near the 3' end via a greedy sliding-window scan. This penalises aligners that stop before the true 3' end with non-poly(A) content at the tail. Penalty: −2/bp, capped at 10. This is distinct from the A-tract depth penalty, which penalises going too far *into* a downstream genomic A-tract.
 
 ---
 
@@ -78,13 +82,16 @@ mapPacBio forces mismatches at splice junction boundaries (a deliberate design c
 ```python
 def select_best_alignment(read_group, annotated_junctions=None):
     """
-    Per-read selection.
+    Per-read selection. Consensus operates on RAW (uncorrected) BAMs.
+    rectify correct runs ONCE after consensus, on the winning aligner's BAM.
 
-    1. Score each aligner
+    1. Score each aligner using composite penalty (5' clip, A-tract depth,
+       3' non-poly(A) terminal errors) — all on the raw BAM records
     2. Select highest scorer
-    3. Tiebreaker: canonical GT-AG count
-    4. Tiebreaker: annotated junction count
-    5. Tiebreaker: majority 3' position vote
+    3. Tiebreaker 1: canonical GT-AG junction count
+    4. Tiebreaker 2: annotated junction count
+    5. Tiebreaker 3: majority 3' position vote across aligners
+    6. Tiebreaker 4: wider alignment span
     """
 ```
 
@@ -122,6 +129,16 @@ Key flags:
 - `-k14`: smaller k-mer for noisy nanopore reads
 - `-G 5000`: max intron (yeast; increase for other organisms)
 - `--splice-flank=no`: disables GT-AG bonus within minimap2 (RECTIFY does its own scoring)
+
+---
+
+## What consensus does NOT do
+
+**Module 2F (Cat3 / `splice_aware_5prime.py`):** During consensus, only a lightweight 5' junction rescue *score* is computed to penalise (or not) each aligner's soft-clip. The full CIGAR surgery — semi-global NW alignment via `local_aligner.py`, exon CIGAR reconstruction — runs entirely **post-consensus** in `bam_processor.py` as Module 2F. Consensus never rewrites CIGARs.
+
+**Module 2H (`junction_refiner.py`):** Post-consensus N-op junction refinement. The `--aligner-bams` option supplies all per-aligner raw BAMs as a **candidate junction pool** only — Module 2H does not re-score or re-correct individual aligners. Scoring is sequence-first (HP-aware edit distance); canonical GT-AG and annotation are tie-breakers, never gates.
+
+**`rectify correct`** runs **once** after consensus on the winning aligner's BAM. It is not part of consensus selection.
 
 ---
 
