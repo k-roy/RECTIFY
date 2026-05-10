@@ -119,6 +119,11 @@ dev_runs/
 # Large reference data (downloaded separately, not for version control)
 rectify/data/*.fsa
 rectify/data/*.fsa.fai
+rectify/data/*.fsa.amb
+rectify/data/*.fsa.ann
+rectify/data/*.fsa.bwt
+rectify/data/*.fsa.pac
+rectify/data/*.fsa.sa
 rectify/data/*.gff
 rectify/data/*.gtf
 rectify/data/*.junc.bed
@@ -137,6 +142,9 @@ rectify/data/output/rectified/*.bedgraph
 rectify/data/output/aligners/*.bam
 rectify/data/output/aligners/*.bam.bai
 rectify/data/output/aligners/*.namesorted.bam
+
+# Generated namesorted BAMs in validation (intermediate, reproducible)
+rectify/data/validation/aligners/*.namesorted.bam
 rectify/data/output/aligners/*.paf
 rectify/data/output/aligners/*.bedgraph
 rectify/data/output/aligners/*_junctions.bed

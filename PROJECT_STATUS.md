@@ -1,8 +1,7 @@
 # RECTIFY — Project Status
 
-**Version:** 2.7.8 (released 2026-04-09)
-**In-development:** 2.7.9 (post-tag commits pending release)
-**Last updated:** 2026-04-11
+**Version:** 3.2.5 (released 2026-04-24)
+**Last updated:** 2026-04-30
 
 ---
 
@@ -21,12 +20,12 @@ conditions.
 
 | Channel | Version | URL |
 |---------|---------|-----|
-| PyPI | 2.7.8 | https://pypi.org/project/rectify-rna/2.7.8/ |
-| Anaconda.org | 2.7.8 (noarch) | https://anaconda.org/kevinrjroy/rectify-rna |
-| GitHub | tag `v2.7.8` | https://github.com/k-roy/RECTIFY |
+| PyPI | 3.2.5 | https://pypi.org/project/rectify-rna/3.2.5/ |
+| Anaconda.org | 3.2.5 (noarch) | https://anaconda.org/kevinrjroy/rectify-rna |
+| GitHub | tag `v3.2.5` | https://github.com/k-roy/RECTIFY |
 
 ```bash
-pip install rectify-rna==2.7.8
+pip install rectify-rna==3.2.5
 conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna
 ```
 
@@ -34,7 +33,7 @@ conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna
 
 ## Test suite
 
-**472 tests passing** (0 failures, 2 warnings) — ~81 s
+**708 tests passing** (0 failures, 4 skipped) — ~120 s
 **Coverage:** 25% overall; core pipeline modules ~40–60%
 
 Coverage gaps: `visualize/` (ridge, vep_panels, read_browser) at 0–16%.
@@ -59,11 +58,13 @@ Coverage gaps: `visualize/` (ridge, vep_panels, read_browser) at 0–16%.
 
 ### Multi-aligner consensus
 
-Three aligners run in parallel (minimap2, mapPacBio/BBMap, gapmm2) and vote
-on the best alignment per read. Junction tuples now carry strand (NEW-020);
-minus-strand donor/acceptor assignments corrected throughout (NEW-011/012).
-mapPacBio subprocess handling hardened: timeout, stderr=DEVNULL, returncode
-checks (NEW-004/005/021).
+**Tier 1 (default):** minimap2, mapPacBio/BBMap, and gapmm2 run in parallel and vote
+on the best alignment per read. **Tier 2 (opt-in):** deSALT and uLTRA add additional
+splice-site sensitivity. Short-read mode (`--short-read`): bbmap and bwa replace
+the Tier 1 long-read panel for Illumina/Aviti ≤150 bp reads. Junction tuples
+now carry strand (NEW-020); minus-strand donor/acceptor assignments corrected
+throughout (NEW-011/012). mapPacBio subprocess handling hardened: timeout,
+stderr=DEVNULL, returncode checks (NEW-004/005/021).
 
 ### Streaming memory pipeline
 
@@ -110,7 +111,38 @@ O(clusters × samples) regardless of read depth. Validated at 21 samples /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
-| **2.7.9-dev** | unreleased | NEW-061–064: N-snap, 5' TSV column, hard-clip walkback, netseq flag |
+| **3.2.5** | 2026-04-24 | Validation Cat1/Cat2 replaced with DRS-trimmed examples; 708 tests |
+| **3.2.2** | 2026-04-22 | XV/XG tag fix; N-op fix for aligner BAMs; 36/36 validation reads certified |
+| **3.2.1** | 2026-04-22 | `rescue_3ss_truncation` soft-clip exon CIGAR body-borrowing fix |
+| **3.2.0** | 2026-04-22 | Validation aligner BAMs rebuilt after DRS rebuild |
+| **3.1.9** | 2026-04-22 | Step 4 `rectified_pA_tail_soft_clipped.bam`; sort+index both paths |
+| **3.1.8** | 2026-04-22 | Validation Cat6/Cat7/Cat9 updated to DRS pre-trim mapPacBio alignments |
+| **3.1.7** | 2026-04-21 | Module 2H bilateral t2, no-candidate-guard policy, canonical HP prior |
+| **3.1.6** | 2026-04-21 | `--drs` flag wired into `run-all`; ARCHITECTURE.md updated |
+| **3.1.5** | 2026-04-21 | `--checkpoint-dir` two-level checkpoint/resume for `rectify correct` |
+| **3.1.4** | 2026-04-21 | Module 2H candidate guard + adaptive tie-break |
+| **3.1.3** | 2026-04-21 | `--aligner-bams` `aligner:path` prefix stripping fix |
+| **3.1.2** | 2026-04-21 | Cat9 validation reads added (Module 2H junction refinement) |
+| **3.1.1** | 2026-04-21 | `_score_junction` range(L) fix + `is_alt` tiebreaker |
+| **3.1.0** | 2026-04-20 | Module 2H — post-consensus N-op junction refinement |
+| **3.0.4** | 2026-04-20 | `rescue_3ss_truncation` minus-strand soft-clip truncation fix |
+| **3.0.3** | 2026-04-16 | `find_polya_boundary` trailing-base false-stop guard |
+| **3.0.2** | 2026-04-16 | `clip_read_to_corrected_3prime` terminal D/N stripping |
+| **3.0.1** | 2026-04-15 | `clip_intronic_tail_5prime` off-by-one + trailing I/S stripping |
+| **3.0.0** | 2026-04-15 | `clip_intronic_tail_5prime` BAM sequence trimming fix |
+| **2.9.9** | 2026-04-15 | HP-aware edit distance + 3'SS acceptor tiebreaker |
+| **2.9.8** | 2026-04-15 | Two-phase discovery + canonical refinement, ±5 bp baseline |
+| **2.9.7** | 2026-04-14 | Natural sort K-way merge fix in `consensus.py` |
+| **2.9.6** | 2026-04-14 | Splice-site ambiguity resolution via data-driven shift range |
+| **2.9.5** | 2026-04-14 | Case 4 intronic-snap rescue in `rescue_3ss_truncation` |
+| **2.9.4** | 2026-04-14 | N-op boundary guard for spliced minus-strand reads |
+| **2.9.3** | 2026-04-14 | Large-deletion pre-scan for poly-A over-calling artifacts |
+| **2.9.2** | 2026-04-14 | Cat3 5' rescue mapPacBio intrusion fix |
+| **2.9.1** | 2026-04-12 | Cat2 soft-clip rescue CIGAR surgery |
+| **v0.9.0-dev** | 2026-04-11 | Bugs 37/38/41/55 fixed; `rectify split/consensus/install-aligners` |
+| **2.8.1** | 2026-04-11 | Module 2G standalone; `--dT-primed-cDNA` rename |
+| **2.8.0** | 2026-04-11 | Cat3 semi-global NW local aligner; chimeric stitch D/N fix |
+| **2.7.9** | 2026-04-09 | NEW-061–064: N-snap, 5' TSV column, hard-clip walkback, netseq flag |
 | **2.7.8** | 2026-04-09 | 35 Round 2 audit bugs; strand fixes throughout; shell injection fix |
 | **2.7.7** | 2026-04-08 | 17 Round 1 audit bugs; 3'SS off-by-one; JSD sqrt; SGE 1-based fix |
 | **2.7.6** | 2026-04-03 | NetSeqSignal pickle; BAM handle leak; false junction filter logger |
@@ -123,30 +155,15 @@ O(clusters × samples) regardless of read depth. Validated at 21 samples /
 | **2.1.0** | 2026-03-16 | Multi-aligner consensus (mapPacBio + gapmm2); HPC batch mode |
 | **2.0.0** | 2026-03-09 | Complete rewrite: streaming pipeline, DESeq2, motif discovery |
 
----
-
-## In-development (post-v2.7.8, not yet tagged)
-
-Four bugs fixed from a validation audit — staged in master, tag `v2.7.9` and
-PyPI/conda publish not yet done:
-
-| Bug | Module | Description |
-|-----|--------|-------------|
-| NEW-061 | `indel_corrector.py` | N-absorption: N CIGAR ops shifted corrected position into poly-A region |
-| NEW-062 | `bam_processor.py` | `five_prime_rescued` column missing from streaming-mode TSV output |
-| NEW-063 | `consensus.py` | Hard-clip walkback incorrectly applied to chimeric reads |
-| NEW-064 | `netseq_bam_processor.py` | NET-seq flag guard missing for unstranded BAMs |
 
 ---
 
 ## Open bugs (tracked in docs/BUGS_TO_FIX.md)
 
-| ID | Priority | Description |
-|----|----------|-------------|
-| Bug 37 | HIGH | Zero unit tests for `terminal_exon_refiner.py` (1690 lines) |
-| Bug 38 | HIGH | `consensus.py` alignment selection only indirectly tested |
-| Bug 41 | MEDIUM | `--polya-model` now forwarded but BAM processor doesn't consume it end-to-end |
-| Bug 55 | MEDIUM | APA clustering params `--min-peak-sep`, `--max-cluster-radius`, `--min-cluster-samples` not CLI-configurable |
+All previously tracked HIGH-priority bugs (37, 38, 41, 55) resolved in v0.9.0-dev / v3.x series.
+
+Current open items are MEDIUM priority (8 items, NEW-067 through NEW-074) — see
+`docs/BUGS_TO_FIX.md` for full details. No CRITICAL or HIGH open issues.
 
 ---
 

@@ -76,6 +76,38 @@ aligner quality per sample.
 
 ---
 
+## Validation
+
+### Regenerate `rectify/data/validation/corrected_3ends.tsv`
+**File:** `rectify/data/validation/corrected_3ends.tsv` (currently deleted in working tree)
+**Priority:** Medium
+
+PROVENANCE.json run #35 (2026-04-27) lists this TSV as an expected output of validation
+BAM regeneration but it was not re-emitted alongside the new aligner BAMs. M1 dev work
+will likely add additional validation reads as we debug the QuantSeq REV strand-flip
+behaviour and the SLURM-script-gen bug in `rectify split --generate-slurm --short-read`,
+so a full re-emit of the validation set (BAMs + TSV with consistent checksums) is
+deferred until that work is more settled.
+
+---
+
+## Algorithm Semantics — Pending Review
+
+### Inverted indel-correction tests (test_indel_correction.py)
+**File:** `tests/test_indel_correction.py`
+**Priority:** Medium
+
+Two tests were renamed and had their assertions inverted (commit pending push, 2026-05-10):
+- `test_plus_strand_T_match_is_genuine_exon_boundary` (was `_skips_T_match_before_true_CPA`)
+- `test_minus_strand_A_match_is_genuine_exon_no_correction` (was `_skips_A_match_*`)
+
+The new names assert that T=T (plus) and A=A (minus) matches are GENUINE exon boundaries
+rather than poly-A false stops to skip past. **Author intent and biological justification
+need explicit verification** before treating this as a stable contract; see the inline
+NOTE block at the top of the regression section in the test file.
+
+---
+
 ## Known Non-Issues
 
 - `minratio=0.4` in `run_map_pacbio()` cmd — duplicates BBTools default, harmless.

@@ -5,6 +5,46 @@ patterns for future developers and AI agents working on this codebase.
 
 ---
 
+## ⚠️ CHUNKING IS MANDATORY FOR FASTQ INPUTS (CRITICAL — NON-NEGOTIABLE)
+
+**NEVER run `rectify run-all` on a FASTQ file without `--chunked-alignment` (or `rectify split`).**
+
+This policy is enforced by a confirmation prompt in `run_command.py` that requires
+typing `I UNDERSTAND THE RISKS` to proceed without chunking. The `--force-no-chunking`
+flag bypasses the prompt for scripted use — but should NEVER be used on an HPC cluster.
+
+**Why chunking is mandatory:**
+- BGZF BAM writes to Oak NFS: ~1 MB/min under concurrent load
+- `$SCRATCH` writes: ~75 GB/s — a **75,000× difference**
+- A whole-sample 2-hour alignment job → **8 minutes** with 16 chunks on `$SCRATCH`
+- Whole-FASTQ inline alignment on HPC causes severe NFS contention that degrades
+  performance cluster-wide, not just for your job
+
+**The ONLY correct way to process a FASTQ:**
+
+```bash
+# Short-read (QuantSeq / Illumina dT-primed):
+rectify split reads.fastq.gz \
+    --short-read --dT-primed-cDNA \
+    -n 16 \
+    --prefix sample_name --generate-slurm \
+    --slurm-partition larsms,owners \
+    --oak-output-dir /oak/.../sample_name/ \
+    -o $SCRATCH/sample_name_chunks/
+bash $SCRATCH/sample_name_chunks/submit_pipeline.sh
+
+# Long-read (DRS / nanopore):
+rectify run-all reads.fastq.gz --Scer --chunked-alignment \
+    --slurm-partition larsms,owners \
+    -o results/sample/
+bash results/sample/submit_pipeline.sh
+```
+
+**This policy is permanent and must not be relaxed.** If you find yourself writing code
+that calls `rectify run-all <fastq>` without chunking, stop and use `rectify split` instead.
+
+---
+
 ## ⚠️ PIPELINE ORDER: Correct-First is the ONLY Validated Approach (CRITICAL)
 
 **The canonical, validated pipeline order is: align → correct (per aligner) → merge corrected TSVs → consensus.**
