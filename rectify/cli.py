@@ -110,6 +110,17 @@ Citation:
         help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
     )
     tech_group.add_argument(
+        '--ONT-cDNA',
+        dest='ONT_cDNA',
+        action='store_true',
+        default=False,
+        help='Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). The poly(A) tail IS '
+             'present in the read as a 3\' soft-clip (minimap2 alignment). Strand '
+             'convention is the same as DRS: is_reverse=True → minus-strand gene. '
+             'Enables poly(A) trimming and indel correction; disables AG mispriming '
+             '(no oligo-dT priming step). Do NOT use --dT-primed-cDNA for this protocol.'
+    )
+    tech_group.add_argument(
         '--short-read',
         dest='short_read',
         action='store_true',
@@ -825,6 +836,124 @@ Citation:
     )
 
     # =========================================================================
+    # trim-cdna-polya command (cDNA FASTQ poly(A)+adapter pre-trimming)
+    # =========================================================================
+    trim_cdna_parser = subparsers.add_parser(
+        'trim-cdna-polya',
+        help='Trim poly(A) tails + adapter stubs from cDNA Nanopore FASTQ files',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Pre-trim poly(A) tails and CRTA adapter stubs from raw cDNA Nanopore '
+            'FASTQ files before alignment.  Unlike rectify trim-polya (which requires '
+            'Dorado-aligned BAMs with pt:i: tags), this module operates on plain FASTQ '
+            'files — suitable when only FASTQ data is available.\n\n'
+            'Default 3\' adapter: CRTA  (CTTGCGGGCGGCGGACTCTCCTCTGAAGATAGAGCGACAGGCAAG)\n'
+            'Default 5\' adapter: CRTA_RC (CTTACCTGCGTCGCTCTATCTTCAGAGGAGAGTCCGCCGCCCGCAAG)\n\n'
+            'Adapter detection uses a configurable k-mer seed (default: first 12 bp of the\n'
+            'adapter, ≤1 mismatch allowed) — more robust than the short stub regex used for\n'
+            'DRS data.'
+        ),
+    )
+    trim_cdna_parser.add_argument(
+        'input_fastq',
+        help='Input FASTQ file (plain or gzip; .fastq, .fastq.gz, .fq, .fq.gz)',
+    )
+    trim_cdna_parser.add_argument(
+        '-o', '--output-dir',
+        dest='output_dir',
+        required=True,
+        help='Output directory for trimmed FASTQ and trim metadata',
+    )
+    trim_cdna_parser.add_argument(
+        '--adapter-3p',
+        dest='adapter_3p',
+        default='CTTGCGGGCGGCGGACTCTCCTCTGAAGATAGAGCGACAGGCAAG',
+        metavar='SEQ',
+        help='Full 3\' adapter sequence expected after the poly(A) tail on RNA-sense reads '
+             '(default: CRTA template-switching adapter)',
+    )
+    trim_cdna_parser.add_argument(
+        '--adapter-5p',
+        dest='adapter_5p',
+        default='CTTACCTGCGTCGCTCTATCTTCAGAGGAGAGTCCGCCGCCCGCAAG',
+        metavar='SEQ',
+        help='Full 5\' adapter sequence expected before the poly(T) run on antisense reads '
+             '(default: CRTA_RC; used only for seed derivation). Pass "" to disable.',
+    )
+    trim_cdna_parser.add_argument(
+        '--seed-len',
+        type=int,
+        default=12,
+        dest='seed_len',
+        metavar='INT',
+        help='k-mer seed length for adapter detection (default: 12 bp from adapter 5\' end)',
+    )
+    trim_cdna_parser.add_argument(
+        '--seed-max-mismatches',
+        type=int,
+        default=1,
+        dest='seed_max_mismatches',
+        metavar='INT',
+        help='Mismatches allowed in the adapter seed match (default: 1)',
+    )
+    trim_cdna_parser.add_argument(
+        '--adapter-window',
+        type=int,
+        default=200,
+        dest='adapter_window',
+        metavar='INT',
+        help='Bases from each end to inspect for poly-A/T + adapter (default: 200)',
+    )
+    trim_cdna_parser.add_argument(
+        '--max-error-rate',
+        type=float,
+        default=0.0,
+        dest='max_error_rate',
+        help='Max cumulative non-A fraction for poly-A scan (0.0 = strict pure-A)',
+    )
+    trim_cdna_parser.add_argument(
+        '--max-consecutive-non-a',
+        type=int,
+        default=1,
+        dest='max_consecutive_non_a',
+        help='Stop poly-A scan after this many consecutive non-A bases (default 1 = stop at ≥2)',
+    )
+    trim_cdna_parser.add_argument(
+        '--trim-5p-polyt',
+        action='store_true',
+        default=False,
+        dest='trim_5p_polyt',
+        help='Also trim poly-T runs from the 5\' end (antisense reads starting with poly-T)',
+    )
+    trim_cdna_parser.add_argument(
+        '--min-polya',
+        type=int,
+        default=1,
+        dest='min_polya',
+        metavar='INT',
+        help='Minimum 3\' poly-A run length to trim (default: 1)',
+    )
+    trim_cdna_parser.add_argument(
+        '--min-polyt',
+        type=int,
+        default=1,
+        dest='min_polyt',
+        metavar='INT',
+        help='Minimum 5\' poly-T run length to trim (requires --trim-5p-polyt; default: 1)',
+    )
+    trim_cdna_parser.add_argument(
+        '--prefix',
+        default=None,
+        help='Output file prefix (default: derived from input FASTQ filename)',
+    )
+    trim_cdna_parser.add_argument(
+        '--tsv',
+        action='store_true',
+        default=False,
+        help='Write trim metadata as TSV instead of parquet',
+    )
+
+    # =========================================================================
     # restore-softclip command (add back trimmed poly(A) as soft-clip)
     # =========================================================================
     restore_sc_parser = subparsers.add_parser(
@@ -993,6 +1122,18 @@ Manifest format (TSV):
             'Generate scheduler array scripts for chunked parallel alignment instead of '
             'running alignment inline. Auto-sizes chunks from --target-reads-per-chunk. '
             'Run bash submit_pipeline.sh to launch the generated dependency chain.'
+        )
+    )
+    run_parser.add_argument(
+        '--force-no-chunking',
+        dest='force_no_chunking',
+        action='store_true',
+        default=False,
+        help=(
+            'DANGER: Bypass the mandatory chunking requirement for FASTQ inputs. '
+            'Running whole-FASTQ alignment inline causes severe NFS I/O contention on '
+            'HPC clusters and is 10-100x slower than chunked array jobs. '
+            'Only use this on a local workstation (not an HPC cluster).'
         )
     )
     run_parser.add_argument(
@@ -1384,6 +1525,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'trim-polya':
         from .core import drs_trim_command
         sys.exit(drs_trim_command.run(args))
+    elif args.command == 'trim-cdna-polya':
+        from .core import cdna_trim_command
+        sys.exit(cdna_trim_command.run(args))
     elif args.command == 'restore-softclip':
         from .core import restore_polya_command
         sys.exit(restore_polya_command.run(args))
