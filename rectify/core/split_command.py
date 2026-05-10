@@ -99,6 +99,18 @@ SR_FINAL_MERGE_CORES  = 8
 SR_FINAL_MERGE_MEM_GB = 32
 SR_FINAL_MERGE_TIME   = '0:30:00'
 
+# Per-chunk consensus selection (parallelised SLURM array)
+# Validated: chunk_000 = 101 min wall for 425k reads at 73 reads/sec
+# 22× speedup vs whole-sample sequential consensus
+CONSENSUS_PER_CHUNK_CORES   = 8
+CONSENSUS_PER_CHUNK_MEM_GB  = 32
+CONSENSUS_PER_CHUNK_TIME    = '4:00:00'
+
+# Merge per-chunk consensus BAMs into final sample consensus BAM
+MERGE_CONSENSUS_CORES   = 8
+MERGE_CONSENSUS_MEM_GB  = 32
+MERGE_CONSENSUS_TIME    = '2:00:00'
+
 
 def create_split_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Create split subcommand parser."""
@@ -508,8 +520,8 @@ N_CHUNKS={n_chunks}
 
 CHUNK_PAD=$(printf "%03d" $RECTIFY_TASK_ID)
 CHUNK_FASTQ="$OUTDIR/{sample_prefix}_chunk_${{CHUNK_PAD}}_of_{n_chunks:03d}.fastq.gz"
-CHUNK_OUTDIR="$OUTDIR/aligner_chunks/mapPacBio/chunk_${{CHUNK_PAD}}"
-mkdir -p "$CHUNK_OUTDIR"
+FINAL_OUTDIR="$OUTDIR/aligner_chunks/mapPacBio/chunk_${{CHUNK_PAD}}"
+mkdir -p "$FINAL_OUTDIR"
 
 echo "Python:  $($PYTHON --version)"
 echo "Host:    $(hostname)"
@@ -518,6 +530,19 @@ echo "Input:   $CHUNK_FASTQ"
 echo "Start:   $(date)"
 
 [ -f "$CHUNK_FASTQ" ] || {{ echo "ERROR: chunk FASTQ not found: $CHUNK_FASTQ" >&2; exit 1; }}
+
+# Skip if alignment BAM already exists (safe resume after preemption or requeue)
+if compgen -G "$FINAL_OUTDIR/*.bam" > /dev/null 2>&1; then
+    echo "Alignment BAM already exists at $FINAL_OUTDIR — skipping: $(date)"
+    ls -lh "$FINAL_OUTDIR"/*.bam
+    exit 0
+fi
+
+# Stage output to fast local scratch to avoid shared-filesystem I/O contention.
+# Falls back to /tmp if $SCRATCH is not set (non-HPC or single-node use).
+SCRATCH_DIR="${{SCRATCH:-/tmp}}/rectify_mpb_${{SLURM_JOB_ID:-$$}}_${{RECTIFY_TASK_ID}}"
+mkdir -p "$SCRATCH_DIR"
+trap "rm -rf '$SCRATCH_DIR'" EXIT
 
 cd "$RECTIFY_SRC"
 $PYTHON -m rectify align \\
@@ -528,11 +553,13 @@ $PYTHON -m rectify align \\
     --no-consensus \\
     --sort --index \\
     -t "$RECTIFY_CPUS" \\
-    -o "$CHUNK_OUTDIR" \\
+    -o "$SCRATCH_DIR" \\
     --verbose
 
+echo "Rsync scratch → output dir: $(date)"
+rsync -a "$SCRATCH_DIR/" "$FINAL_OUTDIR/"
 echo "Done: $(date)"
-ls -lh "$CHUNK_OUTDIR"/*.bam 2>/dev/null || true
+ls -lh "$FINAL_OUTDIR"/*.bam 2>/dev/null || true
 """
 
 
@@ -576,8 +603,8 @@ CHUNK_PAD=$(printf "%03d" $CHUNK_IDX_NUM)
 ALIGNER="${{ALIGNERS[$ALIGNER_IDX]}}"
 
 CHUNK_FASTQ="$OUTDIR/{sample_prefix}_chunk_${{CHUNK_PAD}}_of_{n_chunks:03d}.fastq.gz"
-CHUNK_OUTDIR="$OUTDIR/aligner_chunks/${{ALIGNER}}/chunk_${{CHUNK_PAD}}"
-mkdir -p "$CHUNK_OUTDIR"
+FINAL_OUTDIR="$OUTDIR/aligner_chunks/${{ALIGNER}}/chunk_${{CHUNK_PAD}}"
+mkdir -p "$FINAL_OUTDIR"
 
 echo "Python:  $($PYTHON --version)"
 echo "Host:    $(hostname)"
@@ -586,6 +613,19 @@ echo "Input:   $CHUNK_FASTQ"
 echo "Start:   $(date)"
 
 [ -f "$CHUNK_FASTQ" ] || {{ echo "ERROR: chunk FASTQ not found: $CHUNK_FASTQ" >&2; exit 1; }}
+
+# Skip if alignment BAM already exists (safe resume after preemption or requeue)
+if compgen -G "$FINAL_OUTDIR/*.bam" > /dev/null 2>&1; then
+    echo "Alignment BAM already exists at $FINAL_OUTDIR — skipping: $(date)"
+    ls -lh "$FINAL_OUTDIR"/*.bam
+    exit 0
+fi
+
+# Stage output to fast local scratch to avoid shared-filesystem I/O contention.
+# Falls back to /tmp if $SCRATCH is not set (non-HPC or single-node use).
+SCRATCH_DIR="${{SCRATCH:-/tmp}}/rectify_${{ALIGNER}}_${{SLURM_JOB_ID:-$$}}_${{RECTIFY_TASK_ID}}"
+mkdir -p "$SCRATCH_DIR"
+trap "rm -rf '$SCRATCH_DIR'" EXIT
 
 cd "$RECTIFY_SRC"
 
@@ -604,7 +644,7 @@ for _try in $(seq 1 $MAX_RETRIES); do
             --no-consensus \\
             --sort --index \\
             -t "$RECTIFY_CPUS" \\
-            -o "$CHUNK_OUTDIR" \\
+            -o "$SCRATCH_DIR" \\
             --verbose && break
     else
         $PYTHON -m rectify align \\
@@ -615,7 +655,7 @@ for _try in $(seq 1 $MAX_RETRIES); do
             --no-consensus \\
             --sort --index \\
             -t "$RECTIFY_CPUS" \\
-            -o "$CHUNK_OUTDIR" \\
+            -o "$SCRATCH_DIR" \\
             --verbose && break
     fi
     echo "Attempt $_try/$MAX_RETRIES failed for $ALIGNER chunk $CHUNK_PAD — retrying in 10s" >&2
@@ -626,8 +666,10 @@ for _try in $(seq 1 $MAX_RETRIES); do
     fi
 done
 
+echo "Rsync scratch → output dir: $(date)"
+rsync -a "$SCRATCH_DIR/" "$FINAL_OUTDIR/"
 echo "Done: $(date)"
-ls -lh "$CHUNK_OUTDIR"/*.bam 2>/dev/null || true
+ls -lh "$FINAL_OUTDIR"/*.bam 2>/dev/null || true
 """
 
 
@@ -794,9 +836,23 @@ echo "Start:   $(date)"
 [ -f "$POOL_PKL" ] || {{ echo "ERROR: pool pickle not found: $POOL_PKL" >&2; exit 1; }}
 [ -f "$SCAN_PKL" ] || {{ echo "WARNING: rescue_scan.pkl not found — variant-aware rescue will re-scan" >&2; }}
 
-# Stage to scratch for fast I/O
+# Skip if already complete (both outputs exist on Oak)
+if [ -f "$CHUNK_OUTDIR/corrected_reads.tsv" ] && [ -f "$CHUNK_OUTDIR/corrected.bam" ]; then
+    echo "Chunk $CHUNK_PAD already corrected — skipping: $(date)"
+    ls -lh "$CHUNK_OUTDIR/corrected_reads.tsv" "$CHUNK_OUTDIR/corrected.bam"
+    exit 0
+fi
+
+# Checkpoint state must live on the persistent output directory (not $SCRATCH,
+# which is ephemeral and node-local — purged on job relaunch).
+CHECKPOINT_DIR="$CHUNK_OUTDIR/.checkpoints"
+mkdir -p "$CHECKPOINT_DIR"
+
+# Stage INPUT BAM to fast local scratch for random I/O; output BAM also on scratch.
+# Falls back to /tmp if $SCRATCH is not set (non-HPC or single-node use).
 SCRATCH_WORK="${{SCRATCH:-/tmp}}/rectify_${{SLURM_JOB_ID:-$$}}_${{TASK_ID}}"
 mkdir -p "$SCRATCH_WORK"
+trap "rm -rf '$SCRATCH_WORK'" EXIT
 cp "$IN_BAM" "$SCRATCH_WORK/"
 cp "$IN_BAM".bai "$SCRATCH_WORK/" 2>/dev/null || true
 LOCAL_BAM="$SCRATCH_WORK/$(basename $IN_BAM)"
@@ -816,13 +872,12 @@ $PYTHON -m rectify correct \\
 {aligner_bam_args}
     --threads "$CORRECT_CPUS" \\
     --streaming \\
-    -o "$SCRATCH_WORK/corrected_reads.tsv" \\
+    --checkpoint-dir "$CHECKPOINT_DIR" \\
+    -o "$CHUNK_OUTDIR/corrected_reads.tsv" \\
     --write-corrected-bam "$SCRATCH_WORK/corrected.bam"
 
-# Copy results back to Oak
-cp "$SCRATCH_WORK/corrected_reads.tsv" "$CHUNK_OUTDIR/"
-[ -f "$SCRATCH_WORK/corrected.bam" ] && cp "$SCRATCH_WORK/corrected.bam" "$CHUNK_OUTDIR/"
-rm -rf "$SCRATCH_WORK"
+# Move BAM from scratch to persistent output dir (trap cleans remaining scratch on exit)
+[ -f "$SCRATCH_WORK/corrected.bam" ] && mv "$SCRATCH_WORK/corrected.bam" "$CHUNK_OUTDIR/"
 
 echo "Done: $(date)"
 ls -lh "$CHUNK_OUTDIR/corrected_reads.tsv" "$CHUNK_OUTDIR/corrected.bam" 2>/dev/null
@@ -1078,6 +1133,217 @@ echo "Done: $(date)"
 """
 
 
+def _consensus_per_chunk_body(
+    n_chunks: int, all_aligners: List[str], sample_prefix: str,
+    output_dir: Path, genome: str, annot: str,
+    python_path: str, rectify_src: str,
+) -> str:
+    """Per-chunk consensus selection array (runs after all corrected.bam files exist)."""
+    limits = _thread_limits_block('$CPUS')
+    aligners_bash = ' '.join(f'"{a}"' for a in all_aligners)
+    return f"""#!/bin/bash
+# RECTIFY — per-chunk consensus selection array
+# Runs rectify consensus independently on each chunk's {len(all_aligners)} corrected BAMs.
+# {n_chunks} parallel tasks instead of 1 sequential task over the full read set.
+# Validated: ~420k reads/chunk = ~100 min wall; 22× speedup vs sequential.
+#
+# Run after all run_array_correct_{{aligner}}.sh jobs complete.
+# Follow with run_merge_consensus_chunks.sh to merge {n_chunks} BAMs → final consensus.
+
+{_SCHEDULER_HEADER_PLACEHOLDER_CONSENSUS_PER_CHUNK}
+
+set -euo pipefail
+export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+
+if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CPUS=${{SLURM_CPUS_PER_TASK:-{CONSENSUS_PER_CHUNK_CORES}}}
+elif [ -n "${{SGE_TASK_ID:-}}" ];          then TASK_ID=$(( SGE_TASK_ID - 1 )); CPUS=${{NSLOTS:-{CONSENSUS_PER_CHUNK_CORES}}}
+elif [ -n "${{PBS_ARRAY_INDEX:-}}" ];      then TASK_ID=$(( PBS_ARRAY_INDEX - 1 )); CPUS=${{PBS_NUM_PPN:-{CONSENSUS_PER_CHUNK_CORES}}}
+else echo "ERROR: no scheduler array task variable found" >&2; exit 1; fi
+
+{limits}
+
+PYTHON="{python_path}"
+RECTIFY_SRC="{rectify_src}"
+OUTDIR="{output_dir}"
+SAMPLE="{sample_prefix}"
+GENOME="{genome}"
+ANNOT="{annot}"
+ALIGNERS=({aligners_bash})
+
+CHUNK_PAD=$(printf "%03d" $TASK_ID)
+CHUNK_OUT="$OUTDIR/consensus/chunk_${{CHUNK_PAD}}"
+mkdir -p "$CHUNK_OUT"
+
+echo "Host:    $(hostname)"
+echo "Chunk:   $CHUNK_PAD  CPUs: $CPUS"
+echo "Start:   $(date)"
+
+# Skip if already complete (safe to resubmit after preemption)
+CONSENSUS_BAM="$CHUNK_OUT/${{SAMPLE}}_chunk_${{CHUNK_PAD}}.consensus.bam"
+if [ -f "$CONSENSUS_BAM" ] && [ -f "${{CONSENSUS_BAM}}.bai" ]; then
+    echo "Consensus BAM already exists — skipping: $CONSENSUS_BAM"
+    exit 0
+fi
+
+# Build aligner:path arguments for this chunk
+BAM_ARGS=()
+for ALIGNER in "${{ALIGNERS[@]}}"; do
+    BAM="$OUTDIR/aligner_chunks/$ALIGNER/chunk_${{CHUNK_PAD}}/corrected.bam"
+    if [ ! -f "$BAM" ]; then
+        echo "ERROR: corrected BAM not found for $ALIGNER chunk $CHUNK_PAD: $BAM" >&2
+        exit 1
+    fi
+    BAM_ARGS+=("${{ALIGNER}}:${{BAM}}")
+done
+
+cd "$RECTIFY_SRC"
+$PYTHON -m rectify consensus \\
+    "${{BAM_ARGS[@]}}" \\
+    --genome "$GENOME" \\
+    --annotation "$ANNOT" \\
+    --prefix "${{SAMPLE}}_chunk_${{CHUNK_PAD}}" \\
+    --no-bedgraph \\
+    -o "$CHUNK_OUT"
+
+echo "Done: $(date)"
+ls -lh "$CHUNK_OUT/"*.bam 2>/dev/null || true
+"""
+
+
+def _merge_consensus_chunks_body(
+    n_chunks: int, all_aligners: List[str], sample_prefix: str,
+    output_dir: Path, genome: str,
+    python_path: str, rectify_src: str,
+) -> str:
+    """Merge per-chunk consensus BAMs → final sample consensus BAM."""
+    limits = _thread_limits_block('$CPUS')
+    return f"""#!/bin/bash
+# RECTIFY — merge per-chunk consensus BAMs → final sample consensus BAM
+# Aggregates per-chunk aligner stats, coordinate-sorts, indexes, adds MD tags.
+# Run after run_array_consensus_per_chunk.sh completes all {n_chunks} tasks.
+
+{_SCHEDULER_HEADER_PLACEHOLDER_MERGE_CONSENSUS}
+
+set -euo pipefail
+export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+
+CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{MERGE_CONSENSUS_CORES}}}}}}}
+{limits}
+
+PYTHON="{python_path}"
+OUTDIR="{output_dir}"
+SAMPLE="{sample_prefix}"
+N_CHUNKS={n_chunks}
+GENOME="{genome}"
+CONSENSUS_DIR="$OUTDIR/consensus"
+FINAL_BAM="$CONSENSUS_DIR/${{SAMPLE}}.consensus.bam"
+FINAL_STATS="$CONSENSUS_DIR/${{SAMPLE}}.consensus_aligner_stats.tsv"
+
+echo "Host:  $(hostname)"
+echo "CPUs:  $CPUS"
+echo "Start: $(date)"
+
+# Verify all per-chunk consensus BAMs exist before proceeding
+echo "=== Verifying per-chunk consensus BAMs ==="
+MISSING=0
+CHUNK_BAMS=()
+for (( k=0; k<N_CHUNKS; k++ )); do
+    CHUNK_PAD=$(printf "%03d" $k)
+    BAM="$CONSENSUS_DIR/chunk_${{CHUNK_PAD}}/${{SAMPLE}}_chunk_${{CHUNK_PAD}}.consensus.bam"
+    if [ ! -f "$BAM" ]; then
+        echo "  MISSING: $BAM" >&2
+        MISSING=$(( MISSING + 1 ))
+    else
+        CHUNK_BAMS+=("$BAM")
+    fi
+done
+if [ $MISSING -gt 0 ]; then
+    echo "ERROR: $MISSING per-chunk consensus BAMs missing — cannot merge" >&2
+    exit 1
+fi
+echo "  All $N_CHUNKS chunk BAMs present."
+
+# Stage merge to fast local scratch for I/O performance
+SCRATCH_DIR="${{SCRATCH:-/tmp}}/rectify_merge_consensus_${{SLURM_JOB_ID:-$$}}"
+mkdir -p "$SCRATCH_DIR"
+trap "rm -rf '$SCRATCH_DIR'" EXIT
+
+# Merge all per-chunk consensus BAMs
+echo ""
+echo "=== Merging $N_CHUNKS consensus BAMs ==="
+echo "Start merge: $(date)"
+samtools merge -@ $CPUS -f "$SCRATCH_DIR/${{SAMPLE}}.consensus.unsorted.bam" "${{CHUNK_BAMS[@]}}"
+echo "End merge:   $(date)"
+
+# Coordinate-sort and index
+echo "Coordinate-sorting..."
+samtools sort -@ $CPUS -o "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam" "$SCRATCH_DIR/${{SAMPLE}}.consensus.unsorted.bam"
+samtools index "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam"
+rm "$SCRATCH_DIR/${{SAMPLE}}.consensus.unsorted.bam"
+
+# Add MD tags
+echo "Adding MD tags..."
+samtools calmd -b "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam" "$GENOME" \\
+    > "$SCRATCH_DIR/${{SAMPLE}}.consensus.md.bam" 2>/dev/null
+if [ -s "$SCRATCH_DIR/${{SAMPLE}}.consensus.md.bam" ]; then
+    mv "$SCRATCH_DIR/${{SAMPLE}}.consensus.md.bam" "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam"
+    samtools index "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam"
+    echo "  MD tags added."
+else
+    echo "  WARNING: samtools calmd produced empty file — proceeding without MD tags."
+    rm -f "$SCRATCH_DIR/${{SAMPLE}}.consensus.md.bam"
+fi
+
+# Copy final BAM to persistent storage
+cp "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam" "$FINAL_BAM"
+cp "$SCRATCH_DIR/${{SAMPLE}}.consensus.bam.bai" "${{FINAL_BAM}}.bai"
+
+echo "Final BAM: $FINAL_BAM ($(ls -lh "$FINAL_BAM" | awk '{{print $5}}'))"
+
+# Aggregate per-chunk aligner stats TSVs
+echo ""
+echo "=== Aggregating aligner stats ==="
+$PYTHON - << 'PYEOF'
+import sys
+from pathlib import Path
+import pandas as pd
+
+OUTDIR    = Path("{output_dir}")
+SAMPLE    = "{sample_prefix}"
+N_CHUNKS  = {n_chunks}
+CONS_DIR  = OUTDIR / "consensus"
+
+dfs = []
+for k in range(N_CHUNKS):
+    chunk_pad = f"{{k:03d}}"
+    tsv = CONS_DIR / f"chunk_{{chunk_pad}}" / f"{{SAMPLE}}_chunk_{{chunk_pad}}.consensus_aligner_stats.tsv"
+    if tsv.exists():
+        dfs.append(pd.read_csv(tsv, sep='\\t'))
+    else:
+        print(f"  WARNING: stats TSV missing for chunk {{chunk_pad}}: {{tsv}}", file=sys.stderr)
+
+if not dfs:
+    print("ERROR: no stats TSVs found", file=sys.stderr)
+    sys.exit(1)
+
+combined = dfs[0].copy()
+combined['count'] = sum(df['count'] for df in dfs)
+total = combined.loc[combined['metric'] == 'total_reads', 'count'].values[0]
+combined['percent'] = (combined['count'] / total * 100).round(2)
+
+out_tsv = CONS_DIR / f"{{SAMPLE}}.consensus_aligner_stats.tsv"
+combined.to_csv(out_tsv, sep='\\t', index=False)
+print(f"Wrote aggregated stats: {{out_tsv}}")
+print(combined[['metric', 'count', 'percent']].to_string(index=False))
+PYEOF
+
+echo ""
+echo "Done: $(date)"
+echo "Output: $FINAL_BAM"
+ls -lh "$FINAL_BAM" "${{FINAL_BAM}}.bai" "$FINAL_STATS" 2>/dev/null
+"""
+
+
 def _make_submit_script(
     scheduler: str,
     mpb_script: Optional[Path],
@@ -1087,6 +1353,8 @@ def _make_submit_script(
     correct_scripts: dict,   # {aligner: Path}
     chunk_merge_script: Path,
     final_merge_script: Path,
+    consensus_per_chunk_script: Path,
+    merge_consensus_script: Path,
     output_dir: Path,
 ) -> str:
     """Generate a submit_pipeline.sh that chains jobs with correct-first dependencies."""
@@ -1122,6 +1390,10 @@ def _make_submit_script(
             'echo "Chunk merge:     $CHUNK_MERGE_JOB"',
             f'FINAL_MERGE_JOB=$(sbatch --dependency=afterok:${{CHUNK_MERGE_JOB}} {final_merge_script} | awk \'{{print $4}}\')',
             'echo "Final merge:     $FINAL_MERGE_JOB"',
+            f'CONSENSUS_PER_CHUNK_JOB=$(sbatch --dependency=afterok:${{FINAL_MERGE_JOB}} {consensus_per_chunk_script} | awk \'{{print $4}}\')',
+            'echo "Consensus array: $CONSENSUS_PER_CHUNK_JOB"',
+            f'MERGE_CONSENSUS_JOB=$(sbatch --dependency=afterok:${{CONSENSUS_PER_CHUNK_JOB}} {merge_consensus_script} | awk \'{{print $4}}\')',
+            'echo "Merge consensus: $MERGE_CONSENSUS_JOB"',
             'echo ""',
             'echo "Full correct-first pipeline submitted. Monitor with: squeue -u $USER"',
         ]
@@ -1136,6 +1408,8 @@ def _make_submit_script(
             f'# 4. run_array_correct_*.sh (after prescan, one per aligner)',
             f'# 5. run_array_chunk_merge.sh (after all correct arrays)',
             f'# 6. run_final_merge.sh (after chunk_merge)',
+            f'# 7. run_array_consensus_per_chunk.sh (after final_merge)',
+            f'# 8. run_merge_consensus_chunks.sh (after consensus array)',
         ]
     return '\n'.join(lines) + '\n'
 
@@ -1150,10 +1424,12 @@ _SCHEDULER_HEADER_PLACEHOLDER_MERGE_ALIGNERS = '__SCHED_HEADER_MERGE_ALIGNERS__'
 # Short-read placeholders
 _SCHEDULER_HEADER_PLACEHOLDER_SR_ARRAY        = '__SCHED_HEADER_SR_ARRAY__'
 _SCHEDULER_HEADER_PLACEHOLDER_SR_FINAL_MERGE  = '__SCHED_HEADER_SR_FINAL_MERGE__'
-_SCHEDULER_HEADER_PLACEHOLDER_PRESCAN        = '__SCHED_HEADER_PRESCAN__'
-_SCHEDULER_HEADER_PLACEHOLDER_CORRECT        = '__SCHED_HEADER_CORRECT__'
-_SCHEDULER_HEADER_PLACEHOLDER_CHUNK_MERGE    = '__SCHED_HEADER_CHUNK_MERGE__'
-_SCHEDULER_HEADER_PLACEHOLDER_FINAL_MERGE    = '__SCHED_HEADER_FINAL_MERGE__'
+_SCHEDULER_HEADER_PLACEHOLDER_PRESCAN              = '__SCHED_HEADER_PRESCAN__'
+_SCHEDULER_HEADER_PLACEHOLDER_CORRECT              = '__SCHED_HEADER_CORRECT__'
+_SCHEDULER_HEADER_PLACEHOLDER_CHUNK_MERGE          = '__SCHED_HEADER_CHUNK_MERGE__'
+_SCHEDULER_HEADER_PLACEHOLDER_FINAL_MERGE          = '__SCHED_HEADER_FINAL_MERGE__'
+_SCHEDULER_HEADER_PLACEHOLDER_CONSENSUS_PER_CHUNK  = '__SCHED_HEADER_CONSENSUS_PER_CHUNK__'
+_SCHEDULER_HEADER_PLACEHOLDER_MERGE_CONSENSUS      = '__SCHED_HEADER_MERGE_CONSENSUS__'
 
 
 def _generate_scripts(
@@ -1304,6 +1580,40 @@ def _generate_scripts(
     )
     final_merge_script_path = _write(output_dir / 'run_final_merge.sh', final_merge_body_str)
 
+    # ── Per-chunk consensus array ─────────────────────────────────────────
+    consensus_per_chunk_headers = _scheduler_headers(
+        scheduler, f'{sample_prefix}_consensus_chunks', n_chunks,
+        CONSENSUS_PER_CHUNK_CORES, CONSENSUS_PER_CHUNK_MEM_GB, CONSENSUS_PER_CHUNK_TIME,
+        str(log_dir), log_pat, is_array=True, **sched_kwargs,
+    )
+    consensus_per_chunk_body_str = _consensus_per_chunk_body(
+        n_chunks, all_aligners, sample_prefix, output_dir, genome_str, annot_str,
+        python_path, rectify_src,
+    )
+    consensus_per_chunk_body_str = consensus_per_chunk_body_str.replace(
+        _SCHEDULER_HEADER_PLACEHOLDER_CONSENSUS_PER_CHUNK, consensus_per_chunk_headers
+    )
+    consensus_per_chunk_script_path = _write(
+        output_dir / 'run_array_consensus_per_chunk.sh', consensus_per_chunk_body_str
+    )
+
+    # ── Merge consensus chunks (single job) ──────────────────────────────
+    merge_consensus_headers = _scheduler_headers(
+        scheduler, f'{sample_prefix}_merge_consensus', 1,
+        MERGE_CONSENSUS_CORES, MERGE_CONSENSUS_MEM_GB, MERGE_CONSENSUS_TIME,
+        str(log_dir), log_pat_job, is_array=False, **sched_kwargs,
+    )
+    merge_consensus_body_str = _merge_consensus_chunks_body(
+        n_chunks, all_aligners, sample_prefix, output_dir, genome_str,
+        python_path, rectify_src,
+    )
+    merge_consensus_body_str = merge_consensus_body_str.replace(
+        _SCHEDULER_HEADER_PLACEHOLDER_MERGE_CONSENSUS, merge_consensus_headers
+    )
+    merge_consensus_script_path = _write(
+        output_dir / 'run_merge_consensus_chunks.sh', merge_consensus_body_str
+    )
+
     # ── Submission wrapper ─────────────────────────────────────────────────
     submit_body = _make_submit_script(
         scheduler,
@@ -1314,6 +1624,8 @@ def _generate_scripts(
         correct_script_paths,
         chunk_merge_script_path,
         final_merge_script_path,
+        consensus_per_chunk_script_path,
+        merge_consensus_script_path,
         output_dir,
     )
     submit_path = _write(output_dir / 'submit_pipeline.sh', submit_body)
@@ -1336,6 +1648,11 @@ def _generate_scripts(
                 n_chunks, CHUNK_MERGE_CORES, CHUNK_MERGE_MEM_GB, chunk_merge_script_path)
     logger.info("  Final merge        (1 job,   %d cores, %dG):  %s",
                 FINAL_MERGE_CORES, FINAL_MERGE_MEM_GB, final_merge_script_path)
+    logger.info("  Consensus array    (%d tasks, %d cores, %dG):  %s",
+                n_chunks, CONSENSUS_PER_CHUNK_CORES, CONSENSUS_PER_CHUNK_MEM_GB,
+                consensus_per_chunk_script_path)
+    logger.info("  Merge consensus    (1 job,   %d cores, %dG):  %s",
+                MERGE_CONSENSUS_CORES, MERGE_CONSENSUS_MEM_GB, merge_consensus_script_path)
     logger.info("  Submit chain:  bash %s", submit_path)
 
 
@@ -1362,14 +1679,16 @@ def generate_alignment_scripts(
     Public API: generate correct-first pipeline scripts for a given chunk configuration.
 
     Returns dict with keys:
-      'mpb'            — Path or None (run_array_mapPacBio.sh)
-      'others'         — Path (run_array_others.sh)
-      'merge_aligners' — Path (run_merge_aligners.sh)
-      'prescan'        — Path (run_prescan.sh)
-      'correct'        — dict {aligner: Path} (run_array_correct_{aligner}.sh)
-      'chunk_merge'    — Path (run_array_chunk_merge.sh)
-      'final_merge'    — Path (run_final_merge.sh)
-      'submit'         — Path (submit_pipeline.sh)
+      'mpb'                    — Path or None (run_array_mapPacBio.sh)
+      'others'                 — Path (run_array_others.sh)
+      'merge_aligners'         — Path (run_merge_aligners.sh)
+      'prescan'                — Path (run_prescan.sh)
+      'correct'                — dict {aligner: Path} (run_array_correct_{aligner}.sh)
+      'chunk_merge'            — Path (run_array_chunk_merge.sh)
+      'final_merge'            — Path (run_final_merge.sh)
+      'consensus_per_chunk'    — Path (run_array_consensus_per_chunk.sh)
+      'merge_consensus_chunks' — Path (run_merge_consensus_chunks.sh)
+      'submit'                 — Path (submit_pipeline.sh)
 
     All scripts are written to output_dir.
     """
@@ -1404,10 +1723,12 @@ def generate_alignment_scripts(
         'others':         output_dir / 'run_array_others.sh',
         'merge_aligners': output_dir / 'run_merge_aligners.sh',
         'prescan':        output_dir / 'run_prescan.sh',
-        'correct':        {a: output_dir / f'run_array_correct_{a}.sh' for a in all_aligners},
-        'chunk_merge':    output_dir / 'run_array_chunk_merge.sh',
-        'final_merge':    output_dir / 'run_final_merge.sh',
-        'submit':         output_dir / 'submit_pipeline.sh',
+        'correct':                {a: output_dir / f'run_array_correct_{a}.sh' for a in all_aligners},
+        'chunk_merge':            output_dir / 'run_array_chunk_merge.sh',
+        'final_merge':            output_dir / 'run_final_merge.sh',
+        'consensus_per_chunk':    output_dir / 'run_array_consensus_per_chunk.sh',
+        'merge_consensus_chunks': output_dir / 'run_merge_consensus_chunks.sh',
+        'submit':                 output_dir / 'submit_pipeline.sh',
     }
 
 

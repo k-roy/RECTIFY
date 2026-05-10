@@ -299,6 +299,21 @@ def run_consensus(args: argparse.Namespace) -> int:
     from .consensus import run_consensus_selection
     output_bam = args.output_dir / f"{prefix}.consensus.bam"
 
+    # Skip if consensus BAM already exists (safe resume after preemption)
+    if output_bam.exists():
+        logger.info(f"Consensus BAM already exists — skipping selection: {output_bam}")
+        # Still generate stats/report/tracks if they're missing
+        stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
+        if not stats_tsv.exists():
+            logger.info("  (stats TSV missing — will regenerate from existing BAM)")
+        else:
+            if not getattr(args, 'no_bedgraph', False):
+                try:
+                    _generate_bedgraphs(args.output_dir, prefix, genome)
+                except Exception as e:
+                    logger.warning(f"Bedgraph generation failed (non-fatal): {e}")
+            return 0
+
     logger.info(f"Running consensus selection → {output_bam}")
     _t = _time.perf_counter()
     try:
