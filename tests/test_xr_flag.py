@@ -69,7 +69,6 @@ def make_alignment_info(aligner, five_prime_softclip, strand='+', chrom='chrI'):
         reference_start=1000,
         reference_end=1100,
         cigar_string='50M',
-        mapq=60,
         five_prime_softclip=five_prime_softclip,
         effective_five_prime_clip=five_prime_softclip,
         corrected_3prime=1099 if strand == '+' else 1000,
@@ -266,7 +265,6 @@ class TestXRFlagViaSelectBestAlignment:
             reference_start=1000,
             reference_end=1100,
             cigar_string='80M15S',
-            mapq=60,
             five_prime_softclip=15,   # correct: trailing clip = 5' for minus strand
             effective_five_prime_clip=15,
             three_prime_softclip=0,
@@ -281,7 +279,6 @@ class TestXRFlagViaSelectBestAlignment:
             reference_start=1000,
             reference_end=1100,
             cigar_string='100M',
-            mapq=60,
             five_prime_softclip=0,    # no trailing clip → no 5' clip
             effective_five_prime_clip=0,
             three_prime_softclip=0,
@@ -319,7 +316,6 @@ class TestXRFlagViaSelectBestAlignment:
             reference_start=1000,
             reference_end=1100,
             cigar_string='80M15S',
-            mapq=60,
             five_prime_softclip=0,    # WRONG: old code reads cigar[0]=M → returns 0
             effective_five_prime_clip=0,
             three_prime_softclip=0,
@@ -360,7 +356,6 @@ class TestXRFlagViaSelectBestAlignment:
             reference_start=900,
             reference_end=1100,
             cigar_string='100M100N100M',
-            mapq=60,
             five_prime_softclip=0,    # uLTRA found the 5' junction: no trailing clip
             effective_five_prime_clip=0,
             three_prime_softclip=0,
@@ -375,7 +370,6 @@ class TestXRFlagViaSelectBestAlignment:
             reference_start=900,
             reference_end=1100,
             cigar_string='100M20S',   # 20bp trailing = 5' clip for minus strand
-            mapq=60,
             five_prime_softclip=20,   # correct: trailing clip = 5' for minus strand
             effective_five_prime_clip=20,
             three_prime_softclip=0,
