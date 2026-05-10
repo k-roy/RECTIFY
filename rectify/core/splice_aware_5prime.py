@@ -894,6 +894,52 @@ def rescue_3ss_truncation(
     # 2. Case 4 intronic-snap (below): already used here.
     _n_intervals = _get_n_op_intervals(read)
 
+    # Pre-compute the "leading-D" pattern flags ONCE per read.  These are read
+    # properties (CIGAR-only), independent of the candidate junction, so hoist
+    # them out of the per-junction loop.  Without this hoist, the inner loop
+    # walks the CIGAR for every (read, junction) pair where dist < 0 — a 4×
+    # perf regression on full chunks (Bug 3 patch performance fix, 2026-05-10).
+    #
+    # _leading_del_plus  applies on plus  strand  (5' end = LEFT of CIGAR).
+    # _leading_del_minus applies on minus strand  (5' end = RIGHT of CIGAR).
+    # Both default to False — most reads (non-mapPacBio) never trigger them.
+    _leading_del_plus = False
+    _leading_del_minus = False
+    if _n_intervals and read.cigartuples:
+        # Collect first ≤3 non-H ops from the LEFT end (plus strand 5').
+        _5p_ops_p: List[int] = []
+        for _op, _ in read.cigartuples:
+            if _op == 5:
+                continue   # H: not in query
+            _5p_ops_p.append(_op)
+            if len(_5p_ops_p) >= 3:
+                break
+        # Pattern 1 (terminal D): CIGAR starts D …
+        # Pattern 2 (D between match and N): CIGAR starts =/M/X D N
+        if _5p_ops_p and _5p_ops_p[0] == 2:
+            _leading_del_plus = True
+        elif (len(_5p_ops_p) >= 3
+              and _5p_ops_p[0] in (0, 7, 8)   # M / = / X
+              and _5p_ops_p[1] == 2            # D
+              and _5p_ops_p[2] == 3):          # N
+            _leading_del_plus = True
+
+        # Collect first ≤3 non-H ops from the RIGHT end (minus strand 5').
+        _5p_ops_m: List[int] = []
+        for _op, _ in reversed(read.cigartuples):
+            if _op == 5:
+                continue
+            _5p_ops_m.append(_op)
+            if len(_5p_ops_m) >= 3:
+                break
+        if _5p_ops_m and _5p_ops_m[0] == 2:
+            _leading_del_minus = True
+        elif (len(_5p_ops_m) >= 3
+              and _5p_ops_m[0] in (0, 7, 8)
+              and _5p_ops_m[1] == 2
+              and _5p_ops_m[2] == 3):
+            _leading_del_minus = True
+
     if rescue_seq:
         rescue_len = len(rescue_seq)
         _gs = len(genome_seq)
@@ -915,40 +961,26 @@ def rescue_3ss_truncation(
                     # can rescue the mangled exon-1 boundary.
                     # We do NOT suppress for correctly-aligned reads (Cat6) whose
                     # exon-1 alignment is clean (no leading D at the 5' end).
-                    _n_match = any(
-                        abs(ns - intron_start) <= junction_proximity_bp
-                        and abs(ne - intron_end) <= junction_proximity_bp
-                        for ns, ne in _n_intervals
-                    )
-                    _leading_del = False
-                    if _n_match:
-                        # Collect first ≤3 non-H ops from the 5' end (plus strand:
-                        # left end of CIGAR).
-                        _5p_ops: List[int] = []
-                        for _op, _ in (read.cigartuples or []):
-                            if _op == 5:   continue   # H: not in query
-                            _5p_ops.append(_op)
-                            if len(_5p_ops) >= 3:
-                                break
-                        # Pattern 1 (terminal D): CIGAR starts D … — mapPacBio
-                        # inserts D ops that push align_5prime left of intron_start.
-                        if _5p_ops and _5p_ops[0] == 2:
-                            _leading_del = True
-                        # Pattern 2 (D between match and N): CIGAR starts =/M/X D N —
-                        # mapPacBio misses a few exon bases, encoding them as deletions
-                        # between the terminal match block and the intron N-op.
-                        elif (len(_5p_ops) >= 3
-                              and _5p_ops[0] in (0, 7, 8)   # M / = / X
-                              and _5p_ops[1] == 2            # D
-                              and _5p_ops[2] == 3):          # N
-                            _leading_del = True
-                    if not (_n_match and _leading_del) and align_5prime <= intron_start:
+                    #
+                    # Fast path: _leading_del_plus is precomputed once per read.
+                    # For reads without that pattern (the vast majority), we
+                    # collapse to the original `if align_5prime <= intron_start: continue`
+                    # — restoring May-7 perf for the common case.
+                    if _leading_del_plus:
+                        _n_match = any(
+                            abs(ns - intron_start) <= junction_proximity_bp
+                            and abs(ne - intron_end) <= junction_proximity_bp
+                            for ns, ne in _n_intervals
+                        )
+                    else:
+                        _n_match = False
+                    if not (_n_match and _leading_del_plus) and align_5prime <= intron_start:
                         continue  # alignment is upstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
                     # Track this junction as a forced-snap candidate (mapPacBio
                     # terminal-D overshoot: N-op proves the read spans the intron,
                     # but garbled post-N query bases will likely fail sequence rescue).
-                    if _n_match and _leading_del:
+                    if _n_match and _leading_del_plus:
                         _n_err = min(
                             abs(ns - intron_start) + abs(ne - intron_end)
                             for ns, ne in _n_intervals
@@ -1071,41 +1103,26 @@ def rescue_3ss_truncation(
                     # suppress the skip so we can rescue the mangled exon-1 boundary.
                     # We do NOT suppress for correctly-aligned reads (Cat6) whose
                     # exon-1 alignment is clean (no trailing D at the 5' end).
-                    _n_match = any(
-                        abs(ns - intron_start) <= junction_proximity_bp
-                        and abs(ne - intron_end) <= junction_proximity_bp
-                        for ns, ne in _n_intervals
-                    )
-                    _leading_del = False
-                    if _n_match:
-                        # Collect first ≤3 non-H ops from the 5' end (minus strand:
-                        # right end of CIGAR, so iterate reversed).
-                        _5p_ops_m: List[int] = []
-                        for _op, _ in reversed(read.cigartuples or []):
-                            if _op == 5:   continue   # H: not in query
-                            _5p_ops_m.append(_op)
-                            if len(_5p_ops_m) >= 3:
-                                break
-                        # Pattern 1 (terminal D): reversed CIGAR starts D … — mapPacBio
-                        # inserts D ops that push reference_end — and thus align_5prime
-                        # — past intron_end.
-                        if _5p_ops_m and _5p_ops_m[0] == 2:
-                            _leading_del = True
-                        # Pattern 2 (D between match and N): reversed CIGAR is =/M/X D N
-                        # — mapPacBio puts a few deleted exon bases between the terminal
-                        # match block and the intron N-op (e.g. CIGAR …304N5D11=).
-                        elif (len(_5p_ops_m) >= 3
-                              and _5p_ops_m[0] in (0, 7, 8)   # M / = / X
-                              and _5p_ops_m[1] == 2            # D
-                              and _5p_ops_m[2] == 3):          # N
-                            _leading_del = True
-                    if not (_n_match and _leading_del) and align_5prime >= intron_end:
+                    #
+                    # Fast path: _leading_del_minus is precomputed once per read
+                    # (see hoist near function entry). For reads without that
+                    # pattern (the vast majority), this collapses to the original
+                    # `if align_5prime >= intron_end: continue`.
+                    if _leading_del_minus:
+                        _n_match = any(
+                            abs(ns - intron_start) <= junction_proximity_bp
+                            and abs(ne - intron_end) <= junction_proximity_bp
+                            for ns, ne in _n_intervals
+                        )
+                    else:
+                        _n_match = False
+                    if not (_n_match and _leading_del_minus) and align_5prime >= intron_end:
                         continue  # alignment is downstream of intron entirely — skip
                     dist = 0  # treat as touching the boundary
                     # Track this junction as a forced-snap candidate (mapPacBio
                     # terminal-D overshoot: N-op proves the read spans the intron,
                     # but garbled post-N query bases will likely fail sequence rescue).
-                    if _n_match and _leading_del:
+                    if _n_match and _leading_del_minus:
                         _n_err = min(
                             abs(ns - intron_start) + abs(ne - intron_end)
                             for ns, ne in _n_intervals
