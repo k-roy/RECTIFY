@@ -44,7 +44,9 @@ dependencies = [
     "biopython>=1.79",
     "tqdm>=4.60.0",
     "pydeseq2>=0.4.0",
-    "mappy>=2.24",           # Python bindings for minimap2 (required by gapmm2)
+    "mappy>=2.24",           # Python bindings for minimap2 (required by gapmm2 + cdna_correct re-align)
+    "intervaltree>=3.1",     # gene-interval lookups (correct-cdna sense/antisense classification)
+    "rapidfuzz>=3.0",        # Levenshtein distance for UMI clustering (correct-cdna)
 ]
 
 [project.optional-dependencies]
@@ -52,6 +54,13 @@ dependencies = [
 #   pip install "rectify-rna[performance]"  or  conda install numba
 performance = [
     "numba>=0.55.0",
+]
+# Optional cdna-correct extras — enables fuzzy adapter anchoring + POA consensus
+# in `rectify correct-cdna`. Without these, the subcommand falls back to
+# exact-match anchors and pileup-style consensus (still functional, just less robust).
+cdna-correct = [
+    "edlib>=1.3",            # Lev≤2 fuzzy HW alignment for adapter anchors (~95-97% vs 73% exact)
+    "pyabpoa>=1.5",          # POA consensus when re-aligning multi-read clusters
 ]
 # External binary tools — cannot be installed via pip; use conda/mamba:
 #   mamba install -c bioconda minimap2 bbmap gapmm2 samtools htslib desalt meme

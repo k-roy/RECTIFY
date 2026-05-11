@@ -954,6 +954,95 @@ Citation:
     )
 
     # =========================================================================
+    # correct-cdna command (UMI-aware per-molecule consensus from cDNA BAM)
+    # =========================================================================
+    correct_cdna_parser = subparsers.add_parser(
+        'correct-cdna',
+        help='UMI-aware per-molecule consensus for PCR-cDNA BAMs (PCB114.24 chemistry)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Cluster aligned PCR-cDNA reads (SQK-PCB114.24 SSP + 27-nt UMI architecture) '
+            'by (locus, orientation, UMI) and emit one consensus record per starting RNA '
+            'molecule.\n\n'
+            'Operates AFTER alignment, complementing trim-cdna-polya which runs on the '
+            'FASTQ before alignment. Stage-1 emits a representative-read or pileup-based '
+            'consensus per cluster (POA if pyabpoa+mappy+reference are all available). '
+            'Stage-2 finds cross-orientation (sense+antisense) cluster pairs sharing the '
+            'same UMI and tags them as XS:paired.\n\n'
+            'Output: stage1_consensus.bam (one record per molecule), clusters.tsv '
+            '(per-cluster manifest), stage2_pairs.tsv (cross-orient pair table).'
+        ),
+    )
+    correct_cdna_parser.add_argument(
+        'bam',
+        help='Input BAM (aligned PCR-cDNA reads, indexed)',
+    )
+    correct_cdna_parser.add_argument(
+        '-o', '--out',
+        dest='out',
+        required=True,
+        help='Output directory (will contain stage1_consensus.bam, clusters.tsv, stage2_pairs.tsv)',
+    )
+    correct_cdna_parser.add_argument(
+        '--umi-edit-distance',
+        dest='umi_edit_distance',
+        type=int,
+        default=3,
+        help='Max Levenshtein distance between UMIs in the same cluster',
+    )
+    correct_cdna_parser.add_argument(
+        '--anchor-window-bp',
+        dest='anchor_window_bp',
+        type=int,
+        default=25,
+        help='Window around alignment-end anchor for same-locus clustering (bp)',
+    )
+    correct_cdna_parser.add_argument(
+        '--per-cluster-cap',
+        dest='per_cluster_cap',
+        type=int,
+        default=200,
+        help='Max reads per cluster (larger = potential PCR-jackpot signal, slower POA)',
+    )
+    correct_cdna_parser.add_argument(
+        '--max-cross-orient-span',
+        dest='max_cross_orient_span',
+        type=int,
+        default=3000,
+        help='Stage-2: max bp separation between fwd and rev anchors to consider for pairing',
+    )
+    correct_cdna_parser.add_argument(
+        '--gff',
+        default=None,
+        help='GFF/GFF3 annotation (gzip OK) for sense/antisense classification. '
+             'If omitted, all clusters tagged XS:unannotated.',
+    )
+    correct_cdna_parser.add_argument(
+        '--reference',
+        default=None,
+        help='Reference FASTA (gzip OK) for POA consensus re-alignment. '
+             'Without it, falls back to pileup-style substitution-corrective consensus.',
+    )
+    correct_cdna_parser.add_argument(
+        '--no-poa',
+        action='store_true',
+        dest='no_poa',
+        default=False,
+        help='Force pileup-only consensus even if abPOA is available',
+    )
+    correct_cdna_parser.add_argument(
+        '--region',
+        default=None,
+        help='Restrict to a single BAM region (e.g. chrI) — useful for testing',
+    )
+    correct_cdna_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        default=False,
+        help='Verbose DEBUG-level logging',
+    )
+
+    # =========================================================================
     # restore-softclip command (add back trimmed poly(A) as soft-clip)
     # =========================================================================
     restore_sc_parser = subparsers.add_parser(
@@ -1528,6 +1617,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'trim-cdna-polya':
         from .core import cdna_trim_command
         sys.exit(cdna_trim_command.run(args))
+    elif args.command == 'correct-cdna':
+        from .core import cdna_correct_command
+        sys.exit(cdna_correct_command.run(args))
     elif args.command == 'restore-softclip':
         from .core import restore_polya_command
         sys.exit(restore_polya_command.run(args))
