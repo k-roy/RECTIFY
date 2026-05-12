@@ -618,6 +618,7 @@ def run_bbmap(
     output_bam: str,
     threads: int = 8,
     extra_args: Optional[List[str]] = None,
+    bbmap_path: Optional[str] = None,
 ) -> str:
     """Run vanilla BBMap for short-read splice-aware alignment (Illumina/Aviti).
 
@@ -643,9 +644,19 @@ def run_bbmap(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
-    bbmap_path = shutil.which('bbmap.sh')
-    if not bbmap_path:
-        raise FileNotFoundError("bbmap.sh not found in PATH")
+    # Resolve bbmap.sh: caller-provided path wins (absolute or PATH-resolvable);
+    # otherwise fall back to PATH lookup of bare "bbmap.sh".
+    if bbmap_path and bbmap_path != 'bbmap.sh':
+        bbmap_resolved = bbmap_path if Path(bbmap_path).is_file() else shutil.which(bbmap_path)
+    else:
+        bbmap_resolved = shutil.which('bbmap.sh')
+    if not bbmap_resolved:
+        raise FileNotFoundError(
+            f"bbmap.sh not found (tried path={bbmap_path!r}, also not on PATH). "
+            "Pass --bbmap-path /full/path/to/bbmap.sh, or activate a conda env "
+            "with bbtools installed."
+        )
+    bbmap_path = bbmap_resolved
 
     sam_path = output_bam.with_suffix('.sam')
     bbmap_index_dir = Path(genome_path).parent / 'bbmap_index'
@@ -717,6 +728,7 @@ def run_bwa_mem(
     output_bam: str,
     threads: int = 8,
     extra_args: Optional[List[str]] = None,
+    bwa_path: Optional[str] = None,
 ) -> str:
     """Run BWA-MEM for short-read alignment (Illumina/Aviti).
 
@@ -745,9 +757,17 @@ def run_bwa_mem(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
 
-    bwa_path = shutil.which('bwa')
-    if not bwa_path:
-        raise FileNotFoundError("bwa not found in PATH")
+    # Resolve bwa: caller-provided path wins; otherwise PATH lookup.
+    if bwa_path and bwa_path != 'bwa':
+        bwa_resolved = bwa_path if Path(bwa_path).is_file() else shutil.which(bwa_path)
+    else:
+        bwa_resolved = shutil.which('bwa')
+    if not bwa_resolved:
+        raise FileNotFoundError(
+            f"bwa not found (tried path={bwa_path!r}, also not on PATH). "
+            "Pass --bwa-path /full/path/to/bwa, or `module load bwa`."
+        )
+    bwa_path = bwa_resolved
 
     # Build BWA index if not present (index files sit next to the FASTA)
     bwt_path = Path(str(genome_path) + '.bwt')

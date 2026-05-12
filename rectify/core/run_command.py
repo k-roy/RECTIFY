@@ -177,7 +177,14 @@ def _run_alignment(
         _base_aligners = ['bbmap', 'bwa']
     else:
         _base_aligners = ['minimap2', 'mapPacBio', 'gapmm2']
-    _junction_aligners = junction_aligners or []
+    # Junction-aligner default depends on --short-read: BBMap's intronlen=20
+    # already covers splicing for short reads, so uLTRA/deSALT aren't useful
+    # and shouldn't be the default. Long-read protocols still default to
+    # [uLTRA, deSALT]. Explicit user list (including []) overrides.
+    if junction_aligners is None:
+        _junction_aligners = [] if short_read else ['uLTRA', 'deSALT']
+    else:
+        _junction_aligners = junction_aligners
     all_aligners = _base_aligners + _junction_aligners
     aligner_desc = ' + '.join(all_aligners)
     print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
@@ -1245,7 +1252,8 @@ def _run_single_sample(args) -> int:
     # ── Step 0/1: Alignment ───────────────────────────────────────────────────
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
-        print(f"\n[Step 1/3] Aligning with triple-aligner...")
+        _align_mode = 'short-read (bbmap + bwa)' if getattr(args, 'short_read', False) else 'long-read consensus'
+        print(f"\n[Step 1/3] Aligning ({_align_mode})...")
         print("-" * 50)
         _t0 = _time.perf_counter()
         # Align to bam_dir if specified; otherwise use work_dir (scratch if available)

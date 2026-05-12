@@ -1395,14 +1395,17 @@ Manifest format (TSV):
     run_parser.add_argument(
         '--base-aligners',
         nargs='+',
-        choices=['minimap2', 'mapPacBio', 'gapmm2'],
-        default=['minimap2', 'mapPacBio', 'gapmm2'],
+        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa'],
+        default=None,
         metavar='ALIGNER',
         dest='base_aligners',
         help=(
-            'General-purpose aligners for the consensus pool '
-            '(choices: minimap2, mapPacBio, gapmm2). '
-            'Default: all three. Example: --base-aligners mapPacBio gapmm2'
+            'Base aligners for the consensus pool. When omitted, the default '
+            'depends on --short-read: bbmap + bwa for short-read, '
+            'minimap2 + mapPacBio + gapmm2 for long-read. '
+            'Passing this flag overrides the default in both modes. '
+            'Example (force short-read panel even without --short-read): '
+            '--base-aligners bbmap bwa'
         )
     )
 
@@ -1410,12 +1413,14 @@ Manifest format (TSV):
         '--junction-aligners',
         nargs='+',
         choices=['uLTRA', 'deSALT'],
-        default=['uLTRA', 'deSALT'],
+        default=None,
         metavar='ALIGNER',
         help=(
             'Junction-aware aligners for the consensus pool '
             '(choices: uLTRA, deSALT). Requires --annotation. '
-            'Default: both uLTRA and deSALT. Pass --no-junction-aligners to disable.'
+            'When omitted, defaults to [] (disabled) under --short-read and '
+            '[uLTRA, deSALT] under long-read. '
+            'Pass --no-junction-aligners to explicitly disable.'
         )
     )
 

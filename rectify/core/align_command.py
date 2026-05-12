@@ -416,6 +416,7 @@ def run_align(args: argparse.Namespace) -> int:
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=n_threads,
+                    bbmap_path=exec_path,
                 )
             elif aligner == 'bwa':
                 run_bwa_mem(
@@ -423,6 +424,7 @@ def run_align(args: argparse.Namespace) -> int:
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=n_threads,
+                    bwa_path=exec_path,
                 )
 
             _elapsed = _time.perf_counter() - _t_aligner
