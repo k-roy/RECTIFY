@@ -106,7 +106,7 @@ visualize = [
 rectify = "rectify.cli:main"
 
 [tool.setuptools]
-packages = ["rectify", "rectify.core", "rectify.core.analyze", "rectify.utils", "rectify.data", "rectify.visualize"]
+packages = ["rectify", "rectify.calibration", "rectify.core", "rectify.core.aggregate", "rectify.core.analyze", "rectify.core.classify", "rectify.utils", "rectify.data", "rectify.visualize"]
 
 [tool.setuptools.package-data]
 rectify = [
