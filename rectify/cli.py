@@ -1041,6 +1041,64 @@ Citation:
         default=False,
         help='Verbose DEBUG-level logging',
     )
+    # v1.13+ flags (added during v3 RECTIFY integration):
+    correct_cdna_parser.add_argument(
+        '--umi-clustering',
+        dest='umi_clustering',
+        choices=('directional', 'components'),
+        default='directional',
+        help='UMI clustering method (default: directional, umi_tools-style 2× rule)',
+    )
+    correct_cdna_parser.add_argument(
+        '--min-gene-frac',
+        dest='min_gene_frac',
+        type=float,
+        default=0.3,
+        help='v1.14 XS classifier: gene_overlap / gene_length threshold (default 0.3)',
+    )
+    correct_cdna_parser.add_argument(
+        '--min-read-frac',
+        dest='min_read_frac',
+        type=float,
+        default=0.8,
+        help='v1.14 XS classifier: gene_overlap / read_aln_length threshold (default 0.8)',
+    )
+    correct_cdna_parser.add_argument(
+        '--isoform-tol-5',
+        dest='isoform_tol_5',
+        type=int,
+        default=5,
+        help='v1.17 isoform clustering: bp tolerance on 5\' axis (Type-1 only)',
+    )
+    correct_cdna_parser.add_argument(
+        '--isoform-tol-3',
+        dest='isoform_tol_3',
+        type=int,
+        default=5,
+        help='v1.17 isoform clustering: bp tolerance on 3\' axis',
+    )
+    correct_cdna_parser.add_argument(
+        '--strand-aware-consensus',
+        dest='strand_aware_consensus',
+        action='store_true',
+        default=False,
+        help='v1.18 strand-aware POA: split reads by is_reverse, build a per-strand '
+             'sub-consensus, then merge. Cancels strand-specific systematic errors.',
+    )
+    correct_cdna_parser.add_argument(
+        '--t1t2-tol-5',
+        dest='t1t2_tol_5',
+        type=int,
+        default=5,
+        help='v2 Type-1↔Type-2 reconciliation: bp tolerance on 5\' axis',
+    )
+    correct_cdna_parser.add_argument(
+        '--t1t2-tol-3',
+        dest='t1t2_tol_3',
+        type=int,
+        default=5,
+        help='v2 Type-1↔Type-2 reconciliation: bp tolerance on 3\' axis',
+    )
 
     # =========================================================================
     # restore-softclip command (add back trimmed poly(A) as soft-clip)

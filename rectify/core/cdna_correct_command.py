@@ -1,13 +1,6 @@
+#!/usr/bin/env python3
 """rectify correct-cdna — UMI-aware per-molecule consensus for PCR-cDNA.
 
-Implementation of the `rectify correct-cdna` subcommand. Operates on a BAM
-of aligned PCR-cDNA reads (typically SQK-PCB114.24 chemistry); clusters reads
-by (locus, orientation, UMI) and emits one consensus record per starting
-RNA molecule. Complements the FASTQ-level `rectify trim-cdna-polya` subcommand
-(see ``cdna_trim_command.py``) which runs *before* alignment.
-
-Implementation notes
---------------------
 v1: UMI extraction + Stage-1 clustering + per-cluster representative-read
     selection + Stage-1 consensus BAM output. (POA error-correction is a
     v2 upgrade; v1 uses umi_tools-style "longest-read-as-representative"
@@ -20,13 +13,92 @@ v1.11: fuzzy anchor matching via edlib HW (Lev≤2). The exact-match anchor
     seed region. Lev≤2 lifts anchored detection to ~95–97% with effectively
     zero FP (genome+polyA combined: 0/50k random 300-bp chrI windows).
 
-See ``docs/algorithms/cdna_correct.md`` (ported from cdna_dev DESIGN.md) for
-the full algorithmic description and empirical validation of the PCB114.24
-UMI architecture.
+v2: Type-1↔Type-2 same-orient reconciliation by position (replaces the legacy
+    cross-orient pair check, which had no biological substrate). Both physical
+    PCR strands of a single molecule produce reads with the same orient label
+    after BAM normalization, so cross-orient pairs cannot represent the same
+    molecule. The real same-molecule signal split across populations is:
+    Strand A sequenced → Type-1 (SSP captured); Strand B sequenced with SSP
+    truncated at basecalled-5' → Type-2 (no UMI). v2 matches Type-1↔Type-2
+    pairs at the same gene + same orient with |Δ5'|≤5 AND |Δ3'|≤5. Each pair
+    gets `XL:Z:<partner cluster_id>` on both records and is emitted in
+    t1t2_pairs.tsv.
 
-Ported from ``cdna_dev/src/cdna_correct.py`` v1.11 (M1 dev branch) on
-2026-05-11; argparse setup moved to ``rectify/cli.py`` to integrate with
-the rectify CLI surface.
+v1.15: Type-2 (SSP-less) read parser. Reads where sequencing didn't reach the
+    SSP/UMI region are no longer dropped — they are tagged `XT:i:2` and handled
+    with position-based deduplication (no UMI available). Type-1 reads (SSP+UMI
+    captured, the standard case) carry `XT:i:1`. The two populations serve
+    different biology:
+      Type-1: full-length molecules where SSP template-switched at the original
+              mRNA 5' cap → captures actual TSS.
+      Type-2: 5'-truncated molecules. Likely co-translational decay
+              intermediates (XRN1 paused at ribosomes → 5' positions frame-
+              periodic, peak near stop codon, short polyA tail). Some technical
+              truncations also live here.
+    Distinguishing decay intermediates from technical noise: joint analysis
+    of (Δframe, tail_length) in v1.17 (later).
+
+v1.14: overlap-based XS classifier replaces anchor-proximity classifier. For
+    each cluster's consensus alignment, find genes whose body overlaps; filter
+    to candidates with gene_frac ≥ 0.3 OR read_frac ≥ 0.8. Sense candidates
+    (gene strand matching implied mRNA strand from orient) are preferred over
+    antisense; among sense candidates, pick the one whose TSS comes FIRST in
+    the transcription direction — this attributes dicistronic readthroughs to
+    the upstream-promoter gene and tolerates polyA-cleavage drift past
+    annotated 3' ends without flipping to "antisense of downstream gene." Fixed
+    the chrI:73,460 CDC19 misclassification where polyA drift 16 bp past
+    CDC19's annotated end was being called "antisense of YAL037W."
+
+v1.13: umi_tools-style directional UMI clustering replaces connected-components.
+    Connected-components on a Lev-≤-3 graph chain-merges thousands of independent
+    molecules whenever a polyA hotspot collides their UMIs within Lev-≤-3 hops;
+    the v1.12 mitigation was to drop any bucket exceeding `per_cluster_cap`,
+    which silently threw out ~78% of input reads on chrI. Directional clustering
+    breaks transitivity via the 2× rule (a UMI can absorb a lower-count neighbor
+    only if its own count is at least 2×−1 the neighbor's), so multi-read buckets
+    correctly resolve into individual molecule clusters instead of one mega-cluster.
+    Per-bucket cap is now advisory in the directional path.
+
+v1.12: walk-back anchor canonicalization + sequence-level polyA tail length.
+    Reads ending in polyA at a genomic A-tract had aln_end positions drifting
+    by 5–50 bp across reads of the same molecule (tail-length variance +
+    aligner extension into genomic A's + occasional false N-op into an
+    internal A-stretch). Walk-back: starting at the basecalled-3' anchor,
+    iterate get_aligned_pairs skipping ref-A (or ref-T for reversed reads),
+    stop at the first matching non-A/non-T. False N-ops are handled for free
+    because get_aligned_pairs omits skipped (N-op) ref positions. Tail length
+    = A-count in the BAM-SEQ region between the canonical cleavage anchor
+    and the adapter anchor (or 200 bp fallback). Reported per-read and
+    aggregated to per-cluster median in the XA:i tag.
+
+See ``docs/algorithms/cdna_correct.md`` (port of ont_cdna/DESIGN.md) for full
+algorithmic description and empirical validation of the PCB114.24 UMI
+architecture: SSP_FWD + (TT-VVVV)×4 + TTT UMI + GGG TSO bridge + cDNA body
++ polyA + adapter.
+
+Output files (in --out directory):
+  - stage1_consensus.bam(.bai)   one consensus record per molecule (orient-aware
+                                  tags listed below)
+  - clusters.tsv                 per-cluster manifest
+  - isoforms.tsv                 v1.17 isoform-level aggregation
+  - t1t2_pairs.tsv               v2 Type-1↔Type-2 reconciliation pairs
+
+Tag glossary:
+  XU  canonical UMI                          XA  polyA tail length
+  XO  orient (fwd / rev)                     XG  primary gene (XS join key)
+  XC  cluster size                           XI  isoform_id
+  XR  input read IDs                         XT  read type (1=SSP+UMI, 2=SSP-less)
+  XM  consensus method                       XB  strand-split (n_top/n_bottom)
+  XS  sense/antisense/unannotated            XL  partner cluster_id (T1↔T2)
+  XF  full-length tier (0/1/2)
+
+Algorithm versions are documented per-block above. Ported from
+``ont_cdna/src/cdna_correct.py`` v1.19 + v2 (M1 dev, 2026-05-13);
+argparse setup lives in ``rectify/cli.py``; the standalone entry point
+lives in ont_cdna for algorithm prototyping.
+
+Usage (via rectify CLI):
+    rectify correct-cdna INPUT.bam --out OUTDIR [options]
 """
 
 from __future__ import annotations
@@ -186,22 +258,296 @@ class ReadInfo:
     """Minimal per-read state needed for clustering."""
     read_id: str
     chrom: str
-    anchor: int
+    anchor: int          # canonical cleavage anchor (v1.12 walk-back) or aln-3' end (legacy)
     orient: str          # 'fwd' (SSP at LEFT of BAM SEQ) or 'rev' (SSP_RC at RIGHT)
     umi: str             # 27-nt UMI, basecalled-orient
     is_reverse: bool
     xf_tier: int         # XF: 0=not detected, 1=unanchored, 2=anchored adapter+polyA
+    tail_len: int        # v1.12: sequence-level polyA tail length (A-count between cleavage anchor and adapter)
+    aln_start: int       # v1.14: aligned region start in ref coords (for overlap-based XS classification)
+    aln_end: int         # v1.14: aligned region end (exclusive) in ref coords
+    read_type: int       # v1.15: 1 = SSP+UMI captured, 2 = SSP-less (5'-truncated, e.g. decay intermediate)
+    pos5_corrected: int  # v1.19: TSS-side position corrected for SSP-bridge G-tract ambiguity (analog of 3' polyA walk-back)
 
 
-def extract_read_info(read: pysam.AlignedSegment) -> Optional[ReadInfo]:
-    """Extract UMI + anchor + orient from a primary alignment. Returns None if no SSP found.
+def _find_adapter_anchor_pos(seq: str, orient: str) -> Optional[int]:
+    """Return BAM-SEQ start position of the adapter anchor (fuzzy, Lev≤ANCHOR_MAX_EDIT),
+    or None. For fwd: rightmost hit in last ANCHOR_SEARCH_WIN bp. For rev: leftmost
+    hit in first ANCHOR_SEARCH_WIN bp."""
+    if not HAS_EDLIB:
+        return None
+    if orient == "fwd":
+        off = max(0, len(seq) - ANCHOR_SEARCH_WIN)
+        win = seq[off:]
+        r = edlib.align(ANCHOR_FWD, win, mode="HW", task="locations", k=ANCHOR_MAX_EDIT)
+        if r["editDistance"] == -1 or not r["locations"]: return None
+        return off + r["locations"][-1][0]
+    win = seq[:ANCHOR_SEARCH_WIN]
+    r = edlib.align(ANCHOR_RC, win, mode="HW", task="locations", k=ANCHOR_MAX_EDIT)
+    if r["editDistance"] == -1 or not r["locations"]: return None
+    return r["locations"][0][0]
 
-    ANCHOR LOGIC (fixed 2026-05-10): basecalled-3' anchor = aln_end-1 if not is_reverse
-    else aln_start. This is independent of orient — for any read, basecalled-3' aligns
-    to BAM SEQ's RIGHT end when FLAG=0 (BAM SEQ matches basecalled) and to BAM SEQ's
-    LEFT end (= aln_start in + ref coords) when FLAG=16 (BAM SEQ is RC of basecalled).
-    Earlier versions used `(orient=='fwd') != is_reverse` which inverted the anchor
-    for - strand gene reads and produced flipped sense/antisense labels.
+
+def walk_back_anchor_and_tail(read: pysam.AlignedSegment,
+                               chrom_seq: str,
+                               orient: str) -> Tuple[int, int]:
+    """Return (canonical_cleavage_anchor_ref_pos, polyA_tail_length_in_basecalled_orient).
+
+    Walk-back direction is determined by **orient** (not is_reverse), because the
+    polyA tail's position in BAM SEQ depends on where the SSP/UMI was found, not
+    on the alignment direction. Strand-A and Strand-B reads of the same molecule
+    can both produce orient=fwd records (Strand A on +gene → is_reverse=False;
+    Strand B on −gene → is_reverse=True); in both cases the BAM SEQ structure is
+    SSP-UMI-cDNA-polyA-adapter (left-to-right), so polyA is at the RIGHT regardless.
+
+      - orient='fwd': polyA at RIGHT of BAM SEQ. Walk reverse(pairs), skip ref-A.
+      - orient='rev': polyT at LEFT of BAM SEQ (= basecalled polyA in +ref coords).
+                      Walk iter(pairs), skip ref-T.
+
+    Stops at first matching non-A/non-T position. False N-ops are skipped for free
+    because get_aligned_pairs omits skipped ref positions.
+
+    Tail length is the count of basecalled-A bases (= ref-T for orient=rev) in the
+    BAM-SEQ region between the cleavage anchor and the adapter anchor (or 200 bp
+    fallback if adapter not found).
+    """
+    seq = read.query_sequence
+    # Fallback anchor: polyA-side end of BAM SEQ in ref coords (orient-based).
+    # orient=fwd → polyA at RIGHT → aln_end-1. orient=rev → polyA at LEFT → aln_start.
+    fallback_anchor = ((read.reference_end or 1) - 1) if orient == "fwd" else read.reference_start
+    if seq is None:
+        return (fallback_anchor, 0)
+    pairs = read.get_aligned_pairs(matches_only=True)
+    if not pairs:
+        return (fallback_anchor, 0)
+
+    if orient == "fwd":
+        skip_ref = 'A'
+        tail_base = 'A'
+        iter_pairs = reversed(pairs)
+        def tail_segment(qpos: int) -> str:
+            adp = _find_adapter_anchor_pos(seq, orient)
+            if adp is not None and adp > qpos:
+                return seq[qpos + 1: adp]
+            return seq[qpos + 1: qpos + 1 + 200]
+    else:
+        skip_ref = 'T'        # +ref T at LEFT of BAM SEQ = basecalled polyA in +ref form
+        tail_base = 'T'
+        iter_pairs = iter(pairs)
+        def tail_segment(qpos: int) -> str:
+            adp = _find_adapter_anchor_pos(seq, orient)
+            if adp is not None:
+                adp_end = adp + ANCHOR_LEN
+                if adp_end < qpos:
+                    return seq[adp_end: qpos]
+            return seq[max(0, qpos - 200): qpos]
+
+    for qpos, rpos in iter_pairs:
+        if rpos is None or qpos is None: continue
+        if rpos < 0 or rpos >= len(chrom_seq): continue
+        ref_b = chrom_seq[rpos].upper()
+        if ref_b == skip_ref:
+            continue
+        read_b = seq[qpos].upper()
+        if read_b == ref_b:
+            tail_a = tail_segment(qpos).count(tail_base)
+            return (rpos, tail_a)
+        # mismatch — keep walking; we don't anchor on a basecaller error
+
+    return (fallback_anchor, 0)
+
+
+BRIDGE_LEN = 3     # the rGrGrG of the TSO that becomes the GGG bridge in BAM SEQ.
+# v1.19 chemistry-aware 5' boundary detection:
+# The canonical PCB114 5' boundary in BAM SEQ for orient=fwd reads is the
+# 12-base pattern `TT-VVVV-TTT-GGG`:
+#   - TT       UMI's penultimate TT (start of last TT-VVVV-TTT block)
+#   - VVVV     random V positions (V = A/C/G, not T)
+#   - TTT      UMI's trailing TTT
+#   - GGG      TSO bridge (rGrGrG → GGG in cDNA after RT/PCR)
+# Position right AFTER the GGG = the mRNA TSS.
+#
+# For orient=rev the pattern's RC = `CCC-AAA-BBBB-AA` (where B = T/G/C, not A).
+# Position right BEFORE the CCC = the mRNA 5' end (= aln_end - 1 in ref coords).
+#
+# Detection: at each candidate 12-bp window near the alignment boundary, score
+# the match against the canonical pattern. Pick the highest-scoring window
+# with score >= threshold and 3-of-3 G's (or C's for rev) intact — those G's
+# ARE the bridge and we use them to anchor the boundary.
+
+# Pattern score templates: position → {allowed bases}
+_BOUNDARY_PATTERN_FWD = (
+    {'T'}, {'T'},                       # 0, 1: TT
+    {'A','C','G'}, {'A','C','G'},       # 2, 3: VV
+    {'A','C','G'}, {'A','C','G'},       # 4, 5: VV
+    {'T'}, {'T'}, {'T'},                # 6, 7, 8: TTT
+    {'G'}, {'G'}, {'G'},                # 9, 10, 11: GGG (bridge)
+)
+_BOUNDARY_PATTERN_REV = (
+    {'C'}, {'C'}, {'C'},                # 0, 1, 2: CCC (bridge, RC of GGG)
+    {'A'}, {'A'}, {'A'},                # 3, 4, 5: AAA (RC of TTT)
+    {'C','G','T'}, {'C','G','T'},       # 6, 7: BB
+    {'C','G','T'}, {'C','G','T'},       # 8, 9: BB
+    {'A'}, {'A'},                       # 10, 11: AA (RC of TT)
+)
+_BOUNDARY_LEN = 12
+_BOUNDARY_MIN_SCORE = 10  # allow 2 mismatches across the 12-base window
+
+
+def _score_boundary_window(window: str, pattern) -> int:
+    """Score a 12-base window against the canonical pattern. Returns 0-12."""
+    if len(window) != _BOUNDARY_LEN:
+        return 0
+    score = 0
+    for i, allowed in enumerate(pattern):
+        if window[i] in allowed:
+            score += 1
+    return score
+
+
+def _find_boundary_match(seq: str, search_start: int, search_end: int,
+                          rc: bool = False) -> Optional[Tuple[int, int]]:
+    """Find the best 12-base canonical-pattern match in `seq[search_start:search_end]`.
+
+    Returns (match_qpos, score) of the highest-scoring window, or None if no
+    window meets the minimum score threshold AND has the 3 bridge bases intact.
+    """
+    pattern = _BOUNDARY_PATTERN_REV if rc else _BOUNDARY_PATTERN_FWD
+    # Indices of the bridge bases within the pattern (where the chemistry-fixed
+    # G's / C's sit — these must all match for a valid boundary call)
+    bridge_indices = (0, 1, 2) if rc else (9, 10, 11)
+    bridge_char = 'C' if rc else 'G'
+    best_score = 0
+    best_qpos = -1
+    for qpos in range(search_start, search_end - _BOUNDARY_LEN + 1):
+        window = seq[qpos: qpos + _BOUNDARY_LEN].upper()
+        # Require all 3 bridge bases to match
+        if not all(window[i] == bridge_char for i in bridge_indices):
+            continue
+        score = _score_boundary_window(window, pattern)
+        if score > best_score:
+            best_score = score
+            best_qpos = qpos
+    if best_qpos < 0 or best_score < _BOUNDARY_MIN_SCORE:
+        return None
+    return (best_qpos, best_score)
+
+
+def walk_forward_tss(read: pysam.AlignedSegment, orient: str, chrom_seq: str
+                     ) -> int:
+    """v1.19 (corrected): bridge-G walk-forward — analog of 3' polyA walk-back.
+
+    Chemistry: PCB114 TSO has rGrGrG. After RT, the cDNA carries the RC at its 3'
+    end. The BAM SEQ for orient=fwd reads has the structure
+        ...SSP_FWD - UMI (ending in TTT) - GGG (bridge) - mRNA TSS - mRNA body...
+    The bridge GGG (3 bp, fixed by chemistry) is followed by the mRNA TSS.
+
+    When the genome immediately upstream of the TSS happens to contain G's, the
+    aligner can extend the alignment LEFT through the bridge G's into those
+    upstream genomic G's (each G/G match adds to the alignment score). The
+    reported aln_start ends up 1-3 bp UPSTREAM of the true TSS.
+
+    Fix (symmetric to polyA walk-back): walk forward through aligned G's that
+    match genomic G's, capped at the bridge length (3). The corrected position
+    is at the first non-G match — the "leftmost possible TSS" convention
+    (analogous to "leftmost possible CPA site" for polyA cleavage).
+
+    Sanity-check landmark: before applying the walk, verify the soft-clip
+    immediately before the aligned region contains the UMI's TTT tail (for
+    orient=fwd) or its RC = AAA (for orient=rev). If the chemistry pattern is
+    broken (truncated UMI, Type-2-like), we skip the correction.
+
+    Trade-off: genes whose mRNA legitimately starts with G(s) get their TSS
+    reported up to 3 bp downstream of truth. This is a systematic bias that
+    matches the analogous bias for polyA cleavage at genomic A-tracts.
+    """
+    seq = read.query_sequence
+    if seq is None:
+        return read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
+
+    pairs = read.get_aligned_pairs(matches_only=True)
+    if not pairs:
+        return read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
+
+    # Approach: find the most-parsimonious match of the 12-base canonical
+    # boundary pattern (TT-VVVV-TTT-GGG for fwd; CCC-AAA-BBBB-AA for rev) in a
+    # window around the alignment boundary. The pattern's bridge bases (GGG /
+    # CCC) MUST all match — they're the chemistry-fixed signal. Once we know
+    # the pattern's location in qpos, the boundary between bridge and mRNA TSS
+    # is at: (for fwd) pattern_qpos + 12; (for rev) pattern_qpos.
+    if orient == "fwd":
+        aln_start_qpos = pairs[0][0]
+        aln_start_rpos = pairs[0][1]
+        # Search window: 6 bp before to 3 bp after the expected pattern start.
+        # Expected pattern start = aln_start_qpos - BOUNDARY_LEN.
+        expected_pat_start = aln_start_qpos - _BOUNDARY_LEN
+        search_start = max(0, expected_pat_start - 6)
+        search_end = min(len(seq), expected_pat_start + 3 + _BOUNDARY_LEN)
+        match = _find_boundary_match(seq, search_start, search_end, rc=False)
+        if match is None:
+            return aln_start_rpos  # chemistry pattern not detectable — skip
+        pat_qpos, _ = match
+        tss_qpos = pat_qpos + _BOUNDARY_LEN  # qpos right after GGG = the TSS
+        # If tss_qpos <= aln_start_qpos: alignment already starts at or past TSS
+        # (over-soft-clip case — don't make it worse).
+        if tss_qpos <= aln_start_qpos:
+            return aln_start_rpos
+        # tss_qpos > aln_start_qpos: aligner under-clipped by (tss_qpos - aln_start_qpos)
+        # bridge bases. Walk forward in the alignment to that qpos.
+        shift_needed = tss_qpos - aln_start_qpos
+        # Cap shift at BRIDGE_LEN (3) — chemistry says max bridge is 3 bases.
+        shift_needed = min(shift_needed, BRIDGE_LEN)
+        target_qpos = aln_start_qpos + shift_needed
+        for q, r in pairs:
+            if q == target_qpos:
+                return r
+        return aln_start_rpos
+    else:
+        # orient=rev: pattern starts at the bridge CCC, located right after the
+        # alignment in BAM SEQ.
+        aln_end_qpos = pairs[-1][0] + 1
+        aln_end_rpos = pairs[-1][1]
+        expected_pat_start = aln_end_qpos
+        search_start = max(0, expected_pat_start - 3)
+        search_end = min(len(seq), expected_pat_start + 6 + _BOUNDARY_LEN)
+        match = _find_boundary_match(seq, search_start, search_end, rc=True)
+        if match is None:
+            return aln_end_rpos
+        pat_qpos, _ = match
+        # tss_qpos = qpos of the position right BEFORE the CCC (= last aligned)
+        tss_qpos = pat_qpos - 1
+        if tss_qpos >= aln_end_qpos - 1:
+            return aln_end_rpos  # alignment already ends at or before pattern start
+        # Aligner extended past the boundary into bridge C's. Walk back.
+        shift_needed = (aln_end_qpos - 1) - tss_qpos
+        shift_needed = min(shift_needed, BRIDGE_LEN)
+        target_qpos = aln_end_qpos - 1 - shift_needed
+        for q, r in reversed(pairs):
+            if q == target_qpos:
+                return r
+        return aln_end_rpos
+
+
+def extract_read_info(read: pysam.AlignedSegment,
+                       chrom_seq_cache: Optional[Dict[str, str]] = None
+                       ) -> Optional[ReadInfo]:
+    """Extract UMI + anchor + orient + tail_len from a primary alignment.
+
+    If `chrom_seq_cache` is provided (recommended), uses v1.12 walk-back to
+    produce a canonical cleavage anchor and per-read polyA tail length. Without
+    a cache, falls back to the polyA-side aln position with tail_len=0.
+
+    ANCHOR LOGIC (v1.12): the anchor lives at the polyA cleavage end of the
+    molecule in ref coords. Walk-back (when ref cache available) canonicalizes
+    this across tail-length variance, aligner extension into genomic A-tracts,
+    and false-intron N-op artifacts.
+
+    Direction of "polyA side" is determined by **orient**, not is_reverse:
+      orient=fwd → BAM SEQ = SSP-UMI-cDNA-polyA-adapter → polyA at RIGHT → anchor near aln_end
+      orient=rev → BAM SEQ = adapter_RC-polyT-cDNA_RC-UMI_RC-SSP_RC → polyT at LEFT → anchor near aln_start
+    The same molecule sequenced as Strand A vs Strand B can produce reads with
+    different is_reverse but identical orient (depending on gene strand); using
+    orient guarantees both land on the same polyA cleavage genomic position.
     """
     if read.is_unmapped or read.is_secondary or read.is_supplementary:
         return None
@@ -209,43 +555,85 @@ def extract_read_info(read: pysam.AlignedSegment) -> Optional[ReadInfo]:
     if seq is None:
         return None
 
+    # ---- Type 1 detection (SSP+UMI captured) ----
+    read_type = 1
+    umi_basecalled: Optional[str] = None
+    orient: Optional[str] = None
     p = seq.find(SSP_FWD)
     if p >= 0:
         umi_basecalled = seq[p + len(SSP_FWD): p + len(SSP_FWD) + UMI_LEN]
-        if len(umi_basecalled) != UMI_LEN:
-            return None
-        orient = "fwd"
-    else:
+        if len(umi_basecalled) == UMI_LEN:
+            orient = "fwd"
+        else:
+            umi_basecalled = None
+    if orient is None:
         p = seq.find(SSP_RC)
-        if p < UMI_LEN:
-            return None
-        umi_rc = seq[p - UMI_LEN: p]
-        umi_basecalled = revcomp(umi_rc)
-        if len(umi_basecalled) != UMI_LEN:
-            return None
-        orient = "rev"
+        if p >= UMI_LEN:
+            umi_rc = seq[p - UMI_LEN: p]
+            umi_basecalled = revcomp(umi_rc)
+            if len(umi_basecalled) == UMI_LEN:
+                orient = "rev"
+            else:
+                umi_basecalled = None
 
-    # basecalled-3' anchor: where the cDNA's basecalled 3' end (= the reliable
-    # translocation end, since 3' enters the pore first) sits in genomic coords.
-    if not read.is_reverse:
-        anchor = (read.reference_end or 0) - 1
+    # ---- Type 2 fallback (SSP truncated; infer orient from polyA/adapter) ----
+    if orient is None:
+        # Test both BAM-SEQ ends for adapter+polyA pattern. detect_full_length_tier
+        # returns 2 (anchored) or 1 (unanchored polyA only) when the pattern is
+        # present at the orient-appropriate end. We try both orients and accept
+        # the one with a tier ≥ 1; ties → prefer orient with anchored (tier 2).
+        tier_fwd = detect_full_length_tier(seq, "fwd")
+        tier_rev = detect_full_length_tier(seq, "rev")
+        if tier_fwd == 0 and tier_rev == 0:
+            return None
+        if tier_fwd >= tier_rev:
+            orient = "fwd"
+        else:
+            orient = "rev"
+        read_type = 2
+        umi_basecalled = ""  # placeholder for Type-2 (no UMI available)
+
+    if chrom_seq_cache is not None and read.reference_name in chrom_seq_cache:
+        chrom_seq = chrom_seq_cache[read.reference_name]
+        anchor, tail_len = walk_back_anchor_and_tail(read, chrom_seq, orient)
+        # v1.19: 5' TSS walk-forward (Type-1 only — Type-2 5' is the truncation
+        # point, not the SSP-bridge boundary).
+        if read_type == 1:
+            pos5_corrected = walk_forward_tss(read, orient, chrom_seq)
+        else:
+            pos5_corrected = read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
     else:
-        anchor = read.reference_start
+        # Fallback: polyA-side aln position (orient-based, not is_reverse-based).
+        # orient=fwd → polyA at RIGHT of BAM SEQ → aln_end-1.
+        # orient=rev → polyT at LEFT of BAM SEQ → aln_start.
+        anchor = ((read.reference_end or 0) - 1) if orient == "fwd" else read.reference_start
+        tail_len = 0
+        pos5_corrected = read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
 
     return ReadInfo(
         read_id=read.query_name,
         chrom=read.reference_name,
         anchor=anchor,
         orient=orient,
-        umi=umi_basecalled,
+        umi=umi_basecalled or "",
         is_reverse=read.is_reverse,
         xf_tier=detect_full_length_tier(seq, orient),
+        tail_len=tail_len,
+        aln_start=read.reference_start,
+        aln_end=(read.reference_end or read.reference_start + 1),
+        read_type=read_type,
+        pos5_corrected=pos5_corrected,
     )
 
 
 # ---- Clustering ------------------------------------------------------------
 def umi_components(umis: List[str], max_edit: int) -> List[List[int]]:
-    """Connected-components clustering of UMIs by Levenshtein ≤ max_edit."""
+    """Connected-components clustering of UMIs by Levenshtein ≤ max_edit.
+
+    LEGACY (pre-v1.13). Chains independent molecules together when many UMIs
+    in a bucket are within Lev≤max_edit (the "polyA-hotspot chain-merge"
+    pathology). Retained for comparison / debugging via --umi-clustering=components.
+    """
     n = len(umis)
     if n == 0:
         return []
@@ -268,37 +656,230 @@ def umi_components(umis: List[str], max_edit: int) -> List[List[int]]:
     return list(comps.values())
 
 
+def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]]:
+    """umi_tools-style directional clustering (Smith, Heger & Sudbery 2017, Genome Res).
+
+    Build a directed graph over UNIQUE UMIs in the bucket:
+      node a → b iff Lev(a, b) ≤ max_edit AND count(a) ≥ 2*count(b) − 1.
+
+    Then walk from the highest-count unvisited node via outgoing edges (BFS);
+    everything reached forms one molecule cluster. Repeat with next highest-count
+    unvisited node.
+
+    The 2× rule constrains transitive merging: a small-count UMI (likely an error
+    variant of a deeper UMI nearby) gets absorbed by its parent, but cannot itself
+    absorb other UMIs of comparable depth. This breaks the chain-merge that
+    connected-components suffers at polyA hotspots where thousands of independent
+    molecules' UMIs land within Lev ≤ 3 of each other.
+
+    For singleton-dominated buckets (every UMI has count 1, the 2× rule reduces
+    to "1 ≥ 1", allowing edges between any two Lev-≤-max_edit singletons), the
+    behavior collapses back to connected-components — that's fine; directional
+    helps where it's needed (multi-read buckets with mixed coverage levels).
+    """
+    n = len(umis)
+    if n == 0: return []
+    if n == 1: return [[0]]
+
+    # Group read indices by exact UMI → unique UMI list + counts.
+    umi_to_read_indices: Dict[str, List[int]] = defaultdict(list)
+    for i, u in enumerate(umis):
+        umi_to_read_indices[u].append(i)
+    unique = list(umi_to_read_indices.keys())
+    counts = [len(umi_to_read_indices[u]) for u in unique]
+    n_uniq = len(unique)
+
+    # Order unique UMIs by count desc (ties broken by UMI lex order for determinism).
+    order_desc = sorted(range(n_uniq), key=lambda i: (-counts[i], unique[i]))
+
+    # Build adjacency: for each parent a, find children b later in order_desc whose
+    # count satisfies the 2× rule, then Lev-check.
+    adj: Dict[int, List[int]] = defaultdict(list)
+    for ai_pos, a in enumerate(order_desc):
+        ca = counts[a]
+        max_cb = (ca + 1) // 2  # need cb ≤ this for 2× rule
+        # counts in order_desc are non-increasing; skip until first b with cb ≤ max_cb.
+        bi_start = ai_pos + 1
+        while bi_start < n_uniq and counts[order_desc[bi_start]] > max_cb:
+            bi_start += 1
+        ua = unique[a]
+        for bi_pos in range(bi_start, n_uniq):
+            b = order_desc[bi_pos]
+            d = Levenshtein.distance(ua, unique[b], score_cutoff=max_edit)
+            if d <= max_edit:
+                adj[a].append(b)
+
+    # BFS from each unvisited highest-count root.
+    visited: set = set()
+    clusters: List[List[int]] = []
+    for root in order_desc:
+        if root in visited: continue
+        component_uniqs = []
+        queue = [root]
+        while queue:
+            u = queue.pop()
+            if u in visited: continue
+            visited.add(u)
+            component_uniqs.append(u)
+            for v in adj[u]:
+                if v not in visited:
+                    queue.append(v)
+        # Expand back to read indices.
+        read_indices: List[int] = []
+        for uid in component_uniqs:
+            read_indices.extend(umi_to_read_indices[unique[uid]])
+        clusters.append(read_indices)
+    return clusters
+
+
+def position_components_directional(positions: List[int], weights: List[int],
+                                     max_dist: int) -> List[List[int]]:
+    """v1.17: directional clustering on integer positions for isoform grouping.
+
+    Parallel to umi_components_directional but with two differences:
+      1. Distance = abs(pos[a] - pos[b]) (integer), not Levenshtein.
+      2. STRICT 2× rule: edge a→b iff w(a) ≥ 2·w(b) AND |pos[a]-pos[b]| ≤ max_dist.
+         (Not the umi_tools "n ≥ 2m − 1" — strict prevents bridge-chains where
+         count=1 valley positions link two real peaks through a chain of edges.)
+
+    `positions` and `weights` are parallel arrays — one entry per input cluster.
+    Multiple input clusters at the same position get their weights summed and
+    are treated as one "node" for the directional graph; this is exactly the
+    behavior we want (a peak's strength = total read support, not count of
+    sub-clusters).
+
+    Returns list of components, each as a list of indices into the input arrays.
+    """
+    n = len(positions)
+    if n == 0: return []
+    if n == 1: return [[0]]
+
+    # Group input indices by exact position; weight per node = SUM of input weights.
+    pos_to_indices: Dict[int, List[int]] = defaultdict(list)
+    for i, p in enumerate(positions):
+        pos_to_indices[p].append(i)
+    unique = sorted(pos_to_indices.keys())  # sorted by position (helps locality)
+    node_weight = [sum(weights[i] for i in pos_to_indices[p]) for p in unique]
+    n_nodes = len(unique)
+
+    # Order nodes by weight desc; ties broken by position for determinism.
+    order_desc = sorted(range(n_nodes), key=lambda i: (-node_weight[i], unique[i]))
+
+    # Build adjacency. STRICT 2× rule + max_dist.
+    adj: Dict[int, List[int]] = defaultdict(list)
+    for ai_pos, a in enumerate(order_desc):
+        wa = node_weight[a]
+        pa = unique[a]
+        # Iterate later positions in count-desc order. Need w(b) ≤ wa/2 (strict)
+        # AND |pa - pb| ≤ max_dist.
+        for bi_pos in range(ai_pos + 1, n_nodes):
+            b = order_desc[bi_pos]
+            if node_weight[b] * 2 > wa:
+                continue  # strict 2× rule fails
+            if abs(unique[b] - pa) > max_dist:
+                continue
+            adj[a].append(b)
+
+    # BFS from each unvisited highest-weight root.
+    visited: set = set()
+    clusters: List[List[int]] = []
+    for root in order_desc:
+        if root in visited: continue
+        component_nodes = []
+        queue = [root]
+        while queue:
+            u = queue.pop()
+            if u in visited: continue
+            visited.add(u)
+            component_nodes.append(u)
+            for v in adj[u]:
+                if v not in visited:
+                    queue.append(v)
+        # Expand back to input-cluster indices.
+        cluster_indices: List[int] = []
+        for nid in component_nodes:
+            cluster_indices.extend(pos_to_indices[unique[nid]])
+        clusters.append(cluster_indices)
+    return clusters
+
+
+def position_components(reads: List[ReadInfo]) -> List[List[int]]:
+    """v1.15: exact (aln_start, aln_end) grouping for Type-2 (SSP-less) reads.
+
+    No UMI is available for Type-2 reads, so we collapse exact-position duplicates
+    only. This is conservative — molecules sharing the SAME aln_start AND aln_end
+    are treated as PCR/sequencing duplicates of one decay/truncation event.
+    Wobble of even ±1 bp produces a new cluster; that's fine because real distinct
+    decay-intermediate species typically have well-defined termini.
+    """
+    pos_to_indices: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+    for i, r in enumerate(reads):
+        pos_to_indices[(r.aln_start, r.aln_end)].append(i)
+    return list(pos_to_indices.values())
+
+
 def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
-                  per_cluster_cap: int) -> Tuple[List[List[ReadInfo]], dict]:
+                  per_cluster_cap: int,
+                  clustering_method: str = "directional"
+                  ) -> Tuple[List[List[ReadInfo]], dict]:
+    """Stage-1 clustering: anchor-bucket reads, then UMI-cluster within each bucket.
+
+    clustering_method:
+      - "directional" (v1.13 default): umi_tools-style; breaks polyA-hotspot
+        chain-merge. Per-bucket cap is advisory only (large buckets logged but
+        still processed).
+      - "components" (legacy): connected-components; needs `per_cluster_cap` to
+        drop oversized buckets to avoid catastrophic chain-merge.
+    """
+    # Bucket key includes read_type (v1.15) — Type-1 and Type-2 reads never
+    # mix within a bucket, so they get different clustering algorithms.
     anchor_buckets: dict = defaultdict(list)
     for r in reads:
-        bucket = (r.chrom, r.anchor // anchor_window, r.orient)
+        bucket = (r.chrom, r.anchor // anchor_window, r.orient, r.read_type)
         anchor_buckets[bucket].append(r)
 
     stats = dict(
         anchor_buckets=len(anchor_buckets),
         buckets_dropped_polyA_pileup=0,
         reads_in_dropped_buckets=0,
+        biggest_bucket_size=0,
         molecule_clusters=0,
         molecule_clusters_size_1=0,
         molecule_clusters_size_2=0,
         molecule_clusters_size_ge_3=0,
+        type1_clusters=0,
+        type2_clusters=0,
+        type1_reads=sum(1 for r in reads if r.read_type == 1),
+        type2_reads=sum(1 for r in reads if r.read_type == 2),
     )
 
+    umi_cluster_fn = umi_components_directional if clustering_method == "directional" else umi_components
+
     out_clusters: List[List[ReadInfo]] = []
-    for bucket_reads in anchor_buckets.values():
-        if len(bucket_reads) > per_cluster_cap:
+    for bucket_key, bucket_reads in anchor_buckets.items():
+        read_type = bucket_key[3]
+        bsize = len(bucket_reads)
+        if bsize > stats["biggest_bucket_size"]:
+            stats["biggest_bucket_size"] = bsize
+        # Legacy components path still respects the cap to avoid chain-merge (Type-1 only).
+        if read_type == 1 and clustering_method == "components" and bsize > per_cluster_cap:
             stats["buckets_dropped_polyA_pileup"] += 1
-            stats["reads_in_dropped_buckets"] += len(bucket_reads)
+            stats["reads_in_dropped_buckets"] += bsize
             continue
-        umis = [r.umi for r in bucket_reads]
-        for comp in umi_components(umis, max_edit):
+        if read_type == 1:
+            umis = [r.umi for r in bucket_reads]
+            comps = umi_cluster_fn(umis, max_edit)
+        else:
+            comps = position_components(bucket_reads)
+        for comp in comps:
             cluster = [bucket_reads[i] for i in comp]
             out_clusters.append(cluster)
             sz = len(cluster)
             if sz == 1: stats["molecule_clusters_size_1"] += 1
             elif sz == 2: stats["molecule_clusters_size_2"] += 1
             else: stats["molecule_clusters_size_ge_3"] += 1
+            if read_type == 1: stats["type1_clusters"] += 1
+            else: stats["type2_clusters"] += 1
     stats["molecule_clusters"] = len(out_clusters)
     return out_clusters, stats
 
@@ -395,6 +976,22 @@ def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[T
     return consensus_seq, cigartuples, span_start, qual_string
 
 
+def poa_consensus_from_strings(seqs: List[str]) -> Optional[str]:
+    """Run POA on raw sequence strings (already in matching orientation).
+
+    Used both by `poa_consensus` (reads-from-BAM path) and by the v1.18
+    strand-aware consensus path (which feeds two per-strand sub-consensuses
+    in for a final merge).
+    """
+    if not HAS_POA or len(seqs) < 2:
+        return None
+    aligner = pyabpoa.msa_aligner()
+    res = aligner.msa(seqs, out_cons=True, out_msa=False)
+    if not res.cons_seq:
+        return None
+    return res.cons_seq[0]
+
+
 def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[str]:
     """Build POA consensus sequence across cluster reads (v2 upgrade over pileup).
 
@@ -405,16 +1002,51 @@ def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[str]
     The consensus needs to be re-aligned to the reference afterward (use mappy)
     to obtain a valid CIGAR — the POA itself doesn't produce reference alignment.
     """
+    seqs = [r.query_sequence for r in reads_in_cluster if r.query_sequence]
+    return poa_consensus_from_strings(seqs)
+
+
+def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment]
+                                ) -> Optional[str]:
+    """v1.18: strand-split-then-merge POA consensus.
+
+    Split cluster reads by is_reverse:
+      - is_reverse=True reads (top-strand sequencing) have their reliable
+        basecalled-3' mapped to the LEFT of BAM SEQ (SSP/UMI side).
+      - is_reverse=False reads (bottom-strand sequencing) have their reliable
+        basecalled-3' mapped to the RIGHT of BAM SEQ (polyA side).
+
+    Each sub-pool has correlated strand-specific error modes. Building a
+    per-strand sub-consensus first, then POA-merging the two sub-consensuses,
+    cancels strand-specific systematic biases that POA-on-all-reads would
+    leave on the consensus.
+
+    Falls back to single-strand POA when one side has too few reads (<2).
+    """
     if not HAS_POA or len(reads_in_cluster) < 2:
         return None
-    seqs = [r.query_sequence for r in reads_in_cluster if r.query_sequence]
-    if len(seqs) < 2:
-        return None
-    aligner = pyabpoa.msa_aligner()
-    res = aligner.msa(seqs, out_cons=True, out_msa=False)
-    if not res.cons_seq:
-        return None
-    return res.cons_seq[0]
+    top_seqs = [r.query_sequence for r in reads_in_cluster
+                if r.is_reverse and r.query_sequence]
+    bot_seqs = [r.query_sequence for r in reads_in_cluster
+                if (not r.is_reverse) and r.query_sequence]
+
+    # If one strand has only 0-1 reads, can't usefully build a sub-consensus.
+    # Fall back to the all-reads POA on the other strand (or both pooled).
+    if len(top_seqs) < 2 and len(bot_seqs) < 2:
+        return poa_consensus_from_strings(top_seqs + bot_seqs)
+    if len(top_seqs) < 2:
+        return poa_consensus_from_strings(bot_seqs)
+    if len(bot_seqs) < 2:
+        return poa_consensus_from_strings(top_seqs)
+
+    # Both strands have enough reads — build sub-consensus per strand and merge.
+    top_cons = poa_consensus_from_strings(top_seqs)
+    bot_cons = poa_consensus_from_strings(bot_seqs)
+    if top_cons is None and bot_cons is None: return None
+    if top_cons is None: return bot_cons
+    if bot_cons is None: return top_cons
+    # Both sub-consensuses are in BAM-SEQ orientation, so POA them directly.
+    return poa_consensus_from_strings([top_cons, bot_cons])
 
 
 def realign_consensus(consensus_seq: str, mp_aligner: "mappy.Aligner") -> Optional[Tuple[str, int, List[Tuple[int, int]], int, int, str]]:
@@ -504,8 +1136,13 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
                       cluster_xs: Dict[int, str],
                       cluster_xf_tier: Dict[int, int],
                       paired_partner: Dict[int, str],
+                      cluster_tail_len: Dict[int, int],
+                      cluster_xg: Dict[int, Optional[str]],
+                      cluster_xi: Dict[int, str],
+                      cluster_xl: Dict[int, int],
                       mp_aligner: Optional["mappy.Aligner"] = None,
-                      use_poa: bool = False) -> dict:
+                      use_poa: bool = False,
+                      strand_aware_consensus: bool = False) -> dict:
     """Re-stream the input BAM and emit one record per cluster.
 
     For singletons: pass-through with added tags.
@@ -524,6 +1161,13 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
         cluster_read_ids[cid] = [r.read_id for r in c]
         for r in c:
             rid_to_cluster[r.read_id] = cid
+
+    # v1.18: strand-split per cluster (n_top / n_bottom from ReadInfo.is_reverse)
+    cluster_strand_split: Dict[int, Tuple[int, int]] = {}
+    for cid, c in enumerate(clusters):
+        n_top = sum(1 for r in c if r.is_reverse)
+        n_bot = sum(1 for r in c if not r.is_reverse)
+        cluster_strand_split[cid] = (n_top, n_bot)
 
     # Bucket: per cluster, collect AlignedSegment as we stream the BAM
     cluster_segments: Dict[int, List[pysam.AlignedSegment]] = defaultdict(list)
@@ -563,13 +1207,24 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
                 if cid in paired_partner:
                     rec.set_tag("XP", paired_partner[cid], value_type="Z")
                 rec.set_tag("XF", cluster_xf_tier[cid], value_type="i")
+                rec.set_tag("XA", cluster_tail_len.get(cid, 0), value_type="i")
+                if cluster_xg.get(cid):
+                    rec.set_tag("XG", cluster_xg[cid], value_type="Z")
+                rec.set_tag("XT", c[0].read_type, value_type="i")
+                if cluster_xi.get(cid):
+                    rec.set_tag("XI", cluster_xi[cid], value_type="Z")
+                n_top, n_bot = cluster_strand_split[cid]
+                rec.set_tag("XB", f"{n_top}/{n_bot}", value_type="Z")
+                if cid in cluster_xl:
+                    rec.set_tag("XL", str(cluster_xl[cid]), value_type="Z")
                 out.write(rec)
                 singleton += 1
             else:
                 rec = None
                 # Try POA + re-align first (best quality)
                 if use_poa and mp_aligner is not None:
-                    poa_seq = poa_consensus(segs)
+                    poa_fn = poa_consensus_strand_aware if strand_aware_consensus else poa_consensus
+                    poa_seq = poa_fn(segs)
                     if poa_seq:
                         realigned = realign_consensus(poa_seq, mp_aligner)
                         if realigned:
@@ -607,6 +1262,16 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
                 if cid in paired_partner:
                     rec.set_tag("XP", paired_partner[cid], value_type="Z")
                 rec.set_tag("XF", cluster_xf_tier[cid], value_type="i")
+                rec.set_tag("XA", cluster_tail_len.get(cid, 0), value_type="i")
+                if cluster_xg.get(cid):
+                    rec.set_tag("XG", cluster_xg[cid], value_type="Z")
+                rec.set_tag("XT", c[0].read_type, value_type="i")
+                if cluster_xi.get(cid):
+                    rec.set_tag("XI", cluster_xi[cid], value_type="Z")
+                n_top, n_bot = cluster_strand_split[cid]
+                rec.set_tag("XB", f"{n_top}/{n_bot}", value_type="Z")
+                if cid in cluster_xl:
+                    rec.set_tag("XL", str(cluster_xl[cid]), value_type="Z")
                 out.write(rec)
             written += 1
 
@@ -622,19 +1287,271 @@ def canonical_umi(cluster_umis: List[str]) -> str:
     return min(counts, key=lambda u: (-counts[u], u))
 
 
+# ---- v1.17: isoform clustering --------------------------------------------
+def assign_isoforms(clusters: List[List[ReadInfo]],
+                     cluster_xg: Dict[int, Optional[str]],
+                     tol5: int, tol3: int
+                     ) -> Tuple[Dict[int, str], List[dict]]:
+    """v1.17: group Stage-1 clusters into isoform clusters.
+
+    Within each (gene, orient, read_type) group:
+      Type-1 (SSP+UMI captured, 5' = real mRNA 5' end):
+        - directional clustering on 5' positions (tol5, strict 2× rule)
+        - directional clustering on 3' positions (tol3, strict 2× rule)
+        - isoform = (gene, orient, type=1, 5'-group, 3'-group)
+      Type-2 (SSP-less, 5' is random truncation point):
+        - skip 5' clustering (positions are noisy)
+        - directional clustering on 3' positions (tol3, strict 2× rule)
+        - isoform = (gene, orient, type=2, "*", 3'-group)
+
+    Weights = cluster.n_reads (PCR-collapsed support).
+
+    Returns:
+      cluster_to_isoform_id: dict cluster_id → isoform_id string
+      isoform_records: list of dicts (one per isoform) with aggregated stats
+    """
+    cluster_to_iso: Dict[int, str] = {}
+    iso_records: List[dict] = []
+
+    # Group cluster indices by (gene, orient, read_type)
+    groups: Dict[Tuple[str, str, int], List[int]] = defaultdict(list)
+    for cid, c in enumerate(clusters):
+        gene = cluster_xg.get(cid)
+        if gene is None: continue  # skip unannotated
+        groups[(gene, c[0].orient, c[0].read_type)].append(cid)
+
+    for (gene, orient, rt), cids in groups.items():
+        # 5'/3' position per cluster (mRNA-relative coords).
+        # orient=fwd: 5' = aln_start, 3' = aln_end-1.
+        # orient=rev: 5' = aln_end-1, 3' = aln_start.
+        pos5: List[int] = []
+        pos3: List[int] = []
+        weights: List[int] = []
+        for cid in cids:
+            r0 = clusters[cid][0]
+            # v1.19: use pos5_corrected (bridge walk-forward applied for Type-1;
+            # raw aln-side position for Type-2).
+            pos5.append(r0.pos5_corrected)
+            if orient == "fwd":
+                pos3.append(r0.aln_end - 1)
+            else:
+                pos3.append(r0.aln_start)
+            weights.append(len(clusters[cid]))
+
+        # 3' clustering (used by both Type 1 and Type 2)
+        comps3 = position_components_directional(pos3, weights, tol3)
+        cid_to_3g = {}
+        for g3_idx, comp in enumerate(comps3):
+            for local_idx in comp:
+                cid_to_3g[cids[local_idx]] = g3_idx
+
+        if rt == 1:
+            comps5 = position_components_directional(pos5, weights, tol5)
+            cid_to_5g = {}
+            for g5_idx, comp in enumerate(comps5):
+                for local_idx in comp:
+                    cid_to_5g[cids[local_idx]] = g5_idx
+            # Build isoform IDs and group clusters by (5'-group, 3'-group)
+            iso_buckets: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+            for cid in cids:
+                iso_buckets[(cid_to_5g[cid], cid_to_3g[cid])].append(cid)
+            for (g5, g3), iso_cids in iso_buckets.items():
+                iso_id = f"{gene}_t1_5g{g5}_3g{g3}"
+                _emit_isoform(iso_id, gene, orient, 1, iso_cids, clusters,
+                              cluster_to_iso, iso_records, has_5g=True)
+        else:
+            # Type-2: only 3' grouping
+            iso_buckets3: Dict[int, List[int]] = defaultdict(list)
+            for cid in cids:
+                iso_buckets3[cid_to_3g[cid]].append(cid)
+            for g3, iso_cids in iso_buckets3.items():
+                iso_id = f"{gene}_t2_3g{g3}"
+                _emit_isoform(iso_id, gene, orient, 2, iso_cids, clusters,
+                              cluster_to_iso, iso_records, has_5g=False)
+
+    return cluster_to_iso, iso_records
+
+
+def reconcile_t1_t2_pairs(clusters: List[List[ReadInfo]],
+                            cluster_xg: Dict[int, Optional[str]],
+                            tol5: int, tol3: int
+                            ) -> Tuple[Dict[int, int], List[dict]]:
+    """v2: link Type-1 ↔ Type-2 clusters of the SAME molecule (same gene + same orient
+    + both 5' and 3' termini within tol bp).
+
+    Biology: a single dsDNA molecule produces some reads from Strand A (SSP captured
+    at reliable basecalled-3' → Type-1, UMI extractable) and some from Strand B
+    where SSP at basecalled-5' gets truncated → Type-2 (no UMI). The two read
+    populations end up in different Stage-1 clusters (Type-1 in UMI cluster,
+    Type-2 in position cluster). Reconciliation rescues the link.
+
+    Cross-orient pairs (the v1.13 Stage-2 idea) don't exist in PCB114 chemistry —
+    both physical PCR strands of the same molecule give the same orient label
+    after BAM normalization. The Type-1↔Type-2 same-orient pair IS the real
+    biological substrate.
+
+    Matching is one-to-one greedy: each Type-2 cluster pairs with its nearest
+    Type-1 candidate (closest sum |Δ5'|+|Δ3'|). Each Type-1 can be claimed by
+    at most one Type-2 (first-match-by-distance wins).
+
+    Returns:
+      cluster_xl: dict cluster_id → partner_cluster_id (bidirectional links)
+      pair_records: list of dicts (one per pair) for the TSV manifest
+    """
+    cluster_xl: Dict[int, int] = {}
+    pair_records: List[dict] = []
+
+    # Group cluster indices by (gene, orient)
+    groups: Dict[Tuple[str, str], Dict[int, List[int]]] = defaultdict(
+        lambda: {1: [], 2: []})
+    for cid, c in enumerate(clusters):
+        gene = cluster_xg.get(cid)
+        if gene is None: continue
+        groups[(gene, c[0].orient)][c[0].read_type].append(cid)
+
+    for (gene, orient), by_type in groups.items():
+        t1_cids = by_type[1]
+        t2_cids = by_type[2]
+        if not t1_cids or not t2_cids:
+            continue
+        # Build (5', 3') for each
+        def termini(cid: int) -> Tuple[int, int]:
+            r0 = clusters[cid][0]
+            # v1.19 pos5_corrected (bridge walk-forward); 3' is raw polyA-side
+            if orient == "fwd":
+                return (r0.pos5_corrected, r0.aln_end - 1)
+            return (r0.pos5_corrected, r0.aln_start)
+
+        t1_termini = {cid: termini(cid) for cid in t1_cids}
+        t2_termini = {cid: termini(cid) for cid in t2_cids}
+
+        # Greedy match: for each Type-2, find closest available Type-1 within tol
+        claimed_t1: set = set()
+        # Sort Type-2 by n_reads desc (claim higher-coverage Type-2 first)
+        t2_sorted = sorted(t2_cids, key=lambda c: -len(clusters[c]))
+        for t2 in t2_sorted:
+            p5_2, p3_2 = t2_termini[t2]
+            best_t1 = None
+            best_dist = None
+            for t1 in t1_cids:
+                if t1 in claimed_t1: continue
+                p5_1, p3_1 = t1_termini[t1]
+                d5 = abs(p5_1 - p5_2)
+                d3 = abs(p3_1 - p3_2)
+                if d5 > tol5 or d3 > tol3: continue
+                dist = d5 + d3
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_t1 = t1
+            if best_t1 is None: continue
+            claimed_t1.add(best_t1)
+            cluster_xl[best_t1] = t2   # Type-1 → Type-2 partner cid
+            cluster_xl[t2] = best_t1   # Type-2 → Type-1 partner cid
+            p5_1, p3_1 = t1_termini[best_t1]
+            pair_records.append({
+                "t1_cid": best_t1, "t2_cid": t2,
+                "gene": gene, "orient": orient,
+                "t1_pos5": p5_1, "t1_pos3": p3_1,
+                "t2_pos5": p5_2, "t2_pos3": p3_2,
+                "d5": abs(p5_1 - p5_2), "d3": abs(p3_1 - p3_2),
+                "t1_n_reads": len(clusters[best_t1]),
+                "t2_n_reads": len(clusters[t2]),
+                "t1_umi": umi_canon_placeholder(clusters[best_t1]),
+            })
+    return cluster_xl, pair_records
+
+
+def umi_canon_placeholder(cluster: List[ReadInfo]) -> str:
+    """Return the canonical UMI of a Type-1 cluster (most-frequent UMI string).
+    For Type-2 clusters this returns empty string."""
+    counts: defaultdict[str, int] = defaultdict(int)
+    for r in cluster:
+        counts[r.umi] += 1
+    if not counts: return ""
+    return min(counts, key=lambda u: (-counts[u], u))
+
+
+def _emit_isoform(iso_id: str, gene: str, orient: str, read_type: int,
+                   iso_cids: List[int], clusters: List[List[ReadInfo]],
+                   cluster_to_iso: Dict[int, str], iso_records: List[dict],
+                   has_5g: bool) -> None:
+    pos5_vals = []; pos3_vals = []; n_reads_total = 0
+    tail_lens: List[int] = []
+    chrom = clusters[iso_cids[0]][0].chrom
+    for cid in iso_cids:
+        cluster_to_iso[cid] = iso_id
+        r0 = clusters[cid][0]
+        pos5_vals.append(r0.pos5_corrected)
+        pos3_vals.append(r0.aln_end - 1 if orient == "fwd" else r0.aln_start)
+        n_reads_total += len(clusters[cid])
+        # Each read's tail_len weighted by appearing in the cluster
+        for r in clusters[cid]:
+            tail_lens.append(r.tail_len)
+    def _modal(xs):
+        if not xs: return -1
+        c = defaultdict(int)
+        for x in xs: c[x] += 1
+        return max(c, key=lambda k: (c[k], -k))
+    def _median(xs):
+        if not xs: return 0
+        s = sorted(xs); return s[len(s) // 2]
+    iso_records.append({
+        "isoform_id": iso_id,
+        "gene": gene,
+        "chrom": chrom,
+        "orient": orient,
+        "read_type": read_type,
+        "n_clusters": len(iso_cids),
+        "n_reads_total": n_reads_total,
+        "pos5_modal": _modal(pos5_vals) if has_5g else -1,
+        "pos3_modal": _modal(pos3_vals),
+        "tail_len_median": _median(tail_lens),
+        "cluster_ids": ",".join(str(c) for c in iso_cids),
+    })
+
+
 # ---- v1.6: gene-strand–aware sense/antisense classification ----------------
+def _parse_gff_gene_name(attrs: str) -> Optional[str]:
+    """Extract a stable gene identifier from a GFF attributes column.
+
+    Preference order (matches SGD GFF conventions + cross-project handoff needs):
+      1. ID=        — systematic name (e.g. YAL038W); the canonical join key
+      2. Name=      — same as ID for SGD
+      3. gene=      — common name (e.g. CDC19); fallback only
+    Returns None if no identifier found.
+    """
+    for kv in attrs.split(";"):
+        if kv.startswith("ID="):
+            return kv[3:].strip()
+    for kv in attrs.split(";"):
+        if kv.startswith("Name="):
+            return kv[5:].strip()
+    for kv in attrs.split(";"):
+        if kv.startswith("gene="):
+            return kv[5:].strip()
+    return None
+
+
 def load_gff_genes(gff_path: Path) -> Dict[str, IntervalTree]:
-    """Load gene-like features from a GFF file → chrom → IntervalTree(strand)."""
+    """Load gene-like features → chrom → IntervalTree.
+
+    Each interval's data is a tuple `(strand, gene_name)` for both XS
+    classification and downstream join-key emission (XG tag, v1.14).
+    """
     trees: Dict[str, IntervalTree] = defaultdict(IntervalTree)
     opener = gzip.open if str(gff_path).endswith(".gz") else open
-    GENE_TYPES = {"gene", "mRNA", "transcript", "pseudogene", "ncRNA_gene",
+    # Gene-level types only (no mRNA/transcript — those expose transcript IDs
+    # like "YAL038W_id001" which break the systematic-name join key used by
+    # cross-project taxonomies. SGD GFF reliably emits a 'gene' feature at
+    # every protein-coding locus.)
+    GENE_TYPES = {"gene", "pseudogene", "ncRNA_gene",
                    "tRNA_gene", "snoRNA_gene", "snRNA_gene", "rRNA_gene"}
     with opener(gff_path, "rt") as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
             parts = line.rstrip("\n").split("\t")
-            if len(parts) < 8:
+            if len(parts) < 9:
                 continue
             if parts[2] not in GENE_TYPES:
                 continue
@@ -643,85 +1560,134 @@ def load_gff_genes(gff_path: Path) -> Dict[str, IntervalTree]:
             end = int(parts[4])
             strand = parts[6]
             if start < end and strand in ("+", "-"):
-                trees[chrom][start:end] = strand
+                name = _parse_gff_gene_name(parts[8]) or f"{chrom}:{start}-{end}({strand})"
+                trees[chrom][start:end] = (strand, name)
     return dict(trees)
 
 
-def classify_sense_antisense(chrom: str, anchor: int,
+def classify_sense_antisense(chrom: str, aln_start: int, aln_end: int, orient: str,
                               gene_trees: Dict[str, IntervalTree],
-                              terminal_window: int = 200) -> str:
-    """Classify a cluster's basecalled-3' anchor as 'sense' / 'antisense' / 'unannotated'.
+                              min_gene_frac: float = 0.3,
+                              min_read_frac: float = 0.8
+                              ) -> Tuple[str, Optional[str]]:
+    """v1.14: Overlap-based gene attribution with sense-strand preference and first-TSS tiebreaker.
 
-    Logic: For PCB114 cDNA, the basecalled-3' anchor lies at the polyA end of the
-    cDNA molecule. If that anchor is closer to the gene's polyA-side end (3' end
-    of mRNA: gene_end on + strand, gene_start on - strand), the cDNA matched the
-    mRNA → SENSE. If closer to the cap-side end, the cDNA was RC of mRNA → ANTISENSE.
+    For each gene whose body overlaps the cluster's alignment:
+      - gene_frac = overlap / gene_length  (how much of the gene is covered)
+      - read_frac = overlap / read_aln_length  (how much of the read is in the gene)
 
-    `terminal_window` (default 200 bp) extends gene boundaries to catch reads
-    just outside the annotation — common at 3' UTRs not fully annotated.
+    Keep candidates passing `gene_frac >= min_gene_frac` OR `read_frac >= min_read_frac`.
+    Among these, classify by sense-strand match: the implied mRNA strand is "+"
+    for orient=fwd, "-" for orient=rev.
+
+      - If any candidate gene's strand matches mRNA strand → SENSE. Tie-break
+        by picking the gene whose TSS is FIRST in the transcription direction
+        (lowest TSS for + reads, highest TSS for - reads). This naturally
+        attributes dicistronic readthroughs to the upstream-promoter gene.
+      - Else if any candidate gene exists on the opposite strand → ANTISENSE.
+        Tie-break by maximum gene_frac.
+      - Else → unannotated.
+
+    Replaces the legacy anchor-proximity classifier (pre-v1.14), which mis-
+    classified polyA-drift reads as antisense of downstream genes whose CAP
+    start happened to lie just past the read's drift cleavage site.
     """
     tree = gene_trees.get(chrom)
     if tree is None:
-        return "unannotated"
-    # Direct overlap first
-    overlaps = list(tree[anchor])
+        return ("unannotated", None)
+    aln_len = aln_end - aln_start
+    if aln_len <= 0:
+        return ("unannotated", None)
+
+    overlaps = list(tree.overlap(aln_start, aln_end))
     if not overlaps:
-        # Allow small terminal window
-        overlaps = list(tree.overlap(anchor - terminal_window, anchor + terminal_window))
-    if not overlaps:
-        return "unannotated"
-    # Pick the gene whose polyA end is closest to the anchor
-    best_call = None
-    best_d = float("inf")
+        return ("unannotated", None)
+
+    mRNA_strand = "+" if orient == "fwd" else "-"
+
+    # (gene_frac, read_frac, tss, gene_strand, gene_name)
+    candidates: List[Tuple[float, float, int, str, str]] = []
     for iv in overlaps:
-        if iv.data == "+":
-            polyA_pos = iv.end
-            cap_pos = iv.begin
+        ov_len = max(0, min(iv.end, aln_end) - max(iv.begin, aln_start))
+        if ov_len <= 0:
+            continue
+        gene_len = iv.end - iv.begin
+        gene_frac = ov_len / gene_len
+        read_frac = ov_len / aln_len
+        if gene_frac < min_gene_frac and read_frac < min_read_frac:
+            continue
+        gene_strand, gene_name = iv.data
+        tss = iv.begin if gene_strand == "+" else iv.end
+        candidates.append((gene_frac, read_frac, tss, gene_strand, gene_name))
+
+    if not candidates:
+        return ("unannotated", None)
+
+    # Sense-preferred: pick first by transcription direction TSS.
+    sense_candidates = [c for c in candidates if c[3] == mRNA_strand]
+    if sense_candidates:
+        # First TSS in transcription direction = lowest for +, highest for -.
+        if mRNA_strand == "+":
+            sense_candidates.sort(key=lambda c: c[2])
         else:
-            polyA_pos = iv.begin
-            cap_pos = iv.end
-        d_polyA = abs(anchor - polyA_pos)
-        d_cap = abs(anchor - cap_pos)
-        if d_polyA < d_cap:
-            call = "sense"
-            d = d_polyA
-        elif d_cap < d_polyA:
-            call = "antisense"
-            d = d_cap
-        else:
-            call = "ambiguous"
-            d = d_polyA
-        if d < best_d:
-            best_d = d
-            best_call = call
-    return best_call or "unannotated"
+            sense_candidates.sort(key=lambda c: -c[2])
+        return ("sense", sense_candidates[0][4])
+
+    # Antisense fallback: pick the gene whose body the read overlaps most.
+    anti_candidates = [c for c in candidates if c[3] != mRNA_strand]
+    if anti_candidates:
+        anti_candidates.sort(key=lambda c: -c[0])  # max gene_frac
+        return ("antisense", anti_candidates[0][4])
+
+    return ("unannotated", None)
 
 
 # ---- I/O -------------------------------------------------------------------
-def stream_reads(bam_path: Path, region: Optional[str]) -> Iterator[ReadInfo]:
+def stream_reads(bam_path: Path, region: Optional[str],
+                 reference: Optional[Path] = None) -> Iterator[ReadInfo]:
+    """Stream UMI-extractable reads. If `reference` is provided, builds a per-chrom
+    FASTA cache for v1.12 walk-back / tail-length measurement."""
+    chrom_cache: Optional[Dict[str, str]] = None
+    if reference is not None:
+        chrom_cache = {}
+        with pysam.FastaFile(str(reference)) as fa:
+            for c in fa.references:
+                chrom_cache[c] = fa.fetch(c).upper()
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         it = bam.fetch(region=region) if region else bam.fetch(until_eof=True)
         for read in it:
-            info = extract_read_info(read)
+            info = extract_read_info(read, chrom_cache)
             if info is not None:
                 yield info
 
 
-# ---- Entry point -----------------------------------------------------------
+# ---- Main ------------------------------------------------------------------
 def run(args) -> int:
-    """Entry point called from rectify/cli.py for ``rectify correct-cdna``.
-
-    Expects the args namespace populated by the rectify subparser; argument
-    registration lives in cli.py to keep the rectify CLI surface consistent.
-    """
-    # Normalise args: cli.py passes strings/None for path-like options.
-    args.bam = Path(args.bam)
-    args.out = Path(args.out)
-    args.gff = Path(args.gff) if getattr(args, 'gff', None) else None
-    args.reference = Path(args.reference) if getattr(args, 'reference', None) else None
+    """v3 RECTIFY integration entry point. The argparse Namespace is built by
+    rectify/cli.py's `correct-cdna` subparser; we coerce string paths to Path
+    objects here (the rectify CLI uses bare `default=None` strings, while the
+    algorithm code below expects pathlib.Path)."""
+    args.bam = Path(args.bam) if not isinstance(args.bam, Path) else args.bam
+    args.out = Path(args.out) if not isinstance(args.out, Path) else args.out
+    if getattr(args, "gff", None) is not None:
+        args.gff = Path(args.gff) if not isinstance(args.gff, Path) else args.gff
+    if getattr(args, "reference", None) is not None:
+        args.reference = Path(args.reference) if not isinstance(args.reference, Path) else args.reference
+    # Defaults for new (v1.13+) flags when rectify CLI hasn't been updated yet:
+    for attr, default in [
+        ("umi_clustering", "directional"),
+        ("min_gene_frac", 0.3),
+        ("min_read_frac", 0.8),
+        ("isoform_tol_5", 5),
+        ("isoform_tol_3", 5),
+        ("strand_aware_consensus", False),
+        ("t1t2_tol_5", 5),
+        ("t1t2_tol_3", 5),
+    ]:
+        if not hasattr(args, attr): setattr(args, attr, default)
 
     logging.basicConfig(
-        level=logging.DEBUG if getattr(args, 'verbose', False) else logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s")
     log = logging.getLogger("cdna_correct")
 
@@ -732,15 +1698,20 @@ def run(args) -> int:
 
     t0 = time.time()
     log.info("Streaming reads from %s region=%s ...", args.bam, args.region or "all")
-    reads = list(stream_reads(args.bam, args.region))
+    if args.reference is None:
+        log.warning("No --reference provided: walk-back anchor canonicalization + "
+                    "polyA tail-length measurement DISABLED (legacy aln-end anchor used)")
+    reads = list(stream_reads(args.bam, args.region, reference=args.reference))
     log.info("  %d reads with extractable UMIs (%.1fs)", len(reads), time.time() - t0)
 
     t1 = time.time()
-    log.info("Stage 1: clustering (anchor window %d, UMI Lev≤%d, cap %d)",
-             args.anchor_window_bp, args.umi_edit_distance, args.per_cluster_cap)
+    log.info("Stage 1: clustering (anchor window %d, UMI Lev≤%d, method=%s)",
+             args.anchor_window_bp, args.umi_edit_distance, args.umi_clustering)
     clusters, stats = cluster_reads(reads, args.anchor_window_bp,
-                                     args.umi_edit_distance, args.per_cluster_cap)
-    log.info("  %d molecule clusters (%.1fs)", stats["molecule_clusters"], time.time() - t1)
+                                     args.umi_edit_distance, args.per_cluster_cap,
+                                     clustering_method=args.umi_clustering)
+    log.info("  %d molecule clusters (%.1fs)  biggest bucket=%d reads",
+             stats["molecule_clusters"], time.time() - t1, stats["biggest_bucket_size"])
 
     # Canonical UMI per cluster
     umi_canon = {cid: canonical_umi([r.umi for r in c]) for cid, c in enumerate(clusters)}
@@ -748,45 +1719,66 @@ def run(args) -> int:
     # Per-cluster XF tier: max of constituent reads (any one full-length is enough)
     cluster_xf_tier = {cid: max((r.xf_tier for r in c), default=0) for cid, c in enumerate(clusters)}
 
-    # GFF-based sense/antisense classification
+    # Per-cluster polyA tail length: median across reads (sequence-level, biased
+    # short for long tails — see v1.12 docstring). Singletons report the lone
+    # read's per-read tail length.
+    def _median(xs: List[int]) -> int:
+        if not xs: return 0
+        s = sorted(xs)
+        return s[len(s) // 2]
+    cluster_tail_len = {cid: _median([r.tail_len for r in c])
+                        for cid, c in enumerate(clusters)}
+
+    # GFF-based sense/antisense classification (v1.14: overlap-based with sense
+    # preference and first-TSS tiebreaker). Cluster's representative alignment
+    # span = the FIRST READ's aln interval. For multi-read clusters this is
+    # approximate; the consensus alignment span (computed later) would be
+    # equivalent in most cases.
     cluster_xs: Dict[int, str] = {}
+    cluster_xg: Dict[int, Optional[str]] = {}  # v1.14: primary gene name (XG tag)
     if args.gff:
         log.info("Loading GFF: %s", args.gff)
         gene_trees = load_gff_genes(args.gff)
         log.info("  loaded gene trees for %d chromosomes (%d total intervals)",
                  len(gene_trees), sum(len(t) for t in gene_trees.values()))
         for cid, c in enumerate(clusters):
-            cluster_xs[cid] = classify_sense_antisense(c[0].chrom, c[0].anchor, gene_trees)
+            r0 = c[0]
+            xs, gene_name = classify_sense_antisense(
+                r0.chrom, r0.aln_start, r0.aln_end, r0.orient,
+                gene_trees,
+                min_gene_frac=args.min_gene_frac,
+                min_read_frac=args.min_read_frac,
+            )
+            cluster_xs[cid] = xs
+            cluster_xg[cid] = gene_name
     else:
         for cid in range(len(clusters)):
             cluster_xs[cid] = "unannotated"
+            cluster_xg[cid] = None
 
-    # Stage 2 cross-orient pair check (compute first, before BAM write, so we can override XS=paired)
-    fwd = [(cid, umi_canon[cid], c[0].chrom, c[0].anchor, len(c))
-            for cid, c in enumerate(clusters) if c[0].orient == "fwd"]
-    rev = [(cid, umi_canon[cid], c[0].chrom, c[0].anchor, len(c))
-            for cid, c in enumerate(clusters) if c[0].orient == "rev"]
-    paired_pairs = []
-    fwd_by_chrom = defaultdict(list)
-    for e in fwd:
-        fwd_by_chrom[e[2]].append(e)
-    for r_cid, r_umi, r_ch, r_a, r_sz in rev:
-        for f_cid, f_umi, f_ch, f_a, f_sz in fwd_by_chrom.get(r_ch, []):
-            if abs(r_a - f_a) > args.max_cross_orient_span:
-                continue
-            d = Levenshtein.distance(f_umi, r_umi, score_cutoff=args.umi_edit_distance)
-            if d <= args.umi_edit_distance:
-                paired_pairs.append((f_cid, r_cid, f_ch, f_a, r_a, f_sz, r_sz, d, abs(r_a - f_a)))
+    # v1.17: isoform clustering (position-directional with strict 2× rule)
+    t_iso = time.time()
+    cluster_xi, iso_records = assign_isoforms(
+        clusters, cluster_xg, tol5=args.isoform_tol_5, tol3=args.isoform_tol_3)
+    log.info("Isoform clustering (tol5=%d, tol3=%d): %d isoforms from %d annotated clusters (%.1fs)",
+             args.isoform_tol_5, args.isoform_tol_3, len(iso_records),
+             sum(1 for cid in cluster_xi), time.time() - t_iso)
 
-    # Override XS for paired clusters; build paired_partner mapping
+    # v2: Type-1 ↔ Type-2 same-orient reconciliation (replaces the legacy
+    # cross-orient pair check, which had no biological substrate — both physical
+    # PCR strands of a single molecule produce the same orient label after BAM
+    # normalization). Type-1↔Type-2 pairs ARE same-molecule observations split
+    # across the SSP-captured (Type-1) and SSP-truncated (Type-2) populations.
+    t_t1t2 = time.time()
+    cluster_xl, t1t2_pairs = reconcile_t1_t2_pairs(
+        clusters, cluster_xg,
+        tol5=args.t1t2_tol_5, tol3=args.t1t2_tol_3)
+    log.info("Type-1↔Type-2 reconciliation (tol5=%d, tol3=%d): %d pairs (%.1fs)",
+             args.t1t2_tol_5, args.t1t2_tol_3, len(t1t2_pairs), time.time() - t_t1t2)
+
+    # paired_partner kept as empty dict — preserved as a tag-write hook
+    # (used to be cross-orient molecule_id, now unused).
     paired_partner: Dict[int, str] = {}
-    for f_cid, r_cid, *_ in paired_pairs:
-        # Use the canonical UMI of the fwd cluster as the molecule ID
-        molecule_id = umi_canon[f_cid]
-        paired_partner[f_cid] = molecule_id
-        paired_partner[r_cid] = molecule_id
-        cluster_xs[f_cid] = "paired"
-        cluster_xs[r_cid] = "paired"
 
     # Stage 1 BAM (write unsorted, then sort+index)
     t2 = time.time()
@@ -813,7 +1805,10 @@ def run(args) -> int:
 
     bam_stats = write_stage1_bam(args.bam, unsorted_bam, clusters, umi_canon,
                                    cluster_xs, cluster_xf_tier, paired_partner,
-                                   mp_aligner=mp_aligner, use_poa=use_poa)
+                                   cluster_tail_len, cluster_xg, cluster_xi,
+                                   cluster_xl,
+                                   mp_aligner=mp_aligner, use_poa=use_poa,
+                                   strand_aware_consensus=args.strand_aware_consensus)
     log.info("  wrote %d records (%d singletons, %d pileup consensus, %d rep fallback) in %.1fs",
              bam_stats["written"], bam_stats["from_singletons"],
              bam_stats["from_multi_pileup"], bam_stats["from_multi_fallback"],
@@ -823,22 +1818,46 @@ def run(args) -> int:
     pysam.index(str(out_bam))
     log.info("  sorted + indexed → %s(.bai)", out_bam)
 
-    # Cluster manifest with XS classification
+    # Cluster manifest: + isoform_id (v1.17)
     manifest = args.out / "clusters.tsv"
     with manifest.open("w") as f:
-        f.write("cluster_id\tchrom\tanchor\torient\tn_reads\tumi_canonical\txs\tread_ids\n")
+        f.write("cluster_id\tchrom\tanchor\torient\tn_reads\tumi_canonical"
+                "\txs\txf\txt\ttail_len\tgene\tisoform_id"
+                "\taln_start\taln_end\tread_ids\n")
         for cid, c in enumerate(clusters):
-            f.write(f"{cid}\t{c[0].chrom}\t{c[0].anchor}\t{c[0].orient}"
+            gene_str = cluster_xg.get(cid) or ""
+            iso_str = cluster_xi.get(cid) or ""
+            r0 = c[0]
+            f.write(f"{cid}\t{r0.chrom}\t{r0.anchor}\t{r0.orient}"
                     f"\t{len(c)}\t{umi_canon[cid]}\t{cluster_xs[cid]}"
+                    f"\t{cluster_xf_tier[cid]}\t{r0.read_type}\t{cluster_tail_len[cid]}"
+                    f"\t{gene_str}\t{iso_str}\t{r0.aln_start}\t{r0.aln_end}"
                     f"\t{','.join(r.read_id for r in c)}\n")
     log.info("Wrote cluster manifest → %s", manifest)
 
-    pairs_tsv = args.out / "stage2_pairs.tsv"
+    # v1.17 isoform manifest
+    iso_path = args.out / "isoforms.tsv"
+    with iso_path.open("w") as f:
+        f.write("isoform_id\tgene\tchrom\torient\tread_type\tn_clusters\tn_reads_total"
+                "\tpos5_modal\tpos3_modal\ttail_len_median\tcluster_ids\n")
+        for r in iso_records:
+            f.write(f"{r['isoform_id']}\t{r['gene']}\t{r['chrom']}\t{r['orient']}"
+                    f"\t{r['read_type']}\t{r['n_clusters']}\t{r['n_reads_total']}"
+                    f"\t{r['pos5_modal']}\t{r['pos3_modal']}\t{r['tail_len_median']}"
+                    f"\t{r['cluster_ids']}\n")
+    log.info("Wrote isoform manifest → %s (%d isoforms)", iso_path, len(iso_records))
+
+    # v2: Type-1 ↔ Type-2 same-orient pair manifest (replaces legacy stage2_pairs.tsv)
+    pairs_tsv = args.out / "t1t2_pairs.tsv"
     with pairs_tsv.open("w") as f:
-        f.write("fwd_cid\trev_cid\tchrom\tfwd_anchor\trev_anchor\tfwd_size\trev_size\tumi_levdist\tspan_bp\n")
-        for p in paired_pairs:
-            f.write("\t".join(str(x) for x in p) + "\n")
-    log.info("Stage 2: %d cross-orient pairs → %s", len(paired_pairs), pairs_tsv)
+        f.write("t1_cid\tt2_cid\tgene\torient\tt1_pos5\tt1_pos3\tt2_pos5\tt2_pos3"
+                "\td5\td3\tt1_n_reads\tt2_n_reads\tt1_umi\n")
+        for p in t1t2_pairs:
+            f.write(f"{p['t1_cid']}\t{p['t2_cid']}\t{p['gene']}\t{p['orient']}"
+                    f"\t{p['t1_pos5']}\t{p['t1_pos3']}\t{p['t2_pos5']}\t{p['t2_pos3']}"
+                    f"\t{p['d5']}\t{p['d3']}\t{p['t1_n_reads']}\t{p['t2_n_reads']}"
+                    f"\t{p['t1_umi']}\n")
+    log.info("v2: %d Type-1↔Type-2 same-orient pairs → %s", len(t1t2_pairs), pairs_tsv)
 
     # Final report
     print()
@@ -853,8 +1872,13 @@ def run(args) -> int:
     print(f"  multi-read (rep fallback):       {bam_stats['from_multi_fallback']:>8d}")
     print(f"polyA-pileup buckets dropped:    {stats['buckets_dropped_polyA_pileup']:>8d}"
           f"  ({stats['reads_in_dropped_buckets']} reads — these need POA + position-aware handling)")
-    print(f"Stage 2 cross-orient pairs (span≤{args.max_cross_orient_span}, Lev≤{args.umi_edit_distance}):"
-          f" {len(paired_pairs):>5d}")
+    n_t1 = stats.get('type1_reads', 0); n_t2 = stats.get('type2_reads', 0)
+    n_total_typed = max(1, n_t1 + n_t2)
+    print(f"Read-type breakdown:")
+    print(f"  Type 1 (SSP+UMI captured):       {n_t1:>8d}  ({100*n_t1/n_total_typed:.1f}%)  → {stats.get('type1_clusters', 0)} clusters")
+    print(f"  Type 2 (SSP-less, 5'-truncated): {n_t2:>8d}  ({100*n_t2/n_total_typed:.1f}%)  → {stats.get('type2_clusters', 0)} clusters")
+    print(f"v2 Type-1↔Type-2 same-orient pairs (Δ5'≤{args.t1t2_tol_5}, Δ3'≤{args.t1t2_tol_3}):"
+          f" {len(t1t2_pairs):>5d}")
     print()
     print("XS classification breakdown (per cluster):")
     xs_counts = defaultdict(int)
@@ -895,9 +1919,44 @@ def run(args) -> int:
         pct_full = 100 * (n2 + n1) / tot
         pct_high = 100 * n2 / tot
         print(f"  {cat:<14} {n2:>8d} {n1:>8d} {n0:>8d}  {pct_full:>7.1f}%  {pct_high:>7.1f}%")
+    # PolyA tail length distribution (sequence-level; bias-uniform across conditions)
+    print()
+    print("PolyA tail-length distribution (per-cluster median, sequence-level):")
+    bins = [(0, 1), (1, 10), (10, 20), (20, 30), (30, 50), (50, 75),
+            (75, 100), (100, 150), (150, 250), (250, 10_000)]
+    bin_counts = [0] * len(bins)
+    sense_tail_lens = []
+    antisense_tail_lens = []
+    for cid in range(len(clusters)):
+        if cluster_xf_tier[cid] < 2: continue  # only HIGH-confidence anchored reads
+        tl = cluster_tail_len[cid]
+        for i, (lo, hi) in enumerate(bins):
+            if lo <= tl < hi:
+                bin_counts[i] += 1; break
+        if cluster_xs.get(cid) == "sense": sense_tail_lens.append(tl)
+        elif cluster_xs.get(cid) == "antisense": antisense_tail_lens.append(tl)
+    n_with_tl = sum(bin_counts)
+    print(f"  (restricted to XF=2 anchored clusters: N={n_with_tl})")
+    print(f"  {'range':<12} {'count':>8} {'pct':>6}")
+    for (lo, hi), n in zip(bins, bin_counts):
+        label = f"{lo}-{hi-1}" if hi < 10_000 else f"≥{lo}"
+        pct = 100 * n / max(1, n_with_tl)
+        print(f"  {label:<12} {n:>8d} {pct:>5.1f}%")
+    def _summary(xs):
+        if not xs: return "—"
+        s = sorted(xs); n = len(s)
+        med = s[n // 2]; p25 = s[n // 4]; p75 = s[3 * n // 4]
+        return f"N={n}  median={med}  IQR=({p25}-{p75})"
+    print(f"  sense clusters:     {_summary(sense_tail_lens)}")
+    print(f"  antisense clusters: {_summary(antisense_tail_lens)}")
     print()
     print(f"Output BAM: {out_bam}")
     print(f"Cluster manifest: {manifest}")
-    print(f"Stage-2 pairs: {pairs_tsv}")
+    print(f"T1↔T2 pairs: {pairs_tsv}")
     log.info("Total runtime: %.1fs", time.time() - t0)
     return 0
+
+
+# Module is invoked via rectify CLI: `rectify correct-cdna ...` calls run(args).
+# No __main__ block — the standalone entry point lives in the ont_cdna staging
+# repo at /Users/kevinroy/work/ont_cdna/src/cdna_correct.py.
