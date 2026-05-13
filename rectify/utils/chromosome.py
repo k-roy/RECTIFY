@@ -133,7 +133,13 @@ def normalize_chromosome(
         return chrom
 
     if organism != 'yeast':
-        # For other organisms, just return as-is
+        logger.warning(
+            "normalize_chromosome: target_format=%r requested but no mapping "
+            "tables exist for organism=%r — only yeast is supported. Returning "
+            "%r unchanged. Use target_format='passthrough' to suppress this warning, "
+            "or contribute species-specific mapping tables.",
+            target_format, organism, chrom,
+        )
         return chrom
 
     if target_format == 'ncbi':

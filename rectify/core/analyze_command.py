@@ -616,7 +616,7 @@ def load_corrected_positions(
     filepath: str,
     sample_column: str,
     normalize_chroms: bool = True,
-    chrom_format: str = 'ncbi',
+    chrom_format: str = 'passthrough',
     chunk_size: int = 1_000_000,
     max_rows: int = None,
 ) -> pd.DataFrame:
@@ -626,7 +626,7 @@ def load_corrected_positions(
         filepath: Path to TSV file with corrected positions
         sample_column: Column name for sample identifier
         normalize_chroms: Whether to normalize chromosome names
-        chrom_format: Target chromosome format ('ncbi', 'ucsc')
+        chrom_format: Target chromosome format ('passthrough', 'ucsc', 'ncbi', 'sgd'); default passthrough preserves input names
         chunk_size: Rows per chunk for large files (default: 1M)
         max_rows: Maximum rows to load (for testing)
 
@@ -797,7 +797,7 @@ def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: 
     Args:
         filepath: Path to annotation file
         normalize_chroms: Whether to normalize chromosome names
-        chrom_format: Target chromosome format ('ncbi', 'ucsc')
+        chrom_format: Target chromosome format ('passthrough', 'ucsc', 'ncbi', 'sgd'); default passthrough preserves input names
 
     Returns:
         DataFrame with gene annotations
@@ -823,7 +823,7 @@ def load_position_index(
     tsv_path: str,
     sample_id: str,
     normalize_chroms: bool = True,
-    chrom_format: str = 'ncbi',
+    chrom_format: str = 'passthrough',
 ) -> Optional[pd.DataFrame]:
     """Load compact position index (_index.bed.gz) if it exists.
 
@@ -1059,8 +1059,9 @@ def _run_analyze_manifest(
         cond_str = f" [{s['condition']}]" if 'condition' in s else ''
         print(f"  {s['sample_id']}: {s['path']}{cond_str}")
 
-    # Chromosome format settings
-    chrom_format = 'ncbi'
+    # Chromosome format settings: passthrough-by-default for species portability.
+    # Set by --chrom-format CLI flag.
+    chrom_format = getattr(args, 'chrom_format', 'passthrough')
     sample_column = getattr(args, 'sample_column', 'sample')
 
     # Load annotation early
@@ -2005,6 +2006,18 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         help='Sample manifest TSV (columns: sample_id, path, [condition]). '
              'When provided, processes per-sample TSVs one at a time instead of '
              'a pre-combined TSV.',
+    )
+
+    # Chromosome-name normalization (kept off by default for species portability)
+    parser.add_argument(
+        '--chrom-format',
+        choices=['passthrough', 'ucsc', 'ncbi', 'sgd'],
+        default='passthrough',
+        help='Target chromosome-name convention for output tables. '
+             '`passthrough` (default): preserve input names as-is — works for any species. '
+             '`ucsc`: chrI / chr1. `ncbi`: ref|NC_001133| / NC_000001.11. `sgd`: BK006935.2. '
+             'NOTE: ucsc/ncbi/sgd conversions currently only have lookup tables for S. cerevisiae; '
+             'on other species these modes pass through with a warning.',
     )
 
     parser.set_defaults(func=run_analyze)
