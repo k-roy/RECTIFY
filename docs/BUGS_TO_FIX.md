@@ -1,10 +1,27 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-04-22 (NEW-067 through NEW-074 added from job 22314279 post-mortem)
+## Last Updated: 2026-05-13 (NEW-075 added — walkback strand)
 
 ---
 
 ## Open
+
+---
+
+### NEW-075 (HIGH) — `correct`: dT-primed cDNA walkback is not integrated; post-hoc script emits BAM strand instead of gene/RNA strand
+
+**File:** missing in `rectify/core/correct_command.py`; current workaround is the standalone script at `projects/TRT/scripts/rectify/han2023/11_polya_walkback_recompute.py`.
+
+**Symptom:** For dT-primed cDNA libraries (e.g. QuantSeq REV, the Han 2023 reanalysis), the corrected 3' end needs a polyA walkback step that scans backward from the alignment 3' end past stretches of genome-encoded A's to find the templated CPA. `rectify correct` does not perform this step. Users currently run `11_polya_walkback_recompute.py` post-hoc against the `corrected_3ends.tsv`. That standalone script has a strand bug: it emits the **BAM read strand** in the strand column, but for dT-primed antisense protocols the BAM strand is the **opposite** of the RNA/gene strand. Downstream clustering then sees flipped strands at convergent loci and the entire cluster taxonomy gets confused (caught 2026-05-12 during the Han 2023 cluster-revisit, fixed locally via a TSV strand-flip).
+
+**Fix:** Integrate polyA walkback into `rectify correct` behind a `--dT-primed-cDNA` flag (or auto-detect from sample-sheet protocol field). Two requirements for the integration:
+
+1. **Walkback algorithm:** scan upstream from the 3' end of each alignment past genome-encoded A-runs (parameter `--walkback-min-A-run`, default 4) and emit the templated CPA position. This is the existing logic in `11_polya_walkback_recompute.py` — port and harden.
+2. **Strand convention:** the strand column in `corrected_3ends.tsv` must always be the **gene / RNA strand**, never the BAM-read strand. For dT-primed antisense protocols, flip the strand when emitting (BAM `is_reverse` → `+` RNA strand, and vice versa). Add a test fixture covering this case to prevent regression.
+
+**Why HIGH:** the post-hoc workaround is fragile (lives in TRT-specific scripts, not rectify), the strand bug silently corrupts cluster output at convergent loci, and any future user reanalysing dT-primed cDNA libraries will hit the same trap.
+
+**Discovered:** 2026-05-12 during Han 2023 cluster revisit; documented in `projects/TRT/analyses/han2023_cluster_revisit_20260512/`.
 
 ---
 

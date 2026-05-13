@@ -74,6 +74,27 @@ which are not stored in the position index. Two options:
 the HTML report or `corrected_3ends_stats.tsv`. Surfacing these would help diagnose
 aligner quality per sample.
 
+### Emit cluster COM (read-weighted center-of-mass) from `analyze`
+**File:** `rectify/core/analyze_command.py`
+**Priority:** Medium
+
+`rectify analyze` currently emits per-cluster bedgraphs and a cluster table, but the
+**read-weighted center-of-mass position** within each cluster is not exported. This
+forces downstream consumers (motif scans, IGV navigation, cross-sample COM comparison)
+to recompute it post-hoc by streaming the full `corrected_3ends.tsv` and grouping
+by cluster ID — see `projects/TRT/scripts/rectify/han2023/62_compute_cluster_com.py`
+as the canonical workaround.
+
+**Intended behaviour:** add a `cluster_com` column (1-based genomic coordinate, integer
+floor of read-weighted mean) to the existing per-cluster summary TSV that `analyze`
+emits. Read weight = count of reads whose corrected 3' end falls within the cluster.
+For motif-window extraction, this is the anchor point — the existing cluster start/end
+coordinates do not capture it (they're peak boundaries, not signal centroid).
+
+Acceptance: a manifest-mode analyze run produces a cluster table with `cluster_id`,
+`chrom`, `strand`, `start`, `end`, `cluster_com`, `n_reads`, ... and the post-hoc
+script `62_compute_cluster_com.py` can be retired.
+
 ---
 
 ## Validation
