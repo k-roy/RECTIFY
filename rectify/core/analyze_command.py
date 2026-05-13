@@ -791,7 +791,7 @@ def _load_large_file_chunked(
     return final
 
 
-def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: str = 'ncbi') -> pd.DataFrame:
+def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: str = 'passthrough') -> pd.DataFrame:
     """Load gene annotation file (GTF or TSV).
 
     Args:
@@ -1064,10 +1064,11 @@ def _run_analyze_manifest(
     chrom_format = getattr(args, 'chrom_format', 'passthrough')
     sample_column = getattr(args, 'sample_column', 'sample')
 
-    # Load annotation early
+    # Load annotation early; thread chrom_format so its chrom names match
+    # the cluster table (which is also normalized to chrom_format).
     annotation_df = None
     if args.annotation:
-        annotation_df = load_annotation(args.annotation)
+        annotation_df = load_annotation(args.annotation, chrom_format=chrom_format)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Pass 1: Aggregate positions across all samples for clustering
