@@ -43,6 +43,8 @@ from . import polya_trimmer
 from . import indel_corrector
 from . import netseq_refiner
 from .indel_corrector import VariantAwareHomopolymerRescue
+from .correct.protocols.quantseq_rev import walkback_quantseq_rev
+from .correct.walkback import APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ..utils.genome import load_genome, standardize_chrom_name, reverse_complement
 from .polya_model import PolyAModel, load_model as load_polya_model
@@ -645,22 +647,48 @@ def correct_read_3prime(
     # walk-back distance so the NET-seq refinement guard (range > 0) fires.
     # NEW-068: Skip poly-A walkback when softclip rescue (Module 2G) already
     # corrected this end — the two modules move in opposite directions.
+    #
+    # NEW-075: For QuantSeq REV (dt_primed_cDNA=True) the legacy genome-only
+    # find_polya_boundary fires for only ~8% of reads because its 4-A homopolymer
+    # gate filters out the dominant artifact (internal-priming over short genomic
+    # A-runs). Route those reads through the read-vs-reference walkback
+    # (rectify.core.correct.protocols.quantseq_rev). The new walkback also
+    # handles the V-primer tip artifact (terminal G over a genomic A-run).
     polya_walkback_applied = False
     if genome and not _has_3prime_hardclip and not softclip_rescue_applied:
-        wb = indel_corrector.find_polya_boundary(read, strand, genome)
-        if wb is not None:
-            result['correction_applied'].append('polya_walkback')
-            polya_walkback_applied = True
-            wb_bp = wb['correction_bp']
-            current_position = wb['corrected_pos']
-            # Set ambiguity window to the full walk-back span
-            if strand == '+':
-                result['ambiguity_min'] = current_position
-                result['ambiguity_max'] = original_position
-            else:
-                result['ambiguity_min'] = original_position
-                result['ambiguity_max'] = current_position
-            result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
+        if dt_primed_cDNA:
+            _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
+            if _chrom_seq:
+                _orig_wb, _corr_wb, _applied_wb, _gene_strand_wb = walkback_quantseq_rev(
+                    read, _chrom_seq
+                )
+                if _applied_wb == _APPLIED_WALKBACK_READGENOME:
+                    result['correction_applied'].append('polya_walkback_readgenome')
+                    polya_walkback_applied = True
+                    current_position = _corr_wb
+                    if strand == '+':
+                        result['ambiguity_min'] = current_position
+                        result['ambiguity_max'] = original_position
+                    else:
+                        result['ambiguity_min'] = original_position
+                        result['ambiguity_max'] = current_position
+                    wb_bp = abs(original_position - current_position)
+                    result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
+        else:
+            wb = indel_corrector.find_polya_boundary(read, strand, genome)
+            if wb is not None:
+                result['correction_applied'].append('polya_walkback')
+                polya_walkback_applied = True
+                wb_bp = wb['correction_bp']
+                current_position = wb['corrected_pos']
+                # Set ambiguity window to the full walk-back span
+                if strand == '+':
+                    result['ambiguity_min'] = current_position
+                    result['ambiguity_max'] = original_position
+                else:
+                    result['ambiguity_min'] = original_position
+                    result['ambiguity_max'] = current_position
+                result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
 
     # NEW-061: Prevent corrected positions from landing inside artifact N op spans.
     # Two cases handled:

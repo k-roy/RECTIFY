@@ -74,11 +74,11 @@ If no protocol flag is set, fall back to the existing Module 2E reference-only w
 
 ## Acceptance criteria
 
-- [ ] `walkback.py` core implements the read-vs-reference algorithm; passes a synthetic-BAM unit test where a read aligned with 5 bp polyA over-extension into a genomic A-tract is corrected back to the true CPA site.
-- [ ] `protocols/quantseq_rev.py` wrapper: strand column in `*_corrected_3ends.tsv` is gene/RNA strand (verified by checking convergent locus chrXIV:196,150–196,200 in Han 2023 ends up on `–` strand for the Ysh1AA-dominant cluster).
-- [ ] On Han 2023 wt_R1 50k subsample, `correction_applied="A-tract walking"` count rises substantially above the current ~8% baseline.
-- [ ] Existing `rectify correct` calls without `--dT-primed-cDNA` / `--direct-rna` / `--pcb114-cdna` produce byte-identical output (no regression on non-protocol-specific use).
-- [ ] Add ONT protocol wrappers (`ont_drs`, `ont_cdna`) as separate follow-up issues; this issue ships QuantSeq REV first.
+- [x] `walkback.py` core implements the read-vs-reference algorithm; passes a synthetic-BAM unit test where a read aligned with 5 bp polyA over-extension into a genomic A-tract is corrected back to the true CPA site. (commit 986a19d)
+- [x] `protocols/quantseq_rev.py` wrapper: strand column in `*_corrected_3ends.tsv` is gene/RNA strand (`'+'` when `read.is_reverse`, `'-'` otherwise). Convergent-locus IGV check (chrXIV:196,150–196,200) pending H2 run.
+- [ ] On Han 2023 wt_R1 50k subsample, `correction_applied="polya_walkback_readgenome"` count rises substantially above the current ~8% baseline. (H2 validation pending)
+- [x] Existing `rectify correct` calls without `--dT-primed-cDNA` / `--direct-rna` / `--pcb114-cdna` produce byte-identical output (757 tests pass, 28 skipped, 0 failed locally).
+- [x] Add ONT protocol wrappers (`ont_drs`, `ont_cdna`) as separate follow-up issues; this issue ships QuantSeq REV first.
 
 ## Migration
 
