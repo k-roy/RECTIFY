@@ -24,7 +24,7 @@ import csv
 import logging
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 from rectify.core.analyze.splice_summary import (
     GeneIntronSet,
@@ -51,29 +51,48 @@ GENE_PANEL = [
 ]
 
 
-# BAMs to audit. Tuple of (sample_label, bam_path).
-BAMS = [
+# BAMs to audit. {sample_label: full_bam_path_on_H2}.
+BAMS_H2 = {
     # DRS — 3 wt + 3 upf1Δ
-    ("drs_wt_rep1",    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep1.sorted.bam"),
-    ("drs_wt_rep2",    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep2.sorted.bam"),
-    ("drs_wt_rep3",    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep3.sorted.bam"),
-    ("drs_upf1d_rep1", "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep1.sorted.bam"),
-    ("drs_upf1d_rep2", "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep2.sorted.bam"),
-    ("drs_upf1d_rep3", "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep3.sorted.bam"),
+    "drs_wt_rep1":    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep1.sorted.bam",
+    "drs_wt_rep2":    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep2.sorted.bam",
+    "drs_wt_rep3":    "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/wt_polya_rep3.sorted.bam",
+    "drs_upf1d_rep1": "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep1.sorted.bam",
+    "drs_upf1d_rep2": "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep2.sorted.bam",
+    "drs_upf1d_rep3": "/u/project/guillom/shared/raw/by4742-wt-upf1D_polya_drs_2025/upf1d_polya_rep3.sorted.bam",
     # cDNA — the M1-produced v3 consensus BAM (one record per UMI cluster)
-    ("cdna_wt_rep1",   "/u/project/guillom/kevinroy/projects/ont_cdna/analyses/wt_rep1_v3_20260513/stage1_consensus.bam"),
-]
+    "cdna_wt_rep1":   "/u/project/guillom/kevinroy/projects/ont_cdna/analyses/wt_rep1_v3_20260513/stage1_consensus.bam",
+}
+
+
+def resolve_bams(bams_dir: Optional[str]) -> List[Tuple[str, str]]:
+    """Return [(label, path), ...].
+
+    If ``bams_dir`` is given, look for ``<bams_dir>/<label>.nmdas.bam`` (the
+    subset BAM naming used by the H2 extraction step). Otherwise return the
+    full H2 paths in :data:`BAMS_H2` — useful when running on H2 itself.
+    """
+    if bams_dir:
+        base = Path(bams_dir)
+        return [(label, str(base / f"{label}.nmdas.bam")) for label in BAMS_H2]
+    return [(label, path) for label, path in BAMS_H2.items()]
 
 
 def build_gene_intron_sets() -> List[GeneIntronSet]:
+    """Convert GFF (1-based inclusive) intron coords in GENE_PANEL into BAM
+    (0-based half-open) coords used by N-cigars. The conversion is
+    ``(gff_start, gff_end) -> (gff_start - 1, gff_end)`` — verified empirically
+    against cDNA N-cigars at YRA1 (GFF 1236843,1237608 ↔ BAM 1236842,1237608).
+    """
     out = []
-    for name, sys_id, chrom, strand, introns in GENE_PANEL:
+    for name, sys_id, chrom, strand, gff_introns in GENE_PANEL:
+        bam_introns = frozenset((s - 1, e) for s, e in gff_introns)
         out.append(
             GeneIntronSet(
                 gene_id=f"{name} ({sys_id})",
                 chrom=chrom,
                 strand=strand,
-                introns=frozenset(introns),
+                introns=bam_introns,
             )
         )
     return out
@@ -82,6 +101,12 @@ def build_gene_intron_sets() -> List[GeneIntronSet]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", required=True, help="Output TSV path (long format)")
+    ap.add_argument(
+        "--bams-dir",
+        default=None,
+        help="Look for <label>.nmdas.bam in this dir instead of the full H2 paths. "
+        "Use for local M1 iteration after pulling subset BAMs.",
+    )
     ap.add_argument(
         "--snap-tolerance",
         type=int,
@@ -96,6 +121,7 @@ def main():
         help="Read must overlap intron by this many flanking bp to count as spanning",
     )
     args = ap.parse_args()
+    bams = resolve_bams(args.bams_dir)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -105,7 +131,7 @@ def main():
     genes = build_gene_intron_sets()
     rows = []
 
-    for sample_label, bam_path in BAMS:
+    for sample_label, bam_path in bams:
         if not Path(bam_path).exists():
             logger.warning("Missing BAM, skipping: %s", bam_path)
             continue
@@ -137,12 +163,12 @@ def main():
     # Console pivot: per-gene pct_unspliced wt vs upf1Δ for quick eyeballing
     print("\n=== Quick console pivot: pct_unspliced (intron retention signal) ===")
     print(f"{'gene':<25} ", end="")
-    for label, _ in BAMS:
+    for label, _ in bams:
         print(f"{label:>16} ", end="")
     print()
     for g in genes:
         print(f"{g.gene_id:<25} ", end="")
-        for label, _ in BAMS:
+        for label, _ in bams:
             match = next((r for r in rows if r["gene_id"] == g.gene_id and r["sample"] == label), None)
             if match:
                 print(f"{match['pct_unspliced']:>14.1f}%  ", end="")
