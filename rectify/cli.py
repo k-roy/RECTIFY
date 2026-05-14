@@ -264,8 +264,8 @@ Citation:
     param_group.add_argument(
         '--ag-threshold',
         type=float,
-        default=0.65,
-        help='AG-richness threshold for mispriming flagging (0.0-1.0)'
+        default=17.0,
+        help='AG-richness weighted score threshold for mispriming flagging (0.0-34.5; default 17.0)'
     )
 
     # Output options
