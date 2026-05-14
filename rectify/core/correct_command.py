@@ -267,7 +267,7 @@ def validate_inputs(args) -> dict:
         # the primary use case: the reads stop at the cleavage site and the AG-rich context
         # is only detectable from the genome, not from the reads.
         'apply_ag_mispriming': is_dt_primed and not args.skip_ag_check,
-        'ag_threshold': getattr(args, 'ag_threshold', 0.65),
+        'ag_threshold': getattr(args, 'ag_threshold', 17.0),
         # Poly(A) trimming and indel correction: always enabled for long reads — poly-A
         # is present in the read sequence for both DRS and dT-primed cDNA protocols.
         # Disabled for short reads (no poly-A tail).
