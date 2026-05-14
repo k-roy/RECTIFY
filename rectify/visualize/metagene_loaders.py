@@ -221,12 +221,13 @@ def loci_from_bed(
         'bed_start', 'bed_end'
     """
     df = pd.read_csv(
-        bed_path, sep='\t', header=None, comment='#',
-        names=['chrom', 'start', 'end', 'name', 'score', 'strand'],
-        dtype=str,
+        bed_path, sep='\t', header=None, comment='#', dtype=str,
     )
+    # Standard BED columns in canonical order; rename whatever subset we got.
+    _bed_cols = ['chrom', 'start', 'end', 'name', 'score', 'strand']
+    df.columns = _bed_cols[:len(df.columns)]
 
-    has_strand = len(df.columns) >= 6 and df['strand'].dropna().isin(['+', '-']).any()
+    has_strand = 'strand' in df.columns and df['strand'].dropna().isin(['+', '-']).any()
     center_key = center.lower()
 
     loci = []
