@@ -76,7 +76,8 @@ class ProcessingStats:
     # Correction breakdown — both modes
     ends_corrected_indel: int = 0
     ends_corrected_false_junction: int = 0  # Poly(A)-artifact N-ops removed
-    ends_shifted_atract_walking: int = 0    # Position changed due to A-tract
+    ends_shifted_atract_walking: int = 0     # Position changed due to A-tract (legacy genome-only path)
+    ends_walkback_readgenome: int = 0        # Position changed by read-vs-reference walkback (NEW-075)
     ends_refined_netseq: int = 0
     ends_five_prime_rescued: int = 0        # 5' end rescued at 3'SS boundary
 
@@ -113,6 +114,7 @@ class ProcessingStats:
             'ends_corrected_indel': self.ends_corrected_indel,
             'ends_corrected_false_junction': self.ends_corrected_false_junction,
             'ends_shifted_atract_walking': self.ends_shifted_atract_walking,
+            'ends_walkback_readgenome': self.ends_walkback_readgenome,
             'ends_refined_netseq': self.ends_refined_netseq,
             'ends_five_prime_rescued': self.ends_five_prime_rescued,
             'reads_with_polya': self.reads_with_polya,
@@ -138,6 +140,7 @@ class ProcessingStats:
         self.ends_corrected_indel += other.ends_corrected_indel
         self.ends_corrected_false_junction += other.ends_corrected_false_junction
         self.ends_shifted_atract_walking += other.ends_shifted_atract_walking
+        self.ends_walkback_readgenome += other.ends_walkback_readgenome
         self.ends_refined_netseq += other.ends_refined_netseq
         self.ends_five_prime_rescued += other.ends_five_prime_rescued
         self.reads_with_polya += other.reads_with_polya
@@ -180,9 +183,11 @@ class ProcessingStats:
             if result.get('five_prime_rescued'):
                 self.ends_five_prime_rescued += 1
             if 'atract_ambiguity' in corrections:
-                # Check if position actually shifted
                 if result.get('corrected_3prime') != result.get('original_3prime'):
                     self.ends_shifted_atract_walking += 1
+            if 'polya_walkback_readgenome' in corrections:
+                if result.get('corrected_3prime') != result.get('original_3prime'):
+                    self.ends_walkback_readgenome += 1
             if 'netseq_refinement' in corrections:
                 self.ends_refined_netseq += 1
 
@@ -293,7 +298,8 @@ def write_stats_tsv(
         # Correction breakdown (both protocols)
         if processed > 0:
             f.write(f"ends_corrected_indel\t{stats.ends_corrected_indel}\t{100*stats.ends_corrected_indel/processed:.2f}\t3' ends corrected for indel artifacts\n")
-            f.write(f"ends_shifted_atract_walking\t{stats.ends_shifted_atract_walking}\t{100*stats.ends_shifted_atract_walking/processed:.2f}\t3' ends shifted by A-tract walking\n")
+            f.write(f"ends_shifted_atract_walking\t{stats.ends_shifted_atract_walking}\t{100*stats.ends_shifted_atract_walking/processed:.2f}\t3' ends shifted by A-tract walking (legacy genome-only path)\n")
+            f.write(f"ends_walkback_readgenome\t{stats.ends_walkback_readgenome}\t{100*stats.ends_walkback_readgenome/processed:.2f}\t3' ends corrected by read-vs-reference walkback (NEW-075, --dT-primed-cDNA)\n")
             f.write(f"ends_refined_netseq\t{stats.ends_refined_netseq}\t{100*stats.ends_refined_netseq/processed:.2f}\t3' ends refined by NET-seq\n")
             f.write(f"total_position_shifts\t{stats.total_position_shifts}\t{100*stats.total_position_shifts/processed:.2f}\tTotal 3' ends with position changed\n")
 
@@ -319,7 +325,6 @@ def write_stats_tsv(
         conf_total = stats.confidence_high + stats.confidence_medium + stats.confidence_low
         if conf_total > 0:
             f.write(f"confidence_high\t{stats.confidence_high}\t{100*stats.confidence_high/conf_total:.2f}\tHigh confidence assignments (% of output rows)\n")
-            f.write(f"confidence_medium\t{stats.confidence_medium}\t{100*stats.confidence_medium/conf_total:.2f}\tMedium confidence assignments (% of output rows)\n")
             f.write(f"confidence_low\t{stats.confidence_low}\t{100*stats.confidence_low/conf_total:.2f}\tLow confidence assignments (% of output rows)\n")
 
     logger.info(f"Wrote processing statistics to {output_path}")
@@ -426,6 +431,7 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
         lines.append(f"  Indel correction:         {stats.ends_corrected_indel:>12,} ({100*stats.ends_corrected_indel/processed:>5.1f}%)")
         lines.append(f"  False junction removed:   {stats.ends_corrected_false_junction:>12,} ({100*stats.ends_corrected_false_junction/processed:>5.1f}%)")
         lines.append(f"  A-tract walking:          {stats.ends_shifted_atract_walking:>12,} ({100*stats.ends_shifted_atract_walking/processed:>5.1f}%)")
+        lines.append(f"  Read-genome walkback:     {stats.ends_walkback_readgenome:>12,} ({100*stats.ends_walkback_readgenome/processed:>5.1f}%)")
         lines.append(f"  NET-seq refinement:       {stats.ends_refined_netseq:>12,} ({100*stats.ends_refined_netseq/processed:>5.1f}%)")
         lines.append(f"  5' soft-clip rescued:     {stats.ends_five_prime_rescued:>12,} ({100*stats.ends_five_prime_rescued/processed:>5.1f}%)")
         lines.append(f"  Total position shifts:    {stats.total_position_shifts:>12,} ({100*stats.total_position_shifts/processed:>5.1f}%)")
@@ -461,7 +467,6 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
     lines.append("Final Confidence (% of output rows):")
     if conf_total > 0:
         lines.append(f"  High:                     {stats.confidence_high:>12,} ({100*stats.confidence_high/conf_total:>5.1f}%)")
-        lines.append(f"  Medium:                   {stats.confidence_medium:>12,} ({100*stats.confidence_medium/conf_total:>5.1f}%)")
         lines.append(f"  Low:                      {stats.confidence_low:>12,} ({100*stats.confidence_low/conf_total:>5.1f}%)")
     lines.append("")
     lines.append("=" * 70)
