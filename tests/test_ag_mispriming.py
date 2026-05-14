@@ -66,24 +66,19 @@ class TestAGMisprimingScreening:
         assert result['window_size'] == 50
         assert result['ag_content'] < 0.5
         assert not result['is_likely_misprimed']
-        assert result['confidence'] == 'low'
+        assert result['ag_score'] <= config.AG_RICHNESS_SCORE_THRESHOLD
         assert not result['insufficient_data']
 
     def test_medium_ag_content(self):
-        """Test position with medium AG content (borderline)."""
+        """Position 1050: ~60% AG content, weighted score above threshold."""
         result = ag_mispriming.screen_ag_mispriming(
             MOCK_GENOME, 'chrI', 1050, '+', window=50
         )
 
         assert result['window_size'] == 50
         assert 0.5 < result['ag_content'] < 0.7
-        # Default threshold is 0.65, so ~60% should not be flagged
-        # But if it's >= 0.65, it should be flagged
-        if result['ag_content'] >= config.AG_RICHNESS_THRESHOLD:
-            assert result['is_likely_misprimed']
-            assert result['confidence'] == 'medium'
-        else:
-            assert not result['is_likely_misprimed']
+        assert result['ag_score'] > config.AG_RICHNESS_SCORE_THRESHOLD
+        assert result['is_likely_misprimed']
 
     def test_high_ag_content(self):
         """Test position with high AG content (likely misprimed)."""
@@ -93,8 +88,8 @@ class TestAGMisprimingScreening:
 
         assert result['window_size'] == 50
         assert result['ag_content'] >= 0.75
+        assert result['ag_score'] > config.AG_RICHNESS_SCORE_THRESHOLD
         assert result['is_likely_misprimed']
-        assert result['confidence'] == 'high'
 
     def test_very_high_ag_content(self):
         """Test position with very high AG content."""
@@ -104,8 +99,8 @@ class TestAGMisprimingScreening:
 
         assert result['window_size'] == 50
         assert result['ag_content'] >= 0.85
+        assert result['ag_score'] > config.AG_RICHNESS_SCORE_THRESHOLD
         assert result['is_likely_misprimed']
-        assert result['confidence'] == 'high'
 
     def test_custom_threshold(self):
         """Test with custom AG-richness threshold."""
@@ -222,9 +217,9 @@ class TestStatistics:
     def test_calculate_statistics(self):
         """Test statistics calculation."""
         ag_results = [
-            {'ag_content': 0.3, 'is_likely_misprimed': False, 'confidence': 'low', 'insufficient_data': False},
-            {'ag_content': 0.7, 'is_likely_misprimed': True, 'confidence': 'medium', 'insufficient_data': False},
-            {'ag_content': 0.8, 'is_likely_misprimed': True, 'confidence': 'high', 'insufficient_data': False},
+            {'ag_score': 1.0, 'ag_content': 0.3, 'is_likely_misprimed': False, 'insufficient_data': False},
+            {'ag_score': 18.5, 'ag_content': 0.7, 'is_likely_misprimed': True, 'insufficient_data': False},
+            {'ag_score': 23.0, 'ag_content': 0.8, 'is_likely_misprimed': True, 'insufficient_data': False},
         ]
 
         stats = ag_mispriming.calculate_ag_statistics(ag_results)
@@ -234,15 +229,12 @@ class TestStatistics:
         assert stats['likely_misprimed'] == 2
         assert stats['mispriming_rate'] == pytest.approx(2/3)
         assert stats['mean_ag_content'] == pytest.approx(0.6)
-        assert stats['by_confidence']['low'] == 1
-        assert stats['by_confidence']['medium'] == 1
-        assert stats['by_confidence']['high'] == 1
 
     def test_statistics_with_insufficient_data(self):
         """Test statistics with some insufficient data."""
         ag_results = [
-            {'ag_content': 0.3, 'is_likely_misprimed': False, 'confidence': 'low', 'insufficient_data': False},
-            {'ag_content': None, 'is_likely_misprimed': False, 'confidence': 'low', 'insufficient_data': True},
+            {'ag_score': 1.0, 'ag_content': 0.3, 'is_likely_misprimed': False, 'insufficient_data': False},
+            {'ag_score': None, 'ag_content': None, 'is_likely_misprimed': False, 'insufficient_data': True},
         ]
 
         stats = ag_mispriming.calculate_ag_statistics(ag_results)
@@ -268,7 +260,6 @@ class TestStatistics:
             'mean_ag_content': 0.55,
             'median_ag_content': 0.52,
             'max_ag_content': 0.85,
-            'by_confidence': {'low': 83, 'medium': 8, 'high': 4},
             'insufficient_data': 5,
         }
 
@@ -281,57 +272,65 @@ class TestStatistics:
 
 
 class TestQCFlags:
-    """Test QC flag assignment."""
+    """Test QC flag assignment.
+
+    The flag describes the *genomic* sequence in the 19 bp window downstream
+    (in mRNA orientation) of a read's called 3' end — not the read itself.
+    AG_RICH means that window looks like an oligo-dT(V) priming substrate,
+    so the called 3' end is plausibly an internal-priming artefact.
+
+    Single-band classification: AG_RICH / PASS / INSUFFICIENT_DATA. The
+    historical AG_RICH_HIGH / AG_RICH_MEDIUM distinction was removed when
+    the two thresholds were collapsed onto the single Youden-optimal cutoff
+    at score=17.0.
+    """
 
     def test_qc_flag_pass(self):
-        """Test PASS flag for low AG content."""
-        result = {'ag_content': 0.4, 'is_likely_misprimed': False, 'confidence': 'low', 'insufficient_data': False}
+        """PASS — downstream genomic window not AG-enriched."""
+        result = {'ag_content': 0.4, 'is_likely_misprimed': False, 'insufficient_data': False}
         assert ag_mispriming.get_ag_qc_flag(result) == 'PASS'
 
-    def test_qc_flag_ag_rich_medium(self):
-        """Test AG_RICH_MEDIUM flag."""
-        result = {'ag_content': 0.7, 'is_likely_misprimed': True, 'confidence': 'medium', 'insufficient_data': False}
-        assert ag_mispriming.get_ag_qc_flag(result) == 'AG_RICH_MEDIUM'
-
-    def test_qc_flag_ag_rich_high(self):
-        """Test AG_RICH_HIGH flag."""
-        result = {'ag_content': 0.8, 'is_likely_misprimed': True, 'confidence': 'high', 'insufficient_data': False}
-        assert ag_mispriming.get_ag_qc_flag(result) == 'AG_RICH_HIGH'
+    def test_qc_flag_ag_rich(self):
+        """AG_RICH — downstream genomic window scores above threshold."""
+        result = {'ag_content': 0.8, 'is_likely_misprimed': True, 'insufficient_data': False}
+        assert ag_mispriming.get_ag_qc_flag(result) == 'AG_RICH'
 
     def test_qc_flag_insufficient_data(self):
-        """Test INSUFFICIENT_DATA flag."""
-        result = {'ag_content': None, 'is_likely_misprimed': False, 'confidence': 'low', 'insufficient_data': True}
+        """INSUFFICIENT_DATA dominates when the downstream window is shorter than min_window."""
+        result = {'ag_content': None, 'is_likely_misprimed': False, 'insufficient_data': True}
         assert ag_mispriming.get_ag_qc_flag(result) == 'INSUFFICIENT_DATA'
 
 
-class TestConfidenceAssignment:
-    """Test confidence level assignment."""
+class TestScoreClassification:
+    """Test ag_score-driven flagging across the MOCK_GENOME positions.
 
-    def test_high_confidence(self):
-        """Test high confidence assignment (>= 75% AG)."""
+    Each position represents a putative called 3' end whose 19 bp downstream
+    genomic context drives the AG-richness score.
+    """
+
+    def test_score_above_threshold_flags_high_ag_context(self):
+        """High-AG downstream genomic context (pos 1100) → flagged."""
         result = ag_mispriming.screen_ag_mispriming(
             MOCK_GENOME, 'chrI', 1100, '+', window=50
         )
-
         assert result['ag_content'] >= 0.75
-        assert result['confidence'] == 'high'
+        assert result['ag_score'] > config.AG_RICHNESS_SCORE_THRESHOLD
+        assert result['is_likely_misprimed']
 
-    def test_medium_confidence(self):
-        """Test medium confidence assignment (65-75% AG)."""
-        # Need a position with exactly this range
-        # Position 1050 should have ~60% AG
+    def test_score_above_threshold_flags_medium_ag_context(self):
+        """Medium-AG downstream genomic context (pos 1050) → flagged (single-cutoff contract)."""
         result = ag_mispriming.screen_ag_mispriming(
-            MOCK_GENOME, 'chrI', 1050, '+', window=50, threshold=0.60
+            MOCK_GENOME, 'chrI', 1050, '+', window=50
         )
+        assert 0.5 < result['ag_content'] < 0.7
+        assert result['ag_score'] > config.AG_RICHNESS_SCORE_THRESHOLD
+        assert result['is_likely_misprimed']
 
-        if 0.60 <= result['ag_content'] < 0.75:
-            assert result['confidence'] == 'medium'
-
-    def test_low_confidence(self):
-        """Test low confidence assignment (< threshold)."""
+    def test_score_below_threshold_not_flagged(self):
+        """Low-AG downstream genomic context (pos 1000) → not flagged."""
         result = ag_mispriming.screen_ag_mispriming(
             MOCK_GENOME, 'chrI', 1000, '+', window=50
         )
-
         assert result['ag_content'] < 0.65
-        assert result['confidence'] == 'low'
+        assert result['ag_score'] <= config.AG_RICHNESS_SCORE_THRESHOLD
+        assert not result['is_likely_misprimed']

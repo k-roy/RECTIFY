@@ -21,7 +21,7 @@ from typing import Dict, Optional
 from collections import Counter
 
 from ..config import (
-    AG_RICHNESS_WINDOW, AG_RICHNESS_SCORE_THRESHOLD, AG_RICHNESS_HIGH_THRESHOLD,
+    AG_RICHNESS_WINDOW, AG_RICHNESS_SCORE_THRESHOLD,
     AG_RICHNESS_MIN_WINDOW, AG_RICHNESS_THRESHOLD,
 )
 from ..utils.genome import get_downstream_sequence, clamp_position
@@ -103,7 +103,6 @@ def screen_ag_mispriming(
             - ag_score: Weighted A/G score in downstream window
             - ag_content: Unweighted AG fraction (for backward compatibility)
             - is_likely_misprimed: True if ag_score > threshold
-            - confidence: 'high' (>22), 'medium' (>15), or 'low' (≤15)
             - window_size: Actual window size used
             - base_composition: Dict with counts of A, T, G, C
     """
@@ -118,7 +117,6 @@ def screen_ag_mispriming(
             'ag_score': None,
             'ag_content': None,
             'is_likely_misprimed': False,
-            'confidence': 'low',
             'window_size': actual_window,
             'base_composition': {},
             'insufficient_data': True,
@@ -133,14 +131,6 @@ def screen_ag_mispriming(
     # Determine if likely misprimed
     is_misprimed = ag_score > threshold
 
-    # Assign confidence based on weighted score
-    if ag_score > AG_RICHNESS_HIGH_THRESHOLD:
-        confidence = 'high'
-    elif ag_score > threshold:
-        confidence = 'medium'
-    else:
-        confidence = 'low'
-
     # Get base composition
     seq_upper = downstream_seq.upper()
     base_counts = Counter(seq_upper)
@@ -149,7 +139,6 @@ def screen_ag_mispriming(
         'ag_score': ag_score,
         'ag_content': ag_content,
         'is_likely_misprimed': is_misprimed,
-        'confidence': confidence,
         'window_size': actual_window,
         'base_composition': dict(base_counts),
         'insufficient_data': False,
@@ -206,7 +195,6 @@ def calculate_ag_statistics(ag_results: list) -> Dict:
             'likely_misprimed': 0,
             'mispriming_rate': 0.0,
             'mean_ag_content': 0.0,
-            'by_confidence': {},
         }
 
     import numpy as np
@@ -221,14 +209,12 @@ def calculate_ag_statistics(ag_results: list) -> Dict:
             'mispriming_rate': 0.0,
             'mean_ag_score': None,
             'mean_ag_content': None,
-            'by_confidence': {},
             'insufficient_data': len(ag_results),
         }
 
     ag_scores = [r['ag_score'] for r in valid_results if r.get('ag_score') is not None]
     ag_contents = [r['ag_content'] for r in valid_results if r.get('ag_content') is not None]
     misprimed_count = sum(1 for r in valid_results if r['is_likely_misprimed'])
-    confidences = [r['confidence'] for r in valid_results]
 
     return {
         'total': len(ag_results),
@@ -241,7 +227,6 @@ def calculate_ag_statistics(ag_results: list) -> Dict:
         'mean_ag_content': np.mean(ag_contents) if ag_contents else None,
         'median_ag_content': np.median(ag_contents) if ag_contents else None,
         'max_ag_content': max(ag_contents) if ag_contents else None,
-        'by_confidence': dict(Counter(confidences)),
         'insufficient_data': len(ag_results) - len(valid_results),
     }
 
@@ -279,12 +264,6 @@ def format_ag_report(stats: Dict) -> str:
             report.append(f"  Mean AG fraction:       {stats['mean_ag_content']:.1%}")
         report.append("")
 
-        report.append("Confidence Levels:")
-        for conf in ['high', 'medium', 'low']:
-            count = stats['by_confidence'].get(conf, 0)
-            pct = 100.0 * count / stats['valid'] if stats['valid'] > 0 else 0.0
-            report.append(f"  {conf:10s}          {count:7,} ({pct:5.1f}%)")
-
     if stats.get('insufficient_data', 0) > 0:
         report.append("")
         report.append(f"Insufficient data:        {stats['insufficient_data']:,}")
@@ -297,12 +276,19 @@ def format_ag_report(stats: Dict) -> str:
 
 def get_ag_qc_flag(ag_result: Dict) -> str:
     """
-    Get QC flag for AG mispriming result.
+    Get QC flag describing the *genomic* context at the read's called 3' end.
 
-    Flags reflect the weighted A/G score from Roy & Chanfreau 2019:
-      AG_RICH_HIGH   — score > 17.0 (Youden-optimal threshold, validated by DRS)
-      AG_RICH_MEDIUM — score > 17.0 (same threshold; MEDIUM = HIGH when thresholds are equal)
-      PASS           — score ≤ 15.0 (likely true poly(A) site)
+    The flag labels the 19 bp window of genome immediately downstream (in mRNA
+    orientation) of the called 3' end, not the read itself. Reads carry an
+    AG_RICH flag when that downstream window is A/G-enriched — i.e. it looks
+    like the kind of substrate oligo-dT(V) primers will hybridise to, so the
+    called 3' end is plausibly an internal-priming artefact rather than a
+    bona-fide cleavage/polyadenylation site.
+
+    Single-band classification using the weighted A/G score from Roy & Chanfreau 2019:
+      AG_RICH           — score > AG_RICHNESS_SCORE_THRESHOLD (Youden-optimal cutoff, validated by DRS)
+      PASS              — score ≤ threshold (likely true poly(A) site)
+      INSUFFICIENT_DATA — downstream window shorter than min_window (e.g. near chrom end)
 
     Args:
         ag_result: Result dict from screen_ag_mispriming()
@@ -312,10 +298,6 @@ def get_ag_qc_flag(ag_result: Dict) -> str:
     """
     if ag_result.get('insufficient_data', False):
         return 'INSUFFICIENT_DATA'
-    elif ag_result['is_likely_misprimed']:
-        if ag_result['confidence'] == 'high':
-            return 'AG_RICH_HIGH'
-        else:
-            return 'AG_RICH_MEDIUM'
-    else:
-        return 'PASS'
+    if ag_result['is_likely_misprimed']:
+        return 'AG_RICH'
+    return 'PASS'

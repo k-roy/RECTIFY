@@ -526,11 +526,9 @@ def correct_read_3prime(
             qc_flag = ag_mispriming.get_ag_qc_flag(ag_result)
             result['qc_flags'].append(qc_flag)
             result['ag_content'] = ag_result['ag_content']
-            result['ag_confidence'] = ag_result['confidence']
-
-            # Reduce confidence for misprimed reads
+            result['ag_score'] = ag_result['ag_score']
             if result['confidence'] == 'high':
-                result['confidence'] = 'medium' if ag_result['confidence'] == 'medium' else 'low'
+                result['confidence'] = 'low'
 
     # Module 2B: Poly(A) tail detection (when poly(A) is sequenced)
     # NOTE: This does NOT correct positions - it only measures poly(A) tail length.

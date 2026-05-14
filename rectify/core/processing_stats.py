@@ -32,17 +32,17 @@ class ProcessingStats:
     • reads_with_polya / polya_length_* : poly(A) tail length measured from
       the pre-trimmed sequence; meaningful only for DRS.  Will be 0 for
       oligo-dT-primed cDNA (the poly-A tail is not sequenced in that protocol).
-    • ends_flagged_ag_mispriming / ends_ag_* : ALWAYS 0 in DRS mode.
+    • ends_flagged_ag_mispriming : ALWAYS 0 in DRS mode.
       AG mispriming is a reverse-transcriptase artefact that does not occur in
-      native RNA sequencing.  These counters are populated only when
+      native RNA sequencing.  This counter is populated only when
       --dT-primed-cDNA is passed.
 
     --dT-primed-cDNA (oligo-dT-primed cDNA, e.g. QuantSeq)
     ────────────────────────────────────────────────────────
     • reads_with_polya / polya_length_* : will be 0 because the poly-A tail is
       not in the read (the oligo-dT primer hybridises at its start).
-    • ends_flagged_ag_mispriming / ends_ag_* : populated; report how many reads
-      show evidence of internal AG-mispriming artefacts (Module AG).
+    • ends_flagged_ag_mispriming : populated; reports how many reads show
+      evidence of internal AG-mispriming artefacts (Module AG).
 
     Both modes
     ──────────
@@ -90,8 +90,6 @@ class ProcessingStats:
     # Always 0 in DRS mode; AG mispriming is a cDNA reverse-transcriptase
     # artefact that does not occur in native RNA sequencing.
     ends_flagged_ag_mispriming: int = 0
-    ends_ag_high_confidence: int = 0
-    ends_ag_medium_confidence: int = 0
 
     # Final confidence — both modes
     confidence_high: int = 0
@@ -121,8 +119,6 @@ class ProcessingStats:
             'polya_length_sum': self.polya_length_sum,
             'polya_length_max': self.polya_length_max,
             'ends_flagged_ag_mispriming': self.ends_flagged_ag_mispriming,
-            'ends_ag_high_confidence': self.ends_ag_high_confidence,
-            'ends_ag_medium_confidence': self.ends_ag_medium_confidence,
             'confidence_high': self.confidence_high,
             'confidence_medium': self.confidence_medium,
             'confidence_low': self.confidence_low,
@@ -148,8 +144,6 @@ class ProcessingStats:
         self.polya_length_sum += other.polya_length_sum
         self.polya_length_max = max(self.polya_length_max, other.polya_length_max)
         self.ends_flagged_ag_mispriming += other.ends_flagged_ag_mispriming
-        self.ends_ag_high_confidence += other.ends_ag_high_confidence
-        self.ends_ag_medium_confidence += other.ends_ag_medium_confidence
         self.confidence_high += other.confidence_high
         self.confidence_medium += other.confidence_medium
         self.confidence_low += other.confidence_low
@@ -210,11 +204,6 @@ class ProcessingStats:
             for flag in qc_flags:
                 if 'AG_RICH' in flag:
                     self.ends_flagged_ag_mispriming += 1
-                    ag_conf = result.get('ag_confidence', '')
-                    if ag_conf == 'high':
-                        self.ends_ag_high_confidence += 1
-                    elif ag_conf == 'medium':
-                        self.ends_ag_medium_confidence += 1
                     break
 
         # Final confidence is per output row (each NET-seq assignment has its own)

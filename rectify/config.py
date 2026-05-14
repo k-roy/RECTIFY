@@ -234,17 +234,20 @@ NETSEQ_DECONV_REGULARIZATION: float = 0.01
 # Window size matching the oligo-dT19 primer length
 AG_RICHNESS_WINDOW: int = 19  # bp downstream
 
-# Weighted score threshold for flagging likely mispriming (Youden-optimal, validated by DRS)
+# Weighted score threshold for flagging likely internal priming (Youden-optimal, validated by DRS).
 # Optimized against rRNA-internal (true positives) vs non-internal (true negatives) in
 # QuantSeq REV WT data, validated by DRS cross-chemistry comparison (Roy & Chanfreau 2019).
 # At threshold 17: sensitivity=50.4% for rRNA-internal, FPR=6.6% for non-internal (J=0.438).
 # DRS rRNA-internal above threshold: 0.6% vs QuantSeq 50.4% — 84x chemistry-specific enrichment.
 # Note: max possible score = 25.0 (pure A 19-mer: 6×2 + 13×1). The scale ends at 25, not 34.5.
-AG_RICHNESS_SCORE_THRESHOLD: float = 17.0  # score > 17 → AG_RICH_MEDIUM (cluster flagged)
-
-# High-confidence threshold — set equal to SCORE_THRESHOLD to use a single optimized cutoff.
-# Reads above this threshold are excluded from cluster counts (definite internal priming).
-AG_RICHNESS_HIGH_THRESHOLD: float = 17.0  # score > 17 → AG_RICH_HIGH (read excluded)
+#
+# A read's called 3' end is flagged AG_RICH when the 19 bp of *genomic* sequence
+# downstream of that end (in mRNA orientation) scores above threshold — i.e. the
+# downstream genome looks like a substrate the oligo-dT(V) primer could have
+# hybridised to, so the called 3' end is more plausibly an internal-priming
+# artefact than a bona-fide cleavage/polyadenylation site. Flagged reads are
+# excluded from cluster counts.
+AG_RICHNESS_SCORE_THRESHOLD: float = 17.0
 
 # Minimum window size if near chromosome end
 AG_RICHNESS_MIN_WINDOW: int = 10  # bp (half of primer length)
