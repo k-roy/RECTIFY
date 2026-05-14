@@ -54,16 +54,18 @@ def walkback_3prime(
     to the reference base. The first position where they agree *and* the
     base is not the stop base is the canonical cleavage anchor.
 
-    Three terminal cases are gated upfront so that the walk-back is only
-    applied where it is actually needed:
+    One terminal gate is applied upfront to skip the walk-back in the
+    unambiguously correct case:
 
-    1. Terminal already non-stop AND matches reference → no walk-back.
-       The alignment is correctly anchored.
-    2. Terminal is the stop base AND matches reference → no walk-back.
-       The 3' end sits on a legitimate genomic stop-base run; walking would
-       drift into the gene body.
-    3. Mismatch at the terminal (sequencing error or poly-A over-extension)
-       → walk back until a valid anchor is found.
+    1. Terminal is a non-stop base AND matches the reference → already
+       anchored; no walk-back.
+
+    All other cases (terminal is a stop-base, or terminal mismatches the
+    reference) proceed to the walk-back scan. Critically, a terminal stop-base
+    (A) that happens to match a genomic A is NOT skipped — non-genomically
+    encoded poly-A tails frequently align over genomic A-tracts (the exact
+    scenario RECTIFY was designed to correct), so the scan must walk inward to
+    find the true cleavage anchor regardless of genomic A-content.
 
     Parameters
     ----------
@@ -150,14 +152,14 @@ def walkback_3prime(
     first_rb = qs[first_qp].upper()
     first_gb = chrom_seq[first_rp].upper()
 
-    # Case 1: non-stop read base matching genome → already anchored.
+    # Gate: non-stop read base matching genome → already anchored.
     if first_rb != stop_base and first_rb == first_gb:
         return original_3prime, original_3prime, APPLIED_NONE
-    # Case 2: stop-base read matching genome → genomic stop-base run, leave it.
-    if first_rb == stop_base and first_gb == stop_base:
-        return original_3prime, original_3prime, APPLIED_NONE
 
-    # Case 3: walk back until a non-stop read-vs-ref match is found.
+    # Walk back until a non-stop read-vs-ref match is found.
+    # This covers terminal stop-base (A) regardless of genomic A-content:
+    # poly-A tails routinely align over genomic A-tracts and must be walked
+    # back to the true cleavage anchor.
     corrected = original_3prime
     changed = False
     for qp, rp in scan_pairs:

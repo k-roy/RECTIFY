@@ -63,14 +63,21 @@ class TestTerminalGate:
         assert applied == APPLIED_NONE
         assert orig == corr == 1009
 
-    def test_terminal_stop_base_matching_genome_no_walkback(self):
-        """Terminal A read matching a genomic A → don't drift into gene body."""
-        # 10 bp aligned, terminal A genuinely sits on a genomic A.
-        ref = "X" * 1000 + "CGTACGTAAA" + "X" * 100
-        read = _make_read(start=1000, seq="CGTACGTAAA", cigar=((0, 10),))
+    def test_terminal_stop_base_matching_genome_walkback_fires(self):
+        """Terminal A on genomic A → walkback fires to find true CPA.
+
+        Genome:  ...CGTACGT AAA
+        Read:    ...CGTACGT AAA
+        The last 3 A's could be poly-A tail aligned over the genomic A-run.
+        Walkback scans inward and anchors at T (pos 1006), the last non-A
+        read-genome agreement.
+        """
+        ref = "X" * 1000 + "CGTACGT" + "AAA" + "X" * 100
+        read = _make_read(start=1000, seq="CGTACGT" + "AAA", cigar=((0, 10),))
         orig, corr, applied = walkback_3prime(read, ref, THREE_PRIME_SIDE_RIGHT)
-        assert applied == APPLIED_NONE
-        assert orig == corr == 1009
+        assert applied == APPLIED_WALKBACK
+        assert orig == 1009
+        assert corr == 1006  # T immediately before the A-stretch
 
 
 # ---------------------------------------------------------------------------
@@ -78,22 +85,20 @@ class TestTerminalGate:
 # ---------------------------------------------------------------------------
 class TestWalkbackFires:
     def test_polya_extended_into_genomic_a_stretch_right(self):
-        """The canonical case: 5 bp poly-A over-extends into a genomic A-tract.
+        """Core RECTIFY case: poly-A tail aligning into a genomic A-tract.
 
         Genome:  ...ACGTC AAAAA...
-        Read:    ...ACGTC AAAAA   (last 5 read A's are basecalled tail, not real)
-        Original 3'-end is at the last A of the genomic A-tract; the correct
-        cleavage anchor is the C immediately before the tract.
+        Read:    ...ACGTC AAAAA   (last 5 A's are basecalled tail over genomic A)
+        The terminal A matches the genomic A, but walkback MUST still fire —
+        non-genomically encoded poly-A routinely lands on genomic A-runs.
+        The scan walks back to C (the last non-A read-genome agreement).
         """
         ref = "X" * 1000 + "ACGTC" + "AAAAA" + "X" * 100
         read = _make_read(start=1000, seq="ACGTC" + "AAAAA", cigar=((0, 10),))
         orig, corr, applied = walkback_3prime(read, ref, THREE_PRIME_SIDE_RIGHT)
-        # Terminal is A matching genomic A → Case 2 gate fires; no walkback.
-        # This is intentional: there is no way to tell from read+genome alone
-        # whether those last 5 A's are tail or genomic. The walkback is for
-        # the *unambiguous* over-extension case below.
-        assert applied == APPLIED_NONE
-        assert corr == 1009
+        assert applied == APPLIED_WALKBACK
+        assert orig == 1009
+        assert corr == 1004  # C immediately before the A-stretch
 
     def test_polya_extends_past_genomic_tract_mismatching_terminal(self):
         """Unambiguous over-extension: read has more A's than the genomic A-run.
