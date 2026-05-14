@@ -79,6 +79,7 @@ If no protocol flag is set, fall back to the existing Module 2E reference-only w
 - [x] On Han 2023 wt_R1 50k subsample (64,532 reads), `correction_applied="polya_walkback_readgenome"` fires at 31.2% (20,133 reads) vs legacy ~4.3% (`ends_shifted_atract_walking`). Old standalone-script baseline was 16.2%. Case-2 gate removal accounts for the additional 15 pp gain.
   - Strand inversion confirmed: BAM flag=16 (is_reverse=True) → TSV `+`; BAM flag=0 → TSV `-`.
   - Convergent locus chrXIV:196,100–196,250: 25/33 reads on `-` strand correctly get walkback; `+` strand cluster at 196,149–196,156 untouched.
+  - **Final confidence stats (v4, ag_threshold=17.0):** High: 59,477 (92.2%) / Low: 5,055 (7.8%) — as expected for a real QuantSeq REV dataset with few internal-priming artifacts in yeast. (Prior runs showing 99.7% Low were caused by `--ag-threshold` argparse default of 0.65 in `cli.py`, fixed in commit 7bf0a1d.)
 - [x] Existing `rectify correct` calls without `--dT-primed-cDNA` / `--direct-rna` / `--pcb114-cdna` produce byte-identical output (757 tests pass, 28 skipped, 0 failed locally).
 - [x] Add ONT protocol wrappers (`ont_drs`, `ont_cdna`) as separate follow-up issues; this issue ships QuantSeq REV first.
 
