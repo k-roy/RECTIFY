@@ -17,9 +17,26 @@ RTD answers *what does this function do?* — this document answers
 
 ## Pipeline overview
 
-RECTIFY corrects systematic errors in poly(A)-tailed RNA-seq data (nanopore
-Direct RNA-seq, QuantSeq, Helicos, PacBio Iso-Seq) and then performs
-differential 3' end usage analysis across conditions.
+RECTIFY corrects systematic errors in poly(A)-tailed RNA-seq data and then
+performs differential 3' end usage analysis across conditions. The pipeline
+supports three protocol tracks that share a common correction core but differ
+in pre-processing, alignment strategy, and post-correction analysis:
+
+| Track | Input | Pre-processing | Alignment | 3' end | 5' end |
+|---|---|---|---|---|---|
+| **DRS** (Direct RNA-seq) | Dorado BAM (pt:i: tags) | poly(A)+adapter pre-trim → FASTQ | minimap2 + mapPacBio + gapmm2 | read-vs-ref walkback | splice-aware rescue |
+| **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → re-alignment | minimap2 (+ mapPacBio target) | read-vs-ref walkback on consensus | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering |
+| **QuantSeq REV** | pre-aligned BAM | (external alignment) | BWA-MEM (+ BBMap target) | read-vs-ref walkback (inverted: 3'=left) | N/A (3'-biased protocol) |
+
+**Shared modules** (all tracks): read-vs-reference walkback (`core/correct/walkback.py`),
+per-read splice classification (`core/analyze/splice_summary.py`), CPA clustering,
+gene attribution, DESeq2, GO enrichment, motif discovery, genomic distribution.
+
+**Track-specific modules**: DRS poly(A) pre-trim (`drs_trim_command.py`), cDNA UMI
+consensus (`cdna_correct_command.py`), QuantSeq protocol wrapper
+(`core/correct/protocols/quantseq_rev.py`).
+
+### DRS pipeline (Steps 0–5)
 
 ```
 Dorado-aligned BAM (with pt:i: tags)
@@ -163,6 +180,76 @@ first on the Dorado-aligned BAM, then Step 4 (`restore-softclip`) applied
 after correction to re-attach the trimmed poly(A) to the softclip BAM. Each
 step can also be invoked independently through its own subcommand.
 
+### ONT cDNA pipeline (PCB114.24)
+
+```
+Pre-aligned BAM (minimap2)
+    │
+    ▼
+[Stage 1: UMI Consensus]     rectify correct-cdna
+    │
+    │  Read architecture (5'→3' basecall orientation):
+    │    SSP_FWD + (TT-VVVV)×4 + TTT UMI (16 nt) + GGG TSO bridge + cDNA body + poly(A) + adapter
+    │
+    │  ① UMI extraction: regex-match SSP → extract 16-nt UMI → XU:Z tag
+    │  ② Directional clustering: Levenshtein ≤ 3 + 2× count rule
+    │     Groups reads by (gene, UMI similarity) into consensus families
+    │  ③ abPOA consensus: families with XR ≥ 2 reads → polished consensus sequence
+    │     Singletons (XR = 1) → pass through original sequence
+    │  ④ Re-alignment: consensus reads re-aligned with minimap2 (mapPacBio target)
+    │
+    ▼
+    stage1_consensus.bam
+    Tags: XU (UMI) · XC (cluster) · XR (reads merged) · XF (method) · XA (polyA) · XG (gene) · XT (type)
+    │
+    ▼
+[Stage 2: Isoform Clustering]
+    │
+    │  Type-1 (XT:i:1, SSP+UMI captured): 5' UMI-anchored
+    │    SSP+UMI at 5' end = real TSS; UMI = molecule identity
+    │    UMI merges reads regardless of 3' truncation status
+    │    Isoform = (gene, 5'-group, 3'-group) — uses both ends
+    │
+    │  Type-2 (XT:i:2, SSP-less / truncated): 3' pA-tail-anchored
+    │    5' end is random truncation (noise); only 3' CPA is reliable
+    │    No UMI → no dedup possible; each read = independent molecule
+    │    (singleton UMIs in T1 confirm low PCR duplication rate)
+    │    Isoform = (gene, *, 3'-group) — 5' grouping skipped
+    │    Likely XRN1 decay intermediates or technical truncation
+    │
+    ▼
+[Stage 3: T1↔T2 Reconciliation]
+    │   Match T1 and T2 clusters where |Δ5'| ≤ 5 AND |Δ3'| ≤ 5
+    │   Links written to XL:Z tag + t1t2_pairs.tsv
+    ▼
+    Corrected isoform assignments: XI:Z (isoform_id), XC:i (cluster_id)
+```
+
+The cDNA pipeline diverges from DRS at the input: it takes a pre-aligned BAM
+(no poly(A) pre-trim or multi-aligner step on raw reads) and performs UMI-based
+consensus before correction. The multi-aligner re-alignment step happens on
+consensus reads, not raw reads.
+
+### QuantSeq 3' REV pipeline
+
+```
+Pre-aligned BAM (BWA-MEM or user-supplied)
+    │
+    ▼
+[Poly(A) Pre-Trim]           rectify trim-cdna-polya
+    │   QuantSeq REV captures the 3' end via oligo-dT priming.
+    │   BAM strand is OPPOSITE to gene strand (reverse-complement library).
+    │   3' end of the transcript = LEFT side of the BAM alignment.
+    ▼
+[Correction]                  rectify correct  (with --quantseq-rev flag)
+    │   Uses walkback_quantseq_rev() protocol wrapper:
+    │     three_prime_side = "left" (not "right" as in DRS)
+    │     stop_base = "A" (scan through A-tract from left)
+    │   Strand handling: BAM strand = opposite of gene strand
+    ▼
+    corrected_3ends.tsv → standard analysis pipeline
+```
+
 ---
 
 ## CLI subcommand dispatch
@@ -184,6 +271,9 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 | `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
 | `export` | `core/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
 | `extract` | `core/extract_command.py` | Extract per-read info from BAM to TSV |
+| `correct-cdna` | `core/cdna_correct_command.py` | **ONT cDNA pipeline** — UMI extraction, directional clustering, abPOA consensus, re-alignment, Type-1/Type-2 isoform clustering, T1↔T2 reconciliation |
+| `trim-cdna-polya` | `core/cdna_trim_command.py` | Trim poly(A) from cDNA reads (QuantSeq REV or ONT cDNA pre-processing) |
+| `tag-polya` | `core/tag_polya_command.py` | Tag poly(A) tail lengths on reads (BAM tag annotation) |
 | `netseq` | `core/netseq_command.py` | Process NET-seq BAM files with deconvolution |
 | `aggregate` | `core/aggregate_command.py` | Aggregate reads into CPA / TSS / junction datasets |
 
@@ -218,7 +308,7 @@ flowchart TD
         BC["batch_command.py<br/><i>rectify batch</i>"]
     end
 
-    subgraph commands["Step Commands"]
+    subgraph drs_commands["DRS Step Commands"]
         TC["drs_trim_command.py<br/><i>rectify trim-polya</i>"]
         AL["align_command.py<br/><i>rectify align</i>"]
         CC["correct_command.py<br/><i>rectify correct</i>"]
@@ -226,12 +316,19 @@ flowchart TD
         AC["analyze_command.py<br/><i>rectify analyze</i>"]
     end
 
+    subgraph cdna_commands["cDNA / QuantSeq Commands"]
+        CDNA["cdna_correct_command.py<br/><i>rectify correct-cdna</i>"]
+        CTRIM["cdna_trim_command.py<br/><i>rectify trim-cdna-polya</i>"]
+        TPOL["tag_polya_command.py<br/><i>rectify tag-polya</i>"]
+    end
+
     subgraph utilities["Other Subcommands"]
         EX["export_command.py<br/>extract_command.py<br/>aggregate_command.py<br/>netseq_command.py<br/>validate_command.py<br/>train_polya_command.py"]
     end
 
     CLI --> orchestrators
-    CLI --> commands
+    CLI --> drs_commands
+    CLI --> cdna_commands
     CLI --> utilities
 
     RC -->|"Step 0 (--drs BAM)"| TC
@@ -250,6 +347,7 @@ flowchart TD
 flowchart TD
     CC["correct_command.py"] --> BP["<b>bam_processor.py</b><br/><i>correction hub</i>"]
 
+    BP --> WB["correct/walkback.py<br/><i>read-vs-ref 3' walkback</i>"]
     BP --> MOD1["atract_detector.py<br/><i>① A-tract ambiguity</i>"]
     BP --> MOD2["ag_mispriming.py<br/><i>② AG mispriming<br/>oligo-dT only</i>"]
     BP --> MOD3["polya_trimmer.py<br/><i>③ poly(A) trimming</i>"]
@@ -260,6 +358,17 @@ flowchart TD
     BP --> MOD8["netseq_refiner.py<br/><i>⑧ NET-seq refinement</i>"]
     BP --> MOD9["spikein_filter.py<br/><i>⑨ spike-in filter</i>"]
     BP --> BW["bam_writer.py<br/><i>BAM / bedgraph output</i>"]
+
+    WB --> QS_P["correct/protocols/quantseq_rev.py<br/><i>QuantSeq REV wrapper</i>"]
+
+    subgraph cdna_pipeline["cdna_correct_command.py internals"]
+        UMI["UMI extraction<br/><i>regex SSP match</i>"]
+        DC["directional clustering<br/><i>Lev ≤ 3, 2× rule</i>"]
+        POA["abPOA consensus<br/><i>XR ≥ 2 → polished</i>"]
+        ISO["isoform clustering<br/><i>T1 (3'-anchored)<br/>T2 (5'-anchored)</i>"]
+        REC["T1↔T2 reconciliation<br/><i>|Δ5'| ≤ 5, |Δ3'| ≤ 5</i>"]
+        UMI --> DC --> POA --> ISO --> REC
+    end
 
     subgraph alignment["align_command.py internals"]
         MA["multi_aligner.py<br/><i>minimap2 · mapPacBio<br/>gapmm2 · deSALT · uLTRA</i>"]
@@ -278,6 +387,7 @@ flowchart TD
         MD["analyze/motif_discovery.py"]
         GO["analyze/go_enrichment.py"]
         GD["analyze/genomic_distribution.py"]
+        SS["analyze/splice_summary.py<br/><i>per-read splice classification</i>"]
     end
 ```
 
@@ -303,9 +413,18 @@ rectify/                              ← git repo root
 │   │   │
 │   │   ├── run_command.py            Steps 0–5 orchestrator (the "run-all" dispatcher)
 │   │   ├── align_command.py          Step 1 CLI wrapper
-│   │   ├── correct_command.py        Step 2 CLI wrapper
-│   │   ├── analyze_command.py        Step 3 CLI wrapper + GFF/GTF parsing
+│   │   ├── correct_command.py        Step 2 CLI wrapper (DRS / generic)
+│   │   ├── cdna_correct_command.py   ONT cDNA pipeline (UMI → consensus → isoform clustering)
+│   │   ├── cdna_trim_command.py      cDNA poly(A) trimming (rectify trim-cdna-polya)
+│   │   ├── drs_trim_command.py       DRS poly(A)+adapter pre-trim (rectify trim-polya)
+│   │   ├── tag_polya_command.py      poly(A) tail length tagging (rectify tag-polya)
+│   │   ├── analyze_command.py        Step 5 CLI wrapper + GFF/GTF parsing
 │   │   ├── batch_command.py          parallel/SLURM batch correction
+│   │   │
+│   │   ├── correct/                  3' end correction modules
+│   │   │   ├── walkback.py           read-vs-ref 3' walkback core + DRS wrapper (walkback_drs)
+│   │   │   └── protocols/
+│   │   │       └── quantseq_rev.py   QuantSeq REV wrapper (3'=left, BAM strand=opposite)
 │   │   │
 │   │   ├── multi_aligner.py          Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
 │   │   ├── chimeric_consensus.py     chimeric alignment stitching from sync-points
@@ -354,6 +473,7 @@ rectify/                              ← git repo root
 │   │   │   ├── pan_mutant_refiner.py pan-mutant NET-seq CPA refinement
 │   │   │   ├── atract_refiner.py     A-tract-aware CPA position refinement
 │   │   │   ├── heatmap.py            heatmap visualization of cluster usage
+│   │   │   ├── splice_summary.py      per-read splice classification (annotated/alternative/novel/unspliced)
 │   │   │   ├── pca.py                PCA of per-sample cluster counts
 │   │   │   └── summary.py            per-run summary statistics
 │   │   │
@@ -484,11 +604,39 @@ works on all three schedulers without modification.
 
 **`core/align_command.py`** — Thin CLI wrapper around `multi_aligner.py`.
 
-**`core/correct_command.py`** — Step 2 orchestrator: validates inputs,
-sets thread limits, calls `bam_processor.process_bam_file_parallel()` or
-`process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
+**`core/correct_command.py`** — Step 2 orchestrator (DRS / generic): validates
+inputs, sets thread limits, calls `bam_processor.process_bam_file_parallel()`
+or `process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
 
-**`core/analyze_command.py`** — Step 3 orchestrator: parses GFF/GTF,
+**`core/cdna_correct_command.py`** — ONT cDNA pipeline orchestrator
+(`rectify correct-cdna`). Implements the full PCB114.24 workflow:
+1. **UMI extraction** — regex-matches SSP_FWD in soft-clip, extracts the
+   16-nt UMI (pattern `(TT-VVVV)×4 + TTT`), writes `XU:Z` tag.
+2. **Directional clustering** — groups reads by (gene, UMI similarity) using
+   Levenshtein distance ≤ 3 with the 2× count rule (a UMI with count N can
+   only absorb UMIs with count ≤ N/2). Replaces the earlier connected-components
+   approach which over-merged distant UMIs.
+3. **abPOA consensus** — families with ≥ 2 reads are polished via abPOA
+   partial order alignment. Singletons pass through with original sequence.
+   Tags: `XR` (reads merged), `XF` (consensus method), `XM` (method detail).
+4. **Re-alignment** — consensus sequences re-aligned with minimap2
+   (mapPacBio re-alignment is a target addition).
+5. **Type-1/Type-2 isoform clustering** — Type-1 reads (SSP+UMI, `XT:i:1`)
+   are 5'-UMI-anchored: the SSP+UMI at the 5' end captures the real TSS, and
+   the UMI merges reads regardless of 3' truncation status. Isoform clustering
+   uses both 5' and 3' positions. Type-2 reads (SSP-less, `XT:i:2`) are
+   3'-pA-tail-anchored: only the 3' CPA is reliable, the 5' end is random
+   truncation noise. No UMI → cannot merge reads with different 5' positions.
+   Isoform clustering uses 3' position only (5' grouping skipped).
+   Type-2 reads are likely XRN1 decay intermediates or technical truncation.
+6. **T1↔T2 reconciliation** — matches T1 and T2 clusters where both 5' and
+   3' ends agree within 5 bp. Links written to `XL:Z` tag and `t1t2_pairs.tsv`.
+
+Output tags: `XU` (UMI), `XC` (cluster), `XR` (reads merged), `XF` (method),
+`XA` (polyA), `XG` (gene), `XT` (type 1/2), `XL` (T1↔T2 partner),
+`XI` (isoform_id), `XO` (orient), `XS` (sense/antisense).
+
+**`core/analyze_command.py`** — Step 5 orchestrator: parses GFF/GTF,
 calls analysis modules in sequence, writes all output TSVs and plots.
 Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
@@ -599,7 +747,33 @@ results. Supports two execution modes:
 - `process_bam_streaming()`: 10,000-read chunks, writes incrementally.
   Peak RAM ~4–5 GB regardless of BAM size. **Use this for SLURM jobs.**
 
-Correction modules are called in this order:
+#### Read-vs-reference walkback (`core/correct/walkback.py`)
+
+The protocol-agnostic 3' end correction engine. `walkback_3prime(read,
+chrom_seq, three_prime_side, stop_base="A")` returns `(original_3prime,
+corrected_3prime, applied)`. The algorithm uses a 3-case terminal gate:
+
+1. **Terminal base is non-stop-base AND matches genome** → anchored. The read's
+   3' end is already at an unambiguous non-A position; no walkback needed.
+2. **Terminal base is stop-base** → proceed to walk-back scan.
+3. **Terminal base is non-stop-base BUT mismatches genome** → proceed to scan
+   (the mismatch could be a sequencing error in an A-tract).
+
+The walk-back scan iterates through aligned pairs from the 3' end, walking
+through `read_base == stop_base` positions and mismatches, stopping when
+`read_base == ref_base and read_base != stop_base` — that's the true CPA anchor.
+
+Protocol wrappers customize the directionality:
+- **`walkback_drs()`** (in `walkback.py` itself): `three_prime_side="right"`,
+  BAM strand equals gene strand. Also provides `is_minus_strand_dRNA()`.
+- **`protocols/quantseq_rev.py`** — `walkback_quantseq_rev()`:
+  `three_prime_side="left"` (3' end of transcript is at the left side of the
+  BAM alignment because QuantSeq REV is a reverse-complement library).
+
+The walkback replaces the earlier reference-only A-tract detection approach.
+See "Why read-vs-reference walkback?" in the design decisions section below.
+
+#### Correction modules (called in order by bam_processor)
 
 **① `atract_detector.py`** — Counts A's (or T's for minus strand) in the
 downstream genomic window, looks up expected alignment shift from the
@@ -716,6 +890,9 @@ Support modules called by `bam_processor`:
 | `bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue |
 | `local_aligner.py` | Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR |
 | `atract_detector.py` | A-tract ambiguity calculation (genome-only, used pre-consensus) |
+| `correct/walkback.py` | Read-vs-reference 3' walkback core + DRS wrapper (`walkback_drs`) |
+| `correct/protocols/quantseq_rev.py` | QuantSeq REV walkback wrapper (3'=left, inverted strand) |
+| `cdna_correct_command.py` | ONT cDNA pipeline: UMI → clustering → consensus → isoform typing |
 
 ---
 
@@ -788,6 +965,21 @@ analyses, each producing a horizontal bar chart across conditions:
   (`five_prime_position`) by the same genomic feature hierarchy.
 - **Transcript body distribution**: classifies each *read* by the RNA
   biotype of the feature whose bp overlap its full alignment span is greatest.
+
+**`core/analyze/splice_summary.py`** — Per-read splice classification. For
+each aligned read, classifies its splicing status against the gene annotation.
+The `GeneIntronSet` dataclass holds `donors` and `acceptors` as frozensets
+for O(1) lookup. `classify_read(read, gene, snap_tolerance, span_margin)`
+applies a strict 0-bp matching criterion (with optional boundary snapping)
+through a sequential decision tree:
+
+| Class | Criterion |
+|---|---|
+| `no_intron_span` | Read does not span any annotated intron (±`span_margin` bp) |
+| `unspliced` | Read spans annotated intron(s) but has no N-cigar ops in gene region (intron retention) |
+| `annotated` | All N-ops match annotated introns (both donor and acceptor) |
+| `alternative` | At least one N-op shares a donor OR acceptor with an annotated intron (alt-5'SS, alt-3'SS, exon skipping) |
+| `novel` | At least one N-op has neither end matching any annotated splice site |
 
 Other analysis modules: `junction_analysis.py` (splice stats),
 `junction_validation.py` (annotation-based validation), `heatmap.py`
@@ -973,6 +1165,52 @@ that genuinely belong at non-canonical junctions (e.g. when many reads from the
 same splice isoform all score perfectly at a novel non-canonical site). Annotation
 and canonical tier remain as TIE-BREAKERS only, never as gates. **This policy is
 permanent and must not be re-introduced.**
+
+**Why read-vs-reference walkback replaced reference-only A-tract detection?**
+The original 3' end correction (`atract_detector.py`) looked only at the reference
+genome: count A's downstream of the alignment end, look up expected shift from a
+calibration table. This worked for the common case (aligner lands in a genomic
+A-tract) but failed in three scenarios: (1) sequencing errors in the poly(A) tail
+that create non-A bases matching the genome, causing premature stop; (2) reads
+where the poly(A) tail was pre-trimmed (DRS Step 0) so no tail is present in the
+alignment; (3) reads aligned to A-poor regions where the reference-only heuristic
+has nothing to correct but the actual 3' end is wrong due to indel artifacts.
+
+The read-vs-reference walkback (`correct/walkback.py`) solves all three by
+examining the actual aligned pairs: it walks backward from the 3' end through
+positions where `read_base == stop_base` (A for plus strand, T for minus),
+and stops at the first position where `read_base == ref_base and read_base !=
+stop_base`. This uses the read's own sequence as evidence rather than relying
+on a genome-only heuristic.
+
+The protocol wrapper pattern (`walkback_drs()` in walkback.py, `protocols/quantseq_rev.py`)
+makes the walkback agnostic to library orientation: DRS has 3' on the right side
+of the alignment with BAM strand matching gene strand; QuantSeq REV has 3' on
+the left side with BAM strand opposite to gene strand. The core algorithm is
+identical — only `three_prime_side` and strand interpretation differ.
+
+**Why Type-1 (5' UMI-anchored) vs Type-2 (3' pA-tail-anchored) in cDNA?**
+ONT PCB114.24 cDNA libraries produce two populations of reads. Type-1 reads
+have the SSP+UMI at their 5' end, indicating they were captured from the cap
+through to the CPA site (full-length or near-full-length). The UMI is the
+molecule identity: reads sharing a UMI are the same molecule regardless of
+3' truncation status, so 3'-truncated reads are absorbed into the cluster.
+Isoform assignment uses both 5' (real TSS) and 3' positions.
+
+Type-2 reads lack the SSP, indicating they are either XRN1 5'→3' decay
+intermediates (biologically meaningful — the 5' end marks the decay front) or
+technical truncations. The key limitation: with no UMI, no deduplication is
+possible. Independent molecules commonly share the same 3' CPA site, so
+position alone cannot distinguish molecules. (This is grounded in the
+observation that most Type-1 UMIs are singletons, confirming low PCR
+duplication — each Type-2 read is therefore an independent molecule.)
+Isoform assignment uses only 3' position (5' grouping is skipped).
+
+This asymmetry — UMI absorbs 3' truncation but nothing absorbs 5' truncation —
+is the fundamental reason the two populations must be handled separately.
+The T1↔T2 reconciliation step then links clusters from both populations that
+agree at both 5' and 3' termini (|Δ| ≤ 5 bp each), cross-validating the
+isoform catalog.
 
 ---
 

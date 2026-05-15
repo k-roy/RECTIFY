@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380">
+<rect fill="#ffffff" width="760" height="380"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">PCB114.24 ONT cDNA Read Architecture</text>
+
+<!-- PART 1: Read structure diagram -->
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="48">READ STRUCTURE  (5′ → 3′ basecall orientation)</text>
+
+<!-- SSP region -->
+<rect x="60" y="60" width="80" height="30" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="100" y="79">SSP</text>
+
+<!-- UMI region -->
+<rect x="140" y="60" width="100" height="30" rx="4" fill="#2563eb"/>
+<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="190" y="79">UMI (16 nt)</text>
+
+<!-- Bridge G -->
+<rect x="240" y="60" width="40" height="30" rx="4" fill="#0d9488"/>
+<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="260" y="79">GGG</text>
+
+<!-- cDNA body -->
+<rect x="280" y="60" width="260" height="30" rx="4" fill="#6366f1" opacity="0.18"/>
+<rect x="280" y="60" width="260" height="30" rx="4" fill="none" stroke="#6366f1" stroke-width="1"/>
+<text fill="#6366f1" font-size="10" font-weight="600" text-anchor="middle" x="410" y="79">cDNA body</text>
+
+<!-- Poly-A -->
+<rect x="540" y="60" width="80" height="30" rx="4" fill="#059669" opacity="0.18"/>
+<rect x="540" y="60" width="80" height="30" rx="4" fill="none" stroke="#059669" stroke-width="1"/>
+<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="580" y="79">poly(A)</text>
+
+<!-- Adapter -->
+<rect x="620" y="60" width="80" height="30" rx="4" fill="#94a3b8" opacity="0.3"/>
+<rect x="620" y="60" width="80" height="30" rx="4" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<text fill="#64748b" font-size="9" font-weight="600" text-anchor="middle" x="660" y="79">adapter</text>
+
+<!-- 5' and 3' labels -->
+<text fill="#94a3b8" font-size="9" x="42" y="79">5′</text>
+<text fill="#94a3b8" font-size="9" x="706" y="79">3′</text>
+
+<!-- Tag annotations below read structure -->
+<line x1="190" y1="90" x2="190" y2="106" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,2"/>
+<text fill="#2563eb" font-size="8.5" font-weight="600" text-anchor="middle" x="190" y="118">XU:Z tag</text>
+
+<line x1="580" y1="90" x2="580" y2="106" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+<text fill="#059669" font-size="8.5" font-weight="600" text-anchor="middle" x="580" y="118">XA:i tag</text>
+
+<!-- UMI pattern detail -->
+<text fill="#64748b" font-size="8" font-style="italic" text-anchor="middle" x="190" y="130">(TT-VVVV)×4 + TTT</text>
+
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="144" y2="144"/>
+
+<!-- PART 2: Pipeline flow -->
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="164">UMI CONSENSUS PIPELINE</text>
+
+<!-- Input BAM -->
+<rect x="60" y="178" width="140" height="26" rx="4" fill="#94a3b8" opacity="0.15"/>
+<rect x="60" y="178" width="140" height="26" rx="4" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<text fill="#64748b" font-size="9" font-weight="600" text-anchor="middle" x="130" y="195">input BAM (minimap2)</text>
+
+<!-- Arrow -->
+<line x1="200" y1="191" x2="226" y2="191" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="226,191 220,187.5 220,194.5" fill="#94a3b8"/>
+
+<!-- UMI extraction -->
+<rect x="228" y="178" width="130" height="26" rx="5" fill="#2563eb" opacity="0.15"/>
+<rect x="228" y="178" width="130" height="26" rx="5" fill="none" stroke="#2563eb" stroke-width="1.2"/>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="293" y="195">UMI extraction</text>
+
+<!-- Arrow -->
+<line x1="358" y1="191" x2="384" y2="191" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="384,191 378,187.5 378,194.5" fill="#94a3b8"/>
+
+<!-- Directional clustering -->
+<rect x="386" y="178" width="150" height="26" rx="5" fill="#2563eb" opacity="0.15"/>
+<rect x="386" y="178" width="150" height="26" rx="5" fill="none" stroke="#2563eb" stroke-width="1.2"/>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="461" y="195">directional clustering</text>
+
+<!-- Arrow down -->
+<line x1="461" y1="204" x2="461" y2="222" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="461,222 457.5,216 464.5,216" fill="#94a3b8"/>
+
+<!-- Clustering annotation -->
+<text fill="#64748b" font-size="8" font-style="italic" x="542" y="195">Lev ≤ 3, 2× rule</text>
+
+<!-- Split: XR>=2 and XR=1 -->
+<!-- abPOA branch -->
+<rect x="310" y="226" width="130" height="26" rx="5" fill="#059669" opacity="0.15"/>
+<rect x="310" y="226" width="130" height="26" rx="5" fill="none" stroke="#059669" stroke-width="1.2"/>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="375" y="243">abPOA consensus</text>
+<text fill="#64748b" font-size="8" x="314" y="262">XR ≥ 2 reads → polished</text>
+
+<!-- singleton branch -->
+<rect x="470" y="226" width="130" height="26" rx="5" fill="#d97706" opacity="0.15"/>
+<rect x="470" y="226" width="130" height="26" rx="5" fill="none" stroke="#d97706" stroke-width="1.2"/>
+<text fill="#d97706" font-size="9" font-weight="600" text-anchor="middle" x="535" y="243">singleton pass</text>
+<text fill="#64748b" font-size="8" x="474" y="262">XR = 1 → original seq</text>
+
+<!-- Converge arrows -->
+<line x1="375" y1="252" x2="375" y2="274" stroke="#059669" stroke-width="1"/>
+<line x1="535" y1="252" x2="535" y2="274" stroke="#d97706" stroke-width="1"/>
+<line x1="375" y1="274" x2="455" y2="284" stroke="#94a3b8" stroke-width="1"/>
+<line x1="535" y1="274" x2="455" y2="284" stroke="#94a3b8" stroke-width="1"/>
+<polygon points="455,284 451,278 459,278" fill="#94a3b8"/>
+
+<!-- Re-alignment competition -->
+<rect x="340" y="286" width="230" height="26" rx="5" fill="#6366f1" opacity="0.15"/>
+<rect x="340" y="286" width="230" height="26" rx="5" fill="none" stroke="#6366f1" stroke-width="1.2"/>
+<text fill="#6366f1" font-size="9" font-weight="600" text-anchor="middle" x="455" y="303">minimap2 vs mapPacBio re-alignment</text>
+<text fill="#dc2626" font-size="7.5" font-weight="600" x="576" y="303">*target</text>
+
+<!-- Arrow down -->
+<line x1="455" y1="312" x2="455" y2="328" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="455,328 451.5,322 458.5,322" fill="#94a3b8"/>
+
+<!-- Output -->
+<rect x="310" y="330" width="290" height="26" rx="4" fill="#059669" opacity="0.10"/>
+<rect x="310" y="330" width="290" height="26" rx="4" fill="none" stroke="#059669" stroke-width="0.8"/>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="455" y="347">stage1_consensus.bam</text>
+
+<!-- Output tags summary -->
+<text fill="#64748b" font-size="8" text-anchor="middle" x="455" y="366">Tags: XU (UMI) · XC (cluster) · XR (reads merged) · XF (method) · XA (polyA) · XG (gene) · XT (type)</text>
+
+</g>
+</svg>

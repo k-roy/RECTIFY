@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520">
+<rect fill="#ffffff" width="760" height="520"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Per-Read Splice Classification</text>
+<text fill="#94a3b8" font-size="9" font-style="italic" text-anchor="middle" x="380" y="38">strict 0-bp matching after optional boundary snapping</text>
+
+<!-- Input: Read with N-cigar ops -->
+<rect x="280" y="52" width="200" height="34" rx="6" fill="#6366f1" opacity="0.15"/>
+<rect x="280" y="52" width="200" height="34" rx="6" fill="none" stroke="#6366f1" stroke-width="1.2"/>
+<text fill="#6366f1" font-size="10" font-weight="600" text-anchor="middle" x="380" y="73">Read + N-cigar ops</text>
+
+<!-- Arrow down -->
+<line x1="380" y1="86" x2="380" y2="108" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="380,108 376.5,102 383.5,102" fill="#94a3b8"/>
+
+<!-- Decision 1: Spans annotated intron? -->
+<polygon points="380,112 500,148 380,184 260,148" fill="#fefce8" stroke="#d4d4d8" stroke-width="1"/>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="145">Spans annotated</text>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="157">intron (± 5 bp)?</text>
+
+<!-- NO branch → no_intron_span -->
+<line x1="260" y1="148" x2="140" y2="148" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="140,148 146,144.5 146,151.5" fill="#94a3b8"/>
+<text fill="#94a3b8" font-size="9" font-weight="600" x="170" y="140">No</text>
+<rect x="30" y="134" width="110" height="28" rx="5" fill="#94a3b8" opacity="0.15"/>
+<rect x="30" y="134" width="110" height="28" rx="5" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<text fill="#64748b" font-size="9" font-weight="600" text-anchor="middle" x="85" y="152">no_intron_span</text>
+
+<!-- YES branch down -->
+<line x1="380" y1="184" x2="380" y2="210" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="380,210 376.5,204 383.5,204" fill="#94a3b8"/>
+<text fill="#475569" font-size="9" font-weight="600" x="386" y="200">Yes</text>
+
+<!-- Decision 2: Has N-cigar in gene region? -->
+<polygon points="380,214 500,250 380,286 260,250" fill="#fefce8" stroke="#d4d4d8" stroke-width="1"/>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="247">Has N-cigar ops</text>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="259">in gene region?</text>
+
+<!-- NO branch → unspliced -->
+<line x1="260" y1="250" x2="140" y2="250" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="140,250 146,246.5 146,253.5" fill="#94a3b8"/>
+<text fill="#94a3b8" font-size="9" font-weight="600" x="170" y="242">No</text>
+<rect x="30" y="236" width="110" height="28" rx="5" fill="#d97706" opacity="0.15"/>
+<rect x="30" y="236" width="110" height="28" rx="5" fill="none" stroke="#d97706" stroke-width="1"/>
+<text fill="#d97706" font-size="9" font-weight="600" text-anchor="middle" x="85" y="254">unspliced</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="85" y="278">intron retention</text>
+
+<!-- YES branch down -->
+<line x1="380" y1="286" x2="380" y2="312" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="380,312 376.5,306 383.5,306" fill="#94a3b8"/>
+<text fill="#475569" font-size="9" font-weight="600" x="386" y="302">Yes</text>
+
+<!-- Decision 3: All N-ops match annotated introns? -->
+<polygon points="380,316 510,352 380,388 250,352" fill="#fefce8" stroke="#d4d4d8" stroke-width="1"/>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="349">All N-ops match</text>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="361">annotated introns?</text>
+
+<!-- YES branch → annotated_spliced -->
+<line x1="510" y1="352" x2="610" y2="352" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="610,352 604,348.5 604,355.5" fill="#94a3b8"/>
+<text fill="#475569" font-size="9" font-weight="600" x="524" y="344">Yes</text>
+<rect x="610" y="338" width="120" height="28" rx="5" fill="#059669" opacity="0.15"/>
+<rect x="610" y="338" width="120" height="28" rx="5" fill="none" stroke="#059669" stroke-width="1"/>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="670" y="356">annotated</text>
+
+<!-- NO branch down -->
+<line x1="380" y1="388" x2="380" y2="414" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="380,414 376.5,408 383.5,408" fill="#94a3b8"/>
+<text fill="#475569" font-size="9" font-weight="600" x="386" y="404">No</text>
+
+<!-- Decision 4: Any N-op has one end matching annotated site? -->
+<polygon points="380,418 520,454 380,490 240,454" fill="#fefce8" stroke="#d4d4d8" stroke-width="1"/>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="448">Donor OR acceptor</text>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380" y="460">matches annotated?</text>
+
+<!-- YES branch → alternative_spliced -->
+<line x1="520" y1="454" x2="610" y2="454" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="610,454 604,450.5 604,457.5" fill="#94a3b8"/>
+<text fill="#475569" font-size="9" font-weight="600" x="534" y="446">Yes</text>
+<rect x="610" y="440" width="120" height="28" rx="5" fill="#2563eb" opacity="0.15"/>
+<rect x="610" y="440" width="120" height="28" rx="5" fill="none" stroke="#2563eb" stroke-width="1"/>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="670" y="458">alternative</text>
+
+<!-- NO branch → novel_spliced -->
+<line x1="240" y1="454" x2="140" y2="454" stroke="#94a3b8" stroke-width="1.2"/>
+<polygon points="140,454 146,450.5 146,457.5" fill="#94a3b8"/>
+<text fill="#94a3b8" font-size="9" font-weight="600" x="170" y="446">No</text>
+<rect x="30" y="440" width="110" height="28" rx="5" fill="#dc2626" opacity="0.15"/>
+<rect x="30" y="440" width="110" height="28" rx="5" fill="none" stroke="#dc2626" stroke-width="1"/>
+<text fill="#dc2626" font-size="9" font-weight="600" text-anchor="middle" x="85" y="458">novel</text>
+
+<!-- Result annotations -->
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="670" y="372">all junctions canonical</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="670" y="472">alt-5′SS / alt-3′SS / exon skip</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="85" y="472">neither end annotated</text>
+
+<!-- Source note -->
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="512">Implementation: rectify/core/analyze/splice_summary.py::classify_read()</text>
+
+</g>
+</svg>

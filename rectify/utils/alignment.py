@@ -185,7 +185,8 @@ def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
     read_seq = read.query_sequence or ''
     try:
         ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, AssertionError):
+        # pysam ≥0.22 raises AssertionError for MD/CIGAR length mismatches
         ref_seq = None
 
     for i, (op, length) in enumerate(read.cigartuples):

@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560">
+<rect fill="#ffffff" width="760" height="560"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Isoform Clustering: UMI-Anchored vs pA-Tail-Anchored Reads</text>
+
+<!-- ===== PANEL 1: Type-1 (5' UMI-anchored) ===== -->
+<text fill="#2563eb" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="48">TYPE-1 — 5′ UMI-ANCHORED  (XT:i:1, SSP+UMI captured → real TSS)</text>
+
+<!-- Gene model -->
+<text fill="#64748b" font-size="10" x="14" y="82">Gene</text>
+<rect x="80" y="66" width="100" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="130" y="81">Exon 1</text>
+<line x1="180" y1="77" x2="240" y2="77" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
+<rect x="240" y="66" width="80" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="280" y="81">Exon 2</text>
+<line x1="320" y1="77" x2="380" y2="77" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
+<rect x="380" y="66" width="120" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="440" y="81">Exon 3</text>
+
+<!-- TSS marker -->
+<line stroke="#2563eb" stroke-width="2" x1="80" x2="80" y1="58" y2="92"/>
+<text fill="#2563eb" font-size="8.5" font-weight="600" x="63" y="56">TSS</text>
+
+<!-- CPA site marker -->
+<line stroke="#059669" stroke-width="2" x1="500" x2="500" y1="58" y2="92"/>
+<text fill="#059669" font-size="8.5" font-weight="600" x="505" y="56">CPA</text>
+
+<!-- Read cluster: all share the same UMI at 5', variable 3' -->
+<text fill="#64748b" font-size="9" x="14" y="112">Reads</text>
+
+<!-- Read 1: full length, reaches poly(A) -->
+<rect x="80" y="100" width="30" height="16" rx="3" fill="#2563eb"/>
+<text fill="#ffffff" font-size="7" font-weight="600" text-anchor="middle" x="95" y="111">UMI</text>
+<rect x="110" y="100" width="390" height="16" rx="3" fill="#2563eb" opacity="0.15"/>
+<rect x="110" y="100" width="390" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
+<text fill="#2563eb" font-size="8" x="115" y="111">read 1 — full-length, reaches CPA</text>
+
+<!-- Read 2: full length -->
+<rect x="80" y="118" width="30" height="16" rx="3" fill="#2563eb"/>
+<text fill="#ffffff" font-size="7" font-weight="600" text-anchor="middle" x="95" y="129">UMI</text>
+<rect x="110" y="118" width="390" height="16" rx="3" fill="#2563eb" opacity="0.15"/>
+<rect x="110" y="118" width="390" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
+<text fill="#2563eb" font-size="8" x="115" y="129">read 2 — full-length</text>
+
+<!-- Read 3: 3'-truncated but SAME UMI → still merged -->
+<rect x="80" y="136" width="30" height="16" rx="3" fill="#2563eb"/>
+<text fill="#ffffff" font-size="7" font-weight="600" text-anchor="middle" x="95" y="147">UMI</text>
+<rect x="110" y="136" width="260" height="16" rx="3" fill="#2563eb" opacity="0.10"/>
+<rect x="110" y="136" width="260" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8" stroke-dasharray="4,2"/>
+<text fill="#2563eb" font-size="8" x="115" y="147">read 3 — 3′ truncated, same UMI → merged</text>
+
+<!-- Read 4: even more truncated, same UMI -->
+<rect x="80" y="154" width="30" height="16" rx="3" fill="#2563eb"/>
+<text fill="#ffffff" font-size="7" font-weight="600" text-anchor="middle" x="95" y="165">UMI</text>
+<rect x="110" y="154" width="180" height="16" rx="3" fill="#2563eb" opacity="0.10"/>
+<rect x="110" y="154" width="180" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8" stroke-dasharray="4,2"/>
+<text fill="#2563eb" font-size="8" x="115" y="165">read 4 — 3′ truncated, same UMI → merged</text>
+
+<!-- Shared 5' anchor line -->
+<line stroke="#2563eb" stroke-width="1.5" stroke-dasharray="4,3" x1="80" x2="80" y1="98" y2="174"/>
+
+<!-- Key principle callout -->
+<rect x="520" y="100" width="210" height="54" rx="5" fill="#2563eb" opacity="0.08"/>
+<text fill="#2563eb" font-size="9" font-weight="600" x="530" y="116">UMI = molecule identity</text>
+<text fill="#475569" font-size="8" x="530" y="130">5′ = real TSS (SSP captured)</text>
+<text fill="#475569" font-size="8" x="530" y="142">3′ truncation absorbed by UMI</text>
+
+<!-- Isoform clustering note -->
+<text fill="#2563eb" font-size="9" font-weight="600" x="520" y="168">Isoform = (gene, 5′-group, 3′-group)</text>
+
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="186" y2="186"/>
+
+<!-- ===== PANEL 2: Type-2 (3' pA-tail-anchored) ===== -->
+<text fill="#d97706" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="208">TYPE-2 — 3′ pA-TAIL-ANCHORED  (XT:i:2, SSP-less → 5′ is truncation noise)</text>
+
+<!-- Gene model -->
+<text fill="#64748b" font-size="10" x="14" y="242">Gene</text>
+<rect x="80" y="226" width="100" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="130" y="241">Exon 1</text>
+<line x1="180" y1="237" x2="240" y2="237" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
+<rect x="240" y="226" width="80" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="280" y="241">Exon 2</text>
+<line x1="320" y1="237" x2="380" y2="237" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
+<rect x="380" y="226" width="120" height="22" rx="4" fill="#6366f1"/>
+<text fill="#ffffff" font-size="9" font-weight="600" text-anchor="middle" x="440" y="241">Exon 3</text>
+
+<!-- CPA site marker -->
+<line stroke="#059669" stroke-width="2" x1="500" x2="500" y1="220" y2="252"/>
+<text fill="#059669" font-size="8.5" font-weight="600" x="505" y="230">CPA</text>
+
+<!-- Read cluster: all share CPA at 3', random 5' truncations -->
+<text fill="#64748b" font-size="9" x="14" y="272">Reads</text>
+
+<!-- Read 1: longest, random 5' start -->
+<rect x="140" y="260" width="360" height="16" rx="3" fill="#d97706" opacity="0.15"/>
+<rect x="140" y="260" width="360" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
+<text fill="#d97706" font-size="8" x="145" y="271">molecule A — no UMI, independent</text>
+
+<!-- Read 2: different 5' start -->
+<rect x="220" y="278" width="280" height="16" rx="3" fill="#d97706" opacity="0.15"/>
+<rect x="220" y="278" width="280" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
+<text fill="#d97706" font-size="8" x="225" y="289">molecule B — independent, same CPA</text>
+
+<!-- Read 3: another 5' start -->
+<rect x="300" y="296" width="200" height="16" rx="3" fill="#d97706" opacity="0.15"/>
+<rect x="300" y="296" width="200" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
+<text fill="#d97706" font-size="8" x="305" y="307">molecule C — independent, same CPA</text>
+
+<!-- Read 4: shortest -->
+<rect x="360" y="314" width="140" height="16" rx="3" fill="#d97706" opacity="0.15"/>
+<rect x="360" y="314" width="140" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
+<text fill="#d97706" font-size="8" x="365" y="325">molecule D</text>
+
+<!-- Shared 3' CPA line -->
+<line stroke="#059669" stroke-width="1.5" stroke-dasharray="4,3" x1="500" x2="500" y1="258" y2="334"/>
+
+<!-- Variable 5' bracket — these are noise, NOT an anchor -->
+<path d="M140,256 L136,256 L136,334 L140,334" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.7"/>
+<text fill="#dc2626" font-size="8" font-weight="600" x="130" y="292" text-anchor="end">random</text>
+<text fill="#dc2626" font-size="8" font-weight="600" x="130" y="302" text-anchor="end">5′ ends</text>
+<text fill="#dc2626" font-size="7.5" x="96" y="314" text-anchor="end">(noise)</text>
+
+<!-- Key principle callout -->
+<rect x="520" y="260" width="210" height="54" rx="5" fill="#d97706" opacity="0.08"/>
+<text fill="#d97706" font-size="9" font-weight="600" x="530" y="276">No UMI → no dedup possible</text>
+<text fill="#475569" font-size="8" x="530" y="290">Each read = independent molecule</text>
+<text fill="#475569" font-size="8" x="530" y="302">3′ CPA shared ≠ same molecule</text>
+
+<!-- Isoform clustering note -->
+<text fill="#d97706" font-size="9" font-weight="600" x="520" y="328">Isoform = (gene, *, 3′-group)</text>
+<text fill="#64748b" font-size="8" x="520" y="340">5′ grouping skipped</text>
+
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="356" y2="356"/>
+
+<!-- ===== PANEL 3: Merging Asymmetry + Reconciliation ===== -->
+<text fill="#0d9488" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="376">MERGING ASYMMETRY + T1 ↔ T2 RECONCILIATION</text>
+
+<!-- Asymmetry comparison -->
+<rect x="60" y="390" width="290" height="46" rx="5" fill="#2563eb" opacity="0.08"/>
+<rect x="60" y="390" width="290" height="46" rx="5" fill="none" stroke="#2563eb" stroke-width="0.8"/>
+<text fill="#2563eb" font-size="9" font-weight="600" x="70" y="406">T1: UMI absorbs 3′ truncation</text>
+<text fill="#475569" font-size="8" x="70" y="420">4 reads (2 full + 2 truncated) → 1 molecule</text>
+<text fill="#475569" font-size="8" x="70" y="432">Isoform uses both 5′ and 3′ positions</text>
+
+<rect x="410" y="390" width="290" height="46" rx="5" fill="#d97706" opacity="0.08"/>
+<rect x="410" y="390" width="290" height="46" rx="5" fill="none" stroke="#d97706" stroke-width="0.8"/>
+<text fill="#d97706" font-size="9" font-weight="600" x="420" y="406">T2: no dedup (no molecule identity)</text>
+<text fill="#475569" font-size="8" x="420" y="420">4 reads at same CPA = 4 independent molecules</text>
+<text fill="#475569" font-size="8" x="420" y="432">Isoform uses only 3′ position (count reads)</text>
+
+<!-- Reconciliation -->
+<rect x="130" y="454" width="180" height="36" rx="5" fill="#2563eb" opacity="0.12"/>
+<rect x="130" y="454" width="180" height="36" rx="5" fill="none" stroke="#2563eb" stroke-width="1"/>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="220" y="470">T1 cluster (UMI dedup)</text>
+<text fill="#64748b" font-size="8" text-anchor="middle" x="220" y="484">TSS + CPA + XU</text>
+
+<!-- Bidirectional arrow -->
+<line x1="310" y1="472" x2="410" y2="472" stroke="#0d9488" stroke-width="1.5"/>
+<polygon fill="#0d9488" points="410,472 404,468.5 404,475.5"/>
+<line x1="410" y1="472" x2="310" y2="472" stroke="#0d9488" stroke-width="1.5"/>
+<polygon fill="#0d9488" points="310,472 316,468.5 316,475.5"/>
+<text fill="#0d9488" font-size="8" font-weight="600" text-anchor="middle" x="360" y="464">|Δ5′| ≤ 5 AND |Δ3′| ≤ 5</text>
+
+<!-- T2 cluster box -->
+<rect x="410" y="454" width="180" height="36" rx="5" fill="#d97706" opacity="0.12"/>
+<rect x="410" y="454" width="180" height="36" rx="5" fill="none" stroke="#d97706" stroke-width="1"/>
+<text fill="#d97706" font-size="9" font-weight="600" text-anchor="middle" x="500" y="470">T2 cluster (no dedup)</text>
+<text fill="#64748b" font-size="8" text-anchor="middle" x="500" y="484">CPA only; each read = 1 molecule</text>
+
+<!-- Result annotation -->
+<text fill="#0d9488" font-size="9" font-weight="600" x="610" y="470">→ XL:Z tag</text>
+<text fill="#64748b" font-size="8" x="610" y="484">+ t1t2_pairs.tsv</text>
+
+<!-- Biology note -->
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="512">T1 = full-length (cap → CPA, SSP+UMI proves identity)</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="524">T2 = 5′-truncated (XRN1 decay intermediates or technical; no identity marker)</text>
+
+<!-- Source note -->
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="548">Implementation: rectify/core/cdna_correct_command.py::assign_isoforms(), reconcile_t1_t2_pairs()</text>
+
+</g>
+</svg>
