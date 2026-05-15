@@ -252,6 +252,7 @@ def run_minimap2(
         '--splice-flank=no',  # Disable for compatibility
         '--secondary=no',
         '--MD',  # Include MD tag for indel correction and alignment identity
+        '-y',   # Copy FASTQ comment fields (SAM-format tags) to BAM aux records
         '-t', str(threads),
     ]
 
