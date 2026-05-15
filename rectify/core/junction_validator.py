@@ -330,10 +330,10 @@ def apply_junction_filter(
     input_bam: str,
     output_bam: str,
     validated_junctions: FrozenSet[Tuple[str, int, int]],
-    downgrade_tag: str = 'XC',
+    downgrade_tag: str = 'Xc',
 ) -> Dict[str, int]:
     """
-    Stream through a BAM and downgrade XC confidence for reads whose
+    Stream through a BAM and downgrade Xc confidence for reads whose
     junctions are not in the validated set.
 
     Reads are **never discarded** — only the confidence tag is lowered.
@@ -355,7 +355,7 @@ def apply_junction_filter(
         Set of (chrom, intron_start, intron_end) tuples from
         ``filter_cross_sample_junctions()``.
     downgrade_tag:
-        BAM tag that stores confidence level (default 'XC').
+        BAM tag that stores confidence level (default 'Xc').
 
     Returns
     -------

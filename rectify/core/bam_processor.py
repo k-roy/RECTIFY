@@ -258,9 +258,9 @@ def correct_read_3prime(
         Dict with correction results
     """
     # Skip chimeric reads — they have already been reconstructed by multi_aligner
-    # and must not be re-corrected (XK=1 flag set by consensus.py).
+    # and must not be re-corrected (Xz=1 flag set by chimeric_consensus.py).
     try:
-        if read.get_tag('XK') == 1:
+        if read.get_tag('Xz') == 1:
             original_position, strand = get_read_3prime_position(read)
             if original_position is None:
                 return []
@@ -334,9 +334,9 @@ def correct_read_3prime(
         logger.warning(f"Could not compute 5' position for read {read.query_name}, skipping")
         return []
 
-    # Read XR BAM tag (set by consensus.py when 5' soft-clip was rescued during consensus)
+    # Read Xj BAM tag (set by consensus.py when 5' soft-clip was rescued during consensus)
     try:
-        five_prime_rescued = read.get_tag('XR') == 1
+        five_prime_rescued = read.get_tag('Xj') == 1
     except KeyError:
         five_prime_rescued = False
     _five_prime_exon_cigar = ''      # set by 3'SS rescue when local alignment succeeds

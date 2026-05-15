@@ -743,36 +743,38 @@ def build_chimeric_read(
     out.cigar = cigar_tuples
     out.mapping_quality = template_read.mapping_quality
 
-    # Custom tags
-    # XA: aligner(s) used — comma-separated if chimeric
+    # Custom tags — lowercase second-letter to avoid colliding with the
+    # cDNA pipeline's X[upper] tags (XU=UMI, XC=cluster_size, XA=tail_len,
+    # XS=sense/antisense, XK=3' pre-trim length, XI=isoform_id, ...).
+    # Xa: aligner(s) used — comma-separated if chimeric
     aligner_set = list(dict.fromkeys(
         w[1] for w in chimeric_result.segment_winners
     ))
-    out.set_tag('XA', ','.join(aligner_set))
+    out.set_tag('Xa', ','.join(aligner_set))
 
-    # XC: confidence level
-    out.set_tag('XC', chimeric_result.confidence)
+    # Xc: confidence level
+    out.set_tag('Xc', chimeric_result.confidence)
 
-    # XK: chimeric flag (1 = chimeric, 0 = single aligner)
-    out.set_tag('XK', 1 if chimeric_result.is_chimeric else 0)
+    # Xz: chimeric flag (1 = chimeric, 0 = single aligner)
+    out.set_tag('Xz', 1 if chimeric_result.is_chimeric else 0)
 
-    # XS: number of segments
-    out.set_tag('XS', chimeric_result.n_segments)
+    # Xg: number of segments
+    out.set_tag('Xg', chimeric_result.n_segments)
 
-    # XU: number of unique aligners used
-    out.set_tag('XU', chimeric_result.n_aligners_used)
+    # Xm: number of unique aligners used (multi-aligner / "merged")
+    out.set_tag('Xm', chimeric_result.n_aligners_used)
 
-    # X5: 5' segment aligner
+    # Xq: 5' segment aligner
     if chimeric_result.five_prime_aligner:
-        out.set_tag('X5', chimeric_result.five_prime_aligner)
+        out.set_tag('Xq', chimeric_result.five_prime_aligner)
 
-    # X3: 3' segment aligner
+    # Xw: 3' segment aligner
     if chimeric_result.three_prime_aligner:
-        out.set_tag('X3', chimeric_result.three_prime_aligner)
+        out.set_tag('Xw', chimeric_result.three_prime_aligner)
 
-    # XI: interior segment aligners (comma-separated)
+    # Xy: interior segment aligners (comma-separated)
     if chimeric_result.interior_aligners:
-        out.set_tag('XI', ','.join(chimeric_result.interior_aligners))
+        out.set_tag('Xy', ','.join(chimeric_result.interior_aligners))
 
     return out
 

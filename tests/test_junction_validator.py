@@ -58,7 +58,7 @@ def _make_read(
     # Simulate get_tag / set_tag
     _tags = {}
     if xc_tag is not None:
-        _tags['XC'] = xc_tag
+        _tags['Xc'] = xc_tag
 
     def _get_tag(name):
         if name in _tags:
@@ -398,7 +398,7 @@ class TestApplyJunctionFilter:
         return counts, written_reads
 
     def test_read_with_validated_junction_unchanged(self):
-        """A read whose junction is in the validated set keeps its XC tag."""
+        """A read whose junction is in the validated set keeps its Xc tag."""
         validated = frozenset([('chrI', 10, 110)])
         read = _make_read(
             [(M, 10), (N, 100), (M, 10)], ref_start=0, xc_tag='high'
@@ -406,7 +406,7 @@ class TestApplyJunctionFilter:
         counts, written = self._run_filter([read], validated)
         assert counts['unchanged'] == 1
         assert counts['downgraded'] == 0
-        assert read._tags.get('XC') == 'high'
+        assert read._tags.get('Xc') == 'high'
 
     def test_read_with_unvalidated_junction_downgraded_from_high(self):
         """A read with an unvalidated junction is downgraded from high→medium."""
@@ -416,7 +416,7 @@ class TestApplyJunctionFilter:
         )
         counts, written = self._run_filter([read], validated)
         assert counts['downgraded'] == 1
-        assert read._tags.get('XC') == 'medium'
+        assert read._tags.get('Xc') == 'medium'
 
     def test_read_with_unvalidated_junction_downgraded_from_medium(self):
         """A medium-confidence read with a bad junction becomes low."""
@@ -425,7 +425,7 @@ class TestApplyJunctionFilter:
             [(M, 10), (N, 100), (M, 10)], ref_start=0, xc_tag='medium'
         )
         counts, written = self._run_filter([read], validated)
-        assert read._tags.get('XC') == 'low'
+        assert read._tags.get('Xc') == 'low'
 
     def test_low_confidence_stays_low(self):
         """A low-confidence read cannot be downgraded further."""
@@ -434,7 +434,7 @@ class TestApplyJunctionFilter:
             [(M, 10), (N, 100), (M, 10)], ref_start=0, xc_tag='low'
         )
         counts, written = self._run_filter([read], validated)
-        assert read._tags.get('XC') == 'low'
+        assert read._tags.get('Xc') == 'low'
         assert counts['downgraded'] == 0
 
     def test_all_reads_written(self):
@@ -454,15 +454,15 @@ class TestApplyJunctionFilter:
         read = _make_read([(M, 100)], ref_start=0, xc_tag='high')
         counts, written = self._run_filter([read], validated)
         assert counts['unchanged'] == 1
-        assert read._tags.get('XC') == 'high'
+        assert read._tags.get('Xc') == 'high'
 
     def test_read_without_xc_tag_not_modified(self):
-        """If XC tag is absent no tag is written (avoids spurious annotation)."""
+        """If Xc tag is absent no tag is written (avoids spurious annotation)."""
         validated = frozenset()
         read = _make_read([(M, 10), (N, 100), (M, 10)], ref_start=0)
         # No xc_tag → get_tag raises KeyError
         counts, written = self._run_filter([read], validated)
-        assert 'XC' not in read._tags
+        assert 'Xc' not in read._tags
 
     def test_partial_junction_mix(self):
         """
@@ -476,7 +476,7 @@ class TestApplyJunctionFilter:
         )
         counts, written = self._run_filter([read], validated)
         assert counts['downgraded'] == 1
-        assert read._tags.get('XC') == 'medium'
+        assert read._tags.get('Xc') == 'medium'
 
     def test_return_counts_structure(self):
         """Return dict always has total, downgraded, unchanged keys."""
@@ -582,20 +582,20 @@ class TestHelpers:
 
     def test_downgrade_read_high_to_medium(self):
         read = _make_read([], ref_start=0, xc_tag='high')
-        _downgrade_read(read, 'XC')
-        assert read._tags['XC'] == 'medium'
+        _downgrade_read(read, 'Xc')
+        assert read._tags['Xc'] == 'medium'
 
     def test_downgrade_read_medium_to_low(self):
         read = _make_read([], ref_start=0, xc_tag='medium')
-        _downgrade_read(read, 'XC')
-        assert read._tags['XC'] == 'low'
+        _downgrade_read(read, 'Xc')
+        assert read._tags['Xc'] == 'low'
 
     def test_downgrade_read_low_stays_low(self):
         read = _make_read([], ref_start=0, xc_tag='low')
-        _downgrade_read(read, 'XC')
-        assert read._tags['XC'] == 'low'
+        _downgrade_read(read, 'Xc')
+        assert read._tags['Xc'] == 'low'
 
     def test_downgrade_read_missing_tag_no_op(self):
-        read = _make_read([], ref_start=0)  # no XC tag
-        _downgrade_read(read, 'XC')
-        assert 'XC' not in read._tags
+        read = _make_read([], ref_start=0)  # no Xc tag
+        _downgrade_read(read, 'Xc')
+        assert 'Xc' not in read._tags

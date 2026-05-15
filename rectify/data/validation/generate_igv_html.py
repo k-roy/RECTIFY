@@ -248,7 +248,7 @@ def cat5_row(label, rd):
     hi  = max(rd["re"], m["cmp_e"]) + 50
     full = loc(rd["chrom"], lo, hi)
     tags = rd["tags"]
-    xa   = tags.get("XA", "?")
+    xa   = tags.get("Xa", "?")
     locus_str = rd["chrom"]
     return (
         f'  <tr>\n'

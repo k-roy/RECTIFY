@@ -1499,15 +1499,20 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 if best_read.query_sequence is None:
                     _restore_sequence_from_aligner_reads(best_read, aligner_reads)
 
-                best_read.set_tag('XA', result.best_aligner)
-                best_read.set_tag('XC', result.confidence)
-                best_read.set_tag('XN', result.n_aligners_agree)
+                # Aligner-selection metadata tags — lowercase second-letter to
+                # avoid colliding with X[upper] tags emitted by upstream tools
+                # (e.g. the cDNA pipeline writes XU=UMI, XC=cluster_size,
+                # XA=tail_len, XR=read_ids, XF=full-length tier on FASTQ
+                # comments propagated via minimap2 `-y`).
+                best_read.set_tag('Xa', result.best_aligner)
+                best_read.set_tag('Xc', result.confidence)
+                best_read.set_tag('Xn', result.n_aligners_agree)
                 if result.tied_aligners:
                     best_read.set_tag('Xt', ','.join(sorted(result.tied_aligners)))
                 if result.was_5prime_rescued:
-                    best_read.set_tag('XR', 1)
+                    best_read.set_tag('Xj', 1)
                 if result.false_junction_removed:
-                    best_read.set_tag('XF', 1)
+                    best_read.set_tag('Xv', 1)
                 out_bam.write(best_read)
 
 

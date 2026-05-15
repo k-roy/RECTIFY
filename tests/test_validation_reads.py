@@ -265,14 +265,14 @@ class TestBamIntegrity:
                 f'{cat}: expected 2 plus / 2 minus, got {plus}/{minus}'
 
     def test_chimeric_tags(self, raw_reads):
-        """Cat 5 reads must carry XK=1 and comma-separated XA with exactly 2 aligners."""
+        """Cat 5 reads must carry Xz=1 and comma-separated Xa with exactly 2 aligners."""
         for label in ['cat5_plus_1', 'cat5_plus_2', 'cat5_minus_1', 'cat5_minus_2']:
             r = raw_reads[label]
-            assert r.get_tag('XK') == 1, f'{label}: XK should be 1'
-            xa = r.get_tag('XA')
+            assert r.get_tag('Xz') == 1, f'{label}: Xz should be 1'
+            xa = r.get_tag('Xa')
             aligners = xa.split(',')
             assert len(aligners) == 2, \
-                f'{label}: XA should list exactly 2 aligners, got {xa!r}'
+                f'{label}: Xa should list exactly 2 aligners, got {xa!r}'
 
 
 # ---------------------------------------------------------------------------
@@ -592,8 +592,8 @@ class TestCategory5ChimericReconstruction:
         """Source alignment carries ≥2 segments (≥1 intron in source aligner)."""
         for label in self.LABELS:
             r = raw_reads[label]
-            xs = r.get_tag('XS') if r.has_tag('XS') else 0
-            assert xs >= 2, f'{label}: expected ≥2 segments (XS), got {xs}'
+            xg_segs = r.get_tag('Xg') if r.has_tag('Xg') else 0
+            assert xg_segs >= 2, f'{label}: expected ≥2 segments (Xg), got {xg_segs}'
 
     def test_has_intron_in_source(self, raw_reads):
         """Source CIGAR must contain at least one N op (intron skip)."""
@@ -626,10 +626,10 @@ class TestCategory6SimpleChimeric:
                 f'{label}: expected XG=cat6_chimeric'
 
     def test_xu_tag(self, raw_reads):
-        """Cat6 reads come from a single winning aligner (mapPacBio), so XU=1."""
+        """Cat6 reads come from a single winning aligner (mapPacBio), so Xm=1."""
         for label in self.LABELS:
-            xu = raw_reads[label].get_tag('XU') if raw_reads[label].has_tag('XU') else None
-            assert xu == 1, f'{label}: expected XU=1, got {xu}'
+            xm = raw_reads[label].get_tag('Xm') if raw_reads[label].has_tag('Xm') else None
+            assert xm == 1, f'{label}: expected Xm=1, got {xm}'
 
     @pytest.mark.parametrize('label', LABELS)
     def test_spans_intron(self, raw_reads, label):
@@ -780,11 +780,11 @@ class TestCategory7AltSplice:
                 f'{label}: expected XG=cat7_alt_splice, got {r.get_tag("XG")}'
 
     def test_xu_tag(self, raw_reads):
-        """Cat7 reads come from a single aligner (mapPacBio), so XU=1."""
+        """Cat7 reads come from a single aligner (mapPacBio), so Xm=1."""
         for label in self.LABELS:
             r = raw_reads[label]
-            xu = r.get_tag('XU') if r.has_tag('XU') else None
-            assert xu == 1, f'{label}: expected XU=1, got {xu}'
+            xm = r.get_tag('Xm') if r.has_tag('Xm') else None
+            assert xm == 1, f'{label}: expected Xm=1, got {xm}'
 
     @pytest.mark.parametrize('label', LABELS)
     def test_has_one_junction(self, corrected, raw_reads, label):

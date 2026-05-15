@@ -286,16 +286,16 @@ def _check_cat5(res: _Results, label_map: Dict, bam: Path) -> None:
             res.check(label, False, skip=True, msg='')
             continue
         try:
-            xk = r.get_tag('XK')
-            xa = r.get_tag('XA')
-            xs = r.get_tag('XS') if r.has_tag('XS') else 0
+            xz = r.get_tag('Xz')
+            xa = r.get_tag('Xa')
+            xg_segs = r.get_tag('Xg') if r.has_tag('Xg') else 0
         except KeyError as e:
             res.check(label, False, msg=f'missing tag {e}')
             continue
-        ok = xk == 1 and ',' in xa and xs >= 3
+        ok = xz == 1 and ',' in xa and xg_segs >= 3
         res.check(label, ok,
-                  msg=f'XK={xk} XA={xa!r} XS={xs}',
-                  detail=f'XA={xa} XS={xs}')
+                  msg=f'Xz={xz} Xa={xa!r} Xg={xg_segs}',
+                  detail=f'Xa={xa} Xg={xg_segs}')
 
 
 def _check_cat6(res: _Results, label_map: Dict, all_rows: Dict[str, List]) -> None:
