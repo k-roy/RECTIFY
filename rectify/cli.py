@@ -965,13 +965,13 @@ Citation:
             'by (locus, orientation, UMI) and emit one consensus record per starting RNA '
             'molecule.\n\n'
             'Operates AFTER alignment, complementing trim-cdna-polya which runs on the '
-            'FASTQ before alignment. Stage-1 emits a representative-read or pileup-based '
-            'consensus per cluster (POA if pyabpoa+mappy+reference are all available). '
-            'Stage-2 finds cross-orientation (sense+antisense) cluster pairs sharing the '
-            'same UMI and tags them as XS:paired.\n\n'
-            'Output: stage1_consensus.fastq.gz (per-cluster consensus sequences with '
-            'SAM-tag comments for `rectify align -y` to propagate), clusters.tsv '
-            '(per-cluster manifest), stage2_pairs.tsv (cross-orient pair table).'
+            'FASTQ before alignment. Emits a representative-read or pileup-based '
+            'consensus per cluster (POA if pyabpoa is available).\n\n'
+            'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
+            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB) '
+            'for `rectify align -y` to propagate into the post-align BAM. Gene assignment, '
+            'isoform clustering, and Type-1↔Type-2 pairing run downstream in '
+            '`rectify cdna-analyze`.'
         ),
     )
     correct_cdna_parser.add_argument(
@@ -982,7 +982,7 @@ Citation:
         '-o', '--out',
         dest='out',
         required=True,
-        help='Output directory (will contain stage1_consensus.fastq.gz, clusters.tsv, stage2_pairs.tsv)',
+        help='Output directory (will contain stage1_consensus.fastq.gz)',
     )
     correct_cdna_parser.add_argument(
         '--umi-edit-distance',
@@ -1006,23 +1006,19 @@ Citation:
         help='Max reads per cluster (larger = potential PCR-jackpot signal, slower POA)',
     )
     correct_cdna_parser.add_argument(
-        '--max-cross-orient-span',
-        dest='max_cross_orient_span',
-        type=int,
-        default=3000,
-        help='Stage-2: max bp separation between fwd and rev anchors to consider for pairing',
-    )
-    correct_cdna_parser.add_argument(
         '--gff',
         default=None,
-        help='GFF/GFF3 annotation (gzip OK) for sense/antisense classification. '
-             'If omitted, all clusters tagged XS:unannotated.',
+        help='Genome annotation GFF3 (gzip OK). Required for sense/antisense XS '
+             'classification, XG gene-name tagging, isoform clustering, and rDNA '
+             'masking (reads overlapping rRNA_gene loci are excluded by default to '
+             'prevent O(n²) clustering on chrXII tandem repeats).',
     )
     correct_cdna_parser.add_argument(
         '--reference',
         default=None,
-        help='Reference FASTA (gzip OK) for POA consensus re-alignment. '
-             'Without it, falls back to pileup-style substitution-corrective consensus.',
+        help='Reference FASTA (gzip OK). Required for walk-back anchor '
+             'canonicalization + poly-A tail-length measurement during UMI '
+             'extraction; without it, the legacy aln-end anchor is used.',
     )
     correct_cdna_parser.add_argument(
         '--no-poa',
@@ -1051,34 +1047,6 @@ Citation:
         help='UMI clustering method (default: directional, umi_tools-style 2× rule)',
     )
     correct_cdna_parser.add_argument(
-        '--min-gene-frac',
-        dest='min_gene_frac',
-        type=float,
-        default=0.3,
-        help='v1.14 XS classifier: gene_overlap / gene_length threshold (default 0.3)',
-    )
-    correct_cdna_parser.add_argument(
-        '--min-read-frac',
-        dest='min_read_frac',
-        type=float,
-        default=0.8,
-        help='v1.14 XS classifier: gene_overlap / read_aln_length threshold (default 0.8)',
-    )
-    correct_cdna_parser.add_argument(
-        '--isoform-tol-5',
-        dest='isoform_tol_5',
-        type=int,
-        default=5,
-        help='v1.17 isoform clustering: bp tolerance on 5\' axis (Type-1 only)',
-    )
-    correct_cdna_parser.add_argument(
-        '--isoform-tol-3',
-        dest='isoform_tol_3',
-        type=int,
-        default=5,
-        help='v1.17 isoform clustering: bp tolerance on 3\' axis',
-    )
-    correct_cdna_parser.add_argument(
         '--strand-aware-consensus',
         dest='strand_aware_consensus',
         action='store_true',
@@ -1087,18 +1055,79 @@ Citation:
              'sub-consensus, then merge. Cancels strand-specific systematic errors.',
     )
     correct_cdna_parser.add_argument(
-        '--t1t2-tol-5',
-        dest='t1t2_tol_5',
-        type=int,
-        default=5,
-        help='v2 Type-1↔Type-2 reconciliation: bp tolerance on 5\' axis',
+        '--no-mask-rdna',
+        dest='no_mask_rdna',
+        action='store_true',
+        default=False,
+        help='Disable rDNA masking. By default, reads overlapping rRNA_gene loci in '
+             '--gff are excluded before clustering to prevent the O(n²) UMI '
+             'bottleneck on chrXII tandem repeats (observed: 261k reads → 4h42m).',
     )
-    correct_cdna_parser.add_argument(
-        '--t1t2-tol-3',
-        dest='t1t2_tol_3',
-        type=int,
-        default=5,
-        help='v2 Type-1↔Type-2 reconciliation: bp tolerance on 3\' axis',
+
+    # =========================================================================
+    # cdna-analyze command (post-align isoform clustering for cDNA)
+    # =========================================================================
+    cdna_analyze_parser = subparsers.add_parser(
+        'cdna-analyze',
+        help='Post-alignment isoform clustering for the cDNA pipeline (consumes `rectify align` output of `correct-cdna` consensus FASTQ)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Reads the multi-aligner consensus BAM produced by `rectify align` on the '
+            'per-cluster consensus FASTQ from `rectify correct-cdna`. Each BAM record '
+            'is one UMI-deduplicated molecule; tags XU/XC/XR/XO/XT/XY/XF/XB ride along '
+            'from the FASTQ comments via `minimap2 -y`.\n\n'
+            'Recomputes tail_len (XA) and pos5_corrected via walkback / walk-forward on '
+            'the post-align CIGAR, then runs gene assignment, isoform clustering '
+            '(directional, tol5/tol3), and Type-1↔Type-2 same-orient pairing on the '
+            'post-align coordinates.\n\n'
+            'Output: clusters.tsv (per-cluster manifest), isoforms.tsv (isoform-level '
+            'aggregation), t1t2_pairs.tsv (T1↔T2 reconciliation), consensus_tagged.bam '
+            '(input BAM rewritten with the new XA/XG/XS/XI/XL tags).'
+        ),
+    )
+    cdna_analyze_parser.add_argument(
+        'bam',
+        help='Consensus BAM from `rectify align` on the correct-cdna FASTQ',
+    )
+    cdna_analyze_parser.add_argument(
+        '-o', '--out',
+        dest='out',
+        required=True,
+        help='Output directory (clusters.tsv, isoforms.tsv, t1t2_pairs.tsv, consensus_tagged.bam)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--gff',
+        required=True,
+        help='Genome annotation (GFF3) for gene tree / XS classification',
+    )
+    cdna_analyze_parser.add_argument(
+        '--reference',
+        required=True,
+        help='Genome FASTA — required for walkback (XA tail_len recomputation)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--min-gene-frac', dest='min_gene_frac', type=float, default=0.3,
+        help='XS classifier: gene_overlap / gene_length threshold',
+    )
+    cdna_analyze_parser.add_argument(
+        '--min-read-frac', dest='min_read_frac', type=float, default=0.8,
+        help='XS classifier: gene_overlap / read_aln_length threshold',
+    )
+    cdna_analyze_parser.add_argument(
+        '--isoform-tol-5', dest='isoform_tol_5', type=int, default=5,
+        help='Isoform clustering bp tolerance on 5\' axis (Type-1 only)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--isoform-tol-3', dest='isoform_tol_3', type=int, default=5,
+        help='Isoform clustering bp tolerance on 3\' axis',
+    )
+    cdna_analyze_parser.add_argument(
+        '--t1t2-tol-5', dest='t1t2_tol_5', type=int, default=5,
+        help='T1↔T2 reconciliation bp tolerance on 5\' axis',
+    )
+    cdna_analyze_parser.add_argument(
+        '--t1t2-tol-3', dest='t1t2_tol_3', type=int, default=5,
+        help='T1↔T2 reconciliation bp tolerance on 3\' axis',
     )
 
     # =========================================================================
@@ -1684,6 +1713,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'correct-cdna':
         from .core import cdna_correct_command
         sys.exit(cdna_correct_command.run(args))
+    elif args.command == 'cdna-analyze':
+        from .core import cdna_analyze_command
+        sys.exit(cdna_analyze_command.run(args))
     elif args.command == 'restore-softclip':
         from .core import restore_polya_command
         sys.exit(restore_polya_command.run(args))

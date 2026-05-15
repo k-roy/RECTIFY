@@ -83,9 +83,10 @@ Output files (in --out directory):
                                   SAM-format tags are appended to each read's
                                   comment line for `rectify align -y` to pass
                                   through to the final aligned BAM.
-  - clusters.tsv                 per-cluster manifest
-  - isoforms.tsv                 v1.17 isoform-level aggregation
-  - t1t2_pairs.tsv               v2 Type-1↔Type-2 reconciliation pairs
+
+Downstream: run `rectify align` on the FASTQ, then `rectify cdna-analyze` on
+the resulting BAM to produce clusters.tsv, isoforms.tsv, and t1t2_pairs.tsv
+(on post-align coordinates).
 
 Tag glossary:
   XU  canonical UMI                          XA  polyA tail length
@@ -1190,13 +1191,8 @@ def pretrim_consensus(consensus_seq: str, orient: str, read_type: int
 def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                        clusters: List[List[ReadInfo]],
                        umi_canonical: Dict[int, str],
-                       cluster_xs: Dict[int, str],
                        cluster_xf_tier: Dict[int, int],
-                       paired_partner: Dict[int, str],
                        cluster_tail_len: Dict[int, int],
-                       cluster_xg: Dict[int, Optional[str]],
-                       cluster_xi: Dict[int, str],
-                       cluster_xl: Dict[int, int],
                        use_poa: bool = False,
                        strand_aware_consensus: bool = False) -> dict:
     """Emit per-cluster consensus sequences as a FASTQ for downstream alignment.
@@ -1205,6 +1201,12 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     aligned BAM. Per-cluster SAM-format tags are appended to each read's comment
     line so `minimap2 -y` (and equivalent flags on mapPacBio/gapmm2) can
     propagate them through to the output BAM.
+
+    Only alignment-independent tags are emitted here. Gene/strand/isoform/pair
+    tags (XG, XS, XI, XL) and any pre-align poly-A length are recomputed by
+    `rectify cdna-analyze` on the post-align CIGAR, so emitting them here would
+    be misleading by the time downstream consumers read them. Tail length is
+    still emitted as XA for upstream debuggability; cdna-analyze overwrites it.
 
     Read naming: `cluster_<cid>`.
     """
@@ -1292,30 +1294,21 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 q_trim_5 = 0
             q_trim_3 = len(seq) - q_trim_5 - len(trimmed_seq)
 
+            n_top, n_bot = cluster_strand_split[cid]
             tag_parts = [
                 f"XU:Z:{umi_canonical[cid]}",
                 f"XO:Z:{orient}",
                 f"XC:i:{len(c)}",
                 f"XR:Z:{','.join(cluster_read_ids[cid])}",
                 f"XM:Z:{method}",
-                f"XS:Z:{cluster_xs.get(cid, 'unannotated')}",
                 f"XF:i:{cluster_xf_tier[cid]}",
                 f"XA:i:{cluster_tail_len.get(cid, 0)}",
                 f"XT:i:{read_type}",
                 f"XY:Z:{c[0].read_subtype}",
                 f"XQ:i:{q_trim_5}",
                 f"XK:i:{q_trim_3}",
+                f"XB:Z:{n_top}/{n_bot}",
             ]
-            if cid in paired_partner:
-                tag_parts.append(f"XP:Z:{paired_partner[cid]}")
-            if cluster_xg.get(cid):
-                tag_parts.append(f"XG:Z:{cluster_xg[cid]}")
-            if cluster_xi.get(cid):
-                tag_parts.append(f"XI:Z:{cluster_xi[cid]}")
-            n_top, n_bot = cluster_strand_split[cid]
-            tag_parts.append(f"XB:Z:{n_top}/{n_bot}")
-            if cid in cluster_xl:
-                tag_parts.append(f"XL:Z:{cluster_xl[cid]}")
 
             comment = " ".join(tag_parts)
             qual = "?" * len(trimmed_seq)
@@ -1581,6 +1574,30 @@ def _parse_gff_gene_name(attrs: str) -> Optional[str]:
     return None
 
 
+def load_rdna_intervals(gff_path: Path) -> Dict[str, List[Tuple[int, int]]]:
+    """Parse rRNA_gene features from GFF → {chrom: [(start, end), ...]} (0-based half-open).
+
+    Used for rDNA masking: reads overlapping these intervals are dropped in
+    stream_reads() before UMI extraction and clustering, preventing the O(n²)
+    Levenshtein bottleneck that occurs when thousands of rDNA reads share
+    identical anchor sequences (observed: 261k chrXII reads → 4h42m clustering).
+    """
+    result: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+    opener = gzip.open if str(gff_path).endswith(".gz") else open
+    with opener(gff_path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9 or parts[2] != "rRNA_gene":
+                continue
+            chrom = parts[0]
+            start = int(parts[3]) - 1  # GFF is 1-based inclusive → 0-based half-open
+            end = int(parts[4])
+            result[chrom].append((start, end))
+    return dict(result)
+
+
 def load_gff_genes(gff_path: Path) -> Dict[str, IntervalTree]:
     """Load gene-like features → chrom → IntervalTree.
 
@@ -1693,21 +1710,36 @@ def classify_sense_antisense(chrom: str, aln_start: int, aln_end: int, orient: s
 
 # ---- I/O -------------------------------------------------------------------
 def stream_reads(bam_path: Path, region: Optional[str],
-                 reference: Optional[Path] = None) -> Iterator[ReadInfo]:
-    """Stream UMI-extractable reads. If `reference` is provided, builds a per-chrom
-    FASTA cache for v1.12 walk-back / tail-length measurement."""
+                 reference: Optional[Path] = None,
+                 rdna_intervals: Optional[Dict[str, List[Tuple[int, int]]]] = None,
+                 ) -> Tuple[List[ReadInfo], int]:
+    """Stream UMI-extractable reads; return (reads, n_rdna_masked).
+
+    rdna_intervals: {chrom: [(start, end), ...]} from load_rdna_intervals().
+    Reads whose alignment overlaps any rRNA_gene interval are skipped before
+    UMI extraction, preventing the O(n²) clustering bottleneck on rDNA chroms.
+    """
     chrom_cache: Optional[Dict[str, str]] = None
     if reference is not None:
         chrom_cache = {}
         with pysam.FastaFile(str(reference)) as fa:
             for c in fa.references:
                 chrom_cache[c] = fa.fetch(c).upper()
+    reads: List[ReadInfo] = []
+    n_masked = 0
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         it = bam.fetch(region=region) if region else bam.fetch(until_eof=True)
         for read in it:
+            if rdna_intervals and read.reference_name in rdna_intervals:
+                rs = read.reference_start
+                re = read.reference_end or rs
+                if any(s < re and rs < e for s, e in rdna_intervals[read.reference_name]):
+                    n_masked += 1
+                    continue
             info = extract_read_info(read, chrom_cache)
             if info is not None:
-                yield info
+                reads.append(info)
+    return reads, n_masked
 
 
 # ---- Main ------------------------------------------------------------------
@@ -1718,20 +1750,12 @@ def run(args) -> int:
     algorithm code below expects pathlib.Path)."""
     args.bam = Path(args.bam) if not isinstance(args.bam, Path) else args.bam
     args.out = Path(args.out) if not isinstance(args.out, Path) else args.out
-    if getattr(args, "gff", None) is not None:
-        args.gff = Path(args.gff) if not isinstance(args.gff, Path) else args.gff
     if getattr(args, "reference", None) is not None:
         args.reference = Path(args.reference) if not isinstance(args.reference, Path) else args.reference
-    # Defaults for new (v1.13+) flags when rectify CLI hasn't been updated yet:
     for attr, default in [
         ("umi_clustering", "directional"),
-        ("min_gene_frac", 0.3),
-        ("min_read_frac", 0.8),
-        ("isoform_tol_5", 5),
-        ("isoform_tol_3", 5),
         ("strand_aware_consensus", False),
-        ("t1t2_tol_5", 5),
-        ("t1t2_tol_3", 5),
+        ("no_mask_rdna", False),
     ]:
         if not hasattr(args, attr): setattr(args, attr, default)
 
@@ -1750,8 +1774,23 @@ def run(args) -> int:
     if args.reference is None:
         log.warning("No --reference provided: walk-back anchor canonicalization + "
                     "polyA tail-length measurement DISABLED (legacy aln-end anchor used)")
-    reads = list(stream_reads(args.bam, args.region, reference=args.reference))
+
+    # rDNA masking (default ON): skip reads overlapping rRNA_gene intervals to
+    # avoid O(n²) UMI clustering on chrXII rDNA tandem repeats.
+    rdna_intervals: Optional[Dict[str, List[Tuple[int, int]]]] = None
+    if args.gff and not args.no_mask_rdna:
+        rdna_intervals = load_rdna_intervals(args.gff)
+        n_rdna_loci = sum(len(v) for v in rdna_intervals.values())
+        if n_rdna_loci:
+            log.info("rDNA masking ON: %d rRNA_gene loci across %d chrom(s) "
+                     "(--no-mask-rdna to disable)", n_rdna_loci, len(rdna_intervals))
+
+    reads, n_rdna_masked = stream_reads(args.bam, args.region,
+                                        reference=args.reference,
+                                        rdna_intervals=rdna_intervals)
     log.info("  %d reads with extractable UMIs (%.1fs)", len(reads), time.time() - t0)
+    if n_rdna_masked:
+        log.info("  rDNA masked: %d reads skipped (rRNA_gene overlap)", n_rdna_masked)
 
     t1 = time.time()
     log.info("Stage 1: clustering (anchor window %d, UMI Lev≤%d, method=%s)",
@@ -1778,56 +1817,11 @@ def run(args) -> int:
     cluster_tail_len = {cid: _median([r.tail_len for r in c])
                         for cid, c in enumerate(clusters)}
 
-    # GFF-based sense/antisense classification (v1.14: overlap-based with sense
-    # preference and first-TSS tiebreaker). Cluster's representative alignment
-    # span = the FIRST READ's aln interval. For multi-read clusters this is
-    # approximate; the consensus alignment span (computed later) would be
-    # equivalent in most cases.
-    cluster_xs: Dict[int, str] = {}
-    cluster_xg: Dict[int, Optional[str]] = {}  # v1.14: primary gene name (XG tag)
-    if args.gff:
-        log.info("Loading GFF: %s", args.gff)
-        gene_trees = load_gff_genes(args.gff)
-        log.info("  loaded gene trees for %d chromosomes (%d total intervals)",
-                 len(gene_trees), sum(len(t) for t in gene_trees.values()))
-        for cid, c in enumerate(clusters):
-            r0 = c[0]
-            xs, gene_name = classify_sense_antisense(
-                r0.chrom, r0.aln_start, r0.aln_end, r0.orient,
-                gene_trees,
-                min_gene_frac=args.min_gene_frac,
-                min_read_frac=args.min_read_frac,
-            )
-            cluster_xs[cid] = xs
-            cluster_xg[cid] = gene_name
-    else:
-        for cid in range(len(clusters)):
-            cluster_xs[cid] = "unannotated"
-            cluster_xg[cid] = None
-
-    # v1.17: isoform clustering (position-directional with strict 2× rule)
-    t_iso = time.time()
-    cluster_xi, iso_records = assign_isoforms(
-        clusters, cluster_xg, tol5=args.isoform_tol_5, tol3=args.isoform_tol_3)
-    log.info("Isoform clustering (tol5=%d, tol3=%d): %d isoforms from %d annotated clusters (%.1fs)",
-             args.isoform_tol_5, args.isoform_tol_3, len(iso_records),
-             sum(1 for cid in cluster_xi), time.time() - t_iso)
-
-    # v2: Type-1 ↔ Type-2 same-orient reconciliation (replaces the legacy
-    # cross-orient pair check, which had no biological substrate — both physical
-    # PCR strands of a single molecule produce the same orient label after BAM
-    # normalization). Type-1↔Type-2 pairs ARE same-molecule observations split
-    # across the SSP-captured (Type-1) and SSP-truncated (Type-2) populations.
-    t_t1t2 = time.time()
-    cluster_xl, t1t2_pairs = reconcile_t1_t2_pairs(
-        clusters, cluster_xg,
-        tol5=args.t1t2_tol_5, tol3=args.t1t2_tol_3)
-    log.info("Type-1↔Type-2 reconciliation (tol5=%d, tol3=%d): %d pairs (%.1fs)",
-             args.t1t2_tol_5, args.t1t2_tol_3, len(t1t2_pairs), time.time() - t_t1t2)
-
-    # paired_partner kept as empty dict — preserved as a tag-write hook
-    # (used to be cross-orient molecule_id, now unused).
-    paired_partner: Dict[int, str] = {}
+    # Gene assignment (XG/XS), isoform clustering (XI), and Type-1↔Type-2
+    # pairing (XL) moved to `rectify cdna-analyze`. They run on post-align
+    # coordinates from `rectify align`, which are more accurate than the
+    # pre-align positions available here. correct-cdna now emits ONLY the
+    # alignment-independent stage-1 outputs: the consensus FASTQ.
 
     # Stage 1 FASTQ — per-cluster consensus sequences for `rectify align` to
     # remap with the triple aligner. Per-cluster tags ride along on the FASTQ
@@ -1844,57 +1838,13 @@ def run(args) -> int:
         log.info("Multi-read cluster consensus: pileup-style (substitution-corrective only)")
 
     fastq_stats = write_stage1_fastq(args.bam, out_fastq, clusters, umi_canon,
-                                      cluster_xs, cluster_xf_tier, paired_partner,
-                                      cluster_tail_len, cluster_xg, cluster_xi,
-                                      cluster_xl,
+                                      cluster_xf_tier, cluster_tail_len,
                                       use_poa=use_poa,
                                       strand_aware_consensus=args.strand_aware_consensus)
     log.info("  wrote %d records (%d singletons, %d pileup consensus, %d rep fallback) in %.1fs",
              fastq_stats["written"], fastq_stats["from_singletons"],
              fastq_stats["from_multi_pileup"], fastq_stats["from_multi_fallback"],
              time.time() - t2)
-
-    # Cluster manifest: + isoform_id (v1.17)
-    manifest = args.out / "clusters.tsv"
-    with manifest.open("w") as f:
-        f.write("cluster_id\tchrom\tanchor\torient\tn_reads\tumi_canonical"
-                "\txs\txf\txt\tread_subtype\ttail_len\tgene\tisoform_id"
-                "\taln_start\taln_end\tread_ids\n")
-        for cid, c in enumerate(clusters):
-            gene_str = cluster_xg.get(cid) or ""
-            iso_str = cluster_xi.get(cid) or ""
-            r0 = c[0]
-            f.write(f"{cid}\t{r0.chrom}\t{r0.anchor}\t{r0.orient}"
-                    f"\t{len(c)}\t{umi_canon[cid]}\t{cluster_xs[cid]}"
-                    f"\t{cluster_xf_tier[cid]}\t{r0.read_type}\t{r0.read_subtype}"
-                    f"\t{cluster_tail_len[cid]}"
-                    f"\t{gene_str}\t{iso_str}\t{r0.aln_start}\t{r0.aln_end}"
-                    f"\t{','.join(r.read_id for r in c)}\n")
-    log.info("Wrote cluster manifest → %s", manifest)
-
-    # v1.17 isoform manifest
-    iso_path = args.out / "isoforms.tsv"
-    with iso_path.open("w") as f:
-        f.write("isoform_id\tgene\tchrom\torient\tread_type\tread_subtype\tn_clusters\tn_reads_total"
-                "\tpos5_modal\tpos3_modal\ttail_len_median\tcluster_ids\n")
-        for r in iso_records:
-            f.write(f"{r['isoform_id']}\t{r['gene']}\t{r['chrom']}\t{r['orient']}"
-                    f"\t{r['read_type']}\t{r['read_subtype']}\t{r['n_clusters']}\t{r['n_reads_total']}"
-                    f"\t{r['pos5_modal']}\t{r['pos3_modal']}\t{r['tail_len_median']}"
-                    f"\t{r['cluster_ids']}\n")
-    log.info("Wrote isoform manifest → %s (%d isoforms)", iso_path, len(iso_records))
-
-    # v2: Type-1 ↔ Type-2 same-orient pair manifest (replaces legacy stage2_pairs.tsv)
-    pairs_tsv = args.out / "t1t2_pairs.tsv"
-    with pairs_tsv.open("w") as f:
-        f.write("t1_cid\tt2_cid\tgene\torient\tt1_pos5\tt1_pos3\tt2_pos5\tt2_pos3"
-                "\td5\td3\tt1_n_reads\tt2_n_reads\tt1_umi\n")
-        for p in t1t2_pairs:
-            f.write(f"{p['t1_cid']}\t{p['t2_cid']}\t{p['gene']}\t{p['orient']}"
-                    f"\t{p['t1_pos5']}\t{p['t1_pos3']}\t{p['t2_pos5']}\t{p['t2_pos3']}"
-                    f"\t{p['d5']}\t{p['d3']}\t{p['t1_n_reads']}\t{p['t2_n_reads']}"
-                    f"\t{p['t1_umi']}\n")
-    log.info("v2: %d Type-1↔Type-2 same-orient pairs → %s", len(t1t2_pairs), pairs_tsv)
 
     # Final report
     print()
@@ -1914,64 +1864,33 @@ def run(args) -> int:
     print(f"Read-type breakdown:")
     print(f"  Type 1 (SSP+UMI captured):       {n_t1:>8d}  ({100*n_t1/n_total_typed:.1f}%)  → {stats.get('type1_clusters', 0)} clusters")
     print(f"  Type 2 (SSP-less, 5'-truncated): {n_t2:>8d}  ({100*n_t2/n_total_typed:.1f}%)  → {stats.get('type2_clusters', 0)} clusters")
-    print(f"v2 Type-1↔Type-2 same-orient pairs (Δ5'≤{args.t1t2_tol_5}, Δ3'≤{args.t1t2_tol_3}):"
-          f" {len(t1t2_pairs):>5d}")
-    print()
-    print("XS classification breakdown (per cluster):")
-    xs_counts = defaultdict(int)
-    for v in cluster_xs.values():
-        xs_counts[v] += 1
-    for cat in ("sense", "antisense", "paired", "unannotated", "ambiguous"):
-        if xs_counts.get(cat, 0):
-            print(f"  XS={cat:<12} {xs_counts[cat]:>8d} clusters"
-                  f"  ({100*xs_counts[cat]/len(cluster_xs):.1f}%)")
     print()
     print("XF tier breakdown (full-length confidence):")
     tier_counts = defaultdict(int)
     for v in cluster_xf_tier.values():
         tier_counts[v] += 1
-    n_clust = len(clusters)
-    print(f"  XF=2 (anchored, HIGH confidence):  {tier_counts[2]:>8d} clusters"
+    n_clust = max(1, len(clusters))
+    print(f"  XF=2 (anchored, HIGH confidence):     {tier_counts[2]:>8d} clusters"
           f"  ({100*tier_counts[2]/n_clust:.1f}%)")
     print(f"  XF=1 (unanchored, MEDIUM confidence): {tier_counts[1]:>8d} clusters"
           f"  ({100*tier_counts[1]/n_clust:.1f}%)")
-    print(f"  XF=0 (not detected):                {tier_counts[0]:>8d} clusters"
+    print(f"  XF=0 (not detected):                  {tier_counts[0]:>8d} clusters"
           f"  ({100*tier_counts[0]/n_clust:.1f}%)")
     n_full = tier_counts[1] + tier_counts[2]
-    print(f"  XF≥1 (any full-length):              {n_full:>8d} clusters"
+    print(f"  XF≥1 (any full-length):               {n_full:>8d} clusters"
           f"  ({100*n_full/n_clust:.1f}%)")
-    print()
-    print("Cross-table XS × XF tier:")
-    print(f"  {'XS':<14} {'XF=2':>8} {'XF=1':>8} {'XF=0':>8}  {'%XF≥1':>8}  {'%XF=2':>8}")
-    xs_xf = defaultdict(lambda: defaultdict(int))
-    for cid in range(len(clusters)):
-        xs_xf[cluster_xs.get(cid, "unannotated")][cluster_xf_tier[cid]] += 1
-    for cat in ("sense", "antisense", "paired", "unannotated", "ambiguous"):
-        row = xs_xf.get(cat)
-        if not row:
-            continue
-        n2 = row[2]; n1 = row[1]; n0 = row[0]
-        tot = n2 + n1 + n0
-        if tot == 0: continue
-        pct_full = 100 * (n2 + n1) / tot
-        pct_high = 100 * n2 / tot
-        print(f"  {cat:<14} {n2:>8d} {n1:>8d} {n0:>8d}  {pct_full:>7.1f}%  {pct_high:>7.1f}%")
     # PolyA tail length distribution (sequence-level; bias-uniform across conditions)
     print()
-    print("PolyA tail-length distribution (per-cluster median, sequence-level):")
+    print("PolyA tail-length distribution (per-cluster median, sequence-level, XF=2 only):")
     bins = [(0, 1), (1, 10), (10, 20), (20, 30), (30, 50), (50, 75),
             (75, 100), (100, 150), (150, 250), (250, 10_000)]
     bin_counts = [0] * len(bins)
-    sense_tail_lens = []
-    antisense_tail_lens = []
     for cid in range(len(clusters)):
-        if cluster_xf_tier[cid] < 2: continue  # only HIGH-confidence anchored reads
+        if cluster_xf_tier[cid] < 2: continue
         tl = cluster_tail_len[cid]
         for i, (lo, hi) in enumerate(bins):
             if lo <= tl < hi:
                 bin_counts[i] += 1; break
-        if cluster_xs.get(cid) == "sense": sense_tail_lens.append(tl)
-        elif cluster_xs.get(cid) == "antisense": antisense_tail_lens.append(tl)
     n_with_tl = sum(bin_counts)
     print(f"  (restricted to XF=2 anchored clusters: N={n_with_tl})")
     print(f"  {'range':<12} {'count':>8} {'pct':>6}")
@@ -1979,17 +1898,10 @@ def run(args) -> int:
         label = f"{lo}-{hi-1}" if hi < 10_000 else f"≥{lo}"
         pct = 100 * n / max(1, n_with_tl)
         print(f"  {label:<12} {n:>8d} {pct:>5.1f}%")
-    def _summary(xs):
-        if not xs: return "—"
-        s = sorted(xs); n = len(s)
-        med = s[n // 2]; p25 = s[n // 4]; p75 = s[3 * n // 4]
-        return f"N={n}  median={med}  IQR=({p25}-{p75})"
-    print(f"  sense clusters:     {_summary(sense_tail_lens)}")
-    print(f"  antisense clusters: {_summary(antisense_tail_lens)}")
     print()
     print(f"Output FASTQ: {out_fastq}")
-    print(f"Cluster manifest: {manifest}")
-    print(f"T1↔T2 pairs: {pairs_tsv}")
+    print("Next step: `rectify align` on this FASTQ → `rectify cdna-analyze` "
+          "for clusters.tsv / isoforms.tsv / t1t2_pairs.tsv.")
     log.info("Total runtime: %.1fs", time.time() - t0)
     return 0
 
