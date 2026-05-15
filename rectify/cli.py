@@ -969,7 +969,8 @@ Citation:
             'consensus per cluster (POA if pyabpoa+mappy+reference are all available). '
             'Stage-2 finds cross-orientation (sense+antisense) cluster pairs sharing the '
             'same UMI and tags them as XS:paired.\n\n'
-            'Output: stage1_consensus.bam (one record per molecule), clusters.tsv '
+            'Output: stage1_consensus.fastq.gz (per-cluster consensus sequences with '
+            'SAM-tag comments for `rectify align -y` to propagate), clusters.tsv '
             '(per-cluster manifest), stage2_pairs.tsv (cross-orient pair table).'
         ),
     )
@@ -981,7 +982,7 @@ Citation:
         '-o', '--out',
         dest='out',
         required=True,
-        help='Output directory (will contain stage1_consensus.bam, clusters.tsv, stage2_pairs.tsv)',
+        help='Output directory (will contain stage1_consensus.fastq.gz, clusters.tsv, stage2_pairs.tsv)',
     )
     correct_cdna_parser.add_argument(
         '--umi-edit-distance',

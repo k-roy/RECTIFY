@@ -25,9 +25,11 @@ v2: Type-1↔Type-2 same-orient reconciliation by position (replaces the legacy
     t1t2_pairs.tsv.
 
 v1.15: Type-2 (SSP-less) read parser. Reads where sequencing didn't reach the
-    SSP/UMI region are no longer dropped — they are tagged `XT:i:2` and handled
-    with position-based deduplication (no UMI available). Type-1 reads (SSP+UMI
-    captured, the standard case) carry `XT:i:1`. The two populations serve
+    SSP/UMI region are no longer dropped — they are tagged `XT:i:2` and carried
+    forward as independent observations without deduplication (no UMI available;
+    reads are grouped by CPA position for isoform counting only).
+    Type-1 reads (SSP+UMI captured, the standard case) carry `XT:i:1`. The two
+    populations serve
     different biology:
       Type-1: full-length molecules where SSP template-switched at the original
               mRNA 5' cap → captures actual TSS.
@@ -77,8 +79,10 @@ architecture: SSP_FWD + (TT-VVVV)×4 + TTT UMI + GGG TSO bridge + cDNA body
 + polyA + adapter.
 
 Output files (in --out directory):
-  - stage1_consensus.bam(.bai)   one consensus record per molecule (orient-aware
-                                  tags listed below)
+  - stage1_consensus.fastq.gz    one consensus record per molecule. Per-cluster
+                                  SAM-format tags are appended to each read's
+                                  comment line for `rectify align -y` to pass
+                                  through to the final aligned BAM.
   - clusters.tsv                 per-cluster manifest
   - isoforms.tsv                 v1.17 isoform-level aggregation
   - t1t2_pairs.tsv               v2 Type-1↔Type-2 reconciliation pairs
@@ -90,7 +94,9 @@ Tag glossary:
   XR  input read IDs                         XT  read type (1=SSP+UMI, 2=SSP-less)
   XM  consensus method                       XB  strand-split (n_top/n_bottom)
   XS  sense/antisense/unannotated            XL  partner cluster_id (T1↔T2)
-  XF  full-length tier (0/1/2)
+  XF  full-length tier (0/1/2)              XY  read subtype (umi_captured_fwd/rev, umi_not_captured)
+  XQ  5' pre-trim bases stripped             XK  3' pre-trim bases stripped
+       (SSP+UMI+GGG for T1 / polyT for rev)       (polyA for fwd / SSP_RC suffix for rev)
 
 Algorithm versions are documented per-block above. Ported from
 ``ont_cdna/src/cdna_correct.py`` v1.19 + v2 (M1 dev, 2026-05-13);
@@ -104,6 +110,7 @@ Usage (via rectify CLI):
 from __future__ import annotations
 
 import argparse
+import functools as _functools
 import logging
 import sys
 import time
@@ -268,6 +275,7 @@ class ReadInfo:
     aln_end: int         # v1.14: aligned region end (exclusive) in ref coords
     read_type: int       # v1.15: 1 = SSP+UMI captured, 2 = SSP-less (5'-truncated, e.g. decay intermediate)
     pos5_corrected: int  # v1.19: TSS-side position corrected for SSP-bridge G-tract ambiguity (analog of 3' polyA walk-back)
+    read_subtype: str    # "1a" (Type-1 fwd / SSP+UMI captured) / "1b" (Type-1 rev) / "2" (Type-2, no UMI)
 
 
 def _find_adapter_anchor_pos(seq: str, orient: str) -> Optional[int]:
@@ -610,6 +618,11 @@ def extract_read_info(read: pysam.AlignedSegment,
         tail_len = 0
         pos5_corrected = read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
 
+    if read_type == 1:
+        read_subtype = "1a" if orient == "fwd" else "1b"
+    else:
+        read_subtype = "2"
+
     return ReadInfo(
         read_id=read.query_name,
         chrom=read.reference_name,
@@ -623,6 +636,7 @@ def extract_read_info(read: pysam.AlignedSegment,
         aln_end=(read.reference_end or read.reference_start + 1),
         read_type=read_type,
         pos5_corrected=pos5_corrected,
+        read_subtype=read_subtype,
     )
 
 
@@ -1049,112 +1063,154 @@ def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment]
     return poa_consensus_from_strings([top_cons, bot_cons])
 
 
-def realign_consensus(consensus_seq: str, mp_aligner: "mappy.Aligner") -> Optional[Tuple[str, int, List[Tuple[int, int]], int, int, str]]:
-    """Re-align a consensus sequence to the reference via mappy/minimap2.
+def pretrim_consensus(consensus_seq: str, orient: str, read_type: int
+                      ) -> Tuple[str, int, int]:
+    """Strip SSP/UMI/GGG from 5' and poly-A/adapter from 3' of a consensus sequence.
 
-    Returns (ref_name, ref_start, cigartuples, mapq, flag, query_seq_for_record)
-    of the best hit, or None.
+    This ensures aligners receive clean mRNA sequence — no adapter contamination
+    at either end. Downstream `rectify align` re-aligns the trimmed consensus
+    and the aligner produces appropriate soft-clips for the stripped bases.
 
-    The returned cigartuples include soft-clips (op=4) for any query bases
-    outside the aligned region. The returned query_seq_for_record matches the
-    CIGAR's expected query length: if mappy aligned to the - strand, the
-    consensus is reverse-complemented (so BAM SEQ matches reference orient).
+    5' trim (Type-1 only — Type-2 has no SSP/UMI):
+      - orient=fwd: SSP_FWD (23nt) + UMI (27nt) + GGG bridge (3nt) = 53 nt
+      - orient=rev: SSP_RC at the RIGHT of BAM SEQ + UMI_RC + CCC bridge
+        For rev, the mRNA 5' end is at the RIGHT; the poly-A (= polyT in BAM SEQ)
+        is at the LEFT. We strip the CCC+AAA+UMI_RC+SSP_RC suffix.
+
+    3' trim (both types):
+      - orient=fwd: poly-A is at the RIGHT of BAM SEQ. Strip from the start of
+        the first homopolymer A run of length >= MIN_HOMOPOLYMER_ANCHORED.
+      - orient=rev: poly-T is at the LEFT. Strip from position 0 up to the end
+        of the first homopolymer T run.
+
+    Returns:
+      (trimmed_seq, q_trim_5, pretrim_pa_len) where:
+        trimmed_seq    — the sequence passed to aligners
+        q_trim_5       — bases stripped from 5' (for restoring soft-clip)
+        pretrim_pa_len — A's stripped from 3' (for XA fallback if walkback fails)
     """
-    if not HAS_MAPPY:
-        return None
-    best = None
-    for hit in mp_aligner.map(consensus_seq):
-        if hit.is_primary:
-            best = hit
-            break
-    if best is None:
-        return None
+    q_trim_5 = 0
+    pretrim_pa_len = 0
 
-    # mappy hit.cigar: list of (length, op_int) — BAM op codes
-    aln_cigar = [(op, length) for length, op in best.cigar]
+    # ---- 5' trim (SSP/UMI/GGG) ----
+    if read_type == 1:
+        if orient == "fwd":
+            p = consensus_seq.find(SSP_FWD)
+            if p >= 0:
+                q_trim_5 = p + len(SSP_FWD) + UMI_LEN + BRIDGE_LEN
+            else:
+                # SSP not found in consensus (degenerate) — skip 5' trim
+                q_trim_5 = 0
+        else:  # orient == "rev"
+            p = consensus_seq.find(SSP_RC)
+            if p >= UMI_LEN + BRIDGE_LEN:
+                # SSP_RC found; trim everything from (p - UMI_LEN - BRIDGE_LEN) onward
+                # The mRNA body occupies consensus_seq[0 : p - UMI_LEN - BRIDGE_LEN]
+                # We express this as a suffix trim (handled below as rev 3' trim equiv).
+                # For rev: the "5'" of the mRNA is at the RIGHT, and "5' trim" means
+                # removing from the right end. We encode as q_trim_5 on rev in terms of
+                # the sequence orientation: suffix_len = len(consensus_seq) - (p - UMI_LEN - BRIDGE_LEN)
+                # We use a separate variable to keep the logic clear:
+                pass  # handled in the 3' trim block for rev
 
-    # Soft-clip prefix and suffix to make CIGAR sum equal full query length
-    pre_clip = best.q_st
-    post_clip = len(consensus_seq) - best.q_en
-    cigartuples: List[Tuple[int, int]] = []
-    if pre_clip > 0:
-        cigartuples.append((4, pre_clip))
-    cigartuples.extend(aln_cigar)
-    if post_clip > 0:
-        cigartuples.append((4, post_clip))
+    # ---- 3' trim (poly-A/adapter) ----
+    if orient == "fwd":
+        # For fwd: poly-A is at the RIGHT of BAM SEQ. Strip from last A-run.
+        # Search for the poly-A start using the adapter anchor first (Tier 2),
+        # fall back to unanchored poly-A detection (Tier 1).
+        seq_to_search = consensus_seq[q_trim_5:]
+        adp_pos = _find_adapter_anchor_pos(seq_to_search, "fwd")
+        if adp_pos is not None:
+            # Poly-A is in the 30 bp UPSTREAM of the adapter anchor
+            upstream_start = max(0, adp_pos - ANCHOR_UPSTREAM_WIN)
+            upstream = seq_to_search[upstream_start:adp_pos]
+            m = POLY_A_ANCH_RE.search(upstream)
+            if m:
+                pa_start = q_trim_5 + upstream_start + m.start()
+                pretrim_pa_len = m.group(0).count("A")
+                trimmed_seq = consensus_seq[q_trim_5:pa_start]
+                return (trimmed_seq, q_trim_5, pretrim_pa_len)
+        # Unanchored fallback: find rightmost A-run (>= MIN_HOMOPOLYMER_ANCHORED) in
+        # last END_WINDOW_BP bases. Using the anchored threshold (6+) rather than
+        # the conservative unanchored threshold (10+) because in a cDNA consensus
+        # sequence we know the poly-A is at the 3' end. Taking the RIGHTMOST match
+        # avoids stripping on internal A-runs (e.g. gene body A's).
+        window = seq_to_search[-END_WINDOW_BP:] if len(seq_to_search) > END_WINDOW_BP else seq_to_search
+        window_off = len(seq_to_search) - len(window)
+        all_pa_matches = list(POLY_A_ANCH_RE.finditer(window))
+        if all_pa_matches:
+            m = all_pa_matches[-1]  # rightmost = closest to 3' end
+            pa_start = q_trim_5 + window_off + m.start()
+            pretrim_pa_len = m.group(0).count("A")
+            trimmed_seq = consensus_seq[q_trim_5:pa_start]
+            return (trimmed_seq, q_trim_5, pretrim_pa_len)
+        # No poly-A found: return 5'-trimmed only
+        trimmed_seq = consensus_seq[q_trim_5:]
+        return (trimmed_seq, q_trim_5, 0)
+    else:  # orient == "rev"
+        # For rev: poly-T is at the LEFT of BAM SEQ (basecalled poly-A in +ref coords).
+        # The mRNA body is to the RIGHT; the SSP_RC/UMI_RC/CCC are also to the RIGHT.
+        # Strip poly-T from left, and SSP_RC suffix from right.
 
-    flag = 16 if best.strand == -1 else 0
-    # If aligned to - strand, BAM convention: SEQ is RC'd to match + ref
-    if best.strand == -1:
-        seq_for_record = consensus_seq[::-1].translate(_COMPL)
-        # Soft-clip positions also flip
-        cigartuples = []
-        if post_clip > 0:
-            cigartuples.append((4, post_clip))
-        cigartuples.extend(reversed(aln_cigar))
-        if pre_clip > 0:
-            cigartuples.append((4, pre_clip))
-    else:
-        seq_for_record = consensus_seq
+        # First: find poly-T at left end (= 3' trim in rev orientation).
+        seq = consensus_seq
+        adp_pos = _find_adapter_anchor_pos(seq, "rev")
+        if adp_pos is not None:
+            # poly-T is in 30 bp DOWNSTREAM of the anchor (adapter at LEFT, polyT just after)
+            ds_end = adp_pos + ANCHOR_LEN + ANCHOR_UPSTREAM_WIN
+            downstream = seq[adp_pos + ANCHOR_LEN: min(ds_end, len(seq))]
+            m = POLY_T_ANCH_RE.search(downstream)
+            if m:
+                pt_end = adp_pos + ANCHOR_LEN + m.end()
+                pretrim_pa_len = downstream[m.start():m.end()].count("T")
+                seq = seq[pt_end:]
+                q_trim_5 = pt_end
+        else:
+            # Unanchored: find first T-run in first END_WINDOW_BP bases
+            window = seq[:END_WINDOW_BP]
+            m = POLY_T_UNANCH_RE.search(window)
+            if m:
+                pt_end = m.end()
+                pretrim_pa_len = window[m.start():m.end()].count("T")
+                seq = seq[pt_end:]
+                q_trim_5 = pt_end
 
-    return (best.ctg, best.r_st, cigartuples, best.mapq, flag, seq_for_record)
+        # Second: strip SSP_RC/UMI_RC/CCC suffix from the RIGHT (rev 5' trim)
+        p = seq.find(SSP_RC)
+        if p >= UMI_LEN + BRIDGE_LEN:
+            ssp_trim_start = p - UMI_LEN - BRIDGE_LEN  # start of CCC in the seq
+            seq = seq[:ssp_trim_start]
+        # Note: q_trim_5 for rev tracks left-side trim; right-side trim is not
+        # encoded in q_trim_5. The right suffix trim is implicit in the trimmed_seq
+        # length: suffix_trim = (len(consensus_seq) - q_trim_5) - len(seq).
+
+        return (seq, q_trim_5, pretrim_pa_len)
 
 
-def make_consensus_record(template: pysam.AlignedSegment,
-                           consensus_seq: str,
-                           cigartuples: List[Tuple[int, int]],
-                           ref_start: int,
-                           qual_string: str,
-                           umi: str,
-                           orient: str,
-                           cluster_size: int,
-                           read_ids: List[str],
-                           header: pysam.AlignmentHeader) -> pysam.AlignedSegment:
-    """Build a synthetic consensus AlignedSegment from a multi-read cluster.
+def write_stage1_fastq(input_bam: Path, output_fastq: Path,
+                       clusters: List[List[ReadInfo]],
+                       umi_canonical: Dict[int, str],
+                       cluster_xs: Dict[int, str],
+                       cluster_xf_tier: Dict[int, int],
+                       paired_partner: Dict[int, str],
+                       cluster_tail_len: Dict[int, int],
+                       cluster_xg: Dict[int, Optional[str]],
+                       cluster_xi: Dict[int, str],
+                       cluster_xl: Dict[int, int],
+                       use_poa: bool = False,
+                       strand_aware_consensus: bool = False) -> dict:
+    """Emit per-cluster consensus sequences as a FASTQ for downstream alignment.
 
-    The template provides reference_id and FLAG (orientation); everything
-    sequence-related comes from the consensus.
+    `rectify align` will run the multi-aligner on this FASTQ to produce the final
+    aligned BAM. Per-cluster SAM-format tags are appended to each read's comment
+    line so `minimap2 -y` (and equivalent flags on mapPacBio/gapmm2) can
+    propagate them through to the output BAM.
+
+    Read naming: `cluster_<cid>`.
     """
-    rec = pysam.AlignedSegment(header)
-    rec.query_name = f"consensus_{umi}_{orient}_{template.reference_name}_{ref_start}_{cluster_size}reads"
-    rec.flag = template.flag & ~0x900  # primary; clear secondary/supplementary
-    rec.reference_id = template.reference_id
-    rec.reference_start = ref_start
-    rec.mapping_quality = 60
-    rec.cigartuples = cigartuples
-    rec.query_sequence = consensus_seq
-    rec.query_qualities = pysam.qualitystring_to_array(qual_string)
-    rec.next_reference_id = -1
-    rec.next_reference_start = -1
-    rec.template_length = 0
-    return rec
+    import gzip
 
-
-def write_stage1_bam(input_bam: Path, output_bam: Path,
-                      clusters: List[List[ReadInfo]],
-                      umi_canonical: Dict[int, str],
-                      cluster_xs: Dict[int, str],
-                      cluster_xf_tier: Dict[int, int],
-                      paired_partner: Dict[int, str],
-                      cluster_tail_len: Dict[int, int],
-                      cluster_xg: Dict[int, Optional[str]],
-                      cluster_xi: Dict[int, str],
-                      cluster_xl: Dict[int, int],
-                      mp_aligner: Optional["mappy.Aligner"] = None,
-                      use_poa: bool = False,
-                      strand_aware_consensus: bool = False) -> dict:
-    """Re-stream the input BAM and emit one record per cluster.
-
-    For singletons: pass-through with added tags.
-    For multi-read: pick representative read, copy with added tags.
-
-    Tags written:
-      XU:Z:<umi_canonical>           — canonical UMI of the cluster
-      XO:Z:<orient>                  — 'fwd' or 'rev'
-      XC:i:<cluster_size>            — number of input reads in this cluster
-      XR:Z:<all_read_ids>            — comma-separated input read IDs
-    """
-    # Build read_id -> cluster_id index
+    # Build read_id → cluster_id index
     rid_to_cluster: Dict[str, int] = {}
     cluster_read_ids: Dict[int, List[str]] = {}
     for cid, c in enumerate(clusters):
@@ -1162,25 +1218,16 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
         for r in c:
             rid_to_cluster[r.read_id] = cid
 
-    # v1.18: strand-split per cluster (n_top / n_bottom from ReadInfo.is_reverse)
     cluster_strand_split: Dict[int, Tuple[int, int]] = {}
     for cid, c in enumerate(clusters):
         n_top = sum(1 for r in c if r.is_reverse)
         n_bot = sum(1 for r in c if not r.is_reverse)
         cluster_strand_split[cid] = (n_top, n_bot)
 
-    # Bucket: per cluster, collect AlignedSegment as we stream the BAM
+    # Bucket reads per cluster from input BAM
     cluster_segments: Dict[int, List[pysam.AlignedSegment]] = defaultdict(list)
-
     n_in = 0
     with pysam.AlignmentFile(str(input_bam), "rb") as inbam:
-        header = inbam.header.to_dict()
-        # Add @PG line
-        pg = header.setdefault("PG", [])
-        pg.append({"ID": "rectify-correct-cdna",
-                    "PN": "rectify",
-                    "VN": "0.1.0-v1",
-                    "CL": " ".join(sys.argv)})
         for read in inbam.fetch(until_eof=True):
             n_in += 1
             cid = rid_to_cluster.get(read.query_name)
@@ -1188,91 +1235,91 @@ def write_stage1_bam(input_bam: Path, output_bam: Path,
                 continue
             cluster_segments[cid].append(read)
 
+    is_gz = str(output_fastq).endswith(".gz")
+    opener = gzip.open if is_gz else open
+
     written = singleton = multi_pileup = multi_fallback = 0
-    bam_header = pysam.AlignmentHeader.from_dict(header)
-    with pysam.AlignmentFile(str(output_bam), "wb", header=bam_header) as out:
+
+    with opener(str(output_fastq), "wt") as fq:
         for cid, c in enumerate(clusters):
             segs = cluster_segments.get(cid, [])
             if not segs:
                 continue
+
+            method = "rep"
+            seq: Optional[str] = None
+
             if len(segs) == 1:
-                # Singleton — pass-through with tags
-                rec = segs[0]
-                rec.set_tag("XU", umi_canonical[cid], value_type="Z")
-                rec.set_tag("XO", c[0].orient, value_type="Z")
-                rec.set_tag("XC", len(c), value_type="i")
-                rec.set_tag("XR", ",".join(cluster_read_ids[cid]), value_type="Z")
-                rec.set_tag("XM", "rep", value_type="Z")  # consensus method
-                rec.set_tag("XS", cluster_xs.get(cid, "unannotated"), value_type="Z")
-                if cid in paired_partner:
-                    rec.set_tag("XP", paired_partner[cid], value_type="Z")
-                rec.set_tag("XF", cluster_xf_tier[cid], value_type="i")
-                rec.set_tag("XA", cluster_tail_len.get(cid, 0), value_type="i")
-                if cluster_xg.get(cid):
-                    rec.set_tag("XG", cluster_xg[cid], value_type="Z")
-                rec.set_tag("XT", c[0].read_type, value_type="i")
-                if cluster_xi.get(cid):
-                    rec.set_tag("XI", cluster_xi[cid], value_type="Z")
-                n_top, n_bot = cluster_strand_split[cid]
-                rec.set_tag("XB", f"{n_top}/{n_bot}", value_type="Z")
-                if cid in cluster_xl:
-                    rec.set_tag("XL", str(cluster_xl[cid]), value_type="Z")
-                out.write(rec)
+                seg = segs[0]
+                seq = seg.query_sequence or ""
+                # Restore basecalled orientation: BAM SEQ is RC'd for minus-strand
+                # alignments; we want the original read sequence for re-alignment.
+                if seg.is_reverse:
+                    seq = seq[::-1].translate(_COMPL)
                 singleton += 1
             else:
-                rec = None
-                # Try POA + re-align first (best quality)
-                if use_poa and mp_aligner is not None:
+                if use_poa:
                     poa_fn = poa_consensus_strand_aware if strand_aware_consensus else poa_consensus
-                    poa_seq = poa_fn(segs)
-                    if poa_seq:
-                        realigned = realign_consensus(poa_seq, mp_aligner)
-                        if realigned:
-                            ref_name, ref_start, cigartuples, mapq, new_flag, rec_seq = realigned
-                            template = pick_representative(segs)
-                            rec = make_consensus_record(template, rec_seq, cigartuples,
-                                                         ref_start, "?" * len(rec_seq),
-                                                         umi_canonical[cid], c[0].orient,
-                                                         len(c), cluster_read_ids[cid], bam_header)
-                            rec.flag = new_flag  # set strand from re-alignment
-                            rec.mapping_quality = mapq
-                            rec.set_tag("XM", "poa", value_type="Z")
-                            multi_pileup += 1  # re-using counter; v2 will split
-                # Fallback: pileup-based consensus
-                if rec is None:
+                    seq = poa_fn(segs)
+                    if seq:
+                        method = "poa"
+                if not seq:
                     pileup = pileup_consensus(segs)
-                    if pileup is None:
-                        rec = pick_representative(segs)
-                        rec.set_tag("XM", "rep_fallback", value_type="Z")
-                        multi_fallback += 1
-                    else:
-                        consensus_seq, cigartuples, ref_start, qual_str = pileup
-                        template = pick_representative(segs)
-                        rec = make_consensus_record(template, consensus_seq, cigartuples,
-                                                     ref_start, qual_str,
-                                                     umi_canonical[cid], c[0].orient,
-                                                     len(c), cluster_read_ids[cid], bam_header)
-                        rec.set_tag("XM", "pileup", value_type="Z")
-                        multi_pileup += 1
-                rec.set_tag("XU", umi_canonical[cid], value_type="Z")
-                rec.set_tag("XO", c[0].orient, value_type="Z")
-                rec.set_tag("XC", len(c), value_type="i")
-                rec.set_tag("XR", ",".join(cluster_read_ids[cid]), value_type="Z")
-                rec.set_tag("XS", cluster_xs.get(cid, "unannotated"), value_type="Z")
-                if cid in paired_partner:
-                    rec.set_tag("XP", paired_partner[cid], value_type="Z")
-                rec.set_tag("XF", cluster_xf_tier[cid], value_type="i")
-                rec.set_tag("XA", cluster_tail_len.get(cid, 0), value_type="i")
-                if cluster_xg.get(cid):
-                    rec.set_tag("XG", cluster_xg[cid], value_type="Z")
-                rec.set_tag("XT", c[0].read_type, value_type="i")
-                if cluster_xi.get(cid):
-                    rec.set_tag("XI", cluster_xi[cid], value_type="Z")
-                n_top, n_bot = cluster_strand_split[cid]
-                rec.set_tag("XB", f"{n_top}/{n_bot}", value_type="Z")
-                if cid in cluster_xl:
-                    rec.set_tag("XL", str(cluster_xl[cid]), value_type="Z")
-                out.write(rec)
+                    if pileup is not None:
+                        seq = pileup[0]
+                        method = "pileup"
+                if not seq:
+                    rep = pick_representative(segs)
+                    seq = rep.query_sequence or ""
+                    if rep.is_reverse:
+                        seq = seq[::-1].translate(_COMPL)
+                    method = "rep_fallback"
+                    multi_fallback += 1
+                else:
+                    multi_pileup += 1
+
+            if not seq:
+                continue
+
+            # Strip adapter/UMI/GGG prefix and poly-A/T suffix so rectify align
+            # receives clean mRNA sequence. Store strip lengths as XQ/XK tags so
+            # the aligner can reconstruct the full-length CIGAR with soft-clips.
+            orient = c[0].orient
+            read_type = c[0].read_type
+            trimmed_seq, q_trim_5, _ = pretrim_consensus(seq, orient, read_type)
+            if not trimmed_seq:
+                trimmed_seq = seq
+                q_trim_5 = 0
+            q_trim_3 = len(seq) - q_trim_5 - len(trimmed_seq)
+
+            tag_parts = [
+                f"XU:Z:{umi_canonical[cid]}",
+                f"XO:Z:{orient}",
+                f"XC:i:{len(c)}",
+                f"XR:Z:{','.join(cluster_read_ids[cid])}",
+                f"XM:Z:{method}",
+                f"XS:Z:{cluster_xs.get(cid, 'unannotated')}",
+                f"XF:i:{cluster_xf_tier[cid]}",
+                f"XA:i:{cluster_tail_len.get(cid, 0)}",
+                f"XT:i:{read_type}",
+                f"XY:Z:{c[0].read_subtype}",
+                f"XQ:i:{q_trim_5}",
+                f"XK:i:{q_trim_3}",
+            ]
+            if cid in paired_partner:
+                tag_parts.append(f"XP:Z:{paired_partner[cid]}")
+            if cluster_xg.get(cid):
+                tag_parts.append(f"XG:Z:{cluster_xg[cid]}")
+            if cluster_xi.get(cid):
+                tag_parts.append(f"XI:Z:{cluster_xi[cid]}")
+            n_top, n_bot = cluster_strand_split[cid]
+            tag_parts.append(f"XB:Z:{n_top}/{n_bot}")
+            if cid in cluster_xl:
+                tag_parts.append(f"XL:Z:{cluster_xl[cid]}")
+
+            comment = " ".join(tag_parts)
+            qual = "?" * len(trimmed_seq)
+            fq.write(f"@cluster_{cid} {comment}\n{trimmed_seq}\n+\n{qual}\n")
             written += 1
 
     return dict(input_reads=n_in, written=written, from_singletons=singleton,
@@ -1478,6 +1525,7 @@ def _emit_isoform(iso_id: str, gene: str, orient: str, read_type: int,
     pos5_vals = []; pos3_vals = []; n_reads_total = 0
     tail_lens: List[int] = []
     chrom = clusters[iso_cids[0]][0].chrom
+    read_subtype = clusters[iso_cids[0]][0].read_subtype
     for cid in iso_cids:
         cluster_to_iso[cid] = iso_id
         r0 = clusters[cid][0]
@@ -1501,6 +1549,7 @@ def _emit_isoform(iso_id: str, gene: str, orient: str, read_type: int,
         "chrom": chrom,
         "orient": orient,
         "read_type": read_type,
+        "read_subtype": read_subtype,
         "n_clusters": len(iso_cids),
         "n_reads_total": n_reads_total,
         "pos5_modal": _modal(pos5_vals) if has_5g else -1,
@@ -1780,49 +1829,36 @@ def run(args) -> int:
     # (used to be cross-orient molecule_id, now unused).
     paired_partner: Dict[int, str] = {}
 
-    # Stage 1 BAM (write unsorted, then sort+index)
+    # Stage 1 FASTQ — per-cluster consensus sequences for `rectify align` to
+    # remap with the triple aligner. Per-cluster tags ride along on the FASTQ
+    # comment line so the downstream BAM picks them up via `minimap2 -y`.
     t2 = time.time()
-    unsorted_bam = args.out / "stage1_consensus.unsorted.bam"
-    out_bam = args.out / "stage1_consensus.bam"
-    log.info("Writing Stage-1 consensus BAM (representative-read mode) → %s", out_bam)
-    # Set up POA aligner if requested
-    use_poa = HAS_POA and not args.no_poa and args.reference is not None
-    mp_aligner = None
+    out_fastq = args.out / "stage1_consensus.fastq.gz"
+    log.info("Writing Stage-1 consensus FASTQ → %s", out_fastq)
+    # POA still uses pyabpoa for sequence-level consensus; no aligner needed here.
+    use_poa = HAS_POA and not args.no_poa
+
     if use_poa:
-        if not HAS_MAPPY:
-            log.warning("mappy not available; falling back to pileup consensus")
-            use_poa = False
-        else:
-            log.info("Building mappy aligner from %s ...", args.reference)
-            mp_aligner = mappy.Aligner(str(args.reference), preset="splice")
-            if not mp_aligner:
-                log.warning("Failed to build mappy aligner; falling back to pileup")
-                use_poa = False
-    if use_poa:
-        log.info("Multi-read cluster consensus: POA (pyabpoa) + re-align (mappy/minimap2)")
+        log.info("Multi-read cluster consensus: POA (pyabpoa)")
     else:
         log.info("Multi-read cluster consensus: pileup-style (substitution-corrective only)")
 
-    bam_stats = write_stage1_bam(args.bam, unsorted_bam, clusters, umi_canon,
-                                   cluster_xs, cluster_xf_tier, paired_partner,
-                                   cluster_tail_len, cluster_xg, cluster_xi,
-                                   cluster_xl,
-                                   mp_aligner=mp_aligner, use_poa=use_poa,
-                                   strand_aware_consensus=args.strand_aware_consensus)
+    fastq_stats = write_stage1_fastq(args.bam, out_fastq, clusters, umi_canon,
+                                      cluster_xs, cluster_xf_tier, paired_partner,
+                                      cluster_tail_len, cluster_xg, cluster_xi,
+                                      cluster_xl,
+                                      use_poa=use_poa,
+                                      strand_aware_consensus=args.strand_aware_consensus)
     log.info("  wrote %d records (%d singletons, %d pileup consensus, %d rep fallback) in %.1fs",
-             bam_stats["written"], bam_stats["from_singletons"],
-             bam_stats["from_multi_pileup"], bam_stats["from_multi_fallback"],
+             fastq_stats["written"], fastq_stats["from_singletons"],
+             fastq_stats["from_multi_pileup"], fastq_stats["from_multi_fallback"],
              time.time() - t2)
-    pysam.sort("-o", str(out_bam), str(unsorted_bam))
-    unsorted_bam.unlink()
-    pysam.index(str(out_bam))
-    log.info("  sorted + indexed → %s(.bai)", out_bam)
 
     # Cluster manifest: + isoform_id (v1.17)
     manifest = args.out / "clusters.tsv"
     with manifest.open("w") as f:
         f.write("cluster_id\tchrom\tanchor\torient\tn_reads\tumi_canonical"
-                "\txs\txf\txt\ttail_len\tgene\tisoform_id"
+                "\txs\txf\txt\tread_subtype\ttail_len\tgene\tisoform_id"
                 "\taln_start\taln_end\tread_ids\n")
         for cid, c in enumerate(clusters):
             gene_str = cluster_xg.get(cid) or ""
@@ -1830,7 +1866,8 @@ def run(args) -> int:
             r0 = c[0]
             f.write(f"{cid}\t{r0.chrom}\t{r0.anchor}\t{r0.orient}"
                     f"\t{len(c)}\t{umi_canon[cid]}\t{cluster_xs[cid]}"
-                    f"\t{cluster_xf_tier[cid]}\t{r0.read_type}\t{cluster_tail_len[cid]}"
+                    f"\t{cluster_xf_tier[cid]}\t{r0.read_type}\t{r0.read_subtype}"
+                    f"\t{cluster_tail_len[cid]}"
                     f"\t{gene_str}\t{iso_str}\t{r0.aln_start}\t{r0.aln_end}"
                     f"\t{','.join(r.read_id for r in c)}\n")
     log.info("Wrote cluster manifest → %s", manifest)
@@ -1838,11 +1875,11 @@ def run(args) -> int:
     # v1.17 isoform manifest
     iso_path = args.out / "isoforms.tsv"
     with iso_path.open("w") as f:
-        f.write("isoform_id\tgene\tchrom\torient\tread_type\tn_clusters\tn_reads_total"
+        f.write("isoform_id\tgene\tchrom\torient\tread_type\tread_subtype\tn_clusters\tn_reads_total"
                 "\tpos5_modal\tpos3_modal\ttail_len_median\tcluster_ids\n")
         for r in iso_records:
             f.write(f"{r['isoform_id']}\t{r['gene']}\t{r['chrom']}\t{r['orient']}"
-                    f"\t{r['read_type']}\t{r['n_clusters']}\t{r['n_reads_total']}"
+                    f"\t{r['read_type']}\t{r['read_subtype']}\t{r['n_clusters']}\t{r['n_reads_total']}"
                     f"\t{r['pos5_modal']}\t{r['pos3_modal']}\t{r['tail_len_median']}"
                     f"\t{r['cluster_ids']}\n")
     log.info("Wrote isoform manifest → %s (%d isoforms)", iso_path, len(iso_records))
@@ -1865,11 +1902,11 @@ def run(args) -> int:
     print("cdna_correct v1 — Stage-1 dedup complete")
     print("=" * 70)
     print(f"input reads (UMI-extractable): {len(reads):>8d}")
-    print(f"output records (one per molecule): {bam_stats['written']:>8d}"
-          f"  ({100 * bam_stats['written'] / max(1, len(reads)):.1f}% of input)")
-    print(f"  singletons (passed through):     {bam_stats['from_singletons']:>8d}")
-    print(f"  multi-read (pileup consensus):   {bam_stats['from_multi_pileup']:>8d}")
-    print(f"  multi-read (rep fallback):       {bam_stats['from_multi_fallback']:>8d}")
+    print(f"output records (one per molecule): {fastq_stats['written']:>8d}"
+          f"  ({100 * fastq_stats['written'] / max(1, len(reads)):.1f}% of input)")
+    print(f"  singletons (passed through):     {fastq_stats['from_singletons']:>8d}")
+    print(f"  multi-read (pileup consensus):   {fastq_stats['from_multi_pileup']:>8d}")
+    print(f"  multi-read (rep fallback):       {fastq_stats['from_multi_fallback']:>8d}")
     print(f"polyA-pileup buckets dropped:    {stats['buckets_dropped_polyA_pileup']:>8d}"
           f"  ({stats['reads_in_dropped_buckets']} reads — these need POA + position-aware handling)")
     n_t1 = stats.get('type1_reads', 0); n_t2 = stats.get('type2_reads', 0)
@@ -1950,7 +1987,7 @@ def run(args) -> int:
     print(f"  sense clusters:     {_summary(sense_tail_lens)}")
     print(f"  antisense clusters: {_summary(antisense_tail_lens)}")
     print()
-    print(f"Output BAM: {out_bam}")
+    print(f"Output FASTQ: {out_fastq}")
     print(f"Cluster manifest: {manifest}")
     print(f"T1↔T2 pairs: {pairs_tsv}")
     log.info("Total runtime: %.1fs", time.time() - t0)
