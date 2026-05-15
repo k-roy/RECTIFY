@@ -30,6 +30,11 @@ rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf
 
 # dT-primed cDNA-seq (QuantSeq, etc. — poly(A) is NOT in the read)
 rectify correct reads.bam --genome genome.fa --dT-primed-cDNA -o corrected.tsv
+
+# ONT PCR-cDNA (PCB114.24 chemistry) — UMI-aware 3-stage pipeline
+rectify correct-cdna  pcb114.bam --reference genome.fa -o out/    # Stage 1: per-cluster FASTQ
+rectify align         out/stage1_consensus.fastq.gz --genome genome.fa -o out/
+rectify cdna-analyze  out/stage1.rectified.bam --reference genome.fa --gff genes.gff -o out/
 ```
 
 ---
@@ -119,6 +124,44 @@ After correction, RECTIFY groups nearby CPA sites into clusters using a valley-b
 | **Gene** | Total expression changes | HSP82 is 2-fold down in heat shock |
 | **Cluster** | CPA site usage changes | FAS1 shifts from distal to proximal site |
 
+### ONT PCR-cDNA Pipeline (PCB114.24)
+
+For Oxford Nanopore PCR-cDNA libraries built with the SQK-PCB114.24 chemistry, RECTIFY runs a three-stage UMI-aware pipeline that deduplicates per molecule before correction, then assigns isoforms on post-alignment coordinates.
+
+<p align="center">
+  <img src="docs/figures/cdna_pipeline_overview.png" alt="ONT PCR-cDNA pipeline overview" width="720">
+</p>
+
+**Stage 1 — `rectify correct-cdna`.** PCB114.24 places a 27-nt structured UMI (pattern `(TT-VVVV)×4 + TTT`, V ∈ {A,C,G}) between the SSP and a GGG template-switching bridge at the basecalled 5′ end. Stage 1 extracts the UMI from each read in a pre-aligned BAM, clusters reads by (3′ anchor, UMI similarity) using directional clustering with a 2× count rule (avoids the chain-merge failure mode of connected components on hot poly-A loci), builds an abPOA consensus per multi-read cluster, and strips SSP/UMI/GGG at 5′ + poly(A) at 3′ so the downstream aligner receives clean mRNA. Output is one `stage1_consensus.fastq.gz` record per UMI cluster, with alignment-independent per-cluster tags on a TAB-separated FASTQ comment.
+
+<p align="center">
+  <img src="docs/figures/cdna_umi_architecture.png" alt="PCB114.24 read architecture" width="720">
+</p>
+
+<p align="center">
+  <img src="docs/figures/cdna_poa_consensus.png" alt="UMI consensus pipeline" width="720">
+</p>
+
+Reads are typed by where the UMI landed:
+
+| `XY:Z`              | `XT:i` | When                                                                  | Deduplication                            |
+|:--------------------|:-------|:----------------------------------------------------------------------|:-----------------------------------------|
+| `umi_captured_fwd`  | 1      | SSP+UMI at basecalled-5′ (full-length molecule)                       | UMI-anchored                             |
+| `umi_captured_rev`  | 1      | SSP_RC+UMI_RC at basecalled-3′ (pA-first read traveled far enough)    | UMI-anchored                             |
+| `umi_not_captured`  | 2      | pA-first read truncated before reaching SSP/UMI                       | Not merged — each read is one observation |
+
+**Stage 2 — `rectify align`.** The per-cluster FASTQ goes through the standard multi-aligner consensus path (minimap2 + mapPacBio + gapmm2 + optional chimeric reconstruction). Per-cluster tags ride through via `minimap2 -y`; the FASTQ writer uses TAB-separated comments so each `XX:T:value` becomes its own BAM aux field rather than collapsing into the first tag's Z-string.
+
+**Stage 3 — `rectify cdna-analyze`.** On post-alignment coordinates (more accurate than pre-align for tol-5 = 5 / tol-3 = 5 grouping), Stage 3 recomputes corrected poly(A) length and TSS via read-vs-reference walkback/walk-forward, assigns genes + sense/antisense, groups Stage-1 clusters into isoforms (Type-1 uses 5′+3′ positions; Type-2 uses 3′ only — the 5′ end is random truncation noise), and links same-molecule Type-1 ↔ Type-2 cluster pairs at the same gene+orient with `|Δ5′| ≤ 5 ∧ |Δ3′| ≤ 5`.
+
+<p align="center">
+  <img src="docs/figures/cdna_isoform_clustering.png" alt="Isoform clustering and T1↔T2 reconciliation" width="720">
+</p>
+
+Outputs: `clusters.tsv` (per-cluster manifest), `isoforms.tsv` (isoform-level aggregation), `t1t2_pairs.tsv` (same-molecule pairings), and `consensus_tagged.bam` (input BAM rewritten with the new XA/XG/XS/XI/XL tags for downstream consumers that prefer SAM-tag access).
+
+> **Tag namespace.** The cDNA pipeline owns the `X[upper]` tag namespace (`XU`/`XO`/`XC`/`XR`/`XA`/`XF`/`XT`/`XY`/`XQ`/`XK`/`XB`/`XS`/`XG`/`XI`/`XL`). `rectify align`'s internal aligner-selection bookkeeping uses `X[lower]` (`Xa`/`Xc`/`Xn`/`Xj`/`Xv`/`Xz`/`Xg`/`Xm`/`Xq`/`Xw`/`Xy`) — these are debug metadata, not stable for downstream consumers.
+
 ---
 
 ## NET-seq Refinement
@@ -197,6 +240,8 @@ conda install -c conda-forge -c bioconda rectify-rna
 | `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
 | `rectify netseq` | Resolve CPA site ambiguity within A-tracts using NET-seq nascent RNA data |
 | `rectify trim-polya` | Pre-trim poly(A) tail and adapter from Dorado DRS BAMs (Step 0) |
+| `rectify correct-cdna` | ONT PCR-cDNA Stage 1 — UMI extraction, directional clustering, abPOA consensus, pre-trim → per-cluster FASTQ |
+| `rectify cdna-analyze` | ONT PCR-cDNA Stage 3 — post-align walkback + gene/isoform/T1↔T2 on the `rectify align` output |
 | `rectify tag-polya` | Annotate BAM reads with poly(A) model scores (pt_tag, polya_score, polya_source) |
 | `rectify validate` | Validate corrected 3' ends against NET-seq or known CPA sites |
 | `rectify restore-softclip` | Restore poly(A) tail as soft-clips after correction (Step 4, DRS only) |
@@ -215,6 +260,11 @@ rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
 
 # Correct 3' ends — dT-primed cDNA-seq (QuantSeq, etc.)
 rectify correct reads.bam --genome genome.fa --dT-primed-cDNA -o corrected.tsv
+
+# ONT PCR-cDNA (PCB114.24) — 3-stage UMI-aware pipeline
+rectify correct-cdna  pcb114.bam --reference genome.fa -o out/
+rectify align         out/stage1_consensus.fastq.gz --genome genome.fa --prefix stage1 -o out/
+rectify cdna-analyze  out/stage1.rectified.bam --reference genome.fa --gff genes.gff -o out/
 
 # Correct with custom genome and NET-seq for A-tract resolution
 rectify correct reads.bam --genome genome.fa --netseq-dir my_netseq/ -o corrected.tsv
@@ -241,7 +291,7 @@ rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 ## Supported Technologies
 
-Nanopore direct RNA-seq · QuantSeq (oligo-dT short-read) · PacBio Iso-Seq · NET-seq · Any poly(A)-tailed RNA-seq
+Nanopore direct RNA-seq · Nanopore PCR-cDNA (SQK-PCB114.24, UMI-aware) · QuantSeq (oligo-dT short-read) · PacBio Iso-Seq · NET-seq · Any poly(A)-tailed RNA-seq
 
 ---
 

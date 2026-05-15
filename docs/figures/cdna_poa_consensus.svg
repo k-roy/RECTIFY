@@ -49,17 +49,17 @@
 <line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="248" y2="248"/>
 <text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="262">OUTPUT TAGS</text>
 <text fill="#2563eb" font-size="9" font-weight="700" text-anchor="middle" x="105.0" y="280">XU:Z</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="105.0" y="291">canonical UMI sequence</text>
-<text fill="#6366f1" font-size="9" font-weight="700" text-anchor="middle" x="215.0" y="280">XO:i</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="215.0" y="291">cluster origin read count (XR)</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="105.0" y="291">canonical UMI</text>
+<text fill="#6366f1" font-size="9" font-weight="700" text-anchor="middle" x="215.0" y="280">XO:Z</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="215.0" y="291">orient fwd/rev</text>
 <text fill="#0d9488" font-size="9" font-weight="700" text-anchor="middle" x="325.0" y="280">XC:i</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="325.0" y="291">cluster ID</text>
-<text fill="#d97706" font-size="9" font-weight="700" text-anchor="middle" x="435.0" y="280">XQ:i</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="435.0" y="291">bases stripped from 5′</text>
-<text fill="#d97706" font-size="9" font-weight="700" text-anchor="middle" x="545.0" y="280">XK:i</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="545.0" y="291">bases stripped from 3′</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="325.0" y="291">cluster size</text>
+<text fill="#6366f1" font-size="9" font-weight="700" text-anchor="middle" x="435.0" y="280">XT:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="435.0" y="291">read type 1/2</text>
+<text fill="#d97706" font-size="9" font-weight="700" text-anchor="middle" x="545.0" y="280">XQ:i / XK:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="545.0" y="291">5′ / 3′ pretrim</text>
 <text fill="#059669" font-size="9" font-weight="700" text-anchor="middle" x="655.0" y="280">XA:i</text>
-<text fill="#64748b" font-size="7.5" text-anchor="middle" x="655.0" y="291">poly(A) tail length</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="655.0" y="291">poly(A) length</text>
 
 </g>
 </svg>

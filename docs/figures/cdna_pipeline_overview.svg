@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300">
+<rect fill="#ffffff" width="760" height="300"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">ONT PCR-cDNA Pipeline (PCB114.24)</text>
+<rect x="53" y="52" width="210" height="64" rx="8" fill="#2563eb" opacity="0.13"/>
+<rect x="53" y="52" width="210" height="64" rx="8" fill="none" stroke="#2563eb" stroke-width="1.6"/>
+<text fill="#2563eb" font-size="11" font-weight="700" text-anchor="middle" x="158" y="70">rectify correct-cdna</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="158" y="88">UMI extraction · directional clustering</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="158" y="100">abPOA consensus · pre-trim</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="158" y="46">in: pre-aligned BAM</text>
+<text fill="#2563eb" font-size="8.5" font-weight="600" text-anchor="middle" x="158" y="130">stage1_consensus.fastq.gz</text>
+<text fill="#64748b" font-size="7" text-anchor="middle" x="158" y="144">XU · XO · XC · XR · XM · XF · XA · XT · XY · XQ · XK · XB</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="264" x2="274" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="274,84 267,80.5 267,87.5"/>
+<rect x="275" y="52" width="210" height="64" rx="8" fill="#0d9488" opacity="0.13"/>
+<rect x="275" y="52" width="210" height="64" rx="8" fill="none" stroke="#0d9488" stroke-width="1.6"/>
+<text fill="#0d9488" font-size="11" font-weight="700" text-anchor="middle" x="380" y="70">rectify align</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="380" y="88">minimap2 + mapPacBio + gapmm2</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="380" y="100">chimeric consensus selection</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="46">in: per-cluster FASTQ</text>
+<text fill="#0d9488" font-size="8.5" font-weight="600" text-anchor="middle" x="380" y="130">{prefix}.rectified.bam</text>
+<text fill="#64748b" font-size="7" text-anchor="middle" x="380" y="144">X[upper] tags pass through via minimap2 -y</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="486" x2="496" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="496,84 489,80.5 489,87.5"/>
+<rect x="497" y="52" width="210" height="64" rx="8" fill="#059669" opacity="0.13"/>
+<rect x="497" y="52" width="210" height="64" rx="8" fill="none" stroke="#059669" stroke-width="1.6"/>
+<text fill="#059669" font-size="11" font-weight="700" text-anchor="middle" x="602" y="70">rectify cdna-analyze</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="602" y="88">walkback (XA) · TSS walk-forward</text>
+<text fill="#475569" font-size="8.5" text-anchor="middle" x="602" y="100">isoform clustering (XI) · T1↔T2 (XL)</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="602" y="46">in: post-align BAM</text>
+<text fill="#059669" font-size="8.5" font-weight="600" text-anchor="middle" x="602" y="130">clusters.tsv · isoforms.tsv · t1t2_pairs.tsv · consensus_tagged.bam</text>
+<text fill="#64748b" font-size="7" text-anchor="middle" x="602" y="144">+ XG (gene) · XS (sense/antisense) · XI · XL</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="188" y2="188"/>
+<text fill="#475569" font-size="9" font-weight="700" text-anchor="middle" x="380" y="206">Tag namespace</text>
+<text fill="#64748b" font-size="8.5" text-anchor="middle" x="380" y="222">X[upper] = upstream / user-visible metadata  ·  X[lower] = rectify align internal aligner-selection bookkeeping (Xa, Xc, Xn, Xj, Xv, Xz, Xg, Xm, Xq, Xw, Xy)</text>
+<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="236">FASTQ comment tags are TAB-separated so minimap2 -y emits each as a separate BAM aux field.</text>
+
+</g>
+</svg>

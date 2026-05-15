@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate 5 SVG + PNG figures for RECTIFY cDNA documentation.
+Generate SVG + PNG figures for RECTIFY cDNA documentation.
 
 Figures generated:
-  1. cdna_umi_architecture  — PCB114.24 read structure, pipeline, subtypes
-  2. cdna_poa_consensus     — UMI consensus pipeline flow with stats
-  3. cdna_isoform_clustering — isoform grouping by (pos5, pos3) + T1/T2 reconciliation
-  4. walkback_readvsref     — read-vs-reference walkback algorithm (correct algorithm + bug note)
-  5. splice_classification  — GT-AG / AT-AC / non-canonical + chimeric voting
+  1. cdna_pipeline_overview — 3-stage workflow (correct-cdna → align → cdna-analyze)
+  2. cdna_umi_architecture  — PCB114.24 read structure, pipeline, subtypes
+  3. cdna_poa_consensus     — UMI consensus pipeline flow with stats
+  4. cdna_isoform_clustering — isoform grouping by (pos5, pos3) + T1/T2 reconciliation
+  5. walkback_readvsref     — read-vs-reference walkback algorithm (correct algorithm + bug note)
+  6. splice_classification  — GT-AG / AT-AC / non-canonical + chimeric voting
 
 Run from /Users/kevinroy/work/rectify/:
     python3 generate_cdna_figures.py
@@ -267,39 +268,39 @@ def fig_cdna_umi_architecture():
     L.append(section_head("READ SUBTYPES", y_sec3))
 
     BH_ST = 22
-    COL_W = 200
-    GAP   = 18
-    COL_X = [58, 58 + COL_W + GAP, 58 + 2*(COL_W + GAP)]
+    COL_W = 220
+    GAP   = 12
+    COL_X = [40, 40 + COL_W + GAP, 40 + 2*(COL_W + GAP)]
     y_st  = y_sec3 + 16
 
-    # Subtype 1a: SSP at 5'
+    # umi_captured_fwd: SSP at 5'
     x = COL_X[0]
     L.append(filled_block(x, y_st, 44, BH_ST, "SSP", PAL["exon"]))
     L.append(filled_block(x+44, y_st, 50, BH_ST, "UMI", PAL["blue"]))
     L.append(outline_block(x+94, y_st, 106, BH_ST, "cDNA", PAL["exon"]))
-    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">Subtype 1a (fwd)</text>')
-    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">SSP at 5′</text>')
-    L.append(f'<text fill="{PAL["blue"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=1a</text>')
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">UMI captured (fwd)</text>')
+    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">SSP+UMI at basecalled-5′  ·  XT:i:1</text>')
+    L.append(f'<text fill="{PAL["blue"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=umi_captured_fwd</text>')
 
-    # Subtype 1b: SSP at 3' (reversed read)
+    # umi_captured_rev: SSP at 3' (reversed read)
     x = COL_X[1]
     L.append(outline_block(x, y_st, 106, BH_ST, "cDNA", PAL["exon"]))
     L.append(filled_block(x+106, y_st, 50, BH_ST, "UMI", PAL["blue"]))
     L.append(filled_block(x+156, y_st, 44, BH_ST, "SSP", PAL["exon"]))
-    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">Subtype 1b (rev)</text>')
-    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">SSP at 3′ (reversed read)</text>')
-    L.append(f'<text fill="{PAL["blue"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=1b</text>')
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">UMI captured (rev)</text>')
+    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">SSP_RC near basecalled-3′  ·  XT:i:1</text>')
+    L.append(f'<text fill="{PAL["blue"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=umi_captured_rev</text>')
 
-    # Subtype 2: no SSP
+    # umi_not_captured: no SSP
     x = COL_X[2]
     L.append(f'<rect x="{x}" y="{y_st}" width="44" height="{BH_ST}" rx="4" '
              f'fill="{PAL["muted"]}" opacity="0.25"/>')
     L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
              f'text-anchor="middle" x="{x+22}" y="{y_st + BH_ST//2 + 4}">5′ trunc</text>')
     L.append(outline_block(x+44, y_st, 156, BH_ST, "cDNA (partial)", PAL["exon"]))
-    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">Subtype 2 (no SSP)</text>')
-    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">Truncated 5′-end</text>')
-    L.append(f'<text fill="{PAL["orange"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=2  XC:i by position</text>')
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="bold" x="{x}" y="{y_st + BH_ST + 14}">UMI not captured</text>')
+    L.append(f'<text fill="{PAL["label"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 26}">5′-truncated before SSP  ·  XT:i:2</text>')
+    L.append(f'<text fill="{PAL["orange"]}" font-size="8" x="{x}" y="{y_st + BH_ST + 37}">XY:Z=umi_not_captured</text>')
 
     L.append(svg_close())
     return "\n".join(L)
@@ -403,12 +404,12 @@ def fig_cdna_poa_consensus():
     L.append(section_head("OUTPUT TAGS", y_t))
 
     tag_defs = [
-        ("XU:Z", "canonical UMI sequence",           PAL["blue"]),
-        ("XO:i", "cluster origin read count (XR)",   PAL["exon"]),
-        ("XC:i", "cluster ID",                       PAL["teal"]),
-        ("XQ:i", "bases stripped from 5′",       PAL["orange"]),
-        ("XK:i", "bases stripped from 3′",       PAL["orange"]),
-        ("XA:i", "poly(A) tail length",              PAL["green"]),
+        ("XU:Z", "canonical UMI",            PAL["blue"]),
+        ("XO:Z", "orient fwd/rev",           PAL["exon"]),
+        ("XC:i", "cluster size",             PAL["teal"]),
+        ("XT:i", "read type 1/2",            PAL["exon"]),
+        ("XQ:i / XK:i", "5′ / 3′ pretrim",   PAL["orange"]),
+        ("XA:i", "poly(A) length",           PAL["green"]),
     ]
     TW = 110
     tx0 = (FIG_W - len(tag_defs) * TW) / 2
@@ -785,11 +786,118 @@ def fig_splice_classification():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Figure: cdna_pipeline_overview (760 × 300)
+#   Top-level 3-stage view of the ONT PCR-cDNA workflow:
+#     correct-cdna  →  rectify align  →  cdna-analyze
+# ═══════════════════════════════════════════════════════════════════════
+
+def fig_cdna_pipeline_overview():
+    H = 300
+    L = []
+    L.append(svg_open(H))
+    L.append(fig_title("ONT PCR-cDNA Pipeline (PCB114.24)"))
+
+    # Three stage boxes
+    STAGES = [
+        dict(
+            name="rectify correct-cdna",
+            color=PAL["blue"],
+            sub=("UMI extraction · directional clustering",
+                 "abPOA consensus · pre-trim"),
+            input="pre-aligned BAM",
+            output="stage1_consensus.fastq.gz",
+            tags="XU · XO · XC · XR · XM · XF · XA · XT · XY · XQ · XK · XB",
+        ),
+        dict(
+            name="rectify align",
+            color=PAL["teal"],
+            sub=("minimap2 + mapPacBio + gapmm2",
+                 "chimeric consensus selection"),
+            input="per-cluster FASTQ",
+            output="{prefix}.rectified.bam",
+            tags="X[upper] tags pass through via minimap2 -y",
+        ),
+        dict(
+            name="rectify cdna-analyze",
+            color=PAL["green"],
+            sub=("walkback (XA) · TSS walk-forward",
+                 "isoform clustering (XI) · T1↔T2 (XL)"),
+            input="post-align BAM",
+            output="clusters.tsv · isoforms.tsv · t1t2_pairs.tsv · consensus_tagged.bam",
+            tags="+ XG (gene) · XS (sense/antisense) · XI · XL",
+        ),
+    ]
+
+    BX_W = 210
+    BX_H = 64
+    GAP_X = 12
+    X0 = (FIG_W - 3 * BX_W - 2 * GAP_X) // 2
+    BX_Y = 52
+
+    for i, st in enumerate(STAGES):
+        bx = X0 + i * (BX_W + GAP_X)
+        # Box
+        L.append(f'<rect x="{bx}" y="{BX_Y}" width="{BX_W}" height="{BX_H}" rx="8" '
+                 f'fill="{st["color"]}" opacity="0.13"/>')
+        L.append(f'<rect x="{bx}" y="{BX_Y}" width="{BX_W}" height="{BX_H}" rx="8" '
+                 f'fill="none" stroke="{st["color"]}" stroke-width="1.6"/>')
+        # Title
+        L.append(f'<text fill="{st["color"]}" font-size="11" font-weight="700" '
+                 f'text-anchor="middle" x="{bx + BX_W//2}" y="{BX_Y + 18}">'
+                 f'{st["name"]}</text>')
+        # Sub-lines
+        for j, sub in enumerate(st["sub"]):
+            L.append(f'<text fill="{PAL["heading"]}" font-size="8.5" '
+                     f'text-anchor="middle" x="{bx + BX_W//2}" '
+                     f'y="{BX_Y + 36 + j * 12}">{sub}</text>')
+
+        # Input label above
+        L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+                 f'text-anchor="middle" x="{bx + BX_W//2}" y="{BX_Y - 6}">'
+                 f'in: {st["input"]}</text>')
+
+        # Output label below
+        L.append(f'<text fill="{st["color"]}" font-size="8.5" font-weight="600" '
+                 f'text-anchor="middle" x="{bx + BX_W//2}" '
+                 f'y="{BX_Y + BX_H + 14}">{st["output"]}</text>')
+
+        # Tag list (smaller, muted)
+        L.append(f'<text fill="{PAL["label"]}" font-size="7" '
+                 f'text-anchor="middle" x="{bx + BX_W//2}" '
+                 f'y="{BX_Y + BX_H + 28}">{st["tags"]}</text>')
+
+        # Arrow to next stage
+        if i < len(STAGES) - 1:
+            ax1 = bx + BX_W + 1
+            ax2 = X0 + (i + 1) * (BX_W + GAP_X) - 1
+            ay = BX_Y + BX_H // 2
+            L.append(h_arrow(ax1, ax2, ay, PAL["muted"]))
+
+    # Bottom: namespace note
+    y_note = BX_Y + BX_H + 72
+    L.append(hdivider(y_note))
+    L.append(f'<text fill="{PAL["heading"]}" font-size="9" font-weight="700" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_note + 18}">'
+             f'Tag namespace</text>')
+    L.append(f'<text fill="{PAL["label"]}" font-size="8.5" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_note + 34}">'
+             f'X[upper] = upstream / user-visible metadata  ·  '
+             f'X[lower] = rectify align internal aligner-selection bookkeeping (Xa, Xc, Xn, Xj, Xv, Xz, Xg, Xm, Xq, Xw, Xy)</text>')
+    L.append(f'<text fill="{PAL["muted"]}" font-size="8" font-style="italic" '
+             f'text-anchor="middle" x="{FIG_W//2}" y="{y_note + 48}">'
+             f'FASTQ comment tags are TAB-separated so minimap2 -y emits each as a separate BAM aux field.</text>')
+
+    L.append(svg_close())
+    return "\n".join(L)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     figures = {
+        "cdna_pipeline_overview":  fig_cdna_pipeline_overview,
         "cdna_umi_architecture":   fig_cdna_umi_architecture,
         "cdna_poa_consensus":      fig_cdna_poa_consensus,
         "cdna_isoform_clustering": fig_cdna_isoform_clustering,
@@ -812,4 +920,4 @@ if __name__ == "__main__":
         png_kb = png_path.stat().st_size // 1024
         print(f"  {name}: SVG {svg_kb}KB  PNG {png_kb}KB")
 
-    print(f"\nDone — 5 SVG + 5 PNG written to {OUTDIR}")
+    print(f"\nDone — {len(figures)} SVG + {len(figures)} PNG written to {OUTDIR}")
