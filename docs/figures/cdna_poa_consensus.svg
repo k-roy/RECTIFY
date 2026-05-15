@@ -1,171 +1,65 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="620" viewBox="0 0 760 620">
-<rect fill="#ffffff" width="760" height="620"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380">
+<rect fill="#ffffff" width="760" height="380"/>
 <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Two-Stage Strand-Split abPOA Consensus (v1.18)</text>
-
-<!-- ===== INPUT: UMI Cluster ===== -->
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="50">INPUT — UMI CLUSTER  (all reads share same canonical UMI)</text>
-
-<!-- is_reverse=True reads (top-strand, SSP/UMI basecalled-3' on LEFT) -->
-<rect x="80" y="64" width="310" height="16" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="64" width="310" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="8" x="85" y="75">read A  (is_reverse=True, top-strand)</text>
-<rect x="80" y="82" width="280" height="16" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="82" width="280" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="8" x="85" y="93">read B  (is_reverse=True, top-strand)</text>
-<rect x="80" y="100" width="340" height="16" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="100" width="340" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="8" x="85" y="111">read C  (is_reverse=True, top-strand)</text>
-
-<!-- is_reverse=False reads (bottom-strand, polyA basecalled-3' on RIGHT) -->
-<rect x="80" y="122" width="300" height="16" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="80" y="122" width="300" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="8" x="85" y="133">read D  (is_reverse=False, bottom-strand)</text>
-<rect x="80" y="140" width="330" height="16" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="80" y="140" width="330" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="8" x="85" y="151">read E  (is_reverse=False, bottom-strand)</text>
-
-<!-- UMI label -->
-<rect x="460" y="76" width="160" height="38" rx="4" fill="#6366f1" opacity="0.08"/>
-<text fill="#6366f1" font-size="9" font-weight="600" x="470" y="92">Same canonical UMI</text>
-<text fill="#64748b" font-size="8" x="470" y="104">XU:Z tag, XC:i = 5 reads</text>
-
-<!-- Tag: XB strand split -->
-<rect x="460" y="120" width="160" height="22" rx="4" fill="#0d9488" opacity="0.08"/>
-<text fill="#0d9488" font-size="9" font-weight="600" x="470" y="135">XB:Z = "3/2"</text>
-
-<!-- Divider -->
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="168" y2="168"/>
-
-<!-- ===== STEP 1: Split by is_reverse ===== -->
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="188">STEP 1 — SPLIT BY is_reverse, abPOA EACH SUB-POOL</text>
-
-<!-- Left branch: top-strand (is_reverse=True) -->
-<rect x="60" y="200" width="280" height="150" rx="6" fill="#2563eb" opacity="0.04"/>
-<rect x="60" y="200" width="280" height="150" rx="6" fill="none" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3"/>
-
-<text fill="#2563eb" font-size="9" font-weight="600" x="75" y="218">Top-strand sub-pool (is_reverse=True)</text>
-<text fill="#64748b" font-size="8" x="75" y="232">Correlated error modes: basecaller bias</text>
-<text fill="#64748b" font-size="8" x="75" y="244">specific to this sequencing orientation</text>
-
-<!-- Reads feeding in -->
-<rect x="80" y="256" width="240" height="14" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="256" width="240" height="14" rx="3" fill="none" stroke="#2563eb" stroke-width="0.6"/>
-<text fill="#2563eb" font-size="7" x="85" y="266">read A</text>
-<rect x="80" y="272" width="210" height="14" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="272" width="210" height="14" rx="3" fill="none" stroke="#2563eb" stroke-width="0.6"/>
-<text fill="#2563eb" font-size="7" x="85" y="282">read B</text>
-<rect x="80" y="288" width="260" height="14" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="80" y="288" width="260" height="14" rx="3" fill="none" stroke="#2563eb" stroke-width="0.6"/>
-<text fill="#2563eb" font-size="7" x="85" y="298">read C</text>
-
-<!-- abPOA arrow -->
-<line x1="200" y1="306" x2="200" y2="326" stroke="#2563eb" stroke-width="1.2"/>
-<polygon fill="#2563eb" points="200,326 196.5,320 203.5,320"/>
-<text fill="#2563eb" font-size="8" font-weight="600" x="210" y="320">abPOA</text>
-
-<!-- Sub-consensus A output -->
-<rect x="100" y="330" width="200" height="16" rx="3" fill="#2563eb" opacity="0.25"/>
-<rect x="100" y="330" width="200" height="16" rx="3" fill="none" stroke="#2563eb" stroke-width="1"/>
-<text fill="#2563eb" font-size="8" font-weight="600" x="110" y="341">sub-consensus A (top-strand)</text>
-
-<!-- Right branch: bottom-strand (is_reverse=False) -->
-<rect x="400" y="200" width="280" height="150" rx="6" fill="#d97706" opacity="0.04"/>
-<rect x="400" y="200" width="280" height="150" rx="6" fill="none" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3"/>
-
-<text fill="#d97706" font-size="9" font-weight="600" x="415" y="218">Bottom-strand sub-pool (is_reverse=False)</text>
-<text fill="#64748b" font-size="8" x="415" y="232">Independent error profile from</text>
-<text fill="#64748b" font-size="8" x="415" y="244">complementary sequencing strand</text>
-
-<!-- Reads feeding in -->
-<rect x="420" y="256" width="230" height="14" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="420" y="256" width="230" height="14" rx="3" fill="none" stroke="#d97706" stroke-width="0.6"/>
-<text fill="#d97706" font-size="7" x="425" y="266">read D</text>
-<rect x="420" y="272" width="250" height="14" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="420" y="272" width="250" height="14" rx="3" fill="none" stroke="#d97706" stroke-width="0.6"/>
-<text fill="#d97706" font-size="7" x="425" y="282">read E</text>
-
-<!-- abPOA arrow -->
-<line x1="540" y1="296" x2="540" y2="326" stroke="#d97706" stroke-width="1.2"/>
-<polygon fill="#d97706" points="540,326 536.5,320 543.5,320"/>
-<text fill="#d97706" font-size="8" font-weight="600" x="550" y="320">abPOA</text>
-
-<!-- Sub-consensus B output -->
-<rect x="440" y="330" width="200" height="16" rx="3" fill="#d97706" opacity="0.25"/>
-<rect x="440" y="330" width="200" height="16" rx="3" fill="none" stroke="#d97706" stroke-width="1"/>
-<text fill="#d97706" font-size="8" font-weight="600" x="450" y="341">sub-consensus B (bottom-strand)</text>
-
-<!-- Divider -->
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="362" y2="362"/>
-
-<!-- ===== STEP 2: Cross-strand merge ===== -->
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="382">STEP 2 — CROSS-STRAND MERGE</text>
-
-<!-- Two sub-consensuses converging -->
-<rect x="140" y="394" width="180" height="20" rx="3" fill="#2563eb" opacity="0.25"/>
-<rect x="140" y="394" width="180" height="20" rx="3" fill="none" stroke="#2563eb" stroke-width="1"/>
-<text fill="#2563eb" font-size="8" font-weight="600" text-anchor="middle" x="230" y="408">sub-consensus A</text>
-
-<rect x="440" y="394" width="180" height="20" rx="3" fill="#d97706" opacity="0.25"/>
-<rect x="440" y="394" width="180" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="1"/>
-<text fill="#d97706" font-size="8" font-weight="600" text-anchor="middle" x="530" y="408">sub-consensus B</text>
-
-<!-- Converging arrows to center abPOA -->
-<line x1="230" y1="414" x2="340" y2="436" stroke="#2563eb" stroke-width="1.2"/>
-<polygon fill="#2563eb" points="340,436 333,432 336,439"/>
-<line x1="530" y1="414" x2="420" y2="436" stroke="#d97706" stroke-width="1.2"/>
-<polygon fill="#d97706" points="420,436 424,439 427,432"/>
-
-<!-- Central abPOA merge box -->
-<rect x="310" y="436" width="140" height="30" rx="5" fill="#059669" opacity="0.12"/>
-<rect x="310" y="436" width="140" height="30" rx="5" fill="none" stroke="#059669" stroke-width="1.2"/>
-<text fill="#059669" font-size="10" font-weight="bold" text-anchor="middle" x="380" y="455">abPOA merge</text>
-
-<!-- Arrow down to final consensus -->
-<line x1="380" y1="466" x2="380" y2="486" stroke="#059669" stroke-width="1.5"/>
-<polygon fill="#059669" points="380,486 376,480 384,480"/>
-
-<!-- Final consensus output -->
-<rect x="240" y="488" width="280" height="26" rx="5" fill="#059669" opacity="0.15"/>
-<rect x="240" y="488" width="280" height="26" rx="5" fill="none" stroke="#059669" stroke-width="1.2"/>
-<text fill="#059669" font-size="10" font-weight="bold" text-anchor="middle" x="380" y="506">Final per-cluster consensus</text>
-
-<!-- XM tag -->
-<text fill="#059669" font-size="9" font-weight="600" x="540" y="504">XM:Z = "poa"</text>
-
-<!-- Benefit callout -->
-<rect x="80" y="436" width="210" height="38" rx="4" fill="#0d9488" opacity="0.06"/>
-<text fill="#0d9488" font-size="8" font-weight="600" x="90" y="450">Why two stages?</text>
-<text fill="#64748b" font-size="8" x="90" y="462">Cancels strand-specific basecaller</text>
-<text fill="#64748b" font-size="8" x="90" y="474">biases that single-pass POA retains</text>
-
-<!-- Divider -->
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="528" y2="528"/>
-
-<!-- ===== FALLBACK PATHS ===== -->
-<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="548">FALLBACK PATHS</text>
-
-<!-- Singleton -->
-<rect x="60" y="558" width="200" height="40" rx="4" fill="#94a3b8" opacity="0.08"/>
-<rect x="60" y="558" width="200" height="40" rx="4" fill="none" stroke="#94a3b8" stroke-width="0.8"/>
-<text fill="#64748b" font-size="9" font-weight="600" x="70" y="574">Singleton (1 read)</text>
-<text fill="#64748b" font-size="8" x="70" y="588">Pass-through, XM:Z = "rep"</text>
-
-<!-- One strand < 2 reads -->
-<rect x="280" y="558" width="220" height="40" rx="4" fill="#94a3b8" opacity="0.08"/>
-<rect x="280" y="558" width="220" height="40" rx="4" fill="none" stroke="#94a3b8" stroke-width="0.8"/>
-<text fill="#64748b" font-size="9" font-weight="600" x="290" y="574">One strand &lt; 2 reads</text>
-<text fill="#64748b" font-size="8" x="290" y="588">Single-pass POA on available reads</text>
-
-<!-- Both strands < 2 reads -->
-<rect x="520" y="558" width="200" height="40" rx="4" fill="#94a3b8" opacity="0.08"/>
-<rect x="520" y="558" width="200" height="40" rx="4" fill="none" stroke="#94a3b8" stroke-width="0.8"/>
-<text fill="#64748b" font-size="9" font-weight="600" x="530" y="574">Both strands &lt; 2 reads</text>
-<text fill="#64748b" font-size="8" x="530" y="588">Pool all reads, single-pass POA</text>
-
-<!-- Implementation note -->
-<text fill="#94a3b8" font-size="8" font-style="italic" text-anchor="middle" x="380" y="614">Implementation: rectify/core/cdna_correct_command.py::poa_consensus_strand_aware()</text>
+<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">UMI Consensus Pipeline</text>
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="42">PIPELINE STAGES</text>
+<rect x="44" y="58" width="110" height="52" rx="6" fill="#94a3b8" opacity="0.15"/>
+<rect x="44" y="58" width="110" height="52" rx="6" fill="none" stroke="#94a3b8" stroke-width="1.4"/>
+<text fill="#94a3b8" font-size="9" font-weight="600" text-anchor="middle" x="99" y="84">Input BAM</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="99" y="122">minimap2 alignment</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="156" x2="176" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="176,84 169,80.5 169,87.5"/>
+<rect x="178" y="58" width="110" height="52" rx="6" fill="#2563eb" opacity="0.15"/>
+<rect x="178" y="58" width="110" height="52" rx="6" fill="none" stroke="#2563eb" stroke-width="1.4"/>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="233" y="84">UMI Extraction</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="233" y="122">SSP+27nt UMI</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="233" y="133">extract_read_info()</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="290" x2="310" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="310,84 303,80.5 303,87.5"/>
+<rect x="312" y="58" width="110" height="52" rx="6" fill="#6366f1" opacity="0.15"/>
+<rect x="312" y="58" width="110" height="52" rx="6" fill="none" stroke="#6366f1" stroke-width="1.4"/>
+<text fill="#6366f1" font-size="9" font-weight="600" text-anchor="middle" x="367" y="77">Directional</text>
+<text fill="#6366f1" font-size="9" font-weight="600" text-anchor="middle" x="367" y="91">Clustering</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="367" y="122">Lev≤3 UMI</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="367" y="133">anchor ±25bp</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="424" x2="444" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="444,84 437,80.5 437,87.5"/>
+<rect x="446" y="58" width="110" height="52" rx="6" fill="#0d9488" opacity="0.15"/>
+<rect x="446" y="58" width="110" height="52" rx="6" fill="none" stroke="#0d9488" stroke-width="1.4"/>
+<text fill="#0d9488" font-size="9" font-weight="600" text-anchor="middle" x="501" y="77">abPOA</text>
+<text fill="#0d9488" font-size="9" font-weight="600" text-anchor="middle" x="501" y="91">Consensus</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="501" y="122">pyabpoa</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="501" y="133">multi-read→1 seq</text>
+<line stroke="#94a3b8" stroke-width="1.5" x1="558" x2="578" y1="84" y2="84"/>
+<polygon fill="#94a3b8" points="578,84 571,80.5 571,87.5"/>
+<rect x="580" y="58" width="110" height="52" rx="6" fill="#059669" opacity="0.15"/>
+<rect x="580" y="58" width="110" height="52" rx="6" fill="none" stroke="#059669" stroke-width="1.4"/>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="635" y="77">stage1_consensus</text>
+<text fill="#059669" font-size="9" font-weight="600" text-anchor="middle" x="635" y="91">.fastq.gz</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="635" y="122">XU/XO/XC/XQ/XK</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="635" y="133">tags in comment</text>
+<text fill="#dc2626" font-size="7.5" font-weight="600" text-anchor="middle" x="166.0" y="76">rDNA</text>
+<text fill="#dc2626" font-size="7.5" text-anchor="middle" x="166.0" y="84">masked</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="162" y2="162"/>
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="176">chrI TEST RUN STATS</text>
+<text fill="#2563eb" font-size="9" font-weight="600" text-anchor="middle" x="380" y="194">40,312 input reads → 26,364 clusters</text>
+<text fill="#94a3b8" font-size="8.5" text-anchor="middle" x="380" y="208">(65.4% dedup rate)</text>
+<text fill="#64748b" font-size="9" font-weight="600" text-anchor="middle" x="380" y="212">21,564 singletons  ·  4,800 POA consensus  ·  190s on chrI</text>
+<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="248" y2="248"/>
+<text fill="#475569" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="262">OUTPUT TAGS</text>
+<text fill="#2563eb" font-size="9" font-weight="700" text-anchor="middle" x="105.0" y="280">XU:Z</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="105.0" y="291">canonical UMI sequence</text>
+<text fill="#6366f1" font-size="9" font-weight="700" text-anchor="middle" x="215.0" y="280">XO:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="215.0" y="291">cluster origin read count (XR)</text>
+<text fill="#0d9488" font-size="9" font-weight="700" text-anchor="middle" x="325.0" y="280">XC:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="325.0" y="291">cluster ID</text>
+<text fill="#d97706" font-size="9" font-weight="700" text-anchor="middle" x="435.0" y="280">XQ:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="435.0" y="291">bases stripped from 5′</text>
+<text fill="#d97706" font-size="9" font-weight="700" text-anchor="middle" x="545.0" y="280">XK:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="545.0" y="291">bases stripped from 3′</text>
+<text fill="#059669" font-size="9" font-weight="700" text-anchor="middle" x="655.0" y="280">XA:i</text>
+<text fill="#64748b" font-size="7.5" text-anchor="middle" x="655.0" y="291">poly(A) tail length</text>
 
 </g>
 </svg>

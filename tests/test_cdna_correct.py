@@ -160,36 +160,133 @@ _FASTA = Path("/Users/kevinroy/work/ont_cdna/test_data/S288C_reference_sequence_
 
 
 @pytest.mark.skipif(
-    not (_CHRI_BAM.exists() and _GFF.exists() and _FASTA.exists()),
+    not (_CHRI_BAM.exists() and _FASTA.exists()),
     reason="chrI test data not on disk (only present on dev M1; skip on CI)",
 )
 def test_correct_cdna_chri_smoke(tmp_path):
-    """End-to-end: invoke `rectify correct-cdna` on the chrI BAM. Verify the
-    BAM, clusters.tsv, isoforms.tsv, t1t2_pairs.tsv outputs exist and cluster
-    counts are in the expected ballpark (catches accidental algorithm regressions)."""
+    """End-to-end: invoke `rectify correct-cdna` on the chrI BAM. Manifest
+    files (clusters.tsv / isoforms.tsv / t1t2_pairs.tsv) now come from the
+    downstream `rectify cdna-analyze` step — see test_cdna_pipeline_chri_smoke
+    for the full three-stage check. Here we only verify that correct-cdna
+    emits a non-empty stage1_consensus.fastq.gz with the pretrim wiring tags
+    and an output record count in the expected band."""
     out_dir = tmp_path / "out"
     rc = subprocess.run(
         [sys.executable, "-m", "rectify", "correct-cdna",
          str(_CHRI_BAM), "--out", str(out_dir),
-         "--gff", str(_GFF), "--reference", str(_FASTA)],
+         "--reference", str(_FASTA)],
         capture_output=True, text=True, timeout=900,
     )
     assert rc.returncode == 0, f"stderr: {rc.stderr[-1500:]}"
-    for f in ("stage1_consensus.fastq.gz", "clusters.tsv", "isoforms.tsv", "t1t2_pairs.tsv"):
-        assert (out_dir / f).exists(), f"missing {f}"
+    fastq = out_dir / "stage1_consensus.fastq.gz"
+    assert fastq.exists(), "missing stage1_consensus.fastq.gz"
 
-    # Cluster count sanity bands (chrI w/ v1.19d on 2026-05-13: 26,364 clusters)
-    n_clusters = sum(1 for _ in (out_dir / "clusters.tsv").open()) - 1  # header
+    # Cluster count sanity band (one FASTQ record per cluster; chrI w/ v1.19d
+    # on 2026-05-13: 26,364 clusters)
+    import gzip as _gzip
+    with _gzip.open(fastq, "rt") as fq:
+        first_header = fq.readline()
+        n_records = 1 + sum(1 for line in fq if line.startswith("@cluster_"))
+    assert 24000 < n_records < 30000, f"FASTQ has {n_records} records"
+
+    # Verify required tags ride on the FASTQ comment line for `rectify align -y`
+    # to propagate (XQ / XK = pretrim wiring; XU/XC/XR/XO/XT/XY/XF/XB = the
+    # alignment-independent per-cluster tags consumed by cdna-analyze)
+    for tag in ("XQ:i:", "XK:i:",
+                "XU:Z:", "XC:i:", "XR:Z:", "XO:Z:", "XT:i:", "XY:Z:",
+                "XF:i:", "XB:Z:"):
+        assert tag in first_header, f"{tag} missing from FASTQ header: {first_header[:200]}"
+
+
+@pytest.mark.skipif(
+    not (_CHRI_BAM.exists() and _GFF.exists() and _FASTA.exists()
+         and shutil.which("minimap2") and shutil.which("samtools")),
+    reason="chrI test data + minimap2 + samtools required (dev M1 only)",
+)
+def test_cdna_pipeline_chri_smoke(tmp_path):
+    """Full three-stage pipeline: correct-cdna → align (minimap2) → cdna-analyze.
+
+    Verifies that:
+      * per-cluster FASTQ tags survive minimap2's `-y` passthrough into the
+        consensus BAM,
+      * cdna-analyze can recompute walkback / walk-forward / gene assignment /
+        isoform clustering / T1↔T2 pairing on the post-align coordinates,
+      * the three downstream TSV manifests + consensus_tagged.bam land in the
+        out directory with row counts in the expected bands.
+
+    Uses only the minimap2 aligner. mapPacBio / gapmm2 do not propagate FASTQ
+    comments natively, and gapmm2 isn't installed locally — those aligner
+    combinations are a separate concern (chimeric consensus may need a tag
+    re-attach step) and are out of scope for the smoke test.
+    """
+    correct_out = tmp_path / "correct"
+    rc = subprocess.run(
+        [sys.executable, "-m", "rectify", "correct-cdna",
+         str(_CHRI_BAM), "--out", str(correct_out),
+         "--reference", str(_FASTA)],
+        capture_output=True, text=True, timeout=900,
+    )
+    assert rc.returncode == 0, f"correct-cdna failed: {rc.stderr[-1500:]}"
+    fastq = correct_out / "stage1_consensus.fastq.gz"
+    assert fastq.exists(), "correct-cdna did not emit stage1_consensus.fastq.gz"
+
+    align_out = tmp_path / "align"
+    rc = subprocess.run(
+        [sys.executable, "-m", "rectify", "align",
+         str(fastq), "--genome", str(_FASTA),
+         "-o", str(align_out), "--aligners", "minimap2",
+         "--prefix", "stage1"],
+        capture_output=True, text=True, timeout=1800,
+    )
+    assert rc.returncode == 0, f"align failed: {rc.stderr[-1500:]}"
+    # `align` produces <prefix>.rectified.bam (and .rectified.md.bam after calmd)
+    aligned_bam = align_out / "stage1.rectified.md.bam"
+    if not aligned_bam.exists():
+        aligned_bam = align_out / "stage1.rectified.bam"
+    assert aligned_bam.exists(), f"no rectified BAM in {align_out}: {list(align_out.iterdir())}"
+
+    # Spot-check tag passthrough: the first mapped record must carry the
+    # alignment-independent tags from the FASTQ comment.
+    import pysam as _pysam
+    with _pysam.AlignmentFile(str(aligned_bam), "rb") as bam:
+        first = next((r for r in bam.fetch(until_eof=True) if not r.is_unmapped), None)
+    assert first is not None, "no mapped records in rectified BAM"
+    have = {t for t, _ in first.tags}
+    for required in ("XU", "XC", "XR", "XO", "XT", "XY", "XF", "XB"):
+        assert required in have, (
+            f"tag {required} missing from rectified BAM (-y passthrough broken?). "
+            f"Present: {sorted(have)}"
+        )
+
+    analyze_out = tmp_path / "analyze"
+    rc = subprocess.run(
+        [sys.executable, "-m", "rectify", "cdna-analyze",
+         str(aligned_bam), "-o", str(analyze_out),
+         "--gff", str(_GFF), "--reference", str(_FASTA)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert rc.returncode == 0, f"cdna-analyze failed: {rc.stderr[-1500:]}"
+    for f in ("clusters.tsv", "isoforms.tsv", "t1t2_pairs.tsv", "consensus_tagged.bam"):
+        assert (analyze_out / f).exists(), f"missing {f}"
+
+    n_clusters = sum(1 for _ in (analyze_out / "clusters.tsv").open()) - 1  # header
     assert 24000 < n_clusters < 30000, f"clusters.tsv has {n_clusters} rows"
-    n_isoforms = sum(1 for _ in (out_dir / "isoforms.tsv").open()) - 1
+    n_isoforms = sum(1 for _ in (analyze_out / "isoforms.tsv").open()) - 1
     assert 3000 < n_isoforms < 4500, f"isoforms.tsv has {n_isoforms} rows"
 
-    # Verify pretrim wiring: XQ and XK tags must appear in every FASTQ record
-    import gzip as _gzip
-    with _gzip.open(out_dir / "stage1_consensus.fastq.gz", "rt") as fq:
-        first_header = fq.readline()
-    assert "XQ:i:" in first_header, f"XQ pretrim-5' tag missing from FASTQ: {first_header[:200]}"
-    assert "XK:i:" in first_header, f"XK pretrim-3' tag missing from FASTQ: {first_header[:200]}"
+    # Tagged BAM should contain XS/XA and (for the post-classification subset) XG
+    with _pysam.AlignmentFile(str(analyze_out / "consensus_tagged.bam"), "rb") as bam:
+        seen_xs = seen_xa = seen_xg = 0
+        for rec in bam.fetch(until_eof=True):
+            tags = {t for t, _ in rec.tags}
+            seen_xs += "XS" in tags
+            seen_xa += "XA" in tags
+            seen_xg += "XG" in tags
+            if seen_xs > 100 and seen_xa > 100 and seen_xg > 100:
+                break
+    assert seen_xs > 100 and seen_xa > 100 and seen_xg > 100, (
+        f"tagged BAM missing recomputed tags: XS={seen_xs} XA={seen_xa} XG={seen_xg}"
+    )
 
 
 # ---------------------------------------------------------------------------
