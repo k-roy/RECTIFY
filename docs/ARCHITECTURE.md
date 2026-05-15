@@ -25,7 +25,7 @@ in pre-processing, alignment strategy, and post-correction analysis:
 | Track | Input | Pre-processing | Alignment | 3' end | 5' end |
 |---|---|---|---|---|---|
 | **DRS** (Direct RNA-seq) | Dorado BAM (pt:i: tags) | poly(A)+adapter pre-trim → FASTQ | minimap2 + mapPacBio + gapmm2 | read-vs-ref walkback | splice-aware rescue |
-| **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → re-alignment | minimap2 (+ mapPacBio target) | read-vs-ref walkback on consensus | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering |
+| **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → pre-trim → per-cluster FASTQ → multi-aligner re-alignment | minimap2 + mapPacBio + gapmm2 | post-align walkback in `cdna-analyze` | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering in `cdna-analyze` |
 | **QuantSeq REV** | pre-aligned BAM | (external alignment) | BWA-MEM (+ BBMap target) | read-vs-ref walkback (inverted: 3'=left) | N/A (3'-biased protocol) |
 
 **Shared modules** (all tracks): read-vs-reference walkback (`core/correct/walkback.py`),
@@ -189,46 +189,53 @@ Pre-aligned BAM (minimap2)
 [Stage 1: UMI Consensus]     rectify correct-cdna
     │
     │  Read architecture (5'→3' basecall orientation):
-    │    SSP_FWD + (TT-VVVV)×4 + TTT UMI (16 nt) + GGG TSO bridge + cDNA body + poly(A) + adapter
+    │    SSP_FWD + (TT-VVVV)×4 + TTT UMI (27 nt) + GGG TSO bridge + cDNA body + poly(A) + adapter
     │
-    │  ① UMI extraction: regex-match SSP → extract 16-nt UMI → XU:Z tag
+    │  ① UMI extraction: regex-match SSP → extract 27-nt UMI → XU:Z tag
     │  ② Directional clustering: Levenshtein ≤ 3 + 2× count rule
-    │     Groups reads by (gene, UMI similarity) into consensus families
-    │  ③ abPOA consensus: families with XR ≥ 2 reads → polished consensus sequence
-    │     Singletons (XR = 1) → pass through original sequence
-    │  ④ Re-alignment: consensus reads re-aligned with minimap2 (mapPacBio target)
+    │     Groups reads by (3'-anchor, UMI similarity) into consensus families
+    │  ③ Per-cluster consensus: families with XC ≥ 2 reads → abPOA polished sequence
+    │     Singletons (XC = 1) → pass through original sequence
+    │  ④ Pre-trim: strip SSP/UMI/GGG at 5' and poly-A at 3' so the downstream
+    │     aligner receives clean mRNA body. q_trim_5 → XQ tag, q_trim_3 → XK tag.
     │
     ▼
-    stage1_consensus.bam
-    Tags: XU (UMI) · XC (cluster) · XR (reads merged) · XF (method) · XA (polyA) · XG (gene) · XT (type)
+    stage1_consensus.fastq.gz   (one record per UMI cluster)
+    TAB-separated FASTQ comment tags (propagate via `minimap2 -y`):
+      XU  canonical UMI            XO  orient (fwd/rev)         XC  cluster size
+      XR  input read IDs           XM  consensus method         XF  full-length tier
+      XA  pre-align poly-A length  XT  read type (1/2)          XY  read subtype
+      XQ  5' pre-trim bases        XK  3' pre-trim bases        XB  strand split n_top/n_bot
     │
     ▼
-[Stage 2: Isoform Clustering]
-    │
-    │  Type-1 (XT:i:1, SSP+UMI captured): 5' UMI-anchored
-    │    SSP+UMI at 5' end = real TSS; UMI = molecule identity
-    │    UMI merges reads regardless of 3' truncation status
-    │    Isoform = (gene, 5'-group, 3'-group) — uses both ends
-    │
-    │  Type-2 (XT:i:2, SSP-less / truncated): 3' pA-tail-anchored
-    │    5' end is random truncation (noise); only 3' CPA is reliable
-    │    No UMI → no dedup possible; each read = independent molecule
-    │    (singleton UMIs in T1 confirm low PCR duplication rate)
-    │    Isoform = (gene, *, 3'-group) — 5' grouping skipped
-    │    Likely XRN1 decay intermediates or technical truncation
+[Stage 2: Multi-aligner Re-alignment]    rectify align
+    │   minimap2 (+ mapPacBio + gapmm2 default panel) → chimeric consensus
+    │   `minimap2 -y` propagates FASTQ comment tags to the BAM aux fields.
     │
     ▼
-[Stage 3: T1↔T2 Reconciliation]
-    │   Match T1 and T2 clusters where |Δ5'| ≤ 5 AND |Δ3'| ≤ 5
-    │   Links written to XL:Z tag + t1t2_pairs.tsv
+    <prefix>.rectified.bam   (one BAM record per UMI cluster, tags intact)
+    │
     ▼
-    Corrected isoform assignments: XI:Z (isoform_id), XC:i (cluster_id)
+[Stage 3: Isoform Clustering + T1↔T2 Pairing]   rectify cdna-analyze
+    │   Operates on post-align coordinates. Per BAM record:
+    │     ① Walkback (XA: corrected poly-A tail length on post-align CIGAR)
+    │     ② Walk-forward TSS (post-align pos5_corrected)
+    │     ③ Gene assignment (XG) + sense/antisense (XS)
+    │     ④ Isoform clustering — Type-1 uses 5'+3' position; Type-2 uses 3' only
+    │     ⑤ Type-1 ↔ Type-2 reconciliation (same orient + |Δ5'|≤5 + |Δ3'|≤5)
+    │
+    ▼
+    Outputs: clusters.tsv · isoforms.tsv · t1t2_pairs.tsv · consensus_tagged.bam
+    Tags added by cdna-analyze: XG (gene) · XS (sense/antisense) · XI (isoform_id) · XL (T1↔T2 partner cid)
 ```
 
 The cDNA pipeline diverges from DRS at the input: it takes a pre-aligned BAM
 (no poly(A) pre-trim or multi-aligner step on raw reads) and performs UMI-based
-consensus before correction. The multi-aligner re-alignment step happens on
-consensus reads, not raw reads.
+consensus *before* re-alignment. The multi-aligner step (`rectify align`) runs
+on per-cluster consensus FASTQs rather than raw reads. Gene assignment, isoform
+clustering, and same-molecule strand pairing all run downstream in
+`rectify cdna-analyze` on the post-align CIGAR — pre-align positions were too
+coarse for tol-5 = 5 / tol-3 = 5 grouping decisions.
 
 ### QuantSeq 3' REV pipeline
 
@@ -271,7 +278,8 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 | `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
 | `export` | `core/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
 | `extract` | `core/extract_command.py` | Extract per-read info from BAM to TSV |
-| `correct-cdna` | `core/cdna_correct_command.py` | **ONT cDNA pipeline** — UMI extraction, directional clustering, abPOA consensus, re-alignment, Type-1/Type-2 isoform clustering, T1↔T2 reconciliation |
+| `correct-cdna` | `core/cdna_correct_command.py` | **ONT cDNA Stage 1** — UMI extraction, directional clustering, abPOA consensus, pre-trim → per-cluster FASTQ for `rectify align` |
+| `cdna-analyze` | `core/cdna_analyze_command.py` | **ONT cDNA Stage 3** — walkback + walk-forward + gene/isoform/T1↔T2 on post-align coordinates from `rectify align` |
 | `trim-cdna-polya` | `core/cdna_trim_command.py` | Trim poly(A) from cDNA reads (QuantSeq REV or ONT cDNA pre-processing) |
 | `tag-polya` | `core/tag_polya_command.py` | Tag poly(A) tail lengths on reads (BAM tag annotation) |
 | `netseq` | `core/netseq_command.py` | Process NET-seq BAM files with deconvolution |
@@ -608,33 +616,48 @@ works on all three schedulers without modification.
 inputs, sets thread limits, calls `bam_processor.process_bam_file_parallel()`
 or `process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
 
-**`core/cdna_correct_command.py`** — ONT cDNA pipeline orchestrator
-(`rectify correct-cdna`). Implements the full PCB114.24 workflow:
+**`core/cdna_correct_command.py`** — ONT cDNA pipeline Stage 1
+(`rectify correct-cdna`). Implements the upstream half of the PCB114.24
+workflow; downstream isoform analysis lives in `cdna_analyze_command.py`.
 1. **UMI extraction** — regex-matches SSP_FWD in soft-clip, extracts the
-   16-nt UMI (pattern `(TT-VVVV)×4 + TTT`), writes `XU:Z` tag.
-2. **Directional clustering** — groups reads by (gene, UMI similarity) using
-   Levenshtein distance ≤ 3 with the 2× count rule (a UMI with count N can
-   only absorb UMIs with count ≤ N/2). Replaces the earlier connected-components
-   approach which over-merged distant UMIs.
+   27-nt UMI (pattern `(TT-VVVV)×4 + TTT`), writes `XU:Z` tag.
+2. **Directional clustering** — groups reads by (3'-anchor, UMI similarity)
+   using Levenshtein distance ≤ 3 with the 2× count rule (a UMI with count N
+   can only absorb UMIs with count ≤ N/2). Replaces the earlier
+   connected-components approach which over-merged distant UMIs.
 3. **abPOA consensus** — families with ≥ 2 reads are polished via abPOA
    partial order alignment. Singletons pass through with original sequence.
-   Tags: `XR` (reads merged), `XF` (consensus method), `XM` (method detail).
-4. **Re-alignment** — consensus sequences re-aligned with minimap2
-   (mapPacBio re-alignment is a target addition).
-5. **Type-1/Type-2 isoform clustering** — Type-1 reads (SSP+UMI, `XT:i:1`)
-   are 5'-UMI-anchored: the SSP+UMI at the 5' end captures the real TSS, and
-   the UMI merges reads regardless of 3' truncation status. Isoform clustering
-   uses both 5' and 3' positions. Type-2 reads (SSP-less, `XT:i:2`) are
-   3'-pA-tail-anchored: only the 3' CPA is reliable, the 5' end is random
-   truncation noise. No UMI → cannot merge reads with different 5' positions.
-   Isoform clustering uses 3' position only (5' grouping skipped).
-   Type-2 reads are likely XRN1 decay intermediates or technical truncation.
-6. **T1↔T2 reconciliation** — matches T1 and T2 clusters where both 5' and
-   3' ends agree within 5 bp. Links written to `XL:Z` tag and `t1t2_pairs.tsv`.
+4. **Pre-trim** — strip SSP/UMI/GGG at 5' and poly-A at 3' so the downstream
+   aligner (`rectify align`) receives clean mRNA body. The trim lengths
+   ride along as `XQ:i` (5') and `XK:i` (3') so a soft-clip can be
+   reconstructed downstream if needed.
+5. **FASTQ output** — one record per UMI cluster, written to
+   `stage1_consensus.fastq.gz`. TAB-separated SAM-format tags in the FASTQ
+   comment are propagated to the aligned BAM via `minimap2 -y`.
 
-Output tags: `XU` (UMI), `XC` (cluster), `XR` (reads merged), `XF` (method),
-`XA` (polyA), `XG` (gene), `XT` (type 1/2), `XL` (T1↔T2 partner),
-`XI` (isoform_id), `XO` (orient), `XS` (sense/antisense).
+Per-cluster tags written to the FASTQ comment (alignment-independent):
+`XU` (canonical UMI), `XO` (orient), `XC` (cluster size), `XR` (input read IDs),
+`XM` (consensus method), `XF` (full-length tier), `XA` (pre-align poly-A length),
+`XT` (read type 1/2), `XY` (read subtype), `XQ` (5' pre-trim length),
+`XK` (3' pre-trim length), `XB` (strand split n_top/n_bot).
+
+**`core/cdna_analyze_command.py`** — ONT cDNA pipeline Stage 3
+(`rectify cdna-analyze`). Operates on the multi-aligner-rectified BAM
+produced by `rectify align` on the Stage-1 FASTQ. Per record:
+1. **Walkback** — recompute corrected poly-A tail length on post-align CIGAR
+   (`XA:i`).
+2. **Walk-forward TSS** — recompute the 5' TSS correction position.
+3. **Gene assignment** — `classify_sense_antisense()` against the GFF gene
+   tree; writes `XG:Z` (primary gene) and `XS:Z` (sense/antisense).
+4. **Isoform clustering** — Type-1 reads use 5'+3' positions, Type-2 use
+   3' only. Writes `XI:Z` (isoform_id) per cluster.
+5. **Type-1 ↔ Type-2 same-orient pairing** — links T1/T2 clusters at the
+   same gene+orient with `|Δ5'|≤5 ∧ |Δ3'|≤5`. Writes `XL:i` (partner cid)
+   on both records.
+
+Outputs: `clusters.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, and a tagged
+`consensus_tagged.bam` (input BAM rewritten with the new XA/XG/XS/XI/XL
+tags added).
 
 **`core/analyze_command.py`** — Step 5 orchestrator: parses GFF/GTF,
 calls analysis modules in sequence, writes all output TSVs and plots.

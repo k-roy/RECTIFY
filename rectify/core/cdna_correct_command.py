@@ -1310,9 +1310,13 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 f"XB:Z:{n_top}/{n_bot}",
             ]
 
-            comment = " ".join(tag_parts)
+            # Tab-separate the read name and tags so `minimap2 -y` (and the
+            # equivalent flags in mapPacBio / gapmm2) parse each `XX:T:value`
+            # as a separate SAM aux field. Space separators silently collapse
+            # the comment into a single Z-string aux on the first tag.
+            comment = "\t".join(tag_parts)
             qual = "?" * len(trimmed_seq)
-            fq.write(f"@cluster_{cid} {comment}\n{trimmed_seq}\n+\n{qual}\n")
+            fq.write(f"@cluster_{cid}\t{comment}\n{trimmed_seq}\n+\n{qual}\n")
             written += 1
 
     return dict(input_reads=n_in, written=written, from_singletons=singleton,
