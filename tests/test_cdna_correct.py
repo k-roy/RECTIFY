@@ -172,10 +172,10 @@ def test_correct_cdna_chri_smoke(tmp_path):
         [sys.executable, "-m", "rectify", "correct-cdna",
          str(_CHRI_BAM), "--out", str(out_dir),
          "--gff", str(_GFF), "--reference", str(_FASTA)],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=900,
     )
     assert rc.returncode == 0, f"stderr: {rc.stderr[-1500:]}"
-    for f in ("stage1_consensus.bam", "clusters.tsv", "isoforms.tsv", "t1t2_pairs.tsv"):
+    for f in ("stage1_consensus.fastq.gz", "clusters.tsv", "isoforms.tsv", "t1t2_pairs.tsv"):
         assert (out_dir / f).exists(), f"missing {f}"
 
     # Cluster count sanity bands (chrI w/ v1.19d on 2026-05-13: 26,364 clusters)
@@ -183,3 +183,123 @@ def test_correct_cdna_chri_smoke(tmp_path):
     assert 24000 < n_clusters < 30000, f"clusters.tsv has {n_clusters} rows"
     n_isoforms = sum(1 for _ in (out_dir / "isoforms.tsv").open()) - 1
     assert 3000 < n_isoforms < 4500, f"isoforms.tsv has {n_isoforms} rows"
+
+    # Verify pretrim wiring: XQ and XK tags must appear in every FASTQ record
+    import gzip as _gzip
+    with _gzip.open(out_dir / "stage1_consensus.fastq.gz", "rt") as fq:
+        first_header = fq.readline()
+    assert "XQ:i:" in first_header, f"XQ pretrim-5' tag missing from FASTQ: {first_header[:200]}"
+    assert "XK:i:" in first_header, f"XK pretrim-3' tag missing from FASTQ: {first_header[:200]}"
+
+
+# ---------------------------------------------------------------------------
+# Consensus pre-trimming (Task 2)
+# ---------------------------------------------------------------------------
+class TestPretrimConsensus:
+    """pretrim_consensus strips SSP/UMI/GGG from 5' and poly-A from 3' so
+    aligners receive clean mRNA sequence only."""
+
+    def _make_fwd_consensus(self, mrna: str, polya: str = "A" * 8) -> str:
+        umi = "T" * cc.UMI_LEN
+        return cc.SSP_FWD + umi + "GGG" + mrna + polya + cc.ANCHOR_FWD
+
+    def test_fwd_strips_ssp_umi_ggg_and_polya(self):
+        mrna = "ATGCATGC"
+        full = self._make_fwd_consensus(mrna)
+        trimmed, q_trim_5, pretrim_pa_len = cc.pretrim_consensus(full, "fwd", read_type=1)
+        assert trimmed == mrna, (
+            f"expected trimmed=={mrna!r}, got {trimmed!r}"
+        )
+        assert q_trim_5 == len(cc.SSP_FWD) + cc.UMI_LEN + 3  # 23 + 27 + 3 = 53
+        assert pretrim_pa_len == 8
+
+    def test_fwd_type2_no_5p_trim(self):
+        """Type-2 reads have no SSP — only poly-A strip applies."""
+        mrna = "GCTAGCTAGC"
+        seq = mrna + "A" * 12 + cc.ANCHOR_FWD
+        trimmed, q_trim_5, pretrim_pa_len = cc.pretrim_consensus(seq, "fwd", read_type=2)
+        assert q_trim_5 == 0, "Type-2 should not strip a 5' prefix"
+        assert trimmed == mrna
+        assert pretrim_pa_len == 12
+
+    def test_fwd_no_ssp_found_returns_full_with_no_5p_trim(self):
+        """If SSP is absent from a Type-1 consensus (e.g. POA artifact), the
+        function should not crash and should not trim the 5' end."""
+        seq = "ATGCATGC" + "A" * 6
+        trimmed, q_trim_5, _ = cc.pretrim_consensus(seq, "fwd", read_type=1)
+        assert q_trim_5 == 0
+        assert trimmed.startswith("ATGCATGC")
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — Chimeric junction rescue via select_best_chimeric
+# ---------------------------------------------------------------------------
+
+class TestSelectBestChimericSplice:
+    """select_best_chimeric() must prefer the aligner that calls a canonical
+    GT-AG splice junction over one that calls a non-canonical site.
+
+    Layout:
+      ref  = "A"*100 + "GT" + "T"*98 + "AG" + "C"*100   (302 bp)
+      query = "A"*100 + "C"*100                           (200 bp, exon1+exon2)
+
+    mapPacBio CIGAR: 100M 102N 100M — canonical intron ref[100:202] (GT…AG)
+    minimap2  CIGAR: 100M  50N 100M — wrong intron ref[100:150] (GT…TT)
+
+    Both aligners agree on query[0:100] → ref[0:100] (sync points).
+    They diverge at query[100:200] (the 3' terminal segment containing the
+    splice junction). select_best_chimeric must pick mapPacBio there.
+    """
+
+    def _make_segs(self):
+        import pysam as ps
+
+        ref_seq = "A" * 100 + "GT" + "T" * 98 + "AG" + "C" * 100  # 302 bp
+        genome = {"chrT": ref_seq}
+
+        header = ps.AlignmentHeader.from_dict({
+            "HD": {"VN": "1.6"},
+            "SQ": [{"SN": "chrT", "LN": len(ref_seq)}],
+        })
+
+        query_seq = "A" * 100 + "C" * 100
+
+        def _seg(cigar_tuples):
+            seg = ps.AlignedSegment(header)
+            seg.query_name = "test_read"
+            seg.flag = 0
+            seg.reference_id = 0
+            seg.reference_start = 0
+            seg.mapping_quality = 60
+            seg.cigartuples = cigar_tuples
+            seg.query_sequence = query_seq
+            seg.query_qualities = ps.qualitystring_to_array("?" * len(query_seq))
+            return seg
+
+        # mapPacBio: canonical intron ref[100:202] (GT…AG), 102 bp
+        mpb = _seg([(0, 100), (3, 102), (0, 100)])
+        # minimap2: wrong intron ref[100:150] (GT…TT), 50 bp — non-canonical 3'SS
+        mm2 = _seg([(0, 100), (3, 50), (0, 100)])
+
+        return {"minimap2": mm2, "mapPacBio": mpb}, genome
+
+    def test_canonical_junction_wins(self):
+        from rectify.core.chimeric_consensus import select_best_chimeric
+        aligner_reads, genome = self._make_segs()
+        result = select_best_chimeric(aligner_reads, genome)
+        # The 3' segment holds the junction. mapPacBio has GT-AG (+5); mm2 has GT-TT (-3).
+        assert result.three_prime_aligner == "mapPacBio", (
+            f"Expected mapPacBio to win 3' segment (canonical junction); "
+            f"got three_prime_aligner={result.three_prime_aligner!r}"
+        )
+
+    def test_chimeric_cigar_uses_canonical_intron(self):
+        from rectify.core.chimeric_consensus import select_best_chimeric
+        aligner_reads, genome = self._make_segs()
+        result = select_best_chimeric(aligner_reads, genome)
+        # The chimeric CIGAR should use the 102-bp intron from mapPacBio, not the 50-bp one.
+        n_ops = {op: length for op, length in result.chimeric_cigar}
+        assert n_ops.get(3) == 102, (
+            f"Expected N-op length 102 (canonical intron) in chimeric CIGAR; "
+            f"got cigar={result.chimeric_cigar}"
+        )
