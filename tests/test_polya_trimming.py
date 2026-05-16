@@ -5,7 +5,7 @@ Tests for poly(A) tail trimming module.
 
 import pytest
 from unittest.mock import Mock, patch
-from rectify.core import polya_trimmer
+from rectify.core.polya import polya_trimmer
 from rectify import config
 
 
@@ -175,7 +175,7 @@ class TestReadTrimming:
         )
 
         # Mock soft-clips
-        with patch('rectify.core.polya_trimmer.extract_soft_clips') as mock_sc:
+        with patch('rectify.core.polya.polya_trimmer.extract_soft_clips') as mock_sc:
             mock_sc.return_value = [
                 {'side': 'right', 'seq': 'A' * 20, 'length': 20, 'start': 1100}
             ]
@@ -204,7 +204,7 @@ class TestReadTrimming:
         )
 
         # Mock soft-clips
-        with patch('rectify.core.polya_trimmer.extract_soft_clips') as mock_sc:
+        with patch('rectify.core.polya.polya_trimmer.extract_soft_clips') as mock_sc:
             mock_sc.return_value = [
                 {'side': 'left', 'seq': 'T' * 20, 'length': 20, 'start': 980}
             ]
@@ -232,7 +232,7 @@ class TestReadTrimming:
         )
 
         # Mock soft-clips (none)
-        with patch('rectify.core.polya_trimmer.extract_soft_clips') as mock_sc:
+        with patch('rectify.core.polya.polya_trimmer.extract_soft_clips') as mock_sc:
             mock_sc.return_value = []
 
             result = polya_trimmer.trim_polya_from_read(read, '+')
@@ -254,7 +254,7 @@ class TestReadTrimming:
             strand='+'
         )
 
-        with patch('rectify.core.polya_trimmer.extract_soft_clips') as mock_sc:
+        with patch('rectify.core.polya.polya_trimmer.extract_soft_clips') as mock_sc:
             mock_sc.return_value = [
                 {'side': 'right', 'seq': 'T' * 20, 'length': 20, 'start': 1100}
             ]

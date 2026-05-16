@@ -16,15 +16,15 @@ Date: 2026-03-09
 from typing import Dict, Optional, Tuple
 import pysam
 
-from ..config import (
+from ...config import (
     POLYA_RICHNESS_THRESHOLD,
     POLYA_WINDOW_SIZE,
     MIN_POLYA_LENGTH,
     ADAPTER_POLY_T_MIN,
     ADAPTER_TC_MOTIFS,
 )
-from ..utils.alignment import extract_soft_clips, get_cigar_stats
-from ..utils.genome import reverse_complement
+from ...utils.alignment import extract_soft_clips, get_cigar_stats
+from ...utils.genome import reverse_complement
 
 
 def calculate_a_richness(sequence: str, window: int = POLYA_WINDOW_SIZE) -> float:

@@ -18,7 +18,7 @@ import json
 import logging
 import numpy as np
 
-from ..config import (
+from ...config import (
     POLYA_RICHNESS_THRESHOLD,
     POLYA_WINDOW_SIZE,
     MIN_POLYA_LENGTH,

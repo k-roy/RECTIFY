@@ -4,7 +4,7 @@ Tests for A-tract ambiguity detection module.
 """
 
 import pytest
-from rectify.core import atract_detector
+from rectify.core.polya import atract_detector
 from rectify import config
 
 

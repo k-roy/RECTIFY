@@ -4,7 +4,7 @@ Tests for AG mispriming detection module.
 """
 
 import pytest
-from rectify.core import ag_mispriming
+from rectify.core.polya import ag_mispriming
 from rectify import config
 
 

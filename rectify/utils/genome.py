@@ -293,8 +293,8 @@ def count_contiguous_a_tract(seq: str, strand: str = '+') -> int:
     return count
 
 
-# NOTE: find_atract_boundaries has been consolidated to rectify.core.atract_detector
-# Use: from rectify.core.atract_detector import find_atract_boundaries
+# NOTE: find_atract_boundaries has been consolidated to rectify.core.polya.atract_detector
+# Use: from rectify.core.polya.atract_detector import find_atract_boundaries
 
 
 # =============================================================================

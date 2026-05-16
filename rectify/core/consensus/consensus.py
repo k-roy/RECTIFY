@@ -964,7 +964,7 @@ def extract_alignment_info(
     no MD tags required). Full indel correction (MD-dependent) is applied
     post-consensus as a refinement step.
     """
-    from ..atract_detector import calculate_atract_ambiguity
+    from ..polya.atract_detector import calculate_atract_ambiguity
 
     junctions = extract_junctions_from_cigar(read)
     five_clip, three_clip = get_softclip_lengths(read)

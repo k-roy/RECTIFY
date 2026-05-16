@@ -18,8 +18,8 @@ import math
 from typing import Dict, Optional
 from pathlib import Path
 
-from ..config import DOWNSTREAM_WINDOW_SIZE, CHROM_TO_GENOME, CHROM_SIZES, get_shift_from_acount
-from ..utils.genome import clamp_position
+from ...config import DOWNSTREAM_WINDOW_SIZE, CHROM_TO_GENOME, CHROM_SIZES, get_shift_from_acount
+from ...utils.genome import clamp_position
 
 
 def _get_sequence(genome: Dict[str, str], chrom: str) -> Optional[str]:

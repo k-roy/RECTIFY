@@ -37,9 +37,9 @@ import os
 import pysam
 from pathlib import Path
 
-from .. import atract_detector
-from .. import ag_mispriming
-from .. import polya_trimmer
+from ..polya import atract_detector
+from ..polya import ag_mispriming
+from ..polya import polya_trimmer
 from .. import indel_corrector
 from ..netseq import netseq_refiner
 from ..indel_corrector import VariantAwareHomopolymerRescue
@@ -50,7 +50,7 @@ from ..correct.walkback import (
 )
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ...utils.genome import load_genome, standardize_chrom_name, reverse_complement
-from ..polya_model import PolyAModel, load_model as load_polya_model
+from ..polya.polya_model import PolyAModel, load_model as load_polya_model
 from ...utils.alignment import (
     extract_junctions_simple,
     extract_soft_clips,

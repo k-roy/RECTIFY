@@ -20,11 +20,11 @@ Date: 2026-03-09
 from typing import Dict, Optional
 from collections import Counter
 
-from ..config import (
+from ...config import (
     AG_RICHNESS_WINDOW, AG_RICHNESS_SCORE_THRESHOLD,
     AG_RICHNESS_MIN_WINDOW, AG_RICHNESS_THRESHOLD,
 )
-from ..utils.genome import get_downstream_sequence, clamp_position
+from ...utils.genome import get_downstream_sequence, clamp_position
 
 
 def calculate_ag_content(sequence: str) -> float:

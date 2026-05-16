@@ -1969,7 +1969,7 @@ def write_polya_trimmed_bam(
             'trimmed'      — reads whose poly(A) tail was removed
             'bases_trimmed'— total bases removed across all reads
     """
-    from ..polya_trimmer import trim_polya_from_bam_read
+    from ..polya.polya_trimmer import trim_polya_from_bam_read
 
     stats = {'total': 0, 'trimmed': 0, 'bases_trimmed': 0}
 
