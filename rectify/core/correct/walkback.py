@@ -10,8 +10,8 @@ correction — so for many protocols (QuantSeq REV in particular) ~92% of reads
 emit ``correction_applied="none"`` while their alignments are silently
 drifting 1–N bp into a genomic A-stretch.
 
-The cDNA pipeline (``rectify/core/cdna_correct_command.py::walk_back_anchor_
-and_tail``) already implements the correct algorithm — compare the read base
+The cDNA pipeline (``rectify/core/cdna/walkback.py::walk_back_anchor_and_tail``)
+already implements the correct algorithm — compare the read base
 to the reference base at each aligned position, walk past stop-base (A/T)
 matches, and anchor at the first non-stop match. The logic is protocol-
 agnostic once a few wiring decisions are made (which side of the alignment is

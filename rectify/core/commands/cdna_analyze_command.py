@@ -28,14 +28,18 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
-from rectify.core.commands.cdna_correct_command import (
-    ReadInfo,
-    walk_back_anchor_and_tail,
-    walk_forward_tss,
-    load_gff_genes,
+from rectify.core.cdna.gff import (
     classify_sense_antisense,
+    load_gff_genes,
+)
+from rectify.core.cdna.isoforms import (
     assign_isoforms,
     reconcile_t1_t2_pairs,
+)
+from rectify.core.cdna.read_info import ReadInfo
+from rectify.core.cdna.walkback import (
+    walk_back_anchor_and_tail,
+    walk_forward_tss,
 )
 
 

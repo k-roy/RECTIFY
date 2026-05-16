@@ -15,7 +15,20 @@ from pathlib import Path
 
 import pytest
 
-from rectify.core.commands import cdna_correct_command as cc
+from rectify.core.cdna._constants import ANCHOR_FWD, SSP_FWD, UMI_LEN
+from rectify.core.cdna.consensus import pretrim_consensus
+from rectify.core.cdna.read_info import revcomp
+from rectify.core.cdna.umi import (
+    position_components_directional,
+    umi_components_directional,
+)
+from rectify.core.cdna.walkback import (
+    _BOUNDARY_MIN_SCORE,
+    _BOUNDARY_PATTERN_FWD,
+    _BOUNDARY_PATTERN_REV,
+    _find_boundary_match,
+    _score_boundary_window,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,11 +36,11 @@ from rectify.core.commands import cdna_correct_command as cc
 # ---------------------------------------------------------------------------
 class TestUmiComponentsDirectional:
     def test_single_umi_returns_one_cluster(self):
-        assert cc.umi_components_directional(["TTACGATTAACGTTCACCTTAACGTTT"], max_edit=3) == [[0]]
+        assert umi_components_directional(["TTACGATTAACGTTCACCTTAACGTTT"], max_edit=3) == [[0]]
 
     def test_two_identical_umis_one_cluster(self):
         umis = ["TTACGATTAACGTTCACCTTAACGTTT"] * 2
-        comps = cc.umi_components_directional(umis, max_edit=3)
+        comps = umi_components_directional(umis, max_edit=3)
         assert len(comps) == 1 and sorted(comps[0]) == [0, 1]
 
     def test_two_x_rule_blocks_equal_count_peaks(self):
@@ -37,7 +50,7 @@ class TestUmiComponentsDirectional:
         what umi_tools does and what we use)."""
         umis = ["TTACGATTAACGTTCACCTTAACGTTT",
                 "TTACGATTAACGTTCACCTTAACGTAA"]  # Lev=2 — within max_edit=3
-        comps = cc.umi_components_directional(umis, max_edit=3)
+        comps = umi_components_directional(umis, max_edit=3)
         # With non-strict 2x rule (matching umi_tools): both count=1 nodes merge.
         # If we ever tighten to strict 2× they would split.
         assert len(comps) == 1
@@ -48,7 +61,7 @@ class TestUmiComponentsDirectional:
         umis = (["TTACGATTAACGTTCACCTTAACGTTT"] * 10        # peak A (count 10)
                 + ["TTACGATTAACGTTCACCTTAACGTTA"]            # Lev=1 from A, count 1
                 + ["AACGTTTAACGTTCACCTTAACGTTT"] * 10)       # peak B (Lev≥3 from A)
-        comps = cc.umi_components_directional(umis, max_edit=3)
+        comps = umi_components_directional(umis, max_edit=3)
         # Expect two clusters: peak A (with its variant) and peak B
         assert len(comps) == 2
         # The size-1 variant should be absorbed by peak A (count 10), not peak B
@@ -61,15 +74,15 @@ class TestUmiComponentsDirectional:
 # ---------------------------------------------------------------------------
 class TestPositionComponentsDirectional:
     def test_single_position(self):
-        assert cc.position_components_directional([100], [1], max_dist=5) == [[0]]
+        assert position_components_directional([100], [1], max_dist=5) == [[0]]
 
     def test_identical_positions_merge(self):
-        comps = cc.position_components_directional([100, 100, 100], [3, 1, 1], max_dist=5)
+        comps = position_components_directional([100, 100, 100], [3, 1, 1], max_dist=5)
         assert len(comps) == 1 and sorted(comps[0]) == [0, 1, 2]
 
     def test_within_tolerance_peak_absorbs_low_count_neighbor(self):
         """A peak with count 10 should absorb a singleton 3 bp away."""
-        comps = cc.position_components_directional([100, 103], [10, 1], max_dist=5)
+        comps = position_components_directional([100, 103], [10, 1], max_dist=5)
         assert len(comps) == 1 and sorted(comps[0]) == [0, 1]
 
     def test_strict_2x_rule_prevents_chain_merge(self):
@@ -77,7 +90,7 @@ class TestPositionComponentsDirectional:
         within max_dist=5, must NOT chain-merge under the strict 2× rule."""
         positions = [100,    105,  110,  115,  120]
         weights   = [50,     1,    1,    1,    50]
-        comps = cc.position_components_directional(positions, weights, max_dist=5)
+        comps = position_components_directional(positions, weights, max_dist=5)
         # Expect two clusters (100 and 120 stay distinct), bridges absorbed by
         # their nearest peak (or stay separate as orphans)
         # The peak at 100 absorbs only positions reachable by direct edges (within max_dist=5)
@@ -88,7 +101,7 @@ class TestPositionComponentsDirectional:
         assert n_peak_clusters == 2
 
     def test_returns_input_index_lists(self):
-        comps = cc.position_components_directional([100, 200, 100], [1, 1, 1], max_dist=5)
+        comps = position_components_directional([100, 200, 100], [1, 1, 1], max_dist=5)
         # 100 (idx 0, 2) clusters together; 200 (idx 1) alone
         clusters_sorted = sorted([sorted(c) for c in comps])
         assert clusters_sorted == [[0, 2], [1]]
@@ -101,37 +114,37 @@ class TestBoundaryPattern:
     def test_perfect_fwd_pattern_scores_12(self):
         # TT-VVVV-TTT-GGG (V = A/C/G)
         seq = "TTACGCTTTGGG"
-        score = cc._score_boundary_window(seq, cc._BOUNDARY_PATTERN_FWD)
+        score = _score_boundary_window(seq, _BOUNDARY_PATTERN_FWD)
         assert score == 12
 
     def test_perfect_rev_pattern_scores_12(self):
         # CCC-AAA-BBBB-AA (B = T/G/C)
         seq = "CCCAAACGTCAA"
-        score = cc._score_boundary_window(seq, cc._BOUNDARY_PATTERN_REV)
+        score = _score_boundary_window(seq, _BOUNDARY_PATTERN_REV)
         assert score == 12
 
     def test_one_mismatch_passes_threshold(self):
         seq = "TTACGCTTTGGA"  # last G replaced with A (12 → 11 score)
-        score = cc._score_boundary_window(seq, cc._BOUNDARY_PATTERN_FWD)
+        score = _score_boundary_window(seq, _BOUNDARY_PATTERN_FWD)
         assert 10 <= score < 12
 
     def test_pattern_in_v_position_must_not_be_t(self):
         # V positions [2,3,4,5] cannot be T (would score 0 at those positions)
         seq = "TTTTTTTTTTGGG"[:12]  # contiguous T's
-        score = cc._score_boundary_window(seq, cc._BOUNDARY_PATTERN_FWD)
+        score = _score_boundary_window(seq, _BOUNDARY_PATTERN_FWD)
         # Only positions 0,1,6,7,8 (T) + 9,10,11 (G) match: 5+3 = 8 max
-        assert score < cc._BOUNDARY_MIN_SCORE
+        assert score < _BOUNDARY_MIN_SCORE
 
     def test_find_boundary_match_requires_bridge_intact(self):
         # All 3 G's at end must be intact, even if rest scores well
         seq = "TTACGCTTTGGA"  # 1 bridge G missing → reject
-        result = cc._find_boundary_match(seq, 0, len(seq), rc=False)
+        result = _find_boundary_match(seq, 0, len(seq), rc=False)
         assert result is None
 
     def test_find_boundary_match_returns_best_match(self):
         # Two valid windows; should pick the higher-scoring one
         seq = "TTACGCTTTGGG"  # perfect fwd pattern
-        result = cc._find_boundary_match(seq, 0, len(seq), rc=False)
+        result = _find_boundary_match(seq, 0, len(seq), rc=False)
         assert result is not None
         qpos, score = result
         assert qpos == 0 and score == 12
@@ -142,13 +155,13 @@ class TestBoundaryPattern:
 # ---------------------------------------------------------------------------
 class TestRevComp:
     def test_revcomp_basic(self):
-        assert cc.revcomp("ATCG") == "CGAT"
+        assert revcomp("ATCG") == "CGAT"
 
     def test_revcomp_with_n(self):
-        assert cc.revcomp("ATNCG") == "CGNAT"
+        assert revcomp("ATNCG") == "CGNAT"
 
     def test_revcomp_lowercase_preserved(self):
-        assert cc.revcomp("atcg") == "cgat"
+        assert revcomp("atcg") == "cgat"
 
 
 # ---------------------------------------------------------------------------
@@ -297,24 +310,24 @@ class TestPretrimConsensus:
     aligners receive clean mRNA sequence only."""
 
     def _make_fwd_consensus(self, mrna: str, polya: str = "A" * 8) -> str:
-        umi = "T" * cc.UMI_LEN
-        return cc.SSP_FWD + umi + "GGG" + mrna + polya + cc.ANCHOR_FWD
+        umi = "T" * UMI_LEN
+        return SSP_FWD + umi + "GGG" + mrna + polya + ANCHOR_FWD
 
     def test_fwd_strips_ssp_umi_ggg_and_polya(self):
         mrna = "ATGCATGC"
         full = self._make_fwd_consensus(mrna)
-        trimmed, q_trim_5, pretrim_pa_len = cc.pretrim_consensus(full, "fwd", read_type=1)
+        trimmed, q_trim_5, pretrim_pa_len = pretrim_consensus(full, "fwd", read_type=1)
         assert trimmed == mrna, (
             f"expected trimmed=={mrna!r}, got {trimmed!r}"
         )
-        assert q_trim_5 == len(cc.SSP_FWD) + cc.UMI_LEN + 3  # 23 + 27 + 3 = 53
+        assert q_trim_5 == len(SSP_FWD) + UMI_LEN + 3  # 23 + 27 + 3 = 53
         assert pretrim_pa_len == 8
 
     def test_fwd_type2_no_5p_trim(self):
         """Type-2 reads have no SSP — only poly-A strip applies."""
         mrna = "GCTAGCTAGC"
-        seq = mrna + "A" * 12 + cc.ANCHOR_FWD
-        trimmed, q_trim_5, pretrim_pa_len = cc.pretrim_consensus(seq, "fwd", read_type=2)
+        seq = mrna + "A" * 12 + ANCHOR_FWD
+        trimmed, q_trim_5, pretrim_pa_len = pretrim_consensus(seq, "fwd", read_type=2)
         assert q_trim_5 == 0, "Type-2 should not strip a 5' prefix"
         assert trimmed == mrna
         assert pretrim_pa_len == 12
@@ -323,7 +336,7 @@ class TestPretrimConsensus:
         """If SSP is absent from a Type-1 consensus (e.g. POA artifact), the
         function should not crash and should not trim the 5' end."""
         seq = "ATGCATGC" + "A" * 6
-        trimmed, q_trim_5, _ = cc.pretrim_consensus(seq, "fwd", read_type=1)
+        trimmed, q_trim_5, _ = pretrim_consensus(seq, "fwd", read_type=1)
         assert q_trim_5 == 0
         assert trimmed.startswith("ATGCATGC")
 

@@ -54,6 +54,35 @@ already organized.
 
 Plan ~15 minutes per pipeline test run; budget accordingly.
 
+## Status
+
+**Completed 2026-05-16.** Final layout matches the table above with these
+deviations:
+
+- A small `cdna/_constants.py` was added for the chemistry constants
+  (`SSP_FWD`, `SSP_RC`, `UMI_LEN`, `BRIDGE_LEN`, `ANCHOR_*`, polyA regex,
+  `COMPLEMENT_TABLE`). Multiple target modules need them; putting them in
+  any one of them creates a hub-and-spoke import shape that this small file
+  avoids.
+- `_find_adapter_anchor_pos` lives in `cdna/walkback.py`, not
+  `cdna/read_info.py` as the table above suggests. `extract_read_info`
+  (read_info.py) calls `walk_back_anchor_and_tail` (walkback.py), and
+  `walk_back_anchor_and_tail` calls `_find_adapter_anchor_pos` — putting the
+  anchor finder in read_info would create a read_info ↔ walkback cycle.
+  `consensus.pretrim_consensus` imports it from walkback alongside the
+  walkback wrappers.
+- `cdna_correct_command.py` ended at 330 lines (vs ~250 target). The parser
+  function `create_correct_cdna_parser` is ~150 lines and stays in the command
+  file by design (matches how other commands are laid out).
+- Test/script imports were updated to point at the new module locations
+  (no re-export shims left in `cdna_correct_command.py`):
+  `tests/test_cdna_correct.py`, `tests/test_validation_reads_cdna.py`,
+  `scripts/validation_data/characterize_baseline.py`.
+
+Test gate: all four target tests pass (test_cdna_correct 25/25 incl. the
+5-min smoke; test_cdna_analyze 3/3; test_cdna_chain_canary 1/1 in 4:21;
+test_validation_reads_cdna 16/16).
+
 ## Critical pitfalls
 
 - `ReadInfo` is referenced by name in `cdna_analyze_command.py`

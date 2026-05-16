@@ -48,7 +48,7 @@ def characterize_cdna(bam_path: Path, genome: dict) -> None:
     The cDNA pipeline uses ``orient`` (not is_reverse) — we derive it from the
     XU tag if present, else from is_reverse (proxy).
     """
-    from rectify.core.commands.cdna_correct_command import walk_back_anchor_and_tail
+    from rectify.core.cdna.walkback import walk_back_anchor_and_tail
 
     print(
         "\t".join([

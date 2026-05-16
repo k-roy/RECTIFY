@@ -152,7 +152,7 @@ def test_chain_correct_cdna_to_analyze_preserves_tags(tmp_path):
         "SPACE separator. minimap2 -y propagates FASTQ comments verbatim, "
         "but the SAM parser expects TAB-separated tags — a space-separated "
         "comment collapses everything into ONE Z-string aux. Check "
-        "write_stage1_fastq() in cdna_correct_command.py: the tag-joiner "
+        "write_stage1_fastq() in rectify/core/cdna/io.py: the tag-joiner "
         "MUST use '\\t'.join(...), not ' '.join(...)."
     )
 
