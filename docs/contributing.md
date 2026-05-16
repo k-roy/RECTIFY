@@ -52,7 +52,7 @@ flake8 rectify/ tests/
 
 ### Two `run-all` implementations
 
-The active `run-all` dispatcher is `rectify/core/run_command.py`. Always edit that file for pipeline changes.
+The active `run-all` dispatcher is `rectify/core/commands/run_command.py`. Always edit that file for pipeline changes.
 
 ### Coordinate convention
 

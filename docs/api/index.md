@@ -4,7 +4,7 @@ RECTIFY's Python API is organized into four subpackages. All modules can be impo
 
 ```python
 import rectify
-from rectify.core.bam_processor import process_bam_streaming
+from rectify.core.bam.bam_processor import process_bam_streaming
 from rectify.core.analyze.clustering import cluster_cpa_sites_adaptive
 from rectify.utils.genome import load_genome, reverse_complement
 ```
@@ -27,7 +27,7 @@ from rectify.utils.genome import load_genome, reverse_complement
 ### Correct a BAM file programmatically
 
 ```python
-from rectify.core.bam_processor import process_bam_streaming
+from rectify.core.bam.bam_processor import process_bam_streaming
 from rectify.utils.genome import load_genome
 
 genome = load_genome('genome.fa.gz')

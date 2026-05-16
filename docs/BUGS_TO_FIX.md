@@ -10,7 +10,7 @@
 
 ### NEW-075 (HIGH) — `correct`: dT-primed cDNA walkback is not integrated; post-hoc script emits BAM strand instead of gene/RNA strand
 
-**File:** missing in `rectify/core/correct_command.py`; current workaround is the standalone script at `projects/TRT/scripts/rectify/han2023/11_polya_walkback_recompute.py`.
+**File:** missing in `rectify/core/commands/correct_command.py`; current workaround is the standalone script at `projects/TRT/scripts/rectify/han2023/11_polya_walkback_recompute.py`.
 
 **Symptom:** For dT-primed cDNA libraries (e.g. QuantSeq REV, the Han 2023 reanalysis), the corrected 3' end needs a polyA walkback step that scans backward from the alignment 3' end past stretches of genome-encoded A's to find the templated CPA. `rectify correct` does not perform this step. Users currently run `11_polya_walkback_recompute.py` post-hoc against the `corrected_3ends.tsv`. That standalone script has a strand bug: it emits the **BAM read strand** in the strand column, but for dT-primed antisense protocols the BAM strand is the **opposite** of the RNA/gene strand. Downstream clustering then sees flipped strands at convergent loci and the entire cluster taxonomy gets confused (caught 2026-05-12 during the Han 2023 cluster-revisit, fixed locally via a TSV strand-flip).
 
@@ -27,7 +27,7 @@
 
 ### NEW-074 (MEDIUM) — `consensus.py`: `shutil.copy2()` to NFS without `os.fsync()` risks partial writes
 
-**File:** `rectify/core/consensus.py` (~line 1761)
+**File:** `rectify/core/consensus/consensus.py` (~line 1761)
 
 **Symptom:** Sorted BAM copied from local scratch to NFS Oak with `shutil.copy2()`. Under NFS load, OS buffers the write; if the job crashes or the NFS connection drops before the buffer flushes, the destination BAM is silently truncated. Downstream readers crash with "truncated file".
 
@@ -45,7 +45,7 @@ Apply to both the sorted BAM copy and the `.bai` copy at the same location. Alte
 
 ### NEW-073 (MEDIUM) — `bam_processor.py`: 17× redundant full BAM scans before correction begins
 
-**File:** `rectify/core/bam_processor.py` (lines 1335, 1352, 1768)
+**File:** `rectify/core/bam/bam_processor.py` (lines 1335, 1352, 1768)
 
 **Symptom:** Three independent full BAM scans run before any correction worker starts:
 1. Line 1335: full linear scan for read-flag stats (`ProcessingStats`)
@@ -62,7 +62,7 @@ For a 200k-read yeast BAM this consumes ~47 min of wall time before correction s
 
 ### NEW-072 (MEDIUM) — `multi_aligner.py`: deSALT sort subprocess `stderr=PIPE` with no reader thread risks deadlock
 
-**File:** `rectify/core/multi_aligner.py` (lines 1154–1161, `run_desalt()`)
+**File:** `rectify/core/align/multi_aligner.py` (lines 1154–1161, `run_desalt()`)
 
 **Symptom:** `sort_proc` spawned with `stderr=PIPE` (or inheriting parent stderr). If samtools sort writes ≥64 KB of warnings, the OS pipe buffer fills; since no thread drains it, `sort_proc.communicate()` deadlocks. (The minimap2 path already has a drain thread at lines 209–216; deSALT does not.)
 
@@ -85,7 +85,7 @@ drain_thread.join()
 
 ### NEW-071 (MEDIUM) — `run_command.py`: `stderr=DEVNULL` on samtools fastq hides error context
 
-**File:** `rectify/core/run_command.py` (line 751, DRS trim → FASTQ conversion)
+**File:** `rectify/core/commands/run_command.py` (line 751, DRS trim → FASTQ conversion)
 
 **Symptom:** `subprocess.run(['samtools', 'fastq', ...], check=True, stderr=subprocess.DEVNULL)`. If samtools fails, `check=True` raises `CalledProcessError` (error is caught), but all samtools stderr is discarded, making the failure impossible to diagnose. Line 1157 (same operation in single-sample path) correctly omits `DEVNULL` — only line 751 is affected.
 
@@ -97,7 +97,7 @@ drain_thread.join()
 
 ### NEW-070 (MEDIUM) — `run_command.py`: non-atomic `unlink()` + `rename()` instead of `Path.replace()`
 
-**File:** `rectify/core/run_command.py` (lines 878–879, 1403–1404)
+**File:** `rectify/core/commands/run_command.py` (lines 878–879, 1403–1404)
 
 **Symptom:** Two locations use:
 ```python
@@ -118,7 +118,7 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ### NEW-069 (MEDIUM) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check
 
-**File:** `rectify/core/consensus.py` (lines 1667, 1698)
+**File:** `rectify/core/consensus/consensus.py` (lines 1667, 1698)
 
 **Symptom:** After each batch BAM is written and `out_bam.close()` is called, the `.done` sentinel file is written immediately. If the batch BAM is corrupt (CIGAR/seq mismatch, partial write), the sentinel marks it complete. On resume, `pysam.cat()` or `pysam.sort()` reads the corrupt batch BAM and crashes.
 
@@ -130,7 +130,7 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ### NEW-068 (MEDIUM) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop
 
-**File:** `rectify/core/multi_aligner.py` (after aligner loop, ~line 1267)
+**File:** `rectify/core/align/multi_aligner.py` (after aligner loop, ~line 1267)
 
 **Symptom:** When all aligners are tried in a loop, exceptions are caught and logged per-aligner (`logger.error(f"Aligner {aligner} failed: {e}")`), but the function returns `results` with however many aligners succeeded — including zero. The caller receives an empty dict with no indication that minimap2 (the required baseline aligner) failed. Downstream consensus selection runs with no aligners and silently produces no output.
 
@@ -150,7 +150,7 @@ if 'minimap2' not in results:
 
 ### NEW-067 (MEDIUM) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure
 
-**File:** `rectify/core/align_command.py` (lines 576–579)
+**File:** `rectify/core/commands/align_command.py` (lines 576–579)
 
 **Symptom:** Current code:
 ```python
@@ -174,7 +174,7 @@ if result.returncode == 0 and calmd_bam.stat().st_size > 0:
 
 ### NEW-066 (MEDIUM) — uLTRA reuses stale cached database with empty genome, silently produces zero alignments
 
-**File:** `rectify/core/multi_aligner.py`, `run_ultra()` (~line 848)
+**File:** `rectify/core/align/multi_aligner.py`, `run_ultra()` (~line 848)
 
 **Symptom:** uLTRA exits 0 but produces a SAM with only `@SQ` headers and no alignment records. Observed for chunks 0–6 of `wt_by4742_rep1_chunked_20260412` across three separate SLURM runs.
 
@@ -194,7 +194,7 @@ When `polya_walkback` produces a corrected_3prime that falls *inside* a near-3' 
 - Option A: In `clip_read_to_corrected_3prime`, detect when walking lands inside an N op and snap the clip to the N's start (fully clip the N and all trailing ops). Update corrected_3prime in the TSV to `junction_start − 1`.
 - Option B: In `bam_processor._run_correction`, when FJF detects a near-3' artifact junction, propagate FJF's `corrected_3prime` (junction_start−1) and do not override it with the walkback position when the walkback lands inside the artifact N span.
 
-**Files:** `rectify/core/bam_processor.py` (`clip_read_to_corrected_3prime`), `rectify/core/false_junction_filter.py`
+**Files:** `rectify/core/bam/bam_processor.py` (`clip_read_to_corrected_3prime`), `rectify/core/splice/false_junction_filter.py`
 **Discovered:** 2026-04-09 validation audit (cat4_plus_1, cat4_plus_2)
 
 ---
@@ -205,7 +205,7 @@ When `rescue_3ss_truncation` corrects a read's 5' end, `five_prime_rescued=True`
 
 **Fix:** Add `five_prime_rescued` (bool) to the TSV header and row in `write_results_tsv`, and append `five_prime_rescued` to `correction_applied` when True.
 
-**Files:** `rectify/core/bam_processor.py:567–613` (`write_results_tsv`)
+**Files:** `rectify/core/bam/bam_processor.py:567–613` (`write_results_tsv`)
 **Discovered:** 2026-04-09 validation audit (cat3 reads)
 
 ---
@@ -216,7 +216,7 @@ Reads with XK=1 (chimeric reconstruction) that have a hard-clip at the 3' end ar
 
 **Fix:** In `bam_processor.correct_read_3prime()`, skip polya_walkback (or cap ambiguity window to 0) when the read has a hard-clip at its 3' end (indicates missing sequence; walkback is unanchored).
 
-**Files:** `rectify/core/bam_processor.py` (`correct_read_3prime`), `rectify/core/atract_detector.py`
+**Files:** `rectify/core/bam/bam_processor.py` (`correct_read_3prime`), `rectify/core/polya/atract_detector.py`
 **Discovered:** 2026-04-09 validation audit (cat5_plus_3aligner)
 
 ---
@@ -227,7 +227,7 @@ When `ambiguity_range == 1`, there is only one candidate position; NET-seq refin
 
 **Fix:** In `bam_processor.correct_read_3prime()`, only add `netseq_refinement` to `correction_applied` when `ambiguity_range > 1` (i.e., when NET-seq signal was actually consulted to break a tie).
 
-**Files:** `rectify/core/bam_processor.py` (correction_applied assembly)
+**Files:** `rectify/core/bam/bam_processor.py` (correction_applied assembly)
 **Discovered:** 2026-04-09 validation audit (cat6_minus_single)
 
 ---
@@ -255,7 +255,7 @@ Core per-read consensus selection logic was exercised only through two periphera
 `--polya-model` flag, model training pipeline, and `load_model()` infrastructure existed, but `polya_model_path` was captured in config and then discarded. The hardcoded 80% A-richness threshold was always applied regardless.
 
 **Fix:** Wired `polya_model_path` through `bam_processor.correct_read_3prime()` (both streaming and parallel modes). Added `pt_tag`, `polya_score`, and `polya_source` columns to `corrected_3ends.tsv`. Added `rectify tag-polya` subcommand for retroactive annotation of aligned BAMs. Added unaligned dorado BAM auto-detection and tag-preserving alignment pipeline in `preprocess.py`.
-**Files:** `rectify/core/bam_processor.py`, `rectify/core/correct_command.py`, `rectify/core/tag_polya_command.py`, `rectify/core/preprocess.py`, `rectify/cli.py`
+**Files:** `rectify/core/bam/bam_processor.py`, `rectify/core/commands/correct_command.py`, `rectify/core/commands/tag_polya_command.py`, `rectify/core/align/preprocess.py`, `rectify/cli.py`
 
 ---
 
@@ -264,7 +264,7 @@ Core per-read consensus selection logic was exercised only through two periphera
 `DEFAULT_MIN_PEAK_SEPARATION = 5`, `DEFAULT_MAX_CLUSTER_RADIUS = 10`, and `DEFAULT_MIN_SAMPLES = 2` had no corresponding CLI arguments.
 
 **Fix:** Added `--min-peak-sep`, `--max-cluster-radius`, `--min-cluster-samples` to `create_analyze_parser()`. Both clustering call sites (single-sample and manifest mode) dispatch to `cluster_cpa_sites_adaptive()` when any non-default value is provided; otherwise fall through to the existing fixed-distance `cluster_cpa_sites()`.
-**Files:** `rectify/core/analyze_command.py`
+**Files:** `rectify/core/commands/analyze_command.py`
 
 ---
 
@@ -297,7 +297,7 @@ Core per-read consensus selection logic was exercised only through two periphera
 `core/netseq_bam_processor.py:275` subtracts `n_trimmed` from the minus-strand 3' position during initial extraction. Line 416 subtracts it a second time: `three_prime_raw = three_prime_corrected - n_trimmed`. The plus-strand path correctly adds `n_trimmed` once to undo the subtraction. All minus-strand NET-seq 3' positions are shifted upstream by `2 × n_trimmed`.
 
 **Fix:** Remove the duplicate subtraction at line 416 for minus strand, or consolidate both sites into one.
-**File:** `rectify/core/netseq_bam_processor.py:275, 416`
+**File:** `rectify/core/bam/netseq_bam_processor.py:275, 416`
 
 ---
 
@@ -306,7 +306,7 @@ Core per-read consensus selection logic was exercised only through two periphera
 Both functions initialize `raw_pos = read.reference_end - 1`, discarding any correction already applied upstream. In contrast, `rescue_polya_prefix_in_softclip()` correctly accepts a `current_pos` parameter. When indel correction pipelines call these two functions after an initial correction, the re-anchor silently undoes the prior correction and applies its own walk from the original BAM position.
 
 **Fix:** Add `current_pos` parameter to both functions; replace `raw_pos = read.reference_end - 1` with `raw_pos = current_pos`.
-**File:** `rectify/core/indel_corrector.py:413-419, 654-659` (function definitions), called at lines ~1402, ~1415
+**File:** `rectify/core/correct/indel_corrector.py:413-419, 654-659` (function definitions), called at lines ~1402, ~1415
 
 ---
 
@@ -315,7 +315,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/splice_aware_5prime.py:609`: for minus-strand reads, `exon_seq = genome_seq[intron_end - rescue_len:intron_end]` fetched sequence from the **end of the intron** instead of exon1. For minus-strand genes, exon1 (upstream in transcript order) is at **higher** genomic coordinates than the intron — `intron_end` (exclusive) marks where exon1 begins in genomic space. The soft-clip sequence stored in the BAM is in forward-strand orientation (RC of RNA), so no reverse-complement is needed; the correct window is `genome_seq[intron_end:intron_end + rescue_len]`. All minus-strand cat3 5' splice rescue calls compared the read tail against intronic sequence, causing the position to remain unchanged.
 
 **Fix:** Changed line 609 from `genome_seq[intron_end - rescue_len:intron_end]` to `genome_seq[intron_end:intron_end + rescue_len]`.
-**File:** `rectify/core/splice_aware_5prime.py:609`
+**File:** `rectify/core/splice/splice_aware_5prime.py:609`
 
 ---
 
@@ -324,7 +324,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/batch_command.py:520-547`: sample IDs, BAM paths, organism, netseq-dir, and annotation arguments are embedded in generated bash scripts with only double-quote wrapping (`f'  "{sample_id}"'`), not `shlex.quote()`. A sample ID containing `$(...)` or backtick from a manifest TSV produces shell injection in the SLURM script.
 
 **Fix:** Use `shlex.quote()` for all values embedded in generated shell scripts.
-**File:** `rectify/core/batch_command.py:520-547`
+**File:** `rectify/core/commands/batch_command.py:520-547`
 
 ---
 
@@ -342,7 +342,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/batch_command.py:162`: `_SCRATCH_TEARDOWN_BLOCK` runs `rsync -a "${{SCRATCH_DIR}}/" "$OAK_OUTPUT_DIR/"` with no guard. If `SCRATCH_DIR` is unset or empty, rsync exits non-zero or clobbers Oak output with an empty tree. With `set -euo pipefail` in generated scripts, this aborts jobs that would otherwise succeed.
 
 **Fix:** Guard the teardown: `if [ -n "$SCRATCH_DIR" ] && [ -d "$SCRATCH_DIR" ]; then rsync ...; fi`.
-**File:** `rectify/core/batch_command.py:162`
+**File:** `rectify/core/commands/batch_command.py:162`
 
 ---
 
@@ -351,7 +351,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/multi_aligner.py:385`: `sort_proc.communicate(timeout=ALIGNER_TIMEOUT)` for mapPacBio lacks a surrounding `try-except subprocess.TimeoutExpired`. The minimap2 path at line ~181 wraps this in try-except with `proc.kill()`. If mapPacBio hangs, the rectify process hangs indefinitely — severe in SLURM where wall-time overruns silently kill downstream tasks.
 
 **Fix:** Wrap `sort_proc.communicate(timeout=ALIGNER_TIMEOUT)` in the same try-except pattern as minimap2.
-**File:** `rectify/core/multi_aligner.py:385`
+**File:** `rectify/core/align/multi_aligner.py:385`
 
 ---
 
@@ -360,7 +360,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/multi_aligner.py` (mapPacBio SAM→BAM setup): `view_proc` was spawned with `stderr=subprocess.PIPE` but no thread drained it. When samtools writes enough to fill the OS pipe buffer, `view_proc` blocks; since the parent is blocked on `sort_proc.communicate()`, neither pipe drains → classic deadlock producing a truncated BAM.
 
 **Fix:** Changed `view_proc` to `stderr=subprocess.DEVNULL` (discards aligner stderr; error details come from `sort_proc`). Added `view_proc.kill()` in the timeout handler. `view_proc.wait()` + returncode check added after `sort_proc.communicate()`.
-**File:** `rectify/core/multi_aligner.py`
+**File:** `rectify/core/align/multi_aligner.py`
 
 ---
 
@@ -406,7 +406,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/bam_processor.py`: `get_read_3prime_position()` returns `(None, strand)` for zero-length/unmapped reads. The `None` position is stored directly to the result dict (`'original_3prime': original_position`) and written to TSV as the string `"None"`. Downstream arithmetic raises `TypeError`.
 
 **Fix:** Add `if original_position is None: continue` guard after each position extraction call; increment a stat counter for skipped reads.
-**File:** `rectify/core/bam_processor.py:191, 253-254`
+**File:** `rectify/core/bam/bam_processor.py:191, 253-254`
 
 ---
 
@@ -415,7 +415,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/consensus.py`: plus-strand proximity check uses `if dist < 0` (line 378); minus-strand uses `if dist <= 0` (line 404). A read whose 5' end falls exactly on a junction boundary (`dist == 0`) is rescued on plus strand but excluded on minus strand.
 
 **Fix:** Use consistent comparison: `dist < 0` for both strands (or `<= 0` for both — apply symmetrically).
-**File:** `rectify/core/consensus.py:378, 404`
+**File:** `rectify/core/consensus/consensus.py:378, 404`
 
 ---
 
@@ -424,7 +424,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/consensus.py:899-907`: the candidate junction set is 3-tuples `(chrom, intron_start, intron_end)` with no strand. The rescue loop iterates these without strand filtering, potentially snapping plus-strand reads to minus-strand junction boundaries in overlapping gene regions.
 
 **Fix:** Include strand in the junction key and filter `candidate_junctions` to matching strand before rescue.
-**File:** `rectify/core/consensus.py:899-907`
+**File:** `rectify/core/consensus/consensus.py:899-907`
 
 ---
 
@@ -433,7 +433,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/multi_aligner.py` (mapPacBio SAM→BAM): `sort_proc.returncode` is checked after `communicate()` but `view_proc.returncode` is not. A failed `samtools view` (malformed SAM) produces a corrupt BAM silently passed to consensus. uLTRA and deSALT both call `view_proc.wait()` and check both return codes.
 
 **Fix:** After `communicate()`, call `view_proc.wait()` and raise `RuntimeError` if `view_proc.returncode != 0`.
-**File:** `rectify/core/multi_aligner.py` (mapPacBio section, ~line 387)
+**File:** `rectify/core/align/multi_aligner.py` (mapPacBio section, ~line 387)
 
 ---
 
@@ -442,7 +442,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `run_command.py` uses `getattr(args, 'continue_on_error', False)` to control error propagation in `_run_multi_sample()`, but `--continue-on-error` is not registered in the `run-all` subparser in `cli.py`. The attribute is always absent; all sample failures abort the entire run even if the user passes the flag.
 
 **Fix:** Declare `--continue-on-error` in the `run-all` subparser in `cli.py`.
-**File:** `rectify/core/run_command.py`, `rectify/cli.py`
+**File:** `rectify/core/commands/run_command.py`, `rectify/cli.py`
 
 ---
 
@@ -451,7 +451,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `run_command.py:831`: `getattr(args, 'use_scratch', True)` defaults to `True`, but `--use-scratch` is not in the `run-all` subparser. Users cannot opt out; scratch staging is always attempted even in environments without `$SCRATCH`.
 
 **Fix:** Declare `--use-scratch / --no-use-scratch` in the `run-all` subparser; default to `True` only when scratch is detected.
-**File:** `rectify/core/run_command.py`, `rectify/cli.py`
+**File:** `rectify/core/commands/run_command.py`, `rectify/cli.py`
 
 ---
 
@@ -460,7 +460,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/batch_command.py` `parse_manifest()`: duplicate `sample_id` rows are accepted without warning. Second sample's outputs overwrite the first, and in two-pass streaming mode the duplicate sample is counted twice in the count matrix, inflating apparent read depth.
 
 **Fix:** After loading the manifest, check for duplicate `sample_id` values and raise an error (or prominent warning).
-**File:** `rectify/core/batch_command.py` (`parse_manifest()`)
+**File:** `rectify/core/commands/batch_command.py` (`parse_manifest()`)
 
 ---
 
@@ -469,7 +469,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/analyze_command.py:351-389`: the primary DESeq2 block relies only on `if args.run_deseq2:` without checking that there are ≥ 2 conditions or ≥ 2 samples per condition. The shift-analysis path at line 477 correctly guards with `len(sample_metadata['condition'].unique()) >= 2`. With a single-condition manifest, `pydeseq2` raises an uninformative deep exception.
 
 **Fix:** Add a pre-flight check before the DESeq2 block: if fewer than 2 conditions or 2 samples per condition, log an error and skip DESeq2.
-**File:** `rectify/core/analyze_command.py:351`
+**File:** `rectify/core/commands/analyze_command.py:351`
 
 ---
 
@@ -478,7 +478,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/correct_command.py:206`: `polya_model_path = getattr(args, 'polya_model', None)` is assigned but absent from both `process_bam_streaming()` and `process_bam_file_parallel()` call sites. Both processor functions lack a `polya_model_path` parameter. The trained model is never used; hardcoded 80% A-richness threshold always applies.
 
 **Fix:** Pass `polya_model_path` through to both processor call sites and consume it inside the BAM processor to override the default threshold. (Related to Bug 41.)
-**File:** `rectify/core/correct_command.py:206`, `rectify/core/bam_processor.py`
+**File:** `rectify/core/commands/correct_command.py:206`, `rectify/core/bam/bam_processor.py`
 
 ---
 
@@ -487,7 +487,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/extract_command.py:454-457`: when all reads are filtered, an empty DataFrame is written as a header-only TSV and the process exits with code 0. No warning is emitted. Downstream pipeline steps either crash on the empty file or silently produce empty results.
 
 **Fix:** After filtering, if output is empty, log a WARNING with the filter breakdown before writing. Optionally exit with code 1.
-**File:** `rectify/core/extract_command.py:454-457`
+**File:** `rectify/core/commands/extract_command.py:454-457`
 
 ---
 
@@ -523,7 +523,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/train_polya_command.py:290-292`: `training_data.n_reads_total += len(clips)` increments before `if len(clips) < min_reads: continue`. Sites that fail the threshold still inflate the total count. Training reports may show `n_reads_total = 50,000` when only 1,000 reads were actually used.
 
 **Fix:** Move the increment to after the min_reads guard, or use a separate counter for pre-filter reads.
-**File:** `rectify/core/train_polya_command.py:290, 292`
+**File:** `rectify/core/commands/train_polya_command.py:290, 292`
 
 ---
 ### MEDIUM (Round 2 — Fixed v2.7.8)
@@ -552,7 +552,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/bam_processor.py:694-707`: `_df = pd.read_csv(str(results_or_path), ...)` is assigned at line 694 with an always-true ternary condition (`if True else ...`) and never used. The file is then read again into `_df2` at lines 699 and 704.
 
 **Fix:** Remove the `_df` assignment and the dead `if True else` ternary.
-**File:** `rectify/core/bam_processor.py:694-695`
+**File:** `rectify/core/bam/bam_processor.py:694-695`
 
 ---
 
@@ -561,7 +561,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/consensus.py:544`: at this point `terminal_end > 0` is guaranteed (early return at line 537 handles zero, early return at line 542 exits if `total_errors < min_errors`). `max(five_clip, five_clip + terminal_end)` always returns `five_clip + terminal_end`. The `max()` adds confusion with no defensive value.
 
 **Fix:** Replace with `return five_clip + terminal_end` directly.
-**File:** `rectify/core/consensus.py:544`
+**File:** `rectify/core/consensus/consensus.py:544`
 
 ---
 
@@ -570,7 +570,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/consensus.py`: `_get_effective_5prime_clip` wraps `read.get_aligned_pairs()` in a bare `except Exception: return five_clip`. Any unexpected failure (memory error, corrupted pysam object) is silently swallowed and the default clip length returned.
 
 **Fix:** Narrow to specific exceptions (e.g., `ValueError`, `RuntimeError`); log at WARNING level before returning default.
-**File:** `rectify/core/consensus.py` (`_get_effective_5prime_clip`)
+**File:** `rectify/core/consensus/consensus.py` (`_get_effective_5prime_clip`)
 
 ---
 
@@ -579,7 +579,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/polya_trimmer.py:532`: `a_frac = clip_seq.count('A') / clip_len` with no guard against `clip_len == 0`. A CIGAR soft-clip with length 0 (technically valid) causes `ZeroDivisionError`.
 
 **Fix:** Add `if clip_len == 0: return read, 0` before the division.
-**File:** `rectify/core/polya_trimmer.py:530-532`
+**File:** `rectify/core/polya/polya_trimmer.py:530-532`
 
 ---
 
@@ -588,7 +588,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/polya_trimmer.py:545`: `t_frac = clip_seq.count('T') / clip_len` — same unguarded division in the minus-strand branch.
 
 **Fix:** Add `if clip_len == 0: return read, 0` before the division.
-**File:** `rectify/core/polya_trimmer.py:543-545`
+**File:** `rectify/core/polya/polya_trimmer.py:543-545`
 
 ---
 
@@ -597,7 +597,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/polya_model.py:128-131`: `{int(k): v for k, v in data['position_profile'].items()}` — any non-integer key in a corrupted JSON model file raises `ValueError` with no user-friendly error message.
 
 **Fix:** Wrap the dict comprehension in a try-except; raise a descriptive `ValueError` naming the bad key.
-**File:** `rectify/core/polya_model.py:128-131`
+**File:** `rectify/core/polya/polya_model.py:128-131`
 
 ---
 
@@ -606,7 +606,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/run_command.py` `_bam_has_md_tags()`: bare `except Exception: pass` returns `False` (no MD tags) when the BAM file does not exist. Callers can't distinguish "file missing" from "file has no MD tags."
 
 **Fix:** Narrow the exception handler; let `FileNotFoundError` propagate or raise a descriptive error.
-**File:** `rectify/core/run_command.py` (`_bam_has_md_tags`)
+**File:** `rectify/core/commands/run_command.py` (`_bam_has_md_tags`)
 
 ---
 
@@ -615,7 +615,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/run_command.py:569`: `sample_output = output_dir / sample_id` — a manifest with `sample_id = "../../etc/passwd"` resolves outside `output_dir`. No sanitization is performed.
 
 **Fix:** Validate `sample_id` contains no path separator before constructing the output path (e.g., `if '/' in sample_id or sample_id.startswith('.'): raise ValueError`).
-**File:** `rectify/core/run_command.py:569`
+**File:** `rectify/core/commands/run_command.py:569`
 
 ---
 
@@ -624,7 +624,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/run_command.py` (manifest dispatch): the code validates the `path` column exists but does not check that files are present before submitting all tasks to the thread pool. Missing files are discovered one-by-one as workers start, producing scattered error messages instead of a clear pre-flight failure.
 
 **Fix:** Before spawning workers, check `Path(s['path']).exists()` for each manifest entry; collect all missing files and raise a single descriptive error.
-**File:** `rectify/core/run_command.py` (manifest loading/dispatch section)
+**File:** `rectify/core/commands/run_command.py` (manifest loading/dispatch section)
 
 ---
 
@@ -633,7 +633,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/analyze_command.py` (two-pass streaming): pass 1 skips samples with no valid positions (`if not _agg: continue`). Pass 2 iterates the original manifest and fills missing sample columns with zeros, adding the zero-position sample back as an all-zeros column — inflating the sample count for DESeq2 and shift analysis.
 
 **Fix:** Track which samples were skipped in pass 1; exclude them from both pass 2 and downstream tools.
-**File:** `rectify/core/analyze_command.py` (two-pass streaming logic)
+**File:** `rectify/core/commands/analyze_command.py` (two-pass streaming logic)
 
 ---
 
@@ -642,7 +642,7 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 `core/analyze_command.py:1673`: `with open(output_path, 'w') as f: f.write(...)` — no temp-file + `os.replace()` pattern. A crash mid-write leaves a partial bedgraph that is indistinguishable from a valid file on restart.
 
 **Fix:** Write to a `.tmp` file alongside the target; call `os.replace(tmp, output_path)` on success.
-**File:** `rectify/core/analyze_command.py:1673`
+**File:** `rectify/core/commands/analyze_command.py:1673`
 
 ---
 
@@ -677,49 +677,49 @@ Both functions initialize `raw_pos = read.reference_end - 1`, discarding any cor
 
 ### ~~Bug 29 (CRITICAL) — Double-subtraction of 3'SS position in terminal exon refiner~~ — Fixed 2026-04-08 (v2.7.7)
 Removed the erroneous `- 2` from `abs(read_end - pos - 2)` → `abs(read_end - pos)`.
-**File:** `rectify/core/terminal_exon_refiner.py:1072`
+**File:** `rectify/core/splice/terminal_exon_refiner.py:1072`
 
 ---
 
 ### ~~Bug 30 (CRITICAL) — `use_scratch` and `streaming` silently dropped by `_apply_profile()`~~ — Fixed 2026-04-08 (v2.7.7)
 Added `use_scratch`, `streaming`, `analyze_cpus`, `analyze_mem`, `analyze_time` to `_apply_profile()` dispatch table and defaults dict.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
 ### ~~Bug 31 (HIGH) — `run_command.py` doesn't record resolved config in provenance~~ — Fixed 2026-04-08 (v2.7.7)
 `_run_junction_aggregation()` now passes `config=vars(args)` to `init_provenance()`.
-**File:** `rectify/core/run_command.py`
+**File:** `rectify/core/commands/run_command.py`
 
 ---
 
 ### ~~Bug 33 (HIGH) — Minus-strand 5'SS truncation check uses wrong coordinate~~ — Fixed 2026-04-08 (v2.7.7)
 Changed to `read_5prime = read_end - 1` for minus-strand reads in `detect_junction_truncated_reads()`.
-**File:** `rectify/core/terminal_exon_refiner.py`
+**File:** `rectify/core/splice/terminal_exon_refiner.py`
 
 ---
 
 ### ~~Bug 34 (HIGH) — `analyze_cpus/mem/time` not applied from SLURM profiles~~ — Fixed 2026-04-08 (v2.7.7)
 Resolved by Bug 30 fix.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
 ### ~~Bug 35 (HIGH) — GFF-derived 3'SS positions not validated against genome~~ — Fixed 2026-04-08 (v2.7.7)
 Added optional `genome` parameter to `load_splice_sites_from_gff()`; validates AG/CT dinucleotide at each 3'SS and skips sites that fail.
-**File:** `rectify/core/terminal_exon_refiner.py`
+**File:** `rectify/core/splice/terminal_exon_refiner.py`
 
 ---
 
 ### ~~Bug 39 (MEDIUM) — GC-AG missing from canonical splice motif set~~ — Fixed 2026-04-08 (v2.7.7)
 Added `'GC-AG'` to `_CANONICAL_MOTIFS`.
-**File:** `rectify/core/junction_validator.py`
+**File:** `rectify/core/splice/junction_validator.py`
 
 ---
 
 ### ~~Bug 40 (MEDIUM) — Position shift double-counting for A-tract reads~~ — Fixed 2026-04-08 (v2.7.7)
 `total_position_shifts` no longer increments for reads already counted under `atract_ambiguity`.
-**File:** `rectify/core/processing_stats.py`
+**File:** `rectify/core/bam/processing_stats.py`
 
 ---
 
@@ -731,7 +731,7 @@ Replaced manual JSD with `scipy.spatial.distance.jensenshannon() ** 2`.
 
 ### ~~Bug 43 (MEDIUM) — A-richness threshold inconsistency~~ — Fixed 2026-04-08 (v2.7.7)
 Local `A_RICHNESS_THRESHOLD = 0.7` removed; now uses `POLYA_RICHNESS_THRESHOLD` from `config.py`.
-**File:** `rectify/core/false_junction_filter.py`
+**File:** `rectify/core/splice/false_junction_filter.py`
 
 ---
 
@@ -743,49 +743,49 @@ Added heuristic warning in `build_cds_interval_tree()` when `start` column minim
 
 ### ~~Bug 45 (MEDIUM) — Minus-strand ambiguity window extends in wrong direction~~ — Fixed 2026-04-08 (v2.7.7)
 Corrected to `ambiguity_min = current_position - range`, `ambiguity_max = current_position`.
-**File:** `rectify/core/bam_processor.py`
+**File:** `rectify/core/bam/bam_processor.py`
 
 ---
 
 ### ~~Bug 46 (MEDIUM) — BAM handle not in context manager in `find_coverage_gaps()`~~ — Fixed 2026-04-08 (v2.7.7)
 Wrapped in `with pysam.AlignmentFile(bam_path, 'rb') as bam:`.
-**File:** `rectify/core/bam_processor.py`
+**File:** `rectify/core/bam/bam_processor.py`
 
 ---
 
 ### ~~Bug 47 (MEDIUM) — Bare `except Exception: pass` swallows gene attribution errors~~ — Fixed 2026-04-08 (v2.7.7)
 Changed to `except Exception as _e: logger.warning(...)`.
-**File:** `rectify/core/bam_processor.py`
+**File:** `rectify/core/bam/bam_processor.py`
 
 ---
 
 ### ~~Bug 48 (MEDIUM) — YAML profile fields not validated at load time~~ — Fixed 2026-04-08 (v2.7.7)
 `load_slurm_profile()` now warns on unrecognized keys.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
 ### ~~Bug 49 (MEDIUM) — `--continue-on-error` not wired to SLURM mode~~ — Fixed 2026-04-08 (v2.7.7)
 Generated scripts now use `set -uo pipefail` (no `-e`) when `--continue-on-error` is set.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
 ### ~~Bug 50 (MEDIUM) — `--partition` not enforced when `--submit` is used~~ — Fixed 2026-04-08 (v2.7.7)
 Returns an error immediately if `--submit` is requested without `--partition`.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
 ### ~~Bug 51 (MEDIUM) — Subprocess return code not checked for uLTRA/deSALT SAM→BAM~~ — Fixed 2026-04-08 (v2.7.7)
 Both pipelines now raise `RuntimeError` on non-zero exit from `samtools view` or `samtools sort`.
-**File:** `rectify/core/multi_aligner.py`
+**File:** `rectify/core/align/multi_aligner.py`
 
 ---
 
 ### ~~Bug 52 (MEDIUM) — SGE array task IDs are 1-based; generated script assumes 0-based~~ — Fixed 2026-04-08 (v2.7.7)
 Added `$((SGE_TASK_ID - 1))` normalization in the generated scheduler abstraction block.
-**File:** `rectify/core/batch_command.py`
+**File:** `rectify/core/commands/batch_command.py`
 
 ---
 
@@ -805,79 +805,79 @@ Logs a WARNING when >10% of records lack gene attribution.
 
 ### ~~Bug 27 — `detect_partial_junction_crossings()` TypeError on SEQ=* reads~~ — Fixed 2026-04-03 (v2.7.5)
 `terminal_exon_refiner.py`: `len(clip_seq)` crashed with `TypeError` when `five_prime_clip['sequence']` is `None` (unmapped reads with `SEQ=*` in BAM). Added `if clip_seq is None: continue` guard.
-**File:** `rectify/core/terminal_exon_refiner.py`
+**File:** `rectify/core/splice/terminal_exon_refiner.py`
 
 ---
 
 ### ~~Bug 26 — `generate_bedgraphs()` KeyError~~ — Fixed 2026-04-03 (v2.7.5)
 `analyze_command.py`: Fallback column name `'position'` (non-existent) replaced with `'corrected_position'` (the actual column name in output TSVs).
-**File:** `rectify/core/analyze_command.py`
+**File:** `rectify/core/commands/analyze_command.py`
 
 ---
 
 ### ~~Bug 24 — `_run_junction_aggregation()` KeyError + `.gff.gz` detection~~ — Fixed 2026-04-03 (v2.7.5)
 `run_command.py`: Dict key `partial_results['summary']` replaced with `partial_results['stats']` (correct key from `detect_partial_junction_crossings()`). Also fixed `.suffix` → `.suffixes` so `.gff.gz` files are correctly detected as GFF.
-**File:** `rectify/core/run_command.py`
+**File:** `rectify/core/commands/run_command.py`
 
 ---
 
 ### ~~Bug 23 — `deconvolve_region()` silent bad output~~ — Fixed 2026-04-03 (v2.7.5)
 `netseq_deconvolution.py`: Inverted coordinates (`region_start ≥ region_end`) now raise `ValueError` instead of silently returning a zero-length result.
-**File:** `rectify/core/netseq_deconvolution.py`
+**File:** `rectify/core/netseq/netseq_deconvolution.py`
 
 ---
 
 ### ~~Bug 22 — `get_netseq_3prime_position()` crash on unmapped reads~~ — Fixed 2026-04-03 (v2.7.5)
 `netseq_bam_processor.py`: Added `if read.is_unmapped or read.reference_end is None: raise ValueError(...)` guard to prevent `TypeError` on unmapped reads.
-**File:** `rectify/core/netseq_bam_processor.py`
+**File:** `rectify/core/bam/netseq_bam_processor.py`
 
 ---
 
 ### ~~Bugs 20–21 — Silent fallbacks in `_stitch_group()`~~ — Fixed 2026-04-03 (v2.7.5)
 `mpb_split_reads.py`: Added `logger.debug()` calls for (20) all-unmapped read groups and (21) cross-chromosome/cross-strand chunk fallbacks, so these events are visible at DEBUG level instead of silently dropped.
-**File:** `rectify/core/mpb_split_reads.py`
+**File:** `rectify/core/align/mpb_split_reads.py`
 
 ---
 
 ### ~~Bug 19 — BAM file descriptor leak in `refine_terminal_exons()`~~ — Fixed 2026-04-03 (v2.7.5)
 `terminal_exon_refiner.py`: Converted from `bam.open()/bam.close()` to `with pysam.AlignmentFile(...) as bam:` context manager, ensuring file handle is closed even on early exit.
-**File:** `rectify/core/terminal_exon_refiner.py`
+**File:** `rectify/core/splice/terminal_exon_refiner.py`
 
 ---
 
 ### ~~Bugs 17+11 — OOM and chrom normalization in `junction_validator.py`~~ — Fixed 2026-04-03 (v2.7.5)
 `junction_validator.py`: `filter_cross_sample_junctions()` replaced `pd.concat` + `itertuples()` (OOM on large datasets) with streaming dict accumulation. `read.reference_name` now passes through `standardize_chrom_name()` before junction key construction.
-**File:** `rectify/core/junction_validator.py`
+**File:** `rectify/core/splice/junction_validator.py`
 
 ---
 
 ### ~~Bug 15 — Negative `ambiguity_min` for reads near chromosome start~~ — Fixed 2026-04-03 (v2.7.5)
 `bam_processor.py`: `ambiguity_min` is now clipped to `max(0, ...)` to prevent negative genomic coordinates for reads near the chromosome start.
-**File:** `rectify/core/bam_processor.py`
+**File:** `rectify/core/bam/bam_processor.py`
 
 ---
 
 ### ~~Bug 7 — Missing timeouts on minimap2/mapPacBio/gapmm2~~ — Fixed 2026-04-03 (v2.7.5)
 `multi_aligner.py`: `ALIGNER_TIMEOUT` (7200s) now applied to all five aligners (was only applied to uLTRA and deSALT). Added `try/except TimeoutExpired` with process kill for minimap2 pipe.
-**File:** `rectify/core/multi_aligner.py`
+**File:** `rectify/core/align/multi_aligner.py`
 
 ---
 
 ### ~~Missing `logger` in `false_junction_filter.py`~~ — Fixed 2026-04-03 (v2.7.6)
 `false_junction_filter.py`: `logger.debug()` was called on line 286 but `import logging` and `logger = logging.getLogger(__name__)` were never added. Would have raised `NameError` at runtime whenever a junction motif analysis exception occurred.
-**File:** `rectify/core/false_junction_filter.py`
+**File:** `rectify/core/splice/false_junction_filter.py`
 
 ---
 
 ### ~~`NetSeqSignal` not picklable~~ — Fixed 2026-04-03 (v2.7.6)
 `netseq_refiner.py`: Added `__getstate__()` and `__setstate__()` methods so `NetSeqSignal` can be pickled for use with `multiprocessing.Pool`. The methods exclude the `threading.Lock` and open `pyBigWig` file handles (which are not picklable) and recreate them on restore.
-**File:** `rectify/core/netseq_refiner.py`
+**File:** `rectify/core/netseq/netseq_refiner.py`
 
 ---
 
 ### ~~BAM file handle leak in `iter_netseq_reads()`~~ — Fixed 2026-04-03 (v2.7.6)
 `netseq_bam_processor.py`: The read iteration loop in `iter_netseq_reads()` called `bam.close()` after the loop, but an early `break` (e.g. `max_reads` limit reached) or exception would skip the close. Wrapped the loop in `try: ... finally: bam.close()`.
-**File:** `rectify/core/netseq_bam_processor.py`
+**File:** `rectify/core/bam/netseq_bam_processor.py`
 
 ---
 
@@ -894,7 +894,7 @@ Added explicit `.copy()` before the `_effective_count` assignment block.
 `_load_large_file_chunked` in `analyze_command.py` lacked the auto-detection
 fallback that the small-file path already had. Now both paths try
 `["sample", "replicate", "sample_id", "sample_name"]` and use the first match.
-**Files:** `rectify/core/analyze_command.py`
+**Files:** `rectify/core/commands/analyze_command.py`
 **Tests:** `tests/test_sample_column_autodetect.py` (7 tests)
 
 ---
@@ -906,7 +906,7 @@ PAF format omits the read sequence. Fixed by passing the source FASTQ dict
 to the converter; sequence + quality are looked up by read_id and copied onto
 every gapmm2 BAM record. `_process_and_write_batch` in `consensus.py` provides
 the FASTQ dict; logs a warning rather than crashing when no sequence is found.
-**Files:** `rectify/core/multi_aligner.py`, `rectify/core/consensus.py`
+**Files:** `rectify/core/align/multi_aligner.py`, `rectify/core/consensus/consensus.py`
 **Tests:** `tests/test_gapmm2_seq_restore.py`
 
 ---
@@ -918,7 +918,7 @@ Two root causes:
    records got written as primaries. Now `tp:A:S` → `FLAG |= 0x100`.
 2. The rectified BAM writer did not track which read_ids already had a primary
    written. Fixed to enforce one-primary-per-read-ID.
-**Files:** `rectify/core/multi_aligner.py`, `rectify/core/consensus.py`
+**Files:** `rectify/core/align/multi_aligner.py`, `rectify/core/consensus/consensus.py`
 **Tests:** `tests/test_no_duplicate_primaries.py` (3 tests)
 
 ---
@@ -932,7 +932,7 @@ Implemented COMPASS-style three-pass cross-sample junction validation:
   by min_samples ≥ 2, min_reads ≥ 3, max_intron ≤ 10,000 bp, canonical motifs
 - **Pass 3** `apply_junction_filter()`: stream per-sample BAM, downgrade XC
   confidence for reads with unvalidated junctions (high→medium, medium→low)
-**New file:** `rectify/core/junction_validator.py`
+**New file:** `rectify/core/splice/junction_validator.py`
 **Tests:** `tests/test_junction_validator.py` (44 tests)
 
 ---
@@ -987,4 +987,4 @@ Five root causes of `malloc(): memory corruption` / `SIGABRT` in
 - GFF3: Extracts `ID` → gene_id, `gene` → common name, `Name` → systematic name
 - GTF: Extracts `gene_id` and `gene_name`
 
-**Location:** `rectify/core/analyze_command.py:707-770`
+**Location:** `rectify/core/commands/analyze_command.py:707-770`

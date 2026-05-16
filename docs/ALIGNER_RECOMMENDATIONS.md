@@ -45,7 +45,7 @@ The following were evaluated as potential additions to the panel:
 | **Winnowmap2** | Actively updated; optimized for human genomics | Low priority for yeast |
 | **GraphMap2** | Last updated 2018, compilation issues | Replaced |
 
-These have not been integrated into the production panel. See `rectify/core/multi_aligner.py`
+These have not been integrated into the production panel. See `rectify/core/align/multi_aligner.py`
 for the canonical list of supported aligners.
 
 ---
@@ -54,10 +54,10 @@ for the canonical list of supported aligners.
 
 To integrate a new aligner:
 
-1. Add a wrapper function in `rectify/core/multi_aligner.py` following the existing
+1. Add a wrapper function in `rectify/core/align/multi_aligner.py` following the existing
    `run_minimap2`, `run_mappacbio`, `run_gapmm2`, `run_ultra`, `run_desalt` patterns.
 2. Register the aligner name in `SUPPORTED_ALIGNERS` and the consensus scoring logic
-   in `rectify/core/consensus_command.py`.
+   in `rectify/core/commands/consensus_command.py`.
 3. Run `rectify install-aligners --check` to verify the new binary is on PATH.
 4. Validate against the bundled test dataset: `pytest tests/test_consensus_selection.py`
 

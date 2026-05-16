@@ -300,7 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Missing `_GenomeDictReference` adapter in `false_junction_filter`** (`false_junction_filter.py`):
   `bam_processor.py` called `_fjf._GenomeDictReference(genome)` which existed in beta
   but was never ported to production, causing a crash during the correction step for
-  every sample: `AttributeError: module 'rectify.core.false_junction_filter' has no
+  every sample: `AttributeError: module 'rectify.core.splice.false_junction_filter' has no
   attribute '_GenomeDictReference'`. Ported the thin adapter class (wraps a genome dict
   to present a `pysam.FastaFile`-compatible interface) from beta.
 

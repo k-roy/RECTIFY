@@ -4,7 +4,7 @@ NET-seq refinement is an **optional** post-correction step that snaps 3' ends to
 
 NET-seq runs as the final refinement step, after all main 3' end correction modules (2E pre → 2F → 2A → 2B → 2C → 2D → 2G → 2E main → 2H) have completed. For reads in A-tract regions where the walk-back algorithm cannot uniquely resolve the true CPA position, NET-seq signal is used to guide the final position assignment.
 
-**Implementation:** `rectify/core/netseq_refiner.py`, `rectify/core/netseq_deconvolution.py`
+**Implementation:** `rectify/core/netseq/netseq_refiner.py`, `rectify/core/netseq/netseq_deconvolution.py`
 
 ---
 

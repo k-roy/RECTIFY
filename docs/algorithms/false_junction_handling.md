@@ -2,7 +2,7 @@
 
 Poly(A) tails can create spurious splice junctions (N operations in the CIGAR) when the aligner introduces a skip to align tail bases to a downstream A-tract.
 
-**Implementation:** `rectify/core/false_junction_filter.py`, integrated into `rectify/core/bam_processor.py`
+**Implementation:** `rectify/core/splice/false_junction_filter.py`, integrated into `rectify/core/bam/bam_processor.py`
 
 ---
 
@@ -87,13 +87,13 @@ def screen_ag_mispriming(read, genome, threshold=0.65):
 
 Flagged reads receive the `AG_RICH` QC flag. They are still reported but should be interpreted with caution for CPA site mapping.
 
-**Implementation:** `rectify/core/ag_mispriming.py`
+**Implementation:** `rectify/core/polya/ag_mispriming.py`
 
 ---
 
 ## Post-consensus N-op junction refinement (Module 2H)
 
-**Implementation:** `rectify/core/junction_refiner.py` — `refine_read_junctions()`
+**Implementation:** `rectify/core/splice/junction_refiner.py` — `refine_read_junctions()`
 
 Module 2H runs **post-consensus** on the selected consensus read set. For every N-op in every read, it tests all candidate junctions within a search radius and replaces imprecise N-op boundaries with the best sequence-supported alternative.
 

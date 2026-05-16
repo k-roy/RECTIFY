@@ -167,7 +167,7 @@ with one short-read aligner (BWA-MEM or BBMap) and feeds the BAM in.
 DRS / ONT cDNA tracks — both aligners produce SAM/BAM that the existing
 selector can consume, and short-read splice calls are notably more
 robust when two aligners agree. Until the multi-aligner shim lands in
-`rectify/core/correct_command.py` (the `--short-read --dT-primed-cDNA`
+`rectify/core/commands/correct_command.py` (the `--short-read --dT-primed-cDNA`
 branch), pick whichever aligner gives the best splice sensitivity for
 your organism.
 

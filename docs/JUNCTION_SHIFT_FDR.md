@@ -180,5 +180,5 @@ selection, not a hard filter.
 ## Related Code
 
 - `common/scripts/nanopore/empirical_cigar_error_profiler.py` — generates `penalty_scores.tsv` and `str_penalty_scores.tsv`
-- `rectify/core/junction_refiner.py` — `HpPenaltyTable`, `_hp_run_length`, `_str_repeat_info`, `_score_hp_anchored`
-- `rectify/core/junction_refiner.py:_CANONICAL_HP_PRIOR` — existing defense mechanism that this model must account for
+- `rectify/core/splice/junction_refiner.py` — `HpPenaltyTable`, `_hp_run_length`, `_str_repeat_info`, `_score_hp_anchored`
+- `rectify/core/splice/junction_refiner.py:_CANONICAL_HP_PRIOR` — existing defense mechanism that this model must account for

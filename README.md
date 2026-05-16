@@ -30,7 +30,7 @@ All three tracks reuse the same multi-aligner consensus, read-vs-reference walkb
 
 All three tracks invoke the same multi-aligner consensus path in `rectify align` (which expands `--aligners all` to the long-read panel by default, or to bbmap+bwa when `--short-read` is set). The walkback core (`rectify/core/correct/walkback.py`) is protocol-agnostic; three thin wrappers (`walkback_drs`, `walkback_quantseq_rev`, and the `cdna-analyze` post-align caller) handle the side and strand differences.
 
-> **QuantSeq REV note.** Pre-align the FASTQ explicitly with `rectify align --short-read` first. If you pass a FASTQ directly to `rectify correct --dT-primed-cDNA`, it currently aligns with minimap2 only (see [preprocess.py:479](rectify/core/preprocess.py#L479)) which is the wrong panel for short reads.
+> **QuantSeq REV note.** Pre-align the FASTQ explicitly with `rectify align --short-read` first. If you pass a FASTQ directly to `rectify correct --dT-primed-cDNA`, it currently aligns with minimap2 only (see [preprocess.py:479](rectify/core/align/preprocess.py#L479)) which is the wrong panel for short reads.
 
 ---
 
@@ -151,7 +151,7 @@ This logic is protocol-agnostic and lives in [`rectify/core/correct/walkback.py`
 | `walk_back_anchor_and_tail` (cdna-analyze) | ONT PCR-cDNA (PCB114.24) | orient=fwd → right, orient=rev → left | right (fwd), left (rev) | A (fwd), T (rev) | off |
 | `walkback_quantseq_rev` | QuantSeq REV (dT-primed) | False → −, True → + (inverted) | **left** (False), right (True) | A (both) | off |
 
-All three wrappers delegate the read-vs-reference scan to the same `walkback.py` module. The DRS production path in [`bam_processor.py`](rectify/core/bam_processor.py) calls `walkback_drs_full`, which adds three artifact guards on top of the scan: a homopolymer early-exit (skip reads not at a genomic A-tract), a large-deletion pre-scan (v2.9.3), an N-op intron-boundary guard for minus-strand reads (v2.9.4), and a 4-base poly(A) tail-context false-stop check (v3.0.3). The legacy `indel_corrector.find_polya_boundary` is now a thin alias that delegates to `walkback_3prime_guarded`; byte-identical output on the bundled Cat1–9 validation reads is enforced by `tests/test_walkback_readvsref.py::TestGuardedParityWithFindPolyaBoundary`. Enabling the guards on the cDNA and QuantSeq REV paths is a separate task (those paths currently match their pre-unification behavior).
+All three wrappers delegate the read-vs-reference scan to the same `walkback.py` module. The DRS production path in [`bam_processor.py`](rectify/core/bam/bam_processor.py) calls `walkback_drs_full`, which adds three artifact guards on top of the scan: a homopolymer early-exit (skip reads not at a genomic A-tract), a large-deletion pre-scan (v2.9.3), an N-op intron-boundary guard for minus-strand reads (v2.9.4), and a 4-base poly(A) tail-context false-stop check (v3.0.3). The legacy `indel_corrector.find_polya_boundary` is now a thin alias that delegates to `walkback_3prime_guarded`; byte-identical output on the bundled Cat1–9 validation reads is enforced by `tests/test_walkback_readvsref.py::TestGuardedParityWithFindPolyaBoundary`. Enabling the guards on the cDNA and QuantSeq REV paths is a separate task (those paths currently match their pre-unification behavior).
 
 <p align="center">
   <img src="docs/figures/walkback_readvsref.png" alt="Read-vs-reference walkback — three-case terminal gate" width="680">

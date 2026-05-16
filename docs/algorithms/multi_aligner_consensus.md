@@ -2,7 +2,7 @@
 
 RECTIFY runs up to five aligners in parallel and selects the best alignment per read using a composite score.
 
-**Implementation:** `rectify/core/multi_aligner.py`, `rectify/core/consensus.py`
+**Implementation:** `rectify/core/align/multi_aligner.py`, `rectify/core/consensus/consensus.py`
 
 ---
 
@@ -110,7 +110,7 @@ With `--chimeric-consensus`, RECTIFY uses a more sophisticated assembly:
 
 This can improve accuracy for reads where different aligners are better at different parts, but it is experimental and requires further validation. Off by default.
 
-**Implementation:** `rectify/core/chimeric_consensus.py`
+**Implementation:** `rectify/core/consensus/chimeric_consensus.py`
 
 ---
 

@@ -8,7 +8,7 @@ Core correction pipeline modules.
 
 The main BAM processing orchestrator. Handles parallel and streaming correction modes.
 
-::: rectify.core.bam_processor
+::: rectify.core.bam.bam_processor
     options:
       members:
         - process_bam_file_parallel
@@ -24,7 +24,7 @@ The main BAM processing orchestrator. Handles parallel and streaming correction 
 
 Walk-back algorithm for poly(A)/A-tract indel artifacts.
 
-::: rectify.core.indel_corrector
+::: rectify.core.correct.indel_corrector
     options:
       members:
         - find_polya_boundary
@@ -38,7 +38,7 @@ Walk-back algorithm for poly(A)/A-tract indel artifacts.
 
 Multi-aligner consensus selection.
 
-::: rectify.core.consensus
+::: rectify.core.consensus.consensus
     options:
       members:
         - AlignmentInfo
@@ -53,7 +53,7 @@ Multi-aligner consensus selection.
 
 Aligner wrappers for minimap2, mapPacBio, gapmm2, uLTRA, and deSALT.
 
-::: rectify.core.multi_aligner
+::: rectify.core.align.multi_aligner
     options:
       members:
         - run_minimap2
@@ -68,7 +68,7 @@ Aligner wrappers for minimap2, mapPacBio, gapmm2, uLTRA, and deSALT.
 
 A-tract ambiguity detection and classification.
 
-::: rectify.core.atract_detector
+::: rectify.core.polya.atract_detector
     options:
       members:
         - detect_atract_ambiguity
@@ -81,7 +81,7 @@ A-tract ambiguity detection and classification.
 
 NET-seq-guided position refinement for A-tract ambiguous reads.
 
-::: rectify.core.netseq_refiner
+::: rectify.core.netseq.netseq_refiner
     options:
       members:
         - NetseqRefiner
@@ -104,7 +104,7 @@ Per-read data structure capturing all correction results.
 
 Correction statistics accumulation.
 
-::: rectify.core.processing_stats
+::: rectify.core.bam.processing_stats
     options:
       members:
         - ProcessingStats
@@ -115,7 +115,7 @@ Correction statistics accumulation.
 
 5' splice junction rescue.
 
-::: rectify.core.splice_aware_5prime
+::: rectify.core.splice.splice_aware_5prime
     options:
       members:
         - rescue_5prime_junction
@@ -127,7 +127,7 @@ Correction statistics accumulation.
 
 Poly(A) tail detection and length measurement.
 
-::: rectify.core.polya_trimmer
+::: rectify.core.polya.polya_trimmer
     options:
       members:
         - trim_polya_tail
@@ -140,7 +140,7 @@ Poly(A) tail detection and length measurement.
 
 AG-mispriming detection for oligo-dT libraries.
 
-::: rectify.core.ag_mispriming
+::: rectify.core.polya.ag_mispriming
     options:
       members:
         - screen_ag_mispriming

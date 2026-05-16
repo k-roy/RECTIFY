@@ -6,7 +6,7 @@ RECTIFY rescues two types of soft-clipped bases that represent real sequence but
 
 ## 1. 5' Junction Rescue (Module 2F)
 
-**Implementation:** `rectify/core/splice_aware_5prime.py` — `rescue_3ss_truncation()`
+**Implementation:** `rectify/core/splice/splice_aware_5prime.py` — `rescue_3ss_truncation()`
 
 ### The problem
 
@@ -51,7 +51,7 @@ During multi-aligner consensus, soft-clipped 5' bases are penalized at **−2 bp
 
 ## 2. 3' Soft-Clip Rescue at Homopolymer Boundaries
 
-**Implementation:** `rectify/core/indel_corrector.py` — `rescue_softclip_at_homopolymer()`
+**Implementation:** `rectify/core/correct/indel_corrector.py` — `rescue_softclip_at_homopolymer()`
 
 ### The problem
 

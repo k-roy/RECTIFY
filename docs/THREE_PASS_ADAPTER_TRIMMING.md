@@ -1,6 +1,6 @@
 # DRS Poly(A) + Adapter Trimming: Three-Pass Algorithm
 
-**Relevant source:** `rectify/core/drs_trim_command.py` — `find_polya_and_adapter()`
+**Relevant source:** `rectify/core/commands/drs_trim_command.py` — `find_polya_and_adapter()`
 
 ---
 
@@ -192,7 +192,7 @@ Typical cases: pre-mRNA intermediates, degraded RNA, non-polyadenylated transcri
 
 - `docs/DRS_POLYA_ADAPTER_ANALYSIS.md` — empirical characterisation of adapter stubs
   across multiple DRS datasets; motivation for the regex pattern and Pass 2 threshold
-- `rectify/core/drs_trim_command.py` — full implementation: `_scan_polya()`,
+- `rectify/core/commands/drs_trim_command.py` — full implementation: `_scan_polya()`,
   `find_polya_and_adapter()`, and the BAM I/O layer
-- `rectify/core/restore_polya_command.py` — Step 4: re-attaches trimmed sequence as
+- `rectify/core/commands/restore_polya_command.py` — Step 4: re-attaches trimmed sequence as
   soft-clips for IGV tail-length visualization

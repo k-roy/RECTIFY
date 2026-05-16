@@ -129,7 +129,7 @@ If you corrected samples before the index feature was added, generate indices re
 
 ```python
 from pathlib import Path
-from rectify.core.bam_processor import write_position_index
+from rectify.core.bam.bam_processor import write_position_index
 from concurrent.futures import ThreadPoolExecutor
 
 samples = ['wt_rep1', 'wt_rep2', 'ko_rep1', 'ko_rep2']

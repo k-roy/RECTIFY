@@ -2,7 +2,7 @@
 
 The core RECTIFY algorithm corrects systematic alignment artifacts that arise when poly(A) tails land on genomic A-tracts (adenosine-rich sequences downstream of CPA sites).
 
-**Implementation:** `rectify/core/indel_corrector.py` — `find_polya_boundary()`
+**Implementation:** `rectify/core/correct/indel_corrector.py` — `find_polya_boundary()`
 
 ---
 
@@ -110,7 +110,7 @@ RECTIFY: skip remaining reference T's, match soft-clip GCA → extend alignment
 
 Module 2G runs for **all protocols** (DRS and dT-primed cDNA). It runs after the poly-A walk-back in the correction order and takes priority over opposite-direction corrections to prevent cancellation.
 
-**Implementation:** `rectify/core/indel_corrector.py` — `rescue_softclip_at_homopolymer()`
+**Implementation:** `rectify/core/correct/indel_corrector.py` — `rescue_softclip_at_homopolymer()`
 
 ---
 
@@ -125,7 +125,7 @@ After walk-back, RECTIFY classifies each read:
 | 6–15 | **Moderate ambiguity** | Correction applied, `LOW` confidence |
 | >15 | **Severe ambiguity** | NET-seq refinement attempted; `ATRACT_AMBIGUOUS` flag |
 
-**Implementation:** `rectify/core/atract_detector.py`
+**Implementation:** `rectify/core/polya/atract_detector.py`
 
 ---
 

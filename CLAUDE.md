@@ -189,7 +189,7 @@ is done, **always patch generated scripts before submitting at scale.**
 
 ## Architecture: `run-all` dispatcher
 
-`rectify run-all` dispatches to `rectify/core/run_command.py`, which calls
+`rectify run-all` dispatches to `rectify/core/commands/run_command.py`, which calls
 `_run_single_sample()` or `_run_multi_sample()` based on whether `--manifest`
 is provided.
 
@@ -580,7 +580,7 @@ become near-instant (index files are tiny and already aggregated).
 this feature was added):
 
 ```python
-from rectify.core.bam_processor import write_position_index
+from rectify.core.bam.bam_processor import write_position_index
 from concurrent.futures import ThreadPoolExecutor
 
 samples = ['wt_rep1', 'wt_rep2', ...]
@@ -922,7 +922,7 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - **Tests**: 9 previously failing tests now pass; all 41 tests in `test_junction_refiner.py` pass. Total suite: 698 tests pass, 4 skipped. Key reads: RPL20B `0b3b593b` corrected to `[900767,901193)`; TFC3 annotated junction stable against alternative `[150989,151096)`.
 
 **v3.1.0 (2026-04-20):** Module 2H — post-consensus N-op junction refinement (`junction_refiner.py`):
-- New module `rectify/core/junction_refiner.py`: for every N-op in every consensus read, tests all candidate junctions within a search radius and replaces imprecise N-op boundaries with the best sequence-supported junction.
+- New module `rectify/core/splice/junction_refiner.py`: for every N-op in every consensus read, tests all candidate junctions within a search radius and replaces imprecise N-op boundaries with the best sequence-supported junction.
 - Scoring is **sequence-first**: hp_score (split-alignment with homopolymer-aware edit distance) is the primary criterion; canonical GT-AG and annotated status are tie-breakers only. Annotation NEVER overrides a better-scoring junction.
 - Split-alignment: query window of ±W bp around the current N-op split point; query split can slide ±max_slide bp; scores both exon2 and exon1 genomic context simultaneously.
 - Fast path: reads already at an annotated canonical-tier-0 junction skip scoring entirely (255× speedup over naive approach).

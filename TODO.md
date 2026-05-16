@@ -8,7 +8,7 @@ Add items here rather than inline `# TODO` comments where possible.
 ## Alignment / Consensus
 
 ### 5' Soft-Clip Rescue — Sequence-Based Matching
-**File:** `rectify/core/consensus.py` — `score_alignment()`
+**File:** `rectify/core/consensus/consensus.py` — `score_alignment()`
 **Priority:** High
 
 The current 5' rescue is a blind soft-clip length penalty (`score -= five_prime_softclip * 2`).
@@ -35,11 +35,11 @@ Observed example: read SRR32518284.448567 at SNC1 (chrI:87,446-87,878).
 ## Statistics / Observability
 
 ### Tie-Break Rate per Sample
-**File:** `rectify/core/consensus.py` — now tracks `stats['tied_score']`
+**File:** `rectify/core/consensus/consensus.py` — now tracks `stats['tied_score']`
 **Status:** Counter added (2026-03-29). Not yet surfaced in HTML report or corrected_3ends_stats.tsv.
 
 ### Aligner Combo Breakdown per Sample
-**File:** `rectify/core/consensus.py` — now tracks `stats['by_aligner_combo']`
+**File:** `rectify/core/consensus/consensus.py` — now tracks `stats['by_aligner_combo']`
 **Status:** Logged at INFO level (2026-03-29). Not yet surfaced in HTML report or stats TSV.
 
 ---
@@ -47,7 +47,7 @@ Observed example: read SRR32518284.448567 at SNC1 (chrI:87,446-87,878).
 ## Performance
 
 ### mapPacBio Index Caching
-**File:** `rectify/core/multi_aligner.py` — `run_map_pacbio()`
+**File:** `rectify/core/align/multi_aligner.py` — `run_map_pacbio()`
 **Status:** `nodisk` removed, `path=bbmap_index/` added (2026-03-29). Index pre-built for
 bundled S. cerevisiae genome. New genomes will build on first run and cache thereafter.
 
@@ -56,7 +56,7 @@ bundled S. cerevisiae genome. New genomes will build on first run and cache ther
 ## Analysis / Downstream
 
 ### Bedgraph and Genomic Distribution in Manifest Mode
-**File:** `rectify/core/analyze_command.py` — `_run_analyze_manifest()`
+**File:** `rectify/core/commands/analyze_command.py` — `_run_analyze_manifest()`
 **Priority:** Medium
 
 Manifest mode currently skips bedgraph generation and genomic distribution analysis
@@ -67,7 +67,7 @@ which are not stored in the position index. Two options:
    large and users may not always want them)
 
 ### Expose Aligner Stats in HTML Report
-**Files:** `rectify/core/consensus.py`, HTML report template
+**Files:** `rectify/core/consensus/consensus.py`, HTML report template
 **Priority:** Low
 
 `stats['tied_score']` and `stats['by_aligner_combo']` are tracked but not shown in
@@ -75,7 +75,7 @@ the HTML report or `corrected_3ends_stats.tsv`. Surfacing these would help diagn
 aligner quality per sample.
 
 ### Emit cluster COM (read-weighted center-of-mass) from `analyze`
-**File:** `rectify/core/analyze_command.py`
+**File:** `rectify/core/commands/analyze_command.py`
 **Priority:** Medium
 
 `rectify analyze` currently emits per-cluster bedgraphs and a cluster table, but the

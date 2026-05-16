@@ -171,7 +171,7 @@ chrI    41981             +       3.0
 For samples corrected before the index feature is added:
 
 ```python
-from rectify.core.bam_processor import write_position_index
+from rectify.core.bam.bam_processor import write_position_index
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
