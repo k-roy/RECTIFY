@@ -15,7 +15,7 @@ import pytest
 import pysam
 from typing import List, Tuple
 
-from rectify.core.bam.bam_writer import (
+from rectify.core.bam.read_edits import (
     clip_read_to_corrected_3prime,
     softclip_read_to_corrected_3prime,
 )

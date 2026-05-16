@@ -63,16 +63,20 @@ from ..splice import false_junction_filter as _fjf
 # Backwards-compat re-exports for callers that still reach in via this module.
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
 from .bam_writer import (  # noqa: F401  (re-exported)
-    clip_read_to_corrected_3prime,
-    softclip_read_to_corrected_3prime,
-    extend_read_5prime_for_junction_rescue,
-    fix_homopolymer_mismatches,
-    realign_exon_blocks,
     _load_corrections_from_tsv,
     write_dual_bam,
     write_corrected_bam,
     write_softclipped_bam,
     write_polya_trimmed_bam,
+)
+from .read_edits import (  # noqa: F401  (re-exported)
+    clip_read_to_corrected_3prime,
+    softclip_read_to_corrected_3prime,
+    extend_read_5prime_for_junction_rescue,
+    fix_homopolymer_mismatches,
+    realign_exon_blocks,
+)
+from .bedgraph_writers import (  # noqa: F401  (re-exported)
     write_netseq_assigned_bedgraph,
     write_corrected_reads_bedgraph,
 )
