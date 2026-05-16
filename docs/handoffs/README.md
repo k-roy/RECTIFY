@@ -17,8 +17,7 @@ Recommended order (most-actively-edited first):
 
 1. ~~`bam_processor_split.md`~~ — **DONE 2026-05-16** (commit `0024fa3`)
 2. ~~`cdna_correct_command_split.md`~~ — **DONE 2026-05-16** (commit `c411c80`)
-3. `analyze_command_split.md` — `analyze/` subpackage already exists,
-   so this is the cleanest carve
+3. ~~`analyze_command_split.md`~~ — **DONE 2026-05-16** (commit `49478a0`)
 4. `bam_writer_split.md`
 5. `consensus_split.md`
 6. `junction_refiner_split.md`
