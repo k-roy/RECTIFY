@@ -31,15 +31,20 @@ Recommended order (most-actively-edited first):
 - Tests are at `tests/`; do not move them, just update imports.
 - After each carve, run the broad sweep, fast variant:
   ```
-  python -m pytest tests/ -m "not slow" -n auto
+  python -m pytest tests/ -m "not slow"
   ```
-  This deselects the 4 chrI-pipeline smoke tests (5–10 min each) and
-  parallelizes the rest across CPU cores. The full sweep used to take
-  ~8 min sequentially; this drops it to ~1–2 min.
+  This deselects the 4 chrI-pipeline smoke tests (3–5 min each). With
+  the default addopts no longer requesting coverage, the full sweep
+  drops from ~8 min to ~2:30.
+- Don't add `-n auto` (pytest-xdist). The validation suites are
+  subprocess-driven (`subprocess.run(['python', '-m', 'rectify', ...])`
+  per test) and the resulting CPU contention is net-negative — the
+  same suite takes ~6 min with `-n auto` vs ~2:30 sequential.
 - For a final pre-merge gate that also runs the slow pipeline tests:
   ```
-  python -m pytest tests/ -n auto
+  python -m pytest tests/
   ```
+  Add ~10 min for the four chrI-pipeline smokes.
 - Coverage is opt-in. For a coverage report:
   ```
   python -m pytest tests/ --cov=rectify --cov-report=html --cov-report=term
