@@ -161,7 +161,7 @@ def run(args: argparse.Namespace) -> int:
         genome = load_genome(args.genome)
         logger.info(f"  Genome loaded in {time.perf_counter() - t0:.1f}s")
 
-        from ..bam.bam_processor import run_variant_aware_scan
+        from ..bam.variant_scan import run_variant_aware_scan
         t0 = time.perf_counter()
         logger.info("  Running variant scan...")
         variant_rescue = run_variant_aware_scan(

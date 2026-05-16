@@ -21,6 +21,7 @@ import pysam
 from ...slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
 from ..bam import bam_processor
+from ..bam import parallel as bam_parallel
 from ..bam.processing_stats import write_stats_tsv, generate_stats_report
 from ..spikein_filter import filter_spikein_reads
 from ...utils import genome as genome_utils
@@ -60,8 +61,8 @@ def validate_inputs(args) -> dict:
 
     Handles preprocessing of FASTQ files and bundled genomes, resolves
     protocol flags, and assembles the correction config dict consumed by
-    ``bam_processor.process_bam_file_parallel`` /
-    ``process_bam_streaming_parallel``.
+    ``bam_parallel.process_bam_file_parallel`` /
+    ``bam_parallel.process_bam_streaming_parallel``.
 
     Protocol flags:
         ``--dT-primed-cDNA`` (or deprecated alias ``--polya-sequenced``):
@@ -582,7 +583,7 @@ def run(args):
                     else:
                         # output_path is a directory — place variant TSV inside it
                         variant_output_path = str(Path(_op) / 'corrected_3ends_potential_variants.tsv')
-                stats = bam_processor.process_bam_streaming_parallel(
+                stats = bam_parallel.process_bam_streaming_parallel(
                     bam_path=bam_to_process,
                     genome_path=str(config['genome_path']),
                     output_path=str(config['output_path']),
@@ -608,7 +609,7 @@ def run(args):
             else:
                 # Single-threaded streaming for single-core or debugging
                 chunk_size = getattr(args, 'chunk_size', 10000)
-                stats = bam_processor.process_bam_streaming(
+                stats = bam_parallel.process_bam_streaming(
                     bam_path=bam_to_process,
                     genome_path=str(config['genome_path']),
                     output_path=str(config['output_path']),
@@ -639,7 +640,7 @@ def run(args):
                 else:
                     variant_output_path = str(Path(_op) / 'corrected_3ends_potential_variants.tsv')
 
-            results, stats = bam_processor.process_bam_file_parallel(
+            results, stats = bam_parallel.process_bam_file_parallel(
                 bam_path=bam_to_process,
                 genome_path=str(config['genome_path']),
                 n_threads=n_threads,
