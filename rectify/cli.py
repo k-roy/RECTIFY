@@ -1008,10 +1008,11 @@ Citation:
     correct_cdna_parser.add_argument(
         '--gff',
         default=None,
-        help='Genome annotation GFF3 (gzip OK). Required for sense/antisense XS '
-             'classification, XG gene-name tagging, isoform clustering, and rDNA '
-             'masking (reads overlapping rRNA_gene loci are excluded by default to '
-             'prevent O(n²) clustering on chrXII tandem repeats).',
+        help='Genome annotation GFF3 (gzip OK). Used for rDNA masking (reads '
+             'overlapping rRNA_gene loci are excluded by default to prevent the '
+             'O(n²) UMI clustering blow-up on chrXII tandem repeats). Sense/antisense '
+             'XS classification, XG gene-name tagging, and isoform clustering now '
+             'run downstream in `rectify cdna-analyze`.',
     )
     correct_cdna_parser.add_argument(
         '--reference',

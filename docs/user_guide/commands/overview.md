@@ -1,6 +1,8 @@
 # Commands Overview
 
-RECTIFY provides 14 subcommands, covering the full pipeline from alignment to visualization.
+RECTIFY provides subcommands for the full pipeline: alignment, correction
+(DRS, dT-primed-cDNA / QuantSeq REV, ONT PCR-cDNA), downstream analysis,
+visualization, and utilities.
 
 ```
 rectify <command> [options]
@@ -10,20 +12,49 @@ rectify <command> [options]
 
 ## Command summary
 
+### Core pipeline (DRS / dT-primed-cDNA / QuantSeq REV)
+
 | Command | Description |
 |:--------|:------------|
-| [`rectify correct`](correct.md) | Correct 3' end positions (indel correction, A-tract resolution) |
-| [`rectify run-all`](run.md) | Full pipeline: align (if FASTQ) → correct → analyze |
-| [`rectify align`](align.md) | Multi-aligner consensus alignment (DRS-optimized) |
+| [`rectify correct`](correct.md) | Correct 3' end positions (indel correction, A-tract resolution). Supports DRS, dT-primed-cDNA (QuantSeq), and `--short-read` mode. |
+| [`rectify run-all`](run.md) | Full pipeline: align (if FASTQ) -> correct -> analyze |
+| [`rectify align`](align.md) | Multi-aligner consensus alignment (long-read default panel; `--short-read` selects bbmap + bwa) |
 | [`rectify split`](split.md) | Split FASTQ into N equal chunks for parallel SLURM array alignment |
 | [`rectify consensus`](consensus.md) | Aligner selection on pre-built per-aligner BAMs (post-merge step) |
 | [`rectify analyze`](analyze.md) | Downstream analysis (clustering, DESeq2, GO, motifs) |
+
+### ONT PCR-cDNA pipeline (PCB114.24)
+
+| Command | Description |
+|:--------|:------------|
+| [`rectify correct-cdna`](correct_cdna.md) | Stage 1 — UMI extraction, directional clustering, abPOA consensus, pre-trim -> per-cluster FASTQ |
+| [`rectify cdna-analyze`](cdna_analyze.md) | Stage 3 — post-align walkback, gene assignment, isoform clustering, T1/T2 pairing |
+
+See the [ONT PCR-cDNA pipeline overview](correct_cdna_overview.md) for the three-stage workflow.
+
+### Poly(A) utilities
+
+| Command | Description |
+|:--------|:------------|
+| `rectify trim-polya` | DRS Step 0 — trim poly(A) tail + adapter from Dorado-aligned BAMs before alignment |
+| `rectify tag-polya` | Annotate BAM reads with poly(A) model scores (`pt`, `ps`); only fills `pt` when Dorado's value is absent |
+| `rectify restore-softclip` | DRS Step 4 — re-attach trimmed poly(A) as soft-clip on the corrected BAM (IGV visualization only) |
+| [`rectify train-polya`](train_polya.md) | Train poly(A) tail model from control sites |
+
+### Visualization, export, validation
+
+| Command | Description |
+|:--------|:------------|
 | [`rectify export`](export.md) | Export corrected 3' ends to bigWig/bedGraph tracks |
 | [`rectify extract`](extract.md) | Extract per-read features from BAM to TSV |
 | [`rectify aggregate`](aggregate.md) | Aggregate reads into 3' end, 5' end, and junction datasets |
 | [`rectify netseq`](netseq.md) | Process NET-seq BAM files (3' end extraction, deconvolution) |
 | [`rectify validate`](validate.md) | Validate corrections against ground truth (NET-seq, annotation) |
-| [`rectify train-polya`](train_polya.md) | Train poly(A) tail model from control sites |
+
+### HPC and installation
+
+| Command | Description |
+|:--------|:------------|
 | [`rectify batch`](batch.md) | Generate SLURM array job scripts for multi-sample processing |
 | [`rectify install-aligners`](install_aligners.md) | Download/install external aligners (deSALT, minimap2, gapmm2, uLTRA) |
 

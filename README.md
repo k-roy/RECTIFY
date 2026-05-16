@@ -10,7 +10,27 @@
   </p>
 </p>
 
-Precision transcript structure mapping for direct RNA nanopore sequencing. RECTIFY provides accurate 5' ends, 3' ends, and splice junctions through multi-aligner consensus, artifact correction, and optional NET-seq refinement. Analysis of Nascent Elongating Transcript Sequencing (NET-seq) data reveals evidence of cleavage and polyadenylation (CPA) intermediates — peaks at known CPA sites where approximately half the signal exhibits oligo-adenylated tails — enabling RECTIFY to resolve 3' end positions within genomic A-tracts at nucleotide resolution.
+Precision transcript structure mapping for nanopore and short-read 3'-end RNA-seq. RECTIFY provides accurate 5' ends, 3' ends, and splice junctions through multi-aligner consensus, read-vs-reference walkback, and optional NET-seq refinement. Three protocol tracks (ONT direct RNA, ONT PCR-cDNA, QuantSeq REV) share one set of multi-aligner / walkback / downstream-analysis modules and diverge only where the chemistry forces them to.
+
+<p align="center">
+  <img src="docs/figures/pipeline_overview.png" alt="RECTIFY pipeline overview — three protocol tracks converging at the multi-aligner, walkback, and downstream analyze stages" width="820">
+</p>
+
+---
+
+## Protocol Tracks
+
+All three tracks reuse the same multi-aligner consensus, read-vs-reference walkback core, and downstream `rectify analyze` pipeline. They differ in (a) how the 3'-end side of the read is identified, (b) whether the poly(A) tail is in the read, and (c) whether the BAM strand matches or is inverted relative to the gene/RNA strand.
+
+| Track | Chemistry | Subcommand(s) | Aligners | 3'-end side | Gene strand vs BAM |
+|---|---|---|---|---|---|
+| **DRS** | ONT direct RNA-seq | `rectify trim-polya` → `rectify align` → `rectify correct` | minimap2 + mapPacBio + gapmm2 (± deSALT, uLTRA) | right | same |
+| **ONT cDNA** | ONT PCR-cDNA (SQK-PCB114.24, SSP+UMI) | `rectify correct-cdna` → `rectify align` → `rectify cdna-analyze` | minimap2 + mapPacBio + gapmm2 | right | same |
+| **QuantSeq REV** | dT-primed antisense short-read | `rectify align --short-read` → `rectify correct --dT-primed-cDNA --short-read` | bbmap + bwa | left | **opposite** |
+
+All three tracks invoke the same multi-aligner consensus path in `rectify align` (which expands `--aligners all` to the long-read panel by default, or to bbmap+bwa when `--short-read` is set). The walkback core (`rectify/core/correct/walkback.py`) is protocol-agnostic; three thin wrappers (`walkback_drs`, `walkback_quantseq_rev`, and the `cdna-analyze` post-align caller) handle the side and strand differences.
+
+> **QuantSeq REV note.** Pre-align the FASTQ explicitly with `rectify align --short-read` first. If you pass a FASTQ directly to `rectify correct --dT-primed-cDNA`, it currently aligns with minimap2 only (see [preprocess.py:479](rectify/core/preprocess.py#L479)) which is the wrong panel for short reads.
 
 ---
 
@@ -28,8 +48,8 @@ rectify run-all reads.bam --genome genome.fa --annotation genes.gtf --output-dir
 # Multi-sample manifest mode (parallel correction + combined DESeq2)
 rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf --output-dir results/
 
-# dT-primed cDNA-seq (QuantSeq, etc. — poly(A) is NOT in the read)
-rectify correct reads.bam --genome genome.fa --dT-primed-cDNA -o corrected.tsv
+# QuantSeq REV / dT-primed cDNA-seq — antisense short read; poly(A) is NOT in the read
+rectify correct reads.bam --genome genome.fa --dT-primed-cDNA --short-read -o corrected.tsv
 
 # ONT PCR-cDNA (PCB114.24 chemistry) — UMI-aware 3-stage pipeline
 rectify correct-cdna  pcb114.bam --reference genome.fa -o out/    # Stage 1: per-cluster FASTQ
@@ -43,11 +63,15 @@ rectify cdna-analyze  out/stage1.rectified.bam --reference genome.fa --gff genes
 
 | Feature | Description |
 |:--------|:------------|
-| **Multi-Aligner Consensus** | Runs minimap2, pbmm2, gapmm2 and selects best junction set per read |
+| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio, gapmm2 in parallel and selects the best junction set per read (or per cluster, for cDNA) |
+| **Read-vs-Reference Walkback** | Three-case terminal gate that walks past every A — including A-over-A — to find the true CPA. Catches internal-priming at genomic A-tracts that the older reference-only walkback missed |
 | **5' End Junction Recovery** | Rescues soft-clipped bases by extending alignments through splice junctions |
 | **3' End Indel Correction** | Fixes alignment artifacts where poly(A) tails align to genomic A-tracts |
 | **3' False Junction Handling** | Walk back correction removes spurious junctions from poly(A) artifacts |
 | **Junction Ambiguity Resolution** | Resolves reads matching multiple junctions using proportional assignment |
+| **ONT cDNA UMI Consensus** | PCB114.24 SSP+UMI architecture: three read classes (`umi_captured_fwd`, `umi_captured_rev`, `umi_not_captured`); directional UMI clustering (Lev ≤ 3, 2× rule); two-stage strand-split abPOA consensus per molecule |
+| **5'/3' Isoform Clustering** | Type-1 reads cluster by both TSS and CPA; Type-2 reads cluster by CPA only; same-molecule Type-1 ↔ Type-2 pairs are linked via `XL:Z` |
+| **Splice Classification** | Per-read splice classification (`unspliced` / `annotated` / `alternative` / `novel`) against a gene panel; quantifies NMD-sensitive isoform accumulation |
 | **Poly(A) Measurement** | Reports tail length (aligned + soft-clipped) |
 | **NET-seq Refinement** | Resolves A-tract ambiguity using nascent RNA data (optional) |
 | **Adaptive Clustering** | Groups CPA sites with valley-based algorithm |
@@ -109,6 +133,54 @@ Poly(A) tails can create spurious "junctions" when the aligner introduces a skip
 
 <p align="center">
   <img src="docs/figures/false_junction_walkback.png" alt="False Junction Walk Back" width="660">
+</p>
+
+### Read-vs-Reference Poly(A) Walkback
+
+The core algorithmic improvement over earlier RECTIFY versions. Older versions walked back along the **reference** A-tract only — and stopped at the first genomic non-A. That misses internal-priming, where the read's own poly(A) tail aligns over a genomic A-tract before reaching the true CPA. The current walkback compares **read** to **reference** at each position and resolves three cases at the terminal base:
+
+1. **Anchored non-A** — read base is not A and matches the genome → already correctly placed, no correction.
+2. **Read-A over genome-A** — both read and reference are A → walk inward. This is the internal-priming scenario the old reference-only check incorrectly skipped.
+3. **Mismatch** — read base ≠ reference base → walk inward until `read_base == ref_base` AND `ref_base != 'A'`.
+
+This logic is protocol-agnostic and lives in [`rectify/core/correct/walkback.py`](rectify/core/correct/walkback.py). The shared core has two flavors: `walkback_3prime` / `walkback_3prime_with_qpos` (no artifact guards — for cDNA tail-counting and QuantSeq REV) and `walkback_3prime_guarded` (with three artifact guards — for DRS). Protocol wrappers select per-chemistry side, stop base (read-side), and gene-strand mapping:
+
+| Wrapper | Chemistry | `is_reverse` → gene strand | 3'-end side | Stop base (read) | Guards |
+|---|---|---|---|---|---|
+| `walkback_drs_full` | ONT direct RNA-seq | False → +, True → − | right (+), left (−) | A (+), T (−) | **on** |
+| `walk_back_anchor_and_tail` (cdna-analyze) | ONT PCR-cDNA (PCB114.24) | orient=fwd → right, orient=rev → left | right (fwd), left (rev) | A (fwd), T (rev) | off |
+| `walkback_quantseq_rev` | QuantSeq REV (dT-primed) | False → −, True → + (inverted) | **left** (False), right (True) | A (both) | off |
+
+All three wrappers delegate the read-vs-reference scan to the same `walkback.py` module. The DRS production path in [`bam_processor.py`](rectify/core/bam_processor.py) calls `walkback_drs_full`, which adds three artifact guards on top of the scan: a homopolymer early-exit (skip reads not at a genomic A-tract), a large-deletion pre-scan (v2.9.3), an N-op intron-boundary guard for minus-strand reads (v2.9.4), and a 4-base poly(A) tail-context false-stop check (v3.0.3). The legacy `indel_corrector.find_polya_boundary` is now a thin alias that delegates to `walkback_3prime_guarded`; byte-identical output on the bundled Cat1–9 validation reads is enforced by `tests/test_walkback_readvsref.py::TestGuardedParityWithFindPolyaBoundary`. Enabling the guards on the cDNA and QuantSeq REV paths is a separate task (those paths currently match their pre-unification behavior).
+
+<p align="center">
+  <img src="docs/figures/walkback_readvsref.png" alt="Read-vs-reference walkback — three-case terminal gate" width="680">
+</p>
+
+### Poly(A) Pre-Trim (DRS)
+
+For ONT DRS, the basecalled poly(A) tail and adapter stub are stripped from the read's 3' end **before alignment** so the aligner doesn't try to place non-genomic A's over genomic A-tracts. The trimmed bases are cached as soft-clip metadata and restored by `rectify restore-softclip` after correction, preserving tail-length measurement. ONT PCR-cDNA does the analogous pretrim inside `rectify correct-cdna` (also stripping the 5' SSP+UMI+GGG bridge). QuantSeq REV reads carry no poly(A) and skip this step.
+
+<p align="center">
+  <img src="docs/figures/polya_pretrim.png" alt="Three-pass poly(A) pre-trim" width="680">
+</p>
+
+### Splice Classification
+
+`rectify analyze splice` classifies each read's N-cigar ops against a panel of annotated introns using strict 0-bp matching (with optional snap tolerance for basecaller jitter):
+
+| Class | Condition |
+|---|---|
+| `no_intron_span` | Read does not overlap any annotated intron |
+| `unspliced` | Read spans an intron but has no N-cigar op |
+| `annotated` | Every N-op matches an annotated donor + acceptor exactly |
+| `alternative` | One end of an N-op matches an annotated site (the other does not) |
+| `novel` | Neither end of any N-op matches any annotated site |
+
+This is the basis for the NMD-AS splice audit: NMD-sensitive isoforms are typically `alternative` or `novel` and accumulate when surveillance is impaired.
+
+<p align="center">
+  <img src="docs/figures/splice_classification.png" alt="Splice classification decision tree" width="620">
 </p>
 
 ### Adaptive Clustering and Differential Expression
@@ -235,6 +307,7 @@ conda install -c conda-forge -c bioconda rectify-rna
 | `rectify correct` | Correct 3' end positions (indel correction, A-tract resolution) |
 | `rectify align` | Align FASTQ with multi-aligner consensus (Tier 1: minimap2 + mapPacBio + gapmm2; Tier 2: deSALT + uLTRA; `--short-read`: bbmap + bwa) |
 | `rectify analyze` | Downstream analysis (clustering, DESeq2, GO, motifs) |
+| `rectify analyze splice` | Per-read splice classification (unspliced / annotated / alternative / novel) against a gene panel — basis of the NMD-AS isoform audit |
 | `rectify export` | Export corrected positions to bigWig/bedGraph tracks |
 | `rectify extract` | Extract per-read info from BAM to TSV (5'/3' ends, junctions) |
 | `rectify aggregate` | Aggregate reads into 3' end, 5' end, and junction datasets |
@@ -291,7 +364,14 @@ rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 ## Supported Technologies
 
-Nanopore direct RNA-seq · Nanopore PCR-cDNA (SQK-PCB114.24, UMI-aware) · QuantSeq (oligo-dT short-read) · PacBio Iso-Seq · NET-seq · Any poly(A)-tailed RNA-seq
+| Chemistry | Read | 3'-end anchor | Tier | Subcommand |
+|:--|:--|:--|:--|:--|
+| ONT direct RNA (DRS) | long | poly(A)-tailed read; 3' = right end | primary | `rectify correct` |
+| ONT PCR-cDNA (SQK-PCB114.24, SSP + 27-nt UMI) | long | poly(A)-tailed read; 3' = right end; UMI-aware | primary | `rectify correct-cdna` → `align` → `cdna-analyze` |
+| QuantSeq 3' REV (oligo-dT antisense) | short | poly(A) NOT in read; 3' = left end; strand inverted | primary | `rectify correct --dT-primed-cDNA --short-read` |
+| NET-seq (nascent RNA, 3' end) | short | nascent 3' end; used as NET-seq refinement track for DRS A-tract ambiguity | primary | `rectify netseq` |
+| PacBio Iso-Seq | long | poly(A)-tailed read; minor mode of `rectify correct` | secondary | `rectify correct` |
+| Any poly(A)-tailed RNA-seq | either | poly(A)-tailed read; generic 3'-end correction | secondary | `rectify correct` |
 
 ---
 

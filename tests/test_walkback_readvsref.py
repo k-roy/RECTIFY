@@ -17,7 +17,9 @@ from rectify.core.correct.walkback import (
     THREE_PRIME_SIDE_LEFT,
     THREE_PRIME_SIDE_RIGHT,
     walkback_3prime,
+    walkback_3prime_guarded,
     walkback_drs,
+    walkback_drs_full,
 )
 
 
@@ -197,14 +199,135 @@ class TestDrsWrapper:
         assert applied == APPLIED_WALKBACK
         assert corr == 1004
 
-    def test_drs_minus_strand_uses_left_side(self):
-        """Same V-primer-tip pattern as the left-side core test, exercised
-        through the DRS wrapper (``is_reverse=True`` → minus-strand gene)."""
-        ref = "X" * 1000 + "AAAAAC" + "GTAC" + "X" * 100
+    def test_drs_minus_strand_uses_left_side_and_T_stopbase(self):
+        """Realistic DRS minus-strand pattern.
+
+        pysam returns ``query_sequence`` in alignment orientation, so a
+        minus-strand DRS read has the basecalled poly(A) reverse-complemented
+        to **T's at the LEFT of query_sequence**. The genome at those + strand
+        positions has T's (the - strand has the A's of the genomic A-run that
+        the basecaller miscalled into the poly-A tail).
+
+        Walk-back must therefore use ``stop_base='T'`` on the read side and
+        stop at the first non-T match. Here the alignment starts with 5 T's
+        of poly-A noise; the true CPA anchor is at the first non-T match
+        (``GTAC`` at ref offset 1005).
+        """
+        ref = "X" * 1000 + "TTTTT" + "GTAC" + "X" * 100
         read = _make_read(
-            start=1000, seq="GAAAAA" + "GTAC", cigar=((0, 10),), is_reverse=True
+            start=1000, seq="TTTTT" + "GTAC", cigar=((0, 9),), is_reverse=True
         )
         orig, corr, applied, strand = walkback_drs(read, ref)
         assert strand == "-"
         assert applied == APPLIED_WALKBACK
-        assert corr == 1006
+        assert corr == 1005
+
+    def test_drs_minus_strand_terminal_nonT_match_no_walkback(self):
+        """A minus-strand DRS read whose terminal base is already a non-T
+        match should be left alone — the terminal gate fires."""
+        ref = "X" * 1000 + "GTAC" + "X" * 100
+        read = _make_read(
+            start=1000, seq="GTAC", cigar=((0, 4),), is_reverse=True
+        )
+        orig, corr, applied, strand = walkback_drs(read, ref)
+        assert strand == "-"
+        assert applied == APPLIED_NONE
+        assert corr == orig
+
+
+# ---------------------------------------------------------------------------
+# Parity: walkback_drs_full == find_polya_boundary on the bundled validation
+# BAM. find_polya_boundary is the legacy DRS production walkback;
+# walkback_drs_full is the protocol-agnostic guarded core. This test is the
+# gate for the bam_processor.py swap.
+# ---------------------------------------------------------------------------
+class TestGuardedParityWithFindPolyaBoundary:
+    """walkback_drs_full must produce byte-identical output to
+    find_polya_boundary on every primary read in validation_reads.bam.
+    """
+
+    @pytest.fixture(scope="class")
+    def genome_dict(self):
+        """Load the bundled S288C genome as a dict[chrom -> str]."""
+        from pathlib import Path
+        try:
+            from rectify.utils.genome import load_genome
+        except Exception:
+            pytest.skip("rectify.utils.genome.load_genome not importable")
+        data_dir = Path(__file__).parent.parent / "rectify" / "data" / "genomes" / "saccharomyces_cerevisiae"
+        fasta = data_dir / "S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
+        if not fasta.exists():
+            pytest.skip(f"Bundled genome not present: {fasta}")
+        return load_genome(str(fasta))
+
+    @pytest.fixture(scope="class")
+    def validation_reads(self):
+        """Load all primary reads from the bundled validation BAM."""
+        from pathlib import Path
+        bam_path = Path(__file__).parent.parent / "rectify" / "data" / "validation" / "validation_reads.bam"
+        if not bam_path.exists():
+            pytest.skip(f"Validation BAM not present: {bam_path}")
+        reads = []
+        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+            for r in bam:
+                if r.is_secondary or r.is_supplementary or r.is_unmapped:
+                    continue
+                reads.append(r)
+        return reads
+
+    def test_parity_all_reads(self, genome_dict, validation_reads):
+        """For every primary read in validation_reads.bam, both functions
+        must agree on whether to correct, where to anchor, and the corrected
+        position. Any disagreement is a regression to investigate before
+        wiring walkback_drs_full into the DRS production path.
+        """
+        from rectify.core.indel_corrector import find_polya_boundary
+        from rectify.config import CHROM_TO_GENOME
+
+        disagreements = []
+        for read in validation_reads:
+            strand = "-" if read.is_reverse else "+"
+            chrom = read.reference_name
+            chrom_seq = genome_dict.get(chrom) or genome_dict.get(
+                CHROM_TO_GENOME.get(chrom, ""), ""
+            )
+            if not chrom_seq:
+                continue
+
+            legacy = find_polya_boundary(read, strand, genome_dict)
+            unified = walkback_drs_full(read, chrom_seq)
+
+            # Both None → agree (no correction).
+            if legacy is None and unified is None:
+                continue
+
+            # One is None, other isn't → disagreement.
+            if (legacy is None) != (unified is None):
+                disagreements.append(
+                    (read.query_name, strand,
+                     f"legacy={legacy} unified={unified}")
+                )
+                continue
+
+            # Both not None → compare fields. Use 'corrected_pos' and
+            # 'correction_bp' as the load-bearing values; 'original_pos' and
+            # 'polya_aligned_bp' are derivative.
+            if legacy["corrected_pos"] != unified["corrected_pos"]:
+                disagreements.append(
+                    (read.query_name, strand,
+                     f"legacy.corrected_pos={legacy['corrected_pos']} "
+                     f"unified.corrected_pos={unified['corrected_pos']}")
+                )
+            if legacy["correction_bp"] != unified["correction_bp"]:
+                disagreements.append(
+                    (read.query_name, strand,
+                     f"legacy.correction_bp={legacy['correction_bp']} "
+                     f"unified.correction_bp={unified['correction_bp']}")
+                )
+
+        if disagreements:
+            msg = "\n  ".join(f"{r}/{s}: {d}" for r, s, d in disagreements)
+            pytest.fail(
+                f"walkback_drs_full diverges from find_polya_boundary on "
+                f"{len(disagreements)} read(s):\n  {msg}"
+            )

@@ -126,6 +126,12 @@ import pysam
 from intervaltree import IntervalTree
 from rapidfuzz.distance import Levenshtein
 
+from rectify.core.correct.walkback import (
+    THREE_PRIME_SIDE_LEFT,
+    THREE_PRIME_SIDE_RIGHT,
+    walkback_3prime_with_qpos,
+)
+
 # Optional dependencies (loaded lazily so the module imports without them)
 try:
     import pyabpoa
@@ -276,7 +282,7 @@ class ReadInfo:
     aln_end: int         # v1.14: aligned region end (exclusive) in ref coords
     read_type: int       # v1.15: 1 = SSP+UMI captured, 2 = SSP-less (5'-truncated, e.g. decay intermediate)
     pos5_corrected: int  # v1.19: TSS-side position corrected for SSP-bridge G-tract ambiguity (analog of 3' polyA walk-back)
-    read_subtype: str    # "1a" (Type-1 fwd / SSP+UMI captured) / "1b" (Type-1 rev) / "2" (Type-2, no UMI)
+    read_subtype: str    # "umi_captured_fwd" (Type-1, SSP+UMI at 5') / "umi_captured_rev" (Type-1, SSP+UMI at 3' via pA-first traversal) / "umi_not_captured" (Type-2, pA-first truncated before UMI)
 
 
 def _find_adapter_anchor_pos(seq: str, orient: str) -> Optional[int]:
@@ -309,12 +315,15 @@ def walk_back_anchor_and_tail(read: pysam.AlignedSegment,
     Strand B on −gene → is_reverse=True); in both cases the BAM SEQ structure is
     SSP-UMI-cDNA-polyA-adapter (left-to-right), so polyA is at the RIGHT regardless.
 
-      - orient='fwd': polyA at RIGHT of BAM SEQ. Walk reverse(pairs), skip ref-A.
-      - orient='rev': polyT at LEFT of BAM SEQ (= basecalled polyA in +ref coords).
-                      Walk iter(pairs), skip ref-T.
+      - orient='fwd': polyA at RIGHT of BAM SEQ → side=right, stop_base='A'.
+      - orient='rev': polyA-as-T at LEFT of BAM SEQ (RC of basecalled polyA in
+                      + ref coords) → side=left, stop_base='T'.
 
-    Stops at first matching non-A/non-T position. False N-ops are skipped for free
-    because get_aligned_pairs omits skipped ref positions.
+    The read-vs-reference scan delegates to
+    :func:`rectify.core.correct.walkback.walkback_3prime_with_qpos`, which is the
+    same protocol-agnostic core used by ``walkback_drs`` and
+    ``walkback_quantseq_rev``. This function adds cDNA-specific tail-length
+    counting using the SSP/adapter anchor on top of the shared scan.
 
     Tail length is the count of basecalled-A bases (= ref-T for orient=rev) in the
     BAM-SEQ region between the cleavage anchor and the adapter anchor (or 200 bp
@@ -326,44 +335,43 @@ def walk_back_anchor_and_tail(read: pysam.AlignedSegment,
     fallback_anchor = ((read.reference_end or 1) - 1) if orient == "fwd" else read.reference_start
     if seq is None:
         return (fallback_anchor, 0)
-    pairs = read.get_aligned_pairs(matches_only=True)
-    if not pairs:
-        return (fallback_anchor, 0)
 
     if orient == "fwd":
-        skip_ref = 'A'
+        side = THREE_PRIME_SIDE_RIGHT
         tail_base = 'A'
-        iter_pairs = reversed(pairs)
-        def tail_segment(qpos: int) -> str:
-            adp = _find_adapter_anchor_pos(seq, orient)
-            if adp is not None and adp > qpos:
-                return seq[qpos + 1: adp]
-            return seq[qpos + 1: qpos + 1 + 200]
     else:
-        skip_ref = 'T'        # +ref T at LEFT of BAM SEQ = basecalled polyA in +ref form
+        side = THREE_PRIME_SIDE_LEFT
         tail_base = 'T'
-        iter_pairs = iter(pairs)
-        def tail_segment(qpos: int) -> str:
-            adp = _find_adapter_anchor_pos(seq, orient)
-            if adp is not None:
-                adp_end = adp + ANCHOR_LEN
-                if adp_end < qpos:
-                    return seq[adp_end: qpos]
-            return seq[max(0, qpos - 200): qpos]
 
-    for qpos, rpos in iter_pairs:
-        if rpos is None or qpos is None: continue
-        if rpos < 0 or rpos >= len(chrom_seq): continue
-        ref_b = chrom_seq[rpos].upper()
-        if ref_b == skip_ref:
-            continue
-        read_b = seq[qpos].upper()
-        if read_b == ref_b:
-            tail_a = tail_segment(qpos).count(tail_base)
-            return (rpos, tail_a)
-        # mismatch — keep walking; we don't anchor on a basecaller error
+    _orig, corr, _applied, anchor_qp = walkback_3prime_with_qpos(
+        read, chrom_seq, side, stop_base=tail_base
+    )
+    if anchor_qp < 0:
+        # No usable scan (empty pairs, missing sequence). Preserve the
+        # historical fallback behavior — anchor at the BAM SEQ poly-A-side end
+        # with tail length 0.
+        return (fallback_anchor, 0)
 
-    return (fallback_anchor, 0)
+    # Compute tail length using the SSP/adapter anchor on the basecalled-tail
+    # side of the cleavage anchor.
+    if orient == "fwd":
+        adp = _find_adapter_anchor_pos(seq, orient)
+        if adp is not None and adp > anchor_qp:
+            tail_seg = seq[anchor_qp + 1: adp]
+        else:
+            tail_seg = seq[anchor_qp + 1: anchor_qp + 1 + 200]
+    else:
+        adp = _find_adapter_anchor_pos(seq, orient)
+        if adp is not None:
+            adp_end = adp + ANCHOR_LEN
+            if adp_end < anchor_qp:
+                tail_seg = seq[adp_end: anchor_qp]
+            else:
+                tail_seg = seq[max(0, anchor_qp - 200): anchor_qp]
+        else:
+            tail_seg = seq[max(0, anchor_qp - 200): anchor_qp]
+    tail_a = tail_seg.count(tail_base)
+    return (corr, tail_a)
 
 
 BRIDGE_LEN = 3     # the rGrGrG of the TSO that becomes the GGG bridge in BAM SEQ.
@@ -620,9 +628,9 @@ def extract_read_info(read: pysam.AlignedSegment,
         pos5_corrected = read.reference_start if orient == "fwd" else (read.reference_end or 1) - 1
 
     if read_type == 1:
-        read_subtype = "1a" if orient == "fwd" else "1b"
+        read_subtype = "umi_captured_fwd" if orient == "fwd" else "umi_captured_rev"
     else:
-        read_subtype = "2"
+        read_subtype = "umi_not_captured"
 
     return ReadInfo(
         read_id=read.query_name,

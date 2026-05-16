@@ -44,7 +44,10 @@ from . import indel_corrector
 from . import netseq_refiner
 from .indel_corrector import VariantAwareHomopolymerRescue
 from .correct.protocols.quantseq_rev import walkback_quantseq_rev
-from .correct.walkback import APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME
+from .correct.walkback import (
+    APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME,
+    walkback_drs_full,
+)
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
 from ..utils.genome import load_genome, standardize_chrom_name, reverse_complement
 from .polya_model import PolyAModel, load_model as load_polya_model
@@ -673,7 +676,15 @@ def correct_read_3prime(
                     wb_bp = abs(original_position - current_position)
                     result['ambiguity_range'] = max(result['ambiguity_range'], wb_bp)
         else:
-            wb = indel_corrector.find_polya_boundary(read, strand, genome)
+            # DRS production walkback. The shared protocol-agnostic core is
+            # walkback_3prime_guarded; walkback_drs_full applies the DRS
+            # strand→side/stop_base mapping and returns the same dict shape
+            # as the legacy find_polya_boundary (which now delegates to it).
+            _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
+            if _chrom_seq:
+                wb = walkback_drs_full(read, _chrom_seq)
+            else:
+                wb = None
             if wb is not None:
                 result['correction_applied'].append('polya_walkback')
                 polya_walkback_applied = True

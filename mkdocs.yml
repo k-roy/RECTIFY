@@ -113,7 +113,9 @@ extra:
 nav:
   - Home: index.md
   - Installation: installation.md
-  - Quick Start: quickstart.md
+  - Quick Start:
+    - DRS: quickstart.md
+    - QuantSeq REV: quickstart_quantseq_rev.md
   - User Guide:
     - Input Formats: user_guide/input_formats.md
     - Output Formats: user_guide/output_formats.md
@@ -130,6 +132,9 @@ nav:
       - rectify validate: user_guide/commands/validate.md
       - rectify train-polya: user_guide/commands/train_polya.md
       - rectify batch: user_guide/commands/batch.md
+      - ONT PCR-cDNA pipeline: user_guide/commands/correct_cdna_overview.md
+      - rectify correct-cdna: user_guide/commands/correct_cdna.md
+      - rectify cdna-analyze: user_guide/commands/cdna_analyze.md
     - Multi-Sample Analysis: user_guide/multi_sample.md
     - HPC / SLURM: user_guide/hpc_slurm.md
     - Bundled Data (Yeast): user_guide/bundled_data.md

@@ -66,23 +66,24 @@ from ..config import (
 from ..utils.alignment import extract_deletions, extract_insertions
 from ..utils.genome import fetch_genomic_sequence, standardize_chrom_name
 from ..config import CHROM_TO_GENOME
+from .correct.walkback import (
+    THREE_PRIME_SIDE_LEFT,
+    THREE_PRIME_SIDE_RIGHT,
+    walkback_3prime_guarded,
+)
 
 
 # =============================================================================
-# Pre-allocated scratch buffers for find_polya_boundary()
+# Pre-allocated scratch buffers (shared by rescue_softclip_at_homopolymer
+# and the legacy find_polya_boundary path)
 # =============================================================================
 # Reused across calls to avoid Python allocator fragmentation from allocating
-# and freeing ~1000 tuples per rDNA read × 78k rDNA reads.  array.array uses
-# a contiguous C buffer with no per-element Python object; memory is fixed at
-# module-import time.  Safe for multiprocessing (each process has its own copy)
-# and for single-threaded streaming (--threads 1).
-#
-#   _sc_rp[i]   = read_pos; -1 signals a deletion (no read base)
-#   _sc_refp[i] = ref_pos
-#   _sc_rb[i]   = read base as ASCII ord (0 for deletions)
-#   _sc_gb[i]   = genome base as ASCII ord (always set)
+# and freeing ~1000 tuples per rDNA read × 78k rDNA reads. The canonical
+# poly-A walkback has moved to rectify.core.correct.walkback (with its own
+# parallel _g_* buffers); these _sc_* buffers stay here for the soft-clip
+# rescue path which has not been migrated.
 
-_POLYA_SCRATCH_N = 1200  # slightly more than _MAX_POLYA_SCAN_DEPTH (1000)
+_POLYA_SCRATCH_N = 1200
 _sc_rp   = _array_mod.array('i', [0] * _POLYA_SCRATCH_N)
 _sc_refp = _array_mod.array('i', [0] * _POLYA_SCRATCH_N)
 _sc_rb   = _array_mod.array('B', [0] * _POLYA_SCRATCH_N)
@@ -99,6 +100,15 @@ def find_polya_boundary(
     genome: Dict[str, str],
 ) -> Optional[Dict]:
     """
+    .. deprecated::
+       The canonical implementation now lives in
+       :func:`rectify.core.correct.walkback.walkback_3prime_guarded`. The
+       DRS production path in :mod:`rectify.core.bam_processor` calls
+       :func:`walkback_drs_full` directly. This wrapper is kept as a thin
+       delegate so legacy callers (notably :func:`correct_rna_end_position`
+       and external test code) keep working; new code should use
+       :func:`walkback_drs_full`.
+
     Find the true 3' end by comparing mRNA and genome sequences.
 
     This is the recommended approach for nanopore data. It handles complex
@@ -135,367 +145,17 @@ def find_polya_boundary(
             - correction_bp: How much the position was corrected
         Or None if no poly-A alignment artifacts found
     """
-    cigar = read.cigartuples
-    seq = read.query_sequence
-    if not cigar or not seq:
-        return None
-
-    # Get genomic sequence (try canonical name first, fall back to NCBI format)
     chrom = read.reference_name
-    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
-    if not genome_seq:
+    chrom_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
+    if not chrom_seq:
         return None
-
-    # CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5
-
-    # Early exit: check if 3' end is at a poly-A/poly-T homopolymer boundary.
-    # Most reads do NOT end at a homopolymer, so skipping the expensive
-    # O(read_length) CIGAR walk for those reads dramatically reduces CPU and
-    # Python allocator pressure.  For the rDNA locus (~78k long reads all
-    # ending at the poly-A IGS), this alone saves minutes of CPU time.
-    _MIN_HP_LEN = 4
     if strand == '+':
-        _raw_3p = read.reference_end - 1
-        # Check a small window around the 3' end for poly-A
-        _w_start = max(0, _raw_3p - 1)
-        _w_end = min(len(genome_seq), _raw_3p + _MIN_HP_LEN + 1)
-        _hp_window = genome_seq[_w_start:_w_end].upper()
-        if 'A' * _MIN_HP_LEN not in _hp_window:
-            return None
-    # No early exit for minus strand: the genome at a minus-strand CPA site
-    # may have A's (not T's), since the read carries the poly-A as T's
-    # (reverse-complement of the RNA poly-A tail).  The forward scan detects
-    # poly-A by comparing read T's against genomic A's (rb != gb), so genomic
-    # T content is not a reliable proxy for whether a correction is needed.
-
-    # Limit the scan to the vicinity of the 3' end.  Poly-A walk-backs are
-    # always local (< ~500 bp).  The scratch arrays (_sc_*) are pre-allocated
-    # at module level (_POLYA_SCRATCH_N slots) to avoid per-call Python heap
-    # allocation — a 70+ GB RSS regression on the rDNA locus (78k long reads).
-    _MAX_POLYA_SCAN_DEPTH = 1000
-
-    if strand == '+':
-        # For + strand, 3' end is at right side
-        # Walk BACKWARDS from 3' end to find first non-A agreement
-
-        ref_pos = read.reference_start
-        read_pos = 0
-
-        # Skip 5' soft-clip
-        if cigar[0][0] == 4:
-            read_pos = cigar[0][1]
-
-        # Fill module-level scratch arrays instead of building a list of tuples.
-        # This eliminates per-call Python heap allocation (the main source of
-        # allocator fragmentation on the rDNA locus with 78k long reads).
-        _n = 0
-        _scan_start_ref = max(0, read.reference_end - 1 - _MAX_POLYA_SCAN_DEPTH)
-
-        for op, length in cigar:
-            if op == 4:  # Soft-clip
-                continue
-            elif op == 0 or op == 7 or op == 8:  # M, =, X - match/mismatch
-                for i in range(length):
-                    if ref_pos < len(genome_seq):
-                        if ref_pos >= _scan_start_ref and _n < _POLYA_SCRATCH_N:
-                            _sc_rp[_n] = read_pos
-                            _sc_refp[_n] = ref_pos
-                            _sc_rb[_n] = ord(seq[read_pos].upper()) if read_pos < len(seq) else 78  # 78 = ord('N')
-                            _sc_gb[_n] = ord(genome_seq[ref_pos])  # genome already uppercase
-                            _n += 1
-                    read_pos += 1
-                    ref_pos += 1
-            elif op == 1:  # Insertion - consumes query only
-                read_pos += length
-            elif op == 2:  # Deletion - consumes reference only
-                for i in range(length):
-                    if ref_pos < len(genome_seq):
-                        if ref_pos >= _scan_start_ref and _n < _POLYA_SCRATCH_N:
-                            _sc_rp[_n] = -1   # -1 signals deletion
-                            _sc_refp[_n] = ref_pos
-                            _sc_rb[_n] = 0
-                            _sc_gb[_n] = ord(genome_seq[ref_pos])
-                            _n += 1
-                    ref_pos += 1
-            elif op == 3:  # N (intron skip) - consumes reference only, not read
-                ref_pos += length
-
-        if _n == 0:
-            return None
-
-        # Walk BACKWARDS from the 3' end (last aligned position)
-        # Find the FIRST non-A base where genome and read AGREE
-        raw_3prime = read.reference_end - 1
-        true_cpa_ref_pos = None
-
-        # Pre-scan: detect poly-A over-calling artifacts near the 3' end.
-        # When the alignment ends in a poly-A context (last real aligned position has
-        # gb='A') AND a large deletion (≥ _MIN_LARGE_DEL bp) exists within
-        # _POLY_NOISE_WINDOW bp of raw_3prime, the aligner likely over-extended the
-        # poly-A tail alignment and used a deletion to bridge back to the next exon
-        # match. Restricting the backward scan to before such deletions prevents
-        # stopping at a coincidental non-A match in the poly-A noise zone.
-        _POLY_NOISE_WINDOW = 50
-        _MIN_LARGE_DEL = 5
-
-        scan_end_idx = _n
-        _last_gb = None
-        for _k in range(_n - 1, -1, -1):
-            if _sc_rp[_k] != -1:
-                _last_gb = chr(_sc_gb[_k])
-                break
-        if _last_gb == 'A':
-            _i = _n - 1
-            while _i >= 0:
-                _refp_i = _sc_refp[_i]
-                _rp_i = _sc_rp[_i]
-                if raw_3prime - _refp_i > _POLY_NOISE_WINDOW:
-                    break
-                if _rp_i == -1:  # deletion entry
-                    # Find the start of this deletion block (scan left)
-                    _j = _i
-                    while _j > 0 and _sc_rp[_j - 1] == -1:
-                        _j -= 1
-                    if _i - _j + 1 >= _MIN_LARGE_DEL:
-                        scan_end_idx = _j  # restrict backward scan to before this deletion
-                    _i = _j - 1
-                else:
-                    _i -= 1
-
-        # Guard: how many left-context positions to inspect for poly-A tail pattern.
-        # If all K positions to the left of a candidate stop have rb ∈ {'A','T'} AND at
-        # least one has gb≠rb (mismatch in the poly zone), the candidate stop is a
-        # false stop in the poly-A zone — skip it and continue scanning leftward.
-        _POLYA_TAIL_CTX_K = 4
-
-        for i in range(scan_end_idx - 1, -1, -1):
-            rp = _sc_rp[i]
-            if rp == -1:  # Skip deletions
-                continue
-            refp = _sc_refp[i]
-            rb = chr(_sc_rb[i])
-            gb = chr(_sc_gb[i])
-            # Check: do genome and read agree on a non-A base?
-            # For plus strand the poly-A tail consists of A's, so only A=A matches
-            # are ambiguous.  T=T is almost always the genuine last exon T — the
-            # probability that a poly-A A miscalls to T and coincidentally matches
-            # a specific genomic T is ~1/100, making it far more parsimonious to
-            # trust T=T as genuine exon evidence.
-            if rb == gb and gb != 'A':
-                # Poly-A tail context guard: inspect K positions to the left.
-                # If all K are rb='A' with at least one gb≠rb mismatch (poly-A
-                # tail noise), this is a false stop — keep scanning left.
-                _ctx_all_polya = True
-                _ctx_has_mismatch = False
-                _ctx_n = 0
-                for _j in range(i - 1, -1, -1):
-                    _jrp = _sc_rp[_j]
-                    if _jrp == -1:
-                        continue  # skip deletions
-                    _jrb = chr(_sc_rb[_j])
-                    _jgb = chr(_sc_gb[_j])
-                    if _jrb != 'A':
-                        _ctx_all_polya = False
-                        break
-                    if _jgb != _jrb:
-                        _ctx_has_mismatch = True
-                    _ctx_n += 1
-                    if _ctx_n >= _POLYA_TAIL_CTX_K:
-                        break
-                if _ctx_n >= _POLYA_TAIL_CTX_K and _ctx_all_polya and _ctx_has_mismatch:
-                    continue  # false stop — poly-A tail context; keep scanning left
-                true_cpa_ref_pos = refp
-                break
-
-        if true_cpa_ref_pos is not None:
-            polya_len = raw_3prime - true_cpa_ref_pos
-            if polya_len > 0:
-                return {
-                    'corrected_pos': true_cpa_ref_pos,
-                    'original_pos': raw_3prime,
-                    'polya_aligned_bp': polya_len,
-                    'correction_bp': raw_3prime - true_cpa_ref_pos,
-                }
-
-    else:  # strand == '-'
-        # For - strand, 3' end is at left side (reference_start)
-        # Poly-A appears as T's in genomic coordinates
-        # Walk FORWARD from 3' end to find first non-T agreement
-
-        ref_pos = read.reference_start
-        read_pos = 0
-
-        # Skip 3' soft-clip (at left for - strand)
-        if cigar[0][0] == 4:
-            read_pos = cigar[0][1]
-
-        # Fill scratch arrays (same logic as + strand, but from left end).
-        _n = 0
-        first_n_start = None  # ref_pos of first N-op (intron) boundary, if any
-        _scan_end_ref = read.reference_start + _MAX_POLYA_SCAN_DEPTH
-
-        for op, length in cigar:
-            if op == 4:  # Soft-clip
-                continue
-            elif op == 0 or op == 7 or op == 8:  # M, =, X
-                for i in range(length):
-                    if ref_pos < len(genome_seq):
-                        if ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
-                            _sc_rp[_n] = read_pos
-                            _sc_refp[_n] = ref_pos
-                            _sc_rb[_n] = ord(seq[read_pos].upper()) if read_pos < len(seq) else 78
-                            _sc_gb[_n] = ord(genome_seq[ref_pos])
-                            _n += 1
-                    read_pos += 1
-                    ref_pos += 1
-            elif op == 1:  # Insertion
-                read_pos += length
-            elif op == 2:  # Deletion
-                for i in range(length):
-                    if ref_pos < len(genome_seq):
-                        if ref_pos <= _scan_end_ref and _n < _POLYA_SCRATCH_N:
-                            _sc_rp[_n] = -1
-                            _sc_refp[_n] = ref_pos
-                            _sc_rb[_n] = 0
-                            _sc_gb[_n] = ord(genome_seq[ref_pos])
-                            _n += 1
-                    ref_pos += 1
-            elif op == 3:  # N (intron skip) - consumes reference only, not read
-                if first_n_start is None:
-                    first_n_start = ref_pos  # record first intron boundary
-                ref_pos += length
-
-        if _n == 0:
-            return None
-
-        # Walk FORWARD from the 3' end (first aligned position)
-        # Find the FIRST non-T base where genome and read AGREE
-        raw_3prime = read.reference_start
-        true_cpa_ref_pos = None
-
-        # Do not cross N-op (intron) boundaries: the poly-A walkback is only valid
-        # within the 3' terminal exon block. For minus-strand reads, this is the
-        # leftmost exon (positions before the first N op). Crossing an N op would
-        # find a spurious match in the next exon (e.g. seq[12]='G'==genome[76251]='G'
-        # for a read with 11M223N, where all 11M are T=T and the first exon-2 base
-        # happens to match the read base right after the intron).
-        if first_n_start is not None:
-            scan_limit = _n
-            for _k in range(_n):
-                if _sc_refp[_k] >= first_n_start:
-                    scan_limit = _k
-                    break
-        else:
-            scan_limit = _n
-
-        # Pre-scan: detect poly-A over-calling artifacts near the 3' end.
-        # When the alignment starts in a poly-T context (first real aligned position has
-        # gb='T', i.e. the RNA 3' end is inside the poly-A/T zone) AND a large deletion
-        # (≥ _MIN_LARGE_DEL bp) exists within _POLY_NOISE_WINDOW bp of raw_3prime, the
-        # aligner likely over-extended the poly-A alignment and used a deletion to bridge
-        # back to the next exon match. Starting the forward scan from after such deletions
-        # prevents stopping at a coincidental non-T match in the poly-A noise zone.
-        _POLY_NOISE_WINDOW = 50
-        _MIN_LARGE_DEL = 5
-
-        scan_start_idx = 0
-        _first_gb = None
-        for _k in range(scan_limit):
-            if _sc_rp[_k] != -1:
-                _first_gb = chr(_sc_gb[_k])
-                break
-
-        # For minus strand the poly-A tail (RNA A's) appears as T's in the BAM
-        # (after RC).  Only T=T matches are ambiguous — they could be the poly-A
-        # tail aligning to genomic T's.  A=A matches are always genuine exon body
-        # (RNA T → RC=A = genomic A; a poly-A A → RC=T ≠ genomic A, so poly-A can
-        # never produce A=A).  If the alignment doesn't start in a poly-T context,
-        # there is no poly-A over-alignment to correct.
-        if _first_gb != 'T':
-            return None
-
-        if _first_gb == 'T':
-            _i = 0
-            while _i < scan_limit:
-                _rp_i = _sc_rp[_i]
-                _refp_i = _sc_refp[_i]
-                if _refp_i - raw_3prime > _POLY_NOISE_WINDOW:
-                    break
-                if _rp_i == -1:  # deletion entry
-                    # Find the end of this deletion block (scan right)
-                    _j = _i
-                    while _j < scan_limit - 1 and _sc_rp[_j + 1] == -1:
-                        _j += 1
-                    if _j - _i + 1 >= _MIN_LARGE_DEL:
-                        scan_start_idx = _j + 1  # start forward scan from after this deletion
-                    _i = _j + 1
-                else:
-                    _i += 1
-
-        # Guard: poly-T tail context check.
-        # If all K positions to the RIGHT of a candidate stop have rb='T' AND at
-        # least one has gb≠rb (mismatch in the poly-T zone), this is a false stop.
-        # Skip it and keep scanning right.
-        _POLYT_TAIL_CTX_K = 4
-
-        for i in range(scan_start_idx, scan_limit):
-            rp = _sc_rp[i]
-            if rp == -1:  # Skip deletions
-                continue
-            refp = _sc_refp[i]
-            rb = chr(_sc_rb[i])
-            gb = chr(_sc_gb[i])
-            # Check: do genome and read agree on a non-T base?
-            # For minus strand the poly-A tail appears as T's (RNA A → RC=T = genomic T).
-            # Only T=T is ambiguous.  A=A (RNA T → RC=A = genomic A) is always genuine
-            # exon body — the poly-A tail cannot produce A=A matches.
-            if rb == gb and gb != 'T':
-                # Poly-T tail context guard: inspect K positions to the right.
-                _ctx_all_polyt = True
-                _ctx_has_mismatch = False
-                _ctx_n = 0
-                for _j in range(i + 1, scan_limit):
-                    _jrp = _sc_rp[_j]
-                    if _jrp == -1:
-                        continue
-                    _jrb = chr(_sc_rb[_j])
-                    _jgb = chr(_sc_gb[_j])
-                    if _jrb != 'T':
-                        _ctx_all_polyt = False
-                        break
-                    if _jgb != _jrb:
-                        _ctx_has_mismatch = True
-                    _ctx_n += 1
-                    if _ctx_n >= _POLYT_TAIL_CTX_K:
-                        break
-                if _ctx_n >= _POLYT_TAIL_CTX_K and _ctx_all_polyt and _ctx_has_mismatch:
-                    continue  # false stop — poly-T tail context; keep scanning right
-                true_cpa_ref_pos = refp
-                break
-
-        # If the scan found no non-T match before the N-op boundary, and the
-        # pre-N block ends in T (still in poly-T tail territory), use the N-op
-        # start as the CPA — the intron boundary is the natural exon-end.
-        if true_cpa_ref_pos is None and first_n_start is not None and scan_limit > 0:
-            _last_pre_n_gb = None
-            for _k in range(scan_limit - 1, -1, -1):
-                if _sc_rp[_k] != -1:
-                    _last_pre_n_gb = chr(_sc_gb[_k])
-                    break
-            if _last_pre_n_gb == 'T':
-                true_cpa_ref_pos = first_n_start
-
-        if true_cpa_ref_pos is not None:
-            polya_len = true_cpa_ref_pos - raw_3prime
-            if polya_len > 0:
-                return {
-                    'corrected_pos': true_cpa_ref_pos,
-                    'original_pos': raw_3prime,
-                    'polya_aligned_bp': polya_len,
-                    'correction_bp': true_cpa_ref_pos - raw_3prime,
-                }
-
-    return None
+        side = THREE_PRIME_SIDE_RIGHT
+        stop_base = 'A'
+    else:
+        side = THREE_PRIME_SIDE_LEFT
+        stop_base = 'T'
+    return walkback_3prime_guarded(read, chrom_seq, side, stop_base=stop_base)
 
 
 # =============================================================================

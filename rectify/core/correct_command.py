@@ -154,6 +154,21 @@ def validate_inputs(args) -> dict:
     if genome_path and not genome_path.exists():
         errors.append(f"Genome FASTA not found: {genome_path}")
 
+    # Guard: --dT-primed-cDNA (QuantSeq REV) with FASTQ input is unsafe
+    # because the built-in FASTQ aligner (preprocess.prepare_input) uses
+    # minimap2 only, which is the wrong panel for short-read antisense data.
+    # Force the user to align separately with `rectify align --short-read`.
+    is_dt_primed_arg = (getattr(args, 'dT_primed_cDNA', False)
+                        or getattr(args, 'polya_sequenced', False))
+    if input_type in ('fastq', 'fastq.gz') and is_dt_primed_arg:
+        errors.append(
+            "FASTQ input is not supported with --dT-primed-cDNA: the built-in "
+            "aligner uses minimap2 only, which mis-aligns short antisense "
+            "reads. Pre-align with `rectify align --short-read INPUT.fastq "
+            "--genome GENOME -o ALIGNED.bam` first, then pass ALIGNED.bam to "
+            "`rectify correct --dT-primed-cDNA --short-read`."
+        )
+
     # Preprocess FASTQ input (align with minimap2)
     if input_type in ('fastq', 'fastq.gz') and genome_path and not errors:
         try:
