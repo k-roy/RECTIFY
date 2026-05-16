@@ -660,7 +660,7 @@ Citation:
     # =========================================================================
     # analyze command
     # =========================================================================
-    from .core.analyze_command import create_analyze_parser
+    from .core.commands.analyze_command import create_analyze_parser
     create_analyze_parser(subparsers)
 
     # =========================================================================
@@ -725,61 +725,61 @@ Citation:
     # =========================================================================
     # batch command (multi-sample with SLURM support)
     # =========================================================================
-    from .core.batch_command import create_batch_parser
+    from .core.commands.batch_command import create_batch_parser
     create_batch_parser(subparsers)
 
     # =========================================================================
     # test command (installation smoke-test)
     # =========================================================================
-    from .core.test_command import create_test_parser
+    from .core.commands.test_command import create_test_parser
     create_test_parser(subparsers)
 
     # =========================================================================
     # align command (multi-aligner pipeline)
     # =========================================================================
-    from .core.align_command import create_align_parser
+    from .core.commands.align_command import create_align_parser
     create_align_parser(subparsers)
 
     # =========================================================================
     # split command (FASTQ chunker for parallel array alignment)
     # =========================================================================
-    from .core.split_command import create_split_parser
+    from .core.commands.split_command import create_split_parser
     create_split_parser(subparsers)
 
     # =========================================================================
     # install-aligners command (download/compile external aligners)
     # =========================================================================
-    from .core.install_aligners_command import create_install_aligners_parser
+    from .core.commands.install_aligners_command import create_install_aligners_parser
     create_install_aligners_parser(subparsers)
 
     # =========================================================================
     # consensus command (aligner selection on pre-built BAMs)
     # =========================================================================
-    from .core.consensus_command import create_consensus_parser
+    from .core.commands.consensus_command import create_consensus_parser
     create_consensus_parser(subparsers)
 
     # =========================================================================
     # extract command (per-read BAM to TSV)
     # =========================================================================
-    from .core.extract_command import create_extract_parser
+    from .core.commands.extract_command import create_extract_parser
     create_extract_parser(subparsers)
 
     # =========================================================================
     # prescan command (pre-compute variant scan + junction pool for chunked correction)
     # =========================================================================
-    from .core.prescan_command import create_prescan_parser
+    from .core.commands.prescan_command import create_prescan_parser
     create_prescan_parser(subparsers)
 
     # =========================================================================
     # aggregate command (3' ends, 5' ends, junctions)
     # =========================================================================
-    from .core.aggregate_command import create_aggregate_parser
+    from .core.commands.aggregate_command import create_aggregate_parser
     create_aggregate_parser(subparsers)
 
     # =========================================================================
     # netseq command (NET-seq BAM processing)
     # =========================================================================
-    from .core.netseq_command import add_netseq_parser
+    from .core.commands.netseq_command import add_netseq_parser
     add_netseq_parser(subparsers)
 
     # =========================================================================
@@ -1655,70 +1655,70 @@ def main(argv: Optional[list] = None):
 
     # Import commands only when needed
     if args.command == 'correct':
-        from .core import correct_command
+        from .core.commands import correct_command
         correct_command.run(args)
     elif args.command == 'train-polya':
-        from .core import train_polya_command
+        from .core.commands import train_polya_command
         train_polya_command.run(args)
     elif args.command == 'tag-polya':
-        from .core import tag_polya_command
+        from .core.commands import tag_polya_command
         sys.exit(tag_polya_command.run(args))
     elif args.command == 'validate':
-        from .core import validate_command
+        from .core.commands import validate_command
         validate_command.run(args)
     elif args.command == 'analyze':
-        from .core.analyze_command import run_analyze
+        from .core.commands.analyze_command import run_analyze
         sys.exit(run_analyze(args))
     elif args.command == 'export':
-        from .core import export_command
+        from .core.commands import export_command
         sys.exit(export_command.run(args))
     elif args.command == 'run-all':
-        from .core import run_command
+        from .core.commands import run_command
         run_command.run(args)
     elif args.command == 'batch':
-        from .core import batch_command
+        from .core.commands import batch_command
         sys.exit(batch_command.run(args))
     elif args.command == 'aggregate':
-        from .core import aggregate_command
+        from .core.commands import aggregate_command
         aggregate_command.run(args)
     elif args.command == 'prescan':
-        from .core import prescan_command
+        from .core.commands import prescan_command
         sys.exit(prescan_command.run(args))
     elif args.command == 'test':
-        from .core import test_command
+        from .core.commands import test_command
         sys.exit(test_command.run(args))
     elif args.command == 'align':
-        from .core import align_command
+        from .core.commands import align_command
         align_command.run(args)
     elif args.command == 'split':
-        from .core import split_command
+        from .core.commands import split_command
         split_command.run(args)
     elif args.command == 'consensus':
-        from .core import consensus_command
+        from .core.commands import consensus_command
         consensus_command.run(args)
     elif args.command == 'install-aligners':
-        from .core import install_aligners_command
+        from .core.commands import install_aligners_command
         install_aligners_command.run(args)
     elif args.command == 'extract':
-        from .core import extract_command
+        from .core.commands import extract_command
         extract_command.run(args)
     elif args.command == 'netseq':
-        from .core import netseq_command
+        from .core.commands import netseq_command
         sys.exit(netseq_command.run_netseq(args))
     elif args.command == 'trim-polya':
-        from .core import drs_trim_command
+        from .core.commands import drs_trim_command
         sys.exit(drs_trim_command.run(args))
     elif args.command == 'trim-cdna-polya':
-        from .core import cdna_trim_command
+        from .core.commands import cdna_trim_command
         sys.exit(cdna_trim_command.run(args))
     elif args.command == 'correct-cdna':
-        from .core import cdna_correct_command
+        from .core.commands import cdna_correct_command
         sys.exit(cdna_correct_command.run(args))
     elif args.command == 'cdna-analyze':
-        from .core import cdna_analyze_command
+        from .core.commands import cdna_analyze_command
         sys.exit(cdna_analyze_command.run(args))
     elif args.command == 'restore-softclip':
-        from .core import restore_polya_command
+        from .core.commands import restore_polya_command
         sys.exit(restore_polya_command.run(args))
     else:
         parser.print_help()

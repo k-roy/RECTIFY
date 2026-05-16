@@ -155,13 +155,13 @@ class TestCorrectCommandConfig:
         return argparse.Namespace(**defaults)
 
     def test_filter_spikein_defaults_none(self):
-        from rectify.core.correct_command import validate_inputs
+        from rectify.core.commands.correct_command import validate_inputs
         args = self._make_args(input=Path(__file__))
         config = validate_inputs(args)
         assert config["filter_spikein"] is None
 
     def test_filter_spikein_propagated(self):
-        from rectify.core.correct_command import validate_inputs
+        from rectify.core.commands.correct_command import validate_inputs
         args = self._make_args(input=Path(__file__), filter_spikein=["ENO2"])
         config = validate_inputs(args)
         assert config["filter_spikein"] == ["ENO2"]

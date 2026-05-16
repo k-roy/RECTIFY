@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
-from ..utils.genome import reverse_complement
+from ...utils.genome import reverse_complement
 
 logger = logging.getLogger(__name__)
 

@@ -33,7 +33,7 @@ import pytest
 # ---------------------------------------------------------------------------
 def test_cdna_analyze_imports():
     """The module imports and exposes a `run` callable."""
-    from rectify.core import cdna_analyze_command
+    from rectify.core.commands import cdna_analyze_command
 
     assert callable(cdna_analyze_command.run)
     # The helper that builds a ReadInfo from a BAM record is also part of
@@ -202,7 +202,7 @@ def test_cdna_analyze_synthetic_minimal(tmp_path):
       * t1t2_pairs.tsv exists and is well-formed (header only — there are no
         Type-2 records in this synthetic, so 0 data rows is correct).
     """
-    from rectify.core import cdna_analyze_command
+    from rectify.core.commands import cdna_analyze_command
 
     ref = _build_tiny_reference(tmp_path)
     gff = _build_tiny_gff(tmp_path)
@@ -312,7 +312,7 @@ def test_cdna_analyze_chri_smoke(tmp_path):
     only check that the entry point handles "no usable records" gracefully
     and produces empty manifests with headers intact.
     """
-    from rectify.core import cdna_analyze_command
+    from rectify.core.commands import cdna_analyze_command
 
     out = tmp_path / "out"
     args = _make_args(bam=_CHRI_BAM, out=out, gff=_GFF, ref=_FASTA)

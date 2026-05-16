@@ -242,7 +242,7 @@ def load_annotation(path: Path) -> pd.DataFrame:
 
 def run_3prime_aggregate(args: argparse.Namespace, annotation_df: Optional[pd.DataFrame], prefix: str):
     """Run 3' end aggregation."""
-    from .aggregate.three_prime import aggregate_3prime_clusters, export_3prime_clusters
+    from ..aggregate.three_prime import aggregate_3prime_clusters, export_3prime_clusters
 
     if annotation_df is None:
         logger.warning("No annotation provided - gene attribution will be empty")
@@ -268,7 +268,7 @@ def run_3prime_aggregate(args: argparse.Namespace, annotation_df: Optional[pd.Da
 
 def run_5prime_aggregate(args: argparse.Namespace, annotation_df: Optional[pd.DataFrame], prefix: str):
     """Run 5' end aggregation."""
-    from .aggregate.five_prime import aggregate_5prime_clusters, export_5prime_clusters
+    from ..aggregate.five_prime import aggregate_5prime_clusters, export_5prime_clusters
 
     if annotation_df is None:
         logger.warning("No annotation provided - gene attribution will be empty")
@@ -294,7 +294,7 @@ def run_5prime_aggregate(args: argparse.Namespace, annotation_df: Optional[pd.Da
 
 def run_junction_aggregate(args: argparse.Namespace, genome: Optional[dict], prefix: str):
     """Run junction aggregation."""
-    from .aggregate.junctions import (
+    from ..aggregate.junctions import (
         aggregate_junctions,
         merge_with_partial_evidence,
         export_junctions,
@@ -311,7 +311,7 @@ def run_junction_aggregate(args: argparse.Namespace, genome: Optional[dict], pre
     if args.rescue_partial and args.gff and args.gff.exists() and genome:
         logger.info("Rescuing partial junction evidence...")
 
-        from .terminal_exon_refiner import (
+        from ..terminal_exon_refiner import (
             load_splice_sites_from_gff,
             detect_partial_junction_crossings,
         )

@@ -22,11 +22,11 @@ import numpy as np
 import pysam
 from tqdm import tqdm
 
-from ..slurm import set_thread_limits, get_available_cpus
-from ..utils.genome import load_genome, reverse_complement
-from ..utils.alignment import extract_soft_clips
-from .polya_model import PolyAModel, PolyAModelParameters, PolyAModelStats
-from .atract_detector import calculate_atract_ambiguity
+from ...slurm import set_thread_limits, get_available_cpus
+from ...utils.genome import load_genome, reverse_complement
+from ...utils.alignment import extract_soft_clips
+from ..polya_model import PolyAModel, PolyAModelParameters, PolyAModelStats
+from ..atract_detector import calculate_atract_ambiguity
 
 logger = logging.getLogger(__name__)
 

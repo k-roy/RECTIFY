@@ -168,7 +168,7 @@ class TestCdnaWalkbackBaseline:
 
     @pytest.mark.parametrize("xv", list(EXPECTED_ANCHOR_AND_TAIL.keys()))
     def test_anchor_and_tail(self, xv, reads_by_xv, genome):
-        from rectify.core.cdna_correct_command import walk_back_anchor_and_tail
+        from rectify.core.commands.cdna_correct_command import walk_back_anchor_and_tail
 
         read = reads_by_xv[xv]
         chrom_seq = _resolve_chrom_seq(genome, read.reference_name)

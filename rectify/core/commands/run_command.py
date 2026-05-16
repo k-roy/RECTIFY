@@ -684,8 +684,8 @@ def _run_junction_aggregation(
 
     print("\n[Junctions] Aggregating splice junctions with partial rescue...")
 
-    from .aggregate.junctions import aggregate_junctions, merge_with_partial_evidence, export_junctions
-    from .terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
+    from ..aggregate.junctions import aggregate_junctions, merge_with_partial_evidence, export_junctions
+    from ..terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
     import pysam
 
     junctions_dir = output_dir / 'junctions'
@@ -725,7 +725,7 @@ def _run_junction_aggregation(
 
         # Provenance
         if junctions_tsv.exists():
-            from ..utils.provenance import init_provenance
+            from ...utils.provenance import init_provenance
             prov = init_provenance(output_dir, description="RECTIFY junction aggregation", config=config)
             prov.add_output_file(
                 junctions_tsv,
@@ -779,7 +779,7 @@ def _process_one_sample(
     try:
         with open(log_file, 'w') as log:
             # Determine input type
-            from .preprocess import detect_input_type
+            from ..preprocess import detect_input_type
             input_type = detect_input_type(input_path)
 
             bam_to_correct = input_path
@@ -840,7 +840,7 @@ def _process_one_sample(
                 # Create a per-sample scratch dir for the consensus sort step.
                 # This routes pysam.sort I/O to high-bandwidth scratch storage,
                 # preventing NFS write hangs when output is on shared Oak NFS.
-                from ..slurm import make_job_scratch_dir as _mks_consensus
+                from ...slurm import make_job_scratch_dir as _mks_consensus
                 import shutil as _shutil_consensus
                 _use_scratch = getattr(args, 'use_scratch', True)
                 _consensus_ckpt_dir: Optional[str] = None
@@ -897,7 +897,7 @@ def _process_one_sample(
             print(f"  [{sample_id}] Correcting 3' ends…", flush=True)
             # Stage correction I/O through $SCRATCH when available to avoid
             # NFS write hangs (position index gzip, large TSV writes under load).
-            from ..slurm import make_job_scratch_dir, sync_to_oak as _sync_to_oak
+            from ...slurm import make_job_scratch_dir, sync_to_oak as _sync_to_oak
             import shutil as _shutil_corr
             _use_scratch = getattr(args, 'use_scratch', True)
             _corr_scratch = make_job_scratch_dir(f'rectify_{sample_id}') if _use_scratch else None
@@ -1144,7 +1144,7 @@ def _run_single_sample(args) -> int:
     print(f"Output dir: {output_dir}")
 
     # Determine input type
-    from .preprocess import detect_input_type
+    from ..preprocess import detect_input_type
     input_type = detect_input_type(input_path)
     print(f"Input type: {input_type}")
 
@@ -1156,7 +1156,7 @@ def _run_single_sample(args) -> int:
     # This avoids NFS contention across concurrent array tasks.
     # The rectified BAM is always copied back to the output dir even on fresh
     # alignments so it survives $SCRATCH's auto-purge and enables job resumption.
-    from ..slurm import make_job_scratch_dir, sync_to_oak
+    from ...slurm import make_job_scratch_dir, sync_to_oak
     import shutil as _shutil
 
     use_scratch = getattr(args, 'use_scratch', True)  # default on when scratch available
@@ -1177,7 +1177,7 @@ def _run_single_sample(args) -> int:
     # ── Provenance tracker ───────────────────────────────────────────────────
     # scratch_root/oak_root mapping ensures all sidecar JSON keys use canonical
     # Oak paths — so step_is_current() works on re-runs regardless of $SCRATCH.
-    from ..utils.provenance import ProvenanceTracker
+    from ...utils.provenance import ProvenanceTracker
     tracker = ProvenanceTracker(output_dir=output_dir)
     tracker.set_command(sys.argv)
 
@@ -1335,7 +1335,7 @@ def _run_single_sample(args) -> int:
             # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
-            from .corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
+            from ..corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
             per_aligner_tsvs = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,
@@ -1627,7 +1627,7 @@ def _generate_chunked_pipeline(args) -> int:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if getattr(args, 'input', None):
         input_path = Path(args.input)
-        from .preprocess import detect_input_type
+        from ..preprocess import detect_input_type
         input_type = detect_input_type(input_path)
 
         # (BAM inputs are handled in run() before calling this function)
@@ -1902,7 +1902,7 @@ echo "Done: $(date)"
 
         for s in samples:
             p = Path(s.get('path', s.get('bam_path', '')))
-            from .preprocess import detect_input_type
+            from ..preprocess import detect_input_type
             itype = detect_input_type(p)
             if itype in ('fastq', 'fastq.gz'):
                 fastq_samples.append(s)
@@ -2453,7 +2453,7 @@ def run(args: argparse.Namespace) -> None:
         input_path_str = getattr(args, 'input', None)
         is_bam_input = False
         if input_path_str:
-            from .preprocess import detect_input_type
+            from ..preprocess import detect_input_type
             itype = detect_input_type(Path(str(input_path_str)))
             is_bam_input = itype not in ('fastq', 'fastq.gz')
 

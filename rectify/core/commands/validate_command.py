@@ -22,7 +22,7 @@ import sys
 import numpy as np
 from tqdm import tqdm
 
-from ..slurm import set_thread_limits
+from ...slurm import set_thread_limits
 
 logger = logging.getLogger(__name__)
 
@@ -899,7 +899,7 @@ def run(args) -> None:
     # NET-seq (optional)
     if hasattr(args, 'netseq_dir') and args.netseq_dir:
         try:
-            from .netseq_refiner import NetseqLoader
+            from ..netseq_refiner import NetseqLoader
             logger.info("Loading NET-seq data...")
             netseq_loader = NetseqLoader()
             netseq_loader.load_directory(str(args.netseq_dir))

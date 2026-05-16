@@ -26,9 +26,9 @@ from typing import Optional
 
 import pysam
 
-from ..utils.genome import reverse_complement
-from ..utils.alignment import extract_soft_clips
-from .polya_model import PolyAModel, load_model as load_polya_model, get_default_model
+from ...utils.genome import reverse_complement
+from ...utils.alignment import extract_soft_clips
+from ..polya_model import PolyAModel, load_model as load_polya_model, get_default_model
 
 
 logger = logging.getLogger(__name__)

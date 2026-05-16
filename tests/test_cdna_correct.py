@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from rectify.core import cdna_correct_command as cc
+from rectify.core.commands import cdna_correct_command as cc
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
-from ..utils.genome import reverse_complement
+from ...utils.genome import reverse_complement
 from .drs_trim_command import load_trim_metadata
 
 logger = logging.getLogger(__name__)

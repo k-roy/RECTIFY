@@ -18,13 +18,13 @@ import pysam
 
 # CRITICAL: Set thread limits BEFORE importing numpy/pandas
 # This must happen before bam_processor imports numpy
-from ..slurm import set_thread_limits, get_available_cpus, get_slurm_info
+from ...slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
-from . import bam_processor
-from .processing_stats import write_stats_tsv, generate_stats_report
-from .spikein_filter import filter_spikein_reads
-from ..utils import genome as genome_utils
-from ..utils.provenance import init_provenance
+from .. import bam_processor
+from ..processing_stats import write_stats_tsv, generate_stats_report
+from ..spikein_filter import filter_spikein_reads
+from ...utils import genome as genome_utils
+from ...utils.provenance import init_provenance
 
 
 def _strip_aligner_prefix(bam_entry: str) -> str:
@@ -101,8 +101,8 @@ def validate_inputs(args) -> dict:
             ``junction_window``, ``junction_max_slide``,
             ``junction_max_boundary_shift``
     """
-    from .preprocess import detect_input_type, prepare_input, prepare_bundled_genome
-    from ..data import (
+    from ..preprocess import detect_input_type, prepare_input, prepare_bundled_genome
+    from ...data import (
         normalize_organism, is_bundled_genome_available,
         detect_organism, ensure_netseq_data
     )
@@ -455,8 +455,8 @@ def run(args):
             _t_refine = _time.perf_counter()
             logger.info("Module 2H: Junction N-op boundary refinement...")
             try:
-                from .junction_refiner import refine_bam_junctions
-                from .consensus import load_annotated_junctions as _load_annot_j
+                from ..junction_refiner import refine_bam_junctions
+                from ..consensus import load_annotated_junctions as _load_annot_j
 
                 _annot_j = _load_annot_j(str(config['annotation_path']))
                 _bam_stem = Path(bam_to_process).stem
@@ -471,7 +471,7 @@ def run(args):
                 _run_id = _uuid.uuid4().hex[:8]
                 _refined_bam = str(_out_dir / f"{_bam_stem}.junction_refined_{_run_id}.bam")
 
-                from ..utils.genome import load_genome as _load_genome_for_refine
+                from ...utils.genome import load_genome as _load_genome_for_refine
                 _refine_genome = _load_genome_for_refine(str(config['genome_path']))
 
                 # Load pre-built junction pool from cache if available.
@@ -541,7 +541,7 @@ def run(args):
         _t_junc = _time.perf_counter()
         annotated_junctions = None
         if config.get('annotation_path'):
-            from .consensus import load_annotated_junctions
+            from ..consensus import load_annotated_junctions
             annotated_junctions = load_annotated_junctions(str(config['annotation_path']))
             logger.info(
                 f"Loaded {len(annotated_junctions):,} annotated junctions for 3'SS rescue "
@@ -552,7 +552,7 @@ def run(args):
         gene_interval_trees = None
         if config.get('annotation_path'):
             try:
-                from .analyze.gene_attribution import build_cds_interval_tree
+                from ..analyze.gene_attribution import build_cds_interval_tree
                 from .analyze_command import load_annotation as _load_annotation_for_trees
                 _ann_df = _load_annotation_for_trees(str(config['annotation_path']),
                                                       normalize_chroms=False)
@@ -850,7 +850,7 @@ def run(args):
         # Write NET-seq bedgraph files if requested
         if config.get('bedgraph_prefix') and config.get('output_path'):
             import pandas as _pd
-            from .netseq_output import write_bedgraph as _write_bedgraph
+            from ..netseq_output import write_bedgraph as _write_bedgraph
             _t_bg = _time.perf_counter()
             _tsv_path = str(config['output_path'])
             _prefix = str(config['bedgraph_prefix'])

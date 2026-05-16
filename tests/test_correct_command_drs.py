@@ -213,7 +213,7 @@ def _make_correct_args(*, bam: Path, genome: Path, output: Path,
 
 def _run_correct(args: argparse.Namespace) -> int:
     """Invoke correct_command.run(args), capturing SystemExit if it fires."""
-    from rectify.core import correct_command
+    from rectify.core.commands import correct_command
 
     try:
         correct_command.run(args)
@@ -229,7 +229,7 @@ def _run_correct(args: argparse.Namespace) -> int:
 
 def test_correct_drs_imports():
     """correct_command module loads and exposes run + validate_inputs."""
-    from rectify.core import correct_command
+    from rectify.core.commands import correct_command
 
     assert callable(correct_command.run)
     assert callable(correct_command.validate_inputs)
@@ -245,7 +245,7 @@ def test_correct_qsrev_fastq_input_rejected(tmp_path, caplog, capsys):
     """
     import logging
 
-    from rectify.core import correct_command
+    from rectify.core.commands import correct_command
 
     genome = _make_reference(tmp_path)
     fastq = tmp_path / "qsrev_reads.fastq"
@@ -275,7 +275,7 @@ def test_correct_drs_fastq_input_not_blocked_by_qsrev_guard(tmp_path):
     installed, but that's a separate concern — we only verify the guard
     doesn't false-positive here).
     """
-    from rectify.core import correct_command
+    from rectify.core.commands import correct_command
 
     genome = _make_reference(tmp_path)
     fastq = tmp_path / "drs_reads.fastq"

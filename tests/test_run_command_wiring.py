@@ -133,7 +133,7 @@ class TestRunCommandModuleWiring:
         # but we can inspect that analyze_command's expected attrs are present
         # by checking the source uses 'output=' not 'output_dir='.
         import inspect
-        import rectify.core.run_command as run_mod
+        import rectify.core.commands.run_command as run_mod
 
         source = inspect.getsource(run_mod.run)
         return source
@@ -144,7 +144,7 @@ class TestRunCommandModuleWiring:
         since analyze_command reads args.output.
         """
         import inspect
-        import rectify.core.run_command as run_mod
+        import rectify.core.commands.run_command as run_mod
 
         # The fix is now in _run_analysis which builds analyze_args
         source = inspect.getsource(run_mod._run_analysis)
@@ -159,7 +159,7 @@ class TestRunCommandModuleWiring:
 
     def test_run_command_sets_exclude_mito(self):
         import inspect
-        import rectify.core.run_command as run_mod
+        import rectify.core.commands.run_command as run_mod
 
         source = inspect.getsource(run_mod._run_analysis)
         assert 'exclude_mito' in source, (
@@ -168,7 +168,7 @@ class TestRunCommandModuleWiring:
 
     def test_run_command_sets_motif_upstream(self):
         import inspect
-        import rectify.core.run_command as run_mod
+        import rectify.core.commands.run_command as run_mod
 
         source = inspect.getsource(run_mod._run_analysis)
         assert 'motif_upstream' in source, (
@@ -270,7 +270,7 @@ class TestSlurmProfile:
 
     def test_load_json_profile(self, tmp_path):
         import json
-        from rectify.core.batch_command import load_slurm_profile
+        from rectify.core.commands.batch_command import load_slurm_profile
 
         profile_data = {
             "partition": "my-partition",
@@ -296,7 +296,7 @@ class TestSlurmProfile:
         except ImportError:
             pytest.skip("PyYAML not installed")
 
-        from rectify.core.batch_command import load_slurm_profile
+        from rectify.core.commands.batch_command import load_slurm_profile
 
         # Find bundled profile
         import rectify
@@ -320,7 +320,7 @@ class TestSlurmProfile:
         except ImportError:
             pytest.skip("PyYAML not installed")
 
-        from rectify.core.batch_command import load_slurm_profile
+        from rectify.core.commands.batch_command import load_slurm_profile
 
         content = 'partition: my-partition\ntime: "4:00:00"\nmem: 32G\ncpus: 8\n'
         profile_path = tmp_path / "test.yaml"
@@ -331,7 +331,7 @@ class TestSlurmProfile:
         assert profile["partition"] == "my-partition"
 
     def test_invalid_extension_raises(self, tmp_path):
-        from rectify.core.batch_command import load_slurm_profile
+        from rectify.core.commands.batch_command import load_slurm_profile
 
         profile_path = tmp_path / "test.txt"
         profile_path.write_text("partition: my-partition")
@@ -346,21 +346,21 @@ class TestSlurmProfile:
 class TestCpuDetection:
 
     def test_uses_slurm_env_when_set(self, monkeypatch):
-        from rectify.core.batch_command import _get_available_cpus
+        from rectify.core.commands.batch_command import _get_available_cpus
 
         monkeypatch.setenv('SLURM_CPUS_PER_TASK', '16')
         assert _get_available_cpus() == 16
 
     def test_falls_back_to_system_count(self, monkeypatch):
         import multiprocessing
-        from rectify.core.batch_command import _get_available_cpus
+        from rectify.core.commands.batch_command import _get_available_cpus
 
         monkeypatch.delenv('SLURM_CPUS_PER_TASK', raising=False)
         assert _get_available_cpus() == multiprocessing.cpu_count()
 
     def test_slurm_env_takes_precedence_over_system(self, monkeypatch):
         """SLURM_CPUS_PER_TASK should override multiprocessing.cpu_count()."""
-        from rectify.core.batch_command import _get_available_cpus
+        from rectify.core.commands.batch_command import _get_available_cpus
 
         monkeypatch.setenv('SLURM_CPUS_PER_TASK', '4')
         result = _get_available_cpus()

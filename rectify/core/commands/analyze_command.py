@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 
-from .analyze import (
+from ..analyze import (
     cluster_cpa_sites,
     build_cluster_count_matrix,
     run_deseq2_gene_level,
@@ -41,9 +41,9 @@ from .analyze import (
     run_5prime_distribution_analysis,
     run_transcript_body_distribution_analysis,
 )
-from .analyze.clustering import annotate_clusters_with_genes, cluster_cpa_sites_adaptive
-from .analyze.deseq2 import extract_condition_from_sample
-from ..utils.provenance import init_provenance
+from ..analyze.clustering import annotate_clusters_with_genes, cluster_cpa_sites_adaptive
+from ..analyze.deseq2 import extract_condition_from_sample
+from ...utils.provenance import init_provenance
 
 
 def run_analyze(args: argparse.Namespace) -> int:
@@ -58,7 +58,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     """
     # Must be called before any numpy/pandas/sklearn/pydeseq2 import side-effects
     # so thread limits take effect before those libraries auto-spawn workers.
-    from ..slurm import set_thread_limits
+    from ...slurm import set_thread_limits
     set_thread_limits(getattr(args, 'threads', None))
 
     print("=" * 70)
@@ -440,7 +440,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     # GO enrichment
     if args.go_annotations and deseq2_gene_results:
         print(f"\n[7/9] Running GO enrichment analysis...")
-        from .analyze.go_enrichment import load_go_annotations
+        from ..analyze.go_enrichment import load_go_annotations
 
         go_annotations = load_go_annotations(
             args.go_annotations,
@@ -633,7 +633,7 @@ def load_corrected_positions(
     Returns:
         DataFrame with corrected positions
     """
-    from ..utils.chromosome import normalize_dataframe_chromosomes
+    from ...utils.chromosome import normalize_dataframe_chromosomes
     import os
 
     # Check file size to determine loading strategy
@@ -718,7 +718,7 @@ def _load_large_file_chunked(
     This reduces memory by ~100x for most datasets.
     Uses vectorized pandas operations instead of iterrows for speed.
     """
-    from ..utils.chromosome import normalize_chromosome
+    from ...utils.chromosome import normalize_chromosome
 
     print(f"  Aggregating counts by position (chunk_size={chunk_size:,})...")
 
@@ -802,7 +802,7 @@ def load_annotation(filepath: str, normalize_chroms: bool = True, chrom_format: 
     Returns:
         DataFrame with gene annotations
     """
-    from ..utils.chromosome import normalize_dataframe_chromosomes
+    from ...utils.chromosome import normalize_dataframe_chromosomes
 
     filepath_str = str(filepath)
     if any(filepath_str.endswith(ext) for ext in ('.gtf', '.gff', '.gtf.gz', '.gff.gz', '.gff3', '.gff3.gz')):
@@ -829,7 +829,7 @@ def load_position_index(
 
     Returns None if the index file is missing.
     """
-    from ..utils.chromosome import normalize_dataframe_chromosomes
+    from ...utils.chromosome import normalize_dataframe_chromosomes
     from pathlib import Path as _Path
 
     base = _Path(tsv_path)
@@ -1039,7 +1039,7 @@ def _run_analyze_manifest(
     five_prime_position counts, then clusters them with a wider window (75 bp default).
     """
     from collections import defaultdict
-    from ..utils.chromosome import normalize_chromosome
+    from ...utils.chromosome import normalize_chromosome
 
     print("=" * 70)
     print("RECTIFY Analysis Pipeline (Manifest Mode)")
@@ -1684,7 +1684,7 @@ def _run_analyze_manifest(
     # GO enrichment
     if args.go_annotations and deseq2_gene_results:
         print(f"\n[7/9] Running GO enrichment analysis...")
-        from .analyze.go_enrichment import load_go_annotations
+        from ..analyze.go_enrichment import load_go_annotations
         go_annotations = load_go_annotations(
             args.go_annotations,
             gene_col='gene_name',

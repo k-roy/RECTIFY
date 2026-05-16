@@ -444,12 +444,18 @@ hr {{ border: none; border-top: 1px solid var(--border); margin: 40px 0; }}
 </div>
 <div class="summary">Generated {now} · {n_reads} reads across {n_cats} categories</div>
 <div class="principle">
-<strong>Leftmost-possible-CPA principle</strong> — in mature mRNA, the boundary between genomic
-A's and post-transcriptionally added poly(A) is irrecoverably lost. RECTIFY's walkback returns the
-principled answer to that ambiguity: anchor at the first non-stop read=ref agreement walking
-inward from the alignment 3' edge. NET-seq refinement narrows the leftmost-possible-CPA window
-further (out-of-band). For each read below, verify visually that the corrected position sits at
-this anchor.
+<p><strong>Leftmost-possible-CPA principle</strong> — in mature mRNA, the boundary between
+genomic A's and post-transcriptionally added poly(A) is irrecoverably lost. RECTIFY's walkback
+returns the principled answer to that ambiguity: anchor at the first non-stop read=ref agreement
+walking inward from the alignment 3' edge.</p>
+<p>When NET-seq data is available (a separate nascent-RNA dataset that captures CPA cleavage
+intermediates as a mixture of ~50% non-adenylated and ~50% oligo-adenylated (1–12 nt) species),
+<code>rectify correct --netseq-dir</code> deconvolves the NET-seq peaks within A-tracts and
+apportions the corrected 3' end within the CPA ambiguity window to NET-seq–informed CPA sites in
+the observed proportions (see RECTIFY README). The walkback alone gives you the principled left
+edge of that window; NET-seq refinement pins the position inside it.</p>
+<p>For each read below, verify visually that the corrected position sits at the
+leftmost-possible-CPA anchor (or, for Cat8 reads, at the NET-seq peak inside the ambiguity window).</p>
 </div>
 """
 

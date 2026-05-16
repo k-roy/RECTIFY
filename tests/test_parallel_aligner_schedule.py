@@ -115,7 +115,7 @@ class TestTwoPhaseAlignerSchedule:
             p.stop()
 
     def _run(self, tmp_path, threads=16):
-        from rectify.core.align_command import run_align
+        from rectify.core.commands.align_command import run_align
         args = _make_args(threads=threads, tmp_path=tmp_path)
         run_align(args)
 
@@ -144,7 +144,7 @@ class TestTwoPhaseAlignerSchedule:
 
     def test_no_parallel_flag_gives_all_threads_to_each(self, tmp_path, _patch_aligners):
         """Without --parallel-aligners every aligner runs sequentially with full threads."""
-        from rectify.core.align_command import run_align
+        from rectify.core.commands.align_command import run_align
         args = _make_args(threads=16, parallel_aligners=False, tmp_path=tmp_path)
         run_align(args)
         for name in ('minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT'):
@@ -156,7 +156,7 @@ class TestTwoPhaseAlignerSchedule:
         self, tmp_path, _patch_aligners
     ):
         """If mapPacBio is excluded phase 1 is skipped; others share threads equally."""
-        from rectify.core.align_command import run_align
+        from rectify.core.commands.align_command import run_align
         args = _make_args(threads=16, tmp_path=tmp_path)
         # Remove mapPacBio from the aligner list by marking it unavailable
         with patch(
@@ -195,7 +195,7 @@ class TestPhase2MinimumOneThread:
         for p in patches:
             p.start()
         try:
-            from rectify.core.align_command import run_align
+            from rectify.core.commands.align_command import run_align
             args = _make_args(threads=1, tmp_path=tmp_path)
             run_align(args)
         finally:

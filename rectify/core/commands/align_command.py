@@ -293,7 +293,7 @@ def run_align(args: argparse.Namespace) -> int:
             aligners.append(ja)
 
     # Import multi-aligner functions
-    from .multi_aligner import (
+    from ..multi_aligner import (
         run_minimap2,
         run_map_pacbio,
         run_gapmm2,
@@ -309,7 +309,7 @@ def run_align(args: argparse.Namespace) -> int:
     if args.junc_bed:
         junc_bed_path = str(args.junc_bed)
     elif args.annotation:
-        from ..utils.junction_bed import generate_junction_bed
+        from ...utils.junction_bed import generate_junction_bed
         junc_bed_path = str(args.output_dir / f"{prefix}_junctions.bed")
         generate_junction_bed(str(args.annotation), junc_bed_path)
         logger.info(f"Generated junction BED: {junc_bed_path}")
@@ -540,7 +540,7 @@ def run_align(args: argparse.Namespace) -> int:
     _t_consensus_start = _time.perf_counter()
     logger.info(f"\nRunning consensus selection across {len(successful_aligners)} aligners...")
 
-    from .consensus import run_consensus_selection, load_annotated_junctions
+    from ..consensus import run_consensus_selection, load_annotated_junctions
 
     # Load genome for consensus scoring
     _t_genome_load = _time.perf_counter()
@@ -610,14 +610,14 @@ def run_align(args: argparse.Namespace) -> int:
 
         # Write aligner stats TSV and HTML report alongside the rectified BAM
         try:
-            from .processing_stats import write_consensus_stats_tsv
+            from ..processing_stats import write_consensus_stats_tsv
             _stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
             write_consensus_stats_tsv(stats, str(_stats_tsv))
         except Exception as _e:
             logger.warning(f"Could not write consensus stats TSV: {_e}")
 
         try:
-            from .analyze.summary import generate_consensus_html_report
+            from ..analyze.summary import generate_consensus_html_report
             _report_html = args.output_dir / f"{prefix}.consensus_report.html"
             generate_consensus_html_report(stats, str(_report_html), sample_name=prefix)
             logger.info(f"Consensus report: {_report_html}")

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Tuple, Any
 from datetime import datetime
 
-from ..utils.provenance import init_provenance
+from ...utils.provenance import init_provenance
 
 
 SLURM_CORRECT_TEMPLATE = '''#!/bin/bash
@@ -899,7 +899,7 @@ def _resolve_reference_paths(args) -> None:
 
 def run(args) -> int:
     """Run batch command."""
-    from ..slurm import set_thread_limits
+    from ...slurm import set_thread_limits
     set_thread_limits(getattr(args, 'threads', None))
 
     _resolve_reference_paths(args)

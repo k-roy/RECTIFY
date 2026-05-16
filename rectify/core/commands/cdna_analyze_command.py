@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
-from rectify.core.cdna_correct_command import (
+from rectify.core.commands.cdna_correct_command import (
     ReadInfo,
     walk_back_anchor_and_tail,
     walk_forward_tss,

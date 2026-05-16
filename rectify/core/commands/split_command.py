@@ -1023,7 +1023,7 @@ if corrected_bams:
 # ── Step 3: restore poly-A softclips (if parquet provided) ───────────────
 if PARQUET and Path(PARQUET).exists() and raw_bams:
     try:
-        from rectify.core.restore_polya_command import restore_polya_softclips
+        from rectify.core.commands.restore_polya_command import restore_polya_softclips
         raw_paths = {{a: str(b) for a, b in raw_bams.items()}}
         tmp_p = str(CHUNK_OUT / 'corrected_polya.unsorted.bam')
         stats = restore_polya_softclips(
