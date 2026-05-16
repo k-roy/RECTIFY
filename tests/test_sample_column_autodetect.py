@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from rectify.core.commands.analyze_command import load_corrected_positions
+from rectify.core.analyze.loaders import load_corrected_positions
 
 
 # ---------------------------------------------------------------------------

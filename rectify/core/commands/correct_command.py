@@ -554,7 +554,7 @@ def run(args):
         if config.get('annotation_path'):
             try:
                 from ..analyze.gene_attribution import build_cds_interval_tree
-                from .analyze_command import load_annotation as _load_annotation_for_trees
+                from ..analyze.loaders import load_annotation as _load_annotation_for_trees
                 _ann_df = _load_annotation_for_trees(str(config['annotation_path']),
                                                       normalize_chroms=False)
                 gene_interval_trees = build_cds_interval_tree(_ann_df)
