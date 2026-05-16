@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`tests/test_consensus_selection.py`** (Bug 38): 40 tests covering `extract_junctions_from_cigar`, `check_canonical_splice_sites` (GT/AG, GC/AG, real YAL030W intron), `score_alignment` (5' clip −2/base, A-tract depth cap, 3' clip penalty), `select_best_alignment` (winner selection, `was_5prime_rescued`, tiebreakers, confidence levels). Real-data class validates junction extraction and aligner selection at the YAL030W locus.
 
+## [0.9.0] — Planned: first major public release
+
+The `0.9.0` slot is reserved for the first major public release of RECTIFY.
+Currently a Planned section — content below was developed pre-public-release
+and will be folded into the 0.9.0 release notes when the public version
+ships. Internal pre-public development is tracked under the 2.x and 3.x
+versions below.
+
+### Fixed
+
+- **`_score_junction` degenerate k=L case** (`core/splice/junction_refiner.py`): the k-loop previously ran `range(L+1)`, where k=L gives an empty `rescue[L:]`, making the score 0.0 for every candidate regardless of junction quality — a completely non-discriminating case that caused the wrong junction to win whenever candidates tied at 0.0. Fixed by changing to `range(L)` so `q1 = rescue[k:]` always contains at least one base.
+
+- **`refine_read_junctions` stability tiebreaker** (`core/splice/junction_refiner.py`): added `is_alt` as the second element of the candidate tuple (after `score`, before `canonical_tier`). `is_alt=0` when the candidate matches the current N-op boundaries exactly; `is_alt=1` otherwise. This prevents equal-scoring candidates from spuriously displacing already-correct junctions — critical when multiple candidates share the same `intron_end` (e.g. TFC3 annotated junction and a nearby alternative both score 0.0 at the same `je`).
+
+- **Impact**: 9 previously failing tests in `tests/test_junction_refiner.py` now pass. All 698 tests pass (4 skipped). Key reads fixed: RPL20B read `0b3b593b` now correctly refined from `[900758,901189)` to `[900767,901193)`; TFC3 annotated reads no longer displaced by same-score alternative at `[150989,151096)`.
+
 ## [3.2.5] - 2026-04-24
 
 ### Changed
@@ -598,13 +614,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rectify correct`: Main correction pipeline
 - `rectify train-polya`: (stub) Train poly(A) model
 - `rectify validate`: (stub) Validate corrections
-
-## [0.9.0] — 2026-04-21
-
-### Fixed
-
-- **`_score_junction` degenerate k=L case** (`core/junction_refiner.py`): the k-loop previously ran `range(L+1)`, where k=L gives an empty `rescue[L:]`, making the score 0.0 for every candidate regardless of junction quality — a completely non-discriminating case that caused the wrong junction to win whenever candidates tied at 0.0. Fixed by changing to `range(L)` so `q1 = rescue[k:]` always contains at least one base.
-
-- **`refine_read_junctions` stability tiebreaker** (`core/junction_refiner.py`): added `is_alt` as the second element of the candidate tuple (after `score`, before `canonical_tier`). `is_alt=0` when the candidate matches the current N-op boundaries exactly; `is_alt=1` otherwise. This prevents equal-scoring candidates from spuriously displacing already-correct junctions — critical when multiple candidates share the same `intron_end` (e.g. TFC3 annotated junction and a nearby alternative both score 0.0 at the same `je`).
-
-- **Impact**: 9 previously failing tests in `tests/test_junction_refiner.py` now pass. All 698 tests pass (4 skipped). Key reads fixed: RPL20B read `0b3b593b` now correctly refined from `[900758,901189)` to `[900767,901193)`; TFC3 annotated reads no longer displaced by same-score alternative at `[150989,151096)`.
