@@ -5,7 +5,9 @@ QuantSeq REV chemistry is *antisense*: the cDNA reads are reverse-complementary
 to the mRNA. After pysam-driven reverse-complementation:
 
     is_reverse = False  ->  gene is '-' strand, 3' end at the LEFT
+                          ->  polyT (RC of basecalled polyA) at the LEFT
     is_reverse = True   ->  gene is '+' strand, 3' end at the RIGHT
+                          ->  polyA at the RIGHT
 
 These tests mirror the structure of ``tests/test_walkback_readvsref.py``'s
 ``TestDrsWrapper`` but with the strand inversion that QuantSeq REV adds.
@@ -74,13 +76,17 @@ class TestQuantSeqRevStrandInversion:
     def test_is_reverse_false_yields_minus_strand_and_left_side(self):
         """is_reverse=False -> gene is '-', 3' end at LEFT side.
 
-        Mirror of the core left-side V-primer-tip test routed through the
-        QuantSeq REV wrapper.
+        BAM SEQ for is_reverse=False is in basecall orientation. The
+        cDNA's polyA-side carries T's (the dT primer's T-tract); after
+        alignment those T's appear at the LEFT of the alignment over
+        a genomic T-tract (= RC of the mRNA polyA-over-A-tract on the
+        gene's - strand). Walkback walks past the T-T matches and
+        anchors at the first non-T read=ref agreement inward.
         """
-        ref = "X" * 1000 + "AAAAAC" + "GTAC" + "X" * 100
+        ref = "X" * 1000 + "TTTTT" + "CGTAC" + "X" * 100
         read = _make_read(
             start=1000,
-            seq="GAAAAA" + "GTAC",
+            seq="TTTTT" + "CGTAC",
             cigar=((0, 10),),
             is_reverse=False,
         )
@@ -88,7 +94,7 @@ class TestQuantSeqRevStrandInversion:
         assert gene_strand == "-"
         assert applied == APPLIED_WALKBACK
         assert orig == 1000
-        assert corr == 1006
+        assert corr == 1005  # C immediately after the T-stretch
 
     def test_inversion_is_opposite_of_drs(self):
         """Sanity check: a read with is_reverse=True should map to gene '+'
@@ -168,18 +174,20 @@ class TestQuantSeqRevWalkbackFires:
         assert orig == 1009
         assert corr == 1004  # C before the A-stretch
 
-    def test_internal_priming_left_side_terminal_a_on_genomic_a(self):
-        """Core RECTIFY case on LEFT side: gene '-', poly-A aligning to genomic A.
+    def test_internal_priming_left_side_terminal_t_on_genomic_t(self):
+        """Core RECTIFY case on LEFT side, antisense form: gene '-', polyT
+        (RC of basecalled polyA) aligning over a genomic T-tract.
 
-        is_reverse=False → gene '-', 3' end at LEFT.
-        Genome:  ...AAAAA CGTAC X...
-        Read:    ...AAAAA CGTAC       (all leftmost A's on genomic A; walkback fires)
-        Scan from left anchors at C (pos 1005), the first non-A inward agreement.
+        is_reverse=False → gene '-', 3' end at LEFT, stop_base='T'.
+        On the gene's - strand the mRNA polyA over-aligns onto a genomic
+        A-run; on the + strand reference the same scenario appears as
+        polyT over a genomic T-run. Walkback fires and anchors at the
+        first non-T inward agreement.
         """
-        ref = "X" * 1000 + "AAAAA" + "CGTAC" + "X" * 100
+        ref = "X" * 1000 + "TTTTT" + "CGTAC" + "X" * 100
         read = _make_read(
             start=1000,
-            seq="AAAAA" + "CGTAC",
+            seq="TTTTT" + "CGTAC",
             cigar=((0, 10),),
             is_reverse=False,
         )
@@ -187,7 +195,7 @@ class TestQuantSeqRevWalkbackFires:
         assert gene_strand == "-"
         assert applied == APPLIED_WALKBACK
         assert orig == 1000
-        assert corr == 1005  # C immediately after the A-stretch
+        assert corr == 1005  # C immediately after the T-stretch
 
 
 class TestQuantSeqRevBoundary:

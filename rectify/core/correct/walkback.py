@@ -84,12 +84,20 @@ def walkback_3prime(
         protocol chemistry.
     stop_base
         Nucleotide to walk past, on the **read** side. Default ``"A"``.
-        Protocol wrappers select this from chemistry + BAM strand:
+        Protocol wrappers select this from chemistry + BAM strand. The
+        ``is_reverse`` → ``stop_base`` mapping is symmetric across all
+        three protocols (DRS, cDNA, QuantSeq REV):
 
-        - DRS plus strand, QuantSeq REV (both BAM strands), and cDNA
-          orient=fwd → ``"A"`` (poly-A in alignment orientation is A's).
-        - DRS minus strand and cDNA orient=rev → ``"T"`` (pysam RC of the
-          basecalled poly-A puts T's at the LEFT of query_sequence).
+        - ``is_reverse=True`` → side=RIGHT, ``stop_base="A"`` (BAM SEQ is
+          pysam RC of the basecall, so basecalled polyA T's become A's on
+          the right).
+        - ``is_reverse=False`` → side=LEFT, ``stop_base="T"`` (BAM SEQ is
+          the basecall in alignment orientation; basecalled polyA T's stay
+          at the left).
+
+        Protocols differ only in the BAM→gene-strand mapping: DRS and cDNA
+        are sense (BAM strand passes through); QuantSeq REV is antisense
+        (BAM strand inverts).
 
     Returns
     -------
