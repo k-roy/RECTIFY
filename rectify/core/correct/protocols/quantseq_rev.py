@@ -24,9 +24,11 @@ from typing import Tuple
 import pysam
 
 from rectify.core.correct.walkback import (
+    APPLIED_NONE,
+    APPLIED_WALKBACK,
     THREE_PRIME_SIDE_LEFT,
     THREE_PRIME_SIDE_RIGHT,
-    walkback_3prime,
+    walkback_3prime_guarded,
 )
 
 
@@ -43,14 +45,39 @@ def walkback_quantseq_rev(
     on the right); T on the LEFT for ``is_reverse=False`` (BAM SEQ is the
     basecall in alignment orientation, so the dT-primer T's stay at the
     left).
+
+    Delegates to :func:`walkback_3prime_guarded` so QSrev gets the same
+    three artifact guards as DRS (large-deletion pre-scan, intron-bridging
+    pre-scan, K-context tail false-stop). The homopolymer early-exit is
+    disabled — QSrev V-primer-tip artifacts and internal-priming reads
+    routinely terminate at the last genomic A of a tract, so the window
+    that early-exit inspects (forward of ``original_3prime``) contains
+    no A's even though a real artifact is present.
     """
     if read.is_reverse:
         gene_strand = "+"
         side = THREE_PRIME_SIDE_RIGHT
         stop_base = "A"
+        original_3prime = read.reference_end - 1 if read.reference_end is not None else -1
     else:
         gene_strand = "-"
         side = THREE_PRIME_SIDE_LEFT
         stop_base = "T"
-    orig, corr, applied = walkback_3prime(read, chrom_seq, side, stop_base=stop_base)
-    return orig, corr, applied, gene_strand
+        original_3prime = read.reference_start if read.reference_start is not None else -1
+
+    result = walkback_3prime_guarded(
+        read,
+        chrom_seq,
+        side,
+        stop_base=stop_base,
+        early_exit_homopolymer_check=False,
+        right_side_bridging_guard=True,
+    )
+    if result is None:
+        return original_3prime, original_3prime, APPLIED_NONE, gene_strand
+    return (
+        result["original_pos"],
+        result["corrected_pos"],
+        APPLIED_WALKBACK,
+        gene_strand,
+    )

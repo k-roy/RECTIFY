@@ -281,10 +281,19 @@ def walkback_3prime_with_qpos(
 #      walkback runs left-to-right toward the gene body), the scan cannot
 #      cross the first N-op (intron) boundary; the terminal exon is the
 #      leftmost block. Without this, all-poly-T terminal exons let the scan
-#      hit a spurious match in the next exon. Plus-strand walkback does NOT
-#      need this guard because the terminal exon is the rightmost block and
-#      crossing into earlier exons is biologically legitimate when the last
-#      exon is fully consumed by the poly-A tail.
+#      hit a spurious match in the next exon.
+#
+#      For ``side='right'`` walkbacks the analogous behavior is gated by
+#      the ``right_side_bridging_guard`` flag (default off). When enabled
+#      it fires only if the rightmost N-op end lies within
+#      ``poly_noise_window`` of the 3' end (aligner-inserted intron
+#      bridging poly-A noise back to a distant exon) — in that case the
+#      scan is clipped to the rightmost (terminal) exon. DRS keeps this
+#      off so Cat4-style false N-ops near the 3' end are still absorbed
+#      (walkback can anchor a few bp upstream in real gene-body sequence).
+#      QSrev turns it on because dT-primer bridging artifacts produce a
+#      synthetic tiny pre-N exon that the legacy scan would falsely
+#      anchor on.
 #
 #   3. Tail-context false-stop (v3.0.3) — at every candidate anchor, look
 #      ``tail_context_k`` positions further inward; if all of those positions
@@ -316,6 +325,7 @@ def walkback_3prime_guarded(
     large_del_min_bp: int = 5,
     poly_noise_window: int = 50,
     intron_boundary_guard: bool = True,
+    right_side_bridging_guard: bool = False,
     tail_context_k: int = 4,
     max_scan_depth: int = 1000,
     early_exit_homopolymer_check: bool = True,
@@ -331,11 +341,21 @@ def walkback_3prime_guarded(
         does not stop at a coincidental match across an aligner-introduced
         ≥``large_del_min_bp``-bp deletion within ``poly_noise_window`` of
         the 3' end.
-      * **Intron-boundary guard** — for ``side='left'`` only; the scan
-        cannot cross the first N-op (intron) boundary. When the scan
-        finishes inside the terminal poly-T zone without finding a non-T
-        match, the N-op start is returned as the anchor (the intron is the
-        natural exon end).
+      * **Intron-boundary guard** — for ``side='left'`` the scan cannot
+        cross the first N-op (intron) boundary; when the scan finishes
+        inside the terminal poly-T zone without finding a non-T match,
+        the N-op start is returned as the anchor. For ``side='right'``
+        the symmetric ``right_side_bridging_guard`` is **opt-in**
+        (default off): when enabled, it fires only when the rightmost
+        N-op end lies within ``poly_noise_window`` of the 3' end
+        (aligner-inserted bridging intron in the poly-A noise zone),
+        clipping the scan to the rightmost (terminal) exon. DRS keeps
+        it off so legitimate "false N near 3' end" walkbacks (e.g.
+        Cat4 reads where a spurious 100 bp N is absorbed and the scan
+        anchors a few bp upstream in real gene-body sequence) are not
+        suppressed. QSrev enables it because dT-primer bridging
+        artifacts produce small synthetic pre-N exons that the legacy
+        scan would falsely anchor on.
       * **Tail-context false-stop** — lookahead ``tail_context_k`` positions
         inward of each candidate anchor; if all are read-stop-base AND any
         of them mismatch the genome, treat the candidate as a false stop
@@ -361,8 +381,18 @@ def walkback_3prime_guarded(
         Reference-coordinate window from the 3' end within which the large-
         deletion pre-scan operates. Default 50 bp.
     intron_boundary_guard
-        Whether to clip the scan at the first N-op boundary (only meaningful
-        for ``side='left'``).
+        Whether to clip the scan at an N-op (intron) boundary on the
+        ``side='left'`` path (unconditionally clipped at the first N-op).
+        The symmetric right-side variant is gated by
+        ``right_side_bridging_guard`` (default off).
+    right_side_bridging_guard
+        Opt-in right-side variant of the intron-boundary guard: clips the
+        ``side='right'`` scan to the rightmost (terminal) exon when the
+        rightmost N-op's end lies within ``poly_noise_window`` of the 3'
+        end. Default ``False`` (preserves the legacy DRS behavior of
+        walking past a fake N-op in the poly-A zone to anchor on real
+        gene-body sequence upstream — see Cat4 validation reads). Pass
+        ``True`` for QSrev to suppress dT-primer bridging artifacts.
     tail_context_k
         Lookahead length for the tail-context false-stop check. Set to 0 to
         disable.
@@ -445,6 +475,8 @@ def walkback_3prime_guarded(
 
     n = 0
     first_n_start: Optional[int] = None  # ref_pos of first intron boundary
+    last_n_end: Optional[int] = None     # ref_pos right after the rightmost N-op
+    last_n_post_idx: Optional[int] = None  # scratch idx of first entry past it
 
     for op, length in cigar:
         if op == 4:  # soft-clip
@@ -475,6 +507,8 @@ def walkback_3prime_guarded(
         elif op == 3:  # N (intron) — consumes reference only
             if first_n_start is None:
                 first_n_start = ref_pos
+            last_n_post_idx = n  # next scratch entry will be the first post-intron M base
+            last_n_end = ref_pos + length
             ref_pos += length
 
     if n == 0:
@@ -512,6 +546,25 @@ def walkback_3prime_guarded(
                     _i = _j - 1
                 else:
                     _i -= 1
+
+        # N-op bridging detection (opt-in via right_side_bridging_guard).
+        # When enabled and the rightmost N-op (intron) end lies within
+        # poly_noise_window of the 3' end, clip scan_lo to the first
+        # post-intron scratch index so the main scan is confined to the
+        # rightmost (terminal) exon — it cannot anchor on the upstream side
+        # of the bridging intron. Off by default: DRS Cat4 reads rely on the
+        # walkback being able to absorb a spurious N near the 3' end and
+        # anchor in real upstream gene-body sequence. QSrev enables this to
+        # suppress dT-primer bridging artifacts.
+        if (
+            intron_boundary_guard
+            and right_side_bridging_guard
+            and last_n_end is not None
+            and last_n_post_idx is not None
+            and original_3prime - last_n_end <= poly_noise_window
+        ):
+            if last_n_post_idx > scan_lo:
+                scan_lo = last_n_post_idx
 
         # Terminal gate: check the rightmost real position before any walk.
         # find_polya_boundary doesn't have this gate (its loop simply stops

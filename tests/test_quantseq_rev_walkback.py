@@ -344,3 +344,148 @@ class TestQuantSeqRevTerminalGateAndGappedReads:
             f"on the RIGHT span); got corr={corr}. If corr is near 1000, "
             f"the wrapper is mistakenly walking the LEFT side."
         )
+
+
+class TestQuantSeqRevGuardedRouting:
+    """The QSrev wrapper now delegates to walkback_3prime_guarded so the
+    K-context tail false-stop guard and the right-side N-op bridging guard
+    are both available to QSrev reads.
+    """
+
+    def test_k_context_false_stop_skipped_inside_polya(self):
+        """K-context tail-context guard fires inside the poly-A run.
+
+        Construct a read whose poly-A tail aligns over a region whose
+        genome has a single non-A base (T) buried inside a longer A-tract.
+        The read at that position is A (basecalled poly-A), so it
+        MISMATCHES the genomic T. The candidate non-A anchor sits one
+        position further inward at a C that *does* match the genome —
+        but only one A separates this C from the poly-A tail noise.
+
+        Layout (gene '+', is_reverse=True, RIGHT side, stop_base=A):
+            ref pos 1000..1014:   ACGCAGGAGT  AAAAA   (last 5 are genomic A's)
+            read positions:       ACGCAGGAGT  AAAAA   (read = ref content)
+
+        With tail_context_k=4 lookahead, the candidate at the rightmost
+        non-A match (T at refp 1009) is checked: 4 inward positions look
+        like GAGGA — these are NOT all stop-base, so the candidate is NOT
+        treated as a false stop. Anchor lands at 1009.
+
+        This test verifies the wrapper exposes the guarded core's
+        tail-context behavior; it is the QSrev-side analogue of the
+        cat3/cat6 validation reads in tests/test_walkback_readvsref.py.
+        """
+        ref = "X" * 1000 + "ACGCAGGAGT" + "AAAAA" + "X" * 100
+        read = _make_read(
+            start=1000,
+            seq="ACGCAGGAGT" + "AAAAA",
+            cigar=((0, 15),),
+            is_reverse=True,
+        )
+        orig, corr, applied, gene_strand = walkback_quantseq_rev(read, ref)
+        assert gene_strand == "+"
+        assert applied == APPLIED_WALKBACK, (
+            f"poly-A over genomic A-tract must trigger walkback through the "
+            f"guarded core; got applied={applied!r}"
+        )
+        assert orig == 1014
+        assert corr == 1009, (
+            f"K-context lookahead at T (1009) sees mixed bases (GAGGA) "
+            f"inward — not a false stop. Anchor must land at 1009; "
+            f"got corr={corr}"
+        )
+
+    def test_nop_bridging_returns_no_correction(self):
+        """Right-side N-op bridging guard: an aligner-inserted intron
+        within poly_noise_window of the 3' end, whose entire post-intron
+        span is poly-A over a genomic A-tract, must NOT let the walkback
+        cross the intron and anchor in the pre-intron exon body.
+
+        Without the guard the scan would walk through the post-intron
+        A-tract, cross the N-op silently (the scratch array skips it),
+        and anchor at the last non-A position of the pre-intron span —
+        a corrected position that propagates the bridging artifact. The
+        guard clips scan_lo to the first post-intron scratch index; with
+        no non-A anchor in the (all-A) post-intron span, the function
+        returns None (= APPLIED_NONE in the wrapper).
+
+        Layout (gene '+', is_reverse=True, RIGHT side, stop_base=A):
+            refp 1000..1004:   ACGTC          (pre-intron exon body)
+            refp 1005..1054:   (intron, 50bp)
+            refp 1055..1064:   AAAAAAAAAA     (post-intron, all A's)
+            poly_noise_window default = 50; original_3prime - last_n_end
+            = 1064 - 1055 = 9 ≤ 50 → guard fires.
+        """
+        ref = (
+            "X" * 1000
+            + "ACGTC"          # 1000..1004 pre-intron
+            + "X" * 50         # 1005..1054 intron (X is non-A but skipped)
+            + "A" * 10         # 1055..1064 post-intron A-tract
+            + "X" * 100
+        )
+        read = _make_read(
+            start=1000,
+            seq="ACGTC" + "A" * 10,  # 15 read bases total
+            cigar=((0, 5), (3, 50), (0, 10)),
+            is_reverse=True,
+        )
+        orig, corr, applied, gene_strand = walkback_quantseq_rev(read, ref)
+        assert gene_strand == "+"
+        assert applied == APPLIED_NONE, (
+            f"N-op bridging guard must suppress the walkback when the "
+            f"post-intron span is entirely poly-A; got applied={applied!r}. "
+            f"If applied=APPLIED_WALKBACK with corr near 1004, the guard "
+            f"is not firing and the scan crossed the intron into the "
+            f"pre-intron exon body."
+        )
+        assert orig == 1064
+        assert corr == 1064
+
+    def test_nop_outside_noise_window_no_clipping(self):
+        """N-ops far from the 3' end are legitimate introns, not bridging
+        artifacts; the right-side N-op guard must NOT fire for them.
+
+        Layout (gene '+', is_reverse=True, RIGHT side, stop_base=A):
+            refp 1000..1004:    ACGTC           (first exon)
+            refp 1005..1054:    (intron, 50bp)
+            refp 1055..1149:    95 bases ending in CGTAC (last exon body)
+            refp 1150..1154:    AAAAA           (terminal poly-A noise)
+
+            original_3prime    = 1154
+            last_n_end         = 1055
+            distance           = 1154 - 1055 = 99 > 50 (poly_noise_window)
+            → guard does NOT fire; scan must operate over both exons and
+            anchor at the last non-A match (refp 1149, C).
+        """
+        # Build a 95-bp post-intron exon body: 95 chars with no A's,
+        # ending in T at refp 1149. Then 5 trailing A's of poly-A noise.
+        exon2_body = "CGCG" * 23 + "CGT"  # 92 + 3 = 95 chars (no A's)
+        assert "A" not in exon2_body
+        ref = (
+            "X" * 1000
+            + "ACGTC"          # 1000..1004 first exon
+            + "X" * 50         # 1005..1054 intron
+            + exon2_body       # 1055..1149 (95 bases)
+            + "AAAAA"          # 1150..1154 trailing poly-A
+            + "X" * 100
+        )
+        read = _make_read(
+            start=1000,
+            seq="ACGTC" + exon2_body + "AAAAA",  # 5 + 95 + 5 = 105 bases
+            cigar=((0, 5), (3, 50), (0, 100)),
+            is_reverse=True,
+        )
+        orig, corr, applied, gene_strand = walkback_quantseq_rev(read, ref)
+        assert gene_strand == "+"
+        assert applied == APPLIED_WALKBACK, (
+            f"Intron 99 bp from 3' end is outside poly_noise_window=50; "
+            f"the N-op guard must not fire and walkback must anchor "
+            f"normally; got applied={applied!r}"
+        )
+        assert orig == 1154
+        # last non-A read=ref match: T at refp 1149 (last char of exon2_body).
+        assert corr == 1149, (
+            f"Anchor must land at the last non-A match (refp 1149, T at "
+            f"end of exon2_body). If corr is < 1100, the N-op guard fired "
+            f"incorrectly; got corr={corr}"
+        )
