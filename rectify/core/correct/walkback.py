@@ -341,7 +341,7 @@ def walkback_3prime_guarded(
         of them mismatch the genome, treat the candidate as a false stop
         and continue scanning.
 
-    Returns a dict matching :func:`rectify.core.indel_corrector.find_polya_boundary`:
+    Returns a dict matching :func:`rectify.core.correct.indel_corrector.find_polya_boundary`:
 
         ``{'corrected_pos': int, 'original_pos': int,
            'polya_aligned_bp': int, 'correction_bp': int}``
@@ -374,7 +374,7 @@ def walkback_3prime_guarded(
     Notes
     -----
     This is the DRS production walkback. It supersedes
-    :func:`rectify.core.indel_corrector.find_polya_boundary`; the two
+    :func:`rectify.core.correct.indel_corrector.find_polya_boundary`; the two
     functions return byte-identical results on the bundled Cat1–9
     validation reads (verified in ``tests/test_walkback_readvsref.py``).
     """
@@ -729,7 +729,7 @@ def walkback_drs_full(
     DRS strand→side/stop_base mapping pre-wired.
 
     Returns the same dict shape as
-    :func:`rectify.core.indel_corrector.find_polya_boundary`:
+    :func:`rectify.core.correct.indel_corrector.find_polya_boundary`:
 
         ``{'corrected_pos', 'original_pos', 'polya_aligned_bp', 'correction_bp'}``
 

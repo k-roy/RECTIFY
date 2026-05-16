@@ -57,16 +57,16 @@ from dataclasses import dataclass, field
 import array as _array_mod
 import pysam
 
-from ..config import (
+from ...config import (
     INDEL_MAX_SIZE,
     INDEL_SEARCH_WINDOW,
     INDEL_FLANK_A_THRESHOLD,
     INDEL_MIN_FLANK_LENGTH,
 )
-from ..utils.alignment import extract_deletions, extract_insertions
-from ..utils.genome import fetch_genomic_sequence, standardize_chrom_name
-from ..config import CHROM_TO_GENOME
-from .correct.walkback import (
+from ...utils.alignment import extract_deletions, extract_insertions
+from ...utils.genome import fetch_genomic_sequence, standardize_chrom_name
+from ...config import CHROM_TO_GENOME
+from ..correct.walkback import (
     THREE_PRIME_SIDE_LEFT,
     THREE_PRIME_SIDE_RIGHT,
     walkback_3prime_guarded,

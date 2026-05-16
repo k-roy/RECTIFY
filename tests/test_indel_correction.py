@@ -6,7 +6,7 @@ Tests for indel artifact correction module.
 import pytest
 import pysam
 from unittest.mock import Mock, patch
-from rectify.core import indel_corrector
+from rectify.core.correct import indel_corrector
 from rectify import config
 
 
@@ -275,7 +275,7 @@ class TestDetectIndelArtifacts:
             strand='+'
         )
 
-        with patch('rectify.core.indel_corrector.extract_deletions') as mock_del:
+        with patch('rectify.core.correct.indel_corrector.extract_deletions') as mock_del:
             mock_del.return_value = [
                 {'read_pos': 80, 'ref_pos': 1080, 'length': 2, 'ref_seq': 'TT'}
             ]
@@ -297,7 +297,7 @@ class TestDetectIndelArtifacts:
             strand='-'
         )
 
-        with patch('rectify.core.indel_corrector.extract_deletions') as mock_del:
+        with patch('rectify.core.correct.indel_corrector.extract_deletions') as mock_del:
             mock_del.return_value = [
                 {'read_pos': 18, 'ref_pos': 1018, 'length': 2, 'ref_seq': 'AA'}
             ]
@@ -316,7 +316,7 @@ class TestDetectIndelArtifacts:
             strand='+'
         )
 
-        with patch('rectify.core.indel_corrector.extract_deletions') as mock_del:
+        with patch('rectify.core.correct.indel_corrector.extract_deletions') as mock_del:
             mock_del.return_value = []
 
             artifacts = indel_corrector.detect_indel_artifacts(read, '+')
@@ -454,7 +454,7 @@ class TestCorrectIndelsFromRead:
         )
 
         # Mock detect_indel_artifacts to return artifact
-        with patch('rectify.core.indel_corrector.detect_indel_artifacts') as mock_detect:
+        with patch('rectify.core.correct.indel_corrector.detect_indel_artifacts') as mock_detect:
             mock_detect.return_value = [
                 {
                     'type': 'deletion',
@@ -482,7 +482,7 @@ class TestCorrectIndelsFromRead:
             strand='+'
         )
 
-        with patch('rectify.core.indel_corrector.detect_indel_artifacts') as mock_detect:
+        with patch('rectify.core.correct.indel_corrector.detect_indel_artifacts') as mock_detect:
             mock_detect.return_value = []
 
             result = indel_corrector.correct_indels_from_read(read, '+')

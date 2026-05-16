@@ -17,7 +17,7 @@ import pysam
 # Add rectify to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rectify.core.indel_corrector import (
+from rectify.core.correct.indel_corrector import (
     VariantAwareHomopolymerRescue,
     process_bam_with_variant_aware_rescue,
     correct_3prime_position,

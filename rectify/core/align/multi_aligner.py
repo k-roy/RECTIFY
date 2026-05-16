@@ -120,7 +120,7 @@ ALIGNER_TIMEOUT = 21600
 
 from ...utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
 
-from rectify.core.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
+from rectify.core.align.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
 
 logger = logging.getLogger(__name__)
 

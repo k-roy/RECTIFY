@@ -40,9 +40,9 @@ from pathlib import Path
 from ..polya import atract_detector
 from ..polya import ag_mispriming
 from ..polya import polya_trimmer
-from .. import indel_corrector
+from ..correct import indel_corrector
 from ..netseq import netseq_refiner
-from ..indel_corrector import VariantAwareHomopolymerRescue
+from ..correct.indel_corrector import VariantAwareHomopolymerRescue
 from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
 from ..correct.walkback import (
     APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME,

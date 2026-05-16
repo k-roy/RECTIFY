@@ -281,7 +281,7 @@ class TestGuardedParityWithFindPolyaBoundary:
         position. Any disagreement is a regression to investigate before
         wiring walkback_drs_full into the DRS production path.
         """
-        from rectify.core.indel_corrector import find_polya_boundary
+        from rectify.core.correct.indel_corrector import find_polya_boundary
         from rectify.config import CHROM_TO_GENOME
 
         disagreements = []
