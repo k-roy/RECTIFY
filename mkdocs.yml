@@ -4,6 +4,11 @@ exclude_docs: |
   BUGS_TO_FIX.md
   CHANGELOG.md
   IMPLEMENTATION_SUMMARY.md
+  FIGURE_STYLE_GUIDE.md
+  figures/FIGURE_PROVENANCE.md
+  figures/README.md
+  handoffs/*.md
+  workshop_copilot_testing.md
 
 site_name: RECTIFY
 site_description: "RNA 5' and 3' End Correction Tool with Intron reFInement and ambiguitY resolution"
@@ -116,6 +121,7 @@ nav:
   - Quick Start:
     - DRS: quickstart.md
     - QuantSeq REV: quickstart_quantseq_rev.md
+  - Architecture: ARCHITECTURE.md
   - User Guide:
     - Input Formats: user_guide/input_formats.md
     - Output Formats: user_guide/output_formats.md
@@ -135,6 +141,9 @@ nav:
       - ONT PCR-cDNA pipeline: user_guide/commands/correct_cdna_overview.md
       - rectify correct-cdna: user_guide/commands/correct_cdna.md
       - rectify cdna-analyze: user_guide/commands/cdna_analyze.md
+      - rectify consensus: user_guide/commands/consensus.md
+      - rectify split: user_guide/commands/split.md
+      - rectify install-aligners: user_guide/commands/install_aligners.md
     - Multi-Sample Analysis: user_guide/multi_sample.md
     - HPC / SLURM: user_guide/hpc_slurm.md
     - Bundled Data (Yeast): user_guide/bundled_data.md
@@ -147,11 +156,13 @@ nav:
     - NET-seq Refinement: algorithms/netseq_refinement.md
     - Adaptive Clustering: algorithms/adaptive_clustering.md
     - APA Detection: algorithms/apa_detection.md
+    - cDNA Correct: algorithms/cdna_correct.md
   - Technical Notes:
     - Empirical HP Penalty Scoring: EMPIRICAL_HP_PENALTY_SCORING.md
     - Junction-Shift FDR: JUNCTION_SHIFT_FDR.md
     - DRS 5' End Limitations: DRS_FIVE_PRIME_END_LIMITATIONS.md
     - Three-Pass Adapter Trimming: THREE_PASS_ADAPTER_TRIMMING.md
+    - DRS Poly-A Adapter Analysis: DRS_POLYA_ADAPTER_ANALYSIS.md
   - Coordinate System: coordinate_system.md
   - API Reference:
     - Overview: api/index.md
@@ -159,5 +170,4 @@ nav:
     - rectify.core.analyze: api/analyze.md
     - rectify.utils: api/utils.md
     - rectify.visualize: api/visualize.md
-  - Changelog: changelog.md
   - Contributing: contributing.md
