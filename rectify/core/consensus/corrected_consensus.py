@@ -36,7 +36,7 @@ try:
 except ImportError:  # pragma: no cover
     _pysam = None  # type: ignore
 
-from rectify.core.calibrate_junction_overhang import OverhangTable, _parse_junctions as _parse_junctions_list
+from rectify.core.splice.calibrate_junction_overhang import OverhangTable, _parse_junctions as _parse_junctions_list
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _cigar_hp_edit_distance(read, genome: Optional[Dict[str, str]], penalty_tabl
             for i in range(length):
                 rp = ref_pos + i
                 if penalty_table is not None and genome_seq and rp < len(genome_seq):
-                    from rectify.core.junction_refiner import _hp_run_length
+                    from rectify.core.splice.junction_refiner import _hp_run_length
                     hp = _hp_run_length(genome_seq, rp)
                     total += penalty_table.del_cost(hp, genome_seq[rp])
                 else:
@@ -115,7 +115,7 @@ def _cigar_hp_edit_distance(read, genome: Optional[Dict[str, str]], penalty_tabl
             ref_pos += length
         elif op == 1:              # I (insertion — ref_pos does not advance)
             if penalty_table is not None and genome_seq and ref_pos < len(genome_seq):
-                from rectify.core.junction_refiner import _hp_run_length
+                from rectify.core.splice.junction_refiner import _hp_run_length
                 hp = _hp_run_length(genome_seq, ref_pos)
                 total += length * penalty_table.ins_cost(hp, genome_seq[ref_pos])
             else:

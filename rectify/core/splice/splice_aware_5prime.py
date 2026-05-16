@@ -32,8 +32,8 @@ from dataclasses import dataclass
 import array as _array_mod
 import pysam
 
-from ..utils.genome import standardize_chrom_name
-from ..config import CHROM_TO_GENOME
+from ...utils.genome import standardize_chrom_name
+from ...config import CHROM_TO_GENOME
 
 try:
     from intervaltree import IntervalTree
@@ -1301,7 +1301,7 @@ def rescue_3ss_truncation(
                 _align_seq = _intronic_seq if _intronic_seq else rescue_seq
             _exon_cigar_str = ''
             try:
-                from .local_aligner import align_clip_to_exon, cigar_ops_to_str
+                from ..local_aligner import align_clip_to_exon, cigar_ops_to_str
                 _cigar_ops, _ = align_clip_to_exon(
                     _align_seq, genome_seq,
                     _intron_start, _intron_end, strand,
@@ -1417,7 +1417,7 @@ def rescue_3ss_truncation(
         _exon_cigar_str4 = ''
         if _intronic_seq4:
             try:
-                from .local_aligner import align_clip_to_exon, cigar_ops_to_str
+                from ..local_aligner import align_clip_to_exon, cigar_ops_to_str
                 _cigar_ops4, _ = align_clip_to_exon(
                     _intronic_seq4, genome_seq, intron_start, intron_end, strand,
                 )

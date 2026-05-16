@@ -26,7 +26,7 @@ from unittest.mock import Mock
 import pytest
 import pysam
 
-from rectify.core.terminal_exon_refiner import (
+from rectify.core.splice.terminal_exon_refiner import (
     SpliceSite,
     SpliceSiteIndex,
     load_splice_sites_from_gff,

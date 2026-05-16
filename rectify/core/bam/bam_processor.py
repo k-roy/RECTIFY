@@ -56,8 +56,8 @@ from ...utils.alignment import (
     extract_soft_clips,
     format_junctions_string,
 )
-from ..splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
-from .. import false_junction_filter as _fjf
+from ..splice.splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
+from ..splice import false_junction_filter as _fjf
 from ...slurm import get_available_cpus
 
 # BAM writing and CIGAR surgery — imported here so callers that import from

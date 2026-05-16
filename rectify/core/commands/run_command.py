@@ -1352,7 +1352,7 @@ def _run_single_sample(args) -> int:
                 _jot_path = getattr(args, 'junction_overhang_table', None)
                 _overhang_table = None
                 if _jot_path:
-                    from rectify.core.calibrate_junction_overhang import OverhangTable as _OT
+                    from rectify.core.splice.calibrate_junction_overhang import OverhangTable as _OT
                     try:
                         _overhang_table = _OT.from_tsv(_jot_path)
                         print(f"    Junction overhang filter: {_jot_path}")

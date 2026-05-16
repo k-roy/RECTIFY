@@ -13,15 +13,15 @@ flanking evidence relative to their size.  The penalty is soft: a flagged aligne
 is sorted after non-flagged aligners, but is still chosen if all aligners are flagged.
 
 Usage (standalone):
-    python -m rectify.core.calibrate_junction_overhang \\
+    python -m rectify.core.splice.calibrate_junction_overhang \\
         --tsv-dir /path/to/sample/dir \\   # subdirs named by aligner
         --output overhang_table.tsv
 
-    python -m rectify.core.calibrate_junction_overhang \\
+    python -m rectify.core.splice.calibrate_junction_overhang \\
         --tsvs mapPacBio:/path/a.tsv deSALT:/path/b.tsv gapmm2:/path/c.tsv \\
         --output overhang_table.tsv
 
-    python -m rectify.core.calibrate_junction_overhang \\
+    python -m rectify.core.splice.calibrate_junction_overhang \\
         --merged-tsv corrected_reads.tsv \\   # merged TSV with winning_aligner column
         --output overhang_table.tsv           # (concordance from winners only — less ideal)
 

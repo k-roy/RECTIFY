@@ -105,7 +105,7 @@ from typing import Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
 import numpy as _np
 import pysam
 
-from ..utils.genome import standardize_chrom_name
+from ...utils.genome import standardize_chrom_name
 
 logger = logging.getLogger(__name__)
 
@@ -1368,7 +1368,7 @@ def _apply_junction_replacement(
     Returns:
         True if CIGAR was modified.
     """
-    from .local_aligner import align_clip_to_exon, cigar_ops_to_str, cigar_str_to_ops
+    from ..local_aligner import align_clip_to_exon, cigar_ops_to_str, cigar_str_to_ops
 
     cigar = list(read.cigartuples)
     q = read.query_sequence

@@ -24,7 +24,7 @@ import pysam
 RECTIFY_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(RECTIFY_ROOT))
 
-from rectify.core.junction_refiner import (
+from rectify.core.splice.junction_refiner import (
     _canonical_tier,
     _hp_edit_distance,
     _score_junction,
@@ -278,7 +278,7 @@ class TestRefineReadJunctions:
             f"Expected intron_end=901193, got {new_ne}"
         # New junction must not be WORSE than the old junction on canonicality.
         # Old junction [900758,901189) is tier 1, so tier 0 or 1 are both acceptable.
-        from rectify.core.junction_refiner import _canonical_tier
+        from rectify.core.splice.junction_refiner import _canonical_tier
         old_tier = _canonical_tier(old_ns, old_ne, g, '-')
         new_tier = _canonical_tier(new_ns, new_ne, g, '-')
         assert new_tier <= old_tier or new_tier <= 1, (
@@ -334,7 +334,7 @@ class TestRefineReadJunctions:
             else:
                 pytest.skip("0b3b593b not found")
 
-        from rectify.core.junction_refiner import _canonical_tier
+        from rectify.core.splice.junction_refiner import _canonical_tier
         for pen in [0.1, 0.25, 0.5, 1.0]:
             reps = refine_read_junctions(
                 read, idx, annot_set, g, strand='-',
@@ -496,7 +496,7 @@ class TestApplyJunctionReplacement:
         """
         seq = 'A' * 20
         read = self._make_read('10M100N10M', 900757, seq)
-        from rectify.core.junction_refiner import _apply_junction_replacement
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         applied = _apply_junction_replacement(read, 1, 900767, 900867, 900767, 900869, g, '+', 0.25, 15)
         assert applied, "Expected _apply_junction_replacement to return True"
@@ -522,7 +522,7 @@ class TestApplyJunctionReplacement:
         """
         seq = 'A' * 20
         read = self._make_read('10M100N10M', 900757, seq)
-        from rectify.core.junction_refiner import _apply_junction_replacement
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         applied = _apply_junction_replacement(read, 1, 900767, 900867, 900770, 900867, g, '+', 0.25, 15)
         assert applied, "Expected _apply_junction_replacement to return True"
@@ -539,7 +539,7 @@ class TestApplyJunctionReplacement:
         """No-op: old and new junction are identical → should return False."""
         seq = 'A' * 20
         read = self._make_read('10M100N10M', 900757, seq)
-        from rectify.core.junction_refiner import _apply_junction_replacement
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         # Apply with same coordinates → should still succeed (we check via refine_read_junctions
         # which only calls _apply for genuine changes)
@@ -553,7 +553,7 @@ class TestApplyJunctionReplacement:
         """Total reference span must be preserved after replacement."""
         seq = 'G' * 30
         read = self._make_read('15M200N15M', 900740, seq)
-        from rectify.core.junction_refiner import _apply_junction_replacement
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         old_ref = sum(l for op, l in read.cigartuples if op in (0, 2, 3, 7, 8))
         applied = _apply_junction_replacement(read, 1, 900755, 900955, 900755, 900957, g, '+', 0.25, 15)
@@ -565,7 +565,7 @@ class TestApplyJunctionReplacement:
         """Total query-consuming span must be preserved after replacement."""
         seq = 'C' * 30
         read = self._make_read('15M200N15M', 900740, seq)
-        from rectify.core.junction_refiner import _apply_junction_replacement
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         old_q = sum(l for op, l in read.cigartuples if op in (0, 1, 4, 7, 8))
         applied = _apply_junction_replacement(read, 1, 900755, 900955, 900758, 900955, g, '+', 0.25, 15)

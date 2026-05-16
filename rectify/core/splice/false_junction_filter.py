@@ -38,7 +38,7 @@ import pysam
 
 logger = logging.getLogger(__name__)
 
-from ..config import POLYA_RICHNESS_THRESHOLD
+from ...config import POLYA_RICHNESS_THRESHOLD
 POLYPOLYA_RICHNESS_THRESHOLD = POLYA_RICHNESS_THRESHOLD  # legacy alias
 
 

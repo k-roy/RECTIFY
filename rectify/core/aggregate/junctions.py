@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import pysam
 
-from ..terminal_exon_refiner import (
+from ..splice.terminal_exon_refiner import (
     PartialJunctionEvidence,
     detect_partial_junction_crossings,
     compute_junction_counts_with_ambiguity,

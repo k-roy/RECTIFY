@@ -19,7 +19,7 @@ boundary snapping):
 The "strict 0-bp" rule is applied *after* boundary snapping: an aligner that
 places an N-cigar 1–2 bp off the true donor/acceptor due to basecaller error
 in a homopolymer near the splice site would otherwise be miscategorised as
-"novel". The :mod:`rectify.core.junction_refiner` module handles this in the
+"novel". The :mod:`rectify.core.splice.junction_refiner` module handles this in the
 correction pass (commit ``de27543`` and earlier). For the audit script below
 we use a lightweight inline snapping based on canonical signal proximity —
 this is the same conceptual model as ``junction_refiner`` but without the

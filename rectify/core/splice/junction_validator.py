@@ -47,7 +47,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import pandas as pd
 
-from ..utils.genome import standardize_chrom_name
+from ...utils.genome import standardize_chrom_name
 
 try:
     import pysam

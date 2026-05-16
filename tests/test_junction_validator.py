@@ -3,7 +3,7 @@
 Tests for cross-sample junction validation (Bug 5 fix).
 
 Covers the three-pass COMPASS-inspired architecture in
-rectify.core.junction_validator:
+rectify.core.splice.junction_validator:
 
   Pass 1 — extract_sample_junctions()
   Pass 2 — filter_cross_sample_junctions()
@@ -20,7 +20,7 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 import pandas as pd
 
-from rectify.core.junction_validator import (
+from rectify.core.splice.junction_validator import (
     extract_sample_junctions,
     filter_cross_sample_junctions,
     apply_junction_filter,
@@ -106,7 +106,7 @@ class TestExtractSampleJunctions:
     def _run_extraction(self, reads, sample_id='s1', genome=None):
         """Helper: run extraction against a list of mock reads."""
         ctx, bam_mock = _make_bam_file(reads)
-        with patch('rectify.core.junction_validator.pysam') as mock_pysam:
+        with patch('rectify.core.splice.junction_validator.pysam') as mock_pysam:
             mock_pysam.AlignmentFile.return_value = ctx
             return extract_sample_junctions.__wrapped__(
                 bam_mock, sample_id, genome
@@ -389,7 +389,7 @@ class TestApplyJunctionFilter:
         out_ctx.__enter__ = MagicMock(return_value=out_bam_mock)
         out_ctx.__exit__ = MagicMock(return_value=False)
 
-        with patch('rectify.core.junction_validator.pysam') as mock_pysam:
+        with patch('rectify.core.splice.junction_validator.pysam') as mock_pysam:
             mock_pysam.AlignmentFile.side_effect = [in_ctx, out_ctx]
             counts = apply_junction_filter(
                 'input.bam', 'output.bam', validated_junctions
@@ -494,7 +494,7 @@ def _extract_from_reads(reads, sample_id='s1', genome=None):
     without opening a real BAM file.
     """
     from collections import defaultdict
-    from rectify.core.junction_validator import _get_splice_motif
+    from rectify.core.splice.junction_validator import _get_splice_motif
 
     _BAM_CREF_SKIP = 3
     junction_counts = defaultdict(int)
