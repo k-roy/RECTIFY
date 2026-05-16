@@ -161,7 +161,7 @@ def run(args: argparse.Namespace) -> int:
         genome = load_genome(args.genome)
         logger.info(f"  Genome loaded in {time.perf_counter() - t0:.1f}s")
 
-        from ..bam_processor import run_variant_aware_scan
+        from ..bam.bam_processor import run_variant_aware_scan
         t0 = time.perf_counter()
         logger.info("  Running variant scan...")
         variant_rescue = run_variant_aware_scan(
@@ -188,7 +188,7 @@ def run(args: argparse.Namespace) -> int:
         # Load annotated junctions
         annotated_junctions: set = set()
         if args.annotation:
-            from ..consensus import load_annotated_junctions
+            from ..consensus.consensus import load_annotated_junctions
             logger.info(f"  Loading annotated junctions from {args.annotation}")
             annotated_junctions = load_annotated_junctions(args.annotation)
             logger.info(f"  {len(annotated_junctions)} annotated junctions loaded")
@@ -202,7 +202,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             logger.info("  No aligner BAMs provided; pool will contain annotated junctions only")
 
-        from ..junction_refiner import build_junction_pool
+        from ..splice.junction_refiner import build_junction_pool
         t0 = time.perf_counter()
         all_junctions, annotated_set = build_junction_pool(aligner_bams, annotated_junctions)
         elapsed = time.perf_counter() - t0

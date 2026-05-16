@@ -685,7 +685,7 @@ def _run_junction_aggregation(
     print("\n[Junctions] Aggregating splice junctions with partial rescue...")
 
     from ..aggregate.junctions import aggregate_junctions, merge_with_partial_evidence, export_junctions
-    from ..terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
+    from ..splice.terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
     import pysam
 
     junctions_dir = output_dir / 'junctions'
@@ -1335,7 +1335,7 @@ def _run_single_sample(args) -> int:
             # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
-            from ..corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
+            from ..consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
             per_aligner_tsvs = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,

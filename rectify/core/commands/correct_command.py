@@ -20,8 +20,8 @@ import pysam
 # This must happen before bam_processor imports numpy
 from ...slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
-from .. import bam_processor
-from ..processing_stats import write_stats_tsv, generate_stats_report
+from ..bam import bam_processor
+from ..bam.processing_stats import write_stats_tsv, generate_stats_report
 from ..spikein_filter import filter_spikein_reads
 from ...utils import genome as genome_utils
 from ...utils.provenance import init_provenance
@@ -455,8 +455,8 @@ def run(args):
             _t_refine = _time.perf_counter()
             logger.info("Module 2H: Junction N-op boundary refinement...")
             try:
-                from ..junction_refiner import refine_bam_junctions
-                from ..consensus import load_annotated_junctions as _load_annot_j
+                from ..splice.junction_refiner import refine_bam_junctions
+                from ..consensus.consensus import load_annotated_junctions as _load_annot_j
 
                 _annot_j = _load_annot_j(str(config['annotation_path']))
                 _bam_stem = Path(bam_to_process).stem
@@ -541,7 +541,7 @@ def run(args):
         _t_junc = _time.perf_counter()
         annotated_junctions = None
         if config.get('annotation_path'):
-            from ..consensus import load_annotated_junctions
+            from ..consensus.consensus import load_annotated_junctions
             annotated_junctions = load_annotated_junctions(str(config['annotation_path']))
             logger.info(
                 f"Loaded {len(annotated_junctions):,} annotated junctions for 3'SS rescue "
@@ -850,7 +850,7 @@ def run(args):
         # Write NET-seq bedgraph files if requested
         if config.get('bedgraph_prefix') and config.get('output_path'):
             import pandas as _pd
-            from ..netseq_output import write_bedgraph as _write_bedgraph
+            from ..netseq.netseq_output import write_bedgraph as _write_bedgraph
             _t_bg = _time.perf_counter()
             _tsv_path = str(config['output_path'])
             _prefix = str(config['bedgraph_prefix'])

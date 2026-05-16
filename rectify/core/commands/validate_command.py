@@ -899,7 +899,7 @@ def run(args) -> None:
     # NET-seq (optional)
     if hasattr(args, 'netseq_dir') and args.netseq_dir:
         try:
-            from ..netseq_refiner import NetseqLoader
+            from ..netseq.netseq_refiner import NetseqLoader
             logger.info("Loading NET-seq data...")
             netseq_loader = NetseqLoader()
             netseq_loader.load_directory(str(args.netseq_dir))

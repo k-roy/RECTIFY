@@ -540,7 +540,7 @@ def run_align(args: argparse.Namespace) -> int:
     _t_consensus_start = _time.perf_counter()
     logger.info(f"\nRunning consensus selection across {len(successful_aligners)} aligners...")
 
-    from ..consensus import run_consensus_selection, load_annotated_junctions
+    from ..consensus.consensus import run_consensus_selection, load_annotated_junctions
 
     # Load genome for consensus scoring
     _t_genome_load = _time.perf_counter()
@@ -610,7 +610,7 @@ def run_align(args: argparse.Namespace) -> int:
 
         # Write aligner stats TSV and HTML report alongside the rectified BAM
         try:
-            from ..processing_stats import write_consensus_stats_tsv
+            from ..bam.processing_stats import write_consensus_stats_tsv
             _stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
             write_consensus_stats_tsv(stats, str(_stats_tsv))
         except Exception as _e:

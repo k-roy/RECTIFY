@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from ..netseq_bam_processor import process_netseq_bam, aggregate_positions
-from ..netseq_deconvolution import deconvolve_all_regions
-from ..netseq_output import export_netseq_results, write_exclusion_stats
+from ..bam.netseq_bam_processor import process_netseq_bam, aggregate_positions
+from ..netseq.netseq_deconvolution import deconvolve_all_regions
+from ..netseq.netseq_output import export_netseq_results, write_exclusion_stats
 from ..exclusion_regions import ExclusionRegionDetector
 from ...utils.genome import load_genome
 

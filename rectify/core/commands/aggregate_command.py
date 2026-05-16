@@ -311,7 +311,7 @@ def run_junction_aggregate(args: argparse.Namespace, genome: Optional[dict], pre
     if args.rescue_partial and args.gff and args.gff.exists() and genome:
         logger.info("Rescuing partial junction evidence...")
 
-        from ..terminal_exon_refiner import (
+        from ..splice.terminal_exon_refiner import (
             load_splice_sites_from_gff,
             detect_partial_junction_crossings,
         )

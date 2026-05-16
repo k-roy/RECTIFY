@@ -290,13 +290,13 @@ def run_consensus(args: argparse.Namespace) -> int:
         if not args.annotation.exists():
             logger.warning(f"Annotation not found: {args.annotation} — skipping junction scoring")
         else:
-            from ..consensus import load_annotated_junctions
+            from ..consensus.consensus import load_annotated_junctions
             _t = _time.perf_counter()
             annotated_junctions = load_annotated_junctions(str(args.annotation))
             logger.info(f"[TIMING] Junction load: {_time.perf_counter() - _t:.1f}s")
 
     # Run consensus selection
-    from ..consensus import run_consensus_selection
+    from ..consensus.consensus import run_consensus_selection
     output_bam = args.output_dir / f"{prefix}.consensus.bam"
 
     # Skip if consensus BAM already exists (safe resume after preemption)
@@ -339,7 +339,7 @@ def run_consensus(args: argparse.Namespace) -> int:
 
     # Write aligner stats TSV and HTML report
     try:
-        from ..processing_stats import write_consensus_stats_tsv
+        from ..bam.processing_stats import write_consensus_stats_tsv
         stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
         write_consensus_stats_tsv(stats, str(stats_tsv))
     except Exception as _e:
