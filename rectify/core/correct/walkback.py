@@ -322,10 +322,9 @@ def walkback_3prime_guarded(
     three_prime_side: str,
     stop_base: str = "A",
     *,
+    artifact_n_ref_starts: Optional[set] = None,
     large_del_min_bp: int = 5,
     poly_noise_window: int = 50,
-    intron_boundary_guard: bool = True,
-    right_side_bridging_guard: bool = False,
     tail_context_k: int = 4,
     max_scan_depth: int = 1000,
     early_exit_homopolymer_check: bool = True,
@@ -341,21 +340,13 @@ def walkback_3prime_guarded(
         does not stop at a coincidental match across an aligner-introduced
         ≥``large_del_min_bp``-bp deletion within ``poly_noise_window`` of
         the 3' end.
-      * **Intron-boundary guard** — for ``side='left'`` the scan cannot
-        cross the first N-op (intron) boundary; when the scan finishes
-        inside the terminal poly-T zone without finding a non-T match,
-        the N-op start is returned as the anchor. For ``side='right'``
-        the symmetric ``right_side_bridging_guard`` is **opt-in**
-        (default off): when enabled, it fires only when the rightmost
-        N-op end lies within ``poly_noise_window`` of the 3' end
-        (aligner-inserted bridging intron in the poly-A noise zone),
-        clipping the scan to the rightmost (terminal) exon. DRS keeps
-        it off so legitimate "false N near 3' end" walkbacks (e.g.
-        Cat4 reads where a spurious 100 bp N is absorbed and the scan
-        anchors a few bp upstream in real gene-body sequence) are not
-        suppressed. QSrev enables it because dT-primer bridging
-        artifacts produce small synthetic pre-N exons that the legacy
-        scan would falsely anchor on.
+      * **Intron-boundary guard (symmetric)** — N-ops (introns) classified
+        as **real** clip the scan at the boundary so it cannot anchor on
+        the far side of the intron. N-ops classified as **artifact**
+        (aligner-inserted bridges over poly-A noise) are crossed silently
+        — the scratch array already skips them transparently. The caller
+        passes the classification via ``artifact_n_ref_starts``; biology,
+        not protocol identity, decides whether to cross.
       * **Tail-context false-stop** — lookahead ``tail_context_k`` positions
         inward of each candidate anchor; if all are read-stop-base AND any
         of them mismatch the genome, treat the candidate as a false stop
@@ -374,25 +365,27 @@ def walkback_3prime_guarded(
     ----------
     read, chrom_seq, three_prime_side, stop_base
         As in :func:`walkback_3prime`.
+    artifact_n_ref_starts
+        Set of ``ref_pos`` start positions of N-ops the caller has
+        classified as poly-A-artifact bridges (typically via
+        :func:`rectify.core.splice.false_junction_filter.filter_polya_artifact_junctions`).
+        Artifact N-ops are crossed silently; any N-op NOT in this set is
+        treated as a **real** intron and clips the scan at the boundary.
+
+        ``None`` means "no classification was performed" — for back-compat
+        with callers that haven't been migrated, every N-op is treated as
+        real on ``side='left'`` and every N-op within
+        ``poly_noise_window`` of the 3' end is treated as real on
+        ``side='right'``. New production callers (DRS, QSrev, the
+        ``find_polya_boundary`` shim) pass an explicit set.
     large_del_min_bp
         Minimum deletion length (bp) considered an aligner artifact in the
         pre-scan. Set to 0 to disable.
     poly_noise_window
-        Reference-coordinate window from the 3' end within which the large-
-        deletion pre-scan operates. Default 50 bp.
-    intron_boundary_guard
-        Whether to clip the scan at an N-op (intron) boundary on the
-        ``side='left'`` path (unconditionally clipped at the first N-op).
-        The symmetric right-side variant is gated by
-        ``right_side_bridging_guard`` (default off).
-    right_side_bridging_guard
-        Opt-in right-side variant of the intron-boundary guard: clips the
-        ``side='right'`` scan to the rightmost (terminal) exon when the
-        rightmost N-op's end lies within ``poly_noise_window`` of the 3'
-        end. Default ``False`` (preserves the legacy DRS behavior of
-        walking past a fake N-op in the poly-A zone to anchor on real
-        gene-body sequence upstream — see Cat4 validation reads). Pass
-        ``True`` for QSrev to suppress dT-primer bridging artifacts.
+        Reference-coordinate window from the 3' end. Used by the large-
+        deletion pre-scan, the right-side real-N-op clipping window, and
+        the back-compat ``artifact_n_ref_starts=None`` semantics on the
+        right side. Default 50 bp.
     tail_context_k
         Lookahead length for the tail-context false-stop check. Set to 0 to
         disable.
@@ -473,10 +466,15 @@ def walkback_3prime_guarded(
         scan_start_ref = 0
         scan_end_ref = read.reference_start + max_scan_depth
 
+    # real_nops: list of (n_ref_start, n_ref_end, scratch_idx_just_after)
+    # for every N-op the caller has NOT classified as a poly-A-artifact bridge.
+    # Artifact N-ops contribute nothing — they're skipped during scratch
+    # building (already true: the N-op branch never increments n) and ignored
+    # during the pre-scan. LEFT clips scan_hi at the smallest
+    # scratch_idx_just_after; RIGHT clips scan_lo at the largest
+    # scratch_idx_just_after within poly_noise_window of the 3' end.
+    real_nops: list = []
     n = 0
-    first_n_start: Optional[int] = None  # ref_pos of first intron boundary
-    last_n_end: Optional[int] = None     # ref_pos right after the rightmost N-op
-    last_n_post_idx: Optional[int] = None  # scratch idx of first entry past it
 
     for op, length in cigar:
         if op == 4:  # soft-clip
@@ -505,10 +503,15 @@ def walkback_3prime_guarded(
                         n += 1
                 ref_pos += 1
         elif op == 3:  # N (intron) — consumes reference only
-            if first_n_start is None:
-                first_n_start = ref_pos
-            last_n_post_idx = n  # next scratch entry will be the first post-intron M base
-            last_n_end = ref_pos + length
+            n_start = ref_pos
+            n_end = ref_pos + length
+            is_artifact = (
+                artifact_n_ref_starts is not None
+                and n_start in artifact_n_ref_starts
+            )
+            if not is_artifact:
+                # scratch_idx_just_after = current n (next M base lands here)
+                real_nops.append((n_start, n_end, n))
             ref_pos += length
 
     if n == 0:
@@ -547,24 +550,15 @@ def walkback_3prime_guarded(
                 else:
                     _i -= 1
 
-        # N-op bridging detection (opt-in via right_side_bridging_guard).
-        # When enabled and the rightmost N-op (intron) end lies within
-        # poly_noise_window of the 3' end, clip scan_lo to the first
-        # post-intron scratch index so the main scan is confined to the
-        # rightmost (terminal) exon — it cannot anchor on the upstream side
-        # of the bridging intron. Off by default: DRS Cat4 reads rely on the
-        # walkback being able to absorb a spurious N near the 3' end and
-        # anchor in real upstream gene-body sequence. QSrev enables this to
-        # suppress dT-primer bridging artifacts.
-        if (
-            intron_boundary_guard
-            and right_side_bridging_guard
-            and last_n_end is not None
-            and last_n_post_idx is not None
-            and original_3prime - last_n_end <= poly_noise_window
-        ):
-            if last_n_post_idx > scan_lo:
-                scan_lo = last_n_post_idx
+        # Real-N-op clipping: every N-op the caller classified as real is
+        # an exon boundary the scan cannot cross. Use the LARGEST
+        # scratch_idx_just_after among real N-ops whose end lies within
+        # poly_noise_window of the 3' end — that is the last real intron
+        # exit on the rightmost exon's left side. Anything beyond that is
+        # an upstream exon and not eligible to anchor a 3' end.
+        for _n_start, _n_end, _post_idx in real_nops:
+            if original_3prime - _n_end <= poly_noise_window and _post_idx > scan_lo:
+                scan_lo = _post_idx
 
         # Terminal gate: check the rightmost real position before any walk.
         # find_polya_boundary doesn't have this gate (its loop simply stops
@@ -620,12 +614,16 @@ def walkback_3prime_guarded(
     scan_lo = 0
     scan_hi = n  # main loop iterates [scan_lo, scan_hi) forward
 
-    # Intron-boundary guard: clip scan_hi at the first N-op boundary.
-    if intron_boundary_guard and first_n_start is not None:
-        for _k in range(n):
-            if _g_refp[_k] >= first_n_start:
-                scan_hi = _k
-                break
+    # Real-N-op clipping: clip scan_hi to the smallest scratch_idx_just_after
+    # among real N-ops — i.e., the first real-intron exit on the leftmost
+    # (terminal-3') exon's right side. The scan cannot cross the boundary.
+    # first_real_n is also retained for the fallback snap below.
+    first_real_n: Optional[tuple] = None
+    if real_nops:
+        first_real_n = real_nops[0]  # CIGAR order = ref-left-to-right
+        for _n_start, _n_end, _post_idx in real_nops:
+            if _post_idx < scan_hi:
+                scan_hi = _post_idx
 
     # Find the first real (non-deletion) genome base in the scan window.
     first_gb_chr: Optional[str] = None
@@ -689,13 +687,12 @@ def walkback_3prime_guarded(
             true_cpa = refp
             break
 
-    # Fallback: scan found nothing AND scan_hi was clipped by the intron
-    # guard AND the last pre-N base is still in the stop-base zone → use
-    # the N-op start as the CPA anchor (the intron is the natural exon end).
+    # Fallback: scan found nothing AND scan_hi was clipped at a real N-op AND
+    # the last pre-N base is still in the stop-base zone → use the N-op
+    # start as the CPA anchor (the intron is the natural exon end).
     if (
         true_cpa is None
-        and intron_boundary_guard
-        and first_n_start is not None
+        and first_real_n is not None
         and scan_hi > 0
     ):
         last_pre_n_gb: Optional[str] = None
@@ -704,7 +701,7 @@ def walkback_3prime_guarded(
                 last_pre_n_gb = chr(_g_gb[_k])
                 break
         if last_pre_n_gb == stop_base:
-            true_cpa = first_n_start
+            true_cpa = first_real_n[0]  # n_ref_start
 
     if true_cpa is None:
         return None
@@ -768,18 +765,46 @@ def walkback_drs(
     return orig, corr, applied, gene_strand
 
 
+def _classify_artifact_nops(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    gene_strand: str,
+    artifact_analyses=None,
+) -> set:
+    """Return the set of N-op ``ref_pos`` starts the caller treats as
+    poly-A artifact bridges (to be crossed silently during walkback).
+
+    If ``artifact_analyses`` is provided (caller already ran the filter
+    upstream — e.g., ``bam_processor.correct_read_3prime``), extract
+    junction starts from it. Otherwise run
+    :func:`rectify.core.splice.false_junction_filter.filter_polya_artifact_junctions`
+    here.
+    """
+    if artifact_analyses is not None:
+        return {a.junction_start for a in artifact_analyses}
+    from rectify.core.splice.false_junction_filter import (
+        filter_polya_artifact_junctions,
+        _GenomeDictReference,
+    )
+    _, analyses = filter_polya_artifact_junctions(
+        read, _GenomeDictReference({read.reference_name: chrom_seq}), gene_strand
+    )
+    return {a.junction_start for a in analyses}
+
+
 def walkback_drs_full(
     read: pysam.AlignedSegment,
     chrom_seq: str,
     *,
+    artifact_analyses=None,
     large_del_min_bp: int = 5,
     poly_noise_window: int = 50,
-    intron_boundary_guard: bool = True,
     tail_context_k: int = 4,
     max_scan_depth: int = 1000,
 ) -> Optional[dict]:
     """DRS production walkback — :func:`walkback_3prime_guarded` with the
-    DRS strand→side/stop_base mapping pre-wired.
+    DRS strand→side/stop_base mapping pre-wired and poly-A-artifact N-op
+    classification routed in.
 
     Returns the same dict shape as
     :func:`rectify.core.correct.indel_corrector.find_polya_boundary`:
@@ -789,21 +814,31 @@ def walkback_drs_full(
     or ``None`` when no correction is needed. This is the drop-in
     replacement for the legacy ``find_polya_boundary`` in
     :mod:`rectify.core.bam.bam_processor`.
+
+    Pass ``artifact_analyses`` when the caller has already run
+    :func:`rectify.core.splice.false_junction_filter.filter_polya_artifact_junctions`
+    (e.g. ``bam_processor.correct_read_3prime`` runs it for the 3'SS-rescue
+    path); otherwise this function runs it itself.
     """
     if is_minus_strand_dRNA(read):
         side = THREE_PRIME_SIDE_LEFT
         stop_base = "T"
+        gene_strand = "-"
     else:
         side = THREE_PRIME_SIDE_RIGHT
         stop_base = "A"
+        gene_strand = "+"
+    artifact_starts = _classify_artifact_nops(
+        read, chrom_seq, gene_strand, artifact_analyses
+    )
     return walkback_3prime_guarded(
         read,
         chrom_seq,
         side,
         stop_base=stop_base,
+        artifact_n_ref_starts=artifact_starts,
         large_del_min_bp=large_del_min_bp,
         poly_noise_window=poly_noise_window,
-        intron_boundary_guard=intron_boundary_guard,
         tail_context_k=tail_context_k,
         max_scan_depth=max_scan_depth,
     )

@@ -395,27 +395,33 @@ class TestQuantSeqRevGuardedRouting:
             f"got corr={corr}"
         )
 
-    def test_nop_bridging_returns_no_correction(self):
-        """Right-side N-op bridging guard: an aligner-inserted intron
-        within poly_noise_window of the 3' end, whose entire post-intron
-        span is poly-A over a genomic A-tract, must NOT let the walkback
-        cross the intron and anchor in the pre-intron exon body.
+    def test_real_nop_clips_scan_at_boundary_returns_none(self):
+        """An N-op classified as REAL within ``poly_noise_window`` of the
+        3' end clips ``scan_lo`` to the first post-intron scratch index.
+        With an all-poly-A post-intron span and no non-A anchor available
+        inside it, the scan yields no anchor and the guarded core returns
+        ``None``.
 
-        Without the guard the scan would walk through the post-intron
-        A-tract, cross the N-op silently (the scratch array skips it),
-        and anchor at the last non-A position of the pre-intron span —
-        a corrected position that propagates the bridging artifact. The
-        guard clips scan_lo to the first post-intron scratch index; with
-        no non-A anchor in the (all-A) post-intron span, the function
-        returns None (= APPLIED_NONE in the wrapper).
+        Exercised at the guarded-core level rather than through the QSrev
+        wrapper: on this synthetic genome the upstream classifier
+        (``filter_polya_artifact_junctions``) would mark the N-op as an
+        artifact (A-rich downstream, A-rich target, non-canonical motif)
+        and the wrapper would cross it transparently. Mock the
+        classification by calling the guarded core directly with an
+        explicit empty artifact set so the N-op is treated as REAL —
+        verifying the clip-at-boundary path in isolation.
 
-        Layout (gene '+', is_reverse=True, RIGHT side, stop_base=A):
+        Layout (RIGHT side, stop_base=A):
             refp 1000..1004:   ACGTC          (pre-intron exon body)
             refp 1005..1054:   (intron, 50bp)
             refp 1055..1064:   AAAAAAAAAA     (post-intron, all A's)
-            poly_noise_window default = 50; original_3prime - last_n_end
-            = 1064 - 1055 = 9 ≤ 50 → guard fires.
+            original_3prime - n_end = 1064 - 1055 = 9 ≤ poly_noise_window=50
+            → real-N clip fires.
         """
+        from rectify.core.correct.walkback import (
+            THREE_PRIME_SIDE_RIGHT,
+            walkback_3prime_guarded,
+        )
         ref = (
             "X" * 1000
             + "ACGTC"          # 1000..1004 pre-intron
@@ -425,21 +431,21 @@ class TestQuantSeqRevGuardedRouting:
         )
         read = _make_read(
             start=1000,
-            seq="ACGTC" + "A" * 10,  # 15 read bases total
+            seq="ACGTC" + "A" * 10,
             cigar=((0, 5), (3, 50), (0, 10)),
             is_reverse=True,
         )
-        orig, corr, applied, gene_strand = walkback_quantseq_rev(read, ref)
-        assert gene_strand == "+"
-        assert applied == APPLIED_NONE, (
-            f"N-op bridging guard must suppress the walkback when the "
-            f"post-intron span is entirely poly-A; got applied={applied!r}. "
-            f"If applied=APPLIED_WALKBACK with corr near 1004, the guard "
-            f"is not firing and the scan crossed the intron into the "
-            f"pre-intron exon body."
+        result = walkback_3prime_guarded(
+            read, ref, THREE_PRIME_SIDE_RIGHT,
+            stop_base="A",
+            artifact_n_ref_starts=set(),  # mark every N-op as REAL
+            early_exit_homopolymer_check=False,
         )
-        assert orig == 1064
-        assert corr == 1064
+        assert result is None, (
+            f"REAL N-op within poly_noise_window with all-A post-intron "
+            f"span must clip the scan and yield no correction; "
+            f"got {result!r}"
+        )
 
     def test_nop_outside_noise_window_no_clipping(self):
         """N-ops far from the 3' end are legitimate introns, not bridging

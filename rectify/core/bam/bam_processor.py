@@ -665,7 +665,8 @@ def correct_read_3prime(
             _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
             if _chrom_seq:
                 _orig_wb, _corr_wb, _applied_wb, _gene_strand_wb = walkback_quantseq_rev(
-                    read, _chrom_seq
+                    read, _chrom_seq,
+                    artifact_analyses=_artifact_analyses,
                 )
                 if _applied_wb == _APPLIED_WALKBACK_READGENOME:
                     result['correction_applied'].append('polya_walkback_readgenome')
@@ -686,7 +687,10 @@ def correct_read_3prime(
             # as the legacy find_polya_boundary (which now delegates to it).
             _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
             if _chrom_seq:
-                wb = walkback_drs_full(read, _chrom_seq)
+                wb = walkback_drs_full(
+                    read, _chrom_seq,
+                    artifact_analyses=_artifact_analyses,
+                )
             else:
                 wb = None
             if wb is not None:

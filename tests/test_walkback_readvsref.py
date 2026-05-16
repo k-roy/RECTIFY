@@ -236,31 +236,27 @@ class TestDrsWrapper:
 
 
 # ---------------------------------------------------------------------------
-# Right-side N-op bridging guard in walkback_3prime_guarded
+# Symmetric N-op handling in walkback_3prime_guarded.
+# Real N-ops clip the scan at the boundary; artifact N-ops (caller-classified
+# poly-A bridges) are crossed silently. The caller passes the classification
+# via ``artifact_n_ref_starts``.
 # ---------------------------------------------------------------------------
-class TestGuardedRightSideNopBridging:
-    """When the rightmost N-op end lies within poly_noise_window of the 3'
-    end, the guarded right-side scan must be clipped to the terminal exon
-    so it cannot anchor on the upstream side of the bridging intron.
+class TestGuardedNopClassification:
+    """Cover the three combinations of N-op classification × scan window:
+    (1) N classified as REAL within window → scan clipped, no upstream anchor;
+    (2) N classified as ARTIFACT within window → scan crosses transparently;
+    (3) N (any classification) outside poly_noise_window → no clipping
+        regardless, scan operates over both exons.
     """
 
-    def test_bridging_intron_with_all_polya_postintron_returns_none(self):
-        """Aligner-inserted intron bridging a poly-A tail to a distant
-        A-tract: post-intron span is entirely A. With
-        ``right_side_bridging_guard=True``, scan_lo is clipped to the
-        first post-intron scratch index and the all-A post-intron span
-        yields no anchor → return None (no correction).
+    def test_real_nop_clips_scan_at_boundary_returns_none(self):
+        """An N-op classified as REAL within poly_noise_window of the 3'
+        end clips ``scan_lo`` to the first post-intron scratch index. With
+        the post-intron span entirely poly-A and no non-A anchor available
+        inside it, the scan yields no anchor → ``None``.
 
-        Without the guard the scan would silently cross the intron and
-        anchor at the last non-A of the pre-intron exon body (refp 1004),
-        which would propagate the bridging artifact into corrected_pos.
-        The guard is opt-in (default off) so DRS Cat4-style false N
-        absorption still works; QSrev enables it via its wrapper.
-
-        ``early_exit_homopolymer_check`` is disabled so the N-op guard
-        is what's being exercised (the early-exit check inspects bases
-        forward of the 3' end and would otherwise short-circuit this
-        all-A-tract-ending-at-3'-end case).
+        Caller passes ``artifact_n_ref_starts=set()`` (empty set means "I
+        looked and classified nothing as artifact" → every N-op is real).
         """
         ref = (
             "X" * 1000
@@ -276,20 +272,52 @@ class TestGuardedRightSideNopBridging:
         )
         result = walkback_3prime_guarded(
             read, ref, THREE_PRIME_SIDE_RIGHT,
+            artifact_n_ref_starts=set(),
             early_exit_homopolymer_check=False,
-            right_side_bridging_guard=True,
         )
         assert result is None, (
-            f"Bridging intron within poly_noise_window with all-A post-"
-            f"intron span must yield no correction (None); got {result!r}"
+            f"REAL N-op within poly_noise_window with all-A post-intron "
+            f"span must clip the scan and yield no correction; got {result!r}"
         )
 
-    def test_bridging_intron_with_post_intron_anchor_unaffected(self):
-        """When the post-intron exon has its own non-A read=ref anchor,
-        the guard is a no-op: the scan finds the anchor before reaching
-        the intron boundary, so clipping scan_lo doesn't matter. This
-        mirrors test_strand_inverted_gapped_read_walkback but exercises
-        the guarded core directly.
+    def test_artifact_nop_crossed_silently_anchors_in_pre_intron(self):
+        """An N-op classified as an ARTIFACT bridge (e.g., aligner-inserted
+        false junction within the poly-A noise zone) is crossed transparently
+        by the scan. With an all-A post-intron span and a non-A read=ref
+        anchor in the pre-intron exon, the scan anchors there.
+
+        Same genome layout as the real-N test above — only the
+        classification differs.
+        """
+        ref = (
+            "X" * 1000
+            + "ACGTC"          # 1000..1004
+            + "X" * 50         # 1005..1054 intron
+            + "A" * 10         # 1055..1064
+            + "X" * 100
+        )
+        read = _make_read(
+            start=1000,
+            seq="ACGTC" + "A" * 10,
+            cigar=((0, 5), (3, 50), (0, 10)),
+        )
+        result = walkback_3prime_guarded(
+            read, ref, THREE_PRIME_SIDE_RIGHT,
+            artifact_n_ref_starts={1005},
+            early_exit_homopolymer_check=False,
+        )
+        assert result is not None, (
+            "ARTIFACT N-op must be crossed silently; scan should find the "
+            "C anchor at refp 1004 in the pre-intron exon"
+        )
+        assert result["corrected_pos"] == 1004
+        assert result["original_pos"] == 1064
+
+    def test_intron_with_post_intron_anchor_unaffected_by_classification(self):
+        """When the post-intron exon already carries a non-A read=ref
+        anchor, the scan finds it BEFORE reaching the intron boundary and
+        the N-op classification is a no-op — same anchor under REAL,
+        ARTIFACT, or ``None`` (back-compat).
         """
         ref = (
             "X" * 1000
@@ -304,19 +332,24 @@ class TestGuardedRightSideNopBridging:
             seq="ACGTC" + "ACGTC" + "A" * 8,
             cigar=((0, 5), (3, 50), (0, 13)),
         )
-        result = walkback_3prime_guarded(
-            read, ref, THREE_PRIME_SIDE_RIGHT,
-            early_exit_homopolymer_check=False,
-        )
-        assert result is not None
-        assert result["corrected_pos"] == 1059
-        assert result["original_pos"] == 1067
+        for artifact_set in (set(), {1005}, None):
+            result = walkback_3prime_guarded(
+                read, ref, THREE_PRIME_SIDE_RIGHT,
+                artifact_n_ref_starts=artifact_set,
+                early_exit_homopolymer_check=False,
+            )
+            assert result is not None, f"unexpected None for {artifact_set!r}"
+            assert result["corrected_pos"] == 1059, (
+                f"anchor must land at refp 1059 regardless of classification; "
+                f"got {result['corrected_pos']} for {artifact_set!r}"
+            )
+            assert result["original_pos"] == 1067
 
     def test_far_intron_outside_noise_window_no_clipping(self):
-        """An intron whose end lies more than poly_noise_window bp from
-        the 3' end is a legitimate intron (e.g., the read just happens
-        to span an intron in the last exon's gene body). The guard must
-        NOT clip in this case — the scan operates over both exons.
+        """An intron whose end lies more than ``poly_noise_window`` bp from
+        the 3' end is a legitimate intron in the gene body; on the right
+        side it's outside the clipping window even when classified as REAL,
+        so the scan operates over both exons.
         """
         exon2_body = "CGCG" * 23 + "CGT"  # 92 + 3 = 95 chars, no A's
         assert "A" not in exon2_body
@@ -335,6 +368,7 @@ class TestGuardedRightSideNopBridging:
         )
         result = walkback_3prime_guarded(
             read, ref, THREE_PRIME_SIDE_RIGHT,
+            artifact_n_ref_starts=set(),
             early_exit_homopolymer_check=False,
         )
         assert result is not None

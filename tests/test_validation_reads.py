@@ -510,7 +510,7 @@ class TestCategory4FalseJunction:
     cat4_minus_1 chrI:128094–129063 −  N op 128521–129021 (500 bp, 427 bp from 3' end)
                                         N outside FJF window; treated as real junction → 128098
     cat4_minus_2 chrIX:76016–77313  −  N op 76027–76250 (223 bp, 11 bp from 3' end)
-                                        snap fires → 76027
+                                        false N crossed; anchor in real post-N exon → 76251
     """
 
     @pytest.mark.parametrize('label,strand', [
@@ -547,7 +547,7 @@ class TestCategory4FalseJunction:
         ('cat4_plus_1',  22072),
         ('cat4_plus_2',  393721),   # window-clipped to exclude artifact N
         ('cat4_minus_1', 128098),   # N far from 3' end; normal walkback
-        ('cat4_minus_2', 76027),    # snap to intron_start (3' end abuts N)
+        ('cat4_minus_2', 76251),    # artifact N crossed; anchor in post-N exon
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]

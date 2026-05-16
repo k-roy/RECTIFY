@@ -28,12 +28,16 @@ from rectify.core.correct.walkback import (
     APPLIED_WALKBACK,
     THREE_PRIME_SIDE_LEFT,
     THREE_PRIME_SIDE_RIGHT,
+    _classify_artifact_nops,
     walkback_3prime_guarded,
 )
 
 
 def walkback_quantseq_rev(
-    read: pysam.AlignedSegment, chrom_seq: str
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    *,
+    artifact_analyses=None,
 ) -> Tuple[int, int, str, str]:
     """Walkback for QuantSeq-3' REV.
 
@@ -46,13 +50,20 @@ def walkback_quantseq_rev(
     basecall in alignment orientation, so the dT-primer T's stay at the
     left).
 
-    Delegates to :func:`walkback_3prime_guarded` so QSrev gets the same
-    three artifact guards as DRS (large-deletion pre-scan, intron-bridging
-    pre-scan, K-context tail false-stop). The homopolymer early-exit is
-    disabled — QSrev V-primer-tip artifacts and internal-priming reads
-    routinely terminate at the last genomic A of a tract, so the window
-    that early-exit inspects (forward of ``original_3prime``) contains
-    no A's even though a real artifact is present.
+    Delegates to :func:`walkback_3prime_guarded` with poly-A-artifact
+    N-op classification (via
+    :func:`rectify.core.splice.false_junction_filter.filter_polya_artifact_junctions`)
+    routed in. dT-primer bridging artifacts are detected by the classifier
+    (A-rich downstream, A-rich genome target, non-canonical motif) and
+    crossed silently; real introns clip the scan at the boundary. The
+    homopolymer early-exit is disabled — QSrev V-primer-tip artifacts and
+    internal-priming reads routinely terminate at the last genomic A of a
+    tract, so the window that early-exit inspects (forward of
+    ``original_3prime``) contains no A's even though a real artifact is
+    present.
+
+    Pass ``artifact_analyses`` when the caller has already classified
+    junctions; otherwise the wrapper runs the classifier itself.
     """
     if read.is_reverse:
         gene_strand = "+"
@@ -65,13 +76,16 @@ def walkback_quantseq_rev(
         stop_base = "T"
         original_3prime = read.reference_start if read.reference_start is not None else -1
 
+    artifact_starts = _classify_artifact_nops(
+        read, chrom_seq, gene_strand, artifact_analyses
+    )
     result = walkback_3prime_guarded(
         read,
         chrom_seq,
         side,
         stop_base=stop_base,
+        artifact_n_ref_starts=artifact_starts,
         early_exit_homopolymer_check=False,
-        right_side_bridging_guard=True,
     )
     if result is None:
         return original_3prime, original_3prime, APPLIED_NONE, gene_strand

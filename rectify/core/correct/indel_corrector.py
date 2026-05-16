@@ -69,6 +69,7 @@ from ...config import CHROM_TO_GENOME
 from ..correct.walkback import (
     THREE_PRIME_SIDE_LEFT,
     THREE_PRIME_SIDE_RIGHT,
+    _classify_artifact_nops,
     walkback_3prime_guarded,
 )
 
@@ -155,7 +156,12 @@ def find_polya_boundary(
     else:
         side = THREE_PRIME_SIDE_LEFT
         stop_base = 'T'
-    return walkback_3prime_guarded(read, chrom_seq, side, stop_base=stop_base)
+    artifact_starts = _classify_artifact_nops(read, chrom_seq, strand)
+    return walkback_3prime_guarded(
+        read, chrom_seq, side,
+        stop_base=stop_base,
+        artifact_n_ref_starts=artifact_starts,
+    )
 
 
 # =============================================================================
