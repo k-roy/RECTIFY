@@ -172,6 +172,7 @@ _GFF = Path("/Users/kevinroy/work/ont_cdna/test_data/saccharomyces_cerevisiae_R6
 _FASTA = Path("/Users/kevinroy/work/ont_cdna/test_data/S288C_reference_sequence_R64-5-1_20240529.fsa")
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not (_CHRI_BAM.exists() and _FASTA.exists()),
     reason="chrI test data not on disk (only present on dev M1; skip on CI)",
@@ -211,6 +212,7 @@ def test_correct_cdna_chri_smoke(tmp_path):
         assert tag in first_header, f"{tag} missing from FASTQ header: {first_header[:200]}"
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not (_CHRI_BAM.exists() and _GFF.exists() and _FASTA.exists()
          and shutil.which("minimap2") and shutil.which("samtools")),

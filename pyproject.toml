@@ -134,7 +134,16 @@ rectify = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --cov=rectify --cov-report=html --cov-report=term"
+addopts = "-v"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"'). Currently applies to the 3-stage cDNA pipeline smoke (~5 min on 40k reads) and the cDNA chain canary (~5 min, same pipeline with different assertions).",
+]
+# Coverage is opt-in. For a coverage run:
+#   pytest --cov=rectify --cov-report=html --cov-report=term
+# To skip slow tests (recommended for interactive / handoff sessions):
+#   pytest -m "not slow"
+# To parallelize across cores (requires pytest-xdist):
+#   pytest -n auto -m "not slow"
 
 [tool.black]
 line-length = 100

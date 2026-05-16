@@ -15,8 +15,8 @@ will conflict.
 
 Recommended order (most-actively-edited first):
 
-1. `bam_processor_split.md` — adjacent to the walkback follow-ups
-2. `cdna_correct_command_split.md` — adjacent to cDNA pipeline work
+1. ~~`bam_processor_split.md`~~ — **DONE 2026-05-16** (commit `0024fa3`)
+2. ~~`cdna_correct_command_split.md`~~ — **DONE 2026-05-16** (commit `c411c80`)
 3. `analyze_command_split.md` — `analyze/` subpackage already exists,
    so this is the cleanest carve
 4. `bam_writer_split.md`
@@ -29,8 +29,21 @@ Recommended order (most-actively-edited first):
 
 - All file paths assume the post-reorg layout (commands/, bam/, etc.).
 - Tests are at `tests/`; do not move them, just update imports.
-- After each carve, run the full broad sweep:
-  `python -m pytest tests/ --no-header --no-cov -q --ignore=tests/test_cdna_correct.py --ignore=tests/test_cdna_chain_canary.py`
+- After each carve, run the broad sweep, fast variant:
+  ```
+  python -m pytest tests/ -m "not slow" -n auto
+  ```
+  This deselects the 4 chrI-pipeline smoke tests (5–10 min each) and
+  parallelizes the rest across CPU cores. The full sweep used to take
+  ~8 min sequentially; this drops it to ~1–2 min.
+- For a final pre-merge gate that also runs the slow pipeline tests:
+  ```
+  python -m pytest tests/ -n auto
+  ```
+- Coverage is opt-in. For a coverage report:
+  ```
+  python -m pytest tests/ --cov=rectify --cov-report=html --cov-report=term
+  ```
 - For commits, follow the conventional-commits style already used
   in this repo: `refactor(<scope>): <one-line summary>`.
 - Commit messages should include the

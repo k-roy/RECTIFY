@@ -299,6 +299,7 @@ _GFF = Path("/Users/kevinroy/work/ont_cdna/test_data/saccharomyces_cerevisiae_R6
 _FASTA = Path("/Users/kevinroy/work/ont_cdna/test_data/S288C_reference_sequence_R64-5-1_20240529.fsa")
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not (_CHRI_BAM.exists() and _GFF.exists() and _FASTA.exists()),
     reason="chrI test data not on disk (dev M1 only)",

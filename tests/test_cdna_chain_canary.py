@@ -78,6 +78,7 @@ _SKIP_REASON = (
 )
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "prereqs missing")
 def test_chain_correct_cdna_to_analyze_preserves_tags(tmp_path):
     """Three-stage chain: correct-cdna → align → cdna-analyze.
