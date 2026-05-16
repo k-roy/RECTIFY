@@ -379,3 +379,54 @@ def run(args) -> int:
     print(f"  No trim (polya=0):  {stats['skipped_no_trim']:,}")
 
     return 0
+
+
+def create_restore_softclip_parser(subparsers):
+    """Wire the `restore-softclip` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # restore-softclip command (add back trimmed poly(A) as soft-clip)
+    # =========================================================================
+    restore_sc_parser = subparsers.add_parser(
+        'restore-softclip',
+        help='Restore trimmed poly(A)+adapter bases as soft-clips in corrected BAM',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog="""
+    Example:
+      rectify restore-softclip corrected_reads.tsv \\
+      --aligner-bams minimap2:/path/to/minimap2.bam mapPacBio:/path/to/mapPacBio.bam \\
+      --trim-metadata polya_trim_metadata.parquet \\
+      -o corrected_polya.bam
+        """
+    )
+    restore_sc_parser.add_argument(
+        'corrected_tsv',
+        help='corrected_reads.tsv produced by rectify correct (must contain winning_aligner column)',
+    )
+    restore_sc_parser.add_argument(
+        '--aligner-bams',
+        nargs='+',
+        default=[],
+        metavar='ALIGNER:BAM',
+        help=(
+            'Per-aligner raw BAM files in "aligner:path" format. '
+            'Used to pull the winning aligner\'s raw record for each read. '
+            'Accepted aligners: minimap2, mapPacBio, gapmm2, uLTRA, deSALT.'
+        ),
+    )
+    restore_sc_parser.add_argument(
+        '--trim-metadata',
+        required=True,
+        help='Parquet or TSV metadata from rectify trim-polya',
+    )
+    restore_sc_parser.add_argument(
+        '-o', '--output',
+        required=True,
+        help='Output BAM path',
+    )
+    restore_sc_parser.add_argument(
+        '--threads',
+        type=int,
+        default=1,
+        help='pysam thread count',
+    )

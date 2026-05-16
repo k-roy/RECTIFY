@@ -961,3 +961,426 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     run(args)
+
+
+def create_correct_parser(subparsers):
+    """Wire the `correct` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # correct command
+    # =========================================================================
+    correct_parser = subparsers.add_parser(
+        'correct',
+        help='Correct 3\' end positions in BAM or FASTQ file',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    # Required arguments
+    correct_parser.add_argument(
+        'input',
+        type=Path,
+        help='Input file (BAM or FASTQ/FASTQ.GZ). FASTQ files will be aligned with minimap2.'
+    )
+
+    correct_parser.add_argument(
+        '--genome',
+        type=Path,
+        help='Reference genome FASTA file. Required for FASTQ input unless using bundled genome.'
+    )
+
+    correct_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        required=True,
+        help='Output TSV file with corrected 3\' end positions'
+    )
+
+    # Optional arguments
+    correct_parser.add_argument(
+        '--annotation',
+        type=Path,
+        help='Gene annotation file (GTF/GFF) for AG mispriming context'
+    )
+
+    # Technology flags
+    tech_group = correct_parser.add_argument_group('Technology settings')
+    tech_group.add_argument(
+        '--dT-primed-cDNA',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        help='Input was generated with oligo-dT priming (QuantSeq, dT-primed cDNA). '
+             'The poly(A) tail is NOT in the read. Enables indel artifact correction '
+             'and poly(A) trimming modules designed for this protocol. '
+             'For nanopore direct RNA-seq the poly(A) tail IS sequenced — do NOT use this flag.'
+    )
+    tech_group.add_argument(
+        '--polya-sequenced',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
+    )
+    tech_group.add_argument(
+        '--ONT-cDNA',
+        dest='ONT_cDNA',
+        action='store_true',
+        default=False,
+        help='Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). The poly(A) tail IS '
+             'present in the read as a 3\' soft-clip (minimap2 alignment). Strand '
+             'convention is the same as DRS: is_reverse=True → minus-strand gene. '
+             'Enables poly(A) trimming and indel correction; disables AG mispriming '
+             '(no oligo-dT priming step). Do NOT use --dT-primed-cDNA for this protocol.'
+    )
+    tech_group.add_argument(
+        '--short-read',
+        dest='short_read',
+        action='store_true',
+        default=False,
+        help=(
+            'Input is short-read data (Illumina/Aviti ≤150 bp). Disables '
+            'poly(A)-tail trimming, A-tract correction, and indel modules '
+            '(which assume a poly(A) soft-clip). Use with `rectify align '
+            '--short-read` to select bbmap + bwa instead of the long-read '
+            'aligner panel.'
+        ),
+    )
+
+    tech_group.add_argument(
+        '--aligner',
+        choices=['minimap2', 'bwa', 'star', 'auto'],
+        default='auto',
+        help='Aligner used (affects indel artifact detection)'
+    )
+
+    # Spike-in filtering
+    spikein_group = correct_parser.add_argument_group('Spike-in filtering')
+    spikein_group.add_argument(
+        '--filter-spikein',
+        nargs='+',
+        metavar='GENE',
+        help='Remove spike-in reads by gene name (e.g., --filter-spikein ENO2). '
+             'Pre-defined signatures: ENO2. Multiple genes accepted.'
+    )
+
+    # Module flags
+    module_group = correct_parser.add_argument_group('Module selection')
+    module_group.add_argument(
+        '--skip-atract-check',
+        action='store_true',
+        help='Skip A-tract ambiguity detection (for organisms without A-tracts)'
+    )
+
+    module_group.add_argument(
+        '--skip-ag-check',
+        action='store_true',
+        help='Skip AG mispriming screening'
+    )
+
+    module_group.add_argument(
+        '--skip-polya-trim',
+        action='store_true',
+        help='Skip poly(A) tail trimming (even if --dT-primed-cDNA)'
+    )
+
+    module_group.add_argument(
+        '--skip-indel-correction',
+        action='store_true',
+        help='Skip indel artifact correction (even if --dT-primed-cDNA)'
+    )
+
+    module_group.add_argument(
+        '--skip-variant-aware',
+        action='store_true',
+        help='Skip variant-aware homopolymer rescue (enabled by default). '
+             'The two-pass variant-aware approach first scans all reads to '
+             'identify positions where high mismatch frequency suggests true '
+             'variants (not basecalling errors), then only rescues at '
+             'low-frequency positions. Potential variants are written to '
+             '*_potential_variants.tsv for review.'
+    )
+
+    module_group.add_argument(
+        '--min-mapq',
+        type=int,
+        default=0,
+        metavar='MAPQ',
+        help='Minimum mapping quality (MAPQ) to include a read. Reads with '
+             'MAPQ < MIN_MAPQ are skipped before any correction. Default: 0 '
+             '(no filter). Use --min-mapq 1 to exclude multi-mapping reads '
+             '(MAPQ=0), which is recommended for dT-primed-cDNA data where '
+             'internally-primed reads from repetitive T-rich regions are common.'
+    )
+    module_group.add_argument(
+        '--min-aligned-length',
+        type=int,
+        default=0,
+        metavar='BP',
+        help='Minimum number of reference bases consumed by the alignment '
+             '(reference_length) to include a read. Reads with fewer aligned '
+             'bases are skipped before correction. Default: 0 (no filter). '
+             'Use --min-aligned-length 30 for dT-primed-cDNA short-read data '
+             'to remove reads that align only to low-complexity T-tracts with '
+             'insufficient unique sequence context.'
+    )
+
+    # Poly(A) model
+    polya_group = correct_parser.add_argument_group('Poly(A) tail model')
+    polya_group.add_argument(
+        '--polya-model',
+        type=Path,
+        help='Pre-trained poly(A) tail model (JSON). If not provided, uses built-in model.'
+    )
+    polya_group.add_argument(
+        '--min-polya-score',
+        type=float,
+        default=None,
+        metavar='SCORE',
+        help='Minimum poly(A) model confidence score (0-1) to write to polya_pass column. '
+             'Reads below this threshold are flagged polya_pass=0 but still written to output. '
+             'Requires --polya-model or --dT-primed-cDNA to compute scores.'
+    )
+
+    # NET-seq refinement
+    netseq_group = correct_parser.add_argument_group('NET-seq refinement')
+    netseq_group.add_argument(
+        '--organism',
+        help='Organism name for bundled genome/annotation/NET-seq '
+             '(e.g., yeast, saccharomyces_cerevisiae). '
+             'Bundled WT NET-seq data will be used automatically if available.'
+    )
+    netseq_group.add_argument(
+        '--Scer',
+        dest='organism',
+        action='store_const',
+        const='saccharomyces_cerevisiae',
+        help='Shorthand for --organism saccharomyces_cerevisiae. '
+             'Uses all bundled S. cerevisiae reference data.'
+    )
+
+    netseq_group.add_argument(
+        '--netseq-dir',
+        type=Path,
+        help='Custom NET-seq BigWig directory (overrides bundled data). '
+             'Use this for mutant-specific NET-seq data.'
+    )
+
+    netseq_group.add_argument(
+        '--netseq-samples',
+        nargs='+',
+        help='NET-seq sample names to use (e.g., wt_2022_rep1). If not provided, auto-detect.'
+    )
+
+    # Thresholds and parameters
+    param_group = correct_parser.add_argument_group('Parameters')
+    param_group.add_argument(
+        '--ag-threshold',
+        type=float,
+        default=17.0,
+        help='AG-richness weighted score threshold for mispriming flagging (0.0-34.5; default 17.0)'
+    )
+
+    # Output options
+    output_group = correct_parser.add_argument_group('Output options')
+    output_group.add_argument(
+        '--output-bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a poly(A)-trimmed BAM alongside the corrected TSV. '
+             'The 3\' poly(A) soft-clip is removed from each read; all '
+             'other alignment fields and BAM tags are preserved unchanged. '
+             'Requires --dT-primed-cDNA.'
+    )
+
+    output_group.add_argument(
+        '--write-corrected-bam',
+        dest='corrected_bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a corrected BAM where every read is hard-clipped at its '
+             'corrected 3\' end. Unlike --output-bam, this reflects all '
+             'correction categories (Cat1 poly-A walkback, Cat4 false-N '
+             'absorption, Cat2 soft-clip rescue, etc.) — not just soft-clip '
+             'trimming. The output is sorted and indexed. Best used with '
+             '--annotation for full correction coverage.'
+    )
+
+    output_group.add_argument(
+        '--write-softclipped-bam',
+        dest='softclipped_bam',
+        type=Path,
+        metavar='BAM',
+        help='Write a corrected BAM where poly(A) tail bases are soft-clipped '
+             'rather than hard-clipped at the corrected 3\' end. The poly(A) '
+             'bases remain in the query sequence and are visible in IGV when '
+             '"Show soft-clipped bases" is enabled. Useful for visualising '
+             'where the poly(A) tail was without affecting pileup or coverage. '
+             'The output is sorted and indexed.'
+    )
+
+    output_group.add_argument(
+        '--write-bedgraph',
+        dest='bedgraph_prefix',
+        metavar='PREFIX',
+        help='Write strand-specific bedGraph files for NET-seq reads. '
+             'Signal at each position is the sum of fractional contributions '
+             'across all reads (the fraction column in the corrected TSV), so '
+             'each read contributes exactly 1.0 of total signal distributed '
+             'across its candidate positions. Output files: '
+             'PREFIX.plus.bedgraph and PREFIX.minus.bedgraph. '
+             'Requires NET-seq input (fraction column must be present).'
+    )
+
+    output_group.add_argument(
+        '--report',
+        type=Path,
+        help='Output QC report file (HTML or PDF)'
+    )
+
+    output_group.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose logging'
+    )
+
+    # Performance options
+    perf_group = correct_parser.add_argument_group('Performance options')
+    perf_group.add_argument(
+        '-j', '--threads',
+        type=int,
+        default=0,
+        help='Number of threads for parallel processing. '
+             '0 = auto-detect from SLURM_CPUS_PER_TASK or system (default: 0)'
+    )
+
+    perf_group.add_argument(
+        '--streaming',
+        action='store_true',
+        help='Use streaming output mode to minimize memory usage. '
+             'Recommended for BAM files > 10GB. Writes directly to output file.'
+    )
+
+    perf_group.add_argument(
+        '--chunk-size',
+        type=int,
+        default=10000,
+        help='Number of reads per output chunk in streaming mode (default: 10000)'
+    )
+
+    perf_group.add_argument(
+        '--checkpoint-dir',
+        type=str,
+        default=None,
+        metavar='DIR',
+        help='Directory to store per-region checkpoint sentinels and the variant-scan pickle. '
+             'When set, a failed run can be resumed: completed regions are skipped, '
+             'the variant scan is reloaded from disk, and the partial output TSV is '
+             'appended to rather than overwritten. Has no effect without --streaming.'
+    )
+    perf_group.add_argument(
+        '--variant-scan-cache',
+        type=str,
+        default=None,
+        metavar='PKL',
+        help='Path to a pre-computed variant scan pickle produced by `rectify prescan`. '
+             'Skips the Pass 1 all-reads scan (Module 2D) and loads the '
+             'VariantAwareHomopolymerRescue object directly. Use when running per-chunk '
+             'correction with a shared scan built from the merged BAM.'
+    )
+    perf_group.add_argument(
+        '--junction-pool-cache',
+        type=str,
+        default=None,
+        metavar='PKL',
+        help='Path to a pre-computed junction pool pickle produced by `rectify prescan`. '
+             'Skips the aligner-BAM junction collection step (Module 2H) and loads the '
+             'pool directly. The pickle must contain keys "all_junctions" and '
+             '"annotated_set". Use when running per-chunk correction with a shared pool '
+             'built from all aligner BAMs.'
+    )
+
+    # Junction refinement options
+    junc_group = correct_parser.add_argument_group('Junction refinement')
+    junc_group.add_argument(
+        '--aligner-bams',
+        action='append',
+        type=Path,
+        metavar='BAM',
+        default=[],
+        help='Per-aligner BAM file for junction candidate pool construction '
+             '(repeat the flag for each aligner: --aligner-bams minimap2.bam '
+             '--aligner-bams gapmm2.bam ...). Accepts plain paths or '
+             '\'aligner:path\' pairs. When provided, every N-op in the '
+             'consensus BAM is scored against all candidate junctions within '
+             '--junction-search-radius bp and replaced with the best-supported '
+             'junction (canonical GT-AG > annotated > highest split-alignment '
+             'score). Improves junction accuracy for reads where the chosen '
+             'aligner placed the intron boundary a few bp off from the true '
+             'splice site.'
+    )
+    junc_group.add_argument(
+        '--junction-hp-pen',
+        type=float,
+        default=0.25,
+        metavar='FLOAT',
+        help='Homopolymer indel penalty for junction scoring (0 < value ≤ 1.0). '
+             'Lower values are more tolerant of poly-T/A undercalling errors near '
+             'splice sites. Default 0.25 is recommended for Nanopore DRS data.'
+    )
+    junc_group.add_argument(
+        '--junction-search-radius',
+        type=int,
+        default=5000,
+        metavar='BP',
+        help='Search radius (bp) around each N-op for candidate junction lookup '
+             '(default: 5000). Covers the longest known yeast intron (~1 kb) '
+             'with ample margin.'
+    )
+    junc_group.add_argument(
+        '--junction-window',
+        type=int,
+        default=15,
+        metavar='BP',
+        help='Edit-distance window half-width for split-alignment scoring '
+             '(default: 15 bp on each side of the junction).'
+    )
+    junc_group.add_argument(
+        '--junction-max-slide',
+        type=int,
+        default=10,
+        metavar='BP',
+        help='Maximum query split displacement for split-alignment scoring '
+             '(default: ±10 bp).'
+    )
+    junc_group.add_argument(
+        '--junction-max-boundary-shift',
+        dest='junction_max_boundary_shift',
+        type=int,
+        default=50,
+        metavar='BP',
+        help='Maximum allowed shift of either intron boundary when applying a '
+             'junction replacement (default: 50 bp).  Candidates whose '
+             'intron_start or intron_end differs from the current N-op by more '
+             'than this threshold are excluded, preventing false-positive '
+             'matches from junctions in neighbouring genes.'
+    )
+    junc_group.add_argument(
+        '--junction-penalty-table',
+        dest='junction_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to empirical penalty table (penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py.  When provided, overrides the '
+             'heuristic del/ins cost step-function with per-HP-length values '
+             'derived from multi-aligner agreement on this dataset.  Recommended '
+             'for fine-tuning junction scoring to the specific sequencing run.'
+    )
+    junc_group.add_argument(
+        '--str-penalty-table',
+        dest='str_penalty_table',
+        default=None,
+        metavar='PATH',
+        help='Path to STR penalty table (str_penalty_scores.tsv) produced by '
+             'empirical_cigar_error_profiler.py --str-repeat.  When provided '
+             'alongside --junction-penalty-table, dinucleotide/trinucleotide '
+             'repeat contexts (e.g. TATATA→TATA slippage) are scored with '
+             'empirical STR-specific penalties instead of the HP=1 baseline.'
+    )

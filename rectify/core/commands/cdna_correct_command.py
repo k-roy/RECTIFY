@@ -1921,3 +1921,119 @@ def run(args) -> int:
 # Module is invoked via rectify CLI: `rectify correct-cdna ...` calls run(args).
 # No __main__ block — the standalone entry point lives in the ont_cdna staging
 # repo at /Users/kevinroy/work/ont_cdna/src/cdna_correct.py.
+
+
+def create_correct_cdna_parser(subparsers):
+    """Wire the `correct-cdna` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # correct-cdna command (UMI-aware per-molecule consensus from cDNA BAM)
+    # =========================================================================
+    correct_cdna_parser = subparsers.add_parser(
+        'correct-cdna',
+        help='UMI-aware per-molecule consensus for PCR-cDNA BAMs (PCB114.24 chemistry)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Cluster aligned PCR-cDNA reads (SQK-PCB114.24 SSP + 27-nt UMI architecture) '
+            'by (locus, orientation, UMI) and emit one consensus record per starting RNA '
+            'molecule.\n\n'
+            'Operates AFTER alignment, complementing trim-cdna-polya which runs on the '
+            'FASTQ before alignment. Emits a representative-read or pileup-based '
+            'consensus per cluster (POA if pyabpoa is available).\n\n'
+            'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
+            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB) '
+            'for `rectify align -y` to propagate into the post-align BAM. Gene assignment, '
+            'isoform clustering, and Type-1↔Type-2 pairing run downstream in '
+            '`rectify cdna-analyze`.'
+        ),
+    )
+    correct_cdna_parser.add_argument(
+        'bam',
+        help='Input BAM (aligned PCR-cDNA reads, indexed)',
+    )
+    correct_cdna_parser.add_argument(
+        '-o', '--out',
+        dest='out',
+        required=True,
+        help='Output directory (will contain stage1_consensus.fastq.gz)',
+    )
+    correct_cdna_parser.add_argument(
+        '--umi-edit-distance',
+        dest='umi_edit_distance',
+        type=int,
+        default=3,
+        help='Max Levenshtein distance between UMIs in the same cluster',
+    )
+    correct_cdna_parser.add_argument(
+        '--anchor-window-bp',
+        dest='anchor_window_bp',
+        type=int,
+        default=25,
+        help='Window around alignment-end anchor for same-locus clustering (bp)',
+    )
+    correct_cdna_parser.add_argument(
+        '--per-cluster-cap',
+        dest='per_cluster_cap',
+        type=int,
+        default=200,
+        help='Max reads per cluster (larger = potential PCR-jackpot signal, slower POA)',
+    )
+    correct_cdna_parser.add_argument(
+        '--gff',
+        default=None,
+        help='Genome annotation GFF3 (gzip OK). Used for rDNA masking (reads '
+             'overlapping rRNA_gene loci are excluded by default to prevent the '
+             'O(n²) UMI clustering blow-up on chrXII tandem repeats). Sense/antisense '
+             'XS classification, XG gene-name tagging, and isoform clustering now '
+             'run downstream in `rectify cdna-analyze`.',
+    )
+    correct_cdna_parser.add_argument(
+        '--reference',
+        default=None,
+        help='Reference FASTA (gzip OK). Required for walk-back anchor '
+             'canonicalization + poly-A tail-length measurement during UMI '
+             'extraction; without it, the legacy aln-end anchor is used.',
+    )
+    correct_cdna_parser.add_argument(
+        '--no-poa',
+        action='store_true',
+        dest='no_poa',
+        default=False,
+        help='Force pileup-only consensus even if abPOA is available',
+    )
+    correct_cdna_parser.add_argument(
+        '--region',
+        default=None,
+        help='Restrict to a single BAM region (e.g. chrI) — useful for testing',
+    )
+    correct_cdna_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        default=False,
+        help='Verbose DEBUG-level logging',
+    )
+    # v1.13+ flags (added during v3 RECTIFY integration):
+    correct_cdna_parser.add_argument(
+        '--umi-clustering',
+        dest='umi_clustering',
+        choices=('directional', 'components'),
+        default='directional',
+        help='UMI clustering method (default: directional, umi_tools-style 2× rule)',
+    )
+    correct_cdna_parser.add_argument(
+        '--strand-aware-consensus',
+        dest='strand_aware_consensus',
+        action='store_true',
+        default=False,
+        help='v1.18 strand-aware POA: split reads by is_reverse, build a per-strand '
+             'sub-consensus, then merge. Cancels strand-specific systematic errors.',
+    )
+    correct_cdna_parser.add_argument(
+        '--no-mask-rdna',
+        dest='no_mask_rdna',
+        action='store_true',
+        default=False,
+        help='Disable rDNA masking. By default, reads overlapping rRNA_gene loci in '
+             '--gff are excluded before clustering to prevent the O(n²) UMI '
+             'bottleneck on chrXII tandem repeats (observed: 261k reads → 4h42m).',
+    )

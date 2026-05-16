@@ -292,3 +292,66 @@ def run(args: argparse.Namespace) -> int:
 
     print("\nDone!")
     return 0
+
+
+def create_export_parser(subparsers):
+    """Wire the `export` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # export command (bedGraph/bigWig generation)
+    # =========================================================================
+    export_parser = subparsers.add_parser(
+        'export',
+        help='Export corrected 3\' ends to bedGraph/bigWig format',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    export_parser.add_argument(
+        'input',
+        type=Path,
+        help='Corrected 3\' end TSV file from RECTIFY'
+    )
+
+    export_parser.add_argument(
+        '-o', '--output-dir',
+        type=Path,
+        required=True,
+        help='Output directory for bedGraph/bigWig files'
+    )
+
+    export_parser.add_argument(
+        '--format',
+        choices=['bigwig', 'bedgraph'],
+        default='bigwig',
+        help='Output format'
+    )
+
+    export_parser.add_argument(
+        '--genome',
+        type=Path,
+        help='Reference genome FASTA (for chromosome sizes)'
+    )
+
+    export_parser.add_argument(
+        '--chrom-sizes',
+        type=Path,
+        help='Chromosome sizes file (tab-separated: chrom, size)'
+    )
+
+    export_parser.add_argument(
+        '--position-col',
+        default='position',
+        help='Column with corrected position'
+    )
+
+    export_parser.add_argument(
+        '--per-replicate',
+        action='store_true',
+        help='Generate per-replicate files'
+    )
+
+    export_parser.add_argument(
+        '--per-condition',
+        action='store_true',
+        help='Generate per-condition summed files'
+    )

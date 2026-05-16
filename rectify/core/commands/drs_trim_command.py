@@ -526,3 +526,60 @@ def run(args) -> int:
     print(f"  Pass 2 (peel):    {stats['pass_counts'][2]:,}")
 
     return 0
+
+
+def create_trim_polya_parser(subparsers):
+    """Wire the `trim-polya` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # trim-polya command (DRS poly(A)+adapter pre-trimming)
+    # =========================================================================
+    trim_polya_parser = subparsers.add_parser(
+        'trim-polya',
+        help='Trim poly(A) tail + adapter from DRS BAM before alignment',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    trim_polya_parser.add_argument(
+        'input_bam',
+        help='Input Dorado-aligned BAM (with pt:i: tags)',
+    )
+    trim_polya_parser.add_argument(
+        '-o', '--output-dir',
+        dest='output_dir',
+        required=True,
+        help='Output directory for trimmed BAM and metadata parquet',
+    )
+    trim_polya_parser.add_argument(
+        '--adapter-window',
+        type=int,
+        default=150,
+        help='Bases from 3\' end to search for poly(A)+adapter',
+    )
+    trim_polya_parser.add_argument(
+        '--max-error-rate',
+        type=float,
+        default=0.0,
+        help='Max cumulative non-A fraction for poly(A) scan (default 0.0 = strict pure-A)',
+    )
+    trim_polya_parser.add_argument(
+        '--max-consecutive-non-a',
+        type=int,
+        default=1,
+        dest='max_consecutive_non_a',
+        help=(
+            'Stop poly(A) scan after this many consecutive non-A bases (default 1 = '
+            'stop at 2+ consecutive). Prevents consuming upstream gene-body sequence '
+            'even when --max-error-rate > 0.'
+        ),
+    )
+    trim_polya_parser.add_argument(
+        '--prefix',
+        default=None,
+        help='Output file prefix (default: derived from input BAM stem)',
+    )
+    trim_polya_parser.add_argument(
+        '--tsv',
+        action='store_true',
+        default=False,
+        help='Write metadata as TSV instead of parquet',
+    )

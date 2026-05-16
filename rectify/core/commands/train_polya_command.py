@@ -630,3 +630,56 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     run(args)
+
+
+def create_train_polya_parser(subparsers):
+    """Wire the `train-polya` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # train-polya command
+    # =========================================================================
+    train_parser = subparsers.add_parser(
+        'train-polya',
+        help='Train poly(A) tail model from control data',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    train_parser.add_argument(
+        'bam',
+        type=Path,
+        help='Input BAM file with soft-clipped poly(A) tails'
+    )
+
+    train_parser.add_argument(
+        '--genome',
+        type=Path,
+        required=True,
+        help='Reference genome FASTA file'
+    )
+
+    train_parser.add_argument(
+        '--control-sites',
+        type=Path,
+        required=True,
+        help='TSV file with control CPA sites (0A downstream A-count)'
+    )
+
+    train_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        required=True,
+        help='Output model file (JSON)'
+    )
+
+    train_parser.add_argument(
+        '--min-reads',
+        type=int,
+        default=10,
+        help='Minimum reads per control site for training'
+    )
+
+    train_parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose logging'
+    )

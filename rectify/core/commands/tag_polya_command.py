@@ -184,3 +184,57 @@ def run(args) -> int:
         logger.warning(f"Could not index output BAM: {e} — run 'samtools index' manually")
 
     return 0
+
+
+def create_tag_polya_parser(subparsers):
+    """Wire the `tag-polya` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # tag-polya command
+    # =========================================================================
+    tag_polya_parser = subparsers.add_parser(
+        'tag-polya',
+        help='Add pt:i and ps:f poly(A) tags to an existing aligned BAM',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Score the 3\' soft-clip of each read using the poly(A) model and write '
+            'two BAM auxiliary tags: ps:f (RECTIFY poly(A) confidence score, 0-1) and, '
+            'when pt:i is absent, pt:i (sequence-based tail length estimate). '
+            'Existing dorado pt:i values are never overwritten. '
+            'Use this command to retroactively annotate BAMs produced before dorado '
+            'pt:i support, or processed through pipelines that strip aux tags.'
+        )
+    )
+
+    tag_polya_parser.add_argument(
+        'bam',
+        type=Path,
+        help='Input aligned BAM file'
+    )
+
+    tag_polya_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        required=True,
+        help='Output BAM file with poly(A) tags added'
+    )
+
+    tag_polya_parser.add_argument(
+        '--polya-model',
+        type=Path,
+        default=None,
+        help='Pre-trained poly(A) model JSON (default: built-in model)'
+    )
+
+    tag_polya_parser.add_argument(
+        '--threads',
+        type=int,
+        default=4,
+        help='Threads for BAM compression'
+    )
+
+    tag_polya_parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose logging'
+    )

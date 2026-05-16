@@ -276,3 +276,73 @@ def run(args) -> int:
 
     log.info("Total runtime: %.1fs", time.time() - t0)
     return 0
+
+
+def create_cdna_analyze_parser(subparsers):
+    """Wire the `cdna-analyze` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # cdna-analyze command (post-align isoform clustering for cDNA)
+    # =========================================================================
+    cdna_analyze_parser = subparsers.add_parser(
+        'cdna-analyze',
+        help='Post-alignment isoform clustering for the cDNA pipeline (consumes `rectify align` output of `correct-cdna` consensus FASTQ)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            'Reads the multi-aligner consensus BAM produced by `rectify align` on the '
+            'per-cluster consensus FASTQ from `rectify correct-cdna`. Each BAM record '
+            'is one UMI-deduplicated molecule; tags XU/XC/XR/XO/XT/XY/XF/XB ride along '
+            'from the FASTQ comments via `minimap2 -y`.\n\n'
+            'Recomputes tail_len (XA) and pos5_corrected via walkback / walk-forward on '
+            'the post-align CIGAR, then runs gene assignment, isoform clustering '
+            '(directional, tol5/tol3), and Type-1↔Type-2 same-orient pairing on the '
+            'post-align coordinates.\n\n'
+            'Output: clusters.tsv (per-cluster manifest), isoforms.tsv (isoform-level '
+            'aggregation), t1t2_pairs.tsv (T1↔T2 reconciliation), consensus_tagged.bam '
+            '(input BAM rewritten with the new XA/XG/XS/XI/XL tags).'
+        ),
+    )
+    cdna_analyze_parser.add_argument(
+        'bam',
+        help='Consensus BAM from `rectify align` on the correct-cdna FASTQ',
+    )
+    cdna_analyze_parser.add_argument(
+        '-o', '--out',
+        dest='out',
+        required=True,
+        help='Output directory (clusters.tsv, isoforms.tsv, t1t2_pairs.tsv, consensus_tagged.bam)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--gff',
+        required=True,
+        help='Genome annotation (GFF3) for gene tree / XS classification',
+    )
+    cdna_analyze_parser.add_argument(
+        '--reference',
+        required=True,
+        help='Genome FASTA — required for walkback (XA tail_len recomputation)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--min-gene-frac', dest='min_gene_frac', type=float, default=0.3,
+        help='XS classifier: gene_overlap / gene_length threshold',
+    )
+    cdna_analyze_parser.add_argument(
+        '--min-read-frac', dest='min_read_frac', type=float, default=0.8,
+        help='XS classifier: gene_overlap / read_aln_length threshold',
+    )
+    cdna_analyze_parser.add_argument(
+        '--isoform-tol-5', dest='isoform_tol_5', type=int, default=5,
+        help='Isoform clustering bp tolerance on 5\' axis (Type-1 only)',
+    )
+    cdna_analyze_parser.add_argument(
+        '--isoform-tol-3', dest='isoform_tol_3', type=int, default=5,
+        help='Isoform clustering bp tolerance on 3\' axis',
+    )
+    cdna_analyze_parser.add_argument(
+        '--t1t2-tol-5', dest='t1t2_tol_5', type=int, default=5,
+        help='T1↔T2 reconciliation bp tolerance on 5\' axis',
+    )
+    cdna_analyze_parser.add_argument(
+        '--t1t2-tol-3', dest='t1t2_tol_3', type=int, default=5,
+        help='T1↔T2 reconciliation bp tolerance on 3\' axis',
+    )

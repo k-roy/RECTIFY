@@ -967,3 +967,90 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     run(args)
+
+
+def create_validate_parser(subparsers):
+    """Wire the `validate` subcommand into the given subparsers group."""
+    import argparse
+    # =========================================================================
+    # validate command
+    # =========================================================================
+    validate_parser = subparsers.add_parser(
+        'validate',
+        help='Validate corrections against ground truth',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    # Required arguments
+    validate_parser.add_argument(
+        'corrected',
+        type=Path,
+        help='Corrected 3\' ends TSV from RECTIFY'
+    )
+
+    validate_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        required=True,
+        help='Output validation results TSV'
+    )
+
+    # Ground truth sources (at least one required)
+    truth_group = validate_parser.add_argument_group(
+        'Ground truth sources (at least one required)'
+    )
+
+    truth_group.add_argument(
+        '--netseq-dir',
+        type=Path,
+        help='NET-seq BigWig directory (optional - requires pyBigWig)'
+    )
+
+    truth_group.add_argument(
+        '--netseq-samples',
+        nargs='+',
+        help='Specific NET-seq samples to use'
+    )
+
+    truth_group.add_argument(
+        '--annotation',
+        type=Path,
+        help='Gene annotation GTF/GFF with known 3\' ends'
+    )
+
+    truth_group.add_argument(
+        '--ground-truth',
+        type=Path,
+        help='TSV file with known true 3\' end positions'
+    )
+
+    # Validation parameters
+    param_group = validate_parser.add_argument_group('Validation parameters')
+
+    param_group.add_argument(
+        '--tolerance',
+        type=int,
+        default=1,
+        help='Position tolerance in bp for "correct" classification'
+    )
+
+    param_group.add_argument(
+        '--min-signal',
+        type=float,
+        default=0.5,
+        help='Minimum NET-seq signal for ground truth'
+    )
+
+    param_group.add_argument(
+        '--search-window',
+        type=int,
+        default=10,
+        help='Window size for finding nearest ground truth'
+    )
+
+    # Output options
+    validate_parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose logging'
+    )
