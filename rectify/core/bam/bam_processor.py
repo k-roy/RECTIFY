@@ -41,7 +41,7 @@ from .. import atract_detector
 from .. import ag_mispriming
 from .. import polya_trimmer
 from .. import indel_corrector
-from .. import netseq_refiner
+from ..netseq import netseq_refiner
 from ..indel_corrector import VariantAwareHomopolymerRescue
 from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
 from ..correct.walkback import (

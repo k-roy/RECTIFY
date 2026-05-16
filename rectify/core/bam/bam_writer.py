@@ -2022,7 +2022,7 @@ def write_netseq_assigned_bedgraph(
     Returns:
         Dict with counts per strand: ``{'plus': n_positions, 'minus': n_positions}``.
     """
-    from ..netseq_output import write_bedgraph as _write_bedgraph
+    from ..netseq.netseq_output import write_bedgraph as _write_bedgraph
 
     counts: Dict[Tuple[str, str, int], float] = {}
     n_netseq_rows = 0
@@ -2118,7 +2118,7 @@ def write_corrected_reads_bedgraph(
     Returns:
         Dict with counts per strand: ``{'plus': n_positions, 'minus': n_positions}``.
     """
-    from ..netseq_output import write_bedgraph as _write_bedgraph
+    from ..netseq.netseq_output import write_bedgraph as _write_bedgraph
 
     counts: Dict[Tuple[str, str, int], float] = {}
     n_rows = 0

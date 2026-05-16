@@ -6,7 +6,7 @@ Tests for NET-seq refinement module.
 import pytest
 import numpy as np
 from unittest.mock import Mock, patch, MagicMock
-from rectify.core import netseq_refiner
+from rectify.core.netseq import netseq_refiner
 from rectify import config
 
 
@@ -174,8 +174,8 @@ class TestAssignConfidence:
 class TestNetseqLoader:
     """Test NET-seq BigWig loader."""
 
-    @patch('rectify.core.netseq_refiner.PYBIGWIG_AVAILABLE', True)
-    @patch('rectify.core.netseq_refiner.pyBigWig')
+    @patch('rectify.core.netseq.netseq_refiner.PYBIGWIG_AVAILABLE', True)
+    @patch('rectify.core.netseq.netseq_refiner.pyBigWig')
     def test_load_bigwig(self, mock_pybigwig):
         """Test loading a BigWig file."""
         # Mock pyBigWig.open()

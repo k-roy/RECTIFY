@@ -31,7 +31,7 @@ from collections import OrderedDict
 import threading
 import numpy as np
 
-from ..config import (
+from ...config import (
     NETSEQ_PEAK_WINDOW,
     NETSEQ_PEAK_THRESHOLD,
     NETSEQ_SIGNAL_HIGH,
@@ -173,7 +173,7 @@ class NetseqLoader:
         Args:
             organism: Organism name (e.g., 'saccharomyces_cerevisiae')
         """
-        from ..data import load_bundled_netseq_as_arrays
+        from ...data import load_bundled_netseq_as_arrays
         self._bundled_arrays = load_bundled_netseq_as_arrays(organism)
         self._bundled_loaded = True
 

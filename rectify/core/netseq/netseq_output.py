@@ -15,8 +15,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from ..config import CHROM_SIZES
-from .unified_record import UnifiedReadRecord, export_to_parquet, records_to_dataframe
+from ...config import CHROM_SIZES
+from ..unified_record import UnifiedReadRecord, export_to_parquet, records_to_dataframe
 
 # Try to import pyBigWig
 try:

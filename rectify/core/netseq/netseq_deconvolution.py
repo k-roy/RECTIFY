@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 
-from ..config import NETSEQ_DECONV_REGULARIZATION, CHROM_TO_GENOME
+from ...config import NETSEQ_DECONV_REGULARIZATION, CHROM_TO_GENOME
 from .netseq_refiner import (
     DEFAULT_PSF_0A,
     build_convolution_matrix,
