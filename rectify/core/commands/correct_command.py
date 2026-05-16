@@ -101,7 +101,7 @@ def validate_inputs(args) -> dict:
             ``junction_window``, ``junction_max_slide``,
             ``junction_max_boundary_shift``
     """
-    from ..preprocess import detect_input_type, prepare_input, prepare_bundled_genome
+    from ..align.preprocess import detect_input_type, prepare_input, prepare_bundled_genome
     from ...data import (
         normalize_organism, is_bundled_genome_available,
         detect_organism, ensure_netseq_data

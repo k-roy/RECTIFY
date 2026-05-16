@@ -505,7 +505,7 @@ def prepare_bundled_genome(
     Returns:
         Tuple of (genome_path, annotation_path)
     """
-    from ..data import (
+    from ...data import (
         get_bundled_genome_path,
         get_bundled_annotation_path,
         normalize_organism,

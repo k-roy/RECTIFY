@@ -93,7 +93,7 @@ class TestTwoPhaseAlignerSchedule:
         # "from .multi_aligner import ..."; patch them on the source module.
         patches = [
             patch(
-                f'rectify.core.multi_aligner.{fn}',
+                f'rectify.core.align.multi_aligner.{fn}',
                 side_effect=_make_runner(name),
             )
             for fn, name in [
@@ -106,7 +106,7 @@ class TestTwoPhaseAlignerSchedule:
         ]
         # Also patch check_aligner_available → always True
         patches.append(
-            patch('rectify.core.multi_aligner.check_aligner_available', return_value=True)
+            patch('rectify.core.align.multi_aligner.check_aligner_available', return_value=True)
         )
         for p in patches:
             p.start()
@@ -160,7 +160,7 @@ class TestTwoPhaseAlignerSchedule:
         args = _make_args(threads=16, tmp_path=tmp_path)
         # Remove mapPacBio from the aligner list by marking it unavailable
         with patch(
-            'rectify.core.multi_aligner.check_aligner_available',
+            'rectify.core.align.multi_aligner.check_aligner_available',
             side_effect=lambda p: p != args.mapPacBio_path,
         ):
             run_align(args)
@@ -184,13 +184,13 @@ class TestPhase2MinimumOneThread:
             return _r
 
         patches = [
-            patch(f'rectify.core.multi_aligner.{fn}', side_effect=_runner(nm))
+            patch(f'rectify.core.align.multi_aligner.{fn}', side_effect=_runner(nm))
             for fn, nm in [
                 ('run_minimap2', 'minimap2'), ('run_map_pacbio', 'mapPacBio'),
                 ('run_gapmm2', 'gapmm2'), ('run_ultra', 'uLTRA'),
                 ('run_desalt', 'deSALT'),
             ]
-        ] + [patch('rectify.core.multi_aligner.check_aligner_available', return_value=True)]
+        ] + [patch('rectify.core.align.multi_aligner.check_aligner_available', return_value=True)]
 
         for p in patches:
             p.start()

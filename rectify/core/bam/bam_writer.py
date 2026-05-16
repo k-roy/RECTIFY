@@ -501,7 +501,7 @@ def realign_exon_blocks(
     Returns:
         True if at least one CIGAR op was changed; False otherwise.
     """
-    from ..local_aligner import align_exon_block_global
+    from ..align.local_aligner import align_exon_block_global
 
     if not read.cigartuples or not read.query_sequence:
         return False
@@ -866,7 +866,7 @@ def reroute_intronic_tail_5prime_via_junction(
         return False
 
     try:
-        from ..local_aligner import cigar_str_to_ops
+        from ..align.local_aligner import cigar_str_to_ops
         exon_ops = cigar_str_to_ops(exon_cigar_str)
     except Exception:
         return False
@@ -1086,7 +1086,7 @@ def extend_read_5prime_for_junction_rescue(
     exon_ops: Optional[list] = None
     if exon_cigar_str:
         try:
-            from ..local_aligner import cigar_str_to_ops
+            from ..align.local_aligner import cigar_str_to_ops
             _parsed = cigar_str_to_ops(exon_cigar_str)
             if _parsed:
                 exon_ops = _parsed

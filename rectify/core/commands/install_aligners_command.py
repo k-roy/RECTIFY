@@ -148,7 +148,7 @@ def install_desalt(install_dir: Path, force: bool = False) -> bool:
         return True
 
     # Vendored binary available?
-    from rectify.core.multi_aligner import _get_vendored_desalt
+    from rectify.core.align.multi_aligner import _get_vendored_desalt
     vendored = _get_vendored_desalt()
     if vendored and not force:
         logger.info(f"  Vendored binary available: {vendored}")
@@ -343,7 +343,7 @@ def _check_all_aligners():
         else:
             # Check for vendored deSALT specifically
             if name == 'deSALT':
-                from rectify.core.multi_aligner import _get_vendored_desalt
+                from rectify.core.align.multi_aligner import _get_vendored_desalt
                 vendored = _get_vendored_desalt()
                 if vendored:
                     logger.info(f"  {name:12s}  VENDORED → {vendored}")

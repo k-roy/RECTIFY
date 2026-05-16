@@ -779,7 +779,7 @@ def _process_one_sample(
     try:
         with open(log_file, 'w') as log:
             # Determine input type
-            from ..preprocess import detect_input_type
+            from ..align.preprocess import detect_input_type
             input_type = detect_input_type(input_path)
 
             bam_to_correct = input_path
@@ -1144,7 +1144,7 @@ def _run_single_sample(args) -> int:
     print(f"Output dir: {output_dir}")
 
     # Determine input type
-    from ..preprocess import detect_input_type
+    from ..align.preprocess import detect_input_type
     input_type = detect_input_type(input_path)
     print(f"Input type: {input_type}")
 
@@ -1627,7 +1627,7 @@ def _generate_chunked_pipeline(args) -> int:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if getattr(args, 'input', None):
         input_path = Path(args.input)
-        from ..preprocess import detect_input_type
+        from ..align.preprocess import detect_input_type
         input_type = detect_input_type(input_path)
 
         # (BAM inputs are handled in run() before calling this function)
@@ -1902,7 +1902,7 @@ echo "Done: $(date)"
 
         for s in samples:
             p = Path(s.get('path', s.get('bam_path', '')))
-            from ..preprocess import detect_input_type
+            from ..align.preprocess import detect_input_type
             itype = detect_input_type(p)
             if itype in ('fastq', 'fastq.gz'):
                 fastq_samples.append(s)
@@ -2453,7 +2453,7 @@ def run(args: argparse.Namespace) -> None:
         input_path_str = getattr(args, 'input', None)
         is_bam_input = False
         if input_path_str:
-            from ..preprocess import detect_input_type
+            from ..align.preprocess import detect_input_type
             itype = detect_input_type(Path(str(input_path_str)))
             is_bam_input = itype not in ('fastq', 'fastq.gz')
 

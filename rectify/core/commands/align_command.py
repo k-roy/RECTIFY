@@ -293,7 +293,7 @@ def run_align(args: argparse.Namespace) -> int:
             aligners.append(ja)
 
     # Import multi-aligner functions
-    from ..multi_aligner import (
+    from ..align.multi_aligner import (
         run_minimap2,
         run_map_pacbio,
         run_gapmm2,

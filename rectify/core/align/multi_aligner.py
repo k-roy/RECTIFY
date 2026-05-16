@@ -118,7 +118,7 @@ def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
 # Set to 6 h as a safe upper bound before treating a run as hung.
 ALIGNER_TIMEOUT = 21600
 
-from ..utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
+from ...utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
 
 from rectify.core.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
 

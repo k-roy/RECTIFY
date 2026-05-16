@@ -72,7 +72,7 @@ def test_paf_to_bam_marks_secondary_records():
     secondary as indicated by tp:A:S), _paf_to_bam must set FLAG|=0x100 on
     the secondary record so _filtered_read_iterator excludes it.
     """
-    from rectify.core.multi_aligner import _paf_to_bam
+    from rectify.core.align.multi_aligner import _paf_to_bam
 
     # Minimal PAF: two lines for the same read_id.
     # Fields: qname qlen qst qend strand tname tlen tst tend nmatch alen mapq [tags...]
