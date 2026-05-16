@@ -12,7 +12,7 @@ import tempfile
 import os
 
 # Test imports
-from rectify.core.bam_processor import (
+from rectify.core.bam.bam_processor import (
     get_processing_regions,
     find_coverage_gaps,
     _process_region_worker,
@@ -31,7 +31,7 @@ class TestGetProcessingRegions:
             mock_bam.return_value.references = ['chrI', 'chrII']
             mock_bam.return_value.lengths = [100000, 200000]  # Both under max_region_size
 
-            with patch('rectify.core.bam_processor.find_coverage_gaps', return_value=[]):
+            with patch('rectify.core.bam.bam_processor.find_coverage_gaps', return_value=[]):
                 regions = get_processing_regions(
                     'test.bam',
                     min_gap_size=10000,
@@ -124,7 +124,7 @@ class TestStreamingOutput:
 
     def test_generates_summary_from_stats(self):
         """Summary generation from stats dict should work."""
-        from rectify.core.bam_processor import generate_summary_from_stats
+        from rectify.core.bam.bam_processor import generate_summary_from_stats
 
         stats = {
             'total_reads': 1000,
@@ -143,7 +143,7 @@ class TestStreamingOutput:
 
     def test_empty_stats_handled(self):
         """Empty stats should return appropriate message."""
-        from rectify.core.bam_processor import generate_summary_from_stats
+        from rectify.core.bam.bam_processor import generate_summary_from_stats
 
         stats = {
             'total_reads': 0,
@@ -161,7 +161,7 @@ class TestWriteResultsChunk:
 
     def test_writes_correct_format(self):
         """Chunk writer should produce correct TSV format."""
-        from rectify.core.bam_processor import _write_results_chunk
+        from rectify.core.bam.bam_processor import _write_results_chunk
         from io import StringIO
 
         results = [{

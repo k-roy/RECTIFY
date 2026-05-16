@@ -698,7 +698,7 @@ def walkback_drs(
 
     This uses the simple :func:`walkback_3prime` core (no artifact guards) —
     suitable for unit tests on synthetic reads. The DRS production path in
-    :mod:`rectify.core.bam_processor` calls :func:`walkback_drs_full`, which
+    :mod:`rectify.core.bam.bam_processor` calls :func:`walkback_drs_full`, which
     delegates to :func:`walkback_3prime_guarded` with the same three
     artifact guards that the legacy ``indel_corrector.find_polya_boundary``
     used to apply (now a thin alias for :func:`walkback_3prime_guarded`).
@@ -735,7 +735,7 @@ def walkback_drs_full(
 
     or ``None`` when no correction is needed. This is the drop-in
     replacement for the legacy ``find_polya_boundary`` in
-    :mod:`rectify.core.bam_processor`.
+    :mod:`rectify.core.bam.bam_processor`.
     """
     if is_minus_strand_dRNA(read):
         side = THREE_PRIME_SIDE_LEFT

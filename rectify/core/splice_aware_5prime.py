@@ -489,7 +489,7 @@ def _get_intronic_query_bases(
     These bases are used by :func:`rescue_3ss_truncation` to drive the
     local alignment for the exon-1 CIGAR, ensuring the exon CIGAR has
     exactly as many query-consuming bases as the CIGAR trimming step in
-    :func:`~rectify.core.bam_writer.reroute_intronic_tail_5prime_via_junction`
+    :func:`~rectify.core.bam.bam_writer.reroute_intronic_tail_5prime_via_junction`
     will remove.
     """
     if not read.cigartuples or not read.query_sequence:

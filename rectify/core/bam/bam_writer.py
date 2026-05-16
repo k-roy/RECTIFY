@@ -501,7 +501,7 @@ def realign_exon_blocks(
     Returns:
         True if at least one CIGAR op was changed; False otherwise.
     """
-    from .local_aligner import align_exon_block_global
+    from ..local_aligner import align_exon_block_global
 
     if not read.cigartuples or not read.query_sequence:
         return False
@@ -866,7 +866,7 @@ def reroute_intronic_tail_5prime_via_junction(
         return False
 
     try:
-        from .local_aligner import cigar_str_to_ops
+        from ..local_aligner import cigar_str_to_ops
         exon_ops = cigar_str_to_ops(exon_cigar_str)
     except Exception:
         return False
@@ -1086,7 +1086,7 @@ def extend_read_5prime_for_junction_rescue(
     exon_ops: Optional[list] = None
     if exon_cigar_str:
         try:
-            from .local_aligner import cigar_str_to_ops
+            from ..local_aligner import cigar_str_to_ops
             _parsed = cigar_str_to_ops(exon_cigar_str)
             if _parsed:
                 exon_ops = _parsed
@@ -1969,7 +1969,7 @@ def write_polya_trimmed_bam(
             'trimmed'      — reads whose poly(A) tail was removed
             'bases_trimmed'— total bases removed across all reads
     """
-    from .polya_trimmer import trim_polya_from_bam_read
+    from ..polya_trimmer import trim_polya_from_bam_read
 
     stats = {'total': 0, 'trimmed': 0, 'bases_trimmed': 0}
 
@@ -2022,7 +2022,7 @@ def write_netseq_assigned_bedgraph(
     Returns:
         Dict with counts per strand: ``{'plus': n_positions, 'minus': n_positions}``.
     """
-    from .netseq_output import write_bedgraph as _write_bedgraph
+    from ..netseq_output import write_bedgraph as _write_bedgraph
 
     counts: Dict[Tuple[str, str, int], float] = {}
     n_netseq_rows = 0
@@ -2118,7 +2118,7 @@ def write_corrected_reads_bedgraph(
     Returns:
         Dict with counts per strand: ``{'plus': n_positions, 'minus': n_positions}``.
     """
-    from .netseq_output import write_bedgraph as _write_bedgraph
+    from ..netseq_output import write_bedgraph as _write_bedgraph
 
     counts: Dict[Tuple[str, str, int], float] = {}
     n_rows = 0

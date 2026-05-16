@@ -103,7 +103,7 @@ def find_polya_boundary(
     .. deprecated::
        The canonical implementation now lives in
        :func:`rectify.core.correct.walkback.walkback_3prime_guarded`. The
-       DRS production path in :mod:`rectify.core.bam_processor` calls
+       DRS production path in :mod:`rectify.core.bam.bam_processor` calls
        :func:`walkback_drs_full` directly. This wrapper is kept as a thin
        delegate so legacy callers (notably :func:`correct_rna_end_position`
        and external test code) keep working; new code should use

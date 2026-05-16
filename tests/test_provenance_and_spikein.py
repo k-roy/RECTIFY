@@ -52,7 +52,7 @@ class TestProvenanceTracker:
     def test_processing_stats_serializable_via_asdict(self):
         """The bug: ProcessingStats passed directly to json.dumps fails.
         The fix: dataclasses.asdict() must succeed."""
-        from rectify.core.processing_stats import ProcessingStats
+        from rectify.core.bam.processing_stats import ProcessingStats
         stats = ProcessingStats()
         stats.spikein_reads_filtered = 12345
 
@@ -68,7 +68,7 @@ class TestProvenanceTracker:
     def test_add_output_file_with_stats_metadata(self, tmp_path):
         """Provenance.save() must not raise when stats metadata is a dict."""
         from rectify.utils.provenance import ProvenanceTracker
-        from rectify.core.processing_stats import ProcessingStats
+        from rectify.core.bam.processing_stats import ProcessingStats
 
         stats = ProcessingStats()
         stats.reads_processed = 9999

@@ -37,28 +37,28 @@ import os
 import pysam
 from pathlib import Path
 
-from . import atract_detector
-from . import ag_mispriming
-from . import polya_trimmer
-from . import indel_corrector
-from . import netseq_refiner
-from .indel_corrector import VariantAwareHomopolymerRescue
-from .correct.protocols.quantseq_rev import walkback_quantseq_rev
-from .correct.walkback import (
+from .. import atract_detector
+from .. import ag_mispriming
+from .. import polya_trimmer
+from .. import indel_corrector
+from .. import netseq_refiner
+from ..indel_corrector import VariantAwareHomopolymerRescue
+from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
+from ..correct.walkback import (
     APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME,
     walkback_drs_full,
 )
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report
-from ..utils.genome import load_genome, standardize_chrom_name, reverse_complement
-from .polya_model import PolyAModel, load_model as load_polya_model
-from ..utils.alignment import (
+from ...utils.genome import load_genome, standardize_chrom_name, reverse_complement
+from ..polya_model import PolyAModel, load_model as load_polya_model
+from ...utils.alignment import (
     extract_junctions_simple,
     extract_soft_clips,
     format_junctions_string,
 )
-from .splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
-from . import false_junction_filter as _fjf
-from ..slurm import get_available_cpus
+from ..splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
+from .. import false_junction_filter as _fjf
+from ...slurm import get_available_cpus
 
 # BAM writing and CIGAR surgery — imported here so callers that import from
 # bam_processor continue to work unchanged.
@@ -78,7 +78,7 @@ from .bam_writer import (  # noqa: F401  (re-exported)
 )
 
 # Position index — imported here for the same backwards-compat reason.
-from .position_index import write_position_index  # noqa: F401  (re-exported)
+from ..position_index import write_position_index  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +495,7 @@ def correct_read_3prime(
     gene_id = None
     if gene_interval_trees is not None:
         try:
-            from .analyze.gene_attribution import compute_read_gene_attribution
+            from ..analyze.gene_attribution import compute_read_gene_attribution
             gene_ids = compute_read_gene_attribution(read, gene_interval_trees, chrom=chrom_std)
             gene_id = gene_ids[0] if gene_ids else None
         except Exception as _e:

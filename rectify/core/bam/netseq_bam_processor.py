@@ -20,10 +20,10 @@ import re
 
 import pysam
 
-from ..config import NCBI_TO_CHROM
-from ..utils.alignment import extract_soft_clips, parse_cigar
-from .unified_record import UnifiedReadRecord
-from .exclusion_regions import ExclusionRegionDetector
+from ...config import NCBI_TO_CHROM
+from ...utils.alignment import extract_soft_clips, parse_cigar
+from ..unified_record import UnifiedReadRecord
+from ..exclusion_regions import ExclusionRegionDetector
 
 
 # Extended NCBI mapping for full contig names with metadata
