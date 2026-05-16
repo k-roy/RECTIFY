@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 from unittest.mock import MagicMock
 
-from rectify.core.consensus import (
+from rectify.core.consensus.consensus import (
     AlignmentInfo,
     get_softclip_lengths,
     select_best_alignment,

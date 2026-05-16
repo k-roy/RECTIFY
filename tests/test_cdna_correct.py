@@ -381,7 +381,7 @@ class TestSelectBestChimericSplice:
         return {"minimap2": mm2, "mapPacBio": mpb}, genome
 
     def test_canonical_junction_wins(self):
-        from rectify.core.chimeric_consensus import select_best_chimeric
+        from rectify.core.consensus.chimeric_consensus import select_best_chimeric
         aligner_reads, genome = self._make_segs()
         result = select_best_chimeric(aligner_reads, genome)
         # The 3' segment holds the junction. mapPacBio has GT-AG (+5); mm2 has GT-TT (-3).
@@ -391,7 +391,7 @@ class TestSelectBestChimericSplice:
         )
 
     def test_chimeric_cigar_uses_canonical_intron(self):
-        from rectify.core.chimeric_consensus import select_best_chimeric
+        from rectify.core.consensus.chimeric_consensus import select_best_chimeric
         aligner_reads, genome = self._make_segs()
         result = select_best_chimeric(aligner_reads, genome)
         # The chimeric CIGAR should use the 102-bp intron from mapPacBio, not the 50-bp one.

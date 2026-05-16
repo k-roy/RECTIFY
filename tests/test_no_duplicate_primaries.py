@@ -130,7 +130,7 @@ def test_rectified_bam_no_duplicate_primaries():
     This test exercises _process_and_write_batch() directly to confirm the
     FLAG &= ~0x900 guard works independently of the _paf_to_bam fix.
     """
-    from rectify.core.consensus import _process_and_write_batch, extract_alignment_info
+    from rectify.core.consensus.consensus import _process_and_write_batch, extract_alignment_info
 
     header = _make_header()
 
@@ -195,7 +195,7 @@ def test_consensus_winner_promoted_from_secondary():
     the wrong flag — _process_and_write_batch must clear 0x900 and write it
     as primary.
     """
-    from rectify.core.consensus import _process_and_write_batch, extract_alignment_info
+    from rectify.core.consensus.consensus import _process_and_write_batch, extract_alignment_info
 
     header = _make_header()
 

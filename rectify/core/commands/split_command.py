@@ -936,7 +936,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, '{rectify_src}')
-from rectify.core.corrected_consensus import merge_corrected_tsvs
+from rectify.core.consensus.corrected_consensus import merge_corrected_tsvs
 from rectify.core.calibrate_junction_overhang import OverhangTable
 import pandas as pd
 

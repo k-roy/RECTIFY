@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 from unittest.mock import MagicMock, patch
 
-from rectify.core.consensus import _restore_sequence_from_aligner_reads
+from rectify.core.consensus.consensus import _restore_sequence_from_aligner_reads
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ class TestRestoreSequenceFromAlignerReads:
         }
 
         import logging
-        with patch.object(logging.getLogger("rectify.core.consensus"), "warning") as mock_warn:
+        with patch.object(logging.getLogger("rectify.core.consensus.consensus"), "warning") as mock_warn:
             _restore_sequence_from_aligner_reads(gapmm2_read, aligner_reads)
             mock_warn.assert_called_once()
             assert "read3" in mock_warn.call_args[0][0]
@@ -130,7 +130,7 @@ class TestRestoreSequenceFromAlignerReads:
         aligner_reads = {"gapmm2": gapmm2_read}
 
         import logging
-        with patch.object(logging.getLogger("rectify.core.consensus"), "warning") as mock_warn:
+        with patch.object(logging.getLogger("rectify.core.consensus.consensus"), "warning") as mock_warn:
             _restore_sequence_from_aligner_reads(gapmm2_read, aligner_reads)
             mock_warn.assert_called_once()
 

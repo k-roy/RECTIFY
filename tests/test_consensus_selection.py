@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple
 import pytest
 import pysam
 
-from rectify.core.consensus import (
+from rectify.core.consensus.consensus import (
     AlignmentInfo,
     ConsensusResult,
     check_canonical_splice_sites,

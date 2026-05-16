@@ -24,7 +24,7 @@ from rectify.utils.splice_motif import (
 )
 from rectify.core.analyze.junction_analysis import ASSDetector
 from rectify.core.aggregate.junctions import filter_junctions, resolve_homopolymer_ambiguity
-from rectify.core.consensus import AlignmentInfo, _rescue_5prime_softclip
+from rectify.core.consensus.consensus import AlignmentInfo, _rescue_5prime_softclip
 from rectify.core.splice_aware_5prime import (
     rescue_3ss_truncation,
     _hp_edit_distance,

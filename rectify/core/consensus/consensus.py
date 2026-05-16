@@ -371,7 +371,7 @@ def _rescue_5prime_softclip(
     if chrom not in genome:
         return False
 
-    from .spikein_filter import edit_distance
+    from ..spikein_filter import edit_distance
     genome_seq = genome[chrom]
     clip_seq_upper = clip_seq.upper()  # Hoist out of per-junction loop
 
@@ -964,7 +964,7 @@ def extract_alignment_info(
     no MD tags required). Full indel correction (MD-dependent) is applied
     post-consensus as a refinement step.
     """
-    from .atract_detector import calculate_atract_ambiguity
+    from ..atract_detector import calculate_atract_ambiguity
 
     junctions = extract_junctions_from_cigar(read)
     five_clip, three_clip = get_softclip_lengths(read)
@@ -1021,7 +1021,7 @@ def extract_alignment_info(
     chrom_std = chrom
     if genome.get(chrom_std) is None:
         # Try standardized name
-        from ..utils.genome import standardize_chrom_name
+        from ...utils.genome import standardize_chrom_name
         chrom_std = standardize_chrom_name(chrom) or chrom
 
     if genome.get(chrom_std) is not None:
@@ -1554,7 +1554,7 @@ def run_consensus_selection(
     Returns:
         Summary statistics dict
     """
-    from ..slurm import get_available_cpus, get_slurm_info
+    from ...slurm import get_available_cpus, get_slurm_info
 
     # Auto-detect SLURM array settings from environment.
     # Only activates when RECTIFY_CONSENSUS_ARRAY_MODE=1 is explicitly set.
@@ -1995,7 +1995,7 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int, s
     standardized canonical format (chrI, chrII, etc.) so that junction lookups
     match the standardized chrom names used during correction.
     """
-    from ..utils.genome import standardize_chrom_name
+    from ...utils.genome import standardize_chrom_name
 
     junctions = set()
 
