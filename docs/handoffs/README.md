@@ -20,7 +20,7 @@ Recommended order (most-actively-edited first):
 3. ~~`analyze_command_split.md`~~ — **DONE 2026-05-16** (commit `49478a0`)
 4. ~~`bam_writer_split.md`~~ — **DONE 2026-05-16** (commit `77d3828`)
 5. ~~`consensus_split.md`~~ — **DONE 2026-05-16** (commit `33c683c`)
-6. `junction_refiner_split.md`
+6. ~~`junction_refiner_split.md`~~ — **DONE 2026-05-16** (commit `bf55e96`)
 7. `run_command_split.md` — the largest; do last, after the others
    are stable so the new structure is settled
 
