@@ -288,6 +288,14 @@ def correct_read_3prime(
             five_prime_position = get_read_5prime_position(read, strand)
             if five_prime_position is None:
                 return []
+            # Extract splice junctions from CIGAR even for chimeric reads —
+            # we don't re-correct them, but the N-ops in the multi-aligner
+            # stitch are still real and downstream consumers (validation
+            # tests, junction aggregation, BED export) need them. Previously
+            # this dict omitted junctions/n_junctions entirely, which
+            # silently dropped them from the corrected_reads.tsv.
+            _chimeric_junctions = extract_junctions_simple(read)
+            _chimeric_junctions_str = format_junctions_string(_chimeric_junctions)
             return [{
                 'read_id': read.query_name,
                 'chrom': chrom_std,
@@ -314,6 +322,9 @@ def correct_read_3prime(
                 'pt_tag': None,
                 'polya_score': None,
                 'polya_source': 'none',
+                'junctions': _chimeric_junctions,
+                'junctions_str': _chimeric_junctions_str,
+                'n_junctions': len(_chimeric_junctions),
             }]
     except KeyError:
         pass
