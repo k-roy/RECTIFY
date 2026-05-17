@@ -7,6 +7,50 @@ Add items here rather than inline `# TODO` comments where possible.
 
 ## Alignment / Consensus
 
+### `merge_corrected_tsvs` — Winner-Selection Tie-Breaker Bug
+**File:** `rectify/core/consensus/corrected_consensus.py` — `merge_corrected_tsvs()`
+**Priority:** Medium (correctness; only affects paralog-ambiguous reads)
+
+When a read's `hp_edit_distance` is N/A across all aligners (e.g. when the
+per-aligner correction wasn't given a `--junction-penalty-table`), the sort
+falls through to `_chimera_ok` / `_n_agree` / `_span` / `_n_junc` — but the
+fallback can still let a single-aligner outlier win over a multi-aligner
+position consensus.
+
+**Observed:** cat1_plus_1 (read 0cb5a111) is a paralog read whose sequence
+matches both chrXIV:10610 and chrVI:8703 nearly identically. minimap2,
+gapmm2, uLTRA agree on chrXIV:10610. deSALT picks chrVI:8703. With no
+penalty table active, the merge selects deSALT — despite a 3-aligner
+position consensus on chrXIV.
+
+The user has flagged repeatedly that **mapq is NOT a cross-aligner
+metric**, so any sort key derived from mapq is fragile. The replacement
+should be:
+
+1. When `hp_edit_distance` is unavailable, weight by `_n_agree` on the
+   exact `(chrom, corrected_3prime)` tuple — currently `_n_agree` only
+   groups on `corrected_3prime` (the integer position), so paralog
+   alignments at the same numeric position on different chromosomes
+   spuriously combine, and different positions on the same chromosome
+   stay separate.
+2. Make `_n_agree` require chrom match. A 3-aligner chrXIV consensus
+   should beat a 1-aligner chrVI alignment regardless of any per-aligner
+   self-reported confidence.
+
+**Repro:** Run `python -m rectify.cli correct
+rectify/data/validation/validation_reads.bam --Scer --aligner-bams ...`
+on the bundle's per-aligner BAMs WITHOUT `--junction-penalty-table`.
+cat1_plus_1's `corrected_3prime` lands at chrVI:8703 instead of
+chrXIV:10610.
+
+**Note:** With the bundled penalty tables (now auto-resolved from
+`--Scer`), `hp_edit_distance` should be populated and this fallback path
+shouldn't be reached on the validation set. But the fallback is still
+the wrong shape and will bite users who omit the table or run on
+non-S. cerevisiae data.
+
+---
+
 ### 5' Soft-Clip Rescue — Sequence-Based Matching
 **File:** `rectify/core/consensus/consensus.py` — `score_alignment()`
 **Priority:** High

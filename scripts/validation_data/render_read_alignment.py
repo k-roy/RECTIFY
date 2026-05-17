@@ -60,6 +60,28 @@ SOFTCLIP_FG = "#999999"
 DELETION_BG = "#FFE0B2"
 INTRON_BG = "#E0E0E0"
 
+# Base complement for RNA-orientation rendering of minus-strand reads.
+# When the rendered read is minus-strand RNA, every base shown (ref + read +
+# soft-clip + insertion) is complemented so the panel reads in RNA 5'→3'
+# direction. The x-axis is also inverted at render-time so high-coord (RNA 5')
+# sits on the left and low-coord (RNA 3') sits on the right. Together these
+# two transforms convert the canonical genome+ display into a natural RNA
+# view where poly-A tails appear as poly-A (not poly-T) at the 3' end.
+_COMPLEMENT = {
+    "A": "T", "C": "G", "G": "C", "T": "A", "N": "N",
+    "a": "t", "c": "g", "g": "c", "t": "a", "n": "n",
+}
+
+
+def _comp(b: str) -> str:
+    """Complement a single base; non-ACGT (e.g. '-', '|') pass through."""
+    return _COMPLEMENT.get(b, b)
+
+
+def _maybe_comp(b: str, do_rc: bool) -> str:
+    """Complement only when do_rc is True (minus-strand RNA orientation)."""
+    return _comp(b) if (do_rc and b is not None) else b
+
 
 # ---------------------------------------------------------------------------
 # Data extraction
@@ -163,7 +185,8 @@ def walk_cigar(read: pysam.AlignedSegment, win_start: int, win_end: int) -> dict
                 qp += 1
                 rp += 1
         elif op == 1:  # insertion
-            insertions.append((rp - 1, length))
+            ins_bases = seq[qp:qp + length] if qp < len(seq) else ""
+            insertions.append((rp, length, ins_bases))
             qp += length
         elif op == 2:  # deletion
             for _ in range(length):
@@ -198,7 +221,49 @@ def walk_cigar(read: pysam.AlignedSegment, win_start: int, win_end: int) -> dict
     return out
 
 
+def _decode_eq_chars(aligned: dict, ref_seq: str) -> None:
+    """Decode `=`-encoded sequence bases in walk_cigar's output.
+
+    Per SAM/BAM spec, a `=` character in the BAM SEQ field means the read base
+    matches the reference at that position. Some aligners (notably mapPacBio
+    and minimap2 with =/X CIGAR ops) emit `=`-encoded sequences for space
+    savings. walk_cigar reads seq[read_pos] literally, so the bases array
+    ends up with `=` chars where the read actually matches the reference.
+
+    Without this step, every `=` base would (a) display as a literal `=`
+    character in the alignment row and (b) trip compute_mismatches' comparison
+    against the genomic ref (`=` != A/C/G/T), painting the whole row pink.
+
+    This function rewrites every `aligned` `=` base to the corresponding
+    ref_seq character so downstream rendering treats them as true matches.
+    Also decodes insertion-pill base strings.
+    """
+    bases = aligned["bases"]
+    for i, b in enumerate(bases):
+        if b == '=':
+            bases[i] = ref_seq[i]
+    # Decode `=` in insertion pill bases too (insertions don't have a ref
+    # position, but if the SEQ field uses `=` an insertion base could be `=`).
+    # In practice insertions are by definition NOT matching ref, so `=` is
+    # vanishingly rare in insertion content, but handle defensively.
+    new_inserts = []
+    for entry in aligned["insertions"]:
+        if len(entry) >= 3:
+            rp, length, ins_bases = entry[0], entry[1], entry[2]
+            # `=` in an insertion has no defined ref base; leave as 'N' as a
+            # safe fallback.
+            ins_bases = ''.join('N' if c == '=' else c for c in ins_bases)
+            new_inserts.append((rp, length, ins_bases))
+        else:
+            new_inserts.append(entry)
+    aligned["insertions"] = new_inserts
+
+
 def compute_mismatches(aligned: dict, ref_seq: str) -> None:
+    # Decode any `=`-encoded SEQ bases before comparing — otherwise everything
+    # in a =-encoded BAM (mapPacBio, some minimap2 outputs) gets flagged as
+    # mismatch.
+    _decode_eq_chars(aligned, ref_seq)
     ms: set[int] = set()
     for i, (b, st) in enumerate(zip(aligned["bases"], aligned["state"])):
         if b is None or st != "aligned":
@@ -244,10 +309,25 @@ def _color_for_base(b: str, state: str, in_mismatch: bool) -> tuple[str, str]:
 
 
 def render_alignment_row(ax, aligned: dict, ref_seq: str,
-                         win_start: int, win_end: int, label: str):
+                         win_start: int, win_end: int, label: str,
+                         is_reverse: bool = False):
+    """Render a read row with prominent INLINE insertion bases.
+
+    Each row shows:
+      - Bases at ref positions per the CIGAR (M/=/X → row chars;
+        D → orange '-'; N → grey '|'; S → faded chars past aln bounds).
+      - Insertion overlays as full-size color-coded base characters wrapped
+        in vivid purple-bordered boxes, wedged between ref columns at the
+        insertion site. Stagger heights when nearby insertions would
+        collide so they don't overlap.
+
+    ``is_reverse=True`` complements every displayed base (matches, mismatches,
+    soft-clips, insertion contents) for minus-strand RNA orientation. The
+    caller is responsible for ``ax.invert_xaxis()`` so columns also flip.
+    """
     n = win_end - win_start
     ax.set_xlim(0, n)
-    ax.set_ylim(0, 1)
+    ax.set_ylim(-0.05, 2.60)  # headroom for staggered insertion pills + arrows
     ax.set_yticks([])
     ax.set_xticks([])
     ax.set_ylabel(label, rotation=0, ha="right", va="center", fontsize=8.5)
@@ -258,51 +338,116 @@ def render_alignment_row(ax, aligned: dict, ref_seq: str,
     for i, (b, st) in enumerate(zip(aligned["bases"], aligned["state"])):
         if b is None:
             continue
-        bg, fg = _color_for_base(b, st, i in mismatches)
+        # Complement the displayed character for minus-strand RNA orientation.
+        # Mismatch detection still uses the original b vs ref (computed upstream
+        # in compute_mismatches); the complement is a display-only transform.
+        b_disp = _maybe_comp(b, is_reverse)
+        bg, fg = _color_for_base(b_disp, st, i in mismatches)
         ax.add_patch(Rectangle((i, 0.05), 1, 0.9, facecolor=bg, edgecolor="none"))
         weight = "normal" if st in ("softclip5", "softclip3") else "bold"
-        char = b.upper()
-        ax.text(i + 0.5, 0.5, char, ha="center", va="center",
+        ax.text(i + 0.5, 0.5, b_disp.upper(), ha="center", va="center",
                 fontsize=8, family="monospace", color=fg, fontweight=weight)
-    # Insertions: small purple ↓ + "+N" label ABOVE the row, anchored AT the
-    # ref position immediately preceding the insertion. Ref coords remain rigid.
-    for ref_pos, length in aligned["insertions"]:
-        i = ref_pos - win_start + 1
-        if 0 <= i <= n:
-            ax.plot(i, 1.0, marker="v", markersize=6, color="#9c27b0", clip_on=False)
-            ax.text(i, 1.12, f"+{length}", ha="center", va="bottom",
-                    fontsize=6.5, color="#9c27b0", clip_on=False)
+
+    # Insertions: full-size colored bases wedged in a vivid purple-bordered
+    # box, positioned ABOVE the row with a black ▼ pointing down to the exact
+    # insertion site (between ref columns rp-1 and rp). Nearby insertions
+    # stagger vertically so their boxes don't overlap.
+    insertions = sorted(aligned["insertions"], key=lambda t: t[0])
+    last_x_end = -100
+    stagger = 0
+    for entry in insertions:
+        if len(entry) >= 3:
+            rp, length, bases = entry[0], entry[1], entry[2]
+        else:
+            rp, length = entry[0], entry[1]
+            bases = ""
+        ix = rp - win_start
+        if ix < 0 or ix > n:
+            continue
+        char_width = 0.55
+        total_w = length * char_width
+        start_x = ix - total_w / 2
+        end_x = ix + total_w / 2
+        if start_x < last_x_end + 0.3:
+            stagger = 1 - stagger
+        else:
+            stagger = 0
+        # Two-tier vertical positioning, both ABOVE the row (y=1.0 = row top)
+        pill_y = 1.25 if stagger == 0 else 1.85
+        pill_h = 0.55
+        # Black ▼ pointing down from pill bottom to the exact insertion site
+        ax.plot(ix, 1.02, marker="v", markersize=7, color="#000",
+                clip_on=False, zorder=5)
+        # Thin black guide line from row top up to the pill bottom
+        ax.plot([ix, ix], [1.05, pill_y - 0.02],
+                color="#000", linewidth=0.6, clip_on=False, zorder=4)
+        # Purple-bordered pill
+        ax.add_patch(Rectangle((start_x - 0.10, pill_y),
+                               total_w + 0.20, pill_h,
+                               facecolor="#E1BEE7", edgecolor="#7B1FA2",
+                               linewidth=1.2, clip_on=False, zorder=3))
+        # Complement the inserted bases when rendering minus-strand RNA orientation.
+        bases_disp = "".join(_maybe_comp(c, is_reverse) for c in bases) if bases else bases
+        if length <= 4 and bases_disp:
+            for j, b in enumerate(bases_disp):
+                x = start_x + (j + 0.5) * char_width
+                fg = BASE_COLOR.get(b.upper(), "#7B1FA2")
+                ax.text(x, pill_y + pill_h / 2, b.upper(),
+                        ha="center", va="center",
+                        fontsize=8.5, family="monospace",
+                        color=fg, fontweight="bold", clip_on=False, zorder=4)
+        else:
+            label_text = f"+{length}"
+            if bases_disp:
+                label_text += f" {bases_disp[:3]}…" if length > 3 else f" {bases_disp}"
+            ax.text(ix, pill_y + pill_h / 2, label_text, ha="center", va="center",
+                    fontsize=7.0, color="#7B1FA2", fontweight="bold",
+                    clip_on=False, zorder=4)
+        last_x_end = end_x
 
 
 def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
-                   orig_3p: Optional[int], corr_3p: Optional[int]):
+                   orig_3p: Optional[int], corr_3p: Optional[int],
+                   label: str = "ref", is_reverse: bool = False):
     n = win_end - win_start
     ax.set_xlim(0, n)
-    ax.set_ylim(0, 1.2)
+    # Reserve space ABOVE the bases for the orig/corr markers + labels.
+    # Keeping everything INSIDE the panel bounds prevents text bleeding
+    # into the bedgraph panel above.
+    ax.set_ylim(0, 1.40)
     ax.set_yticks([])
     ax.set_xticks([])
-    ax.set_ylabel("ref", rotation=0, ha="right", va="center",
+    ax.set_ylabel(label, rotation=0, ha="right", va="center",
                   fontsize=9, fontweight="bold")
     for spine in ax.spines.values():
         spine.set_visible(False)
+    # Ref bases sit at y=0.05-0.55 so there's room for ↓ markers above.
+    # For minus-strand RNA orientation, complement each base before display
+    # (caller is responsible for inverting the x-axis).
     for i, b in enumerate(ref_seq):
+        b_disp = _maybe_comp(b, is_reverse)
         bg = "#F5F5F5"
-        fg = BASE_COLOR.get(b.upper(), "#000")
-        ax.add_patch(Rectangle((i, 0.05), 1, 0.7, facecolor=bg, edgecolor="none"))
-        ax.text(i + 0.5, 0.4, b.upper(), ha="center", va="center",
+        fg = BASE_COLOR.get(b_disp.upper(), "#000")
+        ax.add_patch(Rectangle((i, 0.05), 1, 0.50, facecolor=bg, edgecolor="none"))
+        ax.text(i + 0.5, 0.30, b_disp.upper(), ha="center", va="center",
                 fontsize=8, family="monospace", color=fg, fontweight="bold")
-    # Place ↓ markers ABOVE the reference row
-    label_y = 1.05
+    # ↓ markers ABOVE the ref bases. Text label is placed JUST ABOVE the
+    # triangle (y=1.20) so it stays well inside the panel bounds (ylim=1.40)
+    # and doesn't bleed into the bedgraph above. With more vertical headroom
+    # for the marker stack, the labels are also further from the overview
+    # ruler tick labels.
+    tri_y = 0.95
+    txt_y = 1.20
     if orig_3p is not None and win_start <= orig_3p < win_end:
         x = (orig_3p - win_start) + 0.5
-        ax.plot(x, label_y, marker="v", markersize=10, color="#d32f2f", clip_on=False)
-        ax.text(x, label_y + 0.13, "orig", ha="center", va="bottom",
-                fontsize=7, color="#d32f2f", clip_on=False)
+        ax.plot(x, tri_y, marker="v", markersize=11, color="#d32f2f")
+        ax.text(x, txt_y, "orig", ha="center", va="bottom",
+                fontsize=8, color="#d32f2f", fontweight="bold")
     if corr_3p is not None and win_start <= corr_3p < win_end:
         x = (corr_3p - win_start) + 0.5
-        ax.plot(x, label_y, marker="v", markersize=10, color="#2e7d32", clip_on=False)
-        ax.text(x, label_y + 0.13, "corr", ha="center", va="bottom",
-                fontsize=7, color="#2e7d32", clip_on=False)
+        ax.plot(x, tri_y, marker="v", markersize=11, color="#2e7d32")
+        ax.text(x, txt_y, "corr", ha="center", va="bottom",
+                fontsize=8, color="#2e7d32", fontweight="bold")
 
 
 def render_bedgraph(ax, plus_pts, minus_pts, win_start: int, win_end: int,
@@ -332,19 +477,30 @@ def render_bedgraph(ax, plus_pts, minus_pts, win_start: int, win_end: int,
 
 
 def render_axis_ticks(ax, win_start: int, win_end: int):
+    """Render position labels along the bottom of a panel.
+
+    Tick + label are placed at the CENTER of the ref column for that
+    position (x = pos - win_start + 0.5). In 0-based half-open coords,
+    position N occupies the column [N, N+1), so its base character sits
+    at column center N+0.5. Aligning the tick to the center makes it
+    visually point at the labeled base.
+    """
     n = win_end - win_start
     ax.set_xlim(0, n)
-    ax.set_ylim(0, 0.4)
+    ax.set_ylim(0, 1.0)
     for spine in ax.spines.values():
         spine.set_visible(False)
     ax.set_yticks([])
-    step = max(10, n // 8)
+    ax.set_xticks([])
+    # Target ~6 labels per panel; round step up to multiple of 5 for readability
+    raw_step = max(10, n // 6)
+    step = max(10, (raw_step // 5) * 5 or raw_step)
     for x in range(0, n + 1, step):
         pos = win_start + x
-        ax.plot([x, x], [0.3, 0.4], color="#666", linewidth=0.7)
-        ax.text(x, 0.05, f"{pos:,}", ha="center", va="bottom",
-                fontsize=7, color="#444")
-    ax.set_xticks([])
+        cx = x + 0.5  # center of the ref column for `pos`
+        ax.plot([cx, cx], [0.70, 0.95], color="#666", linewidth=0.8)
+        ax.text(cx, 0.05, f"{pos:,}", ha="center", va="bottom",
+                fontsize=7.5, color="#333")
 
 
 def render_overview(ax, aligned_set, win_start: int, win_end: int,
@@ -356,12 +512,21 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
     n = win_end - win_start
     ax.set_xlim(0, n)
     ax.set_ylim(0, len(aligned_set) + 0.5)
-    ax.set_yticks([])
     ax.set_xticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
-    ax.set_ylabel("overview", rotation=0, ha="right", va="center",
-                  fontsize=8.5, fontweight="bold")
+    # Use y-ticks for the per-row labels so matplotlib auto-spaces them
+    # (no more collision with the panel-level "overview" ylabel).
+    yticks = [len(aligned_set) - k - 0.5 for k in range(len(aligned_set))]
+    ylabels = [lbl for lbl, _ in aligned_set]
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels, fontsize=7.5)
+    ax.tick_params(axis="y", length=0, pad=2)
+    # Small "overview" tag at the top-left corner of the panel, OUTSIDE the
+    # y-tick label column so it doesn't stack on top of the row labels.
+    ax.text(-0.02, 1.02, "overview", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=7,
+            color="#888", fontweight="bold")
     for k, (label, aligned) in enumerate(aligned_set):
         y_center = len(aligned_set) - k - 0.5
         if aligned["aln_start"] is None:
@@ -414,7 +579,7 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
                 ax.add_patch(Rectangle((x0, y_center - 0.18), x1 - x0, 0.36,
                                        facecolor=SOFTCLIP_BG, edgecolor=SOFTCLIP_FG,
                                        linewidth=0.5))
-        ax.text(-2, y_center, label, ha="right", va="center", fontsize=7.5)
+        # (row label now drawn as a y-tick — see set_yticklabels above)
     # markers
     if orig_3p is not None and win_start <= orig_3p < win_end:
         x = orig_3p - win_start + 0.5
@@ -464,16 +629,98 @@ def render(
     bg_minus: Path,
     out_path: Path,
     title: str = "",
+    minimap2_bam: Path | None = None,
+    winner_label: str = "",
 ) -> Path:
+    """Render per-base alignment plot with up to 4 alignment rows.
+
+    Tracks rendered top-to-bottom:
+      1. ``minimap2``        — reference aligner row (always shown if
+                                ``minimap2_bam`` is given).
+      2. ``winner: <name>``  — the winning aligner from consensus selection,
+                                only added when ``mapped_bam != minimap2_bam``.
+      3. ``corrected``       — the rectified BAM (CIGAR-surgery output).
+      4. ``pA-rest``         — Step-4 BAM with poly-A tail restored as soft-clip.
+
+    Args:
+        mapped_bam:    The winning aligner's BAM. If ``minimap2_bam`` is None
+                       or identical to ``mapped_bam``, this is the only
+                       upstream row, labeled simply ``minimap2``.
+        minimap2_bam:  Optional path to the minimap2 aligner BAM. If different
+                       from ``mapped_bam``, an extra ``minimap2`` row is
+                       inserted above the winner row.
+        winner_label:  Display name for the winning aligner (e.g. ``mapPacBio``).
+                       Ignored when winner == minimap2.
+    """
     ref_seq = load_window_ref(genome_fa, chrom, win_start, win_end)
+
+    # ---- Build the list of upstream alignment tracks (in display order) ----
+    # If a minimap2 BAM is supplied AND differs from the winner BAM, we render
+    # TWO upstream rows: minimap2 + winner. Otherwise we render one row
+    # labeled "minimap2" (which is the winner — minimap2 is its own winner).
+    show_minimap2_row = (
+        minimap2_bam is not None and Path(minimap2_bam) != Path(mapped_bam)
+    )
+    upstream_tracks: list[tuple[str, Path]] = []
+    if show_minimap2_row:
+        upstream_tracks.append(("minimap2", Path(minimap2_bam)))
+        winner_disp = f"winner: {winner_label}" if winner_label else "winner"
+        upstream_tracks.append((winner_disp, mapped_bam))
+    else:
+        # Single upstream row. If winner_label is set and == "minimap2", or
+        # not set, just call it minimap2. Otherwise show the winner name.
+        single_label = winner_label or "minimap2"
+        # When user passed winner_label == "minimap2" (or omitted it), keep it
+        # simple; if it's some other aligner and minimap2_bam was None, label
+        # it as that winner (rare validation-set path).
+        upstream_tracks.append((single_label, mapped_bam))
+
+    track_sources: list[tuple[str, Path]] = list(upstream_tracks) + [
+        ("corrected", corrected_bam),
+        ("pA-rest",   parestore_bam),
+    ]
+
     aligned_set: list[tuple[str, dict]] = []
-    for label, bp in [("mapped", mapped_bam),
-                      ("corrected", corrected_bam),
-                      ("pA-rest", parestore_bam)]:
+    mapped_read_obj = None
+    for label, bp in track_sources:
         read = fetch_read(bp, qname)
+        # ``mapped_read_obj`` = the winner's record; used for orig_3p override
+        # below. The winner is the LAST upstream row (either minimap2 if
+        # single, or winner row when both are shown).
+        if bp == mapped_bam and mapped_read_obj is None:
+            mapped_read_obj = read
         a = walk_cigar(read, win_start, win_end)
         compute_mismatches(a, ref_seq)
         aligned_set.append((label, a))
+
+    # Override orig_3p with the mapped BAM's actual aln_start (− strand) or
+    # aln_end - 1 (+ strand). The corrected_reads.tsv's `original_3prime` is
+    # computed against the post-merge / consensus input BAM, which can have a
+    # different aln_start than the per-aligner BAM we're rendering (the input
+    # BAM may have absorbed the per-aligner soft-clip into M ops). Showing
+    # the orig arrow against the BAM the row actually displays is the honest
+    # representation of "where minimap2/mapPacBio called the 3' end."
+    if mapped_read_obj is not None:
+        if mapped_read_obj.is_reverse:
+            orig_3p = mapped_read_obj.reference_start
+        else:
+            orig_3p = mapped_read_obj.reference_end - 1
+
+    # Override corr_3p with the rectified BAM's actual final aln boundary.
+    # `corrected_reads.tsv`'s `corrected_3prime` records the intermediate
+    # output from the correction modules (Module 2C / 2E / 2G / etc.), but
+    # `bam_writer._hardclip_trailing_a_run` may subsequently clip additional
+    # genomic A-rich positions to land at a clean body boundary. For minus-
+    # strand cat1_minus_1 this is a 7 bp gap (TSV records 9827; BAM ends at
+    # 9834 = the G of `...AGTG` before the poly-A tail). Show the corr arrow
+    # at the BAM's actual final position so the visualization reflects what
+    # IGV would show.
+    corrected_read_obj = fetch_read(corrected_bam, qname)
+    if corrected_read_obj is not None:
+        if corrected_read_obj.is_reverse:
+            corr_3p = corrected_read_obj.reference_start
+        else:
+            corr_3p = corrected_read_obj.reference_end - 1
 
     plus_pts = load_bedgraph_window(bg_plus, chrom, win_start, win_end)
     minus_pts = load_bedgraph_window(bg_minus, chrom, win_start, win_end)
@@ -483,18 +730,23 @@ def render(
     overview_aligned_set: list[tuple[str, dict]] = []
     if show_overview:
         ov_start, ov_end = overview_window(aligned_set)
-        # Re-walk CIGARs in the overview window
-        for label, bp in [("mapped", mapped_bam),
-                          ("corrected", corrected_bam),
-                          ("pA-rest", parestore_bam)]:
+        # Re-walk CIGARs in the overview window. Use the SAME track_sources
+        # list so the overview matches the per-base panel ordering exactly.
+        for label, bp in track_sources:
             read = fetch_read(bp, qname)
             a = walk_cigar(read, ov_start, ov_end)
             overview_aligned_set.append((label, a))
 
     n = win_end - win_start
     fig_w = max(7.5, n * 0.13)
-    panels = ["bedgraph", "ref", "mapped", "corrected", "pA-rest", "ticks"]
-    height_ratios = [1.0, 0.85, 0.75, 0.75, 0.75, 0.35]
+    # Each entry in track_sources becomes one alignment panel. Common case:
+    # 3 panels (minimap2-only + corrected + pA-rest) or 4 panels (minimap2 +
+    # winner + corrected + pA-rest) when winner != minimap2.
+    track_labels = [lbl for lbl, _ in track_sources]
+    panels = ["bedgraph", "ref"] + track_labels + ["ticks"]
+    # Ref row a hair taller (1.0 → 1.2) for the orig/corr label stack.
+    # Read rows much taller (2.0) for the insertion-pill stagger ABOVE the row.
+    height_ratios = [1.0, 1.2] + [2.0] * len(track_sources) + [0.35]
     if show_overview:
         panels = ["overview", "ov_ticks"] + panels
         height_ratios = [0.9 + 0.18 * len(aligned_set), 0.30] + height_ratios
@@ -511,15 +763,33 @@ def render(
         render_overview(ax_ov, overview_aligned_set, ov_start, ov_end, orig_3p, corr_3p)
         ax_ov_ticks = next(ax_iter)
         render_axis_ticks(ax_ov_ticks, ov_start, ov_end)
+    # For minus-strand reads, render in RNA 5'→3' orientation: complement
+    # every displayed base AND invert the x-axis so the higher genomic coord
+    # (which is the RNA 5' end) sits on the LEFT and the lower genomic coord
+    # (RNA 3' end, where the CPA + poly-A tail are) sits on the RIGHT. This
+    # makes the poly-A tail appear as poly-A (not poly-T) at the natural 3'
+    # end position and lines up with how the user reads RNA sequences.
+    is_reverse = bool(mapped_read_obj is not None and mapped_read_obj.is_reverse)
+
     ax_bg = next(ax_iter)
     render_bedgraph(ax_bg, plus_pts, minus_pts, win_start, win_end, orig_3p, corr_3p)
     ax_ref = next(ax_iter)
-    render_ref_row(ax_ref, ref_seq, win_start, win_end, orig_3p, corr_3p)
+    render_ref_row(ax_ref, ref_seq, win_start, win_end, orig_3p, corr_3p,
+                   is_reverse=is_reverse)
     for label, a in aligned_set:
         ax = next(ax_iter)
-        render_alignment_row(ax, a, ref_seq, win_start, win_end, label)
+        render_alignment_row(ax, a, ref_seq, win_start, win_end, label,
+                             is_reverse=is_reverse)
     ax_ticks = next(ax_iter)
     render_axis_ticks(ax_ticks, win_start, win_end)
+
+    # Flip the x-axis on every panel for minus-strand reads (RNA 5'→3' = left
+    # to right means higher coord on the left). Done after all rendering so
+    # the internal column coordinates stay genomic-oriented and only the
+    # display flips.
+    if is_reverse:
+        for ax in axes:
+            ax.invert_xaxis()
 
     plt.subplots_adjust(left=0.11, right=0.99, top=0.95, bottom=0.04, hspace=0.10)
     fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
@@ -535,7 +805,18 @@ def main():
     p.add_argument("--end", type=int, required=True)
     p.add_argument("--orig-3p", type=int, required=True)
     p.add_argument("--corr-3p", type=int, required=True)
-    p.add_argument("--mapped-bam", type=Path, required=True)
+    p.add_argument("--mapped-bam", type=Path, required=True,
+                   help="Winning aligner's BAM. If equal to --minimap2-bam (or "
+                        "the latter is omitted), only one upstream alignment "
+                        "row is rendered.")
+    p.add_argument("--minimap2-bam", type=Path, default=None,
+                   help="Optional minimap2 BAM. When supplied AND different "
+                        "from --mapped-bam, adds a top 'minimap2' row above "
+                        "the winner row.")
+    p.add_argument("--winner-label", default="",
+                   help="Display name for the winning aligner (e.g. "
+                        "'mapPacBio'). Used only when minimap2 and winner "
+                        "are different BAMs.")
     p.add_argument("--corrected-bam", type=Path, required=True)
     p.add_argument("--parestore-bam", type=Path, required=True)
     p.add_argument("--genome-fa", type=Path, required=True)
@@ -550,6 +831,8 @@ def main():
         orig_3p=args.orig_3p, corr_3p=args.corr_3p,
         genome_fa=args.genome_fa,
         mapped_bam=args.mapped_bam,
+        minimap2_bam=args.minimap2_bam,
+        winner_label=args.winner_label,
         corrected_bam=args.corrected_bam,
         parestore_bam=args.parestore_bam,
         bg_plus=args.bg_plus, bg_minus=args.bg_minus,

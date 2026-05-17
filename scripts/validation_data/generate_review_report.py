@@ -204,8 +204,15 @@ def is_port_up() -> bool:
 
 
 def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
-                orig_3p: int, corr_3p: int, mapped_bam: Path, title: str) -> Path:
-    """Render a per-base alignment plot using render_read_alignment."""
+                orig_3p: int, corr_3p: int, mapped_bam: Path, title: str,
+                minimap2_bam: Path | None = None,
+                winner_label: str = "") -> Path:
+    """Render a per-base alignment plot using render_read_alignment.
+
+    When ``minimap2_bam`` is given and differs from ``mapped_bam``, the
+    renderer adds a separate minimap2 row above the winner row so the
+    reviewer can compare both upstream alignments side-by-side.
+    """
     from render_read_alignment import render as render_alignment
     out = SNAPSHOT_DIR / f"{xv}.png"
     render_alignment(
@@ -214,6 +221,8 @@ def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
         orig_3p=orig_3p, corr_3p=corr_3p,
         genome_fa=GENOME,
         mapped_bam=mapped_bam,
+        minimap2_bam=minimap2_bam,
+        winner_label=winner_label,
         corrected_bam=CORR_BAM,
         parestore_bam=PARESTORE_BAM,
         bg_plus=BG_PLUS, bg_minus=BG_MINUS,
@@ -529,9 +538,19 @@ def main() -> int:
     parser.add_argument("--arm", choices=["drs"], default="drs")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--pad", type=int, default=50)
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None,
+                        help="Output HTML path (single-file mode only). Ignored with --per-category.")
     parser.add_argument("--html-only", action="store_true",
                         help="Skip screenshot pass; rebuild HTML from existing PNGs")
+    parser.add_argument("--category", action="append", default=None,
+                        help="Filter to this XG category (repeatable). Examples: "
+                             "cat1_indel, cat2_softclip, cat3_junction, cat4_false_junc, "
+                             "cat5_chimeric, cat6_chimeric, cat7_alt_splice, "
+                             "cat8_netseq_refine, cat9_junction_refine.")
+    parser.add_argument("--per-category", action="store_true",
+                        help="Write one HTML file per category instead of a single combined report. "
+                             "Useful for iterative phone review of one 4-read category at a time. "
+                             "Files are named <category>_review.html in the same output dir.")
     args = parser.parse_args()
 
     if args.arm != "drs":
@@ -562,12 +581,28 @@ def main() -> int:
             tsv_map[row["read_id"]] = row
 
     xvs = sorted(xv_map.keys())
+    # Filter by category if --category was given (single-file mode); for
+    # --per-category mode we keep all reads and group at output time.
+    if args.category:
+        wanted_cats = set(args.category)
+        xvs = [xv for xv in xvs if xv_map[xv][1] in wanted_cats]
+        missing = wanted_cats - {xv_map[xv][1] for xv in xvs}
+        if missing:
+            print(f"[warn] no reads found for categories: {sorted(missing)}",
+                  file=sys.stderr)
+        if not xvs:
+            print(f"[error] no reads after --category filter; exiting", file=sys.stderr)
+            return 1
+        print(f"[--category] filtered to {len(xvs)} reads in categories {sorted(wanted_cats)}",
+              file=sys.stderr)
     if args.limit:
         xvs = xvs[: args.limit]
 
-    if not args.html_only and not is_port_up():
-        print("IGV is not listening on port 60151. Launch IGV and re-run.", file=sys.stderr)
-        return 1
+    # IGV-port check disabled: this generator now uses the matplotlib-based
+    # render_plot path which doesn't need IGV at all. Only the legacy
+    # take_screenshot() path requires IGV. Keep is_port_up() callable for
+    # future use but don't gate on it.
+    _ = is_port_up  # silence unused warning
 
     reads_meta = []
     t0 = time.time()
@@ -590,12 +625,18 @@ def main() -> int:
             print(f"[{i}/{len(xvs)}] {xv} ({category}, {strand}, {aligner}) — using existing PNG")
         else:
             mapped_bam = VAL_DIR / "aligners" / f"validation_reads.{aligner}.bam"
+            # Always pass the minimap2 BAM separately. The renderer compares
+            # paths and only adds a second upstream row when winner != minimap2
+            # (i.e. cat6_chimeric / cat7_alt_splice / cat9_junction_refine).
+            minimap2_bam = VAL_DIR / "aligners" / "validation_reads.minimap2.bam"
             title = f"{xv} ({category}, strand={strand}) — {row['chrom']}:{left}-{right} (orig {row['original_3prime']} → corr {corr})"
             print(f"[{i}/{len(xvs)}] {xv} ({category}, {strand}, {aligner}) → {row['chrom']}:{left}-{right}", flush=True)
             png_path = render_plot(
                 xv, uuid, row["chrom"], left, right,
                 int(row["original_3prime"]), corr,
                 mapped_bam, title,
+                minimap2_bam=minimap2_bam,
+                winner_label=aligner,
             )
 
         reads_meta.append({
@@ -616,26 +657,44 @@ def main() -> int:
         })
     print(f"Screenshot pass done in {time.time()-t0:.1f}s. Encoding PNGs...", flush=True)
 
-    sections = []
-    for m in reads_meta:
-        b64 = png_to_base64(Path(m["png_path"]))
-        sections.append(build_read_section(m, b64))
+    def _write_html(reads: list[dict], title: str, out_path: Path):
+        sections = [build_read_section(m, png_to_base64(Path(m["png_path"])))
+                    for m in reads]
+        n_cats = len({m["category"] for m in reads})
+        head = HTML_HEAD.format(
+            title=title,
+            now=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            n_reads=len(reads),
+            n_cats=n_cats,
+        )
+        body = "<a id='top'></a>\n" + build_toc(reads) + "\n<hr>\n".join(sections)
+        html = head + body + HTML_TOOLBAR_JS + "\n</body></html>"
+        out_path.write_text(html, encoding="utf-8")
+        size_mb = out_path.stat().st_size / 1024 / 1024
+        print(f"Wrote {out_path} ({size_mb:.1f} MB)")
 
-    title = "RECTIFY DRS validation read review"
-    n_cats = len({m["category"] for m in reads_meta})
-    head = HTML_HEAD.format(
-        title=title,
-        now=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        n_reads=len(reads_meta),
-        n_cats=n_cats,
-    )
-    body = "<a id='top'></a>\n" + build_toc(reads_meta) + "\n<hr>\n".join(sections)
-    html = head + body + HTML_TOOLBAR_JS + "\n</body></html>"
-
-    out_path = args.out or (DRIVE_OUT / "drs_validation_review.html")
-    out_path.write_text(html, encoding="utf-8")
-    size_mb = out_path.stat().st_size / 1024 / 1024
-    print(f"Wrote {out_path} ({size_mb:.1f} MB)")
+    if args.per_category:
+        # Group by category and write one HTML per category. Categories are
+        # rendered alphabetically; within a category, reads stay in the same
+        # XV sort order as the single-file mode (cat1_minus_1 → cat1_plus_2).
+        from collections import defaultdict
+        by_cat: dict[str, list[dict]] = defaultdict(list)
+        for m in reads_meta:
+            by_cat[m["category"]].append(m)
+        out_dir = (args.out.parent if args.out else DRIVE_OUT)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for cat in sorted(by_cat):
+            cat_reads = by_cat[cat]
+            cat_out = out_dir / f"{cat}_review.html"
+            _write_html(cat_reads,
+                        title=f"RECTIFY DRS validation — {cat} ({len(cat_reads)} reads)",
+                        out_path=cat_out)
+    else:
+        out_path = args.out or (DRIVE_OUT / "drs_validation_review.html")
+        title_suffix = f" — {','.join(sorted(args.category))}" if args.category else ""
+        _write_html(reads_meta,
+                    title=f"RECTIFY DRS validation read review{title_suffix}",
+                    out_path=out_path)
     return 0
 
 
