@@ -67,7 +67,18 @@ def _cigar_hp_edit_distance(read, genome: Optional[Dict[str, str]], penalty_tabl
         I (insertion):        HP-aware ins_cost from penalty_table; fallback 1.25
         N (intron):           0  — free pass
         S (soft-clip):        1.0 per base (flat)
-        H (hard-clip):        0
+        H (hard-clip):        1.0 per base (flat)
+
+    Soft- and hard-clip are penalised symmetrically. Hard-clips in corrected
+    BAMs come from rectify's CIGAR surgery (``clip_read_to_corrected_3prime``)
+    when walkback or rescue shifts the 3' end past originally-aligned bases.
+    Without this penalty, an aligner that resolved an HP-undercall by
+    walkback+hard-clip (e.g. minimap2 ``2S 17M`` → ``5H 14M``) would beat an
+    aligner that represented the same artefact in-line as a deletion (e.g.
+    uLTRA ``2= 1D 17=``) — even though the latter is more informative and
+    places the 3' end at the biologically correct position. Counting H
+    against the aligner forces winner-selection to value preserved evidence
+    over discarded evidence.
     """
     if read.cigartuples is None:
         return 0.0
@@ -127,7 +138,7 @@ def _cigar_hp_edit_distance(read, genome: Optional[Dict[str, str]], penalty_tabl
             total += length * 1.0
             q_pos += length
         elif op == 5:              # H (hard-clip — query_seq already excludes these)
-            pass
+            total += length * 1.0
         # P (6): no penalty, no advance
     return total
 
@@ -690,12 +701,21 @@ def merge_corrected_tsvs(
             all_df['confidence'].map(_CONFIDENCE_RANK).fillna(0).astype(int)
         )
         all_df['_n_junc'] = all_df.get('n_junctions', 0).fillna(0).astype(int)
+        # Group on (read_id, chrom, corrected_3prime) — NOT just (read_id,
+        # corrected_3prime). Paralogous loci can place a read at the same
+        # numeric position on different chromosomes (e.g. cat1_plus_1: deSALT
+        # → chrVI:8703, minimap2/gapmm2/uLTRA → chrXIV:10610). Grouping on
+        # position alone made a 1-aligner cross-chrom outlier collapse into
+        # the 3-aligner same-chrom consensus and tie in `_n_agree`, letting
+        # the tail of the sort key (span / n_junc) pick the paralog.
         pos_counts = (
-            all_df.groupby(['read_id', 'corrected_3prime'])
+            all_df.groupby(['read_id', 'chrom', 'corrected_3prime'])
             .size()
             .reset_index(name='_n_agree')
         )
-        all_df = all_df.merge(pos_counts, on=['read_id', 'corrected_3prime'], how='left')
+        all_df = all_df.merge(
+            pos_counts, on=['read_id', 'chrom', 'corrected_3prime'], how='left'
+        )
 
     # ── Representative row per (read_id, aligner) for ranking ────────────
     rep_df = (
