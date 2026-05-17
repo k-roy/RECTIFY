@@ -19,7 +19,7 @@ Precision transcript structure mapping for direct RNA nanopore sequencing. RECTI
 
 | Feature | Description |
 |:--------|:------------|
-| **Multi-Aligner Consensus** | Runs minimap2, pbmm2, gapmm2 (optionally uLTRA + deSALT) and selects best junction set per read |
+| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio (BBMap), gapmm2 (optionally uLTRA + deSALT) and selects best junction set per read |
 | **3' End Soft-Clip Rescue** | Rescues 3' soft-clipped bases at homopolymer boundaries by extending the 3' end outward |
 | **3' End Indel Correction** | Walk-back algorithm fixes alignment artifacts where poly(A) tails land on genomic A-tracts |
 | **False Junction Handling** | Removes spurious N-operations created by poly(A) tail alignment into downstream A-tracts |
@@ -96,13 +96,13 @@ Nanopore direct RNA-seq · QuantSeq (oligo-dT short-read) · PacBio Iso-Seq · N
 
 > Roy KR, Chanfreau GF. Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends at nucleotide resolution by 3'-end sequencing. *Methods*. 2020;176:4-13. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
 
-**RECTIFY 2.0:** Manuscript in preparation.
+**RECTIFY 0.9.0** (first public release): manuscript in preparation.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](https://github.com/k-roy/RECTIFY/blob/main/LICENSE) for details.
+MIT — see [LICENSE](https://github.com/k-roy/RECTIFY/blob/master/LICENSE) for details.
 
 ## Contact
 

@@ -10,18 +10,23 @@ Modules:
 - NET-seq refinement (optional)
 - Visualization (optional, requires matplotlib)
 
-Features (v2.7.6):
-- Region-based parallel BAM processing with coverage gap splitting
-- SLURM-aware CPU detection to prevent oversubscription
+Features (v0.9.0 — first public release):
+- Multi-aligner consensus (minimap2, mapPacBio, gapmm2, uLTRA, deSALT) with per-read selection
+- 3' end indel correction and soft-clip rescue at homopolymer boundaries
+- 5' splice-junction rescue (Cat3) and intronic-tail rerouting
+- False junction handling for poly(A) tails landing on genomic A-tracts
+- Region-based parallel BAM processing with coverage-gap splitting
 - Streaming output mode for large BAM files
-- Export to bedGraph/bigWig format
-- Metagene signal aggregation and multi-track visualization
+- SLURM-aware CPU detection to prevent oversubscription
+- NET-seq NNLS deconvolution for A-tract refinement
+- Adaptive valley-based CPA clustering and DESeq2 at gene + cluster resolution
+- Export to bedGraph/bigWig; metagene and genome-browser visualization
 
 Author: Kevin R. Roy
 License: MIT
 """
 
-__version__ = "3.2.5"
+__version__ = "0.9.0"
 __author__ = "Kevin R. Roy"
 __email__ = "kevinrjroy@gmail.com"
 

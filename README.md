@@ -379,7 +379,7 @@ rectify export corrected.tsv -o tracks/ --genome genome.fa
 
 > Roy KR, Chanfreau GF. Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends at nucleotide resolution by 3'-end sequencing. *Methods*. 2020;176:4-13. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
 
-**RECTIFY 2.0:** Manuscript in preparation.
+**RECTIFY 0.9.0** (first public release): manuscript in preparation.
 
 ---
 

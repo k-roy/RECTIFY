@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD022 MD024 MD025 MD032 -->
 # Changelog
 
 All notable changes to RECTIFY will be documented in this file.
@@ -7,11 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.9.0] - 2026-05-16
 
-- **`rescue_3ss_truncation` Bug 3: mapPacBio terminal-D overshoot, Pattern 2** (`core/splice_aware_5prime.py`): added `_leading_del` detection for CIGAR pattern `… N D =` (reversed 5' ops: `= D N`), where mapPacBio encodes a few missed exon bases as deletions between the terminal match block and the intron N-op. The new `_5p_ops` collector reads up to 3 non-H ops from the 5' end; `_leading_del=True` fires when `op[0] ∈ {M,=,X}`, `op[1]==D`, `op[2]==N`. Pattern 1 (plain terminal D at 5' end, `op[0]==D`) was already handled but is now detected via the same collector for consistency. When both `_n_match` and `_leading_del`, the junction is recorded as `_forced_snap_junction`; `n_op_snap` fires if all sequence-based rescue attempts fail. Verified on real read `de69692f-04e9` (chrII minus strand, N-op `[89132,89436)`): `five_prime_corrected=89440`.
+**First public release of RECTIFY.** Prior 2.x and 3.x versions were internal
+pre-public development; their history is preserved below for completeness but
+should be read as "what landed before 0.9.0 shipped publicly."
 
-- Three new regression tests in `TestRescue3SSTruncation`: `test_minus_n_op_snap_pattern1_terminal_d`, `test_minus_n_op_snap_pattern2_d_between_n_and_match`, `test_minus_clean_5prime_no_snap`.
+### Changed
+
+- **Internal documentation restructure**: separated user-facing docs (`docs/`)
+  from contributor-only material (new `dev/` tree). Promoted `CHANGELOG.md` to
+  repo root per OSS convention; mkdocs site re-exposes it via a snippet stub.
+  Pruned 10 stale files (7 completed refactor briefs + their index + the
+  workshop walkthrough + a stale README clone).
+- **Internal refactor — split seven 2000+-line files** into focused sub-modules
+  under `bam/`, `cdna/`, `commands/run/`, `consensus/`, `splice/`. No public
+  API change; old paths preserved as re-exports. Commits: `0024fa3`
+  (bam_processor), `c411c80` (cdna), `49478a0` (analyze), `77d3828` (bam_writer),
+  `33c683c` (consensus), `bf55e96` (junction_refiner), `b3123fe` (run_command).
 
 ### Added
 
@@ -27,21 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`tests/test_consensus_selection.py`** (Bug 38): 40 tests covering `extract_junctions_from_cigar`, `check_canonical_splice_sites` (GT/AG, GC/AG, real YAL030W intron), `score_alignment` (5' clip −2/base, A-tract depth cap, 3' clip penalty), `select_best_alignment` (winner selection, `was_5prime_rescued`, tiebreakers, confidence levels). Real-data class validates junction extraction and aligner selection at the YAL030W locus.
 
-## [0.9.0] — Planned: first major public release
-
-The `0.9.0` slot is reserved for the first major public release of RECTIFY.
-Currently a Planned section — content below was developed pre-public-release
-and will be folded into the 0.9.0 release notes when the public version
-ships. Internal pre-public development is tracked under the 2.x and 3.x
-versions below.
-
 ### Fixed
+
+- **`rescue_3ss_truncation` Bug 3: mapPacBio terminal-D overshoot, Pattern 2** (`core/splice_aware_5prime.py`): added `_leading_del` detection for CIGAR pattern `… N D =` (reversed 5' ops: `= D N`), where mapPacBio encodes a few missed exon bases as deletions between the terminal match block and the intron N-op. The new `_5p_ops` collector reads up to 3 non-H ops from the 5' end; `_leading_del=True` fires when `op[0] ∈ {M,=,X}`, `op[1]==D`, `op[2]==N`. Pattern 1 (plain terminal D at 5' end, `op[0]==D`) was already handled but is now detected via the same collector for consistency. When both `_n_match` and `_leading_del`, the junction is recorded as `_forced_snap_junction`; `n_op_snap` fires if all sequence-based rescue attempts fail. Verified on real read `de69692f-04e9` (chrII minus strand, N-op `[89132,89436)`): `five_prime_corrected=89440`.
+
+- Three new regression tests in `TestRescue3SSTruncation`: `test_minus_n_op_snap_pattern1_terminal_d`, `test_minus_n_op_snap_pattern2_d_between_n_and_match`, `test_minus_clean_5prime_no_snap`.
 
 - **`_score_junction` degenerate k=L case** (`core/splice/junction_refiner.py`): the k-loop previously ran `range(L+1)`, where k=L gives an empty `rescue[L:]`, making the score 0.0 for every candidate regardless of junction quality — a completely non-discriminating case that caused the wrong junction to win whenever candidates tied at 0.0. Fixed by changing to `range(L)` so `q1 = rescue[k:]` always contains at least one base.
 
 - **`refine_read_junctions` stability tiebreaker** (`core/splice/junction_refiner.py`): added `is_alt` as the second element of the candidate tuple (after `score`, before `canonical_tier`). `is_alt=0` when the candidate matches the current N-op boundaries exactly; `is_alt=1` otherwise. This prevents equal-scoring candidates from spuriously displacing already-correct junctions — critical when multiple candidates share the same `intron_end` (e.g. TFC3 annotated junction and a nearby alternative both score 0.0 at the same `je`).
 
 - **Impact**: 9 previously failing tests in `tests/test_junction_refiner.py` now pass. All 698 tests pass (4 skipped). Key reads fixed: RPL20B read `0b3b593b` now correctly refined from `[900758,901189)` to `[900767,901193)`; TFC3 annotated reads no longer displaced by same-score alternative at `[150989,151096)`.
+
+---
+
+## Pre-public internal history
+
+Earlier 2.x and 3.x version entries describe internal pre-public development.
+Module paths cited in those entries refer to the layout that existed at the time
+of each fix; some paths have moved to subpackages under `core/` since (see the
+0.9.0 refactor note above). The bug rationales and behaviour descriptions remain
+accurate; only the file paths may be stale.
 
 ## [3.2.5] - 2026-04-24
 

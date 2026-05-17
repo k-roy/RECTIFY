@@ -52,7 +52,7 @@ pytest
 |---------|-----------|---------|-------|
 | [minimap2](https://github.com/lh3/minimap2) | Yes (default) | conda/bioconda | Long-read splice-aware aligner |
 | [mapPacBio](https://sourceforge.net/projects/bbmap/) (BBMap) | Recommended | conda/bioconda (`bbmap`) | PacBio RNA mode; improves junction accuracy |
-| [gapmm2](https://github.com/vpc-ccg/gapmm2) | Recommended | pip or conda | Gap-aware minimap2 variant |
+| [gapmm2](https://github.com/nextgenusfs/gapmm2) | Recommended | pip or conda | Gap-aware minimap2 variant |
 | [uLTRA](https://github.com/ksahlin/ultra) | Optional | pip or conda | Annotation-guided collinear chaining; best for small exons (11–20 nt) |
 | [deSALT](https://github.com/ydLiu-HIT/deSALT) | Optional | **vendored** (Linux/x86_64) | De Bruijn graph mapper; bundled binary used automatically |
 

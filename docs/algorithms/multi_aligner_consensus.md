@@ -144,5 +144,5 @@ Key flags:
 
 ## See also
 
-- [Aligner Recommendations](https://github.com/k-roy/RECTIFY/blob/main/docs/ALIGNER_RECOMMENDATIONS.md) — guidance on when to add uLTRA or deSALT
+- [Aligner Recommendations](../ALIGNER_RECOMMENDATIONS.md) — guidance on when to add uLTRA or deSALT
 - [Soft-Clip Rescue](softclip_rescue.md) — how 5' soft-clips are rescued before scoring

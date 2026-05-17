@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rectify-rna"
-version = "3.2.5"
+version = "0.9.0"
 description = "RNA 5' and 3' End Correction Tool with Intron Refinement and Ambiguity Resolution"
 authors = [
     {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}

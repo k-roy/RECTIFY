@@ -6,17 +6,30 @@ Core correction pipeline modules.
 
 ## bam_processor
 
-The main BAM processing orchestrator. Handles parallel and streaming correction modes.
+Per-read correction orchestrator. Owns the `correct_read_3prime` workhorse and
+the small helpers it needs (3'/5' position extraction).
 
 ::: rectify.core.bam.bam_processor
     options:
       members:
-        - process_bam_file_parallel
-        - process_bam_streaming
         - correct_read_3prime
-        - write_position_index
         - get_read_3prime_position
         - get_read_5prime_position
+        - process_bam_file
+
+---
+
+## parallel
+
+Parallel and streaming dispatch over a BAM. Wraps the per-read
+`correct_read_3prime` worker for multi-process and chunked execution.
+
+::: rectify.core.bam.parallel
+    options:
+      members:
+        - process_bam_file_parallel
+        - process_bam_streaming
+        - process_bam_streaming_parallel
 
 ---
 
