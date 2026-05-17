@@ -294,13 +294,15 @@ the empirical table and works correctly with the default heuristics as well.
 
 ## See Also
 
-- [`PENALTY_TABLE.md`](../../../common/scripts/nanopore/PENALTY_TABLE.md) — full analysis
-  details, regeneration commands, known issues, and historical heuristic comparison
-- [`docs/JUNCTION_SHIFT_FDR.md`](JUNCTION_SHIFT_FDR.md) — theoretical risk model for
-  HP-context junction-shift false positives; uses these rates as inputs
-- `common/scripts/nanopore/empirical_cigar_error_profiler.py` — the profiler script
-- `common/scripts/nanopore/error_profile_20260422/` — production penalty tables
-- `common/scripts/nanopore/error_profile_strand_20260501/` — strand-split validation run
+- [Junction-Shift FDR](JUNCTION_SHIFT_FDR.md) — theoretical risk model for
+  HP-context junction-shift false positives; uses these rates as inputs.
+- The penalty profiler and the production tables are maintained outside this
+  repository. To regenerate the tables, run
+  `rectify/calibration/calibrate_shift_corrections.py` on a CIGAR-error
+  profile produced from a high-coverage WT BAM and a reference of the same
+  organism; the resulting JSON is consumed by
+  `--junction-penalty-table` / `--str-penalty-table` on `rectify correct`
+  and `rectify run-all`.
 
 ---
 

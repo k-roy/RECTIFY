@@ -946,6 +946,7 @@ class MetagenePipeline:
             StrandOrientationError: If verify_strands=True and peaks diverge
 
         Example:
+            ```python
             # Load TRT loci cache and RECTIFY position index
             loci = load_trt_loci_cache("cached_trt_signals_v3_no_poliii.pkl")
             index, total_reads = load_rectify_position_index(tsv_files)
@@ -957,7 +958,9 @@ class MetagenePipeline:
                 window=(-150, 150),
                 total_reads=total_reads,
             )
-            print(f"Peak at: {result['x'][np.argmax(result['profile'])]:+d} bp")
+            peak = result["x"][np.argmax(result["profile"])]
+            print(f"Peak at: {peak:+d} bp")
+            ```
         """
         window_start, window_end = window
         profile_length = window_end - window_start + 1
