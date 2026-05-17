@@ -71,4 +71,36 @@ else
 fi
 
 echo
-echo "Done. uLTRA + namfinder are ready."
+echo "uLTRA + namfinder are ready."
+
+# Step 3: build the bundled yeast deSALT index if missing.
+# The rectify package ships an empty `desalt_index/` placeholder next to the
+# yeast genome; the multi-aligner wrapper will pick it up and fail late
+# without this. The index is ~2 GB (deBGA's sparse hash) so it isn't
+# committed; build it once per checkout.
+GENOME_DIR=$(python -c "import os, rectify; print(os.path.join(os.path.dirname(rectify.__file__), 'data', 'genomes', 'saccharomyces_cerevisiae'))")
+GENOME_GZ="$GENOME_DIR/S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
+INDEX_DIR="$GENOME_DIR/desalt_index"
+
+if [[ -f "$INDEX_DIR/ref.seq" && -s "$INDEX_DIR/ref.seq" ]]; then
+    echo "deSALT bundled index: already built at $INDEX_DIR"
+elif ! command -v deSALT >/dev/null 2>&1; then
+    echo "deSALT bundled index: SKIPPED (deSALT not on PATH; install aligners first)"
+elif [[ ! -f "$GENOME_GZ" ]]; then
+    echo "deSALT bundled index: SKIPPED (bundled genome not found at $GENOME_GZ)"
+else
+    echo "deSALT bundled index: building (one-time, ~3 min, ~2 GB on disk)..."
+    GENOME_FA="${GENOME_GZ%.gz}"
+    [[ -f "$GENOME_FA" ]] || gunzip -k "$GENOME_GZ"
+    rm -rf "$INDEX_DIR"
+    deSALT index "$GENOME_FA" "$INDEX_DIR"
+    if [[ -s "$INDEX_DIR/ref.seq" ]]; then
+        echo "deSALT bundled index: built at $INDEX_DIR"
+    else
+        echo "deSALT bundled index: BUILD FAILED — check deSALT/deBGA install"
+        exit 1
+    fi
+fi
+
+echo
+echo "Done."

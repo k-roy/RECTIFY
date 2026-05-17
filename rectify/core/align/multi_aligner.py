@@ -1546,19 +1546,32 @@ def run_desalt(
             "Install with: rectify install-aligners --desalt"
         )
 
-    # Resolve index directory
+    # Resolve index directory. The index must contain a non-empty `ref.seq`
+    # (deBGA's main reference output) — an empty `desalt_index/` placeholder
+    # silently picks up here otherwise and deSALT fails late with a confusing
+    # "index load" error.
+    def _is_built_desalt_index(p: Path) -> bool:
+        return p.is_dir() and (p / 'ref.seq').exists() and (p / 'ref.seq').stat().st_size > 0
+
     if index_path:
         index_dir = Path(index_path)
+        if not _is_built_desalt_index(index_dir):
+            raise FileNotFoundError(
+                f"deSALT index at {index_dir} is missing or empty. "
+                f"Build it with: deSALT index <genome.fa> {index_dir}"
+            )
     else:
         genome_p = Path(genome_path)
         candidates = [
             genome_p.parent / 'desalt_index',
             genome_p.parent / f"{genome_p.name.split('.')[0]}_desalt_index",
         ]
-        index_dir = next((c for c in candidates if c.exists()), None)
+        index_dir = next((c for c in candidates if _is_built_desalt_index(c)), None)
         if index_dir is None:
+            tried = ', '.join(str(c) for c in candidates)
             raise FileNotFoundError(
-                f"deSALT index not found adjacent to {genome_path}. "
+                f"deSALT index not found (or empty) adjacent to {genome_path}. "
+                f"Looked at: {tried}. "
                 f"Build it with: deSALT index <genome.fa> {candidates[0]}"
             )
 
