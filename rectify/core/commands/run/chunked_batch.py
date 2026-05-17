@@ -27,7 +27,7 @@ def _generate_chunked_pipeline(args) -> int:
 
     Returns 0 on success, 1 on error.
     """
-    from . import split_command
+    from .. import split_command
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +113,7 @@ def _generate_chunked_pipeline(args) -> int:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if getattr(args, 'input', None):
         input_path = Path(args.input)
-        from ..align.preprocess import detect_input_type
+        from ...align.preprocess import detect_input_type
         input_type = detect_input_type(input_path)
 
         # (BAM inputs are handled in run() before calling this function)
@@ -372,7 +372,7 @@ echo "Done: $(date)"
     # Multi-sample path (manifest)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if getattr(args, 'manifest', None):
-        from .batch_command import parse_manifest
+        from ..batch_command import parse_manifest
         manifest_path = Path(args.manifest)
         samples = parse_manifest(manifest_path)
         if not samples:
@@ -388,7 +388,7 @@ echo "Done: $(date)"
 
         for s in samples:
             p = Path(s.get('path', s.get('bam_path', '')))
-            from ..align.preprocess import detect_input_type
+            from ...align.preprocess import detect_input_type
             itype = detect_input_type(p)
             if itype in ('fastq', 'fastq.gz'):
                 fastq_samples.append(s)

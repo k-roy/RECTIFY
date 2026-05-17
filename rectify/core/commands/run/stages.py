@@ -91,7 +91,7 @@ def _run_alignment(
     all_aligners = _base_aligners + _junction_aligners
     aligner_desc = ' + '.join(all_aligners)
     print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
-    from .align_command import run_align
+    from ..align_command import run_align
 
     align_args = argparse.Namespace(
         reads=input_path,
@@ -156,12 +156,18 @@ def _run_correction(
     genome_path: Path,
     annotation_path: Optional[Path],
     args,
+    aligner_bams: Optional[List[Path]] = None,
 ) -> Path:
     """
     Run rectify correct on a BAM, writing corrected_reads.tsv into output_dir.
     Returns path to the corrected TSV.
+
+    aligner_bams: Optional list of per-aligner BAM paths to feed Module 2H
+        (junction refinement). Required to match the CLAUDE.md "validated"
+        correct-first pipeline order. When provided, every per-aligner
+        correction gets the full cross-aligner junction candidate pool.
     """
-    from . import correct_command
+    from .. import correct_command
 
     corrected_tsv = output_dir / 'corrected_reads.tsv'
 
@@ -197,6 +203,11 @@ def _run_correction(
         if getattr(args, 'write_softclip_bam', False) else None
     )
 
+    # Module 2H (junction refinement) requires the full per-aligner BAM pool to
+    # build the candidate junction set. Falling back to args.aligner_bams keeps
+    # backwards-compat for callers that set the attribute directly.
+    _aligner_bams = aligner_bams or getattr(args, 'aligner_bams', None) or []
+
     correct_args = argparse.Namespace(
         input=bam_path,
         genome=genome_path,
@@ -207,6 +218,7 @@ def _run_correction(
         netseq_dir=getattr(args, 'netseq_dir', None),
         organism=getattr(args, 'organism', None),
         aligner=getattr(args, 'aligner', 'minimap2'),
+        aligner_bams=[str(p) for p in _aligner_bams],
         dT_primed_cDNA=polya_seq,
         polya_sequenced=polya_seq,  # deprecated attr kept for compat
         threads=getattr(args, 'threads', 4),
@@ -227,6 +239,8 @@ def _run_correction(
         chunk_size=getattr(args, 'chunk_size', 10000),
         junction_penalty_table=getattr(args, 'junction_penalty_table', None),
         str_penalty_table=getattr(args, 'str_penalty_table', None),
+        junction_overhang_table=getattr(args, 'junction_overhang_table', None),
+        junction_pool_cache=getattr(args, 'junction_pool_cache', None),
         debug=False,
         verbose=False,
     )
@@ -306,12 +320,18 @@ def _run_correction_per_aligner(
                     sorted_bam.unlink(missing_ok=True)
                 continue
         try:
+            # Pass ALL per-aligner BAMs so Module 2H (junction refinement) can
+            # build the cross-aligner candidate junction pool — the documented
+            # "correct-first" pipeline order in CLAUDE.md. Without this every
+            # per-aligner correction would run with Module 2H silently disabled.
+            _all_aligner_bams = list(per_aligner_bams.values())
             _run_correction(
                 bam_path=correction_bam,
                 output_dir=aligner_output_dir,
                 genome_path=genome_path,
                 annotation_path=annotation_path,
                 args=args,
+                aligner_bams=_all_aligner_bams,
             )
         except Exception as exc:
             print(
@@ -388,7 +408,7 @@ def _run_analysis(
     n_samples: int = 1,
 ) -> None:
     """Run the analyze command on a (possibly combined) corrected TSV."""
-    from .analyze_command import run_analyze
+    from ..analyze_command import run_analyze
 
     # Only run DESeq2 when there are multiple samples
     run_deseq2 = n_samples > 1
@@ -456,8 +476,8 @@ def _run_junction_aggregation(
 
     print("\n[Junctions] Aggregating splice junctions with partial rescue...")
 
-    from ..aggregate.junctions import aggregate_junctions, merge_with_partial_evidence, export_junctions
-    from ..splice.terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
+    from ...aggregate.junctions import aggregate_junctions, merge_with_partial_evidence, export_junctions
+    from ...splice.terminal_exon_refiner import load_splice_sites_from_gff, detect_partial_junction_crossings
     import pysam
 
     junctions_dir = output_dir / 'junctions'
@@ -497,7 +517,7 @@ def _run_junction_aggregation(
 
         # Provenance
         if junctions_tsv.exists():
-            from ...utils.provenance import init_provenance
+            from ....utils.provenance import init_provenance
             prov = init_provenance(output_dir, description="RECTIFY junction aggregation", config=config)
             prov.add_output_file(
                 junctions_tsv,

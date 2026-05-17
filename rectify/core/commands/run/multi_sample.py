@@ -29,7 +29,7 @@ def _run_analysis_manifest(
     n_samples: int = 1,
 ) -> None:
     """Run the analyze command in manifest mode (memory-efficient multi-sample path)."""
-    from .analyze_command import run_analyze
+    from ..analyze_command import run_analyze
 
     run_deseq2 = n_samples > 1
 
@@ -79,7 +79,7 @@ def _run_multi_sample(args) -> int:
       Stage 2:            combine corrected TSVs → add sample column
       Stage 3:            combined analyze (full DESeq2, GO, motifs)
     """
-    from .batch_command import parse_manifest, _get_available_cpus
+    from ..batch_command import parse_manifest, _get_available_cpus
 
     _resolve_reference_paths(args)
 

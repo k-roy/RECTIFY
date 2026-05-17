@@ -62,7 +62,7 @@ def _process_one_sample(
     try:
         with open(log_file, 'w') as log:
             # Determine input type
-            from ..align.preprocess import detect_input_type
+            from ...align.preprocess import detect_input_type
             input_type = detect_input_type(input_path)
 
             bam_to_correct = input_path
@@ -71,7 +71,7 @@ def _process_one_sample(
             # ── DRS Step 0: Poly(A)+adapter pre-trimming ────────────────────
             if getattr(args, 'drs', False) and input_type not in ('fastq', 'fastq.gz'):
                 import subprocess as _subprocess
-                from .drs_trim_command import trim_drs_bam_polya
+                from ..drs_trim_command import trim_drs_bam_polya
 
                 _drs_dir = sample_output / 'drs_trim'
                 _drs_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def _process_one_sample(
                 # Create a per-sample scratch dir for the consensus sort step.
                 # This routes pysam.sort I/O to high-bandwidth scratch storage,
                 # preventing NFS write hangs when output is on shared Oak NFS.
-                from ...slurm import make_job_scratch_dir as _mks_consensus
+                from ....slurm import make_job_scratch_dir as _mks_consensus
                 import shutil as _shutil_consensus
                 _use_scratch = getattr(args, 'use_scratch', True)
                 _consensus_ckpt_dir: Optional[str] = None
@@ -180,7 +180,7 @@ def _process_one_sample(
             print(f"  [{sample_id}] Correcting 3' ends…", flush=True)
             # Stage correction I/O through $SCRATCH when available to avoid
             # NFS write hangs (position index gzip, large TSV writes under load).
-            from ...slurm import make_job_scratch_dir, sync_to_oak as _sync_to_oak
+            from ....slurm import make_job_scratch_dir, sync_to_oak as _sync_to_oak
             import shutil as _shutil_corr
             _use_scratch = getattr(args, 'use_scratch', True)
             _corr_scratch = make_job_scratch_dir(f'rectify_{sample_id}') if _use_scratch else None
@@ -208,7 +208,7 @@ def _process_one_sample(
             if (getattr(args, 'drs', False)
                     and getattr(args, 'write_polya_bam', False)
                     and drs_metadata_path and drs_metadata_path.exists()):
-                from .restore_polya_command import restore_polya_softclips
+                from ..restore_polya_command import restore_polya_softclips
 
                 _corrected_tsv = sample_output / 'corrected_reads.tsv'
                 _restored_bam = sample_output / f"{sample_id}.corrected_polya.bam"
@@ -277,7 +277,7 @@ def _run_single_sample(args) -> int:
     print(f"Output dir: {output_dir}")
 
     # Determine input type
-    from ..align.preprocess import detect_input_type
+    from ...align.preprocess import detect_input_type
     input_type = detect_input_type(input_path)
     print(f"Input type: {input_type}")
 
@@ -289,7 +289,7 @@ def _run_single_sample(args) -> int:
     # This avoids NFS contention across concurrent array tasks.
     # The rectified BAM is always copied back to the output dir even on fresh
     # alignments so it survives $SCRATCH's auto-purge and enables job resumption.
-    from ...slurm import make_job_scratch_dir, sync_to_oak
+    from ....slurm import make_job_scratch_dir, sync_to_oak
     import shutil as _shutil
 
     use_scratch = getattr(args, 'use_scratch', True)  # default on when scratch available
@@ -310,7 +310,7 @@ def _run_single_sample(args) -> int:
     # ── Provenance tracker ───────────────────────────────────────────────────
     # scratch_root/oak_root mapping ensures all sidecar JSON keys use canonical
     # Oak paths — so step_is_current() works on re-runs regardless of $SCRATCH.
-    from ...utils.provenance import ProvenanceTracker
+    from ....utils.provenance import ProvenanceTracker
     tracker = ProvenanceTracker(output_dir=output_dir)
     tracker.set_command(sys.argv)
 
@@ -327,7 +327,7 @@ def _run_single_sample(args) -> int:
     drs_metadata_path: Optional[Path] = None
 
     if drs_mode and input_type not in ('fastq', 'fastq.gz'):
-        from .drs_trim_command import trim_drs_bam_polya
+        from ..drs_trim_command import trim_drs_bam_polya
         import subprocess as _subprocess
 
         _sample_stem = input_path.stem
@@ -468,7 +468,7 @@ def _run_single_sample(args) -> int:
             # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
-            from ..consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
+            from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
             per_aligner_tsvs = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,
@@ -606,7 +606,7 @@ def _run_single_sample(args) -> int:
     # compare against corrected.bam in IGV to see exactly what Rectify changed.
     if (drs_mode and getattr(args, 'write_polya_bam', False)
             and drs_metadata_path and drs_metadata_path.exists()):
-        from .restore_polya_command import restore_polya_softclips
+        from ..restore_polya_command import restore_polya_softclips
         _orig_stem = Path(args.input).stem
         _restored_bam = output_dir / f"{_orig_stem}.corrected_polya.bam"
         _aligner_bams_for_restore = {k: str(v) for k, v in per_aligner_bams.items()
@@ -643,7 +643,8 @@ def _run_single_sample(args) -> int:
             )
 
     # ── Provenance manifest ───────────────────────────────────────────────────
-    manifest_path = tracker.write_manifest()
+    tracker.save()
+    manifest_path = tracker.prov_file
 
     # ── Summary ──────────────────────────────────────────────────────────────
     _pipeline_elapsed = _time.perf_counter() - _pipeline_start
