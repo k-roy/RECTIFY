@@ -429,15 +429,24 @@ def run_align(args: argparse.Namespace) -> int:
 
             _elapsed = _time.perf_counter() - _t_aligner
             logger.info(f"{aligner} complete: {output_bam} [{_elapsed:.1f}s]")
-            # Index immediately after creation so downstream code (per-aligner
-            # correction, name-sort reads) can use pysam.fetch().  Indexing here
-            # also ensures the BAM is fully flushed to the parallel filesystem
-            # before any subsequent reader opens it.
+            # Aligner wrappers emit name-sorted BAMs (so consensus can stream
+            # across aligners).  Coordinate-sort + index here so the on-disk
+            # BAM is directly usable by IGV, pysam.fetch(), and downstream
+            # per-aligner-review tooling.  Consensus selection re-name-sorts
+            # via _ensure_name_sorted() — coord-sort here is non-destructive.
             try:
-                import pysam as _pysam_idx
-                _pysam_idx.index(str(output_bam))
+                import subprocess as _sp
+                _sort_tmp = str(output_bam) + '.coord_sort_tmp'
+                _sp.run(
+                    ['samtools', 'sort', '-@', str(n_threads),
+                     '-o', _sort_tmp, str(output_bam)],
+                    check=True, capture_output=True,
+                )
+                Path(_sort_tmp).replace(output_bam)
+                _sp.run(['samtools', 'index', str(output_bam)], check=True,
+                        capture_output=True)
             except Exception as _idx_err:
-                logger.warning(f"{aligner}: BAM indexing failed ({_idx_err}); "
+                logger.warning(f"{aligner}: coord-sort/index failed ({_idx_err}); "
                                 "downstream correction may be skipped")
             return aligner, str(output_bam)
 

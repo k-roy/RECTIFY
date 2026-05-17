@@ -65,7 +65,12 @@ cdna-correct = [
 # External binary tools — cannot be installed via pip; use conda/mamba:
 #   mamba install -c bioconda minimap2 bbmap gapmm2 samtools htslib desalt meme
 aligners = [
-    "gapmm2>=0.2",           # minimap2 wrapper with edlib refinement (pip-installable)
+    # gapmm2 25.4.13+ regressed on the `ts:` tag check inside splice_aligner_minimap2:
+    # 25.4.13 raises UnboundLocalError when minimap2 omits `ts:` (single-exon
+    # alignments), and 25.8.12 silently drops all such reads via the missing-ts
+    # skip path. Pin to 25.4.5 until upstream restores tolerance for non-spliced
+    # alignments. See methods/h2_all_aligners_handoff.md.
+    "gapmm2==25.4.5",        # minimap2 wrapper with edlib refinement (pip-installable)
 ]
 junction-aligners = [
     "ultra-bioinformatics>=0.1",  # uLTRA annotation-guided aligner (pip-installable)

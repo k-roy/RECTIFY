@@ -44,14 +44,18 @@ requirements:
     # --- External aligners (Tier 1: default multi-aligner rectification) ---
     - minimap2 >=2.24             # Baseline splice-aware aligner
     - bbmap >=39.0                # Provides mapPacBio.sh (BBTools long-read aligner)
-    - gapmm2 >=0.2                # minimap2 wrapper with edlib terminal exon refinement
+    - gapmm2 ==25.4.5             # pinned: 25.4.13 / 25.8.12 regress on `ts:` tag check (see pyproject.toml)
     - samtools >=1.15             # SAM/BAM manipulation, sorting, indexing, calmd
     - htslib >=1.15               # Provides bgzip for FASTA compression
 
     # --- External aligners (Tier 2: opt-in junction-mode, --junction-aligners) ---
     - desalt >=1.5                # De Bruijn graph splice aligner (optional)
+    - namfinder >=0.1             # uLTRA dependency; vendored binary on some HPC
+                                  # nodes is GLIBCXX-incompatible, so install via conda
     # ultra-bioinformatics not on bioconda — install via pip if needed:
     #   pip install ultra-bioinformatics
+    # After install, run scripts/setup/setup_rectify_env.sh to patch the
+    # uLTRA assertion bug on SGD yeast GTF.
 
     # --- Motif analysis (optional but recommended) ---
     - meme >=5.4.0                # MEME Suite (MEME, STREME, etc.)
