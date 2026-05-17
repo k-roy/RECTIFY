@@ -35,6 +35,9 @@ rectify export corrected_3ends.tsv \
     --per-replicate \
     --per-condition \
     -o tracks/
+
+# Bundled yeast genome (auto-fills --genome / chromosome sizes)
+rectify export corrected_3ends.tsv --Scer -o tracks/
 ```
 
 ---

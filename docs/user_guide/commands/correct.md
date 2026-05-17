@@ -61,12 +61,22 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 | `--netseq-dir` | — | Directory of NET-seq BigWig files for A-tract refinement |
 | `--netseq-samples` | all | Specific NET-seq samples to use |
 
+### Technology / protocol
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--dT-primed-cDNA` | off | Input was generated with oligo-dT priming (QuantSeq, dT-primed cDNA). Poly(A) tail is NOT in the read. Enables indel artifact correction and poly(A) trimming modules. Do NOT use for ONT direct RNA. |
+| `--ONT-cDNA` | off | Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). Poly(A) tail IS present as a 3' soft-clip. Enables poly(A) trimming + indel correction; disables AG-mispriming. Do NOT combine with `--dT-primed-cDNA`. |
+| `--short-read` | off | Input is short-read data (Illumina/Aviti ≤150 bp). Disables poly(A)-tail trimming, A-tract correction, and indel modules. Pair with `rectify align --short-read` (bbmap + bwa). |
+
+*(deprecated aliases retained for backwards compatibility: `--polya-sequenced` / `--no-polya-sequenced`. Use the current flags above for new pipelines.)*
+
 ### Poly(A) handling
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--polya-sequenced` | off | Enable poly(A) trimming and indel correction (use for direct RNA / QuantSeq) |
 | `--polya-model` | built-in | Pre-trained poly(A) tail model (JSON from `rectify train-polya`) |
+| `--min-polya-score` | — | Minimum poly(A) model confidence score (0–1) to mark `polya_pass=1`; reads below are flagged but still written. Requires `--polya-model` or `--dT-primed-cDNA`. |
 
 ### Module selection
 
@@ -76,7 +86,9 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 | `--skip-ag-check` | Skip AG-mispriming screening |
 | `--skip-polya-trim` | Skip poly(A) tail trimming |
 | `--skip-indel-correction` | Skip indel artifact correction |
-| `--skip-variant-aware` | Skip variant-aware position rescue |
+| `--skip-variant-aware` | Skip variant-aware homopolymer rescue (two-pass) |
+| `--min-mapq` | Minimum MAPQ to include a read (default 0; use 1 to drop multi-mappers) |
+| `--min-aligned-length` | Minimum reference bases consumed by the alignment (default 0; 30 recommended for dT-primed short-read) |
 
 ### Filtering
 
@@ -94,6 +106,10 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 
 | Argument | Description |
 |----------|-------------|
+| `--output-bam` | Write a poly(A)-trimmed BAM alongside the corrected TSV (requires `--dT-primed-cDNA`) |
+| `--write-corrected-bam` | Write a corrected BAM hard-clipped at every read's corrected 3' end (sorted + indexed) |
+| `--write-softclipped-bam` | Like `--write-corrected-bam` but poly(A) bases are soft-clipped (visible in IGV) |
+| `--write-bedgraph PREFIX` | Write strand-specific bedGraph files (`PREFIX.plus.bedgraph` / `PREFIX.minus.bedgraph`) for NET-seq fractional pileups |
 | `--report` | Write QC report to this path (`.html` or `.pdf`) |
 
 ### Performance

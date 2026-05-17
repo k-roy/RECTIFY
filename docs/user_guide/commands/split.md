@@ -16,24 +16,23 @@ rectify split <reads> -n <N> -o <output_dir> [options]
 ## Examples
 
 ```bash
-# Split into 16 chunks (dry run — counts reads without writing)
-rectify split reads.fastq.gz -n 16 -o chunks/ --dry-run
+# Auto-size chunks (default 50000 reads/chunk; dry run — counts reads without writing)
+rectify split reads.fastq.gz -o chunks/ --dry-run
 
-# Split and write chunks
+# Fixed 16 chunks
 rectify split reads.fastq.gz -n 16 -o chunks/
 
-# Split and generate SLURM array scripts for 5 aligners
+# Auto-size + generate SLURM array scripts for the non-mapPacBio aligners
 rectify split reads.fastq.gz \
-    -n 16 \
     -o /scratch/chunks/ \
     --generate-slurm \
-    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --other-aligners minimap2 gapmm2 uLTRA deSALT \
     --genome /ref/genome.fa.gz \
     --annotation /ref/genes.gff.gz \
-    --slurm-partition my-partition \
-    --slurm-cpus 16 \
-    --slurm-mem 64G \
-    --slurm-time 12:00:00
+    --slurm-partition my-partition
+
+# Bundled yeast reference (auto-fills --genome and --annotation)
+rectify split reads.fastq.gz -o chunks/ --generate-slurm --Scer
 ```
 
 ---
@@ -43,26 +42,37 @@ rectify split reads.fastq.gz \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `reads` | — | Input FASTQ or FASTQ.GZ file |
-| `-n, --n-chunks` | 16 | Number of chunks to create |
+| `-n, --n-chunks` | auto-sized from `--target-reads-per-chunk` (default 50000) | Number of chunks (overrides auto-sizing). Mutually exclusive with `--target-reads-per-chunk`. |
+| `--target-reads-per-chunk` | 50000 | Auto-size chunks to ~this many reads each (min 4, max 500) |
 | `-o, --output-dir` | — | Output directory |
 | `--prefix` | derived | Output file prefix (default: input filename stem) |
 | `--dry-run` | off | Count reads and print chunk sizes; do not write files |
-| `--generate-slurm` | off | Write SLURM array script and merge script alongside chunks |
+| `--generate-slurm` | off | Generate scheduler array scripts alongside chunks |
 | `--verbose` | off | Verbose logging |
 
-### SLURM script options (with `--generate-slurm`)
+### Script generation options (with `--generate-slurm`)
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--genome` | — | Reference genome path (written into generated scripts) |
 | `--annotation` | — | Annotation GFF/GTF path |
-| `--aligners` | minimap2 mapPacBio gapmm2 | Aligners to include in array job |
+| `--Scer` / `--organism` | — | Use bundled *S. cerevisiae* genome + annotation (autofills `--genome`/`--annotation`) |
+| `--other-aligners` | minimap2 gapmm2 uLTRA deSALT | Non-mapPacBio aligners to include in the "others" array job (mapPacBio runs in its own array) |
+| `--skip-map-pacbio` | off | Omit the mapPacBio array script (e.g. not installed) |
+| `--scheduler` | slurm | Target scheduler for generated headers (`slurm`, `uge`, `pbs`) |
 | `--slurm-partition` | — | SLURM partition(s) |
 | `--slurm-account` | — | SLURM account |
-| `--slurm-cpus` | 16 | CPUs per array task |
-| `--slurm-mem` | 64G | Memory per array task |
-| `--slurm-time` | 12:00:00 | Time limit per array task |
+| `--uge-queue` | `long.q` | UGE/SGE queue name (`-q`) |
+| `--uge-pe` | `smp` | UGE/SGE parallel environment (`-pe`) |
+| `--pbs-queue` | `workq` | PBS queue name (`-q`) |
 | `--python-path` | `python` | Explicit path to Python interpreter |
+| `--rectify-src` | `.` | Path to RECTIFY source checkout (working directory for generated scripts) |
+| `--junction-penalty-table` | — | Empirical HP junction penalty table forwarded to correction scripts |
+| `--str-penalty-table` | — | STR slippage penalty table forwarded to correction scripts |
+| `--junction-overhang-table` | — | Empirical junction overhang table forwarded to chunk-merge scripts |
+| `--short-read` | off | Generate the short-read (bbmap + bwa) pipeline instead of the long-read panel; implies `--skip-map-pacbio` |
+| `--dT-primed-cDNA` | off | Pass `--dT-primed-cDNA` through to generated `rectify correct` calls (auto-enabled by `--short-read`) |
+| `--oak-output-dir` | `{output-dir}/final/` | Destination on persistent storage for the final merged consensus BAM |
 
 ---
 
@@ -100,7 +110,7 @@ output_dir/
 rectify split reads.fastq.gz \
     -n 16 -o /scratch/chunks/ \
     --generate-slurm \
-    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --other-aligners minimap2 gapmm2 uLTRA deSALT \
     --genome genome.fa.gz --annotation genes.gff.gz
 ```
 

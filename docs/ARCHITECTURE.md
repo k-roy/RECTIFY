@@ -266,24 +266,28 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 
 | Subcommand | Module | Purpose |
 |---|---|---|
-| `trim-polya` | `core/drs_trim_command.py` | **Step 0 (DRS only)** — trim poly(A) tail + adapter from Dorado-aligned BAM; writes unaligned BAM + metadata parquet |
-| `align` | `core/align_command.py` | **Step 1** — multi-aligner alignment from FASTQ |
-| `correct` | `core/correct_command.py` | **Step 2** — 3' end correction per aligner; writes cp:i: tag on every output read |
-| `consensus` | `core/consensus_command.py` | **Step 3** — select best corrected output per read from per-aligner corrected TSVs; uses post-correction features (five_prime_rescued, confidence, 3' agreement) |
-| `restore-softclip` | `core/restore_polya_command.py` | **Step 4 (DRS only, opt-in)** — reconstruct full Dorado read by pulling winning aligner's raw BAM record and restoring poly(A) from parquet as soft clip; for IGV validation only |
-| `run-all` | `core/run_command.py` | Full end-to-end pipeline (Steps 0–5) |
-| `analyze` | `core/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
-| `batch` | `core/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
-| `train-polya` | `core/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
-| `validate` | `core/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
-| `export` | `core/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
-| `extract` | `core/extract_command.py` | Extract per-read info from BAM to TSV |
-| `correct-cdna` | `core/cdna_correct_command.py` | **ONT cDNA Stage 1** — UMI extraction, directional clustering, abPOA consensus, pre-trim → per-cluster FASTQ for `rectify align` |
-| `cdna-analyze` | `core/cdna_analyze_command.py` | **ONT cDNA Stage 3** — walkback + walk-forward + gene/isoform/T1↔T2 on post-align coordinates from `rectify align` |
-| `trim-cdna-polya` | `core/cdna_trim_command.py` | Trim poly(A) from cDNA reads (QuantSeq REV or ONT cDNA pre-processing) |
-| `tag-polya` | `core/tag_polya_command.py` | Tag poly(A) tail lengths on reads (BAM tag annotation) |
-| `netseq` | `core/netseq_command.py` | Process NET-seq BAM files with deconvolution |
-| `aggregate` | `core/aggregate_command.py` | Aggregate reads into CPA / TSS / junction datasets |
+| `trim-polya` | `core/commands/drs_trim_command.py` | **Step 0 (DRS only)** — trim poly(A) tail + adapter from Dorado-aligned BAM; writes unaligned BAM + metadata parquet |
+| `align` | `core/commands/align_command.py` | **Step 1** — multi-aligner alignment from FASTQ |
+| `correct` | `core/commands/correct_command.py` | **Step 2** — 3' end correction per aligner; writes cp:i: tag on every output read |
+| `consensus` | `core/commands/consensus_command.py` | **Step 3** — select the best alignment per read across per-aligner BAMs (long-read trio or short-read pair). Operates on either raw BAMs or already-corrected BAMs; the corrected-BAM path emits a final consensus via `core/consensus/corrected_consensus.py`. |
+| `restore-softclip` | `core/commands/restore_polya_command.py` | **Step 4 (DRS only, opt-in)** — reconstruct full Dorado read by pulling winning aligner's raw BAM record and restoring poly(A) from parquet as soft clip; for IGV validation only |
+| `run-all` | `core/commands/run_command.py` (+ `core/commands/run/`) | Full end-to-end pipeline (Steps 0–5) |
+| `analyze` | `core/commands/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
+| `batch` | `core/commands/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
+| `train-polya` | `core/commands/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
+| `validate` | `core/commands/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
+| `export` | `core/commands/export_command.py` | Export corrected 3' ends to bedGraph/bigWig |
+| `extract` | `core/commands/extract_command.py` | Extract per-read info from BAM to TSV |
+| `correct-cdna` | `core/commands/cdna_correct_command.py` | **ONT cDNA Stage 1** — UMI extraction, directional clustering, abPOA consensus, pre-trim → per-cluster FASTQ for `rectify align` |
+| `cdna-analyze` | `core/commands/cdna_analyze_command.py` | **ONT cDNA Stage 3** — walkback + walk-forward + gene/isoform/T1↔T2 on post-align coordinates from `rectify align` |
+| `trim-cdna-polya` | `core/commands/cdna_trim_command.py` | Trim poly(A) from cDNA reads (QuantSeq REV or ONT cDNA pre-processing) |
+| `tag-polya` | `core/commands/tag_polya_command.py` | Tag poly(A) tail lengths on reads (BAM tag annotation) |
+| `netseq` | `core/commands/netseq_command.py` | Process NET-seq BAM files with deconvolution |
+| `aggregate` | `core/commands/aggregate_command.py` | Aggregate reads into CPA / TSS / junction datasets |
+| `prescan` | `core/commands/prescan_command.py` | Pre-compute variant scan and junction pool from a merged BAM; emits `rescue_scan.pkl` and `junction_pool.pkl` consumed by chunked correction runs |
+| `split` | `core/commands/split_command.py` | Split a FASTQ into chunks and generate SLURM/PBS/UGE array-job scripts for parallel alignment |
+| `install-aligners` | `core/commands/install_aligners_command.py` | Download or compile optional aligner binaries (minimap2, mapPacBio, gapmm2, deSALT, uLTRA) into `~/.rectify/bin/` |
+| `test` | `core/commands/test_command.py` | Installation smoke check: runs `correct` on bundled validation reads and asserts expected corrected 3' ends |
 
 > **Note on `train-polya`:** Run once per sequencing technology/chemistry to
 > fit A-richness thresholds. Operates on reads mapping to control sites that
@@ -409,62 +413,118 @@ rectify/                              ← git repo root
 │   │
 │   ├── __init__.py                   version string, public API re-exports
 │   ├── __main__.py                   allows `python -m rectify`
-│   ├── cli.py                        argparse entry point; dispatches subcommands
+│   ├── cli.py                        argparse entry point; dispatches subcommands;
+│   │                                   global --Scer/--organism hook in main()
 │   ├── config.py                     all constants (chroms, thresholds, shifts)
 │   ├── slurm.py                      HPC utilities: thread limits, scratch staging
 │   ├── slurm_profiles/               YAML configs for HPC partitions
 │   │   ├── hpc_cpu.yaml              CPU partition (streaming + scratch on by default)
 │   │   └── hpc_gpu.yaml              GPU partition
-│   ├── provenance.py                 SHA-256 provenance tracking; skip-if-unchanged logic
 │   │
 │   ├── core/                         pipeline step implementations
 │   │   │
-│   │   ├── run_command.py            Steps 0–5 orchestrator (the "run-all" dispatcher)
-│   │   ├── align_command.py          Step 1 CLI wrapper
-│   │   ├── correct_command.py        Step 2 CLI wrapper (DRS / generic)
-│   │   ├── cdna_correct_command.py   ONT cDNA pipeline (UMI → consensus → isoform clustering)
-│   │   ├── cdna_trim_command.py      cDNA poly(A) trimming (rectify trim-cdna-polya)
-│   │   ├── drs_trim_command.py       DRS poly(A)+adapter pre-trim (rectify trim-polya)
-│   │   ├── tag_polya_command.py      poly(A) tail length tagging (rectify tag-polya)
-│   │   ├── analyze_command.py        Step 5 CLI wrapper + GFF/GTF parsing
-│   │   ├── batch_command.py          parallel/SLURM batch correction
+│   │   ├── unified_record.py         unified read record dataclass
+│   │   ├── position_index.py         per-position read-count index (corrected_3ends_index.bed.gz)
+│   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
+│   │   ├── spikein_filter.py         spike-in construct detection and filtering
+│   │   │
+│   │   ├── commands/                 CLI command wrappers (one per `rectify <subcmd>`)
+│   │   │   ├── run_command.py        Steps 0–5 orchestrator (the "run-all" dispatcher)
+│   │   │   ├── run/                  run-all sub-orchestrators (split from run_command):
+│   │   │   │   ├── helpers.py        reference-path resolution, per-aligner BAM lookup,
+│   │   │   │   │                       BAM-integrity / MD-tag checks
+│   │   │   │   ├── stages.py         per-stage runners (align, correct, per-aligner correct,
+│   │   │   │   │                       merge, analyze, aggregate)
+│   │   │   │   ├── single_sample.py  single-sample pipeline + per-sample worker
+│   │   │   │   ├── multi_sample.py   manifest-driven multi-sample pipeline
+│   │   │   │   └── chunked_batch.py  scheduler-array shell-script generator (--chunked-alignment)
+│   │   │   ├── align_command.py      Step 1 CLI wrapper
+│   │   │   ├── correct_command.py    Step 2 CLI wrapper (DRS / generic)
+│   │   │   ├── consensus_command.py  per-aligner BAM aligner-selection (`rectify consensus`)
+│   │   │   ├── analyze_command.py    Step 5 CLI wrapper + GFF/GTF parsing
+│   │   │   ├── batch_command.py      parallel/SLURM batch correction
+│   │   │   ├── cdna_correct_command.py   ONT cDNA pipeline Stage 1 (UMI → consensus FASTQ)
+│   │   │   ├── cdna_analyze_command.py   ONT cDNA pipeline Stage 3 (post-align analysis)
+│   │   │   ├── cdna_trim_command.py      cDNA poly(A) trimming (`rectify trim-cdna-polya`)
+│   │   │   ├── drs_trim_command.py       DRS poly(A)+adapter pre-trim (`rectify trim-polya`)
+│   │   │   ├── restore_polya_command.py  Step 4 softclip restore (`rectify restore-softclip`)
+│   │   │   ├── tag_polya_command.py      poly(A) tail length tagging (`rectify tag-polya`)
+│   │   │   ├── train_polya_command.py    poly(A) model training
+│   │   │   ├── validate_command.py       correction validation vs NET-seq / known sites
+│   │   │   ├── export_command.py         bedGraph/bigWig export
+│   │   │   ├── extract_command.py        per-read BAM → TSV extraction
+│   │   │   ├── aggregate_command.py      3'/5'/junction aggregation dispatcher
+│   │   │   ├── netseq_command.py         `rectify netseq` CLI
+│   │   │   ├── prescan_command.py        pre-compute variant scan + junction pool for chunked correction
+│   │   │   ├── split_command.py          FASTQ chunker for parallel array alignment
+│   │   │   ├── install_aligners_command.py   download/compile external aligners
+│   │   │   └── test_command.py           installation smoke-test
+│   │   │
+│   │   ├── align/                    alignment-layer modules
+│   │   │   ├── multi_aligner.py      Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
+│   │   │   ├── mpb_split_reads.py    mapPacBio long-read splitting and stitching
+│   │   │   ├── local_aligner.py      Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR
+│   │   │   └── preprocess.py         input detection (FASTQ vs BAM), bundled genome prep
+│   │   │
+│   │   ├── consensus/                aligner-consensus selection
+│   │   │   ├── consensus.py          per-read optimal aligner selection (non-chimeric fallback)
+│   │   │   ├── chimeric_consensus.py chimeric alignment stitching from sync-points
+│   │   │   ├── corrected_consensus.py    select winner from per-aligner CORRECTED TSVs (Step 3)
+│   │   │   ├── extract.py            extract per-aligner alignment info for scoring
+│   │   │   ├── scoring.py            composite alignment scoring helpers
+│   │   │   └── select.py             tie-breakers and selection logic
+│   │   │
+│   │   ├── bam/                      BAM I/O + per-read correction core
+│   │   │   ├── bam_processor.py      `correct_read_3prime`: per-read correction (Step 2①–⑨)
+│   │   │   ├── parallel.py           region-parallel + streaming wrappers
+│   │   │   │                           (process_bam_file_parallel, process_bam_streaming,
+│   │   │   │                            process_bam_streaming_parallel)
+│   │   │   ├── bam_writer.py         CIGAR surgery; corrected/soft-clipped/trimmed BAM emission
+│   │   │   ├── bedgraph_writers.py   bedGraph emitter (paired with bam writers)
+│   │   │   ├── netseq_bam_processor.py   NET-seq BAM → 3' end TSV
+│   │   │   ├── output.py             output-record serialization helpers
+│   │   │   ├── processing_stats.py   per-sample QC stat accumulation and reporting
+│   │   │   ├── read_edits.py         per-read edit-record dataclasses
+│   │   │   ├── regions.py            chromosome-region partitioning
+│   │   │   └── variant_scan.py       prescan-mode variant snapshot for correction
 │   │   │
 │   │   ├── correct/                  3' end correction modules
 │   │   │   ├── walkback.py           read-vs-ref 3' walkback core + DRS wrapper (walkback_drs)
+│   │   │   ├── indel_corrector.py    indel artifact correction; variant-aware rescue
 │   │   │   └── protocols/
 │   │   │       └── quantseq_rev.py   QuantSeq REV wrapper (3'=left, BAM strand=opposite)
 │   │   │
-│   │   ├── multi_aligner.py          Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
-│   │   ├── chimeric_consensus.py     chimeric alignment stitching from sync-points
-│   │   ├── consensus.py              per-read optimal aligner selection (non-chimeric fallback)
-│   │   ├── bam_processor.py          correction pipeline orchestrator (Step 2①–⑨)
+│   │   ├── polya/                    poly(A) detection / mispriming
+│   │   │   ├── atract_detector.py    A-tract boundary detection + ambiguity window
+│   │   │   ├── ag_mispriming.py      AG-richness mispriming screen (Roy & Chanfreau 2019)
+│   │   │   ├── polya_trimmer.py      poly(A) tail detection and trimming
+│   │   │   └── polya_model.py        JSON poly(A) model (A-richness thresholds)
 │   │   │
-│   │   ├── atract_detector.py        A-tract boundary detection + ambiguity window
-│   │   ├── ag_mispriming.py          AG-richness mispriming screen (Roy & Chanfreau 2019)
-│   │   ├── polya_trimmer.py          poly(A) tail detection and trimming
-│   │   ├── polya_model.py            JSON poly(A) model (A-richness thresholds)
-│   │   ├── indel_corrector.py        indel artifact correction; variant-aware rescue
-│   │   ├── false_junction_filter.py  poly(A)-artifact N-op (splice junction) removal
-│   │   ├── splice_aware_5prime.py    5' soft-clip junction rescue (intron-displaced TSS)
-│   │   ├── netseq_refiner.py         NET-seq NNLS deconvolution for CPA localization
-│   │   ├── netseq_deconvolution.py   low-level NNLS / PSF math
-│   │   ├── netseq_command.py         `rectify netseq` CLI
-│   │   ├── netseq_bam_processor.py   NET-seq BAM → 3' end TSV
-│   │   ├── netseq_output.py          NET-seq output formatting
-│   │   ├── junction_refiner.py       post-consensus N-op junction refinement (Module 2H)
-│   │   ├── terminal_exon_refiner.py  terminal exon boundary refinement
-│   │   ├── spikein_filter.py         spike-in construct detection and filtering
-│   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
-│   │   ├── junction_validator.py     cross-sample COMPASS-style junction validation
-│   │   ├── mpb_split_reads.py        mapPacBio long-read splitting and stitching
-│   │   ├── preprocess.py             input detection (FASTQ vs BAM), bundled genome prep
-│   │   ├── unified_record.py         unified read record dataclass
-│   │   ├── processing_stats.py       per-sample QC stat accumulation and reporting
-│   │   ├── export_command.py         bedGraph/bigWig export
-│   │   ├── extract_command.py        per-read BAM → TSV extraction
-│   │   ├── validate_command.py       correction validation vs NET-seq / known sites
-│   │   ├── train_polya_command.py    poly(A) model training
-│   │   ├── aggregate_command.py      3'/5'/junction aggregation dispatcher
+│   │   ├── splice/                   splice-junction handling
+│   │   │   ├── splice_aware_5prime.py    5' soft-clip junction rescue (Module 2F)
+│   │   │   ├── junction_refiner.py       post-consensus N-op refinement (Module 2H)
+│   │   │   ├── junction_scoring.py       HP-aware split-alignment scoring
+│   │   │   ├── junction_validator.py     cross-sample COMPASS-style junction validation
+│   │   │   ├── false_junction_filter.py  poly(A)-artifact N-op (splice junction) removal
+│   │   │   ├── hp_penalty.py             homopolymer-aware indel penalties
+│   │   │   ├── terminal_exon_refiner.py  terminal exon boundary refinement
+│   │   │   └── calibrate_junction_overhang.py    overhang calibration helper
+│   │   │
+│   │   ├── netseq/                   NET-seq deconvolution
+│   │   │   ├── netseq_refiner.py     NET-seq NNLS deconvolution for CPA localization
+│   │   │   ├── netseq_deconvolution.py   low-level NNLS / PSF math
+│   │   │   └── netseq_output.py      NET-seq output formatting
+│   │   │
+│   │   ├── cdna/                     ONT cDNA pipeline internals (called by cdna_correct_command)
+│   │   │   ├── umi.py                UMI regex extraction (SSP + TT-VVVV pattern)
+│   │   │   ├── cluster.py            directional clustering (Lev ≤ 3, 2× rule)
+│   │   │   ├── consensus.py          abPOA per-cluster consensus
+│   │   │   ├── walkback.py           cDNA-specific post-align walkback
+│   │   │   ├── isoforms.py           T1/T2 isoform clustering + reconciliation
+│   │   │   ├── read_info.py          per-cluster XG/XS/XI/XL/XU/XC tag schema
+│   │   │   ├── gff.py                GFF parsing for gene assignment
+│   │   │   ├── io.py                 BAM/FASTQ I/O helpers
+│   │   │   └── _constants.py         shared constants (tag names, SSP sequences)
 │   │   │
 │   │   ├── analyze/                  downstream statistical analysis modules
 │   │   │   ├── clustering.py         CPA site clustering (fixed-distance + adaptive)
@@ -481,7 +541,11 @@ rectify/                              ← git repo root
 │   │   │   ├── pan_mutant_refiner.py pan-mutant NET-seq CPA refinement
 │   │   │   ├── atract_refiner.py     A-tract-aware CPA position refinement
 │   │   │   ├── heatmap.py            heatmap visualization of cluster usage
-│   │   │   ├── splice_summary.py      per-read splice classification (annotated/alternative/novel/unspliced)
+│   │   │   ├── splice_summary.py     per-read splice classification (annotated/alternative/novel/unspliced)
+│   │   │   ├── bedgraph.py           analyze-stage bedgraph emitters
+│   │   │   ├── exclusions.py         exclusion-region masking at analyze stage
+│   │   │   ├── loaders.py            corrected-TSV / index loaders
+│   │   │   ├── manifest.py           multi-sample manifest parsing
 │   │   │   ├── pca.py                PCA of per-sample cluster counts
 │   │   │   └── summary.py            per-run summary statistics
 │   │   │
@@ -500,7 +564,7 @@ rectify/                              ← git repo root
 │   │   ├── stats.py                  confidence scoring, QC metrics
 │   │   ├── junction_bed.py           minimap2 junction BED generation from annotation
 │   │   ├── splice_motif.py           GT-AG and other splice site motif scoring
-│   │   └── provenance.py             (re-exports from rectify.provenance)
+│   │   └── provenance.py             SHA-256 provenance tracking; skip-if-unchanged logic
 │   │
 │   ├── visualize/                    plotting layer
 │   │   ├── config.py                 plot-wide style constants (colors, fonts, DPI)
@@ -514,29 +578,21 @@ rectify/                              ← git repo root
 │   │   ├── ridge.py                  ridge/joy-division plots of CPA distributions
 │   │   └── vep_panels.py             variant effect prediction visualization panels
 │   │
-│   ├── data/                         bundled reference data
-│   │   ├── __init__.py               data-loading API (ensure_reference_data(), etc.)
+│   ├── data/                         bundled reference data + organism dispatch
+│   │   ├── __init__.py               data-loading API + add_organism_args / resolve_reference_paths
 │   │   ├── genomes/saccharomyces_cerevisiae/
 │   │   │   ├── S288C_reference_sequence_R64-5-1_20240529.fsa.gz   genome FASTA (bgzipped)
 │   │   │   ├── *.fai, *.gzi, *.pkl                                 index and pickle cache
-│   │   │   ├── S288C_reference_sequence_R64-5-1_20240529.ncbi.gz   NCBI-named version (legacy)
 │   │   │   ├── saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz   gene annotation (GFF3)
 │   │   │   ├── go_annotations.tsv.gz                               SGD GO term assignments
-│   │   │   └── bbmap_index/                                        mapPacBio index
-│   │   ├── saccharomyces_cerevisiae_netseq_wt.tsv.gz               WT NET-seq reference
-│   │   ├── saccharomyces_cerevisiae_netseq_pan.tsv.gz              pan-mutant NET-seq reference
-│   │   ├── saccharomyces_cerevisiae_atract_netseq.tsv.gz           A-tract NET-seq reference
+│   │   │   ├── bbmap_index/                                        mapPacBio index
+│   │   │   └── desalt_index/                                       deSALT index
 │   │   ├── motif_databases/                                        MEME-format motif databases
-│   │   ├── models/                                                  trained poly(A) models (JSON)
-│   │   ├── validation/                                              bundled validation reads + TSVs
-│   │   │   ├── validation_reads.bam / .bai                          36 test reads for CI
-│   │   │   ├── corrected_3ends.tsv                                  expected correction output
-│   │   │   ├── aligners/                                            per-aligner test BAMs
-│   │   │   │   └── validation_reads.{minimap2,mapPacBio,gapmm2,deSALT,uLTRA}.bam
-│   │   │   └── rectified/                                           rectified output BAMs
-│   │   │       ├── rectified_corrected_3end.bam                     hard-clipped at corrected_3prime
-│   │   │       ├── rectified_pA_tail_trimmed.bam                    poly(A) soft-clipped
-│   │   │       └── rectified_pA_tail_soft_clipped.bam               full tail restored (DRS Step 4)
+│   │   ├── bin/linux_x86_64/                                       bundled aligner binaries
+│   │   └── validation/                                              bundled validation reads + TSVs
+│   │       ├── generate_igv_html.py                                  IGV-bundle generator
+│   │       ├── aligners/                                            per-aligner test BAMs
+│   │       └── rectified/                                           rectified output BAMs
 │   │
 │   ├── calibration/
 │   │   └── calibrate_shift_corrections.py   derive A-count→shift table from NET-seq data
@@ -545,13 +601,12 @@ rectify/                              ← git repo root
 │       ├── build_pan_mutant_netseq_database.py   build pan-mutant NET-seq TSV
 │       └── create_atract_netseq_reference.py     build A-tract NET-seq TSV
 │
-├── tests/                            pytest suite (~25 test files, one per module)
+├── tests/                            pytest suite (46 test files; 934 passing + 28 skipped + 4 deselected, ≈1 min)
 ├── docs/                             MkDocs source for RTD
 │   └── ARCHITECTURE.md               this file
 ├── conda-recipe/                     conda-forge recipe (meta.yaml)
 ├── examples/                         usage notebooks and scripts
 ├── scripts/                          helper shell/Python scripts (not part of package)
-├── slurm_profiles/ → rectify/slurm_profiles/  (profiles live inside the package)
 ├── pyproject.toml                    pip packaging metadata + dependency list
 ├── mkdocs.yml                        ReadTheDocs / MkDocs configuration
 ├── CLAUDE.md                         AI agent / developer context
@@ -564,9 +619,16 @@ rectify/                              ← git repo root
 
 ### Layer 1: Entry point
 
-**`cli.py`** — Builds the top-level `argparse` parser and 11 subparsers.
+**`cli.py`** — Builds the top-level `argparse` parser and 22 subparsers.
 Each subparser delegates to a `create_*_parser()` function in the
-corresponding `*_command.py`. No business logic lives here.
+corresponding `core/commands/*_command.py`. A global `--Scer` / `--organism`
+hook in `main()` calls `rectify.data.resolve_reference_paths(args)` after
+parsing for all subcommands except the three that perform their own bespoke
+reference resolution (`correct`, `run-all`, `batch`); the matching arg helper
+`rectify.data.add_organism_args` is wired into the parser for every
+reference-aware subcommand (align, analyze, aggregate, extract, validate,
+netseq, consensus, train-polya, prescan, split, export, correct, run-all,
+batch, …). No business logic lives in `cli.py`.
 
 **`config.py`** — Single source of truth for all numeric constants:
 chromosome name maps (chrI ↔ NCBI), A-count→expected-shift calibration
@@ -587,7 +649,7 @@ hashes input/output files and writes sidecar `.provenance.json`. The
 
 ### Layer 2: Pipeline orchestration
 
-**`core/run_command.py`** — The full end-to-end orchestrator. Handles
+**`core/commands/run_command.py`** (with helpers in `core/commands/run/`) — The full end-to-end orchestrator. Handles
 single-sample (FASTQ or BAM input) and multi-sample (manifest TSV) modes.
 In multi-sample mode, correction runs per-sample in parallel, then analysis
 runs once across all corrected outputs. DESeq2, GO enrichment, and motif
@@ -601,7 +663,7 @@ metadata parquet is written to the Oak output directory so it survives
 `$SCRATCH` purge; the trimmed FASTQ is written to `$SCRATCH/drs_trim/` for
 alignment I/O.
 
-**`core/batch_command.py`** — Parallel batch correction across samples.
+**`core/commands/batch_command.py`** — Parallel batch correction across samples.
 In interactive mode, auto-sizes a `ThreadPoolExecutor` to available CPUs
 and runs `rectify correct` per sample in parallel. In HPC mode, reads a
 profile YAML and generates array job scripts. Generated scripts include a
@@ -610,13 +672,13 @@ task ID from SLURM (`$SLURM_CPUS_PER_TASK`), PBS/Torque (`$PBS_NUM_PPN`),
 and UGE/SGE (`$NSLOTS`) environment variables, so the same script body
 works on all three schedulers without modification.
 
-**`core/align_command.py`** — Thin CLI wrapper around `multi_aligner.py`.
+**`core/commands/align_command.py`** — Thin CLI wrapper around `core/align/multi_aligner.py`.
 
-**`core/correct_command.py`** — Step 2 orchestrator (DRS / generic): validates
-inputs, sets thread limits, calls `bam_processor.process_bam_file_parallel()`
-or `process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
+**`core/commands/correct_command.py`** — Step 2 orchestrator (DRS / generic): validates
+inputs, sets thread limits, calls `core/bam/parallel.process_bam_file_parallel()`
+or `core/bam/parallel.process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
 
-**`core/cdna_correct_command.py`** — ONT cDNA pipeline Stage 1
+**`core/commands/cdna_correct_command.py`** — ONT cDNA pipeline Stage 1
 (`rectify correct-cdna`). Implements the upstream half of the PCB114.24
 workflow; downstream isoform analysis lives in `cdna_analyze_command.py`.
 1. **UMI extraction** — regex-matches SSP_FWD in soft-clip, extracts the
@@ -641,7 +703,7 @@ Per-cluster tags written to the FASTQ comment (alignment-independent):
 `XT` (read type 1/2), `XY` (read subtype), `XQ` (5' pre-trim length),
 `XK` (3' pre-trim length), `XB` (strand split n_top/n_bot).
 
-**`core/cdna_analyze_command.py`** — ONT cDNA pipeline Stage 3
+**`core/commands/cdna_analyze_command.py`** — ONT cDNA pipeline Stage 3
 (`rectify cdna-analyze`). Operates on the multi-aligner-rectified BAM
 produced by `rectify align` on the Stage-1 FASTQ. Per record:
 1. **Walkback** — recompute corrected poly-A tail length on post-align CIGAR
@@ -659,7 +721,7 @@ Outputs: `clusters.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, and a tagged
 `consensus_tagged.bam` (input BAM rewritten with the new XA/XG/XS/XI/XL
 tags added).
 
-**`core/analyze_command.py`** — Step 5 orchestrator: parses GFF/GTF,
+**`core/commands/analyze_command.py`** — Step 5 orchestrator: parses GFF/GTF,
 calls analysis modules in sequence, writes all output TSVs and plots.
 Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
@@ -667,7 +729,7 @@ Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
 ### Layer 3: Alignment (Step 1)
 
-**`core/multi_aligner.py`** — Runs all enabled aligners in parallel
+**`core/align/multi_aligner.py`** — Runs all enabled aligners in parallel
 subprocesses. Tier 1 (default): minimap2, mapPacBio, gapmm2. Tier 2
 (opt-in via `--aligners`): deSALT (high-sensitivity splice aligner) and
 uLTRA (annotation-guided graph aligner, requires GTF). Each aligner
@@ -676,7 +738,7 @@ to minimap2 via `--junc-bed` to improve splice site accuracy while keeping
 scoring annotation-blind (novel junctions are still discoverable). Returns
 per-aligner BAM paths.
 
-**`core/chimeric_consensus.py`** — Chimeric rectification: finds "sync
+**`core/consensus/chimeric_consensus.py`** — Chimeric rectification: finds "sync
 points" where two or more aligners agree on query→reference mapping, then
 scores segments between sync points independently. The best segment from
 each aligner can be combined into one chimeric alignment. This is the key
@@ -684,11 +746,11 @@ innovation that handles DRS reads where no single aligner wins everywhere:
 one may handle the 5' splice-through better, another the 3' poly(A)
 boundary.
 
-**`core/consensus.py`** — Simpler per-read optimal selection (non-chimeric):
+**`core/consensus/consensus.py`** — Simpler per-read optimal selection (non-chimeric):
 scores each aligner's full alignment and picks the best one. Used as
 fallback when chimeric stitching is disabled or sync points are not found.
 
-**`core/mpb_split_reads.py`** — mapPacBio can fail on reads >100 kb.
+**`core/align/mpb_split_reads.py`** — mapPacBio can fail on reads >100 kb.
 Splits long reads, aligns each chunk, then stitches the resulting BAMs
 back together with corrected CIGAR strings.
 
@@ -762,13 +824,16 @@ are added via `samtools calmd` to enable the MD-dependent modules in
 
 ### Layer 4: Correction (Step 3)
 
-**`core/bam_processor.py`** — The correction pipeline hub. Reads the BAM,
-dispatches per-read correction through modules ①–⑧ in sequence, and writes
-results. Supports two execution modes:
-- `process_bam_file_parallel()`: per-chromosome parallelism, accumulates
+**`core/bam/bam_processor.py`** (per-read core) **+ `core/bam/parallel.py`** (workers)
+— The correction pipeline hub. `bam_processor.py` owns the per-read workhorse
+`correct_read_3prime()`; `parallel.py` wraps it in the two execution modes and
+also contains the chunked/streaming variants:
+- `parallel.process_bam_file_parallel()`: per-chromosome parallelism, accumulates
   all results in memory before writing (use for small genomes or low RAM).
-- `process_bam_streaming()`: 10,000-read chunks, writes incrementally.
+- `parallel.process_bam_streaming()`: 10,000-read chunks, writes incrementally.
   Peak RAM ~4–5 GB regardless of BAM size. **Use this for SLURM jobs.**
+- `parallel.process_bam_streaming_parallel()`: streaming output combined with
+  multi-worker region-parallel execution.
 
 #### Read-vs-reference walkback (`core/correct/walkback.py`)
 
@@ -798,23 +863,23 @@ See "Why read-vs-reference walkback?" in the design decisions section below.
 
 #### Correction modules (called in order by bam_processor)
 
-**① `atract_detector.py`** — Counts A's (or T's for minus strand) in the
+**① `core/polya/atract_detector.py`** — Counts A's (or T's for minus strand) in the
 downstream genomic window, looks up expected alignment shift from the
 calibration table in `config.py`, and computes an `ambiguity_min`/
 `ambiguity_max` window. This correction is UNIVERSAL — it applies to
 all poly(A)-tailed RNA-seq, not just direct RNA.
 
-**② `ag_mispriming.py`** — For oligo-dT libraries: screens downstream
+**② `core/polya/ag_mispriming.py`** — For oligo-dT libraries: screens downstream
 sequence for AG-richness. High AG-richness flags a read as likely
 internally primed (misprimed on a genomic A/G run). The original
 RECTIFY algorithm from Roy & Chanfreau 2019.
 
-**③ `polya_trimmer.py`** — For reads that directly sequence the poly(A)
+**③ `core/polya/polya_trimmer.py`** — For reads that directly sequence the poly(A)
 tail: detects A-rich soft-clipped sequence, calculates `polya_length`,
 and back-calculates the pre-tail cleavage position. Uses a trained
 model (JSON) for A-richness thresholds.
 
-**④ `indel_corrector.py` (Module 2C)** — Detects deletion/insertion artifacts
+**④ `core/correct/indel_corrector.py` (Module 2C)** — Detects deletion/insertion artifacts
 that arise when aligners force-align poly(A) tails to genomic A-tracts.
 The `find_polya_boundary` walk-back algorithm scans backward from the
 soft-clip boundary, skipping A's, deletions, T sequencing errors, and N-ops,
@@ -831,12 +896,12 @@ until the first unambiguous non-A/T genome–read agreement. Key guards:
 The `VariantAwareHomopolymerRescue` class also handles cases where a SNP in
 an A-tract could be misinterpreted as an artifact.
 
-**⑤ `false_junction_filter.py`** — Removes spurious N operations (introns)
+**⑤ `core/splice/false_junction_filter.py`** — Removes spurious N operations (introns)
 in CIGAR strings near the 3' end that arise from poly(A) tail misalignment
 to distant A-tracts. A junction is flagged if it is within a configurable
 window of the 3' end AND the downstream region is highly A-rich.
 
-**⑥ `splice_aware_5prime.py` (Module 2F)** — Full Cat3 / Cat4 5' junction
+**⑥ `core/splice/splice_aware_5prime.py` (Module 2F)** — Full Cat3 / Cat4 5' junction
 rescue. When the first exon is short, aligners may place the read's 5' end
 within an annotated intron rather than at the true TSS. Four cases handled
 in priority order:
@@ -852,7 +917,7 @@ The proximity threshold for Cases 1/2/3 is extended by the soft-clip length
 (`dist > junction_proximity_bp + five_clip`), so reads whose soft-clipped
 bases reach across the junction boundary are not filtered by the distance check.
 
-**⑦ `junction_refiner.py` (Module 2H)** — Post-consensus N-op junction
+**⑦ `core/splice/junction_refiner.py` (Module 2H)** — Post-consensus N-op junction
 refinement. For every N-op in every read, collects all candidate junctions
 within `search_radius` (default 5000 bp) and scores each using HP-aware
 split-alignment. The rescue sequence (bases downstream of the N-op split
@@ -879,43 +944,44 @@ Fast path: reads already at an annotated canonical-tier-0 junction skip
 scoring entirely (255× speedup). Requires `--aligner-bams` for novel
 junction discovery.
 
-**⑧ `netseq_refiner.py`** — For reads whose corrected position falls in an
+**⑧ `core/netseq/netseq_refiner.py`** — For reads whose corrected position falls in an
 ambiguous window: queries NET-seq signal, deconvolves the PSF spread caused
 by short poly(A) tails in NET-seq, and re-assigns reads proportionally to
 deconvolved peak intensities. Converts positional uncertainty into a
 probabilistic split across the most likely true CPA sites. Requires
 NET-seq bigWig or TSV data.
 
-**⑨ `spikein_filter.py`** — Detects and removes reads from synthetic
+**⑨ `core/spikein_filter.py`** — Detects and removes reads from synthetic
 spike-in constructs by comparing 3' UTR sequence to the genomic
 reference; spike-ins have a synthetic 3' UTR not present in the genome.
 
 Support modules called by `bam_processor`:
-- **`polya_model.py`** — Loads/saves the JSON poly(A) model.
-- **`terminal_exon_refiner.py`** — Refines terminal exon boundaries.
-- **`junction_validator.py`** — Cross-sample COMPASS-style junction
+- **`core/polya/polya_model.py`** — Loads/saves the JSON poly(A) model.
+- **`core/splice/terminal_exon_refiner.py`** — Refines terminal exon boundaries.
+- **`core/splice/junction_validator.py`** — Cross-sample COMPASS-style junction
   validation: aggregates junctions across samples, applies minimum-support
   and splice-motif filters, then downgrades low-confidence junctions.
-- **`exclusion_regions.py`** — Reads a BED blacklist and marks reads
+- **`core/exclusion_regions.py`** — Reads a BED blacklist and marks reads
   overlapping excluded regions.
 
 #### Implementation file reference
 
 | File | Responsibility |
 |------|---------------|
-| `consensus.py` | `extract_alignment_info`, `score_alignment`, `select_best_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
-| `multi_aligner.py` | Per-aligner subprocess management, two-phase scheduling |
-| `bam_processor.py` | Per-read correction orchestration; calls all modules in order |
-| `splice_aware_5prime.py` | Module 2F: full Cat3/Cat4 5' junction rescue |
-| `junction_refiner.py` | Module 2H: N-op refinement, HP-aware scoring |
-| `indel_corrector.py` | Module 2C/2E: walk-back, A-tract, poly(A) boundary |
-| `false_junction_filter.py` | Module FJF: poly(A) artifact junction detection |
-| `bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue |
-| `local_aligner.py` | Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR |
-| `atract_detector.py` | A-tract ambiguity calculation (genome-only, used pre-consensus) |
-| `correct/walkback.py` | Read-vs-reference 3' walkback core + DRS wrapper (`walkback_drs`) |
-| `correct/protocols/quantseq_rev.py` | QuantSeq REV walkback wrapper (3'=left, inverted strand) |
-| `cdna_correct_command.py` | ONT cDNA pipeline: UMI → clustering → consensus → isoform typing |
+| `core/consensus/consensus.py` | `extract_alignment_info`, `score_alignment`, `select_best_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
+| `core/align/multi_aligner.py` | Per-aligner subprocess management, two-phase scheduling |
+| `core/bam/bam_processor.py` | Per-read correction core: `correct_read_3prime` calls all modules in order |
+| `core/bam/parallel.py` | Region-parallel / streaming wrappers around `correct_read_3prime` |
+| `core/splice/splice_aware_5prime.py` | Module 2F: full Cat3/Cat4 5' junction rescue |
+| `core/splice/junction_refiner.py` | Module 2H: N-op refinement, HP-aware scoring |
+| `core/correct/indel_corrector.py` | Module 2C/2E: walk-back, A-tract, poly(A) boundary |
+| `core/splice/false_junction_filter.py` | Module FJF: poly(A) artifact junction detection |
+| `core/bam/bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue |
+| `core/align/local_aligner.py` | Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR |
+| `core/polya/atract_detector.py` | A-tract ambiguity calculation (genome-only, used pre-consensus) |
+| `core/correct/walkback.py` | Read-vs-reference 3' walkback core + DRS wrapper (`walkback_drs`) |
+| `core/correct/protocols/quantseq_rev.py` | QuantSeq REV walkback wrapper (3'=left, inverted strand) |
+| `core/commands/cdna_correct_command.py` | ONT cDNA pipeline: UMI → clustering → consensus → isoform typing |
 
 ---
 
@@ -1180,7 +1246,7 @@ bases against both the intron reference and the exon-1 reference using HP-aware
 edit distance: snap only fires when the exon-1 match is strictly better (ties
 favour the unspliced interpretation, keeping the read in the intron).
 
-**No candidate guards in Module 2H (permanent policy, v3.1.7+):**
+**No candidate guards in Module 2H (permanent policy):**
 All junctions in the candidate pool are scored; non-canonical, non-annotated
 (novel) alternatives are never filtered before scoring. The previous guard
 (`if is_alt==1 and tier>=4 and is_novel==1: continue`) silently discarded reads
@@ -1271,4 +1337,4 @@ requiring a workflow manager.
 **6. Single genome normalization point.**
 All FASTA chromosome name translation happens in `load_genome()` and never
 again inside the pipeline. Any `CHROM_TO_GENOME` / `GENOME_TO_CHROM` lookup
-outside of `load_genome()` is dead code (legacy from pre-2.x).
+outside of `load_genome()` is dead code (legacy from an earlier internal version).

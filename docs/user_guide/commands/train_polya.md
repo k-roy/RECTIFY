@@ -27,6 +27,12 @@ rectify train-polya reads.bam \
     --control-sites control_cpa_sites.tsv \
     --min-reads 20 \
     -o my_polya_model.json
+
+# Bundled yeast genome (auto-fills --genome)
+rectify train-polya reads.bam \
+    --Scer \
+    --control-sites control_cpa_sites.tsv \
+    -o my_polya_model.json
 ```
 
 ---

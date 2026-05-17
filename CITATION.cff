@@ -1,0 +1,77 @@
+# See https://citation-file-format.github.io/ — used by GitHub's "Cite this
+# repository" button and by Zenodo for DOI minting.
+cff-version: 1.2.0
+title: "RECTIFY: RNA 5' and 3' End Correction Framework"
+message: >-
+  If you use this software, please cite the methods paper below
+  (Roy & Chanfreau 2020). A dedicated RECTIFY manuscript is in
+  preparation; this entry will be updated when it is released.
+type: software
+authors:
+  - given-names: Kevin R.
+    family-names: Roy
+    email: kevinrjroy@gmail.com
+    orcid: "https://orcid.org/0000-0002-0083-5161"
+    affiliation: "University of California, Los Angeles"
+  - given-names: Guillaume F.
+    family-names: Chanfreau
+    affiliation: "University of California, Los Angeles"
+identifiers:
+  - type: url
+    value: "https://github.com/k-roy/RECTIFY"
+    description: "Source code repository"
+  - type: url
+    value: "https://pypi.org/project/rectify-rna/"
+    description: "PyPI package"
+repository-code: "https://github.com/k-roy/RECTIFY"
+url: "https://rectify-rna.readthedocs.io"
+abstract: >-
+  RECTIFY is a unified framework for correcting 5' and 3' end mapping
+  artifacts in poly(A)-tailed RNA sequencing data, with support for
+  Nanopore direct RNA-seq, QuantSeq REV, ONT PCR-cDNA, NET-seq, and any
+  oligo-dT-primed RNA-seq. It combines multi-aligner consensus
+  (minimap2, mapPacBio, gapmm2, uLTRA, deSALT) with poly(A) walk-back,
+  indel correction, 5'-splice-junction rescue, false-junction handling
+  for poly(A) tails landing on genomic A-tracts, and optional NET-seq
+  NNLS deconvolution. Downstream analyses include adaptive
+  valley-based CPA clustering and DESeq2 at both gene and
+  cluster resolution.
+keywords:
+  - RNA-seq
+  - polyadenylation
+  - cleavage and polyadenylation
+  - direct RNA sequencing
+  - nanopore
+  - Oxford Nanopore Technologies
+  - QuantSeq
+  - NET-seq
+  - 3' end mapping
+  - splice junction
+  - multi-aligner consensus
+license: MIT
+version: "0.9.0"
+date-released: "2026-05-16"
+preferred-citation:
+  type: article
+  title: >-
+    Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends
+    at nucleotide resolution by 3'-end sequencing
+  authors:
+    - given-names: Kevin R.
+      family-names: Roy
+    - given-names: Guillaume F.
+      family-names: Chanfreau
+  journal: Methods
+  volume: 176
+  start: 4
+  end: 13
+  year: 2020
+  month: 4
+  doi: "10.1016/j.ymeth.2019.05.016"
+  identifiers:
+    - type: other
+      value: "PMID:31128237"
+      description: "PubMed ID"
+    - type: url
+      value: "https://pubmed.ncbi.nlm.nih.gov/31128237/"
+      description: "PubMed entry"

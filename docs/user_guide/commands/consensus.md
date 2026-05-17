@@ -48,6 +48,11 @@ rectify consensus \
     gapmm2:sample.gapmm2.sorted.bam \
     --genome genome.fa.gz \
     -o results/sample/
+
+# Bundled yeast genome + annotation (no --genome/--annotation needed)
+rectify consensus \
+    minimap2:sample.minimap2.sorted.bam mapPacBio:sample.mapPacBio.sorted.bam \
+    --Scer -o results/sample/
 ```
 
 ---

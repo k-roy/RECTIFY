@@ -55,7 +55,6 @@ APA shift analysis between conditions using Jensen-Shannon divergence.
       members:
         - analyze_cluster_shifts
         - get_top_shifted_genes
-        - compute_js_divergence
 
 ---
 
@@ -104,7 +103,6 @@ NET-seq point-spread function fitting and NNLS deconvolution.
       members:
         - build_convolution_matrix
         - deconvolve_signal
-        - fit_psf_from_controls
 
 ---
 

@@ -70,7 +70,7 @@ Aligner wrappers for minimap2, mapPacBio, gapmm2, uLTRA, and deSALT.
     options:
       members:
         - run_minimap2
-        - run_mapPacBio
+        - run_map_pacbio
         - run_gapmm2
         - run_ultra
         - run_desalt
@@ -84,9 +84,8 @@ A-tract ambiguity detection and classification.
 ::: rectify.core.polya.atract_detector
     options:
       members:
-        - detect_atract_ambiguity
-        - count_downstream_as
-        - classify_ambiguity_level
+        - calculate_atract_ambiguity
+        - get_ambiguity_category
 
 ---
 
@@ -97,8 +96,9 @@ NET-seq-guided position refinement for A-tract ambiguous reads.
 ::: rectify.core.netseq.netseq_refiner
     options:
       members:
-        - NetseqRefiner
         - NetseqLoader
+        - refine_with_netseq
+        - refine_batch
 
 ---
 
@@ -131,8 +131,9 @@ Correction statistics accumulation.
 ::: rectify.core.splice.splice_aware_5prime
     options:
       members:
-        - rescue_5prime_junction
-        - find_upstream_exon_match
+        - correct_5prime_for_splicing
+        - rescue_3ss_truncation
+        - build_intron_interval_tree
 
 ---
 
@@ -143,9 +144,9 @@ Poly(A) tail detection and length measurement.
 ::: rectify.core.polya.polya_trimmer
     options:
       members:
-        - trim_polya_tail
-        - measure_polya_length
-        - PolyAModel
+        - trim_polya_from_read
+        - trim_polya_from_bam_read
+        - calculate_full_polya_length
 
 ---
 
@@ -157,4 +158,4 @@ AG-mispriming detection for oligo-dT libraries.
     options:
       members:
         - screen_ag_mispriming
-        - compute_ag_richness
+        - calculate_ag_content

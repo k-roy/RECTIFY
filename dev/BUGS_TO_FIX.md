@@ -270,5 +270,5 @@ Core per-read consensus selection logic was exercised only through two periphera
 
 ## Historical bug fixes
 
-Resolved bugs are no longer tracked here. See `docs/CHANGELOG.md` for the
+Resolved bugs are no longer tracked here. See `../CHANGELOG.md` for the
 release-by-release history.

@@ -40,12 +40,18 @@ Precision transcript structure mapping for direct RNA nanopore sequencing. RECTI
 ```bash
 pip install rectify-rna
 
-# Single sample — bundled yeast genome (no external files needed)
-rectify correct reads.fastq.gz --organism yeast -o corrected.tsv
+# Yeast — bundled genome / GFF / GO / NET-seq, no external files needed
+rectify correct  reads.fastq.gz --Scer -o corrected.tsv
+rectify run-all  reads.bam      --Scer -o results/
 
-# Full pipeline: correct + multi-sample analysis
-rectify run-all reads.bam --genome genome.fa --annotation genes.gtf --output-dir results/
+# Any other organism — provide reference paths explicitly
+rectify run-all  reads.bam --genome genome.fa --annotation genes.gff -o results/
 ```
+
+`--Scer` is recognized by every reference-aware subcommand (`align`,
+`analyze`, `aggregate`, `extract`, `validate`, `netseq`, `consensus`,
+`train-polya`, `prescan`, `split`, `export`, `correct`, `run-all`, `batch`)
+and is shorthand for `--organism saccharomyces_cerevisiae`.
 
 See the [Quick Start guide](quickstart.md) for a step-by-step walkthrough.
 

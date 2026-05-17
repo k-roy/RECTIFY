@@ -1,0 +1,228 @@
+# Troubleshooting
+
+Common failure modes and the fastest path to a fix. If you don't find your
+issue here, please open a [GitHub issue](https://github.com/k-roy/RECTIFY/issues)
+with the full command, RECTIFY version (`rectify --version`), and a
+truncated traceback.
+
+---
+
+## Installation
+
+### `pip install rectify-rna` works but `rectify --version` says command not found
+
+The console script is created under `~/.local/bin/` for user installs. Add
+it to `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc to persist
+```
+
+For a conda env, the script lives in `$CONDA_PREFIX/bin/` — activate the
+env before running.
+
+### `ImportError: cannot import name 'matplotlib'` from a `rectify visualize` subcommand
+
+The visualization extras are not installed:
+
+```bash
+pip install "rectify-rna[visualize]"
+```
+
+### `mkdir: ~/.rectify/bin: Permission denied` during `rectify install-aligners`
+
+You are on a read-only home directory (some HPC environments mount it
+read-only on compute nodes). Set `RECTIFY_BIN_DIR` to a writable location:
+
+```bash
+export RECTIFY_BIN_DIR=/scratch/$USER/rectify_bin
+rectify install-aligners --all
+export PATH="$RECTIFY_BIN_DIR:$PATH"
+```
+
+---
+
+## Alignment
+
+### `gapmm2: command not found`, but I installed it via pip
+
+`gapmm2` is a pure-Python package — it does not install a `gapmm2` binary.
+RECTIFY calls it as a Python module. Verify the import:
+
+```bash
+python -c "import gapmm2; print(gapmm2.__version__)"
+```
+
+Versions `25.4.13+` regressed the `ts:` aux-tag handling and silently drop
+single-exon alignments. Pin to `25.4.5`:
+
+```bash
+pip install "gapmm2==25.4.5"
+```
+
+This pin is already in `pyproject.toml`'s `aligners` extras group.
+
+### `mapPacBio.sh: command not found`
+
+`mapPacBio.sh` is part of BBMap. Install via conda:
+
+```bash
+conda install -c bioconda bbmap
+```
+
+### `deSALT` binary is bundled — do I need to install it?
+
+On Linux/x86_64, the bundled binary at
+`rectify/data/bin/linux_x86_64/deSALT` is used automatically when no
+`deSALT` is on `PATH`. On macOS or Linux/aarch64, install via:
+
+```bash
+rectify install-aligners --desalt
+```
+
+This compiles deSALT v1.5.6 from source (requires `gcc` + `zlib`).
+
+### Aligner subprocess hangs forever / never produces output
+
+The most common cause is NFS or Lustre contention on a shared filesystem.
+Symptoms: `rectify run-all` fan-out runs are fine on a single node, but
+running many in parallel from the same shared input directory stalls.
+
+Fix: stage the input FASTQ to local scratch first (`/tmp/$USER/` on most
+HPC nodes), and write outputs to local scratch too. Then move final outputs
+back at the end.
+
+---
+
+## Correction (`rectify correct`)
+
+### `ValueError: No bundled genome available for organism 'yeast'`
+
+The bundled yeast genome must be present at
+`rectify/data/genomes/saccharomyces_cerevisiae/`. Verify:
+
+```bash
+python -c "from rectify.data import get_bundled_genome_path; print(get_bundled_genome_path('saccharomyces_cerevisiae'))"
+```
+
+If this returns `None`, the data files are missing from your install
+(possibly an incomplete `pip install`, or a sparse checkout). Reinstall:
+
+```bash
+pip install --force-reinstall --no-deps rectify-rna
+```
+
+### `Genome required for FASTQ input. Provide --genome or --organism with bundled genome.`
+
+You passed a FASTQ to `rectify correct` without a reference. `rectify
+correct` does its own quick alignment for FASTQ input; provide one of:
+
+```bash
+rectify correct reads.fastq.gz --Scer -o out.tsv          # yeast bundled
+rectify correct reads.fastq.gz --genome g.fa -o out.tsv   # custom genome
+```
+
+For FASTQ inputs with `--dT-primed-cDNA` (QuantSeq REV), the built-in
+aligner is wrong (it uses minimap2 only, which mis-aligns short antisense
+reads). Pre-align with `rectify align --short-read` first.
+
+### My corrected positions are identical to the raw 3' ends
+
+This means walk-back didn't fire. Common causes:
+
+1. **The terminal base already matches a non-A reference base** — RECTIFY
+   correctly leaves it alone. This is the desired behavior.
+2. **You're looking at the wrong column** — `original_3prime` is the raw
+   alignment endpoint; `corrected_3prime` is after correction. Diff them.
+3. **`--dT-primed-cDNA` is set but the input is DRS** — the dT-primed
+   modules assume poly(A) is NOT in the read; on DRS reads (poly(A) IS in
+   the read) they no-op. Use the default mode (no `--dT-primed-cDNA`) for
+   DRS data.
+
+### `corrected_3ends.tsv` strand is the BAM strand, not the gene strand
+
+This was a known issue in the post-hoc `11_polya_walkback_recompute.py`
+script (now fixed). In the canonical `rectify correct` output, the `strand`
+column is always the **gene / RNA strand**. If you're seeing BAM strands,
+you are looking at a stale TSV produced by the legacy script — re-run
+`rectify correct` to get the correct output.
+
+---
+
+## Multi-sample / SLURM
+
+### My SLURM batch job dies after 3 seconds with no log
+
+Two well-known sbatch traps that bite in this order:
+
+1. **`set -u` before `source ~/.bashrc`** — `/etc/profile.d/256term.sh`
+   references unbound `$COLORTERM`. Defer `set -u` until after sourcing.
+2. **AVX-512 segfault on AMD Milan nodes** — the anaconda3 python ships
+   AVX-512 intrinsics; on AMD Milan (no AVX-512) you get SIGILL within
+   ~15 seconds. Use `--exclude` for known Milan nodes or `--partition=owners`.
+
+See [`docs/user_guide/hpc_slurm.md`](user_guide/hpc_slurm.md) for the
+full SLURM profile YAML and recommended sbatch flags.
+
+### Login-node throttling kills my interactive iteration
+
+Don't iterate on login nodes — they're throttled. Grab a dev node:
+
+```bash
+# Sherlock (SLURM)
+sdev -c 8 -m 32GB -t 12:00:00
+tmux new -s dev
+
+# Hoffman2 (SGE)
+qrsh -l h_rt=12:00:00,h_data=16G -pe shared 8
+tmux new -s dev
+```
+
+---
+
+## Output / downstream
+
+### `bedtools genomecov` on my rectified BAM gives me read-body coverage, not 3'-end pileups
+
+`samtools depth` and `bedtools genomecov` are coverage tools — they count
+**all positions covered by aligned reads**, not 3'-end positions. For
+3'-end pileups, use one of:
+
+- The `bedgraph/` directory that `rectify analyze` emits — already a
+  proper per-base 3'-end signal, pooled by condition.
+- Build per-replicate bedgraphs from `corrected_3ends.tsv` directly
+  (one row per non-zero position, count of reads at that base).
+
+### IGV shows zero reads on the rectified BAM
+
+Check:
+
+1. The BAM is sorted: `samtools sort -o sorted.bam input.bam`
+2. The BAI is present and newer than the BAM: `samtools index sorted.bam`
+3. The chromosome names in the BAM match the loaded reference (yeast IGV
+   often expects `chrI` vs `chromosome_1` — convert with `samtools view -h
+   bam | sed 's/^@SQ\tSN:I\t/@SQ\tSN:chrI\t/' | samtools view -b - > new.bam`).
+
+### Visualization commands raise `ImportError: matplotlib`
+
+Install the visualization extras:
+
+```bash
+pip install "rectify-rna[visualize]"
+```
+
+---
+
+## Getting more help
+
+- **Documentation**: <https://rectify-rna.readthedocs.io>
+- **Issues**: <https://github.com/k-roy/RECTIFY/issues>
+- **Discussions**: <https://github.com/k-roy/RECTIFY/discussions>
+
+When reporting an issue, please include:
+
+1. `rectify --version`
+2. OS + Python version (`python --version`)
+3. The full command that failed
+4. The full traceback (or last ~50 lines of stderr)
+5. A minimal input that reproduces it, or a public accession + read range

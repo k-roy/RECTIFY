@@ -87,17 +87,21 @@ rectify analyze /dev/null \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--run-deseq2` | off | Run DESeq2 differential expression |
-| `--run-motif` | off | Run STREME motif discovery (requires MEME Suite) |
-| `--run-go` | off | Run GO enrichment |
-| `--run-shift` | on | APA shift analysis (proximal/distal usage changes) |
+| `--run-motif` | off | Run STREME motif discovery (requires MEME Suite + `--genome`) |
+| `--motif-upstream` | 100 | Window upstream of CPA for motif discovery (bp) |
+| `--motif-downstream` | 50 | Window downstream of CPA for motif discovery (bp) |
+
+GO enrichment runs automatically when `--go-annotations` is provided; the bundled yeast file is auto-selected with `--Scer`.
 
 ### Clustering parameters
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--merge-distance` | 25 | Max bp distance between sites to merge into one cluster |
+| `--cluster-distance` | 25 | Max bp distance between sites to merge into one cluster |
 | `--min-reads` | 5 | Minimum total reads per cluster |
-| `--min-samples` | 1 | Minimum samples contributing reads to a cluster |
+| `--min-cluster-samples` | 2 | Minimum samples a cluster must appear in (filters singleton-sample noise) |
+| `--max-cluster-radius` | 10 | Adaptive clustering: max bp from peak to cluster boundary |
+| `--min-peak-sep` | 5 | Adaptive clustering: min bp between distinct CPA peaks |
 
 ### Performance
 

@@ -30,9 +30,13 @@ Data loaders for metagene input formats.
 ::: rectify.visualize.metagene_loaders
     options:
       members:
-        - load_bam_signal
-        - load_bigwig_signal
-        - load_corrected_tsv_signal
+        - loci_from_bed
+        - loci_from_gff
+        - loci_from_tsv
+        - loci_from_motif_scan
+        - loci_from_pickle
+        - position_index_from_tsv
+        - position_index_from_bigwig
 
 ---
 
@@ -44,9 +48,7 @@ Multi-track genome browser figure generation (coverage, gene annotation, reads).
     options:
       members:
         - MultiTrackFigure
-        - add_coverage_track
-        - add_gene_track
-        - add_read_browser_track
+        - create_gene_browser
 
 ---
 
@@ -57,8 +59,11 @@ Per-base coverage track plotting.
 ::: rectify.visualize.coverage
     options:
       members:
-        - plot_coverage
-        - compute_coverage
+        - draw_coverage_track
+        - draw_strand_coverage
+        - extract_coverage_from_bam
+        - extract_coverage_from_array
+        - compare_coverage_tracks
 
 ---
 
@@ -69,8 +74,11 @@ Gene annotation track drawing.
 ::: rectify.visualize.gene_track
     options:
       members:
-        - plot_gene_track
-        - GeneTrackConfig
+        - draw_gene_track
+        - draw_gene_arrow
+        - assign_feature_levels
+        - get_genes_in_region
+        - GENE_TYPE_COLORS
 
 ---
 
@@ -81,8 +89,10 @@ Read-level alignment visualization.
 ::: rectify.visualize.read_browser
     options:
       members:
-        - ReadBrowser
-        - plot_read_alignment
+        - plot_stacked_read_panel
+        - draw_stacked_reads
+        - assign_rows
+        - parse_junction_strings
 
 ---
 
@@ -93,9 +103,12 @@ Plotting utilities and style helpers.
 ::: rectify.visualize.figure_utils
     options:
       members:
-        - set_style
-        - save_figure
-        - add_scale_bar
+        - set_publication_style
+        - save_multi_format
+        - despine
+        - format_genomic_axis
+        - plot_metagene_line
+        - add_metagene_annotations
 
 ---
 

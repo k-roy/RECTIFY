@@ -1,12 +1,10 @@
-# `rectify correct-cdna` — Design Spec
+# `rectify correct-cdna` — UMI consensus for ONT PCR-cDNA
 
-**Status:** draft v1, 2026-05-10
-**Author:** Kevin Roy + Claude
-**Scope:** new subcommand for the rectify pipeline that merges PCR-cDNA reads
-originating from the same starting RNA molecule into a single per-molecule
-consensus read.
-
----
+`rectify correct-cdna` collapses PCR copies of the same starting RNA molecule
+into a single per-molecule consensus read, for libraries that carry a
+structured UMI on the cDNA adapter (currently Oxford Nanopore SQK-PCB114.24
+is the documented configuration; the algorithm generalizes to any kit with a
+fixed-length UMI adjacent to a known anchor motif).
 
 ## Goal
 
@@ -259,59 +257,21 @@ Total expected: **~90 s for a full sample of 1.5 M reads** on M1 with 8 cores.
 
 ---
 
-## Open design questions
+## Design notes
 
-1. **Should the cross-orient merge use sequence overlap or position overlap?**
-   Position overlap is simpler (use alignment coordinates); sequence overlap
-   handles cases where the consensuses don't align cleanly in the middle. Plan:
-   start with position overlap; revisit if mid-mRNA accuracy is poor.
-
-2. **What about reads that don't have an extractable UMI?** ~18 % of reads.
-   Options: (a) drop them; (b) fall through to position-only dedup with a
-   "no-UMI" cluster label. **Default: drop, but log the count.** Position-only
-   dedup admits inter-molecule collisions and isn't the design's purpose.
-
-3. **What about reads that are orientation-ambiguous (SSP not found cleanly)?**
-   These are dropped in 1a. Flagged in stats.
-
-4. **Do we cluster by exon-aware position?** Reads that start at the same exon
-   but at slightly different splice forms would have similar but not identical
-   anchors. The 25 bp window handles small differences; for splice form
-   diversity at the same gene, those should cluster as separate molecules
-   (different starting RNAs), which is what we want.
-
-5. **How do we handle barcodes (sample multiplexing)?** Out of scope for this
-   subcommand — assume the input BAM is already demultiplexed per sample.
-
----
-
-## Validation checklist (before merging to rectify master)
-
-- [ ] On `wt_rep1.chrI.bam`: emits cdna_consensus.bam with N reads, where N is
-      between (size-1 cluster count) and (input read count) — gives the
-      empirical dedup ratio.
-- [ ] On the same data: cdna_stats.tsv pct_clusters_paired_cross_orient is in
-      the 30–70 % range (mostly singletons due to undersampling, but a real
-      fraction of cross-orient pairs as observed in the empirical analysis).
-- [ ] At least 2 spot-checked clusters where Stage 2 paired sense+antisense
-      consensuses give a longer / cleaner alignment than either input.
-- [ ] Test suite: unit tests for UMI extraction, anchor computation,
-      Levenshtein clustering, POA consensus.
-- [ ] Cross-cluster integration test: synthetic "5 PCR sibs of 1 molecule, 3
-      sense + 2 antisense" → must collapse to 1 record.
-
----
-
-## Implementation roadmap
-
-- **v0 (this session):** Standalone Python module under `~/work/cdna_dev/src/`,
-  testable on `wt_rep1.chrI.bam`. Stages 1a + 1b + 1c + 1d only (UMI
-  extraction + clustering, no consensus). Validates the cluster output by
-  printing per-cluster stats.
-- **v1:** Add Stage 1e (abPOA consensus) and 1f (minimap2 re-align). Output
-  per-orientation consensus BAM.
-- **v2:** Add Stage 2 (cross-orient merge). Output final cdna_consensus.bam.
-- **v3:** Integrate into rectify as `rectify correct-cdna` subcommand;
-  follow rectify's CLI / logging / provenance conventions.
-- **v4:** Production run on the full 6 PCB114.24 samples on H2; deposit to
-  `/u/project/guillom/shared/processed/by4742_cdna_pcb114_2026_consensus/`.
+- **Cross-orientation merge uses position overlap, not sequence overlap.**
+  Sequence overlap would be more forgiving in mid-mRNA regions where the two
+  consensuses don't align cleanly, but position overlap (using alignment
+  coordinates) is simpler and was empirically sufficient on the validation set.
+- **Reads without an extractable UMI (~18 % of reads) are dropped, with a
+  counter logged in `cdna_stats.tsv`.** Position-only dedup would admit
+  inter-molecule collisions and is not the goal of this subcommand.
+- **Orientation-ambiguous reads** (SSP motif not found cleanly) are dropped in
+  Stage 1a and reported in stats.
+- **Exon-aware clustering is intentionally not performed.** Reads that start
+  at the same exon boundary but follow different splice forms should be
+  treated as distinct starting molecules — which is what the
+  `(locus, orientation, UMI)` cluster key already produces. The ±25 bp
+  anchor window absorbs minor priming jitter without merging splice variants.
+- **Sample multiplexing is out of scope.** The input BAM is assumed to be
+  pre-demultiplexed per sample.

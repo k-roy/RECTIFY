@@ -159,5 +159,8 @@ nav:
     - rectify.core.analyze: api/analyze.md
     - rectify.utils: api/utils.md
     - rectify.visualize: api/visualize.md
+  - Reference:
+    - Troubleshooting: troubleshooting.md
+    - Tool comparison: comparison.md
   - Changelog: changelog.md
   - Contributing: contributing.md

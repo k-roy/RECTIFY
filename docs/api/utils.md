@@ -32,7 +32,7 @@ CIGAR string parsing, soft-clip extraction, and indel detection.
         - extract_soft_clips
         - extract_deletions
         - extract_insertions
-        - cigar_query_length
+        - get_query_length
 
 ---
 
@@ -43,11 +43,12 @@ Chromosome name normalization and size lookup.
 ::: rectify.utils.chromosome
     options:
       members:
-        - normalize_chrom_name
-        - get_chrom_size
-        - CANONICAL_CHROMS
-        - NCBI_TO_CHROM
-        - CHROM_SIZES
+        - normalize_chromosome
+        - normalize_dataframe_chromosomes
+        - detect_chromosome_format
+        - build_chromosome_map
+        - YEAST_NCBI_TO_CHR
+        - YEAST_CHR_TO_NCBI
 
 ---
 
@@ -58,8 +59,11 @@ BED file generation for splice junction annotation.
 ::: rectify.utils.junction_bed
     options:
       members:
-        - gff_to_junction_bed
-        - gtf_to_junction_bed
+        - generate_junction_bed
+        - parse_gff_introns
+        - parse_gtf_introns
+        - write_junction_bed
+        - get_minimap2_junc_args
 
 ---
 
@@ -70,9 +74,10 @@ Canonical splice site detection.
 ::: rectify.utils.splice_motif
     options:
       members:
-        - is_canonical_donor
-        - is_canonical_acceptor
-        - score_splice_motif
+        - SpliceMotifScorer
+        - NonCanonicalSSDetector
+        - get_splice_site_dinucleotides
+        - get_splice_site_sequences
 
 ---
 
@@ -83,9 +88,11 @@ Statistics aggregation for QC reporting.
 ::: rectify.utils.stats
     options:
       members:
-        - ProcessingStats
-        - update_from_result
-        - generate_summary_report
+        - calculate_summary_stats
+        - format_summary_report
+        - calculate_acount_distribution
+        - calculate_shift_by_acount
+        - assign_qc_flag
 
 ---
 
@@ -96,5 +103,5 @@ Tool version tracking for reproducibility.
 ::: rectify.utils.provenance
     options:
       members:
-        - get_tool_versions
-        - record_provenance
+        - ProvenanceTracker
+        - init_provenance

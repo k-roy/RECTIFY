@@ -16,6 +16,21 @@ should be read as "what landed before 0.9.0 shipped publicly."
 
 ### Changed
 
+- **Universal `--Scer` / `--organism` shorthand** (commit `3454418`): every
+  reference-aware subcommand now accepts `--Scer` (= `--organism
+  saccharomyces_cerevisiae`) and resolves the bundled genome / GFF / GO
+  annotations automatically. A single shared helper
+  (`rectify.data.add_organism_args`) attaches the argparse pair, and a single
+  CLI hook (`rectify.data.resolve_reference_paths`, called once in
+  `rectify.cli.main()` between `parse_args()` and dispatch) fills `args.genome`
+  / `args.annotation` / `args.go_annotations` from the bundled paths. Covers:
+  `align`, `analyze`, `aggregate`, `extract`, `validate`, `netseq`, `consensus`,
+  `train-polya`, `prescan`, `split`, `export`, `correct`, `run-all`, `batch`.
+  `--genome` is relaxed from `required=True` to `default=None` on the commands
+  where it was strict (`align`, `consensus`, `netseq`, `prescan`,
+  `train-polya`). 46 new tests in `tests/test_organism_helper.py` cover the
+  helper, each subcommand's `--Scer` wiring, and the CLI main() hook
+  end-to-end.
 - **Internal documentation restructure**: separated user-facing docs (`docs/`)
   from contributor-only material (new `dev/` tree). Promoted `CHANGELOG.md` to
   repo root per OSS convention; mkdocs site re-exposes it via a snippet stub.

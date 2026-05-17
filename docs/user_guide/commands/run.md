@@ -82,8 +82,19 @@ rectify run-all \
 |----------|---------|-------------|
 | `--skip-alignment` | off | Skip alignment step (FASTQ input with pre-aligned BAM) |
 | `--drs` | off | Enable DRS workflow: adds Step 0 poly(A)+adapter trimming before alignment and Step 4 soft-clip restore after correction (BAM input only) |
-| `--no-polya-sequenced` | off | Disable poly(A) trimming and indel correction |
+| `--dT-primed-cDNA` | off | Input is dT-primed cDNA (QuantSeq, etc.) — poly(A) NOT in read. Enables indel artifact correction and poly(A) trimming modules. |
+| `--short-read` | off | Input is short-read data (Illumina/Aviti ≤150 bp). Uses bbmap + bwa instead of the long-read aligner panel and disables poly(A)/A-tract/indel modules. |
 | `--reference` | auto | Reference condition for DESeq2 (case-insensitive) |
+
+*(deprecated alias retained for backwards compatibility: `--no-polya-sequenced` (synonym for `--dT-primed-cDNA`). Use the current flags above for new pipelines.)*
+
+!!! note "ONT PCR-cDNA (SQK-PCB114.24, SSP + UMI)"
+    `run-all` does not yet wire the `--ONT-cDNA` mode end-to-end. For ONT
+    PCR-cDNA libraries with UMI adapters, run the cDNA-specific subcommands
+    directly: `rectify correct-cdna` (Stage 1 UMI consensus) →
+    `rectify align` → `rectify cdna-analyze`. See the
+    [ONT PCR-cDNA pipeline guide](correct_cdna_overview.md) for the full
+    sequence.
 
 ### NET-seq
 
@@ -95,12 +106,27 @@ rectify run-all \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--aligner` | minimap2 | Primary aligner (`minimap2`, `mapPacBio`, `gapmm2`) |
-| `--junction-aligners` | — | Optional junction-mode aligners: `uLTRA`, `deSALT` |
-| `--parallel-aligners` | off | Run multiple aligners in parallel |
-| `--chimeric-consensus` | off | Use chimeric CIGAR assembly (experimental) |
-| `--ultra-path` | auto | Path to uLTRA executable |
-| `--desalt-path` | auto | Path to deSALT executable |
+| `--base-aligners` | minimap2 mapPacBio gapmm2 (long-read) / bbmap bwa (`--short-read`) | Aligners to include in the consensus pool |
+| `--junction-aligners` | uLTRA deSALT (long-read) / [] (short-read) | Junction-aware aligners (requires `--annotation`) |
+| `--no-junction-aligners` | — | Explicitly disable uLTRA + deSALT |
+| `--parallel-aligners` | off | Run base aligners in parallel (divides `--threads` evenly) |
+| `--chimeric-consensus` | on | Per-segment aligner selection (use `--no-chimeric-consensus` to disable) |
+| `--ultra-path` | `uLTRA` | Path to uLTRA executable |
+| `--desalt-path` | `deSALT` | Path to deSALT executable |
+
+### Chunked alignment (HPC array submission)
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--chunked-alignment` | off | Generate scheduler array scripts for chunked parallel alignment instead of running inline |
+| `--force-no-chunking` | off | DANGER: bypass the chunking requirement for FASTQ inputs (local workstation only) |
+| `--target-reads-per-chunk` | 500000 | Target reads per alignment chunk when `--chunked-alignment` is set |
+| `--scheduler` | slurm | Target scheduler for generated script headers (`slurm`, `uge`, `pbs`) |
+| `--slurm-partition` / `--slurm-account` | — | Header values for SLURM scripts |
+| `--uge-queue` / `--uge-pe` | `long.q` / `smp` | Header values for UGE/SGE scripts |
+| `--pbs-queue` | `workq` | Header value for PBS/Torque scripts |
+| `--python-path` | `sys.executable` | Explicit Python interpreter for generated scripts |
+| `--rectify-src` | auto | Path to RECTIFY source checkout for generated scripts |
 
 ### Analysis options
 

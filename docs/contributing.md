@@ -28,7 +28,7 @@ pytest tests/test_indel_corrector.py -v
 pytest -k "atract" -v
 ```
 
-The test suite has 435 tests. All should pass before submitting a PR.
+The test suite has 934 tests (28 skipped, 4 deselected by default). All non-skipped tests should pass before submitting a PR.
 
 ---
 
