@@ -347,21 +347,8 @@ def create_run_parser(subparsers):
     )
 
     # Organism / bundled reference
-    run_parser.add_argument(
-        '--organism',
-        default=None,
-        help='Organism name for bundled genome/annotation/NET-seq '
-             '(e.g., yeast, saccharomyces_cerevisiae). '
-             'Required when --genome and --annotation are not specified.'
-    )
-    run_parser.add_argument(
-        '--Scer',
-        dest='organism',
-        action='store_const',
-        const='saccharomyces_cerevisiae',
-        help='Shorthand for --organism saccharomyces_cerevisiae. '
-             'Uses all bundled S. cerevisiae reference data (genome, GFF, GO, NET-seq).'
-    )
+    from rectify.data import add_organism_args
+    add_organism_args(run_parser)
 
     # Optional correction arguments
 

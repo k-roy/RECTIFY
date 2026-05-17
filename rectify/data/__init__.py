@@ -752,3 +752,126 @@ def load_bundled_go_annotations(organism: str) -> Optional['pd.DataFrame']:
         return None
 
     return pd.read_csv(go_path, sep='\t', compression='gzip')
+
+
+# =============================================================================
+# Shared --organism / --Scer argparse helper
+# =============================================================================
+
+def add_organism_args(parser_or_group) -> None:
+    """
+    Attach ``--organism`` and ``--Scer`` arguments to a parser or argument group.
+
+    Every RECTIFY subcommand that operates on a reference genome or annotation
+    uses this helper so the bundled-organism shortcut behaves identically
+    everywhere. The matching call to :func:`resolve_reference_paths` happens
+    once in :func:`rectify.cli.main` between ``parse_args`` and dispatch,
+    so command implementations need no further wiring.
+
+    Args:
+        parser_or_group: An ``argparse`` parser or argument group. Both
+            ``parser.add_argument`` and ``argument_group.add_argument`` are
+            supported.
+    """
+    parser_or_group.add_argument(
+        '--organism',
+        default=None,
+        help='Organism name for bundled genome / annotation / NET-seq '
+             '(e.g. yeast, saccharomyces_cerevisiae). When set, --genome '
+             'and --annotation are optional — bundled data is used.',
+    )
+    parser_or_group.add_argument(
+        '--Scer',
+        dest='organism',
+        action='store_const',
+        const='saccharomyces_cerevisiae',
+        help='Shorthand for --organism saccharomyces_cerevisiae. Uses bundled '
+             'S. cerevisiae reference data (genome, GFF, GO, NET-seq).',
+    )
+
+
+def resolve_reference_paths(
+    args,
+    *,
+    require_genome: bool = True,
+    verbose: bool = True,
+) -> None:
+    """
+    Resolve ``--genome`` / ``--annotation`` / ``--go-annotations`` from an organism.
+
+    Mutates ``args`` in place. Safe to call on any ``argparse.Namespace``: the
+    function inspects ``hasattr(args, ...)`` before touching any attribute,
+    so it is a no-op for subcommands that do not expose those flags.
+
+    Behavior:
+      - If ``args.organism`` is set and ``args.genome`` is missing, fills it
+        from the bundled genome path.
+      - If ``args.organism`` is set and ``args.annotation`` is missing, fills
+        it from the bundled annotation path.
+      - If ``args.organism`` is set and ``args.go_annotations`` is missing,
+        fills it from the bundled GO path.
+      - If ``args.organism`` is set and ``args.netseq_dir`` is missing,
+        leaves it alone (loaders read bundled NET-seq via the organism arg).
+      - If ``require_genome`` is True and the command has a ``--genome``
+        slot but no path could be resolved (neither explicit nor bundled),
+        exits with a clear error message.
+
+    Args:
+        args: An ``argparse.Namespace`` returned by ``parser.parse_args()``.
+        require_genome: When True (default for legacy ``run-all`` /
+            ``correct`` / ``batch`` callers), exit with an error if no genome
+            is resolvable. When False (default for the global CLI hook), the
+            subcommand is responsible for raising its own errors.
+        verbose: Print bundled-data attribution messages.
+    """
+    import sys
+
+    if not hasattr(args, 'organism'):
+        return
+
+    organism = getattr(args, 'organism', None)
+    genome_arg = getattr(args, 'genome', None)
+    annotation_arg = getattr(args, 'annotation', None)
+    has_genome_slot = hasattr(args, 'genome')
+
+    if organism is None and genome_arg is None:
+        if require_genome and has_genome_slot:
+            print(
+                "ERROR: No reference genome provided.\n"
+                "  Supply --genome /path/to/genome.fa,\n"
+                "  or use --Scer (S. cerevisiae bundled data),\n"
+                "  or use --organism <name> for another supported organism.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
+
+    if organism is not None:
+        genome_path, annotation_path, data_source = ensure_reference_data(
+            organism=organism,
+            custom_genome=genome_arg,
+            custom_annotation=annotation_arg,
+            verbose=verbose,
+        )
+    else:
+        genome_path = Path(genome_arg) if genome_arg else None
+        annotation_path = Path(annotation_arg) if annotation_arg else None
+        data_source = 'custom' if genome_path else 'none'
+
+    if has_genome_slot and require_genome and genome_path is None:
+        print(
+            f"ERROR: No bundled genome available for organism '{organism}'. "
+            "Use --genome to provide a custom reference.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if has_genome_slot and genome_path is not None:
+        args.genome = genome_path
+    if hasattr(args, 'annotation') and annotation_path is not None:
+        args.annotation = annotation_path
+
+    if hasattr(args, 'go_annotations') and not getattr(args, 'go_annotations', None) and organism:
+        go_path = get_bundled_go_annotations_path(normalize_organism(organism))
+        if go_path:
+            args.go_annotations = go_path

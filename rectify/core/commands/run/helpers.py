@@ -20,58 +20,18 @@ from typing import Dict, Optional
 
 def _resolve_reference_paths(args) -> None:
     """
-    Resolve genome/annotation/GO annotation paths from explicit args or bundled data.
+    Legacy in-place reference resolver for ``rectify run-all`` / ``batch``.
 
-    Reads args.genome, args.annotation, args.organism.
-    Updates args.genome, args.annotation, and args.go_annotations in place.
-
-    Raises SystemExit if a genome cannot be resolved (nothing to align/correct against).
+    Thin wrapper around :func:`rectify.data.resolve_reference_paths` preserved
+    for direct internal callers (``run_command.run``, ``batch_command`` slurm
+    generators, ``tests/test_run_command_wiring.py``) that need the strict
+    "no genome → exit" behavior. New subcommands should rely on the global
+    hook in :func:`rectify.cli.main`, which calls
+    ``resolve_reference_paths(..., require_genome=False)``.
     """
-    from rectify.data import ensure_reference_data, get_bundled_go_annotations_path, normalize_organism
+    from rectify.data import resolve_reference_paths
 
-    organism = getattr(args, 'organism', None)
-    genome_arg = getattr(args, 'genome', None)
-    annotation_arg = getattr(args, 'annotation', None)
-
-    if organism is None and genome_arg is None:
-        print(
-            "ERROR: No reference genome provided.\n"
-            "  Supply --genome /path/to/genome.fa,\n"
-            "  or use --Scer (S. cerevisiae bundled data),\n"
-            "  or use --organism <name> for another supported organism.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if organism is not None:
-        genome_path, annotation_path, data_source = ensure_reference_data(
-            organism=organism,
-            custom_genome=genome_arg,
-            custom_annotation=annotation_arg,
-            verbose=True,
-        )
-    else:
-        # Explicit paths only — validate they exist
-        genome_path = Path(genome_arg) if genome_arg else None
-        annotation_path = Path(annotation_arg) if annotation_arg else None
-        data_source = 'custom' if genome_path else 'none'
-
-    if genome_path is None:
-        print(
-            f"ERROR: No bundled genome available for organism '{organism}'. "
-            "Use --genome to provide a custom reference.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    args.genome = genome_path
-    args.annotation = annotation_path
-
-    # Resolve bundled GO annotations if not already set
-    if not getattr(args, 'go_annotations', None) and organism:
-        go_path = get_bundled_go_annotations_path(normalize_organism(organism))
-        if go_path:
-            args.go_annotations = go_path
+    resolve_reference_paths(args, require_genome=True, verbose=True)
 
 
 # ---------------------------------------------------------------------------

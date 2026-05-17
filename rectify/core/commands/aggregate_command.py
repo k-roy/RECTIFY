@@ -72,6 +72,9 @@ def create_aggregate_parser(subparsers: argparse._SubParsersAction) -> argparse.
         help='GFF file with intron features (for partial junction rescue)'
     )
 
+    from rectify.data import add_organism_args
+    add_organism_args(ref_group)
+
     # Clustering parameters
     cluster_group = parser.add_argument_group('Clustering parameters')
     cluster_group.add_argument(

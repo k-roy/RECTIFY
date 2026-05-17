@@ -178,6 +178,16 @@ def main(argv: Optional[list] = None):
         parser.print_help()
         sys.exit(1)
 
+    # Global --organism / --Scer hook: fill args.genome / args.annotation /
+    # args.go_annotations from bundled data for any subcommand that opted into
+    # rectify.data.add_organism_args. Skipped for commands that perform their
+    # own bespoke resolution (correct, run-all, batch — each decompresses the
+    # bundled FASTA / merges with NET-seq path overrides before alignment).
+    _BESPOKE_RESOLVERS = {'correct', 'run-all', 'batch'}
+    if args.command not in _BESPOKE_RESOLVERS:
+        from .data import resolve_reference_paths
+        resolve_reference_paths(args, require_genome=False, verbose=False)
+
     # Import commands only when needed
     if args.command == 'correct':
         from .core.commands import correct_command

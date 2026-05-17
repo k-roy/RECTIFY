@@ -60,9 +60,10 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
     req.add_argument(
         '--genome',
         type=str,
-        required=True,
+        default=None,
         metavar='FASTA',
-        help='Reference genome FASTA (.fsa or .fsa.gz).',
+        help='Reference genome FASTA (.fsa or .fsa.gz). '
+             'Optional when --Scer or --organism is set.',
     )
     req.add_argument(
         '-o', '--output-dir',
@@ -92,6 +93,9 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
         help='Gene annotation GFF/GFF3 (.gff or .gff.gz). Used to populate '
              'the annotated junction set in the pool.',
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(parser)
 
     opt = parser.add_argument_group('Options')
     opt.add_argument(

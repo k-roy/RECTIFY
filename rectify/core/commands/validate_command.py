@@ -1024,6 +1024,9 @@ def create_validate_parser(subparsers):
         help='TSV file with known true 3\' end positions'
     )
 
+    from rectify.data import add_organism_args
+    add_organism_args(truth_group)
+
     # Validation parameters
     param_group = validate_parser.add_argument_group('Validation parameters')
 

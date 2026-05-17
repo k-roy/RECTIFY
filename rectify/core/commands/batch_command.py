@@ -852,49 +852,8 @@ def _run_interactive_mode(samples: List[Dict[str, str]], args) -> int:
 
 def _resolve_reference_paths(args) -> None:
     """Resolve genome/annotation/GO paths from explicit args or bundled organism data."""
-    from rectify.data import ensure_reference_data, get_bundled_go_annotations_path, normalize_organism
-    import sys
-
-    organism = getattr(args, 'organism', None)
-    genome_arg = getattr(args, 'genome', None)
-    annotation_arg = getattr(args, 'annotation', None)
-
-    if organism is None and genome_arg is None:
-        print(
-            "ERROR: No reference genome provided.\n"
-            "  Supply --genome /path/to/genome.fa,\n"
-            "  or use --Scer (S. cerevisiae bundled data),\n"
-            "  or use --organism <name> for another supported organism.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if organism is not None:
-        genome_path, annotation_path, data_source = ensure_reference_data(
-            organism=organism,
-            custom_genome=genome_arg,
-            custom_annotation=annotation_arg,
-            verbose=True,
-        )
-    else:
-        genome_path = Path(genome_arg) if genome_arg else None
-        annotation_path = Path(annotation_arg) if annotation_arg else None
-
-    if genome_path is None:
-        print(
-            f"ERROR: No bundled genome available for organism '{organism}'. "
-            "Use --genome to provide a custom reference.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    args.genome = genome_path
-    args.annotation = annotation_path
-
-    if not getattr(args, 'go_annotations', None) and organism:
-        go_path = get_bundled_go_annotations_path(normalize_organism(organism))
-        if go_path:
-            args.go_annotations = go_path
+    from rectify.data import resolve_reference_paths
+    resolve_reference_paths(args, require_genome=True, verbose=True)
 
 
 def run(args) -> int:
@@ -1110,21 +1069,8 @@ Manifest format (TSV):
 
     # Rectify options
     rectify_group = batch_parser.add_argument_group('RECTIFY options')
-    rectify_group.add_argument(
-        '--organism',
-        default=None,
-        help='Organism name for bundled genome/annotation/NET-seq '
-             '(e.g., yeast, saccharomyces_cerevisiae). '
-             'Required when --genome and --annotation are not specified.'
-    )
-    rectify_group.add_argument(
-        '--Scer',
-        dest='organism',
-        action='store_const',
-        const='saccharomyces_cerevisiae',
-        help='Shorthand for --organism saccharomyces_cerevisiae. '
-             'Uses all bundled S. cerevisiae reference data.'
-    )
+    from rectify.data import add_organism_args
+    add_organism_args(rectify_group)
 
     rectify_group.add_argument(
         '--aligner',

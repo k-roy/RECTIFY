@@ -45,8 +45,8 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     parser.add_argument(
         '--genome',
         type=Path,
-        required=True,
-        help='Reference genome FASTA file'
+        default=None,
+        help='Reference genome FASTA file. Optional when --Scer or --organism is set.'
     )
 
     parser.add_argument(
@@ -55,6 +55,9 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         required=True,
         help='Output directory for BAM files'
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(parser)
 
     # Protocol flag
     parser.add_argument(

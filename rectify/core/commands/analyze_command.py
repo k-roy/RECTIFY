@@ -650,6 +650,9 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         help='Gene annotation file (GTF/GFF or TSV)',
     )
 
+    from rectify.data import add_organism_args
+    add_organism_args(parser)
+
     # Sample information
     parser.add_argument(
         '--sample-column',

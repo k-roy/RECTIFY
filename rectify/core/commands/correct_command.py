@@ -1142,20 +1142,8 @@ def create_correct_parser(subparsers):
 
     # NET-seq refinement
     netseq_group = correct_parser.add_argument_group('NET-seq refinement')
-    netseq_group.add_argument(
-        '--organism',
-        help='Organism name for bundled genome/annotation/NET-seq '
-             '(e.g., yeast, saccharomyces_cerevisiae). '
-             'Bundled WT NET-seq data will be used automatically if available.'
-    )
-    netseq_group.add_argument(
-        '--Scer',
-        dest='organism',
-        action='store_const',
-        const='saccharomyces_cerevisiae',
-        help='Shorthand for --organism saccharomyces_cerevisiae. '
-             'Uses all bundled S. cerevisiae reference data.'
-    )
+    from rectify.data import add_organism_args
+    add_organism_args(netseq_group)
 
     netseq_group.add_argument(
         '--netseq-dir',

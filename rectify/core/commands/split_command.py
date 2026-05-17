@@ -176,6 +176,9 @@ Examples:
         '--annotation', type=Path,
         help='Annotation GFF/GTF path (written into generated scripts)'
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(script_group)
     script_group.add_argument(
         '--other-aligners', nargs='+',
         default=OTHER_ALIGNERS_DEFAULT,

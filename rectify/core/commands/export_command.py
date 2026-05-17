@@ -338,6 +338,9 @@ def create_export_parser(subparsers):
         help='Chromosome sizes file (tab-separated: chrom, size)'
     )
 
+    from rectify.data import add_organism_args
+    add_organism_args(export_parser)
+
     export_parser.add_argument(
         '--position-col',
         default='position',

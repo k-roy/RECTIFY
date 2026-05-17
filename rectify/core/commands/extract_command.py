@@ -60,6 +60,9 @@ def create_extract_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
         help='Gene annotation GFF/GTF (for gene assignment)'
     )
 
+    from rectify.data import add_organism_args
+    add_organism_args(ref_group)
+
     # Output columns
     col_group = parser.add_argument_group('Output columns')
     col_group.add_argument(

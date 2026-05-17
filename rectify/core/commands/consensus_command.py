@@ -71,8 +71,9 @@ Examples:
     parser.add_argument(
         '--genome',
         type=Path,
-        required=True,
-        help='Reference genome FASTA file (used for MD-tag recalculation)'
+        default=None,
+        help='Reference genome FASTA file (used for MD-tag recalculation). '
+             'Optional when --Scer or --organism is set.'
     )
 
     parser.add_argument(
@@ -93,6 +94,9 @@ Examples:
         type=Path,
         help='Gene annotation GFF/GTF for annotated-junction scoring in consensus selection'
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(parser)
 
     parser.add_argument(
         '--chimeric',

@@ -653,8 +653,8 @@ def create_train_polya_parser(subparsers):
     train_parser.add_argument(
         '--genome',
         type=Path,
-        required=True,
-        help='Reference genome FASTA file'
+        default=None,
+        help='Reference genome FASTA file. Optional when --Scer or --organism is set.'
     )
 
     train_parser.add_argument(
@@ -663,6 +663,9 @@ def create_train_polya_parser(subparsers):
         required=True,
         help='TSV file with control CPA sites (0A downstream A-count)'
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(train_parser)
 
     train_parser.add_argument(
         '-o', '--output',

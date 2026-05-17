@@ -188,8 +188,9 @@ def add_netseq_parser(subparsers) -> None:
     parser.add_argument(
         '--genome', '-g',
         type=Path,
-        required=True,
-        help='Reference genome FASTA (required for deconvolution)',
+        default=None,
+        help='Reference genome FASTA (required for deconvolution). '
+             'Optional when --Scer or --organism is set.',
     )
 
     parser.add_argument(
@@ -205,6 +206,9 @@ def add_netseq_parser(subparsers) -> None:
         type=Path,
         help='GFF annotation file for exclusion region detection',
     )
+
+    from rectify.data import add_organism_args
+    add_organism_args(parser)
 
     # Exclusion options
     excl_group = parser.add_argument_group('Exclusion regions')
