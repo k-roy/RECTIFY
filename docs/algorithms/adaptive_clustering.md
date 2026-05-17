@@ -4,6 +4,11 @@ After per-read correction, RECTIFY groups nearby CPA positions into **clusters**
 
 **Implementation:** `rectify/core/analyze/clustering.py`
 
+<figure markdown>
+  ![Adaptive clustering schematic: histogram of corrected 3' ends along a gene; a fixed-distance cluster naively merges two real peaks, while the valley-based adaptive cluster splits them at the local minimum between peaks.](../figures/adaptive_clustering.png){ width="600" }
+  <figcaption>Fixed-distance clustering (top) merges nearby CPA peaks that should be reported as distinct isoforms. The adaptive valley-based algorithm (bottom) splits peaks at local minima, preserving the multi-site structure that gene-level counts would miss.</figcaption>
+</figure>
+
 ---
 
 ## The problem

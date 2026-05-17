@@ -2,6 +2,11 @@
 
 RECTIFY processes long-read RNA-seq data in three stages: **alignment**, **correction**, and **analysis**.
 
+<figure markdown>
+  ![RECTIFY pipeline overview — three protocol tracks (ONT direct RNA, ONT PCR-cDNA, QuantSeq REV) converging at the shared multi-aligner, walk-back, and downstream analyze stages.](../figures/pipeline_overview.png){ width="820" }
+  <figcaption>The three supported protocol tracks share the multi-aligner / walk-back / analyze core and diverge only where the chemistry demands it — the 3'-end side of the read, whether the poly(A) tail is sequenced, and whether the BAM strand matches the gene strand.</figcaption>
+</figure>
+
 ---
 
 ## Pipeline diagram

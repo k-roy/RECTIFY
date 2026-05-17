@@ -4,6 +4,16 @@ Poly(A) tails can create spurious splice junctions (N operations in the CIGAR) w
 
 **Implementation:** `rectify/core/splice/false_junction_filter.py`, integrated into `rectify/core/bam/bam_processor.py`
 
+<figure markdown>
+  ![False-junction walk-back schematic: an N-operation (genomic skip) bridges the poly(A) tail to a downstream genomic A-tract; the false-junction filter recognises this pattern (N-op flanked by A's on both sides) and walks back through the N-op as A-territory, recovering the true CPA.](../figures/false_junction_walkback.png){ width="660" }
+  <figcaption>When an aligner splices the poly(A) tail to a downstream genomic A-tract, the walk-back treats the N-operation as A-territory (a "false junction") and recovers the true CPA. The companion splice-classification figure (below) shows the full decision tree.</figcaption>
+</figure>
+
+<figure markdown>
+  ![Splice classification decision tree: every N-operation in the CIGAR is classified as canonical (GT/AG-bounded, both flanks non-A), false-junction (A-flanked on both sides → poly(A) skip), partial-evidence (one A flank), or unsplice (no canonical motif). Each class is handled by a dedicated module.](../figures/splice_classification.png){ width="620" }
+  <figcaption>Every N-operation is classified by the dinucleotides at its flanks. False junctions (A-flanked on both sides) are walked through during 3'-end correction; canonical junctions are preserved; partial-evidence junctions are handled by the partial-rescue module.</figcaption>
+</figure>
+
 ---
 
 ## The problem

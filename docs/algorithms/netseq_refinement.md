@@ -14,6 +14,16 @@ NET-seq captures nascent RNA 3' ends with single-nucleotide resolution. Because 
 
 However, NET-seq has its own artifact: **oligo(A)-spreading**. Nuclear RNA undergoes oligoadenylation (addition of short A tails), which creates downstream signal spreading around CPA sites.
 
+<figure markdown>
+  ![Oligo(A) spreading artifact schematic: a true CPA produces a sharp NET-seq peak; oligoadenylation appends short A tails to the nascent RNA, which then get sequenced at offsets +1, +2, +3, … downstream of the true CPA, producing a characteristic spreading footprint.](../figures/oligo_a_spreading.png){ width="500" }
+  <figcaption>NET-seq signal at a CPA is not a single sharp peak — oligoadenylation of nascent RNA produces a downstream "spread" of secondary peaks at +1, +2, +3 nt offsets that must be deconvolved before the signal can be used as ground truth.</figcaption>
+</figure>
+
+<figure markdown>
+  ![NNLS deconvolution schematic: the spread NET-seq signal at a locus is decomposed into a sum of point-spread-function-convolved peak intensities; the deconvolved peaks recover the true single-nucleotide CPA positions used for walk-back tie-breaking.](../figures/oligo_a_deconvolution.png){ width="680" }
+  <figcaption>RECTIFY's NNLS deconvolution decomposes the spread NET-seq signal into a sum of point-spread-function-convolved peaks, recovering sharp single-nucleotide CPA positions. These deconvolved peaks then guide walk-back tie-breaking within A-tract regions.</figcaption>
+</figure>
+
 ---
 
 ## Oligo(A) spreading artifact

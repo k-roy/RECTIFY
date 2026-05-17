@@ -2,11 +2,21 @@
 
 RECTIFY rescues two types of soft-clipped bases that represent real sequence but are left unaligned by the aligner.
 
+<figure markdown>
+  ![Soft-clip rescue schematic — a read with five soft-clipped bases at the 3' boundary; the rescue arm extends the alignment into a genomic homopolymer when the soft-clipped sequence matches.](../figures/softclip_rescue.png){ width="620" }
+  <figcaption>3'-end soft-clip rescue extends the alignment outward into a genomic homopolymer when the soft-clipped bases continue that homopolymer (Module 2G). The companion 5' rescue handles soft-clip at a splice-site boundary (Module 2F, see below).</figcaption>
+</figure>
+
 ---
 
 ## 1. 5' Junction Rescue (Module 2F)
 
 **Implementation:** `rectify/core/splice/splice_aware_5prime.py` — `rescue_3ss_truncation()`
+
+<figure markdown>
+  ![5' junction rescue schematic: a read with soft-clipped bases at the 5' end matches the tail of the upstream exon; RECTIFY closes the gap by extending the alignment across the splice junction and re-anchoring the 5' end at the upstream exon boundary.](../figures/5prime_junction_rescue.png){ width="660" }
+  <figcaption>5' junction rescue closes the gap when soft-clipped bases at the 5' end match the upstream exon — the alignment is extended across the splice junction and the 5' end is re-anchored at the upstream exon boundary (Cat3 truncation).</figcaption>
+</figure>
 
 ### The problem
 

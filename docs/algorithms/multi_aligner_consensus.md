@@ -4,6 +4,11 @@ RECTIFY runs up to five aligners in parallel and selects the best alignment per 
 
 **Implementation:** `rectify/core/align/multi_aligner.py`, `rectify/core/consensus/consensus.py`
 
+<figure markdown>
+  ![Multi-aligner consensus flowchart: a read is aligned in parallel by minimap2, mapPacBio, gapmm2 (and optionally uLTRA + deSALT); each alignment is scored on canonical-junction count, annotation-match, and clip metrics; the highest-scoring alignment is selected and a chimeric CIGAR can optionally be assembled from per-segment winners.](../figures/multi_aligner_consensus.png){ width="660" }
+  <figcaption>Five aligners run in parallel; each alignment is scored on canonical splice sites, annotation matches, 5' clip penalty, and 3' clip handling. The highest-scoring alignment wins per read; with <code>--chimeric-consensus</code> the per-segment winners are stitched together into a chimeric CIGAR.</figcaption>
+</figure>
+
 ---
 
 ## Why multiple aligners?

@@ -6,6 +6,11 @@ structured UMI on the cDNA adapter (currently Oxford Nanopore SQK-PCB114.24
 is the documented configuration; the algorithm generalizes to any kit with a
 fixed-length UMI adjacent to a known anchor motif).
 
+<figure markdown>
+  ![PCB114.24 read architecture: 5' adapter — SSP motif — 27-nt structured UMI ((TT-VVVV)×4 + TTT) — cDNA insert — VNP poly(T) — 3' adapter. The same molecule can be sequenced sense or antisense, with the UMI preserved in either orientation.](../figures/cdna_umi_architecture.png){ width="720" }
+  <figcaption>Oxford Nanopore SQK-PCB114.24 read architecture. The 27-nt structured UMI sits immediately downstream of the SSP motif and supplies ~43 M molecular barcodes. Sense and antisense reads of the same starting molecule share the same UMI.</figcaption>
+</figure>
+
 ## Goal
 
 For SQK-PCB114.24 PCR-cDNA libraries, every starting RNA molecule produces:
@@ -115,6 +120,11 @@ OUTDIR/
 
 ## Stage 1 — Per-orientation cluster + consensus
 
+<figure markdown>
+  ![UMI consensus pipeline: reads sharing (locus, orientation, canonical UMI) form a cluster; within the cluster, abPOA computes a per-orientation consensus sequence; the consensus is re-aligned to the reference and emitted as a single high-quality read per starting strand.](../figures/cdna_poa_consensus.png){ width="720" }
+  <figcaption>Per-orientation UMI consensus pipeline. Reads sharing <code>(anchor, orientation, UMI)</code> within Levenshtein ≤ 3 are clustered; abPOA computes a partial-order-alignment consensus; the consensus is re-aligned with mappy/minimap2 and written to the per-orientation BAM.</figcaption>
+</figure>
+
 ### 1a. Per-read UMI extraction
 
 For each primary alignment in the input BAM:
@@ -193,6 +203,11 @@ Re-align each per-cluster consensus to the reference (minimap2 `-ax splice
 ---
 
 ## Stage 2 — Cross-orientation pair-overlap merge
+
+<figure markdown>
+  ![Isoform clustering and T1↔T2 reconciliation schematic: Stage 1 emits one consensus per (locus, orientation, UMI); Stage 2 pairs sense+antisense consensuses sharing a UMI within a span filter and computes a position-overlap merge that recovers the full molecule from its two complementary basecalls.](../figures/cdna_isoform_clustering.png){ width="720" }
+  <figcaption>Stage 2 pairs Stage 1 consensuses that share a UMI across orientation and whose anchors fall within <code>--max-cross-orient-span</code> bp of each other. The pair-overlap merge recovers the full molecule, with each orientation contributing the half it sequenced most accurately.</figcaption>
+</figure>
 
 For each pair of Stage 1 consensuses (A: orient=fwd, B: orient=rev) that share
 the same UMI canonical (Lev ≤ threshold across orient) **AND whose anchors are

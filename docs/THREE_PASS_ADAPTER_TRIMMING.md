@@ -2,6 +2,11 @@
 
 **Relevant source:** `rectify/core/commands/drs_trim_command.py` — `find_polya_and_adapter()`
 
+<figure markdown>
+  ![Three-pass pre-trim schematic: Pass 1 scans the last 150 bases for a high-confidence adapter motif and trims poly(A) + adapter; Pass 2 handles reads where the adapter is degraded or absent by anchoring on the poly(A) run; Pass 3 catches the remaining edge cases by looking for an A-rich window without requiring an adapter.](figures/polya_pretrim.png){ width="680" }
+  <figcaption>The three-pass pre-trim ensures that the poly(A) tail and any residual adapter are removed before alignment, so downstream walk-back operates on a read whose 3' boundary is genomic sequence rather than artefactual tail.</figcaption>
+</figure>
+
 ---
 
 ## Purpose

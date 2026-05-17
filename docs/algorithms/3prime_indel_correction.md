@@ -4,6 +4,11 @@ The core RECTIFY algorithm corrects systematic alignment artifacts that arise wh
 
 **Implementation:** `rectify/core/correct/indel_corrector.py` — `find_polya_boundary()`
 
+<figure markdown>
+  ![Three-row schematic showing genome, aligned read, and corrected 3' end. The aligned read extends past the true CPA into a downstream A-tract with deletions; the walk-back arrow steps back from the soft-clip boundary, skipping A's and a sequencing-error T, and lands on the CPA position one base 5' of the A-tract.](../figures/indel_correction.png){ width="680" }
+  <figcaption>The walk-back algorithm steps inward from the alignment's 3' boundary, skipping A's, deletions, and T sequencing errors, and stops at the first position where the read base matches the (non-A) reference base — the true CPA site.</figcaption>
+</figure>
+
 ---
 
 ## The problem
@@ -43,6 +48,11 @@ True CPA site
 
 1. The reference base is **not A** (plus strand) or **not T** (minus strand), AND
 2. The read base at that position **agrees with the reference**
+
+<figure markdown>
+  ![Two-panel comparison contrasting reference-only A-tract detection (which stops at the first genomic A and over-corrects) with the read-vs-reference walkback (which walks past every A regardless of the genome and stops at the first non-A position where read and reference agree).](../figures/walkback_readvsref.png){ width="680" }
+  <figcaption>The walk-back compares <em>read</em> and <em>reference</em> base by base, not reference alone — so genomic A's on the way to the CPA are walked past correctly. The terminal-gate is a single rule: "terminal base is not A and matches the genome → already correctly anchored," with no exception for genomic-A-matching terminal A's.</figcaption>
+</figure>
 
 At each step, it skips:
 - **A's and T's** — poly(A) territory
