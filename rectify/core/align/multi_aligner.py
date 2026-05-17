@@ -1108,8 +1108,12 @@ def run_gapmm2(
     cmd = [
         gapmm2_path,
         '-t', str(threads),
-        '-m', '1',   # Mode 1: direct RNA
-        '-i', '5000',  # Max intron size
+        # `-m 1` was here as "Mode 1: direct RNA" — that comment is wrong.
+        # `-m`/`--min-mapq` is gapmm2's min-mapq filter (default 1). Some
+        # 25.4.5 wheels ship without `type=int` on the argparse arg, so
+        # passing `-m 1` made min_mapq the string "1" and TypeError'd on
+        # `h.mapq < min_mapq`. Default (int 1) is what we want anyway.
+        '-i', '5000',  # Max intron size (yeast splice range)
         '-o', str(paf_path),
         genome_path,
         reads_input,
