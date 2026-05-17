@@ -775,7 +775,7 @@ known caveats (deSALT failures on chunks 2/11/15), and diagnostic plot instructi
 ## Audit history & remaining open issues
 
 Two rounds of systematic codebase audits were completed 2026-04-08.
-All findings are tracked in `docs/BUGS_TO_FIX.md`.
+All findings are tracked in `dev/BUGS_TO_FIX.md`.
 
 **v2.7.8 (2026-04-09):** Fixed 35 Round 2 findings including all confirmed
 CRITICALs and HIGHs. Most impactful fixes:
@@ -937,7 +937,7 @@ homopolymer examples. Direct RNA / dT-primed cDNA protocol distinction clarified
 - Fix: `rescue_seq[-five_clip:]` for minus strand, `rescue_seq[:five_clip]` for plus strand (unchanged).
 - Impact: b2c4d195 (27S), 7bf94550 (1S), f6590560 (2S), 08f6ddf7 (5S) all now correctly rescued to `five_prime_corrected=901193`. Previously all fell through to `rescue_type='proximity'` with `rescued=False`.
 
-**No open bugs remaining** — see `docs/BUGS_TO_FIX.md`.
+**No open bugs remaining** — see `dev/BUGS_TO_FIX.md`.
 
 **v3.0.3 (2026-04-16):** `find_polya_boundary` — poly-A tail trailing-base false-stop guard:
 - `find_polya_boundary` in `indel_corrector.py` now detects false stops where the trailing base of a poly-A tail (e.g., a T at the very end of `...AAAAAAAAAAAAAAAAT`) coincidentally matches a genomic base (T=T) at the alignment boundary, causing the backward scan to stop prematurely at the poly-A/exon junction rather than continuing to the true exon body.

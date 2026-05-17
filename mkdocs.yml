@@ -1,21 +1,10 @@
-# Exclude internal developer docs from nav warnings (they're still accessible via direct URL)
-exclude_docs: |
-  ALIGNER_RECOMMENDATIONS.md
-  BUGS_TO_FIX.md
-  CHANGELOG.md
-  FIGURE_STYLE_GUIDE.md
-  figures/FIGURE_PROVENANCE.md
-  figures/README.md
-  handoffs/*.md
-  workshop_copilot_testing.md
-
 site_name: RECTIFY
 site_description: "RNA 5' and 3' End Correction Tool with Intron reFInement and ambiguitY resolution"
 site_author: Kevin R. Roy
 site_url: https://rectify-rna.readthedocs.io
 repo_url: https://github.com/k-roy/RECTIFY
 repo_name: k-roy/RECTIFY
-edit_uri: edit/main/docs/
+edit_uri: edit/master/docs/
 
 theme:
   name: material
@@ -127,7 +116,7 @@ nav:
     - Commands:
       - Overview: user_guide/commands/overview.md
       - rectify correct: user_guide/commands/correct.md
-      - rectify run: user_guide/commands/run.md
+      - rectify run-all: user_guide/commands/run.md
       - rectify align: user_guide/commands/align.md
       - rectify analyze: user_guide/commands/analyze.md
       - rectify export: user_guide/commands/export.md
@@ -158,6 +147,7 @@ nav:
     - cDNA Correct: algorithms/cdna_correct.md
   - Technical Notes:
     - Empirical HP Penalty Scoring: EMPIRICAL_HP_PENALTY_SCORING.md
+    - Aligner Recommendations: ALIGNER_RECOMMENDATIONS.md
     - Junction-Shift FDR: JUNCTION_SHIFT_FDR.md
     - DRS 5' End Limitations: DRS_FIVE_PRIME_END_LIMITATIONS.md
     - Three-Pass Adapter Trimming: THREE_PASS_ADAPTER_TRIMMING.md
@@ -169,4 +159,5 @@ nav:
     - rectify.core.analyze: api/analyze.md
     - rectify.utils: api/utils.md
     - rectify.visualize: api/visualize.md
+  - Changelog: changelog.md
   - Contributing: contributing.md
