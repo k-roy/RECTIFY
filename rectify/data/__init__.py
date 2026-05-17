@@ -562,8 +562,69 @@ BUNDLED_GENOMES = {
             'version': 'R64-5-1',
             'source': 'SGD',
         },
+        # Empirical penalty + overhang tables — see PENALTY_TABLE.md alongside the
+        # bundled files for derivation. The flat keys (junction_penalty_table /
+        # str_penalty_table / junction_overhang_table) point to the DRS-calibrated
+        # tables and remain in place for back-compat — any caller that does NOT
+        # request a protocol picks them up. Protocol-aware callers go through the
+        # 'protocols' map below, which routes --Scer to the table matching the
+        # caller's protocol flags (--dT-primed-cDNA, --short-read).
+        'junction_penalty_table': {
+            'file': 'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores.tsv',
+            'version': 'error_profile_20260422',
+            'source': 'BY4742 DRS multi-aligner consensus, isotonic-smoothed AT/CG HP penalties',
+        },
+        'str_penalty_table': {
+            'file': 'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores.tsv',
+            'version': 'error_profile_20260422',
+            'source': 'BY4742 DRS multi-aligner consensus, STR slippage penalties',
+        },
+        'junction_overhang_table': {
+            'file': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table.tsv',
+            'version': 'overhang_table_20260502',
+            'source': 'BY4742 DRS, ≥4-aligner concordant junctions, isotonic monotone non-decreasing',
+        },
+        # Protocol-aware table routing. Entries for 'cdna' / 'qsrev' are filled
+        # in once their calibration runs land (see scripts/calibration/). Missing
+        # entries fall through to the DRS flat keys above so an unconfigured
+        # protocol is still safe (worst case: identical to today's behavior).
+        'protocols': {
+            'drs': {
+                'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores.tsv',
+                'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores.tsv',
+                'junction_overhang_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table.tsv',
+            },
+            'cdna': {
+                # Calibration pending — empirical_cigar_error_profiler.py --protocol cdna
+                'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna.tsv',
+                'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores_cdna.tsv',
+                'junction_overhang_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table_cdna.tsv',
+            },
+            'qsrev': {
+                # Calibration pending — empirical_cigar_error_profiler.py --protocol qsrev
+                # (HP only; overhang intentionally falls back to DRS — short-read
+                # junctions are too sparse to calibrate, per handoff §6.)
+                'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_qsrev.tsv',
+                'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores_qsrev.tsv',
+                # No 'junction_overhang_table' entry → resolver falls back to DRS.
+            },
+        },
     },
 }
+
+
+# Maps (dT_primed_cDNA, short_read) → protocol name for resolve_reference_paths().
+# Aligned with handoff §4: short_read + dT_primed_cDNA = qsrev; dT_primed_cDNA
+# alone = cdna; everything else = drs (the back-compat default).
+def _protocol_for_args(args) -> str:
+    """Map runtime args to a bundled-table protocol key."""
+    short_read = bool(getattr(args, 'short_read', False))
+    dt_cdna = bool(getattr(args, 'dT_primed_cDNA', False))
+    if short_read and dt_cdna:
+        return 'qsrev'
+    if dt_cdna:
+        return 'cdna'
+    return 'drs'
 
 
 def get_bundled_genome_path(organism: str) -> Optional[Path]:
@@ -637,8 +698,72 @@ def get_bundled_go_annotations_path(organism: str) -> Optional[Path]:
     go_path = BUNDLED_DATA_DIR / go_info['file']
     if go_path.exists():
         return go_path
-
     return None
+
+
+def _resolve_bundled_table(
+    organism: str,
+    key: str,
+    protocol: Optional[str] = None,
+) -> Optional[Path]:
+    """Shared resolver for ``junction_penalty_table`` / ``str_penalty_table`` /
+    ``junction_overhang_table`` entries in :data:`BUNDLED_GENOMES`.
+
+    Resolution order when ``protocol`` is given:
+      1. ``BUNDLED_GENOMES[org]['protocols'][protocol][key]`` if present AND
+         the file exists on disk.
+      2. Fall through to the flat ``BUNDLED_GENOMES[org][key]`` (DRS default).
+      3. ``None``.
+
+    When ``protocol`` is ``None``, only the flat key is consulted — preserves
+    pre-protocol-aware behavior for older callers.
+    """
+    org = normalize_organism(organism)
+    org_entry = BUNDLED_GENOMES.get(org, {})
+
+    if protocol is not None:
+        proto_map = org_entry.get('protocols', {}).get(protocol, {})
+        rel = proto_map.get(key)
+        if rel is not None:
+            path = BUNDLED_DATA_DIR / rel
+            if path.exists():
+                return path
+        # Missing protocol-specific table → fall through to DRS flat key.
+
+    entry = org_entry.get(key)
+    if entry is None:
+        return None
+    path = BUNDLED_DATA_DIR / entry['file']
+    return path if path.exists() else None
+
+
+def get_bundled_junction_penalty_table(
+    organism: str,
+    protocol: Optional[str] = None,
+) -> Optional[Path]:
+    """Path to bundled empirical HP junction penalty table for *organism*.
+
+    When *protocol* is one of ``'drs'`` / ``'cdna'`` / ``'qsrev'``, returns
+    the protocol-specific table if bundled; otherwise falls back to the DRS
+    table. Pass ``protocol=None`` (default) for back-compat callers.
+    """
+    return _resolve_bundled_table(organism, 'junction_penalty_table', protocol)
+
+
+def get_bundled_str_penalty_table(
+    organism: str,
+    protocol: Optional[str] = None,
+) -> Optional[Path]:
+    """Path to bundled empirical STR slippage penalty table for *organism*."""
+    return _resolve_bundled_table(organism, 'str_penalty_table', protocol)
+
+
+def get_bundled_junction_overhang_table(
+    organism: str,
+    protocol: Optional[str] = None,
+) -> Optional[Path]:
+    """Path to bundled junction overhang threshold table for *organism*."""
+    return _resolve_bundled_table(organism, 'junction_overhang_table', protocol)
 
 
 def is_bundled_genome_available(organism: str) -> bool:
@@ -875,3 +1000,27 @@ def resolve_reference_paths(
         go_path = get_bundled_go_annotations_path(normalize_organism(organism))
         if go_path:
             args.go_annotations = go_path
+
+    # Empirical penalty + overhang tables: fill from bundled data only when
+    # the subcommand exposes the slot AND the user did not provide a value.
+    # Mirrors the genome/annotation/go bundling above. See PENALTY_TABLE.md.
+    #
+    # Protocol is derived from --dT-primed-cDNA / --short-read on the same
+    # args namespace, so --Scer --dT-primed-cDNA picks the cDNA table and
+    # --Scer --short-read --dT-primed-cDNA picks the QSrev table. Subcommands
+    # without those flags get the DRS table (back-compat).
+    if organism:
+        org_norm = normalize_organism(organism)
+        protocol = _protocol_for_args(args)
+        for attr, fn in (
+            ('junction_penalty_table', get_bundled_junction_penalty_table),
+            ('str_penalty_table',      get_bundled_str_penalty_table),
+            ('junction_overhang_table', get_bundled_junction_overhang_table),
+        ):
+            if hasattr(args, attr) and not getattr(args, attr, None):
+                p = fn(org_norm, protocol=protocol)
+                if p is not None:
+                    setattr(args, attr, str(p))
+                    if verbose:
+                        print(f"  Using bundled {attr.replace('_', ' ')} "
+                              f"[protocol={protocol}]: {p.name}")

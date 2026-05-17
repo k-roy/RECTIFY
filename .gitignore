@@ -129,7 +129,16 @@ rectify/data/*.gtf
 rectify/data/*.junc.bed
 rectify/data/desalt_index/
 **/desalt_index/
-rectify/data/genomes/
+# Bundled per-organism directories — heavy artifacts ignored, lightweight
+# calibration tables (penalty_tables/) explicitly bundled
+rectify/data/genomes/*
+!rectify/data/genomes/*/
+rectify/data/genomes/*/*
+!rectify/data/genomes/*/penalty_tables/
+rectify/data/genomes/*/penalty_tables/*
+!rectify/data/genomes/*/penalty_tables/*.tsv
+!rectify/data/genomes/*/penalty_tables/*.md
+!rectify/data/genomes/*/penalty_tables/*.json
 
 # Auto-generated provenance and output data (not source)
 rectify/data/README.md
