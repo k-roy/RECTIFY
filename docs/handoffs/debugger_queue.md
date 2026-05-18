@@ -315,6 +315,82 @@ moderate-length HP runs may be either over- or under-penalized
 relative to the empirically-calibrated DEL cost. This is a known
 gap rather than a code bug.
 
+## Cat3 cluster (plotter session 2026-05-18)
+
+Source: `validation_read_review/cat3_junction_findings.md`.
+
+### cat3_minus_2 + cat3_plus_2 — asymmetric 2-bp slide producing `M 2D N` instead of clean `N` (PARTIAL: cat3_plus_2 already clean post-Phase-A)
+
+**User's diagnosis (verbatim):**
+> "We should be capturing the correct intron with a clean N-op, rather
+> than 2D-Nop. All we need to do is move the AG aligned bases to exon 1.
+> Also, it seems our 3' pileup signal is stale."
+
+**Investigation 2026-05-18:** post-Phase-A/E.1 bundle regen via
+`regen_pa_rest_bundle.py`. Per-aligner picture for cat3_minus_2:
+
+```
+minimap2/uLTRA/deSALT  N(366504,366584)  ... N80 2D 13M ...
+mapPacBio              N(366502,366584)  ... N82 15= ...     (clean)
+gapmm2                 N(366502,366584)  ... N82 15M ...     (clean)
+```
+
+3 of 5 aligners place the intron at (366504, 366584) with a trailing
+`2D 13M`; 2 aligners place it at (366502, 366584) with clean `15=`/`15M`.
+The legacy simple-slide fast path
+(`junction_refiner.py:_apply_junction_replacement`, lines 513-590) only
+handles the **symmetric** case `delta_start == delta_end != 0` (pure
+slide, intron length preserved). For cat3_minus_2 the canonical placement
+needs `delta_start = -2, delta_end = 0` — an **asymmetric** slide where
+the intron *length changes* by 2.
+
+cat3_plus_2 is already clean post-Phase-A:
+```
+mapPacBio    N(142253,142619)  14=1D9= N366 50=1I2=  (clean — slid by Bug 1)
+others       N(142253,142618)  ...
+```
+
+So 4 of 5 aligners on cat3_plus_2 are off by 1 on the acceptor — but
+mapPacBio (winner under HP-ED) has the canonical placement.
+
+**Proposed fix (deferred):** add a new fast path for the asymmetric-slide-
+with-length-change case. When the post-N CIGAR has trailing D ops with
+no query consumption that could be absorbed into the N (extending the
+intron) AND the k bases at the would-be new boundary equivalence-match
+the bases at the current boundary, emit a length-extension CIGAR
+transformation rather than letting the general path produce `M 2D N`.
+
+The general criterion (user, verbatim):
+> "`genome[old_donor:old_donor+k] == genome[old_acceptor:old_acceptor+k]`
+> for k=1, 2, 3, …; when the equivalence holds, emit a length-adjustment
+> CIGAR fix rather than a local realignment that produces `kD N`."
+
+This is a meaningful architectural change to the refiner. Out of scope
+for the current session.
+
+### Stale 3' pileup bedgraphs (mechanical follow-up)
+
+`regen_pa_rest_bundle.py` regenerates the corrected BAMs and
+`corrected_reads.tsv` but does NOT regenerate
+`rectify/data/validation/rectified/corrected_3ends.{plus,minus}.bedgraph`.
+After HP-ED winner-selection picks different aligners, the per-read
+`corrected_3prime` values change → bedgraph counts at the OLD positions
+are now stale.
+
+**Fix candidate:** add a bedgraph regen step to `regen_pa_rest_bundle.py`.
+The `corrected_reads.tsv` has per-read `corrected_3prime` and `strand`;
+`rectify/core/bam/bedgraph_writers.py` has the writer logic
+(`write_corrected_reads_bedgraph`). Straightforward addition.
+
+### Summary TSV `junctions` column — RESOLVED transitively
+
+Plotter found: rescue-applied rows showed `junctions=1` instead of
+`donor-acceptor` coords. Resolved by my Phase D fix (commit `dc5591e`)
+which appends the rescued junction to the per-aligner TSV's `junctions`
+list. Current bundle's `rectified/per_aligner_summary.tsv` shows
+`junctions=142253-142619` for all aligners on cat3_plus_2 (including
+the rescued ones).
+
 ---
 
 ## Cat6 / Cat7 (HP-mode metric — Xm semantics)
