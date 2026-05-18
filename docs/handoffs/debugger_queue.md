@@ -373,54 +373,124 @@ gap rather than a code bug.
 
 Source: `validation_read_review/cat3_junction_findings.md`.
 
-### cat3_minus_2 + cat3_plus_2 — asymmetric 2-bp slide producing `M 2D N` instead of clean `N` (PARTIAL: cat3_plus_2 already clean post-Phase-A)
+### cat3_minus_2 + cat3_plus_2 — `M 2D N` vs clean `N`: TSV output is already canonical; only the per-aligner BAM CIGAR is cosmetic
 
-**User's diagnosis (verbatim):**
+**User's diagnosis (verbatim, 2026-05-18 plotter session):**
 > "We should be capturing the correct intron with a clean N-op, rather
 > than 2D-Nop. All we need to do is move the AG aligned bases to exon 1.
 > Also, it seems our 3' pileup signal is stale."
 
-**Investigation 2026-05-18:** post-Phase-A/E.1 bundle regen via
-`regen_pa_rest_bundle.py`. Per-aligner picture for cat3_minus_2:
+**Re-investigation 2026-05-18 evening (after empirical genome/CIGAR check):**
+
+Per-aligner picture for cat3_minus_2 (chrII, minus strand,
+qname 28ea9379…):
 
 ```
-minimap2/uLTRA/deSALT  N(366504,366584)  ... N80 2D 13M ...
-mapPacBio              N(366502,366584)  ... N82 15= ...     (clean)
-gapmm2                 N(366502,366584)  ... N82 15M ...     (clean)
+                          raw aligner CIGAR (relevant flank)         post-rectify trimmed-BAM CIGAR
+gapmm2     primary        … M256 N(366502,366584)(82) M15            (unchanged)
+mapPacBio  primary        … =256 N(366502,366584)(82) =15            (unchanged)
+minimap2   primary        … M258 [13S softclip — no N op]            … M258 N(366504,366584)(80) D2 M13
+deSALT     primary        … M258 [13S softclip — no N op]            … M258 N(366504,366584)(80) D2 M13
+uLTRA      primary        … =258 [13S softclip — no N op]            … =258 N(366504,366584)(80) D2 M13
 ```
 
-3 of 5 aligners place the intron at (366504, 366584) with a trailing
-`2D 13M`; 2 aligners place it at (366502, 366584) with clean `15=`/`15M`.
-The legacy simple-slide fast path
-(`junction_refiner.py:_apply_junction_replacement`, lines 513-590) only
-handles the **symmetric** case `delta_start == delta_end != 0` (pure
-slide, intron length preserved). For cat3_minus_2 the canonical placement
-needs `delta_start = -2, delta_end = 0` — an **asymmetric** slide where
-the intron *length changes* by 2.
+minimap2/deSALT/uLTRA did NOT find the intron in raw alignment — they
+left a 13-bp 3'-soft-clip (= 5' soft-clip in RNA, since the read is
+minus-strand). The 5' rescue stage in `rectify correct` constructs the
+N op for them from the soft-clip + nearest annotated junction. Where it
+places `N` start is what differs from gapmm2/mapPacBio.
 
-cat3_plus_2 is already clean post-Phase-A:
+**Big finding — the TSV output is already canonical:**
+
+`rectify/data/validation/rectified/per_aligner_summary.tsv` for this
+read shows `junctions = 366502-366584` for **all 5 aligners**, and they
+all sit in `effective_group = A` with `effectively_matched_winner = True`.
+The consensus (winner = deSALT, also via `corrected_reads.tsv`) reports
+the canonical junction.
+
+**This means the "2D-N" CIGAR is BAM-level cosmetic only:**
+
+- The corrected_junctions output that downstream code reads is right.
+- The HP-ED winner-selection and `effective_group` clustering see the
+  right values.
+- The only consumers of the per-aligner BAM CIGAR shape are the plotter
+  panels and IGV — that's where the user noticed the ugliness.
+
+So this is "ugly CIGAR in trimmed BAMs," not "broken refiner producing
+wrong junctions." It demotes the fix from architectural-correctness to
+cosmetic-cleanup. The "stale 3' pileup signal" in the user's verbatim
+was a separate complaint that's already RESOLVED (`75b0338` shipped the
+bedgraph regen step).
+
+**The true equivalence criterion (derived empirically):**
+
+The user's verbatim was
+`genome[old_donor:old_donor+k] == genome[old_acceptor:old_acceptor+k]`,
+but checking the actual genome shows that doesn't hold here:
+- `genome[old_ns:old_ns+2]` = `genome[366504:366506]` = `AA`
+- `genome[old_ne:old_ne+2]` = `genome[366584:366586]` = `CT`
+- `AA ≠ CT`, yet the canonical placement IS valid.
+
+The criterion that DOES hold (and is the one the transformation
+actually needs):
+
+```
+genome[old_ns - k : old_ns] == genome[old_ne : old_ne + k]
+```
+
+Concretely for cat3_minus_2 (k=2):
+- `genome[366502:366504]` = `CT`
+- `genome[366584:366586]` = `CT`
+- equal ✓
+
+Geometrically: the k ref bases just before the intron start equal the
+k ref bases just after the intron end. Those k query bases that were
+aligned to the end of the upstream exon can be re-aligned to the start
+of the downstream exon, with the intron extending leftward by k to
+absorb the gap. The trailing `D(k)` after `N` is what gets absorbed
+into the downstream `M` (growing from `M(j)` to `M(j+k)`).
+
+The user's "donor/acceptor" wording should be reconciled before any
+code lands. The literal verbatim formula is wrong for this case.
+
+**Where the trimmed-BAM CIGAR is produced:**
+
+`scripts/validation_data/regen_pa_rest_bundle.py` Step 1 runs `rectify
+correct` per-aligner with `--aligner-bams` (cross-aligner candidate
+pool active). The `--write-corrected-bam` output is the trimmed BAM in
+`rectified/per_aligner/{aligner}.trimmed.bam`. The 5' rescue (which
+constructs the N op for minimap2/deSALT/uLTRA) lives in this pipeline,
+upstream of the BAM writer. The junction refiner ALSO runs as part of
+this — but the trimmed BAM CIGAR doesn't show the general-path
+signature (`M(m-k) I(k) N D(k) M(j)`), which suggests the refiner
+either didn't fire on these reads or its output was overwritten
+downstream. **Determining which is a prerequisite for any fix.**
+
+**Deferred — needs the following before a code change:**
+
+1. User confirmation of which equivalence criterion they meant
+   (`genome[old_ns-k:old_ns] == genome[old_ne:old_ne+k]` vs the
+   verbatim, which doesn't hold for cat3_minus_2).
+2. Identification of which stage produces the trimmed-BAM CIGAR for
+   the 5'-rescue-constructed alignments (refiner output? 5' rescue
+   directly? something downstream rewriting?).
+3. A test that asserts the trimmed-BAM CIGAR is clean (currently no
+   such test exists — the canonical-junction assertion lives at the
+   TSV level, which already passes).
+
+Until those land, the CIGAR uglyness costs nothing functional and the
+fix has no test to anchor.
+
+### cat3_plus_2 — already clean post-Phase-A (no follow-up)
+
+Per-aligner picture (post-Phase-A):
 ```
 mapPacBio    N(142253,142619)  14=1D9= N366 50=1I2=  (clean — slid by Bug 1)
-others       N(142253,142618)  ...
+others       N(142253,142618)  ...                   (1-bp asymmetric, but mapPacBio wins HP-ED)
 ```
 
-So 4 of 5 aligners on cat3_plus_2 are off by 1 on the acceptor — but
-mapPacBio (winner under HP-ED) has the canonical placement.
-
-**Proposed fix (deferred):** add a new fast path for the asymmetric-slide-
-with-length-change case. When the post-N CIGAR has trailing D ops with
-no query consumption that could be absorbed into the N (extending the
-intron) AND the k bases at the would-be new boundary equivalence-match
-the bases at the current boundary, emit a length-extension CIGAR
-transformation rather than letting the general path produce `M 2D N`.
-
-The general criterion (user, verbatim):
-> "`genome[old_donor:old_donor+k] == genome[old_acceptor:old_acceptor+k]`
-> for k=1, 2, 3, …; when the equivalence holds, emit a length-adjustment
-> CIGAR fix rather than a local realignment that produces `kD N`."
-
-This is a meaningful architectural change to the refiner. Out of scope
-for the current session.
+4 of 5 aligners are off by 1 on the acceptor; mapPacBio (HP-ED winner)
+has the canonical placement. No action needed.
 
 ### Stale 3' pileup bedgraphs (mechanical follow-up) — RESOLVED (commit 75b0338)
 

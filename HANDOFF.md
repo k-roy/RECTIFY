@@ -1,12 +1,12 @@
 # Session Handoff — Validation suite 40 → 0 + Cat3 plotter findings queued
 
-## 2026-05-18 evening addendum (no code change; doc cleanup only)
+## 2026-05-18 evening addendum (no code change; doc cleanup + cat3 re-classification)
 
 Short follow-up session. Outcome:
 
 - **Confirmed baseline**: `pytest tests/test_validation_reads.py` →
   105 passed / 8 skipped (run on M1 against top of branch).
-- **No code shipped.** Two queued items were re-investigated and
+- **No code shipped.** Three queued items were re-investigated and
   re-classified rather than coded:
   - `cat2_minus_2` "Module 2G lookahead past one HP del" → on close
     inspection the proposal doesn't fit the genome (intervening bases
@@ -14,21 +14,34 @@ Short follow-up session. Outcome:
     "right" endpoint isn't pinned down). Flagged as needing user
     decision before code lands. Full walkthrough now in
     `docs/handoffs/debugger_queue.md`.
+  - `cat3_minus_2` "asymmetric 2-bp slide refiner gap" → re-investigation
+    showed the **TSV output is already canonical** for all 5 aligners
+    (`junctions = 366502-366584`, all in `effective_group A`,
+    `effectively_matched_winner = True`). The `2D-N` is BAM-CIGAR
+    cosmetic only — no downstream code reads it. The user's verbatim
+    equivalence criterion
+    (`genome[old_donor:old_donor+k] == genome[old_acceptor:old_acceptor+k]`)
+    doesn't hold for this case (AA ≠ CT); the criterion that DOES hold
+    and matches the geometry is
+    `genome[old_ns-k:old_ns] == genome[old_ne:old_ne+k]` (CT == CT).
+    Demoted from architectural-correctness to cosmetic-cleanup; needs
+    user reconciliation of the formula + identification of which stage
+    actually writes the trimmed-BAM CIGAR before any code lands.
   - Two items the prior handoff listed as open are actually already
     shipped by commit `75b0338`:
     - Bedgraph regen step in `regen_pa_rest_bundle.py`.
     - Per-aligner effective-utility column (`effective_group` +
       `effectively_matched_winner`) in summary TSV.
-- **debugger_queue.md** updated to mark those items RESOLVED with the
-  commit hash, and to replace the cat2_minus_2 entry with the actual
-  geometry + the three candidate endpoints + the open design question.
-- **Next session should pick a different baton**: the Cat3 asymmetric
-  2-bp slide (architectural) and the Cat1 HP-mode metric (architectural)
-  remain open; the Phase C 5' soft-clip rescue calibration report is
-  delivered but doesn't translate 1:1 to a `_rescue_5prime_softclip`
-  code change (calibration profiled a different null) and needs a
-  precision/recall measurement on actual rescue cases before any
-  threshold is tightened.
+- **debugger_queue.md** updated to mark resolved items with the commit
+  hash, replace the cat2_minus_2 entry with the actual geometry, and
+  replace the cat3_minus_2 entry with the empirical CIGAR/TSV trace
+  + the corrected equivalence criterion.
+- **Genuinely open work for the next session**: Cat1 HP-mode metric
+  design (architectural, deferred); Phase C 5' soft-clip rescue
+  calibration (report delivered but doesn't translate 1:1 to code —
+  needs a precision/recall measurement on actual rescue cases); the
+  cat3 CIGAR-cosmetic fix (after user reconciles the formula + a
+  prerequisite "which stage writes the trimmed BAM CIGAR" trace).
 
 Below is the prior handoff (afternoon session, 14-commit push to
 40→0 validation pass) preserved as-is for context.
