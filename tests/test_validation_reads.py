@@ -739,15 +739,41 @@ class TestCategory6SimpleChimeric:
         assert clip_5p == 0, \
             f'{label}: mapPacBio source should have no 5\' soft-clip, got {clip_5p}S'
 
+    # Expected annotated 5' intron coordinates per Cat6 read. The test verifies
+    # the corrected output places exactly this junction, regardless of whether
+    # the winning aligner was mapPacBio (native intron span, no rescue) or a
+    # rescue-applied aligner (minimap2/gapmm2/deSALT/uLTRA with 5' soft-clip →
+    # rescue materialized the same N-op). Both paths produce the same biology.
+    EXPECTED_INTRON = {
+        'cat6_plus_1':  (125154, 125270),
+        'cat6_plus_2':  (45644,  45977),
+        'cat6_minus_1': (60193,  60697),
+        'cat6_minus_2': (307333, 307765),
+    }
+
     @pytest.mark.parametrize('label', LABELS)
-    def test_no_five_prime_rescue(self, corrected, raw_reads, label):
-        """Cat6 reads span the 5' intron already; no 5' rescue should fire."""
+    def test_intron_present_at_expected_coords(self, corrected, raw_reads, label):
+        """Cat6 corrected output must contain the annotated 5' intron exactly once.
+
+        Replaces the legacy ``test_no_five_prime_rescue`` assertion (which
+        required ``five_prime_rescued == 0`` because the old bundle's consensus
+        picked mapPacBio's native intron span). HP-mode consensus now legitimately
+        picks rescue-applied winners for some Cat6 reads — their corrected BAM
+        still contains the annotated intron at the same coordinates. The test
+        checks the BIOLOGICAL OUTCOME (right junction at right coordinates) and
+        is path-agnostic on whether rescue was the route.
+        """
         read = raw_reads[label]
         row = corrected.get(read.query_name)
         if row is None:
             pytest.skip(f'Read {label} not in correction output')
-        assert row.get('five_prime_rescued', '0') == '0', \
-            f'{label}: five_prime_rescued should be 0 for Cat6 reads'
+        expected_start, expected_end = self.EXPECTED_INTRON[label]
+        expected_str = f'{expected_start}-{expected_end}'
+        junctions_field = row.get('junctions', '') or ''
+        assert expected_str in junctions_field.split(';'), (
+            f'{label}: expected intron {expected_str} in corrected junctions, '
+            f'got {junctions_field!r}'
+        )
 
     @pytest.mark.parametrize('label', LABELS)
     def test_has_one_junction(self, corrected, raw_reads, label):
