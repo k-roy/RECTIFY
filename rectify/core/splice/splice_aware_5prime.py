@@ -1371,37 +1371,31 @@ def rescue_3ss_truncation(
                             _align_seq = _borrowed + _align_seq
                             break
 
-            elif (
-                rescue_type_candidate == 'softclip'
-                and strand == '+'
-                and read.reference_start is not None
-            ):
-                _overshoot = read.reference_start - _intron_end
-                if 0 < _overshoot:
-                    _q = read.query_sequence or ''
-                    _scl = _get_5prime_softclip_len(read)
-                    _max_k = min(_overshoot, _MAX_K)
-                    for _k_try in range(_max_k, 0, -1):
-                        if _scl <= 0 or len(_q) < _scl + _k_try:
-                            continue
-                        # Borrowed read bases are the first k_try body-M query
-                        # bases, immediately after the leading 5' soft-clip.
-                        _borrowed = _q[_scl : _scl + _k_try].upper()
-                        _ref_old = genome_seq[
-                            read.reference_start : read.reference_start + _k_try
-                        ].upper()
-                        _ref_new = genome_seq[
-                            _intron_start - _k_try : _intron_start
-                        ].upper()
-                        if (
-                            len(_ref_old) == _k_try
-                            and len(_ref_new) == _k_try
-                            and _borrowed == _ref_old
-                            and _borrowed == _ref_new
-                        ):
-                            _upstream_trim = _k_try
-                            _align_seq = _align_seq + _borrowed  # + strand: append
-                            break
+            # + strand equivalence-extension is DISABLED pending geometry fix.
+            #
+            # The structural mirror of the - strand `ref_end > intron_start`
+            # overshoot (body M extends INTO the intron region) is the
+            # + strand case `ref_start < intron_end` — i.e., body M EXTENDS
+            # INTO the intron from the high (downstream) edge. The handoff
+            # §3 calls this the "undershoot" pattern and it is what
+            # cat3_plus_2 exhibits.
+            #
+            # The previous implementation triggered on the OPPOSITE sign
+            # (`ref_start > intron_end`, body M starts PAST the intron
+            # with a gap). That is not a mirror of - strand overshoot; the
+            # resulting BAM surgery in `extend_read_5prime_for_junction_rescue`
+            # computed `intron_len = (ref_start + k) - five_prime_position - 1`
+            # = `canonical + 2k`, producing a non-canonical intron k bases
+            # too long on each side. There was no D-op to absorb either —
+            # body M's first k bases were pure matches inside the
+            # downstream exon, not inside the intron.
+            #
+            # Leaving the + strand path as a no-op is conservative: it
+            # restores pre-equivalence-extension behavior on + strand
+            # rescues. The proper + strand fix (mirror of - strand,
+            # triggered by `_intron_end - read.reference_start > 0`) is
+            # queued alongside the cat3_plus_2 undershoot work in
+            # docs/handoffs/debugger_queue.md.
 
             _exon_cigar_str = ''
             try:

@@ -6,6 +6,81 @@ keep the 40 → 0 push moving.
 
 ---
 
+## Bug note: + strand 5'-rescue equivalence-extension geometry inverted (DISABLED 2026-05-18)
+
+**Scope:** `rectify/core/splice/splice_aware_5prime.py`, `rescue_3ss_truncation`,
+the equivalence-extension block added in commit `0653172`.
+
+**What was wrong:** The + strand branch triggered on
+`_overshoot = read.reference_start - _intron_end > 0` (body M starts PAST
+canonical intron_end, i.e., a gap between intron and body M). The
+structural mirror of the - strand `ref_end > intron_start` overshoot is
+the OPPOSITE sign: `_intron_end - read.reference_start > 0` (body M
+extends INTO the intron from the high-coord edge).
+
+**Why it produced wrong BAMs (if it had ever fired):** When the + strand
+branch triggered, the downstream surgery in
+`extend_read_5prime_for_junction_rescue` (read_edits.py) computed:
+
+```
+intron_len = (read.reference_start + effective_trim) - five_prime_position - 1
+           = (intron_end + k + k) - (intron_start - 1) - 1
+           = canonical_intron_len + 2k
+```
+
+— a non-canonical intron 2k bases longer than the annotated splice junction,
+spanning `[intron_start, intron_end + 2k)`. The - strand path's arithmetic
+collapses cleanly to canonical (`canonical_intron_len`); the + strand path
+doesn't because the geometry is inverted.
+
+**Independent giveaway:** The + strand case the code handles has no D op
+to absorb. Body M's first k bases at `[intron_end + k, intron_end + 2k)`
+are pure matches inside the downstream exon. The transformation just
+moves k bases from body M to rescue M and lengthens the intron — no
+D-elimination benefit, which is the whole point of equivalence-extension.
+
+**Verification trail:** No real or synthetic + strand cat3 read in the
+validation bundle has the overshoot pattern needed to trigger the buggy
+path (cat3_plus_2 is undershoot; cat3_plus_1 has `ref_start == intron_end`
+exactly). Pytest passed because the path was never exercised. The
+handoff `HANDOFF_2026-05-18_0653172_cat3_equivalence.md` §2 already
+flagged this as "+ strand mirror code path has no test that exercises
+it" — the verification follow-up caught the geometric inversion.
+
+**Current state:** The + strand `elif` branch is replaced with an inline
+explanatory comment; behavior is now identical to pre-`6d2cf59` on
++ strand rescues. Validation suite still 106 passed / 8 skipped.
+
+**To fix properly:** Implement the correct mirror, which is structurally
+the same transformation as the deferred cat3_plus_2 "off-by-1 acceptor"
+undershoot case (§3 of the cat3 handoff). Sketch:
+
+- Trigger: `strand == '+' AND _intron_end - read.reference_start > 0`
+  (body M starts k bases short of canonical intron_end, INSIDE intron).
+- Borrowed query bases: first `_k_try` body-M query bases (same as
+  before): `_q[_scl : _scl + _k_try]`.
+- `_ref_old = genome[read.reference_start : read.reference_start + _k_try]`
+  — currently aligned at `[intron_end - k, intron_end)` inside intron region.
+- `_ref_new = genome[intron_end : intron_end + _k_try]` — downstream
+  exon start (structural mirror of - strand's `_ref_new`).
+- Surgery: the borrowed bases need to move from intron-region to
+  downstream-exon-start. That is NOT the same operation as appending to
+  rescue M (which is on the upstream side). On + strand, "move to
+  downstream exon start" means shifting body M's ref_start LEFT by k
+  (from `intron_end - k` to `intron_end - 2k`? — re-derive carefully).
+  This may need a different BAM-writer code path than the - strand
+  case, since both - and + strand currently route the "borrowed bases"
+  into the rescue M, which is the upstream side for + strand but the
+  downstream side for - strand. The asymmetry probably needs a separate
+  surgery routine.
+
+**Blast radius:** The handoff §3 cat3_plus_2 case (4/5 aligners) is
+exactly this undershoot pattern. The proper + strand fix would clean
+up its cosmetic CIGAR the same way - strand's was cleaned for
+cat3_minus_2.
+
+---
+
 ## Design note: splice-junction ambiguity window + motif-strength tiebreaker (next session)
 
 **User ask (2026-05-18 evening):** "We check upstream of the called 5' SS
