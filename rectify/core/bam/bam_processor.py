@@ -433,6 +433,19 @@ def correct_read_3prime(
 
     # Extract splice junctions from CIGAR
     junctions = extract_junctions_simple(read)
+    # When 5' rescue fired and located a real annotated junction, the read's
+    # raw CIGAR doesn't yet carry an N-op (the surgery happens later in
+    # bam_writer's extend_read_5prime_for_junction_rescue). For TSV reporting
+    # purposes, include the rescued junction so n_junctions reflects the
+    # post-rescue state — this is what downstream consumers (validation tests,
+    # junction aggregation, BED export) expect.
+    if five_prime_rescued:
+        _rj_post = _3ss_result.get('rescued_junction') if '_3ss_result' in locals() else None
+        if _rj_post:
+            _, _r_start, _r_end = _rj_post
+            _junc_tuple = (_r_start, _r_end)
+            if _junc_tuple not in junctions:
+                junctions = list(junctions) + [_junc_tuple]
     junctions_str = format_junctions_string(junctions)
 
     # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
