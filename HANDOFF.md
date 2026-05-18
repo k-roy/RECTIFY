@@ -53,6 +53,8 @@ relaxations + bundle regen. Plotter-session findings from
 | `62241ea` | Phase E.1: reroute_intronic_tail consumes boundary-adjacent query-only ops (cat3_plus_1 silent-False fix). | quality fix (no test count change) |
 | `56eb543` | Document Phase E resolutions + Cat2 plotter findings in debugger_queue.md. | docs |
 | `5df89c9` | Bundle regen: incorporate all above into `rectify/data/validation/` BAMs + TSVs. | data update |
+| `14d9add` | Session-wrap HANDOFF.md (this file). | docs |
+| `75b0338` | (i) Bedgraph regen step in `regen_pa_rest_bundle.py` keeps `rectified/corrected_3ends.{plus,minus}.bedgraph` in sync. (ii) `merge_corrected_tsvs` summary TSV now has `effective_group` + `effectively_matched_winner` columns + sample-wide rollup at `logger.info`. | plotter-requested follow-up |
 
 **Real code fixes (no test relaxation):** `a1728eb`, `22136af`, `dc5591e`,
 `09e4627`, `62241ea` — these change actual pipeline behavior and recovered
@@ -141,11 +143,14 @@ the summary below is just the lookup index.**
 
 ### Plan-level deferred work
 
-- **Phase C calibration agent on H2** (not launched this session). The
-  TODO.md "5' Soft-Clip Rescue — Sequence-Based Matching" item still
-  warrants the empirical profiling against
-  `/u/project/guillom/shared/raw/by4742_polya_drs_2025/` (RPL19B,
-  RPL20B + other short-upstream-exon junctions).
+- **Phase C calibration agent on H2** — launched during the session
+  wrap. Profile output (when the agent completes) lands at
+  `docs/handoffs/anchored_prefix_calibration.md` and gives recommended
+  per-base error-rate thresholds + minimum matched prefix length for
+  the anchored-prefix scoring algorithm (TODO.md "5' Soft-Clip Rescue —
+  Sequence-Based Matching"). Next agent: read that report before
+  implementing the rescue scoring change in `consensus/scoring.py:
+  _rescue_5prime_softclip`.
 - **Bundle source BAM regen** (`rectify/data/validation/
   validation_reads.bam`): the consensus output BAM was NOT regenerated
   this session. Only the post-rectify outputs (`rectified/*.bam`,
