@@ -440,7 +440,17 @@ def walkback_3prime_guarded(
         and early_exit_min_homopolymer_len > 0
     ):
         _raw_3p = read.reference_end - 1
-        _w_start = max(0, _raw_3p - 1)
+        # Window extended upstream by 20 bp to also catch the
+        # "force-aligned past the pA tail" pattern (e.g. mapPacBio
+        # cat1_plus_1: 3' end at chrXIV:10617, with the genomic A-tract
+        # 7 bp upstream at chrXIV[10600..10610]). The narrower legacy
+        # window (_raw_3p - 1 only) made walkback exit early for these
+        # alignments, leaving the corrected 3' end stuck at the
+        # force-anchored position. The main scan's tail-context guard
+        # (lines below) correctly rejects fake anchors with leading
+        # pA-mismatch runs; widening the entry condition lets the guard
+        # do its job.
+        _w_start = max(0, _raw_3p - 20)
         _w_end = min(
             len(chrom_seq), _raw_3p + early_exit_min_homopolymer_len + 1
         )
@@ -567,6 +577,14 @@ def walkback_3prime_guarded(
         # (Implicitly handled by the loop below — no special case needed.)
 
         # Main scan: walk right-to-left through scratch arrays in [scan_lo, scan_hi).
+        # Tolerance for the "all-stop-base" tail-context guard: real nanopore
+        # over-call regions are predominantly pA-stop-base but routinely contain
+        # 1-2 non-stop-base basecall errors. The strict 100% gate misses
+        # exactly the cat1_plus_1 pattern (mapPacBio force-aligns past pA with
+        # rb=A,T,A,A across 4 trailing X-mismatches — one T breaks "all A").
+        # Allow up to floor(tail_context_k / 4) non-stop-base positions in the
+        # tail window before treating the candidate as a real anchor.
+        _max_non_stop_in_tail = max(1, tail_context_k // 4)
         true_cpa: Optional[int] = None
         for i in range(scan_hi - 1, scan_lo - 1, -1):
             if _g_rp[i] == -1:
@@ -580,14 +598,25 @@ def walkback_3prime_guarded(
                     ctx_all_stop = True
                     ctx_has_mismatch = False
                     ctx_n = 0
+                    ctx_non_stop = 0
                     for _j in range(i - 1, scan_lo - 1, -1):
                         if _g_rp[_j] == -1:
                             continue
                         jrb = _g_rb[_j]
                         jgb = _g_gb[_j]
                         if jrb != stop_ord:
-                            ctx_all_stop = False
-                            break
+                            ctx_non_stop += 1
+                            if ctx_non_stop > _max_non_stop_in_tail:
+                                ctx_all_stop = False
+                                break
+                            # Tolerated non-stop-base — still count as a tail
+                            # position but check for mismatch like a stop-base.
+                            if jgb != jrb:
+                                ctx_has_mismatch = True
+                            ctx_n += 1
+                            if ctx_n >= tail_context_k:
+                                break
+                            continue
                         if jgb != jrb:
                             ctx_has_mismatch = True
                         ctx_n += 1
