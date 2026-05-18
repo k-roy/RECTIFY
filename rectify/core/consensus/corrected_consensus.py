@@ -806,11 +806,67 @@ def merge_corrected_tsvs(
     # ── Comparison summary (always built; written to file only if requested) ─
     summary = rep_df.merge(winner_df, on='read_id', how='left')
     summary['_is_winner'] = summary['_aligner'] == summary['_winning_aligner']
+
+    # ── Per-aligner effective-utility cluster annotation ──
+    #
+    # Within each read, group aligners by their (corrected_3prime,
+    # corrected_junctions) tuple — aligners landing at the same biological
+    # answer are functionally interchangeable for RECTIFY's outputs, even
+    # if their CIGARs differ in mismatch/indel placement.  This makes the
+    # HP-ED tiebreak within a cluster informative without losing the signal
+    # that multiple aligners are "right enough."
+    #
+    # The new ``effective_group`` column assigns each row a letter (A, B,
+    # C, …) keyed by its cluster within the read.  Cluster letters are
+    # ordered by descending size (most-popular cluster = A).  Ties are
+    # broken alphabetically by aligner name.
+    #
+    # ``effectively_matched_winner`` is True when the row's cluster is the
+    # same as the winning aligner's cluster.
+    def _eff_key(_row):
+        _juncs = _row.get('junctions', '') or ''
+        # Normalize: sort the donor-acceptor tuples so semicolon-order
+        # differences across aligners don't shadow real equivalence.
+        _parts = tuple(sorted(p for p in _juncs.split(';') if p))
+        try:
+            _c3p = int(_row['corrected_3prime'])
+        except (TypeError, ValueError, KeyError):
+            _c3p = -1
+        return (_c3p, _parts)
+
+    summary['_eff_key'] = summary.apply(_eff_key, axis=1)
+    summary['effective_group'] = ''
+    summary['effectively_matched_winner'] = False
+    for _rid, _grp in summary.groupby('read_id', sort=False):
+        # Cluster sizes within this read (descending), then alphabetical
+        # aligner name as tiebreak for deterministic labeling.
+        _key_to_aligners: Dict[tuple, list] = {}
+        for _idx, _row in _grp.iterrows():
+            _key_to_aligners.setdefault(_row['_eff_key'], []).append(_row['_aligner'])
+        _sorted_keys = sorted(
+            _key_to_aligners.items(),
+            key=lambda kv: (-len(kv[1]), sorted(kv[1])[0]),
+        )
+        _key_to_letter = {_k: chr(ord('A') + _i) for _i, (_k, _) in enumerate(_sorted_keys)}
+        # Winner's effective key — match column at winner row
+        _winner_row = _grp[_grp['_is_winner']]
+        _winner_key = (
+            _winner_row.iloc[0]['_eff_key']
+            if not _winner_row.empty
+            else None
+        )
+        for _idx, _row in _grp.iterrows():
+            summary.at[_idx, 'effective_group'] = _key_to_letter[_row['_eff_key']]
+            summary.at[_idx, 'effectively_matched_winner'] = (
+                _winner_key is not None and _row['_eff_key'] == _winner_key
+            )
+
     if summary_tsv:
         keep = [
             'read_id', '_aligner', '_is_winner', '_chimera_ok', 'hp_edit_distance',
             'aligned_bases', 'corrected_3prime', 'five_prime_position',
             'junctions', '_conf_rank', '_n_agree', '_n_junc', '_five_rescued',
+            'effective_group', 'effectively_matched_winner',
             'correction_applied', 'confidence',
         ]
         keep = [c for c in keep if c in summary.columns]
@@ -818,6 +874,25 @@ def merge_corrected_tsvs(
             summary_tsv, sep='\t', index=False
         )
         logger.info("Comparison summary → %s", summary_tsv)
+
+        # Sample-wide effective-utility rollup: per aligner, how often did
+        # it carry the same biological answer as the consensus winner?
+        # An aligner can lose HP-ED within the winning cluster (cluster A)
+        # and still be in the right cluster — this captures that signal.
+        try:
+            _n_reads = summary['read_id'].nunique()
+            _rollup = (
+                summary.groupby('_aligner')['effectively_matched_winner']
+                .sum()
+                .sort_values(ascending=False)
+            )
+            logger.info("Sample-wide effective utility (out of %d reads):", _n_reads)
+            for _aln, _matched in _rollup.items():
+                _pct = 100.0 * _matched / max(1, _n_reads)
+                logger.info("  %-10s matched winner cluster in %5d / %5d reads (%5.1f%%)",
+                            _aln, int(_matched), _n_reads, _pct)
+        except Exception as _roll_exc:
+            logger.warning("effective-utility rollup failed: %s", _roll_exc)
 
     # ── Select all rows from winning aligner (handles multi-peak reads) ──
     result_df = all_df.merge(winner_df, on='read_id', how='left')
