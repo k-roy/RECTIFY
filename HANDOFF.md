@@ -1,5 +1,44 @@
 # Session Handoff — Validation suite 40 → 0 + Cat3 plotter findings queued
 
+## 2026-05-18 late-evening addendum — cat3 CIGAR cleanup shipped (commit 6d2cf59)
+
+Iteration after the earlier doc-cleanup pass. Outcome:
+
+- **Code change shipped (commit `6d2cf59`):** equivalence-extension in the
+  5' rescue produces clean `M(m-k) N(L+k) M(j+k)` instead of `M N D(k) M`
+  for the cat3_minus_2 pattern. New TSV column `five_prime_upstream_trim`.
+  Threaded through `splice_aware_5prime.py` → `bam_processor.py` →
+  `output.py` → `bam_writer.py` → `read_edits.py`.
+- **New test:** `test_cat3_minus_2_rescued_aligners_have_clean_intron_cigar`
+  in `TestCategory3JunctionRescue`. Fixture refactor exposes per-aligner
+  corrected BAMs from the test pipeline.
+- **pytest delta:** 105 → 106 passed (+1 new test), 8 skipped unchanged.
+- **Bundle regenerated.** Bundled `validation_reads.bam` and the per-aligner
+  trimmed BAMs in `rectified/per_aligner/` reflect the clean CIGAR for
+  cat3_minus_2. All 5 aligners now report `hp_edit_distance = 20.6323`
+  for cat3_minus_2 (was 20.63/21.49 split before the fix).
+- **Limitation:** - strand only. + strand cat3 reads (cat3_plus_2) have a
+  different geometric pattern (off-by-1 on acceptor) that needs separate
+  detection logic. + strand mirror plumbing IS in place in
+  `extend_read_5prime_for_junction_rescue` — only `rescue_3ss_truncation`'s
+  trigger logic is - strand only. Queued in `debugger_queue.md`.
+
+### Next-session work queued in `debugger_queue.md`
+
+- **Splice-junction ambiguity window + motif-strength tiebreaker** (the
+  "other half" of the user's 2026-05-18 evening "both please" ask). Full
+  design note at the top of `debugger_queue.md` — names the existing
+  `SpliceMotifScorer` building blocks, the symmetric-slide ambiguity
+  geometry, the 4-commit implementation sketch, and the test additions.
+  The advisor's blast-radius note still applies (narrow validation-set
+  benefit; check production scope before assuming impact).
+- **cat3_plus_2 + strand mirror** — detection logic in
+  `rescue_3ss_truncation` for the off-by-1-acceptor pattern.
+- **Cat1 HP-mode metric design** (architectural, still deferred).
+- **Phase C 5' rescue calibration** — report delivered, threshold
+  application still needs precision/recall measurement on actual rescue
+  cases (advisor's note from earlier this session).
+
 ## 2026-05-18 evening addendum (no code change; doc cleanup + cat3 re-classification)
 
 Short follow-up session. Outcome:

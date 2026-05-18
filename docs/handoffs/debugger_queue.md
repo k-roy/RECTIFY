@@ -4,6 +4,102 @@ User-supplied findings for follow-up sessions. These are real bugs/design
 questions that surfaced during Phase D investigation but were deferred to
 keep the 40 → 0 push moving.
 
+---
+
+## Design note: splice-junction ambiguity window + motif-strength tiebreaker (next session)
+
+**User ask (2026-05-18 evening):** "We check upstream of the called 5' SS
+and 3' SS for the same nt(s). We also check downstream for the same nt(s).
+We report back those numbers as the ambiguity window, and use the splice
+site signal motif strengths (defined in one of our rectify docs) if the
+window is >0 for tiebreaking purposes."
+
+**Geometric criterion (symmetric slide — already what the existing fast
+path in `junction_refiner.py:_apply_junction_replacement` lines 513-590
+implements):**
+
+For an intron at (intron_start, intron_end):
+- `up_amb(k)` holds when `genome[intron_start - k : intron_start] ==
+  genome[intron_end - k : intron_end]` (upstream of each SS matches).
+- `down_amb(k)` holds when `genome[intron_start : intron_start + k] ==
+  genome[intron_end : intron_end + k]` (downstream of each SS matches).
+- The ambiguity window is the largest k where either holds → intron can
+  be slid by up to k bp in that direction without changing length.
+
+(This is distinct from the asymmetric-slide criterion
+`genome[old_ns - k : old_ns] == genome[old_ne : old_ne + k]` shipped this
+session in `rescue_3ss_truncation`. That one changes intron *length*.)
+
+**Existing infrastructure (already in tree):**
+
+- `rectify/utils/splice_motif.py`:
+  - `SpliceMotifScorer.score_five_ss(seq) -> float` — yeast penalty matrix
+    `[4, 3, 1, 1, 2, 1]` against consensus `GTATGT`. Lower = better.
+  - `SpliceMotifScorer.score_three_ss(seq)` — `[1, 1, 1, 3, 4]` against
+    `YYYAG`.
+  - `get_splice_site_dinucleotides(genome, chrom, intron_start, intron_end,
+    strand)` — returns (five_dinuc, three_dinuc) in transcript orientation.
+  - `get_splice_site_sequences(genome, chrom, intron_start, intron_end,
+    strand, context=6)` — returns the consensus-length sequences for
+    scoring.
+- `rectify/core/consensus/consensus.py:load_annotated_junctions(annotation_path)`
+  — returns `Set[(chrom, intron_start, intron_end, strand)]`.
+
+**CLAUDE.md line 202-204** already prefigures this work:
+> "Future enhancement: pre-compute `up_amb` / `down_amb` fields on
+> annotated junctions so soft-clip rescue can flex the match length
+> within the ambiguity window."
+
+**Implementation sketch (suggested 4 commits):**
+
+1. **Per-junction ambiguity precompute** (no behavior change yet):
+   - In `consensus.py:load_annotated_junctions`, augment the return type
+     from `Set[tuple]` to `Dict[tuple, dict]` where each value carries
+     `up_amb`, `down_amb`, `five_ss_motif_score`, `three_ss_motif_score`.
+   - Compute by walking outward from each SS while genome bases match
+     between the two SS (cap at, say, k=10).
+   - Backward-compatible callers: those that just need the set of
+     coordinates can still iterate keys.
+
+2. **TSV reporting columns** (observability):
+   - Add `junction_up_amb`, `junction_down_amb`, `junction_five_ss_score`,
+     `junction_three_ss_score` to `corrected_reads.tsv` (one set of values
+     per row; for multi-junction reads, use the worst-scoring junction or
+     join all). Plumbing parallels what this session did for
+     `five_prime_upstream_trim` — through `bam_processor.py`/`output.py`.
+
+3. **Tiebreaker integration** (winner selection):
+   - In `corrected_consensus.merge_corrected_tsvs`, when the HP-edit
+     distances are tied AND the tied aligners disagree on junction
+     placement within an ambiguity window of an annotated junction, prefer
+     the placement with the lower motif penalty score. Concretely: extend
+     the sort key tuple at line 765 with a motif-score component that
+     activates only on `up_amb + down_amb > 0`.
+   - The advisor noted (2026-05-18 session) that the blast radius of any
+     tiebreaker change is narrow (1-3 reads in validation; check production
+     before assuming impact).
+
+4. **Tests** in `tests/test_validation_reads.py`:
+   - `test_annotated_junction_carries_ambiguity_fields` — every row whose
+     `junctions` column refers to an annotated junction should have non-empty
+     ambiguity/motif columns.
+   - `test_tied_hp_ed_resolves_by_motif_score` — for a curated read where
+     two aligners tie on HP-ED but place the junction at different points
+     in the ambiguity window, the higher-motif-score placement wins.
+
+**Out of scope for this design note:**
+
+- Whether to use motif-strength for ANY tiebreaking (not just ambiguity-
+  window-driven). The user's verbatim was specific to "if the window is >0
+  for tiebreaking purposes" — keeping that scope is safe.
+- Whether to use motif-strength as a NOVEL junction filter. That's a
+  separate concern that interacts with the chimera-exemption discussion
+  in the cat3 entry below.
+
+---
+
+## Original queue (pre-2026-05-18 evening)
+
 ## Foundational policy: reads never end in A
 
 Per user (2026-05-18, plotter session via
