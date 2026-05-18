@@ -1054,6 +1054,7 @@ def extend_read_5prime_for_junction_rescue(
     soft_clip_len: int,
     strand: str,
     exon_cigar_str: str = '',
+    upstream_trim: int = 0,
 ) -> bool:
     """
     Extend a read's 5' alignment to cover a rescued splice-junction exon.
@@ -1066,6 +1067,16 @@ def extend_read_5prime_for_junction_rescue(
     When *exon_cigar_str* is provided (computed by :mod:`local_aligner`), the
     exon segment uses the actual M/I/D alignment ops.  If absent or empty, a
     flat ``nM`` is used as before.
+
+    When *upstream_trim* > 0, the rescue uses the equivalence-extension path:
+    the alignment's body M op overshoots the annotated intron boundary by k
+    bases that match BOTH the upstream-exon-end (already aligned) AND the
+    downstream-exon-start (where the soft-clip rescue is going). The k query
+    bases at the end (− strand) or start (+ strand) of the boundary-adjacent
+    M op are removed from the body M and absorbed into the *exon_cigar_str*'s
+    leading M op. ``intron_len`` and the new ``reference_start`` / ``reference_end``
+    are computed from the trimmed boundary, not the raw one.  This produces a
+    clean ``N(L+k) M(j+k)`` flank instead of ``N(L) D(k) M(j)``.
 
     The intron length is derived from the gap between the current alignment
     boundary and *five_prime_position* (the junction boundary marker):
@@ -1110,6 +1121,11 @@ def extend_read_5prime_for_junction_rescue(
         except Exception:
             pass  # fall back to flat M
 
+    # Ops that consume both query and reference (eligible for upstream_trim).
+    _MX_OPS = frozenset([0, 7, 8])  # M, =, X
+    _ref_consuming_exon = frozenset([0, 2, 7, 8])  # M, D, =, X
+    _query_consuming_exon = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
+
     if strand == '+':
         # Leading soft-clip is the 5' end for plus-strand reads.
         if not cigar or cigar[0][0] != 4:  # S
@@ -1117,25 +1133,36 @@ def extend_read_5prime_for_junction_rescue(
         actual_sc = cigar.pop(0)[1]
         n = actual_sc
 
-        intron_len = read.reference_start - five_prime_position - 1
+        # Equivalence-extension: trim *upstream_trim* ref-AND-query bases off
+        # the START of the body's first M/=/X op. The trimmed query bases get
+        # absorbed into the leading exon op's M (which exon_cigar_str already
+        # accounts for, since rescue_3ss_truncation called align_clip_to_exon
+        # with the EXTENDED clip).
+        effective_trim = 0
+        if upstream_trim > 0 and cigar and cigar[0][0] in _MX_OPS and cigar[0][1] >= upstream_trim:
+            op0, len0 = cigar[0]
+            new_len = len0 - upstream_trim
+            if new_len > 0:
+                cigar[0] = (op0, new_len)
+            else:
+                cigar.pop(0)
+            effective_trim = upstream_trim
 
-        # Build exon CIGAR ops (M/I/D).  Reference bases consumed by exon ops
-        # must equal (five_prime_position + 1) - exon_ref_start, but we can
-        # derive the ref start from intron_len and exon ops ref span.
+        # Body M was trimmed by `effective_trim` ref bases → reference_start shifts
+        # right by that much. intron_len uses the post-trim reference_start.
+        intron_len = (read.reference_start + effective_trim) - five_prime_position - 1
+
         if exon_ops is None:
-            exon_ops = [(0, n)]  # flat M fallback
+            exon_ops = [(0, n + effective_trim)]  # flat M fallback (extended clip + borrowed)
 
-        # ref bases consumed by exon ops
-        _ref_consuming_exon = frozenset([0, 2, 7, 8])  # M, D, =, X
-        _query_consuming_exon = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
         exon_ref_span = sum(l for op, l in exon_ops if op in _ref_consuming_exon)
         exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
-        # Guard: exon_ops must not consume more query bases than the soft-clip.
-        # If they do (local aligner artefact, e.g. one extra M from a D at the
-        # boundary), fall back to a flat M so the BAM record stays valid.
-        if exon_query_span != actual_sc:
-            exon_ops = [(0, actual_sc)]
-            exon_ref_span = actual_sc
+        # Guard: with equivalence-extension the exon must consume actual_sc + effective_trim
+        # query bases. Without extension it must consume exactly actual_sc.
+        expected_query = actual_sc + effective_trim
+        if exon_query_span != expected_query:
+            exon_ops = [(0, expected_query)]
+            exon_ref_span = expected_query
         # New reference_start = five_prime_position - exon_ref_span + 1
         new_ref_start = five_prime_position - exon_ref_span + 1
 
@@ -1161,15 +1188,31 @@ def extend_read_5prime_for_junction_rescue(
         actual_sc = cigar.pop()[1]
         n = actual_sc
 
-        intron_len = five_prime_position - read.reference_end
+        # Equivalence-extension: trim *upstream_trim* ref-AND-query bases off
+        # the END of the body's last M/=/X op (now at cigar[-1] after popping S).
+        # The trimmed query bases get absorbed into exon_cigar_str's first M
+        # (which rescue_3ss_truncation extended by the borrowed bases).
+        effective_trim = 0
+        if upstream_trim > 0 and cigar and cigar[-1][0] in _MX_OPS and cigar[-1][1] >= upstream_trim:
+            opN, lenN = cigar[-1]
+            new_len = lenN - upstream_trim
+            if new_len > 0:
+                cigar[-1] = (opN, new_len)
+            else:
+                cigar.pop()
+            effective_trim = upstream_trim
+
+        # Body M was trimmed by `effective_trim` ref bases → reference_end shifts
+        # left by that much.  intron_len uses the post-trim reference_end.
+        intron_len = five_prime_position - (read.reference_end - effective_trim)
 
         if exon_ops is None:
-            exon_ops = [(0, n)]  # flat M fallback
+            exon_ops = [(0, n + effective_trim)]  # flat M fallback (extended clip + borrowed)
 
-        _query_consuming_exon = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
         exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
-        if exon_query_span != actual_sc:
-            exon_ops = [(0, actual_sc)]
+        expected_query = actual_sc + effective_trim
+        if exon_query_span != expected_query:
+            exon_ops = [(0, expected_query)]
 
         if intron_len <= 0:
             for op_tup in exon_ops:

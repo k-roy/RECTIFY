@@ -1299,6 +1299,47 @@ def rescue_3ss_truncation(
                 _align_seq = rescue_seq
             else:
                 _align_seq = _intronic_seq if _intronic_seq else rescue_seq
+
+            # Equivalence-extension: when the alignment overshoots the
+            # annotated intron boundary on the body side, k query bases that
+            # are currently at the END of the upstream M can be re-aligned to
+            # the START of the downstream exon, allowing the intron to extend
+            # by k and absorbing what would otherwise be a trailing kD op.
+            # Geometric criterion (- strand, soft-clip rescue):
+            #   k = read.reference_end - _intron_start  (must be > 0)
+            #   borrowed read bases at [n_q - softclip_len - k : n_q - softclip_len]
+            #     == genome[_intron_start - k : _intron_start]
+            #     == genome[_intron_end   : _intron_end   + k]
+            # When all three slices are equal (and the upstream M matched at
+            # those positions, so the read bases ARE genome bases), prepend
+            # the borrowed bases to _align_seq and record the trim amount so
+            # the BAM writer can shrink the upstream M by k.
+            # Only attempted for - strand soft-clip rescues this session;
+            # + strand has a different geometric pattern (cat3_plus_2 shows
+            # off-by-1 on the acceptor, not body-end overshoot).
+            _upstream_trim = 0
+            if (
+                rescue_type_candidate == 'softclip'
+                and strand == '-'
+                and read.reference_end is not None
+            ):
+                _k = read.reference_end - _intron_start
+                if 0 < _k <= 10:
+                    _ref_left  = genome_seq[_intron_start - _k : _intron_start].upper()
+                    _ref_right = genome_seq[_intron_end : _intron_end + _k].upper()
+                    _q = read.query_sequence or ''
+                    _scl = _get_5prime_softclip_len(read)
+                    if (
+                        len(_ref_left) == _k
+                        and _ref_left == _ref_right
+                        and _scl > 0
+                        and len(_q) >= _scl + _k
+                    ):
+                        _borrowed = _q[len(_q) - _scl - _k : len(_q) - _scl].upper()
+                        if _borrowed == _ref_left:
+                            _upstream_trim = _k
+                            _align_seq = _borrowed + _align_seq
+
             _exon_cigar_str = ''
             try:
                 from ..align.local_aligner import align_clip_to_exon, cigar_ops_to_str
@@ -1317,6 +1358,7 @@ def rescue_3ss_truncation(
                 'edit_distance': best_ed,
                 'query_bp': len(rescue_seq),
                 'five_prime_exon_cigar': _exon_cigar_str,
+                'five_prime_upstream_trim': _upstream_trim,
             }
 
     # --- Case 4.5: forced N-op snap for mapPacBio terminal-D overshoot ---
@@ -1338,6 +1380,7 @@ def rescue_3ss_truncation(
             'edit_distance': -1,
             'query_bp': 0,
             'five_prime_exon_cigar': '',
+            'five_prime_upstream_trim': 0,
         }
 
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
@@ -1433,6 +1476,7 @@ def rescue_3ss_truncation(
             'edit_distance': -1,
             'query_bp': intronic_depth,
             'five_prime_exon_cigar': _exon_cigar_str4,
+            'five_prime_upstream_trim': 0,
         }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
@@ -1453,6 +1497,7 @@ def rescue_3ss_truncation(
                 'edit_distance': -1,
                 'query_bp': 0,
                 'five_prime_exon_cigar': '',
+                'five_prime_upstream_trim': 0,
             }
 
     return _no_rescue(read, strand)
@@ -1473,6 +1518,7 @@ def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:
         'edit_distance': -1,
         'query_bp': 0,
         'five_prime_exon_cigar': '',
+        'five_prime_upstream_trim': 0,
     }
 
 

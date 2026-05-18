@@ -130,6 +130,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
             i_5p_res  = hdr.index('five_prime_rescued')          if 'five_prime_rescued'          in hdr else -1
             i_5p_clip = hdr.index('five_prime_soft_clip_length') if 'five_prime_soft_clip_length' in hdr else -1
             i_5p_cig  = hdr.index('five_prime_exon_cigar')       if 'five_prime_exon_cigar'       in hdr else -1
+            i_5p_trim = hdr.index('five_prime_upstream_trim')    if 'five_prime_upstream_trim'    in hdr else -1
             # Cat2 soft-clip rescue columns (v2.9.1)
             i_sc_ext   = hdr.index('sc_homopolymer_extension')  if 'sc_homopolymer_extension'  in hdr else -1
             i_sc_seq   = hdr.index('sc_rescued_seq')             if 'sc_rescued_seq'             in hdr else -1
@@ -156,6 +157,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                 five_prime_rescued = (parts[i_5p_res] == '1') if i_5p_res >= 0 and len(parts) > i_5p_res else False
                 five_prime_sc      = int(parts[i_5p_clip])   if i_5p_clip >= 0 and len(parts) > i_5p_clip and parts[i_5p_clip] else 0
                 five_prime_exon_cig = parts[i_5p_cig]        if i_5p_cig >= 0  and len(parts) > i_5p_cig  and parts[i_5p_cig]  else ''
+                five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
                 sc_seq   = parts[i_sc_seq]         if i_sc_seq   >= 0 and len(parts) > i_sc_seq   else ''
@@ -175,6 +177,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                     'five_prime_rescued':         five_prime_rescued,
                     'five_prime_soft_clip':       five_prime_sc,
                     'five_prime_exon_cigar':      five_prime_exon_cig,
+                    'five_prime_upstream_trim':   five_prime_trim,
                     'five_prime_intron_clip_pos': five_prime_icp,
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
@@ -270,6 +273,7 @@ def write_corrected_bam(
                     correction['five_prime_soft_clip'],
                     correction['strand'],
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
+                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
                 )
 
             # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
@@ -409,6 +413,7 @@ def write_softclipped_bam(
                     correction['five_prime_soft_clip'],
                     correction['strand'],
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
+                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
                 )
 
             # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).

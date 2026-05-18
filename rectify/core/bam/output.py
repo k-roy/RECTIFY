@@ -47,6 +47,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'oc_homopolymer_extension',  # over-call rescue: genomic HP extension past raw_pos (D op)
             'oc_overcall_count',         # over-call rescue: # of over-call stop-base bases (I op)
             'oc_terminal_base',          # over-call rescue: the terminal non-stop-base char (= op)
+            'five_prime_upstream_trim',  # Cat3 equivalence-extension: k bases trimmed from upstream M (v2.9.9)
         ]
         f.write('\t'.join(header) + '\n')
 
@@ -91,6 +92,7 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 str(result.get('oc_homopolymer_extension', 0)),  # over-call rescue D
                 str(result.get('oc_overcall_count', 0)),          # over-call rescue I
                 result.get('oc_terminal_base', ''),               # over-call rescue terminal base
+                str(result.get('five_prime_upstream_trim', 0)),   # Cat3 equivalence-extension trim
             ]
             f.write('\t'.join(row) + '\n')
 

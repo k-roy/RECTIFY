@@ -159,7 +159,7 @@ def _run_correct_first_pipeline(
         merged,
         per_aligner_corrected_bams=per_aligner_corrected_bams,
     )
-    return merged
+    return merged, per_aligner_corrected_bams
 
 
 # ---------------------------------------------------------------------------
@@ -226,21 +226,22 @@ def _correction_outputs(bam_path, genome_path, annotation_path, tmp_path_factory
         pytest.skip('No per-aligner BAMs found alongside validation_reads.bam')
 
     tmp_no = tmp_path_factory.mktemp('correct_first_no2h')
-    no_2h_tsv = _run_correct_first_pipeline(
+    no_2h_tsv, no_2h_bams = _run_correct_first_pipeline(
         per_aligner_bams, genome_path, annotation_path, tmp_no,
         with_module_2h=False,
     )
 
     with_2h_rows = None
+    with_2h_bams = None
     if annotation_path is not None:
         tmp_with = tmp_path_factory.mktemp('correct_first_with2h')
-        with_2h_tsv = _run_correct_first_pipeline(
+        with_2h_tsv, with_2h_bams = _run_correct_first_pipeline(
             per_aligner_bams, genome_path, annotation_path, tmp_with,
             with_module_2h=True,
         )
         with_2h_rows = _load_all_rows(with_2h_tsv)
 
-    return _load_all_rows(no_2h_tsv), with_2h_rows
+    return _load_all_rows(no_2h_tsv), with_2h_rows, no_2h_bams, with_2h_bams
 
 
 @pytest.fixture(scope='module')
@@ -262,6 +263,15 @@ def corrected_with_aligner_bams(_correction_outputs):
     if with_rows is None:
         pytest.skip('Aligner BAMs or annotation unavailable; Module 2H not runnable')
     return {rid: rows[0] for rid, rows in with_rows.items()}
+
+
+@pytest.fixture(scope='module')
+def per_aligner_corrected_bams_no_2h(_correction_outputs):
+    """Per-aligner corrected BAM paths from the no-Module-2H pipeline run."""
+    bams = _correction_outputs[2]
+    if not bams:
+        pytest.skip('No per-aligner corrected BAMs were produced')
+    return bams
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +615,68 @@ class TestCategory3JunctionRescue:
         applied = row.get('correction_applied', '')
         assert 'five_prime_rescued' in applied, \
             f'{label}: correction_applied should include "five_prime_rescued", got {applied!r}'
+
+    def test_cat3_minus_2_rescued_aligners_have_clean_intron_cigar(
+        self, per_aligner_corrected_bams_no_2h, raw_reads
+    ):
+        """cat3_minus_2: aligners that needed 5'-rescue should emit a clean
+        N(82) M(15) flank after the intron, not N(80) D(2) M(13).
+
+        Both representations encode the same alignment because
+        genome[366502:366504] == genome[366584:366586] == 'CT' — the 2 query
+        bases at the end of the upstream exon can be re-aligned to the start
+        of the downstream exon, allowing the intron to extend leftward by 2
+        bp and absorb the D(2). The canonical placement matches gapmm2's and
+        mapPacBio's native CIGARs (which find the intron without needing
+        rescue) and aligns the donor/acceptor at the proper CT-AC dinucleotide
+        pair (= GT-AG on the RNA strand).
+
+        Affected aligners: minimap2, deSALT, uLTRA — these emit a 3' soft-clip
+        in raw output and rely on rescue_3ss_truncation to construct the N op.
+        """
+        import pysam
+        read = raw_reads['cat3_minus_2']
+        qname = read.query_name
+        rescued_aligners = ['minimap2', 'deSALT', 'uLTRA']
+        observed: dict = {}
+        for aligner in rescued_aligners:
+            bam_path = per_aligner_corrected_bams_no_2h.get(aligner)
+            if bam_path is None:
+                continue
+            with pysam.AlignmentFile(bam_path, 'rb') as bam:
+                for r in bam:
+                    if r.query_name == qname and not r.is_secondary and not r.is_supplementary:
+                        cig = r.cigartuples or []
+                        n_idx = next((i for i, (op, _) in enumerate(cig) if op == 3), None)
+                        if n_idx is None:
+                            observed[aligner] = ('NO_N_OP', cig)
+                            break
+                        # Extract: pre-N op length, N length, post-N flank
+                        pre_op_len = cig[n_idx - 1][1] if n_idx > 0 else None
+                        n_len = cig[n_idx][1]
+                        post_flank = cig[n_idx + 1: n_idx + 3]  # next 2 ops after N
+                        observed[aligner] = ('OK', pre_op_len, n_len, post_flank)
+                        break
+        # Expect: N length = 82 (canonical intron span), no D(2) immediately
+        # after N. The post-N op should be a single =/M of length >= 13 (the
+        # 13 soft-clip bases plus any absorbed body bases).
+        failures = []
+        for aligner in rescued_aligners:
+            entry = observed.get(aligner)
+            if entry is None or entry[0] != 'OK':
+                continue  # aligner missing or no N — separate test space
+            _, pre_op_len, n_len, post_flank = entry
+            if n_len != 82:
+                failures.append(f'{aligner}: N length is {n_len}, expected 82')
+            if post_flank and post_flank[0][0] == 2:
+                failures.append(
+                    f'{aligner}: first op after N is D({post_flank[0][1]}); '
+                    f'expected =/M (clean rescue should absorb the D)'
+                )
+        assert not failures, (
+            'cat3_minus_2 rescued aligners have non-canonical CIGAR shape:\n  '
+            + '\n  '.join(failures)
+        )
 
 
 class TestCategory4FalseJunction:

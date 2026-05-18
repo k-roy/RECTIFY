@@ -374,6 +374,7 @@ def correct_read_3prime(
         five_prime_rescued = False
     _five_prime_exon_cigar = ''      # set by 3'SS rescue when local alignment succeeds
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
+    _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -408,6 +409,7 @@ def correct_read_3prime(
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
                 _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
+                _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
                 # Record the exon-side intron boundary for BAM hard-clip when:
                 #   (a) the alignment's 5' end sits inside the rescued intron, AND
                 #   (b) there is no 5' soft-clip to extend via extend_read_5prime.
@@ -521,6 +523,9 @@ def correct_read_3prime(
         'five_prime_exon_cigar': _five_prime_exon_cigar,
         # -1 = not applicable; ≥0 = genomic boundary to hard-clip intronic tail to
         'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
+        # Cat3 equivalence-extension: k bases the BAM writer should trim from
+        # the end of the upstream M before applying the rescue surgery
+        'five_prime_upstream_trim': _five_prime_upstream_trim,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op
