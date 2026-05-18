@@ -259,6 +259,62 @@ logging to identify which precondition fails for cat3_plus_1.
 `if n_intronic_q != exon_q_bases: return False`) or boundary check
 (line 941: `if read.reference_start >= clip_boundary: return False`).
 
+**RESOLVED 2026-05-18 (commit `62241ea`):** mapPacBio cat3_plus_1's
+raw CIGAR is `1X 2= 7I 86=...`. The intronic head walk hits
+`break` at `ref_pos >= clip_boundary` before consuming the 7I op
+at the boundary, so `n_intronic_q=3` while exon_cigar `4M1I5M`
+needs 10 query bases. Fix: after the loop hits the clip boundary,
+also consume any boundary-adjacent query-only ops (I, S) so the
+strict `n_intronic_q == exon_q_bases` check passes. Applied to
+both plus and minus strand branches. Verified: cat3_plus_1
+corrected CIGAR now `4M1I5M385N86=2I65=...` with the N-op
+canonical at (168424, 168808).
+
+## Cat3_plus_2 downstream CIGAR mangling — RESOLVED transitively
+
+HANDOFF §3 NEW BUG flagged that refiner produces clean
+`14=1D9=366N50=...` but downstream pipeline mangles upstream to
+`22D1M21I1M`. Verified 2026-05-18 that with `--aligner-bams` the
+corrected BAM is clean `14=1D9=366N50=1I2=...` — N-op canonical at
+(142253, 142619). Likely fixed transitively by Phase A's
+`_decode_eq_seq_inplace` (which keeps indel_corrector and friends
+from re-rewriting CIGARs on `=`-encoded SEQ reads).
+
+## Penalty table calibration — INS AT hp_len ≥ 4 missing (Cat2 cluster)
+
+Investigation 2026-05-18 on `rectify/data/genomes/saccharomyces_
+cerevisiae/penalty_tables/penalty_scores.tsv`:
+
+```
+I AT 1  0.0000  count=1.0   penalty=1.2500  low_count=True
+I AT 2  0.0000  count=3.0   penalty=0.3805  low_count=True
+I AT 3  0.0000  count=1.0   penalty=0.7156  low_count=True
+(no entries for hp ≥ 4 — falls back to hp=3 value via
+ PenaltyTable.ins_cost line 274)
+D AT 15 0.9951  count=34922 penalty=0.2736  low_count=False
+D AT 16 0.9951  count=25418 penalty=0.2736  low_count=False
+...
+D AT 18 0.9951  count=2686  penalty=0.2736  low_count=False
+```
+
+**Observations:**
+1. INS AT hp ≥ 4 has NO entries. `ins_cost(hp=4, 'A')` falls back to
+   `table[3] = 0.7156` (which itself is `low_count=True`, count=1).
+   The cat2_plus_1 deSALT case has 3 single-base insertions in AAAT
+   tetramer regions — each costs ~0.72 → total ~2.16.
+2. DEL AT hp 15-20 has solid empirical entries (count > 2K) at
+   0.27/base. minimap2's 8-bp deletion in a 19-A run costs ~2.19.
+3. The two are roughly equal — but the cat2_plus_1 panel shows
+   deSALT winning by 4.5 hp_ed (15.6 vs minimap2 20.1). The
+   remaining gap (~4-5) is likely from elsewhere (hardclip / X-ops
+   in the body alignment), not the indel cost itself.
+
+**Follow-up:** extend the empirical INS AT table to cover hp_len
+4-20 (recalibration job). Until then, INS-heavy alignments at
+moderate-length HP runs may be either over- or under-penalized
+relative to the empirically-calibrated DEL cost. This is a known
+gap rather than a code bug.
+
 ---
 
 ## Cat6 / Cat7 (HP-mode metric — Xm semantics)
