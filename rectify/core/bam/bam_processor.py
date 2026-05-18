@@ -64,6 +64,7 @@ from ..splice import false_junction_filter as _fjf
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
 from .bam_writer import (  # noqa: F401  (re-exported)
     _load_corrections_from_tsv,
+    _decode_eq_seq_inplace,
     write_dual_bam,
     write_corrected_bam,
     write_softclipped_bam,
@@ -268,6 +269,16 @@ def correct_read_3prime(
     Returns:
         Dict with correction results
     """
+    # Decode SAM-spec ``=`` shorthand in SEQ before any module reads
+    # query_sequence. Aligners with ``=``-CIGAR emission (minimap2, gapmm2,
+    # deSALT, uLTRA) propagate ``=`` chars into SEQ at match positions; any
+    # downstream consumer comparing SEQ bytes to genome bytes (walkback,
+    # softclip rescue, overcall rescue, indel corrector) would see ``=`` as
+    # a literal mismatch and short-circuit. Decoding once at intake makes
+    # every consumer ``=``-safe without per-module patches.
+    if genome is not None and not read.is_unmapped:
+        _decode_eq_seq_inplace(read, genome)
+
     # Skip chimeric reads — they have already been reconstructed by multi_aligner
     # and must not be re-corrected (Xz=1 flag set by chimeric_consensus.py).
     try:
@@ -654,6 +665,40 @@ def correct_read_3prime(
             result['ambiguity_max'] = current_position
             result['ambiguity_range'] = 0
 
+    # Module 2G.5: Over-call terminal-match rescue (cat1_plus_1/2 pattern).
+    # When the basecaller OVER-called the poly-A tail length, the 3' soft-clip's
+    # inner bases are all pA-stop-base and the OUTERMOST base is a non-stop-base
+    # that matches genome at the first non-stop-base position past the genomic
+    # HP. Convert the soft-clip into `{hp_ext}D {overcall_count}I 1=` and advance
+    # the corrected 3' end by hp_ext+1.
+    #
+    # Mutually exclusive with softclip_rescue (Module 2G) and polya_walkback
+    # (Module 2E): all three operate on the same 3' soft-clip evidence. Fire only
+    # when softclip_rescue did not already claim the soft-clip.
+    overcall_rescue_applied = False
+    if (
+        genome
+        and not _has_3prime_hardclip
+        and not softclip_rescue_applied
+        and _3prime_sc_len >= 1
+    ):
+        _oc_result = indel_corrector.rescue_overcall_terminal_match(
+            read, strand, genome,
+        )
+        if _oc_result is not None:
+            result['correction_applied'].append('overcall_rescue')
+            current_position = _oc_result['corrected_pos']
+            overcall_rescue_applied = True
+            # Bam_writer reads these to apply the CIGAR surgery.
+            result['oc_overcall_count']         = _oc_result['overcall_count']
+            result['oc_homopolymer_extension']  = _oc_result['homopolymer_extension']
+            result['oc_terminal_base']          = _oc_result['terminal_match']
+            # Sequence evidence is definitive: collapse ambiguity to the rescue
+            # target so NET-seq refinement does not override.
+            result['ambiguity_min'] = current_position
+            result['ambiguity_max'] = current_position
+            result['ambiguity_range'] = 0
+
     # Module 2E: Poly-A walk-back — genome-aware correction for reads where the
     # poly-A tail aligned to a short genomic A-run, shifting the apparent 3' end
     # into the run. find_polya_boundary() walks backwards from the mapped 3' end
@@ -675,7 +720,12 @@ def correct_read_3prime(
     # (rectify.core.correct.protocols.quantseq_rev). The new walkback also
     # handles the V-primer tip artifact (terminal G over a genomic A-run).
     polya_walkback_applied = False
-    if genome and not _has_3prime_hardclip and not softclip_rescue_applied:
+    if (
+        genome
+        and not _has_3prime_hardclip
+        and not softclip_rescue_applied
+        and not overcall_rescue_applied
+    ):
         if dt_primed_cDNA:
             _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
             if _chrom_seq:

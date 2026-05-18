@@ -28,6 +28,7 @@ from .read_edits import (
     clip_read_to_corrected_3prime,
     softclip_read_to_corrected_3prime,
     extend_read_5prime_for_junction_rescue,
+    extend_read_3prime_for_overcall_rescue,
     extend_read_3prime_for_softclip_rescue,
     softclip_intronic_tail_5prime,
     reroute_intronic_tail_5prime_via_junction,
@@ -36,6 +37,66 @@ from .read_edits import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_eq_seq_inplace(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+) -> bool:
+    """Replace ``=`` characters in ``read.query_sequence`` with the genome
+    base at the corresponding reference position.
+
+    BAM/SAM spec allows ``SEQ`` to contain ``=`` as a shorthand for "matches
+    reference at this position". Aligners that emit this compressed form
+    (minimap2, gapmm2, deSALT, uLTRA on long ``=``-CIGAR runs) propagate
+    the ``=`` chars through to downstream BAMs unless explicitly decoded.
+    Downstream consumers that read ``query_sequence`` and compare to the
+    reference (notably ``_cigar_hp_edit_distance`` in winner-selection)
+    misinterpret ``=`` as a literal mismatch and score every M-block base
+    as wrong — silently biasing winner-selection against any aligner that
+    used the compressed form.
+
+    Decoding at BAM-write time produces explicit-SEQ BAMs that all consumers
+    can read uniformly. Bloat is typically +20–40 % on minimap2-family BAMs
+    (perfect-match runs compress poorly once expanded) and zero on aligners
+    that already emit explicit bases. Returns True if any ``=`` was decoded.
+
+    Only M/=/X CIGAR ops can carry ``=`` in SEQ per spec (those positions
+    have a defined ref base); I, S positions are passed through untouched.
+    """
+    if read.is_unmapped:
+        return False
+    seq = read.query_sequence
+    if seq is None or '=' not in seq:
+        return False
+    chrom_seq = genome.get(read.reference_name) if genome else None
+    if chrom_seq is None:
+        return False
+    new_chars = list(seq)
+    ref_pos = read.reference_start
+    q_pos = 0
+    decoded_any = False
+    for op, length in read.cigartuples or []:
+        if op in (0, 7, 8):                # M, =, X — consume ref + query
+            for i in range(length):
+                if new_chars[q_pos + i] == '=' and ref_pos + i < len(chrom_seq):
+                    new_chars[q_pos + i] = chrom_seq[ref_pos + i].upper()
+                    decoded_any = True
+            ref_pos += length
+            q_pos += length
+        elif op in (1, 4):                 # I, S — consume query only
+            q_pos += length
+        elif op in (2, 3):                 # D, N — consume ref only
+            ref_pos += length
+        # H (5), P (6) — consume neither
+    if not decoded_any:
+        return False
+    # Re-assigning query_sequence clobbers query_qualities; save and restore.
+    saved_qual = read.query_qualities
+    read.query_sequence = ''.join(new_chars)
+    if saved_qual is not None:
+        read.query_qualities = saved_qual
+    return True
 
 
 def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
@@ -75,6 +136,10 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
             i_sc_sclen = hdr.index('sc_original_softclip_len')  if 'sc_original_softclip_len'  in hdr else -1
             # Case 4 intronic-snap BAM hard-clip column (v2.9.8)
             i_5p_icp   = hdr.index('five_prime_intron_clip_pos') if 'five_prime_intron_clip_pos' in hdr else -1
+            # Over-call rescue columns
+            i_oc_ext   = hdr.index('oc_homopolymer_extension')   if 'oc_homopolymer_extension'   in hdr else -1
+            i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
+            i_oc_term  = hdr.index('oc_terminal_base')           if 'oc_terminal_base'           in hdr else -1
 
             for line in _f:
                 parts = line.rstrip('\n').split('\t')
@@ -98,6 +163,10 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                 # Case 4 intronic-snap BAM clip position (-1 = not applicable)
                 _icp_raw = parts[i_5p_icp] if i_5p_icp >= 0 and len(parts) > i_5p_icp and parts[i_5p_icp] else '-1'
                 five_prime_icp = int(_icp_raw) if _icp_raw.lstrip('-').isdigit() else -1
+                # Over-call rescue fields
+                oc_ext  = int(parts[i_oc_ext])  if i_oc_ext  >= 0 and len(parts) > i_oc_ext  and parts[i_oc_ext]  else 0
+                oc_cnt  = int(parts[i_oc_cnt])  if i_oc_cnt  >= 0 and len(parts) > i_oc_cnt  and parts[i_oc_cnt]  else 0
+                oc_term = parts[i_oc_term]      if i_oc_term >= 0 and len(parts) > i_oc_term else ''
 
                 corrections[rid] = {
                     'corrected_3prime':           corr_pos,
@@ -110,6 +179,9 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
                     'sc_original_softclip_len':   sc_sclen,
+                    'oc_homopolymer_extension':   oc_ext,
+                    'oc_overcall_count':          oc_cnt,
+                    'oc_terminal_base':           oc_term,
                 }
     except OSError as exc:
         raise OSError(
@@ -170,6 +242,11 @@ def write_corrected_bam(
                 stats['unchanged'] += 1
                 continue
 
+            # Decode '='-compressed SEQ so every emitted read has explicit
+            # bases (see _decode_eq_seq_inplace docstring).
+            if genome is not None:
+                _decode_eq_seq_inplace(read, genome)
+
             correction = corrections.get(read.query_name)
             if correction is None:
                 bam_out.write(read)
@@ -228,6 +305,19 @@ def write_corrected_bam(
                     correction['sc_rescued_seq'],
                     correction['sc_original_softclip_len'],
                     hard_clip=True,
+                )
+
+            # Over-call rescue (cat1_plus_1/2): convert the 3' soft-clip
+            # `{overcall_count}S + 1 terminal` to `{hp_ext}D {overcall_count}I 1=`,
+            # extending the alignment by 1 ref position to include the terminal
+            # body match past the genomic HP-A run.
+            if correction.get('oc_terminal_base'):
+                modified |= extend_read_3prime_for_overcall_rescue(
+                    read,
+                    correction['strand'],
+                    correction['oc_homopolymer_extension'],
+                    correction['oc_overcall_count'],
+                    correction['oc_terminal_base'],
                 )
 
             # 3' correction: hard-clip to corrected position (Cat1/4/5/6).
@@ -294,6 +384,11 @@ def write_softclipped_bam(
                 stats['unchanged'] += 1
                 continue
 
+            # Decode '='-compressed SEQ so every emitted read has explicit
+            # bases (see _decode_eq_seq_inplace docstring).
+            if genome is not None:
+                _decode_eq_seq_inplace(read, genome)
+
             correction = corrections.get(read.query_name)
             if correction is None:
                 bam_out.write(read)
@@ -344,6 +439,18 @@ def write_softclipped_bam(
                     correction['sc_rescued_seq'],
                     correction['sc_original_softclip_len'],
                     hard_clip=False,
+                )
+
+            # Over-call rescue (cat1_plus_1/2): consume the soft-clip into
+            # `{hp_ext}D {overcall_count}I 1=` extending the alignment by 1
+            # ref position to capture the terminal body match.
+            if correction.get('oc_terminal_base'):
+                modified |= extend_read_3prime_for_overcall_rescue(
+                    read,
+                    correction['strand'],
+                    correction['oc_homopolymer_extension'],
+                    correction['oc_overcall_count'],
+                    correction['oc_terminal_base'],
                 )
 
             # 3' correction: soft-clip to corrected position (Cat1/4/5/6).
@@ -426,6 +533,11 @@ def write_dual_bam(
                 hc_stats['unchanged'] += 1
                 sc_stats['unchanged'] += 1
                 continue
+
+            # Decode '='-compressed SEQ so both emitted BAMs carry explicit
+            # bases (see _decode_eq_seq_inplace docstring).
+            if genome is not None:
+                _decode_eq_seq_inplace(read, genome)
 
             correction = corrections.get(read.query_name)
             if correction is None:

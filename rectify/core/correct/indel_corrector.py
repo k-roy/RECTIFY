@@ -640,6 +640,203 @@ def rescue_softclip_at_homopolymer(
         }
 
 
+def rescue_overcall_terminal_match(
+    read: pysam.AlignedSegment,
+    strand: str,
+    genome: Dict[str, str],
+    min_homopolymer_len: int = 3,
+    poly_noise_window: int = 50,
+    min_inner_pa_fraction: float = 0.5,
+) -> Optional[Dict]:
+    """Rescue 3' end where the basecaller OVER-CALLED the poly-A tail length.
+
+    Pattern (+ strand example, cat1_plus_1):
+      Genome:  ...AAAAAAAAAA T AGCTC...     (long genomic A-run, then T body)
+                              ↑ 10611
+      Read:    ...AAAAAAAAAA-AAT             (read body ends in A-run, then 2
+              16M-aligned   3S soft-clip      over-call A's + terminal body T)
+
+    Standard soft-clip rescue (`rescue_softclip_at_homopolymer`) handles the
+    UNDER-call case (read missing A's, soft-clip matches body past the gap).
+    This function handles the OPPOSITE: the read has EXTRA poly-A-stop-base
+    bases before a terminal body base that matches genome's first non-A
+    position past the boundary.
+
+    Detection rule:
+      1. 3' end has a soft-clip
+      2. Soft-clip's INNERMOST bases are all pA-stop-base (A for + strand,
+         T for - strand) — over-call evidence
+      3. Soft-clip's OUTERMOST base is non-pA-stop-base AND matches genome's
+         first non-stop-base position past the HP boundary
+      4. The leading-soft-clip-bases-are-A and terminal-matches conditions are
+         both satisfied — strong evidence the body's last base is at the
+         genomic non-A position, NOT at the alignment boundary
+
+    Action: set ``corrected_pos`` to the genomic non-A position past the HP.
+
+    Guard against cat4-style false N ops: this rescue does NOT fire if there is
+    an N op (intron skip) in the CIGAR within ``poly_noise_window`` of the 3'
+    end. Those cases need the walkback (which can cross the false N to land in
+    the pre-N body exon) rather than this rescue (which would extend deeper
+    into the post-N pA-tail-noise exon).
+
+    Returns dict with:
+      - ``corrected_pos``: int, the genomic non-A position the terminal soft-clip
+        base matches
+      - ``original_pos``: int, raw alignment 3' end
+      - ``overcall_pa_len``: int, number of over-called pA bases between the
+        original alignment end and the new corrected position
+      - ``terminal_match``: str, the matched non-A base
+    Or ``None`` if pattern doesn't fit.
+    """
+    cigar = read.cigartuples
+    seq = read.query_sequence
+    if not cigar or not seq or read.is_unmapped:
+        return None
+
+    chrom = read.reference_name
+    chrom_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
+    if not chrom_seq:
+        return None
+
+    stop_base = 'A' if strand == '+' else 'T'
+
+    # Guard: if there's a recent N op within poly_noise_window of the 3' end,
+    # this is likely a cat4-style false-junction artifact — let the walkback
+    # handle it instead of over-call rescue.
+    _ref_pos = read.reference_start
+    _3p_ref = (read.reference_end - 1) if strand == '+' else read.reference_start
+    for _op, _len in cigar:
+        if _op in (0, 7, 8):  # M/=/X — consume ref
+            _ref_pos += _len
+        elif _op == 2:  # D — consume ref
+            _ref_pos += _len
+        elif _op == 3:  # N — consume ref + check distance
+            _n_end = _ref_pos + _len
+            if strand == '+':
+                if 0 <= _3p_ref - _n_end <= poly_noise_window:
+                    return None
+            else:
+                if 0 <= _ref_pos - _3p_ref <= poly_noise_window:
+                    return None
+            _ref_pos = _n_end
+        # I, S, H, P don't consume ref
+
+    if strand == '+':
+        # 3' soft-clip at end of CIGAR
+        if cigar[-1][0] != 4:
+            return None
+        sc_len = cigar[-1][1]
+        if sc_len < 1:
+            return None
+        sc_seq = seq[-sc_len:].upper()
+        raw_pos = read.reference_end - 1
+
+        # Innermost soft-clip base (closest to alignment) is sc_seq[0]; outermost
+        # (= read 3' tip, the terminal base) is sc_seq[-1].
+        # Required: sc_seq[:-1] all pA-stop-base (= over-call); sc_seq[-1] non-stop-base.
+        terminal_base = sc_seq[-1]
+        if terminal_base == stop_base:
+            return None  # Terminal is pA — not the over-call-with-body-tip pattern
+        # Inner soft-clip bases (the over-call region) are expected to be
+        # mostly pA-stop-base but nanopore basecalling routinely flips a
+        # fraction to non-pA. Require a majority (default 50%) rather than
+        # 100% purity. Empty inner (sc_len == 1) is permitted.
+        inner = sc_seq[:-1]
+        if inner:
+            pa_count = sum(1 for b in inner if b == stop_base)
+            if pa_count / len(inner) < min_inner_pa_fraction:
+                return None  # Inner soft-clip is not predominantly pA — pattern not over-call
+
+        # Verify HP-stop-base run at alignment boundary
+        boundary_start = max(0, raw_pos - min_homopolymer_len + 1)
+        boundary_seq = chrom_seq[boundary_start:raw_pos + 1].upper()
+        if len(boundary_seq) < min_homopolymer_len or not all(b == stop_base for b in boundary_seq):
+            return None
+
+        # Find HP extension rightward (past raw_pos)
+        hp_ext = 0
+        for off in range(1, min(sc_len + 10, len(chrom_seq) - raw_pos)):
+            if chrom_seq[raw_pos + off].upper() == stop_base:
+                hp_ext += 1
+            else:
+                break
+
+        # Genome's first non-stop-base position past the HP
+        first_non_stop_pos = raw_pos + hp_ext + 1
+        if first_non_stop_pos >= len(chrom_seq):
+            return None
+        first_non_stop_base = chrom_seq[first_non_stop_pos].upper()
+
+        # Does the soft-clip's terminal base match the first non-stop-base?
+        if terminal_base != first_non_stop_base:
+            return None
+
+        return {
+            'corrected_pos': first_non_stop_pos,
+            'original_pos': raw_pos,
+            'overcall_count': sc_len - 1,
+            'homopolymer_extension': hp_ext,
+            'overcall_pa_len': sc_len - 1 + hp_ext,
+            'terminal_match': first_non_stop_base,
+        }
+
+    else:  # strand == '-'
+        # 3' soft-clip is at the START of CIGAR for minus strand
+        if cigar[0][0] != 4:
+            return None
+        sc_len = cigar[0][1]
+        if sc_len < 1:
+            return None
+        sc_seq = seq[:sc_len].upper()
+        raw_pos = read.reference_start
+
+        # Innermost = sc_seq[-1] (closest to alignment); outermost = sc_seq[0]
+        # (= read 3' tip in RNA, since BAM stores read in alignment orientation
+        # = RC of RNA; the LEFTMOST BAM base corresponds to the rightmost RNA base
+        # = RNA 3' tip).
+        terminal_base = sc_seq[0]
+        if terminal_base == stop_base:
+            return None
+        # Same majority-pA gate as the plus-strand branch above.
+        inner = sc_seq[1:]
+        if inner:
+            pa_count = sum(1 for b in inner if b == stop_base)
+            if pa_count / len(inner) < min_inner_pa_fraction:
+                return None
+
+        # HP-stop-base at boundary (rightward of raw_pos)
+        boundary_end = min(len(chrom_seq), raw_pos + min_homopolymer_len)
+        boundary_seq = chrom_seq[raw_pos:boundary_end].upper()
+        if len(boundary_seq) < min_homopolymer_len or not all(b == stop_base for b in boundary_seq):
+            return None
+
+        # HP extension leftward (past raw_pos toward lower coord)
+        hp_ext = 0
+        for off in range(1, min(sc_len + 10, raw_pos + 1)):
+            if chrom_seq[raw_pos - off].upper() == stop_base:
+                hp_ext += 1
+            else:
+                break
+
+        first_non_stop_pos = raw_pos - hp_ext - 1
+        if first_non_stop_pos < 0:
+            return None
+        first_non_stop_base = chrom_seq[first_non_stop_pos].upper()
+
+        if terminal_base != first_non_stop_base:
+            return None
+
+        return {
+            'corrected_pos': first_non_stop_pos,
+            'original_pos': raw_pos,
+            'overcall_count': sc_len - 1,
+            'homopolymer_extension': hp_ext,
+            'overcall_pa_len': sc_len - 1 + hp_ext,
+            'terminal_match': first_non_stop_base,
+        }
+
+
 def rescue_mismatch_inside_homopolymer(
     read: pysam.AlignedSegment,
     strand: str,

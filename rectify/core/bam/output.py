@@ -44,6 +44,9 @@ def write_output_tsv(results: List[Dict], output_path: str):
             'sc_rescued_seq',            # Cat2: non-poly-A bases matched to ref (v2.9.1)
             'sc_original_softclip_len',  # Cat2: original 3' soft-clip length (v2.9.1)
             'five_prime_intron_clip_pos',  # Case 4: exon-side intron boundary for BAM hard-clip (-1 if N/A)
+            'oc_homopolymer_extension',  # over-call rescue: genomic HP extension past raw_pos (D op)
+            'oc_overcall_count',         # over-call rescue: # of over-call stop-base bases (I op)
+            'oc_terminal_base',          # over-call rescue: the terminal non-stop-base char (= op)
         ]
         f.write('\t'.join(header) + '\n')
 
@@ -85,6 +88,9 @@ def write_output_tsv(results: List[Dict], output_path: str):
                 result.get('sc_rescued_seq', ''),
                 str(result.get('sc_original_softclip_len', 0)),
                 str(result.get('five_prime_intron_clip_pos', -1)),  # Case 4 BAM clip
+                str(result.get('oc_homopolymer_extension', 0)),  # over-call rescue D
+                str(result.get('oc_overcall_count', 0)),          # over-call rescue I
+                result.get('oc_terminal_base', ''),               # over-call rescue terminal base
             ]
             f.write('\t'.join(row) + '\n')
 

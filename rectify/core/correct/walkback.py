@@ -634,9 +634,32 @@ def walkback_3prime_guarded(
 
     # For left-side walkback, find_polya_boundary returns None when the
     # alignment doesn't start in a stop_base context — there's no poly-A
-    # over-alignment to correct. Preserve that behavior.
+    # over-alignment to correct.
+    #
+    # Relaxation for noisy pA-boundary alignments (cat1_minus_1 pattern):
+    # mapPacBio sometimes places the alignment's leading position on a
+    # non-stop-base genome position (e.g. a single A in a stretch of T's)
+    # because the read happens to have a non-stop-base call there. The
+    # genome+ context is still pA (mostly T's around), and the body
+    # boundary is further inward. We need to let the scan proceed so the
+    # in-loop tail-context-false-stop guard can recognize the leading
+    # non-stop-base position as boundary noise and walk past it.
+    #
+    # Allow proceeding when ANY of the first ``tail_context_k`` positions
+    # in the scan window has a stop-base READ-vs-REF match (rb == gb ==
+    # stop_base). That confirms the alignment is in a pA-tail-like region
+    # even if the very first base is non-stop. Otherwise (no stop-base
+    # matches in the leading window) preserve the legacy behavior of
+    # bailing out — the alignment isn't pA-region material.
+    leading_has_stop_match = False
     if first_gb_chr != stop_base:
-        return None
+        _k_max = scan_lo + max(tail_context_k, 4)
+        for _k in range(scan_lo, min(_k_max, scan_hi)):
+            if _g_rp[_k] != -1 and _g_rb[_k] == stop_ord and _g_gb[_k] == stop_ord:
+                leading_has_stop_match = True
+                break
+        if not leading_has_stop_match:
+            return None
 
     # Large-deletion pre-scan (forward variant).
     if large_del_min_bp > 0:

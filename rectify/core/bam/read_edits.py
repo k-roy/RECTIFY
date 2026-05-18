@@ -1162,6 +1162,119 @@ def extend_read_5prime_for_junction_rescue(
         return True
 
 
+def extend_read_3prime_for_overcall_rescue(
+    read: pysam.AlignedSegment,
+    strand: str,
+    homopolymer_extension: int,
+    overcall_count: int,
+    terminal_base: str,
+) -> bool:
+    """Extend a read's 3' alignment to consume a poly-A over-call terminal match.
+
+    Companion to :func:`extend_read_3prime_for_softclip_rescue` but for the
+    OVER-call case (cat1_plus_1 / cat1_plus_2 pattern):
+
+    * The 3' soft-clip's inner bases are all pA-stop-base (A for + strand,
+      T for - strand) — these are the basecaller's poly-A over-call.
+    * The 3' soft-clip's terminal base is a non-stop-base that matches genome
+      at the first non-stop-base position past the homopolymer extension.
+
+    Transformation (+ strand, sc = ``[over-call pA-stop-base]…[terminal_base]``):
+        Before: ``... [body M ops] {sc_len}S``
+        After:  ``... [body M ops] {hp_extension}D {overcall_count}I 1=``
+        ref_end advances by ``hp_extension + 1``.
+
+    The entire soft-clip is consumed: ``overcall_count`` pA-stop-base bases
+    become an insertion (no ref consumed), the genomic HP gap (if any) becomes
+    a deletion, and the terminal non-stop-base becomes a single match at the
+    genomic non-stop position. Nothing is left in the soft-clip.
+
+    For - strand the construction is mirrored (prepend instead of append) and
+    ``reference_start`` shifts leftward by ``hp_extension + 1``.
+
+    Args:
+        read:                  pysam AlignedSegment — modified in-place.
+        strand:                ``'+'`` or ``'-'``.
+        homopolymer_extension: Number of genomic stop-base positions between
+                               the raw alignment 3' end and the first non-
+                               stop-base position. Encoded as a ``D`` op.
+        overcall_count:        Number of over-called stop-base bases in the
+                               soft-clip (= soft-clip length − 1). Encoded as
+                               an ``I`` op.
+        terminal_base:         The terminal non-stop-base char (only used for
+                               sanity validation against the read's seq).
+
+    Returns:
+        True if surgery was applied; False if preconditions were not met
+        (no 3' soft-clip, soft-clip length doesn't match overcall_count + 1,
+        terminal base doesn't match, etc.).
+    """
+    cigar = list(read.cigartuples or [])
+    if not cigar or read.is_unmapped:
+        return False
+    seq = read.query_sequence
+    if seq is None:
+        return False
+
+    expected_sc = overcall_count + 1  # over-call + 1 terminal
+
+    if strand == '+':
+        # Trailing soft-clip
+        if cigar[-1][0] != 4:
+            return False
+        actual_sc = cigar[-1][1]
+        if actual_sc != expected_sc:
+            return False
+        # Validate terminal base
+        if seq[-1].upper() != terminal_base.upper():
+            return False
+        # Remove the trailing S
+        cigar.pop()
+        # Strip any pre-existing trailing H (shouldn't exist after S, but defensive)
+        while cigar and cigar[-1][0] == 5:
+            cigar.pop()
+        # Append: D(hp_extension) + I(overcall) + 1=
+        if homopolymer_extension > 0:
+            cigar.append((2, homopolymer_extension))  # D
+        if overcall_count > 0:
+            cigar.append((1, overcall_count))         # I
+        cigar.append((7, 1))                          # = (single match)
+        read.cigartuples = cigar
+        # query_sequence unchanged (terminal_base stays in seq; the over-call
+        # bases stay as `I` op which consumes query). ref_end advances
+        # implicitly via the new D+= ops.
+        return True
+
+    else:  # minus strand: 3' end is at the LEFT of CIGAR
+        # Leading soft-clip
+        if cigar[0][0] != 4:
+            return False
+        actual_sc = cigar[0][1]
+        if actual_sc != expected_sc:
+            return False
+        # Validate terminal base (= read base at BAM seq[0], = RNA 3' tip)
+        if seq[0].upper() != terminal_base.upper():
+            return False
+        # Remove the leading S
+        cigar.pop(0)
+        # Strip any pre-existing leading H
+        while cigar and cigar[0][0] == 5:
+            cigar.pop(0)
+        # Prepend ops so left-to-right CIGAR reads:
+        #   [1=] [I(overcall)] [D(hp_extension)] [original body]
+        # Insert order (front-insert):
+        if homopolymer_extension > 0:
+            cigar.insert(0, (2, homopolymer_extension))
+        if overcall_count > 0:
+            cigar.insert(0, (1, overcall_count))
+        cigar.insert(0, (7, 1))                       # = at very front
+        read.cigartuples = cigar
+        # reference_start shifts leftward by the new D+1 worth of ref
+        # consumption (the `I` op doesn't consume ref; the `=` and `D` do).
+        read.reference_start -= (homopolymer_extension + 1)
+        return True
+
+
 def extend_read_3prime_for_softclip_rescue(
     read: pysam.AlignedSegment,
     strand: str,
