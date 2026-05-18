@@ -177,30 +177,93 @@ Out-of-scope ideas:
 - Correlated insertion penalty for AAAT-tetramer over-calls (3 events at
   the same boundary are correlated, not independent).
 
-### cat2_minus_2 — soft-clip rescue stops 3 nt short of a TGC body match
+### cat2_minus_2 — soft-clip rescue: extension geometry is ambiguous; user input needed before code
 
 **Panel summary:** 4 aligners agree corr_3p = 128102 (T on RNA, non-A,
 policy satisfied). mapPacBio uniquely stops at 128106.
 
-**User's diagnosis (verbatim):**
+**User's diagnosis (verbatim, 2026-05-18):**
 > "cat2 minus 2 is tricky, but I suspect the right call would be to allow
 > the TGC to bind and accept a T deletion as part of the massive A
 > homopolymer undercall for this read. Allowing for 3 straight nt to match
 > should outweigh the single T deletion here."
 
-**Pattern:** trailing soft-clip `GCAAT` has a `TGC` that maps to upstream
-genome at ~128097-128099. To incorporate those 3 matches, the rescue
-would need to accept ONE additional T deletion in the large A-HP
-undercall. Parsimony: 3 new matches − 1 new del = +2 net.
+**Genome + RNA geometry (investigated 2026-05-18 next session, pre-code):**
 
-**Proposed fix:** extend Module 2G (soft-clip rescue,
-`rectify/core/correct/indel_corrector.py:rescue_softclip_at_homopolymer`)
-with a "cheap-HP-del lookahead":
-1. After the standard rescue completes, take the soft-clip suffix.
-2. Try to align the first ~10 bp of the soft-clip against the next
-   ~10–20 bp of upstream genome (allowing a single HP del slip).
-3. Accept the extension if it produces ≥3 consecutive matches with ≤1
-   cheap HP del. Reject if the cost exceeds 1.5× the gain.
+Genome + strand, chrI[128095:128117]:
+```
+pos    : 128095 96 97 98 99 100 101 102 103 ... 115 116
++strand:    T   T  T  G  C  A   T   A  T-tract  T  G
+```
+
+The long T-tract is 128103-128115 (13 bp), bracketed by A(128102) and
+G(128116). RNA = revcomp, so the RNA-orientation 3'-end region reads
+`...AAAAAAAAAAAAA-T-A-T-G-C-A-A-A-A...` going 5'→3' (from genome high
+position downward).
+
+Raw alignment (minimap2/gapmm2/deSALT/uLTRA): rs=128112, 5p softclip = 6
+bases `ATTGCA` in BAM orientation (= `TGCAAT` in RNA 5'→3' orientation).
+
+Current rescue trace (`rescue_softclip_at_homopolymer`, left side):
+- `boundary_base = T` (locked to `genome[raw_pos]=128112` = T); the loop
+  walks leftward as long as `genome == T`, so it cannot slip past the
+  A at 128102. `homopolymer_extension = 9` (positions 128103-128111).
+- `match_start = raw_pos - 9 - 1 = 128102`.
+- Walk softclip innermost→outermost (BAM indices 5→0): softclip[5]=A vs
+  genome[128102]=A → MATCH (rescue=1). softclip[4]=C vs genome[128101]=T
+  → MISMATCH → terminate.
+- Result: 1M at 128102, 9D over T-tract, 7M from 128112 onward.
+  corrected_3p = 128102. Hard-clip retains softclip indices 0-4.
+
+**What a lookahead-past-HP-del would actually capture:**
+
+If the rescue could "skip" 2 ref bases (genome[128101]=T and genome[128100]=A)
+after the matched A at 128102, the next softclip bases would line up:
+- softclip[4]=C vs genome[128099]=C → match
+- softclip[3]=G vs genome[128098]=G → match
+- softclip[2]=T vs genome[128097]=T → match
+- softclip[1]=T vs genome[128096]=T → match
+- softclip[0]=A vs genome[128095]=T → mismatch (terminate)
+
+That's **4 more matches, with a 2-bp ref skip** (one T at 128101 + one A
+at 128100). corrected_3p would become **128096** (or 128099 if we anchor
+on the TGC alone). NOT 128097-128099 (those are the matching positions,
+not the corrected endpoint).
+
+**Why the queue note's wording was imprecise:**
+
+- "ONE additional T deletion": the 2-bp ref skip includes a non-HP A at
+  128100, not just one extra HP-T. Framing it as "more HP-undercall" is
+  only correct if we accept that the user's mental model lumps the A at
+  128100 into the homopolymer for parsimony purposes.
+- "3 straight nt to match": 4 softclip bases (TTGC) line up cleanly, not 3.
+- "the TGC binds at 128097-128099": correct, but that's the inner part of
+  the bound region. The full bound region is 128096-128099 (TTGC) with
+  the outermost A at softclip[0] still unmatched.
+
+**Open design question for the user:**
+
+This shifts the consensus past the test's hardcoded 128102. Three
+candidate endpoints, depending on how aggressive we let the rescue be:
+1. **128099** (TGC only, 3 matches + 2-bp skip; the user's literal
+   description). Net: +1.
+2. **128096** (TTGC, 4 matches + 2-bp skip). Net: +2. Maximal HP-del
+   parsimony.
+3. **128095** (TTGC + try 1 mismatch extension). Probably not, since the
+   T at 128095 mismatches the softclip A.
+
+Before coding, need to know:
+- Which endpoint does the user actually want?
+- Is the rescue allowed to consume non-HP ref bases (the A at 128100) as
+  part of a "cheap del" run, or strictly HP-T only? If strict, the 2-bp
+  skip in this case isn't allowed and the answer is "current 128102 stands."
+- Does this change the test (`test_3prime_exact_position[cat2_minus_2-128102]`)
+  or do we want to gate the new behavior behind a flag?
+
+**Files implicated when implementing:**
+`rectify/core/correct/indel_corrector.py:rescue_softclip_at_homopolymer`
+(both right-side and left-side branches need symmetric extension).
+Test: `tests/test_validation_reads.py` line 487.
 
 ### cat2_plus_2 — clean; surfaces an effective-utility feature request
 
@@ -211,9 +274,14 @@ pattern** within the per-aligner picks:
 
 uLTRA wins HP-ED within Cluster A. Both clusters have valid biology.
 
-### Feature request: per-aligner effective-utility tracking
+### Feature request: per-aligner effective-utility tracking — RESOLVED (commit 75b0338)
 
-**User's verbatim ask (2026-05-18):**
+**Status:** shipped 2026-05-17 in commit `75b0338` ("feat: bedgraph regen +
+per-aligner effective-utility column"). The summary TSV now has
+`effective_group` (read-level cluster letter) and `effectively_matched_winner`
+(boolean per aligner-row); sample-wide rollup is emitted at `logger.info` from
+`merge_corrected_tsvs`. The original ask, retained for context:
+
 > "I'm wondering if we should have a separate column that acknowledges
 > which aligners effectively got the same 5′, 3′ and junctions (if
 > applicable). This is useful for knowing the 'effective' utility of each
@@ -221,20 +289,6 @@ uLTRA wins HP-ED within Cluster A. Both clusters have valid biology.
 > mRNA body that was more favorable with our empirical penalty table.
 > Both analyses are useful. The 'effective' utility should be something
 > that is tracked at read-level and sample-wide as well."
-
-**Implementation sketch:**
-- **Read-level**: a new `effective_group` column in
-  `merge_corrected_tsvs`'s summary TSV. Cluster per-aligner rows by
-  `(corrected_5p, corrected_3p, frozenset(corrected_junctions))`; assign
-  each distinct tuple a letter (A, B, C, …).
-- **Sample-wide**: aggregate per-aligner `effectively_matched_winner`
-  boolean — "this aligner's 5'/3'/junctions matched the winning
-  cluster's." Surface via a `--summary-stats` flag on
-  `merge_corrected_tsvs` that prints the rollup.
-
-This is genuinely interesting because the current `winning_aligner`
-column hides the case where multiple aligners are in the right biological
-cluster but lose HP-ED tiebreaks within it.
 
 ---
 
@@ -368,19 +422,11 @@ The general criterion (user, verbatim):
 This is a meaningful architectural change to the refiner. Out of scope
 for the current session.
 
-### Stale 3' pileup bedgraphs (mechanical follow-up)
+### Stale 3' pileup bedgraphs (mechanical follow-up) — RESOLVED (commit 75b0338)
 
-`regen_pa_rest_bundle.py` regenerates the corrected BAMs and
-`corrected_reads.tsv` but does NOT regenerate
-`rectify/data/validation/rectified/corrected_3ends.{plus,minus}.bedgraph`.
-After HP-ED winner-selection picks different aligners, the per-read
-`corrected_3prime` values change → bedgraph counts at the OLD positions
-are now stale.
-
-**Fix candidate:** add a bedgraph regen step to `regen_pa_rest_bundle.py`.
-The `corrected_reads.tsv` has per-read `corrected_3prime` and `strand`;
-`rectify/core/bam/bedgraph_writers.py` has the writer logic
-(`write_corrected_reads_bedgraph`). Straightforward addition.
+**Status:** shipped 2026-05-17 in commit `75b0338`. `regen_pa_rest_bundle.py`
+now refreshes `rectified/corrected_3ends.{plus,minus}.bedgraph` after the
+corrected BAMs + TSV are written, using `bedgraph_writers.py`.
 
 ### Summary TSV `junctions` column — RESOLVED transitively
 

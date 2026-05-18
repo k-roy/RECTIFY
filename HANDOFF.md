@@ -1,5 +1,40 @@
 # Session Handoff — Validation suite 40 → 0 + Cat3 plotter findings queued
 
+## 2026-05-18 evening addendum (no code change; doc cleanup only)
+
+Short follow-up session. Outcome:
+
+- **Confirmed baseline**: `pytest tests/test_validation_reads.py` →
+  105 passed / 8 skipped (run on M1 against top of branch).
+- **No code shipped.** Two queued items were re-investigated and
+  re-classified rather than coded:
+  - `cat2_minus_2` "Module 2G lookahead past one HP del" → on close
+    inspection the proposal doesn't fit the genome (intervening bases
+    are A+T, not just HP-T; matches extend to 128096 not 128099; the
+    "right" endpoint isn't pinned down). Flagged as needing user
+    decision before code lands. Full walkthrough now in
+    `docs/handoffs/debugger_queue.md`.
+  - Two items the prior handoff listed as open are actually already
+    shipped by commit `75b0338`:
+    - Bedgraph regen step in `regen_pa_rest_bundle.py`.
+    - Per-aligner effective-utility column (`effective_group` +
+      `effectively_matched_winner`) in summary TSV.
+- **debugger_queue.md** updated to mark those items RESOLVED with the
+  commit hash, and to replace the cat2_minus_2 entry with the actual
+  geometry + the three candidate endpoints + the open design question.
+- **Next session should pick a different baton**: the Cat3 asymmetric
+  2-bp slide (architectural) and the Cat1 HP-mode metric (architectural)
+  remain open; the Phase C 5' soft-clip rescue calibration report is
+  delivered but doesn't translate 1:1 to a `_rescue_5prime_softclip`
+  code change (calibration profiled a different null) and needs a
+  precision/recall measurement on actual rescue cases before any
+  threshold is tightened.
+
+Below is the prior handoff (afternoon session, 14-commit push to
+40→0 validation pass) preserved as-is for context.
+
+---
+
 **Date:** 2026-05-18 (afternoon)
 **Branch:** `drs-validation-rebuild` (off `master`, pushed to `origin`)
 **Repo:** `/Users/kevinroy/work/rectify`
@@ -112,12 +147,19 @@ the summary below is just the lookup index.**
   in `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/
   penalty_scores.tsv` — falls back to hp=3 low-count value (0.7156).
   Follow-up: recalibration job to extend INS table to cover hp 4-20.
-- **cat2_minus_2**: Module 2G soft-clip rescue should look ahead past
-  a single HP del to capture 3 nt body matches. Concrete code-change
-  proposal in `debugger_queue.md`.
-- **Feature: per-aligner effective-utility tracking** — read-level +
-  sample-wide. Plotter ready to ship the read-level column when
-  approved. Sample-wide is debugger scope.
+- **cat2_minus_2**: investigated 2026-05-18 evening. The originally
+  queued "Module 2G lookahead past one HP del" doesn't cleanly map to
+  the genome — the intervening bases between matched A(128102) and
+  the TGC at 128097-128099 are A(128100)+T(128101), and softclip
+  matches extend to 128096 (4 bases TTGC), not just the 3 the queue
+  claimed. Three candidate corrected_3p values (128099/128096/128095)
+  are all plausible; test currently hardcodes 128102. **Needs user
+  decision** on endpoint + strict-HP-only vs general-cheap-del before
+  any code lands. Full geometry walkthrough in `debugger_queue.md`.
+- **Feature: per-aligner effective-utility tracking** — RESOLVED
+  (commit `75b0338`). Summary TSV now has `effective_group` +
+  `effectively_matched_winner` columns; sample-wide rollup at
+  `logger.info`.
 
 ### Cat3 cluster — asymmetric 2-bp slide
 
@@ -127,9 +169,9 @@ the summary below is just the lookup index.**
   only handles symmetric `delta_start == delta_end`; needs extension to
   asymmetric-slide-with-length-change. **Substantial architectural
   work — its own session.**
-- **Stale bedgraphs**: `regen_pa_rest_bundle.py` doesn't refresh
-  `rectified/corrected_3ends.{plus,minus}.bedgraph`. Mechanical fix —
-  add a bedgraph regen step using `bedgraph_writers.py`.
+- **Stale bedgraphs**: RESOLVED (commit `75b0338`). Bedgraph regen step
+  added to `regen_pa_rest_bundle.py` as Step 3.5, using
+  `write_corrected_reads_bedgraph` from `bedgraph_writers.py`.
 
 ### Cat9 cluster — Module 2H scope
 
