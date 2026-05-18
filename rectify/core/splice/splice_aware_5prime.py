@@ -1301,44 +1301,107 @@ def rescue_3ss_truncation(
                 _align_seq = _intronic_seq if _intronic_seq else rescue_seq
 
             # Equivalence-extension: when the alignment overshoots the
-            # annotated intron boundary on the body side, k query bases that
-            # are currently at the END of the upstream M can be re-aligned to
-            # the START of the downstream exon, allowing the intron to extend
-            # by k and absorbing what would otherwise be a trailing kD op.
-            # Geometric criterion (- strand, soft-clip rescue):
-            #   k = read.reference_end - _intron_start  (must be > 0)
-            #   borrowed read bases at [n_q - softclip_len - k : n_q - softclip_len]
-            #     == genome[_intron_start - k : _intron_start]
-            #     == genome[_intron_end   : _intron_end   + k]
-            # When all three slices are equal (and the upstream M matched at
-            # those positions, so the read bases ARE genome bases), prepend
-            # the borrowed bases to _align_seq and record the trim amount so
-            # the BAM writer can shrink the upstream M by k.
-            # Only attempted for - strand soft-clip rescues this session;
-            # + strand has a different geometric pattern (cat3_plus_2 shows
-            # off-by-1 on the acceptor, not body-end overshoot).
+            # annotated intron boundary on the body side, the k query bases
+            # at the boundary-adjacent end of body M can be re-aligned to
+            # the start of the downstream exon (- strand) or the end of the
+            # upstream exon (+ strand). The intron length changes accordingly
+            # and what would otherwise be a trailing/leading kD op gets
+            # absorbed into the rescued M op.
+            #
+            # The k-sweep below tries k = 1..min(overshoot, _MAX_K) and picks
+            # the largest k where the equivalence holds. This enables partial
+            # absorption when the full overshoot doesn't qualify.
+            #
+            # Geometric criteria (overshoot only — undershoot is a separate
+            # transformation; deferred):
+            #
+            #   - strand: ref_end > intron_start by `overshoot`. The k bases
+            #     to absorb live at [ref_end - k, ref_end) = [intron_start,
+            #     intron_start + k). After absorption they align at
+            #     [intron_end, intron_end + k).
+            #     Required: genome[intron_start : intron_start + k]
+            #            == genome[intron_end : intron_end + k]
+            #     AND the read bases at those query positions equal both
+            #     (so the original body M was a match, not a mismatch).
+            #
+            #   + strand: ref_start > intron_end by `overshoot`. The k bases
+            #     to absorb live at [ref_start, ref_start + k) = [intron_end
+            #     + k, intron_end + 2k). After absorption they move into the
+            #     upstream exon at [intron_start - k, intron_start).
+            #     Required: genome[ref_start : ref_start + k]
+            #            == genome[intron_start - k : intron_start]
+            #     AND the read bases at those query positions equal both.
             _upstream_trim = 0
+            _MAX_K = 10
             if (
                 rescue_type_candidate == 'softclip'
                 and strand == '-'
                 and read.reference_end is not None
             ):
-                _k = read.reference_end - _intron_start
-                if 0 < _k <= 10:
-                    _ref_left  = genome_seq[_intron_start - _k : _intron_start].upper()
-                    _ref_right = genome_seq[_intron_end : _intron_end + _k].upper()
+                _overshoot = read.reference_end - _intron_start
+                if 0 < _overshoot:
                     _q = read.query_sequence or ''
                     _scl = _get_5prime_softclip_len(read)
-                    if (
-                        len(_ref_left) == _k
-                        and _ref_left == _ref_right
-                        and _scl > 0
-                        and len(_q) >= _scl + _k
-                    ):
-                        _borrowed = _q[len(_q) - _scl - _k : len(_q) - _scl].upper()
-                        if _borrowed == _ref_left:
-                            _upstream_trim = _k
+                    _max_k = min(_overshoot, _MAX_K)
+                    # Iterate from largest k downward so the first hit is
+                    # the maximum-absorption case.
+                    for _k_try in range(_max_k, 0, -1):
+                        if _scl <= 0 or len(_q) < _scl + _k_try:
+                            continue
+                        # Borrowed read bases are the last k_try query bases
+                        # of body M (just before the trailing soft-clip in BAM).
+                        _borrowed = _q[len(_q) - _scl - _k_try : len(_q) - _scl].upper()
+                        # Their OLD ref position (where body M aligned them).
+                        # For overshoot, this is genome[ref_end - k, ref_end)
+                        # = genome[intron_start, intron_start + k) when the
+                        # k-window stays within the overshoot region.
+                        _ref_old = genome_seq[
+                            read.reference_end - _k_try : read.reference_end
+                        ].upper()
+                        _ref_new = genome_seq[
+                            _intron_end : _intron_end + _k_try
+                        ].upper()
+                        if (
+                            len(_ref_old) == _k_try
+                            and len(_ref_new) == _k_try
+                            and _borrowed == _ref_old        # body M was a real match here
+                            and _borrowed == _ref_new        # bases also match at new position
+                        ):
+                            _upstream_trim = _k_try
                             _align_seq = _borrowed + _align_seq
+                            break
+
+            elif (
+                rescue_type_candidate == 'softclip'
+                and strand == '+'
+                and read.reference_start is not None
+            ):
+                _overshoot = read.reference_start - _intron_end
+                if 0 < _overshoot:
+                    _q = read.query_sequence or ''
+                    _scl = _get_5prime_softclip_len(read)
+                    _max_k = min(_overshoot, _MAX_K)
+                    for _k_try in range(_max_k, 0, -1):
+                        if _scl <= 0 or len(_q) < _scl + _k_try:
+                            continue
+                        # Borrowed read bases are the first k_try body-M query
+                        # bases, immediately after the leading 5' soft-clip.
+                        _borrowed = _q[_scl : _scl + _k_try].upper()
+                        _ref_old = genome_seq[
+                            read.reference_start : read.reference_start + _k_try
+                        ].upper()
+                        _ref_new = genome_seq[
+                            _intron_start - _k_try : _intron_start
+                        ].upper()
+                        if (
+                            len(_ref_old) == _k_try
+                            and len(_ref_new) == _k_try
+                            and _borrowed == _ref_old
+                            and _borrowed == _ref_new
+                        ):
+                            _upstream_trim = _k_try
+                            _align_seq = _align_seq + _borrowed  # + strand: append
+                            break
 
             _exon_cigar_str = ''
             try:

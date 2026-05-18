@@ -469,24 +469,56 @@ gap rather than a code bug.
 
 Source: `validation_read_review/cat3_junction_findings.md`.
 
-### cat3_minus_2 — RESOLVED (5'-rescue equivalence-extension)
+### cat3_minus_2 — RESOLVED (5'-rescue equivalence-extension; iterated 2026-05-18)
 
-**Status:** shipped (this session). The rescue_3ss_truncation function now
-detects when the body alignment overshoots the annotated intron boundary by
-*k* bases AND `genome[old_ns-k:old_ns] == genome[old_ne:old_ne+k]`. When the
-equivalence holds it borrows the *k* query bases from the end of the upstream
-M and re-aligns them as the start of the downstream exon's M op, producing
-clean `M(m-k) N(L+k) M(j+k)` instead of `M(m) N(L) D(k) M(j)`. Threaded
-through a new `five_prime_upstream_trim` TSV column. New test:
-`test_cat3_minus_2_rescued_aligners_have_clean_intron_cigar` (pytest 106/8).
+**Status:** shipped + iterated this session (commits 6d2cf59, then a follow-up
+that fixes the slice geometry, adds the + strand trigger, and adds a k-sweep).
+The rescue_3ss_truncation function detects when the body alignment overshoots
+the annotated intron boundary by *k* bases AND the borrowed read bases at
+those positions equal BOTH the original genome slice AND the would-be new
+slice. The intron length changes accordingly and what would otherwise be a
+trailing/leading kD op gets absorbed into the rescued M op.
 
-Limitation: **— strand only this session.** + strand cat3 reads (cat3_plus_2)
-have a different geometric pattern (off-by-1 on the acceptor; mapPacBio winner
-has canonical placement at higher cost). Implementing the symmetric + strand
-case is straightforward (mirror the trim from the first M op after the
-softclip; the parameter plumbing already accepts strand-agnostic `upstream_trim`),
-but the + strand cat3 reads don't show the same overshoot pattern and may
-benefit from a different fix. Deferred.
+**Correct geometric criteria (derived empirically — these are NOT the
+ambiguity-window criteria; that's separate symmetric-slide work in the
+design note above):**
+
+  - strand (body overshoots intron_start):
+    ```
+    genome[ref_end - k : ref_end] == genome[intron_end : intron_end + k]
+    AND read[last k of body M] equals both slices
+    ```
+
+  + strand (body overshoots intron_end):
+    ```
+    genome[ref_start : ref_start + k] == genome[intron_start - k : intron_start]
+    AND read[first k of body M, after softclip] equals both slices
+    ```
+
+**k-sweep**: tries k = min(overshoot, 10) downward and accepts the largest
+k where the equivalence holds. Allows partial absorption when full-overshoot k
+doesn't qualify.
+
+**Initial (commit 6d2cf59) bug**: the - strand `_ref_left` slice used
+`genome[intron_start - k : intron_start]` instead of the correct
+`genome[ref_end - k : ref_end]`. For cat3_minus_2 these slices happened to
+both be `CT` (chrII at positions 366500-366503 has a CT-CT repeat pattern),
+so the test passed by coincidence. The follow-up commit corrects the slice
+to the geometrically correct position.
+
+**Still deferred (next session work):**
+
+- **cat3_plus_2 "off-by-1 acceptor" pattern**: this is an UNDERSHOOT, not
+  overshoot — body M starts at `ref_start = intron_end - 1` (1 bp short of
+  canonical). The current overshoot-only detection doesn't fire for this
+  pattern. Fix would be the mirror: extend body M by k bases (taking from
+  the END of the upstream softclip-aligned region) when ref_start <
+  intron_end. Same equivalence concept but rotated. Untouched this session.
+- **Symmetric-slide ambiguity window + motif-strength tiebreaker at the
+  consensus-selection level**: see "Design note" at the top of this file.
+  The existing rescue function already does ambiguity-window SEARCH for
+  best junction placement (lines 1191-1218); what's missing is the
+  motif-based tiebreaker in `merge_corrected_tsvs`.
 
 ### cat3_plus_2 — `M 2D N` vs clean `N` (+ strand follow-up)
 
