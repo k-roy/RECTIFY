@@ -982,10 +982,15 @@ if not valid_tsvs:
     log.error('No corrected TSVs found for chunk %s', CHUNK); sys.exit(1)
 log.info('Merging %d TSVs: %s', len(valid_tsvs), list(valid_tsvs.keys()))
 
+# Pass per-aligner corrected BAMs when discovered to activate HP-edit-distance
+# winner selection (the validated correct-first path per CLAUDE.md PIPELINE
+# ORDER). Falls back to legacy 5-key sort transparently when corrected_bams is
+# empty (e.g. an older chunk run without per-aligner BAMs on disk).
 merge_corrected_tsvs(
     valid_tsvs,
     CHUNK_OUT/'corrected_reads.tsv',
     CHUNK_OUT/'aligner_summary.tsv',
+    per_aligner_corrected_bams={{a: str(p) for a, p in corrected_bams.items()}} if corrected_bams else None,
     overhang_table=_overhang_table,
 )
 merged = pd.read_csv(CHUNK_OUT/'corrected_reads.tsv', sep='\\t', low_memory=False)

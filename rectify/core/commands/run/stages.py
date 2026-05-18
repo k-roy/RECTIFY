@@ -257,7 +257,7 @@ def _run_correction_per_aligner(
     genome_path: Path,
     annotation_path: Optional[Path],
     args,
-) -> Dict[str, Path]:
+) -> Tuple[Dict[str, Path], Dict[str, Path]]:
     """
     Run ``rectify correct`` on each per-aligner BAM independently.
 
@@ -266,13 +266,21 @@ def _run_correction_per_aligner(
 
     Returns
     -------
-    Dict mapping aligner name → corrected_reads.tsv path for each aligner
-    whose correction succeeded.
+    Tuple ``(per_aligner_tsvs, per_aligner_corrected_bams)``:
+        - ``per_aligner_tsvs``: Dict mapping aligner name → corrected_reads.tsv
+          path for each aligner whose correction succeeded.
+        - ``per_aligner_corrected_bams``: Dict mapping aligner name →
+          rectified_corrected_3end.bam path for each aligner whose correction
+          succeeded AND produced a corrected BAM. Empty when no corrected BAMs
+          were materialized (e.g. ``--write-corrected-bam`` omitted upstream).
+          When non-empty, this dict is the input ``merge_corrected_tsvs`` needs
+          to activate HP-edit-distance mode for winner selection.
     """
     per_aligner_dir = output_dir / 'per_aligner_corrected'
     per_aligner_dir.mkdir(parents=True, exist_ok=True)
 
     per_aligner_tsvs: Dict[str, Path] = {}
+    per_aligner_corrected_bams: Dict[str, Path] = {}
     for aligner_name, bam_path in per_aligner_bams.items():
         aligner_output_dir = per_aligner_dir / aligner_name
         aligner_output_dir.mkdir(exist_ok=True)
@@ -346,13 +354,26 @@ def _run_correction_per_aligner(
 
         if tsv_path.exists():
             per_aligner_tsvs[aligner_name] = tsv_path
+            # Find the corrected BAM emitted by _run_correction.  Naming
+            # convention: ``{input_bam.stem stripped of .rectified/.consensus}
+            # .rectified_corrected_3end.bam``.  When ``--write-corrected-bam``
+            # was disabled upstream this file won't exist; that's fine —
+            # absence triggers legacy 5-key sort in merge_corrected_tsvs.
+            _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
+            for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
+                if _stem.endswith(_sfx):
+                    _stem = _stem[:-len(_sfx)]
+                    break
+            _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
+            if _corr_bam.exists():
+                per_aligner_corrected_bams[aligner_name] = _corr_bam
         else:
             print(
                 f"    WARNING: [{aligner_name}] correction produced no output",
                 file=sys.stderr,
             )
 
-    return per_aligner_tsvs
+    return per_aligner_tsvs, per_aligner_corrected_bams
 def _combine_corrected_tsvs(
     samples: List[Dict[str, str]],
     output_dir: Path,

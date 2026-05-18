@@ -470,7 +470,7 @@ def _run_single_sample(args) -> int:
             # features — which are not cross-comparable across aligners.
             from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
-            per_aligner_tsvs = _run_correction_per_aligner(
+            per_aligner_tsvs, per_aligner_corrected_bams = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,
                 output_dir=work_dir,
                 genome_path=genome_path,
@@ -492,10 +492,17 @@ def _run_single_sample(args) -> int:
                     except Exception as _e:
                         print(f"    WARNING: Could not load overhang table {_jot_path}: {_e}",
                               file=sys.stderr)
+                # Pass per_aligner_corrected_bams when available to activate
+                # HP-edit-distance winner selection (the validated correct-first
+                # path per CLAUDE.md PIPELINE ORDER). Falls back to the legacy
+                # 5-key sort transparently when the dict is empty.
                 corrected_tsv = merge_corrected_tsvs(
                     per_aligner_tsvs=per_aligner_tsvs,
                     output_tsv=work_dir / 'corrected_reads.tsv',
                     summary_tsv=_summary_tsv,
+                    per_aligner_corrected_bams={
+                        a: str(p) for a, p in per_aligner_corrected_bams.items()
+                    } if per_aligner_corrected_bams else None,
                     overhang_table=_overhang_table,
                 )
                 # Identify Cat5 candidates (reads where aligners contribute unique introns)
