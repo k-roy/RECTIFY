@@ -52,3 +52,24 @@ A complementary fix in `bam_processor.py` (commit `dc5591e`) adds the
 rescued junction to the TSV's `junctions` list so `n_junctions` reflects
 post-rescue state, which the new test (and `test_has_one_junction`)
 depend on.
+
+## Cat6 + Cat7 — `test_xu_tag` relaxed from `Xm == 1` to `Xm >= 1`
+
+**Old assertion:** `r.get_tag('Xm') == 1` (for source-BAM reads).
+
+**Old rationale:** "Cat6/Cat7 reads come from a single winning aligner
+(mapPacBio), so Xm=1." The legacy chimeric consensus always picked one
+aligner per read in cases where mapPacBio's intron span was strong.
+
+**New behavior:** The current chimeric consensus stitches multiple
+aligners when their alignments are equivalent — Xm == 2 is common for
+reads where minimap2 and mapPacBio agree on intron coordinates and both
+contribute to the multi-aligner stitch. Both single-aligner and multi-
+aligner stitches are biologically correct.
+
+**Per-read observation** (cat6_plus_1 bundle source BAM): `Xm == 2` —
+two aligners contributed to the stitch.
+
+**Fix:** Relax to `xm >= 1` (presence + positive count). The semantic
+meaning ("at least one aligner contributed") is preserved without
+over-constraining on the exact contributor count.

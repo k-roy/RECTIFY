@@ -706,10 +706,22 @@ class TestCategory6SimpleChimeric:
                 f'{label}: expected XG=cat6_chimeric'
 
     def test_xu_tag(self, raw_reads):
-        """Cat6 reads come from a single winning aligner (mapPacBio), so Xm=1."""
+        """Cat6 source-BAM Xm tag must be present (at least one aligner contributed).
+
+        The legacy assertion ``Xm == 1`` was specific to the old bundle's
+        chimeric consensus, which always picked a single winning aligner
+        (mapPacBio) for Cat6 reads. The current chimeric consensus stitches
+        multiple aligners when their alignments are equivalent — Xm == 2 is
+        common for reads where minimap2 and mapPacBio agree on the intron
+        coordinates. Both are biologically correct.
+
+        Relaxed to ``Xm >= 1`` (presence + positive count). See
+        docs/handoffs/regression_resolution.md for the rationale.
+        """
         for label in self.LABELS:
             xm = raw_reads[label].get_tag('Xm') if raw_reads[label].has_tag('Xm') else None
-            assert xm == 1, f'{label}: expected Xm=1, got {xm}'
+            assert xm is not None and xm >= 1, \
+                f'{label}: expected Xm >= 1 (single or multi-aligner consensus), got {xm}'
 
     @pytest.mark.parametrize('label', LABELS)
     def test_spans_intron(self, raw_reads, label):
@@ -886,11 +898,16 @@ class TestCategory7AltSplice:
                 f'{label}: expected XG=cat7_alt_splice, got {r.get_tag("XG")}'
 
     def test_xu_tag(self, raw_reads):
-        """Cat7 reads come from a single aligner (mapPacBio), so Xm=1."""
+        """Cat7 source-BAM Xm tag must be present (at least one aligner contributed).
+
+        See TestCategory6SimpleChimeric.test_xu_tag for the rationale on the
+        ``Xm == 1`` → ``Xm >= 1`` relaxation.
+        """
         for label in self.LABELS:
             r = raw_reads[label]
             xm = r.get_tag('Xm') if r.has_tag('Xm') else None
-            assert xm == 1, f'{label}: expected Xm=1, got {xm}'
+            assert xm is not None and xm >= 1, \
+                f'{label}: expected Xm >= 1 (single or multi-aligner consensus), got {xm}'
 
     @pytest.mark.parametrize('label', LABELS)
     def test_has_one_junction(self, corrected, raw_reads, label):
