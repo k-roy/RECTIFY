@@ -879,6 +879,12 @@ def reroute_intronic_tail_5prime_via_junction(
         while tmp:
             cur_end = _cigar_ref_end(read.reference_start, tmp)
             if cur_end <= clip_boundary:
+                # Also consume boundary-adjacent query-only ops (mirror of
+                # plus-strand fix). On - strand the intronic tail is at the
+                # RIGHT of the CIGAR, so look at trailing query-only ops.
+                while tmp and tmp[-1][0] in _QUERY_CONSUMING and tmp[-1][0] not in _REF_CONSUMING:
+                    n_intronic_q += tmp[-1][1]
+                    tmp.pop()
                 break
             op, length = tmp[-1]
             excess = cur_end - clip_boundary
@@ -898,10 +904,13 @@ def reroute_intronic_tail_5prime_via_junction(
         if n_intronic_q != exon_q_bases:
             return False  # query-length mismatch — don't risk corrupting the read
 
-        # Trim the live CIGAR (no sequence change).
+        # Trim the live CIGAR (no sequence change). Mirror the boundary-
+        # adjacent query-only consumption above.
         while cigar:
             cur_end = _cigar_ref_end(read.reference_start, cigar)
             if cur_end <= clip_boundary:
+                while cigar and cigar[-1][0] in _QUERY_CONSUMING and cigar[-1][0] not in _REF_CONSUMING:
+                    cigar.pop()
                 break
             op, length = cigar[-1]
             excess = cur_end - clip_boundary
@@ -948,6 +957,17 @@ def reroute_intronic_tail_5prime_via_junction(
         while tmp:
             op, length = tmp[0]
             if ref_pos >= clip_boundary:
+                # At the boundary, also consume any boundary-adjacent
+                # query-only ops (I, S). These represent query bases the
+                # aligner inserted at the intron/exon junction with no
+                # reference anchor — they belong with the rerouted
+                # upstream-exon mapping (e.g. cat3_plus_1 mapPacBio has
+                # `1X 2= 7I 86=...`: the 7I sits between the intronic
+                # 1X2= and the exonic 86=, and reroute needs those 7
+                # bases to fill the exon_cigar's query span).
+                while tmp and tmp[0][0] in _QUERY_CONSUMING and tmp[0][0] not in _REF_CONSUMING:
+                    n_intronic_q += tmp[0][1]
+                    tmp.pop(0)
                 break
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
@@ -967,11 +987,15 @@ def reroute_intronic_tail_5prime_via_junction(
         if n_intronic_q != exon_q_bases:
             return False
 
-        # Trim the live CIGAR.
+        # Trim the live CIGAR. Mirrors the boundary-adjacent query-only
+        # consumption above so the cigar passed to the splice surgery
+        # below is exactly the post-intronic portion.
         ref_pos = read.reference_start
         while cigar:
             op, length = cigar[0]
             if ref_pos >= clip_boundary:
+                while cigar and cigar[0][0] in _QUERY_CONSUMING and cigar[0][0] not in _REF_CONSUMING:
+                    cigar.pop(0)
                 break
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
