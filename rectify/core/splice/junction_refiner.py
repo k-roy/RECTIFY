@@ -492,6 +492,103 @@ def _apply_junction_replacement(
     new_cigar = list(cigar)
     new_ref_start = read.reference_start
 
+    # --- Fast path: pure k-bp slide on splice-ambiguous bases ---
+    #
+    # When delta_start == delta_end == k (pure slide, no length change to the
+    # intron) AND the k genome bases that flip role between intron-edge and
+    # exon-edge are identical at both placements, the slide is a trivial CIGAR
+    # transformation: extend the boundary =/M op on one side of N by k and
+    # shrink the boundary =/M op on the other side by k.  The read base whose
+    # role flips has the same identity at both genomic positions, so an =-op
+    # at the old placement remains an =-op at the new placement.
+    #
+    # This avoids the boundary D/I insertions that the general path emits, which
+    # are then mangled by the downstream indel corrector into degenerate
+    # local-realignment CIGARs (e.g. 14=1D8=1D366N1I50= → 22D1M20I1M366N1I50=).
+    #
+    # The transformation is strand-agnostic: CIGAR ops are always in genomic
+    # order, so we only care about which adjacent op is upstream (lower genomic
+    # coord) and which is downstream (higher).  Strand only affects which end
+    # is the donor vs acceptor, which the fast path doesn't need to know.
+    if (
+        delta_start == delta_end
+        and delta_start != 0
+        and abs(delta_start) <= 50  # same _MAX_BOUNDARY_SHIFT guard as below
+        and 0 < cigar_idx < len(new_cigar) - 1
+    ):
+        k = delta_start  # signed slide magnitude (positive = N slid right)
+        absk = abs(k)
+
+        # Adjacent ops: must be =/M on both sides for the slide to remain valid
+        # as a pure match-extension transformation.
+        up_op, up_len = new_cigar[cigar_idx - 1]
+        dn_op, dn_len = new_cigar[cigar_idx + 1]
+
+        if up_op in (_EQ, _M) and dn_op in (_EQ, _M):
+            # Identify the read base(s) whose role flips and the two genomic
+            # positions they would align to.
+            #
+            # k > 0 (intron slides right by k): genome positions [old_ns,
+            #   old_ns + k) flip from intron to upstream-exon; positions
+            #   [old_ne, old_ne + k) flip from downstream-exon to intron.
+            #   The read base previously aligned to genome[old_ne + i] is now
+            #   aligned to genome[old_ns + i].  For an =-op to remain valid,
+            #   genome[old_ns + i] == genome[old_ne + i] for i in [0, k).
+            #
+            # k < 0 (intron slides left by |k|): genome positions [old_ns - |k|,
+            #   old_ns) flip from upstream-exon to intron; positions
+            #   [old_ne - |k|, old_ne) flip from intron to downstream-exon.
+            #   The read base previously aligned to genome[old_ns - 1 - i] is
+            #   now aligned to genome[old_ne - 1 - i].  Need genome[old_ns - 1
+            #   - i] == genome[old_ne - 1 - i] for i in [0, |k|).
+            gs = len(genome_seq)
+            ok = True
+            if k > 0:
+                if old_ne + k > gs or old_ns < 0:
+                    ok = False
+                else:
+                    for i in range(k):
+                        if genome_seq[old_ns + i].upper() != genome_seq[old_ne + i].upper():
+                            ok = False
+                            break
+                # Shrinking side: downstream op must have length >= k
+                if ok and dn_len < k:
+                    ok = False
+            else:  # k < 0
+                if old_ne + k < 0 or old_ns > gs:
+                    ok = False
+                else:
+                    for i in range(absk):
+                        if genome_seq[old_ns - 1 - i].upper() != genome_seq[old_ne - 1 - i].upper():
+                            ok = False
+                            break
+                # Shrinking side: upstream op must have length >= |k|
+                if ok and up_len < absk:
+                    ok = False
+
+            if ok:
+                # k > 0: upstream =/M gains k; downstream =/M loses k.
+                # k < 0: upstream =/M loses |k|; downstream =/M gains |k|.
+                if k > 0:
+                    new_up_len = up_len + k
+                    new_dn_len = dn_len - k
+                else:
+                    new_up_len = up_len + k  # k is negative → subtracts
+                    new_dn_len = dn_len - k  # k is negative → adds
+
+                # N length is unchanged (pure slide preserves intron length).
+                n_len = old_ne - old_ns
+                new_cigar[cigar_idx - 1] = (up_op, new_up_len)
+                new_cigar[cigar_idx]     = (_N, n_len)
+                new_cigar[cigar_idx + 1] = (dn_op, new_dn_len)
+
+                # Span checks: ref span gains k from upstream and loses k from
+                # downstream (or vice versa) — net zero.  Same for query span.
+                read.cigartuples = new_cigar
+                # reference_start unchanged (we never touched leading ops)
+                return True
+        # Fall through to general path if fast-path preconditions not met
+
     # --- Fix intron start boundary ---
     # If delta_start > 0: intron_start moved right → exon2 gained |delta_start| ref bases
     #                      (need to add M ops before N from exon2 query bases absorbed in old N)
