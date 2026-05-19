@@ -1103,8 +1103,12 @@ class TestRescue3SSTruncationExtended:
             "_off search window: shift=0 (annotated NN, in_amb=True) finds the "
             "same exon window via _off=3 as shift=-3 (canonical GT, in_amb=False) "
             "via _off=0. in_amb priority selects shift=0 → five_prime_corrected=102 "
-            "instead of 99. Requires limiting _off for soft-clip rescues (dist=0 "
-            "case) or revisiting in_amb > donor_ok for out-of-window canonical donors."
+            "instead of 99. Three fix options: (A) limit _off_limit=0 for soft-clip "
+            "rescues when align_5prime==intron_end (narrow); (B) revisit in_amb > "
+            "donor_ok for out-of-window canonical donors (design call); (C) track "
+            "_eff_intron_start -= _off in the scoring loop so the recorded donor "
+            "position matches where the window actually landed (root-cause fix, "
+            "smallest diff — preferred)."
         ),
     )
     def test_plus_offset_junction_rescued(self):
