@@ -470,6 +470,18 @@ def correct_read_3prime(
         five_prime_soft_clip_len = right_clip_length
         three_prime_soft_clip_len = left_clip_length
 
+    # Reanchor pre-pass: when rescue_3ss_truncation's reanchor materially
+    # modified the CIGAR (e.g. mapPacBio's `1X 2= 7I` 5' edge collapsed into
+    # a `10S`), the rescue's exon_cigar was computed against the post-reanchor
+    # geometry. The TSV's five_prime_soft_clip_length must reflect the POST-
+    # reanchor leading-S length so bam_writer's extend_read_5prime_for_junction_rescue
+    # gate (soft_clip_len > 0) fires and the rescue's exon_cigar actually
+    # replaces the soft-clip in the final BAM. Without this propagation, mpb-
+    # style reads pay the per-base soft-clip penalty (1.0/bp) in HP-ED scoring
+    # for a clip that the rescue was supposed to eliminate.
+    if _reanchor_clip_len > 0:
+        five_prime_soft_clip_len = _reanchor_clip_len
+
     # Extract 3' soft-clip sequence for poly(A) model scoring.
     # Iterate the clip list rather than recomputing — seq is already present.
     _three_prime_clip_seq = None

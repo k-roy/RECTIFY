@@ -1,5 +1,5 @@
 track type=bedGraph name="corrected_3ends.minus" description="corrected_3ends.minus"
-chrI	128102	128103	1.0000
+chrI	128096	128097	1.0000
 chrI	128117	128118	1.0000
 chrII	9834	9835	1.0000
 chrII	59705	59706	1.0000
