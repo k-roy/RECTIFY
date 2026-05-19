@@ -6,7 +6,51 @@ keep the 40 → 0 push moving.
 
 ---
 
-## Design: separate match-quality placement from canonical-signal slide in 5'-rescue
+## RESOLVED — separate match-quality placement from canonical-signal slide in 5'-rescue
+
+**Status:** RESOLVED 2026-05-18. See commit at HEAD (`fix(rescue): two-step
+scoring tuple in rescue_3ss_truncation — in_amb dominates donor_ok`).
+
+**What shipped:** Minimal-blast soft-tiebreak reorder in both scoring
+loops of `_rescue_3ss_truncation_body` (`splice_aware_5prime.py`):
+
+- Inner per-junction tuple reordered from
+  `(not _donor_ok, not _in_amb, _shift_abs)` →
+  `(not _in_amb, not _donor_ok, _shift_abs)`.
+  Applied identically to the + strand block (~lines 1141–1167) and the
+  − strand mirror (~lines 1280–1297).
+- Cross-junction outer tuple at ~lines 1336–1342 reordered to match:
+  `(ed_exon, not _best_in_amb, not _best_local_canonical, _best_local_shift_abs, _acceptor_priority)`.
+- Docstring blocks at all three sites rewritten to label the steps
+  explicitly (Step 1: ED, Step 2: in_amb, Step 3: donor_ok, Step 4: shift).
+
+**Why a reorder and not the full sketch:** The user's verbatim text and
+the sketch fragment in this entry pulled in different directions —
+the prose argued that in_amb must dominate donor_ok (a tuple-order
+question), while the sketch built explicit tied-position lists with
+helper functions. The minimal change that captures the user's load-bearing
+concern ("in_amb is match-quality, donor_ok is signal-quality, in_amb
+should win when ED ties") is the tuple reorder. The wide-vs-ambig
+search range (`_shift_lo = -max(5, _l_amb)`) is preserved so reads with
+imprecise annotations whose true junction sits at shift=±3 outside a
+±1 ambig window are still rescuable. The "build tied-position lists +
+extract ambig-window helper" structure would be a larger refactor for
+no behavior delta on the current validation set; queue it again if a
+future case demonstrates the structural form is needed.
+
+**Verification:**
+
+- `pytest tests/test_validation_reads.py` → **107 passed, 8 skipped**,
+  identical to the pre-refactor baseline.
+- `regen_pa_rest_bundle.py` → winner counts identical
+  (`mm2=0, gapmm2=3, mpb=8, deSALT=19, uLTRA=6`).
+- `per_aligner_summary.tsv` byte-identical to the pre-refactor regen.
+- BAM CIGAR spot-check on all 4 cat3 reads × 5 aligners — all preserve
+  the documented post-regen geometry. cat3_plus_2 specifically:
+  ref_start=142230, CIGAR head `14=1D9=366N50=…` (or M-equivalent) on
+  all 5 aligners, matching the queue verification target.
+
+**Pre-refactor scoping context (kept for archive):**
 
 **Scope:** `rectify/core/splice/splice_aware_5prime.py:rescue_3ss_truncation`,
 specifically the candidate-junction scoring loops around lines 1141–1156

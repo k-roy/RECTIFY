@@ -1140,12 +1140,23 @@ def _rescue_3ss_truncation_body(
                             continue
                         _ed = _hp_edit_distance(_rseq.upper(), _cand)
                         _shift_abs = abs(_shift)
-                        # Two-phase scoring (lower tuple = better):
-                        #   Phase 1 — discovery: minimise edit distance across wide range
-                        #   Phase 2 — refinement: prefer canonical donor, then within
-                        #             the ambiguity window, then smallest |shift|
-                        _cur  = (not _donor_ok, not _in_amb, _shift_abs)
-                        _best = (not _best_local_canonical, not _best_in_amb,
+                        # Two-step scoring (lower tuple = better):
+                        #   Step 1 — match quality: minimise HP-edit-distance.
+                        #            Only this ranks candidates as primary; all
+                        #            other criteria are tiebreakers among ED-ties.
+                        #   Step 2 — among ED-ties: prefer placements INSIDE the
+                        #            sequence-ambiguity window. The ambig window
+                        #            is a match-quality property — a slide inside
+                        #            it is genuinely a no-op, while a slide outside
+                        #            it changes the read's alignment geometry.
+                        #   Step 3 — among ED+in_amb-ties: prefer canonical donor
+                        #            (GT/GC). This is signal quality and must rank
+                        #            below in_amb so canonical signal is never
+                        #            purchased at the cost of a worse-anchored slide.
+                        #   Step 4 — among ED+in_amb+donor-ties: smallest |shift|
+                        #            from the annotated position.
+                        _cur  = (not _in_amb, not _donor_ok, _shift_abs)
+                        _best = (not _best_in_amb, not _best_local_canonical,
                                  _best_local_shift_abs)
                         if _ed < _best_local_ed or (
                                 _ed == _best_local_ed and _cur < _best):
@@ -1273,8 +1284,11 @@ def _rescue_3ss_truncation_body(
                             continue
                         _ed = _hp_edit_distance(_rseq.upper(), _cand)
                         _shift_abs = abs(_shift)
-                        _cur  = (not _donor_ok, not _in_amb, _shift_abs)
-                        _best = (not _best_local_canonical, not _best_in_amb,
+                        # Two-step scoring — see + strand block (lines ~1141-1156)
+                        # for the full rationale. Tuple ordering matches the +
+                        # branch so the two scoring loops are structural mirrors.
+                        _cur  = (not _in_amb, not _donor_ok, _shift_abs)
+                        _best = (not _best_in_amb, not _best_local_canonical,
                                  _best_local_shift_abs)
                         if _ed < _best_local_ed or (
                                 _ed == _best_local_ed and _cur < _best):
@@ -1313,15 +1327,18 @@ def _rescue_3ss_truncation_body(
                 # Near chromosome boundary — fall back to absolute threshold
                 rescue_ok = (ed_exon / _rlen <= max_edit_frac)
             if rescue_ok:
-                # Full tiebreaking tuple (lower = better):
-                #   1. edit distance (hp-aware, float)
-                #   2. canonical 5'SS donor (GT/GC plus, AC/GC minus)
-                #   3. shift within sequence-ambiguity window
+                # Cross-junction tiebreaking tuple (lower = better). Matches the
+                # within-junction two-step ordering so the priority is consistent
+                # at both scopes: match quality (ED) → match-anchor quality
+                # (in_amb) → signal quality (canonical donor, then acceptor).
+                #   1. edit distance (hp-aware, float)             — match quality
+                #   2. shift within sequence-ambiguity window      — match anchor
+                #   3. canonical 5'SS donor (GT/GC plus, AC/GC minus) — donor signal
                 #   4. smallest |shift| from annotated position
                 #   5. 3'SS acceptor quality: AG=0, CG=1, TG=2, AT=3, other=4
-                _cur_outer  = (ed_exon, not _best_local_canonical, not _best_in_amb,
+                _cur_outer  = (ed_exon, not _best_in_amb, not _best_local_canonical,
                                _best_local_shift_abs, _acceptor_priority)
-                _best_outer = (best_ed, not best_is_canonical, not best_in_amb,
+                _best_outer = (best_ed, not best_in_amb, not best_is_canonical,
                                best_shift_abs, best_acceptor_priority)
                 _overall_update = (best_ed < 0 or _cur_outer < _best_outer)
                 if _overall_update:
