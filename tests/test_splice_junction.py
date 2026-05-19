@@ -1323,3 +1323,125 @@ class TestRescue3SSTruncationExtended:
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
         assert r['five_prime_corrected'] == 99  # junction A: intron_start=100 → corrected=99
+
+
+# =============================================================================
+# in_amb priority over canonical donor (99558c1 two-step scoring)
+# =============================================================================
+
+class TestInAmbVsDonorOkPriority:
+    """
+    Verifies the priority introduced in 99558c1:
+      Step 2 (in_amb) ranks above Step 3 (canonical donor).
+
+    At an edit-distance tie, a shift that lands inside the sequence-ambiguity
+    window must beat a shift that lands outside it — even if the outside shift
+    has a canonical GT/GC donor and the inside shift does not.
+
+    Rationale: in_amb is a match-quality property (a slide within the window
+    is a genuine no-op for the aligner); canonical-donor is a signal-quality
+    property. Buying a better-anchored placement at the cost of non-canonical
+    signal is never the right trade.
+    """
+
+    def test_plus_in_amb_beats_canonical_out_of_window(self):
+        """
+        Genome layout (chrP):
+          pos 0-1:   CC  (exon1 head, irrelevant)
+          pos 2-7:   GTGTGT  (repeating exon1 tail — both windows land here)
+          pos 8-9:   NN  (non-canonical 5'SS donor at intron_start=8)
+          pos 10-107: N*98  (intron body)
+          pos 108-109: AG  (canonical 3'SS acceptor, intron_end=110)
+          pos 110-159: C*50  (exon2 / read body)
+
+        soft-clip rescue_seq = 'GTGT' (4 bases).
+
+        Within the ±5 shift search:
+          shift= 0: _eff_start=8, exon window genome[4:8]='GTGT', ED=0,
+                    in_amb=True  (only shift=0 is in_amb because _r_amb=0, _l_amb=0),
+                    donor genome[8:10]='NN' → non-canonical.
+          shift=-2: _eff_start=6, exon window genome[2:6]='GTGT', ED=0,
+                    in_amb=False (2 positions outside the ambiguity window),
+                    donor genome[6:8]='GT' → canonical.
+
+        The two-step scoring tuple (not in_amb, not donor_ok, shift_abs):
+          shift= 0 → (False, True,  0)
+          shift=-2 → (True,  False, 2)
+        (False, True, 0) < (True, False, 2) → shift=0 wins → five_prime_corrected=7.
+
+        With the OLD pre-99558c1 ordering (not donor_ok, not in_amb, shift_abs):
+          shift= 0 → (True,  False, 0)
+          shift=-2 → (False, True,  2)
+        (False, True, 2) < (True, False, 0) → shift=-2 would win → five_prime_corrected=5.
+        """
+        genome = {'chrP':
+                  'CC'              # pos 0-1
+                  + 'GTGTGT'        # pos 2-7: exon1 tail; GT at 6-7 = canonical donor
+                  + 'NN'            # pos 8-9: non-canonical donor (intron_start=8)
+                  + 'N' * 98        # pos 10-107: intron body
+                  + 'AG'            # pos 108-109: canonical acceptor (intron_end=110)
+                  + 'C' * 50}       # pos 110-159: exon2
+        junction = {('chrP', 8, 110)}
+        read = MockRead(
+            reference_name='chrP',
+            reference_start=110,
+            reference_end=160,
+            is_reverse=False,
+            query_sequence='GTGT' + 'C' * 50,
+            cigartuples=[(4, 4), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junction, strand='+')
+        assert r['rescued'] is True
+        # shift=0 (in_amb) wins over shift=-2 (canonical GT, out-of-window)
+        assert r['five_prime_corrected'] == 7   # intron_start(8) - 1 = 7
+        assert r['rescued_junction'] == ('chrP', 8, 110)
+
+    def test_plus_canonical_wins_when_both_in_amb(self):
+        """
+        When both shifts are inside the ambiguity window (in_amb tied), the canonical
+        GT donor (Step 3) is the deciding factor.  This is the complement of
+        test_plus_in_amb_beats_canonical_out_of_window.
+
+        Genome layout (chrQ):
+          pos 0-15:  A*16  (exon1)
+          pos 16-17: AA    (non-canonical donor at shift=0)
+          pos 18-19: GT    (canonical donor at shift=+2)
+          pos 20+:   intron body + AG acceptor + exon2
+
+        Ambiguity window:
+          _leb=genome[15]='A'; _r_amb: genome[16]='A'=_leb → +1;
+            genome[17]='A'=_leb → +1; genome[18]='G'≠'A' → stop. _r_amb=2.
+          _fib=genome[16]='A'; _l_amb: genome[15]='A'=_fib → +1; ... → _l_amb=15.
+          in_amb window: (-15 ≤ shift ≤ 2) → both shift=0 and shift=+2 are in_amb.
+
+        soft-clip = 'AAAA' matches both exon windows with ED=0:
+          shift=0:  genome[12:16]='AAAA', ED=0
+          shift=+2: genome[14:18]='AAAA', ED=0
+
+        Scoring tuple (not in_amb, not donor_ok, shift_abs):
+          shift=0:  (False, True,  0)  — in_amb, non-canonical
+          shift=+2: (False, False, 2)  — in_amb, canonical GT
+        (False, False, 2) < (False, True, 0) → shift=+2 (canonical) wins.
+
+        Expected: five_prime_corrected = 17 (intron_start+2 - 1).
+        """
+        genome = {'chrQ':
+                  'A' * 16          # pos 0-15: exon1
+                  + 'AAGT'          # pos 16-19: AA (non-canonical) then GT (canonical)
+                  + 'N' * 96        # pos 20-115: intron body
+                  + 'AG'            # pos 116-117: acceptor (intron_end=118)
+                  + 'C' * 50}       # pos 118-167: exon2
+        junction = {('chrQ', 16, 118)}
+        read = MockRead(
+            reference_name='chrQ',
+            reference_start=118,
+            reference_end=168,
+            is_reverse=False,
+            query_sequence='AAAA' + 'C' * 50,
+            cigartuples=[(4, 4), (0, 50)],
+        )
+        r = rescue_3ss_truncation(read, genome, junction, strand='+')
+        assert r['rescued'] is True
+        # shift=+2 (canonical GT, in_amb) beats shift=0 (non-canonical AA, in_amb)
+        assert r['five_prime_corrected'] == 17  # intron_start+2 - 1 = 17
+        assert r['rescued_junction'] == ('chrQ', 18, 118)
