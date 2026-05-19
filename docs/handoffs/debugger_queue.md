@@ -362,6 +362,20 @@ deSALT (26.21) by 1.39 points and picks the wrong winner. Followup
 work is the HP-ED weight calibration in the open "Cat1 cluster"
 entry, not the reanchor.
 
+**Post-regen update (2026-05-19):** The "less-parsimonious `1D 1=` tail"
+framing above was written against pre-e39089e BAMs and is stale. After
+the e39089e regen, all 5 aligners for cat3_plus_2 have the same clean
+`14=1D9=366N50=` head structure (no `1D 1=` exon-1 tail). The 1.39-point
+gap is entirely in the **second exon body** (ref 142673–142730): deSALT
+represents 3 bases as `I1+D1` (cost 1.25 + 0.36 via HP-context penalty
+table at ref 142730 = 1.61) while mpb calls them 3 flat X-ops (cost 3.0).
+The responsible weight is the D1 at ref 142730 in a 1-bp HP context
+(penalty_table cost 0.36 vs flat 1.0). This is HP-ED working as designed —
+HP-context deletions are genuinely cheaper in Nanopore data. Both aligners
+produce identical TSV output (`corrected_3prime=143380`, `junctions=142253-142619`,
+`effective_group=A`) → not a wrong-winner bug; RECTIFY's functional output
+is the same regardless of which aligner wins. No fix needed for cat3_plus_2.
+
 **Files touched:**
 - `rectify/core/splice/splice_aware_5prime.py` — reanchor pre-pass in
   `rescue_3ss_truncation`; body split out into `_rescue_3ss_truncation_body`
