@@ -108,7 +108,7 @@ All tests in `test_validation_reads.py`: **107 passed, 8 skipped**.
 
 | Read | Locus | corrected_3prime | Notes |
 | --- | --- | --- | --- |
-| cat2_plus_1 | chrI+ 23754 | 23754 | deSALT wins; calibration issue open (see below) |
+| cat2_plus_1 | chrI+ 23754 | 23754 | deSALT correct winner; post-regen gapmm2/mm2/uLTRA at HP-ED 56.6 |
 | cat2_plus_2 | chrVI+ | 8605 | |
 | cat2_minus_1 | chrV− | 186 | |
 | cat2_minus_2 | chrI− | 128096 | 2-bp del extension; 6943450 |
@@ -146,14 +146,6 @@ Winner counts from `regen_pa_rest_bundle.py`: `mm2=0, gapmm2=3, mpb=8, deSALT=19
 ## Open items (carry forward)
 
 ### Genuinely open — code change needed
-
-**cat2_plus_1 calibration** — `del_cost(hp_len≈19, base='A')` in
-`penalty_tables/penalty_scores.tsv` may be too expensive. deSALT (23754, 3× single-base
-insertions in AAAT tetramers) wins over minimap2 (23759, 1× 8-bp HP deletion in a long
-A-run). User diagnosis: minimap2's representation is more parsimonious; HP-ED should favor
-it. Test currently hardcodes 23754 to accept the current (wrong) behavior — fix requires
-recalibration of long-A-run del_cost and updating the test assertion to 23759. Cluster job
-needed to extend empirical INS AT table for hp_len 4-20.
 
 **xfail `test_plus_offset_junction_rescued` fix (option C)** — `_off` search window in
 `_rescue_3ss_truncation_body` allows shift=0 (annotated NN, in_amb=True) to score the

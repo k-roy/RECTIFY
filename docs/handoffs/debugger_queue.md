@@ -514,9 +514,20 @@ chrXII[15345] = C on plus = G on RNA → policy satisfied.
 Plotter findings, 2026-05-18, from
 `validation_read_review/cat2_softclip_findings.md`.
 
-### cat2_plus_1 — HP-ED penalty calibration: del_cost(long-A-run) may be too expensive
+### cat2_plus_1 — HP-ED penalty calibration concern — RESOLVED / superseded
 
-**Panel (verbatim):**
+**Status:** RESOLVED 2026-05-19. The calibration concern (minimap2 should win) was based
+on an older plotter panel showing minimap2/gapmm2/uLTRA at HP-ED≈20, close to deSALT's
+15.6. The current figure (post-regen, post-acb508e) shows gapmm2/minimap2/uLTRA at
+HP-ED=56.6 — completely non-competitive. deSALT (15.6) is the correct winner. User
+confirmed 2026-05-19: "deSALT looks like the correct winner for that one too."
+
+The prior user diagnosis ("minimap2 did the right thing") was based on stale bundle data;
+after regen the per-base view shows minimap2/gapmm2/uLTRA massively undercalling the
+A-tract. Test asserts corrected_3prime=23754 (deSALT winner); test passes. No calibration
+change needed.
+
+**Original panel (stale — from pre-regen bundle):**
 ```
 aligner     5'    Δ   3'    Δ    HP-ED  span  pick
 minimap2    23362 0   23759 0    20.1   398
@@ -526,31 +537,12 @@ uLTRA       23362 0   23759 0    20.1   398
 gapmm2      23362 0   23759 0    20.1   398
 ```
 
-**Two-cluster divergence:** minimap2/gapmm2/uLTRA at 3'=23759 (Cluster A);
-mapPacBio/deSALT at 3'=23754 (Cluster B). HP-ED picks deSALT (Cluster B).
-
-**User's diagnosis (verbatim):**
-> "For cat2 plus1, I actually think minimap2 did the right thing. The
-> undercalling of the A-tract is the most plausible alignment here, and it
-> allows everything else to cleanly align. The extra AAAT repeats are
-> classic nanopore over-calling of tetramer repeats. The hp-aware edit
-> distance should be allowing minimap2 to win this one outright."
-
-**Representations:**
-- minimap2: 1× 8-bp HP deletion in a long A-tract (1 biological event).
-- deSALT: 3× single-base insertions in AAAT tetramer repeats (3 events).
-
-**Hypothesis:** `del_cost(hp_len ≈ 19, base='A')` in
-`rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores.tsv`
-may be too expensive — empirically nanopore DRS undercalls long A-runs at
-high frequency, so cost should be very cheap. If del_cost were correct,
-minimap2's HP-ED would dip below deSALT's.
-
-Out-of-scope ideas:
-- HP-ED could normalize per "biological event" rather than per CIGAR-op
-  base (one 8-bp HP under-call is one event, not eight).
-- Correlated insertion penalty for AAAT-tetramer over-calls (3 events at
-  the same boundary are correlated, not independent).
+**Current panel (post-regen):**
+```
+deSALT:               HP-ED 15.6,  raw 15  ← winner
+mapPacBio:            HP-ED 16.9,  raw 16
+gapmm2/mm2/uLTRA:     HP-ED 56.6,  raw 57  (massive A-tract undercall)
+```
 
 ### cat2_minus_2 — soft-clip rescue: 2-bp del extension — RESOLVED (6943450)
 
