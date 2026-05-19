@@ -154,7 +154,7 @@ was relying on an interaction the refactor breaks. Cross-link:
 
 ---
 
-## Bug note: + strand 5'-rescue equivalence-extension geometry inverted (DISABLED 2026-05-18)
+## Bug note: + strand 5'-rescue equivalence-extension geometry inverted — RESOLVED (acb508e, 2026-05-18)
 
 **Scope:** `rectify/core/splice/splice_aware_5prime.py`, `rescue_3ss_truncation`,
 the equivalence-extension block added in commit `0653172`.
@@ -195,37 +195,22 @@ handoff `HANDOFF_2026-05-18_0653172_cat3_equivalence.md` §2 already
 flagged this as "+ strand mirror code path has no test that exercises
 it" — the verification follow-up caught the geometric inversion.
 
-**Current state:** The + strand `elif` branch is replaced with an inline
-explanatory comment; behavior is now identical to pre-`6d2cf59` on
-+ strand rescues. Validation suite still 106 passed / 8 skipped.
+**Resolution (acb508e, 2026-05-18):** Commit `acb508e` replaced the disabled
+no-op with the correctly-triggered `elif` branch:
 
-**To fix properly:** Implement the correct mirror, which is structurally
-the same transformation as the deferred cat3_plus_2 "off-by-1 acceptor"
-undershoot case (§3 of the cat3 handoff). Sketch:
+- Trigger: `_intron_end - read.reference_start > 0` (undershoot — body M
+  starts INSIDE intron from the high-coord edge).
+- Borrowed read bases: `_q[_scl : _scl + _k_try]` (first k body-M bases
+  after leading soft-clip).
+- `_ref_old = genome[ref_start : ref_start + k]` (intron-internal position).
+- `_ref_new = genome[intron_start - k : intron_start]` (upstream exon tail).
+- Same `extend_read_5prime_for_junction_rescue` surgery path works cleanly;
+  intron_len collapses to `intron_end - intron_start` (canonical).
 
-- Trigger: `strand == '+' AND _intron_end - read.reference_start > 0`
-  (body M starts k bases short of canonical intron_end, INSIDE intron).
-- Borrowed query bases: first `_k_try` body-M query bases (same as
-  before): `_q[_scl : _scl + _k_try]`.
-- `_ref_old = genome[read.reference_start : read.reference_start + _k_try]`
-  — currently aligned at `[intron_end - k, intron_end)` inside intron region.
-- `_ref_new = genome[intron_end : intron_end + _k_try]` — downstream
-  exon start (structural mirror of - strand's `_ref_new`).
-- Surgery: the borrowed bases need to move from intron-region to
-  downstream-exon-start. That is NOT the same operation as appending to
-  rescue M (which is on the upstream side). On + strand, "move to
-  downstream exon start" means shifting body M's ref_start LEFT by k
-  (from `intron_end - k` to `intron_end - 2k`? — re-derive carefully).
-  This may need a different BAM-writer code path than the - strand
-  case, since both - and + strand currently route the "borrowed bases"
-  into the rescue M, which is the upstream side for + strand but the
-  downstream side for - strand. The asymmetry probably needs a separate
-  surgery routine.
-
-**Blast radius:** The handoff §3 cat3_plus_2 case (4/5 aligners) is
-exactly this undershoot pattern. The proper + strand fix would clean
-up its cosmetic CIGAR the same way - strand's was cleaned for
-cat3_minus_2.
+The same commit also fixed a +1 off-by-one in `reroute_intronic_tail_5prime_via_junction`
+that was corrupting the + strand intron_len when the reroute fired after equivalence-extension.
+Combined result: all 5 aligners on cat3_plus_2 produce canonical N(366) CIGAR. Validation
+suite: 107 passed / 8 skipped. Regression test added in `tests/test_validation_reads.py`.
 
 ---
 
