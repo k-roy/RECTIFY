@@ -678,6 +678,69 @@ class TestCategory3JunctionRescue:
             + '\n  '.join(failures)
         )
 
+    def test_cat3_plus_2_rescued_aligners_have_clean_intron_cigar(
+        self, per_aligner_corrected_bams_no_2h, raw_reads
+    ):
+        """cat3_plus_2: + strand mirror of the cat3_minus_2 test. Aligners
+        that placed the intron acceptor 1 bp early (142253, 142618) should
+        emit a clean N(366) flank on canonical (142253, 142619) coordinates
+        after the + strand equivalence-extension fires.
+
+        The undershoot pattern: body M's first query base aligns at
+        ref_start = 142618 = intron_end - 1 (inside intron from the high
+        side). For YAL003W's G|G ambiguity, genome[142618] == genome[142252]
+        == 'G', so the borrowed base can be re-anchored at the upstream-
+        exon-tail; body M's start advances to canonical intron_end = 142619.
+        Intron length collapses to canonical (366 bp).
+
+        Affected aligners: minimap2, deSALT, uLTRA, gapmm2 (4 of 5 native
+        placements have off-by-1 acceptor). mapPacBio already emits
+        canonical intron coords natively.
+        """
+        import pysam
+        read = raw_reads['cat3_plus_2']
+        qname = read.query_name
+        # Aligners that placed acceptor 1 bp early per debugger_queue.md
+        rescued_aligners = ['minimap2', 'deSALT', 'uLTRA', 'gapmm2']
+        observed: dict = {}
+        for aligner in rescued_aligners:
+            bam_path = per_aligner_corrected_bams_no_2h.get(aligner)
+            if bam_path is None:
+                continue
+            with pysam.AlignmentFile(bam_path, 'rb') as bam:
+                for r in bam:
+                    if r.query_name == qname and not r.is_secondary and not r.is_supplementary:
+                        cig = r.cigartuples or []
+                        n_idx = next((i for i, (op, _) in enumerate(cig) if op == 3), None)
+                        if n_idx is None:
+                            observed[aligner] = ('NO_N_OP', cig)
+                            break
+                        pre_flank = cig[max(0, n_idx - 2): n_idx]  # 2 ops before N
+                        n_len = cig[n_idx][1]
+                        post_op_len = cig[n_idx + 1][1] if n_idx + 1 < len(cig) else None
+                        observed[aligner] = ('OK', pre_flank, n_len, post_op_len)
+                        break
+        # Expect: N length = 366 (canonical intron span); no D op immediately
+        # before N. The pre-N op should be a clean =/M.
+        failures = []
+        for aligner in rescued_aligners:
+            entry = observed.get(aligner)
+            if entry is None or entry[0] != 'OK':
+                continue
+            _, pre_flank, n_len, post_op_len = entry
+            if n_len != 366:
+                failures.append(f'{aligner}: N length is {n_len}, expected 366')
+            if pre_flank and pre_flank[-1][0] == 2:
+                failures.append(
+                    f'{aligner}: last op before N is D({pre_flank[-1][1]}); '
+                    f'expected =/M (clean rescue should absorb the D into '
+                    f'upstream-exon-tail)'
+                )
+        assert not failures, (
+            'cat3_plus_2 rescued aligners have non-canonical CIGAR shape:\n  '
+            + '\n  '.join(failures)
+        )
+
 
 class TestCategory4FalseJunction:
     """False N ops near 3' end must be absorbed; corrected position walks back past them.

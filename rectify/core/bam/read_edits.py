@@ -1011,13 +1011,20 @@ def reroute_intronic_tail_5prime_via_junction(
             if not cigar:
                 return False
 
-        # intron_len = clip_boundary (intron_end) − five_prime_position (intron_start)
-        intron_len = clip_boundary - five_prime_position
+        # Off-by-one convention: + strand `five_prime_position` is the LAST
+        # base of the upstream exon (= intron_start - 1), not intron_start
+        # itself. The intron's genomic span is [intron_start, intron_end) =
+        # [five_prime_position + 1, clip_boundary), so intron_len needs the
+        # `- 1` adjustment. Similarly, exon ends at five_prime_position
+        # INCLUSIVE, so new_ref_start = five_prime_position - exon_ref_span + 1.
+        # (- strand uses `five_prime_position = intron_end` directly, which is
+        # why the - strand branch above doesn't need this adjustment.)
+        intron_len = clip_boundary - five_prime_position - 1
         if intron_len <= 0:
             return False
 
         exon_ref_span = sum(l for op, l in exon_ops if op in _REF_CONSUMING)
-        new_ref_start = five_prime_position - exon_ref_span
+        new_ref_start = five_prime_position - exon_ref_span + 1
 
         cigar.insert(0, (3, intron_len))        # N
         for op_tup in reversed(exon_ops):

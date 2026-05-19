@@ -1371,31 +1371,49 @@ def rescue_3ss_truncation(
                             _align_seq = _borrowed + _align_seq
                             break
 
-            # + strand equivalence-extension is DISABLED pending geometry fix.
-            #
-            # The structural mirror of the - strand `ref_end > intron_start`
-            # overshoot (body M extends INTO the intron region) is the
-            # + strand case `ref_start < intron_end` — i.e., body M EXTENDS
-            # INTO the intron from the high (downstream) edge. The handoff
-            # §3 calls this the "undershoot" pattern and it is what
-            # cat3_plus_2 exhibits.
-            #
-            # The previous implementation triggered on the OPPOSITE sign
-            # (`ref_start > intron_end`, body M starts PAST the intron
-            # with a gap). That is not a mirror of - strand overshoot; the
-            # resulting BAM surgery in `extend_read_5prime_for_junction_rescue`
-            # computed `intron_len = (ref_start + k) - five_prime_position - 1`
-            # = `canonical + 2k`, producing a non-canonical intron k bases
-            # too long on each side. There was no D-op to absorb either —
-            # body M's first k bases were pure matches inside the
-            # downstream exon, not inside the intron.
-            #
-            # Leaving the + strand path as a no-op is conservative: it
-            # restores pre-equivalence-extension behavior on + strand
-            # rescues. The proper + strand fix (mirror of - strand,
-            # triggered by `_intron_end - read.reference_start > 0`) is
-            # queued alongside the cat3_plus_2 undershoot work in
-            # docs/handoffs/debugger_queue.md.
+            # + strand mirror: body M starts INSIDE the intron region from
+            # the high (downstream) edge — i.e., `ref_start < intron_end`.
+            # This is the structural mirror of - strand's `ref_end > intron_start`
+            # overshoot. Body M's first k query bases sit at
+            # `[ref_start, ref_start + k)` = `[intron_end - k, intron_end)`,
+            # inside the intron region. Moving them to the upstream-exon-tail
+            # `[intron_start - k, intron_start)` produces a canonical-coords
+            # BAM (intron_len collapses to `intron_end - intron_start`).
+            elif (
+                rescue_type_candidate == 'softclip'
+                and strand == '+'
+                and read.reference_start is not None
+            ):
+                _undershoot = _intron_end - read.reference_start
+                if 0 < _undershoot:
+                    _q = read.query_sequence or ''
+                    _scl = _get_5prime_softclip_len(read)
+                    _max_k = min(_undershoot, _MAX_K)
+                    for _k_try in range(_max_k, 0, -1):
+                        if _scl <= 0 or len(_q) < _scl + _k_try:
+                            continue
+                        # Borrowed read bases are the first k_try body-M
+                        # query bases (just after the leading 5' soft-clip).
+                        _borrowed = _q[_scl : _scl + _k_try].upper()
+                        # OLD position: body M's first k bases align at
+                        # genome[ref_start : ref_start + k), inside intron.
+                        _ref_old = genome_seq[
+                            read.reference_start : read.reference_start + _k_try
+                        ].upper()
+                        # NEW position: upstream-exon-tail
+                        # genome[intron_start - k : intron_start).
+                        _ref_new = genome_seq[
+                            _intron_start - _k_try : _intron_start
+                        ].upper()
+                        if (
+                            len(_ref_old) == _k_try
+                            and len(_ref_new) == _k_try
+                            and _borrowed == _ref_old        # body M was a real match here
+                            and _borrowed == _ref_new        # bases also match at upstream-exon tail
+                        ):
+                            _upstream_trim = _k_try
+                            _align_seq = _align_seq + _borrowed  # + strand: append (clip is right-anchored at intron_start)
+                            break
 
             _exon_cigar_str = ''
             try:
