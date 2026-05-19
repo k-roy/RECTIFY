@@ -485,6 +485,7 @@ def _thread_limits_block(cores_var: str = '$RECTIFY_CPUS') -> str:
 export OMP_NUM_THREADS={cores_var}
 export OPENBLAS_NUM_THREADS={cores_var}
 export MKL_NUM_THREADS={cores_var}
+export MKL_DEBUG_CPU_TYPE=5
 export LOKY_MAX_CPU_COUNT={cores_var}
 export NUMEXPR_MAX_THREADS={cores_var}"""
 
