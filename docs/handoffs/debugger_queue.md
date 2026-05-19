@@ -405,9 +405,9 @@ walkback short-circuited and left corr_3p on a chrII T (RNA A).
 
 ## Cat1 cluster (HP-mode metric / walkback design)
 
-### cat1_plus_1 — mapPacBio force-aligns 4+ mismatches into the body
+### cat1_plus_1 — mapPacBio force-aligns 4+ mismatches into the body — RESOLVED (09e4627)
 
-**Status:** currently failing `test_3prime_shifted` + `test_3prime_exact_position[cat1_plus_1-10611]`.
+**Status:** RESOLVED 2026-05-19. Commit `09e4627` ("fix(walkback): handle force-aligned-past-pA-tail pattern") widened the early-exit window from `[_raw_3p - 1, _raw_3p + 4)` (6 bp) to `[max(0, _raw_3p - 20), _raw_3p + 4)`. Both tests pass: `test_3prime_shifted[cat1_plus_1-+]` and `test_3prime_exact_position[cat1_plus_1-10611]`. Winner is mapPacBio, corrected_3prime = 10611. The walkback investigation below was accurate — the proposed fix (widen window) is exactly what shipped.
 
 **Panel finding (user, 2026-05-18):** mapPacBio winner extends to chrXIV:10617
 (vs 10611 for minimap2/gapmm2/uLTRA via `overcall_rescue`). Genome around:
@@ -464,9 +464,9 @@ that triggers walkback when the trailing ≥k CIGAR positions have
 
 **Location:** `rectify/core/correct/walkback.py:437-449`.
 
-### cat1_plus_2 — HP-aware insertion cost may not fire
+### cat1_plus_2 — HP-aware insertion cost may not fire — RESOLVED
 
-**Status:** currently failing `test_3prime_shifted` + `test_3prime_exact_position[cat1_plus_2-31546]` (wait — Phase A fix should have addressed this; verify the latest pytest).
+**Status:** RESOLVED (verified 2026-05-19). Both tests pass: `test_3prime_shifted[cat1_plus_2-+]` and `test_3prime_exact_position[cat1_plus_2-31546]`. The Phase A fix (`a1728eb`, `_decode_eq_seq_inplace`) covered this case. The proposed indel_corrector investigation was not needed — Phase A was sufficient.
 
 **Panel finding (user, 2026-05-18):** `corr_3p = 31545` on chrI. Genome
 around: `chrI[31535..31560] = GTCACCGAAAAGAAAAGGTAAAAAG`. Genuinely ambiguous:
@@ -552,9 +552,11 @@ Out-of-scope ideas:
 - Correlated insertion penalty for AAAT-tetramer over-calls (3 events at
   the same boundary are correlated, not independent).
 
-### cat2_minus_2 — soft-clip rescue: extension geometry is ambiguous; user input needed before code
+### cat2_minus_2 — soft-clip rescue: 2-bp del extension — RESOLVED (6943450)
 
-**Panel summary:** 4 aligners agree corr_3p = 128102 (T on RNA, non-A,
+**Status:** RESOLVED 2026-05-18 by commit `6943450` ("fix(rescue): cat2_minus_2 2-bp del extension"). Per user directive, the rescue was extended to absorb a 2-bp ref skip (A@128100 + T@128101) to reach the TTGC motif at 128096-128099. Corrected endpoint = 128096. Test `test_3prime_exact_position[cat2_minus_2-128096]` passes. The "user input needed" question was resolved by user on 2026-05-18 (endpoint = 128096, option 2 in the sketch below).
+
+**Panel summary (original, pre-fix):** 4 aligners agree corr_3p = 128102 (T on RNA, non-A,
 policy satisfied). mapPacBio uniquely stops at 128106.
 
 **User's diagnosis (verbatim, 2026-05-18):**
