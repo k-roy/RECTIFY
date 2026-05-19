@@ -35,6 +35,211 @@ _QUERY_CONSUMING: frozenset = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
 # Note: H (5) is excluded from both — hard-clipped bases are NOT in query_sequence.
 
 
+def reanchor_5prime_for_rescue(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    anchor_min_run: int = 10,
+) -> bool:
+    """Collapse a 5'-edge mismatch/indel cluster into a leading soft-clip.
+
+    DEFERRED — implementation present but NOT wired into bam_processor.py
+    or bam_writer.py. Initial hook attempt (2026-05-18) caused regressions
+    in cat4_plus_2 3'-end position and cat7_plus_1/cat7_plus_2 junction
+    coords; root cause is cross-stage CIGAR inconsistency: reanchor modifies
+    the BAM CIGAR mid-pipeline, but the TSV's `five_prime_exon_cigar` was
+    computed against the un-reanchored CIGAR (rescue_3ss_truncation in
+    bam_processor.py used the raw CIGAR; reanchor would only fire in
+    bam_writer.py before extend_read_5prime). Re-hook requires either:
+    (a) reanchor early in bam_processor BEFORE rescue_3ss_truncation, so
+    the TSV and BAM agree on the geometry, OR (b) persist the reanchor
+    result in the TSV (e.g. as a new column `reanchor_clip_len`) so
+    downstream surgery uses a consistent geometry without modifying the
+    raw BAM in the correction pass.
+
+    For reads (notably mapPacBio) whose alignment starts with a tight
+    cluster of X/I/D ops or mismatched M bases at the 5' end, this pre-pass
+    walks the CIGAR from the 5' edge inward to find the FIRST sustained
+    run of matching bases (length ≥ *anchor_min_run*) and converts all
+    upstream ops into a single soft-clip. The downstream 5'-rescue
+    machinery (``rescue_3ss_truncation`` →
+    ``extend_read_5prime_for_junction_rescue``) then sees the same
+    {S}{body} geometry as aligners that already produce a clean leading
+    soft-clip.
+
+    "5' edge" is strand-aware: for ``+`` strand reads it is the START of
+    the CIGAR; for ``-`` strand reads (``read.is_reverse``) it is the END.
+
+    For M ops, a per-base genome comparison decides whether each position
+    is a match. =, X ops are read directly. S, I, D, N break the match run.
+
+    Args:
+        read:            pysam AlignedSegment — modified in-place if a
+                         re-anchor is found.
+        genome:          Dict of chromosome sequences (NCBI- or canonical-keyed).
+        anchor_min_run:  Minimum length of the matching-base anchor run.
+
+    Returns:
+        True if the CIGAR was modified; False otherwise.
+    """
+    if read.is_unmapped or not read.cigartuples or not read.query_sequence:
+        return False
+    from ...utils.genome import standardize_chrom_name
+    from ...config import CHROM_TO_GENOME
+    chrom = read.reference_name
+    genome_seq = genome.get(chrom) or genome.get(CHROM_TO_GENOME.get(chrom, ''), '')
+    if not genome_seq:
+        return False
+
+    cigar = list(read.cigartuples)
+    query = read.query_sequence
+    n_q = len(query)
+    n_g = len(genome_seq)
+
+    if not read.is_reverse:
+        # + strand: scan forward from cigar[0]. q_pos advances; r_pos
+        # starts at reference_start.
+        q_pos = 0
+        r_pos = read.reference_start
+        n_match_run = 0
+        run_start_q = 0
+        run_start_r = 0
+        run_start_idx = -1
+        run_start_off = 0  # offset into op where run started
+
+        for op_idx, (op, length) in enumerate(cigar):
+            if op == 5:  # H — neither query nor ref
+                continue
+            if op == 4 or op == 1:  # S, I — query-consuming, no ref
+                q_pos += length
+                n_match_run = 0
+                continue
+            if op == 2 or op == 3:  # D, N — ref-consuming, no query
+                r_pos += length
+                n_match_run = 0
+                continue
+            # M (0), = (7), X (8) — per-base walk
+            for k in range(length):
+                if op == 7:
+                    is_match = True
+                elif op == 8:
+                    is_match = False
+                else:  # M
+                    is_match = (
+                        q_pos < n_q and r_pos < n_g
+                        and query[q_pos].upper() == genome_seq[r_pos].upper()
+                    )
+                if is_match:
+                    if n_match_run == 0:
+                        run_start_q = q_pos
+                        run_start_r = r_pos
+                        run_start_idx = op_idx
+                        run_start_off = k
+                    n_match_run += 1
+                    if n_match_run >= anchor_min_run:
+                        # Found anchor. Nothing to collapse if the run
+                        # starts at the very 5' edge (no upstream cluster).
+                        if run_start_q == 0:
+                            return False
+                        # Build new CIGAR.
+                        new_cigar: list = [(4, run_start_q)]  # leading S
+                        # First op containing the anchor — may need splitting
+                        # at run_start_off.
+                        first_op, first_len = cigar[run_start_idx]
+                        if run_start_off > 0:
+                            # Drop the first run_start_off bases of this op;
+                            # they were ref-consuming and got "trimmed" into
+                            # the new S. Adjust reference_start accordingly.
+                            new_cigar.append((first_op, first_len - run_start_off))
+                        else:
+                            new_cigar.append((first_op, first_len))
+                        new_cigar.extend(cigar[run_start_idx + 1:])
+                        read.cigartuples = new_cigar
+                        read.reference_start = run_start_r
+                        return True
+                else:
+                    n_match_run = 0
+                q_pos += 1
+                r_pos += 1
+        return False
+
+    else:
+        # - strand: scan backward from cigar[-1]. Mirror geometry.
+        # q_pos counts from the END of the query backward.
+        # r_pos counts from reference_end backward.
+        # Pre-compute reference_end (= sum of ref-consuming ops from ref_start).
+        ref_end = read.reference_start
+        for op, length in cigar:
+            if op in _REF_CONSUMING:
+                ref_end += length
+
+        q_pos = n_q  # exclusive index from the end
+        r_pos = ref_end
+        n_match_run = 0
+        run_end_q = n_q  # exclusive end of match run on query
+        run_end_r = ref_end
+        run_end_idx = -1
+        run_end_off = 0  # offset from END of op where run started (inclusive)
+
+        for op_idx in range(len(cigar) - 1, -1, -1):
+            op, length = cigar[op_idx]
+            if op == 5:
+                continue
+            if op == 4 or op == 1:
+                q_pos -= length
+                n_match_run = 0
+                continue
+            if op == 2 or op == 3:
+                r_pos -= length
+                n_match_run = 0
+                continue
+            for k in range(length):
+                q_pos -= 1
+                r_pos -= 1
+                if op == 7:
+                    is_match = True
+                elif op == 8:
+                    is_match = False
+                else:  # M
+                    is_match = (
+                        0 <= q_pos < n_q and 0 <= r_pos < n_g
+                        and query[q_pos].upper() == genome_seq[r_pos].upper()
+                    )
+                if is_match:
+                    if n_match_run == 0:
+                        # Track the OUTERMOST (5'-side, in BAM = highest
+                        # query/ref) position of the run, i.e. the position
+                        # where the run STARTS when walking backward. We
+                        # store `k` (iterations from BAM-end of the op) so
+                        # the new first-op length = first_len - k covers
+                        # bases [0, first_len - k), inclusive of the match.
+                        run_end_q = q_pos + 1  # exclusive
+                        run_end_r = r_pos + 1
+                        run_end_idx = op_idx
+                        run_end_off = k  # bases AFTER the match within this op
+                    n_match_run += 1
+                    if n_match_run >= anchor_min_run:
+                        # Trailing-S length = total query bases at indices
+                        # >= run_end_q.
+                        trail_s_len = n_q - run_end_q
+                        if trail_s_len == 0:
+                            return False
+                        # Build new CIGAR: keep ops 0..run_end_idx (the
+                        # body, low-ref side), but split the op at
+                        # run_end_idx to drop the trailing run_end_off
+                        # bases; then a trailing S of all bases past the
+                        # match.
+                        new_cigar = list(cigar[:run_end_idx])
+                        first_op, first_len = cigar[run_end_idx]
+                        new_cigar.append((first_op, first_len - run_end_off))
+                        new_cigar.append((4, trail_s_len))
+                        read.cigartuples = new_cigar
+                        # reference_start unchanged; reference_end shrinks.
+                        return True
+                else:
+                    n_match_run = 0
+        return False
+
+
 def clip_read_to_corrected_3prime(
     read: pysam.AlignedSegment,
     corrected_3prime: int,

@@ -494,7 +494,7 @@ class TestCategory2SoftClipRescue:
         ('cat2_plus_1',  23754),    # chrI mapPacBio 9D 34= alignment ends at 23755 → corr=23754
         ('cat2_plus_2',  8605),     # chrVI consensus shifted -1 bp from legacy 8606 after Phase A/B
         ('cat2_minus_1', 186),      # chrV mapPacBio winner; pre-extends
-        ('cat2_minus_2', 128102),   # chrI softclip_rescue −11 bp from raw 128113 (minimap2 winner)
+        ('cat2_minus_2', 128096),   # chrI softclip_rescue −17 bp from raw 128113 (2-bp del extension absorbs A@128100+T@128101 to reach TTGC motif at 128096-128099); user directive 2026-05-18
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]

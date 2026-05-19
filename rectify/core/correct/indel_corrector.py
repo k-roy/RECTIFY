@@ -626,6 +626,65 @@ def rescue_softclip_at_homopolymer(
         if rescued_count == 0:
             return None
 
+        # ── 2-bp deletion extension (cat2_minus_2 motif rescue) ───────────
+        # If the main walk terminated at a softclip-vs-ref mismatch (not at
+        # poly-T entry / chromosome boundary), try absorbing two more ref
+        # positions into the deletion and see if at least 3 additional
+        # softclip bases match the resulting upstream window. This handles
+        # the case where the basecaller under-called a long HP tract AND
+        # the alignment then placed the cleavage one feature short of a
+        # downstream motif (e.g. cat2_minus_2: A-T-tract-A boundary at
+        # 128102 with TTGC at 128096-128099 immediately beyond a 2-bp
+        # non-HP gap).
+        #
+        # The threshold (≥3 extra matches) is calibrated against the
+        # user's 2026-05-18 directive on cat2_minus_2: "Allowing for 3
+        # straight nt to match should outweigh the single T deletion".
+        # Once accepted, the walk continues outward until the first true
+        # mismatch ("maximize the ending matches when an already long
+        # deletion is simply extended").
+        _EXTRA_SKIP = 2
+        _MIN_EXTRA_MATCHES = 3
+        _extra_match_start = match_start - rescued_count - _EXTRA_SKIP
+        if (
+            rescued_count < softclip_len
+            and _extra_match_start >= 0
+            and consecutive_t < min_homopolymer_len
+        ):
+            _extra_bases: list = []
+            _extra_consec_t = 0
+            for _j in range(softclip_len - rescued_count):
+                _clip_i = softclip_len - 1 - rescued_count - _j
+                _ref_pos = _extra_match_start - _j
+                if _clip_i < 0 or _ref_pos < 0:
+                    break
+                _ref_base = genome_seq[_ref_pos].upper()
+                _scb = softclip_seq[_clip_i]
+                if _scb == 'T':
+                    _extra_consec_t += 1
+                    if _extra_consec_t >= min_homopolymer_len:
+                        # Poly-T entry — roll back this run's Ts to avoid
+                        # rescuing into the poly-A tail.
+                        _n_rollback = _extra_consec_t - 1
+                        if _n_rollback > 0:
+                            _extra_bases = _extra_bases[:-_n_rollback]
+                        break
+                else:
+                    _extra_consec_t = 0
+                if _scb != _ref_base:
+                    break
+                _extra_bases.append(_scb)
+
+            if len(_extra_bases) >= _MIN_EXTRA_MATCHES:
+                rescued_bases.extend(_extra_bases)
+                rescued_count += len(_extra_bases)
+                # Roll the 2-bp non-HP skip into homopolymer_extension so
+                # the downstream BAM surgery in
+                # `extend_read_3prime_for_softclip_rescue` produces a
+                # single D(HP + 2) + M(rescued) flank rather than needing
+                # a new "extra-D" plumbing path.
+                homopolymer_extension += _EXTRA_SKIP
+
         # The corrected position is before all rescued bases
         total_shift = homopolymer_extension + rescued_count
 
