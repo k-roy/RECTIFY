@@ -6,6 +6,110 @@ keep the 40 → 0 push moving.
 
 ---
 
+## Design: separate match-quality placement from canonical-signal slide in 5'-rescue
+
+**Scope:** `rectify/core/splice/splice_aware_5prime.py:rescue_3ss_truncation`,
+specifically the candidate-junction scoring loops around lines 1141–1156
+(+ strand) and the mirror block ~1270–1290 (− strand).
+
+**User-supplied design (2026-05-18, verbatim):**
+
+> If we first take only the soft-clipped portion, and check to see how it
+> matches upstream, we should find the best possible match amongst all
+> exon 1's that are possible in our junction pool. Because our junction
+> pool has the ambiguous windows, this first placement WILL NOT CONSIDER
+> canonical splice signals at all, it should simply find the best match
+> within that window. Then, in a second step, we evaluate the splice
+> signals present at each slide across the entire ambiguous window
+> stretch, favoring the canonical ones.
+
+**What's there now:** A single scoring loop ranks each candidate
+junction by the tuple
+``(_ed, (not _donor_ok, not _in_amb, _shift_abs))`` — edit distance
+first, then canonical-donor *as the next tiebreaker*, then "inside the
+ambiguity window," then shift magnitude. So a tied-on-edit-distance
+candidate with canonical-GT outside the ambig window beats an
+equal-edit-distance candidate inside the window with a non-canonical
+donor. Match-quality and signal-quality are intermixed.
+
+**What it should be (two-step structure):**
+
+1. **Step 1 — pure match-quality placement.** Search every position
+   that the junction pool's ambiguous-window expansion exposes for the
+   candidate junction. Rank candidates by HP-edit-distance alone
+   (no `_donor_ok`, no `_acceptor_priority`). Keep all positions tied
+   at the minimum ED — that set defines the slide window for Step 2.
+2. **Step 2 — canonical-signal slide within the window.** Across the
+   tied-set from Step 1, score the splice signals at each position
+   (GT/GC donor, AG/CG/TG acceptor) and pick the most canonical.
+   Because Step 1 already filtered to equal-quality placements, this
+   slide is "free" — no alignment quality is sacrificed for the
+   canonical signal, and the canonical signal is *never* purchased
+   at the cost of a worse match.
+
+**Why this matters:** the current intermixed tuple can pick a
+canonical-donor placement outside the ambig window over a
+non-canonical placement inside it when they tie on edit distance. That
+trades a real match-quality property (inside-ambig-window means the
+slide is genuinely a no-op) for a signal-quality property (canonical
+GT) — but if the inside-window position is the truly-equivalent one,
+sliding outside it changes the read's alignment geometry in ways the
+HP-ED downstream pipeline doesn't model.
+
+**cat3_plus_2 status (2026-05-18):** the fresh bundle regen renders
+both winner cluster (deSALT/gapmm2/minimap2/uLTRA) and mapPacBio with
+`14= 1D 9= 366N 50= …` and canonical [142253, 142619) intron — the
+visible-bug state shown in the earlier
+`cat3_junction_review_pngs/cat3_plus_2.png` (mtime 20:29, pre-regen)
+is **already resolved** in the post-regen bundle (mtime 20:45). The
+acb508e + strand equivalence-extension fix produces the correct
+parsimonious tail *here*, by way of the equivalence borrowing
+happening to land on the canonical position. This design item is
+hardening: it makes the canonical choice principled rather than
+incidental, so future cases where match ties don't happen to align
+with canonical signals still produce correct geometry.
+
+**Implementation sketch:**
+
+```python
+# Step 1: per-junction, search all ambig-window positions, keep min-ED set.
+best_ed = +inf
+tied_positions = []
+for junc in candidate_junctions:
+    for pos in junction_pool.ambig_window(junc):
+        cand_exon = genome_seq[pos - rlen : pos]
+        ed = _hp_edit_distance(rescue_seq, cand_exon)
+        if ed < best_ed:
+            best_ed = ed; tied_positions = [(junc, pos)]
+        elif ed == best_ed:
+            tied_positions.append((junc, pos))
+
+# Step 2: pick the most-canonical position from the tied set.
+def signal_score(junc, pos):
+    donor_di = genome_seq[junc.intron_start : junc.intron_start + 2]
+    accep_di = genome_seq[junc.intron_end - 2 : junc.intron_end]
+    return (
+        0 if donor_di in ('GT', 'GC') else 1,
+        ACCEPTOR_PRIORITY[accep_di],
+    )
+best = min(tied_positions, key=lambda jp: signal_score(*jp))
+```
+
+The current code's `_in_amb` flag computation (around line 937-951) is
+exactly the ambig-window detection that Step 1's expansion needs —
+extract it into a small helper that returns the *full window* (not
+just the boolean) and reuse it.
+
+**Verification target:** after the refactor, cat3_plus_2 should
+remain at `14= 1D 9= 366N 50= …` (post-regen baseline). If any test
+geometry changes, investigate before merging — a refactor that
+changes outputs on the current validation set means the prior code
+was relying on an interaction the refactor breaks. Cross-link:
+[[feedback-rectify-junction-slide]] (the existing memory note on
+`junction_refiner`'s buggy realignment for the simple-slide case).
+
+---
+
 ## Bug note: + strand 5'-rescue equivalence-extension geometry inverted (DISABLED 2026-05-18)
 
 **Scope:** `rectify/core/splice/splice_aware_5prime.py`, `rescue_3ss_truncation`,
