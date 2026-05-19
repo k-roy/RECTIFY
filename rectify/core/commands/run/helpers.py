@@ -43,7 +43,7 @@ def _rectified_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
     return sample_output_dir / f"{sample_id}.rectified.bam"
 
 
-_ALIGNER_NAMES = ['minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT']
+_ALIGNER_NAMES = ['minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa']
 
 
 def _collect_per_aligner_bams(
