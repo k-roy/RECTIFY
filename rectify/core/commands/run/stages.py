@@ -46,6 +46,7 @@ def _run_alignment(
     mapPacBio_chunks: int = 1,
     checkpoint_dir: Optional[str] = None,
     short_read: bool = False,
+    trust_existing_bams: bool = False,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing rectified.bam.
@@ -69,10 +70,39 @@ def _run_alignment(
     if not rectified_bam.exists() and _legacy_bam.exists():
         rectified_bam = _legacy_bam
 
+    # Compute run provenance once — used by both the rectified.bam reuse gate
+    # and the per-aligner BAM provenance filter.
+    import sys as _sys
+    from rectify.utils.bam_provenance import (
+        compute_run_provenance,
+        expected_provenance_for_aligner,
+        matches_strict,
+        read_sidecar,
+    )
+    _run_provenance = compute_run_provenance(command=_sys.argv)
+
     if _validate_bam_integrity(rectified_bam):
-        print(f"    Skipping alignment — rectified.bam exists: {rectified_bam}")
-        per_aligner_bams = _collect_per_aligner_bams(sample_id, sample_output_dir)
-        return per_aligner_bams, rectified_bam
+        if trust_existing_bams:
+            print(f"    Skipping alignment — rectified.bam exists (--trust-existing-bams): {rectified_bam}")
+            per_aligner_bams = _collect_per_aligner_bams(
+                sample_id, sample_output_dir,
+                run_provenance=None, trust_existing_bams=True,
+            )
+            return per_aligner_bams, rectified_bam
+        _expected = expected_provenance_for_aligner(_run_provenance, "consensus")
+        _stored = read_sidecar(rectified_bam)
+        _ok, _reason = matches_strict(_stored, _expected)
+        if _ok:
+            print(f"    Skipping alignment — rectified.bam exists (provenance match): {rectified_bam}")
+            per_aligner_bams = _collect_per_aligner_bams(
+                sample_id, sample_output_dir,
+                run_provenance=_run_provenance, trust_existing_bams=False,
+            )
+            return per_aligner_bams, rectified_bam
+        print(
+            f"    rectified.bam provenance mismatch ({_reason}); re-running alignment. "
+            "Pass --trust-existing-bams to override."
+        )
 
     if base_aligners is not None:
         _base_aligners = base_aligners
@@ -120,6 +150,8 @@ def _run_alignment(
         index=True,
         verbose=False,
         checkpoint_dir=checkpoint_dir,
+        trust_existing_bams=trust_existing_bams,
+        _run_provenance=_run_provenance,
     )
 
     # Temporarily hide scheduler array env vars so consensus.py runs in
@@ -148,7 +180,10 @@ def _run_alignment(
             f"Alignment completed but rectified.bam not found: {rectified_bam}"
         )
 
-    per_aligner_bams = _collect_per_aligner_bams(sample_id, sample_output_dir)
+    per_aligner_bams = _collect_per_aligner_bams(
+        sample_id, sample_output_dir,
+        run_provenance=_run_provenance, trust_existing_bams=trust_existing_bams,
+    )
     return per_aligner_bams, rectified_bam
 def _run_correction(
     bam_path: Path,

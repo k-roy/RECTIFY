@@ -107,9 +107,15 @@ _ALIGNER_VERSION_PROBES: Dict[str, Tuple[List[str], str]] = {
 
 def get_aligner_version(aligner_name: str) -> Optional[str]:
     """Best-effort: version string of ``aligner_name``. Returns ``None`` if
-    the aligner is not on PATH or its version probe fails. Cached per name."""
+    the aligner is not on PATH or its version probe fails. Cached per name.
+
+    Special case: ``'consensus'`` is the rectify consensus-selection step,
+    not a third-party binary. Its version is the rectify package version."""
     if aligner_name in _ALIGNER_VERSION_CACHE:
         return _ALIGNER_VERSION_CACHE[aligner_name]
+    if aligner_name == "consensus":
+        _ALIGNER_VERSION_CACHE["consensus"] = _RECTIFY_PKG_VERSION
+        return _RECTIFY_PKG_VERSION
     probe = _ALIGNER_VERSION_PROBES.get(aligner_name)
     if probe is None:
         _ALIGNER_VERSION_CACHE[aligner_name] = None

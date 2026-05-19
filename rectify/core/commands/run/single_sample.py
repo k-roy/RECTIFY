@@ -152,6 +152,7 @@ def _process_one_sample(
                         mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
                         checkpoint_dir=_consensus_ckpt_dir,
                         short_read=getattr(args, 'short_read', False),
+                        trust_existing_bams=getattr(args, 'trust_existing_bams', False),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -412,6 +413,7 @@ def _run_single_sample(args) -> int:
             mapPacBio_chunks=getattr(args, 'mapPacBio_chunks', 1),
             checkpoint_dir=_single_ckpt_dir,
             short_read=getattr(args, 'short_read', False),
+            trust_existing_bams=getattr(args, 'trust_existing_bams', False),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")

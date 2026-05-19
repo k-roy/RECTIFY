@@ -11,7 +11,7 @@ Helpers shared across the ``rectify run-all`` runners.
 
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -49,13 +49,47 @@ _ALIGNER_NAMES = ['minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT']
 def _collect_per_aligner_bams(
     sample_id: str,
     sample_output_dir: Path,
+    run_provenance: Optional[Dict[str, Any]] = None,
+    trust_existing_bams: bool = False,
 ) -> Dict[str, Path]:
-    """Return per-aligner BAM paths that exist on disk (keyed by aligner name)."""
+    """Return per-aligner BAM paths that exist on disk (keyed by aligner name).
+
+    When ``run_provenance`` is provided and ``trust_existing_bams`` is False,
+    each BAM is validated against its sidecar. BAMs with no sidecar or a
+    mismatched sidecar are excluded (logged at WARNING level). Callers receive
+    a smaller pool; downstream stages proceed with whatever matches.
+    """
     bams: Dict[str, Path] = {}
     for aligner in _ALIGNER_NAMES:
         bam = sample_output_dir / f"{sample_id}.{aligner}.bam"
-        if bam.exists():
-            bams[aligner] = bam
+        if not bam.exists():
+            continue
+        if run_provenance is not None and not trust_existing_bams:
+            try:
+                from rectify.utils.bam_provenance import (
+                    expected_provenance_for_aligner,
+                    matches_strict,
+                    read_sidecar,
+                )
+                import logging as _logging
+                _log = _logging.getLogger(__name__)
+                expected = expected_provenance_for_aligner(run_provenance, aligner)
+                stored = read_sidecar(bam)
+                ok, reason = matches_strict(stored, expected)
+                if not ok:
+                    _log.warning(
+                        "Excluding %s per-aligner BAM — provenance mismatch (%s): %s. "
+                        "Pass --trust-existing-bams to reuse anyway.",
+                        aligner, reason, bam,
+                    )
+                    continue
+            except Exception as _exc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Could not check provenance for %s BAM (%s); including it anyway.",
+                    aligner, _exc,
+                )
+        bams[aligner] = bam
     return bams
 
 

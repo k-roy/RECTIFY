@@ -270,6 +270,17 @@ def create_run_parser(subparsers):
         help='Skip triple-aligner alignment even for FASTQ input '
              '(use if you already have a rectified.bam or consensus.bam)'
     )
+    run_parser.add_argument(
+        '--trust-existing-bams',
+        dest='trust_existing_bams',
+        action='store_true',
+        default=False,
+        help=(
+            'Reuse pre-existing per-aligner / rectified BAMs without checking '
+            'provenance sidecars. Use only when you have manually verified the '
+            'BAMs were produced by a compatible rectify version.'
+        )
+    )
 
     run_parser.add_argument(
         '--chunked-alignment',

@@ -830,6 +830,17 @@ def run_consensus_selection(
         pysam.index(output_bam)
     logger.info(f"[TIMING] Coordinate-sort + index: {_time.perf_counter() - _t_sort:.1f}s")
 
+    # Drop a provenance sidecar so a future run-all reuse gate can verify the
+    # rectified BAM was produced by the same rectify version before reusing it.
+    try:
+        import sys as _sys_prov
+        from rectify.utils.bam_provenance import compute_run_provenance, write_sidecar
+        _prov = compute_run_provenance(command=_sys_prov.argv)
+        write_sidecar(output_bam, _prov, aligner_name="consensus")
+    except Exception as _prov_err:
+        logger.warning("Failed to write provenance sidecar for rectified BAM (%s); "
+                       "BAM emitted without sidecar", _prov_err)
+
     # Log summary
     logger.info(f"\nConsensus selection complete:")
     logger.info(f"  Total reads processed: {stats['total_reads']}")
