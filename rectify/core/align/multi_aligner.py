@@ -1736,10 +1736,20 @@ def run_desalt(
         raise RuntimeError(f"samtools sort (deSALT) timed out after {ALIGNER_TIMEOUT}s")
 
     view_proc.wait()
-    if view_proc.returncode != 0:
-        raise RuntimeError(f"samtools view (deSALT) failed with exit code {view_proc.returncode}")
-    if sort_proc.returncode != 0:
-        raise RuntimeError(f"samtools sort (deSALT) failed with exit code {sort_proc.returncode}")
+    if view_proc.returncode != 0 or sort_proc.returncode != 0:
+        # deSALT occasionally writes malformed SAM (CIGAR/seq length mismatch)
+        # that samtools rejects.  Same deterministic-input behaviour as the
+        # SIGSEGV case — retrying never recovers.  Emit an empty BAM.
+        raw_bam.unlink(missing_ok=True)
+        sam_path.unlink(missing_ok=True)
+        logger.warning(
+            "deSALT wrote invalid SAM (samtools view exit %d / sort exit %d — "
+            "likely CIGAR mismatch; upstream bug: github.com/ydLiu-HIT/deSALT/issues/49) — "
+            "emitting empty BAM; chunk will use 4-aligner consensus.",
+            view_proc.returncode, sort_proc.returncode,
+        )
+        _create_empty_name_sorted_bam(output_bam)
+        return str(output_bam)
 
     sam_path.unlink(missing_ok=True)
 
