@@ -438,7 +438,8 @@ def _apply_calmd_eq(bam_path: Path, genome_path: str, threads: int = 1) -> None:
 # batch — retries never succeed.  When this happens we emit an empty
 # name-sorted BAM so the merge step proceeds with the other 4 aligners.
 # Upstream bug filed: github.com/ydLiu-HIT/deSALT/issues/49
-_DESALT_CRASH_EXITS = frozenset({139, 137})
+# 139/137 = shell (128+signal); -11/-9 = Python subprocess (negative signal number)
+_DESALT_CRASH_EXITS = frozenset({139, 137, -11, -9})
 
 
 def _create_empty_name_sorted_bam(output_bam: Path) -> None:
@@ -1699,6 +1700,8 @@ def run_desalt(
     tmp_cleaned_fastq.unlink(missing_ok=True)
     if result.returncode != 0:
         sam_path.unlink(missing_ok=True)
+        logger.debug("deSALT exit code: %d (in crash set: %s)",
+                     result.returncode, result.returncode in _DESALT_CRASH_EXITS)
         if result.returncode in _DESALT_CRASH_EXITS:
             # Deterministic SIGSEGV/OOM in second-pass Loop-ProcessReads.
             # Retrying the same input never helps.  Emit an empty BAM so
@@ -1711,7 +1714,7 @@ def run_desalt(
             )
             _create_empty_name_sorted_bam(output_bam)
             return str(output_bam)
-        raise RuntimeError(f"deSALT failed: {result.stderr}")
+        raise RuntimeError(f"deSALT failed (exit {result.returncode}): {result.stderr}")
 
     if not sam_path.exists() or sam_path.stat().st_size == 0:
         sam_path.unlink(missing_ok=True)
