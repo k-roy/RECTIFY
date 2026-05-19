@@ -362,9 +362,38 @@ def run_align(args: argparse.Namespace) -> int:
         # file; re-run rather than propagating a corrupt result.
         if output_bam.exists():
             size = output_bam.stat().st_size
-            if aligner == 'deSALT' or size > 2000:
-                logger.info(f"{aligner} BAM already exists ({size}B), skipping: {output_bam}")
-                return aligner, str(output_bam)
+            size_ok = (aligner == 'deSALT' or size > 2000)
+            if size_ok:
+                # Provenance gate: refuse to reuse an on-disk BAM whose
+                # sidecar (rectify SHA / aligner version) doesn't match the
+                # current run. --trust-existing-bams bypasses this; see
+                # rectify/utils/bam_provenance.py.
+                _trust = bool(getattr(args, 'trust_existing_bams', False))
+                if _trust:
+                    logger.info(f"{aligner} BAM already exists ({size}B), reusing "
+                                f"(--trust-existing-bams): {output_bam}")
+                    return aligner, str(output_bam)
+                from ...utils.bam_provenance import (
+                    read_sidecar, matches_strict,
+                    expected_provenance_for_aligner, compute_run_provenance,
+                )
+                _run_prov = getattr(args, '_run_provenance', None)
+                if _run_prov is None:
+                    import sys as _sys
+                    _run_prov = compute_run_provenance(command=_sys.argv)
+                expected = expected_provenance_for_aligner(_run_prov, aligner)
+                stored = read_sidecar(output_bam)
+                ok, reason = matches_strict(stored, expected)
+                if ok:
+                    logger.info(f"{aligner} BAM already exists ({size}B); "
+                                f"provenance matches — reusing: {output_bam}")
+                    return aligner, str(output_bam)
+                logger.warning(
+                    f"{aligner} BAM exists at {output_bam} but provenance "
+                    f"check failed ({reason}); re-running alignment. "
+                    "Pass --trust-existing-bams to override."
+                )
+                # Fall through to re-run; the aligner wrapper will overwrite.
             else:
                 logger.warning(
                     f"{aligner} BAM exists but is only {size}B — likely from a prior crash; "
@@ -460,6 +489,21 @@ def run_align(args: argparse.Namespace) -> int:
             except Exception as _idx_err:
                 logger.warning(f"{aligner}: coord-sort/index failed ({_idx_err}); "
                                 "downstream correction may be skipped")
+            # Drop a provenance sidecar (rectify SHA, aligner name+version,
+            # timestamp) so a future run-all reuse gate can verify the BAM was
+            # produced by the same tool versions before reusing it. See
+            # rectify/utils/bam_provenance.py.
+            try:
+                from ...utils.bam_provenance import write_sidecar
+                _run_prov = getattr(args, '_run_provenance', None)
+                if _run_prov is None:
+                    from ...utils.bam_provenance import compute_run_provenance
+                    import sys as _sys
+                    _run_prov = compute_run_provenance(command=_sys.argv)
+                write_sidecar(output_bam, _run_prov, aligner_name=aligner)
+            except Exception as _prov_err:
+                logger.warning(f"{aligner}: failed to write provenance sidecar "
+                               f"({_prov_err}); BAM emitted without sidecar")
             return aligner, str(output_bam)
 
         except Exception as e:
