@@ -432,6 +432,29 @@ def _apply_calmd_eq(bam_path: Path, genome_path: str, threads: int = 1) -> None:
         raise
 
 
+# deSALT v1.5.6 segfaults (SIGSEGV, exit 139) or is OOM-killed (exit 137)
+# during second-pass "Loop-ProcessReads" when specific pseudo-exon structures
+# are inferred from the input.  The crash is deterministic for a given input
+# batch — retries never succeed.  When this happens we emit an empty
+# name-sorted BAM so the merge step proceeds with the other 4 aligners.
+# Upstream bug filed: github.com/ydLiu-HIT/deSALT/issues/49
+_DESALT_CRASH_EXITS = frozenset({139, 137})
+
+
+def _create_empty_name_sorted_bam(output_bam: Path) -> None:
+    """Write a valid empty name-sorted BAM (header-only) to output_bam."""
+    result = subprocess.run(
+        ['samtools', 'view', '-bS', '-o', str(output_bam)],
+        input=b'@HD\tVN:1.6\tSO:queryname\n',
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to create empty BAM at {output_bam}: "
+            f"{result.stderr.decode(errors='replace')}"
+        )
+
+
 # Tolerance for BBMap's TranslateColorspaceRead.realign_new AssertionError.
 # When a spliced sub-read's genomic extent (greflen) exceeds ALIGN_COLUMNS-80
 # (7520), BBMap's padding-shrinkage loops drive extraPadLeft/Right negative
@@ -1675,9 +1698,19 @@ def run_desalt(
         sidecar.unlink(missing_ok=True)
     tmp_cleaned_fastq.unlink(missing_ok=True)
     if result.returncode != 0:
-        # Clean up the 0-byte SAM file deSALT leaves behind on crash, so it
-        # doesn't get picked up as valid output in downstream tools.
         sam_path.unlink(missing_ok=True)
+        if result.returncode in _DESALT_CRASH_EXITS:
+            # Deterministic SIGSEGV/OOM in second-pass Loop-ProcessReads.
+            # Retrying the same input never helps.  Emit an empty BAM so
+            # merge_aligners proceeds with the other 4 aligners for this chunk.
+            logger.warning(
+                "deSALT crashed (exit %d, likely SIGSEGV in Loop-ProcessReads) — "
+                "emitting empty BAM; chunk will use 4-aligner consensus. "
+                "Upstream bug: github.com/ydLiu-HIT/deSALT",
+                result.returncode,
+            )
+            _create_empty_name_sorted_bam(output_bam)
+            return str(output_bam)
         raise RuntimeError(f"deSALT failed: {result.stderr}")
 
     if not sam_path.exists() or sam_path.stat().st_size == 0:
