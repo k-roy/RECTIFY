@@ -33,6 +33,7 @@ from .read_edits import (
     softclip_intronic_tail_5prime,
     reroute_intronic_tail_5prime_via_junction,
     realign_exon_blocks,
+    reanchor_5prime_for_rescue,
     _hardclip_trailing_a_run,
 )
 
@@ -131,6 +132,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
             i_5p_clip = hdr.index('five_prime_soft_clip_length') if 'five_prime_soft_clip_length' in hdr else -1
             i_5p_cig  = hdr.index('five_prime_exon_cigar')       if 'five_prime_exon_cigar'       in hdr else -1
             i_5p_trim = hdr.index('five_prime_upstream_trim')    if 'five_prime_upstream_trim'    in hdr else -1
+            i_5p_reanc = hdr.index('reanchor_clip_len')          if 'reanchor_clip_len'           in hdr else -1
             # Cat2 soft-clip rescue columns (v2.9.1)
             i_sc_ext   = hdr.index('sc_homopolymer_extension')  if 'sc_homopolymer_extension'  in hdr else -1
             i_sc_seq   = hdr.index('sc_rescued_seq')             if 'sc_rescued_seq'             in hdr else -1
@@ -158,6 +160,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                 five_prime_sc      = int(parts[i_5p_clip])   if i_5p_clip >= 0 and len(parts) > i_5p_clip and parts[i_5p_clip] else 0
                 five_prime_exon_cig = parts[i_5p_cig]        if i_5p_cig >= 0  and len(parts) > i_5p_cig  and parts[i_5p_cig]  else ''
                 five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
+                five_prime_reanc   = int(parts[i_5p_reanc])  if i_5p_reanc >= 0 and len(parts) > i_5p_reanc and parts[i_5p_reanc] else 0
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
                 sc_seq   = parts[i_sc_seq]         if i_sc_seq   >= 0 and len(parts) > i_sc_seq   else ''
@@ -178,6 +181,7 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
                     'five_prime_soft_clip':       five_prime_sc,
                     'five_prime_exon_cigar':      five_prime_exon_cig,
                     'five_prime_upstream_trim':   five_prime_trim,
+                    'reanchor_clip_len':          five_prime_reanc,
                     'five_prime_intron_clip_pos': five_prime_icp,
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
@@ -257,6 +261,17 @@ def write_corrected_bam(
                 continue
 
             modified = False
+
+            # 5'-edge reanchor pre-pass: when bam_processor's 3'SS rescue used
+            # a reanchored copy of the read (TSV reanchor_clip_len > 0), apply
+            # the same deterministic reanchor here BEFORE realign_exon_blocks so
+            # the live CIGAR matches the geometry that exon_cigar was sized for.
+            # Must run before realign — realign mutates body M into per-base
+            # =/X ops which can produce divergent reanchor walks (see
+            # docs/handoffs/debugger_queue.md "Deferred: mapPacBio 5'-edge
+            # reanchor for rescue" — cross-stage CIGAR inconsistency).
+            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
+                modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
 
             # Homopolymer CIGAR surgery: re-align each exon block with reduced
             # mismatch penalty at homopolymer ref positions so that nanopore DRS
@@ -400,6 +415,10 @@ def write_softclipped_bam(
                 continue
 
             modified = False
+
+            # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
+            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
+                modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
 
             # Homopolymer CIGAR surgery: re-align exon blocks.
             if genome is not None:
@@ -554,6 +573,10 @@ def write_dual_bam(
 
             # Apply shared pre-pass — identical for both BAMs.
             shared_modified = False
+
+            # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
+            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
+                shared_modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
 
             # Homopolymer CIGAR surgery: re-align exon blocks.
             if genome is not None:

@@ -375,6 +375,7 @@ def correct_read_3prime(
     _five_prime_exon_cigar = ''      # set by 3'SS rescue when local alignment succeeds
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
+    _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -410,6 +411,7 @@ def correct_read_3prime(
                 five_prime_position = _3ss_result['five_prime_corrected']
                 _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
                 _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
+                _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
                 # Record the exon-side intron boundary for BAM hard-clip when:
                 #   (a) the alignment's 5' end sits inside the rescued intron, AND
                 #   (b) there is no 5' soft-clip to extend via extend_read_5prime.
@@ -526,6 +528,11 @@ def correct_read_3prime(
         # Cat3 equivalence-extension: k bases the BAM writer should trim from
         # the end of the upstream M before applying the rescue surgery
         'five_prime_upstream_trim': _five_prime_upstream_trim,
+        # Length of the leading soft-clip produced by the reanchor pre-pass
+        # (rectify/core/bam/read_edits.py:reanchor_5prime_for_rescue); 0 when
+        # reanchor did not materially modify the CIGAR. > 0 signals bam_writer
+        # to apply the same reanchor before realign + 5'-rescue surgery.
+        'reanchor_clip_len': _reanchor_clip_len,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

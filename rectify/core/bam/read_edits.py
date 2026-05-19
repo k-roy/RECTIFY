@@ -42,19 +42,15 @@ def reanchor_5prime_for_rescue(
 ) -> bool:
     """Collapse a 5'-edge mismatch/indel cluster into a leading soft-clip.
 
-    DEFERRED — implementation present but NOT wired into bam_processor.py
-    or bam_writer.py. Initial hook attempt (2026-05-18) caused regressions
-    in cat4_plus_2 3'-end position and cat7_plus_1/cat7_plus_2 junction
-    coords; root cause is cross-stage CIGAR inconsistency: reanchor modifies
-    the BAM CIGAR mid-pipeline, but the TSV's `five_prime_exon_cigar` was
-    computed against the un-reanchored CIGAR (rescue_3ss_truncation in
-    bam_processor.py used the raw CIGAR; reanchor would only fire in
-    bam_writer.py before extend_read_5prime). Re-hook requires either:
-    (a) reanchor early in bam_processor BEFORE rescue_3ss_truncation, so
-    the TSV and BAM agree on the geometry, OR (b) persist the reanchor
-    result in the TSV (e.g. as a new column `reanchor_clip_len`) so
-    downstream surgery uses a consistent geometry without modifying the
-    raw BAM in the correction pass.
+    Wired into both ``rectify/core/splice/splice_aware_5prime.py:rescue_3ss_truncation``
+    (mutates a saved-and-restored copy of the read so the TSV's exon_cigar is
+    sized to the reanchored geometry; emits ``reanchor_clip_len`` in the result
+    dict) and ``rectify/core/bam/bam_writer.py`` (re-applies the same reanchor
+    on the raw input read BEFORE ``realign_exon_blocks`` when the TSV's
+    ``reanchor_clip_len > 0``). Both call sites use ``anchor_min_run=10``; the
+    function is deterministic for a given ``(read, genome, anchor_min_run)``
+    triple, so both calls produce the same leading-S length and downstream
+    surgery sees a consistent CIGAR.
 
     For reads (notably mapPacBio) whose alignment starts with a tight
     cluster of X/I/D ops or mismatched M bases at the 5' end, this pre-pass

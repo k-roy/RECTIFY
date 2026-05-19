@@ -173,56 +173,55 @@ session in `rescue_3ss_truncation`. That one changes intron *length*.)
 
 ---
 
-## Deferred: mapPacBio 5'-edge reanchor for rescue (function shipped, hooks reverted)
+## RESOLVED: mapPacBio 5'-edge reanchor wired via persist-as-TSV-column (path b)
 
-**Scope:** `rectify/core/bam/read_edits.py:reanchor_5prime_for_rescue`,
-plus hooks in `bam_processor.py` and `bam_writer.py` (NOT wired).
+**Status:** Shipped 2026-05-18. Path (b) from the prior entry.
 
-**Goal:** For mapPacBio (and any aligner) whose 5' edge starts with a
-tight mismatch/indel cluster that blocks the 5'-rescue machinery
-(`cat3_minus_1`, `cat3_plus_1` per `cat3_junction_findings.md` §"Update —
-2026-05-18, formal cat1–3 review"), pre-pass that walks the CIGAR from
-the 5' edge to find the first sustained match run of length ≥10 and
-collapses everything upstream into a leading soft-clip. The existing
-rescue machinery then handles the read like any other 5'-softclipped
-read.
+`rescue_3ss_truncation` now runs `reanchor_5prime_for_rescue` against a
+save-and-restored mutation of the read; when the function produces a
+*materially different* CIGAR (not just a no-op rebuild — uLTRA-style
+reads with a clean leading S already matching the first ≥10 run rebuild
+to an identical cigartuples list and must not propagate a phantom
+clip_len), the new leading-S length is emitted as `reanchor_clip_len`
+in the result dict and persisted as a new TSV column. `bam_writer`
+re-applies the same deterministic reanchor (same `anchor_min_run=10`)
+on the raw input read BEFORE `realign_exon_blocks` whenever
+`reanchor_clip_len > 0`, so the live CIGAR matches the geometry that
+`five_prime_exon_cigar` was sized against. This fixes the previous
+session's "cross-stage CIGAR inconsistency" (bam_writer's reanchor ran
+*after* realign and saw a different CIGAR than bam_processor's).
 
-**Implementation:** `reanchor_5prime_for_rescue` is in
-`rectify/core/bam/read_edits.py:38` with strand-aware logic (+ strand
-walks cigar[0]→cigar[-1]; - strand walks cigar[-1]→cigar[0]). M ops are
-per-base-compared against the genome to determine match/mismatch. =,X
-read directly. S, I, D, N break the run.
+**Verified (2026-05-18):**
+- 107 passed, 8 skipped in `tests/test_validation_reads.py` — no
+  regressions on the prior session's hot list (cat3_minus_2,
+  cat3_plus_2, cat4_plus_2, cat7_plus_1, cat7_plus_2).
+- Targeted check on the bundled per-aligner BAMs confirms reanchor
+  materially modifies CIGAR only on the intended reads:
+  - mpb cat3_plus_1: `1X2=7I86=…` → `10S86=…`, ref_start 168805→168808
+  - mpb cat3_minus_1: `…10=5I1=2I2=1I5=` → `…10=16S` (trailing cluster collapsed)
+  - mpb cat3_minus_2 + every deSALT/minimap2/gapmm2 read: correctly no-op
+  - uLTRA cat3 reads: function returns True but `_cigar_after == _cigar_before`,
+    so the materially-changed gate emits `reanchor_clip_len = 0`.
 
-**Why deferred (2026-05-18):** First hook attempt (bam_processor +
-bam_writer, gated to fire only when `five_prime_rescued`) produced
-6 regressions across cat3_minus_2, cat3_plus_2, cat4_plus_2, cat7_plus_1,
-cat7_plus_2 in `test_validation_reads.py`. Root cause: cross-stage CIGAR
-inconsistency. `rescue_3ss_truncation` (in bam_processor) computed the
-TSV's `five_prime_exon_cigar` against the RAW CIGAR; the reanchor in
-bam_writer (just before `extend_read_5prime`) then modified the CIGAR
-to a different shape than the exon_cigar was sized for. Surgery used
-`actual_sc` from the BAM (post-reanchor) but `exon_cigar_str` from the
-TSV (pre-reanchor) — span mismatch corrupted downstream reads.
+**Not yet measured (follow-up):** consensus winner-selection impact for
+cat3_minus_1 / cat3_plus_1 / cat3_plus_2 after bundle regen. The prior
+session's prediction was that HP-ED would re-rank mpb first once its
+5'-rescue succeeds. Confirm by checking `_winning_aligner` in
+`rectify/data/validation/rectified/per_aligner_summary.tsv` post-regen.
 
-**To unblock:**
-
-Option (a): Hook reanchor in `bam_processor.py` BEFORE
-`rescue_3ss_truncation` (line 407). Then the TSV's `five_prime_exon_cigar`
-is sized to the reanchored geometry, and bam_writer must apply the SAME
-reanchor before surgery so the live CIGAR matches. Both sides must use
-identical anchor_min_run.
-
-Option (b): Persist the reanchor decision as a new TSV column
-`reanchor_clip_len`. `rescue_3ss_truncation` uses this for its exon_cigar
-sizing. `extend_read_5prime_for_junction_rescue` takes it as a new
-parameter and applies the trim. Avoids modifying the raw BAM in the
-correction pass.
-
-(b) is structurally cleaner (no in-place CIGAR mutation in
-bam_processor); (a) is fewer changes but more brittle.
-
-**Pseudocode reference:** `validation_read_review/cat3_junction_findings.md`
-lines 252-282.
+**Files touched:**
+- `rectify/core/splice/splice_aware_5prime.py` — reanchor pre-pass in
+  `rescue_3ss_truncation`; body split out into `_rescue_3ss_truncation_body`
+  so the outer wrapper owns the save/restore + result-dict augmentation.
+- `rectify/core/bam/bam_processor.py` — pick up `reanchor_clip_len` from
+  the rescue result; thread into the TSV row dict.
+- `rectify/core/bam/output.py` — new TSV column `reanchor_clip_len`.
+- `rectify/core/bam/bam_writer.py` — parse the new column; apply
+  `reanchor_5prime_for_rescue` BEFORE `realign_exon_blocks` in all three
+  write paths (`write_corrected_bam`, `write_softclipped_bam`,
+  `write_dual_bam`).
+- `rectify/core/bam/read_edits.py` — docstring updated to reflect that
+  the function is wired.
 
 ---
 

@@ -804,6 +804,74 @@ def rescue_3ss_truncation(
     if not genome_seq:
         return _no_rescue(read, strand)
 
+    # 5'-edge reanchor pre-pass (for mapPacBio-style reads whose 5' edge has a
+    # tight X/I/D cluster blocking soft-clip-based rescue). reanchor_5prime_for_rescue
+    # walks from the 5' edge to find the first sustained match run (≥10 bp) and
+    # collapses everything upstream into a leading soft-clip — making the read
+    # look like a normal cat3 soft-clipped read to the rest of this function.
+    #
+    # We mutate the read in-place to keep the rest of the function unchanged,
+    # then restore via try/finally so callers do not see the mutation. The same
+    # reanchor will be reapplied deterministically in bam_writer (gated on the
+    # reanchor_clip_len value we emit in the result dict).
+    from ..bam.read_edits import reanchor_5prime_for_rescue as _reanchor_5p
+    _saved_cigartuples = read.cigartuples
+    _saved_reference_start = read.reference_start
+    _cigar_before = list(_saved_cigartuples) if _saved_cigartuples else []
+    _reanchor_clip_len = 0
+    try:
+        if _reanchor_5p(read, genome, anchor_min_run=10):
+            _cigar_after = list(read.cigartuples) if read.cigartuples else []
+            # Only treat as a "material" reanchor when the CIGAR actually changed
+            # shape (a no-mutation reanchor — e.g. read already had a leading S
+            # matching the first ≥10 match-run — produces an identical cigartuples
+            # list and must not propagate a phantom reanchor_clip_len).
+            if _cigar_after != _cigar_before:
+                if strand == '+':
+                    if _cigar_after and _cigar_after[0][0] == 4:
+                        _reanchor_clip_len = _cigar_after[0][1]
+                else:
+                    if _cigar_after and _cigar_after[-1][0] == 4:
+                        _reanchor_clip_len = _cigar_after[-1][1]
+        # If reanchor did not materially change the CIGAR, restore now so the
+        # rest of the function (and the finally restore) is a no-op on read state.
+        if _reanchor_clip_len == 0:
+            read.cigartuples = _saved_cigartuples
+            read.reference_start = _saved_reference_start
+
+        _result = _rescue_3ss_truncation_body(
+            read, genome, candidate_junctions, strand,
+            max_edit_frac, junction_proximity_bp, scan_bp,
+            chrom, genome_seq,
+        )
+    finally:
+        # Restore original read state so callers see no mutation.
+        read.cigartuples = _saved_cigartuples
+        read.reference_start = _saved_reference_start
+
+    if _result.get('rescued'):
+        _result['reanchor_clip_len'] = _reanchor_clip_len
+    return _result
+
+
+def _rescue_3ss_truncation_body(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    candidate_junctions: Set[Tuple[str, int, int]],
+    strand: str,
+    max_edit_frac: float,
+    junction_proximity_bp: int,
+    scan_bp: int,
+    chrom: str,
+    genome_seq: str,
+) -> Dict:
+    """Inner body of rescue_3ss_truncation — see that function's docstring.
+
+    Split out so the outer function can wrap the body in a try/finally that
+    restores the read's CIGAR/reference_start after an optional reanchor pre-pass.
+    All early returns in this function operate on a potentially-reanchored read;
+    the caller is responsible for restore + emitting reanchor_clip_len.
+    """
     five_clip = _get_5prime_softclip_len(read)
 
     # --- Determine 5' alignment boundary (first aligned base, after any soft-clip) ---
