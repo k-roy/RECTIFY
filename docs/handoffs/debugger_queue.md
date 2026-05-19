@@ -787,41 +787,30 @@ to the geometrically correct position.
 
 **Still deferred (next session work):**
 
-- **cat3_plus_2 "off-by-1 acceptor" pattern**: this is an UNDERSHOOT, not
-  overshoot — body M starts at `ref_start = intron_end - 1` (1 bp short of
-  canonical). The current overshoot-only detection doesn't fire for this
-  pattern. Fix would be the mirror: extend body M by k bases (taking from
-  the END of the upstream softclip-aligned region) when ref_start <
-  intron_end. Same equivalence concept but rotated. Untouched this session.
+- **cat3_plus_2 "off-by-1 acceptor" pattern**: RESOLVED by acb508e (see
+  "Bug note: + strand 5'-rescue equivalence-extension" section above). The
+  undershoot trigger `_intron_end - read.reference_start > 0` and the
+  reroute off-by-one fix together produce canonical N(366) CIGAR for all
+  5 aligners on cat3_plus_2.
 - **Symmetric-slide ambiguity window + motif-strength tiebreaker at the
   consensus-selection level**: see "Design note" at the top of this file.
   The existing rescue function already does ambiguity-window SEARCH for
   best junction placement (lines 1191-1218); what's missing is the
   motif-based tiebreaker in `merge_corrected_tsvs`.
 
-### cat3_plus_2 — `M 2D N` vs clean `N` (+ strand follow-up)
+### cat3_plus_2 — RESOLVED (acb508e, 2026-05-18)
 
-Per-aligner picture (current bundle):
-```
-mapPacBio  N(142253,142619)  14=1D9= N366 50=1I2=  (canonical placement;
-                                                    HP-ED 27.60 — WORST of 5)
-others     N(142253,142618)  ...  (off-by-1 on acceptor, but cleaner HP-ED
-                                   so they win consensus)
-```
+**Status:** RESOLVED by commit `acb508e`. The + strand undershoot trigger
+(`_intron_end - read.reference_start > 0`) and the reroute off-by-one fix
+together produce canonical N(366) CIGAR for all 5 aligners. All 4 rescued
+aligners (minimap2, gapmm2, deSALT, uLTRA) now emit `14=1D9= N(366) 50=…`
+— same as mpb's native alignment. 
 
-Different geometric pattern than cat3_minus_2 — here 4 of 5 aligners place
-the intron's RIGHT boundary 1 bp earlier than canonical, rather than the
-body alignment overshooting the donor on the - strand body side. The
-- strand fix's body-overshoot detection won't fire because there isn't an
-overshoot.
-
-The + strand mirror of the - strand fix (trim N bases off the START of the
-body M after the softclip) is plumbed through `extend_read_5prime_for_junction_rescue`
-but `rescue_3ss_truncation` only emits `five_prime_upstream_trim > 0` for
-- strand reads. For + strand cat3_plus_2's "off-by-1 acceptor" pattern, the
-detection logic needs to be different — possibly checking whether the
-annotated intron's acceptor is 1 bp later than the aligner's placed
-acceptor, AND the equivalence criterion still holds. Deferred.
+Remaining open item: the 1.39-point HP-ED gap (deSALT 26.21 vs mpb 27.60)
+is a **body-only** difference in the second exon (ref 142673–142730). Both
+produce identical TSV output (`corrected_3prime=143380`, `junctions=142253-142619`).
+Not a wrong-winner bug — documented in the reanchor section above (post-regen
+update 2026-05-19). No code change needed.
 
 ### Stale 3' pileup bedgraphs (mechanical follow-up) — RESOLVED (commit 75b0338)
 
