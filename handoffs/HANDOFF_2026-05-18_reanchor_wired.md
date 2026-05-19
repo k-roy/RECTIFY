@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-18 (late evening, continuing from `845a573`)
 **Branch:** `drs-validation-rebuild`
+**Top of branch:** `560f82c` — reanchor wired via TSV persist (path b)
 **Predecessor handoffs:**
 - `handoffs/HANDOFF_2026-05-18_6943450_cat3p2_cat2m2_reanchor.md` — shipped
   cat3_plus_2 + cat2_minus_2 fixes; deferred the reanchor hooks.
