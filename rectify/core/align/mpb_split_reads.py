@@ -50,15 +50,21 @@ def split_long_reads(input_fastq, output_fastq, max_length=MAX_MPB_READ_LENGTH):
     _open_in = gzip.open if str(input_fastq).endswith('.gz') else open
     with _open_in(input_fastq, 'rt') as fin, open(output_fastq, "w") as fout:
         while True:
-            header = fin.readline()
+            try:
+                header = fin.readline()
+            except EOFError:
+                break
             if not header:
                 break
             header = header.strip()
             if not header.startswith("@"):
                 continue
-            seq  = fin.readline().strip()
-            plus = fin.readline().strip()
-            qual = fin.readline().strip()
+            try:
+                seq  = fin.readline().strip()
+                plus = fin.readline().strip()
+                qual = fin.readline().strip()
+            except EOFError:
+                break
             n_total += 1
 
             read_name = header[1:].split()[0]

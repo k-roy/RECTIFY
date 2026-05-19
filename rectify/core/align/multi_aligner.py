@@ -367,12 +367,18 @@ def extract_fastq_chunk(
     read_idx = 0
     with _open_in(input_fastq, 'rt') as fin, open(output_fastq, 'w') as fout:
         while True:
-            header = fin.readline()
+            try:
+                header = fin.readline()
+            except EOFError:
+                break
             if not header:
                 break
-            seq  = fin.readline()
-            plus = fin.readline()
-            qual = fin.readline()
+            try:
+                seq  = fin.readline()
+                plus = fin.readline()
+                qual = fin.readline()
+            except EOFError:
+                break
             if read_idx % n_chunks == chunk_idx:
                 fout.write(header if header.endswith('\n') else header + '\n')
                 fout.write(seq   if seq.endswith('\n')    else seq   + '\n')
