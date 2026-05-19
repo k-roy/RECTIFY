@@ -54,6 +54,11 @@ def _clean_fastq(reads_path: Path, output_dir: Path) -> Path:
     Strips DRS auxiliary tags from read names, skips reads with empty sequences
     (Dorado placeholders), and skips duplicate UUIDs.  Returns the path to the
     temporary FASTQ file; the caller is responsible for deleting it.
+
+    Handles both standard gzip and BGZF-compressed FASTQ.  BGZF (used by
+    samtools/dorado output) appends a 28-byte EOF terminator block that
+    Python's gzip module misidentifies as a truncation error; we catch that
+    EOFError and treat it as a clean end-of-file.
     """
     opener = gzip.open if str(reads_path).endswith('.gz') else open
     tmp_fq = _tempfile.NamedTemporaryFile(suffix='.fastq', dir=output_dir, delete=False)
@@ -63,12 +68,18 @@ def _clean_fastq(reads_path: Path, output_dir: Path) -> Path:
     n_skipped_dup = 0
     with opener(reads_path, 'rt') as src, open(tmp_path, 'w') as dst:
         while True:
-            header = src.readline()
+            try:
+                header = src.readline()
+            except EOFError:
+                break
             if not header:
                 break
-            seq  = src.readline()
-            plus = src.readline()
-            qual = src.readline()
+            try:
+                seq  = src.readline()
+                plus = src.readline()
+                qual = src.readline()
+            except EOFError:
+                break
             clean_name = header[1:].split()[0]
             if not seq.rstrip():
                 n_skipped_empty += 1
@@ -101,12 +112,18 @@ def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
     seqs: Dict[str, Tuple[str, str]] = {}
     with opener(reads_path, 'rt') as fh:
         while True:
-            header = fh.readline()
+            try:
+                header = fh.readline()
+            except EOFError:
+                break
             if not header:
                 break
-            seq = fh.readline().rstrip()
-            fh.readline()            # discard '+' line
-            qual = fh.readline().rstrip()
+            try:
+                seq = fh.readline().rstrip()
+                fh.readline()            # discard '+' line
+                qual = fh.readline().rstrip()
+            except EOFError:
+                break
             # Strip leading '@', then take only the part before any whitespace
             # to match minimap2's PAF query-name truncation behaviour.
             read_name = header[1:].split()[0]
@@ -415,6 +432,32 @@ def _apply_calmd_eq(bam_path: Path, genome_path: str, threads: int = 1) -> None:
         raise
 
 
+# Tolerance for BBMap's TranslateColorspaceRead.realign_new AssertionError.
+# When a spliced sub-read's genomic extent (greflen) exceeds ALIGN_COLUMNS-80
+# (7520), BBMap's padding-shrinkage loops drive extraPadLeft/Right negative
+# and the JVM assertion fires.  This drops exactly 1 read per thread crash.
+# We accept the partial SAM when the discrepancy is ≤ this many reads.
+_MAX_MPB_LOST_READS = 3
+
+
+def _parse_mpb_lost_reads(stderr: str) -> Optional[int]:
+    """Return number of reads lost to BBMap's read-count assertion, or None.
+
+    BBMap's AbstractMapper.printOutputStats fires when reads_out != reads_in.
+    The message includes a line like ``316339 != 316340``; we extract the
+    delta so callers can decide whether to accept the partial SAM.
+    """
+    if 'number of reads out does not add up' not in stderr:
+        return None
+    m = re.search(r'(\d[\d+]*) = (\d+) != (\d+)', stderr)
+    if not m:
+        return None
+    reads_out, reads_in = int(m.group(2)), int(m.group(3))
+    if reads_in > reads_out:
+        return reads_in - reads_out
+    return None
+
+
 def run_map_pacbio(
     reads_path: str,
     genome_path: str,
@@ -537,8 +580,22 @@ def run_map_pacbio(
     if chunk_tmp_fq:
         Path(chunk_tmp_fq).unlink(missing_ok=True)
     if result.returncode != 0:
-        mpb_split_fq.unlink(missing_ok=True)
-        raise RuntimeError(f"mapPacBio failed: {result.stderr}")
+        lost = _parse_mpb_lost_reads(result.stderr)
+        if (lost is not None and 0 < lost <= _MAX_MPB_LOST_READS
+                and sam_path.exists() and sam_path.stat().st_size > 0):
+            # BBMap's TranslateColorspaceRead.realign_new assertion: a spliced
+            # sub-read with greflen >= ALIGN_COLUMNS-80 (7520) drives padding
+            # negative and crashes the thread, losing exactly 1 read.
+            # The partial SAM is valid for all other reads — accept it.
+            logger.warning(
+                "mapPacBio: accepting partial SAM — %d read(s) lost to "
+                "realign_new AssertionError (BBMap spliced greflen overflow; "
+                "upstream bug report: github.com/bbushnell/BBTools/issues/19)",
+                lost,
+            )
+        else:
+            mpb_split_fq.unlink(missing_ok=True)
+            raise RuntimeError(f"mapPacBio failed: {result.stderr}")
 
     # Convert SAM to name-sorted BAM. Name-sort (-n) so consensus selection
     # can stream across aligners without a secondary sort step.
