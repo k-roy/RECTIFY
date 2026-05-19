@@ -181,7 +181,55 @@ __all__ = [
     '_has_boundary_error',
     'refine_bam_junctions',
     'evaluate_hp_pen_values',
+    'PenaltyTableSet',
 ]
+
+
+# ---------------------------------------------------------------------------
+# Per-UMI-bin penalty table set
+# ---------------------------------------------------------------------------
+
+class PenaltyTableSet:
+    """Maps per-read UMI-count tag to the appropriate :class:`HpPenaltyTable`.
+
+    Used for protocols where error rates vary with UMI cluster depth (e.g. ONT
+    PCR-cDNA with UMI consensus).  The ``umi_tag`` (default ``XC``) is read
+    from each BAM record; the count is bucketed into ``umi1`` / ``umi2`` /
+    ``umi3plus`` bins.  If the tag is absent or the bin is not in ``bins``,
+    the lookup falls back to the ``pooled`` entry.
+
+    Example::
+
+        tables = {
+            'umi1':    HpPenaltyTable.from_tsv(path_umi1),
+            'umi2':    HpPenaltyTable.from_tsv(path_umi2),
+            'umi3plus': HpPenaltyTable.from_tsv(path_umi3plus),
+            'pooled':  HpPenaltyTable.from_tsv(path_pooled),
+        }
+        pts = PenaltyTableSet(tables)
+        effective_table = pts.for_read(read)
+    """
+
+    def __init__(
+        self,
+        bins: Dict[str, 'HpPenaltyTable'],
+        umi_tag: str = 'XC',
+    ) -> None:
+        self.bins = bins
+        self.umi_tag = umi_tag
+        self._fallback: Optional['HpPenaltyTable'] = bins.get('pooled')
+
+    def for_read(self, read: 'pysam.AlignedSegment') -> Optional['HpPenaltyTable']:
+        """Return the table for *read* based on its UMI-count tag value."""
+        try:
+            count = int(read.get_tag(self.umi_tag))
+        except (KeyError, TypeError):
+            return self._fallback
+        if count == 1:
+            return self.bins.get('umi1', self._fallback)
+        if count == 2:
+            return self.bins.get('umi2', self._fallback)
+        return self.bins.get('umi3plus', self._fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -858,6 +906,7 @@ def _run_sequential(
     max_boundary_shift: int,
     boundary_error_window: int,
     penalty_table: Optional[HpPenaltyTable],
+    penalty_table_set: Optional[PenaltyTableSet] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
@@ -884,6 +933,8 @@ def _run_sequential(
                 stats['unchanged'] += 1
                 continue
 
+            eff_table = (penalty_table_set.for_read(read)
+                         if penalty_table_set is not None else penalty_table)
             try:
                 replacements = refine_read_junctions(
                     read, junctions_idx, annotated_set, genome_seq, strand,
@@ -891,7 +942,7 @@ def _run_sequential(
                     search_radius=search_radius,
                     max_boundary_shift=max_boundary_shift,
                     boundary_error_window=boundary_error_window,
-                    penalty_table=penalty_table,
+                    penalty_table=eff_table,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -930,6 +981,7 @@ def _run_parallel(
     penalty_table: Optional[HpPenaltyTable],
     n_workers: int,
     batch_size: int,
+    penalty_table_set: Optional[PenaltyTableSet] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
 
@@ -974,6 +1026,7 @@ def _run_parallel(
         'boundary_error_window': boundary_error_window,
         'penalty_table': penalty_table,
     }
+    _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
 
     # Trigger numba JIT compilation before forking so workers inherit compiled code
     if _NUMBA_AVAILABLE:
@@ -1064,6 +1117,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
     annotated_set = state['annotated_set']
     genome = state['genome']
     kw = state['kwargs']
+    penalty_table_set: Optional[PenaltyTableSet] = state.get('penalty_table_set')
 
     results: List[Tuple[str, List]] = []
     for sam_str in sam_strings:
@@ -1075,8 +1129,12 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
                 results.append((sam_str, []))
                 continue
             strand = '-' if read.is_reverse else '+'
+            if penalty_table_set is not None:
+                eff_kw = {**kw, 'penalty_table': penalty_table_set.for_read(read)}
+            else:
+                eff_kw = kw
             replacements = refine_read_junctions(
-                read, junctions_idx, annotated_set, genome_seq, strand, **kw
+                read, junctions_idx, annotated_set, genome_seq, strand, **eff_kw
             )
             results.append((sam_str, replacements))
         except Exception:
@@ -1108,6 +1166,7 @@ def refine_bam_junctions(
     sort_threads: int = 1,
     n_workers: int = 1,
     batch_size: int = 200,
+    penalty_table_set: Optional['PenaltyTableSet'] = None,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1134,6 +1193,12 @@ def refine_bam_junctions(
                               by ``empirical_cigar_error_profiler.py``.  When
                               provided, overrides the heuristic del/ins cost
                               step-function with empirical per-HP-length values.
+                              Ignored when *penalty_table_set* is provided.
+        penalty_table_set:    Optional :class:`PenaltyTableSet` holding
+                              per-UMI-bin tables.  When provided, each read's
+                              UMI-count tag (default ``XC``) is read to select
+                              the appropriate table.  Takes precedence over
+                              *penalty_table_path*.
 
     Returns:
         Stats dict with keys: total, n_op_reads, refined, unchanged, errors.
@@ -1179,12 +1244,14 @@ def refine_bam_junctions(
             input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, penalty_table, n_workers, batch_size,
+            penalty_table_set=penalty_table_set,
         )
     else:
         _run_sequential(
             input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, penalty_table,
+            penalty_table_set=penalty_table_set,
         )
 
     if sort_and_index:
@@ -1211,17 +1278,39 @@ def _sort_and_index(bam_path: str, n_threads: int = 1) -> None:
         bam_path:  Path to the BAM file to sort and index in place.
         n_threads: Number of threads to pass to ``samtools sort`` and
                    ``samtools index`` via ``-@``.  Defaults to 1.
+
+    Raises:
+        FileNotFoundError: If samtools cannot be located on PATH or in the
+            active conda/venv environment's bin directory.
     """
     import os
+    import shutil
     import subprocess
+    import sys
+
+    # Resolve samtools: check PATH first, then the conda/venv env bin dir
+    # that contains the current Python interpreter (robust across platforms
+    # where correction job scripts may not export the full conda PATH).
+    samtools = shutil.which('samtools')
+    if samtools is None:
+        candidate = os.path.join(os.path.dirname(sys.executable), 'samtools')
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            samtools = candidate
+    if samtools is None:
+        raise FileNotFoundError(
+            "samtools not found on PATH or in the active environment "
+            f"({os.path.dirname(sys.executable)}). "
+            "Add samtools to PATH or install it into the rectify conda env."
+        )
+
     tmp = bam_path + '.tmp.bam'
     subprocess.run(
-        ['samtools', 'sort', f'-@{n_threads}', '-o', tmp, bam_path],
+        [samtools, 'sort', f'-@{n_threads}', '-o', tmp, bam_path],
         check=True, capture_output=True,
     )
     os.replace(tmp, bam_path)
     subprocess.run(
-        ['samtools', 'index', f'-@{n_threads}', bam_path],
+        [samtools, 'index', f'-@{n_threads}', bam_path],
         check=True, capture_output=True,
     )
 
