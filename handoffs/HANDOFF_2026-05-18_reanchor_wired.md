@@ -2,10 +2,23 @@
 
 **Date:** 2026-05-18 (late evening, continuing from `845a573`)
 **Branch:** `drs-validation-rebuild`
-**Top of branch:** `560f82c` — reanchor wired via TSV persist (path b)
+**Top of branch:** `08de34a` — docs(queue): 5'-rescue two-step placement
+**Session commit chain:**
+- `560f82c` fix(rescue): wire mpb 5'-edge reanchor via TSV persist (path b)
+- `0419615` docs(handoff): add commit hash to reanchor-wired handoff
+- `61e8ae8` docs(handoff): correct cat3_plus_2 framing
+- `08de34a` docs(queue): add 5'-rescue two-step placement design item
+
 **Predecessor handoffs:**
 - `handoffs/HANDOFF_2026-05-18_6943450_cat3p2_cat2m2_reanchor.md` — shipped
   cat3_plus_2 + cat2_minus_2 fixes; deferred the reanchor hooks.
+
+**READ ALSO (open work the next session will likely touch):**
+- `docs/handoffs/debugger_queue.md` — top entry (`08de34a`) is a queued
+  design item from the user this session: "separate match-quality
+  placement from canonical-signal slide in 5'-rescue" (two-step
+  refactor of `rescue_3ss_truncation`'s scoring tuple). Includes
+  implementation sketch + verification target.
 
 ---
 
@@ -122,34 +135,46 @@ failed. mpb's HP-ED still trails the winner cluster on those reads
 (probably from body mismatches the reanchor doesn't touch), so the
 *winner* didn't flip on cat3_plus_1 / cat3_minus_1.
 
-**cat3_plus_2 is a separate winner-selection finding (user, on plot
-review):** mpb's raw alignment for cat3_plus_2 is *already* correct —
-exon-1 tail is `…14= 1D 9=` with both terminal G's properly in exon 1
-and a clean 366-bp intron. mpb's `_five_rescued=0 /
-correction_applied=none` is the *right* answer there: no rescue
-needed. The winner cluster (deSALT/gapmm2/minimap2/uLTRA) needed
-rescue (raw alignments had the 365-bp off-by-one) and ended up with
-`…14= 1D 7= 1D 1=` — same ref end position, but with one terminal G
-pushed off into a `1D 1=` split instead of staying inside the clean
-`9=`. HP-ED scores deSALT 26.21 vs mpb 27.60 — only 1.39 points
-apart, and mpb loses even though its junction is the more
-parsimonious one (per the plotter image
-`validation_read_review/cat3_junction_review_pngs/cat3_plus_2.png`).
+**cat3_plus_2 — actually correct in the post-regen bundle:** the
+plotter PNG that triggered the user's first round of feedback
+(`validation_read_review/cat3_junction_review_pngs/cat3_plus_2.png`,
+mtime 20:29) was rendered against the *pre-regen* bundle. After this
+session's bundle regen (mtime 20:45) and a fresh
+`generate_review_report.py --category cat3_junction` re-render, both
+winner cluster and mapPacBio show `14= 1D 9= 366N 50= …` with the
+canonical [142253, 142619) intron — clean `9=` exon-1 tail on both,
+no `1D 1=` split. The acb508e + strand equivalence-extension fix
+shipped in the predecessor session is producing the correct
+parsimonious geometry once the deSALT/etc. 5'-rescue path runs over
+the regenerated bundle. Confirmed by `cigartuples` inspection of
+`rectified/per_aligner/{deSALT,mapPacBio}.trimmed.bam` for
+`79f61403-…`.
 
-So the actionable finding for the *next* session is:
-**HP-ED is under-penalizing the winner's `1D 1=` tail relative to
-mpb's clean `9=` tail.** This is the same family of complaint as the
-existing "Cat1 cluster (HP-ED metric)" entry in
-`docs/handoffs/debugger_queue.md` — terminal `1D ... 1=` splits at
-junction boundaries should cost more than a single equivalent `D` in
-the middle of a clean match run, but currently they don't. Worth
-tracing the per-op HP-ED contributions for both alignments to confirm
-exactly which weights are mis-calibrated.
+mpb's `_five_rescued=0 / correction_applied=none` row is the *right*
+answer: mpb's raw alignment was already canonical and didn't need
+rescue. The winners DID need rescue (their raw alignments had the
+365-bp off-by-one form) and the rescue produced the canonical form.
+
+**User's deeper design note (now queued — see `docs/handoffs/debugger_queue.md`
+top entry, commit `08de34a`):** the canonical placement at
+cat3_plus_2 is currently *incidental* — the rescue's local aligner +
+equivalence-extension happen to land on the canonical position, but
+the scoring tuple in `rescue_3ss_truncation` intermixes match quality
+and signal quality. A more principled design is two-step: Step 1
+finds the best-match set across the junction pool's ambiguous-window
+expansion using HP-edit-distance alone, and Step 2 slides within the
+tied-on-ED set to pick the canonical splice signal. This makes the
+canonical choice principled rather than coincidental, hardening
+against future cases where match ties don't happen to align with
+canonical signals.
 
 The earlier "mpb wins on body-quality HP-ED after reanchor"
-prediction from the predecessor handoff does not hold here — but
-that prediction was about cat3_plus_1 / cat3_minus_1, where the
-mpb HP-ED gap *is* a body-quality issue, not a junction-tail one.
+prediction from the predecessor handoff does not hold on cat3_plus_1
+/ cat3_minus_1 (mpb body HP-ED is 8–15 points worse than the winners
+even after the reanchor enables rescue). That's a separate finding —
+HP-ED is correctly ranking the alignments by body quality; mpb just
+has worse bodies on those reads. Not a bug, possibly an aligner-
+configuration / penalty-calibration item to revisit.
 
 - **Pre-existing tiebreaker test failures in
   `test_corrected_consensus_tiebreaker.py`.** Unchanged from the
