@@ -355,12 +355,21 @@ def run_align(args: argparse.Namespace) -> int:
         n_threads = aligner_thread_counts[aligner]
         output_bam = args.output_dir / f"{prefix}.{aligner}.bam"
 
-        # Per-aligner BAM checkpoint: skip if final output already exists.
-        # This lets the main pipeline skip mapPacBio when chunk BAMs have
-        # already been merged by a prior chunk array job.
+        # Per-aligner BAM checkpoint: skip if final output already exists and
+        # is plausibly complete.  deSALT may intentionally produce empty BAMs
+        # (crash fallback in run_desalt) — always honour those.  For all other
+        # aligners, a file < 2 kB means a prior crash wrote a partial/empty
+        # file; re-run rather than propagating a corrupt result.
         if output_bam.exists():
-            logger.info(f"{aligner} BAM already exists, skipping: {output_bam}")
-            return aligner, str(output_bam)
+            size = output_bam.stat().st_size
+            if aligner == 'deSALT' or size > 2000:
+                logger.info(f"{aligner} BAM already exists ({size}B), skipping: {output_bam}")
+                return aligner, str(output_bam)
+            else:
+                logger.warning(
+                    f"{aligner} BAM exists but is only {size}B — likely from a prior crash; "
+                    "re-running alignment"
+                )
 
         logger.info(f"Running {aligner} (threads={n_threads})...")
         _t_aligner = _time.perf_counter()
