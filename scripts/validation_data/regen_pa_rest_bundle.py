@@ -271,6 +271,22 @@ def main() -> int:
         # Re-index after rewrite
         pysam.index(str(SOFTCLIP_OUT_BAM))
 
+
+    # ---- Step 5: rebuild dorado-source BAM to stay in sync with validation_reads.bam ----
+    # validation_reads_dorado_source.bam must cover the same 36 reads as
+    # validation_reads.bam. When Cat1/Cat2 reads were replaced (v3.2.5) the
+    # dorado_source was not updated; this step prevents that from recurring.
+    print(f"\n\u2192 rebuild dorado-source BAM")
+    dorado_cmd = [
+        sys.executable,
+        str(REPO / "scripts/validation_data/build_dorado_source.py"),
+    ]
+    res = subprocess.run(dorado_cmd, capture_output=True)
+    print(res.stdout.decode(errors="replace"))
+    if res.returncode != 0:
+        print(res.stderr.decode(errors="replace")[:2000], file=sys.stderr)
+        return 2
+
     print("\nDone.")
     return 0
 
