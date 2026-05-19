@@ -96,7 +96,7 @@ def _generate_chunked_pipeline(args) -> int:
                 f'$(sbatch --dependency={dep_type}:{dep_var} {script} | awk \'{{print $4}}\')'
             )
         elif scheduler == 'uge':
-            return f'$(qsub -hold_jid {dep_var} {script} | awk \'{{print $3}}\')'
+            return f'$(qsub -hold_jid {dep_var} {script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')'
         else:  # pbs
             return f'$(qsub -W depend=afterok:{dep_var} {script})'
 
@@ -104,7 +104,7 @@ def _generate_chunked_pipeline(args) -> int:
         if scheduler == 'slurm':
             return f'$(sbatch {script} | awk \'{{print $4}}\')'
         elif scheduler == 'uge':
-            return f'$(qsub {script} | awk \'{{print $3}}\')'
+            return f'$(qsub {script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')'
         else:
             return f'$(qsub {script})'
 
@@ -306,11 +306,11 @@ echo "Done: $(date)"
             ]
             if mpb_script:
                 submit_lines += [
-                    f'MPB_JOB=$(qsub -hold_jid $SPLIT_JOB {mpb_script} | awk \'{{print $3}}\')',
+                    f'MPB_JOB=$(qsub -hold_jid $SPLIT_JOB {mpb_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                     'echo "mapPacBio array: $MPB_JOB"',
                 ]
             submit_lines += [
-                f'OTHERS_JOB=$(qsub -hold_jid $SPLIT_JOB {others_script} | awk \'{{print $3}}\')',
+                f'OTHERS_JOB=$(qsub -hold_jid $SPLIT_JOB {others_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 'echo "Others array: $OTHERS_JOB"',
             ]
             if mpb_script:
@@ -318,9 +318,9 @@ echo "Done: $(date)"
             else:
                 merge_hold = '-hold_jid $OTHERS_JOB'
             submit_lines += [
-                f'MERGE_JOB=$(qsub {merge_hold} {merge_script} | awk \'{{print $3}}\')',
+                f'MERGE_JOB=$(qsub {merge_hold} {merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 'echo "Merge+consensus: $MERGE_JOB"',
-                f'CA_JOB=$(qsub -hold_jid $MERGE_JOB {correct_analyze_script} | awk \'{{print $3}}\')',
+                f'CA_JOB=$(qsub -hold_jid $MERGE_JOB {correct_analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 'echo "Correct+analyze: $CA_JOB"',
                 'echo ""',
                 'echo "Pipeline submitted. Monitor with: qstat -u $USER"',
@@ -561,22 +561,22 @@ echo "Done: $(date)"
                     f'SPLIT_JOB={_submit_no_dep(split_script)}',
                 ]
                 if mpb_script:
-                    sub_lines += [f'MPB_JOB=$(qsub -hold_jid $SPLIT_JOB {mpb_script} | awk \'{{print $3}}\')']
-                sub_lines += [f'OTHERS_JOB=$(qsub -hold_jid $SPLIT_JOB {others_script} | awk \'{{print $3}}\')']
+                    sub_lines += [f'MPB_JOB=$(qsub -hold_jid $SPLIT_JOB {mpb_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')']
+                sub_lines += [f'OTHERS_JOB=$(qsub -hold_jid $SPLIT_JOB {others_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')']
                 align_hold = '$MPB_JOB,$OTHERS_JOB' if mpb_script else '$OTHERS_JOB'
                 sub_lines += [
-                    f'MERGE_ALIGNERS_JOB=$(qsub -hold_jid {align_hold} {merge_aligners_script} | awk \'{{print $3}}\')',
-                    f'PRESCAN_JOB=$(qsub -hold_jid $MERGE_ALIGNERS_JOB {prescan_script} | awk \'{{print $3}}\')',
+                    f'MERGE_ALIGNERS_JOB=$(qsub -hold_jid {align_hold} {merge_aligners_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                    f'PRESCAN_JOB=$(qsub -hold_jid $MERGE_ALIGNERS_JOB {prescan_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 ]
                 correct_vars = []
                 for aligner, cscript in correct_scripts.items():
                     var = f'CORRECT_{aligner.upper()}_JOB'
-                    sub_lines += [f'{var}=$(qsub -hold_jid $PRESCAN_JOB {cscript} | awk \'{{print $3}}\')']
+                    sub_lines += [f'{var}=$(qsub -hold_jid $PRESCAN_JOB {cscript} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')']
                     correct_vars.append(f'${{{var}}}')
                 correct_hold = ','.join(correct_vars)
                 sub_lines += [
-                    f'CHUNK_MERGE_JOB=$(qsub -hold_jid {correct_hold} {chunk_merge_script} | awk \'{{print $3}}\')',
-                    f'FINAL_MERGE_JOB=$(qsub -hold_jid $CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $3}}\')',
+                    f'CHUNK_MERGE_JOB=$(qsub -hold_jid {correct_hold} {chunk_merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                    f'FINAL_MERGE_JOB=$(qsub -hold_jid $CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                     'echo $FINAL_MERGE_JOB',
                 ]
             else:  # pbs
@@ -842,19 +842,19 @@ echo "Done: $(date)"
                 ]
             if bam_samples and not fastq_samples:
                 submit_all_lines += [
-                    f'CORRECT_JOB=$(qsub {correct_array_script} | awk \'{{print $3}}\')',
-                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\')',
+                    f'CORRECT_JOB=$(qsub {correct_array_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 ]
             elif bam_samples:
                 submit_all_lines += [
                     'FINAL_JOBS="${FINAL_JOBS#,}"',
-                    f'CORRECT_JOB=$(qsub -hold_jid $FINAL_JOBS {correct_array_script} | awk \'{{print $3}}\')',
-                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\')',
+                    f'CORRECT_JOB=$(qsub -hold_jid $FINAL_JOBS {correct_array_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $CORRECT_JOB {analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 ]
             else:
                 submit_all_lines += [
                     'FINAL_JOBS="${FINAL_JOBS#,}"',
-                    f'ANALYZE_JOB=$(qsub -hold_jid $FINAL_JOBS {analyze_script} | awk \'{{print $3}}\')',
+                    f'ANALYZE_JOB=$(qsub -hold_jid $FINAL_JOBS {analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 ]
             submit_all_lines += [
                 'echo "Analysis: $ANALYZE_JOB"',
