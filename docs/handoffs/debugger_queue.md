@@ -203,11 +203,16 @@ session's "cross-stage CIGAR inconsistency" (bam_writer's reanchor ran
   - uLTRA cat3 reads: function returns True but `_cigar_after == _cigar_before`,
     so the materially-changed gate emits `reanchor_clip_len = 0`.
 
-**Not yet measured (follow-up):** consensus winner-selection impact for
-cat3_minus_1 / cat3_plus_1 / cat3_plus_2 after bundle regen. The prior
-session's prediction was that HP-ED would re-rank mpb first once its
-5'-rescue succeeds. Confirm by checking `_winning_aligner` in
-`rectify/data/validation/rectified/per_aligner_summary.tsv` post-regen.
+**Measured post-regen:** mpb's `_five_rescued` flipped 0→1 on
+cat3_plus_1 and cat3_minus_1, but HP-ED still gives the win to deSALT
+(mpb body HP-ED 18.91 / 24.90 vs deSALT 10.16 / 9.90). cat3_plus_2 is
+a separate finding from the plotter image: mpb's *raw* alignment is
+already correct (clean `9=` exon-1 tail, canonical 366-bp intron, no
+rescue needed); the winners need rescue and end up with a
+less-parsimonious `1D 1=` tail; HP-ED ranks mpb (27.60) *worse* than
+deSALT (26.21) by 1.39 points and picks the wrong winner. Followup
+work is the HP-ED weight calibration in the open "Cat1 cluster"
+entry, not the reanchor.
 
 **Files touched:**
 - `rectify/core/splice/splice_aware_5prime.py` — reanchor pre-pass in

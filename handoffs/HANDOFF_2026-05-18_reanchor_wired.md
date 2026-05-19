@@ -114,22 +114,42 @@ minimap2=0, gapmm2=3, mapPacBio=8, deSALT=19, uLTRA=6).
 | cat3_plus_1 (0a28167d) | 18.91 | 10.16 | **1** (was 0) | deSALT |
 | cat3_minus_1 (ac4db6da) | 24.90 | 9.90 | **1** (was 0) | deSALT |
 | cat3_minus_2 (28ea9379) | 20.83 | 20.63 | 0 (correctly no-op) | deSALT |
-| cat3_plus_2 (79f61403) | 27.60 | 26.21 | 0 (still blocked) | deSALT |
+| cat3_plus_2 (79f61403) | 27.60 | 26.21 | 0 (mpb didn't need rescue) | deSALT |
 
 **The reanchor is doing exactly its job** — it enables mpb's 5'-rescue
 to succeed on cat3_plus_1 and cat3_minus_1, where it previously
 failed. mpb's HP-ED still trails the winner cluster on those reads
 (probably from body mismatches the reanchor doesn't touch), so the
-*winner* didn't flip; the user's prior prediction (mpb wins on
-body-quality HP-ED after the reanchor) does not hold on these two
-reads. cat3_plus_2 mpb still isn't five_rescued — reanchor's
-match-run gate didn't find an anchor (or the rescue's exon-1 alignment
-still fails post-reanchor). Worth investigating separately.
+*winner* didn't flip on cat3_plus_1 / cat3_minus_1.
 
-**This means the reanchor wiring is correct, but the downstream
-"mpb wins because clean body" claim is wrong — at least on this
-validation set.** That's a finding to surface to the user, not a fix
-to ship.
+**cat3_plus_2 is a separate winner-selection finding (user, on plot
+review):** mpb's raw alignment for cat3_plus_2 is *already* correct —
+exon-1 tail is `…14= 1D 9=` with both terminal G's properly in exon 1
+and a clean 366-bp intron. mpb's `_five_rescued=0 /
+correction_applied=none` is the *right* answer there: no rescue
+needed. The winner cluster (deSALT/gapmm2/minimap2/uLTRA) needed
+rescue (raw alignments had the 365-bp off-by-one) and ended up with
+`…14= 1D 7= 1D 1=` — same ref end position, but with one terminal G
+pushed off into a `1D 1=` split instead of staying inside the clean
+`9=`. HP-ED scores deSALT 26.21 vs mpb 27.60 — only 1.39 points
+apart, and mpb loses even though its junction is the more
+parsimonious one (per the plotter image
+`validation_read_review/cat3_junction_review_pngs/cat3_plus_2.png`).
+
+So the actionable finding for the *next* session is:
+**HP-ED is under-penalizing the winner's `1D 1=` tail relative to
+mpb's clean `9=` tail.** This is the same family of complaint as the
+existing "Cat1 cluster (HP-ED metric)" entry in
+`docs/handoffs/debugger_queue.md` — terminal `1D ... 1=` splits at
+junction boundaries should cost more than a single equivalent `D` in
+the middle of a clean match run, but currently they don't. Worth
+tracing the per-op HP-ED contributions for both alignments to confirm
+exactly which weights are mis-calibrated.
+
+The earlier "mpb wins on body-quality HP-ED after reanchor"
+prediction from the predecessor handoff does not hold here — but
+that prediction was about cat3_plus_1 / cat3_minus_1, where the
+mpb HP-ED gap *is* a body-quality issue, not a junction-tail one.
 
 - **Pre-existing tiebreaker test failures in
   `test_corrected_consensus_tiebreaker.py`.** Unchanged from the
@@ -154,16 +174,19 @@ output (e.g. forced mismatches in the body), it overlaps with the open
 to anchor at a non-A past a poly-A tail. May want to revisit the
 HP-ED scoring weights or mpb's penalty configuration.
 
-### Investigate why cat3_plus_2 mpb still isn't five_rescued
+### cat3_plus_2: HP-ED winner-selection should pick mpb
 
-The reanchor on mpb cat3_plus_2 was correctly a no-op in
-`rescue_3ss_truncation` (5' edge already clean by reanchor's
-criteria), but mpb's `_five_rescued=0` in the regen bundle, while the
-other 4 aligners are rescued. So the 5'-rescue machinery itself is
-rejecting mpb's geometry for a reason unrelated to the reanchor.
-Trace through `_rescue_3ss(mpb_cat3p2)` to find which gate (edit
-fraction, junction proximity, intronic_seq mismatch) blocks the
-rescue.
+mpb's raw alignment is already canonical (no rescue needed). The
+winner cluster's rescued alignment has a less-parsimonious `1D 1=` at
+the exon-1 tail. HP-ED scores them within 1.4 points and picks the
+winner cluster anyway. Trace per-op HP-ED contributions for
+cat3_plus_2 deSALT vs mpb and find which weight (likely either the
+match-after-D bonus or the per-base soft-clip penalty) under-counts
+the winner's split-D tail. Shares root cause with the open
+"Cat1 cluster (HP-ED metric)" entry. The user's prior call ("don't
+need a hack; once CIGARs converge after canonical-intron fixes,
+HP-ED naturally decides") needs revisiting — HP-ED is in fact
+deciding *wrong* here.
 
 ### Defensive belt-and-suspenders (optional)
 
