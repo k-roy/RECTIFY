@@ -508,7 +508,7 @@ def _mpb_array_body(
 
 set -euo pipefail
 
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
@@ -586,7 +586,7 @@ def _others_array_body(
 
 set -euo pipefail
 
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
@@ -690,7 +690,7 @@ def _merge_aligners_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_MERGE_ALIGNERS}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{MERGE_CORES}}}}}}}
 {limits}
@@ -756,7 +756,7 @@ def _prescan_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_PRESCAN}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 PRESCAN_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{PRESCAN_CORES}}}}}}}
 {limits}
@@ -808,7 +808,7 @@ def _correct_array_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CORRECT}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CORRECT_CPUS=${{SLURM_CPUS_PER_TASK:-{CORRECT_CORES}}}
 elif [ -n "${{SGE_TASK_ID:-}}" ];          then TASK_ID=$(( SGE_TASK_ID - 1 )); CORRECT_CPUS=${{NSLOTS:-{CORRECT_CORES}}}
@@ -904,7 +904,7 @@ def _chunk_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CHUNK_MERGE}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CHUNK_MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-{CHUNK_MERGE_CORES}}}
 elif [ -n "${{SGE_TASK_ID:-}}" ];          then TASK_ID=$(( SGE_TASK_ID - 1 )); CHUNK_MERGE_CPUS=${{NSLOTS:-{CHUNK_MERGE_CORES}}}
@@ -1069,7 +1069,7 @@ def _final_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_FINAL_MERGE}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 FINAL_MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{FINAL_MERGE_CORES}}}}}}}
 {limits}
@@ -1161,7 +1161,7 @@ def _consensus_per_chunk_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CONSENSUS_PER_CHUNK}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CPUS=${{SLURM_CPUS_PER_TASK:-{CONSENSUS_PER_CHUNK_CORES}}}
 elif [ -n "${{SGE_TASK_ID:-}}" ];          then TASK_ID=$(( SGE_TASK_ID - 1 )); CPUS=${{NSLOTS:-{CONSENSUS_PER_CHUNK_CORES}}}
@@ -1233,7 +1233,7 @@ def _merge_consensus_chunks_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_MERGE_CONSENSUS}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{MERGE_CONSENSUS_CORES}}}}}}}
 {limits}
@@ -1782,7 +1782,7 @@ def _short_read_array_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_SR_ARRAY}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
@@ -1944,7 +1944,7 @@ def _short_read_final_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_SR_FINAL_MERGE}
 
 set -euo pipefail
-export PATH="$HOME/bin:$HOME/.rectify/bin:$PATH"
+export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 FINAL_MERGE_CPUS="${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{SR_FINAL_MERGE_CORES}}}}}}}
 {limits}
