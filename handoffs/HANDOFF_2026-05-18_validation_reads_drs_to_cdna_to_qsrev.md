@@ -2,11 +2,37 @@
 
 **Date:** 2026-05-18 (late evening)
 **Branch:** `drs-validation-rebuild`
-**Top of branch at handoff:** `a133b54` (WIP — see `HANDOFF_2026-05-18_run_all_prelim_and_provenance.md` for the run-all+provenance work that's also in flight).
+**Top of branch at handoff:** `a133b54` (WIP).
 **Anchor commit for VALIDATION work specifically:** `e39089e` —
 fix(rescue): propagate reanchor_clip_len → five_prime_soft_clip_length.
-That's the last fully-tested validation-suite change. `a133b54` is
-provenance scaffold (unrelated to validation reads).
+
+---
+
+## Status update — 2026-05-19 (added during wind-down)
+
+Several items in §3.1 below have shipped since this handoff was
+originally written. Cross-check against `git log` and
+`docs/handoffs/debugger_queue.md` before starting work:
+
+- **15 pre-existing `test_splice_junction.py` failures** — addressed.
+  `d562395` classified the MockRead failures; `eb34f87` expanded each
+  xfail reason with three concrete fix options.
+- **+ strand 5'-rescue equivalence-extension proper-mirror fix** —
+  RESOLVED at `acb508e`; queue entry marked RESOLVED at `940d7cc`.
+- **Synthetic unit test for `in_amb`-vs-`donor_ok` priority** — added
+  at `bf1749e` (makes the `99558c1` two-step scoring tuple change
+  load-bearing as the advisor flagged).
+- **BAM-provenance feature** (referenced in the sibling run-all
+  handoff, now archived) — landed at `3f46a7f` with 21 unit tests.
+
+Still open in §3.1: cat3_plus_2 HP-ED winner-selection, Cat1 HP-mode
+metric, defensive belt-and-suspenders for `bam_writer` reanchor gate,
+ambig-window + motif-strength tiebreaker for consensus, Phase C 5'
+rescue calibration. The sibling `run-all + provenance` handoff has been
+archived at `handoffs/_archive/HANDOFF_2026-05-18_run_all_prelim_and_provenance.md`;
+the active baton for that workstream is `HANDOFF.md` at the repo root.
+
+cDNA (§3.2) and QSREV (§3.3) sections are unchanged.
 
 ---
 
