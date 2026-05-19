@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 # Algorithm constants (from DRS_POLYA_ADAPTER_ANALYSIS.md)
 # ---------------------------------------------------------------------------
 
-_ADAPTER_RE = re.compile(r'T[CT]{0,10}$')
+# DNA adapter stub pattern (Pass 1) — also handles RNA notation (U instead of T)
+_ADAPTER_RE = re.compile(r'[TU][CTU]{0,10}$')
 _PASS2_MAX_STUB = 15       # max stub length to try peeling in pass 2
 _MIN_POLYA_PASS2 = 5       # min poly(A) length required to accept a pass-2 call
 _ADAPTER_WINDOW = 150      # last N bases of RNA-oriented sequence to analyse
@@ -478,49 +479,195 @@ def trim_drs_bam_polya(
 
 
 # ---------------------------------------------------------------------------
+# FASTQ trimmer (for DRS reads without a Dorado-aligned BAM)
+# ---------------------------------------------------------------------------
+
+
+def trim_drs_fastq_polya(
+    input_fastq_path: str,
+    output_fastq_path: str,
+    metadata_path: str,
+    max_error_rate: float = 0.0,
+    max_consecutive_non_a: int = 1,
+    adapter_window: int = _ADAPTER_WINDOW,
+) -> dict:
+    """Trim poly(A) tails from a DRS FASTQ where reads are already 5'→3' RNA.
+
+    Dorado writes DRS reads in 5'→3' orientation; poly(A) is always at the
+    3' end of the stored sequence.  No alignment or strand flip is needed.
+    The pt:i: tag is unavailable for FASTQ input; pt_tag is recorded as -1.
+
+    Args:
+        input_fastq_path:  Input FASTQ (.fastq or .fastq.gz / BGZF).
+        output_fastq_path: Output trimmed FASTQ (.fastq.gz).
+        metadata_path:     Destination for per-read metadata (.parquet or .tsv).
+
+    Returns:
+        Stats dict: total, trimmed, untrimmed, pass_counts {0,1,2}.
+    """
+    import gzip as _gzip
+
+    stats: dict = {
+        'total': 0,
+        'trimmed': 0,
+        'untrimmed': 0,
+        'unmapped': 0,
+        'pass_counts': {0: 0, 1: 0, 2: 0},
+    }
+    metadata_rows: list = []
+
+    def _open_fq(path):
+        s = str(path)
+        if s.endswith('.gz') or s.endswith('.bgz'):
+            return _gzip.open(s, 'rt')
+        return open(s, 'r')
+
+    def _readline(fh):
+        try:
+            return fh.readline()
+        except EOFError:
+            return ''
+
+    with _open_fq(input_fastq_path) as fin, \
+         _gzip.open(output_fastq_path, 'wt') as fout:
+        while True:
+            header = _readline(fin)
+            if not header:
+                break
+            header = header.rstrip('\n')
+            try:
+                seq   = _readline(fin).rstrip('\n')
+                plus  = _readline(fin).rstrip('\n')
+                qual  = _readline(fin).rstrip('\n')
+            except EOFError:
+                break
+            if not seq:
+                break
+
+            stats['total'] += 1
+            read_id = header[1:].split()[0] if header.startswith('@') else header[1:]
+
+            # DRS reads are already 5'→3'; poly-A is at the 3' end
+            polya_len, adapter_seq, _last_base, adapter_pass = find_polya_and_adapter(
+                seq,
+                max_error_rate=max_error_rate,
+                max_consecutive_non_a=max_consecutive_non_a,
+                adapter_window=adapter_window,
+            )
+            stats['pass_counts'][adapter_pass] += 1
+            total_trim = polya_len + len(adapter_seq)
+
+            if polya_len >= 1 and total_trim < len(seq):
+                trimmed_3prime_seq  = seq[-total_trim:]
+                trimmed_3prime_qual = qual[-total_trim:] if qual else ''
+                trimmed_seq  = seq[:-total_trim]
+                trimmed_qual = qual[:-total_trim] if qual else ''
+                stats['trimmed'] += 1
+            else:
+                trimmed_3prime_seq  = ''
+                trimmed_3prime_qual = ''
+                trimmed_seq  = seq
+                trimmed_qual = qual
+                stats['untrimmed'] += 1
+
+            fout.write(f"{header}\n{trimmed_seq}\n{plus}\n{trimmed_qual}\n")
+
+            quals_str = ','.join(str(ord(c) - 33) for c in trimmed_3prime_qual) if trimmed_3prime_qual else ''
+            metadata_rows.append({
+                'read_id':             read_id,
+                'strand':              '+',
+                'polya_len':           polya_len,
+                'adapter_seq':         adapter_seq[:50],
+                'adapter_pass':        adapter_pass,
+                'pt_tag':              -1,
+                'trimmed_3prime_seq':  trimmed_3prime_seq,
+                'trimmed_3prime_quals': quals_str,
+                'original_seq_len':    len(seq),
+                'trimmed_seq_len':     len(trimmed_seq),
+            })
+
+    _write_metadata(metadata_rows, Path(metadata_path))
+    logger.info(
+        "trim_drs_fastq_polya: total=%d trimmed=%d untrimmed=%d "
+        "pass0=%d pass1=%d pass2=%d",
+        stats['total'], stats['trimmed'], stats['untrimmed'],
+        stats['pass_counts'][0], stats['pass_counts'][1], stats['pass_counts'][2],
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
+_FASTQ_SUFFIXES = {'.fastq', '.fq', '.fastq.gz', '.fq.gz'}
+
+
+def _is_fastq(path: Path) -> bool:
+    return path.suffix in {'.fastq', '.fq'} or str(path).endswith(('.fastq.gz', '.fq.gz'))
 
 
 def run(args) -> int:
     """Entry point called from rectify/cli.py for `rectify trim-polya`."""
     import sys
 
-    input_bam = Path(args.input_bam)
-    if not input_bam.exists():
-        print(f"ERROR: Input BAM not found: {input_bam}", file=sys.stderr)
+    input_path = Path(args.input_bam)  # accepts BAM or FASTQ
+    if not input_path.exists():
+        print(f"ERROR: Input file not found: {input_path}", file=sys.stderr)
         return 1
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_stem = getattr(args, 'prefix', None) or input_bam.stem
-    output_bam = output_dir / f"{sample_stem}.bam"
+    sample_stem = getattr(args, 'prefix', None) or input_path.stem
+    # strip double extension for .fastq.gz
+    if sample_stem.endswith('.fastq') or sample_stem.endswith('.fq'):
+        sample_stem = Path(sample_stem).stem
+
     use_tsv = getattr(args, 'tsv', False)
     meta_ext = '.tsv' if use_tsv else '.parquet'
     metadata_path = output_dir / f"{sample_stem}_polya_trim_metadata{meta_ext}"
 
-    print(f"Input BAM:   {input_bam}")
-    print(f"Output BAM:  {output_bam}")
+    print(f"Input:       {input_path}")
+    print(f"Output dir:  {output_dir}")
     print(f"Metadata:    {metadata_path}")
     print(f"max_error_rate:          {args.max_error_rate}")
     print(f"max_consecutive_non_a:   {args.max_consecutive_non_a}")
     print(f"adapter_window:          {args.adapter_window}")
 
-    stats = trim_drs_bam_polya(
-        input_bam_path=str(input_bam),
-        output_bam_path=str(output_bam),
-        metadata_path=str(metadata_path),
-        max_error_rate=args.max_error_rate,
-        max_consecutive_non_a=args.max_consecutive_non_a,
-        adapter_window=args.adapter_window,
-    )
+    if _is_fastq(input_path):
+        # FASTQ path: reads are 5'→3' RNA, poly-A at 3' end — no alignment needed
+        output_fastq = output_dir / f"{sample_stem}_trimmed.fastq.gz"
+        print(f"Mode:        FASTQ (DRS 5'→3', pt_tag=-1)")
+        print(f"Output FASTQ: {output_fastq}")
+        stats = trim_drs_fastq_polya(
+            input_fastq_path=str(input_path),
+            output_fastq_path=str(output_fastq),
+            metadata_path=str(metadata_path),
+            max_error_rate=args.max_error_rate,
+            max_consecutive_non_a=args.max_consecutive_non_a,
+            adapter_window=args.adapter_window,
+        )
+    else:
+        # BAM path: standard Dorado-aligned DRS BAM
+        output_bam = output_dir / f"{sample_stem}.bam"
+        print(f"Mode:        BAM")
+        print(f"Output BAM:  {output_bam}")
+        stats = trim_drs_bam_polya(
+            input_bam_path=str(input_path),
+            output_bam_path=str(output_bam),
+            metadata_path=str(metadata_path),
+            max_error_rate=args.max_error_rate,
+            max_consecutive_non_a=args.max_consecutive_non_a,
+            adapter_window=args.adapter_window,
+        )
 
     print(f"\nTrim summary:")
     print(f"  Total reads:      {stats['total']:,}")
     print(f"  Trimmed:          {stats['trimmed']:,}")
     print(f"  Untrimmed:        {stats['untrimmed']:,}")
-    print(f"  Unmapped (skip):  {stats['unmapped']:,}")
+    if stats.get('unmapped', 0):
+        print(f"  Unmapped (skip):  {stats['unmapped']:,}")
     print(f"  Pass 0 (no stub): {stats['pass_counts'][0]:,}")
     print(f"  Pass 1 (regex):   {stats['pass_counts'][1]:,}")
     print(f"  Pass 2 (peel):    {stats['pass_counts'][2]:,}")
@@ -536,12 +683,16 @@ def create_trim_polya_parser(subparsers):
     # =========================================================================
     trim_polya_parser = subparsers.add_parser(
         'trim-polya',
-        help='Trim poly(A) tail + adapter from DRS BAM before alignment',
+        help='Trim poly(A) tail + adapter from DRS BAM or FASTQ before alignment',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     trim_polya_parser.add_argument(
         'input_bam',
-        help='Input Dorado-aligned BAM (with pt:i: tags)',
+        help=(
+            'Input file: Dorado-aligned BAM (with optional pt:i: tags), '
+            'OR a raw DRS FASTQ/FASTQ.GZ where reads are already 5\'→3\' RNA orientation. '
+            'FASTQ mode: pt_tag stored as -1; poly-A detected from sequence directly.'
+        ),
     )
     trim_polya_parser.add_argument(
         '-o', '--output-dir',
