@@ -530,6 +530,38 @@ def _normalize_read_id(read_id_series: "pd.Series") -> "pd.Series":
     return out
 
 
+_CORRECTED_TSV_MANIFEST_HEADER = [
+    'region_id', 'chrom', 'start', 'end', 'tsv_path', 'n_rows', 'sha256',
+]
+
+
+def _read_single_corrected_tsv(tsv_path: Path) -> pd.DataFrame:
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter('ignore')
+        return pd.read_csv(tsv_path, sep='\t', index_col=False)
+
+
+def _read_corrected_tsv_or_manifest(tsv_path: Path) -> pd.DataFrame:
+    with tsv_path.open() as fh:
+        header = fh.readline().rstrip('\n').split('\t')
+
+    if header != _CORRECTED_TSV_MANIFEST_HEADER:
+        return _read_single_corrected_tsv(tsv_path)
+
+    from ..bam.tsv_partition import load_manifest
+
+    dfs = []
+    for entry in load_manifest(tsv_path):
+        region_tsv = entry['tsv_path']
+        region_df = _read_single_corrected_tsv(region_tsv)
+        if not region_df.empty:
+            dfs.append(region_df)
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True)
+
+
 def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
     """Load one per-aligner TSV, returning None on failure.
 
@@ -545,10 +577,7 @@ def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
         logger.warning("Per-aligner TSV not found, skipping: %s", tsv_path)
         return None
     try:
-        import warnings as _warnings
-        with _warnings.catch_warnings():
-            _warnings.simplefilter('ignore')
-            df = pd.read_csv(tsv_path, sep='\t', index_col=False)
+        df = _read_corrected_tsv_or_manifest(tsv_path)
         if df.empty:
             logger.warning("Empty per-aligner TSV, skipping: %s", tsv_path)
             return None

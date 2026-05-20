@@ -95,6 +95,21 @@ def _write_tsv(path: Path, rows: list) -> None:
     df.to_csv(path, sep='\t', index=False)
 
 
+def _write_manifest(path: Path, region_paths: list[Path]) -> None:
+    rows = []
+    for idx, region_path in enumerate(region_paths):
+        rows.append(
+            f"region_{idx:03d}\tchrI\t{idx * 100}\t{(idx + 1) * 100}\t"
+            f"{region_path.name}\t1\tunused"
+        )
+    path.write_text(
+        "\t".join(["region_id", "chrom", "start", "end", "tsv_path", "n_rows", "sha256"])
+        + "\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+
+
 def test_paralog_tiebreaker_picks_multi_aligner_consensus(tmp_path):
     """A 3-aligner chrXIV consensus must beat a 1-aligner chrVI outlier
     even when both place the read at the same numeric corrected_3prime.
@@ -197,3 +212,48 @@ def test_single_aligner_passthrough_unaffected(tmp_path):
     assert len(merged) == 1
     assert merged.iloc[0]['winning_aligner'] == 'minimap2'
     assert merged.iloc[0]['chrom'] == 'chrI'
+
+
+def test_merge_corrected_tsvs_accepts_region_manifests(tmp_path):
+    """Per-aligner inputs may be manifest-only outputs from ``rectify correct``."""
+    read_1 = 'manifest_read_1'
+    read_2 = 'manifest_read_2'
+    minimap2_region = tmp_path / 'minimap2.region_000.tsv'
+    desalt_region = tmp_path / 'deSALT.region_000.tsv'
+    minimap2_manifest = tmp_path / 'minimap2.manifest.tsv'
+    desalt_manifest = tmp_path / 'deSALT.manifest.tsv'
+
+    _write_tsv(
+        minimap2_region,
+        [
+            _make_row(read_1, 'chrI', 1000, confidence='high'),
+            _make_row(read_2, 'chrI', 2000, confidence='low'),
+        ],
+    )
+    _write_tsv(
+        desalt_region,
+        [
+            _make_row(read_1, 'chrI', 1000, confidence='low'),
+            _make_row(read_2, 'chrI', 2000, confidence='high'),
+        ],
+    )
+    _write_manifest(minimap2_manifest, [minimap2_region])
+    _write_manifest(desalt_manifest, [desalt_region])
+
+    out_tsv = tmp_path / 'merged.tsv'
+    merge_corrected_tsvs(
+        per_aligner_tsvs={
+            'minimap2': minimap2_manifest,
+            'deSALT': desalt_manifest,
+        },
+        output_tsv=out_tsv,
+        per_aligner_corrected_bams=None,
+    )
+
+    merged = pd.read_csv(out_tsv, sep='\t')
+    assert set(merged['read_id']) == {read_1, read_2}
+    winners = dict(zip(merged['read_id'], merged['winning_aligner']))
+    assert winners == {
+        read_1: 'minimap2',
+        read_2: 'deSALT',
+    }
