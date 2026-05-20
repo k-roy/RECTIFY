@@ -37,6 +37,11 @@ class ProvenanceTracker:
     """
     Track provenance for RECTIFY output directories.
 
+    This is the USER-FACING per-directory run log + README writer. It records
+    a human-readable PROVENANCE.json and README.md in the output directory.
+    For machine-readable stage-level sidecars + skip-check / resume, see
+    :mod:`rectify.core.provenance`.
+
     Usage:
         tracker = ProvenanceTracker(output_dir)
         tracker.set_command(sys.argv)
@@ -182,21 +187,6 @@ class ProvenanceTracker:
         # Record output files in the master file list
         for filepath in (output_files or []):
             self.add_output_file(Path(filepath))
-
-    def register_staged(self, staged_path, original_path):
-        """
-        Register a mapping from a staged (scratch) path to its canonical Oak path.
-
-        Used so that provenance records use canonical persistent paths rather
-        than ephemeral scratch paths that disappear after the job ends.
-
-        Args:
-            staged_path: Path on scratch ($SCRATCH) where the file was staged
-            original_path: Canonical path on Oak (persistent storage)
-        """
-        if not hasattr(self, '_staged_map'):
-            self._staged_map = {}
-        self._staged_map[str(staged_path)] = str(original_path)
 
     def save(self):
         """Save provenance to output directory."""
