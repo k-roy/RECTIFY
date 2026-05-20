@@ -320,6 +320,9 @@ def validate_inputs(args) -> dict:
         # Poly-A IS in the read as a right soft-clip; AG mispriming is disabled.
         # Used for stats protocol label only — no bam_processor behaviour changes needed.
         'ont_cDNA': is_ont_cdna,
+        # Organism name (normalized, e.g. 'saccharomyces_cerevisiae') for bundled
+        # data resolution. May be None when only a genome path was supplied.
+        'organism': normalize_organism(organism) if organism else None,
         # Minimum MAPQ filter: reads with mapping_quality < min_mapq are skipped.
         # Default 0 = no filter. Use 1 to exclude MAPQ=0 multi-mapping reads.
         'min_mapq': getattr(args, 'min_mapq', 0),
@@ -414,6 +417,40 @@ def run(args):
     import time as _time
     _t_correct_total = _time.perf_counter()
     try:
+        # Guard: detect empty/headerless BAM (e.g. aligner SIGSEGV fallback) before
+        # spending time on junction refinement or genome loading.
+        try:
+            import pysam as _pysam
+            with _pysam.AlignmentFile(str(config['bam_path']), 'rb', check_sq=False) as _bam_probe:
+                _n_refs = _bam_probe.nreferences
+        except Exception:
+            _n_refs = None
+        if _n_refs is not None and _n_refs == 0:
+            logger.warning(
+                "Input BAM has no reference sequences in header — likely an aligner "
+                "fallback empty BAM. Writing empty outputs and skipping correction."
+            )
+            _EMPTY_TSV_COLS = [
+                'read_id', 'chrom', 'strand',
+                'original_3prime', 'corrected_3prime',
+                'five_prime_position', 'five_prime_rescued', 'five_prime_exon_cigar',
+                'alignment_start', 'alignment_end',
+                'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
+                'polya_length', 'aligned_a_length', 'soft_clip_a_length',
+                'junctions', 'n_junctions',
+                'five_prime_soft_clip_length', 'three_prime_soft_clip_length',
+                'mapq', 'correction_applied', 'confidence', 'qc_flags', 'fraction',
+                'gene_id', 'pt_tag', 'polya_score', 'polya_source',
+                'sc_homopolymer_extension', 'sc_rescued_seq', 'sc_original_softclip_len',
+            ]
+            import pandas as _pd
+            _pd.DataFrame(columns=_EMPTY_TSV_COLS).to_csv(
+                str(config['output_path']), sep='\t', index=False
+            )
+            if config.get('write_corrected_bam'):
+                import shutil as _shutil
+                _shutil.copy(str(config['bam_path']), str(config['write_corrected_bam']))
+            return
         logger.info("Processing BAM file...")
 
         # Spike-in filtering (pre-processing step)
@@ -494,6 +531,52 @@ def run(args):
                 # This is built once here and passed to all process_bam_* calls below.
                 _pool_chrom_index = bam_processor._build_pool_chrom_index(_prebuilt_pool)
 
+                # For ONT PCR-cDNA, try to build a per-UMI-bin PenaltyTableSet from
+                # bundled tables.  This routes each read to the table calibrated at
+                # its UMI cluster depth (umi1/umi2/umi3plus), which reduces false
+                # corrections from over-confident singleton-read error rates.
+                # Only activated when no explicit --junction-penalty-table was given
+                # (a user-supplied path always uses single-table mode).
+                _penalty_table_set = None
+                if config.get('ont_cDNA') and not config.get('junction_penalty_table'):
+                    try:
+                        from ..splice.junction_refiner import PenaltyTableSet
+                        from ..splice.hp_penalty import HpPenaltyTable as _HpPT
+                        from ...data import (
+                            get_bundled_junction_penalty_table,
+                            get_bundled_str_penalty_table as _get_str_pt,
+                        )
+                        _org = config.get('organism')
+                        if _org is None:
+                            from ...data import detect_organism_from_genome
+                            _gp = config.get('genome_path')
+                            if _gp:
+                                _org = detect_organism_from_genome(Path(str(_gp)))
+                        if _org:
+                            _pts_bins = {}
+                            _str_p = _get_str_pt(_org, protocol='cdna')
+                            _str_path = str(_str_p) if _str_p is not None else None
+                            for _bin_name in ('umi1', 'umi2', 'umi3plus', 'pooled'):
+                                _p = get_bundled_junction_penalty_table(
+                                    _org, protocol='cdna', bin=_bin_name
+                                )
+                                if _p is not None:
+                                    _pts_bins[_bin_name] = _HpPT.from_tsv(
+                                        str(_p), str_path=_str_path
+                                    )
+                            if all(b in _pts_bins for b in ('umi1', 'umi2', 'umi3plus')):
+                                _penalty_table_set = PenaltyTableSet(_pts_bins, umi_tag='XC')
+                                logger.info(
+                                    "  Module 2H: per-UMI-bin penalty tables loaded "
+                                    "(%d bins: %s)",
+                                    len(_pts_bins), ', '.join(sorted(_pts_bins)),
+                                )
+                    except Exception as _pts_exc:
+                        logger.debug(
+                            "  Module 2H: could not build PenaltyTableSet "
+                            "(will use single-table mode): %s", _pts_exc
+                        )
+
                 _refine_stats = refine_bam_junctions(
                     input_bam=bam_to_process,
                     output_bam=_refined_bam,
@@ -513,6 +596,7 @@ def run(args):
                     prebuilt_annotated_set=_prebuilt_annot_set,
                     sort_threads=config.get('threads', 1),
                     n_workers=config.get('threads', 1),
+                    penalty_table_set=_penalty_table_set,
                 )
                 bam_to_process = _refined_bam
                 logger.info(
