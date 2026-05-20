@@ -18,7 +18,7 @@ Flow:
      end-correction + winner-selection panel.
   3. Filter each per-aligner BAM by winning aligner, concat into the bundle
      paths.
-  4. Run splice_polya_from_parquet.py to add poly-A tail to the
+  4. Run restore_polya_from_parquet.py to add poly-A tail to the
      soft-clipped variant.
 
 Backups: existing bundle files copied to *.pre_regen before overwriting (if
@@ -70,7 +70,12 @@ def _backup(p: Path) -> None:
 
 
 def main() -> int:
-    skip_polya = "--skip-polya-splice" in sys.argv
+    # Accept both flag spellings: the new --skip-polya-restore and the
+    # legacy --skip-polya-splice (kept for backwards compatibility with
+    # existing wrappers; "splice" was a misnomer — splicing refers to
+    # intron removal, not pA-tail re-attachment).
+    skip_polya = ("--skip-polya-restore" in sys.argv
+                  or "--skip-polya-splice" in sys.argv)
     print(f"Genome:     {GENOME}")
     print(f"Annotation: {ANNOT}")
 
@@ -221,7 +226,46 @@ def main() -> int:
         # renderer can compute raw edit distance per aligner (HP-aware vs.
         # flat-penalty comparison) and inspect any aligner's CIGAR for any
         # read without re-running the regen pipeline.
+        # Also persist per-aligner softclipped variants and splice the pA
+        # tail into each so the renderer can show per-aligner pA-rest tracks.
         PER_ALIGNER_DIR.mkdir(parents=True, exist_ok=True)
+        for aligner, bam_path in per_aligner_soft.items():
+            sc_dst = PER_ALIGNER_DIR / f"{aligner}.softclipped.bam"
+            _backup(sc_dst)
+            shutil.copy2(bam_path, sc_dst)
+            try:
+                pysam.index(str(sc_dst))
+            except Exception as exc:
+                print(f"  WARNING: pysam.index failed on {sc_dst.name}: {exc}",
+                      file=sys.stderr)
+            # Splice pA tail in-place to create the pA-rest variant.
+            pa_dst = PER_ALIGNER_DIR / f"{aligner}.pA_rest.bam"
+            if not skip_polya:
+                splice_cmd = [
+                    sys.executable,
+                    str(REPO / "scripts/validation_data/restore_polya_from_parquet.py"),
+                    "--in-bam", str(sc_dst),
+                    "--parquet", str(PARQUET_TSV),
+                    "--out-bam", str(pa_dst),
+                ]
+                res = subprocess.run(splice_cmd, capture_output=True)
+                if res.returncode == 0:
+                    try:
+                        pysam.index(str(pa_dst))
+                    except Exception as exc:
+                        print(f"  WARNING: pysam.index failed on {pa_dst.name}: {exc}",
+                              file=sys.stderr)
+                else:
+                    print(f"  WARNING: pA-tail restore failed for {aligner}; "
+                          f"falling back to softclipped without pA",
+                          file=sys.stderr)
+                    if pa_dst.exists():
+                        pa_dst.unlink()
+                    shutil.copy2(sc_dst, pa_dst)
+                    pysam.index(str(pa_dst))
+            else:
+                shutil.copy2(sc_dst, pa_dst)
+                pysam.index(str(pa_dst))
         for aligner, bam_path in per_aligner_trimmed.items():
             dst = PER_ALIGNER_DIR / f"{aligner}.trimmed.bam"
             _backup(dst)
@@ -253,12 +297,36 @@ def main() -> int:
     except Exception as _bg_exc:
         print(f"  WARNING: bedgraph regen failed: {_bg_exc}", file=sys.stderr)
 
-    # ---- Step 4: parquet poly-A splice on the soft-clipped variant ----
+    # ---- Step 4b: pre-RECTIFY baseline — splice pA tail into the ORIGINAL
+    # minimap2 aligner BAM so the renderer can show what the read would
+    # look like without RECTIFY (untrimmed tail + samtools-style 3' end).
     if not skip_polya:
-        print(f"\n→ splice poly-A tail from {PARQUET_TSV}")
+        unrect_dst = PER_ALIGNER_DIR / "minimap2_unrectified.bam"
+        _backup(unrect_dst)
         splice_cmd = [
             sys.executable,
-            str(REPO / "scripts/validation_data/splice_polya_from_parquet.py"),
+            str(REPO / "scripts/validation_data/restore_polya_from_parquet.py"),
+            "--in-bam", str(ALIGNER_DIR / "validation_reads.minimap2.bam"),
+            "--parquet", str(PARQUET_TSV),
+            "--out-bam", str(unrect_dst),
+        ]
+        res = subprocess.run(splice_cmd, capture_output=True)
+        if res.returncode == 0:
+            try:
+                pysam.index(str(unrect_dst))
+            except Exception as exc:
+                print(f"  WARNING: pysam.index failed on {unrect_dst.name}: {exc}",
+                      file=sys.stderr)
+            print(f"  wrote {unrect_dst}")
+        else:
+            print(f"  WARNING: unrectified-minimap2 pA restore failed", file=sys.stderr)
+
+    # ---- Step 4: parquet poly-A restore on the soft-clipped variant ----
+    if not skip_polya:
+        print(f"\n→ restore poly-A tail from {PARQUET_TSV}")
+        splice_cmd = [
+            sys.executable,
+            str(REPO / "scripts/validation_data/restore_polya_from_parquet.py"),
             "--in-bam", str(SOFTCLIP_OUT_BAM),
             "--parquet", str(PARQUET_TSV),
             "--out-bam", str(SOFTCLIP_OUT_BAM),

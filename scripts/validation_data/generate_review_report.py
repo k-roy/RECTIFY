@@ -26,6 +26,8 @@ import argparse
 import base64
 import csv
 import io
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -56,6 +58,8 @@ CORR_BAM    = VAL_DIR / "rectified/rectified_pA_tail_trimmed.bam"
 PARESTORE_BAM = VAL_DIR / "rectified/rectified_pA_tail_soft_clipped.bam"
 BG_PLUS     = VAL_DIR / "rectified/corrected_3ends.plus.bedgraph"
 BG_MINUS    = VAL_DIR / "rectified/corrected_3ends.minus.bedgraph"
+SUMMARY_TSV = VAL_DIR / "rectified/per_aligner_summary.tsv"
+ALIGNER_DIR = VAL_DIR / "aligners"
 
 CAT_TO_ALIGNER_DRS = {
     "cat1_indel":             "minimap2",
@@ -206,12 +210,16 @@ def is_port_up() -> bool:
 def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
                 orig_3p: int, corr_3p: int, mapped_bam: Path, title: str,
                 minimap2_bam: Path | None = None,
-                winner_label: str = "") -> Path:
+                winner_label: str = "",
+                gene_id: str = "") -> Path:
     """Render a per-base alignment plot using render_read_alignment.
 
     When ``minimap2_bam`` is given and differs from ``mapped_bam``, the
     renderer adds a separate minimap2 row above the winner row so the
     reviewer can compare both upstream alignments side-by-side.
+
+    When ``SUMMARY_TSV`` exists, the End-correction + Winner-selection
+    panel is automatically added at the top of the figure.
     """
     from render_read_alignment import render as render_alignment
     out = SNAPSHOT_DIR / f"{xv}.png"
@@ -227,6 +235,9 @@ def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
         parestore_bam=PARESTORE_BAM,
         bg_plus=BG_PLUS, bg_minus=BG_MINUS,
         out_path=out, title=title,
+        summary_tsv=SUMMARY_TSV if SUMMARY_TSV.exists() else None,
+        aligner_bam_dir=ALIGNER_DIR if ALIGNER_DIR.exists() else None,
+        gene_id=gene_id,
     )
     return out
 
@@ -504,6 +515,105 @@ def build_toc(reads_meta: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _html_to_md(s: str) -> str:
+    """Convert the limited HTML subset used in MODULE_INTERP / CAT_HINTS /
+    interpret_correction output into plain Markdown."""
+    s = re.sub(r"</?(strong|b)>", "**", s)
+    s = re.sub(r"</?(em|i)>", "*", s)
+    s = re.sub(r"<code>([^<]*)</code>", r"`\1`", s)
+    s = re.sub(r"<br\s*/?>", "  \n", s)
+    s = re.sub(r"<li>\s*", "- ", s)
+    s = re.sub(r"\s*</li>", "\n", s)
+    s = re.sub(r"</?(ul|ol)>\s*", "", s)
+    s = re.sub(r"<p>\s*", "", s)
+    s = re.sub(r"\s*</p>", "\n\n", s)
+    return s.strip()
+
+
+def build_read_section_md(m: dict, png_rel: str) -> str:
+    shift = int(m["corrected_3prime"]) - int(m["original_3prime"])
+    interp = _html_to_md(interpret_correction(m["correction_applied"], shift))
+    hint = _html_to_md(CAT_HINTS.get(m["category"], ""))
+    rows = [
+        ("read_id", f"`{m['read_id']}`"),
+        ("category", m["category"]),
+        ("strand", m["strand"]),
+        ("aligner shown", m["aligner"]),
+        ("chrom", m["chrom"]),
+        ("locus shown", m["locus"]),
+        ("alignment span", f"[{m['alignment_start']}, {m['alignment_end']})"),
+        ("5′ position", m["five_prime_position"] or "—"),
+        ("original 3′", m["original_3prime"]),
+        ("corrected 3′", m["corrected_3prime"]),
+        ("shift (corr − orig)", f"**{shift:+d} bp**" if shift else "0 bp (zero-shift)"),
+        ("correction_applied", f"`{m['correction_applied']}`"),
+    ]
+    table = "| field | value |\n| --- | --- |\n" + "\n".join(
+        f"| {k} | {v} |" for k, v in rows
+    )
+    return (
+        f"## {m['xv']} <a id=\"{m['xv']}\"></a> — {m['category']}\n\n"
+        f"{table}\n\n"
+        f"**What RECTIFY did for this read**\n\n{interp}\n\n"
+        f"**What to verify visually**\n\n> {hint}\n\n"
+        f"![{m['xv']}]({png_rel})\n\n"
+        f"_Reviewer notes:_ [ ] OK   [ ] flag — note here\n"
+    )
+
+
+MD_PRINCIPLE = (
+    "> **Leftmost-possible-CPA principle** — in mature mRNA, the boundary between "
+    "genomic A's and post-transcriptionally added poly(A) is irrecoverably lost. "
+    "RECTIFY's walkback anchors at the first non-stop read=ref agreement walking "
+    "inward from the alignment 3′ edge. When NET-seq is available, "
+    "`rectify correct --netseq-dir` pins the corrected 3′ within that ambiguity window.\n"
+)
+
+
+def _copy_png(src: Path, dest_dir: Path) -> Path:
+    """Copy a PNG into dest_dir/<src.name> (idempotent by mtime+size)."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    if dest.exists() and dest.stat().st_size == src.stat().st_size \
+            and dest.stat().st_mtime >= src.stat().st_mtime:
+        return dest
+    shutil.copy2(src, dest)
+    return dest
+
+
+def write_md_report(reads: list[dict], title: str, out_path: Path) -> None:
+    """Write a Markdown report. PNGs are copied next to the .md in a
+    sibling folder named ``<out_path stem>_pngs/`` and referenced relatively
+    so the file works when opened directly in VS Code's markdown preview."""
+    png_dir = out_path.parent / f"{out_path.stem}_pngs"
+    sections: list[str] = []
+    for m in reads:
+        copied = _copy_png(Path(m["png_path"]), png_dir)
+        rel = f"{png_dir.name}/{copied.name}"
+        sections.append(build_read_section_md(m, rel))
+
+    by_cat: dict[str, list[dict]] = {}
+    for m in reads:
+        by_cat.setdefault(m["category"], []).append(m)
+    toc_lines = ["## Jump to read\n"]
+    for cat in sorted(by_cat):
+        links = " · ".join(f"[{m['xv']}](#{m['xv']})" for m in by_cat[cat])
+        toc_lines.append(f"- **{cat}** — {links}")
+    toc = "\n".join(toc_lines)
+
+    header = (
+        f"# {title}\n\n"
+        f"_Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} · "
+        f"{len(reads)} reads across {len(by_cat)} categor"
+        f"{'y' if len(by_cat) == 1 else 'ies'}_\n\n"
+        f"{MD_PRINCIPLE}\n"
+        f"{toc}\n\n---\n\n"
+    )
+    out_path.write_text(header + "\n---\n\n".join(sections), encoding="utf-8")
+    size_kb = out_path.stat().st_size / 1024
+    print(f"Wrote {out_path} ({size_kb:.1f} KB markdown + PNGs in {png_dir.name}/)")
+
+
 def build_read_section(m: dict, png_b64: str) -> str:
     shift = int(m["corrected_3prime"]) - int(m["original_3prime"])
     shift_class = "shift-zero" if shift == 0 else "shift-nonzero"
@@ -551,6 +661,9 @@ def main() -> int:
                         help="Write one HTML file per category instead of a single combined report. "
                              "Useful for iterative phone review of one 4-read category at a time. "
                              "Files are named <category>_review.html in the same output dir.")
+    parser.add_argument("--format", choices=["html", "md", "both"], default="html",
+                        help="Output format. md is VS-Code-friendly (markdown preview + "
+                             "sibling PNG folder). both writes html and md side-by-side.")
     args = parser.parse_args()
 
     if args.arm != "drs":
@@ -629,7 +742,7 @@ def main() -> int:
             # paths and only adds a second upstream row when winner != minimap2
             # (i.e. cat6_chimeric / cat7_alt_splice / cat9_junction_refine).
             minimap2_bam = VAL_DIR / "aligners" / "validation_reads.minimap2.bam"
-            title = f"{xv} ({category}, strand={strand}) — {row['chrom']}:{left}-{right} (orig {row['original_3prime']} → corr {corr})"
+            title = f"{xv} ({category}, strand={strand}) — {row['chrom']}:{left}-{right} (orig {row['original_3prime']} -> corr {corr})"
             print(f"[{i}/{len(xvs)}] {xv} ({category}, {strand}, {aligner}) → {row['chrom']}:{left}-{right}", flush=True)
             png_path = render_plot(
                 xv, uuid, row["chrom"], left, right,
@@ -637,6 +750,7 @@ def main() -> int:
                 mapped_bam, title,
                 minimap2_bam=minimap2_bam,
                 winner_label=aligner,
+                gene_id=row.get("gene_id", ""),
             )
 
         reads_meta.append({
@@ -673,8 +787,11 @@ def main() -> int:
         size_mb = out_path.stat().st_size / 1024 / 1024
         print(f"Wrote {out_path} ({size_mb:.1f} MB)")
 
+    want_html = args.format in ("html", "both")
+    want_md = args.format in ("md", "both")
+
     if args.per_category:
-        # Group by category and write one HTML per category. Categories are
+        # Group by category and write one report per category. Categories are
         # rendered alphabetically; within a category, reads stay in the same
         # XV sort order as the single-file mode (cat1_minus_1 → cat1_plus_2).
         from collections import defaultdict
@@ -685,16 +802,23 @@ def main() -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         for cat in sorted(by_cat):
             cat_reads = by_cat[cat]
-            cat_out = out_dir / f"{cat}_review.html"
-            _write_html(cat_reads,
-                        title=f"RECTIFY DRS validation — {cat} ({len(cat_reads)} reads)",
-                        out_path=cat_out)
+            cat_title = f"RECTIFY DRS validation — {cat} ({len(cat_reads)} reads)"
+            if want_html:
+                _write_html(cat_reads, cat_title, out_dir / f"{cat}_review.html")
+            if want_md:
+                write_md_report(cat_reads, cat_title, out_dir / f"{cat}_review.md")
     else:
-        out_path = args.out or (DRIVE_OUT / "drs_validation_review.html")
         title_suffix = f" — {','.join(sorted(args.category))}" if args.category else ""
-        _write_html(reads_meta,
-                    title=f"RECTIFY DRS validation read review{title_suffix}",
-                    out_path=out_path)
+        combined_title = f"RECTIFY DRS validation read review{title_suffix}"
+        if want_html:
+            out_path = args.out or (DRIVE_OUT / "drs_validation_review.html")
+            if args.out and args.out.suffix == ".md":
+                out_path = args.out.with_suffix(".html")
+            _write_html(reads_meta, combined_title, out_path)
+        if want_md:
+            md_path = (args.out.with_suffix(".md") if args.out
+                       else DRIVE_OUT / "drs_validation_review.md")
+            write_md_report(reads_meta, combined_title, md_path)
     return 0
 
 

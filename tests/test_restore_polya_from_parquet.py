@@ -1,7 +1,7 @@
-"""Tests for ``scripts/validation_data/splice_polya_from_parquet.py``.
+"""Tests for ``scripts/validation_data/restore_polya_from_parquet.py``.
 
-Asserts that the splice script re-attaches the trimmer-determined poly(A)
-bases as a 3' soft-clip on the validation bundle's representative
+Asserts that the script re-attaches the trimmer-determined poly(A) bases
+as a 3' soft-clip on the validation bundle's representative
 ``cat3_plus_2`` read (read_id ``79f61403-cf63-4522-b555-569590dc4304``).
 """
 
@@ -17,7 +17,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT_PATH = (
-    _REPO_ROOT / "scripts" / "validation_data" / "splice_polya_from_parquet.py"
+    _REPO_ROOT / "scripts" / "validation_data" / "restore_polya_from_parquet.py"
 )
 _SOURCE_BAM = (
     _REPO_ROOT
@@ -41,7 +41,7 @@ _CAT3_PLUS_2 = "79f61403-cf63-4522-b555-569590dc4304"
 def _load_script_module():
     """Import the script as a module from its file path (it lives outside the package)."""
     spec = importlib.util.spec_from_file_location(
-        "splice_polya_from_parquet", _SCRIPT_PATH
+        "restore_polya_from_parquet", _SCRIPT_PATH
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -55,11 +55,11 @@ _CIGAR_H = 5
 
 
 def _strip_trailing_softclip(read: pysam.AlignedSegment, n: int) -> None:
-    """Remove a trailing ``n``-base soft-clip in place (mirror of the splice).
+    """Remove a trailing ``n``-base soft-clip in place (mirror of the restore).
 
     Used in the test fixture to simulate the regenerated-but-poly(A)-dropped
     state, so the test exercises the script regardless of whether the on-disk
-    bundle has already been spliced.
+    bundle has already had its pA tail restored.
     """
     cigar = list(read.cigartuples or [])
     if not cigar:
@@ -91,8 +91,8 @@ def _extract_single_read_bam(
     """Write a 1-read BAM (primary alignment only) for ``read_id``.
 
     If ``strip_trailing_n`` > 0, strips that many trailing soft-clip bases from
-    the plus-strand read before writing (used to simulate the pre-splice state
-    even when the bundle on disk has already been spliced).
+    the plus-strand read before writing (used to simulate the pre-restore state
+    even when the bundle on disk has already had its pA restored).
     """
     count = 0
     with pysam.AlignmentFile(str(src_bam), "rb") as bam_in, pysam.AlignmentFile(
@@ -125,10 +125,10 @@ def parquet_row():
     return rows.iloc[0].to_dict()
 
 
-def test_splice_cat3_plus_2(tmp_path, parquet_row):
-    """End-to-end: extract a 1-read BAM, splice, verify the trailing S op and bases."""
+def test_restore_cat3_plus_2(tmp_path, parquet_row):
+    """End-to-end: extract a 1-read BAM, restore pA, verify the trailing S op and bases."""
     assert _SOURCE_BAM.exists(), f"Source BAM not found: {_SOURCE_BAM}"
-    assert _SCRIPT_PATH.exists(), f"Splice script not found: {_SCRIPT_PATH}"
+    assert _SCRIPT_PATH.exists(), f"Restore script not found: {_SCRIPT_PATH}"
 
     polya_len = int(parquet_row["polya_len"])
     polya_seq = str(parquet_row["trimmed_3prime_seq"])
@@ -142,7 +142,7 @@ def test_splice_cat3_plus_2(tmp_path, parquet_row):
 
     # Carve out a 1-read BAM. Strip any existing trailing soft-clip of length
     # polya_len so the test simulates the regenerated-but-poly(A)-dropped input
-    # state regardless of whether the on-disk bundle has already been spliced.
+    # state regardless of whether the on-disk bundle has already had pA restored.
     in_bam = tmp_path / "cat3_plus_2.in.bam"
     n_extracted = _extract_single_read_bam(
         _SOURCE_BAM, in_bam, _CAT3_PLUS_2, strip_trailing_n=polya_len
@@ -151,7 +151,7 @@ def test_splice_cat3_plus_2(tmp_path, parquet_row):
         f"Expected exactly 1 primary alignment for {_CAT3_PLUS_2}, got {n_extracted}"
     )
 
-    # Capture original (pre-splice) sequence + CIGAR for delta assertions
+    # Capture original (pre-restore) sequence + CIGAR for delta assertions
     with pysam.AlignmentFile(str(in_bam), "rb") as bam:
         orig = next(iter(bam))
     orig_seq = orig.query_sequence
@@ -162,7 +162,7 @@ def test_splice_cat3_plus_2(tmp_path, parquet_row):
         f"got CIGAR tail: {orig_cigar[-5:]}"
     )
 
-    # Run the splice script via main()
+    # Run the restore script via main()
     out_bam = tmp_path / "cat3_plus_2.out.bam"
     mod = _load_script_module()
     rc = mod.main([
@@ -173,39 +173,39 @@ def test_splice_cat3_plus_2(tmp_path, parquet_row):
     assert rc == 0
     assert out_bam.exists()
 
-    # Verify the spliced read
+    # Verify the restored read
     with pysam.AlignmentFile(str(out_bam), "rb") as bam:
         reads = [r for r in bam if r.query_name == _CAT3_PLUS_2
                  and not (r.is_secondary or r.is_supplementary)]
     assert len(reads) == 1
-    spliced = reads[0]
+    restored = reads[0]
 
     # CIGAR: trailing op (ignoring H) must be S of exact size polya_len
-    spliced_cigar = list(spliced.cigartuples)
+    restored_cigar = list(restored.cigartuples)
     trailing = next(
-        (op_len for op_len in reversed(spliced_cigar) if op_len[0] != 5),
+        (op_len for op_len in reversed(restored_cigar) if op_len[0] != 5),
         None,
     )
     assert trailing is not None
     assert trailing[0] == 4, (
-        f"Expected trailing soft-clip op (4), got CIGAR tail: {spliced_cigar[-5:]}"
+        f"Expected trailing soft-clip op (4), got CIGAR tail: {restored_cigar[-5:]}"
     )
     assert trailing[1] == polya_len, (
         f"Expected trailing S op of length {polya_len}, got {trailing[1]}; "
-        f"CIGAR tail: {spliced_cigar[-5:]}"
+        f"CIGAR tail: {restored_cigar[-5:]}"
     )
 
     # Sequence length grew by exactly polya_len
-    assert len(spliced.query_sequence) == len(orig_seq) + polya_len
+    assert len(restored.query_sequence) == len(orig_seq) + polya_len
 
     # The trailing bases match the parquet poly(A) sequence verbatim
-    assert spliced.query_sequence[-polya_len:] == polya_seq, (
-        f"Trailing bases mismatch: got {spliced.query_sequence[-polya_len:]!r}, "
+    assert restored.query_sequence[-polya_len:] == polya_seq, (
+        f"Trailing bases mismatch: got {restored.query_sequence[-polya_len:]!r}, "
         f"expected {polya_seq!r}"
     )
 
     # Prefix is unchanged
-    assert spliced.query_sequence[:-polya_len] == orig_seq
+    assert restored.query_sequence[:-polya_len] == orig_seq
 
     # reference_start is unchanged
-    assert spliced.reference_start == orig.reference_start
+    assert restored.reference_start == orig.reference_start

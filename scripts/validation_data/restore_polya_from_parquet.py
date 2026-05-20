@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Splice the poly(A) tail back onto a rectified soft-clipped BAM.
+"""Restore the poly(A) tail onto a rectified soft-clipped BAM.
 
 The validation bundle's ``rectified_pA_tail_soft_clipped.bam`` historically was
 produced by :func:`rectify.core.commands.restore_polya_command.restore_polya_softclips`,
@@ -8,7 +8,10 @@ which appends the trimmer-determined poly(A) bases (from the
 
 A recent rebuild path that writes the soft-clipped BAM directly (without going
 through ``restore_polya_softclips``) preserved the CIGAR rescue surgery but
-dropped the poly(A) bases. This script splices them back in.
+dropped the poly(A) bases. This script re-attaches them.
+
+(The term "splice" was used for this operation in earlier revisions; it is a
+misnomer — splicing refers to intron removal, not pA-tail re-attachment.)
 
 The parquet/TSV is the **authoritative** source of the poly(A) bases — NOT the
 3' soft-clip of ``validation_reads_dorado_source.bam`` (which can include
@@ -24,7 +27,7 @@ Strand convention (matches ``restore_polya_softclips``):
 
 Usage::
 
-    splice_polya_from_parquet.py \\
+    restore_polya_from_parquet.py \\
         --in-bam  rectify/data/validation/rectified/rectified_pA_tail_soft_clipped.bam \\
         --parquet path/to/polya_trim_metadata.parquet \\
         --out-bam rectify/data/validation/rectified/rectified_pA_tail_soft_clipped.with_polya.bam
@@ -100,16 +103,16 @@ def _extend_or_add_leading_s(
 
 
 # ---------------------------------------------------------------------------
-# Per-read splice
+# Per-read restore
 # ---------------------------------------------------------------------------
 
 
-def splice_polya(
+def restore_polya(
     read: pysam.AlignedSegment,
     trimmed_3prime_seq: str,
     trimmed_3prime_quals: List[int],
 ) -> bool:
-    """Splice trimmed poly(A) bases back onto ``read`` as a 3' soft-clip.
+    """Re-attach trimmed poly(A) bases onto ``read`` as a 3' soft-clip.
 
     Mirrors ``rectify.core.commands.restore_polya_command._restore_read_polya``:
     no idempotency guard. Pre-existing soft-clips on the 3' end (from rescue
@@ -168,18 +171,22 @@ def splice_polya(
     return True
 
 
+# Backwards-compat alias for downstream callers that still import the old name.
+splice_polya = restore_polya
+
+
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
 
-def splice_polya_from_metadata(
+def restore_polya_from_metadata(
     in_bam: Path,
     parquet: Path,
     out_bam: Path,
     threads: int = 1,
 ) -> Dict[str, int]:
-    """Splice poly(A) tails from ``parquet`` onto reads in ``in_bam``.
+    """Re-attach poly(A) tails from ``parquet`` onto reads in ``in_bam``.
 
     Writes a coordinate-sorted, indexed BAM at ``out_bam``.
     """
@@ -189,7 +196,7 @@ def splice_polya_from_metadata(
 
     stats = {
         "total": 0,
-        "spliced": 0,
+        "restored": 0,
         "skipped_no_meta": 0,
         "skipped_no_polya": 0,
         "skipped_no_change": 0,
@@ -233,9 +240,9 @@ def splice_polya_from_metadata(
             else:
                 trimmed_quals = []
 
-            modified = splice_polya(read, trimmed_seq, trimmed_quals)
+            modified = restore_polya(read, trimmed_seq, trimmed_quals)
             if modified:
-                stats["spliced"] += 1
+                stats["restored"] += 1
             else:
                 stats["skipped_no_change"] += 1
             bam_out.write(read)
@@ -245,8 +252,12 @@ def splice_polya_from_metadata(
     unsorted_out.unlink()
     pysam.index(str(out_bam))
 
-    logger.info("splice summary: %s", stats)
+    logger.info("restore summary: %s", stats)
     return stats
+
+
+# Backwards-compat alias for downstream callers that still import the old name.
+splice_polya_from_metadata = restore_polya_from_metadata
 
 
 def main(argv=None) -> int:
@@ -283,13 +294,13 @@ def main(argv=None) -> int:
             )
             return 1
 
-    stats = splice_polya_from_metadata(
+    stats = restore_polya_from_metadata(
         in_bam=args.in_bam,
         parquet=args.parquet,
         out_bam=args.out_bam,
         threads=args.threads,
     )
-    print("Splice summary:")
+    print("Restore summary:")
     for k, v in stats.items():
         print(f"  {k:32s} {v:,}")
     return 0
