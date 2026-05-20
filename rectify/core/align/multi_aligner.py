@@ -621,7 +621,7 @@ def run_map_pacbio(
         with _opener(_mpb_in, 'rt') as _fin, open(_mpb_san_fq, 'w') as _fout:
             for _ln in _fin:
                 if _ln.startswith('@'):
-                    _fout.write('@' + _ln[1:].split(' ', 1)[0][:254] + '\n')
+                    _fout.write('@' + _ln[1:].split(' ', 1)[0].rstrip('\n')[:254] + '\n')
                 else:
                     _fout.write(_ln)
         cmd = [f'in={_mpb_san_fq}' if c.startswith('in=') else c for c in cmd]
