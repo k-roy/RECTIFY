@@ -146,14 +146,20 @@ def get_scratch_dir() -> Optional[Path]:
     """
     Return the best available high-bandwidth scratch directory for this job.
 
-    Priority order (first that exists wins):
+    Auto-detection only fires inside a recognized HPC batch job (SLURM, SGE/UGE,
+    PBS). On local workstations — including macOS, where ``$TMPDIR`` is always
+    set by the OS — this returns ``None`` so callers can write directly to the
+    output filesystem with no rsync staging overhead. Users who want explicit
+    scratch staging on a workstation can pass ``--scratch-dir DIR``.
+
+    Priority order inside an HPC job (first that exists wins):
       1. $SCRATCH       — Preferred: persistent per-user scratch (Hoffman2, TACC,
-                          and similar HPC systems). BAM files survive for post-job inspection and job
-                          resumption. Auto-purged after ~90 days.
+                          and similar HPC systems). BAM files survive for post-job
+                          inspection and job resumption. Auto-purged after ~90 days.
       2. $SLURM_TMPDIR  — Node-local tmpdir on some SLURM clusters.
       3. $TMPDIR        — POSIX generic; auto-cleaned at job end (not stable).
 
-    Returns None if no scratch filesystem is detected.
+    Returns None if no scratch filesystem is detected (or if not in an HPC job).
 
     Notes:
         - $SCRATCH is preferred over $TMPDIR because rectify writes large intermediate
@@ -163,19 +169,20 @@ def get_scratch_dir() -> Optional[Path]:
           within a single tool invocation.
         - Always clean up job-specific subdirectories at job end.
     """
+    if not is_hpc_job():
+        return None
     for var in ('SCRATCH', 'SLURM_TMPDIR', 'TMPDIR'):
         val = os.environ.get(var)
         if val:
             p = Path(val)
             if p.exists():
                 return p
-    if get_job_id() != str(os.getpid()):  # running under a real scheduler
-        logger.warning(
-            "get_scratch_dir(): running in a batch job but no scratch directory "
-            "found ($SCRATCH, $SLURM_TMPDIR, $TMPDIR unset or non-existent). "
-            "All I/O will go directly to the output filesystem, which may cause "
-            "severe NFS contention under concurrent array tasks."
-        )
+    logger.warning(
+        "get_scratch_dir(): running in a batch job but no scratch directory "
+        "found ($SCRATCH, $SLURM_TMPDIR, $TMPDIR unset or non-existent). "
+        "All I/O will go directly to the output filesystem, which may cause "
+        "severe NFS contention under concurrent array tasks."
+    )
     return None
 
 
@@ -214,6 +221,48 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
     return scratch_dir
 
 
+def resolve_scratch_dir(prefix: str = 'rectify', base_dir: Optional[Path] = None) -> Path:
+    """
+    Return a writable scratch subdirectory for intermediate BAM I/O.
+
+    Unlike ``make_job_scratch_dir``, this function **always** returns a valid
+    ``Path`` — callers should always clean up with ``shutil.rmtree``.
+
+    Resolution order when *base_dir* is ``None``:
+
+    1. ``$SCRATCH``           — persistent per-user scratch (Hoffman2 / Sherlock / TACC)
+    2. ``$SLURM_TMPDIR``      — node-local tmpdir on some SLURM clusters
+    3. ``$TMPDIR``            — POSIX generic; auto-cleaned at job end
+    4. ``tempfile.mkdtemp()`` — always-available fallback (uses ``/tmp``)
+
+    Args:
+        prefix:   Directory name prefix used in the subdirectory name.
+        base_dir: Explicit base path (from ``--scratch-dir``). When set, a
+                  per-job subdirectory is created under *base_dir* instead of
+                  the auto-detected path.
+
+    Returns:
+        Path to a freshly-created, per-job scratch subdirectory.
+    """
+    import tempfile
+
+    if base_dir is not None:
+        scratch_base: Optional[Path] = Path(base_dir)
+        scratch_base.mkdir(parents=True, exist_ok=True)
+    else:
+        scratch_base = get_scratch_dir()
+
+    if scratch_base is None:
+        tmp = tempfile.mkdtemp(prefix=f'{prefix}_')
+        return Path(tmp)
+
+    job_id = get_job_id()
+    task_id = get_task_id()
+    d = scratch_base / f'{prefix}_{job_id}_{task_id}'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def sync_to_oak(
     scratch_dir: Path,
     oak_dir: Path,
@@ -232,23 +281,40 @@ def sync_to_oak(
         exclude_bam: If True, skip all *.bam and *.bai files (use when the
             BAM already lives on Oak and was only staged temporarily).
         exclude_aligner_bams: If True, skip per-aligner BAMs (*.minimap2.bam,
-            *.mapPacBio.bam, *.gapmm2.bam, etc.) but keep the rectified BAM.
-            Takes effect only when exclude_bam is False.
+            *.mapPacBio.bam, *.gapmm2.bam, etc.) but keep the rectified BAM
+            and the Step-4 *.corrected_polya.bam. Takes effect only when
+            exclude_bam is False.
 
     Notes:
         - Always call this before rmtree(scratch_dir).
-        - Falls back to shutil.copytree if rsync is unavailable.
+        - The ``drs_trim/`` and ``consensus_ckpt/`` subdirectories are always
+          excluded — they hold large regenerable intermediates (trim FASTQ,
+          consensus checkpoint state) that should never reach the durable
+          output filesystem.
+        - Falls back to a shutil-based copy if rsync is unavailable.
     """
     oak_dir.mkdir(parents=True, exist_ok=True)
     cmd = ['rsync', '-rlL', f'{scratch_dir}/', str(oak_dir) + '/']
+    # Always-skip transient subdirs and aligner-internal scratch.
+    # - drs_trim/, consensus_ckpt/: regenerable intermediate state
+    # - *.uLTRA_ultra_tmp/: uLTRA prep_splicing index — rebuilt per run
+    # - *.paf: aligner PAF dumps — debugging aid, regenerable
+    cmd += [
+        '--exclude=drs_trim/',
+        '--exclude=consensus_ckpt/',
+        '--exclude=*_ultra_tmp/',
+        '--exclude=*.paf',
+    ]
     if exclude_bam:
         cmd += ['--exclude=*.bam', '--exclude=*.bai']
     elif exclude_aligner_bams:
-        # Keep only *.rectified.bam; discard per-aligner BAMs.
-        # rsync rule matching: first matching rule wins.
+        # Keep *.rectified.bam and *.corrected_polya.bam (Step-4 output);
+        # discard per-aligner BAMs.  rsync filter rules: first match wins.
         cmd += [
             '--include=*.rectified.bam',
             '--include=*.rectified.bam.bai',
+            '--include=*.corrected_polya.bam',
+            '--include=*.corrected_polya.bam.bai',
             '--exclude=*.bam',
             '--exclude=*.bai',
         ]
@@ -263,14 +329,25 @@ def sync_to_oak(
             "sync_to_oak: rsync not found on PATH; falling back to shutil.copy2. "
             "Install rsync for reliable Oak syncing."
         )
+        _TRANSIENT_DIRS = {'drs_trim', 'consensus_ckpt'}
+
         def _should_skip(p: Path) -> bool:
+            if p.is_dir() and (p.name in _TRANSIENT_DIRS or p.name.endswith('_ultra_tmp')):
+                return True
+            if p.suffix == '.paf':
+                return True
             if exclude_bam and p.suffix in ('.bam', '.bai'):
                 return True
             if exclude_aligner_bams:
                 n = p.name
                 is_bam_like = n.endswith('.bam') or n.endswith('.bai')
-                is_rectified = n.endswith('.rectified.bam') or n.endswith('.rectified.bam.bai')
-                if is_bam_like and not is_rectified:
+                is_durable_bam = (
+                    n.endswith('.rectified.bam')
+                    or n.endswith('.rectified.bam.bai')
+                    or n.endswith('.corrected_polya.bam')
+                    or n.endswith('.corrected_polya.bam.bai')
+                )
+                if is_bam_like and not is_durable_bam:
                     return True
             return False
 

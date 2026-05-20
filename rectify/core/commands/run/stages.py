@@ -144,7 +144,12 @@ def _run_alignment(
         desalt_path=desalt_path,
         mapPacBio_chunks=mapPacBio_chunks,
         mapPacBio_chunk_idx=None,  # merge mode: look for existing chunk BAMs
-        prefix='',
+        # Use the canonical sample_id as prefix so the rectified BAM lands at
+        # <sample_id>.rectified.bam (matching _rectified_bam_path). With an
+        # empty prefix, align_command falls back to args.reads.stem — which
+        # for DRS inputs is "<sample>_trimmed" after Step 0, breaking the
+        # post-align rectified.bam lookup at stages.py:178.
+        prefix=sample_id,
         keep_sam=False,
         sort=True,
         index=True,

@@ -547,6 +547,21 @@ def create_run_parser(subparsers):
              'consensus selection. By default, per-aligner BAMs are excluded '
              'from the Oak sync to save disk space; only the rectified BAM is kept.'
     )
+    bam_group.add_argument(
+        '--scratch-dir',
+        type=Path,
+        default=None,
+        dest='scratch_dir',
+        metavar='DIR',
+        help=(
+            'Base directory for intermediate BAM I/O (alignment output, unsorted '
+            'corrected BAM, pysam sort temp files). Auto-detected from $SCRATCH, '
+            '$SLURM_TMPDIR, or $TMPDIR when running inside an HPC batch job; no '
+            'staging overhead on local workstations when no HPC scratch is found. '
+            'Durable outputs (corrected_reads.tsv, bedgraphs, report) always stay '
+            'in --output-dir.'
+        ),
+    )
 
     run_parser.add_argument(
         '--continue-on-error',
@@ -558,8 +573,8 @@ def create_run_parser(subparsers):
     run_parser.add_argument(
         '--use-scratch',
         action='store_true',
-        default=False,
-        help='Stage I/O through $SCRATCH for better performance'
+        default=True,
+        help=argparse.SUPPRESS,  # Deprecated; scratch staging is on by default. Use --scratch-dir to override path.
     )
 
     run_parser.add_argument(

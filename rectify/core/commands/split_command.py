@@ -1,8 +1,11 @@
 """
 Split Command for RECTIFY.
 
-Splits a FASTQ/FASTQ.GZ file into N equal-sized chunks at read boundaries.
+Splits a FASTQ/FASTQ.GZ or BAM file into N equal-sized chunks at read boundaries.
 Used to parallelize alignment across a scheduler array job (SLURM, UGE/SGE, PBS).
+BAM inputs are auto-converted to FASTQ (preserving pt:i: and other aux tags via
+`samtools fastq -T '*'`) before chunking, so a Dorado-aligned DRS BAM can go
+straight through the chunked alignment pipeline without a manual pre-step.
 
 Chunk count is determined automatically from a target reads-per-chunk (default 50 000),
 so a 1 M-read dataset gets ~20 chunks while a 50 M-read dataset gets ~1000 chunks
@@ -38,7 +41,10 @@ import gzip
 import json
 import logging
 import math
+import os
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -134,7 +140,28 @@ Examples:
         """
     )
 
-    parser.add_argument('reads', type=Path, help='Input FASTQ or FASTQ.GZ file')
+    parser.add_argument(
+        'reads', type=Path,
+        help=(
+            'Input FASTQ, FASTQ.GZ, or BAM file. BAM inputs are converted to '
+            'FASTQ before chunking; the derived FASTQ is written into '
+            '--output-dir. With --drs, the BAM is run through `trim-polya` '
+            'first (yielding a trimmed FASTQ + parquet metadata sidecar so '
+            'Step-4 restore-softclip can be invoked later). Without --drs, '
+            "the BAM is dumped via `samtools fastq -T '*'` (aux tags kept "
+            'as FASTQ comments, no trimming).'
+        ),
+    )
+    parser.add_argument(
+        '--drs', action='store_true', default=False,
+        help=(
+            'Treat a BAM input as a Dorado-aligned DRS BAM and run Step-0 '
+            'poly(A)/adapter trim (`trim-polya`) before chunking. The parquet '
+            'metadata is preserved at <output-dir>/<stem>_polya_trim_metadata'
+            '.parquet for later use by `rectify restore-softclip`. No effect '
+            'on FASTQ inputs.'
+        ),
+    )
 
     size_group = parser.add_mutually_exclusive_group()
     size_group.add_argument(
@@ -410,7 +437,7 @@ def _uge_headers(
 #$ -N {job_name}
 #$ -q {queue}
 #$ -pe {pe} {cores}
-#$ -l h_vmem={mem_per_slot}G
+#$ -l h_data={mem_per_slot}G
 #$ -l h_rt={time}
 {array_line}
 #$ -o {log_dir}/
@@ -2153,6 +2180,86 @@ def run_split(args: argparse.Namespace) -> int:
     if not args.reads.exists():
         logger.error("Reads file not found: %s", args.reads)
         return 1
+
+    # ── BAM input: convert to FASTQ once ──────────────────────────────────
+    # For DRS BAMs (--drs), use the same Step-0 trim run-all performs:
+    # ``trim_drs_bam_polya`` walks back the poly(A)/adapter tail and emits
+    # both a trimmed unaligned BAM and a parquet metadata sidecar (carries
+    # original poly-A length + boundary, required by Step-4 restore-softclip).
+    # Without --drs we fall back to ``samtools fastq -T '*'`` which preserves
+    # all aux tags as FASTQ comments but does NOT trim — appropriate for
+    # non-DRS BAMs where the poly-A tail isn't artificial.
+    if args.reads.suffix == '.bam':
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        stem = args.reads.stem
+        derived_fq = args.output_dir / f"{stem}_trimmed.fastq.gz"
+        derived_meta = args.output_dir / f"{stem}_polya_trim_metadata.parquet"
+
+        if getattr(args, 'drs', False):
+            # DRS path: trim-polya → trimmed BAM → FASTQ (+ parquet metadata)
+            if derived_fq.exists() and derived_fq.stat().st_size > 0 and derived_meta.exists():
+                logger.info(
+                    "DRS BAM: reusing existing trim outputs at %s (+ %s)",
+                    derived_fq, derived_meta,
+                )
+            else:
+                if shutil.which('samtools') is None:
+                    logger.error("--drs BAM trim requires samtools on PATH.")
+                    return 1
+                from .drs_trim_command import trim_drs_bam_polya
+                trimmed_bam = args.output_dir / f"{stem}_trimmed.bam"
+                logger.info(
+                    "DRS BAM: trim-polya %s → %s + %s",
+                    args.reads, derived_fq, derived_meta,
+                )
+                trim_stats = trim_drs_bam_polya(
+                    input_bam_path=str(args.reads),
+                    output_bam_path=str(trimmed_bam),
+                    metadata_path=str(derived_meta),
+                    threads=max(1, getattr(args, 'threads', 4)),
+                )
+                logger.info(
+                    "  Trimmed %s / %s reads",
+                    f"{trim_stats.get('trimmed', 0):,}",
+                    f"{trim_stats.get('total', 0):,}",
+                )
+                cmd = f"samtools fastq -@ {max(1, getattr(args, 'threads', 4) - 1)} -0 {derived_fq} {trimmed_bam}"
+                try:
+                    subprocess.run(cmd, shell=True, check=True)
+                except subprocess.CalledProcessError as e:
+                    logger.error("samtools fastq failed (exit %d): %s", e.returncode, e)
+                    return 1
+                logger.info(
+                    "  Metadata parquet preserved at %s — pass it to "
+                    "`rectify restore-softclip --trim-metadata` after the "
+                    "chunked correction pipeline finishes.",
+                    derived_meta,
+                )
+        else:
+            # Non-DRS BAM path: dump to FASTQ preserving aux tags as comments
+            if shutil.which('samtools') is None:
+                logger.error(
+                    "BAM input requires samtools on PATH (got %s).",
+                    args.reads,
+                )
+                return 1
+            derived_fq = args.output_dir / f"{stem}.fastq.gz"
+            if derived_fq.exists() and derived_fq.stat().st_size > 0:
+                logger.info("BAM input: reusing existing FASTQ at %s", derived_fq)
+            else:
+                logger.info(
+                    "BAM input: converting %s → %s (samtools fastq -T '*', preserves aux tags as comments)",
+                    args.reads, derived_fq,
+                )
+                cmd = f"samtools fastq -T '*' {args.reads} | gzip > {derived_fq}"
+                try:
+                    subprocess.run(cmd, shell=True, check=True)
+                except subprocess.CalledProcessError as e:
+                    logger.error("samtools fastq failed (exit %d): %s", e.returncode, e)
+                    if derived_fq.exists():
+                        derived_fq.unlink()
+                    return 1
+        args.reads = derived_fq
 
     # ── Determine chunk count ─────────────────────────────────────────────
     if args.n_chunks is not None:
