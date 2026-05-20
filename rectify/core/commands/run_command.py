@@ -446,6 +446,18 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--aligner-concurrency',
+        default='auto',
+        metavar='{auto,1,N}',
+        help=(
+            'Correct multiple aligners with a shared worker budget. auto disables '
+            'this second parallelism axis on small laptops and reserves two CPUs '
+            'for merge/main-process overhead on cluster nodes. Use 1 to preserve '
+            'sequential-aligner correction behavior.'
+        )
+    )
+
+    run_parser.add_argument(
         '--mapPacBio-chunks',
         type=int,
         default=1,
