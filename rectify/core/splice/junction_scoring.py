@@ -22,6 +22,7 @@ Do not import from ``junction_refiner`` here.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 import numpy as _np
@@ -225,9 +226,24 @@ def build_junction_pool(
 
     all_j: Set[Junction] = set(annot_3)
 
-    for bam_path in aligner_bams:
-        novel = collect_junctions_from_bam(bam_path, chrom_filter=chrom_filter)
+    if not aligner_bams:
+        # No aligner BAMs — pool is just the annotated set.
+        pass
+    elif len(aligner_bams) == 1:
+        # Single aligner — avoid fork overhead.
+        novel = collect_junctions_from_bam(aligner_bams[0], chrom_filter=chrom_filter)
         all_j.update(novel)
+    else:
+        # Multiple aligners — process in parallel (one process per BAM).
+        from concurrent.futures import ProcessPoolExecutor
+        n_workers = min(len(aligner_bams), os.cpu_count() or 4)
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            futures = [
+                ex.submit(collect_junctions_from_bam, bp, chrom_filter)
+                for bp in aligner_bams
+            ]
+            for fut in futures:
+                all_j.update(fut.result())
 
     logger.debug(
         "build_junction_pool: %d annotated, %d novel, %d total",

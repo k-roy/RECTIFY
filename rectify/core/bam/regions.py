@@ -8,9 +8,61 @@ to produce balanced work units for the parallel correction pipeline.
 Author: Kevin R. Roy
 """
 
-from typing import List, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import pysam
+
+
+@dataclass(frozen=True)
+class RegionPlan:
+    """A single region's work plan for parallel BAM processing.
+
+    Carries an id (stable across runs given the same input + min_gap_size)
+    and a per-region temp dir so workers can write outputs without colliding.
+    """
+    region_id: str          # e.g. "r000", "r001"; left-padded so lex-sort == coord-sort
+    chrom: str
+    start: int              # 0-based, inclusive
+    end: int                # 0-based, exclusive (pysam fetch convention)
+    tmp_dir: Path           # per-region scratch dir (workers write region_NNN.bam etc. here)
+
+    @property
+    def region_bam(self) -> Path:
+        return self.tmp_dir / f"{self.region_id}.bam"
+
+    @property
+    def ok_sentinel(self) -> Path:
+        """Marker file written ONLY after region_bam is fully sorted + fsync'd.
+        Existence -> this region's work is durably complete."""
+        return self.tmp_dir / f"{self.region_id}.bam.ok"
+
+
+def plan_regions(
+    bam_path: str,
+    tmp_dir: Path,
+    min_gap_size: int = 10000,
+    max_region_size: int = 100000,
+) -> List[RegionPlan]:
+    """Wrap get_processing_regions() into RegionPlan objects.
+
+    Region ids are assigned in coordinate order using fixed-width zero-padding
+    so that lex-sort matches coord-sort (matters for samtools merge of
+    'region_*.bam' globbed in shell order).
+    """
+    raw = get_processing_regions(bam_path, min_gap_size=min_gap_size, max_region_size=max_region_size)
+    width = max(3, len(str(max(len(raw) - 1, 0))))  # at least 3 digits, more if needed
+    plans = []
+    for i, (chrom, start, end) in enumerate(raw):
+        plans.append(RegionPlan(
+            region_id=f"r{i:0{width}d}",
+            chrom=chrom,
+            start=start,
+            end=end,
+            tmp_dir=tmp_dir,
+        ))
+    return plans
 
 
 def find_coverage_gaps(
