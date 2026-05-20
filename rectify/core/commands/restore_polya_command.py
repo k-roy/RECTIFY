@@ -36,6 +36,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
 import pysam
 
 from ...utils.genome import reverse_complement
@@ -196,6 +197,46 @@ def _restore_read_polya(
 # ---------------------------------------------------------------------------
 
 
+def _load_winning_aligners(corrected_tsv_path: str) -> Dict[str, str]:
+    """Load read_id -> winning_aligner from a merged TSV or region manifest."""
+    corrected_path = Path(corrected_tsv_path)
+    with corrected_path.open() as fh:
+        header = fh.readline().rstrip('\n').split('\t')
+
+    if header == ['region_id', 'chrom', 'start', 'end', 'tsv_path', 'n_rows', 'sha256']:
+        from ..bam.tsv_partition import load_manifest
+
+        frames = [
+            pd.read_csv(
+                entry['tsv_path'],
+                sep='\t',
+                usecols=lambda c: c in ('read_id', 'winning_aligner'),
+            )
+            for entry in load_manifest(corrected_path)
+        ]
+        if frames:
+            tsv = pd.concat(frames, ignore_index=True)
+        else:
+            tsv = pd.DataFrame(columns=['read_id', 'winning_aligner'])
+    else:
+        tsv = pd.read_csv(
+            corrected_path,
+            sep='\t',
+            usecols=lambda c: c in ('read_id', 'winning_aligner'),
+        )
+
+    if 'winning_aligner' not in tsv.columns:
+        raise ValueError(
+            f"corrected reads table at {corrected_tsv_path} has no winning_aligner column. "
+            "Re-run rectify consensus / run-all to regenerate with the updated corrected_consensus.py."
+        )
+    if 'read_id' not in tsv.columns:
+        raise ValueError(
+            f"corrected reads table at {corrected_tsv_path} has no read_id column."
+        )
+    return dict(zip(tsv['read_id'], tsv['winning_aligner']))
+
+
 def restore_polya_softclips(
     corrected_tsv_path: str,
     aligner_bam_paths: Dict[str, str],
@@ -225,8 +266,6 @@ def restore_polya_softclips(
         Stats dict: total, restored, unchanged, skipped_no_meta, skipped_no_trim,
                     skipped_no_aligner_bam, skipped_no_read.
     """
-    import pandas as pd
-
     stats: Dict = {
         'total': 0,
         'restored': 0,
@@ -242,13 +281,7 @@ def restore_polya_softclips(
     print(f"  Loaded {len(metadata):,} read records")
 
     print(f"Loading corrected TSV from: {corrected_tsv_path}")
-    tsv = pd.read_csv(corrected_tsv_path, sep='\t', usecols=lambda c: c in ('read_id', 'winning_aligner'))
-    if 'winning_aligner' not in tsv.columns:
-        raise ValueError(
-            f"corrected_reads.tsv at {corrected_tsv_path} has no winning_aligner column. "
-            "Re-run rectify consensus / run-all to regenerate with the updated corrected_consensus.py."
-        )
-    read_to_aligner: Dict[str, str] = dict(zip(tsv['read_id'], tsv['winning_aligner']))
+    read_to_aligner = _load_winning_aligners(corrected_tsv_path)
     print(f"  {len(read_to_aligner):,} reads, {len(set(read_to_aligner.values()))} aligners")
 
     # Build index: aligner → set of read_ids that aligner won
@@ -401,7 +434,10 @@ def create_restore_softclip_parser(subparsers):
     )
     restore_sc_parser.add_argument(
         'corrected_tsv',
-        help='corrected_reads.tsv produced by rectify correct (must contain winning_aligner column)',
+        help=(
+            'corrected_reads.tsv or corrected_reads.manifest.tsv produced by rectify correct '
+            '(must contain winning_aligner column)'
+        ),
     )
     restore_sc_parser.add_argument(
         '--aligner-bams',
