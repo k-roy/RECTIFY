@@ -824,7 +824,11 @@ def merge_corrected_tsvs(
     # ``effectively_matched_winner`` is True when the row's cluster is the
     # same as the winning aligner's cluster.
     def _eff_key(_row):
-        _juncs = _row.get('junctions', '') or ''
+        _juncs = _row.get('junctions', '')
+        # pandas .get() returns NaN (a truthy float) when the column is
+        # missing, so `or ''` does NOT catch it — coerce to str first.
+        if not isinstance(_juncs, str):
+            _juncs = ''
         # Normalize: sort the donor-acceptor tuples so semicolon-order
         # differences across aligners don't shadow real equivalence.
         _parts = tuple(sorted(p for p in _juncs.split(';') if p))
