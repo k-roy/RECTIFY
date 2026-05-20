@@ -831,3 +831,199 @@ class TestAltSpliceGenes:
             f"TFC3 alt 3'SS reads moved to non-canonical junction: "
             f"{n_non_canonical}/{n_tested}"
         )
+
+
+# ---------------------------------------------------------------------------
+# PenaltyTableSet — per-UMI-bin table routing
+# ---------------------------------------------------------------------------
+
+class TestPenaltyTableSet:
+    """Unit tests for PenaltyTableSet.for_read() tag-based routing.
+
+    Uses minimal HpPenaltyTable instances and synthetic pysam reads; no BAM
+    files needed.
+    """
+
+    @staticmethod
+    def _make_table():
+        """Return a minimal valid HpPenaltyTable (used as a distinct sentinel)."""
+        from rectify.core.splice.hp_penalty import HpPenaltyTable
+        return HpPenaltyTable(
+            del_tables={'AT': {1: 1.0}, 'CG': {1: 1.0}},
+            ins_tables={'AT': {1: 1.25}, 'CG': {1: 1.25}},
+        )
+
+    @staticmethod
+    def _make_read(xc=None):
+        """Return a minimal AlignedSegment with optional XC tag."""
+        read = pysam.AlignedSegment()
+        read.query_name = 'test'
+        read.query_sequence = 'ACGT'
+        read.flag = 0
+        if xc is not None:
+            read.set_tag('XC', xc)
+        return read
+
+    def _make_set(self):
+        self.t_umi1    = self._make_table()
+        self.t_umi2    = self._make_table()
+        self.t_umi3p   = self._make_table()
+        self.t_pooled  = self._make_table()
+        from rectify.core.splice.junction_refiner import PenaltyTableSet
+        return PenaltyTableSet(
+            bins={
+                'umi1': self.t_umi1,
+                'umi2': self.t_umi2,
+                'umi3plus': self.t_umi3p,
+                'pooled': self.t_pooled,
+            },
+            umi_tag='XC',
+        )
+
+    def test_singleton_routes_to_umi1(self):
+        pts = self._make_set()
+        read = self._make_read(xc=1)
+        assert pts.for_read(read) is self.t_umi1
+
+    def test_doubleton_routes_to_umi2(self):
+        pts = self._make_set()
+        read = self._make_read(xc=2)
+        assert pts.for_read(read) is self.t_umi2
+
+    def test_tripleton_routes_to_umi3plus(self):
+        pts = self._make_set()
+        read = self._make_read(xc=3)
+        assert pts.for_read(read) is self.t_umi3p
+
+    def test_large_count_routes_to_umi3plus(self):
+        pts = self._make_set()
+        read = self._make_read(xc=50)
+        assert pts.for_read(read) is self.t_umi3p
+
+    def test_missing_tag_falls_back_to_pooled(self):
+        pts = self._make_set()
+        read = self._make_read(xc=None)  # no XC tag
+        assert pts.for_read(read) is self.t_pooled
+
+    def test_missing_bin_falls_back_to_pooled(self):
+        """If a specific bin is absent from the dict, return the pooled table."""
+        from rectify.core.splice.junction_refiner import PenaltyTableSet
+        t_pooled = self._make_table()
+        pts = PenaltyTableSet(
+            bins={'pooled': t_pooled},  # no umi1/umi2/umi3plus
+            umi_tag='XC',
+        )
+        assert pts.for_read(self._make_read(xc=1)) is t_pooled
+        assert pts.for_read(self._make_read(xc=2)) is t_pooled
+        assert pts.for_read(self._make_read(xc=5)) is t_pooled
+
+    def test_no_pooled_and_missing_bin_returns_none(self):
+        """No pooled entry and no matching bin → None (safe null sentinel)."""
+        from rectify.core.splice.junction_refiner import PenaltyTableSet
+        t_umi1 = self._make_table()
+        pts = PenaltyTableSet(bins={'umi1': t_umi1}, umi_tag='XC')
+        assert pts.for_read(self._make_read(xc=2)) is None
+        assert pts.for_read(self._make_read(xc=None)) is None
+
+
+class TestRefineReadBatchWiring:
+    """Wiring tests for _refine_read_batch parallel worker per-read routing.
+
+    Verifies that when _WORKER_POOL_STATE contains a PenaltyTableSet, the
+    worker calls penalty_table_set.for_read(read) for each read and passes the
+    result as penalty_table= to refine_read_junctions.
+    """
+
+    def test_per_read_routing_in_worker(self):
+        """XC=1→umi1, XC=2→umi2, XC=5→umi3plus tables passed to refine_read_junctions."""
+        import unittest.mock as _mock
+        from rectify.core.splice.junction_refiner import (
+            _refine_read_batch,
+            _WORKER_POOL_STATE,
+            PenaltyTableSet,
+        )
+        from rectify.core.splice.hp_penalty import HpPenaltyTable
+
+        def _make_table():
+            return HpPenaltyTable(
+                del_tables={'AT': {1: 1.0}},
+                ins_tables={'AT': {1: 1.25}},
+            )
+
+        t1, t2, t3p = _make_table(), _make_table(), _make_table()
+        pts = PenaltyTableSet(
+            bins={'umi1': t1, 'umi2': t2, 'umi3plus': t3p},
+            umi_tag='XC',
+        )
+
+        header = pysam.AlignmentHeader.from_dict({
+            'HD': {'VN': '1.6'},
+            'SQ': [{'SN': 'chrI', 'LN': 230218}],
+        })
+
+        _WORKER_POOL_STATE.clear()
+        _WORKER_POOL_STATE.update({
+            'header': header,
+            'junctions_idx': {},
+            'annotated_set': set(),
+            'genome': {'chrI': 'ACGT' * 100},
+            'kwargs': {},
+            'penalty_table_set': pts,
+        })
+
+        sam_strings = [
+            'r1\t0\tchrI\t1\t255\t10M\t*\t0\t0\tACGTACGTAC\t**********\tXC:i:1',
+            'r2\t0\tchrI\t1\t255\t10M\t*\t0\t0\tACGTACGTAC\t**********\tXC:i:2',
+            'r3\t0\tchrI\t1\t255\t10M\t*\t0\t0\tACGTACGTAC\t**********\tXC:i:5',
+        ]
+
+        target = 'rectify.core.splice.junction_refiner.refine_read_junctions'
+        try:
+            with _mock.patch(target, return_value=[]) as mock_rfj:
+                _refine_read_batch(sam_strings)
+        finally:
+            _WORKER_POOL_STATE.clear()
+
+        assert mock_rfj.call_count == 3
+        tables_used = [call[1]['penalty_table'] for call in mock_rfj.call_args_list]
+        assert tables_used[0] is t1    # XC=1 → umi1
+        assert tables_used[1] is t2    # XC=2 → umi2
+        assert tables_used[2] is t3p   # XC=5 → umi3plus
+
+    def test_no_penalty_table_set_passes_through_kwargs(self):
+        """When penalty_table_set is None, kwargs are forwarded unmodified."""
+        import unittest.mock as _mock
+        from rectify.core.splice.junction_refiner import (
+            _refine_read_batch,
+            _WORKER_POOL_STATE,
+        )
+
+        header = pysam.AlignmentHeader.from_dict({
+            'HD': {'VN': '1.6'},
+            'SQ': [{'SN': 'chrI', 'LN': 230218}],
+        })
+
+        sentinel = object()
+        _WORKER_POOL_STATE.clear()
+        _WORKER_POOL_STATE.update({
+            'header': header,
+            'junctions_idx': {},
+            'annotated_set': set(),
+            'genome': {'chrI': 'ACGT' * 100},
+            'kwargs': {'hp_pen': sentinel},
+            # no penalty_table_set key → state.get returns None
+        })
+
+        sam_str = 'r1\t0\tchrI\t1\t255\t10M\t*\t0\t0\tACGTACGTAC\t**********\tXC:i:1'
+
+        target = 'rectify.core.splice.junction_refiner.refine_read_junctions'
+        try:
+            with _mock.patch(target, return_value=[]) as mock_rfj:
+                _refine_read_batch([sam_str])
+        finally:
+            _WORKER_POOL_STATE.clear()
+
+        assert mock_rfj.call_count == 1
+        kw = mock_rfj.call_args_list[0][1]
+        assert kw.get('hp_pen') is sentinel
+        assert 'penalty_table' not in kw
