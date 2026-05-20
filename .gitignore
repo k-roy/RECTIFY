@@ -115,6 +115,23 @@ site/
 
 # Development test runs (large alignment/correction outputs, not for version control)
 dev_runs/
+_h2_rebaseline/
+scripts/validation_data/rebuild_2026_05/
+scripts/calibration/runs/
+docs/figures/*.v2-backup.png
+docs/figures/*.v2-backup.svg
+rectify/data/validation/**/*.pre_regen
+
+# Diagnostic run outputs; keep reports/scripts/results under scripts/diagnostics
+scripts/diagnostics/**/*.bam
+scripts/diagnostics/**/*.bai
+scripts/diagnostics/**/*.paf
+scripts/diagnostics/**/*.fastq
+scripts/diagnostics/**/*.sam
+scripts/diagnostics/**/*.stderr
+scripts/diagnostics/**/*_stderr.txt
+scripts/diagnostics/**/qnames_*.txt
+scripts/diagnostics/**/ref/
 
 # Large reference data (downloaded separately, not for version control)
 rectify/data/*.fsa
