@@ -1,149 +1,101 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="420" viewBox="0 0 760 420">
-<rect fill="#ffffff" width="760" height="420"/>
-<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="400" y="22">Adaptive Valley Clustering</text>
-
-<!-- Plot area: x=70..730, y=40..340 (660w x 300h) -->
-<!-- Y axis: 0..50 counts, X axis: 0..100 bp -->
-<!-- Scale: x = 70 + pos*6.6, y = 340 - count*6 -->
-
-<!-- Y axis -->
-<line x1="70" y1="40" x2="70" y2="340" stroke="#94a3b8" stroke-width="1"/>
-<!-- Y axis ticks and labels -->
-<line x1="65" y1="340" x2="70" y2="340" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="end" x="62" y="344">0</text>
-<line x1="65" y1="280" x2="70" y2="280" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="end" x="62" y="284">10</text>
-<line x1="65" y1="220" x2="70" y2="220" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="end" x="62" y="224">20</text>
-<line x1="65" y1="160" x2="70" y2="160" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="end" x="62" y="164">30</text>
-<line x1="65" y1="100" x2="70" y2="100" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="end" x="62" y="104">40</text>
-<!-- Y grid lines -->
-<line x1="70" y1="280" x2="730" y2="280" stroke="#e2e8f0" stroke-width="0.5"/>
-<line x1="70" y1="220" x2="730" y2="220" stroke="#e2e8f0" stroke-width="0.5"/>
-<line x1="70" y1="160" x2="730" y2="160" stroke="#e2e8f0" stroke-width="0.5"/>
-<line x1="70" y1="100" x2="730" y2="100" stroke="#e2e8f0" stroke-width="0.5"/>
-<!-- Y axis label -->
-<text fill="#475569" font-size="11" font-weight="600" text-anchor="middle" x="20" y="190" transform="rotate(-90,20,190)">3′ End Read Counts</text>
-
-<!-- X axis -->
-<line x1="70" y1="340" x2="730" y2="340" stroke="#94a3b8" stroke-width="1"/>
-<!-- X axis ticks: every 20 bp -->
-<line x1="70" y1="340" x2="70" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="70" y="358">0</text>
-<line x1="202" y1="340" x2="202" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="202" y="358">20</text>
-<line x1="334" y1="340" x2="334" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="334" y="358">40</text>
-<line x1="466" y1="340" x2="466" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="466" y="358">60</text>
-<line x1="598" y1="340" x2="598" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="598" y="358">80</text>
-<line x1="730" y1="340" x2="730" y2="345" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" text-anchor="middle" x="730" y="358">100</text>
-<!-- X axis label -->
-<text fill="#475569" font-size="11" font-weight="600" text-anchor="middle" x="400" y="378">Genomic Position (bp)</text>
-
-<!-- Cluster shading backgrounds -->
-<!-- Cluster 1: pos 12-38 → x=149.2..320.8 -->
-<rect x="149" y="40" width="172" height="300" fill="#d6e6f5" opacity="0.4"/>
-<!-- Cluster 2: pos 38-68 → x=320.8..518.8 -->
-<rect x="321" y="40" width="198" height="300" fill="#fde8c8" opacity="0.4"/>
-<!-- Cluster 3: pos 68-92 → x=518.8..677.2 -->
-<rect x="519" y="40" width="158" height="300" fill="#dff5c8" opacity="0.4"/>
-
-<!-- Cluster boundary lines (dashed) -->
-<line x1="149" y1="40" x2="149" y2="340" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6,4" opacity="0.7"/>
-<line x1="321" y1="40" x2="321" y2="340" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6,4" opacity="0.7"/>
-<line x1="519" y1="40" x2="519" y2="340" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6,4" opacity="0.7"/>
-<line x1="677" y1="40" x2="677" y2="340" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6,4" opacity="0.7"/>
-
-<!-- HISTOGRAM BARS -->
-<!-- Cluster 1 (blue #6c9fd8): peaks at pos 15-30 region -->
-<!-- pos*6.6+70 = x, count*6 = height from baseline 340 -->
-<rect x="167" y="334" width="5" height="6" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos15, 1 -->
-<rect x="180" y="298" width="5" height="42" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos17, 7 -->
-<rect x="187" y="268" width="5" height="72" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos18, 12 -->
-<rect x="193" y="226" width="5" height="114" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos19, 19 -->
-<rect x="200" y="202" width="5" height="138" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos20, 23 -->
-<rect x="206" y="172" width="5" height="168" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos21, 28 -->
-<rect x="213" y="112" width="5" height="228" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos22, 38 PEAK -->
-<rect x="219" y="232" width="5" height="108" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos23, 18 -->
-<rect x="226" y="244" width="5" height="96" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos24, 16 -->
-<rect x="232" y="274" width="5" height="66" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos25, 11 -->
-<rect x="239" y="316" width="5" height="24" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos26, 4 -->
-<rect x="245" y="328" width="5" height="12" fill="#6c9fd8" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos27, 2 -->
-
-<!-- Cluster 2 (orange #e8a848): peaks at pos 42-58 region -->
-<rect x="347" y="334" width="5" height="6" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos42, 1 -->
-<rect x="354" y="334" width="5" height="6" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos43, 1 -->
-<rect x="360" y="292" width="5" height="48" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos44, 8 -->
-<rect x="367" y="274" width="5" height="66" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos45, 11 -->
-<rect x="373" y="226" width="5" height="114" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos46, 19 -->
-<rect x="380" y="220" width="5" height="120" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos47, 20 -->
-<rect x="386" y="196" width="5" height="144" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos48, 24 -->
-<rect x="393" y="184" width="5" height="156" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos49, 26 PEAK -->
-<rect x="399" y="190" width="5" height="150" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos50, 25 -->
-<rect x="406" y="226" width="5" height="114" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos51, 19 -->
-<rect x="412" y="274" width="5" height="66" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos52, 11 -->
-<rect x="419" y="334" width="5" height="6" fill="#e8a848" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos53, 1 -->
-
-<!-- Cluster 3 (green #8bc46a): peaks at pos 76-90 region -->
-<rect x="571" y="334" width="5" height="6" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos76, 1 -->
-<rect x="578" y="274" width="5" height="66" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos77, 11 -->
-<rect x="584" y="262" width="5" height="78" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos78, 13 -->
-<rect x="591" y="250" width="5" height="90" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos79, 15 -->
-<rect x="597" y="244" width="5" height="96" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos80, 16 PEAK (rescaled) -->
-<rect x="604" y="280" width="5" height="60" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos81, 10 -->
-<rect x="610" y="286" width="5" height="54" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos82, 9 -->
-<rect x="617" y="298" width="5" height="42" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos83, 7 -->
-<rect x="623" y="304" width="5" height="36" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos84, 6 -->
-<rect x="630" y="316" width="5" height="24" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos85, 4 -->
-<rect x="636" y="322" width="5" height="18" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos86, 3 -->
-<rect x="643" y="328" width="5" height="12" fill="#8bc46a" stroke="#fff" stroke-width="0.3" rx="0.5"/><!-- pos87, 2 -->
-
-<!-- Peak markers (red inverted triangles) -->
-<!-- Cluster 1 peak at pos 22 → x=215 -->
-<polygon points="215,98 210,88 220,88" fill="#dc2626" stroke="#991b1b" stroke-width="1"/>
-<!-- Cluster 2 peak at pos 49 → x=395 -->
-<polygon points="395,170 390,160 400,160" fill="#dc2626" stroke="#991b1b" stroke-width="1"/>
-<!-- Cluster 3 peak at pos 80 → x=599 -->
-<polygon points="599,230 594,220 604,220" fill="#dc2626" stroke="#991b1b" stroke-width="1"/>
-
-<!-- Valley markers (cyan upward triangles) -->
-<!-- Valley between C1/C2 at pos 38 → x=321 -->
-<polygon points="321,326 316,336 326,336" fill="#06b6d4" stroke="#0891b2" stroke-width="1"/>
-<!-- Valley between C2/C3 at pos 68 → x=519 -->
-<polygon points="519,326 514,336 524,336" fill="#06b6d4" stroke="#0891b2" stroke-width="1"/>
-
-<!-- Cluster labels (positioned INSIDE shading, above bars) -->
-<text fill="#1e40af" font-size="11" font-weight="bold" text-anchor="middle" x="235" y="58">Cluster 1</text>
-<text fill="#1e40af" font-size="9" text-anchor="middle" x="235" y="72">192 reads</text>
-
-<text fill="#9a3412" font-size="11" font-weight="bold" text-anchor="middle" x="420" y="58">Cluster 2</text>
-<text fill="#9a3412" font-size="9" text-anchor="middle" x="420" y="72">170 reads</text>
-
-<text fill="#166534" font-size="11" font-weight="bold" text-anchor="middle" x="598" y="58">Cluster 3</text>
-<text fill="#166534" font-size="9" text-anchor="middle" x="598" y="72">80 reads</text>
-
-<!-- Legend (horizontal, under title, centered) -->
-<rect x="200" y="30" width="360" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="#e2e8f0" stroke-width="0.6"/>
-<!-- Peak marker -->
-<polygon points="218,40 214,34 222,34" fill="#dc2626" stroke="#991b1b" stroke-width="0.7"/>
-<text fill="#64748b" font-size="9" x="226" y="42">Peak (local max)</text>
-<!-- Valley marker -->
-<polygon points="338,39 334,44 342,44" fill="#06b6d4" stroke="#0891b2" stroke-width="0.7"/>
-<text fill="#64748b" font-size="9" x="346" y="42">Valley (local min)</text>
-<!-- Boundary line -->
-<line x1="440" y1="39" x2="454" y2="39" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3"/>
-<text fill="#64748b" font-size="9" x="458" y="42">Cluster boundary</text>
-
-<!-- Algorithm note (bottom left) -->
-<rect x="76" y="388" width="360" height="24" rx="3" fill="#fefce8" fill-opacity="0.9" stroke="#d4d4d8" stroke-width="0.6"/>
-<text fill="#78716c" font-size="9" x="82" y="404">Algorithm: find peaks → find valleys → boundary = midpoint(peak, valley) ± 10 bp cap</text>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="280" viewBox="0 0 760 280">
+<rect fill="#ffffff" width="760" height="280"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">Adaptive valley clustering</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="44">group nearby CPA sites by peaks-then-valleys; boundaries at midpoints</text>
+<line x1="80" x2="720" y1="230" y2="230" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="80.0" x2="80.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="80.0" y="246">0</text>
+<line x1="208.0" x2="208.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="208.0" y="246">20</text>
+<line x1="336.0" x2="336.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="336.0" y="246">40</text>
+<line x1="464.0" x2="464.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="464.0" y="246">60</text>
+<line x1="592.0" x2="592.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="592.0" y="246">80</text>
+<line x1="720.0" x2="720.0" y1="230" y2="234" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="720.0" y="246">100</text>
+<text fill="#475569" font-size="9.5" font-weight="600" text-anchor="middle" x="400.0" y="262">Genomic position (bp)</text>
+<line x1="76" x2="80" y1="192.5" y2="192.5" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="end" x="72" y="195.5">10</text>
+<line x1="76" x2="80" y1="155.0" y2="155.0" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="end" x="72" y="158.0">20</text>
+<line x1="76" x2="80" y1="117.5" y2="117.5" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="end" x="72" y="120.5">30</text>
+<line x1="76" x2="80" y1="80.0" y2="80.0" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="end" x="72" y="83.0">40</text>
+<line x1="156.8" x2="156.8" y1="80" y2="230" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
+<line x1="323.2" x2="323.2" y1="80" y2="230" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
+<line x1="515.2" x2="515.2" y1="80" y2="230" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
+<line x1="668.8000000000001" x2="668.8000000000001" y1="80" y2="230" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
+<rect x="167.60000000000002" y="225.92941613820156" width="4" height="4.070583861798428" fill="#2563eb" opacity="0.85"/>
+<rect x="174.0" y="220.6336846721444" width="4" height="9.366315327855594" fill="#2563eb" opacity="0.85"/>
+<rect x="180.4" y="210.7147221387827" width="4" height="19.28527786121731" fill="#2563eb" opacity="0.85"/>
+<rect x="186.8" y="194.46731024923528" width="4" height="35.53268975076471" fill="#2563eb" opacity="0.85"/>
+<rect x="193.2" y="171.4164986027258" width="4" height="58.58350139727421" fill="#2563eb" opacity="0.85"/>
+<rect x="199.6" y="143.56938099094975" width="4" height="86.43061900905026" fill="#2563eb" opacity="0.85"/>
+<rect x="206.0" y="115.89492008435487" width="4" height="114.10507991564513" fill="#2563eb" opacity="0.85"/>
+<rect x="212.4" y="95.20077568078594" width="4" height="134.79922431921406" fill="#2563eb" opacity="0.85"/>
+<rect x="218.8" y="87.5" width="4" height="142.5" fill="#2563eb" opacity="0.85"/>
+<rect x="225.20000000000002" y="95.20077568078594" width="4" height="134.79922431921406" fill="#2563eb" opacity="0.85"/>
+<rect x="231.6" y="115.89492008435487" width="4" height="114.10507991564513" fill="#2563eb" opacity="0.85"/>
+<rect x="238.0" y="143.56938099094975" width="4" height="86.43061900905026" fill="#2563eb" opacity="0.85"/>
+<rect x="244.4" y="171.4164986027258" width="4" height="58.58350139727421" fill="#2563eb" opacity="0.85"/>
+<rect x="250.8" y="194.46731024923528" width="4" height="35.53268975076471" fill="#2563eb" opacity="0.85"/>
+<rect x="257.20000000000005" y="210.7147221387827" width="4" height="19.28527786121731" fill="#2563eb" opacity="0.85"/>
+<rect x="263.6" y="220.6336846721444" width="4" height="9.366315327855594" fill="#2563eb" opacity="0.85"/>
+<rect x="270.0" y="225.92941613820156" width="4" height="4.070583861798428" fill="#2563eb" opacity="0.85"/>
+<rect x="340.4" y="226.42584090954566" width="4" height="3.574159090454356" fill="#d97706" opacity="0.85"/>
+<rect x="346.8" y="222.84645899158267" width="4" height="7.153541008417332" fill="#d97706" opacity="0.85"/>
+<rect x="353.2" y="216.80480988443026" width="4" height="13.195190115569739" fill="#d97706" opacity="0.85"/>
+<rect x="359.6" y="207.5685358481036" width="4" height="22.431464151896385" fill="#d97706" opacity="0.85"/>
+<rect x="366.0" y="194.85634061171245" width="4" height="35.143659388287546" fill="#d97706" opacity="0.85"/>
+<rect x="372.40000000000003" y="179.25611320048154" width="4" height="50.74388679951846" fill="#d97706" opacity="0.85"/>
+<rect x="378.79999999999995" y="162.47449088999323" width="4" height="67.52550911000677" fill="#d97706" opacity="0.85"/>
+<rect x="385.2" y="147.18683288458953" width="4" height="82.81316711541047" fill="#d97706" opacity="0.85"/>
+<rect x="391.6" y="136.39946947466592" width="4" height="93.60053052533408" fill="#d97706" opacity="0.85"/>
+<rect x="398.0" y="132.5" width="4" height="97.5" fill="#d97706" opacity="0.85"/>
+<rect x="404.4" y="136.39946947466592" width="4" height="93.60053052533408" fill="#d97706" opacity="0.85"/>
+<rect x="410.8" y="147.18683288458953" width="4" height="82.81316711541047" fill="#d97706" opacity="0.85"/>
+<rect x="417.20000000000005" y="162.47449088999323" width="4" height="67.52550911000677" fill="#d97706" opacity="0.85"/>
+<rect x="423.6" y="179.25611320048154" width="4" height="50.74388679951846" fill="#d97706" opacity="0.85"/>
+<rect x="430.0" y="194.85634061171245" width="4" height="35.143659388287546" fill="#d97706" opacity="0.85"/>
+<rect x="436.40000000000003" y="207.5685358481036" width="4" height="22.431464151896385" fill="#d97706" opacity="0.85"/>
+<rect x="442.79999999999995" y="216.80480988443026" width="4" height="13.195190115569739" fill="#d97706" opacity="0.85"/>
+<rect x="449.2" y="222.84645899158267" width="4" height="7.153541008417332" fill="#d97706" opacity="0.85"/>
+<rect x="455.59999999999997" y="226.42584090954566" width="4" height="3.574159090454356" fill="#d97706" opacity="0.85"/>
+<rect x="538.8" y="227.36378398259555" width="4" height="2.636216017404446" fill="#059669" opacity="0.85"/>
+<rect x="545.2" y="224.51637467863716" width="4" height="5.483625321362838" fill="#059669" opacity="0.85"/>
+<rect x="551.6" y="219.65470256637482" width="4" height="10.345297433625172" fill="#059669" opacity="0.85"/>
+<rect x="558.0" y="212.29864062953342" width="4" height="17.701359370466573" fill="#059669" opacity="0.85"/>
+<rect x="564.4" y="202.52999829370313" width="4" height="27.47000170629686" fill="#059669" opacity="0.85"/>
+<rect x="570.8" y="191.33667651048827" width="4" height="38.66332348951172" fill="#059669" opacity="0.85"/>
+<rect x="577.2" y="180.64534625608013" width="4" height="49.354653743919876" fill="#059669" opacity="0.85"/>
+<rect x="583.6" y="172.85931200628943" width="4" height="57.140687993710586" fill="#059669" opacity="0.85"/>
+<rect x="590.0" y="170.0" width="4" height="60.0" fill="#059669" opacity="0.85"/>
+<rect x="596.4000000000001" y="172.85931200628943" width="4" height="57.140687993710586" fill="#059669" opacity="0.85"/>
+<rect x="602.8" y="180.64534625608013" width="4" height="49.354653743919876" fill="#059669" opacity="0.85"/>
+<rect x="609.1999999999999" y="191.33667651048827" width="4" height="38.66332348951172" fill="#059669" opacity="0.85"/>
+<rect x="615.6" y="202.52999829370313" width="4" height="27.47000170629686" fill="#059669" opacity="0.85"/>
+<rect x="622.0" y="212.29864062953342" width="4" height="17.701359370466573" fill="#059669" opacity="0.85"/>
+<rect x="628.4" y="219.65470256637482" width="4" height="10.345297433625172" fill="#059669" opacity="0.85"/>
+<rect x="634.8" y="224.51637467863716" width="4" height="5.483625321362838" fill="#059669" opacity="0.85"/>
+<rect x="641.2" y="227.36378398259555" width="4" height="2.636216017404446" fill="#059669" opacity="0.85"/>
+<polygon points="215.8,66.5 225.8,66.5 220.8,73.5" fill="#dc2626" stroke="#dc2626"/>
+<text fill="#2563eb" font-size="9.5" font-weight="700" text-anchor="middle" x="220.8" y="59.5">Cluster 1</text>
+<polygon points="395.0,111.5 405.0,111.5 400.0,118.5" fill="#dc2626" stroke="#dc2626"/>
+<text fill="#d97706" font-size="9.5" font-weight="700" text-anchor="middle" x="400.0" y="104.5">Cluster 2</text>
+<polygon points="587.0,149.0 597.0,149.0 592.0,156.0" fill="#dc2626" stroke="#dc2626"/>
+<text fill="#059669" font-size="9.5" font-weight="700" text-anchor="middle" x="592.0" y="142.0">Cluster 3</text>
+<polygon points="319.2,228 327.2,228 323.2,222" fill="#0d9488" stroke="#0d9488"/>
+<polygon points="511.20000000000005,228 519.2,228 515.2,222" fill="#0d9488" stroke="#0d9488"/>
+<polygon points="485,57 495,57 490,64" fill="#dc2626"/>
+<text fill="#475569" font-size="9" font-weight="400" text-anchor="start" x="499" y="64">peak</text>
+<polygon points="547,64 557,64 552,57" fill="#0d9488"/>
+<text fill="#475569" font-size="9" font-weight="400" text-anchor="start" x="561" y="64">valley</text>
+<line x1="608" x2="628" y1="60" y2="60" stroke="#94a3b8" stroke-dasharray="3,3"/>
+<text fill="#475569" font-size="9" font-weight="400" text-anchor="start" x="632" y="64">cluster boundary</text>
 </g>
 </svg>

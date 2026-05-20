@@ -1,121 +1,40 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480">
-<rect fill="#ffffff" width="760" height="480"/>
-<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="14" font-weight="bold" text-anchor="middle" x="380" y="22">Read-vs-Reference 3′ End Walkback</text>
-
-<!-- ===== PANEL 1: OLD approach ===== -->
-<text fill="#dc2626" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="48">OLD — REFERENCE-ONLY A-TRACT DETECTION (stops at genomic A)</text>
-
-<text fill="#64748b" font-size="10" x="14" y="82">Reference</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="90" y="66" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="103" y="82">G</text>
-<rect fill="#f3e8ff" height="24" rx="3" width="26" x="116" y="66" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="129" y="82">C</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="142" y="66" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="155" y="82">T</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="168" y="66" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="181" y="82">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="194" y="66" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="207" y="82">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="220" y="66" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="233" y="82">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="246" y="66" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="259" y="82">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="272" y="66" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="285" y="82">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="298" y="66" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="311" y="82">G</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="324" y="66" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="337" y="82">T</text>
-<path d="M168,65 L168,60 L298,60 L298,65" fill="none" stroke="#059669" stroke-width="1" opacity="0.6"/>
-<text fill="#059669" font-size="8.5" text-anchor="middle" x="233" y="56">genomic A-tract (5 bp)</text>
-
-<text fill="#64748b" font-size="10" x="14" y="132">Read</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="90" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="103" y="132">G</text>
-<rect fill="#f3e8ff" height="24" rx="3" width="26" x="116" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="129" y="132">C</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="142" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="155" y="132">T</text>
-<!-- Read extends through genomic A-tract into poly-A tail -->
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="168" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="181" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="194" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="207" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="220" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="233" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="246" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="259" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="272" y="116" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="285" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="298" y="116" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="311" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="324" y="116" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="337" y="132">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="350" y="116" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="363" y="132">A</text>
-<path d="M298,141 L298,146 L376,146 L376,141" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.6"/>
-<text fill="#dc2626" font-size="8.5" text-anchor="middle" x="337" y="158">poly(A) aligned over genomic A's + beyond</text>
-
-<!-- Old approach result -->
-<text fill="#64748b" font-size="10" x="14" y="182">Result</text>
-<line stroke="#d97706" stroke-width="2" x1="168" x2="168" y1="168" y2="190"/>
-<text fill="#d97706" font-size="9" font-weight="600" x="173" y="180">old 3′ end: first genomic A</text>
-<text fill="#dc2626" font-size="8.5" font-style="italic" x="173" y="194">WRONG — internal priming into genomic A-tract goes undetected</text>
-
-<line stroke="#e2e8f0" stroke-width="1" x1="50" x2="710" y1="210" y2="210"/>
-
-<!-- ===== PANEL 2: NEW approach ===== -->
-<text fill="#059669" font-size="10" font-weight="bold" letter-spacing="0.8" x="60" y="232">NEW — READ-VS-REFERENCE WALKBACK (compares both sequences)</text>
-
-<text fill="#64748b" font-size="10" x="14" y="266">Reference</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="90" y="250" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="103" y="266">G</text>
-<rect fill="#f3e8ff" height="24" rx="3" width="26" x="116" y="250" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="129" y="266">C</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="142" y="250" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="155" y="266">T</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="168" y="250" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="181" y="266">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="194" y="250" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="207" y="266">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="220" y="250" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="233" y="266">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="246" y="250" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="259" y="266">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="272" y="250" stroke="#059669" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="285" y="266">A</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="298" y="250" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="311" y="266">G</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="324" y="250" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="337" y="266">T</text>
-
-<text fill="#64748b" font-size="10" x="14" y="316">Read</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="90" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="103" y="316">G</text>
-<rect fill="#f3e8ff" height="24" rx="3" width="26" x="116" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="129" y="316">C</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="142" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="155" y="316">T</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="168" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="181" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="194" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="207" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="220" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="233" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="246" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="259" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="272" y="300" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="285" y="316">A</text>
-<!-- poly-A extends past genomic A-tract -->
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="298" y="300" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="311" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="324" y="300" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="337" y="316">A</text>
-<rect fill="#dcfce7" height="24" rx="3" width="26" x="350" y="300" stroke="#fee2e2" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="363" y="316">A</text>
-
-<!-- Comparison annotations between ref and read -->
-<!-- pos 298: ref=G, read=A → mismatch, keep walking -->
-<text fill="#dc2626" font-size="8" font-weight="bold" text-anchor="middle" x="311" y="297">✗</text>
-<!-- pos 324: ref=T, read=A → mismatch, keep walking -->
-<text fill="#dc2626" font-size="8" font-weight="bold" text-anchor="middle" x="337" y="297">✗</text>
-<!-- pos 272: ref=A, read=A → both A, walk past -->
-<text fill="#d97706" font-size="7" font-weight="600" text-anchor="middle" x="285" y="297">A=A</text>
-<text fill="#d97706" font-size="7" font-weight="600" text-anchor="middle" x="259" y="297">A=A</text>
-<text fill="#d97706" font-size="7" font-weight="600" text-anchor="middle" x="233" y="297">A=A</text>
-<text fill="#d97706" font-size="7" font-weight="600" text-anchor="middle" x="207" y="297">A=A</text>
-<text fill="#d97706" font-size="7" font-weight="600" text-anchor="middle" x="181" y="297">A=A</text>
-<!-- pos 142: ref=T, read=T → match, non-A → STOP -->
-<text fill="#059669" font-size="8" font-weight="bold" text-anchor="middle" x="155" y="297">T=T ✓</text>
-
-<!-- Walk-back arrow -->
-<line stroke="#2563eb" stroke-width="1.5" x1="350" x2="160" y1="334" y2="334"/>
-<polygon fill="#2563eb" points="160,334 167,330.5 167,337.5"/>
-<text fill="#2563eb" font-size="9" text-anchor="middle" x="255" y="350">walk back: skip A=A pairs, skip mismatches → stop at T=T (non-A match)</text>
-
-<!-- Three-case gate box -->
-<rect x="410" y="250" width="290" height="80" rx="4" fill="#fefce8" fill-opacity="0.9" stroke="#d4d4d8" stroke-width="0.6"/>
-<text fill="#475569" font-size="9" font-weight="bold" x="418" y="266">Terminal gate (3 cases):</text>
-<text fill="#059669" font-size="8.5" x="418" y="282">1. non-A match → anchored (no walkback)</text>
-<text fill="#d97706" font-size="8.5" x="418" y="296">2. read A = ref A → walk inward</text>
-<text fill="#dc2626" font-size="8.5" x="418" y="310">3. mismatch → walk inward</text>
-<text fill="#64748b" font-size="8" font-style="italic" x="418" y="324">Stop: read == ref AND ref ≠ A</text>
-
-<!-- Corrected result -->
-<text fill="#64748b" font-size="10" x="14" y="380">Corrected</text>
-<rect fill="#dbeafe" height="24" rx="3" width="26" x="90" y="364" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#1e40af" font-size="11" font-weight="600" text-anchor="middle" x="103" y="380">G</text>
-<rect fill="#f3e8ff" height="24" rx="3" width="26" x="116" y="364" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="129" y="380">C</text>
-<rect fill="#ffedd5" height="24" rx="3" width="26" x="142" y="364" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="155" y="380">T</text>
-
-<line stroke="#059669" stroke-width="2" x1="168" x2="168" y1="356" y2="392"/>
-<text fill="#059669" font-size="9" font-weight="600" x="173" y="370">true 3′ end (CPA)</text>
-
-<!-- Protocol table -->
-<rect x="250" y="398" width="370" height="56" rx="3" fill="#f8fafc" stroke="#e2e8f0" stroke-width="0.6"/>
-<text fill="#475569" font-size="8.5" font-weight="bold" x="258" y="414">Protocol wiring:</text>
-<text fill="#64748b" font-size="8" x="258" y="428">DRS:          is_reverse → gene strand, 3′ = right side</text>
-<text fill="#64748b" font-size="8" x="258" y="442">QuantSeq REV: is_reverse → opposite strand, 3′ = left side</text>
-<text fill="#94a3b8" font-size="8" font-style="italic" x="258" y="456">walkback core is protocol-agnostic (walkback.py)</text>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="240" viewBox="0 0 760 240">
+<defs><marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,7 L7,3.5 z" fill="#2563eb"/></marker></defs>
+<rect fill="#ffffff" width="760" height="240"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">Read-vs-reference walkback</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="44">walk past A=A pairs AND tail seq errors to the true CPA</text>
+<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="249" y="97.0">Genome</text>
+<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="249" y="149.0">Read</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="261" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="275.0" y="97.0">C</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="291" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="305.0" y="97.0">C</text>
+<rect fill="#ffedd5" height="26" rx="3" width="28" x="321" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="335.0" y="97.0">T</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="351" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="365.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="381" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="411" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="425.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="441" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="455.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="471" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="485.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="501" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="515.0" y="97.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="531" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="545.0" y="97.0">A</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="261" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="275.0" y="149.0">C</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="291" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="11" font-weight="600" text-anchor="middle" x="305.0" y="149.0">C</text>
+<rect fill="#ffedd5" height="26" rx="3" width="28" x="321" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="335.0" y="149.0">T</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="351" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="365.0" y="149.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="381" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="395.0" y="149.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="411" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="425.0" y="149.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="441" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="455.0" y="149.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="471" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="485.0" y="149.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="501" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="11" font-weight="600" text-anchor="middle" x="515.0" y="149.0">A</text>
+<rect fill="#fee2e2" height="26" rx="3" width="28" x="531" y="132" stroke="#dc2626" stroke-width="1.2"/><text fill="#9a3412" font-size="11" font-weight="600" text-anchor="middle" x="545.0" y="149.0">T</text>
+<path d="M351,128 L351,123 L529,123 L529,128" fill="none" stroke="#0d9488" stroke-width="1" opacity="0.7"/>
+<text fill="#0d9488" font-size="8.5" font-weight="600" text-anchor="middle" x="440.0" y="119">A = A · walk in</text>
+<path d="M531,128 L531,123 L559,123 L559,128" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.7"/>
+<text fill="#dc2626" font-size="8.5" font-weight="600" text-anchor="middle" x="545.0" y="119">seq err</text>
+<line stroke="#2563eb" stroke-width="2" x1="350" x2="350" y1="126" y2="164"/>
+<line stroke="#2563eb" stroke-width="1.5" x1="559" x2="350" y1="186" y2="186"/>
+<polygon fill="#2563eb" points="350,186 357,182.5 357,189.5"/>
+<text fill="#2563eb" font-size="8.5" font-weight="400" text-anchor="middle" x="454.5" y="200">walk back from 3′ end</text>
+<text fill="#2563eb" font-size="10" font-weight="700" text-anchor="middle" x="350" y="218">true CPA (non-A match)</text>
 </g>
 </svg>

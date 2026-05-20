@@ -1,122 +1,37 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460">
-<rect fill="#ffffff" width="760" height="460"/>
-<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="16" font-weight="bold" text-anchor="middle" x="380" y="26">PCB114.24 ONT cDNA Read Architecture</text>
-
-<!-- PART 1: Read structure diagram -->
-<text fill="#475569" font-size="11" font-weight="bold" letter-spacing="0.6" x="50" y="54">READ STRUCTURE  (5' → 3' basecall orientation)</text>
-
-<!-- SSP region -->
-<rect x="50" y="68" width="86" height="34" rx="5" fill="#6366f1"/>
-<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="93" y="90">SSP</text>
-
-<!-- UMI region -->
-<rect x="136" y="68" width="110" height="34" rx="5" fill="#2563eb"/>
-<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="191" y="90">UMI (16 nt)</text>
-
-<!-- Bridge G -->
-<rect x="246" y="68" width="46" height="34" rx="5" fill="#0d9488"/>
-<text fill="#ffffff" font-size="11" font-weight="600" text-anchor="middle" x="269" y="90">GGG</text>
-
-<!-- cDNA body -->
-<rect x="292" y="68" width="260" height="34" rx="5" fill="#6366f1" opacity="0.15"/>
-<rect x="292" y="68" width="260" height="34" rx="5" fill="none" stroke="#6366f1" stroke-width="1"/>
-<text fill="#6366f1" font-size="11" font-weight="600" text-anchor="middle" x="422" y="90">cDNA body</text>
-
-<!-- Poly-A -->
-<rect x="552" y="68" width="86" height="34" rx="5" fill="#059669" opacity="0.15"/>
-<rect x="552" y="68" width="86" height="34" rx="5" fill="none" stroke="#059669" stroke-width="1"/>
-<text fill="#059669" font-size="11" font-weight="600" text-anchor="middle" x="595" y="90">poly(A)</text>
-
-<!-- Adapter -->
-<rect x="638" y="68" width="80" height="34" rx="5" fill="#94a3b8" opacity="0.25"/>
-<rect x="638" y="68" width="80" height="34" rx="5" fill="none" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" font-weight="600" text-anchor="middle" x="678" y="90">adapter</text>
-
-<!-- 5' and 3' labels -->
-<text fill="#94a3b8" font-size="10" x="30" y="90">5'</text>
-<text fill="#94a3b8" font-size="10" x="724" y="90">3'</text>
-
-<!-- Tag annotations below read structure -->
-<line x1="191" y1="102" x2="191" y2="120" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,2"/>
-<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="191" y="134">XU:Z tag</text>
-<text fill="#64748b" font-size="9" font-style="italic" text-anchor="middle" x="191" y="148">(TT-VVVV)×4 + TTT</text>
-
-<line x1="595" y1="102" x2="595" y2="120" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
-<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="595" y="134">XA:i tag</text>
-
-<line stroke="#e2e8f0" stroke-width="1" x1="40" x2="720" y1="166" y2="166"/>
-
-<!-- PART 2: Pipeline flow -->
-<text fill="#475569" font-size="11" font-weight="bold" letter-spacing="0.6" x="50" y="190">UMI CONSENSUS PIPELINE</text>
-
-<!-- Input BAM -->
-<rect x="50" y="206" width="156" height="30" rx="5" fill="#94a3b8" opacity="0.12"/>
-<rect x="50" y="206" width="156" height="30" rx="5" fill="none" stroke="#94a3b8" stroke-width="1"/>
-<text fill="#64748b" font-size="10" font-weight="600" text-anchor="middle" x="128" y="226">input BAM (minimap2)</text>
-
-<!-- Arrow -->
-<line x1="206" y1="221" x2="236" y2="221" stroke="#94a3b8" stroke-width="1.2"/>
-<polygon points="236,221 230,217.5 230,224.5" fill="#94a3b8"/>
-
-<!-- UMI extraction -->
-<rect x="238" y="206" width="146" height="30" rx="5" fill="#2563eb" opacity="0.12"/>
-<rect x="238" y="206" width="146" height="30" rx="5" fill="none" stroke="#2563eb" stroke-width="1.2"/>
-<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="311" y="226">UMI extraction</text>
-
-<!-- Arrow -->
-<line x1="384" y1="221" x2="414" y2="221" stroke="#94a3b8" stroke-width="1.2"/>
-<polygon points="414,221 408,217.5 408,224.5" fill="#94a3b8"/>
-
-<!-- Directional clustering -->
-<rect x="416" y="206" width="168" height="30" rx="5" fill="#2563eb" opacity="0.12"/>
-<rect x="416" y="206" width="168" height="30" rx="5" fill="none" stroke="#2563eb" stroke-width="1.2"/>
-<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="500" y="226">directional clustering</text>
-
-<!-- Clustering annotation -->
-<text fill="#64748b" font-size="9" font-style="italic" x="590" y="226">Lev ≤ 3, 2× rule</text>
-
-<!-- Arrow down from clustering -->
-<line x1="500" y1="236" x2="500" y2="260" stroke="#94a3b8" stroke-width="1.2"/>
-<polygon points="500,260 496.5,254 503.5,254" fill="#94a3b8"/>
-
-<!-- Split: XR>=2 and XR=1 -->
-<!-- abPOA branch -->
-<rect x="300" y="264" width="160" height="30" rx="5" fill="#059669" opacity="0.12"/>
-<rect x="300" y="264" width="160" height="30" rx="5" fill="none" stroke="#059669" stroke-width="1.2"/>
-<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="380" y="284">abPOA consensus</text>
-<text fill="#64748b" font-size="9" x="306" y="306">XR ≥ 2 reads → polished</text>
-
-<!-- singleton branch -->
-<rect x="510" y="264" width="160" height="30" rx="5" fill="#d97706" opacity="0.12"/>
-<rect x="510" y="264" width="160" height="30" rx="5" fill="none" stroke="#d97706" stroke-width="1.2"/>
-<text fill="#d97706" font-size="10" font-weight="600" text-anchor="middle" x="590" y="284">singleton pass</text>
-<text fill="#64748b" font-size="9" x="516" y="306">XR = 1 → original seq</text>
-
-<!-- Converge arrows to re-alignment -->
-<line x1="380" y1="294" x2="380" y2="318" stroke="#059669" stroke-width="1"/>
-<line x1="590" y1="294" x2="590" y2="318" stroke="#d97706" stroke-width="1"/>
-<line x1="380" y1="318" x2="480" y2="332" stroke="#94a3b8" stroke-width="1"/>
-<line x1="590" y1="318" x2="490" y2="332" stroke="#94a3b8" stroke-width="1"/>
-
-<!-- Re-alignment competition -->
-<rect x="330" y="332" width="260" height="30" rx="5" fill="#6366f1" opacity="0.12"/>
-<rect x="330" y="332" width="260" height="30" rx="5" fill="none" stroke="#6366f1" stroke-width="1.2"/>
-<text fill="#6366f1" font-size="10" font-weight="600" text-anchor="middle" x="460" y="352">minimap2 vs mapPacBio re-alignment</text>
-<text fill="#dc2626" font-size="9" font-weight="600" x="596" y="352">*target</text>
-
-<!-- Arrow down -->
-<line x1="460" y1="362" x2="460" y2="382" stroke="#94a3b8" stroke-width="1.2"/>
-<polygon points="460,382 456.5,376 463.5,376" fill="#94a3b8"/>
-
-<!-- Output -->
-<rect x="310" y="384" width="300" height="30" rx="5" fill="#059669" opacity="0.10"/>
-<rect x="310" y="384" width="300" height="30" rx="5" fill="none" stroke="#059669" stroke-width="1"/>
-<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="460" y="404">stage1_consensus.bam</text>
-
-<!-- Output tags summary -->
-<text fill="#64748b" font-size="9" text-anchor="middle" x="380" y="434">Tags: XU (UMI) · XC (cluster) · XR (reads merged) · XF (method) · XA (polyA) · XG (gene) · XT (type)</text>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="320" viewBox="0 0 760 320">
+<rect fill="#ffffff" width="760" height="320"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">ONT PCR-cDNA read architecture (SQK-PCB114.24)</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="44">both strands of each amplicon are sequenced — Dorado does not reverse-complement</text>
+<text fill="#0d9488" font-size="10" font-weight="700" text-anchor="start" x="80" y="86">orient = fwd   (≈50% of reads)</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="end" x="80" y="111.0">5′</text>
+<rect x="111.0" y="92" width="80" height="30" rx="4" fill="#dbeafe" stroke="#2563eb" stroke-width="1.2"/>
+<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="151.0" y="111.0">SSP</text>
+<rect x="191.0" y="92" width="90" height="30" rx="4" fill="#f3e8ff" stroke="#9333ea" stroke-width="1.2"/>
+<text fill="#9333ea" font-size="10" font-weight="600" text-anchor="middle" x="236.0" y="111.0">UMI (27 nt)</text>
+<rect x="281.0" y="92" width="32" height="30" rx="4" fill="#fed7aa" stroke="#d97706" stroke-width="1.2"/>
+<text fill="#d97706" font-size="10" font-weight="600" text-anchor="middle" x="297.0" y="111.0">GGG</text>
+<rect x="313.0" y="92" width="260" height="30" rx="4" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.2"/>
+<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="443.0" y="111.0">mRNA</text>
+<rect x="573.0" y="92" width="100" height="30" rx="4" fill="#d1fae5" stroke="#059669" stroke-width="1.2"/>
+<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="623.0" y="111.0">poly(A)</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="start" x="679.0" y="111.0">3′</text>
+<path d="M191.0,126 L191.0,131 L281.0,131 L281.0,126" fill="none" stroke="#9333ea" stroke-width="1" opacity="0.7"/>
+<text fill="#9333ea" font-size="8.5" font-weight="600" text-anchor="middle" x="236.0" y="143">(TT-VVVV) x 4 + TTT   V = A / C / G</text>
+<text fill="#d97706" font-size="10" font-weight="700" text-anchor="start" x="80" y="214">orient = rev   (≈50% of reads)</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="end" x="80" y="239.0">5′</text>
+<rect x="111.0" y="220" width="100" height="30" rx="4" fill="#d1fae5" stroke="#059669" stroke-width="1.2"/>
+<text fill="#059669" font-size="10" font-weight="600" text-anchor="middle" x="161.0" y="239.0">poly(T)</text>
+<rect x="211.0" y="220" width="260" height="30" rx="4" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.2"/>
+<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="341.0" y="239.0">mRNA (RC)</text>
+<rect x="471.0" y="220" width="32" height="30" rx="4" fill="#fed7aa" stroke="#d97706" stroke-width="1.2"/>
+<text fill="#d97706" font-size="10" font-weight="600" text-anchor="middle" x="487.0" y="239.0">CCC</text>
+<rect x="503.0" y="220" width="90" height="30" rx="4" fill="#f3e8ff" stroke="#9333ea" stroke-width="1.2"/>
+<text fill="#9333ea" font-size="10" font-weight="600" text-anchor="middle" x="548.0" y="239.0">UMI_RC (27 nt)</text>
+<rect x="593.0" y="220" width="80" height="30" rx="4" fill="#dbeafe" stroke="#2563eb" stroke-width="1.2"/>
+<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="633.0" y="239.0">SSP_RC</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="start" x="679.0" y="239.0">3′</text>
+<text fill="#475569" font-size="9" font-weight="600" text-anchor="middle" x="380.0" y="290">rectify correct-cdna strips SSP/UMI/GGG and poly(A/T) from both — output is one canonical orientation</text>
 </g>
 </svg>
