@@ -49,6 +49,13 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from rectify.core.chunking.sidecar import (
+    ReadNumSidecarWriter,
+    format_fastq_header_with_rn,
+    sha256_file,
+    split_fastq_header,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── Resource specs per aligner (empirically validated on HPC clusters) ──────
@@ -336,12 +343,16 @@ def split_fastq(
     output_dir: Path,
     n_chunks: int,
     prefix: str = '',
+    write_read_num_sidecar: bool = True,
 ) -> List[Path]:
     """
     Split a FASTQ/FASTQ.GZ into n_chunks equal files via round-robin interleaving.
 
     Round-robin gives each chunk an even distribution of read lengths even when
     reads are sorted by genomic position (which correlates with length in RNA-seq).
+    Each derived FASTQ header carries an ``RN:i:<read_num>`` comment tag. When
+    ``write_read_num_sidecar`` is true, a sibling ``<prefix>.read_num_sidecar.parquet``
+    maps those read numbers back to the original FASTQ header comment.
 
     Returns list of output chunk paths.
     """
@@ -361,8 +372,17 @@ def split_fastq(
         for k in range(n_chunks)
     ]
     chunk_files = [gzip.open(str(p), 'wt') for p in chunk_paths]
-
+    sidecar_writer = None
     try:
+        if write_read_num_sidecar:
+            sidecar_writer = ReadNumSidecarWriter(
+                output_dir / f"{prefix}.read_num_sidecar.parquet",
+                sample_id=prefix,
+                source_fastq=input_path,
+                source_fastq_sha256=sha256_file(input_path),
+                chunk_count=n_chunks,
+            )
+
         read_idx = 0
         with _open_fastq(input_path) as fh:
             while True:
@@ -376,11 +396,20 @@ def split_fastq(
                     raise ValueError(
                         f"Truncated FASTQ record at read {read_idx} in {input_path}"
                     )
-                dest = chunk_files[read_idx % n_chunks]
-                dest.write(header)
-                dest.write(seq)
-                dest.write(plus)
-                dest.write(qual)
+                chunk_idx = read_idx % n_chunks
+                chunk_id = f"chunk_{chunk_idx:03d}_of_{n_chunks:03d}"
+                original_qname, fastq_comment = split_fastq_header(header)
+                if sidecar_writer is not None:
+                    sidecar_writer.add(
+                        read_idx, original_qname, fastq_comment, chunk_id, seq, qual
+                    )
+                dest = chunk_files[chunk_idx]
+                dest.write(format_fastq_header_with_rn(
+                    original_qname, fastq_comment, read_idx
+                ))
+                dest.write(seq if seq.endswith('\n') else seq + '\n')
+                dest.write(plus if plus.endswith('\n') else plus + '\n')
+                dest.write(qual if qual.endswith('\n') else qual + '\n')
                 read_idx += 1
 
         logger.info(
@@ -390,6 +419,8 @@ def split_fastq(
     finally:
         for fh in chunk_files:
             fh.close()
+        if sidecar_writer is not None:
+            sidecar_writer.close()
 
     return chunk_paths
 
@@ -2312,6 +2343,7 @@ def run_split(args: argparse.Namespace) -> int:
         'n_chunks': n_chunks,
         'reads_per_chunk': chunk_size,
         'chunks': [str(p) for p in chunk_paths],
+        'read_num_sidecar': str((args.output_dir / f'{prefix}.read_num_sidecar.parquet').resolve()),
     }
     manifest_path = args.output_dir / 'chunks_manifest.json'
     with open(str(manifest_path), 'w') as fh:

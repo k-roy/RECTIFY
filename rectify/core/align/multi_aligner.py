@@ -33,7 +33,7 @@ import subprocess
 import logging
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Mapping
 from dataclasses import dataclass, field
 
 from rectify.core.align.qname_validator import validate_post_alignment_qnames
@@ -131,6 +131,77 @@ def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
             read_name = header[1:].split()[0]
             seqs[read_name] = (seq, qual)
     return seqs
+
+
+
+def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
+    """Return sanitized FASTQ qname -> RN tag for RN-bearing chunk FASTQs."""
+    from rectify.core.chunking.sidecar import parse_rn_from_fastq_header
+
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+    qname_to_rn: Dict[str, int] = {}
+    n_dup = 0
+    with opener(reads_path, 'rt') as fh:
+        while True:
+            try:
+                header = fh.readline()
+            except EOFError:
+                break
+            if not header:
+                break
+            try:
+                fh.readline()
+                fh.readline()
+                fh.readline()
+            except EOFError:
+                break
+            if not header.startswith('@'):
+                continue
+            qname, rn = parse_rn_from_fastq_header(header)
+            if rn is None:
+                continue
+            qname = qname[:254]
+            if qname in qname_to_rn and qname_to_rn[qname] != rn:
+                n_dup += 1
+                continue
+            qname_to_rn[qname] = rn
+    if n_dup:
+        logger.warning(
+            "RN map for %s saw %d duplicate QNAME(s) with conflicting RN tags; "
+            "kept the first mapping", reads_path, n_dup,
+        )
+    return qname_to_rn
+
+
+def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int]) -> int:
+    """Stream-rewrite a BAM, adding ``RN:i`` to records with a QNAME mapping."""
+    if not qname_to_rn:
+        return 0
+    import pysam
+    from rectify.core.consensus.consensus import _normalize_bam_read_name
+
+    src = Path(bam_path)
+    tmp = src.with_suffix('.rn_injected.tmp.bam')
+    n_tagged = 0
+    n_missing = 0
+    with pysam.AlignmentFile(str(src), 'rb') as bam_in, \
+         pysam.AlignmentFile(str(tmp), 'wb', header=bam_in.header) as bam_out:
+        for read in bam_in:
+            qn = _normalize_bam_read_name(read.query_name or '')[:254]
+            rn = qname_to_rn.get(qn)
+            if rn is not None:
+                read.set_tag('RN', int(rn), value_type='i')
+                n_tagged += 1
+            else:
+                n_missing += 1
+            bam_out.write(read)
+    tmp.replace(src)
+    if n_missing:
+        logger.warning(
+            "[%s] RN injection: %d/%d records had no QNAME->RN mapping",
+            bam_path, n_missing, n_tagged + n_missing,
+        )
+    return n_tagged
 
 # Maximum wall-clock seconds to wait for any single aligner subprocess.
 # mapPacBio on 9.7M nanopore reads needs ~3 h; uLTRA/deSALT ~30-60 min.
@@ -597,6 +668,8 @@ def run_map_pacbio(
         extract_fastq_chunk(reads_path, chunk_tmp_fq, chunk_idx, n_chunks)
         actual_reads_path = chunk_tmp_fq
 
+    qname_to_rn = _load_fastq_rn_map(str(actual_reads_path))
+
     # Check if mapPacBio is available
     map_pacbio_path = shutil.which('mapPacBio.sh')
     if not map_pacbio_path:
@@ -750,6 +823,7 @@ def run_map_pacbio(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("mapPacBio complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(actual_reads_path), 'mapPacBio')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -784,6 +858,7 @@ def run_bbmap(
     """
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
 
     # Resolve bbmap.sh: caller-provided path wins (absolute or PATH-resolvable);
     # otherwise fall back to PATH lookup of bare "bbmap.sh".
@@ -867,6 +942,7 @@ def run_bbmap(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bbmap complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bbmap')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -904,6 +980,7 @@ def run_bwa_mem(
 
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
 
     # Resolve bwa: caller-provided path wins; otherwise PATH lookup.
     if bwa_path and bwa_path != 'bwa':
@@ -979,6 +1056,7 @@ def run_bwa_mem(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bwa mem complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bwa')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -1246,6 +1324,7 @@ def run_gapmm2(
     #    a FASTQ with duplicate names, seq() returns None for BOTH entries,
     #    causing a TypeError in gapmm2's refinement loop.  Fix: skip reads with
     #    empty sequences and skip any UUID seen more than once.
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
     logger.info("Preparing deduplicated FASTQ for gapmm2 compatibility")
     tmp_fastq = _clean_fastq(reads_path, output_bam.parent)
     reads_input = str(tmp_fastq)
@@ -1292,6 +1371,7 @@ def run_gapmm2(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"gapmm2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'gapmm2')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -1510,6 +1590,7 @@ def run_ultra(
     """
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
 
     ultra_path = shutil.which('uLTRA')
     if not ultra_path:
@@ -1692,6 +1773,7 @@ def run_ultra(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"uLTRA complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'uLTRA')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -1805,6 +1887,8 @@ def run_desalt(
                 f"Build it with: deSALT index <genome.fa> {candidates[0]}"
             )
 
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+
     # deSALT v1.5.6 silently misparses gzipped FASTQ (reads binary gz header as
     # plain text, producing garbage "reads" and exit code 0) and stops at the
     # first empty-sequence record (Dorado placeholder reads in DRS-trimmed FASTQs).
@@ -1911,6 +1995,7 @@ def run_desalt(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"deSALT complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'deSALT')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 

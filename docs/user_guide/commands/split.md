@@ -176,3 +176,13 @@ SLURM_CPUS_PER_TASK=${PBS_NUM_PPN:-8}
 - Chunks use round-robin assignment so read-length distributions are equal across chunks even when the input is coordinate-sorted. This prevents some chunks being fast (short reads) and others slow (long reads).
 - The `--dry-run` flag reads the entire file to count reads but writes nothing. Use it to preview chunk sizes before committing to a long split.
 - Chunk files are gzip-compressed regardless of whether the input was gzipped.
+
+## Read-Number Sidecar
+
+`rectify split` adds an `RN:i:<read_num>` FASTQ comment tag to every derived
+chunk record and writes `<sample>.read_num_sidecar.parquet` beside the chunks.
+The sidecar maps RN back to the original FASTQ QNAME and full FASTQ comment,
+including cDNA metadata tags. Existing comments are preserved after the RN tag.
+
+Old chunk FASTQs and BAMs without RN still work; consensus falls back to the
+legacy normalized-QNAME merge path whenever any input BAM lacks RN.

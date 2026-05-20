@@ -114,6 +114,17 @@ Examples:
         help='Verbose logging'
     )
 
+
+    parser.add_argument(
+        '--read-num-sidecar',
+        type=Path,
+        default=None,
+        help=(
+            'Optional <sample>.read_num_sidecar.parquet from rectify split. '
+            'If omitted, RECTIFY looks beside the input BAMs for a matching sidecar.'
+        )
+    )
+
     parser.add_argument(
         '--no-bedgraph',
         action='store_true',
@@ -151,6 +162,31 @@ def _parse_bam_args(bam_args: list) -> dict:
             raise FileNotFoundError(f"BAM file not found for {aligner}: {bam_path}")
         result[aligner] = str(bam_path)
     return result
+
+
+def _autodetect_read_num_sidecar(bam_paths: dict, prefix: str):
+    """Find a read-num sidecar beside the input BAMs, if one is unambiguous."""
+    candidates = []
+    seen = set()
+    for path_str in bam_paths.values():
+        parent = Path(path_str).parent
+        preferred = parent / f"{prefix}.read_num_sidecar.parquet"
+        if preferred.exists() and preferred not in seen:
+            candidates.append(preferred)
+            seen.add(preferred)
+        for p in parent.glob("*.read_num_sidecar.parquet"):
+            if p not in seen:
+                candidates.append(p)
+                seen.add(p)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    logger.warning(
+        "Multiple read-num sidecars found; pass --read-num-sidecar explicitly. Candidates: %s",
+        ', '.join(str(p) for p in candidates),
+    )
+    return None
 
 
 def _generate_bedgraphs(output_dir: Path, prefix: str, genome: dict) -> None:
@@ -251,6 +287,15 @@ def run_consensus(args: argparse.Namespace) -> int:
     )
     logger.info(f"Output prefix: {prefix}")
 
+    read_num_sidecar = getattr(args, 'read_num_sidecar', None)
+    if read_num_sidecar is None:
+        read_num_sidecar = _autodetect_read_num_sidecar(bam_paths, prefix)
+    elif not read_num_sidecar.exists():
+        logger.error(f"Read-num sidecar not found: {read_num_sidecar}")
+        return 1
+    if read_num_sidecar is not None:
+        logger.info(f"Read-num sidecar: {read_num_sidecar}")
+
     import time as _time
 
     # Load genome
@@ -330,6 +375,7 @@ def run_consensus(args: argparse.Namespace) -> int:
             output_bam=str(output_bam),
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
+            read_num_sidecar=str(read_num_sidecar) if read_num_sidecar is not None else None,
         )
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")

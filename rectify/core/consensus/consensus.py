@@ -39,10 +39,9 @@ Scoring priorities:
      relative to aligners that simply start mapping AFTER the junction.
    - Per-read junction pool = annotated junctions UNION all aligners' observed
      junctions for this read.
-2. Prefer alignments whose 3' end lands outside a downstream A-tract (3' end quality)
-3. Prefer junctions supported by multiple aligners
-4. Tiebreaker: prefer aligner whose corrected 3' position agrees with majority
-5. Tiebreaker: canonical splice site motifs (GT/AG) and annotated junctions
+2. Prefer junctions supported by multiple aligners
+3. Tiebreaker: prefer aligner whose corrected 3' position agrees with majority
+4. Tiebreaker: canonical splice site motifs (GT/AG) and annotated junctions
 
 Note: A-tract 3' correction is applied to each aligner pre-scoring using genome
 sequence only. Full indel correction (MD-tag dependent) is applied post-consensus
@@ -130,7 +129,7 @@ def _ensure_name_sorted(bam_path: str) -> str:
 
 def _read_id_hash(read_id: str, n_buckets: int) -> int:
     """Deterministic hash of read_id for SLURM array splitting."""
-    h = hashlib.md5(read_id.encode()).hexdigest()
+    h = hashlib.md5(str(read_id).encode()).hexdigest()
     return int(h, 16) % n_buckets
 
 
@@ -212,6 +211,88 @@ def _normalize_bam_read_name(name: str) -> str:
     return _UNDERSCORE_COMMENT_RE.sub('', name)
 
 
+
+
+def _first_primary_has_rn(bam_path: str) -> bool:
+    """Return True if the first primary mapped record carries an RN tag."""
+    with pysam.AlignmentFile(bam_path, 'rb') as bam:
+        for read in bam:
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+            return read.has_tag('RN')
+    return False
+
+
+def _all_inputs_have_rn(bam_paths: Dict[str, str]) -> bool:
+    if not bam_paths:
+        return False
+    return all(_first_primary_has_rn(path) for path in bam_paths.values())
+
+
+def _merge_key(read: pysam.AlignedSegment, use_rn_key: bool):
+    if use_rn_key:
+        try:
+            return int(read.get_tag('RN'))
+        except KeyError:
+            return None
+    return _normalize_bam_read_name(read.query_name or '')
+
+
+def _merge_key_sort_value(key):
+    if isinstance(key, int):
+        return key
+    return _natural_sort_key(str(key))
+
+
+def _parse_fastq_comment_tags(comment: str) -> List[Tuple[str, str, object]]:
+    """Parse SAM-format FASTQ comment tags into ``(tag, type, value)`` tuples."""
+    tags = []
+    for tok in (comment or '').split():
+        parts = tok.split(':', 2)
+        if len(parts) != 3:
+            continue
+        tag, typ, raw = parts
+        if len(tag) != 2 or tag == 'RN':
+            continue
+        try:
+            if typ in ('i', 'I'):
+                value = int(raw)
+            elif typ == 'f':
+                value = float(raw)
+            elif typ in ('Z', 'H'):
+                value = raw
+            elif typ == 'A' and len(raw) == 1:
+                value = raw
+            else:
+                continue
+        except ValueError:
+            continue
+        tags.append((tag, typ, value))
+    return tags
+
+
+def _restore_sidecar_tags(read: pysam.AlignedSegment, read_num_sidecar) -> None:
+    """Restore FASTQ-comment aux tags from a read-num sidecar, if available."""
+    if read_num_sidecar is None:
+        return
+    try:
+        if read.has_tag('RN'):
+            row = read_num_sidecar.lookup(int(read.get_tag('RN')))
+        else:
+            row = read_num_sidecar.lookup_by_qname(
+                _normalize_bam_read_name(read.query_name or '')
+            )
+    except KeyError:
+        logger.warning(
+            "Read-num sidecar has no row for consensus read %r; writing without restored tags",
+            read.query_name,
+        )
+        return
+    for tag, typ, value in _parse_fastq_comment_tags(row.fastq_comment):
+        if read.has_tag(tag):
+            continue
+        read.set_tag(tag, value, value_type=typ)
+
 def _check_read_name_compatibility(
     bam_paths: Dict[str, str], n_sample: int = 100
 ) -> None:
@@ -264,8 +345,16 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     K-way merge across name-sorted BAMs, yielding all alignments per read.
 
     Memory: O(n_aligners) per read instead of O(total_reads * n_aligners).
+    When every input BAM carries RN tags, the merge key is the integer RN;
+    otherwise the legacy normalized-QNAME key path is used unchanged.
     """
-    _check_read_name_compatibility(bam_paths)
+    use_rn_key = _all_inputs_have_rn(bam_paths)
+    if use_rn_key:
+        logger.info("Consensus K-way merge: using RN:i keys")
+    else:
+        _check_read_name_compatibility(bam_paths)
+        logger.info("Consensus K-way merge: using normalized QNAME keys")
+
     bams = {}
     iterators = {}
     for aligner, path in bam_paths.items():
@@ -282,28 +371,19 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
 
     try:
         while any(r is not None for r in current_reads.values()):
-            # Use normalized names as the merge key so mapPacBio's UUID_pt:i:N
-            # reads group with bare UUID reads from other aligners.
             min_read_id = min(
-                (_normalize_bam_read_name(r.query_name)
-                 for r in current_reads.values() if r is not None),
-                key=_natural_sort_key,
+                (_merge_key(r, use_rn_key) for r in current_reads.values() if r is not None),
+                key=_merge_key_sort_value,
             )
             group = {}
             for aligner in list(current_reads.keys()):
                 read = current_reads[aligner]
-                if read is not None and _normalize_bam_read_name(read.query_name) == min_read_id:
-                    # Drain ALL same-name records from this aligner (handles the
-                    # rare case where mapPacBio emits two primary alignments for
-                    # the same read, e.g. a truncated exon-1-only alignment plus
-                    # the full spliced alignment).  Among duplicates, prefer the
-                    # alignment with the most N-ops (most complete splice chain),
-                    # then highest MAPQ.
+                if read is not None and _merge_key(read, use_rn_key) == min_read_id:
                     candidates = [read]
                     try:
                         nxt = next(iterators[aligner])
                         while (nxt is not None
-                               and _normalize_bam_read_name(nxt.query_name) == min_read_id):
+                               and _merge_key(nxt, use_rn_key) == min_read_id):
                             candidates.append(nxt)
                             nxt = next(iterators[aligner])
                         current_reads[aligner] = nxt
@@ -383,7 +463,7 @@ def _restore_sequence_from_aligner_reads(
     )
 
 
-def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False):
+def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None):
     """Process a batch of reads and write best alignments to output BAM."""
     if use_chimeric:
         from .chimeric_consensus import select_best_chimeric, build_chimeric_read
@@ -466,6 +546,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             # this, mapPacBio/uLTRA-templated chimeric reads carry mutated
             # QNAMEs into every downstream QNAME-keyed join.
             out_read.query_name = _normalize_bam_read_name(out_read.query_name or '')
+            _restore_sidecar_tags(out_read, read_num_sidecar)
             out_bam.write(out_read)
 
         else:
@@ -517,6 +598,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                     best_read.set_tag('Xj', 1)
                 if result.false_junction_removed:
                     best_read.set_tag('Xv', 1)
+                _restore_sidecar_tags(best_read, read_num_sidecar)
                 out_bam.write(best_read)
 
 
@@ -532,6 +614,7 @@ def run_consensus_selection(
     slurm_array_total: Optional[int] = None,
     use_chimeric: bool = False,
     checkpoint_dir: Optional[str] = None,
+    read_num_sidecar: Optional[str] = None,
 ) -> Dict[str, int]:
     """
     Run consensus selection across multiple BAM files.
@@ -644,6 +727,12 @@ def run_consensus_selection(
         'by_aligner': defaultdict(int),
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
+
+    sidecar_reader = None
+    if read_num_sidecar:
+        from rectify.core.chunking.sidecar import ReadNumSidecar
+        sidecar_reader = ReadNumSidecar.open(read_num_sidecar)
+        logger.info("Read-num sidecar loaded: %s (%d rows)", read_num_sidecar, len(sidecar_reader))
 
     # ── Checkpoint setup ─────────────────────────────────────────────────────
     # When checkpoint_dir is set:
@@ -778,6 +867,7 @@ def run_consensus_selection(
                     read_batch, raw_read_batch, genome,
                     annotated_junctions, out_bam, stats,
                     use_chimeric=use_chimeric,
+                    read_num_sidecar=sidecar_reader,
                 )
                 read_batch = []
                 raw_read_batch = []
@@ -812,6 +902,7 @@ def run_consensus_selection(
                 read_batch, raw_read_batch, genome,
                 annotated_junctions, out_bam, stats,
                 use_chimeric=use_chimeric,
+                read_num_sidecar=sidecar_reader,
             )
             n_batches += 1
             if checkpoint_dir:
