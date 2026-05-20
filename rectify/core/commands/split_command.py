@@ -509,13 +509,13 @@ def _mpb_array_body(
 
 set -euo pipefail
 
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 GENOME="{genome}"
@@ -587,13 +587,13 @@ def _others_array_body(
 
 set -euo pipefail
 
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 GENOME="{genome}"
@@ -691,6 +691,7 @@ def _merge_aligners_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_MERGE_ALIGNERS}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{MERGE_CORES}}}}}}}
@@ -757,12 +758,12 @@ def _prescan_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_PRESCAN}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 PRESCAN_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{PRESCAN_CORES}}}}}}}
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 MERGED_DIR="$OUTDIR/merged_bams"
@@ -809,6 +810,7 @@ def _correct_array_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CORRECT}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CORRECT_CPUS=${{SLURM_CPUS_PER_TASK:-{CORRECT_CORES}}}
@@ -818,7 +820,6 @@ else echo "ERROR: no scheduler array task variable" >&2; exit 1; fi
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 MERGED_DIR="$OUTDIR/merged_bams"
@@ -905,6 +906,7 @@ def _chunk_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CHUNK_MERGE}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CHUNK_MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-{CHUNK_MERGE_CORES}}}
@@ -914,7 +916,6 @@ else echo "ERROR: no scheduler array task variable" >&2; exit 1; fi
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 ALIGNERS=({aligner_arr})
@@ -1070,12 +1071,12 @@ def _final_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_FINAL_MERGE}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 FINAL_MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{FINAL_MERGE_CORES}}}}}}}
 {limits}
 
-PYTHON="{python_path}"
 OUTDIR="{output_dir}"
 N_CHUNKS={n_chunks}
 CONSENSUS_DIR="$OUTDIR/consensus"
@@ -1162,6 +1163,7 @@ def _consensus_per_chunk_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_CONSENSUS_PER_CHUNK}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 if   [ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]; then TASK_ID=$SLURM_ARRAY_TASK_ID; CPUS=${{SLURM_CPUS_PER_TASK:-{CONSENSUS_PER_CHUNK_CORES}}}
@@ -1171,7 +1173,6 @@ else echo "ERROR: no scheduler array task variable found" >&2; exit 1; fi
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 SAMPLE="{sample_prefix}"
@@ -1234,12 +1235,12 @@ def _merge_consensus_chunks_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_MERGE_CONSENSUS}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{MERGE_CONSENSUS_CORES}}}}}}}
 {limits}
 
-PYTHON="{python_path}"
 OUTDIR="{output_dir}"
 SAMPLE="{sample_prefix}"
 N_CHUNKS={n_chunks}
@@ -1783,13 +1784,13 @@ def _short_read_array_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_SR_ARRAY}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 {shim}
 
 {limits}
 
-PYTHON="{python_path}"
 RECTIFY_SRC="{rectify_src}"
 OUTDIR="{output_dir}"
 GENOME="{genome}"
@@ -1945,6 +1946,7 @@ def _short_read_final_merge_body(
 {_SCHEDULER_HEADER_PLACEHOLDER_SR_FINAL_MERGE}
 
 set -euo pipefail
+PYTHON="{python_path}"
 export PATH="$(dirname "$PYTHON"):$HOME/bin:$HOME/.rectify/bin:$PATH"
 
 FINAL_MERGE_CPUS="${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{SR_FINAL_MERGE_CORES}}}}}}}
