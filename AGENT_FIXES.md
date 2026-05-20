@@ -174,5 +174,79 @@ See briefing: `dev/specs/briefings/commit_b_briefing.md` §4 for the smoke defer
 
 ---
 
+## [2026-05-20] `rectify analyze` per-condition bedgraph: 1-bp left shift
+
+**Status:** FIXED on M1 working tree (uncommitted at time of entry); awaiting commit + push.
+
+**Affects:** every per-condition strand-specific bedgraph emitted by
+`rectify analyze` (filenames like `<condition>_plus.bedgraph` /
+`<condition>_minus.bedgraph`, header
+`description="RECTIFY 3' ends (<strand> strand)"`). Hits DRS and QuantSeq REV
+equally — anything routed through `rectify/core/analyze/bedgraph.py::generate_bedgraphs`.
+
+**Symptom:** the per-position 3'-end pileup peak in a `rectify analyze`
+bedgraph appears 1 bp to the LEFT of the true position. Empirical:
+CST6 ysh1 peak at chrIX in 2026-05-12 wbfix Han run wrote
+`chrIX 287748 287749 70.66` (IGV 1-based 287,749); the matching DRS
+3'-end signal from `bedtools genomecov -3 -bg` on the corrected
+strand-split DRS BAM wrote `chrIX 287749 287750 18` (IGV 287,750). Gap
+1 bp, consistent.
+
+**Root cause:** `rectify/core/analyze/bedgraph.py:99-100` wrote
+```python
+start = int(pos) - 1
+end   = int(pos)
+```
+as if `pos` (a `corrected_3prime` value) were 1-based. But
+`corrected_3prime` is **0-based-inclusive** everywhere it is computed —
+`reference_end - 1` for `is_reverse=True` (with explicit comment
+`# 0-based inclusive` at `walkback.py:142,214,471`, `indel_corrector.py:1661,2027`)
+and `reference_start` for `is_reverse=False`. BED is 0-based half-open,
+so a single base at 0-based `pos` is the interval `[pos, pos+1)`. The
+subtract-1 spelling was a leftover from an earlier 1-based convention
+that was never updated when corrected_3prime semantics settled at 0-based.
+
+**Fix:**
+```python
+start = int(pos)
+end   = int(pos) + 1
+```
+Plus three regression tests in `tests/test_analyze.py::TestBedgraphCoordinates`
+covering single-base emission, strand routing, and same-position aggregation.
+Tests confirmed to FAIL under the pre-fix code and PASS under the fix.
+
+**Safe to pull:** strict correctness improvement. Existing pipeline runs
+that produced left-shifted bedgraphs were never used as the source of
+truth for clustering or shift analysis (those work from `corrected_reads.tsv`
+position columns directly, not from the bedgraphs), so the bug only
+affected downstream visualization and any analysis that cross-referenced
+the per-condition bedgraph against an independently-generated track. The
+He et al manuscript-anchored TRT analysis (`analyses/cross_modality_trt_20260519`)
+caught it during a CST6 cross-modality diagnostic; v2 classification was
+unaffected because it worked from per-position attributed counts via the
+DRS bedtools-derived bedgraphs, not from the `rectify analyze` output.
+
+**Audit completed 2026-05-20** — see `dev/audits/bedgraph_coordinate_audit_20260520.md` for the full per-file table. **Three instances of the same bug found and fixed:**
+
+- `rectify/core/analyze/manifest.py:598` — manifest-mode equivalent of `generate_bedgraphs` (streams per-sample TSVs without holding the combined frame in memory). Same `int(pos) - 1` / `int(pos)` spelling against the same 0-based `corrected_position` / `corrected_3prime` column. Corrected to `int(pos)` / `int(pos) + 1`.
+- `scripts/generate_bedgraph_from_polished.py:113` — standalone CLI utility. Same off-by-1 with an explicitly wrong inline comment claiming the position was 1-based. Caught by a parallel multi-agent audit run after my initial close; my recipe had been scoped to `rectify/core/` and `rectify/data/` and missed `scripts/`. Fixed and noted in the audit doc as a scope-expansion miss.
+
+All other bedgraph and bigwig emitters verified to already use the correct 0-based half-open convention (`netseq/netseq_output.py:122,191`, `commands/export_command.py:88,128`, and the delegate chains through `bam/bedgraph_writers.py`, `commands/{consensus,correct,analyze}_command.py`).
+
+**Adjacent coordinate-convention findings (not bedgraph emission)** surfaced by the same multi-agent audit — tracked as separate BUGS_TO_FIX entries NEW-077 through NEW-081:
+
+- NEW-077 (HIGH) — `bam_processor.py:826-836` minus-strand artifact N snap can land on a SKIPPED base.
+- NEW-078 (HIGH/MEDIUM) — `bam_processor.py:847` ambiguity clip leaves NET-seq window in N span.
+- NEW-079 (MEDIUM) — `clustering.py:532` plus-strand `distance_to_gene_3prime` is off by 1 (uses `gene['end']` against half-open annotation).
+- NEW-080 (MEDIUM) — `false_junction_filter.py:282 vs 300` minus-strand wrong-flank fetch.
+- NEW-081 (LOW) — `analyze_command.py:130` + `manifest.py:217` rDNA exclusion uses `<= end` against half-open regions.
+
+**Action items still open:**
+- Commit all three bedgraph fixes (`analyze/bedgraph.py` + `analyze/manifest.py` + `scripts/generate_bedgraph_from_polished.py` + `tests/test_analyze.py`) to `drs-validation-rebuild`, push, pull on H2 + Sherlock.
+- Run the fast test suite on a cluster login node (M1 is memory-constrained; pytest there was killing M1 with the multi-agent audit also running).
+- Triage and fix NEW-077 / NEW-078 / NEW-080 (HIGH-severity, biology-affecting); NEW-079 / NEW-081 are easy clean-ups.
+
+---
+
 *To add an entry: symptom (exact error string), root cause (one sentence),
 fix commit, safe-to-pull verdict.*

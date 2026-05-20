@@ -1,10 +1,86 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-05-13 (NEW-075 added — walkback strand)
+## Last Updated: 2026-05-20 (NEW-076 through NEW-081 added — bedgraph coordinate audit + adjacent coordinate-convention findings from multi-agent audit run)
 
 ---
 
 ## Open
+
+---
+
+### NEW-076 (HIGH) — `rectify analyze` per-condition bedgraph: 1-bp left shift in `start`/`end` BED columns; wider audit of other bedgraph emitters pending
+
+**Files:** confirmed in `rectify/core/analyze/bedgraph.py:99-100` (FIXED 2026-05-20, uncommitted). Audit pending in `rectify/core/bam/bedgraph_writers.py`, `rectify/core/netseq/netseq_output.py`, `rectify/core/commands/{consensus,run,export,analyze,correct,split}_command.py`, `rectify/core/analyze/manifest.py`, `rectify/data/validation/generate_igv_html.py`.
+
+**Symptom:** Per-condition strand-specific bedgraphs from `rectify analyze` show their 3'-end pileup peak 1 bp to the LEFT of the true position. Caught 2026-05-20 in the He et al cross-modality TRT analysis: CST6 ysh1 peak in `han2023_analyze_wbfix_20260512/analyze/bedgraph/Ysh1AA_plus.bedgraph` at `chrIX 287748 287749` (IGV 287,749) vs the matching DRS bedtools-derived 3'-end peak at `chrIX 287749 287750` (IGV 287,750). Affects DRS, QuantSeq REV, and PCR-cDNA equally — the emitter is protocol-agnostic.
+
+**Root cause:** the writer at `analyze/bedgraph.py:99-100` did `start = pos - 1; end = pos`, treating `corrected_3prime` as 1-based. It is **0-based-inclusive** (from `reference_end - 1` / `reference_start`). Correct: `start = pos; end = pos + 1`. See `dev/audits/bedgraph_coordinate_audit_20260520.md` for the full convention statement and the per-file audit table.
+
+**Fix status:**
+- `analyze/bedgraph.py:99-100` corrected on M1 working tree (uncommitted); 3 regression tests added in `tests/test_analyze.py::TestBedgraphCoordinates`. Verified by toggling the fix off/on (FAIL/PASS).
+- Other emitters listed in the audit doc are NOT YET INSPECTED. Same bug pattern could exist in any of them. The audit doc has a verification recipe (trace each `start`/`end` assignment to its source column; if 0-based, must be `[pos, pos+1)`).
+
+**Blast radius:** every prior `rectify analyze` output's `bedgraph/` subdir has 1-bp-left-shifted per-condition tracks. Clustering, shift analysis, and per-position attribution work from the `corrected_reads.tsv` / `corrected_3ends.tsv` position columns directly and are unaffected; only the bedgraph tracks (used for IGV inspection and cross-track comparison) need regeneration after fix lands.
+
+**See:** `AGENT_FIXES.md` `[2026-05-20]` entry for the first emitter's fix detail; `dev/audits/bedgraph_coordinate_audit_20260520.md` for the audit plan.
+
+---
+
+### NEW-077 (HIGH) — `bam_processor.py` minus-strand artifact N snap can emit an intronic / skipped coordinate as the 3' end
+
+**File:** `rectify/core/bam/bam_processor.py:826-836`.
+
+**Symptom:** When `current_position` falls inside an artifact N span `[junction_start, junction_end)` on the minus strand, the snap routine sets `current_position = junction_start`. Because `junction_start` is the first base of the SKIPPED (N-op) span in half-open coordinates, the emitted 3' end coordinate lands ON a base that the alignment doesn't cover. Pathogenic for reads whose walkback lands inside an artifact N.
+
+**Likely fix direction:** the target on the minus strand should be the first ALIGNED base on the 3' side (i.e. `junction_end` if interpreting half-open, or the aligned base immediately upstream of the N span — depends on intended geometry). Needs a careful review of what "3' end of the read" means semantically when the polished position falls inside an intron/N span.
+
+**Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
+
+---
+
+### NEW-078 (HIGH/MEDIUM) — `bam_processor.py` minus-strand artifact ambiguity clipping leaves NET-seq refinement window touching the N span
+
+**File:** `rectify/core/bam/bam_processor.py:847`.
+
+**Symptom:** Minus-strand ambiguity-range clipping does `ambiguity_min <= junction_start` then sets `ambiguity_min = junction_start`. Because `[start, end)` is half-open, this leaves the refinement window starting at the first SKIPPED base of the N span. Downstream NET-seq refinement can still assign reads into the intronic / N-spanned region.
+
+**Likely fix direction:** clip `ambiguity_min` to the first ALIGNED base outside the N span, not to `junction_start` (which is the boundary of the skipped span). Related to NEW-077 — same root confusion between half-open boundary semantics and aligned-base semantics on the minus strand.
+
+**Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
+
+---
+
+### NEW-079 (MEDIUM) — `clustering.py` plus-strand `distance_to_gene_3prime` is off by 1
+
+**File:** `rectify/core/analyze/clustering.py:532`.
+
+**Symptom:** Uses `gene['end']` as the plus-strand gene 3' coordinate. Loaded annotations are 0-based half-open (per `rectify/core/analyze/loaders.py:411` which does `start - 1, end`), so the last aligned base of the gene is `gene['end'] - 1`, not `gene['end']`. Result: `distance_to_gene_3prime` is 1 bp too large for plus-strand clusters.
+
+**Blast radius:** affects the `distance_to_gene_3prime` column in cluster output only; does NOT affect clustering itself or any downstream call that uses cluster identity rather than gene-3' distance. Low biological impact but easy to clean up — `gene_3prime_pos = gene['end'] - 1` for plus, `gene['start']` for minus.
+
+**Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
+
+---
+
+### NEW-080 (MEDIUM) — `false_junction_filter.py` minus-strand wrong-flank lookup against artifact N target
+
+**File:** `rectify/core/splice/false_junction_filter.py:282` (comment) vs `:300` (code).
+
+**Symptom:** The comment at line 282 says the minus-strand poly-A side is BEFORE the N (i.e. on the `[start-20, start)` flank), but the code at line 300 always fetches `[end, end+20)` regardless of strand. Plausibly wrong-flank logic on the minus strand. Feeds into the artifact N snap issue tracked as NEW-077.
+
+**Likely fix direction:** branch on strand in the flank lookup; minus strand should fetch the upstream-of-N flank, not the downstream-of-N flank.
+
+**Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
+
+---
+
+### NEW-081 (LOW) — `analyze_command.py` / `analyze/manifest.py` rDNA exclusion uses inclusive `<= end` against half-open annotations
+
+**Files:** `rectify/core/commands/analyze_command.py:130`; `rectify/core/analyze/manifest.py:217`.
+
+**Symptom:** Both compare `corrected_position <= end` to test rDNA-region membership. If `rdna_regions` are half-open `[start, end)` (consistent with `loaders.py:411`), the `<= end` predicate excludes one EXTRA base at the right edge of each region. Low biological impact (off-by-one at region boundaries; rDNA is large enough that one extra base on each side is noise), but trivial to fix to `< end`.
+
+**Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
 ---
 

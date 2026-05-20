@@ -28,6 +28,7 @@ from rectify.core.analyze.deseq2 import (
 from rectify.core.analyze.pca import (
     run_pca_analysis,
 )
+from rectify.core.analyze.bedgraph import generate_bedgraphs
 from rectify.core.analyze.go_enrichment import (
     run_go_enrichment,
     _benjamini_hochberg,
@@ -642,3 +643,67 @@ class TestAnalyzePipelineIntegration:
 
         # Verify PCA ran
         assert pca_results['pca_coords'] is not None or sample_count_matrix.shape[1] < 2
+
+
+class TestBedgraphCoordinates:
+    """Regression: per-condition bedgraph must treat corrected_3prime as 0-based.
+
+    corrected_3prime is stored throughout rectify as 0-based-inclusive (derived
+    from pysam reference_end - 1 for is_reverse=True and reference_start for
+    is_reverse=False). BED is 0-based half-open, so a single base at 0-based
+    pos must emit `start=pos, end=pos+1`. The previous emitter wrote
+    `start=pos-1, end=pos`, which shifted every per-condition bedgraph row
+    1 bp to the left of the true position — see AGENT_FIXES.md entry
+    [2026-05-20] for the CST6 chrIX:287,749 vs 287,750 case.
+    """
+
+    def test_single_base_position_emitted_zero_based(self, tmp_path):
+        # Construct one read per condition; corrected_3prime is a 0-based
+        # coordinate of the last aligned base (matches the convention from
+        # protocols/quantseq_rev.py:72 and walkback.py:142).
+        positions_df = pd.DataFrame({
+            'sample': ['ysh1_rep1'],
+            'chrom': ['chrIX'],
+            'corrected_3prime': [287749],  # 0-based — IGV 1-based 287,750
+            'strand': ['+'],
+        })
+
+        generate_bedgraphs(positions_df, tmp_path, normalize_rpm=False)
+
+        out = tmp_path / 'ysh1_plus.bedgraph'
+        assert out.exists()
+        lines = [l for l in out.read_text().splitlines() if not l.startswith('track')]
+        assert len(lines) == 1
+        chrom, start, end, value = lines[0].split('\t')
+        # A single base at 0-based 287,749 is the half-open interval [287749, 287750).
+        assert (chrom, int(start), int(end)) == ('chrIX', 287749, 287750)
+        assert float(value) == 1.0
+
+    def test_minus_strand_routed_to_minus_file(self, tmp_path):
+        positions_df = pd.DataFrame({
+            'sample': ['wt_rep1', 'wt_rep1'],
+            'chrom': ['chrI', 'chrI'],
+            'corrected_3prime': [1000, 2000],
+            'strand': ['+', '-'],
+        })
+        generate_bedgraphs(positions_df, tmp_path, normalize_rpm=False)
+
+        plus_rows = [l for l in (tmp_path / 'wt_plus.bedgraph').read_text().splitlines()
+                     if not l.startswith('track')]
+        minus_rows = [l for l in (tmp_path / 'wt_minus.bedgraph').read_text().splitlines()
+                      if not l.startswith('track')]
+        assert plus_rows == ['chrI\t1000\t1001\t1.0000']
+        assert minus_rows == ['chrI\t2000\t2001\t1.0000']
+
+    def test_multiple_reads_at_same_position_aggregate(self, tmp_path):
+        positions_df = pd.DataFrame({
+            'sample': ['ysh1_rep1'] * 3,
+            'chrom': ['chrIX'] * 3,
+            'corrected_3prime': [287749, 287749, 287749],
+            'strand': ['+', '+', '+'],
+        })
+        generate_bedgraphs(positions_df, tmp_path, normalize_rpm=False)
+
+        rows = [l for l in (tmp_path / 'ysh1_plus.bedgraph').read_text().splitlines()
+                if not l.startswith('track')]
+        assert rows == ['chrIX\t287749\t287750\t3.0000']

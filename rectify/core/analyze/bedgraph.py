@@ -96,8 +96,12 @@ def generate_bedgraphs(
                         for pos in sorted(counts_dict[chrom].keys()):
                             count = counts_dict[chrom][pos]
                             value = count * rpm_factor if normalize_rpm else count
-                            start = int(pos) - 1
-                            end = int(pos)
+                            # corrected_3prime is 0-based-inclusive (derived from
+                            # pysam reference_end - 1 or reference_start, both
+                            # 0-based). BED is 0-based half-open, so a single
+                            # base at 0-based pos is [pos, pos+1).
+                            start = int(pos)
+                            end = int(pos) + 1
                             f.write(f"{chrom}\t{start}\t{end}\t{value:.4f}\n")
 
                 _os.rename(tmp_path, output_path)

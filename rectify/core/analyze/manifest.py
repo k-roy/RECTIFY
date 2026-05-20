@@ -595,7 +595,10 @@ def _run_analyze_manifest(
                                 continue
                             for _pos in sorted(_chrom_dict[_chrom]):
                                 _val = _chrom_dict[_chrom][_pos] * _rpm
-                                _f.write(f"{_chrom}\t{int(_pos)-1}\t{int(_pos)}\t{_val:.4f}\n")
+                                # corrected_3prime / corrected_position is
+                                # 0-based-inclusive; BED is 0-based half-open
+                                # so a single base at pos is [pos, pos+1).
+                                _f.write(f"{_chrom}\t{int(_pos)}\t{int(_pos)+1}\t{_val:.4f}\n")
                     _os.rename(_tmp, _out)
                 except Exception as _bg_exc:
                     if _tmp.exists():

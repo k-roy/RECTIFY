@@ -108,10 +108,20 @@ def polished_to_bedgraph(input_tsv, output_prefix, normalize_rpm=True):
                     count = counts_dict[chrom][pos]
                     value = count * rpm_factor if normalize_rpm else count
 
-                    # Bedgraph is 0-based, half-open
-                    # Position is 1-based, so start = pos - 1, end = pos
-                    start = int(pos) - 1
-                    end = int(pos)
+                    # Bedgraph is 0-based, half-open. `corrected_3prime` is
+                    # 0-based-inclusive (derived from pysam reference_end - 1
+                    # for is_reverse=True and reference_start otherwise — see
+                    # rectify/core/correct/walkback.py:142 and 471). So a
+                    # single base at 0-based `pos` is the interval
+                    # [pos, pos+1).
+                    #
+                    # NOTE: the pre-2026-05-20 spelling here was
+                    # `start = pos - 1; end = pos`, written under the false
+                    # premise that `pos` was 1-based. That shifted every row
+                    # 1 bp to the left of the true coordinate. See
+                    # dev/audits/bedgraph_coordinate_audit_20260520.md.
+                    start = int(pos)
+                    end = int(pos) + 1
 
                     f.write(f"{chrom}\t{start}\t{end}\t{value:.4f}\n")
 
