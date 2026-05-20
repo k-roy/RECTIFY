@@ -100,18 +100,11 @@ def _decode_eq_seq_inplace(
     return True
 
 
-def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
-    """
-    Parse a corrected TSV and return a per-read correction dict.
+def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
+    """Load corrections from a single (non-manifest) corrected_reads TSV.
 
-    Only the first row per read_id is used (dominant position for Cat6
-    multi-peak reads).  Returns a dict mapping read_id → correction info:
-
-        ``corrected_3prime``       int
-        ``strand``                 str  ('+' or '-')
-        ``five_prime_position``    int or None
-        ``five_prime_rescued``     bool
-        ``five_prime_soft_clip``   int
+    Internal helper — callers should use :func:`_load_corrections_from_tsv`
+    which auto-detects manifest vs single-TSV format.
     """
     corrections: Dict[str, dict] = {}
     try:
@@ -195,6 +188,50 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
             f"Cannot read corrected TSV {corrected_tsv_path}: {exc}"
         ) from exc
     return corrections
+
+
+# ---------------------------------------------------------------------------
+# Manifest-aware public loader (Commit B, 2026-05-20)
+# ---------------------------------------------------------------------------
+
+_MANIFEST_HEADER_COLS = ['region_id', 'chrom', 'start', 'end', 'tsv_path', 'n_rows', 'sha256']
+
+def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
+    """Load corrections from a corrected_reads.tsv OR a corrected_reads.manifest.tsv.
+
+    Auto-detects which format the input is by reading the first header line:
+
+    * **Manifest** header: ``region_id\\tchrom\\tstart\\tend\\ttsv_path\\tn_rows\\tsha256``
+    * **Single TSV** header: rectify-correct row header (``read_id\\tchrom\\t...``)
+
+    Both code paths ultimately return the same ``{read_id: correction_dict}``
+    mapping so ALL callers (``write_corrected_bam``, ``write_softclipped_bam``,
+    ``write_dual_bam``, ``bam_writer_parallel``) work unchanged.
+
+    Args:
+        corrected_tsv_path:  Path to either a ``corrected_reads.tsv`` or a
+            ``corrected_reads.manifest.tsv`` produced by ``rectify correct``.
+
+    Returns:
+        Dict mapping read_id → correction info dict.
+    """
+    from pathlib import Path as _Path
+    p = _Path(corrected_tsv_path)
+    with p.open() as fh:
+        header = fh.readline().rstrip('\n').split('\t')
+
+    if header == _MANIFEST_HEADER_COLS:
+        # Manifest format — load per-region TSVs and merge.
+        from .tsv_partition import load_manifest
+        entries = load_manifest(p)
+        merged: Dict[str, dict] = {}
+        for entry in entries:
+            region_tsv = entry['tsv_path']  # already absolute Path from load_manifest
+            merged.update(_load_corrections_from_single_tsv(str(region_tsv)))
+        return merged
+    else:
+        # Legacy single-TSV format.
+        return _load_corrections_from_single_tsv(corrected_tsv_path)
 
 
 def write_corrected_bam(

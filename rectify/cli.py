@@ -82,6 +82,10 @@ Citation:
     from .core.commands.export_command import create_export_parser
     create_export_parser(subparsers)
 
+    # export-merged-tsv command (back-compat shim for manifest-only correct output)
+    from .core.commands.export_merged_tsv_command import create_export_merged_tsv_parser
+    create_export_merged_tsv_parser(subparsers)
+
     # =========================================================================
     # batch command (multi-sample with SLURM support)
     # =========================================================================
@@ -255,6 +259,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'restore-softclip':
         from .core.commands import restore_polya_command
         sys.exit(restore_polya_command.run(args))
+    elif args.command == 'export-merged-tsv':
+        from .core.commands import export_merged_tsv_command
+        sys.exit(export_merged_tsv_command.run(args))
     else:
         parser.print_help()
         sys.exit(1)

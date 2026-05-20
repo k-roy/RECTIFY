@@ -164,7 +164,13 @@ Bypass the merged-BAM crash entirely. Stage E already produced 24 per-chunk cons
 
 **Do not pull yet** — v0.9.2 is correct; this is a downstream pysam-level issue surfaced BY the correctness fix, not caused by it. Pulling `cb2fe6c` is safe; just be aware that whole-sample `rectify correct` at ≥4M-read scale may need the `--checkpoint-dir` + lower thread workaround.
 
-**[2026-05-20] Commit B hypothesis:** Commit B's `write_corrected_bam_parallel` partitions the BAM into per-region BAMs (≤100k ref bp each) with idempotent `.ok` sentinels before region workers start. This is architecturally the same as the `--checkpoint-dir` mitigation above. The structural resolution test (6.7M-read Han wt_R1 full-scale run on H2 16-core) was **DEFERRED** — H2 pod_smp.q had 25,600 waiting jobs at submission time, and Sherlock ControlMaster was not available (required Duo re-auth). The chrI-V subset (2,009,670 reads, 16 threads) from prior Sherlock runs already passed (61:40 wall, exit 0), validating the Commit B architecture at this scale. The full 6.7M-read test remains as Outcome A/B/C to be run in a coordinated follow-up session when queues clear. See briefing: `dev/specs/briefings/commit_b_briefing.md` §4.
+**[2026-05-20] Commit B hypothesis — tempered.** Commit B's `write_corrected_bam_parallel` PRE-PARTITIONS the input BAM into per-region BAMs (≤100k ref bp each) BEFORE region workers start — each worker opens its own small region BAM via pysam, not the full 6.7M-read merged BAM. This is meaningfully different from the `--checkpoint-dir` mitigation above (which still fetched from the full merged BAM, just with sentinel-based resume). Hypothesis: workers operating on ≤100k-bp region BAMs may not trigger the pysam C-level state corruption that the merged-BAM workers do at scale.
+
+**But this is unproven and the prior threads=8 mitigation already silent-hung.** The structural resolution test (6.7M-read Han wt_R1 full-scale run on H2 16-core) was **DEFERRED**: H2 pod_smp.q had 25,600 waiting jobs at submission time; Sherlock ControlMaster was not available (Duo re-auth needed). The chrI-V subset (2,009,670 reads, 16 threads) from prior Sherlock runs passed (61:40 wall, exit 0), validating Commit B's architecture at the proven-safe scale. The Han wt_R1 6.7M-read test remains as Outcome A/B/C to be run in a coordinated follow-up session when queues clear.
+
+**Current working policy stands:** for samples >4M reads, use `rectify split` per-chunk array (290k reads per chunk, Stage E.5 pattern) — do NOT run `rectify correct` on merged BAMs regardless of which cluster, thread count, or commit. Commit B's region-pre-partitioning may or may not change this; until the deferred test runs, the chunk-first policy is the recommendation.
+
+See briefing: `dev/specs/briefings/commit_b_briefing.md` §4 for the smoke deferral context.
 
 ---
 

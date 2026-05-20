@@ -54,6 +54,7 @@ def _build_correct_cmd(bam_path: Path, genome_path: Path,
         str(bam_path),
         '--genome', str(genome_path),
         '-o', str(out_tsv),
+        '--emit-merged-tsv',  # Commit B: default is manifest-only; keep merged TSV for callers that read it directly
     ]
     if annotation_path is not None:
         cmd += ['--annotation', str(annotation_path)]
@@ -134,6 +135,7 @@ def _run_correct_first_pipeline(
             '--genome', str(genome_path),
             '-o', str(out_tsv),
             '--write-corrected-bam', str(out_bam),
+            '--emit-merged-tsv',  # Commit B: default is manifest-only; keep merged TSV for direct pandas reads
         ]
         if annotation_path is not None:
             cmd += ['--annotation', str(annotation_path)]

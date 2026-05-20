@@ -197,8 +197,16 @@ def _make_correct_args(*, bam: Path, genome: Path, output: Path,
         streaming=False,
         chunk_size=10000,
         checkpoint_dir=None,
+        tmp_dir=None,
+        emit_merged_tsv=True,    # opt back in to legacy merged TSV for these tests
+        legacy_single_threaded=False,
         variant_scan_cache=None,
         junction_pool_cache=None,
+        # Resume/sidecar flags (defaults)
+        force_all=False,
+        force_stage=None,
+        accept_prior_provenance=False,
+        dry_run_resume=False,
         # Junction refinement (all disabled / default)
         aligner_bams=[],
         junction_hp_pen=0.25,

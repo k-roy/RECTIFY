@@ -13,6 +13,121 @@ from typing import Optional
 import pandas as pd
 
 
+_MANIFEST_HEADER_COLS = ['region_id', 'chrom', 'start', 'end', 'tsv_path', 'n_rows', 'sha256']
+
+
+def _is_manifest(filepath: str) -> bool:
+    """Return True if filepath is a corrected_reads.manifest.tsv (Commit B format)."""
+    try:
+        with open(filepath) as fh:
+            first_line = fh.readline().rstrip('\n')
+        return first_line.split('\t') == _MANIFEST_HEADER_COLS
+    except OSError:
+        return False
+
+
+def _load_manifest_as_dataframe(
+    manifest_path: str,
+    sample_column: str,
+    normalize_chroms: bool = True,
+    chrom_format: str = 'passthrough',
+    chunk_size: int = 1_000_000,
+    max_rows: int = None,
+) -> pd.DataFrame:
+    """Load a corrected_reads.manifest.tsv by concatenating its region TSVs.
+
+    Iterates region TSVs in manifest order and concatenates them into one
+    DataFrame. Commit D will restructure analyze to stream partials; this
+    in-memory concat is intentionally simple for now.
+    """
+    import os
+    from ...core.bam.tsv_partition import load_manifest
+    entries = load_manifest(Path(manifest_path))
+    frames = []
+    rows_loaded = 0
+    for entry in entries:
+        region_tsv = entry['tsv_path']  # absolute Path
+        if not region_tsv.exists():
+            raise FileNotFoundError(
+                f"Manifest references missing region TSV: {region_tsv}"
+            )
+        df_part = pd.read_csv(str(region_tsv), sep='\t')
+        if max_rows is not None:
+            remaining = max_rows - rows_loaded
+            if remaining <= 0:
+                break
+            df_part = df_part.iloc[:remaining]
+        frames.append(df_part)
+        rows_loaded += len(df_part)
+        if max_rows is not None and rows_loaded >= max_rows:
+            break
+    if not frames:
+        # Return an empty DataFrame with sensible columns
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    # Apply the same post-processing that load_corrected_positions does below.
+    return _postprocess_positions_df(combined, sample_column, normalize_chroms, chrom_format)
+
+
+def _postprocess_positions_df(
+    df: pd.DataFrame,
+    sample_column: str,
+    normalize_chroms: bool,
+    chrom_format: str,
+) -> pd.DataFrame:
+    """Apply position-column normalisation, sample-column auto-detect, and column
+    trimming to df.  Mirrors the post-processing in the single-TSV code path."""
+    from ...utils.chromosome import normalize_dataframe_chromosomes
+
+    position_col = None
+    for col in ['corrected_position', 'corrected_3prime', 'position']:
+        if col in df.columns:
+            position_col = col
+            break
+
+    if position_col is None:
+        raise ValueError(
+            "No position column found (tried: corrected_position, corrected_3prime, position)"
+        )
+
+    if position_col != 'corrected_position':
+        df['corrected_position'] = df[position_col]
+        print(f"  Using '{position_col}' as position column")
+
+    if sample_column not in df.columns:
+        _alt_sample_cols = ['sample', 'replicate', 'sample_id', 'sample_name', 'condition']
+        _detected = next((c for c in _alt_sample_cols if c in df.columns), None)
+        if _detected:
+            print(f"  Auto-detected sample column '{_detected}' (requested '{sample_column}' not found)")
+            sample_column = _detected
+        else:
+            raise ValueError(
+                f"Sample column '{sample_column}' not found. "
+                f"Tried fallbacks: {_alt_sample_cols}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+    required_cols = ['chrom', 'strand', 'corrected_position', sample_column]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if normalize_chroms:
+        df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)
+        print(f"  Normalized chromosome names to {chrom_format} format")
+
+    # Drop columns not needed downstream to reduce memory usage
+    _keep_cols = {'chrom', 'strand', 'corrected_position', sample_column}
+    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count'):
+        if _opt in df.columns:
+            _keep_cols.add(_opt)
+    _drop_cols = [c for c in df.columns if c not in _keep_cols]
+    if _drop_cols:
+        df = df.drop(columns=_drop_cols)
+
+    return df
+
+
 def load_corrected_positions(
     filepath: str,
     sample_column: str,
@@ -23,8 +138,12 @@ def load_corrected_positions(
 ) -> pd.DataFrame:
     """Load corrected positions from TSV file with optional chunked loading.
 
+    Auto-detects whether ``filepath`` is a manifest
+    (``corrected_reads.manifest.tsv``) or a single concatenated TSV.  Both
+    forms produce the same DataFrame so downstream code is unchanged.
+
     Args:
-        filepath: Path to TSV file with corrected positions
+        filepath: Path to TSV file with corrected positions OR a manifest.
         sample_column: Column name for sample identifier
         normalize_chroms: Whether to normalize chromosome names
         chrom_format: Target chromosome format ('passthrough', 'ucsc', 'ncbi', 'sgd'); default passthrough preserves input names
@@ -36,6 +155,13 @@ def load_corrected_positions(
     """
     from ...utils.chromosome import normalize_dataframe_chromosomes
     import os
+
+    # Manifest auto-detect (Commit B, 2026-05-20)
+    if _is_manifest(filepath):
+        print(f"  Detected manifest format — loading per-region TSVs...")
+        return _load_manifest_as_dataframe(
+            filepath, sample_column, normalize_chroms, chrom_format, chunk_size, max_rows
+        )
 
     # Check file size to determine loading strategy
     file_size = os.path.getsize(filepath)

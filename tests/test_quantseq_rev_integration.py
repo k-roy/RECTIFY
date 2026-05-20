@@ -121,6 +121,7 @@ def pipeline_output(integration_dir: Path) -> list[dict]:
         "--short-read",
         "--dT-primed-cDNA",
         "-o", str(out_tsv),
+        "--emit-merged-tsv",  # Commit B: default is manifest-only; keep merged TSV for test assertions
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

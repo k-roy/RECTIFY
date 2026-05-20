@@ -28,6 +28,45 @@ from ...utils import genome as genome_utils
 from ...utils.provenance import init_provenance
 
 
+def _derive_sample_id(args) -> str:
+    """Derive a stable sample ID from args for sidecar naming.
+
+    Priority:
+    1. ``args.corrected_bam`` stem (most specific — the final corrected BAM path)
+    2. ``args.input`` stem (input BAM / FASTQ stem)
+    3. Fallback: ``"rectify_sample"``
+    """
+    if getattr(args, 'corrected_bam', None):
+        return Path(str(args.corrected_bam)).stem
+    if getattr(args, 'input', None):
+        stem = Path(str(args.input)).stem
+        # Strip common suffixes (e.g., .sorted, .consensus) for a cleaner ID.
+        for sfx in ('.sorted', '.consensus', '.rectified', '.bam'):
+            if stem.endswith(sfx):
+                stem = stem[:-len(sfx)]
+        return stem or "rectify_sample"
+    return "rectify_sample"
+
+
+def _estimate_n_reads(bam_path: str) -> int:
+    """Estimate total read count from BAM index statistics.
+
+    Uses ``pysam.idxstats`` which requires the BAM to be indexed. If the
+    index is absent or the call fails, returns 0 (falls through to sequential
+    path as a safe fallback).
+    """
+    try:
+        lines = pysam.idxstats(str(bam_path)).strip().split('\n')
+        total = 0
+        for line in lines:
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                total += int(parts[2])  # mapped reads
+        return total
+    except Exception:
+        return 0
+
+
 def _strip_aligner_prefix(bam_entry: str) -> str:
     """Strip optional ``aligner:`` prefix from a BAM path entry.
 
@@ -343,6 +382,14 @@ def run(args):
     Args:
         args: Parsed command-line arguments from argparse
     """
+    import os as _os_run
+    import sys as _sys_run
+    import time as _time_run
+    from datetime import datetime, timezone
+
+    # Capture stage start time for provenance sidecar (must be before any work).
+    _stage_started_at = datetime.now(timezone.utc).isoformat()
+
     # Determine thread count and set limits BEFORE numpy import
     n_threads = args.threads if args.threads > 0 else get_available_cpus()
     set_thread_limits(n_threads)
@@ -401,6 +448,56 @@ def run(args):
     else:
         logger.info(f"  Junction refinement:   {'ENABLED (' + str(_n_abams) + ' aligner BAMs)' if _n_abams else 'DISABLED (pass --aligner-bams to enable)'}")
     logger.info("")
+
+    # ---------- Resume check (Commit B, 2026-05-20) ----------
+    _sample_id = _derive_sample_id(args)
+    _output_dir = Path(config['output_path']).parent if config.get('output_path') else None
+    _emit_merged_tsv = getattr(args, 'emit_merged_tsv', False)
+    _legacy_single_threaded = getattr(args, 'legacy_single_threaded', False)
+    _tmp_dir = getattr(args, 'tmp_dir', None)
+
+    if _output_dir is not None:
+        from rectify.core.provenance import can_skip_stage
+        from rectify.utils.version import get_rectify_git_sha as _get_sha
+        _rectify_sha = _get_sha()
+        _current_inputs = {
+            'bam': str(config['bam_path']),
+            'genome': str(config['genome_path']) if config.get('genome_path') else None,
+        }
+        if config.get('annotation_path'):
+            _current_inputs['annotation'] = str(config['annotation_path'])
+        # Remove None values — can_skip_stage expects existing paths.
+        _current_inputs = {k: v for k, v in _current_inputs.items() if v}
+
+        _skip_decision = can_skip_stage(
+            stage='correct',
+            sample_output=_output_dir,
+            sample_id=_sample_id,
+            current_inputs=_current_inputs,
+            current_argv=_sys_run.argv,
+            rectify_git_sha=_rectify_sha,
+            force=getattr(args, 'force_all', False),
+            force_stages=set(getattr(args, 'force_stage', None).split(','))
+                         if getattr(args, 'force_stage', None) else None,
+            accept_prior_provenance=getattr(args, 'accept_prior_provenance', False),
+        )
+        logger.info(
+            "[RESUME] sample=%s stage=correct decision=%s reason=%s",
+            _sample_id,
+            'SKIP' if _skip_decision.skip else 'RUN',
+            _skip_decision.reason,
+        )
+        if _skip_decision.skip:
+            logger.info("[RESUME] Skipping correct stage — prior sidecar valid.")
+            return 0
+
+        # Dry-run mode: print decision and exit.
+        if getattr(args, 'dry_run_resume', False):
+            print(f"[dry-run-resume] stage=correct decision=RUN reason={_skip_decision.reason}")
+            return 0
+    else:
+        _rectify_sha = 'unknown'
+    # -------------------------------------------------------
 
     # Initialize provenance tracking
     provenance = None
@@ -752,6 +849,55 @@ def run(args):
 
         logger.info(f"[TIMING] BAM processing: {_time.perf_counter() - _t_proc:.1f}s")
 
+        # ---------- Manifest TSV emission (Commit B, 2026-05-20) ----------
+        # The canonical artifact going forward is corrected_reads.manifest.tsv.
+        # The merged corrected_reads.tsv is emitted only when --emit-merged-tsv
+        # is explicitly passed.
+        _manifest_path = None
+        if config.get('output_path'):
+            _tsv_path = Path(str(config['output_path']))
+            _manifest_path = _tsv_path.parent / (
+                _tsv_path.stem.replace('corrected_reads', 'corrected_reads') + '.manifest.tsv'
+            )
+            # Build manifest path next to the TSV
+            _manifest_path = _tsv_path.parent / (_tsv_path.stem + '.manifest.tsv')
+            if _tsv_path.exists():
+                import hashlib as _hashlib
+                # Create a single-entry manifest wrapping the existing TSV.
+                # (Commit D will emit per-region TSVs from the parallel workers;
+                # for now we wrap the monolithic TSV in a one-entry manifest.)
+                with _tsv_path.open('rb') as _mf:
+                    _sha = _hashlib.sha256(_mf.read()).hexdigest()
+                _n_data_rows = sum(1 for _ in _tsv_path.open()) - 1  # subtract header
+                _rel_tsv = _os_run.path.relpath(str(_tsv_path), str(_manifest_path.parent))
+                with open(_manifest_path, 'w') as _mfh:
+                    _mfh.write('region_id\tchrom\tstart\tend\ttsv_path\tn_rows\tsha256\n')
+                    _mfh.write(f'region_000\t*\t0\t0\t{_rel_tsv}\t{_n_data_rows}\t{_sha}\n')
+                logger.info(
+                    "[CHANGED] correct now writes corrected_reads.manifest.tsv by default; "
+                    "pass --emit-merged-tsv for the legacy concatenated form or use "
+                    "'rectify export-merged-tsv <manifest>' on demand."
+                )
+                logger.info(f"  Manifest: {_manifest_path}")
+                if not _emit_merged_tsv:
+                    # Default: manifest-only. Rename the merged TSV so it's
+                    # not at the canonical path (available via manifest).
+                    _region_tsv_path = _tsv_path.parent / (_tsv_path.stem + '.region_000.tsv')
+                    _tsv_path.rename(_region_tsv_path)
+                    # Update manifest to point to renamed file.
+                    _rel_region = _os_run.path.relpath(str(_region_tsv_path), str(_manifest_path.parent))
+                    with open(_manifest_path, 'w') as _mfh:
+                        _mfh.write('region_id\tchrom\tstart\tend\ttsv_path\tn_rows\tsha256\n')
+                        _mfh.write(f'region_000\t*\t0\t0\t{_rel_region}\t{_n_data_rows}\t{_sha}\n')
+                    # Update config['output_path'] to point to the region TSV so
+                    # downstream BAM writers (which load corrections from TSV) can
+                    # still find it via the manifest-aware loader.
+                    config['output_path'] = str(_region_tsv_path)
+                    logger.info(f"  Region TSV (manifest-only mode): {_region_tsv_path}")
+                else:
+                    logger.info(f"  Merged TSV (--emit-merged-tsv): {_tsv_path}")
+        # -------------------------------------------------------------------
+
         # Propagate spike-in count into stats
         if spikein_stats:
             stats.spikein_reads_filtered = spikein_stats.get('spikein_reads', 0)
@@ -841,25 +987,81 @@ def run(args):
             logger.info(f"[TIMING] Dual BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
 
         elif _want_hc:
-            import subprocess as _subprocess
             _t_cbam = _time.perf_counter()
-            _unsorted_bam = str(config['corrected_bam']) + '.unsorted.bam'
             logger.info(f"Writing corrected BAM to {config['corrected_bam']}...")
-            cbam_stats = bam_processor.write_corrected_bam(
-                str(bam_to_process),
-                str(config['output_path']),
-                _unsorted_bam,
-                genome=_genome_for_bam,
+
+            # Commit B: parallel BAM write gate.
+            _input_size = _os_run.path.getsize(str(bam_to_process))
+            _n_reads_est = _estimate_n_reads(str(bam_to_process))
+            _use_parallel = (
+                not _legacy_single_threaded
+                and _input_size >= 100 * 1024 ** 2   # 100 MB
+                and _n_reads_est >= 500_000
             )
-            logger.info(
-                f"  Reads written: {cbam_stats['total']:,}  "
-                f"clipped: {cbam_stats['clipped']:,}  "
-                f"unchanged: {cbam_stats['unchanged']:,}"
-            )
-            pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
-            pysam.index(str(config['corrected_bam']))
-            import os as _os
-            _os.unlink(_unsorted_bam)
+            if _use_parallel:
+                logger.info(
+                    "[bam_writer] parallel path: size=%d MB, est_reads=%d, n_threads=%d",
+                    _input_size // (1024 ** 2), _n_reads_est, n_threads,
+                )
+                from ..bam.bam_writer_parallel import write_corrected_bam_parallel
+                cbam_parallel_stats = write_corrected_bam_parallel(
+                    input_bam_path=str(bam_to_process),
+                    corrected_tsv_path=str(config['output_path']),
+                    output_bam_path=str(config['corrected_bam']),
+                    n_threads=n_threads,
+                    genome=_genome_for_bam,
+                    tmp_dir=_tmp_dir,
+                )
+                cbam_stats = {
+                    'total': cbam_parallel_stats.get('n_reads_out_total', 0),
+                    'clipped': 0,  # parallel path doesn't track per-category
+                    'unchanged': 0,
+                }
+                logger.info(
+                    f"  Reads written: {cbam_stats['total']:,}  (parallel, {cbam_parallel_stats.get('n_regions', '?')} regions)"
+                )
+            elif _legacy_single_threaded:
+                logger.info(
+                    "[bam_writer] using legacy single-threaded path (--legacy-single-threaded)"
+                )
+                _unsorted_bam = str(config['corrected_bam']) + '.unsorted.bam'
+                cbam_stats = bam_processor.write_corrected_bam(
+                    str(bam_to_process),
+                    str(config['output_path']),
+                    _unsorted_bam,
+                    genome=_genome_for_bam,
+                )
+                logger.info(
+                    f"  Reads written: {cbam_stats['total']:,}  "
+                    f"clipped: {cbam_stats['clipped']:,}  "
+                    f"unchanged: {cbam_stats['unchanged']:,}"
+                )
+                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
+                pysam.index(str(config['corrected_bam']))
+                import os as _os
+                _os.unlink(_unsorted_bam)
+            else:
+                logger.info(
+                    "[bam_writer] small-input gate fired (size=%d MB, est_reads=%d) — using sequential path",
+                    _input_size // (1024 ** 2), _n_reads_est,
+                )
+                _unsorted_bam = str(config['corrected_bam']) + '.unsorted.bam'
+                cbam_stats = bam_processor.write_corrected_bam(
+                    str(bam_to_process),
+                    str(config['output_path']),
+                    _unsorted_bam,
+                    genome=_genome_for_bam,
+                )
+                logger.info(
+                    f"  Reads written: {cbam_stats['total']:,}  "
+                    f"clipped: {cbam_stats['clipped']:,}  "
+                    f"unchanged: {cbam_stats['unchanged']:,}"
+                )
+                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
+                pysam.index(str(config['corrected_bam']))
+                import os as _os
+                _os.unlink(_unsorted_bam)
+
             logger.info(f"  Sorted and indexed {config['corrected_bam']}")
             logger.info(f"[TIMING] Corrected BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
 
@@ -1006,11 +1208,84 @@ def run(args):
             except Exception:
                 pass  # non-fatal if cleanup fails
 
+        _wall_total_secs = _time.perf_counter() - _t_correct_total
         logger.info("")
         logger.info("=" * 70)
         logger.info("RECTIFY completed successfully!")
-        logger.info(f"[TIMING] Correction total: {_time.perf_counter() - _t_correct_total:.1f}s")
+        logger.info(f"[TIMING] Correction total: {_wall_total_secs:.1f}s")
         logger.info("=" * 70)
+
+        # ---------- Stage-level sidecar emission (Commit B, 2026-05-20) ----------
+        # CRITICAL: sidecar MUST be written AFTER all durable outputs exist.
+        # A crash before this point leaves no sidecar → next run correctly reruns.
+        if _output_dir is not None:
+            try:
+                from datetime import datetime as _dt_sidecar, timezone as _tz_sidecar_cls
+                from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+
+                _sidecar_inputs = {}
+                if config.get('bam_path'):
+                    _sidecar_inputs['bam'] = str(config['bam_path'])
+                if config.get('genome_path'):
+                    _sidecar_inputs['genome'] = str(config['genome_path'])
+                if config.get('annotation_path'):
+                    _sidecar_inputs['annotation'] = str(config['annotation_path'])
+
+                _sidecar_outputs = {}
+                if config.get('output_path') and Path(str(config['output_path'])).exists():
+                    _sidecar_outputs['corrected_tsv'] = str(config['output_path'])
+                if _manifest_path and _manifest_path.exists():
+                    _sidecar_outputs['corrected_tsv_manifest'] = str(_manifest_path)
+                if config.get('corrected_bam') and Path(str(config['corrected_bam'])).exists():
+                    _sidecar_outputs['corrected_bam'] = str(config['corrected_bam'])
+                if config.get('corrected_bam') and Path(str(config['corrected_bam']) + '.bai').exists():
+                    _sidecar_outputs['corrected_bam_index'] = (str(config['corrected_bam']) + '.bai', True)
+
+                # Determine protocol subtype
+                _subtype = 'drs'
+                if is_dt_primed:
+                    _subtype = 'cdna'
+                elif is_ont_cdna:
+                    _subtype = 'ont_cdna'
+                elif is_short_read:
+                    _subtype = 'short_read'
+
+                _record = ProvenanceRecord.from_components(
+                    stage='correct',
+                    stage_subtype=_subtype,
+                    sample_id=_sample_id,
+                    sample_output_dir=_output_dir,
+                    started_at=_stage_started_at,
+                    completed_at=_dt_sidecar.now(_tz_sidecar_cls.utc).isoformat(),
+                    exit_status=0,
+                    inputs=_sidecar_inputs,
+                    outputs=_sidecar_outputs,
+                    stats={
+                        'wall_seconds': _wall_total_secs,
+                        'n_threads': n_threads,
+                    },
+                    skip_check_config={
+                        'ignore_argv': [
+                            '--n-threads', '--threads', '-j',
+                            '--tmp-dir', '--verbose', '--keep-tmp',
+                            '--legacy-single-threaded',
+                            '--checkpoint-dir', '--chunk-size',
+                        ],
+                    },
+                    argv=_sys_run.argv,
+                    rectify_git_sha=_rectify_sha,
+                )
+                write_stage_sidecar(_record, sample_output=_output_dir)
+                logger.info(
+                    "[PROVENANCE] Wrote stage sidecar: %s.correct.provenance.json",
+                    _sample_id,
+                )
+            except Exception as _sc_exc:
+                logger.warning(
+                    "[PROVENANCE] Failed to write correct stage sidecar (non-fatal): %s",
+                    _sc_exc,
+                )
+        # -------------------------------------------------------------------------
 
     except Exception as e:
         logger.error(f"Error during processing: {e}")
@@ -1348,6 +1623,43 @@ def create_correct_parser(subparsers):
              'the variant scan is reloaded from disk, and the partial output TSV is '
              'appended to rather than overwritten. Has no effect without --streaming.'
     )
+
+    perf_group.add_argument(
+        '--tmp-dir',
+        type=str,
+        default=None,
+        metavar='DIR',
+        help='Scratch directory for intermediate per-region BAM files used by the '
+             'parallel BAM writer (write_corrected_bam_parallel). Defaults to a new '
+             'directory under $TMPDIR / tempfile.gettempdir(). On H2/Sherlock, pass '
+             '$L_SCRATCH/rectify_regions for fast local disk.'
+    )
+
+    perf_group.add_argument(
+        '--emit-merged-tsv',
+        dest='emit_merged_tsv',
+        action='store_true',
+        default=False,
+        help='Also emit the legacy concatenated corrected_reads.tsv alongside the '
+             'corrected_reads.manifest.tsv (default: manifest-only). Useful for '
+             'downstream scripts that have not yet been migrated to accept manifests. '
+             'Equivalent to running rectify export-merged-tsv <manifest> afterwards.'
+    )
+
+    perf_group.add_argument(
+        '--legacy-single-threaded',
+        dest='legacy_single_threaded',
+        action='store_true',
+        default=False,
+        help='Force the pre-Commit-A single-threaded BAM writer regardless of input '
+             'size or thread count. For debugging correctness regressions and '
+             'memory-constrained environments. '
+             'DEPRECATED: will be removed in a future release.'
+    )
+
+    # Resume / sidecar flags
+    from rectify.core.provenance.cli import add_resume_args
+    add_resume_args(correct_parser)
     perf_group.add_argument(
         '--variant-scan-cache',
         type=str,
