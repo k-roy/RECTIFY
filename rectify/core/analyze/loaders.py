@@ -245,6 +245,10 @@ def load_position_index(
     df = pd.read_csv(str(index_path), sep='\t', compression='gzip')
     df = df.rename(columns={'corrected_3prime': 'corrected_position'})
     df['sample'] = sample_id
+    # Older indices (pre-2026-05-19) lack count_ag_rich; default to 0.0
+    # so downstream code can rely on the column always being present.
+    if 'count_ag_rich' not in df.columns:
+        df['count_ag_rich'] = 0.0
 
     if normalize_chroms and 'chrom' in df.columns:
         df = normalize_dataframe_chromosomes(df, 'chrom', chrom_format)

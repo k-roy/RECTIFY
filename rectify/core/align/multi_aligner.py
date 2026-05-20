@@ -761,6 +761,12 @@ def run_bbmap(
         'maxindel=100000',   # Allow yeast-scale introns (up to ~1 kb)
         'minratio=0.56',     # Default short-read sensitivity
         'ambiguous=best',
+        'trd=t',             # Trim read description: keep only the first
+                             # whitespace token of the FASTQ header in QNAME.
+                             # Without this, BBmap retains the full header
+                             # (e.g. 'SRR.123 123 length=76') while BWA truncates
+                             # to the bare accession — consensus K-way merge
+                             # then fails to join cross-aligner reads.
         '-Xmx32g',
     ]
 

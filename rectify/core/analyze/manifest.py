@@ -123,9 +123,12 @@ def _run_analyze_manifest(
         # Try loading from compact index first
         idx_df = load_position_index(tsv_path, sample_id, normalize_chroms=True, chrom_format=chrom_format)
         if idx_df is not None:
-            print(f"  {sample_id}: loaded index ({len(idx_df):,} positions)")
-            # Index has corrected_position, chrom, strand, count, sample
-            all_pos_dfs.append(idx_df[['chrom', 'strand', 'corrected_position', 'count', 'sample']])
+            n_ag = int(idx_df['count_ag_rich'].sum()) if 'count_ag_rich' in idx_df.columns else 0
+            print(f"  {sample_id}: loaded index ({len(idx_df):,} positions, {n_ag:,} AG-rich reads tracked)")
+            # Index has corrected_position, chrom, strand, count, count_ag_rich, sample
+            all_pos_dfs.append(
+                idx_df[['chrom', 'strand', 'corrected_position', 'count', 'count_ag_rich', 'sample']]
+            )
             continue
 
         # Fall back: stream the full TSV with minimal columns
@@ -144,31 +147,49 @@ def _run_analyze_manifest(
         _usecols = ['chrom', 'strand', _pos_col]
         if _has_qc:
             _usecols.append('qc_flags')
-        _agg = defaultdict(float)
-        _n_ag_rich_filtered = 0
+        # Each value is [count_total, count_ag_rich]. AG_RICH reads are KEPT
+        # in the cluster-discovery pool (v0.9.2+): the WT-vs-Ysh1AA contrast
+        # showed condition-dependent AG enrichment reflecting real CPA-readthrough
+        # biology, not protocol artefact. AG counts are tracked separately so
+        # cluster-level annotation can carry an `ag_rich_fraction` flag for
+        # downstream filtering (e.g. DRS-based orthogonal voting).
+        _agg = defaultdict(lambda: [0.0, 0.0])
+        _n_ag_rich = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
-            # Drop reads whose called 3' end sits in AG-rich downstream genomic
-            # context (likely oligo-dT(V) internal-priming artefact, not a true CPA).
             if _has_qc:
                 _ag_mask = _chunk['qc_flags'].str.contains('AG_RICH', na=False)
-                _n_ag_rich_filtered += int(_ag_mask.sum())
-                _chunk = _chunk.loc[~_ag_mask]
+                _n_ag_rich += int(_ag_mask.sum())
+            else:
+                _ag_mask = None
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             # Vectorized groupby (~20-50x faster than itertuples+dict for large chunks)
             for (chrom, strand, pos), cnt in (
                 _chunk.groupby(['chrom', 'strand', _pos_col], sort=False).size().items()
             ):
-                _agg[(chrom, strand, pos)] += float(cnt)
+                _agg[(chrom, strand, pos)][0] += float(cnt)
+            if _ag_mask is not None and _ag_mask.any():
+                for (chrom, strand, pos), cnt in (
+                    _chunk.loc[_ag_mask]
+                    .groupby(['chrom', 'strand', _pos_col], sort=False)
+                    .size()
+                    .items()
+                ):
+                    _agg[(chrom, strand, pos)][1] += float(cnt)
 
-        if _has_qc and _n_ag_rich_filtered > 0:
-            print(f"  {sample_id}: filtered {_n_ag_rich_filtered:,} reads with AG-rich downstream genomic context")
+        if _has_qc and _n_ag_rich > 0:
+            print(f"  {sample_id}: tracked {_n_ag_rich:,} AG-rich reads (kept in cluster pool)")
 
         if not _agg:
             print(f"  WARNING: No positions found in {tsv_path}, skipping.")
             continue
 
-        _rows = [{'chrom': c, 'strand': st, 'corrected_position': pos, 'count': cnt, 'sample': sample_id}
-                 for (c, st, pos), cnt in _agg.items()]
+        _rows = [
+            {
+                'chrom': c, 'strand': st, 'corrected_position': pos,
+                'count': cnt, 'count_ag_rich': cnt_ag, 'sample': sample_id,
+            }
+            for (c, st, pos), (cnt, cnt_ag) in _agg.items()
+        ]
         all_pos_dfs.append(pd.DataFrame(_rows))
         print(f"  {sample_id}: aggregated {len(_rows):,} positions")
 
@@ -220,6 +241,64 @@ def _run_analyze_manifest(
         count_col=count_col,
     )
     print(f"  Formed {len(clusters_df):,} clusters")
+
+    # Annotate clusters with AG-richness aggregates. Post-hoc join keeps the
+    # clusterer signature stable; runs in O(positions + clusters) via interval
+    # lookups grouped by (chrom, strand).
+    if 'count_ag_rich' in positions_agg.columns and len(clusters_df) > 0:
+        _pos_totals = (
+            positions_agg.groupby(
+                ['chrom', 'strand', 'corrected_position'], sort=False
+            )[['count', 'count_ag_rich']]
+            .sum()
+            .reset_index()
+        )
+        # Per-cluster aggregate: sum count_ag_rich and count over positions in
+        # [start, end] on the same (chrom, strand).
+        _n_ag = []
+        _n_tot = []
+        _modal_ag = []
+        # Group positions by (chrom, strand) once for cheap repeated lookups
+        # via the position index inside each per-(chrom,strand) frame.
+        _by_cs = {
+            k: v.set_index('corrected_position')[['count', 'count_ag_rich']]
+            for k, v in _pos_totals.groupby(['chrom', 'strand'])
+        }
+        for _, c in clusters_df.iterrows():
+            sub = _by_cs.get((c['chrom'], c['strand']))
+            if sub is None:
+                _n_ag.append(0.0)
+                _n_tot.append(0.0)
+                _modal_ag.append(False)
+                continue
+            in_range = sub.loc[(sub.index >= c['start']) & (sub.index <= c['end'])]
+            _n_ag.append(float(in_range['count_ag_rich'].sum()))
+            _n_tot.append(float(in_range['count'].sum()))
+            # modal_pos_ag_rich: at the modal_position, is the AG fraction > 0.5?
+            modal_row = sub.loc[sub.index == c['modal_position']]
+            if len(modal_row) > 0 and float(modal_row['count'].iloc[0]) > 0:
+                _modal_ag.append(
+                    float(modal_row['count_ag_rich'].iloc[0])
+                    / float(modal_row['count'].iloc[0])
+                    > 0.5
+                )
+            else:
+                _modal_ag.append(False)
+        clusters_df['n_reads_ag_rich'] = _n_ag
+        clusters_df['ag_rich_fraction'] = [
+            (a / t) if t > 0 else 0.0 for a, t in zip(_n_ag, _n_tot)
+        ]
+        clusters_df['modal_pos_ag_rich'] = _modal_ag
+        _ag_threshold = getattr(args, 'cluster_ag_fraction_threshold', 0.5)
+        clusters_df['cluster_ag_flag'] = (
+            (clusters_df['ag_rich_fraction'] > _ag_threshold)
+            | clusters_df['modal_pos_ag_rich']
+        )
+        n_ag_flagged = int(clusters_df['cluster_ag_flag'].sum())
+        print(
+            f"  AG-rich annotation: {n_ag_flagged:,} clusters flagged "
+            f"(modal_pos AG_RICH OR cluster ag_rich_fraction > {_ag_threshold})"
+        )
 
     if args.annotation and annotation_df is not None:
         print(f"  Annotating clusters with genes...")
@@ -400,21 +479,19 @@ def _run_analyze_manifest(
 
         _has_fraction = 'fraction' in _header.columns
         _has_tss = 'five_prime_position' in _header.columns
-        _has_qc_p2 = 'qc_flags' in _header.columns
         _usecols = ['chrom', 'strand', _pos_col]
         if _has_fraction:
             _usecols.append('fraction')
         if _has_tss:
             _usecols.append('five_prime_position')
-        if _has_qc_p2:
-            _usecols.append('qc_flags')
 
+        # AG_RICH reads are KEPT in cluster counts (v0.9.2+). The WT-vs-Ysh1AA
+        # contrast shows condition-dependent AG-richness reflecting real
+        # CPA-readthrough biology rather than internal-priming artefact;
+        # downstream consumers can filter on the cluster-level `cluster_ag_flag`
+        # column in cpa_clusters.tsv (or use DRS orthogonal voting).
         n_assigned = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
-            # Drop reads whose called 3' end sits in AG-rich downstream genomic
-            # context — they must not contribute to cluster counts.
-            if _has_qc_p2:
-                _chunk = _chunk.loc[~_chunk['qc_flags'].str.contains('AG_RICH', na=False)]
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             weights = _chunk['fraction'].values if _has_fraction else None
 

@@ -153,26 +153,94 @@ def _natural_sort_key(s: str) -> list:
     return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', s)]
 
 
+# Underscore-encoded comment suffixes that samtools sort may produce by
+# converting in-QNAME spaces to underscores. Two patterns from our pipeline:
+#   mapPacBio:                 '<uuid>_pt:i:<N>'
+#   BBmap + retained comment:  '<accession>_<record_num>_length=<read_len>'
+# We match specific forms (not bare '_<anything>') to avoid mangling qnames
+# that legitimately contain underscores (e.g. Illumina-style flow-cell ids).
+_UNDERSCORE_COMMENT_RE = re.compile(
+    r'(?:_pt:i:\d+|_\d+_length=\d+).*$'
+)
+
+
 def _normalize_bam_read_name(name: str) -> str:
-    """Strip mapPacBio's pt:i:N suffix from BAM read names.
+    """Strip aligner-specific comment suffixes from BAM read names.
 
-    mapPacBio embeds the poly-A tail length from the FASTQ auxiliary tag
-    directly into the BAM read name.  The separator depends on processing stage:
+    Two failure modes this guards against in the K-way consensus merge:
 
-    - Space-separated ('UUID pt:i:25'): direct mapPacBio output, before samtools sort.
-    - Underscore-separated ('UUID_pt:i:25'): after samtools sort (BAM spec forbids
-      spaces in QNAME, so samtools converts the space to underscore).
+    1. **BBmap-retained FASTQ comments** (the v0.9.1 wt_R1 bug). BBmap by
+       default emits the full FASTQ header line into QNAME, including the
+       trailing comment: ``'SRR22434624.1654499 1654499 length=76'``.
+       BWA truncates to the first whitespace token: ``'SRR22434624.1654499'``.
+       Unnormalized, the two never join in consensus → no deduplication.
 
-    Both forms must be stripped so that the K-way merge correctly groups mapPacBio
-    reads with their counterparts from other aligners.
+    2. **mapPacBio pt:i:N suffix** (pre-existing). mapPacBio embeds the
+       poly-A tail length from the FASTQ auxiliary tag into the BAM read
+       name. The separator depends on processing stage:
+       - Space-separated ('UUID pt:i:25'): direct mapPacBio output, pre-sort.
+       - Underscore-separated ('UUID_pt:i:25'): after samtools sort (BAM spec
+         forbids spaces in QNAME, so samtools converts space → underscore).
+
+    Strategy: strip everything after the first whitespace (handles BBmap's
+    retained comment and ONT runid/sampleid comments while qnames are still
+    in raw post-aligner form), then strip specific underscore-encoded
+    suffixes produced by samtools sort.
     """
-    idx = name.find(' pt:i:')
-    if idx != -1:
-        return name[:idx]
-    idx = name.find('_pt:i:')
-    if idx != -1:
-        return name[:idx]
-    return name
+    # Strip after first whitespace (space or tab).
+    for sep in (' ', '\t'):
+        idx = name.find(sep)
+        if idx != -1:
+            name = name[:idx]
+    # Strip recognized underscore-encoded suffixes left by samtools sort.
+    return _UNDERSCORE_COMMENT_RE.sub('', name)
+
+
+def _check_read_name_compatibility(
+    bam_paths: Dict[str, str], n_sample: int = 100
+) -> None:
+    """Sample the first N reads from each input BAM and verify normalized
+    names overlap meaningfully across aligners.
+
+    Catches the v0.9.1 wt_R1 failure mode where BBmap retained FASTQ
+    comments while BWA truncated them — the K-way merge then silently
+    emitted both rows per read instead of one consensus winner.
+
+    Raises with a clear error if normalized-name overlap is <50% across
+    any pair of aligners, suggesting a read_id format mismatch that the
+    consensus join would never recover from.
+    """
+    if len(bam_paths) < 2:
+        return
+    samples: Dict[str, set] = {}
+    for aligner, path in bam_paths.items():
+        names = set()
+        with pysam.AlignmentFile(path, 'rb') as bam:
+            for i, read in enumerate(bam):
+                if i >= n_sample:
+                    break
+                names.add(_normalize_bam_read_name(read.query_name or ''))
+        samples[aligner] = names
+    aligners = list(samples.keys())
+    for i, a in enumerate(aligners):
+        for b in aligners[i + 1:]:
+            inter = samples[a] & samples[b]
+            union = samples[a] | samples[b]
+            if not union:
+                continue
+            overlap = len(inter) / len(union)
+            if overlap < 0.5:
+                raise RuntimeError(
+                    f"Read-id format mismatch between aligners {a!r} and {b!r}: "
+                    f"only {len(inter)}/{len(union)} ({100*overlap:.1f}%) of the "
+                    f"first {n_sample} normalized read names overlap. The K-way "
+                    f"consensus merge will not match reads across these BAMs. "
+                    f"Inspect QNAME formats in the input BAMs; if BBmap retained "
+                    f"a FASTQ comment, re-run BBmap with 'trd=t' or extend "
+                    f"_normalize_bam_read_name() to strip the offending suffix.\n"
+                    f"  {a} sample: {sorted(samples[a])[:3]}\n"
+                    f"  {b} sample: {sorted(samples[b])[:3]}"
+                )
 
 
 def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
@@ -181,6 +249,7 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
 
     Memory: O(n_aligners) per read instead of O(total_reads * n_aligners).
     """
+    _check_read_name_compatibility(bam_paths)
     bams = {}
     iterators = {}
     for aligner, path in bam_paths.items():
