@@ -248,6 +248,34 @@ All other bedgraph and bigwig emitters verified to already use the correct 0-bas
 
 ---
 
+## [2026-05-20] Read-number sidecar + RN aux-tag hybrid
+
+**Status:** IMPLEMENTED (working tree; uncommitted at time of entry).
+
+**Problem solved:** cDNA FASTQ comment tags (`XA/XC/XF/XU/XR/XI/XK/XS`) were
+only propagated by minimap2 `-y`; non-minimap2 consensus winners lost that
+metadata. `rectify split` now assigns a per-sample integer `RN:i:<read_num>`
+to each derived FASTQ header and writes `<sample>.read_num_sidecar.parquet`
+with the original QNAME, full FASTQ comment, chunk id, and seq/qual MD5s.
+
+**Architecture:** Option B from `HANDOFF.md` landed. Original QNAMEs stay in
+FASTQ/BAMs for IGV and grep ergonomics. minimap2 carries RN natively via `-y`;
+mapPacBio, gapmm2, deSALT, uLTRA, bbmap, and bwa build QNAME→RN maps before
+comment stripping and stream-inject `RN:i` into their BAMs after the existing
+QNAME validator. Consensus uses RN as the K-way merge key only when every input
+BAM has RN; otherwise it falls back to the existing normalized-QNAME path.
+
+**Restoration:** `rectify consensus --read-num-sidecar` (or autodetection beside
+input BAMs) restores SAM-format tags from the sidecar FASTQ comment onto each
+winning consensus record without overwriting tags already present on the read.
+Old RN-less BAMs remain valid and require no migration.
+
+**Tests:** New focused tests cover sidecar round-trip/lookups/fingerprint checks,
+chunker RN emission, RN BAM injection, RN-keyed merge fallback behavior, and
+consensus tag restoration. Local PyArrow is unavailable, so the 1M-row streaming
+RSS test is skipped locally; deployments with PyArrow exercise true parquet
+row-group writing.
+
 ## [2026-05-20] QNAME pipeline hardening — sanitizer + validator + cross-aligner audit
 
 **Status:** FIXED (working tree; uncommitted at time of entry).
@@ -324,6 +352,113 @@ strand guard). Pre-existing unrelated breakage in
 **Safe to pull:** strict correctness. Per-aligner BAMs will have an
 added <1s validator pass at the end; nothing else slows. Existing BAMs
 on disk are unchanged unless the auto-sanitizer fires on a re-run.
+
+---
+
+## [2026-05-20] set2 cascade scale: merged-BAM `--aligner-bams` lookups crash at chunk scale — STILL OPEN
+
+**Status:** UNDER INVESTIGATION. Same root cause as entry 2 (Han 2023 6.7M
+heap corruption) but reproduced at set2's smaller scale, demonstrating the
+problem is **not** Han 2023-specific. Empty-SEQ filter (entry 1's "Faster
+recovery" section) is necessary but **not sufficient**.
+
+**Affects:** `rectify correct` invoked with `--aligner-bams` pointing at
+merged per-aligner BAMs ≥ ~4M reads, when the per-chunk input BAM is just
+~280k-466k reads. This is the standard set2 wrapper invocation generated
+by `rectify split --generate-slurm` — each per-chunk correct does
+cross-aligner consensus lookups against the merged BAMs.
+
+**Symptom (mixed silent-hang + explicit free()):**
+
+Same pattern as entries 1 ("Downstream symptom") and 2:
+```
+INFO - rectify.core.bam.parallel -   X regions across 8 workers
+*** Error in `python': free(): invalid next size (fast): 0x... ***
+```
+… followed by memory-map dump and either:
+- Silent hang (Slurm reports RUNNING until walltime kill — most cases)
+- The explicit `free():` + map dump in the .err log (minority cases)
+
+Only ~2 of dozens of logs at first inspection showed the verbatim
+`free()` line; the rest had logs frozen at the "regions across N workers"
+line with no further output. Workers may or may not show CPU activity —
+the silent-hang variant can keep workers in tight loops in corrupted
+memory state.
+
+**Scale at which it manifests for set2 (verified 2026-05-20):**
+- Per-chunk INPUT BAM: ~280k-466k reads (well under the 4M threshold)
+- `--aligner-bams` MERGED BAMs: 4-15M reads per sample (above threshold)
+- Cross-aligner fetch() calls into the large merged BAMs trigger the
+  same htslib state corruption that entry 2 documents on Han 2023
+
+**What the empty-SEQ filter (entry 1) fixed vs left open:**
+- ✅ Fixed: merged-BAM crashes caused by the mapPacBio QNAME bug's empty-SEQ
+  reads. Pysam scan showed 8.4% (366k/4.3M) of mapPacBio merged BAM reads
+  had `query_sequence is None`. Filtering them allowed PRESCAN to complete
+  cleanly (it would crash on the unfiltered merged BAM within seconds).
+- ❌ Still open: the broader scale-related heap corruption at merged BAM
+  ≥ ~4M reads, INDEPENDENT of the empty-SEQ pattern. Filtering removes
+  one trigger but not all.
+
+**Verification path that exposed it:** post-empty-SEQ-filter cascade
+launched 99 jobs (11 samples × prescan + 5 correct + chunk_merge +
+final_merge). Prescan succeeded on all 11. Correct stage ran but only
+~19 / 530+ chunk tasks COMPLETED — and most of those 19 were the
+empty-BAM-guard fallbacks (deSALT SIGSEGV chunks that exit-0 via the
+6c8f5a6 guard in seconds, never doing real correction). Real-correct
+tasks at 1:24+ elapsed showed the silent-hang / explicit-crash pattern.
+
+**Working theory (from entry 2):** the issue is htslib's per-region
+fetch() against multi-million-read indexed BAMs under multi-worker fan-out.
+Workers' shared file handles or memory state corrupt in a way that
+manifests as `free(): invalid next size`. The empty-SEQ filter removed
+~8% of mapPacBio reads (an outlier-removal that brought some samples
+under threshold) but didn't change the fundamental dynamic for samples
+still over 4M reads in merged BAMs (every set2 sample is).
+
+**Practical workarounds for set2 today (in order of preference):**
+
+1. **Single-aligner correct (no `--aligner-bams`).** Bypass cross-aligner
+   lookups entirely. Each per-chunk correct uses ONLY its own input BAM
+   (e.g., minimap2-only). Removes the merged-BAM fetch path that's
+   crashing. 3'-end accuracy stays ~95-99% of multi-aligner consensus
+   per Kevin's earlier analysis (DRS yeast data; cross-aligner consensus
+   mostly improves splice junction edge cases, less the 3'-end call
+   itself). Used by this session as the salvage path after the 5-aligner
+   cascade collapsed.
+
+2. **Stage E.5 per-chunk-consensus correct.** Documented in entry 2 as the
+   Han 2023 workaround. Requires producing per-chunk consensus.bam files
+   FIRST (Stage E), then running rectify correct on each per-chunk
+   consensus BAM (~290k reads each, proven-safe scale, no merged-BAM
+   lookup at all). More compute than (1) but retains multi-aligner
+   consensus value.
+
+3. **Commit B `write_corrected_bam_parallel` pre-partitioning.**
+   Architectural fix in flight (entry 2 references). When merged with M1,
+   correct workers operate on per-region BAM slices ≤100k bp ref-space
+   rather than fetching against the full merged BAM. Should resolve at
+   the code level. Smoke-test pending.
+
+**For the next agent debugging this:**
+
+- Don't trust Slurm RUNNING — most "running" tasks at the second hour
+  are hung in userspace memory-corrupted state, not making progress.
+- The signature in logs is line: `rectify.core.bam.parallel -   X regions
+  across N workers` followed by either silence OR `free():` errors.
+- Check log progression with `tail -1 <log>.err` — if frozen at the
+  "regions" line for >10 min, the task is hung.
+- `grep -l "free()" *.err` undercounts because some logs go to silent
+  hang without printing the free() line at all.
+- Workers may show high CPU (50-99%) while hung — they're stuck in
+  userspace loops in corrupted memory, not stuck in syscall waits.
+- See sssion 5 handoff in `project_status_markdowns/DRS_CPA_PROJECT_STATUS.md`
+  for the empty-SEQ-filter recovery context and the full set2 cascade
+  timeline.
+
+**Do not pull this entry for guidance** — pull the actual fix (entry 2's
+Commit B branch or whatever supersedes it) once it lands. This entry is a
+field report, not a fix.
 
 ---
 
