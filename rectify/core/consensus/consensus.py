@@ -154,13 +154,29 @@ def _natural_sort_key(s: str) -> list:
 
 
 # Underscore-encoded comment suffixes that samtools sort may produce by
-# converting in-QNAME spaces to underscores. Two patterns from our pipeline:
-#   mapPacBio:                 '<uuid>_pt:i:<N>'
-#   BBmap + retained comment:  '<accession>_<record_num>_length=<read_len>'
-# We match specific forms (not bare '_<anything>') to avoid mangling qnames
-# that legitimately contain underscores (e.g. Illumina-style flow-cell ids).
+# converting in-QNAME whitespace (spaces or tabs) to underscores. Patterns
+# observed in our pipeline:
+#   mapPacBio:                  '<uuid>_pt:i:<N>'
+#   BBmap + retained comment:   '<accession>_<record_num>_length=<read_len>'
+#   tab-aux leak (minimap2 -y): '<uuid>_XA:Z:foo', '<uuid>_XC:i:42', etc.
+#   Dorado metadata leak:       '<uuid>_runid=<v>_ch=<v>_start_time=<v>...'
+#
+# Matched specifically (not bare '_<anything>') to avoid mangling qnames that
+# legitimately contain underscores (e.g. Illumina-style flow-cell ids).
+#
+# The generic SAM-aux pattern `_<2char>:[AZifHB]:` covers any underscore-encoded
+# aux tag (XA:Z:, XC:i:, ts:A:, etc.) — defends against future aligner outputs
+# without needing per-tag regex updates. The Dorado metadata keys are
+# enumerated because their `=`-separated form is too easy to overmatch.
 _UNDERSCORE_COMMENT_RE = re.compile(
-    r'(?:_pt:i:\d+|_\d+_length=\d+).*$'
+    r'(?:'
+    r'_pt:i:\d+'                                # mapPacBio poly-A annotation
+    r'|_\d+_length=\d+'                         # BBmap + retained SRA-style comment
+    r'|_[A-Za-z][A-Za-z0-9]:[AZifHB]:'          # generic SAM aux tag (XA:Z:, etc.)
+    r'|_(?:runid|ch|start_time|sampleid'
+    r'|flow_cell_id|read|parent_read_id'
+    r'|model_version_id|barcode)='              # Dorado metadata keys
+    r').*$'
 )
 
 
@@ -347,6 +363,11 @@ def _restore_sequence_from_aligner_reads(
         seq = donor_read.query_sequence
         if seq is None:
             continue
+        # pysam reverse-complements `query_sequence` for `is_reverse=True`
+        # records, so a donor mapped on the opposite strand would inject
+        # the RC of the correct sequence. Skip mismatched-strand donors.
+        if donor_read.is_reverse != best_read.is_reverse:
+            continue
         if expected_len > 0 and len(seq) != expected_len:
             logger.debug(
                 f"Skipping donor for '{best_read.query_name}': "
@@ -440,6 +461,11 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             )
             stats['by_aligner_combo'][unique_winners] += 1
 
+            # Same normalization rule as the non-chimeric path at line 489 —
+            # the chimeric template can be any aligner's record, so without
+            # this, mapPacBio/uLTRA-templated chimeric reads carry mutated
+            # QNAMEs into every downstream QNAME-keyed join.
+            out_read.query_name = _normalize_bam_read_name(out_read.query_name or '')
             out_bam.write(out_read)
 
         else:
@@ -464,12 +490,13 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 # supplementary (0x800) bits so the winning record is always primary.
                 best_read.flag &= ~0x900
 
-                # Normalize mapPacBio's 'UUID pt:i:N' / 'UUID_pt:i:N' read name to bare
-                # UUID so all downstream tools see a consistent read name regardless of
-                # which aligner won the consensus selection.
-                qn = best_read.query_name or ''
-                if ' pt:i:' in qn or '_pt:i:' in qn:
-                    best_read.query_name = _normalize_bam_read_name(best_read.query_name)
+                # Normalize the winning read's QNAME so all downstream tools see a
+                # consistent bare form regardless of which aligner won. Without this,
+                # the consensus.bam contains a mix of QNAME shapes (uLTRA's
+                # `uuid_runid=abc_ch=42`, bbmap's retained comment, mapPacBio's pt:i,
+                # etc.) depending on which aligner happened to win each read.
+                # Symmetric with the merge key in _iter_name_grouped_bams.
+                best_read.query_name = _normalize_bam_read_name(best_read.query_name or '')
 
                 # gapmm2 PAF→BAM conversion does not preserve read sequences;
                 # restore SEQ from another aligner's record for the same read.

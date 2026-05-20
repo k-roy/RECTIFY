@@ -37,6 +37,10 @@ except ImportError:  # pragma: no cover
     _pysam = None  # type: ignore
 
 from rectify.core.splice.calibrate_junction_overhang import OverhangTable, _parse_junctions as _parse_junctions_list
+from rectify.core.consensus.consensus import (
+    _normalize_bam_read_name,
+    _UNDERSCORE_COMMENT_RE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +48,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # HP-aware edit distance from corrected CIGAR
 # ---------------------------------------------------------------------------
-
-def _bare_uuid(name: str) -> str:
-    """Strip mapPacBio _pt:i:N or ' pt:i:N' suffix to recover the canonical read ID."""
-    if "_pt:i:" in name:
-        return name.split("_pt:i:")[0]
-    if " pt:i:" in name:
-        return name.split(" pt:i:")[0]
-    return name
 
 
 def _cigar_hp_edit_distance(read, genome: Optional[Dict[str, str]], penalty_table) -> float:
@@ -177,7 +173,7 @@ def _read_hp_edit_distances(
             for read in bam:
                 if read.is_secondary or read.is_supplementary or read.is_unmapped:
                     continue
-                rid = _bare_uuid(read.query_name or "")
+                rid = _normalize_bam_read_name(read.query_name or "")
                 results[rid] = (
                     _cigar_hp_edit_distance(read, genome, penalty_table),
                     _cigar_aligned_bases(read),
@@ -516,27 +512,22 @@ def _parse_junctions(junc_str) -> frozenset:
 
 
 def _normalize_read_id(read_id_series: "pd.Series") -> "pd.Series":
-    """Strip mapPacBio's pt:i:N suffix from read IDs so all aligners share a common key.
+    """Vectorized application of ``_normalize_bam_read_name`` to a TSV read_id column.
 
-    mapPacBio embeds the FASTQ header's auxiliary tag in the BAM read name.
-    The separator is space before ``samtools sort`` and underscore after:
-    - Pre-sort (live correction output): 'UUID pt:i:25'
-    - Post-sort / merged BAMs: 'UUID_pt:i:25'
+    Covers every suffix shape ``_normalize_bam_read_name`` handles: mapPacBio
+    ``_pt:i:N``, BBmap ``_<N>_length=<N>``, generic SAM aux leaks
+    (``_XA:Z:``, ``_XC:i:``, etc.), and Dorado metadata keys
+    (``_runid=``, ``_ch=``, ``_start_time=``, ...).
 
-    All other aligners use just 'UUID'.  Without normalization, merge_corrected_tsvs
-    treats these as different reads, producing ~50% logical duplicates in the merged
-    output.
+    Equivalent to ``read_id_series.apply(_normalize_bam_read_name)`` but
+    vectorized for the TSV-merge hot path on large per-aligner outputs.
     """
-    read_id_series = read_id_series.copy()
-    # Space form (pre-samtools-sort): 'UUID pt:i:N'
-    space_mask = read_id_series.str.contains(' pt:i:', na=False, regex=False)
-    if space_mask.any():
-        read_id_series[space_mask] = read_id_series[space_mask].str.split(' pt:i:').str[0]
-    # Underscore form (post-samtools-sort): 'UUID_pt:i:N'
-    under_mask = read_id_series.str.contains('_pt:i:', na=False, regex=False)
-    if under_mask.any():
-        read_id_series[under_mask] = read_id_series[under_mask].str.split('_pt:i:').str[0]
-    return read_id_series
+    # Strip post-whitespace (mirrors the first half of _normalize_bam_read_name).
+    out = read_id_series.str.split(' ', n=1).str[0].str.split('\t', n=1).str[0]
+    # Strip known underscore-encoded suffixes using the canonical regex
+    # imported from consensus.py so the two normalizers cannot drift.
+    out = out.str.replace(_UNDERSCORE_COMMENT_RE.pattern, '', regex=True)
+    return out
 
 
 def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:

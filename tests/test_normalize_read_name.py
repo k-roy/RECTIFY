@@ -73,3 +73,47 @@ class TestNormalizeBamReadName:
         assert _normalize_bam_read_name(
             "abc-def-123e4567 runid=xyz sampleid=foo"
         ) == "abc-def-123e4567"
+
+    # ── Extended-regex coverage (2026-05-20 survey gaps) ─────────────────
+
+    def test_tab_aux_leak_xa_z(self):
+        # mapPacBio (pre-sanitizer-fix) converted tab to underscore, leaving
+        # the minimap2 -y / cDNA-pipeline aux tag in the QNAME.
+        assert _normalize_bam_read_name("uuid_XA:Z:foo") == "uuid"
+
+    def test_tab_aux_leak_xc_i(self):
+        assert _normalize_bam_read_name("uuid_XC:i:42") == "uuid"
+
+    def test_tab_aux_leak_ts_a(self):
+        # gapmm2 strand tag in the BBmap-style leaked form.
+        assert _normalize_bam_read_name("uuid_ts:A:+") == "uuid"
+
+    def test_tab_aux_leak_multi(self):
+        # Multiple aux tags concatenated by samtools sort.
+        assert _normalize_bam_read_name(
+            "uuid_XA:Z:foo_XC:i:42_XF:Z:bar"
+        ) == "uuid"
+
+    def test_dorado_runid_underscore_encoded(self):
+        # Dorado metadata after samtools sort encodes spaces as underscores.
+        assert _normalize_bam_read_name(
+            "abc-def-123_runid=xyz_ch=42_start_time=2024"
+        ) == "abc-def-123"
+
+    def test_dorado_flow_cell_id_underscore_encoded(self):
+        assert _normalize_bam_read_name(
+            "uuid_flow_cell_id=FAL12345"
+        ) == "uuid"
+
+    def test_legitimate_underscore_qname_preserved(self):
+        # Illumina-style flow-cell IDs contain underscores but no `=` or `:T:`.
+        # These must NOT be mangled — only specific suffix forms are stripped.
+        assert _normalize_bam_read_name(
+            "M00123_45_000000000-ABCDE_1_1101_12345_67890"
+        ) == "M00123_45_000000000-ABCDE_1_1101_12345_67890"
+
+    def test_sra_accession_with_dot_underscore_preserved(self):
+        # SRA-style `SRR.<id>` should survive even with trailing length=.
+        assert _normalize_bam_read_name(
+            "SRR123456.789_789_length=76"
+        ) == "SRR123456.789"

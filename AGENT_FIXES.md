@@ -248,5 +248,84 @@ All other bedgraph and bigwig emitters verified to already use the correct 0-bas
 
 ---
 
+## [2026-05-20] QNAME pipeline hardening — sanitizer + validator + cross-aligner audit
+
+**Status:** FIXED (working tree; uncommitted at time of entry).
+
+**Affects:** any RECTIFY pipeline run. The active-panel mutation
+class was latent in production DRS (set1 spot-check showed 0 leakage),
+but multiple structural gaps were silently active for the chimeric path
+and the TSV merge.
+
+**Three connected fixes shipped today (one session):**
+
+1. **mapPacBio sanitizer: always per-record, handle tab**
+   (`multi_aligner.py: _sanitize_mpb_fastq`).
+   The previous gate `_need_san = _first.startswith('@') and ' ' in _first`
+   evaluated only the first FASTQ record AND only checked space (not tab),
+   so bare-first files or tab-aux FASTQs (minimap2 `-y`, cDNA-pipeline shape)
+   silently bypassed the sanitizer. Always rewrites per-record now; strips
+   both space and tab; 254-char cap.
+
+2. **Extended `_normalize_bam_read_name` regex** (`consensus.py:171`).
+   Now covers generic SAM aux tag suffixes (`_<2c>:[AZifHB]:`) and
+   enumerated Dorado metadata keys (`_runid=`, `_ch=`, `_start_time=`,
+   `_flow_cell_id=`, ...). Defense in depth for any aligner that emits
+   underscore-encoded comment leaks.
+
+3. **`validate_post_alignment_qnames` + auto-sanitize**
+   (`rectify/core/align/qname_validator.py`, NEW).
+   Wired into ALL aligner wrappers (minimap2, mapPacBio, gapmm2, deSALT,
+   bbmap, bwa, uLTRA). Samples 200 primary BAM reads; tracks 4 mutation
+   classes (whitespace, overlength, cosmetic-needs-normalize,
+   non-round-tripping). Default behavior: if a recoverable mutation is
+   detected, stream-rewrite the BAM with normalized QNAMEs and re-validate.
+   Raises only on unrecoverable mutation. Bypass with
+   `RECTIFY_NO_AUTO_QNAME_SANITIZE=1` (detect-only) or
+   `RECTIFY_SKIP_POST_ALIGN_VALIDATION=1` (skip entirely).
+
+**Three cross-aligner audit follow-ups (audit:
+`scripts/diagnostics/qname_mutation_survey/EDGE_CASES.md`):**
+
+- **Chimeric path QNAME normalize** (`consensus.py:459`) — mirrored the
+  non-chimeric path's line-489 normalize. Without this, mapPacBio /
+  uLTRA-templated chimeric reads carried mutated QNAMEs into all
+  downstream joins.
+- **TSV-side normalizers reuse canonical regex**
+  (`corrected_consensus.py:48`, `:518`) — deleted `_bare_uuid`, replaced
+  body of `_normalize_read_id` with vectorized form of
+  `_normalize_bam_read_name`; imports `_UNDERSCORE_COMMENT_RE` so the
+  two cannot drift.
+- **`_restore_sequence_from_aligner_reads` strand guard**
+  (`consensus.py:362`) — skip donor when `donor_read.is_reverse !=
+  best_read.is_reverse` to prevent RC'd SEQ injection.
+
+**Open follow-ups (NOT done in this session):**
+- Issue #3 from EDGE_CASES.md (cDNA FASTQ tags lost for non-minimap2
+  winners) — structural; needs sidecar architecture or per-wrapper `-y`
+  equivalent. Held for separate design session.
+- Issues #4 (cosmetic tiebreaker comment), #6 (validator sequential
+  sampling) — low severity.
+
+**Survey artifacts:**
+- `scripts/diagnostics/qname_mutation_survey/results.tsv` — 4-aligner ×
+  53-read adversarial synthetic + 3 real-data sanity checks
+- `scripts/diagnostics/qname_mutation_survey/REPORT.md` — full audit
+  narrative
+- `scripts/diagnostics/qname_mutation_survey/EDGE_CASES.md` —
+  cross-aligner punch list (6 entries, 3 of which fixed today)
+
+**Tests:** 113 pass in the QNAME + consensus + restore suite (47 new
+covering the sanitizer, validator, vectorized TSV normalizer, and
+strand guard). Pre-existing unrelated breakage in
+`test_validation_reads.py` and `test_quantseq_rev_integration.py`
+(Commit B manifest-output WIP) is not addressed by this work.
+
+**Safe to pull:** strict correctness. Per-aligner BAMs will have an
+added <1s validator pass at the end; nothing else slows. Existing BAMs
+on disk are unchanged unless the auto-sanitizer fires on a re-run.
+
+---
+
 *To add an entry: symptom (exact error string), root cause (one sentence),
 fix commit, safe-to-pull verdict.*

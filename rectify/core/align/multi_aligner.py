@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+from rectify.core.align.qname_validator import validate_post_alignment_qnames
+
 # Pre-compiled regexes for gapmm2 PAF cs-tag parsing (avoid per-call recompilation)
 _CS_TOK_RE = re.compile(r':[0-9]+|[*][a-z][a-z]|[+][a-z]+|[-][a-z]+|~[a-z]{2}[0-9]+[a-z]{2}')
 _INTRON_LEN_RE = re.compile(r'[0-9]+')
@@ -347,6 +349,7 @@ def run_minimap2(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"minimap2 complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'minimap2')
     return str(output_bam)
 
 
@@ -488,6 +491,38 @@ def _parse_mpb_lost_reads(stderr: str) -> Optional[int]:
     return None
 
 
+def _sanitize_mpb_fastq(src_path: str, dst_path: str) -> None:
+    """Rewrite a FASTQ for mapPacBio with SAM-spec-compliant QNAMEs.
+
+    Strips everything after the first whitespace (space OR tab) and truncates
+    to 254 chars. Runs unconditionally per-record — a per-file gate misses
+    mixed-comment files whose first read is bare-UUID while later reads carry
+    comments, and missing the tab case leaks minimap2 `-y` aux tags into the
+    BAM QNAME as `id_XA:Z:foo` after samtools sort.
+
+    Accepts gzipped or plain FASTQ for ``src_path``.
+    """
+    opener = gzip.open if str(src_path).endswith('.gz') else open
+    with opener(src_path, 'rt') as fin, open(dst_path, 'w') as fout:
+        while True:
+            header = fin.readline()
+            if not header:
+                break
+            seq = fin.readline()
+            sep = fin.readline()
+            qual = fin.readline()
+            qname = header[1:].rstrip('\n')
+            cut = len(qname)
+            for ws in (' ', '\t'):
+                i = qname.find(ws)
+                if 0 <= i < cut:
+                    cut = i
+            fout.write('@' + qname[:cut][:254] + '\n')
+            fout.write(seq)
+            fout.write(sep)
+            fout.write(qual)
+
+
 def run_map_pacbio(
     reads_path: str,
     genome_path: str,
@@ -604,33 +639,19 @@ def run_map_pacbio(
     # ── Sanitise QNAME for SAM spec compliance ──
     # ONT Dorado FASTQs embed run metadata in the read description:
     #   @<uuid> runid=... ch=... start_time=... flow_cell_id=...
+    # minimap2 -y / cDNA-pipeline FASTQs use tab-separated SAM-format aux tags:
+    #   @<uuid>\tXA:Z:foo\tXC:i:42
     # mapPacBio.sh copies the full header verbatim into the SAM QNAME field,
     # which violates the SAM spec 254-char limit and causes ``samtools view``
-    # to exit 1 with "query name too long".  Strip everything after the first
-    # space so the QNAME is just the bare UUID.
+    # to exit 1 with "query name too long". The sanitiser runs per-record
+    # (see ``_sanitize_mpb_fastq``) and strips both space and tab comments.
     _mpb_in = next(
         (c.split('=', 1)[1] for c in cmd if c.startswith('in=')),
         str(actual_reads_path),
     )
-    _opener = gzip.open if _mpb_in.endswith('.gz') else open
-    with _opener(_mpb_in, 'rt') as _f:
-        _first = _f.readline()
-        _need_san = _first.startswith('@') and ' ' in _first
-    if _need_san:
-        _mpb_san_fq = Path(sam_path).with_suffix('.mpb_san.fastq')
-        with _opener(_mpb_in, 'rt') as _fin, open(_mpb_san_fq, 'w') as _fout:
-            while True:
-                header = _fin.readline()
-                if not header:
-                    break
-                seq = _fin.readline()
-                sep = _fin.readline()
-                qual = _fin.readline()
-                _fout.write('@' + header[1:].split(' ', 1)[0].rstrip('\n')[:254] + '\n')
-                _fout.write(seq)
-                _fout.write(sep)
-                _fout.write(qual)
-        cmd = [f'in={_mpb_san_fq}' if c.startswith('in=') else c for c in cmd]
+    _mpb_san_fq = Path(sam_path).with_suffix('.mpb_san.fastq')
+    _sanitize_mpb_fastq(_mpb_in, str(_mpb_san_fq))
+    cmd = [f'in={_mpb_san_fq}' if c.startswith('in=') else c for c in cmd]
 
     logger.info(
         "Running mapPacBio: %s",
@@ -728,6 +749,7 @@ def run_map_pacbio(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("mapPacBio complete: %s", output_bam)
+    validate_post_alignment_qnames(str(output_bam), str(actual_reads_path), 'mapPacBio')
     return str(output_bam)
 
 
@@ -844,6 +866,7 @@ def run_bbmap(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bbmap complete: %s", output_bam)
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bbmap')
     return str(output_bam)
 
 
@@ -955,6 +978,7 @@ def run_bwa_mem(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bwa mem complete: %s", output_bam)
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bwa')
     return str(output_bam)
 
 
@@ -1267,6 +1291,7 @@ def run_gapmm2(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"gapmm2 complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'gapmm2')
     return str(output_bam)
 
 
@@ -1666,6 +1691,7 @@ def run_ultra(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"uLTRA complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'uLTRA')
     return str(output_bam)
 
 
@@ -1884,6 +1910,7 @@ def run_desalt(
 
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"deSALT complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'deSALT')
     return str(output_bam)
 
 

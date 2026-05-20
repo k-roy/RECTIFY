@@ -27,12 +27,19 @@ from rectify.core.consensus.consensus import _restore_sequence_from_aligner_read
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_mock_read(query_name="read1", query_sequence=None, query_qualities=None):
-    """Return a minimal mock pysam.AlignedSegment."""
+def make_mock_read(query_name="read1", query_sequence=None, query_qualities=None,
+                   is_reverse=False):
+    """Return a minimal mock pysam.AlignedSegment.
+
+    ``is_reverse`` defaults to False so donor/recipient pass the strand-match
+    guard in _restore_sequence_from_aligner_reads (added 2026-05-20 to prevent
+    RC'd SEQ injection from opposite-strand donors).
+    """
     read = MagicMock()
     read.query_name = query_name
     read.query_sequence = query_sequence
     read.query_qualities = query_qualities
+    read.is_reverse = is_reverse
     return read
 
 
@@ -149,5 +156,58 @@ class TestRestoreSequenceFromAlignerReads:
             {"gapmm2": gapmm2_read, "minimap2": minimap2_read}
         )
 
+        assert gapmm2_read.query_sequence == seq
+        assert gapmm2_read.query_qualities == quals
+
+    def test_opposite_strand_donor_skipped(self):
+        """Donor with opposite is_reverse must NOT supply sequence.
+
+        pysam reverse-complements ``query_sequence`` for is_reverse=True
+        records, so an opposite-strand donor would inject the RC of the
+        correct sequence. The strand guard skips them and the function falls
+        through to the warning path (no donor found).
+        """
+        seq = "ACGTACGT"
+        gapmm2_read = make_mock_read("read7", query_sequence=None,
+                                     is_reverse=False)
+        rc_donor = make_mock_read("read7", query_sequence=seq,
+                                  query_qualities=[30] * len(seq),
+                                  is_reverse=True)
+
+        import logging
+        with patch.object(
+            logging.getLogger("rectify.core.consensus.consensus"), "warning",
+        ) as mock_warn:
+            _restore_sequence_from_aligner_reads(
+                gapmm2_read,
+                {"gapmm2": gapmm2_read, "minimap2": rc_donor},
+            )
+            mock_warn.assert_called_once()
+
+        # SEQ stays None — the RC'd donor was correctly skipped.
+        assert gapmm2_read.query_sequence is None
+
+    def test_same_strand_donor_accepted_when_opposite_strand_also_present(self):
+        """Strand guard skips opposite-strand donor and accepts same-strand donor."""
+        seq = "ACGTACGT"
+        quals = [30] * len(seq)
+        gapmm2_read = make_mock_read("read8", query_sequence=None,
+                                     is_reverse=True)
+        wrong_strand_donor = make_mock_read("read8", query_sequence="WRONG-RC",
+                                            query_qualities=[10] * 8,
+                                            is_reverse=False)
+        right_strand_donor = make_mock_read("read8", query_sequence=seq,
+                                            query_qualities=quals,
+                                            is_reverse=True)
+
+        # Insertion order: wrong-strand first, right-strand second. Dict
+        # iteration preserves insertion order; the guard must skip the
+        # wrong-strand donor and pick the right-strand one.
+        _restore_sequence_from_aligner_reads(
+            gapmm2_read,
+            {"gapmm2": gapmm2_read,
+             "minimap2": wrong_strand_donor,
+             "mapPacBio": right_strand_donor},
+        )
         assert gapmm2_read.query_sequence == seq
         assert gapmm2_read.query_qualities == quals
