@@ -1268,11 +1268,21 @@ def _subtract_introns_gtf(tx_start: int, tx_end: int, intron_list: list) -> list
 
 
 def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
-    """Convert an SGD-style GTF to a uLTRA-compatible GTF.
+    """Convert an SGD-style or gffread-produced GTF to a uLTRA-compatible GTF.
 
-    SGD GTFs use ``mRNA`` instead of ``transcript`` and lack ``exon``
-    features entirely.  uLTRA requires ``gene``, ``transcript``, and
-    ``exon`` in column 3.
+    uLTRA requires ``gene``, ``transcript``, and ``exon`` features with a
+    ``gene_id`` attribute on every exon line, and ``gene_id != transcript_id``
+    on every exon.  Three common failure modes are handled here:
+
+    1. SGD-style GTFs: ``mRNA`` feature instead of ``transcript``; exons
+       absent and must be derived from transcript span minus ``intron`` intervals.
+    2. gffread-produced GTFs: ``gene`` features omitted entirely; their absence
+       prevents gffutils from building the gene→transcript→exon hierarchy,
+       causing ``KeyError: 'gene_id'`` at ``create_augmented_gene.py:323``.
+       Synthetic gene records are generated from transcript extents.
+    3. gffread-produced GTFs: ``gene_id == transcript_id`` (e.g., both
+       ``"YAL069W_mRNA"``).  The isoform suffix is stripped from gene_id so
+       the two attributes are distinct.
 
     SGD naming convention (critical for intron–transcript matching):
     - ``mRNA`` lines carry ``transcript_id "YAL030W"`` (gene name) and
@@ -1282,8 +1292,10 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
 
     Changes applied:
     - ``mRNA`` feature → ``transcript``
-    - ``exon`` features derived from transcript span minus any ``intron``
-      intervals matched via the mRNA ``Name`` attribute
+    - For each transcript: use existing ``exon`` intervals if present;
+      otherwise derive from transcript span minus any ``intron`` intervals.
+    - Ensure every emitted exon line carries ``gene_id``, sourced from the
+      parent transcript's attributes.
 
     The result is written to *out_path* and can be cached alongside the
     source GTF for repeated use.
@@ -1295,10 +1307,22 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
         m = re.search(rf'{key} "([^"]+)"', attr_str)
         return m.group(1) if m else ''
 
-    # First pass: collect transcript records (keyed by Name) and introns
-    # (keyed by transcript_id, which equals the mRNA Name in SGD GTFs).
+    def _ensure_gene_id(attr_str: str, gene_id: str) -> str:
+        if not gene_id:
+            return attr_str
+        if re.search(r'gene_id "', attr_str):
+            return attr_str
+        return f'gene_id "{gene_id}"; ' + attr_str
+
+    # Suffixes that gffread appends to gene IDs when naming transcripts.
+    # Used to recover the parent gene ID from transcript_id when Name is absent.
+    _ISOFORM_SUFFIXES = ('_mRNA', '_id001', '_id002', '_id003', '_id004', '_id005')
+
+    # First pass: collect transcript records, introns, and existing exons.
+    # Keyed by isoform Name (SGD convention) or transcript_id (gffread GTFs).
     transcripts: dict = {}   # isoform_name → list of 9 GTF fields
-    introns: dict = collections.defaultdict(list)  # isoform_name → [(start, end)]
+    introns: dict = collections.defaultdict(list)   # isoform_name → [(start, end)]
+    exons: dict = collections.defaultdict(list)     # isoform_name → [(start, end)]
     gene_lines: list = []
 
     with open(gtf_path) as fh:
@@ -1322,6 +1346,36 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
                 tid = _get_attr(parts[8], 'transcript_id')
                 if tid:
                     introns[tid].append((int(parts[3]), int(parts[4])))
+            elif feature == 'exon':
+                tid = _get_attr(parts[8], 'transcript_id')
+                if tid:
+                    exons[tid].append((int(parts[3]), int(parts[4])))
+
+    # gffread-produced GTFs omit 'gene' features entirely.  uLTRA's gffutils
+    # parser requires them to build the gene→transcript→exon hierarchy; without
+    # them, exon.attributes["gene_id"] raises KeyError at create_augmented_gene.py:323.
+    # Synthesize gene records from transcript extents when none are present.
+    _has_gene_features = any('\tgene\t' in ln for ln in gene_lines if not ln.startswith('#'))
+    if not _has_gene_features and transcripts:
+        _gene_extents: dict = {}  # bare_gene_id → [seqname, min_start, max_end, strand]
+        for _n, _p in transcripts.items():
+            _gid = _get_attr(_p[8], 'gene_id') or _n
+            for _sfx in _ISOFORM_SUFFIXES:
+                if _gid.endswith(_sfx):
+                    _gid = _gid[:-len(_sfx)]
+                    break
+            _s, _e = int(_p[3]), int(_p[4])
+            if _gid not in _gene_extents:
+                _gene_extents[_gid] = [_p[0], _s, _e, _p[6]]
+            else:
+                _gene_extents[_gid][1] = min(_gene_extents[_gid][1], _s)
+                _gene_extents[_gid][2] = max(_gene_extents[_gid][2], _e)
+        for _gid, (_seq, _s, _e, _strand) in sorted(
+                _gene_extents.items(), key=lambda x: (x[1][0], x[1][1])):
+            gene_lines.append(
+                f'{_seq}\t.\tgene\t{_s}\t{_e}\t.\t{_strand}\t.'
+                f'\tgene_id "{_gid}"; transcript_id "{_gid}";\n'
+            )
 
     with open(out_path, 'w') as fh:
         for line in gene_lines:
@@ -1334,18 +1388,36 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
             # name for both, so replace transcript_id with the isoform Name.
             clean_attrs = re.sub(r'transcript_id "[^"]+"', f'transcript_id "{name}"',
                                  clean_attrs, count=1)
+            gene_id = _get_attr(clean_attrs, 'gene_id')
+            # For gffread-produced GTFs, gene_id carries an isoform suffix
+            # (e.g., "YAL069W_mRNA") making it equal to transcript_id.  Strip
+            # the suffix so uLTRA sees distinct gene_id and transcript_id.
+            if gene_id and gene_id == name:
+                for _sfx in _ISOFORM_SUFFIXES:
+                    if gene_id.endswith(_sfx):
+                        gene_id = gene_id[:-len(_sfx)]
+                        clean_attrs = re.sub(r'gene_id "[^"]+"', f'gene_id "{gene_id}"',
+                                             clean_attrs, count=1)
+                        break
             # Write transcript line
             tx_parts = parts[:]
             tx_parts[2] = 'transcript'
             tx_parts[8] = clean_attrs
             fh.write('\t'.join(tx_parts) + '\n')
-            # Derive exon intervals: transcript span minus introns for this isoform
-            for ex_start, ex_end in _subtract_introns_gtf(tx_start, tx_end, introns.get(name, [])):
+            # Use existing exon intervals if present; otherwise derive from
+            # transcript span minus introns.  Always ensure gene_id is set.
+            if name in exons:
+                exon_intervals = sorted(exons[name])
+            elif name in introns:
+                exon_intervals = _subtract_introns_gtf(tx_start, tx_end, introns[name])
+            else:
+                exon_intervals = [(tx_start, tx_end)]
+            for ex_start, ex_end in exon_intervals:
                 ex_parts = parts[:]
                 ex_parts[2] = 'exon'
                 ex_parts[3] = str(ex_start)
                 ex_parts[4] = str(ex_end)
-                ex_parts[8] = clean_attrs
+                ex_parts[8] = _ensure_gene_id(clean_attrs, gene_id)
                 fh.write('\t'.join(ex_parts) + '\n')
 
 
@@ -1436,9 +1508,11 @@ def run_ultra(
                     break
         if not candidate_gtf.exists():
             raise FileNotFoundError(
-                f"uLTRA requires GTF annotation but only GFF was found: {annotation_path}. "
-                f"Generate a GTF with: rectify build-gtf --annotation {annotation_path} "
-                f"-o {candidate_gtf}"
+                f"uLTRA requires a sibling GTF alongside the GFF but none was found: "
+                f"{annotation_path}. Expected: {candidate_gtf}. "
+                f"For RECTIFY built-in genomes this file is bundled; for custom genomes "
+                f"provide a GTF from the same annotation source (NOT gffread -T output, "
+                f"which omits gene features required by uLTRA)."
             )
         ann_path = str(candidate_gtf)
         logger.info(f"uLTRA: using GTF annotation at {ann_path}")
@@ -1462,19 +1536,25 @@ def run_ultra(
             f_out.write(f_in.read())
         ann_path = str(ann_dest)
 
-    # Normalize GTF for uLTRA if it lacks 'exon' features (e.g. SGD-style GTFs
-    # use 'mRNA' instead of 'transcript' and omit exon lines entirely).
+    # Normalize GTF for uLTRA if:
+    #   (a) the annotation came from GFF discovery (the sibling .gtf may have
+    #       been generated by gffread, which produces exon features but omits
+    #       gene_id on ~10% of them — crashing uLTRA at
+    #       create_augmented_gene.py:323), or
+    #   (b) the GTF contains no 'exon' features at all (SGD-style GTFs use
+    #       'mRNA' instead of 'transcript' and derive exons from intron spans).
     # Cache the normalized GTF alongside the source so it is only built once.
-    _needs_norm = False
-    with open(ann_path) as _fh:
-        for _line in _fh:
-            if _line.startswith('#'):
-                continue
-            _parts = _line.split('\t')
-            if len(_parts) >= 3 and _parts[2] == 'exon':
-                break
-        else:
-            _needs_norm = True
+    _needs_norm = _is_gff(annotation_path)  # always normalize GFF-sourced GTFs
+    if not _needs_norm:
+        with open(ann_path) as _fh:
+            for _line in _fh:
+                if _line.startswith('#'):
+                    continue
+                _parts = _line.split('\t')
+                if len(_parts) >= 3 and _parts[2] == 'exon':
+                    break
+            else:
+                _needs_norm = True
 
     if _needs_norm:
         _ann_p = Path(ann_path)
