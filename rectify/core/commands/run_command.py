@@ -158,6 +158,22 @@ def run(args: argparse.Namespace) -> None:
 def create_run_parser(subparsers):
     """Wire the `run-all` subcommand into the given subparsers group."""
     import argparse
+
+    def _aligner_concurrency_arg(value: str) -> str:
+        if value == 'auto':
+            return value
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "--aligner-concurrency must be 'auto' or a positive integer"
+            ) from exc
+        if parsed < 1:
+            raise argparse.ArgumentTypeError(
+                "--aligner-concurrency must be 'auto' or a positive integer"
+            )
+        return value
+
     # =========================================================================
     # run-all command (all-in-one: correct + analyze)
     # =========================================================================
@@ -448,6 +464,7 @@ def create_run_parser(subparsers):
     run_parser.add_argument(
         '--aligner-concurrency',
         default='auto',
+        type=_aligner_concurrency_arg,
         metavar='{auto,1,N}',
         help=(
             'Correct multiple aligners with a shared worker budget. auto disables '

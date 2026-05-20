@@ -50,3 +50,13 @@ def test_run_all_parser_accepts_aligner_concurrency():
     )
 
     assert args.aligner_concurrency == "4"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "many"])
+def test_run_all_parser_rejects_invalid_aligner_concurrency(value):
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="cmd")
+    create_run_parser(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run-all", "input.bam", "--Scer", "-o", "out", "--aligner-concurrency", value])
