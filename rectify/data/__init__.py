@@ -595,10 +595,19 @@ BUNDLED_GENOMES = {
                 'junction_overhang_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table.tsv',
             },
             'cdna': {
-                # Calibration pending — empirical_cigar_error_profiler.py --protocol cdna
-                'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna.tsv',
-                'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores_cdna.tsv',
-                'junction_overhang_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table_cdna.tsv',
+                # Nested bin → key → path. 'pooled' is the cross-bin default
+                # used when no UMI bin is specified or when a requested bin's
+                # file isn't on disk. Per-bin entries (umi1/umi2/umi3plus)
+                # cover only junction_penalty_table — STR and overhang remain
+                # pooled-only because Phase A's profiler doesn't bin them.
+                'pooled': {
+                    'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna.tsv',
+                    'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores_cdna.tsv',
+                    'junction_overhang_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/junction_overhang_table_cdna.tsv',
+                },
+                'umi1':     {'junction_penalty_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna_umi1.tsv'},
+                'umi2':     {'junction_penalty_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna_umi2.tsv'},
+                'umi3plus': {'junction_penalty_table': 'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_cdna_umi3plus.tsv'},
             },
             'qsrev': {
                 # Calibration pending — empirical_cigar_error_profiler.py --protocol qsrev
@@ -705,31 +714,73 @@ def _resolve_bundled_table(
     organism: str,
     key: str,
     protocol: Optional[str] = None,
+    bin: Optional[str] = None,
 ) -> Optional[Path]:
     """Shared resolver for ``junction_penalty_table`` / ``str_penalty_table`` /
     ``junction_overhang_table`` entries in :data:`BUNDLED_GENOMES`.
 
-    Resolution order when ``protocol`` is given:
-      1. ``BUNDLED_GENOMES[org]['protocols'][protocol][key]`` if present AND
-         the file exists on disk.
-      2. Fall through to the flat ``BUNDLED_GENOMES[org][key]`` (DRS default).
-      3. ``None``.
+    The protocols map supports two shapes per protocol:
 
-    When ``protocol`` is ``None``, only the flat key is consulted — preserves
-    pre-protocol-aware behavior for older callers.
+      * **Flat** (legacy, e.g. ``drs`` / ``qsrev``):
+        ``protocols[protocol][key] = '<relative path>'``.
+      * **Nested** (e.g. ``cdna`` with per-UMI-bin tables):
+        ``protocols[protocol][bin][key] = '<relative path>'`` with a
+        ``'pooled'`` sub-key as the cross-bin default.
+
+    Resolution order when ``protocol`` is given:
+
+      1. If ``bin`` is given AND ``protocols[protocol][bin][key]`` exists on
+         disk → return it.
+      2. If the protocol map has a ``'pooled'`` sub-key AND
+         ``protocols[protocol]['pooled'][key]`` exists on disk → return it.
+      3. If the protocol map has ``key`` directly (flat shape) AND it exists
+         on disk → return it.
+      4. Fall through to the org-level flat ``BUNDLED_GENOMES[org][key]``
+         (DRS fallback).
+      5. ``None``.
+
+    When ``bin`` is given but the bin-specific file isn't bundled, we fall
+    through to the pooled (then DRS) entry rather than raising — bins are
+    additive and protocol/pooled is always safe.
+
+    When ``protocol`` is ``None``, only the org-level flat key is consulted
+    — preserves pre-protocol-aware behavior for older callers.
     """
     org = normalize_organism(organism)
     org_entry = BUNDLED_GENOMES.get(org, {})
 
     if protocol is not None:
         proto_map = org_entry.get('protocols', {}).get(protocol, {})
+
+        # (1) Per-bin entry
+        if bin is not None:
+            bin_map = proto_map.get(bin)
+            if isinstance(bin_map, dict):
+                rel = bin_map.get(key)
+                if rel is not None:
+                    path = BUNDLED_DATA_DIR / rel
+                    if path.exists():
+                        return path
+            # Missing bin file → fall through to pooled.
+
+        # (2) Nested 'pooled' default
+        pooled_map = proto_map.get('pooled')
+        if isinstance(pooled_map, dict):
+            rel = pooled_map.get(key)
+            if rel is not None:
+                path = BUNDLED_DATA_DIR / rel
+                if path.exists():
+                    return path
+
+        # (3) Flat shape — key sits directly on the protocol map
         rel = proto_map.get(key)
-        if rel is not None:
+        if isinstance(rel, str):
             path = BUNDLED_DATA_DIR / rel
             if path.exists():
                 return path
         # Missing protocol-specific table → fall through to DRS flat key.
 
+    # (4) Org-level flat key (DRS default)
     entry = org_entry.get(key)
     if entry is None:
         return None
@@ -740,30 +791,48 @@ def _resolve_bundled_table(
 def get_bundled_junction_penalty_table(
     organism: str,
     protocol: Optional[str] = None,
+    bin: Optional[str] = None,
 ) -> Optional[Path]:
     """Path to bundled empirical HP junction penalty table for *organism*.
 
     When *protocol* is one of ``'drs'`` / ``'cdna'`` / ``'qsrev'``, returns
     the protocol-specific table if bundled; otherwise falls back to the DRS
     table. Pass ``protocol=None`` (default) for back-compat callers.
+
+    *bin* selects a per-UMI-bin table within a nested protocol entry
+    (currently only ``'cdna'`` has bins: ``umi1`` / ``umi2`` / ``umi3plus``).
+    Missing bin tables fall through to the protocol's ``pooled`` default,
+    then to the DRS flat key.
     """
-    return _resolve_bundled_table(organism, 'junction_penalty_table', protocol)
+    return _resolve_bundled_table(organism, 'junction_penalty_table', protocol, bin=bin)
 
 
 def get_bundled_str_penalty_table(
     organism: str,
     protocol: Optional[str] = None,
+    bin: Optional[str] = None,
 ) -> Optional[Path]:
-    """Path to bundled empirical STR slippage penalty table for *organism*."""
-    return _resolve_bundled_table(organism, 'str_penalty_table', protocol)
+    """Path to bundled empirical STR slippage penalty table for *organism*.
+
+    STR tables are currently pooled-only (no per-bin variants); *bin* is
+    accepted for API symmetry but always resolves through the pooled / DRS
+    fallback path.
+    """
+    return _resolve_bundled_table(organism, 'str_penalty_table', protocol, bin=bin)
 
 
 def get_bundled_junction_overhang_table(
     organism: str,
     protocol: Optional[str] = None,
+    bin: Optional[str] = None,
 ) -> Optional[Path]:
-    """Path to bundled junction overhang threshold table for *organism*."""
-    return _resolve_bundled_table(organism, 'junction_overhang_table', protocol)
+    """Path to bundled junction overhang threshold table for *organism*.
+
+    Overhang tables are currently pooled-only (no per-bin variants); *bin*
+    is accepted for API symmetry but always resolves through the pooled /
+    DRS fallback path.
+    """
+    return _resolve_bundled_table(organism, 'junction_overhang_table', protocol, bin=bin)
 
 
 def is_bundled_genome_available(organism: str) -> bool:

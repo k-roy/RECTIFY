@@ -124,6 +124,48 @@ def test_resolve_reference_paths_picks_cdna_protocol():
         assert Path(val).exists(), f'{attr} -> {val} does not exist'
 
 
+# ---------------------------------------------------------------------------
+# Phase B: nested-shape resolver + per-UMI-bin fallback
+# ---------------------------------------------------------------------------
+
+def test_cdna_pooled_when_bin_not_specified():
+    """Without a ``bin`` kwarg, cdna resolves to the pooled penalty_scores_cdna.tsv."""
+    p = d.get_bundled_junction_penalty_table(ORG, protocol='cdna')
+    assert p is not None
+    assert p.exists()
+    assert p.name == 'penalty_scores_cdna.tsv'
+
+
+@pytest.mark.parametrize('umi_bin', ['umi1', 'umi2', 'umi3plus'])
+def test_cdna_per_bin_resolves_to_specific_file(umi_bin):
+    """Per-bin TSVs are bundled (Phase D complete); resolver must return the
+    bin-specific file, not fall back to the pooled table."""
+    bin_specific = (d.BUNDLED_DATA_DIR /
+                    f'genomes/{ORG}/penalty_tables/penalty_scores_cdna_{umi_bin}.tsv')
+    assert bin_specific.exists(), f'{bin_specific} missing — re-run Phase D bundling'
+
+    p = d.get_bundled_junction_penalty_table(ORG, protocol='cdna', bin=umi_bin)
+    assert p is not None
+    assert p.name == f'penalty_scores_cdna_{umi_bin}.tsv'
+
+
+def test_qsrev_flat_protocols_still_resolves():
+    """Flat-shape detection: qsrev keeps its ``key`` directly on the protocol
+    map (no ``pooled`` nesting). Resolver must still return the qsrev table."""
+    p = d.get_bundled_junction_penalty_table(ORG, protocol='qsrev')
+    assert p is not None
+    assert p.exists()
+    assert p.name == 'penalty_scores_qsrev.tsv'
+
+
+def test_drs_no_protocol_unchanged():
+    """Org-level flat key (no protocol) returns the DRS penalty_scores.tsv."""
+    p = d.get_bundled_junction_penalty_table(ORG)
+    assert p is not None
+    assert p.exists()
+    assert p.name == 'penalty_scores.tsv'
+
+
 def test_resolve_reference_paths_back_compat_no_dt_cdna():
     """Without --dT-primed-cDNA, must pick DRS tables (back-compat behavior)."""
     args = Namespace(
@@ -140,3 +182,48 @@ def test_resolve_reference_paths_back_compat_no_dt_cdna():
     assert 'penalty_scores.tsv' in args.junction_penalty_table
     assert '_cdna' not in args.junction_penalty_table
     assert '_qsrev' not in args.junction_penalty_table
+
+
+# ---------------------------------------------------------------------------
+# Phase C smoke test: ONT-cDNA per-UMI-bin PenaltyTableSet
+# ---------------------------------------------------------------------------
+
+def test_ont_cdna_penalty_table_set_routes_by_xc_tag():
+    """Smoke test: bundled per-bin tables load and route correctly by XC tag.
+
+    Exercises the full chain used by ``rectify correct --ONT-cDNA``:
+      1. get_bundled_junction_penalty_table resolves all four bin paths on disk
+      2. HpPenaltyTable.from_tsv loads each table (with shared STR fallback path)
+      3. PenaltyTableSet.for_read routes XC=1→umi1, XC=2→umi2, XC≥3→umi3plus,
+         absent→pooled
+    """
+    import pysam
+    from rectify.core.splice.junction_refiner import PenaltyTableSet
+    from rectify.core.splice.hp_penalty import HpPenaltyTable
+
+    _str_p = d.get_bundled_str_penalty_table(ORG, protocol='cdna')
+    _str_path = str(_str_p) if _str_p is not None else None
+
+    bins = {}
+    for bin_name in ('umi1', 'umi2', 'umi3plus', 'pooled'):
+        p = d.get_bundled_junction_penalty_table(ORG, protocol='cdna', bin=bin_name)
+        assert p is not None, f"Bundled per-bin table missing for bin='{bin_name}'"
+        assert p.exists(), f"Bundled per-bin file not on disk: {p}"
+        bins[bin_name] = HpPenaltyTable.from_tsv(str(p), str_path=_str_path)
+
+    pts = PenaltyTableSet(bins=bins, umi_tag='XC')
+
+    def _read(xc):
+        r = pysam.AlignedSegment()
+        r.query_name = 'smoke'
+        r.query_sequence = 'ACGT'
+        r.flag = 0
+        if xc is not None:
+            r.set_tag('XC', xc)
+        return r
+
+    assert pts.for_read(_read(1))    is bins['umi1'],     "XC=1 → umi1"
+    assert pts.for_read(_read(2))    is bins['umi2'],     "XC=2 → umi2"
+    assert pts.for_read(_read(3))    is bins['umi3plus'], "XC=3 → umi3plus"
+    assert pts.for_read(_read(10))   is bins['umi3plus'], "XC=10 → umi3plus"
+    assert pts.for_read(_read(None)) is bins['pooled'],   "missing XC → pooled"

@@ -26,6 +26,9 @@ set -euo pipefail
 . /u/local/Modules/default/init/bash
 module load conda/23.11.0
 source activate rectify
+# bwa is not bundled in the rectify conda env — load the H2 module so the
+# `bwa` executable is on PATH for rectify align's bwa runner.
+module load bwa
 
 # --- Paths ------------------------------------------------------------------
 WORK=/u/scratch/k/kevinroy/calibration_2026_05/qsrev

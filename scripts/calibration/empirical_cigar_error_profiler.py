@@ -157,6 +157,73 @@ _CODE_OP = {0: 'M', 1: 'X', 2: 'D'}
 
 
 # ---------------------------------------------------------------------------
+# UMI cluster-size binning
+# ---------------------------------------------------------------------------
+
+# A bin is a tuple (label, kind, n) where:
+#   kind == 'eq' → matches reads with UMI cluster size == n
+#   kind == 'ge' → matches reads with UMI cluster size >= n  (e.g. '3+')
+# Plain data representation (no lambdas) so the spec pickles cleanly across
+# multiprocessing fork/spawn boundaries.
+UmiBinSpec = Tuple[str, str, int]
+
+
+def _sanitize_bin_label(label: str) -> str:
+    """Filename-safe form of a bin label: '3+' → '3plus', '1' → '1'."""
+    return label.replace('+', 'plus')
+
+
+def parse_umi_bins(spec: str) -> List[UmiBinSpec]:
+    """Parse a CLI bin spec like '1,2,3+' into a list of UmiBinSpec tuples.
+
+    Each token is either an integer (interpreted as eq, exact match) or an
+    integer followed by '+' (interpreted as ge, ≥). Whitespace is tolerated.
+
+    Returns a list of (label, kind, n) tuples; labels preserve the original
+    token (e.g. '3+' not '3plus') — sanitize with _sanitize_bin_label() at
+    write time. Raises ValueError on malformed input.
+    """
+    bins: List[UmiBinSpec] = []
+    if not spec or not spec.strip():
+        raise ValueError('--umi-bins must contain at least one bin token')
+    for raw in spec.split(','):
+        tok = raw.strip()
+        if not tok:
+            raise ValueError(f'empty bin token in --umi-bins {spec!r}')
+        if tok.endswith('+'):
+            try:
+                n = int(tok[:-1])
+            except ValueError as exc:
+                raise ValueError(f'malformed bin token {tok!r}: expected <int>+') from exc
+            bins.append((tok, 'ge', n))
+        else:
+            try:
+                n = int(tok)
+            except ValueError as exc:
+                raise ValueError(f'malformed bin token {tok!r}: expected <int> or <int>+') from exc
+            bins.append((tok, 'eq', n))
+    return bins
+
+
+def assign_bin(umi_size: Optional[int], bins: List[UmiBinSpec]) -> Optional[str]:
+    """Return the label of the first matching bin, or None for no match.
+
+    None inputs (missing tag) always return None — they are pooled-only.
+    Bins are checked in order; the first matching bin wins. The caller is
+    responsible for ensuring bins are non-overlapping if exact ownership
+    matters (1, 2, 3+ is non-overlapping by construction).
+    """
+    if umi_size is None:
+        return None
+    for label, kind, n in bins:
+        if kind == 'eq' and umi_size == n:
+            return label
+        if kind == 'ge' and umi_size >= n:
+            return label
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Homopolymer utilities  (ported from junction_refiner._hp_run_length)
 # ---------------------------------------------------------------------------
 
@@ -501,7 +568,18 @@ def _build_pos_op_map_with_seq(
             if 0 <= rpos < len(ref_seq) and qpos < len(query_seq):
                 ref_base = ref_seq[rpos]
                 read_base = query_seq[qpos].upper()
-                op = 'M' if read_base == ref_base else 'X'
+                # SAM spec allows '=' in SEQ to mean "matches reference at this
+                # position" — samtools/minimap2 sometimes emit this as a size
+                # compression. pysam returns it verbatim. Without this branch,
+                # every '=' position is mis-classified as a mismatch ('X') and
+                # `m_mask` ends up empty for the entire chunk — which silently
+                # kills all M counts (and therefore all counts, since the
+                # denominator uses M + D + X). Verified on cDNA stage1_consensus
+                # BAMs 2026-05-17.
+                if read_base == '=':
+                    op = 'M'
+                else:
+                    op = 'M' if read_base == ref_base else 'X'
                 pos_ops[rpos] = (op, ref_base)
 
     return pos_ops, ins_before
@@ -736,9 +814,17 @@ _MAPPACBIO_SUFFIX_RE = re.compile(r'_pt:i:\d+$')
 def _normalise_read_name(name: str) -> str:
     """Strip aligner-appended suffixes so names match across aligners.
 
-    mapPacBio appends '_pt:i:N' (poly-A tail length estimate) to read names.
-    All other aligners use the raw UUID from the FASTQ.
+    Two normalisations are applied:
+      * Whitespace truncation: bbmap (and some other tools) write the entire
+        FASTQ header into QNAME (e.g. ``SRR22434624.1029737 1029737 length=76``)
+        while bwa / minimap2 / etc. strip at the first whitespace. SAM spec
+        forbids whitespace in QNAME, so the strip is the correct normalisation.
+        Without this, bbmap+bwa BAMs have an empty intersection at scale
+        (verified 2026-05-17 on Han 2023 QSrev — 783k bbmap, 834k bwa, 0 common
+        before fix; 779k common after).
+      * mapPacBio's `_pt:i:N` poly-A-length suffix.
     """
+    name = name.split(None, 1)[0]
     return _MAPPACBIO_SUFFIX_RE.sub('', name)
 
 
@@ -790,6 +876,13 @@ def profile_chunk(
     union_counts: Optional[Dict[Tuple[str, str, int], int]] = None,
     str_counts: Optional[Dict[Tuple[str, str, int], int]] = None,
     strand_counts: Optional[Dict[Tuple[str, str, int, str], int]] = None,
+    umi_tag: Optional[str] = None,
+    umi_bins: Optional[List[UmiBinSpec]] = None,
+    counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = None,
+    union_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = None,
+    str_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = None,
+    reads_per_bin: Optional[Dict[str, int]] = None,
+    umi_lookup: Optional[Dict[str, int]] = None,
 ) -> Tuple[int, int]:
     """Profile one chunk, updating *counts* (and optionally *union_counts*) in place.
 
@@ -888,6 +981,8 @@ def profile_chunk(
     n_processed = 0
     n_no_agreed_range = 0
     n_chrom_mismatch = 0
+    _lookup_hits = 0
+    _lookup_misses = 0
 
     # Precompute HP run-length arrays for every reference chromosome (fast numpy).
     # STR maps are computed lazily per chromosome (slower Python sweep, ~2–5 s each).
@@ -923,6 +1018,42 @@ def profile_chunk(
         ref_seq = ref_seqs.get(chrom)
         if ref_seq is None:
             continue
+
+        # --- UMI bin lookup (once per read, before per-range loops) ---
+        # The bin label drives parallel per-bin counters; reads with no UMI
+        # tag (or no matching bin) get bin_label=None — those still feed the
+        # pooled `counts` (and union/str), but NOT any per-bin output.
+        bin_label: Optional[str] = None
+        if umi_bins and counts_by_bin is not None and umi_tag:
+            umi_val: Optional[int] = None
+            if umi_lookup is not None:
+                # Sidecar BAM path: use prebuilt name→tag dict (read_name is
+                # already normalised, matching umi_lookup keys).
+                raw = umi_lookup.get(read_name)
+                if raw is not None:
+                    try:
+                        umi_val = int(raw)
+                        _lookup_hits += 1
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    _lookup_misses += 1
+            else:
+                # Inline tag path: pick any aligner that carries the tag —
+                # they should all match but only one BAM tends to propagate
+                # aux tags from the input (e.g. minimap2 with -y).
+                for _a in aligners:
+                    _r = reads[_a]
+                    try:
+                        umi_val = int(_r.get_tag(umi_tag))
+                        break
+                    except KeyError:
+                        continue
+                    except (TypeError, ValueError):
+                        continue
+            bin_label = assign_bin(umi_val, umi_bins)
+            if bin_label is not None and reads_per_bin is not None:
+                reads_per_bin[bin_label] = reads_per_bin.get(bin_label, 0) + 1
 
         # Retrieve precomputed HP array; build STR map lazily (only when needed)
         hp_arr = hp_arrays[chrom]
@@ -1026,14 +1157,22 @@ def profile_chunk(
                     su, sc = str_map.get(pos, (None, 0))
                     if su is not None:
                         str_counts[('M', su, sc)] += 1
+                        if bin_label is not None and str_counts_by_bin is not None:
+                            str_counts_by_bin[bin_label][('M', su, sc)] += 1
                         if union_counts is not None:
                             union_counts[('M', ref_base, hp_len)] += 1
+                            if bin_label is not None and union_counts_by_bin is not None:
+                                union_counts_by_bin[bin_label][('M', ref_base, hp_len)] += 1
                         continue   # exclude from HP counts (cleaner baseline)
                 counts[('M', ref_base, hp_len)] += 1
+                if bin_label is not None and counts_by_bin is not None:
+                    counts_by_bin[bin_label][('M', ref_base, hp_len)] += 1
                 if strand_counts is not None and read_strand is not None:
                     strand_counts[('M', ref_base, hp_len, read_strand)] += 1
                 if union_counts is not None:
                     union_counts[('M', ref_base, hp_len)] += 1
+                    if bin_label is not None and union_counts_by_bin is not None:
+                        union_counts_by_bin[bin_label][('M', ref_base, hp_len)] += 1
 
             # Collect strict D/X error events (iterate only error positions)
             strict_error_events: List[Tuple[int, str, str]] = []
@@ -1088,9 +1227,13 @@ def profile_chunk(
                     for pos, op_type, ref_base in run:
                         if run_su is not None:
                             str_counts[(op_type, run_su, run_sc)] += 1
+                            if bin_label is not None and str_counts_by_bin is not None:
+                                str_counts_by_bin[bin_label][(op_type, run_su, run_sc)] += 1
                         else:
                             hp_len = int(hp_arr[pos])
                             counts[(op_type, ref_base, hp_len)] += 1
+                            if bin_label is not None and counts_by_bin is not None:
+                                counts_by_bin[bin_label][(op_type, ref_base, hp_len)] += 1
                             if strand_counts is not None and read_strand is not None:
                                 strand_counts[(op_type, ref_base, hp_len, read_strand)] += 1
 
@@ -1111,6 +1254,8 @@ def profile_chunk(
                                     ref_base = ref_seq[pos]
                                     hp_len = int(hp_arr[pos])
                                     union_counts[(op_char, ref_base, hp_len)] += 1
+                                    if bin_label is not None and union_counts_by_bin is not None:
+                                        union_counts_by_bin[bin_label][(op_char, ref_base, hp_len)] += 1
 
             # --- Phase 5: insertions (strict and union) ---
             strict_ins_before: Set[int] = set()
@@ -1124,9 +1269,9 @@ def profile_chunk(
                 if union_counts is not None and n_with >= 1:
                     any_ins_before.add(pos)
 
-            for pos_set, target_counts in [
-                (strict_ins_before, counts),
-                (any_ins_before, union_counts),
+            for pos_set, target_counts, target_by_bin in [
+                (strict_ins_before, counts, counts_by_bin),
+                (any_ins_before, union_counts, union_counts_by_bin),
             ]:
                 if target_counts is None:
                     continue
@@ -1148,11 +1293,18 @@ def profile_chunk(
                         hp_base  = (ref_seq[pos - 1] if hp_left >= hp_right
                                     else ref_seq[pos])
                         target_counts[('I', hp_base, hp_len)] += 1
+                        if bin_label is not None and target_by_bin is not None:
+                            target_by_bin[bin_label][('I', hp_base, hp_len)] += 1
 
         n_processed += 1
 
     log.info('  Processed %d reads  (chrom_mismatch=%d  no_agreed_range=%d)',
              n_processed, n_chrom_mismatch, n_no_agreed_range)
+    if umi_lookup is not None and umi_bins:
+        total_looked = _lookup_hits + _lookup_misses
+        pct = 100.0 * _lookup_hits / total_looked if total_looked else 0.0
+        log.info('  Sidecar UMI lookup: %d hits / %d total (%.1f%% hit rate)',
+                 _lookup_hits, total_looked, pct)
     return n_processed, len(common_names)
 
 
@@ -1282,7 +1434,7 @@ def derive_penalties(
         .apply(lambda g: pd.Series({
             'rate_mean':   np.average(g['rate'], weights=g['count'].clip(lower=1)),
             'count_total': g['count'].sum(),
-        }), include_groups=False)
+        }))
         .reset_index()
     )
 
@@ -1732,6 +1884,21 @@ def build_parser() -> argparse.ArgumentParser:
                         'from inflating the HP=1 baseline used to normalize the penalty '
                         'table.  The HP penalty table from the main output will reflect '
                         'true non-STR HP=1 error rates after this correction.')
+    p.add_argument('--umi-tag', type=str, default='XC', metavar='TAG',
+                   help='BAM aux tag carrying the integer UMI cluster size '
+                        '(default: XC). When the tag is present, reads are '
+                        'routed into per-bin error-count tables (see '
+                        '--umi-bins) in addition to the pooled output. Reads '
+                        'missing this tag still contribute to the pooled '
+                        'counts but to no per-bin output.')
+    p.add_argument('--umi-bins', type=str, default='1,2,3+', metavar='SPEC',
+                   help='Comma-separated UMI cluster-size bins for stratified '
+                        "calibration (default: '1,2,3+'). Each token is "
+                        "either '<N>' (exact match) or '<N>+' (≥ N). For "
+                        'each bin the profiler emits '
+                        "error_counts_umi<label>.tsv alongside the pooled "
+                        "error_counts.tsv. Pass '1' to disable stratification "
+                        '(single bin matching only singletons).')
     p.add_argument('--strand-split', action='store_true', default=False,
                    help='In addition to the pooled counts, also accumulate per-strand '
                         'counts keyed by (op_type, ref_base, hp_length, strand).  Outputs '
@@ -1739,6 +1906,13 @@ def build_parser() -> argparse.ArgumentParser:
                         'Useful for verifying that + and - strand reads show symmetric error '
                         'profiles (a significant asymmetry would suggest strand-specific '
                         'sequencing artifacts or systematic misalignment).')
+    p.add_argument('--umi-source-bam', type=Path, default=None, metavar='PATH',
+                   help='Sidecar BAM carrying the UMI tag (e.g. stage1_consensus.bam) '
+                        'when the per-aligner BAMs lack it. At startup, read names and '
+                        'their --umi-tag values are loaded from this BAM into an in-memory '
+                        'lookup and used instead of querying the aligned BAMs. Falls back '
+                        'to the aligned BAM tag for reads not found in the sidecar. '
+                        'Read names are normalised the same way as per-aligner BAMs.')
 
     return p
 
@@ -1750,13 +1924,21 @@ def build_parser() -> argparse.ArgumentParser:
 def _worker(args_tuple):
     """Multiprocessing worker: profile one chunk and return local count dicts.
 
-    Returns (counts, union_counts, str_counts) — each a plain dict or None.
-    Uses process-local defaultdicts so no shared state is needed.
-    On Linux (fork start method) ref_seqs is shared copy-on-write at no cost.
+    Returns a tuple of:
+        (counts, union_counts, str_counts, strand_counts,
+         counts_by_bin, union_counts_by_bin, str_counts_by_bin, reads_per_bin)
+
+    Each *_counts is a plain dict (or None when the corresponding flag is off);
+    each *_by_bin is a dict of plain dicts keyed by bin label.
+
+    Uses process-local defaultdicts so no shared state is needed. On Linux
+    (fork start method) ref_seqs is shared copy-on-write at no cost. The
+    `umi_bins` spec is a list of plain tuples — no lambdas — so it pickles
+    cleanly under both fork and spawn start methods.
     """
     (chunk_idx, run_dir, n_chunks, aligners, ref_seqs,
      min_aligners, max_reads, isolation_flank, exclude_5p_bp, exclude_3p_bp,
-     do_union, do_str, do_strand) = args_tuple
+     do_union, do_str, do_strand, umi_tag, umi_bins, umi_lookup) = args_tuple
 
     local_counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
     local_union: Optional[Dict[Tuple[str, str, int], int]] = (
@@ -1769,10 +1951,27 @@ def _worker(args_tuple):
         defaultdict(int) if do_strand else None
     )
 
+    if umi_bins:
+        local_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = {
+            label: defaultdict(int) for label, _, _ in umi_bins
+        }
+        local_union_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = (
+            {label: defaultdict(int) for label, _, _ in umi_bins} if do_union else None
+        )
+        local_str_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = (
+            {label: defaultdict(int) for label, _, _ in umi_bins} if do_str else None
+        )
+        local_reads_per_bin: Optional[Dict[str, int]] = {label: 0 for label, _, _ in umi_bins}
+    else:
+        local_counts_by_bin = None
+        local_union_by_bin = None
+        local_str_by_bin = None
+        local_reads_per_bin = None
+
     chunk_bams = find_chunk_bams(run_dir, chunk_idx, n_chunks, aligners)
     if not chunk_bams:
         log.warning('Worker: no BAMs for chunk %d — skipping', chunk_idx)
-        return dict(local_counts), None, None, None
+        return dict(local_counts), None, None, None, None, None, None, None
 
     log.info('[worker pid=%d] chunk %d: %s', os.getpid(), chunk_idx,
              list(chunk_bams.keys()))
@@ -1782,12 +1981,26 @@ def _worker(args_tuple):
                   exclude_3p_bp=exclude_3p_bp,
                   union_counts=local_union,
                   str_counts=local_str,
-                  strand_counts=local_strand)
+                  strand_counts=local_strand,
+                  umi_tag=umi_tag,
+                  umi_bins=umi_bins,
+                  counts_by_bin=local_counts_by_bin,
+                  union_counts_by_bin=local_union_by_bin,
+                  str_counts_by_bin=local_str_by_bin,
+                  reads_per_bin=local_reads_per_bin,
+                  umi_lookup=umi_lookup)
+
+    def _freeze(d):
+        return {k: dict(v) for k, v in d.items()} if d is not None else None
 
     return (dict(local_counts),
             dict(local_union)  if local_union  is not None else None,
             dict(local_str)    if local_str    is not None else None,
-            dict(local_strand) if local_strand is not None else None)
+            dict(local_strand) if local_strand is not None else None,
+            _freeze(local_counts_by_bin),
+            _freeze(local_union_by_bin),
+            _freeze(local_str_by_bin),
+            dict(local_reads_per_bin) if local_reads_per_bin is not None else None)
 
 
 def _merge_counts(
@@ -1798,6 +2011,20 @@ def _merge_counts(
     if source:
         for k, v in source.items():
             target[k] += v
+
+
+def _merge_counts_by_bin(
+    target: Optional[Dict[str, Dict[Tuple[str, str, int], int]]],
+    source: Optional[Dict[str, Dict[Tuple[str, str, int], int]]],
+) -> None:
+    """Add per-bin source dicts into per-bin target in place."""
+    if not target or not source:
+        return
+    for bin_label, sub in source.items():
+        if bin_label not in target:
+            target[bin_label] = defaultdict(int)
+        for k, v in sub.items():
+            target[bin_label][k] += v
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -1814,6 +2041,33 @@ def main(argv: Optional[List[str]] = None) -> None:
     log.info('Protocol: %s  |  aligners: %s  |  read-coord exclusion: 5\'=%d bp, 3\'=%d bp',
              args.protocol, ' '.join(args.aligners),
              args.exclude_5p_bp, args.exclude_3p_bp)
+
+    # --- Parse UMI bins (plain-data tuples; pickles cleanly for workers) ---
+    try:
+        args.umi_bin_specs: List[UmiBinSpec] = parse_umi_bins(args.umi_bins)
+    except ValueError as exc:
+        sys.exit(f'ERROR: invalid --umi-bins {args.umi_bins!r}: {exc}')
+    log.info('UMI tag: %s  |  bins: %s',
+             args.umi_tag,
+             ', '.join(f'{lbl}({kind} {n})' for lbl, kind, n in args.umi_bin_specs))
+
+    # --- Build sidecar UMI lookup (optional) ---
+    umi_lookup: Optional[Dict[str, int]] = None
+    if args.umi_source_bam is not None:
+        if not args.umi_source_bam.exists():
+            sys.exit(f'ERROR: --umi-source-bam not found: {args.umi_source_bam}')
+        log.info('Building UMI lookup from sidecar BAM: %s', args.umi_source_bam)
+        umi_lookup = {}
+        with pysam.AlignmentFile(str(args.umi_source_bam), 'rb', check_sq=False) as _bam:
+            for _r in _bam:
+                if _r.is_unmapped or _r.is_secondary or _r.is_supplementary:
+                    continue
+                try:
+                    _val = int(_r.get_tag(args.umi_tag))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                umi_lookup[_normalise_read_name(_r.query_name)] = _val
+        log.info('Sidecar UMI lookup built: %d entries', len(umi_lookup))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     plots_dir = args.output_dir / 'plots'
@@ -1841,6 +2095,22 @@ def main(argv: Optional[List[str]] = None) -> None:
         defaultdict(int) if args.strand_split else None
     )
 
+    # Per-bin accumulators (parallel to pooled counts/union/str above).
+    # strand_counts is intentionally pooled-only — strand symmetry analysis
+    # doesn't need UMI stratification at this stage.
+    counts_by_bin: Dict[str, Dict[Tuple[str, str, int], int]] = {
+        label: defaultdict(int) for label, _, _ in args.umi_bin_specs
+    }
+    union_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = (
+        {label: defaultdict(int) for label, _, _ in args.umi_bin_specs}
+        if args.union else None
+    )
+    str_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = (
+        {label: defaultdict(int) for label, _, _ in args.umi_bin_specs}
+        if args.str_repeat else None
+    )
+    reads_per_bin: Dict[str, int] = {label: 0 for label, _, _ in args.umi_bin_specs}
+
     if args.isolation_flank > 0:
         log.info('Isolation filter: --isolation-flank %d  (require ≥%d M-flanking bases)',
                  args.isolation_flank, args.isolation_flank)
@@ -1857,6 +2127,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         union_counts=union_counts,
         str_counts=str_counts,
         strand_counts=strand_counts,
+        umi_tag=args.umi_tag,
+        umi_bins=args.umi_bin_specs,
+        counts_by_bin=counts_by_bin,
+        union_counts_by_bin=union_counts_by_bin,
+        str_counts_by_bin=str_counts_by_bin,
+        reads_per_bin=reads_per_bin,
+        umi_lookup=umi_lookup,
     )
 
     if args.aligner_bams:
@@ -1889,7 +2166,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             (chunk_idx, run_dir, n_chunks, args.aligners, ref_seqs,
              min_aligners, args.max_reads, args.isolation_flank,
              args.exclude_5p_bp, args.exclude_3p_bp,
-             args.union, args.str_repeat, args.strand_split)
+             args.union, args.str_repeat, args.strand_split,
+             args.umi_tag, args.umi_bin_specs, umi_lookup)
             for chunk_idx in chunk_indices
         ]
 
@@ -1902,7 +2180,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             log.info('Sequential mode (--workers 1)')
             results = [_worker(a) for a in worker_args]
 
-        for chunk_counts, chunk_union, chunk_str, chunk_strand in results:
+        for (chunk_counts, chunk_union, chunk_str, chunk_strand,
+             chunk_counts_by_bin, chunk_union_by_bin, chunk_str_by_bin,
+             chunk_reads_per_bin) in results:
             _merge_counts(counts, chunk_counts)
             if union_counts is not None:
                 _merge_counts(union_counts, chunk_union)
@@ -1910,6 +2190,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _merge_counts(str_counts, chunk_str)
             if strand_counts is not None:
                 _merge_counts(strand_counts, chunk_strand)
+            _merge_counts_by_bin(counts_by_bin, chunk_counts_by_bin)
+            if union_counts_by_bin is not None:
+                _merge_counts_by_bin(union_counts_by_bin, chunk_union_by_bin)
+            if str_counts_by_bin is not None:
+                _merge_counts_by_bin(str_counts_by_bin, chunk_str_by_bin)
+            if chunk_reads_per_bin:
+                for k, v in chunk_reads_per_bin.items():
+                    reads_per_bin[k] = reads_per_bin.get(k, 0) + v
 
     if not counts:
         log.error('No counts accumulated — check inputs.')
@@ -1967,6 +2255,37 @@ def main(argv: Optional[List[str]] = None) -> None:
     # --- Rates & penalties: strict ---
     log.info('Computing rates ...')
     rate_df_strict, penalty_df_strict = _write_outputs(counts, '', 'Strict')
+
+    # --- Per-bin error counts (Phase A: counts only, no derived penalties) ---
+    # bundle_protocol_tables.py (Phase B) consumes these to derive per-bin
+    # penalty tables. We deliberately do NOT call _write_outputs() per bin
+    # because that path also re-derives penalties / rates / plots — the
+    # design decision is that bin-aware penalty derivation belongs in the
+    # bundler, where the min_count fallback logic across bins lives.
+    log.info('--- Per-UMI-bin error counts ---')
+    print('\nUMI-bin summary  (--umi-tag %s):' % args.umi_tag)
+    for bin_label, _kind, _n in args.umi_bin_specs:
+        bin_counts = counts_by_bin.get(bin_label, {})
+        n_events = sum(bin_counts.values())
+        n_reads = reads_per_bin.get(bin_label, 0)
+        suffix = _sanitize_bin_label(bin_label)
+        out_path = args.output_dir / f'error_counts_umi{suffix}.tsv'
+        cnt_rows = [
+            {'op_type': op, 'ref_base': base, 'hp_length': hp, 'count': c}
+            for (op, base, hp), c in bin_counts.items()
+            if hp <= args.max_hp
+        ]
+        df_out = pd.DataFrame(
+            cnt_rows,
+            columns=['op_type', 'ref_base', 'hp_length', 'count'],
+        )
+        if not df_out.empty:
+            df_out = df_out.sort_values(['op_type', 'hp_length', 'ref_base'])
+        df_out.to_csv(out_path, sep='\t', index=False)
+        log.info('Wrote: %s  (n_reads=%d, n_events=%d)', out_path, n_reads, n_events)
+        print(f'  umi{suffix:<7}  n_reads={n_reads:>8d}  n_events={n_events:>10d}'
+              f'  -> {out_path.name}')
+    print()
 
     # --- Plots (strict) ---
     log.info('Generating plots ...')

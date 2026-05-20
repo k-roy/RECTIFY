@@ -50,13 +50,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BUNDLE_DIR = REPO_ROOT / 'rectify' / 'data' / 'genomes' / ORGANISM / 'penalty_tables'
 
 
-def _read_counts(input_dirs: Iterable[Path]) -> Tuple[Dict, Dict]:
-    """Pool error_counts.tsv (HP) and str_error_counts.tsv (STR) across runs."""
+def _read_counts(
+    input_dirs: Iterable[Path],
+    hp_filename: str = 'error_counts.tsv',
+) -> Tuple[Dict, Dict]:
+    """Pool ``hp_filename`` (HP) and ``str_error_counts.tsv`` (STR) across runs.
+
+    The HP filename is parameterized so per-UMI-bin variants (e.g.
+    ``error_counts_umi1.tsv``) can be pooled without touching the STR side —
+    Phase A's profiler keeps STR pooled-only, so there is no per-bin STR file.
+    """
     hp_counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
     str_counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
 
     for d in input_dirs:
-        hp_tsv = d / 'error_counts.tsv'
+        hp_tsv = d / hp_filename
         if not hp_tsv.exists():
             raise FileNotFoundError(f'{hp_tsv} missing — was the profiler run on {d}?')
         df = pd.read_csv(hp_tsv, sep='\t')
@@ -78,8 +86,14 @@ def main(argv=None):
     p.add_argument('--protocol', choices=['drs', 'cdna', 'qsrev'], required=True)
     p.add_argument('--inputs', type=Path, nargs='+', required=True,
                    help='Per-sample profiler output dirs')
+    p.add_argument('--umi-bin', dest='umi_bin', default=None,
+                   help='Optional per-UMI-bin label (typically umi1/umi2/umi3plus). '
+                        'When set, reads error_counts_<LABEL>.tsv from each --inputs '
+                        'dir and writes penalty_scores_<protocol>_<LABEL>.tsv. STR '
+                        'output is skipped (Phase A profiler keeps STR pooled-only).')
     p.add_argument('--overhang', type=Path, default=None,
-                   help='Path to junction_overhang_table.tsv to bundle (omit for qsrev)')
+                   help='Path to junction_overhang_table.tsv to bundle (omit for qsrev '
+                        'or for per-UMI-bin runs)')
     p.add_argument('--max-hp', type=int, default=20)
     p.add_argument('--default-ins', type=float, default=1.25)
     p.add_argument('--min-count-flag', type=int, default=50)
@@ -91,8 +105,15 @@ def main(argv=None):
         sys.exit(f'ERROR: {BUNDLE_DIR} does not exist. Run from rectify repo root.')
 
     # --- Pool counts ---
-    print(f'Pooling counts across {len(args.inputs)} input(s) ...')
-    hp_counts, str_counts = _read_counts(args.inputs)
+    hp_filename = (f'error_counts_{args.umi_bin}.tsv'
+                   if args.umi_bin else 'error_counts.tsv')
+    print(f'Pooling counts across {len(args.inputs)} input(s) '
+          f'(HP source: {hp_filename}) ...')
+    hp_counts, str_counts = _read_counts(args.inputs, hp_filename=hp_filename)
+    # Per-bin runs: STR is pooled-only at the profiler stage, so suppress STR
+    # output regardless of what _read_counts found.
+    if args.umi_bin:
+        str_counts = {}
     print(f'  HP counts:  {sum(hp_counts.values())} events across '
           f'{len(hp_counts)} (op, base, hp) keys')
     print(f'  STR counts: {sum(str_counts.values())} events across '
@@ -111,6 +132,8 @@ def main(argv=None):
 
     # --- Write outputs ---
     suffix = f'_{args.protocol}'
+    if args.umi_bin:
+        suffix = f'{suffix}_{args.umi_bin}'
     out_pen  = BUNDLE_DIR / f'penalty_scores{suffix}.tsv'
     out_str  = BUNDLE_DIR / f'str_penalty_scores{suffix}.tsv'
     out_ovh  = BUNDLE_DIR / f'junction_overhang_table{suffix}.tsv'
