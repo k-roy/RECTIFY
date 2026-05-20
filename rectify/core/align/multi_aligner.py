@@ -601,6 +601,31 @@ def run_map_pacbio(
     if mpb_n_split > 0:
         cmd = [f'in={mpb_split_fq}' if c.startswith('in=') else c for c in cmd]
 
+    # ── Sanitise QNAME for SAM spec compliance ──
+    # ONT Dorado FASTQs embed run metadata in the read description:
+    #   @<uuid> runid=... ch=... start_time=... flow_cell_id=...
+    # mapPacBio.sh copies the full header verbatim into the SAM QNAME field,
+    # which violates the SAM spec 254-char limit and causes ``samtools view``
+    # to exit 1 with "query name too long".  Strip everything after the first
+    # space so the QNAME is just the bare UUID.
+    _mpb_in = next(
+        (c.split('=', 1)[1] for c in cmd if c.startswith('in=')),
+        str(actual_reads_path),
+    )
+    _opener = gzip.open if _mpb_in.endswith('.gz') else open
+    with _opener(_mpb_in, 'rt') as _f:
+        _first = _f.readline()
+        _need_san = _first.startswith('@') and ' ' in _first
+    if _need_san:
+        _mpb_san_fq = Path(sam_path).with_suffix('.mpb_san.fastq')
+        with _opener(_mpb_in, 'rt') as _fin, open(_mpb_san_fq, 'w') as _fout:
+            for _ln in _fin:
+                if _ln.startswith('@'):
+                    _fout.write('@' + _ln[1:].split(' ', 1)[0][:254] + '\n')
+                else:
+                    _fout.write(_ln)
+        cmd = [f'in={_mpb_san_fq}' if c.startswith('in=') else c for c in cmd]
+
     logger.info(
         "Running mapPacBio: %s",
         ' '.join(cmd[:5]) + (f' [chunk {chunk_idx}/{n_chunks}]' if chunk_idx is not None else ''),
