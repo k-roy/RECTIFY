@@ -99,6 +99,18 @@ from .gene_attribution import (
     compute_cluster_attribution,
 )
 
+from .cluster_gene_attribution import (
+    annotation_cluster_attributions,
+    load_reference_position_attributions,
+    reference_position_attributions_to_clusters,
+    build_reference_cluster_lookup,
+    body_attributions_from_corrected_tsvs,
+    apply_annotation_fallback,
+    apply_gene_names_from_annotation,
+    normalize_cluster_gene_attributions,
+    apply_primary_gene_to_clusters,
+)
+
 from .junction_validation import (
     JunctionEvidence,
     collect_junction_evidence,
@@ -200,6 +212,15 @@ __all__ = [
     'compute_read_gene_attribution',
     'aggregate_attributions_for_3prime_end',
     'compute_cluster_attribution',
+    'annotation_cluster_attributions',
+    'load_reference_position_attributions',
+    'reference_position_attributions_to_clusters',
+    'build_reference_cluster_lookup',
+    'body_attributions_from_corrected_tsvs',
+    'apply_annotation_fallback',
+    'apply_gene_names_from_annotation',
+    'normalize_cluster_gene_attributions',
+    'apply_primary_gene_to_clusters',
     # Junction validation
     'JunctionEvidence',
     'collect_junction_evidence',
