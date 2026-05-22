@@ -163,6 +163,10 @@ def _run_alignment(
     # single-sample mode. In run-all, array indices are for sample-level
     # parallelism; we never want within-sample read-level partitioning here.
     import os as _os
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    _align_started_at = _dt.now(_tz.utc).isoformat()
+    _align_t0 = _time.perf_counter()
     _array_vars = {k: _os.environ.pop(k) for k in (
         # SLURM
         'SLURM_ARRAY_TASK_ID', 'SLURM_ARRAY_TASK_COUNT',
@@ -189,6 +193,39 @@ def _run_alignment(
         sample_id, sample_output_dir,
         run_provenance=_run_provenance, trust_existing_bams=trust_existing_bams,
     )
+
+    try:
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        _align_inputs: dict = {'reads': input_path, 'genome': genome_path}
+        if annotation_path is not None:
+            _align_inputs['annotation'] = annotation_path
+        _align_outputs: dict = {'rectified_bam': rectified_bam}
+        _align_outputs.update({
+            f'per_aligner_bam_{name}': bam
+            for name, bam in per_aligner_bams.items()
+        })
+        _align_record = ProvenanceRecord.from_components(
+            stage='align',
+            sample_id=sample_id,
+            sample_output_dir=sample_output_dir,
+            started_at=_align_started_at,
+            completed_at=_dt.now(_tz.utc).isoformat(),
+            exit_status=0,
+            inputs=_align_inputs,
+            outputs=_align_outputs,
+            stats={
+                'wall_seconds': _time.perf_counter() - _align_t0,
+                'n_aligners': len(all_aligners),
+                'aligners': all_aligners,
+                'parallel_aligners': parallel_aligners,
+                'threads': threads,
+            },
+        )
+        write_stage_sidecar(_align_record, sample_output=sample_output_dir)
+    except Exception as _sc_exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Failed to write align sidecar: %s", _sc_exc)
+
     return per_aligner_bams, rectified_bam
 def _run_correction(
     bam_path: Path,

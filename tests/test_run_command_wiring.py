@@ -365,3 +365,35 @@ class TestCpuDetection:
         monkeypatch.setenv('SLURM_CPUS_PER_TASK', '4')
         result = _get_available_cpus()
         assert result == 4, f"Expected 4 (from SLURM env), got {result}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E.3: --parallel-aligners default=True (BooleanOptionalAction)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestParallelAlignersDefault:
+    """E.3: --parallel-aligners must default to True and support --no-parallel-aligners."""
+
+    def _parse(self, extra_args=()):
+        from rectify.cli import create_parser
+        parser = create_parser()
+        return parser.parse_args(['run-all', 'sample.bam', '-o', 'out/', *extra_args])
+
+    def test_parallel_aligners_default_is_true(self):
+        """Without any flag, parallel_aligners must be True."""
+        args = self._parse()
+        assert args.parallel_aligners is True, (
+            "--parallel-aligners should default to True (E.3 flip)"
+        )
+
+    def test_parallel_aligners_explicit_true(self):
+        """--parallel-aligners flag explicitly enables (idempotent)."""
+        args = self._parse(['--parallel-aligners'])
+        assert args.parallel_aligners is True
+
+    def test_no_parallel_aligners_disables(self):
+        """--no-parallel-aligners must set parallel_aligners=False."""
+        args = self._parse(['--no-parallel-aligners'])
+        assert args.parallel_aligners is False, (
+            "--no-parallel-aligners must be a valid escape hatch (BooleanOptionalAction)"
+        )

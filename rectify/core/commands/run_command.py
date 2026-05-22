@@ -452,12 +452,13 @@ def create_run_parser(subparsers):
 
     run_parser.add_argument(
         '--parallel-aligners',
-        action='store_true',
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            'Run minimap2, mapPacBio, and gapmm2 in parallel during alignment. '
+            'Run minimap2, mapPacBio, and gapmm2 in parallel during alignment (default: enabled). '
             'Threads are divided evenly across aligners (e.g., --threads 16 → 5 per aligner). '
-            'Reduces wall-clock time for the alignment step at the cost of higher peak memory.'
+            'Reduces wall-clock time for the alignment step at the cost of higher peak memory. '
+            'Use --no-parallel-aligners to force sequential alignment.'
         )
     )
 
