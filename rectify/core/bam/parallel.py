@@ -64,9 +64,16 @@ def _get_bam_worker_context() -> mp.context.BaseContext:
 def _init_region_worker_state(
     genome_path: str,
     polya_model_path: Optional[str],
-    worker_kwargs: Dict,
+    shared_kwargs: Dict,
 ) -> None:
     """Initialise per-process state for region workers.
+
+    Holds only the fields shared across aligners in one ``run-all`` invocation:
+    ``genome``, ``polya_model``, ``annotated_junctions``, ``pool_chrom_index``,
+    ``gene_interval_trees``, ``netseq_dir``, and config flags. Per-aligner
+    fields (``bam_path``, ``variant_aware_rescue``) are NOT stored here — they
+    travel with each region task tuple so the same pool can be shared across
+    multiple per-aligner correction calls (Commit C-II.0 worker state model).
 
     This avoids sending large objects such as the genome with every task while
     still keeping all pysam handles worker-local.
@@ -75,18 +82,29 @@ def _init_region_worker_state(
 
     genome = load_genome(genome_path)
     polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
-    _REGION_WORKER_STATE = dict(worker_kwargs)
+    _REGION_WORKER_STATE = dict(shared_kwargs)
     _REGION_WORKER_STATE['genome'] = genome
     _REGION_WORKER_STATE['polya_model'] = polya_model
 
 
 def _process_region_worker_from_state(
-    region: Tuple[str, int, int],
+    task: Tuple,
 ) -> Union[List[Dict], str]:
-    """Pool entrypoint using process-local state installed by initializer."""
+    """Pool entrypoint using process-local state installed by initializer.
+
+    The task tuple is ``(region, bam_path, variant_aware_rescue)``. The first
+    field is the genome interval; the latter two are the per-aligner sliver
+    that must vary across calls submitted to a shared pool.
+    """
     if not _REGION_WORKER_STATE:
         raise RuntimeError("Region worker state was not initialised")
-    return _process_region_worker(region=region, **_REGION_WORKER_STATE)
+    region, bam_path, variant_aware_rescue = task
+    return _process_region_worker(
+        region=region,
+        bam_path=bam_path,
+        variant_aware_rescue=variant_aware_rescue,
+        **_REGION_WORKER_STATE,
+    )
 
 
 def _write_results_chunk(fh, results: List[Dict]):
@@ -728,15 +746,18 @@ def process_bam_file_parallel(
     # parent-side BAM scans is inherited by the workers.
     logger.info(f"Processing {len(regions)} regions across {n_threads} workers...")
 
-    worker_kwargs = dict(
-        bam_path=bam_path,
+    # Commit C-II.0 worker state split: shared across aligners vs per-task.
+    # The shared bundle is installed once via the pool initializer; per-task
+    # fields (bam_path, variant_aware_rescue) are wrapped into each region
+    # tuple so the same pool can later be shared across per-aligner correction
+    # calls without re-init overhead.
+    shared_kwargs = dict(
         apply_atract=apply_atract,
         apply_ag_mispriming=apply_ag_mispriming,
         ag_threshold=ag_threshold,
         apply_polya_trim=apply_polya_trim,
         apply_indel_correction=apply_indel_correction,
         netseq_dir=netseq_dir,
-        variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
         pool_chrom_index=pool_chrom_index,
         apply_3ss_rescue=apply_3ss_rescue,
@@ -746,6 +767,7 @@ def process_bam_file_parallel(
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
     )
+    region_tasks = [(region, bam_path, variant_aware_rescue) for region in regions]
 
     # The parent no longer needs these large objects once worker initializers
     # will load their own copies. Releasing them also reduces RSS before the
@@ -769,18 +791,18 @@ def process_bam_file_parallel(
     with ctx.Pool(
         n_threads,
         initializer=_init_region_worker_state,
-        initargs=(str(genome_path), polya_model_path, worker_kwargs),
+        initargs=(str(genome_path), polya_model_path, shared_kwargs),
     ) as pool:
         try:
             # Try to use tqdm for progress if available
             from tqdm import tqdm
             results_iter = tqdm(
-                pool.imap(_process_region_worker_from_state, regions),
-                total=len(regions),
+                pool.imap(_process_region_worker_from_state, region_tasks),
+                total=len(region_tasks),
                 desc="Processing regions"
             )
         except ImportError:
-            results_iter = pool.imap(_process_region_worker_from_state, regions)
+            results_iter = pool.imap(_process_region_worker_from_state, region_tasks)
 
         for region_results in results_iter:
             all_results.extend(region_results)
@@ -1135,15 +1157,16 @@ def process_bam_streaming_parallel(
     import tempfile as _tempfile
     _tmp_dir = _tempfile.mkdtemp(prefix='rectify_region_')
 
-    worker_kwargs = dict(
-        bam_path=bam_path,
+    # Commit C-II.0 worker state split (streaming path mirrors the in-memory
+    # process_bam_file_parallel layout above): per-aligner fields go into
+    # task tuples; everything else stays at init level.
+    shared_kwargs = dict(
         apply_atract=apply_atract,
         apply_ag_mispriming=apply_ag_mispriming,
         ag_threshold=ag_threshold,
         apply_polya_trim=apply_polya_trim,
         apply_indel_correction=apply_indel_correction,
         netseq_dir=netseq_dir,
-        variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
         pool_chrom_index=pool_chrom_index,
         apply_3ss_rescue=apply_3ss_rescue,
@@ -1185,12 +1208,15 @@ def process_bam_streaming_parallel(
             ctx.get_start_method(),
         )
         if _regions_to_run:
+            _region_tasks = [
+                (region, bam_path, variant_aware_rescue) for region in _regions_to_run
+            ]
             with ctx.Pool(
                 n_threads,
                 initializer=_init_region_worker_state,
-                initargs=(str(genome_path), polya_model_path, worker_kwargs),
+                initargs=(str(genome_path), polya_model_path, shared_kwargs),
             ) as pool:
-                _iter = getattr(pool, _map_fn)(_process_region_worker_from_state, _regions_to_run)
+                _iter = getattr(pool, _map_fn)(_process_region_worker_from_state, _region_tasks)
                 for _batch_num, _worker_ret in enumerate(_iter):
                     # Workers return a temp-file path (str) when tmp_dir is set.
                     # Load the pickle and delete the file immediately to free space.
