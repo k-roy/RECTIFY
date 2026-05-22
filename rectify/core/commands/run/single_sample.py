@@ -204,6 +204,7 @@ def _process_one_sample(
                         merge_corrected_tsvs,
                         identify_cat5_candidates,
                         write_corrected_consensus_bam,
+                        _stage_raw_bams,
                     )
                     per_aligner_tsvs, per_aligner_corrected_bams = _run_correction_per_aligner(
                         per_aligner_bams=_sample_per_aligner_bams,
@@ -229,49 +230,49 @@ def _process_one_sample(
                                 )
                         from rectify.utils.genome import load_genome as _load_genome_for_merge
                         _merge_genome = _load_genome_for_merge(str(genome_path))
-                        merge_corrected_tsvs(
-                            per_aligner_tsvs=per_aligner_tsvs,
-                            output_tsv=_work / 'corrected_reads.tsv',
-                            summary_tsv=_summary_tsv,
-                            per_aligner_corrected_bams={
-                                a: str(p) for a, p in per_aligner_corrected_bams.items()
-                            } if per_aligner_corrected_bams else None,
-                            per_aligner_raw_bams={
-                                a: str(p) for a, p in _sample_per_aligner_bams.items()
-                            } if not per_aligner_corrected_bams else None,
-                            genome=_merge_genome,
-                            overhang_table=_overhang_table,
-                            lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
-                        )
-                        _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
-                        identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
-                        # Emit corrected_consensus.bam — symmetric with the chunked path.
-                        # Non-fatal: merged TSV is the primary output; missing BAM is
-                        # recoverable via post-hoc write_corrected_consensus_bam.
-                        _consensus_bam_out = _work / 'corrected_consensus.bam'
-                        try:
-                            _consensus_stats = write_corrected_consensus_bam(
-                                per_aligner_raw_bams={
-                                    a: str(p) for a, p in _sample_per_aligner_bams.items()
-                                },
+                        _raw_bams_s1 = {
+                            a: str(p) for a, p in _sample_per_aligner_bams.items()
+                        } if _sample_per_aligner_bams else {}
+                        with _stage_raw_bams(_raw_bams_s1) as _staged_s1:
+                            merge_corrected_tsvs(
                                 per_aligner_tsvs=per_aligner_tsvs,
-                                merged_tsv=_work / 'corrected_reads.tsv',
-                                output_bam=_consensus_bam_out,
+                                output_tsv=_work / 'corrected_reads.tsv',
+                                summary_tsv=_summary_tsv,
+                                per_aligner_corrected_bams={
+                                    a: str(p) for a, p in per_aligner_corrected_bams.items()
+                                } if per_aligner_corrected_bams else None,
+                                per_aligner_raw_bams=_staged_s1 if not per_aligner_corrected_bams else None,
                                 genome=_merge_genome,
-                                threads=max(1, int(getattr(args, 'threads', 1) or 1)),
-                                strict=True,
+                                overhang_table=_overhang_table,
+                                lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
                             )
-                            print(
-                                f"  [{sample_id}] corrected_consensus.bam written"
-                                f" ({_consensus_stats.get('written', '?')} reads)",
-                                flush=True,
-                            )
-                        except Exception as _cbam_exc:
-                            print(
-                                f"  [{sample_id}] WARNING: corrected_consensus.bam write failed"
-                                f" (non-fatal): {_cbam_exc}",
-                                file=sys.stderr,
-                            )
+                            _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
+                            identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
+                            # Emit corrected_consensus.bam — symmetric with the chunked path.
+                            # Non-fatal: merged TSV is the primary output; missing BAM is
+                            # recoverable via post-hoc write_corrected_consensus_bam.
+                            _consensus_bam_out = _work / 'corrected_consensus.bam'
+                            try:
+                                _consensus_stats = write_corrected_consensus_bam(
+                                    per_aligner_raw_bams=_staged_s1,
+                                    per_aligner_tsvs=per_aligner_tsvs,
+                                    merged_tsv=_work / 'corrected_reads.tsv',
+                                    output_bam=_consensus_bam_out,
+                                    genome=_merge_genome,
+                                    threads=max(1, int(getattr(args, 'threads', 1) or 1)),
+                                    strict=True,
+                                )
+                                print(
+                                    f"  [{sample_id}] corrected_consensus.bam written"
+                                    f" ({_consensus_stats.get('written', '?')} reads)",
+                                    flush=True,
+                                )
+                            except Exception as _cbam_exc:
+                                print(
+                                    f"  [{sample_id}] WARNING: corrected_consensus.bam write failed"
+                                    f" (non-fatal): {_cbam_exc}",
+                                    file=sys.stderr,
+                                )
                     else:
                         print(
                             f"  [{sample_id}] WARNING: No per-aligner correction succeeded; "
@@ -587,7 +588,7 @@ def _run_single_sample(args) -> int:
             # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
-            from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates, write_corrected_consensus_bam
+            from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates, write_corrected_consensus_bam, _stage_raw_bams
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
             per_aligner_tsvs, per_aligner_corrected_bams = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,
@@ -616,50 +617,50 @@ def _run_single_sample(args) -> int:
                 # BAMs + corrected TSVs.
                 from rectify.utils.genome import load_genome as _load_genome_for_merge
                 _merge_genome = _load_genome_for_merge(str(genome_path))
-                corrected_tsv = merge_corrected_tsvs(
-                    per_aligner_tsvs=per_aligner_tsvs,
-                    output_tsv=work_dir / 'corrected_reads.tsv',
-                    summary_tsv=_summary_tsv,
-                    per_aligner_corrected_bams={
-                        a: str(p) for a, p in per_aligner_corrected_bams.items()
-                    } if per_aligner_corrected_bams else None,
-                    per_aligner_raw_bams={
-                        a: str(p) for a, p in per_aligner_bams.items()
-                    } if not per_aligner_corrected_bams else None,
-                    genome=_merge_genome,
-                    overhang_table=_overhang_table,
-                    lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
-                )
-                # Identify Cat5 candidates (reads where aligners contribute unique introns)
-                _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
-                identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
-                # Emit corrected_consensus.bam — symmetric with the chunked path.
-                # Non-fatal: merged TSV is the primary output; missing BAM is
-                # recoverable via post-hoc write_corrected_consensus_bam.
-                _consensus_bam_out = work_dir / 'corrected_consensus.bam'
-                try:
-                    _consensus_stats = write_corrected_consensus_bam(
-                        per_aligner_raw_bams={
-                            a: str(p) for a, p in per_aligner_bams.items()
-                        },
+                _raw_bams_s2 = {
+                    a: str(p) for a, p in per_aligner_bams.items()
+                } if per_aligner_bams else {}
+                with _stage_raw_bams(_raw_bams_s2) as _staged_s2:
+                    corrected_tsv = merge_corrected_tsvs(
                         per_aligner_tsvs=per_aligner_tsvs,
-                        merged_tsv=corrected_tsv,
-                        output_bam=_consensus_bam_out,
+                        output_tsv=work_dir / 'corrected_reads.tsv',
+                        summary_tsv=_summary_tsv,
+                        per_aligner_corrected_bams={
+                            a: str(p) for a, p in per_aligner_corrected_bams.items()
+                        } if per_aligner_corrected_bams else None,
+                        per_aligner_raw_bams=_staged_s2 if not per_aligner_corrected_bams else None,
                         genome=_merge_genome,
-                        threads=max(1, int(getattr(args, 'threads', 1) or 1)),
-                        strict=True,
+                        overhang_table=_overhang_table,
+                        lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
                     )
-                    print(
-                        f"    corrected_consensus.bam written"
-                        f" ({_consensus_stats.get('written', '?')} reads)",
-                        flush=True,
-                    )
-                except Exception as _cbam_exc:
-                    print(
-                        f"    WARNING: corrected_consensus.bam write failed"
-                        f" (non-fatal): {_cbam_exc}",
-                        file=sys.stderr,
-                    )
+                    # Identify Cat5 candidates (reads where aligners contribute unique introns)
+                    _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
+                    identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
+                    # Emit corrected_consensus.bam — symmetric with the chunked path.
+                    # Non-fatal: merged TSV is the primary output; missing BAM is
+                    # recoverable via post-hoc write_corrected_consensus_bam.
+                    _consensus_bam_out = work_dir / 'corrected_consensus.bam'
+                    try:
+                        _consensus_stats = write_corrected_consensus_bam(
+                            per_aligner_raw_bams=_staged_s2,
+                            per_aligner_tsvs=per_aligner_tsvs,
+                            merged_tsv=corrected_tsv,
+                            output_bam=_consensus_bam_out,
+                            genome=_merge_genome,
+                            threads=max(1, int(getattr(args, 'threads', 1) or 1)),
+                            strict=True,
+                        )
+                        print(
+                            f"    corrected_consensus.bam written"
+                            f" ({_consensus_stats.get('written', '?')} reads)",
+                            flush=True,
+                        )
+                    except Exception as _cbam_exc:
+                        print(
+                            f"    WARNING: corrected_consensus.bam write failed"
+                            f" (non-fatal): {_cbam_exc}",
+                            file=sys.stderr,
+                        )
             else:
                 # All per-aligner corrections failed — fall back to consensus BAM
                 print(

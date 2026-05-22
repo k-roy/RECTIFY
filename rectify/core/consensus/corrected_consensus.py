@@ -25,11 +25,15 @@ at least one correctly-rescued intron not present in the other aligner's result.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import shutil
+import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Dict, Iterator, List, Optional, Set, Tuple, Any
 
 import pandas as pd
 
@@ -882,6 +886,41 @@ def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
 # Public API
 # ---------------------------------------------------------------------------
 
+@contextlib.contextmanager
+def _stage_raw_bams(
+    per_aligner_raw_bams: Dict[str, str],
+    scratch_root: Optional[str] = None,
+) -> Iterator[Dict[str, str]]:
+    """Copy raw BAMs to local scratch before merge + write to avoid Lustre cold-read overhead.
+
+    ProcessPoolExecutor workers maintain per-process Lustre client caches. BAMs read
+    inside workers don't warm the main process's cache, so both HP scoring and the
+    subsequent BAM write hit cold Lustre. Staging to local NVMe ($L_SCRATCH / $SCRATCH)
+    once in the main process eliminates this for all readers.
+
+    Yields a {aligner: staged_path_str} dict. Cleans up the staging directory on exit.
+    """
+    if not per_aligner_raw_bams:
+        yield per_aligner_raw_bams
+        return
+    if scratch_root is None:
+        scratch_root = os.environ.get('L_SCRATCH', os.environ.get('SCRATCH')) or None
+    stage_dir = Path(tempfile.mkdtemp(prefix='rectify_bam_stage_', dir=scratch_root))
+    try:
+        staged: Dict[str, str] = {}
+        for aligner, bam_path in per_aligner_raw_bams.items():
+            dest = stage_dir / Path(str(bam_path)).name
+            shutil.copy2(str(bam_path), str(dest))
+            staged[aligner] = str(dest)
+            logger.info(
+                'Staged %s BAM to local scratch (%.0f MB): %s',
+                aligner, Path(str(bam_path)).stat().st_size / 1e6, dest,
+            )
+        yield staged
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+
+
 def merge_corrected_tsvs(
     per_aligner_tsvs: Dict[str, Path],
     output_tsv: Path,
@@ -1081,7 +1120,8 @@ def merge_corrected_tsvs(
                 ]
                 worker_fn = _score_hp_distances_for_aligner
             logger.info("HP edit-distance scoring using %d aligner workers", n_workers)
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            pool = ProcessPoolExecutor(max_workers=n_workers)
+            try:
                 futures = [pool.submit(worker_fn, args) for args in worker_args]
                 for future in as_completed(futures):
                     aligner_name, ed_dict = future.result()
@@ -1097,6 +1137,10 @@ def merge_corrected_tsvs(
                             'hp_edit_distance': ed,
                             'aligned_bases': ab,
                         })
+            finally:
+                # All results consumed; release workers in background so the
+                # 22-s queue-drain overhead overlaps with post-scoring merge work.
+                pool.shutdown(wait=False)
         else:
             for aligner_name, bam_path in score_aligners.items():
                 logger.info("HP edit-distance scoring for %s", aligner_name)

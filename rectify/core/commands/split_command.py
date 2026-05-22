@@ -1022,6 +1022,7 @@ sys.path.insert(0, '{rectify_src}')
 from rectify.core.consensus.corrected_consensus import (
     merge_corrected_tsvs,
     write_corrected_consensus_bam,
+    _stage_raw_bams,
 )
 from rectify.core.splice.calibrate_junction_overhang import OverhangTable
 from rectify.utils.genome import load_genome
@@ -1068,6 +1069,15 @@ if not valid_tsvs:
 log.info('Merging %d TSVs: %s', len(valid_tsvs), list(valid_tsvs.keys()))
 genome = load_genome(GENOME_PATH)
 
+# Stage raw BAMs to local NVMe ($L_SCRATCH / $SCRATCH) before HP scoring and BAM
+# write to avoid OAK Lustre per-process client cache cold-read overhead.  Workers
+# spawned by ProcessPoolExecutor each maintain their own Lustre cache, so without
+# staging both HP scoring and write_corrected_consensus_bam hit cold Lustre.
+import contextlib as _contextlib
+_raw_bams_str = {{a: str(p) for a, p in raw_bams.items()}} if raw_bams else {{}}
+_bam_stage_ctx = _contextlib.ExitStack()
+_staged = _bam_stage_ctx.enter_context(_stage_raw_bams(_raw_bams_str))
+
 # Prefer lazy HP-edit-distance scoring from raw BAMs + corrected TSVs. Existing
 # per-aligner corrected BAMs are still accepted for backward-compatible reruns.
 merge_corrected_tsvs(
@@ -1075,7 +1085,7 @@ merge_corrected_tsvs(
     CHUNK_OUT/'corrected_reads.tsv',
     CHUNK_OUT/'aligner_summary.tsv',
     per_aligner_corrected_bams={{a: str(p) for a, p in corrected_bams.items()}} if corrected_bams else None,
-    per_aligner_raw_bams={{a: str(p) for a, p in raw_bams.items()}} if (raw_bams and not corrected_bams) else None,
+    per_aligner_raw_bams=_staged if (raw_bams and not corrected_bams) else None,
     genome=genome,
     overhang_table=_overhang_table,
     lazy_scoring_workers=THREADS,
@@ -1091,7 +1101,7 @@ if 'winning_aligner' in merged.columns:
 # ── Step 2: build corrected consensus BAM ─────────────────────────────────
 if raw_bams:
     stats = write_corrected_consensus_bam(
-        {{a: str(p) for a, p in raw_bams.items()}},
+        _staged,
         valid_tsvs,
         CHUNK_OUT/'corrected_reads.tsv',
         CHUNK_OUT/'corrected_consensus.bam',
@@ -1129,7 +1139,7 @@ elif corrected_bams:
 if PARQUET and Path(PARQUET).exists() and raw_bams:
     try:
         from rectify.core.commands.restore_polya_command import restore_polya_softclips
-        raw_paths = {{a: str(b) for a, b in raw_bams.items()}}
+        raw_paths = _staged
         tmp_p = str(CHUNK_OUT / 'corrected_polya.unsorted.bam')
         stats = restore_polya_softclips(
             str(CHUNK_OUT/'corrected_reads.tsv'), raw_paths, PARQUET, tmp_p, threads=THREADS
@@ -1145,6 +1155,7 @@ elif PARQUET and not Path(PARQUET).exists():
 else:
     log.info('RECTIFY_PARQUET_PATH not set — skipping poly-A restore')
 
+_bam_stage_ctx.close()
 log.info('Chunk %s complete.', CHUNK)
 PYEOF
 
