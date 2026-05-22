@@ -140,14 +140,38 @@ rectify run-all \
 |----------|-------------|
 | `--filter-spikein GENE [GENE ...]` | Remove spike-in reads by gene name |
 
+### Junction scoring pass-through
+
+These flags are forwarded verbatim to `rectify correct`. See the
+[rectify correct reference](correct.md#junction-refinement-module-2h) for details.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--junction-penalty-table PATH` | (heuristic) | Empirical HP-context penalty table (`penalty_scores.tsv`) |
+| `--str-penalty-table PATH` | (none) | STR slippage penalty table (`str_penalty_scores.tsv`) |
+| `--junction-overhang-table PATH` | (none) | Empirical junction overhang table produced by `calibrate_junction_overhang.py`. Penalises aligner wins that rely on junctions lacking sufficient flanking overhang for their intron size. Short introns (<500 bp, ≥5 cross-read support) are exempt. |
+
+### BAM output options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--write-softclip-bam` | off | Write a soft-clipped corrected BAM alongside the primary hard-clipped BAM. Cat2 soft-clip rescue bases are visible in IGV with "Show soft-clipped bases" enabled. Useful for QC/debugging. |
+| `--write-polya-bam` | off | Write a BAM with the original poly(A) tail restored from the DRS trim parquet metadata as a 3' soft clip. Useful for visually validating poly(A) tail handling in IGV. Has no effect without `--drs`. |
+| `--bam-dir DIR` | (sample output dir) | Directory to write alignment BAMs (per-aligner and rectified). Useful for inspecting per-aligner BAMs separately from corrected outputs. |
+| `--keep-aligner-bams` | off | Retain per-aligner BAMs (minimap2, mapPacBio, gapmm2) after consensus selection. By default these are excluded from the Oak sync to save disk space. |
+| `--trust-existing-bams` | off | Reuse pre-existing per-aligner / rectified BAMs without checking provenance sidecars. Use only when BAMs have been manually verified as compatible. |
+| `--scratch-dir DIR` | auto | Base directory for intermediate BAM I/O (alignment output, unsorted corrected BAM, sort temp files). Auto-detected from `$SCRATCH`, `$SLURM_TMPDIR`, or `$TMPDIR` inside HPC batch jobs. |
+
 ### Performance
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--threads` | 4 | Number of threads |
+| `--threads` | 0 | Number of threads (0 = auto-detect from `SLURM_CPUS_PER_TASK` or CPU count) |
 | `--streaming` | off | Streaming mode for large BAMs |
 | `--chunk-size` | 10000 | Reads per chunk (streaming mode) |
 | `--mapPacBio-chunks` | 1 | Split FASTQ into N chunks for mapPacBio parallelism |
+| `--aligner-concurrency` | auto | Run multiple aligner corrections concurrently with a shared worker budget. `auto` disables this on small laptops and reserves 2 CPUs for merge/main-process overhead on cluster nodes. Use `1` to preserve sequential-aligner correction behavior. |
+| `--continue-on-error` | off | Continue processing remaining samples if one sample fails (multi-sample mode only). |
 
 ### HPC
 

@@ -3,6 +3,151 @@
 Two rounds of systematic codebase audits were completed 2026-04-08. All
 findings are tracked in `dev/BUGS_TO_FIX.md`. **No open bugs remaining.**
 
+---
+
+## Documentation audit — 2026-05-21
+
+**Baseline:** HEAD commit `6813bd1` (branch `drs-validation-rebuild`).
+**Method:** Cross-checked all documentation against `python -m rectify <cmd> --help` output
+(stashed WIP before each invocation), file existence checks, and grep verification.
+63 files modified / 6078 lines inserted in WIP not audited (deferred to WIP resolver).
+
+### HIGH severity
+
+**H1 — `docs/user_guide/commands/correct.md`: `--ag-threshold` range and default wrong**
+
+- Doc states: "AG-richness threshold (0–1); default 0.65"
+- Actual CLI: "AG-richness weighted score threshold for mispriming flagging (0.0–34.5; default 17.0)"
+- The threshold is a weighted composite score, not a simple [0,1] fraction.
+  Users reading the docs who set `--ag-threshold 0.5` would be supplying a value
+  far below the noise floor and flag almost nothing.
+
+**H2 — `docs/user_guide/commands/correct.md`: Entire "Junction refinement" section absent**
+
+The following eight flags exist in `rectify correct` (Module 2H, post-consensus N-op
+refinement) and are not documented in `correct.md`:
+
+| Flag | Default |
+|------|---------|
+| `--aligner-bams BAM` | (repeatable; enables Module 2H) |
+| `--junction-hp-pen FLOAT` | 0.25 |
+| `--junction-search-radius BP` | 5000 |
+| `--junction-window BP` | 15 |
+| `--junction-max-slide BP` | 10 |
+| `--junction-max-boundary-shift BP` | 50 |
+| `--junction-penalty-table PATH` | (empirical HP costs) |
+| `--str-penalty-table PATH` | (empirical STR costs) |
+
+Module 2H is the primary mechanism for correcting off-by-a-few-bp junction boundaries
+and is the only user-configurable path for empirical penalty tables. Having no `correct.md`
+entry makes these flags effectively invisible outside `--help`.
+
+**H3 — `docs/user_guide/commands/correct.md`: "Resume / sidecar" and other operational flags absent**
+
+The following flags exist in `rectify correct` but have no `correct.md` entry:
+
+| Flag group | Flags |
+|------------|-------|
+| Checkpoint/resume | `--checkpoint-dir DIR`, `--tmp-dir DIR`, `--variant-scan-cache PKL`, `--junction-pool-cache PKL` |
+| Force/sidecar | `--force-all`, `--force-stage NAME[,NAME...]`, `--accept-prior-provenance`, `--dry-run-resume` |
+| Output | `--emit-merged-tsv`, `--legacy-single-threaded` (DEPRECATED) |
+
+These are operational flags most users will need when running `rectify correct` in HPC batch
+pipelines. `--checkpoint-dir` in particular is critical for long streaming runs (>10 GB BAMs).
+
+### MEDIUM severity
+
+**M1 — `docs/user_guide/commands/run.md`: ~11 new flags absent**
+
+The following flags exist in `rectify run-all` but are not in `run.md`:
+
+| Flag | Description |
+|------|-------------|
+| `--aligner-concurrency {auto,1,N}` | Parallel-aligner correction worker budget |
+| `--junction-overhang-table PATH` | Empirical overhang filter (v3.3.0 feature) |
+| `--write-softclip-bam` | Write soft-clipped corrected BAM alongside primary |
+| `--write-polya-bam` | Write poly(A)-restored BAM for IGV validation |
+| `--trust-existing-bams` | Reuse pre-existing BAMs without sidecar check |
+| `--bam-dir DIR` | Redirect alignment BAM output directory |
+| `--keep-aligner-bams` | Retain per-aligner BAMs after consensus selection |
+| `--scratch-dir DIR` | HPC scratch for intermediate BAM I/O |
+| `--continue-on-error` | Continue remaining samples if one fails |
+| `--junction-penalty-table PATH` | Pass-through to `rectify correct` |
+| `--str-penalty-table PATH` | Pass-through to `rectify correct` |
+
+**M2 — `docs/user_guide/commands/correct.md` L72: deprecated alias `--no-polya-sequenced` incorrectly attributed**
+
+`correct.md` states: *"deprecated aliases retained for backwards compatibility:
+`--polya-sequenced` / `--no-polya-sequenced`"*
+
+Verified in source: `--polya-sequenced` exists in `correct_command.py` (line 1370).
+`--no-polya-sequenced` does **not** exist in `correct_command.py` — it is in
+`run_command.py` only (line 413). The `correct.md` entry overstates the alias
+coverage for this subcommand.
+
+**M3 — `docs/ALIGNER_RECOMMENDATIONS.md`: Dead internal link (×2)**
+
+Lines 72 and 172 both reference `docs/desalt_crash_investigation_handoff.md`.
+That file does not exist. Verified with `ls docs/ | grep desalt` → no output.
+The link should either be removed, replaced with a pointer to the relevant
+`AGENT_FIXES.md` entry, or the handoff doc should be created.
+
+**M4 — `docs/user_guide/commands/consensus.md`: `--no-bedgraph` flag absent**
+
+`rectify consensus --help` includes `--no-bedgraph` (skips bedGraph/bigWig
+generation post-consensus). Not documented in `consensus.md`.
+
+### LOW severity
+
+**L1 — `docs/user_guide/commands/run.md` L147: `--threads` default says "4"**
+
+- Doc: "default 4"
+- Actual CLI: "0 (auto-detect from SLURM_CPUS_PER_TASK or CPU count)"
+
+**L2 — Memory index `reference_rectify_5aligner_status.md` is stale**
+
+Entry says `docs/ALIGNER_RECOMMENDATIONS.md` "is stale (says SIGSEGV — needs update)".
+The file was updated 2026-05-19 and now correctly documents the SIGSEGV as a resolved
+historical issue with the vendored binary. Memory entry should be updated to reflect
+that the doc is current.
+
+### Confirmed current
+
+The following were checked and found accurate against HEAD:
+
+| Document | Status |
+|----------|--------|
+| `docs/ALIGNER_RECOMMENDATIONS.md` | Current (updated 2026-05-19; SIGSEGV documented as resolved) |
+| `docs/algorithms/overview.md` | Current; Module 2H described; HP penalty calibration accurate |
+| `docs/ARCHITECTURE.md` | Current; DRS Steps 0–5, cDNA pipeline, consensus scoring all match code |
+| `docs/quickstart.md` | Current; all example commands use valid flags |
+| `docs/index.md` | Current; `mapPacBio (BBMap)` label is correct (`mapPacBio.sh` is from BBMap/BBTools) |
+| `docs/user_guide/commands/split.md` | Current; `--junction-overhang-table` documented |
+| `docs/user_guide/commands/consensus.md` | Mostly current; `--read-num-sidecar` and `--chimeric` documented |
+| `CHANGELOG.md` | Current for 0.9.0 public release |
+| `docs/user_guide/output_formats.md` | Current; columns match `corrected_3ends.tsv` schema |
+| `docs/user_guide/commands/run.md` | Mostly current; pipeline steps, DRS workflow, manifest format accurate |
+
+### Recommended actions (priority order)
+
+1. **Fix `--ag-threshold` range and default in `correct.md`** (H1) — one-line edit, high
+   user-facing impact.
+2. **Add "Junction refinement" section to `correct.md`** (H2) — Module 2H is production-grade
+   for yeast DRS runs; currently invisible to docs readers.
+3. **Add "Checkpoint / resume / sidecar" section to `correct.md`** (H3) — required knowledge
+   for any HPC deployment.
+4. **Update `run.md` with 11 missing flags** (M1) — `--aligner-concurrency` and
+   `--junction-overhang-table` in particular affect production run quality.
+5. **Fix deprecated-alias attribution in `correct.md`** (M2) — remove `--no-polya-sequenced`
+   from the `correct` entry.
+6. **Resolve dead link to `desalt_crash_investigation_handoff.md`** (M3) — either create
+   the stub file or change the reference.
+7. **Add `--no-bedgraph` to `consensus.md`** (M4) — minor but complete.
+8. **Fix `--threads` default in `run.md`** (L1) — trivial.
+9. **Update memory entry `reference_rectify_5aligner_status.md`** (L2) — stale agent context.
+
+---
+
 This file collects per-version notes for changes prior to the 0.9.0
 public release. New entries should go in `CHANGELOG.md`; this file is
 for historical reference only.

@@ -66,6 +66,8 @@ rectify consensus \
 | `--prefix` | No | Output file prefix (default: derived from first BAM name) |
 | `--annotation` | No | Gene annotation GFF/GTF for junction scoring |
 | `--chimeric` | No | Use chimeric CIGAR assembly (experimental) |
+| `--read-num-sidecar PATH` | No | Path to `<sample>.read_num_sidecar.parquet` from `rectify split`. If omitted, RECTIFY looks beside the input BAMs for a matching sidecar. |
+| `--no-bedgraph` | No | Skip bedGraph/bigWig generation after consensus selection. By default, strand-specific 3' and 5' end coverage files are written from `corrected_reads.tsv` if present in the output directory. |
 | `--verbose` | No | Verbose logging |
 
 ---

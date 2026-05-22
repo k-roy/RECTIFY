@@ -69,8 +69,7 @@ Two chunks hit SIGSEGV with the conda binary during set2 re-alignment (May 2026)
 
 Both triggered the empty-BAM fallback; those chunks use 4-aligner consensus in the
 correction step. The crash is non-monotonic and read-composition dependent (not purely a
-read-count threshold). See `docs/desalt_crash_investigation_handoff.md` for investigation
-notes and reproduction approach.
+read-count threshold). See `AGENT_FIXES.md` for any follow-up investigation notes on residual SIGSEGV occurrences.
 
 **Background (pre-2026-03-10):**
 The vendored binary at `rectify/data/bin/linux_x86_64/deSALT` (v1.5.6) produced SIGSEGV
