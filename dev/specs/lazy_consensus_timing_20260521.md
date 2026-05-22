@@ -131,3 +131,89 @@ Next optimization targets:
 1. Make UpSet plot generation opt-in (saves ~6–38 s of merge overhead)
 2. Profile `merge_corrected_tsvs` internals (TSV pandas load + merge join) to find the true hotspot
 3. Parallelize BAM write (currently 136.6 s single-threaded; this is the clearest win)
+
+---
+
+## Phase E — production-representative timing + Lustre I/O diagnosis
+
+**Date:** 2026-05-22  
+**Job:** 25709013 (`sh04-11n19`, 8 CPUs)  
+**Config:** `lazy_scoring_workers=3` (production default), BAM write `threads=8`  
+**Script:** `scripts/timing/phase_e_parallel_timing_20260522.sh`
+
+### (a) Full lazy path — workers=3
+
+| Stage      | Phase E (workers=3) | Phase D (workers=1) | Delta |
+|------------|---------------------|---------------------|-------|
+| Merge      | 223.5 s             | 355.6 s             | −132 s (−37%) |
+| BAM write  | 146.2 s             | 136.6 s             | +9.6 s (within node variance) |
+| **Total**  | **369.8 s**         | **492.2 s**         | **−122 s (−25%)** |
+| Peak RSS   | 288 MB              | 285 MB              | — |
+
+Workers=3 (production config) saves 122 s vs the workers=1 benchmarks used in Phase C/D.
+The Phase C/D benchmarks were **not** measuring production behavior.
+
+### (b) BAM write sub-step breakdown — warm-cache second pass
+
+| Sub-step         | Wall (s) |
+|------------------|----------|
+| Merged TSV load  | 0.05 |
+| Dict build       | 0.02 |
+| Correction tables| 0.21 |
+| Unsorted write   | 13.68 (15,654 reads) |
+| pysam.sort -@8   | 0.13 |
+| pysam.index      | 0.06 |
+| **Total (warm)**  | **14.14** |
+
+Per-aligner unsorted write:
+
+| Aligner   | Wall (s) | Writes | µs/write |
+|-----------|----------|--------|----------|
+| minimap2  | 2.18     | 1,000  | 2,175    |
+| mapPacBio | 5.33     | 4,298  | 1,240    |
+| gapmm2    | 6.17     | 10,356 | 596      |
+
+**Critical finding:** cold BAM write (section a) = 146.2 s; warm BAM write (section b) = 14.1 s.
+The CPU work is ~14 s. The remaining ~132 s is entirely OAK Lustre cold-read latency.
+
+### (c) cProfile top findings — warm-cache third pass (92 s total)
+
+```
+merge_corrected_tsvs:           67.3 s cumulative
+  ProcessPool shutdown overhead:  22.6 s  (queue drain after last worker returns)
+  actual useful work:            ~45 s
+write_corrected_consensus_bam:  24.8 s cumulative
+```
+
+Warm-cache HP scoring times (workers=3, all concurrent):
+- minimap2: 14 s, gapmm2: 20 s, mapPacBio: 22 s → wall **22 s**
+
+vs cold-cache HP scoring (section a, workers=3): wall **159 s** — a **7.2× Lustre penalty**.
+
+### Root cause: OAK Lustre per-process client cache
+
+`ProcessPoolExecutor` workers each maintain their own Lustre client cache. When workers read
+BAM files for HP scoring, that data is cached only in each worker's client. When the main
+process reads the same BAMs for `write_corrected_consensus_bam`, it hits cold Lustre again.
+The same cross-process cache miss explains the 9× overhead seen in Phase D's in-merge vs
+isolated HP scoring comparison.
+
+### Production budget with warm NVMe cache (extrapolated)
+
+| Stage                          | Cold Lustre (current) | Warm NVMe (estimate) |
+|--------------------------------|-----------------------|----------------------|
+| Prefilter (TSV pandas load)    | ~22 s                 | ~5 s                 |
+| HP scoring (workers=3)         | 159 s                 | 22 s                 |
+| ProcessPool shutdown           | 22 s                  | 22 s                 |
+| Post-scoring merge + UpSet     | ~20 s                 | ~20 s                |
+| **Merge total**                | **223 s**             | **~69 s**            |
+| BAM write (unsorted + sort)    | 146 s                 | ~14 s                |
+| **Grand total**                | **369 s**             | **~83 s**            |
+
+### Priority optimization targets
+
+1. **Stage raw BAMs to `$SCRATCH` NVMe before merge** — eliminates ~265 s of Lustre cold I/O;
+   expected total ~83–100 s. Implement as a pre-copy step in `split_command.py` chunk merge body.
+2. **Fix ProcessPool shutdown overhead (22 s)** — reuse the `ProcessPoolExecutor` across calls
+   or drain the result queue before `__exit__`; saves ~22 s per chunk merge.
+3. ~~Make UpSet plot opt-in~~ — low priority; UpSet takes ~3–20 s, dominated by above two issues.
