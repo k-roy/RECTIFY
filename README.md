@@ -12,7 +12,7 @@
   </p>
 </p>
 
-Off-the-shelf aligners misplace the ends of poly(A)-RNA reads: 5' soft-clips that actually match an upstream exon, splice junctions that drift in homopolymer runs, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site. **RECTIFY corrects each of these in one pass** so the bases at the read ends mean what biology says they should — 5' end → transcription start, N-cigar op → splice junction, 3' end → cleavage and polyadenylation.
+Off-the-shelf aligners misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass** so the bases at the read ends mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site. To address the inherent ambiguity of CPA sites within A-tracts, RECTIFY shifts all 3' ends to the first non-A residue.
 
 One pipeline, three input chemistries.
 
@@ -31,7 +31,7 @@ One pipeline, three input chemistries.
 | 3' end side of read   | right                  | right (`fwd`) / left (`rev`)                | left                       |
 | Gene strand vs BAM    | matches                | matches (`fwd`) / inverted (`rev`)          | **inverted (antisense)**   |
 
-Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** reverse-complement antisense reads. About half come out as `orient=fwd` (SSP+UMI at basecalled 5′, poly-A at 3′ — same layout as DRS) and half as `orient=rev` (SSP_RC+UMI_RC at basecalled 3′, poly-T at 5′ — mirror layout). `rectify correct-cdna` normalises both via its `orient` parameter so all downstream stages see a single canonical orientation per read. All three chemistries converge at the multi-aligner and correction stages.
+Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** reverse-complement antisense reads. About half come out as `orient=fwd` (SSP+UMI at basecalled 5′, poly-A at 3′ — same layout as DRS) and half as `orient=rev` (SSP_RC+UMI_RC at basecalled 3′, poly-T at 5′ — mirror layout). `rectify correct-cdna` normalises both so all downstream stages see a single canonical orientation per read. All three chemistries converge at the multi-aligner and correction stages.
 
 ---
 
@@ -39,7 +39,7 @@ Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** revers
 
 ### (a) Per-protocol pre-process
 
-Each chemistry buries the mRNA body under different junk — basecalled poly(A), template-switching primers, UMIs, adapter stubs. Pre-processing isolates the mRNA body so every downstream step sees the same kind of input.
+Nanopore reads carry non-genomic sequence — basecalled poly(A), template-switching primers, UMIs, adapter stubs — that causes aligners to misplace the exact 5' and 3' ends. Pre-processing strips this material so every downstream step sees a clean mRNA body.
 
 | Protocol     | Step                    | What it does |
 |---           |---                      |---           |
@@ -54,7 +54,7 @@ Each chemistry buries the mRNA body under different junk — basecalled poly(A),
 
 ### (b) Multi-aligner (parallel) + junction pool
 
-`rectify align` runs **minimap2 + mapPacBio + gapmm2** in parallel for long reads, or **bbmap + bwa** for short reads (`--short-read`). **Each aligner produces its own BAM** — its own junction set, its own soft-clips, its own end positions. Junctions observed across all aligner BAMs are then unioned with the annotated splice database to form a shared **junction pool** that the correction step uses to rescue partial alignments.
+`rectify align` runs **minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT** in parallel for long reads, or **bbmap + bwa** for short reads (`--short-read`). Aligners disagree on junctions within reads for several reasons — inherent ambiguity at homopolymer donor/acceptor sites, differing gap-open penalties, different handling of soft-clips — so running them in parallel gives RECTIFY a panel of candidate alignments per read to reconcile. **Each aligner produces its own BAM** with its own junction set; junctions observed across all BAMs are unioned with the annotated splice database to form a shared **junction pool** that the correction step uses to rescue partial alignments.
 
 <p align="center">
   <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-aligner pipeline" width="720">
@@ -88,7 +88,7 @@ Each N-cigar op is refined against the **junction pool** (annotated + observed-a
 </p>
 
 #### 3' ends — read-vs-reference walkback
-Pre-trim in (a) **always trims up to the first non-A** at the read's 3' end. The trimmed read therefore ends in a non-A — which is often a **basecalling error** (e.g. a T over a genomic A-tract). Walkback scans inward from there, walking past every A=A pair *and* every mismatch (case 3) until it stops at the first non-A base where read matches reference (case 1). This is the algorithmic heart of RECTIFY: it catches **internal priming** at genomic A-tracts (read's own poly(A) tail aligned over genomic A's) AND **terminal seq errors** in one pass.
+Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This is the algorithmic heart of RECTIFY: it catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA site. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
 
 <p align="center">
   <img src="docs/figures/walkback_readvsref.png" alt="Read-vs-reference walkback" width="680">
@@ -102,7 +102,7 @@ See [docs/EMPIRICAL_HP_PENALTY_SCORING.md](docs/EMPIRICAL_HP_PENALTY_SCORING.md)
 
 ### (e) Consensus → rectified BAM
 
-Now that every aligner's output has been independently rescued and scored on the same scale, the consensus step picks the **best CORRECTED alignment per read** by priority (5' rescued → confidence → 3' agreement → span → junction count). Optional chimeric reconstruction stitches complementary junction sets across aligners to recover junctions no single aligner produced on its own. Output: one BAM where every record reflects the strongest of the three corrected alternatives.
+Now that every aligner's output has been independently rescued and scored on the same scale, the consensus step picks the **best corrected alignment per read** by priority (5' rescued → confidence → 3' agreement → span → junction count). Optional chimeric reconstruction stitches complementary junction sets across aligners to recover junctions no single aligner produced on its own. Output: one BAM where every record has been independently rescued, scored, and reconciled across the full aligner panel.
 
 ---
 

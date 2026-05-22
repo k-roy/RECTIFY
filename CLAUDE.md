@@ -17,7 +17,7 @@ Per-topic deep-dives live in `docs/` — fetch on demand, don't preload.
 | Empirical penalty tables (`--junction-penalty-table`) quick reference | `docs/penalty_tables_quickref.md` |
 | Empirical penalty tables — algorithm + design rationale | `docs/EMPIRICAL_HP_PENALTY_SCORING.md` |
 | Per-read validation plotting (junction zoom, pA-rest, HTML reports) | `scripts/validation_data/PLOTTING.md` |
-| Pre-public version history (v2.x / v3.x — internal) | `docs/audit_history.md` |
+| Pre-public version history (v2.x / v3.x — internal) | `dev/audits/audit_history.md` |
 | Current session handoff (open bugs, in-flight design) | `HANDOFF.md` |
 | Algorithm walk-throughs (per-module) | `docs/algorithms/*.md` |
 | Validation read bundle layout + per-read expectations | `rectify/data/validation/VALIDATION_READS.md` |
@@ -143,7 +143,7 @@ rectify/
 │   │   ├── genomes/saccharomyces_cerevisiae/penalty_tables/   # bundled DRS penalty tables
 │   │   ├── validation/                # bundled validation reads + TSVs + per-aligner BAMs
 │   │   └── bin/linux_x86_64/deSALT    # vendored deSALT binary
-│   └── visualize/                     # Plotting (PLOT_SKILLS.md)
+│   └── visualize/                     # Plotting (dev/PLOT_SKILLS.md)
 ├── scripts/validation_data/           # Per-read renderer + report generator (PLOTTING.md)
 ├── tests/
 ├── docs/                              # Algorithm + architecture documents
@@ -172,7 +172,7 @@ JUNC_BED   = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed'
 - **Default branch**: `master` (not `main`).
 - **Pre-1.0**: `0.9.0` is the first public release. Don't reference 2.x
   or 3.x in user-facing docs — those were internal pre-public; see
-  `docs/audit_history.md` for the history.
+  `dev/audits/audit_history.md` for the history.
 - **Test suite**: `pytest -m "not slow"` runs in ~1 minute, covers
   ~934 tests + 28 skipped + 4 deselected. The `slow` marker covers
   cDNA-pipeline smoke and chain canary (~5 min each).
