@@ -26,6 +26,8 @@ Author: Kevin R. Roy
 License: MIT
 """
 
+import os as _os
+
 __version__ = "0.9.0"
 __author__ = "Kevin R. Roy"
 __email__ = "kevinrjroy@gmail.com"
@@ -33,11 +35,17 @@ __email__ = "kevinrjroy@gmail.com"
 from . import core, utils, slurm
 from .slurm import get_available_cpus, set_thread_limits, is_slurm_job
 
-# Conditionally import visualize module if matplotlib is available
-try:
-    from . import visualize
-    _VISUALIZE_AVAILABLE = True
-except ImportError:
+# Visualization is intentionally lazy. Importing ``rectify`` happens in CLI,
+# worker, and test startup paths where optional plotting stacks must not run
+# before thread limits are set. Users can still import ``rectify.visualize``
+# directly, or opt into the legacy eager probe with RECTIFY_IMPORT_VISUALIZE=1.
+if _os.environ.get('RECTIFY_IMPORT_VISUALIZE') == '1':
+    try:
+        from . import visualize
+        _VISUALIZE_AVAILABLE = True
+    except ImportError:
+        _VISUALIZE_AVAILABLE = False
+else:
     _VISUALIZE_AVAILABLE = False
 
 __all__ = [

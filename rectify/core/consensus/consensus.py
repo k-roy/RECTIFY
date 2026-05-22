@@ -54,6 +54,7 @@ import logging
 import os
 import hashlib
 import re
+import shutil
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -95,6 +96,79 @@ __all__ = [
     'merge_slurm_array_bams',
     'load_annotated_junctions',
 ]
+
+
+def _fsync_parent_dir(path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(path)) or '.'
+    try:
+        fd = os.open(parent, os.O_RDONLY)
+    except OSError as exc:
+        logger.debug("Could not open parent directory for fsync: %s (%s)", parent, exc)
+        return
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        logger.debug("Could not fsync parent directory: %s (%s)", parent, exc)
+    finally:
+        os.close(fd)
+
+
+def _fsync_file(path: str) -> None:
+    with open(path, 'rb') as fh:
+        os.fsync(fh.fileno())
+
+
+def _atomic_write_text(path: str, text: str = '') -> None:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, 'w') as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+    _fsync_parent_dir(path)
+
+
+def _copy2_and_fsync(src: str, dst: str) -> None:
+    shutil.copy2(src, dst)
+    _fsync_file(dst)
+    _fsync_parent_dir(dst)
+
+
+def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
+    try:
+        pysam.quickcheck(path)
+    except Exception as exc:
+        raise RuntimeError(f"BAM quickcheck failed for checkpoint batch {path}: {exc}") from exc
+
+    mismatch_count = 0
+    try:
+        with pysam.AlignmentFile(path, 'rb') as bam:
+            for i, read in enumerate(bam.fetch(until_eof=True)):
+                if i >= max_records:
+                    break
+                if read.query_sequence is None or read.cigartuples is None:
+                    continue
+                query_ops = {0, 1, 4, 7, 8}  # M I S = X
+                cigar_query_span = sum(length for op, length in read.cigartuples if op in query_ops)
+                if cigar_query_span != len(read.query_sequence):
+                    mismatch_count += 1
+    except Exception as exc:
+        raise RuntimeError(f"Could not read checkpoint batch BAM {path}: {exc}") from exc
+
+    if mismatch_count:
+        raise RuntimeError(
+            f"Checkpoint batch validation failed for {path}: "
+            f"{mismatch_count}/{max_records} sampled reads have CIGAR/sequence length mismatches"
+        )
+
+
+def _commit_checkpoint_batch(bam_path: str, done_path: str) -> None:
+    if not os.path.exists(bam_path):
+        raise FileNotFoundError(f"Checkpoint batch BAM does not exist: {bam_path}")
+    _fsync_file(bam_path)
+    _fsync_parent_dir(bam_path)
+    _validate_bam_sample(bam_path)
+    _atomic_write_text(done_path, 'ok\n')
 
 
 def _ensure_name_sorted(bam_path: str) -> str:
@@ -763,17 +837,38 @@ def run_consensus_selection(
             _json.dump(ckpt, _f, indent=2)
 
     if checkpoint_dir:
-        import glob as _glob, json as _json_ckpt
+        import json as _json_ckpt
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        # Collect completed batches from a previous (interrupted) run
-        _done_files = sorted(_glob.glob(
-            os.path.join(checkpoint_dir, 'consensus_batch_*.done')
-        ))
-        for _df in _done_files:
-            _bam_f = _df.replace('.done', '.bam')
-            if os.path.exists(_bam_f):
-                _batch_bam_paths.append(_bam_f)
+        # Collect only the contiguous valid prefix from a previous run. Skipping
+        # input reads by count is only safe when batch N implies all batches < N.
+        _resume_batch_idx = 0
+        while True:
+            _bam_f = os.path.join(
+                checkpoint_dir, f'consensus_batch_{_resume_batch_idx:06d}.bam'
+            )
+            _done_f = os.path.join(
+                checkpoint_dir, f'consensus_batch_{_resume_batch_idx:06d}.done'
+            )
+            if not os.path.exists(_done_f):
+                break
+            if not os.path.exists(_bam_f):
+                logger.warning(
+                    "Ignoring consensus checkpoint from batch %d onward: done marker exists "
+                    "without BAM (%s)",
+                    _resume_batch_idx, _done_f,
+                )
+                break
+            try:
+                _validate_bam_sample(_bam_f)
+            except Exception as exc:
+                logger.warning(
+                    "Ignoring consensus checkpoint from batch %d onward: invalid batch %s (%s)",
+                    _resume_batch_idx, _bam_f, exc,
+                )
+                break
+            _batch_bam_paths.append(_bam_f)
+            _resume_batch_idx += 1
         _ckpt_batch_num = len(_batch_bam_paths)
 
         # Restore stats from checkpoint JSON if present
@@ -878,7 +973,7 @@ def run_consensus_selection(
                     _sentinel = os.path.join(
                         checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.done'
                     )
-                    open(_sentinel, 'w').close()
+                    _commit_checkpoint_batch(_cur_batch_path, _sentinel)
                     _batch_bam_paths.append(_cur_batch_path)
                     _ckpt_batch_num += 1
                     out_bam = None  # will be lazily opened for next batch
@@ -910,7 +1005,7 @@ def run_consensus_selection(
                 _sentinel = os.path.join(
                     checkpoint_dir, f'consensus_batch_{_ckpt_batch_num:06d}.done'
                 )
-                open(_sentinel, 'w').close()
+                _commit_checkpoint_batch(_cur_batch_path, _sentinel)
                 _batch_bam_paths.append(_cur_batch_path)
                 _ckpt_batch_num += 1
                 out_bam = None
@@ -947,7 +1042,6 @@ def run_consensus_selection(
         #    then copy the final sorted BAM to output_bam (Oak).
         #    This avoids pysam.sort writing directly to Oak NFS which can hang
         #    under concurrent array-job I/O load.
-        import shutil as _shutil_sort
         _merged_path = os.path.join(checkpoint_dir, 'consensus_merged.bam')
         _sorted_path = os.path.join(checkpoint_dir, 'consensus_sorted.bam')
 
@@ -969,10 +1063,10 @@ def run_consensus_selection(
         pysam.index(_sorted_path)
 
         # Copy sorted BAM + index to Oak output path
-        _shutil_sort.copy2(_sorted_path, output_bam)
+        _copy2_and_fsync(_sorted_path, output_bam)
         _bai_src = _sorted_path + '.bai'
         if os.path.exists(_bai_src):
-            _shutil_sort.copy2(_bai_src, output_bam + '.bai')
+            _copy2_and_fsync(_bai_src, output_bam + '.bai')
 
         # Clean up scratch sort files
         for _p in (_sorted_path, _bai_src):

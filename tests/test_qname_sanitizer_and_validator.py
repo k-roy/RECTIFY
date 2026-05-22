@@ -186,6 +186,16 @@ class TestValidatePostAlignmentQnames:
         _write_bam(bam, ['uuid-1', 'uuid-2'])
         validate_post_alignment_qnames(str(bam), str(fq), 'test-aligner')
 
+    def test_coordinate_sorted_bam_sample_can_match_late_fastq_records(self, tmp_path: Path):
+        fq = tmp_path / 'reads.fastq'
+        bam = tmp_path / 'aln.bam'
+        _write_fastq(fq, [(f'uuid-{i} runid=abc', 'ACGT', 'IIII')
+                          for i in range(100)])
+        _write_bam(bam, [f'uuid-{i}' for i in range(80, 85)])
+        validate_post_alignment_qnames(
+            str(bam), str(fq), 'test-aligner', sample_size=5,
+        )
+
     def test_auto_sanitize_repairs_whitespace(self, tmp_path: Path):
         # Default behavior: detect whitespace, repair in place, re-validate.
         fq = tmp_path / 'reads.fastq'

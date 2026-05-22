@@ -48,8 +48,35 @@ from ..analyze.deseq2 import extract_condition_from_sample
 from ..analyze.loaders import load_corrected_positions, load_annotation
 from ..analyze.exclusions import _detect_exclusion_regions
 from ..analyze.bedgraph import generate_bedgraphs
-from ..analyze.manifest import _run_analyze_manifest
+from ..analyze.manifest import _run_analyze_manifest, _build_cluster_gene_attribution_table
 from ...utils.provenance import init_provenance
+
+
+def _make_cluster_lookup(clusters_df):
+    try:
+        from intervaltree import IntervalTree
+        trees = {}
+        for _, row in clusters_df.iterrows():
+            key = (row['chrom'], row['strand'])
+            trees.setdefault(key, IntervalTree())[row['start']:row['end'] + 1] = row['cluster_id']
+
+        def lookup(chrom, strand, pos):
+            hits = trees.get((chrom, strand), IntervalTree())[pos]
+            return hits.pop().data if hits else None
+        return lookup
+    except ImportError:
+        lists = {}
+        for _, row in clusters_df.iterrows():
+            lists.setdefault((row['chrom'], row['strand']), []).append(
+                (row['start'], row['end'], row['cluster_id'])
+            )
+
+        def lookup(chrom, strand, pos):
+            for start, end, cid in lists.get((chrom, strand), []):
+                if start <= pos <= end:
+                    return cid
+            return None
+        return lookup
 
 
 def run_analyze(args: argparse.Namespace) -> int:
@@ -131,7 +158,7 @@ def run_analyze(args: argparse.Namespace) -> int:
                 region_mask = (
                     (positions_df['chrom'] == chrom) &
                     (positions_df['corrected_position'] >= start) &
-                    (positions_df['corrected_position'] <= end)
+                    (positions_df['corrected_position'] < end)
                 )
                 rdna_mask = rdna_mask | region_mask
 
@@ -155,6 +182,9 @@ def run_analyze(args: argparse.Namespace) -> int:
     if 'count' in positions_df.columns and not count_col:
         count_col = 'count'
         print(f"  Using pre-aggregated counts")
+    elif 'fraction' in positions_df.columns and not count_col:
+        count_col = 'fraction'
+        print(f"  Using fractional assignment weights")
 
     # Generate bedgraphs (default: enabled, unless --no-bedgraph)
     if not getattr(args, 'no_bedgraph', False):
@@ -225,7 +255,11 @@ def run_analyze(args: argparse.Namespace) -> int:
             print(f"  Warning: 5' end distribution analysis failed: {e}")
 
     # Form clusters
-    fraction_col = 'fraction' if 'fraction' in positions_df.columns else None
+    fraction_col = (
+        'fraction'
+        if 'fraction' in positions_df.columns and count_col != 'fraction'
+        else None
+    )
     _max_radius = getattr(args, 'max_cluster_radius', 10)
     _min_peak_sep = getattr(args, 'min_peak_sep', 5)
     _min_cluster_samples = getattr(args, 'min_cluster_samples', 2)
@@ -248,10 +282,7 @@ def run_analyze(args: argparse.Namespace) -> int:
         n_annotated = clusters_df['gene_id'].notna().sum()
         print(f"  Annotated {n_annotated:,} clusters ({100*n_annotated/len(clusters_df):.1f}%)")
 
-    # Save clusters
     clusters_path = output_dir / 'cpa_clusters.tsv'
-    clusters_df.to_csv(clusters_path, sep='\t', index=False)
-    print(f"  Saved clusters to {clusters_path}")
 
     # 5' end (TSS) clustering — mirrors CPA clustering but on five_prime_position
     # with a wider window (75 bp) to account for DRS 5'-end noisiness.
@@ -298,15 +329,55 @@ def run_analyze(args: argparse.Namespace) -> int:
         count_col=count_col,
         fraction_col=fraction_col,
     )
+    if _min_cluster_samples > 1 and not count_matrix.empty:
+        _sample_counts = (count_matrix > 0).sum(axis=1)
+        _keep_cluster_ids = set(_sample_counts[_sample_counts >= _min_cluster_samples].index)
+        _n_before = len(clusters_df)
+        clusters_df = clusters_df[clusters_df['cluster_id'].isin(_keep_cluster_ids)].copy()
+        count_matrix = count_matrix.loc[
+            [cid for cid in count_matrix.index if cid in _keep_cluster_ids]
+        ]
+        print(f"  Kept {len(clusters_df):,}/{_n_before:,} clusters present in >= {_min_cluster_samples} samples")
     print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
+
+    sample_names = count_matrix.columns.tolist()
+    lookup = _make_cluster_lookup(clusters_df)
+    cluster_gene_attributions = None
+    try:
+        _samples_for_attr = [{'sample_id': 'input', 'path': args.input}]
+        clusters_df, cluster_gene_attributions = _build_cluster_gene_attribution_table(
+            args,
+            samples=_samples_for_attr,
+            clusters_df=clusters_df,
+            lookup=lookup,
+            annotation_df=annotation_df,
+            chrom_format=getattr(args, 'chrom_format', 'passthrough'),
+        )
+        attr_path = output_dir / 'cluster_gene_attributions.tsv'
+        cluster_gene_attributions.to_csv(attr_path, sep='\t', index=False)
+        n_attr_clusters = cluster_gene_attributions['cluster_id'].nunique() if not cluster_gene_attributions.empty else 0
+        n_attr_genes = cluster_gene_attributions['gene_id'].nunique() if not cluster_gene_attributions.empty else 0
+        print(
+            f"  Cluster gene attributions: {len(cluster_gene_attributions):,} rows, "
+            f"{n_attr_clusters:,} clusters, {n_attr_genes:,} genes → {attr_path}"
+        )
+    except Exception as _attr_exc:
+        mode = getattr(args, 'gene_attribution_mode', 'annotation')
+        if mode not in {'annotation', 'none'}:
+            print(f"ERROR: cluster gene attribution failed for mode '{mode}': {_attr_exc}", flush=True)
+            return 1
+        print(f"  WARNING: cluster gene attribution failed: {_attr_exc}")
+        cluster_gene_attributions = None
+
+    # Save clusters after cross-sample filters are applied.
+    clusters_df.to_csv(clusters_path, sep='\t', index=False)
+    print(f"  Saved clusters to {clusters_path}")
 
     # Save count matrix
     counts_path = output_dir / 'cluster_counts.tsv'
     count_matrix.to_csv(counts_path, sep='\t')
 
     # Create sample metadata
-    sample_names = count_matrix.columns.tolist()
-
     if args.reference:
         reference_condition = args.reference.lower()
     else:
@@ -411,6 +482,7 @@ def run_analyze(args: argparse.Namespace) -> int:
                 clusters_df,
                 sample_metadata,
                 reference_condition,
+                cluster_gene_attributions=cluster_gene_attributions,
                 n_cpus=args.threads,
             )
             for condition, result_df in deseq2_gene_results.items():
@@ -459,6 +531,9 @@ def run_analyze(args: argparse.Namespace) -> int:
         _sys2common = {}
         if 'gene_id' in clusters_df.columns and 'gene_name' in clusters_df.columns:
             for _, _r in clusters_df[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
+                _sys2common[_r['gene_id']] = _r['gene_name']
+        if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+            for _, _r in cluster_gene_attributions[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
                 _sys2common[_r['gene_id']] = _r['gene_name']
 
         def _to_common_names(genes):
@@ -539,6 +614,7 @@ def run_analyze(args: argparse.Namespace) -> int:
                 reference_condition,
                 condition,
                 sample_metadata,
+                cluster_gene_attributions=cluster_gene_attributions,
             )
 
             if not shift_df.empty:
@@ -572,7 +648,10 @@ def run_analyze(args: argparse.Namespace) -> int:
     # Generate summary
     print(f"\n[Summary] Generating report...")
 
-    n_genes = clusters_df['gene_id'].nunique() if 'gene_id' in clusters_df.columns else 0
+    if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+        n_genes = cluster_gene_attributions['gene_id'].nunique()
+    else:
+        n_genes = clusters_df['gene_id'].nunique() if 'gene_id' in clusters_df.columns else 0
 
     summary_df = generate_analysis_summary(
         n_samples=len(sample_names),
@@ -742,6 +821,58 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         type=int,
         default=50,
         help='Window downstream of CPA for motif discovery (default: 50bp)',
+    )
+
+    parser.add_argument(
+        '--gene-attribution-mode',
+        choices=[
+            'annotation',
+            'none',
+            'body',
+            'body-then-annotation',
+            'reference',
+            'reference-then-annotation',
+        ],
+        default='annotation',
+        help='How CPA clusters are assigned to genes for gene-level DESeq2 and shift analysis. '
+             'annotation keeps the legacy nearest-TES rule. body uses read-body overlap from '
+             'corrected TSV alignment spans. reference maps external long-read per-position '
+             'attribution TSVs onto current clusters. *-then-annotation fills missing clusters '
+             'with the legacy annotation fallback.',
+    )
+
+    parser.add_argument(
+        '--gene-attributions',
+        nargs='+',
+        help='External per-position gene attribution TSV file(s) or directories for '
+             '--gene-attribution-mode reference/reference-then-annotation. Expected columns: '
+             'chrom, position, strand, gene_id, attributed_count.',
+    )
+
+    parser.add_argument(
+        '--gene-attribution-reference-window',
+        type=int,
+        default=0,
+        metavar='BP',
+        help='For --gene-attribution-mode reference/reference-then-annotation, allow a '
+             'long-read attributed position to assign to the nearest same-strand current '
+             'CPA cluster within BP bases when it does not overlap a cluster exactly. '
+             'Exact overlaps are always preferred. Default: 0.',
+    )
+
+    parser.add_argument(
+        '--body-gene-attribution-mode',
+        choices=['origin', 'proportional'],
+        default='origin',
+        help='Read-body attribution rule for --gene-attribution-mode body/body-then-annotation. '
+             'origin assigns each read to the transcription-upstream overlapped gene; '
+             'proportional splits by feature overlap length.',
+    )
+
+    parser.add_argument(
+        '--include-intergenic-attributions',
+        action='store_true',
+        help='Keep intergenic rows from external attribution inputs. By default they are dropped.',
     )
 
     # Performance

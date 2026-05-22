@@ -237,7 +237,10 @@ def _run_correction(
         if _stem.endswith(_sfx):
             _stem = _stem[:-len(_sfx)]
             break
-    corrected_bam_path   = output_dir / f"{_stem}.rectified_corrected_3end.bam"
+    corrected_bam_path = (
+        output_dir / f"{_stem}.rectified_corrected_3end.bam"
+        if getattr(args, 'write_corrected_bam', False) else None
+    )
     softclipped_bam_path = (
         output_dir / f"{_stem}.rectified_pA_tail_trimmed.bam"
         if getattr(args, 'write_softclip_bam', False) else None

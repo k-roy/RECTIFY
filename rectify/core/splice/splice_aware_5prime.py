@@ -1015,6 +1015,8 @@ def _rescue_3ss_truncation_body(
             j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
             if j_chrom != chrom:
                 continue
+            if len(j_entry) >= 4 and j_entry[3] not in (strand, '.', ''):
+                continue
 
             if strand == '+':
                 # Upstream intron: intron_end must be at or just before align_5prime.
@@ -1556,6 +1558,8 @@ def _rescue_3ss_truncation_body(
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
             continue
+        if len(j_entry) >= 4 and j_entry[3] not in (strand, '.', ''):
+            continue
         # Condition: align_5prime inside [intron_start, intron_end).
         # intron_start is inclusive: a read whose rightmost base IS intron_start
         # (reference_end = intron_start + 1 for minus strand) is mapping into
@@ -1570,8 +1574,10 @@ def _rescue_3ss_truncation_body(
         )
         if already_has_n:
             continue
-        # Snap to exon-1-side boundary
-        snap_pos = intron_end if strand == '-' else intron_start
+        # Snap to exon-1-side boundary.  five_prime_position is an inclusive
+        # aligned-base coordinate, so the plus-strand upstream exon base is
+        # intron_start - 1; intron_start itself is the first skipped base.
+        snap_pos = intron_end if strand == '-' else intron_start - 1
         intronic_depth = (align_5prime - intron_start) if strand == '-' else (intron_end - align_5prime)
         # Compute exon CIGAR so bam_writer can reroute the intronic tail.
         _clip_bd4 = intron_start if strand == '-' else intron_end
@@ -1643,6 +1649,8 @@ def _rescue_3ss_truncation_body(
     for j_entry in candidate_junctions:
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
+            continue
+        if len(j_entry) >= 4 and j_entry[3] not in (strand, '.', ''):
             continue
         if strand == '+':
             dist = align_5prime - intron_end

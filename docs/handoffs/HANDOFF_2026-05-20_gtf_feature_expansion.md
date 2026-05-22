@@ -2,8 +2,8 @@
 
 Date: 2026-05-20
 
-Status: follow-up work. The audit-fix tranche did not implement this because it
-is a broader parser and classification-contract change.
+Status: implemented in Codex working tree on 2026-05-20. Kept as a design note
+for review and future agents.
 
 ## Problem
 

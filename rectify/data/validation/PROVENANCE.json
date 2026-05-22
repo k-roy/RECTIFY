@@ -3115,6 +3115,496 @@
           "generated_by_run": 36
         }
       ]
+    },
+    {
+      "timestamp": "2026-05-16T16:06:20.094355",
+      "command": "/Users/kevinroy/work/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --aligner-bams rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams rectify/data/validation/aligners/validation_reads.uLTRA.bam --aligner-bams rectify/data/validation/aligners/validation_reads.deSALT.bam --threads 4 -o rectify/data/validation/corrected_reads.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_reads.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 17.0,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
+        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+        "bedgraph_prefix": null,
+        "aligner_bams": [
+          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
+          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
+          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
+          "rectify/data/validation/aligners/validation_reads.uLTRA.bam",
+          "rectify/data/validation/aligners/validation_reads.deSALT.bam"
+        ],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null,
+        "str_penalty_table": null,
+        "variant_scan_cache": null,
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "ont_cDNA": false,
+        "min_mapq": 0,
+        "min_aligned_length": 0
+      },
+      "python_version": "3.9.13 | packaged by conda-forge | (main, May 27 2022, 17:01:00) \n[Clang 13.0.1 ]",
+      "working_dir": "/Users/kevinroy/work/rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_reads.tsv",
+          "name": "corrected_reads.tsv",
+          "size_bytes": 6943,
+          "modified": "2026-05-16T16:06:32.681578",
+          "md5": "73504f14228282027b2b8be7b7b89975",
+          "generated_by_run": 37,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "d996561f15a473b93468a968c64410bd"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 31,
+              "ends_ambiguous_atract": 13,
+              "ends_corrected_indel": 7,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 8,
+              "ends_walkback_readgenome": 0,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 14,
+              "polya_length_sum": 48,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 1
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_reads_stats.tsv",
+          "name": "corrected_reads_stats.tsv",
+          "size_bytes": 2037,
+          "modified": "2026-05-16T16:06:32.683937",
+          "md5": "2baa3aa71b55d492dddb18c7e12cf45e",
+          "generated_by_run": 37
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-05-16T18:15:55.913153",
+      "command": "/Users/kevinroy/work/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --aligner-bams rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams rectify/data/validation/aligners/validation_reads.uLTRA.bam --aligner-bams rectify/data/validation/aligners/validation_reads.deSALT.bam --threads 4 -o rectify/data/validation/corrected_reads.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_reads.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 17.0,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
+        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+        "bedgraph_prefix": null,
+        "aligner_bams": [
+          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
+          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
+          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
+          "rectify/data/validation/aligners/validation_reads.uLTRA.bam",
+          "rectify/data/validation/aligners/validation_reads.deSALT.bam"
+        ],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null,
+        "str_penalty_table": null,
+        "variant_scan_cache": null,
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "ont_cDNA": false,
+        "min_mapq": 0,
+        "min_aligned_length": 0
+      },
+      "python_version": "3.9.13 | packaged by conda-forge | (main, May 27 2022, 17:01:00) \n[Clang 13.0.1 ]",
+      "working_dir": "/Users/kevinroy/work/rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_reads.tsv",
+          "name": "corrected_reads.tsv",
+          "size_bytes": 6974,
+          "modified": "2026-05-16T18:16:19.600941",
+          "md5": "c8aeaf4110542485adbec6b364d499f5",
+          "generated_by_run": 38,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "d996561f15a473b93468a968c64410bd"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 31,
+              "ends_ambiguous_atract": 15,
+              "ends_corrected_indel": 7,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 8,
+              "ends_walkback_readgenome": 0,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 14,
+              "polya_length_sum": 48,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 2
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_reads_stats.tsv",
+          "name": "corrected_reads_stats.tsv",
+          "size_bytes": 2037,
+          "modified": "2026-05-16T18:16:19.605798",
+          "md5": "5691cfdeb07ca240c3ab67922dde6875",
+          "generated_by_run": 38
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-05-16T18:26:26.200400",
+      "command": "/Users/kevinroy/work/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --aligner-bams rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams rectify/data/validation/aligners/validation_reads.uLTRA.bam --aligner-bams rectify/data/validation/aligners/validation_reads.deSALT.bam --threads 4 -o rectify/data/validation/corrected_reads.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_reads.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 17.0,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
+        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+        "bedgraph_prefix": null,
+        "aligner_bams": [
+          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
+          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
+          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
+          "rectify/data/validation/aligners/validation_reads.uLTRA.bam",
+          "rectify/data/validation/aligners/validation_reads.deSALT.bam"
+        ],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null,
+        "str_penalty_table": null,
+        "variant_scan_cache": null,
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "ont_cDNA": false,
+        "min_mapq": 0,
+        "min_aligned_length": 0
+      },
+      "python_version": "3.9.13 | packaged by conda-forge | (main, May 27 2022, 17:01:00) \n[Clang 13.0.1 ]",
+      "working_dir": "/Users/kevinroy/work/rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_reads.tsv",
+          "name": "corrected_reads.tsv",
+          "size_bytes": 7007,
+          "modified": "2026-05-16T18:26:45.427977",
+          "md5": "47a13b41b1dd18d806d7b28b25bd4284",
+          "generated_by_run": 39,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "d996561f15a473b93468a968c64410bd"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 31,
+              "ends_ambiguous_atract": 11,
+              "ends_corrected_indel": 7,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 10,
+              "ends_walkback_readgenome": 0,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 14,
+              "polya_length_sum": 48,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 2
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_reads_stats.tsv",
+          "name": "corrected_reads_stats.tsv",
+          "size_bytes": 2038,
+          "modified": "2026-05-16T18:26:45.430592",
+          "md5": "e1f0cbd66e8a6b7f838433614603b134",
+          "generated_by_run": 39
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-05-16T18:29:59.768659",
+      "command": "/Users/kevinroy/work/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --aligner-bams rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams rectify/data/validation/aligners/validation_reads.uLTRA.bam --aligner-bams rectify/data/validation/aligners/validation_reads.deSALT.bam --threads 4 -o rectify/data/validation/corrected_reads.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_reads.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 17.0,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
+        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+        "bedgraph_prefix": null,
+        "aligner_bams": [
+          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
+          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
+          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
+          "rectify/data/validation/aligners/validation_reads.uLTRA.bam",
+          "rectify/data/validation/aligners/validation_reads.deSALT.bam"
+        ],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null,
+        "str_penalty_table": null,
+        "variant_scan_cache": null,
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "ont_cDNA": false,
+        "min_mapq": 0,
+        "min_aligned_length": 0
+      },
+      "python_version": "3.9.13 | packaged by conda-forge | (main, May 27 2022, 17:01:00) \n[Clang 13.0.1 ]",
+      "working_dir": "/Users/kevinroy/work/rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_reads.tsv",
+          "name": "corrected_reads.tsv",
+          "size_bytes": 7006,
+          "modified": "2026-05-16T18:30:15.144128",
+          "md5": "806b303386a9985d89f12337803dbfd6",
+          "generated_by_run": 40,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "d996561f15a473b93468a968c64410bd"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 31,
+              "ends_ambiguous_atract": 12,
+              "ends_corrected_indel": 7,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 10,
+              "ends_walkback_readgenome": 0,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 14,
+              "polya_length_sum": 48,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 2
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_reads_stats.tsv",
+          "name": "corrected_reads_stats.tsv",
+          "size_bytes": 2038,
+          "modified": "2026-05-16T18:30:15.151756",
+          "md5": "58299449807c78c2233eada6bcbd1384",
+          "generated_by_run": 40
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-05-16T20:06:48.317058",
+      "command": "/Users/kevinroy/work/rectify/rectify/__main__.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz --annotation rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz --aligner-bams rectify/data/validation/aligners/validation_reads.minimap2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.gapmm2.bam --aligner-bams rectify/data/validation/aligners/validation_reads.mapPacBio.bam --aligner-bams rectify/data/validation/aligners/validation_reads.uLTRA.bam --aligner-bams rectify/data/validation/aligners/validation_reads.deSALT.bam --threads 4 -o rectify/data/validation/corrected_reads.tsv --write-corrected-bam rectify/data/validation/rectified/rectified_corrected_3end.bam --write-softclipped-bam rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+      "config": {
+        "bam_path": "rectify/data/validation/validation_reads.bam",
+        "genome_path": "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz",
+        "annotation_path": "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+        "output_path": "rectify/data/validation/corrected_reads.tsv",
+        "apply_atract": true,
+        "apply_ag_mispriming": false,
+        "ag_threshold": 17.0,
+        "apply_polya_trim": true,
+        "apply_indel_correction": true,
+        "netseq_dir": null,
+        "netseq_samples": null,
+        "polya_model_path": null,
+        "threads": 4,
+        "verbose": false,
+        "variant_aware": true,
+        "filter_spikein": null,
+        "output_bam": null,
+        "corrected_bam": "rectify/data/validation/rectified/rectified_corrected_3end.bam",
+        "softclipped_bam": "rectify/data/validation/rectified/rectified_pA_tail_trimmed.bam",
+        "bedgraph_prefix": null,
+        "aligner_bams": [
+          "rectify/data/validation/aligners/validation_reads.minimap2.bam",
+          "rectify/data/validation/aligners/validation_reads.gapmm2.bam",
+          "rectify/data/validation/aligners/validation_reads.mapPacBio.bam",
+          "rectify/data/validation/aligners/validation_reads.uLTRA.bam",
+          "rectify/data/validation/aligners/validation_reads.deSALT.bam"
+        ],
+        "junction_hp_pen": 0.25,
+        "junction_search_radius": 5000,
+        "junction_window": 15,
+        "junction_max_slide": 10,
+        "junction_max_boundary_shift": 50,
+        "junction_penalty_table": null,
+        "str_penalty_table": null,
+        "variant_scan_cache": null,
+        "junction_pool_cache": null,
+        "dt_primed_cDNA": false,
+        "ont_cDNA": false,
+        "min_mapq": 0,
+        "min_aligned_length": 0
+      },
+      "python_version": "3.9.13 | packaged by conda-forge | (main, May 27 2022, 17:01:00) \n[Clang 13.0.1 ]",
+      "working_dir": "/Users/kevinroy/work/rectify",
+      "outputs": [
+        {
+          "path": "rectify/data/validation/corrected_reads.tsv",
+          "name": "corrected_reads.tsv",
+          "size_bytes": 7250,
+          "modified": "2026-05-16T20:07:12.942333",
+          "md5": "48747cb3b612bae0ca4ee19674dd1cf6",
+          "generated_by_run": 41,
+          "source_files": [
+            {
+              "path": "rectify/data/validation/validation_reads.bam",
+              "md5": "d996561f15a473b93468a968c64410bd"
+            }
+          ],
+          "metadata": {
+            "stats": {
+              "total_reads_in_bam": 36,
+              "reads_unmapped": 0,
+              "reads_secondary": 0,
+              "reads_supplementary": 0,
+              "spikein_reads_filtered": 0,
+              "reads_processed": 36,
+              "ends_with_downstream_A": 31,
+              "ends_ambiguous_atract": 12,
+              "ends_corrected_indel": 7,
+              "ends_corrected_false_junction": 0,
+              "ends_shifted_atract_walking": 10,
+              "ends_walkback_readgenome": 0,
+              "ends_refined_netseq": 0,
+              "ends_five_prime_rescued": 6,
+              "reads_with_polya": 14,
+              "polya_length_sum": 48,
+              "polya_length_max": 25,
+              "ends_flagged_ag_mispriming": 0,
+              "confidence_high": 32,
+              "confidence_medium": 0,
+              "confidence_low": 4,
+              "total_position_shifts": 2
+            }
+          }
+        },
+        {
+          "path": "rectify/data/validation/corrected_reads_stats.tsv",
+          "name": "corrected_reads_stats.tsv",
+          "size_bytes": 2038,
+          "modified": "2026-05-16T20:07:12.957030",
+          "md5": "58299449807c78c2233eada6bcbd1384",
+          "generated_by_run": 41
+        }
+      ]
     }
   ],
   "files": {
@@ -3166,7 +3656,55 @@
       "modified": "2026-04-27T18:22:20",
       "md5": "7370c2f0663b187f50909d29f6f4270f",
       "generated_by_run": 36
+    },
+    "corrected_reads.tsv": {
+      "path": "rectify/data/validation/corrected_reads.tsv",
+      "name": "corrected_reads.tsv",
+      "size_bytes": 7250,
+      "modified": "2026-05-16T20:07:12.942333",
+      "md5": "48747cb3b612bae0ca4ee19674dd1cf6",
+      "generated_by_run": 41,
+      "source_files": [
+        {
+          "path": "rectify/data/validation/validation_reads.bam",
+          "md5": "d996561f15a473b93468a968c64410bd"
+        }
+      ],
+      "metadata": {
+        "stats": {
+          "total_reads_in_bam": 36,
+          "reads_unmapped": 0,
+          "reads_secondary": 0,
+          "reads_supplementary": 0,
+          "spikein_reads_filtered": 0,
+          "reads_processed": 36,
+          "ends_with_downstream_A": 31,
+          "ends_ambiguous_atract": 12,
+          "ends_corrected_indel": 7,
+          "ends_corrected_false_junction": 0,
+          "ends_shifted_atract_walking": 10,
+          "ends_walkback_readgenome": 0,
+          "ends_refined_netseq": 0,
+          "ends_five_prime_rescued": 6,
+          "reads_with_polya": 14,
+          "polya_length_sum": 48,
+          "polya_length_max": 25,
+          "ends_flagged_ag_mispriming": 0,
+          "confidence_high": 32,
+          "confidence_medium": 0,
+          "confidence_low": 4,
+          "total_position_shifts": 2
+        }
+      }
+    },
+    "corrected_reads_stats.tsv": {
+      "path": "rectify/data/validation/corrected_reads_stats.tsv",
+      "name": "corrected_reads_stats.tsv",
+      "size_bytes": 2038,
+      "modified": "2026-05-16T20:07:12.957030",
+      "md5": "58299449807c78c2233eada6bcbd1384",
+      "generated_by_run": 41
     }
   },
-  "last_updated": "2026-04-27T18:22:21.049312"
+  "last_updated": "2026-05-16T20:07:13.088658"
 }

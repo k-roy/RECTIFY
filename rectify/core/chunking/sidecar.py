@@ -24,10 +24,13 @@ behind the same API. The file extension and public contract stay unchanged.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import logging
 import os
 import pickle
+import re
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -115,9 +118,133 @@ def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def _open_fastq(path: str | Path):
+    path = Path(path)
+    if path.suffix == '.gz' or str(path).endswith(('.fastq.gz', '.fq.gz')):
+        return gzip.open(str(path), 'rt')
+    return open(str(path), 'r')
+
+
+def _iter_fastq_records(path: str | Path):
+    with _open_fastq(path) as fh:
+        idx = 0
+        while True:
+            header = fh.readline()
+            if not header:
+                break
+            seq = fh.readline()
+            plus = fh.readline()
+            qual = fh.readline()
+            if not qual:
+                raise ValueError(f"Truncated FASTQ record {idx} in {path}")
+            yield idx, header, seq, plus, qual
+            idx += 1
+
+
+def _chunk_index_from_path(path: str | Path) -> Optional[int]:
+    match = re.search(r'_chunk_(\d+)_of_(\d+)', Path(path).name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def provenance_path_for(sidecar_path: str | Path) -> Path:
     path = Path(sidecar_path)
     return path.with_suffix('.PROVENANCE.json')
+
+
+def posthoc_provenance_path_for(sidecar_path: str | Path, sample_id: str) -> Path:
+    return Path(sidecar_path).with_name(f"{sample_id}.POSTHOC_PROVENANCE.json")
+
+
+def reconstruct_posthoc_sidecar_from_chunks(
+    chunk_fastqs: Iterable[str | Path],
+    sidecar_path: str | Path,
+    *,
+    sample_id: str,
+    n_chunks: Optional[int] = None,
+    hash_chunks: bool = False,
+) -> Path:
+    """Reconstruct a read-number sidecar from legacy round-robin chunk FASTQs.
+
+    Legacy chunks were written by assigning input read ``read_num`` to
+    ``chunk_idx = read_num % n_chunks``.  Therefore local record index ``j`` in
+    chunk ``k`` maps back to ``read_num = j * n_chunks + k``.  This rebuilds
+    the sidecar without re-aligning or rewriting BAMs.
+    """
+    sidecar_path = Path(sidecar_path)
+    chunk_paths = [Path(p) for p in chunk_fastqs]
+    if not chunk_paths:
+        raise ValueError("No chunk FASTQs supplied")
+    if n_chunks is None:
+        n_chunks = len(chunk_paths)
+    if n_chunks <= 0:
+        raise ValueError("n_chunks must be positive")
+
+    indexed = []
+    used_indices = set()
+    for path in chunk_paths:
+        idx = _chunk_index_from_path(path)
+        if idx is None:
+            raise ValueError(
+                f"Cannot infer chunk index from filename: {path}. "
+                "Pass chunk_idx explicitly or rename to _chunk_NNN_of_MMM."
+            )
+        if idx in used_indices:
+            raise ValueError(f"Duplicate chunk index {idx} for {path}")
+        if idx < 0 or idx >= n_chunks:
+            raise ValueError(f"Chunk index {idx} out of range for n_chunks={n_chunks}: {path}")
+        used_indices.add(idx)
+        indexed.append((idx, path))
+    indexed.sort()
+
+    total_reads = 0
+    chunk_reports = []
+    with ReadNumSidecarWriter(
+        sidecar_path,
+        sample_id=sample_id,
+        source_fastq=None,
+        source_fastq_sha256=None,
+        chunk_count=n_chunks,
+    ) as writer:
+        for chunk_idx, path in indexed:
+            local_count = 0
+            for local_idx, header, seq, _plus, qual in _iter_fastq_records(path):
+                read_num = local_idx * n_chunks + chunk_idx
+                chunk_id = f"chunk_{chunk_idx:03d}_of_{n_chunks:03d}"
+                original_qname, fastq_comment = split_fastq_header(header)
+                writer.add(read_num, original_qname, fastq_comment, chunk_id, seq, qual)
+                local_count += 1
+            total_reads += local_count
+            report = {
+                'chunk_idx': chunk_idx,
+                'path': str(path),
+                'n_reads': local_count,
+                'size_bytes': path.stat().st_size if path.exists() else None,
+            }
+            if hash_chunks:
+                report['sha256'] = sha256_file(path)
+            chunk_reports.append(report)
+
+    prov_path = posthoc_provenance_path_for(sidecar_path, sample_id)
+    prov = {
+        'schema_version': SCHEMA_VERSION,
+        'kind': 'posthoc_read_num_sidecar',
+        'sample_id': sample_id,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'sidecar_path': str(sidecar_path),
+        'sidecar_sha256': sha256_file(sidecar_path),
+        'n_chunks': n_chunks,
+        'total_reads': total_reads,
+        'read_num_formula': 'read_num = local_read_index * n_chunks + chunk_index',
+        'chunk_fastqs': chunk_reports,
+    }
+    tmp = prov_path.with_suffix(prov_path.suffix + '.tmp')
+    with open(tmp, 'w') as fh:
+        json.dump(prov, fh, indent=2, sort_keys=True)
+        fh.write('\n')
+    os.replace(tmp, prov_path)
+    return sidecar_path
 
 
 class ReadNumSidecarWriter:

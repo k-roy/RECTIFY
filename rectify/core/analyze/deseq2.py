@@ -124,6 +124,7 @@ def run_deseq2_gene_level(
     clusters_df: pd.DataFrame,
     sample_metadata: pd.DataFrame,
     reference_condition: str,
+    cluster_gene_attributions: Optional[pd.DataFrame] = None,
     min_counts: int = 10,
     min_samples: int = 2,
     n_cpus: int = 4,
@@ -149,8 +150,11 @@ def run_deseq2_gene_level(
             "Install with: pip install pydeseq2"
         )
 
-    # Aggregate counts by gene
-    gene_counts = _aggregate_counts_by_gene(cluster_counts, clusters_df)
+    # Aggregate counts by gene.  When a weighted cluster→gene attribution table
+    # is supplied, shared CPA clusters contribute fractionally to each gene.
+    gene_counts = _aggregate_counts_by_gene(
+        cluster_counts, clusters_df, cluster_gene_attributions
+    )
 
     if gene_counts.empty:
         return {}
@@ -245,8 +249,27 @@ def run_deseq2_cluster_level(
 def _aggregate_counts_by_gene(
     cluster_counts: pd.DataFrame,
     clusters_df: pd.DataFrame,
+    cluster_gene_attributions: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Aggregate cluster counts to gene level."""
+    if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+        attr = cluster_gene_attributions.copy()
+        required = {'cluster_id', 'gene_id', 'attribution_weight'}
+        missing = required - set(attr.columns)
+        if missing:
+            raise ValueError(f"cluster_gene_attributions missing columns: {sorted(missing)}")
+        attr = attr[attr['cluster_id'].isin(cluster_counts.index)].copy()
+        attr = attr[attr['gene_id'].notna() & (attr['gene_id'] != 'intergenic')]
+        if attr.empty:
+            return pd.DataFrame()
+        pieces = []
+        for row in attr.itertuples(index=False):
+            weighted = cluster_counts.loc[row.cluster_id] * float(row.attribution_weight)
+            weighted.name = row.gene_id
+            pieces.append(weighted)
+        weighted_counts = pd.DataFrame(pieces)
+        return weighted_counts.groupby(weighted_counts.index).sum()
+
     # Get gene_id for each cluster
     cluster_to_gene = clusters_df.set_index('cluster_id')['gene_id'].to_dict()
 

@@ -10,6 +10,82 @@ from typing import Dict, List
 from .processing_stats import ProcessingStats, generate_stats_report
 
 
+CORRECTION_TSV_HEADER = [
+    'read_id', 'chrom', 'strand',
+    'original_3prime', 'corrected_3prime',
+    'five_prime_position',
+    'five_prime_rescued',
+    'five_prime_exon_cigar',
+    'alignment_start', 'alignment_end',
+    'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
+    'polya_length',
+    'aligned_a_length', 'soft_clip_a_length',
+    'junctions', 'n_junctions',
+    'five_prime_soft_clip_length', 'three_prime_soft_clip_length',
+    'mapq',
+    'correction_applied', 'confidence', 'qc_flags', 'fraction',
+    'gene_id',
+    'pt_tag',
+    'polya_score',
+    'polya_source',
+    'sc_homopolymer_extension',
+    'sc_rescued_seq',
+    'sc_original_softclip_len',
+    'five_prime_intron_clip_pos',
+    'oc_homopolymer_extension',
+    'oc_overcall_count',
+    'oc_terminal_base',
+    'five_prime_upstream_trim',
+    'reanchor_clip_len',
+]
+
+
+def correction_result_to_tsv_row(result: Dict) -> List[str]:
+    """Serialize one correction result using ``CORRECTION_TSV_HEADER`` order."""
+    _pt = result.get('pt_tag')
+    _ps = result.get('polya_score')
+    return [
+        result['read_id'],
+        result['chrom'],
+        result['strand'],
+        str(result['original_3prime']),
+        str(result['corrected_3prime']),
+        str(result.get('five_prime_position', '')),
+        '1' if result.get('five_prime_rescued') else '0',
+        result.get('five_prime_exon_cigar') or '',
+        str(result.get('alignment_start', '')),
+        str(result.get('alignment_end', '')),
+        str(result['ambiguity_min']),
+        str(result['ambiguity_max']),
+        str(result['ambiguity_range']),
+        str(result.get('polya_length', 0)),
+        str(result.get('aligned_a_length', 0)),
+        str(result.get('soft_clip_a_length', 0)),
+        result.get('junctions_str', ''),
+        str(result.get('n_junctions', 0)),
+        str(result.get('five_prime_soft_clip_length', 0)),
+        str(result.get('three_prime_soft_clip_length', 0)),
+        str(result.get('mapq', 0)),
+        ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
+        result['confidence'],
+        ','.join(result['qc_flags']),
+        f"{result.get('fraction', 1.0):.6f}",
+        result.get('gene_id') or '',
+        str(_pt) if _pt is not None else '',
+        f'{_ps:.4f}' if _ps is not None else '',
+        result.get('polya_source', 'none'),
+        str(result.get('sc_homopolymer_extension', 0)),
+        result.get('sc_rescued_seq', ''),
+        str(result.get('sc_original_softclip_len', 0)),
+        str(result.get('five_prime_intron_clip_pos', -1)),
+        str(result.get('oc_homopolymer_extension', 0)),
+        str(result.get('oc_overcall_count', 0)),
+        result.get('oc_terminal_base', ''),
+        str(result.get('five_prime_upstream_trim', 0)),
+        str(result.get('reanchor_clip_len', 0)),
+    ]
+
+
 def write_output_tsv(results: List[Dict], output_path: str):
     """
     Write correction results to TSV file.
@@ -22,81 +98,11 @@ def write_output_tsv(results: List[Dict], output_path: str):
 
     with open(output_path, 'w') as f:
         # Write header
-        header = [
-            'read_id', 'chrom', 'strand',
-            'original_3prime', 'corrected_3prime',
-            'five_prime_position',  # TSS end of the read (v2.6.0)
-            'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
-            'five_prime_exon_cigar',  # SAM CIGAR for exon segment of Cat3 rescue (v2.8.0)
-            'alignment_start', 'alignment_end',  # Full read body interval (v2.6.0)
-            'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
-            'polya_length',  # Total observed poly(A) tail length
-            'aligned_a_length', 'soft_clip_a_length',  # Breakdown of poly(A)
-            'junctions', 'n_junctions',  # Splice junctions (v2.7.0)
-            'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips (v2.7.0)
-            'mapq',  # Mapping quality (v2.7.0)
-            'correction_applied', 'confidence', 'qc_flags', 'fraction',
-            'gene_id',  # Per-read gene attribution (optional)
-            'pt_tag',      # dorado pt:i signal-level poly(A) length (blank if absent) (v2.9.0)
-            'polya_score', # poly(A) model confidence 0-1 (blank if no model) (v2.9.0)
-            'polya_source',  # 'pt_tag' | 'model' | 'none' (v2.9.0)
-            'sc_homopolymer_extension',  # Cat2: under-called homopolymer bases (v2.9.1)
-            'sc_rescued_seq',            # Cat2: non-poly-A bases matched to ref (v2.9.1)
-            'sc_original_softclip_len',  # Cat2: original 3' soft-clip length (v2.9.1)
-            'five_prime_intron_clip_pos',  # Case 4: exon-side intron boundary for BAM hard-clip (-1 if N/A)
-            'oc_homopolymer_extension',  # over-call rescue: genomic HP extension past raw_pos (D op)
-            'oc_overcall_count',         # over-call rescue: # of over-call stop-base bases (I op)
-            'oc_terminal_base',          # over-call rescue: the terminal non-stop-base char (= op)
-            'five_prime_upstream_trim',  # Cat3 equivalence-extension: k bases trimmed from upstream M (v2.9.9)
-            'reanchor_clip_len',  # Cat3 reanchor pre-pass: leading-S length after 5'-edge reanchor (0 = no reanchor)
-        ]
-        f.write('\t'.join(header) + '\n')
+        f.write('\t'.join(CORRECTION_TSV_HEADER) + '\n')
 
         # Write results
         for result in results:
-            _pt = result.get('pt_tag')
-            _ps = result.get('polya_score')
-            row = [
-                result['read_id'],
-                result['chrom'],
-                result['strand'],
-                str(result['original_3prime']),
-                str(result['corrected_3prime']),
-                str(result.get('five_prime_position', '')),  # 5' end (TSS)
-                '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
-                result.get('five_prime_exon_cigar') or '',  # exon CIGAR for Cat3
-                str(result.get('alignment_start', '')),  # Read body start
-                str(result.get('alignment_end', '')),  # Read body end (exclusive)
-                str(result['ambiguity_min']),
-                str(result['ambiguity_max']),
-                str(result['ambiguity_range']),
-                str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
-                str(result.get('aligned_a_length', 0)),  # Aligned A's
-                str(result.get('soft_clip_a_length', 0)),  # Soft-clipped A's
-                result.get('junctions_str', ''),  # Junctions as semicolon-separated string
-                str(result.get('n_junctions', 0)),  # Number of junctions
-                str(result.get('five_prime_soft_clip_length', 0)),  # 5' soft clip
-                str(result.get('three_prime_soft_clip_length', 0)),  # 3' soft clip
-                str(result.get('mapq', 0)),  # Mapping quality
-                ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
-                result['confidence'],
-                ','.join(result['qc_flags']),
-                f"{result.get('fraction', 1.0):.6f}",
-                result.get('gene_id') or '',  # Per-read gene attribution (empty if not computed)
-                str(_pt) if _pt is not None else '',
-                f'{_ps:.4f}' if _ps is not None else '',
-                result.get('polya_source', 'none'),
-                str(result.get('sc_homopolymer_extension', 0)),  # Cat2 CIGAR surgery
-                result.get('sc_rescued_seq', ''),
-                str(result.get('sc_original_softclip_len', 0)),
-                str(result.get('five_prime_intron_clip_pos', -1)),  # Case 4 BAM clip
-                str(result.get('oc_homopolymer_extension', 0)),  # over-call rescue D
-                str(result.get('oc_overcall_count', 0)),          # over-call rescue I
-                result.get('oc_terminal_base', ''),               # over-call rescue terminal base
-                str(result.get('five_prime_upstream_trim', 0)),   # Cat3 equivalence-extension trim
-                str(result.get('reanchor_clip_len', 0)),           # Cat3 reanchor pre-pass leading-S length
-            ]
-            f.write('\t'.join(row) + '\n')
+            f.write('\t'.join(correction_result_to_tsv_row(result)) + '\n')
 
     print(f"  Wrote {len(results):,} corrected positions")
 

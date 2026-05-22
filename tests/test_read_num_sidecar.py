@@ -3,7 +3,11 @@ import resource
 
 import pytest
 
-from rectify.core.chunking.sidecar import ReadNumSidecar, ReadNumSidecarWriter
+from rectify.core.chunking.sidecar import (
+    ReadNumSidecar,
+    ReadNumSidecarWriter,
+    reconstruct_posthoc_sidecar_from_chunks,
+)
 
 
 def _write_sidecar(path, n):
@@ -42,6 +46,47 @@ def test_verify_reports_fingerprint_mismatch(tmp_path, caplog):
     assert not result.seq_matches
     assert result.qual_matches
     assert 'fingerprint mismatch' in caplog.text
+
+
+def test_reconstruct_posthoc_sidecar_from_round_robin_chunks(tmp_path):
+    chunks = []
+    records_by_chunk = {
+        0: [
+            ('@read0 XA:Z:a\n', 'ACGT\n', '+\n', 'IIII\n'),
+            ('@read3\n', 'TTTT\n', '+\n', 'JJJJ\n'),
+        ],
+        1: [
+            ('@read1\n', 'CCCC\n', '+\n', 'KKKK\n'),
+            ('@read4\n', 'GGGG\n', '+\n', 'LLLL\n'),
+        ],
+        2: [
+            ('@read2\n', 'AAAA\n', '+\n', 'MMMM\n'),
+        ],
+    }
+    for idx, records in records_by_chunk.items():
+        path = tmp_path / f'sample_chunk_{idx:03d}_of_003.fastq'
+        with path.open('w') as fh:
+            for rec in records:
+                fh.writelines(rec)
+        chunks.append(path)
+
+    sidecar_path = tmp_path / 'sample.read_num_sidecar.parquet'
+    reconstruct_posthoc_sidecar_from_chunks(
+        chunks,
+        sidecar_path,
+        sample_id='sample',
+        n_chunks=3,
+    )
+
+    sc = ReadNumSidecar.open(sidecar_path)
+    assert len(sc) == 5
+    assert sc.lookup(0).original_qname == 'read0'
+    assert sc.lookup(0).fastq_comment == 'XA:Z:a'
+    assert sc.lookup(1).original_qname == 'read1'
+    assert sc.lookup(2).original_qname == 'read2'
+    assert sc.lookup(3).original_qname == 'read3'
+    assert sc.lookup(4).original_qname == 'read4'
+    assert (tmp_path / 'sample.POSTHOC_PROVENANCE.json').exists()
 
 
 @pytest.mark.skipif(importlib.util.find_spec('pyarrow') is None, reason='pyarrow unavailable')

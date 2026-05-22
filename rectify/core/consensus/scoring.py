@@ -192,7 +192,7 @@ def _rescue_5prime_softclip(
         # 5' alignment start = leftmost mapped base
         align_5prime = alignment.reference_start
         for (j_chrom, intron_start, intron_end, j_strand) in candidate_junctions:
-            if j_chrom != chrom:
+            if j_chrom != chrom or j_strand != alignment.strand:
                 continue
             # Upstream intron: its 3'SS (intron_end) must be at or before align_5prime.
             # Directional: intron_end ≤ align_5prime (not abs, to exclude internal junctions).
@@ -218,7 +218,7 @@ def _rescue_5prime_softclip(
         align_5prime = alignment.reference_end - 1
         reference_end = alignment.reference_end
         for (j_chrom, intron_start, intron_end, j_strand) in candidate_junctions:
-            if j_chrom != chrom:
+            if j_chrom != chrom or j_strand != alignment.strand:
                 continue
             # Upstream intron (in transcript): intron_start must be ≥ reference_end.
             # Directional: intron_start > align_5prime (excludes internal junctions).

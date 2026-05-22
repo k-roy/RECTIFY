@@ -93,6 +93,25 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
         help='Gene annotation GFF/GFF3 (.gff or .gff.gz). Used to populate '
              'the annotated junction set in the pool.',
     )
+    junc.add_argument(
+        '--junction-min-support',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Minimum total observed read support across all --aligner-bams '
+             'required for non-annotated junctions to enter junction_pool.pkl. '
+             'Annotated junctions are always retained. Raising this filters '
+             'one-off noisy N-op junctions from large DRS pools.',
+    )
+    junc.add_argument(
+        '--junction-max-size',
+        type=int,
+        default=None,
+        metavar='BP',
+        help='Optional maximum observed intron/junction length to include from '
+             '--aligner-bams. Annotated junctions are always retained. For '
+             'S. cerevisiae, 10000 is a conservative organism-tuned cap.',
+    )
 
     from rectify.data import add_organism_args
     add_organism_args(parser)
@@ -208,7 +227,12 @@ def run(args: argparse.Namespace) -> int:
 
         from ..splice.junction_refiner import build_junction_pool
         t0 = time.perf_counter()
-        all_junctions, annotated_set = build_junction_pool(aligner_bams, annotated_junctions)
+        all_junctions, annotated_set = build_junction_pool(
+            aligner_bams,
+            annotated_junctions,
+            min_observed_support=args.junction_min_support,
+            max_junction_size=args.junction_max_size,
+        )
         elapsed = time.perf_counter() - t0
         logger.info(
             f"  Junction pool built in {elapsed:.1f}s: "
@@ -218,6 +242,8 @@ def run(args: argparse.Namespace) -> int:
         pool_data = {
             'all_junctions': all_junctions,
             'annotated_set': annotated_set,
+            'min_observed_support': args.junction_min_support,
+            'max_junction_size': args.junction_max_size,
         }
         with open(junction_pool_path, 'wb') as fh:
             pickle.dump(pool_data, fh, protocol=pickle.HIGHEST_PROTOCOL)

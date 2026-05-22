@@ -103,12 +103,21 @@ Reads end in genomic A-tracts; the aligner's 3' boundary is shifted inward
 (plus: left; minus: right) by polya_walkback. All four reads confirmed to
 produce `corrected_3prime != original_3prime` after `rectify correct`.
 
-| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift |
-|---|---|---|---|---|---|
-| `cat1_plus_1` | 0cb5a111 | chrXIV:10435–10611 | + | 10610→10594 | −16 bp |
-| `cat1_plus_2` | a146838d | chrI:31118–31546   | + | 31545→31541 | −4 bp |
-| `cat1_minus_1` | 77b392d9 | chrII:9831–10558   | − | 9831→9834  | +3 bp |
-| `cat1_minus_2` | 34ba198b | chrXII:15348–15964 | − | 15348→15351 | +3 bp |
+**Updated 2026-05-16:** Cat1/Cat2 reads re-trimmed with current strict defaults
+(`max_error_rate=0.0`, `max_consecutive_non_a=1`) and re-aligned with minimap2 +
+mapPacBio locally on M1. Per-aligner winner selection updated by the new
+hard-clip penalty in `_cigar_hp_edit_distance` (H=1.0/base) which lets HP-undercall
+representations (uLTRA's `2=1D17=`, mapPacBio's `9D N=`) win over hard-clip-then-
+discard representations (minimap2's `5H 14M`). cat1_minus_2 now lands at
+chrXII:15345 (uLTRA winner); cat2_plus_1 now lands at chrI:23754 (mapPacBio
+`9D 34=` extension to the final genomic T at 23755 ref_end).
+
+| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift | Winner |
+|---|---|---|---|---|---|---|
+| `cat1_plus_1` | 0cb5a111 | chrXIV:10435–10611 | + | 10610→10610 | 0 bp | deSALT |
+| `cat1_plus_2` | a146838d | chrI:31118–31546   | + | 31545→31545 | 0 bp | deSALT |
+| `cat1_minus_1` | 77b392d9 | chrII:9826–10558   | − | 9826→9827  | +1 bp | mapPacBio |
+| `cat1_minus_2` | 34ba198b | chrXII:15345–15964 | − | 15345→15345 | 0 bp | uLTRA |
 
 ---
 
@@ -122,12 +131,19 @@ and matches the soft-clipped bases to the downstream reference sequence.
 The corrected position shifts **outward** (corrected > original for +,
 corrected < original for −).
 
-| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift | HP base | D op | M op |
-|---|---|---|---|---|---|---|---|---|
-| `cat2_plus_1`  | 61b0c014 | chrI:23362–23727   | + | 23726→23737 | +11 bp | T | 9 | TT (2 bp)    |
-| `cat2_plus_2`  | 88953e9c | chrVI:7832–8602    | + | 8601→8605   | +4 bp  | T | 1 | AGT (3 bp)   |
-| `cat2_minus_1` | b313b50d | chrV:195–829       | − | 195→187     | −8 bp  | T | 3 | CCTAG (5 bp) |
-| `cat2_minus_2` | 9dbd37bf | chrI:128112–129052 | − | 128112→128102 | −10 bp | T | 9 | A (1 bp)     |
+**Updated 2026-05-16:** With strict-retrim'd reads + the new hard-clip penalty in
+winner selection, several Cat2 reads now have their winning aligner's CIGAR
+represent the HP-undercall inline (mapPacBio's `9D N=`), so the corrected position
+equals the alignment's natural endpoint and `correction_applied=none`. Only
+`cat2_minus_2` still requires the post-correct `softclip_rescue` step (minimap2
+wins; its `2S 17M`-style CIGAR doesn't pre-extend to the rescue target).
+
+| Label | UUID | Coords (0-based half-open) | Strand | orig→corr | Shift | Winner | Mechanism |
+|---|---|---|---|---|---|---|---|
+| `cat2_plus_1`  | 61b0c014 | chrI:23362–23755   | + | 23754→23754 |  0 bp | mapPacBio | `9D 34=` extends to final T at 23755 |
+| `cat2_plus_2`  | 88953e9c | chrVI:7832–8607    | + | 8606→8606   |  0 bp | uLTRA     | pre-extended |
+| `cat2_minus_1` | b313b50d | chrV:186–829       | − | 186→186     |  0 bp | mapPacBio | pre-extended |
+| `cat2_minus_2` | 9dbd37bf | chrI:128112–129052 | − | 128113→128102 | −11 bp | minimap2 | post-correct `softclip_rescue` |
 
 Note: "Shift" is outward (away from the gene body). For + strand reads
 `corrected_3prime = original_3prime + shift`; for − strand reads

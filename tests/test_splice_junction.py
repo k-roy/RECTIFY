@@ -843,6 +843,24 @@ class TestRescue3SSTruncation:
         assert r['rescue_type'] == 'proximity'
         assert r['rescued_junction'] == ('chrT', 100, 200)
 
+    def test_plus_intronic_snap_returns_last_upstream_exon_base(self):
+        """Case 4 intronic snap must not return intron_start itself."""
+        read = MockRead(
+            reference_name='chrT',
+            reference_start=150,
+            reference_end=200,
+            is_reverse=False,
+            query_sequence='A' * 50,
+            cigartuples=[(0, 50)],
+        )
+
+        r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='+')
+
+        assert r['rescued'] is True
+        assert r['rescue_type'] == 'intronic_snap'
+        assert r['five_prime_corrected'] == 99
+        assert r['five_prime_corrected'] != 100
+
     # ---- Plus strand: start too far from any 3'SS ----
 
     def test_plus_no_junction_in_proximity(self):

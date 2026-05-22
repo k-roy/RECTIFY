@@ -347,6 +347,35 @@ def standardize_chrom_name(chrom: str) -> str:
     return chrom
 
 
+def get_chrom_sequence(genome: Dict[str, str], chrom: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(sequence, key)`` for common chromosome-name aliases."""
+    if not genome or not chrom:
+        return None, None
+
+    chrom_std = standardize_chrom_name(chrom)
+    candidates = [
+        chrom,
+        chrom_std,
+        CHROM_TO_GENOME.get(chrom),
+        CHROM_TO_GENOME.get(chrom_std),
+        GENOME_TO_CHROM.get(chrom),
+        GENOME_TO_CHROM.get(chrom_std),
+    ]
+    if chrom.startswith('chr'):
+        candidates.append(chrom[3:])
+    else:
+        candidates.append('chr' + chrom)
+
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key in genome:
+            return genome[key], key
+    return None, None
+
+
 def validate_coordinates(chrom: str, start: int, end: int) -> bool:
     """
     Validate that coordinates are within chromosome bounds.

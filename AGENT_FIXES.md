@@ -6,6 +6,355 @@ Archive entries into CHANGELOG.md when the session wave is done.
 
 ---
 
+## [2026-05-21] BAM-first 10k correct smoke + RN sidecar check
+
+**Status:** FIRST PASS SUCCEEDED on H2 for TSV correction; follow-up 2H-enabled
+pass needed because the first command omitted `--aligner-bams`.
+
+**Why this was run:** the old chunk directories often have BAMs but zero-byte
+`corrected_reads.tsv` files, so smoke-test candidates must be identified from
+the BAMs themselves rather than from successful `rectify correct` outputs.
+
+**Input panel:** H2
+`/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep2/chunks/aligner_chunks`,
+chunk `chunk_000`, all five aligners.
+
+**BAM-derived candidate scan highlights:**
+- Existing per-aligner chunk BAMs were present for `mapPacBio`, `minimap2`,
+  `gapmm2`, `uLTRA`, and `deSALT`; their `corrected_reads.tsv` files were all
+  0 bytes.
+- The scan selected 10,000 normalized read IDs from BAM CIGAR/read-pattern
+  triggers, including junction/N-op reads, terminal clips, terminal
+  clip+junction combinations, short terminal exons, and terminal indel-rich
+  reads.
+- Reads shared by all five aligners in the source BAM panel: 346,618.
+
+**Subset BAMs created:**
+`/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep2/chunks/correct_smoke_10k_from_bam/aligner_chunks/{aligner}/chunk_000/*.subset_10k.bam`
+
+Primary read IDs retained:
+- `mapPacBio`: 9,491 primary read IDs / 10,143 records
+- `minimap2`: 8,704 primary read IDs / 10,168 records
+- `gapmm2`: 8,366 primary read IDs / 8,372 records
+- `uLTRA`: 8,697 primary read IDs / 8,706 records
+- `deSALT`: 9,788 primary read IDs / 12,397 records
+
+**First `rectify correct` smoke run:** H2 SGE array `13465761.1-5` succeeded
+for all five aligners with `--streaming --emit-merged-tsv`, no corrected BAM
+write, and no heap corruption. Outputs are under:
+`/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep2/chunks/correct_smoke_10k_from_bam/correct_outputs/{aligner}/chunk_000/`
+
+Timings:
+- `mapPacBio`: 9,504 reads processed; BAM processing 25.2s; total 27.4s
+- `minimap2`: 8,707 reads processed; BAM processing 23.7s
+- `gapmm2`: 8,372 reads processed; total completed successfully
+- `uLTRA`: 8,700 reads processed; total completed successfully
+- `deSALT`: 9,788 reads processed; total 33.3s
+
+**Important caveat:** this first smoke run exercised 2F 3'SS rescue and core
+correction, but Module 2H junction refinement was logged as disabled:
+`Junction refinement: DISABLED (pass --aligner-bams to enable)`. A follow-up
+10k run with the same subset BAM panel passed as repeated `--aligner-bams`
+is needed before treating this as a full 2F+2H correction smoke.
+
+**RN sidecar test:** wrote a post-hoc BAM-panel sidecar:
+`/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep2/chunks/correct_smoke_10k_from_bam/wt_tfiiib_rep2_chunk000_bam_panel_10k.read_num_sidecar.parquet`
+
+Provenance:
+`/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep2/chunks/correct_smoke_10k_from_bam/wt_tfiiib_rep2_chunk000_bam_panel_10k.read_num_sidecar.POSTHOC_PROVENANCE.json`
+
+Validation:
+- Sidecar rows: 10,000; missing selected reads: 0.
+- Normalized QNAME lookup covered every primary record in all five subset
+  BAMs: `mapPacBio` 9,504/9,504, `minimap2` 8,707/8,707, `gapmm2` 8,372/8,372,
+  `uLTRA` 8,700/8,700, `deSALT` 9,788/9,788.
+- Fingerprint verification is intentionally not a pass/fail criterion for this
+  BAM-derived sidecar because aligners can hard-clip/trim/reorient query
+  sequence and qualities. For production provenance, sidecars reconstructed
+  from chunk FASTQs remain the correct fingerprint source.
+- Local focused module tests passed:
+  `tests/test_read_num_sidecar.py tests/test_consensus_tag_restoration.py`
+  → `7 passed, 1 skipped`. H2 production env lacks `pytest`, so the cluster
+  validation was the live sidecar open/lookup test above.
+
+## [2026-05-21] Module 2H junction pool explosion — CANDIDATE LOOKUP + YEAST SIZE CAP IN WORKING TREE
+
+**Status:** FIXED in working tree, uncommitted. Needs deployment to Sherlock/H2
+RECTIFY checkouts before rerunning production chunk-correct jobs.
+
+**Scope:** DRS/CPA `rectify correct` Module 2H junction refinement, especially
+all-5-aligner per-chunk correction on Sherlock where `refine_bam_junctions`
+was spending tens of minutes after loading a 53k min-support-filtered pool and
+where the unfiltered all-5 pool reached ~5.0M junctions for `ysh1_rep2`.
+
+**Root cause clarified:**
+- Candidate lookup was already restricted to the same chromosome.
+- There was a `--junction-search-radius` default of 5000 bp, but the active
+  lookup call also used `start_radius=end_radius=--junction-max-boundary-shift`
+  (default 50 bp). That means candidates were endpoint-bounded to ±50 bp, not
+  a free 5 kb window.
+- `_candidates_near()` still scanned the per-chromosome sorted list from the
+  chromosome start for every N-op until `js > ns + radius`. With large noisy
+  pools, this made the cost grow with chromosome-position × N-op count.
+- Module 2H had no explicit max junction/intron-size cap in pool construction
+  or candidate scoring. Yeast should use an organism-tuned cap; 10 kb is a
+  conservative S. cerevisiae value.
+
+**Fixes landed:**
+- `junction_scoring.py`: `_candidates_near()` now uses `bisect_left` /
+  `bisect_right` to scan only the intron-start window around the current N-op
+  instead of repeatedly walking from chromosome start.
+- `junction_scoring.py`: added optional `max_junction_size` filtering to
+  `collect_junctions_from_bam()`, `collect_junction_counts_from_bam()`,
+  `build_junction_pool()`, and `_candidates_near()`.
+- `junction_scoring.py`: `build_junction_pool()` now supports
+  `min_observed_support` and counts N-op support across aligner BAMs; annotated
+  junctions are retained regardless of support or max-size cap.
+- `junction_scoring.py`: pool scans skip secondary and supplementary records.
+- `junction_refiner.py`: `max_junction_size` is propagated through
+  `refine_bam_junctions()`, sequential/parallel workers, and
+  `refine_read_junctions()`, so it applies both to newly built pools and to
+  pre-built pools loaded from `rectify prescan`.
+- `correct_command.py`: added `--junction-max-size BP`.
+- `prescan_command.py`: added `--junction-min-support N` and
+  `--junction-max-size BP`; both are recorded in `junction_pool.pkl` metadata.
+
+**Recommended yeast command policy:**
+- Prefer preserving all aligners, but pass `--junction-max-size 10000` to both
+  `rectify prescan` and per-chunk `rectify correct`.
+- Keep `--junction-min-support` available as an optional guardrail, but the
+  10 kb cap plus bounded lookup may make min-support unnecessary for yeast.
+- If using a pre-built pool, still pass `--junction-max-size 10000` to
+  `rectify correct`; it filters oversized candidates at scoring time even if
+  the pickle was built before the cap existed.
+
+**Tests run:** focused splice/refiner suite passed with single-threaded BLAS
+environment variables:
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+pytest tests/test_junction_scoring_parallel.py tests/test_junction_refiner.py
+```
+Result: `41 passed, 17 skipped, 1 warning in 4.41s`.
+
+**Caveat:** running the same pytest command without BLAS thread caps aborted
+during NumPy's macOS import/runtime check before test collection. This appears
+environmental and not specific to the junction-refiner patch.
+
+**Operational note:** Sherlock test array `25600177_[0-4]` was still RUNNING at
+25 min on the old code path after loading `junction_pool.min10.all5.pkl`
+(53,392 total junctions). Replace/rerun the single-chunk all-5-aligner test
+after syncing this patch, using `--junction-max-size 10000`.
+
+**[2026-05-21 09:38 PDT] Cluster sync + first speed check:**
+- M1 working-tree code/docs/tests were synced to Sherlock and H2 so the three
+  checkouts are consistent. Large `rectify/data/` payloads were excluded.
+- Backups were written before sync:
+  - Sherlock: `.codex_backups/pre_m1_code_sync_20260521_092607`
+  - H2: `.codex_backups/pre_m1_code_sync_20260521_092608`
+- A first broad rsync briefly copied package/test/docs contents into the
+  checkout root. Those accidental top-level copies were moved, not deleted:
+  - Sherlock: `.codex_backups/accidental_top_level_20260521_093324`
+  - H2: `.codex_backups/accidental_top_level_20260521_093330`
+- Verification:
+  - Sherlock production Python: `tests/test_junction_scoring_parallel.py`
+    + `tests/test_junction_refiner.py` → `41 passed, 17 skipped`.
+  - H2 production Python (`/u/project/guillom/shared/envs/rectify/bin/python`):
+    import smoke passed and `rectify correct --help` shows
+    `--junction-max-size`.
+- Patched Sherlock benchmark `25601448_[0-4]` is running with the previous
+  min10 all-aligner pool and `--junction-max-size 10000`.
+  At 09:38 PDT, tasks were still in Module 2H:
+  `mapPacBio` 12:15 elapsed, other aligners 7:35 elapsed, no outputs yet.
+  That is not convincing speedup evidence. Since the 10 kb cap removes only
+  1,342 / 53,392 junctions from the already-min10 pool (~2.5%), this benchmark
+  mostly tests the bisect lookup. If it remains slow, the next bottleneck is
+  per-candidate scoring and we should add scoring/memoization instrumentation
+  rather than relying on lookup changes alone.
+
+**[2026-05-21 11:27 PDT] Speed check result — not enough:**
+- Patched benchmark `25601448_[0-4]` was stopped after proving the current
+  optimization is insufficient. No final corrected TSV/BAM outputs were
+  produced.
+- Module 2H did complete for several aligners, but still took about an hour:
+  - mapPacBio: 402,070 reads, 205,619 N-op reads, 101,183 refined;
+    Module 2H timing `3915.4s` (~65.3 min), then timed out in downstream BAM
+    parallel streaming before final output.
+  - gapmm2: 330,634 reads, 211,002 N-op reads, 81,214 refined;
+    Module 2H timing `3607.7s` (~60.1 min), then remained in downstream BAM
+    streaming.
+  - uLTRA: 340,584 reads, 209,726 N-op reads, 85,200 refined;
+    Module 2H timing `3547.4s` (~59.1 min), then remained in downstream BAM
+    streaming.
+  - minimap2 was still in Module 2H at ~54 min when the benchmark was stopped.
+  - deSALT log ended with a Python memory-map dump while still running; treat
+    this test as failed/indeterminate.
+- Interpretation: bisect lookup and a 10 kb max-size cap are necessary cleanup,
+  but do not make all-5-aligner Module 2H tractable on this chunk. The dominant
+  cost is now per-read/per-candidate scoring and/or too many N-op reads being
+  refined. Next plan should instrument candidate counts and add a hard
+  candidate cap/support-ranked candidate selection or a much narrower yeast
+  junction pool before running production correction.
+
+**[2026-05-21] Plan C implementation — profiling + candidate cap:**
+- Added opt-in Module 2H profiling:
+  - `rectify correct --junction-profile profile.json`
+  - `--junction-profile-sample-rate N` (default 1)
+- Profile JSON records aggregate timings, counts, raw/after-cap candidate
+  histograms, p50/p90/p99/max candidate counts, `_score_junction` calls,
+  `_score_hp_anchored` tier-1/tier-2 calls, boundary-filter counts, and final
+  Module 2H stats.
+- Added deterministic candidate cap:
+  - `--junction-max-candidates-per-nop N`
+  - ranking order: current junction first, annotated junctions next, then
+    smallest boundary delta, smallest intron-length delta, coordinates.
+  - Recommended first speed test value: `32`.
+- Normal runs are unchanged unless either new flag is supplied.
+- Focused local validation:
+  ```bash
+  OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  pytest tests/test_junction_refiner.py tests/test_junction_scoring_parallel.py -q
+  ```
+  Result: `43 passed, 17 skipped`.
+- Synced to Sherlock and H2. Sherlock focused tests passed
+  (`43 passed, 17 skipped`); H2 production Python import smoke passed.
+- Sherlock Plan C benchmark submitted:
+  - job array: `25624678_[0-4]`
+  - sample/chunk: `ysh1_rep2`, chunk `000`
+  - pool: previous `junction_pool.min10.all5.pkl`
+  - flags: `--junction-max-size 10000`,
+    `--junction-max-candidates-per-nop 32`,
+    `--junction-profile <aligner>/chunk_000/junction_profile.json`
+  - output root:
+    `/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/set2_cpa_machinery/ysh1_rep2/chunks/planc_test`
+
+**[2026-05-21] Bypass test hooks:**
+- Added `rectify correct --skip-junction-refinement` to bypass Module 2H
+  N-op boundary realignment/rewrite while still allowing an optional junction
+  pool to be indexed for downstream Module 2F.
+- Added `rectify correct --skip-3ss-rescue` to bypass Module 2F 3'SS
+  truncation rescue entirely, including annotation, pool, and read-own N-op
+  rescue triggers. Annotation-dependent gene attribution remains available.
+- Planned benchmark: ysh1_rep2 chunk 000 all five aligners with both flags,
+  to measure baseline correction runtime when both junction-specific rescue
+  layers are disabled.
+
+**[2026-05-21] ysh1 chunk 000 TSV-only vs corrected-BAM timing estimate:**
+- In the no-2F/no-2H bypass benchmark, TSV correction finished quickly for
+  the four usable aligners:
+  - mapPacBio: BAM processing `93.0s`
+  - minimap2: BAM processing `86.3s`
+  - gapmm2: BAM processing `92.7s`
+  - uLTRA: BAM processing `90.6s`
+- The only fully completed corrected-BAM write was minimap2:
+  `Corrected BAM write: 111.6s`, `Correction total: 202.6s`.
+- mapPacBio/gapmm2/uLTRA had already emitted their corrected TSVs but were
+  still in corrected-BAM writing when canceled at `14:35` elapsed, implying a
+  lower bound of roughly `>12.6 min` extra BAM-writing time for each of those
+  aligners on this chunk.
+- Operational conclusion: corrected TSV manifests are sufficient for
+  `rectify analyze`, so production correction should omit corrected BAMs by
+  default. Generate corrected BAMs only for targeted IGV/debug chunks until
+  the corrected-BAM writer is profiled/optimized.
+
+**[2026-05-21] Lazy corrected consensus design note:**
+- Dedicated plan written at `dev/specs/lazy_corrected_consensus_plan.md`.
+- Core idea: keep homopolymer-aware corrected-CIGAR scoring and still emit a
+  final corrected consensus BAM, but stop materializing full per-aligner
+  corrected BAMs as an intermediate. Instead, score raw BAM records in memory
+  using the per-aligner corrected TSV rows, select `winning_aligner`, then
+  write only the winning corrected records into `corrected_consensus.bam`.
+- Advisor review confirmed the main coupling points:
+  `merge_corrected_tsvs()` uses per-aligner corrected BAMs only for
+  `hp_edit_distance`/`aligned_bases`; generated split scripts use corrected
+  BAMs both for that scoring and as the source for `corrected_consensus.bam`;
+  non-chunked `run/stages.py` also unconditionally wires corrected-BAM output.
+- Implementation should first target `realign_exon_blocks()` so it realigns
+  only exon blocks containing homopolymer-position `X` ops, then extract the
+  corrected-read edit sequence into a shared helper used by sequential writer,
+  parallel writer, lazy HP scoring, and final consensus BAM generation.
+- Important legacy-run caveat added to the plan: CPA DRS and H2 mex67aa
+  predate RN-tagged chunk FASTQs / `*.read_num_sidecar.parquet`. Before lazy
+  raw-BAM scoring is trusted on those outputs, reconstruct post-hoc read_num
+  sidecars from existing chunk FASTQs using old round-robin chunk order
+  (`read_num = local_index * n_chunks + chunk_index`) and write explicit
+  `POSTHOC_PROVENANCE.json`. Use sidecar-backed normalized QNAME lookup first;
+  inject `RN:i` into existing BAMs only if QNAME fallback coverage is
+  insufficient.
+
+**[2026-05-21] Lazy corrected consensus implementation checkpoint:**
+- `realign_exon_blocks()` now targets only exon blocks that contain an `X` op
+  at a homopolymer reference position, instead of realigning every eligible
+  short exon block after a read-level trigger.
+- Added shared `apply_corrected_edits_to_read()` in `bam_writer.py`; sequential
+  and parallel corrected-BAM writers now use the same hard-clipped correction
+  edit sequence that lazy scoring/final consensus BAM writing uses.
+- `merge_corrected_tsvs()` now supports `per_aligner_raw_bams=...` for lazy
+  HP-aware edit-distance scoring from raw BAM + corrected TSV, with strict
+  identity checks by default. The old `per_aligner_corrected_bams` path remains
+  supported and takes precedence when supplied.
+- Added `write_corrected_consensus_bam()` to write the final corrected consensus
+  BAM directly from raw BAMs + per-aligner corrected TSVs + merged
+  `winning_aligner`, without materializing full per-aligner corrected BAMs.
+- Generated chunk correction scripts now omit per-aligner
+  `--write-corrected-bam` by default; chunk merge prefers lazy HP scoring and
+  writes one `corrected_consensus.bam`.
+- Added `reconstruct_posthoc_sidecar_from_chunks()` in
+  `core/chunking/sidecar.py` for legacy round-robin chunk FASTQs, emitting
+  `<sample>.POSTHOC_PROVENANCE.json`.
+- Focused local validation:
+  - `tests/test_bam_writer_parallel_smoke.py`,
+    `tests/test_corrected_consensus_tiebreaker.py`,
+    `tests/test_qname_sanitizer_and_validator.py`,
+    `tests/test_read_num_sidecar.py`, `tests/test_splice_junction.py`,
+    `tests/test_parallel_processing.py` →
+    `145 passed, 1 skipped, 1 xfailed`.
+  - Full `tests/test_validation_reads.py` did not run in the local sandbox:
+    subprocess `rectify correct` calls aborted at OpenMP startup with
+    `OMP: Error #179: Function Can't open SHM failed`, before exercising the
+    assertions.
+- Synced this implementation checkpoint to Sherlock and H2. Compile smoke
+  passed on both. Sherlock focused test pass
+  (`tests/test_bam_writer_parallel_smoke.py tests/test_read_num_sidecar.py`)
+  passed: `11 passed`.
+
+---
+
+## [2026-05-20] CODEX audit bug sweep — CHECKPOINT/IO/PRESCAN FIXES IN WORKING TREE
+
+**Status:** FIXED in working tree, uncommitted.
+
+**Scope:** Follow-up fixes from `dev/BUGS_TO_FIX.md` NEW-067 through NEW-074 and
+related `CODEX_AUDIT.md` durability/performance findings.
+
+**Fixes landed:**
+- `consensus.py`: checkpoint batches now fsync/validate BAMs before atomic
+  `.done` sentinels; resume trusts only a contiguous valid batch prefix.
+- `consensus.py`: scratch-to-output BAM and `.bai` copies now fsync destination
+  files and parent dirs.
+- `single_sample.py`: DRS `samtools fastq` failures preserve stderr/stdout in the
+  raised error instead of discarding context.
+- `single_sample.py`: DRS restored-polya BAM sort swaps now use `Path.replace()`
+  instead of `unlink()` + `rename()`.
+- `multi_aligner.py`: if minimap2 was requested but failed, the pipeline raises
+  instead of returning a partial/empty aligner map into consensus.
+- `align_command.py`: MD-tagged `.md.bam` is indexed before replacing
+  `rectified.bam`; the `.bai` is atomically swapped only after index success.
+- `bam/parallel.py`: parallel correction prescans the BAM once for read stats,
+  coverage-region planning, and optional variant-aware rescue, removing the
+  previous stats scan + per-chromosome coverage scans + variant scan fan-out.
+
+**Tests run:** focused suite passed:
+`tests/test_consensus_checkpoint_safety.py`, `tests/test_align_command_index_commit.py`,
+`tests/test_multi_aligner_failures.py`, `tests/test_run_single_sample_safety.py`,
+`tests/test_parallel_processing.py`, `tests/test_corrected_consensus_tiebreaker.py`,
+`tests/test_analyze.py`, `tests/test_bam_writer.py`,
+`tests/test_bam_writer_parallel_smoke.py` (`93 passed`). Earlier related slices
+also passed for GTF feature expansion, checkpoint resume, and BAM writer smoke.
+
+**Caveat:** full repository pytest has not been run in this session.
+
+---
+
 ## [2026-05-20] mapPacBio QNAME sanitizer — ONT Dorado FASTQs
 
 **Status:** FIXED (`e8c8070`)
@@ -171,6 +520,51 @@ Bypass the merged-BAM crash entirely. Stage E already produced 24 per-chunk cons
 **Current working policy stands:** for samples >4M reads, use `rectify split` per-chunk array (290k reads per chunk, Stage E.5 pattern) — do NOT run `rectify correct` on merged BAMs regardless of which cluster, thread count, or commit. Commit B's region-pre-partitioning may or may not change this; until the deferred test runs, the chunk-first policy is the recommendation.
 
 See briefing: `dev/specs/briefings/commit_b_briefing.md` §4 for the smoke deferral context.
+
+---
+
+## [2026-05-20] parallel BAM writer process aborts — MITIGATED IN WORKING TREE
+
+**Status:** MITIGATED (uncommitted Codex working tree, 2026-05-20). The
+parallel BAM writer no longer uses worker processes by default. It preserves
+the region-planning code path but executes region workers sequentially unless
+`RECTIFY_ENABLE_PARALLEL_BAM_WRITER=1` is explicitly set.
+
+**Affects:** `rectify.core.bam.bam_writer_parallel.write_corrected_bam_parallel()`
+and tests that call it with `n_threads > 1`.
+
+**Symptom:** intermittent fatal Python aborts in/around `multiprocessing.Pool`
+or process launch while exercising `write_corrected_bam_parallel()`. In the M1
+sandbox, attempts to switch to spawn/forkserver/subprocess workers exposed
+related low-level failures:
+
+- `spawn` stalled in pytest on the 36-read smoke fixture.
+- `forkserver` failed with sandbox `PermissionError` binding the Unix socket.
+- clean subprocess workers hit OpenMP shared-memory startup failures and could
+  still emit fatal abort traces during `subprocess.Popen`.
+
+**Adjacent import bug found:** plain `import rectify` eagerly imported
+`rectify.visualize`, which imported Matplotlib and ran font-manager subprocess
+checks during test collection. This violates the repo rule that optional
+numpy/plotting stacks must not load before thread limits are set. The working
+tree now makes visualization lazy by default; `import rectify.visualize` still
+works when plotting is needed, and `RECTIFY_IMPORT_VISUALIZE=1` restores the
+legacy eager probe.
+
+**Fix/mitigation in working tree:**
+
+- Region BAM commits are now atomic: write unsorted temp → sort to temp BAM →
+  fsync → `os.replace()` final region BAM → atomic `.ok` sentinel.
+- Resume only trusts a region when both the `.ok` sentinel and region BAM exist.
+- Unsafe worker-process execution is opt-in via
+  `RECTIFY_ENABLE_PARALLEL_BAM_WRITER=1`; default `n_threads > 1` logs a warning
+  and runs region workers sequentially.
+
+**Validation:** `pytest tests/test_bam_writer.py tests/test_bam_writer_parallel_smoke.py -q`
+passes on M1 (`18 passed`). This is intentionally a correctness/safety
+mitigation, not a throughput fix. Re-enable true process parallelism only after
+cluster-specific smoke tests prove the local Python/pysam/OpenMP runtime can
+launch workers without aborts.
 
 ---
 
@@ -464,3 +858,277 @@ field report, not a fix.
 
 *To add an entry: symptom (exact error string), root cause (one sentence),
 fix commit, safe-to-pull verdict.*
+
+---
+
+## [2026-05-21] Analyze gene attribution for APA/shift analysis — SHERLOCK HAN VALIDATED
+
+**Status:** Implemented in working tree, uncommitted. Local focused tests pass
+and Sherlock Han BWA-only analyze completed successfully with DRS-origin
+reference attribution.
+
+**Affects:** `rectify analyze` gene-level DESeq2 and cluster shift analysis,
+especially short-read QuantSeq REV runs and any long-read run where a CPA
+cluster may derive from multiple upstream genes.
+
+**Problem:** `rectify analyze` currently annotates CPA clusters with a single
+nearest same-strand annotated TES using `annotate_clusters_with_genes()`
+(`-500/+100` bp default). There is no protocol/read-length fork: manifest
+analysis uses this heuristic for both DRS and QSrev once it has
+`chrom/strand/corrected_position`. This is incorrect for:
+
+- long reads, where read-body/TSS evidence should drive gene attribution;
+- shared CPA clusters, where one cluster can legitimately have weighted
+  contributions from multiple upstream genes;
+- short reads, where body overlap is weak and the best attribution source is
+  an imported long-read-derived cluster/position gene map, with annotation as
+  an explicit fallback rather than the primary rule.
+
+**Implementation landed in working tree:**
+
+- Add a first-class weighted `cluster_gene_attributions.tsv` table:
+  `cluster_id, gene_id, gene_name, raw_attributed_count,
+  attribution_weight, source`.
+- Add attribution modes for analyze:
+  - `annotation`: legacy nearest-TES behavior;
+  - `body`: compute attribution from corrected TSV read-body spans
+    (`alignment_start/end`) against CDS/gene features;
+  - `reference`: map external per-position DRS attribution TSVs
+    (`chrom, position, strand, gene_id, attributed_count`) onto the current CPA
+    clusters;
+  - `body-then-annotation` / `reference-then-annotation`: fill unattributed
+    clusters with the legacy annotation fallback.
+- Thread weighted attributions into gene-level DESeq2 and shift analysis so a
+  shared CPA cluster contributes fractionally to multiple genes instead of
+  being forced into one arbitrary `gene_id`.
+- Fill reference/body attribution `gene_name` values from loaded annotation
+  when possible, so systematic IDs still map to common names for GO/plots.
+- Explicit non-default attribution modes fail the analyze run if attribution
+  cannot be built; the legacy `annotation` mode remains backward compatible.
+- Add `--gene-attribution-reference-window BP` for reference modes. Exact
+  DRS-position-to-current-cluster overlap is still preferred; if absent, a
+  DRS attributed position can map to the nearest same-strand current CPA
+  cluster within BP bases. This handles small DRS/QSrev peak offsets without
+  reopening the broad `-500/+100` annotation window.
+
+**Files touched for this entry:**
+
+- `rectify/core/analyze/cluster_gene_attribution.py` (new)
+- `rectify/core/analyze/__init__.py`
+- `rectify/core/analyze/deseq2.py`
+- `rectify/core/analyze/manifest.py`
+- `rectify/core/analyze/shift_analysis.py`
+- `rectify/core/commands/analyze_command.py`
+- `tests/test_analyze.py`
+
+**Local tests run:**
+
+```bash
+pytest tests/test_analyze.py -q
+```
+
+Result after the reference-window addition: `53 passed, 2 warnings in 35.93s`.
+The new tests cover weighted
+gene-level aggregation, weighted shift analysis, and mapping external
+per-position DRS attributions onto current CPA clusters, including the bounded
+nearest-cluster reference window.
+
+**Validation:** reran Han BWA-only analyze on Sherlock with
+`--gene-attribution-mode reference-then-annotation` using staged DRS origin
+attribution tables under
+`analyses/cross_modality_trt_20260519/inputs/*/attribution_origin/`.
+Submitted full rerun as Sherlock SLURM job `25601498` using:
+`/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/han2023_bwa_fast/run_han_bwa_analyze_drs_origin_ref.sbatch`.
+Output target:
+`/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/han2023_bwa_fast/analyze_drs_origin_ref_20260521`.
+Job `25601498` failed before analysis started because the sbatch script exited
+on `git log/status` from a compute-node path that did not resolve as a git
+checkout. Fix the script to make git reporting best-effort, add
+`--gene-attribution-reference-window`, then resubmit.
+Resubmitted as Sherlock SLURM job `25602373` with
+`--gene-attribution-reference-window 25`.
+Result: `COMPLETED`, exit `0:0`, elapsed `01:11:16`.
+
+Output:
+`/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/han2023_bwa_fast/analyze_drs_origin_ref_20260521`
+
+Key output metrics:
+- CPA clusters retained: 231,182
+- `cluster_gene_attributions.tsv`: 214,114 rows, 170,819 clusters, 8,442 genes
+- Attribution row sources: 194,778 reference; 19,336 annotation fallback
+- Shared multi-gene clusters: 36,513
+- Gene-level DESeq2 tested 7,238 genes per contrast
+- Significant genes: Ysh1AA 4,403; Rat1AA 3,727
+- Weighted shift genes analyzed: Ysh1AA 6,859; Rat1AA 6,858
+
+**Safe-to-pull verdict:** candidate fix is validated on the Han BWA-only data
+and ready for review/commit. Still inspect the dirty tree carefully and stage
+only the attribution-related paths; the repo contains unrelated WIP.
+
+---
+
+## [2026-05-21] H2 mex67aa_rep3 DRS continuation — MERGE SUBMITTED
+
+**Status:** H2 merge-aligners job submitted and under monitoring.
+
+**Dataset:** `/u/project/guillom/shared/processed/mex67aa_vs_wtaa_rectify_v0.9.0`
+
+**Observed state before submission:**
+- `mex67aa_rep1` and `mex67aa_rep2` each had all five merged aligner BAMs.
+- `mex67aa_rep3` had completed chunk outputs for all five aligners but had no
+  `chunks/merged_bams/` outputs yet.
+- `mex67aa_rep3` deSALT chunks `003`, `005`, and `006` produced tiny empty BAMs
+  after deSALT exited `-11`; logs identify this as likely SIGSEGV in
+  `Loop-ProcessReads` from the upstream deSALT bug and intentionally emit empty
+  BAMs so those chunks proceed with 4-aligner consensus.
+
+**Submission:**
+- First `qsub` failed because H2 JSV treated propagated `LC_ALL=C.UTF-8`
+  locale warnings as fatal.
+- Resubmitted with locale variables cleared:
+  `env -u LC_ALL -u LANG qsub .../mex67aa_rep3/chunks/run_merge_aligners.sh`
+- Job: `13463288` (`mex67aa_rep3_merge_aln`)
+- Initial queue state at 2026-05-21 15:21 PDT: `qw`, waiting for 16 shared
+  slots on `campus2.q`.
+
+**Next steps when merge completes:**
+Run the manual UGE chain from `mex67aa_rep3/chunks/submit_pipeline.sh`:
+`run_prescan.sh`, per-aligner correction arrays, chunk merge, final merge,
+per-chunk consensus, then consensus-chunk merge. Confirm whether correction
+uses the current safer single-aligner/per-chunk strategy before launching the
+large merged-BAM cross-aligner correct stage.
+
+---
+
+## [2026-05-21] Post-hoc read-number sidecars — CPA SHERLOCK COMPLETE
+
+**Status:** Sherlock CPA set2 sidecars reconstructed and validated. H2 pending
+environment/data prerequisites.
+
+**Why:** Production CPA and mex67aa chunk FASTQs predate the RN/read-number
+sidecar split path. They had `chunks_manifest.json`, but no
+`*.read_num_sidecar.parquet`; FASTQ headers also lacked `RN:i`.
+
+**Method:** used the legacy round-robin inverse:
+`read_num = local_read_index * n_chunks + chunk_index`.
+The helper writes:
+- `<sample>.read_num_sidecar.parquet`
+- `<sample>.read_num_sidecar.PROVENANCE.json`
+- `<sample>.POSTHOC_PROVENANCE.json`
+
+**Sherlock CPA output root:**
+`/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/set2_cpa_machinery`
+
+**Validated row counts:** Parquet metadata row counts exactly match each
+sample's `chunks_manifest.json` `n_reads`.
+
+| Sample | Rows |
+| --- | ---: |
+| wt_rep1 | 4,347,602 |
+| wt_rep2 | 4,198,935 |
+| wt_rep3 | 2,897,972 |
+| rna15_rep1 | 1,090,278 |
+| rna15_rep2 | 1,910,111 |
+| rna15_rep3 | 945,995 |
+| ysh1_rep1 | 1,264,614 |
+| ysh1_rep2 | 2,010,907 |
+| ysh1_rep3 | 1,859,080 |
+| wt_tfiiib_rep1 | 11,543,753 |
+| wt_tfiiib_rep2 | 8,234,198 |
+| wt_tfiiib_rep3 | 7,657,191 |
+
+**Important operational notes:**
+- The first batch process was killed after writing `wt_rep1`/`wt_rep2` because
+  validation used `ReadNumSidecar.open()`, which loads all rows into memory.
+  The completed sidecars were valid. The rerun used one sample per Python
+  process and `pyarrow.parquet.ParquetFile(...).metadata.num_rows`.
+- Do not validate multi-million-row sidecars by opening them through
+  `ReadNumSidecar.open()` on login nodes.
+- These are post-hoc sidecars only. Existing BAMs do **not** have `RN:i` tags.
+  Consensus can still use the sidecar for tag restoration via normalized-QNAME
+  fallback, but RN-keyed consensus requires either BAM RN injection or
+  re-alignment from RN-tagged chunk FASTQs.
+
+**H2 status:**
+- `/u/project/guillom/shared/processed/mex67aa_vs_wtaa_rectify_v0.9.0` has
+  38 chunk FASTQs and 3 `chunks_manifest.json` files, so post-hoc
+  reconstruction is possible.
+- Installed `pyarrow==16.1.0` into
+  `/u/project/guillom/shared/envs/rectify` using the env's own `pip` with
+  `--only-binary=:all:`. The first unpinned `pip install pyarrow` attempted a
+  source build and failed before installing anything; the pinned wheel install
+  succeeded. Verified a Parquet write/read smoke test with the env Python.
+- H2 mex67aa post-hoc sidecars were reconstructed and validated by Parquet
+  metadata against each sample's `chunks_manifest.json`:
+  - `mex67aa_rep1`: 7,925,277 rows
+  - `mex67aa_rep2`: 6,311,767 rows
+  - `mex67aa_rep3`: 4,111,368 rows
+- `/u/project/guillom/shared/processed/alignments/wt_tfiiib_rep*` has no
+  chunk FASTQs and no `chunks_manifest.json`; it cannot be reconstructed
+  in-place from that copied H2 artifact tree.
+
+---
+
+## [2026-05-21] Lazy Corrected Consensus — ysh1 Pilot Timings and Fast-Path Test
+
+**Status:** implemented, synced to Sherlock for testing; H2 sync pending this
+checkpoint.
+
+**Code changes:**
+- `merge_corrected_tsvs()` now accepts `lazy_scoring_workers` and can score
+  aligners in parallel from raw BAMs + corrected TSVs.
+- Lazy raw-BAM HP scoring skips the transient corrected-BAM edit stack when a
+  TSV row has no correction surgery fields that can alter the CIGAR.
+- Generated split and single-sample merge paths pass their thread counts into
+  lazy HP scoring.
+
+**Full ysh1 chunk 000 baseline, Sherlock job `25635672`:**
+- Aligners: `mapPacBio`, `minimap2`, `gapmm2`, `uLTRA`; deSALT excluded.
+- Lazy merge + whole-read HP scoring: `1055.0s`.
+- Final corrected consensus BAM writing/sort/index: `227.4s`.
+- Output:
+  `/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/set2_cpa_machinery/ysh1_rep2/chunks/bypass_2f2h_lazy_consensus_region_test/chunk_000/corrected_consensus.bam`
+
+**10k stratified fast-path pilot, Sherlock job `25637055`:**
+- `N_READS_TO_TEST=10000` builds temporary per-aligner TSV subsets before
+  merge/consensus.
+- Trigger coverage selected from ysh1 chunk 000:
+  - softclip HP rescue: 2,127 selected / 2,790 available
+  - overcall rescue: 2,087 / 2,492
+  - changed 3' end: 6,426 / 41,431
+  - junction reads: 6,301 / 223,577
+  - no module trigger: 3,957 / 140,323
+  - no available examples in this bypass chunk for 2F five-prime rescue,
+    intronic-tail clip, or reanchor/upstream-trim.
+- Lazy merge + HP scoring: `18.8s`.
+- Final corrected consensus BAM: `14.1s`.
+- Per-aligner scoring stats:
+  - mapPacBio: 9,944 no-edit fast path, 0 transient-edit, 9,813 scored
+  - minimap2: 5,992 no-edit, 4,000 transient-edit, 9,876 scored
+  - uLTRA: 6,483 no-edit, 3,520 transient-edit, 9,857 scored
+  - gapmm2: 5,542 no-edit, 3,903 transient-edit, 9,040 scored
+
+**Important next step:** implement differential HP scoring over only the read
+regions where candidate aligners disagree. Current whole-read scoring is
+correct but still recomputes shared blocks that cancel out when aligners have
+identical or near-identical CIGAR representations.
+
+**2F-rich targeted panel:** RPL19B/RPL20B short-exon-1 genes are good real
+examples for minimap2 2F rescue. In current TSVs these appear as systematic IDs
+`YBL027W` and `YOR312C`. Scanning full minimap2 corrected TSVs found dense
+RPL19B 2F examples; `rna15_rep3/chunk_001` was selected because all four stable
+aligners had nonempty corrected TSVs and raw BAMs.
+
+Sherlock job `25637632`:
+- `N_READS_TO_TEST=10000`
+- `MIN_READS_PER_TRIGGER=1000`
+- `MIN_READS_TARGET_GENES=1000`
+- `TARGET_GENE_IDS=YBL027W,YOR312C`
+- selected all 134 target-gene reads and all 93 target-gene 2F reads
+- selected 7,552 / 9,590 available 2F reads overall
+- also included intronic-tail, reanchor/upstream-trim, junction, 3'-changed,
+  softclip HP, overcall, and no-trigger examples
+- lazy merge + HP scoring: `18.3s`
+- final corrected consensus BAM: `7.9s`
+- output:
+  `/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/set2_cpa_machinery/rna15_rep3/chunks/lazy_consensus_target_2f_test/chunk_001`

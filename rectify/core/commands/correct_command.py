@@ -328,6 +328,7 @@ def validate_inputs(args) -> dict:
         # Disabled for short reads (no poly-A tail).
         'apply_polya_trim': not args.skip_polya_trim and not is_short_read,
         'apply_indel_correction': not args.skip_indel_correction and not is_short_read,
+        'apply_3ss_rescue': not getattr(args, 'skip_3ss_rescue', False),
         'netseq_dir': getattr(args, '_resolved_netseq_dir', getattr(args, 'netseq_dir', None)),
         'netseq_samples': getattr(args, 'netseq_samples', None),
         'polya_model_path': getattr(args, 'polya_model', None),
@@ -346,6 +347,11 @@ def validate_inputs(args) -> dict:
         'junction_window':           getattr(args, 'junction_window', 15),
         'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
         'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
+        'junction_max_size':         getattr(args, 'junction_max_size', None),
+        'junction_max_candidates_per_nop': getattr(args, 'junction_max_candidates_per_nop', None),
+        'junction_profile':          getattr(args, 'junction_profile', None),
+        'junction_profile_sample_rate': getattr(args, 'junction_profile_sample_rate', 1),
+        'skip_junction_refinement':  getattr(args, 'skip_junction_refinement', False),
         'junction_penalty_table':    getattr(args, 'junction_penalty_table', None),
         'str_penalty_table':         getattr(args, 'str_penalty_table', None),
         # Pre-computed cache paths from `rectify prescan` (chunked correction pipelines).
@@ -436,6 +442,7 @@ def run(args):
     logger.info(f"  AG mispriming:         {'ENABLED' if config['apply_ag_mispriming'] else 'DISABLED'}")
     logger.info(f"  Poly(A) trimming:      {'ENABLED' if config['apply_polya_trim'] else 'DISABLED'}")
     logger.info(f"  Indel correction:      {'ENABLED' if config['apply_indel_correction'] else 'DISABLED'}")
+    logger.info(f"  3'SS rescue (2F):      {'ENABLED' if config['apply_3ss_rescue'] else 'DISABLED'}")
     logger.info(f"  Variant-aware rescue:  {'ENABLED' if config['variant_aware'] else 'DISABLED'}")
     if config.get('variant_scan_cache'):
         logger.info(f"    Variant scan cache:  {config['variant_scan_cache']}")
@@ -443,7 +450,14 @@ def run(args):
     logger.info(f"  Spike-in filter:       {'ENABLED (' + ','.join(config['filter_spikein']) + ')' if config['filter_spikein'] else 'DISABLED'}")
     _n_abams = len(config.get('aligner_bams', []))
     _jpool_cache = config.get('junction_pool_cache')
-    if _jpool_cache:
+    if config.get('skip_junction_refinement'):
+        if _jpool_cache:
+            logger.info(f"  Junction refinement:   SKIPPED (pool-only cache: {_jpool_cache})")
+        elif _n_abams:
+            logger.info(f"  Junction refinement:   SKIPPED (pool-only from {_n_abams} aligner BAMs)")
+        else:
+            logger.info("  Junction refinement:   SKIPPED")
+    elif _jpool_cache:
         logger.info(f"  Junction refinement:   ENABLED (pre-built pool cache: {_jpool_cache})")
     else:
         logger.info(f"  Junction refinement:   {'ENABLED (' + str(_n_abams) + ' aligner BAMs)' if _n_abams else 'DISABLED (pass --aligner-bams to enable)'}")
@@ -527,20 +541,8 @@ def run(args):
                 "Input BAM has no reference sequences in header — likely an aligner "
                 "fallback empty BAM. Writing empty outputs and skipping correction."
             )
-            _EMPTY_TSV_COLS = [
-                'read_id', 'chrom', 'strand',
-                'original_3prime', 'corrected_3prime',
-                'five_prime_position', 'five_prime_rescued', 'five_prime_exon_cigar',
-                'alignment_start', 'alignment_end',
-                'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
-                'polya_length', 'aligned_a_length', 'soft_clip_a_length',
-                'junctions', 'n_junctions',
-                'five_prime_soft_clip_length', 'three_prime_soft_clip_length',
-                'mapq', 'correction_applied', 'confidence', 'qc_flags', 'fraction',
-                'gene_id', 'pt_tag', 'polya_score', 'polya_source',
-                'sc_homopolymer_extension', 'sc_rescued_seq', 'sc_original_softclip_len',
-            ]
             import pandas as _pd
+            from ..bam.output import CORRECTION_TSV_HEADER as _EMPTY_TSV_COLS
             _pd.DataFrame(columns=_EMPTY_TSV_COLS).to_csv(
                 str(config['output_path']), sep='\t', index=False
             )
@@ -580,34 +582,31 @@ def run(args):
         # When --aligner-bams are provided (or a --junction-pool-cache pkl), replace
         # imprecise N-op boundaries in the consensus BAM with the best-supported
         # candidate junction using split-alignment scoring with homopolymer-aware
-        # edit distance.
+        # edit distance.  With --skip-junction-refinement, only the junction pool
+        # index is prepared for downstream Module 2F rescue; the input BAM is not
+        # realigned or rewritten.
         _junction_pool_cache = config.get('junction_pool_cache')
-        _run_2h = (config.get('aligner_bams') or _junction_pool_cache) and config.get('annotation_path')
+        _skip_junction_refinement = config.get('skip_junction_refinement', False)
+        _skip_3ss_rescue = not config.get('apply_3ss_rescue', True)
+        _has_junction_context = (
+            (config.get('aligner_bams') or _junction_pool_cache)
+            and config.get('annotation_path')
+            and not (_skip_junction_refinement and _skip_3ss_rescue)
+        )
         # Per-chromosome sorted junction index for Module 2F pool lookup.
         # Built from the prescan pool if available; otherwise None (GFF-only mode).
         _pool_chrom_index = None
-        if _run_2h:
+        if _has_junction_context:
             _t_refine = _time.perf_counter()
-            logger.info("Module 2H: Junction N-op boundary refinement...")
+            if _skip_junction_refinement:
+                logger.info("Module 2H: skipped junction refinement; preparing pool lookup only...")
+            else:
+                logger.info("Module 2H: Junction N-op boundary refinement...")
             try:
-                from ..splice.junction_refiner import refine_bam_junctions
+                from ..splice.junction_refiner import build_junction_pool, refine_bam_junctions
                 from ..consensus.consensus import load_annotated_junctions as _load_annot_j
 
                 _annot_j = _load_annot_j(str(config['annotation_path']))
-                _bam_stem = Path(bam_to_process).stem
-                for _sfx in ('.consensus.sorted', '.consensus', '.rectified', '.sorted'):
-                    if _bam_stem.endswith(_sfx):
-                        _bam_stem = _bam_stem[:-len(_sfx)]
-                        break
-                _out_dir = Path(str(config['output_path'])).parent
-                # Include a short unique ID so concurrent runs on the same sample
-                # don't collide on the intermediate file.
-                import uuid as _uuid
-                _run_id = _uuid.uuid4().hex[:8]
-                _refined_bam = str(_out_dir / f"{_bam_stem}.junction_refined_{_run_id}.bam")
-
-                from ...utils.genome import load_genome as _load_genome_for_refine
-                _refine_genome = _load_genome_for_refine(str(config['genome_path']))
 
                 # Load pre-built junction pool from cache if available.
                 _prebuilt_pool = None
@@ -624,84 +623,142 @@ def run(args):
                         len(_prebuilt_pool), len(_prebuilt_annot_set),
                     )
 
+                if _prebuilt_pool is None and config.get('aligner_bams'):
+                    _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
+                        config['aligner_bams'],
+                        _annot_j,
+                        max_junction_size=config.get('junction_max_size'),
+                    )
+                    logger.info(
+                        "  Built junction pool: %d junctions (%d annotated)",
+                        len(_prebuilt_pool), len(_prebuilt_annot_set),
+                    )
+
+                _pool_for_index = _prebuilt_pool
+                _jmax = config.get('junction_max_size')
+                if _pool_for_index and _jmax is not None:
+                    _annot_for_filter = _prebuilt_annot_set or set()
+                    _before_pool_filter = len(_pool_for_index)
+                    _pool_for_index = {
+                        _j for _j in _pool_for_index
+                        if (
+                            _j in _annot_for_filter
+                            or (len(_j) >= 3 and int(_j[2]) - int(_j[1]) <= int(_jmax))
+                        )
+                    }
+                    if len(_pool_for_index) != _before_pool_filter:
+                        logger.info(
+                            "  Pool lookup max-size filter: %d -> %d junctions",
+                            _before_pool_filter, len(_pool_for_index),
+                        )
+
                 # Build bisect index for Module 2F pool lookup (novel junction rescue).
                 # This is built once here and passed to all process_bam_* calls below.
-                _pool_chrom_index = bam_processor._build_pool_chrom_index(_prebuilt_pool)
+                _pool_chrom_index = bam_processor._build_pool_chrom_index(_pool_for_index)
 
-                # For ONT PCR-cDNA, try to build a per-UMI-bin PenaltyTableSet from
-                # bundled tables.  This routes each read to the table calibrated at
-                # its UMI cluster depth (umi1/umi2/umi3plus), which reduces false
-                # corrections from over-confident singleton-read error rates.
-                # Only activated when no explicit --junction-penalty-table was given
-                # (a user-supplied path always uses single-table mode).
-                _penalty_table_set = None
-                if config.get('ont_cDNA') and not config.get('junction_penalty_table'):
-                    try:
-                        from ..splice.junction_refiner import PenaltyTableSet
-                        from ..splice.hp_penalty import HpPenaltyTable as _HpPT
-                        from ...data import (
-                            get_bundled_junction_penalty_table,
-                            get_bundled_str_penalty_table as _get_str_pt,
-                        )
-                        _org = config.get('organism')
-                        if _org is None:
-                            from ...data import detect_organism_from_genome
-                            _gp = config.get('genome_path')
-                            if _gp:
-                                _org = detect_organism_from_genome(Path(str(_gp)))
-                        if _org:
-                            _pts_bins = {}
-                            _str_p = _get_str_pt(_org, protocol='cdna')
-                            _str_path = str(_str_p) if _str_p is not None else None
-                            for _bin_name in ('umi1', 'umi2', 'umi3plus', 'pooled'):
-                                _p = get_bundled_junction_penalty_table(
-                                    _org, protocol='cdna', bin=_bin_name
-                                )
-                                if _p is not None:
-                                    _pts_bins[_bin_name] = _HpPT.from_tsv(
-                                        str(_p), str_path=_str_path
+                if _skip_junction_refinement:
+                    _n_pool = len(_pool_for_index) if _pool_for_index else 0
+                    logger.info(
+                        "  Junction refinement skipped; Module 2F will use %d pooled junctions",
+                        _n_pool,
+                    )
+                    logger.info(
+                        f"[TIMING] Junction pool setup: {_time.perf_counter() - _t_refine:.1f}s"
+                    )
+                else:
+                    _bam_stem = Path(bam_to_process).stem
+                    for _sfx in ('.consensus.sorted', '.consensus', '.rectified', '.sorted'):
+                        if _bam_stem.endswith(_sfx):
+                            _bam_stem = _bam_stem[:-len(_sfx)]
+                            break
+                    _out_dir = Path(str(config['output_path'])).parent
+                    # Include a short unique ID so concurrent runs on the same sample
+                    # don't collide on the intermediate file.
+                    import uuid as _uuid
+                    _run_id = _uuid.uuid4().hex[:8]
+                    _refined_bam = str(_out_dir / f"{_bam_stem}.junction_refined_{_run_id}.bam")
+
+                    from ...utils.genome import load_genome as _load_genome_for_refine
+                    _refine_genome = _load_genome_for_refine(str(config['genome_path']))
+
+                    # For ONT PCR-cDNA, try to build a per-UMI-bin PenaltyTableSet from
+                    # bundled tables.  This routes each read to the table calibrated at
+                    # its UMI cluster depth (umi1/umi2/umi3plus), which reduces false
+                    # corrections from over-confident singleton-read error rates.
+                    # Only activated when no explicit --junction-penalty-table was given
+                    # (a user-supplied path always uses single-table mode).
+                    _penalty_table_set = None
+                    if config.get('ont_cDNA') and not config.get('junction_penalty_table'):
+                        try:
+                            from ..splice.junction_refiner import PenaltyTableSet
+                            from ..splice.hp_penalty import HpPenaltyTable as _HpPT
+                            from ...data import (
+                                get_bundled_junction_penalty_table,
+                                get_bundled_str_penalty_table as _get_str_pt,
+                            )
+                            _org = config.get('organism')
+                            if _org is None:
+                                from ...data import detect_organism_from_genome
+                                _gp = config.get('genome_path')
+                                if _gp:
+                                    _org = detect_organism_from_genome(Path(str(_gp)))
+                            if _org:
+                                _pts_bins = {}
+                                _str_p = _get_str_pt(_org, protocol='cdna')
+                                _str_path = str(_str_p) if _str_p is not None else None
+                                for _bin_name in ('umi1', 'umi2', 'umi3plus', 'pooled'):
+                                    _p = get_bundled_junction_penalty_table(
+                                        _org, protocol='cdna', bin=_bin_name
                                     )
-                            if all(b in _pts_bins for b in ('umi1', 'umi2', 'umi3plus')):
-                                _penalty_table_set = PenaltyTableSet(_pts_bins, umi_tag='XC')
-                                logger.info(
-                                    "  Module 2H: per-UMI-bin penalty tables loaded "
-                                    "(%d bins: %s)",
-                                    len(_pts_bins), ', '.join(sorted(_pts_bins)),
-                                )
-                    except Exception as _pts_exc:
-                        logger.debug(
-                            "  Module 2H: could not build PenaltyTableSet "
-                            "(will use single-table mode): %s", _pts_exc
-                        )
+                                    if _p is not None:
+                                        _pts_bins[_bin_name] = _HpPT.from_tsv(
+                                            str(_p), str_path=_str_path
+                                        )
+                                if all(b in _pts_bins for b in ('umi1', 'umi2', 'umi3plus')):
+                                    _penalty_table_set = PenaltyTableSet(_pts_bins, umi_tag='XC')
+                                    logger.info(
+                                        "  Module 2H: per-UMI-bin penalty tables loaded "
+                                        "(%d bins: %s)",
+                                        len(_pts_bins), ', '.join(sorted(_pts_bins)),
+                                    )
+                        except Exception as _pts_exc:
+                            logger.debug(
+                                "  Module 2H: could not build PenaltyTableSet "
+                                "(will use single-table mode): %s", _pts_exc
+                            )
 
-                _refine_stats = refine_bam_junctions(
-                    input_bam=bam_to_process,
-                    output_bam=_refined_bam,
-                    aligner_bams=config['aligner_bams'],
-                    annotated_junctions=_annot_j,
-                    genome=_refine_genome,
-                    hp_pen=config['junction_hp_pen'],
-                    W=config['junction_window'],
-                    max_slide=config['junction_max_slide'],
-                    search_radius=config['junction_search_radius'],
-                    max_boundary_shift=config['junction_max_boundary_shift'],
-                    boundary_error_window=config.get('junction_boundary_error_window', 10),
-                    sort_and_index=True,
-                    penalty_table_path=config.get('junction_penalty_table'),
-                    str_penalty_table_path=config.get('str_penalty_table'),
-                    prebuilt_junction_pool=_prebuilt_pool,
-                    prebuilt_annotated_set=_prebuilt_annot_set,
-                    sort_threads=config.get('threads', 1),
-                    n_workers=config.get('threads', 1),
-                    penalty_table_set=_penalty_table_set,
-                )
-                bam_to_process = _refined_bam
-                logger.info(
-                    "  Junction refinement: %d reads with N-ops, %d refined, %d unchanged",
-                    _refine_stats['n_op_reads'], _refine_stats['refined'],
-                    _refine_stats['unchanged'],
-                )
-                logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
+                    _refine_stats = refine_bam_junctions(
+                        input_bam=bam_to_process,
+                        output_bam=_refined_bam,
+                        aligner_bams=config['aligner_bams'],
+                        annotated_junctions=_annot_j,
+                        genome=_refine_genome,
+                        hp_pen=config['junction_hp_pen'],
+                        W=config['junction_window'],
+                        max_slide=config['junction_max_slide'],
+                        search_radius=config['junction_search_radius'],
+                        max_boundary_shift=config['junction_max_boundary_shift'],
+                        boundary_error_window=config.get('junction_boundary_error_window', 10),
+                        max_junction_size=config.get('junction_max_size'),
+                        max_candidates_per_nop=config.get('junction_max_candidates_per_nop'),
+                        sort_and_index=True,
+                        penalty_table_path=config.get('junction_penalty_table'),
+                        str_penalty_table_path=config.get('str_penalty_table'),
+                        prebuilt_junction_pool=_prebuilt_pool,
+                        prebuilt_annotated_set=_prebuilt_annot_set,
+                        sort_threads=config.get('threads', 1),
+                        n_workers=config.get('threads', 1),
+                        penalty_table_set=_penalty_table_set,
+                        profile_path=config.get('junction_profile'),
+                        profile_sample_rate=config.get('junction_profile_sample_rate', 1),
+                    )
+                    bam_to_process = _refined_bam
+                    logger.info(
+                        "  Junction refinement: %d reads with N-ops, %d refined, %d unchanged",
+                        _refine_stats['n_op_reads'], _refine_stats['refined'],
+                        _refine_stats['unchanged'],
+                    )
+                    logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
             except Exception as _exc:
                 logger.warning(
                     "Module 2H junction refinement failed (non-fatal, continuing): %s", _exc
@@ -722,7 +779,9 @@ def run(args):
         # exactly at the 3'SS boundary (no N in CIGAR, just a soft-clip) are missed.
         _t_junc = _time.perf_counter()
         annotated_junctions = None
-        if config.get('annotation_path'):
+        if not config.get('apply_3ss_rescue', True):
+            logger.info("Module 2F: 3'SS truncation rescue skipped")
+        elif config.get('annotation_path'):
             from ..consensus.consensus import load_annotated_junctions
             annotated_junctions = load_annotated_junctions(str(config['annotation_path']))
             logger.info(
@@ -779,6 +838,7 @@ def run(args):
                     variant_output_path=variant_output_path,
                     annotated_junctions=annotated_junctions,
                     pool_chrom_index=_pool_chrom_index,
+                    apply_3ss_rescue=config['apply_3ss_rescue'],
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     checkpoint_dir=getattr(args, 'checkpoint_dir', None),
@@ -803,6 +863,7 @@ def run(args):
                     netseq_dir=str(config['netseq_dir']) if config['netseq_dir'] else None,
                     annotated_junctions=annotated_junctions,
                     pool_chrom_index=_pool_chrom_index,
+                    apply_3ss_rescue=config['apply_3ss_rescue'],
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
@@ -838,6 +899,7 @@ def run(args):
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
                 pool_chrom_index=_pool_chrom_index,
+                apply_3ss_rescue=config['apply_3ss_rescue'],
                 gene_interval_trees=gene_interval_trees,
                 polya_model_path=_polya_model_path,
                 variant_scan_cache=config.get('variant_scan_cache'),
@@ -1310,6 +1372,7 @@ if __name__ == '__main__':
     parser.add_argument('--skip-ag-check', action='store_true')
     parser.add_argument('--skip-polya-trim', action='store_true')
     parser.add_argument('--skip-indel-correction', action='store_true')
+    parser.add_argument('--skip-3ss-rescue', dest='skip_3ss_rescue', action='store_true')
     parser.add_argument('--skip-variant-aware', action='store_true',
                         help='Skip variant-aware homopolymer rescue (enabled by default)')
     parser.add_argument('--netseq-dir', type=Path)
@@ -1445,6 +1508,16 @@ def create_correct_parser(subparsers):
         '--skip-indel-correction',
         action='store_true',
         help='Skip indel artifact correction (even if --dT-primed-cDNA)'
+    )
+
+    module_group.add_argument(
+        '--skip-3ss-rescue',
+        dest='skip_3ss_rescue',
+        action='store_true',
+        help="Skip Module 2F 3' splice-site truncation rescue. This disables "
+             "terminal 5' rescue from annotated junctions, pooled junctions, "
+             "and read-own N-ops without disabling annotation-dependent gene "
+             "attribution."
     )
 
     module_group.add_argument(
@@ -1746,6 +1819,58 @@ def create_correct_parser(subparsers):
              'intron_start or intron_end differs from the current N-op by more '
              'than this threshold are excluded, preventing false-positive '
              'matches from junctions in neighbouring genes.'
+    )
+    junc_group.add_argument(
+        '--junction-max-size',
+        dest='junction_max_size',
+        type=int,
+        default=None,
+        metavar='BP',
+        help='Optional maximum candidate intron/junction length for Module 2H. '
+             'Observed N-ops longer than this are excluded from pools built '
+             'from --aligner-bams, and longer candidates from a pre-built pool '
+             'are skipped during scoring. For S. cerevisiae, 10000 is a '
+             'conservative organism-tuned cap.'
+    )
+    junc_group.add_argument(
+        '--junction-max-candidates-per-nop',
+        dest='junction_max_candidates_per_nop',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Optional cap on the number of candidate junctions scored for '
+             'each N-op. Candidates are ranked deterministically with the '
+             'current junction first, then annotated junctions, then smallest '
+             'boundary/length delta. Use 32 for the first yeast Plan C speed test.'
+    )
+    junc_group.add_argument(
+        '--skip-junction-refinement',
+        dest='skip_junction_refinement',
+        action='store_true',
+        help='Skip Module 2H N-op boundary realignment/rewrite even when '
+             '--aligner-bams or --junction-pool-cache are supplied. A supplied '
+             'or built junction pool is still indexed for downstream Module 2F '
+             '3\'SS rescue; omit both pool and aligner BAMs for annotation/read-only '
+             'junction handling.'
+    )
+    junc_group.add_argument(
+        '--junction-profile',
+        dest='junction_profile',
+        default=None,
+        metavar='JSON',
+        help='Write a compact Module 2H profiling summary JSON for junction '
+             'refinement. Records aggregate timing counters, candidate-count '
+             'histograms, and scoring-call counts without per-read log spam.'
+    )
+    junc_group.add_argument(
+        '--junction-profile-sample-rate',
+        dest='junction_profile_sample_rate',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Profile every Nth N-op read when --junction-profile is enabled '
+             '(default: 1, full profiling). Higher values reduce profiling '
+             'overhead for very large production runs.'
     )
     junc_group.add_argument(
         '--junction-penalty-table',

@@ -23,11 +23,14 @@ Author: Kevin R. Roy
 """
 
 import logging
-import multiprocessing as mp
+import json
 import os
+import pickle
 import random
 import shutil
 import string
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -36,23 +39,54 @@ from typing import Dict, List, Optional, Tuple
 import pysam
 
 from .bam_writer import (
-    _decode_eq_seq_inplace,
+    apply_corrected_edits_to_read,
     _load_corrections_from_tsv,
-)
-from .read_edits import (
-    clip_read_to_corrected_3prime,
-    extend_read_5prime_for_junction_rescue,
-    extend_read_3prime_for_overcall_rescue,
-    extend_read_3prime_for_softclip_rescue,
-    softclip_intronic_tail_5prime,
-    reroute_intronic_tail_5prime_via_junction,
-    realign_exon_blocks,
-    reanchor_5prime_for_rescue,
-    _hardclip_trailing_a_run,
 )
 from .regions import RegionPlan, plan_regions
 
 logger = logging.getLogger(__name__)
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp_path = path.with_name(path.name + '.tmp')
+    with open(tmp_path, 'w') as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+    _fsync_parent_dir(path)
+
+
+def _plan_complete(plan: RegionPlan) -> bool:
+    return plan.ok_sentinel.exists() and plan.region_bam.exists()
+
+
+def _atomic_pickle(path: Path, value) -> None:
+    tmp_path = path.with_name(path.name + '.tmp')
+    with open(tmp_path, 'wb') as fh:
+        pickle.dump(value, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+    _fsync_parent_dir(path)
+
+
+def _chunk_plans(plans: List[RegionPlan], n_batches: int) -> List[List[RegionPlan]]:
+    batches: List[List[RegionPlan]] = [[] for _ in range(max(1, n_batches))]
+    for idx, plan in enumerate(plans):
+        batches[idx % len(batches)].append(plan)
+    return [batch for batch in batches if batch]
 
 
 # ---------------------------------------------------------------------------
@@ -64,97 +98,8 @@ def _apply_corrections_to_read(
     correction: Optional[Dict],
     genome: Optional[Dict[str, str]],
 ) -> bool:
-    """Apply per-read corrections in the same sequence as write_corrected_bam.
-
-    Returns True if the read was modified, False otherwise.
-
-    This is a module-level function (not a method) so it can be used by both
-    the region worker and the unmapped tail pass.
-    """
-    if read.is_unmapped or read.is_secondary or read.is_supplementary:
-        # These are written unchanged — mirror bam_writer.py:247-250.
-        return False
-
-    # Decode '='-compressed SEQ (see _decode_eq_seq_inplace docstring).
-    if genome is not None:
-        _decode_eq_seq_inplace(read, genome)
-
-    if correction is None:
-        return False
-
-    modified = False
-
-    # 5'-edge reanchor pre-pass: apply before realign_exon_blocks.
-    if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
-        modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
-
-    # Homopolymer CIGAR surgery: re-align exon blocks.
-    if genome is not None:
-        modified |= realign_exon_blocks(read, genome)
-
-    # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
-    if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
-        modified |= extend_read_5prime_for_junction_rescue(
-            read,
-            correction['five_prime_position'],
-            correction['five_prime_soft_clip'],
-            correction['strand'],
-            exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
-            upstream_trim=correction.get('five_prime_upstream_trim', 0),
-        )
-
-    # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
-    _icp = correction.get('five_prime_intron_clip_pos', -1)
-    _exon_cig = correction.get('five_prime_exon_cigar', '')
-    if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
-            and correction['five_prime_position'] is not None):
-        modified |= reroute_intronic_tail_5prime_via_junction(
-            read,
-            clip_boundary=_icp,
-            five_prime_position=correction['five_prime_position'],
-            exon_cigar_str=_exon_cig,
-            strand=correction['strand'],
-        )
-    elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
-        modified |= softclip_intronic_tail_5prime(
-            read,
-            clip_boundary=_icp,
-            strand=correction['strand'],
-        )
-
-    # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
-    if correction.get('sc_rescued_seq'):
-        modified |= extend_read_3prime_for_softclip_rescue(
-            read,
-            correction['strand'],
-            correction['sc_homopolymer_extension'],
-            correction['sc_rescued_seq'],
-            correction['sc_original_softclip_len'],
-            hard_clip=True,
-        )
-
-    # Over-call rescue: convert trailing soft-clip to aligned bases.
-    if correction.get('oc_terminal_base'):
-        modified |= extend_read_3prime_for_overcall_rescue(
-            read,
-            correction['strand'],
-            correction['oc_homopolymer_extension'],
-            correction['oc_overcall_count'],
-            correction['oc_terminal_base'],
-        )
-
-    # 3' hard-clip to corrected position.
-    modified |= clip_read_to_corrected_3prime(
-        read, correction['corrected_3prime'], correction['strand']
-    )
-
-    # Hard-clip trailing genomic A-run at the 3' end.
-    modified |= _hardclip_trailing_a_run(read, correction['strand'])
-
-    # Tag the corrected 3' end position for IGV visibility.
-    read.set_tag('cp', correction['corrected_3prime'])
-
-    return modified
+    """Backward-compatible wrapper around the shared corrected-read helper."""
+    return apply_corrected_edits_to_read(read, correction, genome)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +124,7 @@ def _process_region_for_bam_write(
     region_id = plan.region_id
 
     # Resume via sentinel: if a prior run completed this region durably, skip.
-    if plan.ok_sentinel.exists():
+    if _plan_complete(plan):
         logger.info("[region %s] skip: sentinel exists", region_id)
         # Return stats with zeros (actual counts are lost, but sentinel implies success)
         return {
@@ -190,55 +135,79 @@ def _process_region_for_bam_write(
             "wall_seconds": 0.0,
             "resumed": True,
         }
+    if plan.ok_sentinel.exists() and not plan.region_bam.exists():
+        logger.warning(
+            "[region %s] ignoring stale sentinel without region BAM: %s",
+            region_id,
+            plan.ok_sentinel,
+        )
 
-    unsorted_path = plan.tmp_dir / f"{region_id}.unsorted.bam"
+    unsorted_path = plan.tmp_dir / f"{region_id}.{os.getpid()}.unsorted.bam.tmp"
+    sorted_tmp_path = plan.region_bam.with_name(
+        f"{plan.region_bam.name}.{os.getpid()}.tmp"
+    )
 
     n_reads_in = 0
     n_reads_out = 0
     n_reads_skipped_dedup = 0
 
-    bam_in = pysam.AlignmentFile(input_bam_path, 'rb')
     try:
-        bam_out = pysam.AlignmentFile(
-            str(unsorted_path), 'wb', header=bam_in.header
-        )
+        bam_in = pysam.AlignmentFile(input_bam_path, 'rb')
         try:
-            for read in bam_in.fetch(plan.chrom, plan.start, plan.end):
-                n_reads_in += 1
+            bam_out = pysam.AlignmentFile(
+                str(unsorted_path), 'wb', header=bam_in.header
+            )
+            try:
+                for read in bam_in.fetch(plan.chrom, plan.start, plan.end):
+                    n_reads_in += 1
 
-                # Region-boundary dedup: only process reads whose alignment
-                # START (reference_start) falls within [plan.start, plan.end).
-                # Reads that START in an adjacent region are that region's
-                # responsibility; they will appear in both fetches but we only
-                # process each read once.
-                if not read.is_unmapped:
-                    if (read.reference_start < plan.start
-                            or read.reference_start >= plan.end):
-                        n_reads_skipped_dedup += 1
-                        continue
+                    # Region-boundary dedup: only process reads whose alignment
+                    # START (reference_start) falls within [plan.start, plan.end).
+                    # Reads that START in an adjacent region are that region's
+                    # responsibility; they will appear in both fetches but we only
+                    # process each read once.
+                    if not read.is_unmapped:
+                        if (read.reference_start < plan.start
+                                or read.reference_start >= plan.end):
+                            n_reads_skipped_dedup += 1
+                            continue
 
-                correction = corrections.get(read.query_name) if not (
-                    read.is_unmapped or read.is_secondary or read.is_supplementary
-                ) else None
+                    correction = corrections.get(read.query_name) if not (
+                        read.is_unmapped or read.is_secondary or read.is_supplementary
+                    ) else None
 
-                _apply_corrections_to_read(read, correction, genome)
-                bam_out.write(read)
-                n_reads_out += 1
+                    _apply_corrections_to_read(read, correction, genome)
+                    bam_out.write(read)
+                    n_reads_out += 1
+            finally:
+                bam_out.close()
         finally:
-            bam_out.close()
-    finally:
-        bam_in.close()
+            bam_in.close()
 
-    # Sort the unsorted region BAM to the final region BAM path.
-    pysam.sort('-@', '1', '-o', str(plan.region_bam), str(unsorted_path))
-    unsorted_path.unlink()
+        # Sort to a temp BAM first. Only the final os.replace publishes this
+        # region for resume/merge.
+        if sorted_tmp_path.exists():
+            sorted_tmp_path.unlink()
+        pysam.sort('-@', '1', '-o', str(sorted_tmp_path), str(unsorted_path))
+        unsorted_path.unlink()
 
-    # fsync the region BAM to ensure durable write before touching the sentinel.
-    with open(plan.region_bam, 'rb') as fh:
-        os.fsync(fh.fileno())
+        # fsync the region BAM to ensure durable write before touching the sentinel.
+        with open(sorted_tmp_path, 'rb') as fh:
+            os.fsync(fh.fileno())
+        os.replace(sorted_tmp_path, plan.region_bam)
+        _fsync_parent_dir(plan.region_bam)
 
-    # Touch the sentinel AFTER fsync — existence implies region_bam is durable.
-    plan.ok_sentinel.touch()
+        # Write the sentinel AFTER the BAM replacement. Existence implies the
+        # region BAM was durably committed.
+        _atomic_write_text(plan.ok_sentinel, 'ok\n')
+    except Exception:
+        for path in (unsorted_path, sorted_tmp_path):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
 
     wall_seconds = time.monotonic() - t0
     logger.info(
@@ -380,15 +349,36 @@ def write_corrected_bam_parallel(
 
     stats_per_region: List[Dict] = []
 
-    if n_threads == 1 or len(plans) <= 1:
-        # Sequential path: avoids ProcessPool spawn cost for small inputs.
+    enable_subprocess_workers = os.environ.get('RECTIFY_ENABLE_PARALLEL_BAM_WRITER') == '1'
+    if n_threads == 1 or len(plans) <= 1 or not enable_subprocess_workers:
+        # Sequential path: avoids unsafe multiprocessing/subprocess behavior by
+        # default. Set RECTIFY_ENABLE_PARALLEL_BAM_WRITER=1 to opt into external
+        # worker processes after validating the local runtime.
+        if n_threads > 1 and len(plans) > 1 and not enable_subprocess_workers:
+            logger.warning(
+                "write_corrected_bam_parallel: n_threads=%d requested, but "
+                "parallel BAM writer workers are disabled by default because "
+                "they can abort in some pysam/OpenMP runtimes. Running region "
+                "workers sequentially; set RECTIFY_ENABLE_PARALLEL_BAM_WRITER=1 "
+                "to opt in.",
+                n_threads,
+            )
         for args in worker_args:
             stats_per_region.append(_process_region_for_bam_write(*args))
     else:
         effective_workers = min(n_threads, len(plans))
-        with mp.Pool(processes=effective_workers) as pool:
-            for result in pool.imap(_process_region_for_bam_write_star, worker_args):
-                stats_per_region.append(result)
+        logger.info(
+            "write_corrected_bam_parallel: launching %d clean worker subprocesses",
+            effective_workers,
+        )
+        stats_per_region.extend(_run_region_batches_in_subprocesses(
+            plans,
+            input_bam_path,
+            corrections,
+            genome,
+            tmp_dir_path,
+            effective_workers,
+        ))
 
     # Verify all regions completed successfully.
     for plan in plans:
@@ -458,3 +448,112 @@ def write_corrected_bam_parallel(
 def _process_region_for_bam_write_star(args: Tuple) -> Dict:
     """Unpacking wrapper for pool.imap (which passes a single iterable arg)."""
     return _process_region_for_bam_write(*args)
+
+
+def _run_region_batches_in_subprocesses(
+    plans: List[RegionPlan],
+    input_bam_path: str,
+    corrections: Dict[str, Dict],
+    genome: Optional[Dict[str, str]],
+    tmp_dir_path: Path,
+    n_workers: int,
+) -> List[Dict]:
+    """Run region workers as clean Python subprocesses, not forked Pool children."""
+    worker_dir = tmp_dir_path / "worker_state"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    corrections_pkl = worker_dir / "corrections.pkl"
+    genome_pkl = worker_dir / "genome.pkl"
+    _atomic_pickle(corrections_pkl, corrections)
+    _atomic_pickle(genome_pkl, genome)
+
+    batches = _chunk_plans(plans, n_workers)
+    worker_env = os.environ.copy()
+    for key in (
+        'OMP_NUM_THREADS',
+        'OPENBLAS_NUM_THREADS',
+        'MKL_NUM_THREADS',
+        'VECLIB_MAXIMUM_THREADS',
+        'NUMEXPR_NUM_THREADS',
+        'LOKY_MAX_CPU_COUNT',
+    ):
+        worker_env[key] = '1'
+    worker_env.setdefault('KMP_INIT_AT_FORK', 'FALSE')
+    worker_env['RECTIFY_IMPORT_VISUALIZE'] = '0'
+
+    processes = []
+    try:
+        for batch_idx, batch in enumerate(batches):
+            plans_pkl = worker_dir / f"batch_{batch_idx:03d}.plans.pkl"
+            stats_json = worker_dir / f"batch_{batch_idx:03d}.stats.json"
+            _atomic_pickle(plans_pkl, batch)
+            cmd = [
+                sys.executable,
+                '-m',
+                'rectify.core.bam.bam_writer_parallel',
+                '--worker-batch',
+                '--input-bam',
+                input_bam_path,
+                '--plans-pkl',
+                str(plans_pkl),
+                '--corrections-pkl',
+                str(corrections_pkl),
+                '--genome-pkl',
+                str(genome_pkl),
+                '--stats-json',
+                str(stats_json),
+            ]
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=worker_env,
+            )
+            processes.append((batch_idx, proc, stats_json))
+
+        stats: List[Dict] = []
+        for batch_idx, proc, stats_json in processes:
+            stdout, stderr = proc.communicate()
+            if proc.returncode != 0:
+                details = stderr.strip() or stdout.strip() or f"exit code {proc.returncode}"
+                raise RuntimeError(f"BAM writer worker batch {batch_idx} failed: {details}")
+            with open(stats_json, 'r') as fh:
+                stats.extend(json.load(fh))
+    except Exception:
+        for _batch_idx, proc, _stats_json in processes:
+            if proc.poll() is None:
+                proc.terminate()
+        raise
+
+    return sorted(stats, key=lambda item: item.get('region_id', ''))
+
+
+def _worker_batch_main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--worker-batch', action='store_true')
+    parser.add_argument('--input-bam', required=True)
+    parser.add_argument('--plans-pkl', required=True)
+    parser.add_argument('--corrections-pkl', required=True)
+    parser.add_argument('--genome-pkl', required=True)
+    parser.add_argument('--stats-json', required=True)
+    args = parser.parse_args(argv)
+
+    with open(args.plans_pkl, 'rb') as fh:
+        plans = pickle.load(fh)
+    with open(args.corrections_pkl, 'rb') as fh:
+        corrections = pickle.load(fh)
+    with open(args.genome_pkl, 'rb') as fh:
+        genome = pickle.load(fh)
+
+    stats = [
+        _process_region_for_bam_write(plan, args.input_bam, corrections, genome)
+        for plan in plans
+    ]
+    _atomic_write_text(Path(args.stats_json), json.dumps(stats, sort_keys=True) + '\n')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(_worker_batch_main())

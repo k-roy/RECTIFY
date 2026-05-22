@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from rectify.core.splice.junction_scoring import (
+    _build_junction_index,
+    _candidates_near,
     build_junction_pool,
     collect_junctions_from_bam,
 )
@@ -133,3 +135,82 @@ def test_annotated_junctions_included_with_parallel(bam_minimap2, bam_gapmm2):
     # annot_3 should be the normalised annotated subset
     for j in annotated:
         assert j in annot_3, f"Annotated junction {j} missing from annot_3"
+
+
+def test_min_observed_support_filters_observed_junctions_but_keeps_annotated(
+    bam_minimap2, bam_gapmm2,
+):
+    """Observed junctions below support threshold are filtered; annotations stay."""
+    j1 = collect_junctions_from_bam(bam_minimap2)
+    j2 = collect_junctions_from_bam(bam_gapmm2)
+    shared = j1 & j2
+    only_one = (j1 ^ j2)
+    if not shared or not only_one:
+        pytest.skip("fixture BAMs do not have both shared and aligner-unique junctions")
+
+    annotated_unique = next(iter(only_one))
+    pool, annot_3 = build_junction_pool(
+        [bam_minimap2, bam_gapmm2],
+        {annotated_unique},
+        min_observed_support=2,
+    )
+
+    assert annotated_unique in pool
+    assert annotated_unique in annot_3
+    assert shared <= pool
+    assert not ((only_one - {annotated_unique}) & pool)
+
+
+def test_candidates_near_uses_bounded_start_window_and_max_size():
+    """Candidate lookup remains endpoint-bounded and can cap intron length."""
+    junctions = {
+        ("chrI", 100, 300),
+        ("chrI", 900, 10950),   # near start/end but too large for yeast cap
+        ("chrI", 1000, 1200),   # expected hit
+        ("chrI", 1025, 1220),   # expected hit
+        ("chrI", 4000, 4200),
+        ("chrII", 1000, 1200),
+    }
+    idx = _build_junction_index(junctions)
+
+    assert _candidates_near(
+        idx,
+        "chrI",
+        1000,
+        1200,
+        radius=5000,
+        start_radius=50,
+        end_radius=50,
+        max_junction_size=10000,
+    ) == [(1000, 1200), (1025, 1220)]
+
+    assert _candidates_near(
+        idx,
+        "chrI",
+        900,
+        10950,
+        radius=5000,
+        start_radius=50,
+        end_radius=50,
+        max_junction_size=10000,
+    ) == []
+
+
+def test_build_junction_pool_max_size_filters_observed_but_keeps_annotated(
+    bam_minimap2,
+):
+    """The max-size cap filters BAM-derived calls only; annotations stay."""
+    observed = collect_junctions_from_bam(bam_minimap2)
+    if not observed:
+        pytest.skip("fixture BAM has no observed junctions")
+
+    annotated_long = ("chrI", 10, 20000)
+    pool, annot_3 = build_junction_pool(
+        [bam_minimap2],
+        {annotated_long},
+        max_junction_size=1,
+    )
+
+    assert annotated_long in pool
+    assert annotated_long in annot_3
+    assert not (observed & (pool - {annotated_long}))

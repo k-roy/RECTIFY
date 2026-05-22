@@ -27,6 +27,15 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _commit_indexed_bam(temp_bam: Path, final_bam: Path, index_runner) -> None:
+    """Index a temporary BAM before atomically replacing the final BAM and BAI."""
+    temp_bai = Path(str(temp_bam) + '.bai')
+    final_bai = Path(str(final_bam) + '.bai')
+    index_runner(['samtools', 'index', str(temp_bam)], check=True)
+    temp_bam.replace(final_bam)
+    temp_bai.replace(final_bai)
+
+
 def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Create align subcommand parser."""
     parser = subparsers.add_parser(
@@ -709,9 +718,7 @@ def run_align(args: argparse.Namespace) -> int:
         with open(str(calmd_bam), 'wb') as fh_out:
             result = _sp.run(calmd_cmd, stdout=fh_out, stderr=_sp.PIPE)
         if result.returncode == 0 and calmd_bam.stat().st_size > 0:
-            import shutil
-            calmd_bam.replace(rectified_bam)
-            _sp.run(['samtools', 'index', str(rectified_bam)], check=True)
+            _commit_indexed_bam(calmd_bam, rectified_bam, _sp.run)
             logger.info("  MD tags added successfully")
         else:
             logger.warning(

@@ -29,6 +29,7 @@ def analyze_cluster_shifts(
     condition_a: str,
     condition_b: str,
     sample_metadata: pd.DataFrame,
+    cluster_gene_attributions: Optional[pd.DataFrame] = None,
     min_total_counts: int = 20,
 ) -> pd.DataFrame:
     """
@@ -78,20 +79,27 @@ def analyze_cluster_shifts(
     # Add gene info to clusters
     cluster_info = clusters_df.set_index('cluster_id')
 
+    if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+        gene_iter = _iter_weighted_gene_clusters(cluster_gene_attributions, count_matrix.index)
+    else:
+        gene_iter = _iter_single_gene_clusters(clusters_df, count_matrix.index)
+
     results = []
 
     # Group clusters by gene
-    for gene_id in clusters_df['gene_id'].dropna().unique():
-        gene_clusters = clusters_df[clusters_df['gene_id'] == gene_id]
-
-        if len(gene_clusters) < 1:
+    for gene_id, gene_name, cluster_weights in gene_iter:
+        if not cluster_weights:
             continue
-
-        cluster_ids = gene_clusters['cluster_id'].tolist()
+        cluster_ids = list(cluster_weights)
 
         # Get counts for this gene's clusters
-        gene_counts_a = counts_a.loc[counts_a.index.isin(cluster_ids)]
-        gene_counts_b = counts_b.loc[counts_b.index.isin(cluster_ids)]
+        gene_counts_a = counts_a.loc[counts_a.index.isin(cluster_ids)].copy()
+        gene_counts_b = counts_b.loc[counts_b.index.isin(cluster_ids)].copy()
+        for cid, weight in cluster_weights.items():
+            if cid in gene_counts_a.index:
+                gene_counts_a.loc[cid] *= weight
+            if cid in gene_counts_b.index:
+                gene_counts_b.loc[cid] *= weight
 
         total_a = gene_counts_a.sum()
         total_b = gene_counts_b.sum()
@@ -133,13 +141,10 @@ def analyze_cluster_shifts(
         # Calculate distribution divergence (Jensen-Shannon)
         divergence = _jensen_shannon_divergence(frac_a.values, frac_b.values)
 
-        # Get gene name
-        gene_name = gene_clusters['gene_name'].iloc[0] if 'gene_name' in gene_clusters.columns else gene_id
-
         results.append({
             'gene_id': gene_id,
             'gene_name': gene_name,
-            'n_clusters': len(gene_clusters),
+            'n_clusters': len(cluster_ids),
             'counts_a': total_a,
             'counts_b': total_b,
             'major_cluster_a': major_cluster_a,
@@ -153,6 +158,45 @@ def analyze_cluster_shifts(
         })
 
     return pd.DataFrame(results)
+
+
+def _iter_single_gene_clusters(clusters_df: pd.DataFrame, valid_cluster_ids) -> list:
+    if 'gene_id' not in clusters_df.columns:
+        return []
+    valid = set(valid_cluster_ids)
+    out = []
+    for gene_id in clusters_df['gene_id'].dropna().unique():
+        gene_clusters = clusters_df[
+            (clusters_df['gene_id'] == gene_id) & clusters_df['cluster_id'].isin(valid)
+        ]
+        if gene_clusters.empty:
+            continue
+        gene_name = gene_clusters['gene_name'].iloc[0] if 'gene_name' in gene_clusters.columns else gene_id
+        out.append((gene_id, gene_name, {cid: 1.0 for cid in gene_clusters['cluster_id'].tolist()}))
+    return out
+
+
+def _iter_weighted_gene_clusters(attr_df: pd.DataFrame, valid_cluster_ids) -> list:
+    required = {'cluster_id', 'gene_id', 'attribution_weight'}
+    missing = required - set(attr_df.columns)
+    if missing:
+        raise ValueError(f"cluster_gene_attributions missing columns: {sorted(missing)}")
+    valid = set(valid_cluster_ids)
+    df = attr_df[attr_df['cluster_id'].isin(valid)].copy()
+    df = df[df['gene_id'].notna() & (df['gene_id'] != 'intergenic')]
+    if df.empty:
+        return []
+    out = []
+    name_col = 'gene_name' if 'gene_name' in df.columns else 'gene_id'
+    for gene_id, group in df.groupby('gene_id', sort=False):
+        weights = (
+            group.groupby('cluster_id')['attribution_weight']
+            .sum()
+            .to_dict()
+        )
+        gene_name = group[name_col].dropna().iloc[0] if group[name_col].notna().any() else gene_id
+        out.append((gene_id, gene_name, weights))
+    return out
 
 
 def _jensen_shannon_divergence(p: np.ndarray, q: np.ndarray) -> float:

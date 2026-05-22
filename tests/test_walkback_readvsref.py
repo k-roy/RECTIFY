@@ -235,6 +235,30 @@ class TestDrsWrapper:
         assert corr == orig
 
 
+class TestRealNBoundaries:
+    def test_left_side_real_n_fallback_returns_last_exon_base(self):
+        """The real-N fallback must not return the first skipped intron base."""
+        ref = "X" * 1000 + "TTTTT" + "N" * 100 + "GGGGG" + "X" * 100
+        read = _make_read(
+            start=1000,
+            seq="TTTTTGGGGG",
+            cigar=((0, 5), (3, 100), (0, 5)),
+            is_reverse=True,
+        )
+
+        result = walkback_3prime_guarded(
+            read,
+            ref,
+            THREE_PRIME_SIDE_LEFT,
+            stop_base="T",
+            artifact_n_ref_starts=set(),
+        )
+
+        assert result is not None
+        assert result["corrected_pos"] == 1004
+        assert result["corrected_pos"] != 1005
+
+
 # ---------------------------------------------------------------------------
 # Symmetric N-op handling in walkback_3prime_guarded.
 # Real N-ops clip the scan at the boundary; artifact N-ops (caller-classified

@@ -60,20 +60,34 @@ def generate_bedgraphs(
         if len(cond_df) == 0:
             continue
 
-        # Count per chrom/strand/position
-        plus_counts = defaultdict(lambda: defaultdict(int))
-        minus_counts = defaultdict(lambda: defaultdict(int))
+        # Count per chrom/strand/position.  Use pre-aggregated or fractional
+        # weights when present so bedgraph totals match clustering/count matrices.
+        plus_counts = defaultdict(lambda: defaultdict(float))
+        minus_counts = defaultdict(lambda: defaultdict(float))
+        weight_col = None
+        if 'count' in cond_df.columns:
+            weight_col = 'count'
+        elif 'fraction' in cond_df.columns:
+            weight_col = 'fraction'
 
         plus_df = cond_df[cond_df['strand'] == '+']
         minus_df = cond_df[cond_df['strand'] == '-']
 
-        for (chrom, pos), count in plus_df.groupby(['chrom', position_column]).size().items():
-            plus_counts[chrom][pos] += count
+        if weight_col:
+            plus_grouped = plus_df.groupby(['chrom', position_column])[weight_col].sum()
+            minus_grouped = minus_df.groupby(['chrom', position_column])[weight_col].sum()
+            total_reads = float(cond_df[weight_col].sum())
+        else:
+            plus_grouped = plus_df.groupby(['chrom', position_column]).size()
+            minus_grouped = minus_df.groupby(['chrom', position_column]).size()
+            total_reads = float(len(cond_df))
 
-        for (chrom, pos), count in minus_df.groupby(['chrom', position_column]).size().items():
-            minus_counts[chrom][pos] += count
+        for (chrom, pos), count in plus_grouped.items():
+            plus_counts[chrom][pos] += float(count)
 
-        total_reads = len(cond_df)
+        for (chrom, pos), count in minus_grouped.items():
+            minus_counts[chrom][pos] += float(count)
+
         rpm_factor = 1e6 / total_reads if normalize_rpm and total_reads > 0 else 1.0
 
         # Write bedgraph files atomically: write to a temp file first, then
@@ -89,7 +103,11 @@ def generate_bedgraphs(
                     f.write(f'track type=bedGraph name="{condition}_{strand_name}" '
                             f'description="RECTIFY 3\' ends ({strand_name} strand)"\n')
 
-                    for chrom in CHROM_ORDER:
+                    ordered_chroms = [
+                        *[chrom for chrom in CHROM_ORDER if chrom in counts_dict],
+                        *sorted(chrom for chrom in counts_dict if chrom not in CHROM_ORDER),
+                    ]
+                    for chrom in ordered_chroms:
                         if chrom not in counts_dict:
                             continue
 

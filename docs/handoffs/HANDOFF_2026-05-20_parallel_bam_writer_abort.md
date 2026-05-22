@@ -2,8 +2,9 @@
 
 Date: 2026-05-20
 
-Status: follow-up work. The low-level BAM writer tests pass, but the audit saw
-intermittent fatal Python aborts while exercising the parallel BAM writer.
+Status: mitigated in Codex working tree on 2026-05-20. The low-level BAM writer
+tests pass, and worker-process execution is now opt-in because this runtime can
+abort during process launch.
 
 ## Problem
 

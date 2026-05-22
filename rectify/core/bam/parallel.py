@@ -6,21 +6,20 @@ Wraps the per-read correction core (``bam_processor.correct_read_3prime``)
 with region-based parallel workers, streaming TSV writers, and a streaming +
 parallel combination for very large BAMs.
 
-Workers fork from the parent process so the loaded genome, poly(A) model, and
-walkback scratch arrays in ``rectify.core.correct.walkback`` are shared via
-copy-on-write. The per-read function itself is imported from
-``bam_processor`` rather than re-defined here so that all workers reach the
-same code object and walkback state.
+Workers use a spawn-style multiprocessing context by default so pysam/htslib
+state opened during parent-side BAM scans is never inherited by child
+processes. Each worker loads its own genome/model state once at process start
+and opens its own BAM handle per region.
 
 Author: Kevin R. Roy
 """
 
-from functools import partial
-from multiprocessing import Pool
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import gzip
+import json
 import logging
+import multiprocessing as mp
 import os
 
 import pysam
@@ -30,56 +29,400 @@ from ..polya.polya_model import PolyAModel, load_model as load_polya_model
 from ...slurm import get_available_cpus
 from ...utils.genome import load_genome
 from .bam_processor import correct_read_3prime, _load_netseq
-from .output import write_output_tsv
+from .output import CORRECTION_TSV_HEADER, correction_result_to_tsv_row, write_output_tsv
 from .processing_stats import ProcessingStats
-from .regions import get_processing_regions
-from .variant_scan import run_variant_aware_scan
 from ..position_index import write_position_index
 
 logger = logging.getLogger(__name__)
 
 
+_REGION_WORKER_STATE: Dict = {}
+
+
+def _get_bam_worker_context() -> mp.context.BaseContext:
+    """Return the multiprocessing context used for pysam region workers.
+
+    Linux defaults to ``fork``, which can inherit htslib C-level state from
+    parent-side BAM scans and corrupt large indexed fetch workloads. ``spawn``
+    gives each worker a fresh interpreter and fresh htslib state. The env var
+    is intentionally narrow so HPC debugging can compare methods without a
+    code patch.
+    """
+    method = os.environ.get('RECTIFY_BAM_MP_START_METHOD', 'spawn').strip().lower()
+    valid = set(mp.get_all_start_methods())
+    if method not in valid:
+        logger.warning(
+            "Invalid RECTIFY_BAM_MP_START_METHOD=%r; falling back to 'spawn' "
+            "(available: %s)",
+            method,
+            ', '.join(sorted(valid)),
+        )
+        method = 'spawn'
+    return mp.get_context(method)
+
+
+def _init_region_worker_state(
+    genome_path: str,
+    polya_model_path: Optional[str],
+    worker_kwargs: Dict,
+) -> None:
+    """Initialise per-process state for region workers.
+
+    This avoids sending large objects such as the genome with every task while
+    still keeping all pysam handles worker-local.
+    """
+    global _REGION_WORKER_STATE
+
+    genome = load_genome(genome_path)
+    polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
+    _REGION_WORKER_STATE = dict(worker_kwargs)
+    _REGION_WORKER_STATE['genome'] = genome
+    _REGION_WORKER_STATE['polya_model'] = polya_model
+
+
+def _process_region_worker_from_state(
+    region: Tuple[str, int, int],
+) -> Union[List[Dict], str]:
+    """Pool entrypoint using process-local state installed by initializer."""
+    if not _REGION_WORKER_STATE:
+        raise RuntimeError("Region worker state was not initialised")
+    return _process_region_worker(region=region, **_REGION_WORKER_STATE)
+
+
 def _write_results_chunk(fh, results: List[Dict]):
     """Write a chunk of results to file handle."""
     for result in results:
-        _pt = result.get('pt_tag')
-        _ps = result.get('polya_score')
-        row = [
-            result['read_id'],
-            result['chrom'],
-            result['strand'],
-            str(result['original_3prime']),
-            str(result['corrected_3prime']),
-            str(result.get('five_prime_position', '')),  # 5' end (TSS)
-            '1' if result.get('five_prime_rescued') else '0',  # 5' rescue flag
-            result.get('five_prime_exon_cigar') or '',  # exon CIGAR for Cat3
-            str(result.get('alignment_start', '')),  # Read body start
-            str(result.get('alignment_end', '')),  # Read body end (exclusive)
-            str(result['ambiguity_min']),
-            str(result['ambiguity_max']),
-            str(result['ambiguity_range']),
-            str(result.get('polya_length', 0)),  # poly(A) length, default 0 if not computed
-            str(result.get('aligned_a_length', 0)),  # Aligned A's
-            str(result.get('soft_clip_a_length', 0)),  # Soft-clipped A's
-            result.get('junctions_str', ''),  # Junctions as semicolon-separated string
-            str(result.get('n_junctions', 0)),  # Number of junctions
-            str(result.get('five_prime_soft_clip_length', 0)),  # 5' soft clip
-            str(result.get('three_prime_soft_clip_length', 0)),  # 3' soft clip
-            str(result.get('mapq', 0)),  # Mapping quality
-            ','.join(result['correction_applied']) if result['correction_applied'] else 'none',
-            result['confidence'],
-            ','.join(result['qc_flags']),
-            f"{result.get('fraction', 1.0):.6f}",
-            result.get('gene_id') or '',  # Per-read gene attribution (empty if not computed)
-            str(_pt) if _pt is not None else '',
-            f'{_ps:.4f}' if _ps is not None else '',
-            result.get('polya_source', 'none'),
-            str(result.get('sc_homopolymer_extension', 0)),  # Cat2 CIGAR surgery
-            result.get('sc_rescued_seq', ''),
-            str(result.get('sc_original_softclip_len', 0)),
-            str(result.get('five_prime_intron_clip_pos', -1)),  # Case 4 BAM clip
+        fh.write('\t'.join(correction_result_to_tsv_row(result)) + '\n')
+
+
+def _region_tsv_path(checkpoint_dir: Path, region_idx: int) -> Path:
+    return checkpoint_dir / f'region_{region_idx:04d}.tsv'
+
+
+def _region_stats_path(checkpoint_dir: Path, region_idx: int) -> Path:
+    return checkpoint_dir / f'region_{region_idx:04d}.stats.json'
+
+
+def _region_done_path(checkpoint_dir: Path, region_idx: int) -> Path:
+    return checkpoint_dir / f'region_{region_idx:04d}.done'
+
+
+def _is_region_checkpoint_complete(checkpoint_dir: Path, region_idx: int) -> bool:
+    return (
+        _region_done_path(checkpoint_dir, region_idx).exists()
+        and _region_tsv_path(checkpoint_dir, region_idx).exists()
+    )
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    """Best-effort parent-directory fsync after atomic checkpoint renames."""
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp_path = path.with_name(path.name + '.tmp')
+    with open(tmp_path, 'w') as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)
+    _fsync_parent_dir(path)
+
+
+def _stats_for_results(results: List[Dict]) -> ProcessingStats:
+    stats = ProcessingStats()
+    for result in results:
+        stats.update_from_result(result)
+    return stats
+
+
+def _stats_from_dict(values: Dict) -> ProcessingStats:
+    stats = ProcessingStats()
+    for key in stats.to_dict():
+        setattr(stats, key, int(values.get(key, 0) or 0))
+    return stats
+
+
+def _copy_prescan_counts(source: ProcessingStats, target: ProcessingStats) -> None:
+    target.total_reads_in_bam = source.total_reads_in_bam
+    target.reads_unmapped = source.reads_unmapped
+    target.reads_secondary = source.reads_secondary
+    target.reads_supplementary = source.reads_supplementary
+    target.spikein_reads_filtered = source.spikein_reads_filtered
+
+
+def _write_potential_variants(
+    rescue: VariantAwareHomopolymerRescue,
+    output_variants_path: Optional[str],
+) -> None:
+    if not output_variants_path:
+        return
+    variants = rescue.get_potential_variants()
+    if not variants:
+        return
+    logger.info(f"  Writing {len(variants)} potential variants to {output_variants_path}")
+    with open(output_variants_path, 'w') as f:
+        header = [
+            'chrom', 'position', 'ref_base', 'homopolymer_base',
+            'total_reads', 'mismatch_fraction',
+            'dominant_mismatch_base', 'dominant_mismatch_fraction',
         ]
-        fh.write('\t'.join(row) + '\n')
+        f.write('\t'.join(header) + '\n')
+        for v in variants:
+            row = [
+                v['chrom'],
+                str(v['position']),
+                v['ref_base'],
+                v['homopolymer_base'],
+                str(v['total_reads']),
+                f"{v['mismatch_fraction']:.3f}",
+                v.get('dominant_mismatch_base', ''),
+                f"{v.get('dominant_mismatch_fraction', 0.0):.3f}",
+            ]
+            f.write('\t'.join(row) + '\n')
+
+
+def _regions_from_intervals(
+    chrom_lengths: Dict[str, int],
+    intervals_by_chrom: Dict[str, List[Tuple[int, int]]],
+    *,
+    min_gap_size: int,
+    max_region_size: int = 100000,
+) -> List[Tuple[str, int, int]]:
+    regions: List[Tuple[str, int, int]] = []
+    for chrom, chrom_len in chrom_lengths.items():
+        if chrom_len <= max_region_size:
+            regions.append((chrom, 0, chrom_len))
+            continue
+
+        intervals = sorted(intervals_by_chrom.get(chrom, []))
+        if not intervals:
+            continue
+
+        merged = [list(intervals[0])]
+        for start, end in intervals[1:]:
+            if start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        gaps: List[Tuple[int, int]] = []
+        prev_end = 0
+        for seg_start, seg_end in merged:
+            if seg_start - prev_end >= min_gap_size:
+                gaps.append((prev_end, seg_start))
+            prev_end = seg_end
+        if chrom_len - prev_end >= min_gap_size:
+            gaps.append((prev_end, chrom_len))
+
+        if not gaps:
+            n_sub = max(1, (chrom_len + max_region_size - 1) // max_region_size)
+            sub_size = chrom_len // n_sub
+            for i in range(n_sub):
+                sub_start = i * sub_size
+                sub_end = chrom_len if i == n_sub - 1 else (i + 1) * sub_size
+                regions.append((chrom, sub_start, sub_end))
+            continue
+
+        current_start = 0
+        for gap_start, gap_end in gaps:
+            if gap_start > current_start:
+                regions.append((chrom, current_start, gap_start))
+            current_start = gap_end
+        if current_start < chrom_len:
+            regions.append((chrom, current_start, chrom_len))
+    return regions
+
+
+def _prescan_bam_once(
+    bam_path: str,
+    genome: Dict[str, str],
+    *,
+    min_gap_size: int,
+    variant_aware: bool = False,
+    output_variants_path: Optional[str] = None,
+) -> Tuple[ProcessingStats, List[Tuple[str, int, int]], Optional[VariantAwareHomopolymerRescue]]:
+    """Single parent-side BAM scan for stats, region planning, and optional variant scan."""
+    stats = ProcessingStats()
+    intervals_by_chrom: Dict[str, List[Tuple[int, int]]] = {}
+    rescue = None
+    if variant_aware:
+        rescue = VariantAwareHomopolymerRescue(
+            min_variant_fraction=0.8,
+            min_reads_for_variant_call=5,
+            min_homopolymer_len=4,
+            max_rescue_bases=3,
+        )
+
+    logger.info("Pre-scanning BAM once for read stats and region planning...")
+    n_variant_scanned = 0
+    with pysam.AlignmentFile(bam_path, 'rb') as bam:
+        chrom_lengths = dict(zip(bam.references, bam.lengths))
+        for chrom in bam.references:
+            intervals_by_chrom[chrom] = []
+
+        for read in bam.fetch(until_eof=True):
+            stats.total_reads_in_bam += 1
+            if read.is_unmapped:
+                stats.reads_unmapped += 1
+                continue
+            if read.is_secondary:
+                stats.reads_secondary += 1
+                continue
+            if read.is_supplementary:
+                stats.reads_supplementary += 1
+                continue
+
+            chrom = bam.get_reference_name(read.reference_id)
+            if chrom and read.reference_start is not None and read.reference_end is not None:
+                intervals_by_chrom.setdefault(chrom, []).append((read.reference_start, read.reference_end))
+
+            if rescue is not None:
+                strand = '-' if read.is_reverse else '+'
+                rescue.scan_read(read, strand, genome, end='3prime')
+                n_variant_scanned += 1
+                if n_variant_scanned % 500000 == 0:
+                    logger.info(f"  Variant-aware scan: {n_variant_scanned:,} reads...")
+
+    if rescue is not None:
+        logger.info(f"  Variant-aware scan total: {n_variant_scanned:,} reads")
+        rescue.finalize_scan()
+        variant_stats = rescue.get_statistics()
+        logger.info(f"  Positions with mismatches: {variant_stats['total_positions_scanned']:,}")
+        logger.info(f"  With sufficient coverage: {variant_stats['positions_with_sufficient_coverage']:,}")
+        logger.info(f"  Potential variants: {variant_stats['potential_variants_detected']:,}")
+        _write_potential_variants(rescue, output_variants_path)
+
+    regions = _regions_from_intervals(
+        chrom_lengths,
+        intervals_by_chrom,
+        min_gap_size=min_gap_size,
+    )
+    logger.info(f"  Total reads: {stats.total_reads_in_bam:,}")
+    logger.info(f"  Unmapped: {stats.reads_unmapped:,}")
+    logger.info(f"  Secondary: {stats.reads_secondary:,}")
+    logger.info(f"  Supplementary: {stats.reads_supplementary:,}")
+    return stats, regions, rescue
+
+
+def _write_region_results_atomic(checkpoint_dir: Path, region_idx: int, results: List[Dict]) -> None:
+    """Atomically commit one checkpointed region's rows and stats."""
+    tsv_path = _region_tsv_path(checkpoint_dir, region_idx)
+    tsv_tmp = tsv_path.with_name(tsv_path.name + '.tmp')
+    with open(tsv_tmp, 'w') as fh:
+        _write_results_chunk(fh, results)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tsv_tmp, tsv_path)
+    _fsync_parent_dir(tsv_path)
+
+    stats_path = _region_stats_path(checkpoint_dir, region_idx)
+    stats_text = json.dumps(_stats_for_results(results).to_dict(), sort_keys=True) + '\n'
+    _atomic_write_text(stats_path, stats_text)
+
+    # The done sentinel is written last. A crash before this point leaves files
+    # that are safe to overwrite on the next run, but not trusted as complete.
+    _atomic_write_text(_region_done_path(checkpoint_dir, region_idx), 'done\n')
+
+
+def _parse_tsv_result(fields: List[str], seen_read_ids: set) -> Dict:
+    row = dict(zip(CORRECTION_TSV_HEADER, fields))
+
+    def _int(name: str, default: int = 0) -> int:
+        value = row.get(name, '')
+        return int(value) if value not in ('', None) else default
+
+    def _float(name: str, default: float = 0.0) -> float:
+        value = row.get(name, '')
+        return float(value) if value not in ('', None) else default
+
+    corrections = row.get('correction_applied', '')
+    correction_applied = [] if corrections in ('', 'none') else corrections.split(',')
+    qc_flags = [flag for flag in row.get('qc_flags', '').split(',') if flag]
+    read_id = row.get('read_id', '')
+    is_primary = read_id not in seen_read_ids
+    seen_read_ids.add(read_id)
+
+    return {
+        'read_id': read_id,
+        'chrom': row.get('chrom', ''),
+        'strand': row.get('strand', ''),
+        'original_3prime': _int('original_3prime'),
+        'corrected_3prime': _int('corrected_3prime'),
+        'ambiguity_min': _int('ambiguity_min'),
+        'ambiguity_max': _int('ambiguity_max'),
+        'ambiguity_range': _int('ambiguity_range'),
+        'polya_length': _int('polya_length'),
+        'correction_applied': correction_applied,
+        'confidence': row.get('confidence', 'high') or 'high',
+        'qc_flags': qc_flags,
+        'fraction': _float('fraction', 1.0),
+        'five_prime_rescued': row.get('five_prime_rescued', '0') == '1',
+        'is_primary_result': is_primary,
+    }
+
+
+def _output_tmp_path(output_path: str) -> Path:
+    path = Path(output_path)
+    return path.with_name(path.name + '.tmp')
+
+
+def _rebuild_output_from_region_files(
+    checkpoint_dir: Path,
+    output_path: str,
+    region_count: int,
+    prescan_stats: ProcessingStats,
+) -> Tuple[ProcessingStats, Dict[Tuple[str, int, str], float]]:
+    """Rebuild final TSV and position counts from completed region checkpoints."""
+    final_stats = ProcessingStats()
+    _copy_prescan_counts(prescan_stats, final_stats)
+    pos_counts: Dict[Tuple[str, int, str], float] = {}
+    seen_read_ids: set = set()
+    tmp_output = _output_tmp_path(output_path)
+
+    opener = gzip.open if output_path.endswith('.gz') else open
+    try:
+        with opener(tmp_output, 'wt') as out_fh:
+            out_fh.write('\t'.join(CORRECTION_TSV_HEADER) + '\n')
+            for region_idx in range(region_count):
+                if not _is_region_checkpoint_complete(checkpoint_dir, region_idx):
+                    raise RuntimeError(f"Checkpoint region {region_idx} is not complete")
+
+                stats_path = _region_stats_path(checkpoint_dir, region_idx)
+                has_stats_sidecar = stats_path.exists()
+                if has_stats_sidecar:
+                    with open(stats_path, 'r') as stats_fh:
+                        final_stats.merge(_stats_from_dict(json.load(stats_fh)))
+
+                with open(_region_tsv_path(checkpoint_dir, region_idx), 'r') as region_fh:
+                    for line in region_fh:
+                        out_fh.write(line)
+                        fields = line.rstrip('\n').split('\t')
+                        if len(fields) != len(CORRECTION_TSV_HEADER):
+                            continue
+                        result = _parse_tsv_result(fields, seen_read_ids)
+                        key = (result['chrom'], result['corrected_3prime'], result['strand'])
+                        pos_counts[key] = pos_counts.get(key, 0.0) + float(result.get('fraction', 1.0))
+                        if not has_stats_sidecar:
+                            final_stats.update_from_result(result)
+
+        os.replace(tmp_output, output_path)
+        _fsync_parent_dir(Path(output_path))
+    finally:
+        try:
+            if tmp_output.exists():
+                tmp_output.unlink()
+        except OSError:
+            pass
+
+    return final_stats, pos_counts
 
 
 def _rebuild_pos_counts_from_partial(output_path: str, pos_counts: dict) -> int:
@@ -124,6 +467,7 @@ def _process_region_worker(
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
     pool_chrom_index: Optional[Dict] = None,
+    apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     tmp_dir: Optional[str] = None,
@@ -140,7 +484,7 @@ def _process_region_worker(
     Args:
         region: Tuple of (chrom, start, end)
         bam_path: Path to BAM file
-        genome: Pre-loaded genome dict (shared via fork)
+        genome: Pre-loaded genome dict
         apply_*: Correction module flags
         netseq_dir: Optional NET-seq BigWig directory
         variant_aware_rescue: Optional variant-aware rescue object (from first pass)
@@ -219,6 +563,7 @@ def _process_region_worker(
                 variant_aware_rescue=_local_rescue,
                 annotated_junctions=annotated_junctions,
                 pool_chrom_index=pool_chrom_index,
+                apply_3ss_rescue=apply_3ss_rescue,
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
                 dt_primed_cDNA=dt_primed_cDNA,
@@ -260,6 +605,7 @@ def process_bam_file_parallel(
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
     pool_chrom_index: Optional[Dict] = None,
+    apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     variant_scan_cache: Optional[str] = None,
@@ -300,11 +646,13 @@ def process_bam_file_parallel(
 
     logger.info(f"Using {n_threads} thread(s) for parallel processing")
 
-    # Load genome (shared across workers via fork)
+    # Load genome for sequential correction and variant-aware prescan. In the
+    # parallel path, spawned workers load clean per-process copies.
     logger.info(f"Loading genome from {genome_path}...")
     genome = load_genome(genome_path)
 
-    # Load poly(A) model if provided (once, shared across all workers via fork)
+    # Load poly(A) model for sequential correction. In the parallel path,
+    # spawned workers load clean per-process copies.
     polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
     if polya_model is not None:
         logger.info(f"Loaded poly(A) model from {polya_model_path}")
@@ -319,36 +667,16 @@ def process_bam_file_parallel(
             logger.info(f"Loading pre-computed variant scan from cache: {variant_scan_cache}")
             with open(variant_scan_cache, 'rb') as _f:
                 variant_aware_rescue = _pickle.load(_f)
-        else:
-            variant_aware_rescue = run_variant_aware_scan(
-                bam_path=bam_path,
-                genome=genome,
-                min_variant_fraction=0.8,
-                min_reads_for_variant_call=5,
-                output_variants_path=variant_output_path,
-            )
 
-    # Count total reads and filtered reads for stats
-    stats = ProcessingStats()
-    logger.info("Counting reads in BAM file...")
-    bam = pysam.AlignmentFile(bam_path, 'rb')
-    for read in bam:
-        stats.total_reads_in_bam += 1
-        if read.is_unmapped:
-            stats.reads_unmapped += 1
-        elif read.is_secondary:
-            stats.reads_secondary += 1
-        elif read.is_supplementary:
-            stats.reads_supplementary += 1
-    bam.close()
-    logger.info(f"  Total reads: {stats.total_reads_in_bam:,}")
-    logger.info(f"  Unmapped: {stats.reads_unmapped:,}")
-    logger.info(f"  Secondary: {stats.reads_secondary:,}")
-    logger.info(f"  Supplementary: {stats.reads_supplementary:,}")
-
-    # Get processing regions
-    logger.info("Identifying processing regions...")
-    regions = get_processing_regions(bam_path, min_gap_size=min_gap_size)
+    stats, regions, prescan_rescue = _prescan_bam_once(
+        bam_path,
+        genome,
+        min_gap_size=min_gap_size,
+        variant_aware=variant_aware and variant_aware_rescue is None,
+        output_variants_path=variant_output_path,
+    )
+    if prescan_rescue is not None:
+        variant_aware_rescue = prescan_rescue
     logger.info(f"  Found {len(regions)} processing regions")
 
     # Single-threaded fallback
@@ -368,6 +696,7 @@ def process_bam_file_parallel(
                 netseq_dir, variant_aware_rescue,
                 annotated_junctions,
                 pool_chrom_index,
+                apply_3ss_rescue,
                 gene_interval_trees,
                 polya_model,
                 max_reads_for_variant_rescue=max_reads_for_variant_rescue,
@@ -395,14 +724,12 @@ def process_bam_file_parallel(
             return all_results, stats
         return all_results
 
-    # Multi-threaded processing
+    # Multi-process processing. Use spawn-style workers so no htslib state from
+    # parent-side BAM scans is inherited by the workers.
     logger.info(f"Processing {len(regions)} regions across {n_threads} workers...")
 
-    # Create partial function with fixed arguments
-    worker_func = partial(
-        _process_region_worker,
+    worker_kwargs = dict(
         bam_path=bam_path,
-        genome=genome,
         apply_atract=apply_atract,
         apply_ag_mispriming=apply_ag_mispriming,
         ag_threshold=ag_threshold,
@@ -412,28 +739,48 @@ def process_bam_file_parallel(
         variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
         pool_chrom_index=pool_chrom_index,
+        apply_3ss_rescue=apply_3ss_rescue,
         gene_interval_trees=gene_interval_trees,
-        polya_model=polya_model,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
         dt_primed_cDNA=dt_primed_cDNA,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
     )
 
+    # The parent no longer needs these large objects once worker initializers
+    # will load their own copies. Releasing them also reduces RSS before the
+    # spawned workers start.
+    try:
+        del genome
+        del polya_model
+    except NameError:
+        pass
+    import gc as _gc
+    _gc.collect()
+
     all_results = []
 
     # Process with pool
-    with Pool(n_threads) as pool:
+    ctx = _get_bam_worker_context()
+    logger.info(
+        "Using multiprocessing start method '%s' for BAM region workers",
+        ctx.get_start_method(),
+    )
+    with ctx.Pool(
+        n_threads,
+        initializer=_init_region_worker_state,
+        initargs=(str(genome_path), polya_model_path, worker_kwargs),
+    ) as pool:
         try:
             # Try to use tqdm for progress if available
             from tqdm import tqdm
             results_iter = tqdm(
-                pool.imap(worker_func, regions),
+                pool.imap(_process_region_worker_from_state, regions),
                 total=len(regions),
                 desc="Processing regions"
             )
         except ImportError:
-            results_iter = pool.imap(worker_func, regions)
+            results_iter = pool.imap(_process_region_worker_from_state, regions)
 
         for region_results in results_iter:
             all_results.extend(region_results)
@@ -477,6 +824,7 @@ def process_bam_streaming(
     show_progress: bool = True,
     annotated_junctions: Optional[set] = None,
     pool_chrom_index: Optional[Dict] = None,
+    apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     dt_primed_cDNA: bool = False,
@@ -532,29 +880,7 @@ def process_bam_streaming(
     _failed = False
     try:
         # Write header
-        header = [
-            'read_id', 'chrom', 'strand',
-            'original_3prime', 'corrected_3prime',
-            'five_prime_position',  # TSS end of the read
-            'five_prime_rescued',   # 1 if 5' end was corrected by junction rescue (v2.7.9)
-            'five_prime_exon_cigar',  # SAM CIGAR for exon segment of Cat3 rescue (v2.8.0)
-            'alignment_start', 'alignment_end',  # Full read body interval
-            'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
-            'polya_length',  # Total observed poly(A) tail length
-            'aligned_a_length', 'soft_clip_a_length',  # Breakdown of poly(A)
-            'junctions', 'n_junctions',  # Splice junctions
-            'five_prime_soft_clip_length', 'three_prime_soft_clip_length',  # Soft clips
-            'mapq',  # Mapping quality
-            'correction_applied', 'confidence', 'qc_flags', 'fraction',
-            'gene_id',  # Per-read gene attribution (optional)
-            'pt_tag',      # dorado pt:i signal-level poly(A) length (blank if absent) (v2.9.0)
-            'polya_score', # poly(A) model confidence 0-1 (blank if no model) (v2.9.0)
-            'polya_source',  # 'pt_tag' | 'model' | 'none' (v2.9.0)
-            'sc_homopolymer_extension',  # Cat2: under-called homopolymer bases (v2.9.1)
-            'sc_rescued_seq',            # Cat2: non-poly-A bases matched to ref (v2.9.1)
-            'sc_original_softclip_len',  # Cat2: original 3' soft-clip length (v2.9.1)
-        ]
-        out_fh.write('\t'.join(header) + '\n')
+        out_fh.write('\t'.join(CORRECTION_TSV_HEADER) + '\n')
 
         # Open BAM
         bam = pysam.AlignmentFile(bam_path, 'rb')
@@ -594,6 +920,7 @@ def process_bam_streaming(
                     netseq_loader=netseq_loader,
                     annotated_junctions=annotated_junctions,
                     pool_chrom_index=pool_chrom_index,
+                    apply_3ss_rescue=apply_3ss_rescue,
                     gene_interval_trees=gene_interval_trees,
                     polya_model=polya_model,
                     dt_primed_cDNA=dt_primed_cDNA,
@@ -680,6 +1007,7 @@ def process_bam_streaming_parallel(
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
     pool_chrom_index: Optional[Dict] = None,
+    apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     min_gap_size: int = 10000,
@@ -722,11 +1050,13 @@ def process_bam_streaming_parallel(
 
     logger.info(f"Using {n_threads} worker(s) for parallel streaming processing")
 
-    # Load genome once — shared across workers via fork
+    # Load genome for variant-aware prescan. Spawned workers load clean
+    # per-process copies for region correction.
     logger.info(f"Loading genome from {genome_path}...")
     genome = load_genome(genome_path)
 
-    # Load poly(A) model once (shared via fork)
+    # Load poly(A) model for parent-side setup/logging. Spawned workers load
+    # clean per-process copies for region correction.
     polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
     if polya_model is not None:
         logger.info(f"Loaded poly(A) model from {polya_model_path}")
@@ -752,37 +1082,20 @@ def process_bam_streaming_parallel(
             logger.info(f"Loading pre-computed variant scan from checkpoint: {_rescue_pkl}")
             with open(_rescue_pkl, 'rb') as _f:
                 variant_aware_rescue = _pickle.load(_f)
-        else:
-            variant_aware_rescue = run_variant_aware_scan(
-                bam_path=bam_path,
-                genome=genome,
-                min_variant_fraction=0.8,
-                min_reads_for_variant_call=5,
-                output_variants_path=variant_output_path,
-            )
-            if _rescue_pkl:
-                with open(_rescue_pkl, 'wb') as _f:
-                    _pickle.dump(variant_aware_rescue, _f, protocol=_pickle.HIGHEST_PROTOCOL)
-                logger.info(f"Scan checkpoint saved: {_rescue_pkl}")
 
-    # Count total reads and filtered reads for stats (pre-scan, single-threaded)
-    stats = ProcessingStats()
-    logger.info("Counting reads in BAM file...")
-    _bam_prescan = pysam.AlignmentFile(bam_path, 'rb')
-    for _r in _bam_prescan:
-        stats.total_reads_in_bam += 1
-        if _r.is_unmapped:
-            stats.reads_unmapped += 1
-        elif _r.is_secondary:
-            stats.reads_secondary += 1
-        elif _r.is_supplementary:
-            stats.reads_supplementary += 1
-    _bam_prescan.close()
-    logger.info(f"  Total reads: {stats.total_reads_in_bam:,}")
-
-    # Compute genomic regions
-    logger.info("Identifying processing regions...")
-    regions = get_processing_regions(bam_path, min_gap_size=min_gap_size)
+    stats, regions, prescan_rescue = _prescan_bam_once(
+        bam_path,
+        genome,
+        min_gap_size=min_gap_size,
+        variant_aware=variant_aware and variant_aware_rescue is None,
+        output_variants_path=variant_output_path,
+    )
+    if prescan_rescue is not None:
+        variant_aware_rescue = prescan_rescue
+        if _rescue_pkl:
+            with open(_rescue_pkl, 'wb') as _f:
+                _pickle.dump(variant_aware_rescue, _f, protocol=_pickle.HIGHEST_PROTOCOL)
+            logger.info(f"Scan checkpoint saved: {_rescue_pkl}")
     logger.info(f"  {len(regions)} regions across {n_threads} workers")
     _pos_counts: dict = {}
     _t_start = _time.monotonic()
@@ -793,15 +1106,21 @@ def process_bam_streaming_parallel(
     if _chk_dir:
         for _sf in _chk_dir.glob('region_*.done'):
             try:
-                _done_region_idxs.add(int(_sf.stem.split('_')[1]))
+                _idx = int(_sf.stem.split('_')[1])
             except (ValueError, IndexError):
-                pass
+                continue
+            if _is_region_checkpoint_complete(_chk_dir, _idx):
+                _done_region_idxs.add(_idx)
+            else:
+                logger.warning(
+                    "Ignoring incomplete checkpoint marker for region %04d "
+                    "(done sentinel without committed TSV)",
+                    _idx,
+                )
         if _done_region_idxs:
             logger.info(
                 f"Checkpoint: {len(_done_region_idxs)}/{len(regions)} regions already done, resuming..."
             )
-            _n_partial = _rebuild_pos_counts_from_partial(output_path, _pos_counts)
-            logger.info(f"  Rebuilt pos_counts from {_n_partial:,} rows in partial output")
 
     _regions_to_run = [r for i, r in enumerate(regions) if i not in _done_region_idxs]
     _orig_idxs = [i for i, _r in enumerate(regions) if i not in _done_region_idxs]
@@ -816,10 +1135,8 @@ def process_bam_streaming_parallel(
     import tempfile as _tempfile
     _tmp_dir = _tempfile.mkdtemp(prefix='rectify_region_')
 
-    worker_func = partial(
-        _process_region_worker,
+    worker_kwargs = dict(
         bam_path=bam_path,
-        genome=genome,
         apply_atract=apply_atract,
         apply_ag_mispriming=apply_ag_mispriming,
         ag_threshold=ag_threshold,
@@ -829,8 +1146,8 @@ def process_bam_streaming_parallel(
         variant_aware_rescue=variant_aware_rescue,
         annotated_junctions=annotated_junctions,
         pool_chrom_index=pool_chrom_index,
+        apply_3ss_rescue=apply_3ss_rescue,
         gene_interval_trees=gene_interval_trees,
-        polya_model=polya_model,
         tmp_dir=_tmp_dir,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
         dt_primed_cDNA=dt_primed_cDNA,
@@ -838,72 +1155,82 @@ def process_bam_streaming_parallel(
         min_aligned_length=min_aligned_length,
     )
 
-    # Build the TSV header (identical to process_bam_streaming)
-    _header = [
-        'read_id', 'chrom', 'strand',
-        'original_3prime', 'corrected_3prime',
-        'five_prime_position', 'five_prime_rescued', 'five_prime_exon_cigar',
-        'alignment_start', 'alignment_end',
-        'ambiguity_min', 'ambiguity_max', 'ambiguity_range',
-        'polya_length', 'aligned_a_length', 'soft_clip_a_length',
-        'junctions', 'n_junctions',
-        'five_prime_soft_clip_length', 'three_prime_soft_clip_length',
-        'mapq', 'correction_applied', 'confidence', 'qc_flags', 'fraction',
-        'gene_id', 'pt_tag', 'polya_score', 'polya_source',
-        'sc_homopolymer_extension', 'sc_rescued_seq', 'sc_original_softclip_len',
-        'five_prime_intron_clip_pos',
-    ]
+    # Do not keep parent-loaded genome/model objects alive across worker
+    # creation. Spawned workers load clean copies in their initializer.
+    try:
+        del genome
+        del polya_model
+    except NameError:
+        pass
+    import gc as _gc
+    _gc.collect()
 
-    _resuming = bool(_done_region_idxs) and Path(output_path).exists()
-    if output_path.endswith('.gz'):
-        out_fh = gzip.open(output_path, 'at' if _resuming else 'wt')
-    else:
-        out_fh = open(output_path, 'a' if _resuming else 'w')
+    # Build the TSV header (identical to process_bam_streaming)
+    _header = CORRECTION_TSV_HEADER
 
     _failed = False
+    out_fh = None
     try:
-        if not _resuming:
+        if not _chk_dir:
+            if output_path.endswith('.gz'):
+                out_fh = gzip.open(output_path, 'wt')
+            else:
+                out_fh = open(output_path, 'w')
             out_fh.write('\t'.join(_header) + '\n')
 
         _map_fn = 'imap' if _chk_dir else 'imap_unordered'
-        with Pool(n_threads) as pool:
-            _iter = getattr(pool, _map_fn)(worker_func, _regions_to_run)
-            for _batch_num, _worker_ret in enumerate(_iter):
-                # Workers return a temp-file path (str) when tmp_dir is set.
-                # Load the pickle and delete the file immediately to free space.
-                if isinstance(_worker_ret, str):
-                    with open(_worker_ret, 'rb') as _pkl_fh:
-                        region_results = _pickle.load(_pkl_fh)
-                    os.unlink(_worker_ret)
-                else:
-                    region_results = _worker_ret
-                _write_results_chunk(out_fh, region_results)
+        ctx = _get_bam_worker_context()
+        logger.info(
+            "Using multiprocessing start method '%s' for BAM region workers",
+            ctx.get_start_method(),
+        )
+        if _regions_to_run:
+            with ctx.Pool(
+                n_threads,
+                initializer=_init_region_worker_state,
+                initargs=(str(genome_path), polya_model_path, worker_kwargs),
+            ) as pool:
+                _iter = getattr(pool, _map_fn)(_process_region_worker_from_state, _regions_to_run)
+                for _batch_num, _worker_ret in enumerate(_iter):
+                    # Workers return a temp-file path (str) when tmp_dir is set.
+                    # Load the pickle and delete the file immediately to free space.
+                    if isinstance(_worker_ret, str):
+                        with open(_worker_ret, 'rb') as _pkl_fh:
+                            region_results = _pickle.load(_pkl_fh)
+                        os.unlink(_worker_ret)
+                    else:
+                        region_results = _worker_ret
 
-                for result in region_results:
-                    stats.update_from_result(result)
-                    _pos_counts.setdefault(
-                        (result['chrom'], result['corrected_3prime'], result['strand']), 0.0
-                    )
-                    _pos_counts[(result['chrom'], result['corrected_3prime'], result['strand'])] += float(result.get('fraction', 1.0))
+                    if _chk_dir:
+                        orig_idx = _orig_idxs[_batch_num]
+                        _write_region_results_atomic(_chk_dir, orig_idx, region_results)
+                    else:
+                        _write_results_chunk(out_fh, region_results)
 
-                if _chk_dir:
-                    orig_idx = _orig_idxs[_batch_num]
-                    (_chk_dir / f'region_{orig_idx:04d}.done').touch()
+                    for result in region_results:
+                        stats.update_from_result(result)
+                        _pos_counts.setdefault(
+                            (result['chrom'], result['corrected_3prime'], result['strand']), 0.0
+                        )
+                        _pos_counts[(result['chrom'], result['corrected_3prime'], result['strand'])] += float(result.get('fraction', 1.0))
 
-                if show_progress and stats.reads_processed >= _next_progress:
-                    _elapsed = _time.monotonic() - _t_start
-                    _rate = (stats.reads_processed / _elapsed * 60) if _elapsed > 0 else 0
-                    logger.info(
-                        f"  Processed {stats.reads_processed:,} reads  "
-                        f"({_rate / 1000:.0f}k reads/min, {_elapsed / 60:.1f} min elapsed)"
-                    )
-                    _next_progress += 100000
+                    if show_progress and stats.reads_processed >= _next_progress:
+                        _elapsed = _time.monotonic() - _t_start
+                        _rate = (stats.reads_processed / _elapsed * 60) if _elapsed > 0 else 0
+                        logger.info(
+                            f"  Processed {stats.reads_processed:,} reads  "
+                            f"({_rate / 1000:.0f}k reads/min, {_elapsed / 60:.1f} min elapsed)"
+                        )
+                        _next_progress += 100000
+        elif _chk_dir:
+            logger.info("Checkpoint: all regions already complete; rebuilding final output")
 
     except Exception:
         _failed = True
         raise
     finally:
-        out_fh.close()
+        if out_fh is not None:
+            out_fh.close()
         # Clean up temp dir (any leftover .pkl files from failed workers)
         import shutil as _shutil
         try:
@@ -917,8 +1244,16 @@ def process_bam_streaming_parallel(
                 logger.warning(f"Removed partial output after error: {output_path}")
         elif _failed and _chk_dir:
             logger.warning(
-                f"Processing failed — partial output preserved for checkpoint resume: {output_path}"
+                f"Processing failed — committed region checkpoints preserved in {_chk_dir}"
             )
+
+    if _chk_dir:
+        stats, _pos_counts = _rebuild_output_from_region_files(
+            _chk_dir,
+            output_path,
+            len(regions),
+            stats,
+        )
 
     logger.info(f"Completed processing {stats.reads_processed:,} reads")
     logger.info(f"  Output written to {output_path}")

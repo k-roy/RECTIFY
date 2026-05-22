@@ -1027,3 +1027,88 @@ class TestRefineReadBatchWiring:
         kw = mock_rfj.call_args_list[0][1]
         assert kw.get('hp_pen') is sentinel
         assert 'penalty_table' not in kw
+
+
+def test_candidate_cap_ranks_current_and_annotated_before_scoring():
+    """max_candidates_per_nop limits scoring after deterministic priority ranking."""
+    import unittest.mock as _mock
+    from rectify.core.splice.junction_refiner import refine_read_junctions
+
+    header = pysam.AlignmentHeader.from_dict({
+        'HD': {'VN': '1.6'},
+        'SQ': [{'SN': 'chrI', 'LN': 1000}],
+    })
+    read = pysam.AlignedSegment(header)
+    read.query_name = 'cap_test'
+    read.query_sequence = 'ACGTACGTACACGTACGTAC'
+    read.flag = 0
+    read.reference_id = 0
+    read.reference_start = 0
+    read.mapping_quality = 60
+    read.cigartuples = [(0, 10), (3, 100), (0, 10)]
+    read.query_qualities = pysam.qualitystring_to_array('*' * 20)
+
+    idx = {'chrI': [(10, 110), (11, 111), (12, 112), (13, 113)]}
+    annotated = {('chrI', 12, 112)}
+    genome_seq = 'ACGT' * 300
+
+    target = 'rectify.core.splice.junction_refiner._score_junction'
+    with _mock.patch(target, return_value=(1.0, 0)) as mock_score:
+        replacements = refine_read_junctions(
+            read,
+            idx,
+            annotated,
+            genome_seq,
+            '+',
+            boundary_error_window=0,
+            max_candidates_per_nop=2,
+        )
+
+    assert replacements == []
+    scored = [(call.args[2], call.args[3]) for call in mock_score.call_args_list]
+    assert scored == [(10, 110), (12, 112)]
+
+
+def test_junction_profile_records_candidate_cap_counts():
+    """Profiling records candidate histograms and cap/drop counters."""
+    import unittest.mock as _mock
+    from rectify.core.splice.junction_refiner import (
+        JunctionRefineProfile,
+        refine_read_junctions,
+    )
+
+    header = pysam.AlignmentHeader.from_dict({
+        'HD': {'VN': '1.6'},
+        'SQ': [{'SN': 'chrI', 'LN': 1000}],
+    })
+    read = pysam.AlignedSegment(header)
+    read.query_name = 'profile_test'
+    read.query_sequence = 'ACGTACGTACACGTACGTAC'
+    read.flag = 0
+    read.reference_id = 0
+    read.reference_start = 0
+    read.mapping_quality = 60
+    read.cigartuples = [(0, 10), (3, 100), (0, 10)]
+    read.query_qualities = pysam.qualitystring_to_array('*' * 20)
+
+    profile = JunctionRefineProfile()
+    idx = {'chrI': [(10, 110), (11, 111), (12, 112), (13, 113)]}
+    target = 'rectify.core.splice.junction_refiner._score_junction'
+    with _mock.patch(target, return_value=(1.0, 0)):
+        refine_read_junctions(
+            read,
+            idx,
+            {('chrI', 12, 112)},
+            'ACGT' * 300,
+            '+',
+            boundary_error_window=0,
+            max_candidates_per_nop=2,
+            profile=profile,
+        )
+
+    summary = profile.to_summary()
+    assert summary['counts']['n_ops_examined'] == 1
+    assert summary['counts']['n_ops_candidate_capped'] == 1
+    assert summary['counts']['candidates_dropped_by_cap'] == 2
+    assert summary['candidate_count_summary']['max'] == 4
+    assert summary['candidate_count_after_cap_summary']['max'] == 2

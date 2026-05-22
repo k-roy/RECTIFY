@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+import time
+from bisect import bisect_left, bisect_right
+from collections import Counter
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import numpy as _np
 import pysam
@@ -168,6 +171,7 @@ def _canonical_tier(
 def collect_junctions_from_bam(
     bam_path: str,
     chrom_filter: Optional[str] = None,
+    max_junction_size: Optional[int] = None,
 ) -> Set[Tuple[str, int, int]]:
     """Extract all N-op intervals from a BAM file.
 
@@ -182,7 +186,12 @@ def collect_junctions_from_bam(
     try:
         with pysam.AlignmentFile(bam_path, 'rb') as bam:
             for read in bam:
-                if read.is_unmapped or not read.cigartuples:
+                if (
+                    read.is_unmapped
+                    or read.is_secondary
+                    or read.is_supplementary
+                    or not read.cigartuples
+                ):
                     continue
                 chrom = standardize_chrom_name(read.reference_name)
                 if chrom_filter and chrom != chrom_filter:
@@ -190,7 +199,8 @@ def collect_junctions_from_bam(
                 pos = read.reference_start
                 for op, length in read.cigartuples:
                     if op == _N:
-                        junctions.add((chrom, pos, pos + length))
+                        if max_junction_size is None or length <= max_junction_size:
+                            junctions.add((chrom, pos, pos + length))
                     if op in _REF_CONSUMING:
                         pos += length
     except Exception as exc:
@@ -198,10 +208,44 @@ def collect_junctions_from_bam(
     return junctions
 
 
+def collect_junction_counts_from_bam(
+    bam_path: str,
+    chrom_filter: Optional[str] = None,
+    max_junction_size: Optional[int] = None,
+) -> Counter[Junction]:
+    """Count N-op intervals from a BAM file."""
+    junctions: Counter[Junction] = Counter()
+    try:
+        with pysam.AlignmentFile(bam_path, 'rb') as bam:
+            for read in bam:
+                if (
+                    read.is_unmapped
+                    or read.is_secondary
+                    or read.is_supplementary
+                    or not read.cigartuples
+                ):
+                    continue
+                chrom = standardize_chrom_name(read.reference_name)
+                if chrom_filter and chrom != chrom_filter:
+                    continue
+                pos = read.reference_start
+                for op, length in read.cigartuples:
+                    if op == _N:
+                        if max_junction_size is None or length <= max_junction_size:
+                            junctions[(chrom, pos, pos + length)] += 1
+                    if op in _REF_CONSUMING:
+                        pos += length
+    except Exception as exc:
+        logger.warning("collect_junction_counts_from_bam(%s): %s", bam_path, exc)
+    return junctions
+
+
 def build_junction_pool(
     aligner_bams: List[str],
     annotated_junctions: Set[Tuple],
     chrom_filter: Optional[str] = None,
+    min_observed_support: int = 1,
+    max_junction_size: Optional[int] = None,
 ) -> Tuple[Set[Junction], Set[Junction]]:
     """Build union of annotated + per-aligner junctions.
 
@@ -210,6 +254,11 @@ def build_junction_pool(
         annotated_junctions:  Set of (chrom, start, end[, strand]) tuples from
                               ``load_annotated_junctions()``.
         chrom_filter:         Optional chromosome to restrict to.
+        min_observed_support: Minimum total read support across all aligner BAMs
+                              required for observed, non-annotated junctions.
+                              Annotated junctions are always retained.
+        max_junction_size:    Optional maximum observed N-op length to include.
+                              Annotated junctions are always retained.
 
     Returns:
         (all_junctions, annotated_set) where annotated_set is the normalised
@@ -225,29 +274,62 @@ def build_junction_pool(
             annot_3.add((chrom, int(j[1]), int(j[2])))
 
     all_j: Set[Junction] = set(annot_3)
+    min_observed_support = max(1, int(min_observed_support))
 
     if not aligner_bams:
         # No aligner BAMs — pool is just the annotated set.
         pass
     elif len(aligner_bams) == 1:
         # Single aligner — avoid fork overhead.
-        novel = collect_junctions_from_bam(aligner_bams[0], chrom_filter=chrom_filter)
-        all_j.update(novel)
+        observed_counts = collect_junction_counts_from_bam(
+            aligner_bams[0],
+            chrom_filter=chrom_filter,
+            max_junction_size=max_junction_size,
+        )
+        all_j.update(
+            j for j, n in observed_counts.items()
+            if n >= min_observed_support
+        )
     else:
         # Multiple aligners — process in parallel (one process per BAM).
-        from concurrent.futures import ProcessPoolExecutor
-        n_workers = min(len(aligner_bams), os.cpu_count() or 4)
-        with ProcessPoolExecutor(max_workers=n_workers) as ex:
-            futures = [
-                ex.submit(collect_junctions_from_bam, bp, chrom_filter)
-                for bp in aligner_bams
-            ]
-            for fut in futures:
-                all_j.update(fut.result())
+        observed_counts: Counter[Junction] = Counter()
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            n_workers = min(len(aligner_bams), os.cpu_count() or 4)
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                futures = [
+                    ex.submit(
+                        collect_junction_counts_from_bam,
+                        bp,
+                        chrom_filter,
+                        max_junction_size,
+                    )
+                    for bp in aligner_bams
+                ]
+                for fut in futures:
+                    observed_counts.update(fut.result())
+        except (OSError, PermissionError, NotImplementedError) as exc:
+            logger.warning(
+                "build_junction_pool: ProcessPoolExecutor unavailable (%s); "
+                "falling back to sequential BAM scans",
+                exc,
+            )
+            for bp in aligner_bams:
+                observed_counts.update(
+                    collect_junction_counts_from_bam(
+                        bp,
+                        chrom_filter,
+                        max_junction_size=max_junction_size,
+                    )
+                )
+        all_j.update(
+            j for j, n in observed_counts.items()
+            if n >= min_observed_support
+        )
 
     logger.debug(
-        "build_junction_pool: %d annotated, %d novel, %d total",
-        len(annot_3), len(all_j) - len(annot_3), len(all_j),
+        "build_junction_pool: %d annotated, %d observed-support>=%d, %d total",
+        len(annot_3), len(all_j - annot_3), min_observed_support, len(all_j),
     )
     return all_j, annot_3
 
@@ -276,6 +358,7 @@ def _candidates_near(
     radius: int,
     start_radius: Optional[int] = None,
     end_radius: Optional[int] = None,
+    max_junction_size: Optional[int] = None,
 ) -> List[Tuple[int, int]]:
     """Return all (js, je) near (ns, ne) on *chrom*.
 
@@ -293,6 +376,7 @@ def _candidates_near(
         end_radius:    Maximum allowed shift of intron_end (bp).  When
                        supplied, only candidates with |je - ne| ≤ end_radius
                        are returned.  Defaults to *radius*.
+        max_junction_size: Optional maximum candidate intron length.
 
     Separating *radius* from *start_radius*/*end_radius* allows a large
     discovery window (e.g. 5000 bp) for annotated junctions while keeping the
@@ -306,11 +390,21 @@ def _candidates_near(
         end_radius = radius
 
     entries = idx.get(chrom, [])
+    if not entries:
+        return []
+
+    # The index is sorted by intron_start.  Bound the scan to the same start
+    # interval the legacy filter accepted instead of scanning from chromosome
+    # start for every N-op.
+    start_window = min(radius, start_radius)
+    left = bisect_left(entries, (ns - start_window, -10**18))
+    right = bisect_right(entries, (ns + start_window, 10**18))
+
     results = []
-    for js, je in entries:
-        if js > ns + radius:
-            break
-        if js >= ns - radius and abs(js - ns) <= start_radius and abs(je - ne) <= end_radius:
+    for js, je in entries[left:right]:
+        if max_junction_size is not None and (je - js) > max_junction_size:
+            continue
+        if abs(js - ns) <= start_radius and abs(je - ne) <= end_radius:
             results.append((js, je))
     return results
 
@@ -443,6 +537,7 @@ def _score_junction(
     W: int,            # kept for API compatibility; ignored by this implementation
     max_slide: int,    # kept for API compatibility; ignored by this implementation
     current_ns: int = -1,  # current N-op intron_start (anchor ref position for tier 2)
+    profile: Optional[Any] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
 ) -> Tuple[float, int]:
     """Score a candidate junction using HP-aware intron_end-anchored alignment.
@@ -481,14 +576,21 @@ def _score_junction(
     Returns:
         ``(best_score, 0)`` where ``best_score`` is ``min_k (t1(k) + t2(k))``.
     """
+    if profile is not None:
+        profile.inc('score_junction_calls')
+    _t_total = time.perf_counter() if profile is not None else 0.0
     gs = len(genome_seq)
 
     # Cap rescue length: only the first ~30 bp are needed to identify the junction.
+    _t_setup = time.perf_counter() if profile is not None else 0.0
     _MAX_RESCUE = 30
     rescue = query[q_split : q_split + _MAX_RESCUE].upper()
     L = len(rescue)
 
     if L == 0:
+        if profile is not None:
+            profile.inc('score_junction_empty_rescue')
+            profile.add_time('score_junction_total', time.perf_counter() - _t_total)
         return 0.0, 0
 
     # Tier-1 reference: sequence starting at intron_end (exon2 body after the intron).
@@ -499,39 +601,54 @@ def _score_junction(
     # Used reversed so that the last base of rescue[:k] anchors to intron_end-1.
     ref_intron_end = genome_seq[max(0, intron_end - _BUF) : intron_end].upper()
     ref_intron_end_rev = ref_intron_end[::-1]
+    if profile is not None:
+        profile.add_time('score_junction_setup', time.perf_counter() - _t_setup)
 
     # Precompute per-position deletion costs for the two fixed reference windows.
     # del_costs depend only on the ref sequence and genome position, not on the
     # query, so they are identical across all k values in the loop below.
     # Computing them once here and passing them in avoids ~58 redundant scans of
     # _hp_run_length / _str_repeat_info per junction call.
+    _t_delcosts = time.perf_counter() if profile is not None else 0.0
     del_costs_fwd = _precompute_del_costs(
         ref_exon2_start, genome_seq, intron_end, False, penalty_table,
     )
     del_costs_rev = _precompute_del_costs(
         ref_intron_end_rev, genome_seq, intron_end - 1, True, penalty_table,
     )
+    if profile is not None:
+        profile.add_time('score_junction_del_costs', time.perf_counter() - _t_delcosts)
 
     best_score = float("inf")
 
     for k in range(L):
+        if profile is not None:
+            profile.inc('score_junction_k_iterations')
         # Tier-1: rescue[k:] must align cleanly to exon2 starting at intron_end.
         q1 = rescue[k:]
+        _t_t1 = time.perf_counter() if profile is not None else 0.0
         t1 = _score_hp_anchored(
             q1, ref_exon2_start, penalty_table=penalty_table,
             genome_seq=genome_seq, ref_genome_start=intron_end,
             precomputed_del_costs=del_costs_fwd,
         )
+        if profile is not None:
+            profile.inc('score_hp_anchored_t1_calls')
+            profile.add_time('score_hp_anchored_t1', time.perf_counter() - _t_t1)
 
         # Tier-2: rescue[:k] must end cleanly at intron_end - 1 (last intronic base).
         # Reversal trick: left-anchored DP on reversed sequences ≡ right-anchored DP.
         if k > 0:
+            _t_t2 = time.perf_counter() if profile is not None else 0.0
             t2 = _score_hp_anchored(
                 rescue[:k][::-1], ref_intron_end_rev, penalty_table=penalty_table,
                 genome_seq=genome_seq, ref_genome_start=intron_end - 1,
                 ref_genome_rev=True,
                 precomputed_del_costs=del_costs_rev,
             )
+            if profile is not None:
+                profile.inc('score_hp_anchored_t2_calls')
+                profile.add_time('score_hp_anchored_t2', time.perf_counter() - _t_t2)
         else:
             t2 = 0.0
 
@@ -539,8 +656,12 @@ def _score_junction(
         if score < best_score:
             best_score = score
             if best_score == 0.0:
+                if profile is not None:
+                    profile.inc('score_junction_perfect_breaks')
                 break  # perfect match; can't improve
 
+    if profile is not None:
+        profile.add_time('score_junction_total', time.perf_counter() - _t_total)
     return best_score, 0
 
 

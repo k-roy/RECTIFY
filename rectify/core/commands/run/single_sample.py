@@ -33,6 +33,28 @@ from .stages import (
 )
 
 
+def _run_samtools_fastq(input_bam: Path, output_fastq: Path, *, threads: int) -> None:
+    import subprocess as _subprocess
+
+    result = _subprocess.run(
+        [
+            'samtools', 'fastq',
+            '-@', str(max(1, threads - 1)),
+            '-0', str(output_fastq),
+            str(input_bam),
+        ],
+        check=False,
+        stdout=_subprocess.PIPE,
+        stderr=_subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or '').strip()
+        stdout = (result.stdout or '').strip()
+        detail = stderr or stdout or 'no samtools output captured'
+        raise RuntimeError(f"samtools fastq failed (exit {result.returncode}): {detail}")
+
+
 def _process_one_sample(
     sample: Dict[str, str],
     output_dir: Path,
@@ -92,7 +114,6 @@ def _process_one_sample(
 
             # ── DRS Step 0: Poly(A)+adapter pre-trimming ────────────────────
             if getattr(args, 'drs', False) and input_type not in ('fastq', 'fastq.gz'):
-                import subprocess as _subprocess
                 from ..drs_trim_command import trim_drs_bam_polya
 
                 _drs_dir = _work / 'drs_trim'
@@ -114,16 +135,10 @@ def _process_one_sample(
                     log.write(
                         f"DRS trim: {_n_trimmed:,}/{_n_total:,} reads trimmed\n"
                     )
-                    _subprocess.run(
-                        [
-                            'samtools', 'fastq',
-                            '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
-                            '-0', str(_trimmed_fastq),
-                            str(_trimmed_bam),
-                        ],
-                        check=True,
-                        stdout=_subprocess.DEVNULL,
-                        stderr=_subprocess.DEVNULL,
+                    _run_samtools_fastq(
+                        _trimmed_bam,
+                        _trimmed_fastq,
+                        threads=getattr(args, 'threads', 4),
                     )
                     input_path = _trimmed_fastq
                     input_type = 'fastq.gz'
@@ -188,6 +203,7 @@ def _process_one_sample(
                     from ...consensus.corrected_consensus import (
                         merge_corrected_tsvs,
                         identify_cat5_candidates,
+                        write_corrected_consensus_bam,
                     )
                     per_aligner_tsvs, per_aligner_corrected_bams = _run_correction_per_aligner(
                         per_aligner_bams=_sample_per_aligner_bams,
@@ -211,6 +227,8 @@ def _process_one_sample(
                                     f" {_jot_path}: {_e}",
                                     file=sys.stderr,
                                 )
+                        from rectify.utils.genome import load_genome as _load_genome_for_merge
+                        _merge_genome = _load_genome_for_merge(str(genome_path))
                         merge_corrected_tsvs(
                             per_aligner_tsvs=per_aligner_tsvs,
                             output_tsv=_work / 'corrected_reads.tsv',
@@ -218,10 +236,42 @@ def _process_one_sample(
                             per_aligner_corrected_bams={
                                 a: str(p) for a, p in per_aligner_corrected_bams.items()
                             } if per_aligner_corrected_bams else None,
+                            per_aligner_raw_bams={
+                                a: str(p) for a, p in _sample_per_aligner_bams.items()
+                            } if not per_aligner_corrected_bams else None,
+                            genome=_merge_genome,
                             overhang_table=_overhang_table,
+                            lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
                         )
                         _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
                         identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
+                        # Emit corrected_consensus.bam — symmetric with the chunked path.
+                        # Non-fatal: merged TSV is the primary output; missing BAM is
+                        # recoverable via post-hoc write_corrected_consensus_bam.
+                        _consensus_bam_out = _work / 'corrected_consensus.bam'
+                        try:
+                            _consensus_stats = write_corrected_consensus_bam(
+                                per_aligner_raw_bams={
+                                    a: str(p) for a, p in _sample_per_aligner_bams.items()
+                                },
+                                per_aligner_tsvs=per_aligner_tsvs,
+                                merged_tsv=_work / 'corrected_reads.tsv',
+                                output_bam=_consensus_bam_out,
+                                genome=_merge_genome,
+                                threads=max(1, int(getattr(args, 'threads', 1) or 1)),
+                                strict=True,
+                            )
+                            print(
+                                f"  [{sample_id}] corrected_consensus.bam written"
+                                f" ({_consensus_stats.get('written', '?')} reads)",
+                                flush=True,
+                            )
+                        except Exception as _cbam_exc:
+                            print(
+                                f"  [{sample_id}] WARNING: corrected_consensus.bam write failed"
+                                f" (non-fatal): {_cbam_exc}",
+                                file=sys.stderr,
+                            )
                     else:
                         print(
                             f"  [{sample_id}] WARNING: No per-aligner correction succeeded; "
@@ -251,6 +301,12 @@ def _process_one_sample(
                         _sidecar = _work / '.corrected_reads.tsv.provenance.json'
                         if _sidecar.exists():
                             _shutil.copy2(_sidecar, sample_output / _sidecar.name)
+                    _cbam_src = _work / 'corrected_consensus.bam'
+                    if _cbam_src.exists():
+                        _shutil.copy2(_cbam_src, sample_output / 'corrected_consensus.bam')
+                        _cbam_bai = _work / 'corrected_consensus.bam.bai'
+                        if _cbam_bai.exists():
+                            _shutil.copy2(_cbam_bai, sample_output / 'corrected_consensus.bam.bai')
                 log.write("Correction complete\n")
             except Exception as e:
                 log.write(f"Correction failed: {e}\n")
@@ -283,8 +339,7 @@ def _process_one_sample(
                         import pysam as _pysam_sc
                         _restored_tmp = str(_restored_bam) + '.sort_tmp.bam'
                         _pysam_sc.sort('-o', _restored_tmp, str(_restored_bam))
-                        _restored_bam.unlink(missing_ok=True)
-                        Path(_restored_tmp).rename(_restored_bam)
+                        Path(_restored_tmp).replace(_restored_bam)
                         _pysam_sc.index(str(_restored_bam))
                         log.write(f"DRS restore: {_sc_stats.get('restored', 0):,} reads restored\n")
                     except Exception as e:
@@ -400,7 +455,6 @@ def _run_single_sample(args) -> int:
 
     if drs_mode and input_type not in ('fastq', 'fastq.gz'):
         from ..drs_trim_command import trim_drs_bam_polya
-        import subprocess as _subprocess
 
         _sample_stem = input_path.stem
         _drs_dir = work_dir / 'drs_trim'
@@ -432,14 +486,10 @@ def _run_single_sample(args) -> int:
         # mapPacBio to write it as a suffix (UUID_pt:i:N), creating duplicate
         # read IDs and breaking parquet lookups. Poly-A lengths are stored in
         # the parquet metadata; the FASTQ read name must be the bare UUID only.
-        _subprocess.run(
-            [
-                'samtools', 'fastq',
-                '-@', str(max(1, getattr(args, 'threads', 4) - 1)),
-                '-0', str(_trimmed_fastq),
-                str(_trimmed_bam),
-            ],
-            check=True,
+        _run_samtools_fastq(
+            _trimmed_bam,
+            _trimmed_fastq,
+            threads=getattr(args, 'threads', 4),
         )
 
         print(f"  FASTQ written: {_trimmed_fastq}")
@@ -537,7 +587,7 @@ def _run_single_sample(args) -> int:
             # The final corrected_reads.tsv is selected from post-correction features
             # (five_prime_rescued, confidence, 3' agreement) rather than raw alignment
             # features — which are not cross-comparable across aligners.
-            from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates
+            from ...consensus.corrected_consensus import merge_corrected_tsvs, identify_cat5_candidates, write_corrected_consensus_bam
             print(f"    Running per-aligner correction ({len(per_aligner_bams)} aligners)...")
             per_aligner_tsvs, per_aligner_corrected_bams = _run_correction_per_aligner(
                 per_aligner_bams=per_aligner_bams,
@@ -561,10 +611,11 @@ def _run_single_sample(args) -> int:
                     except Exception as _e:
                         print(f"    WARNING: Could not load overhang table {_jot_path}: {_e}",
                               file=sys.stderr)
-                # Pass per_aligner_corrected_bams when available to activate
-                # HP-edit-distance winner selection (the validated correct-first
-                # path per CLAUDE.md PIPELINE ORDER). Falls back to the legacy
-                # 5-key sort transparently when the dict is empty.
+                # Use HP-edit-distance winner selection. If per-aligner
+                # corrected BAMs were not materialized, score lazily from raw
+                # BAMs + corrected TSVs.
+                from rectify.utils.genome import load_genome as _load_genome_for_merge
+                _merge_genome = _load_genome_for_merge(str(genome_path))
                 corrected_tsv = merge_corrected_tsvs(
                     per_aligner_tsvs=per_aligner_tsvs,
                     output_tsv=work_dir / 'corrected_reads.tsv',
@@ -572,11 +623,43 @@ def _run_single_sample(args) -> int:
                     per_aligner_corrected_bams={
                         a: str(p) for a, p in per_aligner_corrected_bams.items()
                     } if per_aligner_corrected_bams else None,
+                    per_aligner_raw_bams={
+                        a: str(p) for a, p in per_aligner_bams.items()
+                    } if not per_aligner_corrected_bams else None,
+                    genome=_merge_genome,
                     overhang_table=_overhang_table,
+                    lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
                 )
                 # Identify Cat5 candidates (reads where aligners contribute unique introns)
                 _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
                 identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
+                # Emit corrected_consensus.bam — symmetric with the chunked path.
+                # Non-fatal: merged TSV is the primary output; missing BAM is
+                # recoverable via post-hoc write_corrected_consensus_bam.
+                _consensus_bam_out = work_dir / 'corrected_consensus.bam'
+                try:
+                    _consensus_stats = write_corrected_consensus_bam(
+                        per_aligner_raw_bams={
+                            a: str(p) for a, p in per_aligner_bams.items()
+                        },
+                        per_aligner_tsvs=per_aligner_tsvs,
+                        merged_tsv=corrected_tsv,
+                        output_bam=_consensus_bam_out,
+                        genome=_merge_genome,
+                        threads=max(1, int(getattr(args, 'threads', 1) or 1)),
+                        strict=True,
+                    )
+                    print(
+                        f"    corrected_consensus.bam written"
+                        f" ({_consensus_stats.get('written', '?')} reads)",
+                        flush=True,
+                    )
+                except Exception as _cbam_exc:
+                    print(
+                        f"    WARNING: corrected_consensus.bam write failed"
+                        f" (non-fatal): {_cbam_exc}",
+                        file=sys.stderr,
+                    )
             else:
                 # All per-aligner corrections failed — fall back to consensus BAM
                 print(
@@ -620,6 +703,12 @@ def _run_single_sample(args) -> int:
         _sidecar = corrected_tsv.parent / f".{corrected_tsv.name}.provenance.json"
         if _sidecar.exists():
             _shutil.copy2(_sidecar, output_dir / _sidecar.name)
+        _cbam_scratch = corrected_tsv.parent / 'corrected_consensus.bam'
+        if _cbam_scratch.exists():
+            _shutil.copy2(_cbam_scratch, output_dir / 'corrected_consensus.bam')
+            _cbam_bai = corrected_tsv.parent / 'corrected_consensus.bam.bai'
+            if _cbam_bai.exists():
+                _shutil.copy2(_cbam_bai, output_dir / 'corrected_consensus.bam.bai')
         corrected_tsv = _oak_corrected_tsv
         work_dir = output_dir  # analysis outputs go directly to Oak
 
@@ -697,8 +786,7 @@ def _run_single_sample(args) -> int:
                 import pysam as _pysam_sc
                 _restored_tmp = str(_restored_bam) + '.sort_tmp.bam'
                 _pysam_sc.sort('-o', _restored_tmp, str(_restored_bam))
-                _restored_bam.unlink(missing_ok=True)
-                Path(_restored_tmp).rename(_restored_bam)
+                Path(_restored_tmp).replace(_restored_bam)
                 _pysam_sc.index(str(_restored_bam))
                 print(f"  Restored: {_sc_stats.get('restored', 0):,} reads")
                 print(f"[TIMING] DRS restore: {_time.perf_counter() - _t0_sc:.1f}s")

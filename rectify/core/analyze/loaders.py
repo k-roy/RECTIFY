@@ -79,15 +79,12 @@ def _postprocess_positions_df(
     trimming to df.  Mirrors the post-processing in the single-TSV code path."""
     from ...utils.chromosome import normalize_dataframe_chromosomes
 
-    position_col = None
-    for col in ['corrected_position', 'corrected_3prime', 'position']:
-        if col in df.columns:
-            position_col = col
-            break
+    position_col = _select_position_column(df.columns)
+    _validate_corrected_position_columns(df)
 
     if position_col is None:
         raise ValueError(
-            "No position column found (tried: corrected_position, corrected_3prime, position)"
+            "No position column found (tried: corrected_3prime, corrected_position, position)"
         )
 
     if position_col != 'corrected_position':
@@ -126,6 +123,26 @@ def _postprocess_positions_df(
         df = df.drop(columns=_drop_cols)
 
     return df
+
+
+def _select_position_column(columns) -> Optional[str]:
+    for col in ['corrected_3prime', 'corrected_position', 'position']:
+        if col in columns:
+            return col
+    return None
+
+
+def _validate_corrected_position_columns(df: pd.DataFrame) -> None:
+    if 'corrected_3prime' not in df.columns or 'corrected_position' not in df.columns:
+        return
+    lhs = pd.to_numeric(df['corrected_3prime'], errors='coerce')
+    rhs = pd.to_numeric(df['corrected_position'], errors='coerce')
+    mismatch = lhs.notna() & rhs.notna() & (lhs != rhs)
+    if mismatch.any():
+        raise ValueError(
+            "TSV contains both corrected_3prime and corrected_position with "
+            f"{int(mismatch.sum())} differing rows; refusing to choose silently"
+        )
 
 
 def load_corrected_positions(
@@ -178,14 +195,11 @@ def load_corrected_positions(
     df = pd.read_csv(filepath, sep='\t', nrows=max_rows)
 
     # Handle different position column names
-    position_col = None
-    for col in ['corrected_position', 'corrected_3prime', 'position']:
-        if col in df.columns:
-            position_col = col
-            break
+    position_col = _select_position_column(df.columns)
+    _validate_corrected_position_columns(df)
 
     if position_col is None:
-        raise ValueError("No position column found (tried: corrected_position, corrected_3prime, position)")
+        raise ValueError("No position column found (tried: corrected_3prime, corrected_position, position)")
 
     # Standardize to 'corrected_position' if needed
     if position_col != 'corrected_position':
@@ -251,11 +265,7 @@ def _load_large_file_chunked(
 
     # First pass: determine position column name
     header = pd.read_csv(filepath, sep='\t', nrows=0)
-    position_col = None
-    for col in ['corrected_position', 'corrected_3prime', 'position']:
-        if col in header.columns:
-            position_col = col
-            break
+    position_col = _select_position_column(header.columns)
 
     if position_col is None:
         raise ValueError("No position column found")
@@ -265,13 +275,15 @@ def _load_large_file_chunked(
 
     # Build usecols list — only load columns actually needed
     _usecols_set = {position_col, sample_column, 'chrom', 'strand'}
+    if 'corrected_3prime' in header.columns and 'corrected_position' in header.columns:
+        _usecols_set.update(['corrected_3prime', 'corrected_position'])
     if has_fraction:
         _usecols_set.add('fraction')
     for _optional_col in ('alignment_start', 'alignment_end'):
         if _optional_col in header.columns:
             _usecols_set.add(_optional_col)
     # Preserve a stable order: required cols first, then optional
-    _usecols = [c for c in [position_col, sample_column, 'chrom', 'strand', 'fraction', 'alignment_start', 'alignment_end'] if c in _usecols_set]
+    _usecols = [c for c in [position_col, sample_column, 'chrom', 'strand', 'corrected_3prime', 'corrected_position', 'fraction', 'alignment_start', 'alignment_end'] if c in _usecols_set]
 
     # Aggregated DataFrames from each chunk
     aggregated_chunks = []
@@ -282,6 +294,7 @@ def _load_large_file_chunked(
             break
 
         # Normalize chromosomes in chunk (vectorized)
+        _validate_corrected_position_columns(chunk)
         if normalize_chroms:
             chunk['chrom'] = chunk['chrom'].map(
                 lambda x: normalize_chromosome(x, chrom_format)
@@ -382,17 +395,64 @@ def load_position_index(
     return df
 
 
+def _parse_annotation_attributes(attr_string: str) -> dict:
+    """Parse GTF/GFF3 attribute text into a dict."""
+    from urllib.parse import unquote
+
+    attrs = {}
+    if '=' in attr_string:
+        for attr in attr_string.split(';'):
+            attr = attr.strip()
+            if '=' not in attr:
+                continue
+            key, value = attr.split('=', 1)
+            attrs[key] = unquote(value.strip().strip('"'))
+    else:
+        for attr in attr_string.split(';'):
+            attr = attr.strip()
+            if ' ' not in attr:
+                continue
+            key, value = attr.split(' ', 1)
+            attrs[key] = value.strip().strip('"')
+    return attrs
+
+
+def _normalize_feature_type(feature: str) -> str:
+    """Normalize common GTF/GFF feature spellings to downstream categories."""
+    raw = str(feature or '').strip()
+    key = raw.lower().replace('-', '_')
+    feature_map = {
+        'three_prime_utr': 'UTR3',
+        '3utr': 'UTR3',
+        '3_utr': 'UTR3',
+        'utr3': 'UTR3',
+        "3'utr": 'UTR3',
+        'five_prime_utr': 'UTR5',
+        '5utr': 'UTR5',
+        '5_utr': 'UTR5',
+        'utr5': 'UTR5',
+        "5'utr": 'UTR5',
+        'cds': 'CDS',
+        'snorna_gene': 'snoRNA',
+        'snorna': 'snoRNA',
+        'snrna_gene': 'snRNA',
+        'snrna': 'snRNA',
+        'trna_gene': 'tRNA',
+        'trna': 'tRNA',
+        'rrna_gene': 'rRNA',
+        'rrna': 'rRNA',
+        'ncrna_gene': 'ncRNA',
+        'ncrna': 'ncRNA',
+        'cut': 'CUT',
+        'sut': 'SUT',
+        'xut': 'XUT',
+    }
+    return feature_map.get(key, raw)
+
+
 def _parse_gtf(filepath: str) -> pd.DataFrame:
-    """Parse GTF/GFF3 file to extract gene coordinates.
-
-    Supports both GTF format (key "value") and GFF3 format (key=value).
-    For GFF3, extracts:
-        - ID -> gene_id
-        - Name -> systematic gene name
-        - gene -> common gene name (preferred for display)
-    """
-    genes = []
-
+    """Parse GTF/GFF3 annotation, preserving gene and feature-level rows."""
+    records = []
     import gzip as _gzip
     _open = _gzip.open if str(filepath).endswith('.gz') else open
     with _open(filepath, 'rt') as f:
@@ -404,51 +464,71 @@ def _parse_gtf(filepath: str) -> pd.DataFrame:
             if len(fields) < 9:
                 continue
 
-            if fields[2] != 'gene':
-                continue
-
             chrom = fields[0]
-            start = int(fields[3]) - 1  # GFF is 1-based inclusive → 0-based half-open
-            end = int(fields[4])        # GFF end is inclusive = 0-based exclusive (no change)
+            try:
+                start = int(fields[3]) - 1
+                end = int(fields[4])
+            except ValueError:
+                continue
+            if start < 0 or end <= start:
+                continue
             strand = fields[6]
+            raw_feature = fields[2]
+            attrs = _parse_annotation_attributes(fields[8])
+            parent_id = (attrs.get('Parent') or '').split(',')[0] or None
+            record_id = attrs.get('ID') or attrs.get('gene_id') or attrs.get('transcript_id')
+            feature_type = _normalize_feature_type(raw_feature)
 
-            # Parse attributes - handle both GTF and GFF3 formats
-            attrs = {}
-            attr_string = fields[8]
-
-            # Detect format: GFF3 uses key=value, GTF uses key "value"
-            if '=' in attr_string:
-                # GFF3 format: ID=YAL069W;Name=YAL069W;gene=PAU8
-                for attr in attr_string.split(';'):
-                    attr = attr.strip()
-                    if '=' in attr:
-                        key, value = attr.split('=', 1)
-                        # URL decode common escapes
-                        value = value.replace('%20', ' ').replace('%3B', ';').replace('%2C', ',')
-                        attrs[key] = value
-            else:
-                # GTF format: gene_id "YAL069W"; gene_name "PAU8"
-                for attr in attr_string.split(';'):
-                    attr = attr.strip()
-                    if ' ' in attr:
-                        key, value = attr.split(' ', 1)
-                        attrs[key] = value.strip('"')
-
-            # Extract gene_id - try GFF3 keys first, then GTF
-            gene_id = attrs.get('ID') or attrs.get('gene_id') or f'{chrom}_{start}'
-
-            # Extract gene_name - prefer common name, fall back to systematic name
-            # GFF3: 'gene' has common name, 'Name' has systematic name
-            # GTF: 'gene_name' has the name
-            gene_name = attrs.get('gene') or attrs.get('gene_name') or attrs.get('Name') or gene_id
-
-            genes.append({
+            records.append({
                 'chrom': chrom,
                 'start': start,
                 'end': end,
                 'strand': strand,
-                'gene_id': gene_id,
-                'gene_name': gene_name,
+                'gene_id': attrs.get('gene_id') or (record_id if feature_type == 'gene' else None),
+                'gene_name': attrs.get('gene_name') or attrs.get('gene') or attrs.get('Name'),
+                'feature_type': feature_type,
+                'raw_feature': raw_feature,
+                'source': fields[1],
+                'transcript_id': attrs.get('transcript_id'),
+                'parent_id': parent_id,
+                '_record_id': record_id,
             })
 
-    return pd.DataFrame(genes)
+    if not records:
+        return pd.DataFrame(columns=[
+            'chrom', 'start', 'end', 'strand', 'gene_id', 'gene_name',
+            'feature_type', 'raw_feature', 'source', 'transcript_id',
+            'parent_id',
+        ])
+
+    id_to_gene = {}
+    id_to_name = {}
+    for rec in records:
+        rec_id = rec.get('_record_id')
+        if not rec_id:
+            continue
+        gene_id = rec.get('gene_id') or rec_id
+        gene_name = rec.get('gene_name') or gene_id
+        id_to_gene[rec_id] = gene_id
+        id_to_name[rec_id] = gene_name
+
+    for rec in records:
+        parent_id = rec.get('parent_id')
+        rec_id = rec.get('_record_id')
+        if not rec.get('gene_id'):
+            rec['gene_id'] = (
+                id_to_gene.get(parent_id)
+                or id_to_gene.get(rec_id)
+                or parent_id
+                or rec_id
+                or f"{rec['chrom']}_{rec['start']}"
+            )
+        if not rec.get('gene_name'):
+            rec['gene_name'] = (
+                id_to_name.get(parent_id)
+                or id_to_name.get(rec_id)
+                or rec['gene_id']
+            )
+
+    df = pd.DataFrame(records)
+    return df.drop(columns=['_record_id'])

@@ -2100,5 +2100,14 @@ def run_multi_aligner(
         except Exception as e:
             logger.error(f"Aligner {aligner} failed: {e}")
 
+    if 'minimap2' in aligners and 'minimap2' not in results:
+        succeeded = ', '.join(sorted(results)) or 'none'
+        raise RuntimeError(
+            "Required baseline aligner minimap2 failed; cannot proceed with "
+            f"consensus selection (succeeded: {succeeded})"
+        )
+    if not results:
+        raise RuntimeError("All requested aligners failed; no BAMs are available for consensus selection")
+
     logger.info(f"Multi-aligner pipeline complete: {len(results)} aligners succeeded")
     return results

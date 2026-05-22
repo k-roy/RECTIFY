@@ -7,6 +7,44 @@ Add items here rather than inline `# TODO` comments where possible.
 
 ## Alignment / Consensus
 
+### Fix deSALT on Sherlock — Install Conda Binary
+**Priority:** High
+**Context:** deSALT's vendored binary at `rectify/data/bin/linux_x86_64/deSALT`
+(v1.5.6) crashes with SIGSEGV on every chunk on Sherlock, producing 274B empty
+fallback BAMs. The same tool works correctly on H2 where it is conda-installed
+(`~/.conda/envs/rectify/bin/deSALT`, 856 KB, built 2025-09-29): 5065 alignments,
+99.5% mapped, real CIGAR strings with splice N-ops. See
+`docs/ALIGNER_RECOMMENDATIONS.md` for full details.
+
+**Fix:** install deSALT on Sherlock via conda (same channel/version as H2).
+After fixing, re-run set2 and set3 merges and correct with deSALT enabled.
+
+**Also investigate:** the `rectify correct` hang observed in smoke test 25410215
+when empty (274B) deSALT BAMs were used as primary input — confirm whether the
+hang is triggered by the empty BAM itself or is a separate bug in
+`rectify.core.bam.parallel`.
+
+**Agent task:** full step-by-step instructions (install, crash-window validation at
+14,900 / 30,000 / 40,000 reads, result interpretation, and rollout if passing) are
+in `project_status_markdowns/TASK_desalt_conda_sherlock_test.md`.
+
+---
+
+### Evaluate Newer Aligners as Panel Additions (Minisplice, GLASS, Winnowmap2)
+**Priority:** Medium
+**Context:** Regardless of the deSALT Sherlock fix, newer aligners have emerged
+that may improve consensus quality or provide algorithmic diversity.
+
+Candidates:
+- **Minisplice** (~June 2025) — minimap2 + deep-learning splice signals
+- **GLASS** (April 2025) — graph-learning splice-aware alignment
+- **Winnowmap2** — optimized for repetitive regions; lower priority for yeast
+
+Integration path: add a wrapper in `rectify/core/align/multi_aligner.py`, register
+in `SUPPORTED_ALIGNERS`, validate with `pytest tests/test_consensus_selection.py`.
+
+---
+
 ### `merge_corrected_tsvs` — Winner-Selection Tie-Breaker Bug
 **File:** `rectify/core/consensus/corrected_consensus.py` — `merge_corrected_tsvs()`
 **Priority:** Medium (correctness; only affects paralog-ambiguous reads)

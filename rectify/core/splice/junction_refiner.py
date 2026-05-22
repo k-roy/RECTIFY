@@ -118,7 +118,11 @@ Date: 2026-04-20
 
 from __future__ import annotations
 
+import json
 import logging
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import pysam
@@ -160,6 +164,129 @@ from .junction_scoring import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+class JunctionRefineProfile:
+    """Low-overhead aggregate profiler for Module 2H junction refinement."""
+
+    def __init__(self, sample_rate: int = 1) -> None:
+        self.sample_rate = max(1, int(sample_rate or 1))
+        self.timings: Counter[str] = Counter()
+        self.counts: Counter[str] = Counter()
+        self.candidate_hist: Counter[int] = Counter()
+        self.candidate_after_cap_hist: Counter[int] = Counter()
+
+    def add_time(self, key: str, seconds: float) -> None:
+        self.timings[key] += float(seconds)
+
+    def inc(self, key: str, n: int = 1) -> None:
+        self.counts[key] += int(n)
+
+    def observe_candidates(self, n: int, *, after_cap: bool = False) -> None:
+        hist = self.candidate_after_cap_hist if after_cap else self.candidate_hist
+        hist[int(n)] += 1
+
+    def merge(self, other: Optional[object]) -> None:
+        if other is None:
+            return
+        if isinstance(other, JunctionRefineProfile):
+            other = other.to_raw_dict()
+        if not isinstance(other, dict):
+            return
+        self.timings.update({k: float(v) for k, v in other.get('timings', {}).items()})
+        self.counts.update({k: int(v) for k, v in other.get('counts', {}).items()})
+        self.candidate_hist.update({
+            int(k): int(v) for k, v in other.get('candidate_hist', {}).items()
+        })
+        self.candidate_after_cap_hist.update({
+            int(k): int(v) for k, v in other.get('candidate_after_cap_hist', {}).items()
+        })
+
+    def to_raw_dict(self) -> dict:
+        return {
+            'sample_rate': self.sample_rate,
+            'timings': dict(self.timings),
+            'counts': dict(self.counts),
+            'candidate_hist': dict(self.candidate_hist),
+            'candidate_after_cap_hist': dict(self.candidate_after_cap_hist),
+        }
+
+    @staticmethod
+    def _percentiles(hist: Counter[int]) -> dict:
+        total = sum(hist.values())
+        if total <= 0:
+            return {'n': 0, 'min': None, 'p50': None, 'p90': None, 'p99': None, 'max': None}
+        items = sorted(hist.items())
+
+        def pct(q: float) -> int:
+            threshold = max(1, int((q * total) + 0.999999))
+            seen = 0
+            for value, count in items:
+                seen += count
+                if seen >= threshold:
+                    return value
+            return items[-1][0]
+
+        return {
+            'n': total,
+            'min': items[0][0],
+            'p50': pct(0.50),
+            'p90': pct(0.90),
+            'p99': pct(0.99),
+            'max': items[-1][0],
+        }
+
+    def to_summary(self) -> dict:
+        total_time = sum(self.timings.values())
+        timing_percent = {
+            k: (100.0 * v / total_time if total_time > 0 else 0.0)
+            for k, v in self.timings.items()
+        }
+        return {
+            'version': 1,
+            'sample_rate': self.sample_rate,
+            'counts': dict(sorted(self.counts.items())),
+            'timings_seconds': dict(sorted(self.timings.items())),
+            'timings_percent_of_profiled_time': dict(sorted(timing_percent.items())),
+            'candidate_count_summary': self._percentiles(self.candidate_hist),
+            'candidate_count_after_cap_summary': self._percentiles(
+                self.candidate_after_cap_hist
+            ),
+            'candidate_hist': {str(k): v for k, v in sorted(self.candidate_hist.items())},
+            'candidate_after_cap_hist': {
+                str(k): v for k, v in sorted(self.candidate_after_cap_hist.items())
+            },
+        }
+
+
+def _profile_time(profile: Optional[JunctionRefineProfile], key: str, start: float) -> None:
+    if profile is not None:
+        profile.add_time(key, time.perf_counter() - start)
+
+
+def _rank_and_cap_candidates(
+    candidates: List[Tuple[int, int]],
+    chrom: str,
+    ns: int,
+    ne: int,
+    annotated_set: Set[Junction],
+    max_candidates: Optional[int],
+) -> List[Tuple[int, int]]:
+    """Deterministically rank candidates and cap the scoring set when requested."""
+    if not max_candidates or max_candidates <= 0 or len(candidates) <= max_candidates:
+        return candidates
+
+    current = (ns, ne)
+
+    def rank(item: Tuple[int, int]) -> Tuple[int, int, int, int, int, int]:
+        js, je = item
+        is_current = 0 if item == current else 1
+        is_annotated = 0 if (chrom, js, je) in annotated_set else 1
+        boundary_delta = abs(js - ns) + abs(je - ne)
+        length_delta = abs((je - js) - (ne - ns))
+        return (is_current, is_annotated, boundary_delta, length_delta, js, je)
+
+    return sorted(candidates, key=rank)[:max_candidates]
 
 __all__ = [
     # Re-exported from hp_penalty for backwards compatibility
@@ -344,6 +471,9 @@ def refine_read_junctions(
     search_radius: int = 5000,
     max_boundary_shift: int = 50,
     boundary_error_window: int = 10,
+    max_junction_size: Optional[int] = None,
+    max_candidates_per_nop: Optional[int] = None,
+    profile: Optional[JunctionRefineProfile] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
@@ -375,6 +505,14 @@ def refine_read_junctions(
                               are already correctly placed and don't need
                               refinement.  Set to 0 to disable this filter and
                               score every N-op.
+        max_junction_size:    Optional maximum candidate intron/junction length.
+                              For yeast, 10000 keeps organism-plausible
+                              junctions while removing long noisy N-op calls.
+        max_candidates_per_nop:
+                              Optional deterministic cap on candidates scored
+                              per N-op after ranking current/annotated/nearby
+                              candidates first.
+        profile:              Optional aggregate profiler.
 
     Returns:
         List of (cigar_idx, old_start, old_end, new_start, new_end) for each
@@ -391,6 +529,8 @@ def refine_read_junctions(
     replacements = []
 
     for cigar_idx, ns, ne, q_split in _iter_n_ops(read):
+        if profile is not None:
+            profile.inc('n_ops_examined')
         # Filter: only score junctions where there is alignment evidence of a
         # boundary problem — an X (mismatch) or I/D (indel) op within
         # boundary_error_window reference bases of either junction endpoint.
@@ -401,23 +541,60 @@ def refine_read_junctions(
         # produce a locally-optimal but canonically-wrong split with no nearby
         # errors (e.g. 54= leading into a GG donor), and these are exactly the
         # cases that need correction.
-        if boundary_error_window > 0 and not _has_boundary_error(
-            read.cigartuples, ns, ne,
-            read.reference_start, boundary_error_window,
-        ):
-            if _canonical_tier(ns, ne, genome_seq, strand) < 4:
-                continue
+        if boundary_error_window > 0:
+            _t_boundary = time.perf_counter() if profile is not None else 0.0
+            has_boundary_error = _has_boundary_error(
+                read.cigartuples, ns, ne,
+                read.reference_start, boundary_error_window,
+            )
+            _profile_time(profile, 'boundary_error_filter', _t_boundary)
+            if not has_boundary_error:
+                _t_tier = time.perf_counter() if profile is not None else 0.0
+                current_filter_tier = _canonical_tier(ns, ne, genome_seq, strand)
+                _profile_time(profile, 'canonical_tier_current_filter', _t_tier)
+                if current_filter_tier < 4:
+                    if profile is not None:
+                        profile.inc('n_ops_skipped_boundary_clean')
+                    continue
+                if profile is not None:
+                    profile.inc('n_ops_noncanonical_bypass_boundary_filter')
         # Use search_radius to discover candidates (finds annotated junctions from
         # adjacent isoforms), but constrain each endpoint to max_boundary_shift to
         # avoid pairing with junctions from entirely different genes.
+        _t_candidates = time.perf_counter() if profile is not None else 0.0
         candidates = _candidates_near(
             all_junctions_idx, chrom, ns, ne,
             radius=search_radius,
             start_radius=max_boundary_shift,
             end_radius=max_boundary_shift,
+            max_junction_size=max_junction_size,
         )
+        _profile_time(profile, 'candidate_lookup', _t_candidates)
+        if profile is not None:
+            profile.observe_candidates(len(candidates))
         if not candidates:
+            if profile is not None:
+                profile.inc('n_ops_no_candidates')
             continue
+
+        if max_candidates_per_nop and max_candidates_per_nop > 0:
+            _t_cap = time.perf_counter() if profile is not None else 0.0
+            capped_candidates = _rank_and_cap_candidates(
+                candidates, chrom, ns, ne, annotated_set, max_candidates_per_nop
+            )
+            _profile_time(profile, 'candidate_rank_and_cap', _t_cap)
+            if profile is not None:
+                profile.observe_candidates(len(capped_candidates), after_cap=True)
+                if len(capped_candidates) < len(candidates):
+                    profile.inc('n_ops_candidate_capped')
+                    profile.inc('candidates_dropped_by_cap', len(candidates) - len(capped_candidates))
+            candidates = capped_candidates
+        elif profile is not None:
+            profile.observe_candidates(len(candidates), after_cap=True)
+
+        if profile is not None:
+            profile.inc('n_ops_scored')
+            profile.inc('candidates_scored', len(candidates))
 
         # All candidates are scored; canonical/annotated status is used ONLY as
         # a tie-breaker for equal or near-equal sequence scores.
@@ -433,24 +610,33 @@ def refine_read_junctions(
         # comparison wins over is_alt).  When the current junction is acceptably
         # canonical (tier < 4), the read was placed there for good reason and the
         # current junction is preferred at equal score (is_alt wins over tier).
+        _t_tier = time.perf_counter() if profile is not None else 0.0
         current_tier = _canonical_tier(ns, ne, genome_seq, strand)
+        _profile_time(profile, 'canonical_tier_current_scoring', _t_tier)
         tier_beats_alt = current_tier >= 4  # True → prefer canonical over current
 
         for js, je in candidates:
             if je <= js:
+                if profile is not None:
+                    profile.inc('candidates_invalid')
                 continue
 
+            _t_score = time.perf_counter() if profile is not None else 0.0
             score, delta = _score_junction(
                 q, q_split, js, je, genome_seq,
                 hp_pen=hp_pen, W=W, max_slide=max_slide,
                 current_ns=ns,   # anchor: current N-op boundaries
+                profile=profile,
                 penalty_table=penalty_table,
             )
+            _profile_time(profile, 'score_junction_call_wall', _t_score)
 
             # Tie-breakers (only matter when score is identical or within noise floor):
             is_alt   = 0 if (js == ns and je == ne) else 1  # current junction preferred
+            _t_tiebreak = time.perf_counter() if profile is not None else 0.0
             tier     = _canonical_tier(js, je, genome_seq, strand)
             is_novel = 0 if (chrom, js, je) in annotated_set else 1
+            _profile_time(profile, 'candidate_tiebreak_metadata', _t_tiebreak)
 
             # When the current junction is non-canonical, apply _CANONICAL_HP_PRIOR
             # (0.5 edit-distance units) as a discount to canonical-tier junctions so
@@ -487,6 +673,8 @@ def refine_read_junctions(
         # Only emit a replacement if the junction actually changes.
         if new_js != ns or new_je != ne:
             replacements.append((cigar_idx, ns, ne, new_js, new_je))
+            if profile is not None:
+                profile.inc('replacements_emitted')
 
     return replacements
 
@@ -905,10 +1093,14 @@ def _run_sequential(
     search_radius: int,
     max_boundary_shift: int,
     boundary_error_window: int,
+    max_junction_size: Optional[int],
+    max_candidates_per_nop: Optional[int],
     penalty_table: Optional[HpPenaltyTable],
     penalty_table_set: Optional[PenaltyTableSet] = None,
+    profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
+    sample_rate = profile.sample_rate if profile is not None else 1
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
          pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
 
@@ -936,12 +1128,20 @@ def _run_sequential(
             eff_table = (penalty_table_set.for_read(read)
                          if penalty_table_set is not None else penalty_table)
             try:
+                read_profile = (
+                    profile
+                    if profile is not None and (stats['n_op_reads'] % sample_rate == 0)
+                    else None
+                )
                 replacements = refine_read_junctions(
                     read, junctions_idx, annotated_set, genome_seq, strand,
                     hp_pen=hp_pen, W=W, max_slide=max_slide,
                     search_radius=search_radius,
                     max_boundary_shift=max_boundary_shift,
                     boundary_error_window=boundary_error_window,
+                    max_junction_size=max_junction_size,
+                    max_candidates_per_nop=max_candidates_per_nop,
+                    profile=read_profile,
                     penalty_table=eff_table,
                 )
             except Exception as exc:
@@ -978,10 +1178,13 @@ def _run_parallel(
     search_radius: int,
     max_boundary_shift: int,
     boundary_error_window: int,
+    max_junction_size: Optional[int],
+    max_candidates_per_nop: Optional[int],
     penalty_table: Optional[HpPenaltyTable],
     n_workers: int,
     batch_size: int,
     penalty_table_set: Optional[PenaltyTableSet] = None,
+    profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
 
@@ -993,6 +1196,7 @@ def _run_parallel(
     import multiprocessing as mp
 
     # Phase 1: separate pass-through reads from N-op reads, write pass-throughs
+    _t_scan = time.perf_counter() if profile is not None else 0.0
     n_op_sams: List[str] = []
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in:
         header_dict = bam_in.header.to_dict()
@@ -1004,6 +1208,7 @@ def _run_parallel(
                 continue
             stats['n_op_reads'] += 1
             n_op_sams.append(read.to_string())
+    _profile_time(profile, 'parallel_bam_scan_collect_nop_reads', _t_scan)
 
     if not n_op_sams:
         # No N-op reads: just copy the BAM
@@ -1024,9 +1229,13 @@ def _run_parallel(
         'search_radius': search_radius,
         'max_boundary_shift': max_boundary_shift,
         'boundary_error_window': boundary_error_window,
+        'max_junction_size': max_junction_size,
+        'max_candidates_per_nop': max_candidates_per_nop,
         'penalty_table': penalty_table,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
+    _WORKER_POOL_STATE['profile_enabled'] = profile is not None
+    _WORKER_POOL_STATE['profile_sample_rate'] = profile.sample_rate if profile is not None else 1
 
     # Trigger numba JIT compilation before forking so workers inherit compiled code
     if _NUMBA_AVAILABLE:
@@ -1037,13 +1246,21 @@ def _run_parallel(
     all_results: List[Tuple[str, List]] = []
 
     # Phase 2: parallel scoring
+    _t_workers = time.perf_counter() if profile is not None else 0.0
     with mp.Pool(n_workers) as pool:
         for batch_results in pool.imap_unordered(_refine_read_batch, batches):
-            all_results.extend(batch_results)
+            if isinstance(batch_results, dict):
+                all_results.extend(batch_results.get('results', []))
+                if profile is not None:
+                    profile.merge(batch_results.get('profile'))
+            else:
+                all_results.extend(batch_results)
+    _profile_time(profile, 'parallel_worker_scoring', _t_workers)
 
     _WORKER_POOL_STATE.clear()
 
     # Phase 3: write all output (pass-throughs first, then N-op results)
+    _t_write = time.perf_counter() if profile is not None else 0.0
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
          pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
 
@@ -1071,6 +1288,7 @@ def _run_parallel(
                 stats['refined'] += 1
             else:
                 stats['unchanged'] += 1
+    _profile_time(profile, 'parallel_output_write_apply_replacements', _t_write)
 
 
 def _warmup_numba_dp() -> None:
@@ -1118,11 +1336,16 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
     genome = state['genome']
     kw = state['kwargs']
     penalty_table_set: Optional[PenaltyTableSet] = state.get('penalty_table_set')
+    profile_enabled = bool(state.get('profile_enabled', False))
+    profile_sample_rate = max(1, int(state.get('profile_sample_rate', 1) or 1))
+    profile = JunctionRefineProfile(profile_sample_rate) if profile_enabled else None
 
     results: List[Tuple[str, List]] = []
-    for sam_str in sam_strings:
+    for i, sam_str in enumerate(sam_strings):
         try:
+            _t_parse = time.perf_counter() if profile is not None else 0.0
             read = pysam.AlignedSegment.fromstring(sam_str, header)
+            _profile_time(profile, 'worker_sam_parse', _t_parse)
             chrom = standardize_chrom_name(read.reference_name)
             genome_seq = genome.get(chrom, '')
             if not genome_seq:
@@ -1133,12 +1356,18 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
                 eff_kw = {**kw, 'penalty_table': penalty_table_set.for_read(read)}
             else:
                 eff_kw = kw
+            if profile is not None and (i % profile_sample_rate == 0):
+                eff_kw = {**eff_kw, 'profile': profile}
             replacements = refine_read_junctions(
                 read, junctions_idx, annotated_set, genome_seq, strand, **eff_kw
             )
             results.append((sam_str, replacements))
         except Exception:
             results.append((sam_str, []))
+            if profile is not None:
+                profile.inc('worker_errors')
+    if profile is not None:
+        return {'results': results, 'profile': profile.to_raw_dict()}
     return results
 
 
@@ -1158,6 +1387,8 @@ def refine_bam_junctions(
     search_radius: int = 5000,
     max_boundary_shift: int = 50,
     boundary_error_window: int = 10,
+    max_junction_size: Optional[int] = None,
+    max_candidates_per_nop: Optional[int] = None,
     sort_and_index: bool = True,
     penalty_table_path: Optional[str] = None,
     str_penalty_table_path: Optional[str] = None,
@@ -1167,6 +1398,8 @@ def refine_bam_junctions(
     n_workers: int = 1,
     batch_size: int = 200,
     penalty_table_set: Optional['PenaltyTableSet'] = None,
+    profile_path: Optional[str] = None,
+    profile_sample_rate: int = 1,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1188,6 +1421,12 @@ def refine_bam_junctions(
                               Prevents false-positive matches from junctions
                               in adjacent genes within search_radius.
         search_radius:        Junction search radius (bp).
+        max_junction_size:    Optional maximum observed/candidate junction
+                              length.  Applied when building a pool from BAMs
+                              and when querying a pre-built pool.
+        max_candidates_per_nop:
+                              Optional deterministic cap on candidates scored
+                              per N-op after candidate ranking.
         sort_and_index:       Sort and index the output BAM when True.
         penalty_table_path:   Optional path to ``penalty_scores.tsv`` produced
                               by ``empirical_cigar_error_profiler.py``.  When
@@ -1203,8 +1442,10 @@ def refine_bam_junctions(
     Returns:
         Stats dict with keys: total, n_op_reads, refined, unchanged, errors.
     """
+    profile = JunctionRefineProfile(profile_sample_rate) if profile_path else None
     penalty_table: Optional[HpPenaltyTable] = None
     if penalty_table_path:
+        _t_penalty = time.perf_counter() if profile is not None else 0.0
         try:
             penalty_table = HpPenaltyTable.from_tsv(penalty_table_path, str_path=str_penalty_table_path)
             logger.info(
@@ -1217,46 +1458,62 @@ def refine_bam_junctions(
                 "— falling back to heuristic scoring",
                 penalty_table_path, exc,
             )
+        _profile_time(profile, 'penalty_table_load', _t_penalty)
     stats = dict(total=0, n_op_reads=0, refined=0, unchanged=0, errors=0)
 
     # Build junction pool and index.
     # When prebuilt_junction_pool is provided (from `rectify prescan`), use it
     # directly and skip BAM collection — used for chunked correction pipelines.
     if prebuilt_junction_pool is not None:
+        _t_pool = time.perf_counter() if profile is not None else 0.0
         all_junctions = prebuilt_junction_pool
         annotated_set = prebuilt_annotated_set if prebuilt_annotated_set is not None else set()
         logger.info(
             "refine_bam_junctions: using pre-built pool (%d junctions, %d annotated)",
             len(all_junctions), len(annotated_set),
         )
+        _profile_time(profile, 'junction_pool_load_or_assign', _t_pool)
     else:
+        _t_pool = time.perf_counter() if profile is not None else 0.0
         all_junctions, annotated_set = build_junction_pool(
-            aligner_bams, annotated_junctions,
+            aligner_bams,
+            annotated_junctions,
+            max_junction_size=max_junction_size,
         )
         logger.info(
             "refine_bam_junctions: pool has %d junctions (%d annotated)",
             len(all_junctions), len(annotated_set),
         )
+        _profile_time(profile, 'junction_pool_build', _t_pool)
+    _t_index = time.perf_counter() if profile is not None else 0.0
     junctions_idx = _build_junction_index(all_junctions)
+    _profile_time(profile, 'junction_index_build', _t_index)
+    if profile is not None:
+        profile.inc('pool_junctions', len(all_junctions))
+        profile.inc('pool_annotated_junctions', len(annotated_set))
 
     if n_workers > 1:
         _run_parallel(
             input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
-            boundary_error_window, penalty_table, n_workers, batch_size,
-            penalty_table_set=penalty_table_set,
+            boundary_error_window, max_junction_size, max_candidates_per_nop,
+            penalty_table, n_workers, batch_size,
+            penalty_table_set=penalty_table_set, profile=profile,
         )
     else:
         _run_sequential(
             input_bam, output_bam, genome, junctions_idx, annotated_set, stats,
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
-            boundary_error_window, penalty_table,
-            penalty_table_set=penalty_table_set,
+            boundary_error_window, max_junction_size, max_candidates_per_nop,
+            penalty_table,
+            penalty_table_set=penalty_table_set, profile=profile,
         )
 
     if sort_and_index:
         try:
+            _t_sort = time.perf_counter() if profile is not None else 0.0
             _sort_and_index(output_bam, n_threads=sort_threads)
+            _profile_time(profile, 'sort_and_index_output_bam', _t_sort)
         except Exception as exc:
             logger.warning("refine_bam_junctions: sort/index failed: %s", exc)
 
@@ -1265,6 +1522,14 @@ def refine_bam_junctions(
         stats['total'], stats['n_op_reads'], stats['refined'],
         stats['unchanged'], stats['errors'],
     )
+    if profile is not None:
+        profile.counts.update({f"final_stats_{k}": int(v) for k, v in stats.items()})
+        summary = profile.to_summary()
+        out_path = Path(profile_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, 'w') as fh:
+            json.dump(summary, fh, indent=2, sort_keys=True)
+        logger.info("refine_bam_junctions: wrote profile summary to %s", out_path)
     return stats
 
 

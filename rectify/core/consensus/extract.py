@@ -33,6 +33,12 @@ _atract_cache: Dict[Tuple[str, int, str], dict] = {}
 CANONICAL_5SS = {'GT', 'GC'}  # 5' splice site (donor)
 CANONICAL_3SS = {'AG'}  # 3' splice site (acceptor)
 
+_RC_TABLE = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
+
+
+def _revcomp(seq: str) -> str:
+    return seq.translate(_RC_TABLE)[::-1].upper()
+
 
 @dataclass
 class AlignmentInfo:
@@ -176,6 +182,7 @@ def check_canonical_splice_sites(
     junctions: List[Tuple[int, int]],
     chrom: str,
     genome: Dict[str, str],
+    strand: str = '+',
 ) -> Tuple[int, int]:
     """
     Count canonical vs non-canonical splice sites for junctions.
@@ -193,10 +200,15 @@ def check_canonical_splice_sites(
         if start < 0 or end > len(seq):
             continue
 
-        # 5'SS: first 2 bases of intron
-        five_ss = seq[start:start + 2].upper()
-        # 3'SS: last 2 bases of intron
-        three_ss = seq[end - 2:end].upper()
+        if strand == '-':
+            # Minus-strand transcript orientation: genomic right edge is the
+            # donor and genomic left edge is the acceptor.
+            five_ss = _revcomp(seq[end - 2:end].upper())
+            three_ss = _revcomp(seq[start:start + 2].upper())
+        else:
+            # Plus-strand transcript orientation.
+            five_ss = seq[start:start + 2].upper()
+            three_ss = seq[end - 2:end].upper()
 
         if five_ss in CANONICAL_5SS and three_ss in CANONICAL_3SS:
             canonical += 1
@@ -264,7 +276,7 @@ def extract_alignment_info(
 
     chrom = read.reference_name
     strand = '-' if read.is_reverse else '+'
-    canonical, non_canonical = check_canonical_splice_sites(junctions, chrom, genome)
+    canonical, non_canonical = check_canonical_splice_sites(junctions, chrom, genome, strand)
 
     # Estimate corrected 3' end using A-tract ambiguity detection.
     # Raw 3' end: reference_end - 1 for + strand, reference_start for - strand.

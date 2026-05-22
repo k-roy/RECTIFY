@@ -10,13 +10,24 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 import tempfile
 import os
+import pysam
 
 # Test imports
 from rectify.core.bam.regions import (
     get_processing_regions,
     find_coverage_gaps,
 )
-from rectify.core.bam.parallel import _process_region_worker
+from rectify.core.bam.parallel import (
+    _is_region_checkpoint_complete,
+    _prescan_bam_once,
+    _process_region_worker,
+    _rebuild_output_from_region_files,
+    _region_done_path,
+    _region_tsv_path,
+    _regions_from_intervals,
+    _write_region_results_atomic,
+)
+from rectify.core.bam.processing_stats import ProcessingStats
 
 
 class TestGetProcessingRegions:
@@ -187,3 +198,163 @@ class TestWriteResultsChunk:
         assert '+' in written
         assert 'atract_ambiguity' in written
         assert 'PASS' in written
+
+    def test_chunk_writer_matches_canonical_schema_width(self):
+        """Streaming chunks must carry every column needed by BAM CIGAR surgery."""
+        from rectify.core.bam.output import CORRECTION_TSV_HEADER
+        from rectify.core.bam.parallel import _write_results_chunk
+        from io import StringIO
+
+        result = {
+            'read_id': 'read1',
+            'chrom': 'chrI',
+            'strand': '+',
+            'original_3prime': 100,
+            'corrected_3prime': 95,
+            'ambiguity_min': 95,
+            'ambiguity_max': 100,
+            'ambiguity_range': 5,
+            'correction_applied': ['overcall_rescue'],
+            'confidence': 'high',
+            'qc_flags': ['PASS'],
+            'oc_homopolymer_extension': 3,
+            'oc_overcall_count': 2,
+            'oc_terminal_base': 'G',
+            'five_prime_upstream_trim': 4,
+            'reanchor_clip_len': 5,
+        }
+
+        output = StringIO()
+        _write_results_chunk(output, [result])
+        fields = output.getvalue().rstrip('\n').split('\t')
+
+        assert len(fields) == len(CORRECTION_TSV_HEADER)
+        by_col = dict(zip(CORRECTION_TSV_HEADER, fields))
+        assert by_col['oc_homopolymer_extension'] == '3'
+        assert by_col['oc_overcall_count'] == '2'
+        assert by_col['oc_terminal_base'] == 'G'
+        assert by_col['five_prime_upstream_trim'] == '4'
+        assert by_col['reanchor_clip_len'] == '5'
+
+
+class TestCheckpointRegionFiles:
+    """Tests for checkpointed parallel output durability."""
+
+    def _result(self, read_id, chrom='chrI', corrected=100, fraction=1.0):
+        return {
+            'read_id': read_id,
+            'chrom': chrom,
+            'strand': '+',
+            'original_3prime': corrected,
+            'corrected_3prime': corrected,
+            'ambiguity_min': corrected,
+            'ambiguity_max': corrected,
+            'ambiguity_range': 0,
+            'correction_applied': [],
+            'confidence': 'high',
+            'qc_flags': ['PASS'],
+            'fraction': fraction,
+        }
+
+    def test_region_done_requires_committed_tsv(self, tmp_path):
+        """A .done sentinel alone must not be trusted as a completed region."""
+        done_path = _region_done_path(tmp_path, 0)
+        done_path.write_text('done\n')
+        tmp_region = tmp_path / 'region_0000.tsv.tmp'
+        tmp_region.write_text('partial row\n')
+
+        assert not _is_region_checkpoint_complete(tmp_path, 0)
+
+        _region_tsv_path(tmp_path, 0).write_text('')
+        assert _is_region_checkpoint_complete(tmp_path, 0)
+
+    def test_region_results_commit_tsv_stats_then_done(self, tmp_path):
+        """Region commits should leave a trusted TSV, stats sidecar, and sentinel."""
+        _write_region_results_atomic(tmp_path, 2, [self._result('read2')])
+
+        assert _is_region_checkpoint_complete(tmp_path, 2)
+        assert _region_tsv_path(tmp_path, 2).read_text().startswith('read2\tchrI\t+')
+        assert not (tmp_path / 'region_0002.tsv.tmp').exists()
+        assert _region_done_path(tmp_path, 2).read_text() == 'done\n'
+
+    def test_rebuild_output_orders_regions_and_position_counts(self, tmp_path):
+        """Final output is rebuilt in region order, independent of commit order."""
+        _write_region_results_atomic(tmp_path, 1, [self._result('readB', corrected=200)])
+        _write_region_results_atomic(tmp_path, 0, [self._result('readA', corrected=100)])
+
+        prescan_stats = ProcessingStats(total_reads_in_bam=2)
+        output_path = tmp_path / 'corrected_reads.tsv'
+
+        stats, pos_counts = _rebuild_output_from_region_files(
+            tmp_path,
+            str(output_path),
+            2,
+            prescan_stats,
+        )
+
+        lines = output_path.read_text().splitlines()
+        assert lines[0].startswith('read_id\tchrom\tstrand')
+        assert lines[1].startswith('readA\tchrI\t+')
+        assert lines[2].startswith('readB\tchrI\t+')
+        assert stats.total_reads_in_bam == 2
+        assert stats.reads_processed == 2
+        assert pos_counts == {
+            ('chrI', 100, '+'): 1.0,
+            ('chrI', 200, '+'): 1.0,
+        }
+
+
+class TestParallelPrescan:
+    def test_regions_from_intervals_splits_at_large_gaps(self):
+        regions = _regions_from_intervals(
+            {'chrI': 250000},
+            {'chrI': [(100, 200), (50000, 50100), (200000, 200100)]},
+            min_gap_size=10000,
+        )
+
+        assert regions == [
+            ('chrI', 0, 200),
+            ('chrI', 50000, 50100),
+            ('chrI', 200000, 200100),
+        ]
+
+    def test_prescan_bam_once_counts_stats_and_plans_regions(self, tmp_path):
+        bam_path = tmp_path / 'reads.bam'
+        header = {
+            'HD': {'VN': '1.0'},
+            'SQ': [{'SN': 'chrI', 'LN': 200000}],
+        }
+        with pysam.AlignmentFile(str(bam_path), 'wb', header=header) as out:
+            read = pysam.AlignedSegment()
+            read.query_name = 'read1'
+            read.query_sequence = 'A' * 20
+            read.flag = 0
+            read.reference_id = 0
+            read.reference_start = 10
+            read.mapping_quality = 60
+            read.cigartuples = [(0, 20)]
+            read.query_qualities = pysam.qualitystring_to_array('I' * 20)
+            out.write(read)
+
+            unmapped = pysam.AlignedSegment()
+            unmapped.query_name = 'unmapped'
+            unmapped.query_sequence = 'A' * 10
+            unmapped.flag = 4
+            unmapped.reference_id = -1
+            unmapped.reference_start = -1
+            unmapped.mapping_quality = 0
+            unmapped.cigartuples = None
+            unmapped.query_qualities = pysam.qualitystring_to_array('I' * 10)
+            out.write(unmapped)
+
+        stats, regions, rescue = _prescan_bam_once(
+            str(bam_path),
+            {'chrI': 'A' * 200000},
+            min_gap_size=10000,
+            variant_aware=False,
+        )
+
+        assert stats.total_reads_in_bam == 2
+        assert stats.reads_unmapped == 1
+        assert regions == [('chrI', 0, 30)]
+        assert rescue is None

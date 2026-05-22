@@ -740,20 +740,24 @@ def walkback_3prime_guarded(
             break
 
     # Fallback: scan found nothing AND scan_hi was clipped at a real N-op AND
-    # the last pre-N base is still in the stop-base zone → use the N-op
-    # start as the CPA anchor (the intron is the natural exon end).
+    # the last pre-N base is still in the stop-base zone → use the nearest
+    # aligned exon base before the N-op as the CPA anchor.  first_real_n[0] is
+    # the first skipped intron base in half-open CIGAR coordinates and is not a
+    # valid inclusive aligned-base CPA.
     if (
         true_cpa is None
         and first_real_n is not None
         and scan_hi > 0
     ):
         last_pre_n_gb: Optional[str] = None
+        last_pre_n_refp: Optional[int] = None
         for _k in range(scan_hi - 1, -1, -1):
             if _g_rp[_k] != -1:
                 last_pre_n_gb = chr(_g_gb[_k])
+                last_pre_n_refp = _g_refp[_k]
                 break
-        if last_pre_n_gb == stop_base:
-            true_cpa = first_real_n[0]  # n_ref_start
+        if last_pre_n_gb == stop_base and last_pre_n_refp is not None:
+            true_cpa = last_pre_n_refp
 
     if true_cpa is None:
         return None

@@ -169,6 +169,16 @@ class TestCheckCanonicalSpliceSites:
         assert canon == 1
         assert non_canon == 0
 
+    def test_minus_strand_ct_ac_is_canonical(self):
+        # Genomic CT...AC is transcript-orientation GT...AG on minus strand.
+        seq = 'A' * 10 + 'CT' + 'A' * 6 + 'AC' + 'A' * 100
+        genome = {'chrI': seq}
+        canon, non_canon = check_canonical_splice_sites(
+            [(10, 20)], 'chrI', genome, strand='-'
+        )
+        assert canon == 1
+        assert non_canon == 0
+
     def test_non_canonical_detected(self):
         seq = 'A' * 10 + 'AT' + 'A' * 6 + 'TT' + 'A' * 100
         genome = {'chrI': seq}
@@ -292,6 +302,36 @@ class TestScoreAlignment:
                                    effective_three_prime_clip=0)
         score_alignment(al, self._genome())
         assert al.junction_score == -4.0
+
+    def test_opposite_strand_junction_does_not_rescue_5prime_clip(self):
+        genome = {'chrT': 'A' * 100 + 'N' * 100 + 'G' * 100}
+        al = _make_alignment_info(
+            chrom='chrT',
+            strand='+',
+            start=200,
+            end=250,
+            effective_five_prime_clip=5,
+            five_prime_softclip_seq='A' * 5,
+        )
+
+        score = score_alignment(al, genome, {('chrT', 100, 200, '-')})
+
+        assert score == -10.0
+
+    def test_matching_strand_junction_rescues_5prime_clip(self):
+        genome = {'chrT': 'A' * 100 + 'N' * 100 + 'G' * 100}
+        al = _make_alignment_info(
+            chrom='chrT',
+            strand='+',
+            start=200,
+            end=250,
+            effective_five_prime_clip=5,
+            five_prime_softclip_seq='A' * 5,
+        )
+
+        score = score_alignment(al, genome, {('chrT', 100, 200, '+')})
+
+        assert score == 0.0
 
 
 # ---------------------------------------------------------------------------

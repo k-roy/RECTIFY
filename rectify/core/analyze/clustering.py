@@ -338,16 +338,14 @@ def _get_adaptive_cluster_boundaries(
             left_bound = peak - max_radius
         else:
             valley = valleys[i - 1]
-            midpoint = (valley + peak) // 2
-            left_bound = max(midpoint, peak - max_radius)
+            left_bound = max(valley + 1, peak - max_radius)
 
         # Right boundary
         if i == len(peaks) - 1:
             right_bound = peak + max_radius
         else:
             valley = valleys[i]
-            midpoint = (peak + valley) // 2
-            right_bound = min(midpoint, peak + max_radius)
+            right_bound = min(valley, peak + max_radius)
 
         boundaries.append((left_bound, right_bound))
 
@@ -530,7 +528,7 @@ def annotate_clusters_with_genes(
         key = (gene['chrom'], gene['strand'])
         # Gene 3' end position
         if gene['strand'] == '+':
-            gene_3prime = gene['end']
+            gene_3prime = gene['end'] - 1
         else:
             gene_3prime = gene['start']
         gene_lookup[key].append({

@@ -2,8 +2,8 @@
 
 Date: 2026-05-20
 
-Status: follow-up work. No implementation has been done for this item in the
-2026-05-20 Codex audit-fix tranche.
+Status: implemented in Codex working tree on 2026-05-20. Kept as a design note
+for review and future agents.
 
 ## Problem
 

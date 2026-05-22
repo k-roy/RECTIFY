@@ -50,7 +50,12 @@ from ..correct.walkback import (
     APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME,
     walkback_drs_full,
 )
-from ...utils.genome import load_genome, standardize_chrom_name, reverse_complement
+from ...utils.genome import (
+    get_chrom_sequence,
+    load_genome,
+    reverse_complement,
+    standardize_chrom_name,
+)
 from ..polya.polya_model import PolyAModel
 from ...utils.alignment import (
     extract_junctions_simple,
@@ -248,6 +253,7 @@ def correct_read_3prime(
     variant_aware_rescue: Optional[VariantAwareHomopolymerRescue] = None,
     annotated_junctions: Optional[set] = None,
     pool_chrom_index: Optional[Dict] = None,
+    apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     dt_primed_cDNA: bool = False,
@@ -385,7 +391,7 @@ def correct_read_3prime(
     # Module 2F: 3'SS truncation rescue (post-consensus).
     # Corrects five_prime_position for reads truncated or soft-clipped at the
     # exon 2 / 3' splice site boundary.
-    if annotated_junctions or _real_junctions or pool_chrom_index:
+    if apply_3ss_rescue and (annotated_junctions or _real_junctions or pool_chrom_index):
         _ss_junctions: set = set()
         if annotated_junctions:
             _ss_junctions.update(annotated_junctions)
@@ -764,7 +770,7 @@ def correct_read_3prime(
         and not overcall_rescue_applied
     ):
         if dt_primed_cDNA:
-            _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
+            _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
             if _chrom_seq:
                 _orig_wb, _corr_wb, _applied_wb, _gene_strand_wb = walkback_quantseq_rev(
                     read, _chrom_seq,
@@ -787,7 +793,7 @@ def correct_read_3prime(
             # walkback_3prime_guarded; walkback_drs_full applies the DRS
             # strand→side/stop_base mapping and returns the same dict shape
             # as the legacy find_polya_boundary (which now delegates to it).
-            _chrom_seq = genome.get(chrom_std) or genome.get(chrom)
+            _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
             if _chrom_seq:
                 wb = walkback_drs_full(
                     read, _chrom_seq,
@@ -829,11 +835,13 @@ def correct_read_3prime(
                 # Plus strand: 3' end is on the right; N is to the left; snap to
                 #   junction_start-1 (last M before N).
                 # Minus strand: 3' end is on the left; N is to the right; snap to
-                #   junction_start (N's left edge; all leading M bases consumed).
+                #   junction_end (first aligned base after N). junction_start is
+                #   the first skipped base and would put corrected_3prime inside
+                #   the artifact gap.
                 if strand == '+':
                     current_position = _art.junction_start - 1
                 else:
-                    current_position = _art.junction_start
+                    current_position = _art.junction_end
                 result['ambiguity_min'] = current_position
                 result['ambiguity_max'] = current_position
                 result['ambiguity_range'] = 0
@@ -844,10 +852,10 @@ def correct_read_3prime(
                 result['ambiguity_max'] = _art.junction_start - 1
                 result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
                 break
-            elif strand == '-' and result['ambiguity_min'] <= _art.junction_start:
+            elif strand == '-' and result['ambiguity_min'] <= _art.junction_end:
                 # Case B (minus): ambiguity window extends into the N — clip min
-                # to junction_start so NET-seq stays on the 3' side of the N.
-                result['ambiguity_min'] = _art.junction_start
+                # to junction_end so NET-seq stays on the 3' side of the N.
+                result['ambiguity_min'] = _art.junction_end
                 result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
                 break
 
@@ -910,6 +918,12 @@ def correct_read_3prime(
         else:
             result['ambiguity_min'] = original_position
             result['ambiguity_max'] = current_position
+        if result['ambiguity_min'] > result['ambiguity_max']:
+            result['ambiguity_min'], result['ambiguity_max'] = (
+                result['ambiguity_max'],
+                result['ambiguity_min'],
+            )
+        result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
 
     # NEW-062: record 5' rescue in correction_applied before any early return.
     if result.get('five_prime_rescued'):
@@ -944,9 +958,14 @@ def correct_read_3prime(
         # assignment remains, renormalise those fractions and use them.  If all
         # assignments are at poly-A bases, fall back to the walkback anchor
         # (fraction=1.0).
-        if polya_walkback_applied and genome and assignments and chrom_std in genome:
+        if polya_walkback_applied and genome and assignments:
+            chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
+            if not chrom_seq:
+                chrom_seq = None
+        else:
+            chrom_seq = None
+        if chrom_seq is not None:
             polya_base = 'A' if strand == '+' else 'T'
-            chrom_seq = genome[chrom_std]
             filtered_assignments = [
                 a for a in assignments
                 if a['assigned_position'] < len(chrom_seq)
@@ -1012,6 +1031,7 @@ def process_bam_file(
     netseq_dir: Optional[str] = None,
     output_path: Optional[str] = None,
     max_reads: Optional[int] = None,
+    apply_3ss_rescue: bool = True,
     dt_primed_cDNA: bool = False,
 ) -> List[Dict]:
     """
@@ -1068,6 +1088,7 @@ def process_bam_file(
                 apply_polya_trim=apply_polya_trim,
                 apply_indel_correction=apply_indel_correction,
                 netseq_loader=netseq_loader,
+                apply_3ss_rescue=apply_3ss_rescue,
                 dt_primed_cDNA=dt_primed_cDNA,
             )
 
@@ -1090,5 +1111,3 @@ def process_bam_file(
         write_output_tsv(results, output_path)
 
     return results
-
-

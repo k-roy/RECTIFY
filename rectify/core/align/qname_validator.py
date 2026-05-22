@@ -54,14 +54,14 @@ def _strip_fastq_whitespace(raw: str) -> str:
     return raw[:cut]
 
 
-def _load_fastq_qname_set(fastq_path: str, n_lookahead: int) -> set:
+def _load_fastq_qname_set(fastq_path: str, max_records: Optional[int] = None) -> set:
     from rectify.core.consensus.consensus import _normalize_bam_read_name
 
     opener = gzip.open if str(fastq_path).endswith('.gz') else open
     out: set = set()
     with opener(fastq_path, 'rt') as fin:
         seen = 0
-        while seen < n_lookahead:
+        while max_records is None or seen < max_records:
             header = fin.readline()
             if not header:
                 break
@@ -229,9 +229,10 @@ def validate_post_alignment_qnames(
     if os.environ.get('RECTIFY_NO_AUTO_QNAME_SANITIZE') == '1':
         auto_sanitize = False
 
-    n_lookahead = sample_size * _LOOKAHEAD_MULTIPLIER
     try:
-        fastq_qnames = _load_fastq_qname_set(fastq_path, n_lookahead)
+        # The BAM is usually coordinate-sorted here, so its first sampled
+        # alignments are not guaranteed to appear near the start of the FASTQ.
+        fastq_qnames = _load_fastq_qname_set(fastq_path)
     except (OSError, IOError) as exc:
         logger.warning(
             f"[{aligner_name}] cannot read source FASTQ for validation "

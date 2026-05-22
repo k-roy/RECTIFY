@@ -26,8 +26,10 @@ at least one correctly-rescued intron not present in the other aligner's result.
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 import pandas as pd
 
@@ -181,6 +183,279 @@ def _read_hp_edit_distances(
     except Exception as exc:
         logger.warning("Failed to compute HP edit distances from %s: %s", bam_path, exc)
     return results
+
+
+def _normalized_correction_lookup(
+    corrections: Dict[str, dict],
+) -> Dict[str, dict]:
+    """Build a normalized-QNAME correction lookup, excluding collisions."""
+    norm_counts = Counter(_normalize_bam_read_name(str(read_id)) for read_id in corrections)
+    return {
+        norm_id: corrections[raw_id]
+        for raw_id in corrections
+        for norm_id in [_normalize_bam_read_name(str(raw_id))]
+        if norm_counts[norm_id] == 1
+    }
+
+
+def _lookup_read_correction(
+    read,
+    corrections: Dict[str, dict],
+    normalized_corrections: Dict[str, dict],
+) -> Optional[dict]:
+    raw_name = read.query_name or ""
+    correction = corrections.get(raw_name)
+    if correction is not None:
+        return correction
+    return normalized_corrections.get(_normalize_bam_read_name(raw_name))
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        if pd.isna(value):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_str(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return str(value)
+
+
+
+def _read_hp_edit_distances_from_raw_bam(
+    bam_path: str,
+    corrected_tsv_path: Path,
+    genome: Optional[Dict[str, str]] = None,
+    penalty_table=None,
+    *,
+    strict: bool = True,
+    read_id_filter: Optional[Set[str]] = None,
+) -> Dict[str, Tuple[float, int]]:
+    """Compute HP edit distances after applying TSV corrections in memory.
+
+    This is the lazy equivalent of reading a materialized per-aligner corrected
+    BAM.  It streams the raw aligner BAM, applies the same corrected-BAM edits
+    used by ``write_corrected_bam()``, scores the mutated record, then discards
+    it.
+    """
+    if _pysam is None:
+        raise RuntimeError("pysam is required to compute HP edit distances from BAM")
+
+    from rectify.core.bam.bam_writer import (
+        _load_corrections_from_tsv,
+        apply_corrected_edits_to_read,
+    )
+
+    corrections = _load_corrections_from_tsv(str(corrected_tsv_path))
+    normalized_corrections = _normalized_correction_lookup(corrections)
+    normalized_filter = (
+        {_normalize_bam_read_name(str(read_id)) for read_id in read_id_filter}
+        if read_id_filter is not None
+        else None
+    )
+    seen_corrected_ids: Set[str] = set()
+    results: Dict[str, Tuple[float, int]] = {}
+
+    try:
+        with _pysam.AlignmentFile(bam_path, "rb") as bam:
+            for read in bam:
+                if read.is_secondary or read.is_supplementary or read.is_unmapped:
+                    continue
+                read_id = _normalize_bam_read_name(read.query_name or "")
+                if normalized_filter is not None and read_id not in normalized_filter:
+                    continue
+                correction = _lookup_read_correction(read, corrections, normalized_corrections)
+                if correction is None:
+                    continue
+                seen_corrected_ids.add(_normalize_bam_read_name(str(correction.get('read_id', read_id))))
+                apply_corrected_edits_to_read(read, correction, genome)
+                results[read_id] = (
+                    _cigar_hp_edit_distance(read, genome, penalty_table),
+                    _cigar_aligned_bases(read),
+                )
+    except Exception:
+        if strict:
+            raise
+        logger.exception("Failed lazy HP edit-distance scoring from %s", bam_path)
+
+    if strict:
+        expected_ids = {
+            _normalize_bam_read_name(str(correction.get('read_id', read_id)))
+            for read_id, correction in corrections.items()
+        }
+        if normalized_filter is not None:
+            expected_ids &= normalized_filter
+        missing = expected_ids - seen_corrected_ids
+        if missing:
+            sample = ', '.join(sorted(missing)[:5])
+            raise RuntimeError(
+                f"Lazy HP scoring missed {len(missing)} corrected reads in {bam_path}; "
+                f"examples: {sample}"
+            )
+
+    logger.info(
+        "Lazy HP scoring %s: scored=%d",
+        bam_path,
+        len(results),
+    )
+    return results
+
+
+def _score_hp_distances_for_aligner(args: Tuple[str, str, Optional[str], Optional[Dict[str, str]], Any, bool, Optional[Set[str]]]) -> Tuple[str, Dict[str, Tuple[float, int]]]:
+    """Process-pool worker for one aligner's HP edit-distance scan."""
+    aligner_name, bam_path, tsv_path, genome, penalty_table, strict, read_id_filter = args
+    if tsv_path is None:
+        if strict:
+            raise FileNotFoundError(f"Missing corrected TSV for lazy HP scoring: {aligner_name}")
+        logger.warning("Missing corrected TSV for lazy HP scoring, skipping %s", aligner_name)
+        return aligner_name, {}
+    return aligner_name, _read_hp_edit_distances_from_raw_bam(
+        str(bam_path),
+        Path(tsv_path),
+        genome,
+        penalty_table,
+        strict=strict,
+        read_id_filter=read_id_filter,
+    )
+
+
+def _score_corrected_bam_for_aligner(args: Tuple[str, str, Optional[Dict[str, str]], Any]) -> Tuple[str, Dict[str, Tuple[float, int]]]:
+    """Process-pool worker for one corrected BAM HP edit-distance scan."""
+    aligner_name, bam_path, genome, penalty_table = args
+    return aligner_name, _read_hp_edit_distances(str(bam_path), genome, penalty_table)
+
+
+def write_corrected_consensus_bam(
+    per_aligner_raw_bams: Dict[str, str],
+    per_aligner_tsvs: Dict[str, Path],
+    merged_tsv: Path,
+    output_bam: Path,
+    genome: Optional[Dict[str, str]] = None,
+    *,
+    threads: int = 1,
+    strict: bool = True,
+) -> Dict[str, int]:
+    """Write the final corrected consensus BAM directly from raw BAMs + TSVs.
+
+    The merged TSV supplies ``read_id -> winning_aligner``.  For each winning
+    raw BAM record, this function applies the aligner's corrected TSV row in
+    memory and writes only that corrected winning record to the final BAM.
+    """
+    if _pysam is None:
+        raise RuntimeError("pysam is required to write corrected consensus BAM")
+
+    from rectify.core.bam.bam_writer import (
+        _load_corrections_from_tsv,
+        apply_corrected_edits_to_read,
+    )
+
+    merged_df = _read_corrected_tsv_or_manifest(Path(merged_tsv))
+    if 'winning_aligner' not in merged_df.columns:
+        raise ValueError(f"{merged_tsv} has no winning_aligner column")
+    if 'read_id' not in merged_df.columns:
+        raise ValueError(f"{merged_tsv} has no read_id column")
+
+    read_to_aligner = {
+        _normalize_bam_read_name(str(row.read_id)): str(row.winning_aligner)
+        for row in merged_df[['read_id', 'winning_aligner']].drop_duplicates().itertuples(index=False)
+    }
+    aligner_to_reads: Dict[str, Set[str]] = defaultdict(set)
+    for read_id, aligner in read_to_aligner.items():
+        aligner_to_reads[aligner].add(read_id)
+
+    correction_tables: Dict[str, Tuple[Dict[str, dict], Dict[str, dict]]] = {}
+    for aligner, tsv_path in per_aligner_tsvs.items():
+        corrections = _load_corrections_from_tsv(str(tsv_path))
+        correction_tables[aligner] = (
+            corrections,
+            _normalized_correction_lookup(corrections),
+        )
+
+    header_bam = next((Path(p) for p in per_aligner_raw_bams.values() if Path(p).exists()), None)
+    if header_bam is None:
+        raise FileNotFoundError("No raw BAMs available for corrected consensus output")
+
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    unsorted_bam = output_bam.with_name(output_bam.name + '.unsorted.bam')
+
+    written_ids: Set[str] = set()
+    stats = {
+        'requested': len(read_to_aligner),
+        'written': 0,
+        'skipped_no_raw_bam': 0,
+        'skipped_no_correction': 0,
+    }
+
+    with _pysam.AlignmentFile(str(header_bam), 'rb') as header_in:
+        header = header_in.header
+    with _pysam.AlignmentFile(str(unsorted_bam), 'wb', header=header) as out_bam:
+        for aligner, winning_ids in aligner_to_reads.items():
+            raw_bam = per_aligner_raw_bams.get(aligner)
+            if not raw_bam or not Path(raw_bam).exists():
+                stats['skipped_no_raw_bam'] += len(winning_ids)
+                if strict:
+                    raise FileNotFoundError(f"Missing raw BAM for winning aligner {aligner}: {raw_bam}")
+                continue
+            if aligner not in correction_tables:
+                stats['skipped_no_correction'] += len(winning_ids)
+                if strict:
+                    raise FileNotFoundError(f"Missing corrected TSV for winning aligner {aligner}")
+                continue
+            corrections, normalized_corrections = correction_tables[aligner]
+            with _pysam.AlignmentFile(str(raw_bam), 'rb') as bam_in:
+                for read in bam_in:
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                        continue
+                    read_id = _normalize_bam_read_name(read.query_name or "")
+                    if read_id not in winning_ids:
+                        continue
+                    correction = _lookup_read_correction(read, corrections, normalized_corrections)
+                    if correction is None:
+                        stats['skipped_no_correction'] += 1
+                        if strict:
+                            raise RuntimeError(
+                                f"Missing correction row for winning read {read_id} "
+                                f"from aligner {aligner}"
+                            )
+                        continue
+                    apply_corrected_edits_to_read(read, correction, genome)
+                    out_bam.write(read)
+                    written_ids.add(read_id)
+                    stats['written'] += 1
+
+    _pysam.sort('-@', str(max(1, threads)), '-o', str(output_bam), str(unsorted_bam))
+    _pysam.index(str(output_bam))
+    try:
+        unsorted_bam.unlink()
+    except OSError:
+        pass
+
+    if strict:
+        missing = set(read_to_aligner) - written_ids
+        if missing:
+            sample = ', '.join(sorted(missing)[:5])
+            raise RuntimeError(
+                f"Corrected consensus BAM missed {len(missing)} winning reads; "
+                f"examples: {sample}"
+            )
+
+    logger.info(
+        "write_corrected_consensus_bam: requested=%d written=%d -> %s",
+        stats['requested'],
+        stats['written'],
+        output_bam,
+    )
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +856,19 @@ def _load_tsv(aligner_name: str, tsv_path: Path) -> Optional[pd.DataFrame]:
         if df.empty:
             logger.warning("Empty per-aligner TSV, skipping: %s", tsv_path)
             return None
+        # Drop any pre-existing winning_aligner column.  Per-aligner TSVs may
+        # carry a stale winning_aligner from a prior merge run (e.g. the
+        # validation fixture was generated from a 5-aligner merge and has
+        # legacy aligner names in that column).  Keeping it causes a pandas
+        # rename collision at line 1354: after the merge step all_df already
+        # contains "winning_aligner" (stale) and the fresh "_winning_aligner"
+        # from winner_df; renaming _winning_aligner → winning_aligner produces
+        # two columns with the same name and to_csv writes both — the stale
+        # one appears first, so callers that read the output see wrong winners.
+        # merge_corrected_tsvs is the canonical source of winning_aligner;
+        # whatever the per-aligner input says is always superseded.
+        if 'winning_aligner' in df.columns:
+            df = df.drop(columns=['winning_aligner'])
         df['_aligner'] = aligner_name
         if 'read_id' in df.columns:
             df['read_id'] = _normalize_read_id(df['read_id'])
@@ -599,9 +887,12 @@ def merge_corrected_tsvs(
     output_tsv: Path,
     summary_tsv: Optional[Path] = None,
     per_aligner_corrected_bams: Optional[Dict[str, str]] = None,
+    per_aligner_raw_bams: Optional[Dict[str, str]] = None,
     genome: Optional[Dict[str, str]] = None,
     penalty_table=None,
     overhang_table: Optional[OverhangTable] = None,
+    strict_lazy_identity: bool = True,
+    lazy_scoring_workers: int = 1,
 ) -> Path:
     """
     Merge N per-aligner corrected TSVs into a single corrected_reads.tsv.
@@ -642,6 +933,11 @@ def merge_corrected_tsvs(
         Optional mapping from aligner name to corrected.bam path.  When
         provided, HP-aware edit distances are computed from the final corrected
         CIGARs and used as the primary winner criterion.
+    per_aligner_raw_bams:
+        Optional mapping from aligner name to raw/pre-correction BAM path.  When
+        provided without ``per_aligner_corrected_bams``, corrections are applied
+        in memory from each aligner's TSV and HP-aware edit distances are scored
+        lazily without materializing per-aligner corrected BAMs.
     genome:
         Optional genome dict {chrom: seq} for HP run-length computation during
         edit distance scoring.  If absent, flat penalties are used.
@@ -656,6 +952,12 @@ def merge_corrected_tsvs(
         relaxed thresholds when backed by strong cross-read evidence.
         Load with ``OverhangTable.from_tsv(path)`` or use
         ``OverhangTable.default()`` for the built-in conservative defaults.
+    strict_lazy_identity:
+        If true, lazy HP scoring fails fast when a TSV read cannot be matched
+        back to the raw BAM by raw or normalized QNAME.
+    lazy_scoring_workers:
+        Number of aligner-level workers for HP edit-distance scoring. Each
+        worker scans one BAM and applies one aligner's corrections in memory.
 
     Returns
     -------
@@ -689,16 +991,153 @@ def merge_corrected_tsvs(
     aln_end   = all_df.get('alignment_end',   pd.Series(0, index=all_df.index)).fillna(0)
     all_df['_span'] = (aln_end - aln_start).astype(int)
 
+    # five_prime_rescued is needed by both the HP sort and the lazy scoring
+    # prefilter below.
+    rescued_col = all_df.get('five_prime_rescued', pd.Series(0, index=all_df.index))
+    all_df['_five_rescued'] = (
+        pd.to_numeric(rescued_col, errors='coerce').fillna(0).astype(int)
+    )
+
+    # Before paying for HP-aware CIGAR scoring, identify aligner/read pairs
+    # that can still win after the chimera-overhang tier.  Candidates with a
+    # worse effective chimera flag cannot win because HP edit distance is only
+    # sorted after that flag.  We still score the sole surviving candidate for
+    # each read so the minimal-anchor hard filter keeps using corrected CIGAR
+    # aligned-bases for the eventual winner.
+    lazy_read_filters: Optional[Dict[str, Set[str]]] = None
+    if per_aligner_raw_bams and not per_aligner_corrected_bams:
+        rep_preview = (
+            all_df.sort_values(
+                ['read_id', '_aligner', 'fraction'],
+                ascending=[True, True, False],
+                na_position='last',
+            )
+            .groupby(['read_id', '_aligner'], sort=False)
+            .first()
+            .reset_index()
+        )
+        _preview_ov_table = overhang_table if overhang_table is not None else OverhangTable.default()
+        preview_junc_stats = _compute_junction_stats(all_df)
+        preview_chimera_flags = _add_chimera_flag(rep_preview, _preview_ov_table, preview_junc_stats)
+        rep_preview['_chimera_ok'] = preview_chimera_flags
+        rep_preview['_effective_chimera_ok'] = (
+            rep_preview['_chimera_ok'] & (rep_preview['_five_rescued'] == 0)
+        ).astype(int)
+        keep_pairs = []
+        for _rid, _grp in rep_preview.groupby('read_id', sort=False):
+            _best_flag = _grp['_effective_chimera_ok'].min()
+            keep_pairs.append(_grp.loc[_grp['_effective_chimera_ok'] == _best_flag, ['read_id', '_aligner']])
+        if keep_pairs:
+            lazy_read_filters = {}
+            keep_df = pd.concat(keep_pairs, ignore_index=True)
+            for _aligner, _grp in keep_df.groupby('_aligner', sort=False):
+                lazy_read_filters[str(_aligner)] = {
+                    _normalize_bam_read_name(str(_rid)) for _rid in _grp['read_id']
+                }
+            kept_pairs = sum(len(v) for v in lazy_read_filters.values())
+            logger.info(
+                "Lazy HP scoring prefilter retained %d / %d aligner-read pairs",
+                kept_pairs,
+                len(rep_preview),
+            )
+
     # ── HP-aware edit distance (primary criterion when BAMs provided) ──────
-    use_hp_ed = bool(per_aligner_corrected_bams)
+    use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)
     if use_hp_ed:
-        logger.info("Computing HP-aware edit distances from corrected BAMs...")
+        if per_aligner_raw_bams and not per_aligner_corrected_bams and strict_lazy_identity:
+            missing_raw = sorted(set(dfs) - set(per_aligner_raw_bams))
+            if missing_raw:
+                raise FileNotFoundError(
+                    "Missing raw BAMs for lazy HP scoring: " + ', '.join(missing_raw)
+                )
+        if per_aligner_corrected_bams:
+            logger.info("Computing HP-aware edit distances from corrected BAMs...")
+        else:
+            logger.info("Computing HP-aware edit distances lazily from raw BAMs + TSVs...")
         ed_rows = []
-        for aligner_name, bam_path in (per_aligner_corrected_bams or {}).items():
-            ed_dict = _read_hp_edit_distances(str(bam_path), genome, penalty_table)
-            for rid, (ed, ab) in ed_dict.items():
-                ed_rows.append({'read_id': rid, '_aligner': aligner_name,
-                                 'hp_edit_distance': ed, 'aligned_bases': ab})
+        score_aligners = per_aligner_corrected_bams or per_aligner_raw_bams or {}
+        n_workers = max(1, min(int(lazy_scoring_workers or 1), len(score_aligners)))
+        if n_workers > 1:
+            if per_aligner_corrected_bams:
+                worker_args = [
+                    (aligner_name, str(bam_path), genome, penalty_table)
+                    for aligner_name, bam_path in score_aligners.items()
+                ]
+                worker_fn = _score_corrected_bam_for_aligner
+            else:
+                worker_args = [
+                    (
+                        aligner_name,
+                        str(bam_path),
+                        str(per_aligner_tsvs[aligner_name])
+                        if aligner_name in per_aligner_tsvs
+                        else None,
+                        genome,
+                        penalty_table,
+                        strict_lazy_identity,
+                        lazy_read_filters.get(aligner_name, set()) if lazy_read_filters else None,
+                    )
+                    for aligner_name, bam_path in score_aligners.items()
+                ]
+                worker_fn = _score_hp_distances_for_aligner
+            logger.info("HP edit-distance scoring using %d aligner workers", n_workers)
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = [pool.submit(worker_fn, args) for args in worker_args]
+                for future in as_completed(futures):
+                    aligner_name, ed_dict = future.result()
+                    logger.info(
+                        "HP edit distances computed for %s: %d reads",
+                        aligner_name,
+                        len(ed_dict),
+                    )
+                    for rid, (ed, ab) in ed_dict.items():
+                        ed_rows.append({
+                            'read_id': rid,
+                            '_aligner': aligner_name,
+                            'hp_edit_distance': ed,
+                            'aligned_bases': ab,
+                        })
+        else:
+            for aligner_name, bam_path in score_aligners.items():
+                logger.info("HP edit-distance scoring for %s", aligner_name)
+                if per_aligner_corrected_bams:
+                    ed_dict = _read_hp_edit_distances(str(bam_path), genome, penalty_table)
+                else:
+                    tsv_path = per_aligner_tsvs.get(aligner_name)
+                    if tsv_path is None:
+                        if strict_lazy_identity:
+                            raise FileNotFoundError(
+                                f"Missing corrected TSV for lazy HP scoring: {aligner_name}"
+                            )
+                        logger.warning(
+                            "Missing corrected TSV for lazy HP scoring, skipping %s",
+                            aligner_name,
+                        )
+                        continue
+                    ed_dict = _read_hp_edit_distances_from_raw_bam(
+                        str(bam_path),
+                        Path(tsv_path),
+                        genome,
+                        penalty_table,
+                        strict=strict_lazy_identity,
+                        read_id_filter=(
+                            lazy_read_filters.get(aligner_name, set())
+                            if lazy_read_filters
+                            else None
+                        ),
+                    )
+                logger.info(
+                    "HP edit distances computed for %s: %d reads",
+                    aligner_name,
+                    len(ed_dict),
+                )
+                for rid, (ed, ab) in ed_dict.items():
+                    ed_rows.append({
+                        'read_id': rid,
+                        '_aligner': aligner_name,
+                        'hp_edit_distance': ed,
+                        'aligned_bases': ab,
+                    })
         if ed_rows:
             ed_df = pd.DataFrame(ed_rows)
             all_df = all_df.merge(ed_df, on=['read_id', '_aligner'], how='left')
@@ -829,8 +1268,8 @@ def merge_corrected_tsvs(
 
     # ── Per-aligner effective-utility cluster annotation ──
     #
-    # Within each read, group aligners by their (corrected_3prime,
-    # corrected_junctions) tuple — aligners landing at the same biological
+    # Within each read, group aligners by their (chrom, strand,
+    # corrected_3prime, corrected_junctions) tuple — aligners landing at the same biological
     # answer are functionally interchangeable for RECTIFY's outputs, even
     # if their CIGARs differ in mismatch/indel placement.  This makes the
     # HP-ED tiebreak within a cluster informative without losing the signal
@@ -856,7 +1295,7 @@ def merge_corrected_tsvs(
             _c3p = int(_row['corrected_3prime'])
         except (TypeError, ValueError, KeyError):
             _c3p = -1
-        return (_c3p, _parts)
+        return (_row.get('chrom', ''), _row.get('strand', ''), _c3p, _parts)
 
     summary['_eff_key'] = summary.apply(_eff_key, axis=1)
     summary['effective_group'] = ''

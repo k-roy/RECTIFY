@@ -24,11 +24,14 @@ from rectify.core.analyze.deseq2 import (
     detect_control_samples,
     create_sample_metadata,
     extract_condition_from_sample,
+    _aggregate_counts_by_gene,
 )
 from rectify.core.analyze.pca import (
     run_pca_analysis,
 )
 from rectify.core.analyze.bedgraph import generate_bedgraphs
+from rectify.core.analyze.loaders import load_annotation, load_corrected_positions
+from rectify.core.analyze.genomic_distribution import classify_positions_by_region
 from rectify.core.analyze.go_enrichment import (
     run_go_enrichment,
     _benjamini_hochberg,
@@ -41,6 +44,10 @@ from rectify.core.analyze.shift_analysis import (
 from rectify.core.analyze.summary import (
     generate_analysis_summary,
     generate_summary_tables,
+)
+from rectify.core.analyze.cluster_gene_attribution import (
+    build_reference_cluster_lookup,
+    reference_position_attributions_to_clusters,
 )
 
 
@@ -211,6 +218,136 @@ class TestBuildClusterCountMatrix:
         )
 
         assert (count_matrix.values >= 0).all()
+
+
+class TestWeightedClusterGeneAttribution:
+    """Tests for weighted cluster-to-gene attribution in analyze outputs."""
+
+    def test_gene_counts_use_weighted_shared_clusters(self):
+        counts = pd.DataFrame(
+            {
+                'wt_rep1': [100.0, 40.0],
+                'wt_rep2': [120.0, 60.0],
+                'mut_rep1': [80.0, 30.0],
+            },
+            index=['cluster_a', 'cluster_b'],
+        )
+        clusters = pd.DataFrame({
+            'cluster_id': ['cluster_a', 'cluster_b'],
+            'gene_id': ['fallback_a', 'fallback_b'],
+        })
+        attr = pd.DataFrame({
+            'cluster_id': ['cluster_a', 'cluster_a', 'cluster_b'],
+            'gene_id': ['GENE1', 'GENE2', 'GENE2'],
+            'gene_name': ['GENE1', 'GENE2', 'GENE2'],
+            'raw_attributed_count': [75.0, 25.0, 10.0],
+            'attribution_weight': [0.75, 0.25, 1.0],
+            'source': ['reference', 'reference', 'reference'],
+        })
+
+        gene_counts = _aggregate_counts_by_gene(counts, clusters, attr)
+
+        assert gene_counts.loc['GENE1', 'wt_rep1'] == pytest.approx(75.0)
+        assert gene_counts.loc['GENE2', 'wt_rep1'] == pytest.approx(25.0 + 40.0)
+        assert gene_counts.loc['GENE2', 'wt_rep2'] == pytest.approx(30.0 + 60.0)
+
+    def test_shift_analysis_uses_weighted_cluster_gene_map(self, sample_metadata):
+        counts = pd.DataFrame(
+            {
+                'wt_rep1': [90.0, 10.0],
+                'wt_rep2': [90.0, 10.0],
+                'treat_rep1': [10.0, 90.0],
+                'treat_rep2': [10.0, 90.0],
+            },
+            index=['cluster_prox', 'cluster_dist'],
+        )
+        clusters = pd.DataFrame({
+            'cluster_id': ['cluster_prox', 'cluster_dist'],
+            'chrom': ['chrI', 'chrI'],
+            'strand': ['+', '+'],
+            'start': [100, 300],
+            'end': [100, 300],
+            'modal_position': [100, 300],
+            'gene_id': ['nearest_wrong_1', 'nearest_wrong_2'],
+            'gene_name': ['nearest_wrong_1', 'nearest_wrong_2'],
+        })
+        attr = pd.DataFrame({
+            'cluster_id': ['cluster_prox', 'cluster_dist'],
+            'gene_id': ['GENE_BODY', 'GENE_BODY'],
+            'gene_name': ['GENE_BODY', 'GENE_BODY'],
+            'raw_attributed_count': [50.0, 50.0],
+            'attribution_weight': [1.0, 1.0],
+            'source': ['reference', 'reference'],
+        })
+
+        result = analyze_cluster_shifts(
+            counts,
+            clusters,
+            'wt',
+            'treat',
+            sample_metadata,
+            cluster_gene_attributions=attr,
+            min_total_counts=1,
+        )
+
+        assert result['gene_id'].tolist() == ['GENE_BODY']
+        assert result.loc[0, 'major_cluster_a'] == 'cluster_prox'
+        assert result.loc[0, 'major_cluster_b'] == 'cluster_dist'
+        assert result.loc[0, 'shift_bp'] == 200
+        assert result.loc[0, 'distribution_divergence'] > 0.2
+
+    def test_reference_position_attributions_map_to_current_clusters(self):
+        pos_attr = pd.DataFrame({
+            'chrom': ['chrI', 'chrI', 'chrI'],
+            'strand': ['+', '+', '+'],
+            'position': [101, 101, 305],
+            'gene_id': ['GENE1', 'GENE2', 'GENE2'],
+            'attributed_count': [3.0, 1.0, 6.0],
+        })
+
+        def lookup(chrom, strand, pos):
+            if chrom == 'chrI' and strand == '+' and 95 <= pos <= 105:
+                return 'cluster_a'
+            if chrom == 'chrI' and strand == '+' and 300 <= pos <= 310:
+                return 'cluster_b'
+            return None
+
+        mapped = reference_position_attributions_to_clusters(pos_attr, lookup, source='drs_origin')
+
+        row_a1 = mapped[(mapped['cluster_id'] == 'cluster_a') & (mapped['gene_id'] == 'GENE1')].iloc[0]
+        row_a2 = mapped[(mapped['cluster_id'] == 'cluster_a') & (mapped['gene_id'] == 'GENE2')].iloc[0]
+        assert row_a1['attribution_weight'] == pytest.approx(0.75)
+        assert row_a2['attribution_weight'] == pytest.approx(0.25)
+        assert mapped[mapped['cluster_id'] == 'cluster_b']['gene_id'].tolist() == ['GENE2']
+
+    def test_reference_position_attributions_use_bounded_nearest_cluster_window(self):
+        clusters = pd.DataFrame({
+            'cluster_id': ['cluster_a', 'cluster_b'],
+            'chrom': ['chrI', 'chrI'],
+            'strand': ['+', '+'],
+            'start': [100, 150],
+            'end': [105, 155],
+            'modal_position': [102, 152],
+        })
+        pos_attr = pd.DataFrame({
+            'chrom': ['chrI', 'chrI', 'chrI'],
+            'strand': ['+', '+', '+'],
+            'position': [110, 145, 130],
+            'gene_id': ['GENE_A', 'GENE_B', 'GENE_TOO_FAR'],
+            'attributed_count': [2.0, 3.0, 10.0],
+        })
+
+        exact_lookup = build_reference_cluster_lookup(clusters, max_distance=0)
+        exact = reference_position_attributions_to_clusters(pos_attr, exact_lookup)
+        assert exact.empty
+
+        window_lookup = build_reference_cluster_lookup(clusters, max_distance=5)
+        mapped = reference_position_attributions_to_clusters(pos_attr, window_lookup)
+
+        assert mapped[['cluster_id', 'gene_id']].values.tolist() == [
+            ['cluster_a', 'GENE_A'],
+            ['cluster_b', 'GENE_B'],
+        ]
 
 
 class TestAnnotateClustersWithGenes:
@@ -707,3 +844,120 @@ class TestBedgraphCoordinates:
         rows = [l for l in (tmp_path / 'ysh1_plus.bedgraph').read_text().splitlines()
                 if not l.startswith('track')]
         assert rows == ['chrIX\t287749\t287750\t3.0000']
+
+    def test_fraction_weights_and_non_yeast_contigs_are_emitted(self, tmp_path):
+        positions_df = pd.DataFrame({
+            'sample': ['sample1', 'sample1'],
+            'chrom': ['chrUn_KI270442v1', 'chrUn_KI270442v1'],
+            'corrected_3prime': [10, 10],
+            'strand': ['+', '+'],
+            'fraction': [0.25, 0.75],
+        })
+
+        generate_bedgraphs(positions_df, tmp_path, normalize_rpm=False)
+
+        rows = [l for l in (tmp_path / 'sample1_plus.bedgraph').read_text().splitlines()
+                if not l.startswith('track')]
+        assert rows == ['chrUn_KI270442v1\t10\t11\t1.0000']
+
+
+class TestAnalyzePositionColumns:
+    def test_conflicting_corrected_columns_fail_loudly(self, tmp_path):
+        path = tmp_path / 'positions.tsv'
+        pd.DataFrame({
+            'sample': ['s1'],
+            'chrom': ['chrI'],
+            'strand': ['+'],
+            'corrected_3prime': [100],
+            'corrected_position': [101],
+        }).to_csv(path, sep='\t', index=False)
+
+        with pytest.raises(ValueError, match='corrected_3prime and corrected_position'):
+            load_corrected_positions(str(path), sample_column='sample')
+
+
+class TestAnnotationFeatureParsing:
+    def test_gff_feature_rows_are_preserved_and_half_open(self, tmp_path):
+        gff = tmp_path / 'features.gff3'
+        gff.write_text(
+            '\n'.join([
+                '##gff-version 3',
+                'chrI\tSGD\tgene\t1\t1000\t.\t+\t.\tID=geneA;Name=YAL001C;gene=TFC3',
+                'chrI\tSGD\tfive_prime_UTR\t1\t100\t.\t+\t.\tID=utr5A;Parent=geneA',
+                'chrI\tSGD\tCDS\t101\t800\t.\t+\t0\tID=cdsA;Parent=geneA',
+                'chrI\tSGD\tthree_prime_UTR\t801\t1000\t.\t+\t.\tID=utr3A;Parent=geneA',
+                'chrI\tSGD\tsnoRNA\t1201\t1230\t.\t-\t.\tID=sno1;Name=SNR1',
+                'chrI\tSGD\tCUT\t1401\t1500\t.\t+\t.\tID=cut1;Name=CUT001',
+                '',
+            ])
+        )
+
+        ann = load_annotation(str(gff), normalize_chroms=False)
+
+        assert set(['gene', 'UTR5', 'CDS', 'UTR3', 'snoRNA', 'CUT']).issubset(
+            set(ann['feature_type'])
+        )
+        gene = ann[ann['feature_type'] == 'gene'].iloc[0]
+        assert int(gene['start']) == 0
+        assert int(gene['end']) == 1000
+        assert gene['gene_id'] == 'geneA'
+        assert gene['gene_name'] == 'TFC3'
+
+        utr3 = ann[ann['feature_type'] == 'UTR3'].iloc[0]
+        assert utr3['gene_id'] == 'geneA'
+        assert utr3['gene_name'] == 'TFC3'
+        assert int(utr3['start']) == 800
+        assert int(utr3['end']) == 1000
+
+    def test_feature_rows_drive_genomic_distribution_classification(self, tmp_path):
+        gff = tmp_path / 'features.gff3'
+        gff.write_text(
+            '\n'.join([
+                'chrI\tSGD\tgene\t1\t1000\t.\t+\t.\tID=geneA;Name=YAL001C;gene=TFC3',
+                'chrI\tSGD\tfive_prime_UTR\t1\t100\t.\t+\t.\tID=utr5A;Parent=geneA',
+                'chrI\tSGD\tCDS\t101\t800\t.\t+\t0\tID=cdsA;Parent=geneA',
+                'chrI\tSGD\tthree_prime_UTR\t801\t1000\t.\t+\t.\tID=utr3A;Parent=geneA',
+                'chrI\tSGD\tsnoRNA\t1201\t1230\t.\t-\t.\tID=sno1;Name=SNR1',
+                'chrI\tSGD\tCUT\t1401\t1500\t.\t+\t.\tID=cut1;Name=CUT001',
+                '',
+            ])
+        )
+        ann = load_annotation(str(gff), normalize_chroms=False)
+        positions = pd.DataFrame({
+            'chrom': ['chrI', 'chrI', 'chrI', 'chrI'],
+            'strand': ['+', '+', '-', '+'],
+            'corrected_position': [850, 200, 1210, 1450],
+            'sample': ['s1', 's1', 's1', 's1'],
+        })
+
+        classified = classify_positions_by_region(positions, ann)
+
+        assert classified['genomic_region'].tolist() == [
+            'UTR3',
+            'UTR5_CDS',
+            'snoRNA',
+            'CUT',
+        ]
+
+
+class TestAdaptiveClusteringBoundaries:
+    def test_valley_position_is_assigned_to_a_cluster(self):
+        positions_df = pd.DataFrame({
+            'chrom': ['chrI'] * 3,
+            'strand': ['+'] * 3,
+            'corrected_position': [100, 103, 106],
+            'count': [10, 1, 10],
+        })
+
+        clusters = cluster_cpa_sites_adaptive(
+            positions_df,
+            max_cluster_radius=10,
+            min_peak_separation=5,
+            min_reads=1,
+            count_col='count',
+        )
+
+        assert any(
+            row.start <= 103 <= row.end
+            for row in clusters.itertuples(index=False)
+        )

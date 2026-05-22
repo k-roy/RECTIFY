@@ -708,7 +708,11 @@ def realign_exon_blocks(
     query_seq = read.query_sequence
     cigar = list(read.cigartuples)
 
-    # ── Fast pre-check: any X op at a homopolymer ref position? ──────────────
+    # ── Fast pre-check: mark exon blocks with X at homopolymer ref positions.
+    # Only those blocks need the expensive O(Q*R) global DP below.  Older code
+    # used a read-level trigger, then re-aligned every short exon block in the
+    # read once any homopolymer X existed; long DRS reads can have many clean
+    # short exon blocks, so that was unnecessarily broad.
     def _homo_run(pos: int) -> int:
         if pos < 0 or pos >= len(chrom_ref):
             return 0
@@ -723,20 +727,21 @@ def realign_exon_blocks(
             right += 1
         return right - left
 
-    has_homo_x = False
+    target_block_starts = set()
     rp = read.reference_start
-    for op, length in cigar:
+    block_start = 0
+    for idx, (op, length) in enumerate(cigar):
+        if op in (3, 4, 5):
+            block_start = idx + 1
         if op == 8:  # X mismatch
             for k in range(length):
                 if _homo_run(rp + k) >= min_run:
-                    has_homo_x = True
+                    target_block_starts.add(block_start)
                     break
-        if has_homo_x:
-            break
         if op in _REF_CONSUMING:
             rp += length
 
-    if not has_homo_x:
+    if not target_block_starts:
         return False
 
     # ── Rebuild CIGAR, re-aligning each exon block ────────────────────────────
@@ -782,6 +787,10 @@ def realign_exon_blocks(
         R_block = rp - block_rp
 
         if Q_block <= 0 or R_block <= 0:
+            new_cigar.extend(cigar[block_start:i])
+            continue
+
+        if block_start not in target_block_starts:
             new_cigar.extend(cigar[block_start:i])
             continue
 

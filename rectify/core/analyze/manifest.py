@@ -20,6 +20,16 @@ from .clustering import (
     cluster_cpa_sites_adaptive,
     annotate_clusters_with_genes,
 )
+from .cluster_gene_attribution import (
+    annotation_cluster_attributions,
+    build_reference_cluster_lookup,
+    load_reference_position_attributions,
+    reference_position_attributions_to_clusters,
+    body_attributions_from_corrected_tsvs,
+    apply_annotation_fallback,
+    apply_gene_names_from_annotation,
+    apply_primary_gene_to_clusters,
+)
 from .deseq2 import (
     extract_condition_from_sample,
     detect_control_samples,
@@ -46,8 +56,75 @@ from .genomic_distribution import (
     run_5prime_distribution_analysis,
     run_transcript_body_distribution_analysis,
 )
-from .loaders import load_annotation, load_position_index
+from .loaders import (
+    _select_position_column,
+    _validate_corrected_position_columns,
+    load_annotation,
+    load_position_index,
+)
 from .exclusions import _detect_exclusion_regions
+
+
+def _build_cluster_gene_attribution_table(
+    args,
+    *,
+    samples,
+    clusters_df,
+    lookup,
+    annotation_df,
+    chrom_format,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build and apply the requested cluster→gene attribution table."""
+    from ...utils.chromosome import normalize_chromosome
+
+    mode = getattr(args, 'gene_attribution_mode', 'annotation')
+    chrom_normalizer = lambda x: normalize_chromosome(x, chrom_format)
+    annotation_fallback = annotation_cluster_attributions(clusters_df, source='annotation')
+
+    if mode == 'none':
+        return clusters_df, annotation_fallback.iloc[0:0].copy()
+    if mode == 'annotation':
+        attr_df = annotation_fallback
+    elif mode in {'reference', 'reference-then-annotation'}:
+        paths = getattr(args, 'gene_attributions', None) or []
+        if not paths:
+            raise ValueError("--gene-attribution-mode reference requires --gene-attributions")
+        pos_attr = load_reference_position_attributions(
+            paths,
+            chrom_normalizer=chrom_normalizer,
+            include_intergenic=getattr(args, 'include_intergenic_attributions', False),
+        )
+        ref_window = int(getattr(args, 'gene_attribution_reference_window', 0) or 0)
+        ref_lookup = (
+            build_reference_cluster_lookup(clusters_df, max_distance=ref_window)
+            if ref_window > 0
+            else lookup
+        )
+        attr_df = reference_position_attributions_to_clusters(
+            pos_attr, ref_lookup, source='reference'
+        )
+        if mode == 'reference-then-annotation':
+            attr_df = apply_annotation_fallback(attr_df, annotation_fallback, clusters_df)
+    elif mode in {'body', 'body-then-annotation'}:
+        if annotation_df is None:
+            raise ValueError("--gene-attribution-mode body requires --annotation")
+        attr_df = body_attributions_from_corrected_tsvs(
+            samples,
+            lookup,
+            annotation_df,
+            chrom_normalizer=chrom_normalizer,
+            mode=getattr(args, 'body_gene_attribution_mode', 'origin'),
+        )
+        if mode == 'body-then-annotation':
+            attr_df = apply_annotation_fallback(attr_df, annotation_fallback, clusters_df)
+    else:
+        raise ValueError(f"Unknown gene attribution mode: {mode}")
+
+    valid_clusters = set(clusters_df['cluster_id'])
+    attr_df = attr_df[attr_df['cluster_id'].isin(valid_clusters)].copy()
+    attr_df = apply_gene_names_from_annotation(attr_df, annotation_df)
+    clusters_df = apply_primary_gene_to_clusters(clusters_df, attr_df)
+    return clusters_df, attr_df
 
 
 def _run_analyze_manifest(
@@ -134,19 +211,20 @@ def _run_analyze_manifest(
         # Fall back: stream the full TSV with minimal columns
         print(f"  {sample_id}: streaming TSV (no index found)...")
         _header = pd.read_csv(tsv_path, sep='\t', nrows=0)
-        _pos_col = None
-        for _c in ['corrected_position', 'corrected_3prime', 'position']:
-            if _c in _header.columns:
-                _pos_col = _c
-                break
+        _pos_col = _select_position_column(_header.columns)
         if _pos_col is None:
             print(f"  WARNING: No position column in {tsv_path}, skipping.")
             continue
 
         _has_qc = 'qc_flags' in _header.columns
+        _has_fraction = 'fraction' in _header.columns
         _usecols = ['chrom', 'strand', _pos_col]
+        if 'corrected_3prime' in _header.columns and 'corrected_position' in _header.columns:
+            _usecols = ['chrom', 'strand', 'corrected_3prime', 'corrected_position']
         if _has_qc:
             _usecols.append('qc_flags')
+        if _has_fraction:
+            _usecols.append('fraction')
         # Each value is [count_total, count_ag_rich]. AG_RICH reads are KEPT
         # in the cluster-discovery pool (v0.9.2+): the WT-vs-Ysh1AA contrast
         # showed condition-dependent AG enrichment reflecting real CPA-readthrough
@@ -156,6 +234,7 @@ def _run_analyze_manifest(
         _agg = defaultdict(lambda: [0.0, 0.0])
         _n_ag_rich = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            _validate_corrected_position_columns(_chunk)
             if _has_qc:
                 _ag_mask = _chunk['qc_flags'].str.contains('AG_RICH', na=False)
                 _n_ag_rich += int(_ag_mask.sum())
@@ -163,17 +242,22 @@ def _run_analyze_manifest(
                 _ag_mask = None
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             # Vectorized groupby (~20-50x faster than itertuples+dict for large chunks)
-            for (chrom, strand, pos), cnt in (
-                _chunk.groupby(['chrom', 'strand', _pos_col], sort=False).size().items()
-            ):
+            if _has_fraction:
+                grouped = _chunk.groupby(['chrom', 'strand', _pos_col], sort=False)['fraction'].sum()
+            else:
+                grouped = _chunk.groupby(['chrom', 'strand', _pos_col], sort=False).size()
+            for (chrom, strand, pos), cnt in grouped.items():
                 _agg[(chrom, strand, pos)][0] += float(cnt)
             if _ag_mask is not None and _ag_mask.any():
-                for (chrom, strand, pos), cnt in (
-                    _chunk.loc[_ag_mask]
-                    .groupby(['chrom', 'strand', _pos_col], sort=False)
-                    .size()
-                    .items()
-                ):
+                if _has_fraction:
+                    grouped_ag = _chunk.loc[_ag_mask].groupby(
+                        ['chrom', 'strand', _pos_col], sort=False
+                    )['fraction'].sum()
+                else:
+                    grouped_ag = _chunk.loc[_ag_mask].groupby(
+                        ['chrom', 'strand', _pos_col], sort=False
+                    ).size()
+                for (chrom, strand, pos), cnt in grouped_ag.items():
                     _agg[(chrom, strand, pos)][1] += float(cnt)
 
         if _has_qc and _n_ag_rich > 0:
@@ -218,7 +302,7 @@ def _run_analyze_manifest(
                 rdna_mask = rdna_mask | (
                     (positions_agg['chrom'] == chrom) &
                     (positions_agg['corrected_position'] >= start) &
-                    (positions_agg['corrected_position'] <= end)
+                    (positions_agg['corrected_position'] < end)
                 )
         positions_agg = positions_agg[~(mito_mask | rdna_mask)]
         n_removed = n_before - len(positions_agg)
@@ -307,8 +391,6 @@ def _run_analyze_manifest(
         print(f"  Annotated {n_annotated:,} clusters ({100*n_annotated/len(clusters_df):.1f}%)")
 
     clusters_path = output_dir / 'cpa_clusters.tsv'
-    clusters_df.to_csv(clusters_path, sep='\t', index=False)
-    print(f"  Saved clusters to {clusters_path}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Pass 1b: Aggregate 5' end (TSS) positions and cluster them
@@ -468,11 +550,7 @@ def _run_analyze_manifest(
 
         # Stream full TSV — load all needed columns in one pass
         _header = pd.read_csv(tsv_path, sep='\t', nrows=0)
-        _pos_col = None
-        for _c in ['corrected_position', 'corrected_3prime', 'position']:
-            if _c in _header.columns:
-                _pos_col = _c
-                break
+        _pos_col = _select_position_column(_header.columns)
         if _pos_col is None:
             print(f"  WARNING: No position column in {tsv_path}, skipping.")
             continue
@@ -480,6 +558,8 @@ def _run_analyze_manifest(
         _has_fraction = 'fraction' in _header.columns
         _has_tss = 'five_prime_position' in _header.columns
         _usecols = ['chrom', 'strand', _pos_col]
+        if 'corrected_3prime' in _header.columns and 'corrected_position' in _header.columns:
+            _usecols = ['chrom', 'strand', 'corrected_3prime', 'corrected_position']
         if _has_fraction:
             _usecols.append('fraction')
         if _has_tss:
@@ -492,6 +572,7 @@ def _run_analyze_manifest(
         # column in cpa_clusters.tsv (or use DRS orthogonal voting).
         n_assigned = 0
         for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+            _validate_corrected_position_columns(_chunk)
             _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
             weights = _chunk['fraction'].values if _has_fraction else None
 
@@ -504,9 +585,14 @@ def _run_analyze_manifest(
                     n_assigned += 1
 
             # Bedgraph accumulation (3' corrected positions, per-condition)
-            for chrom, strand, pos in zip(_chunk['chrom'], _chunk['strand'], _chunk[_pos_col]):
-                _bedgraph_acc[_condition][strand][chrom][int(pos)] += 1
-                _condition_totals[_condition] += 1
+            if _has_fraction:
+                _bg_iter = zip(_chunk['chrom'], _chunk['strand'], _chunk[_pos_col], _chunk['fraction'])
+            else:
+                _bg_iter = ((chrom, strand, pos, 1.0)
+                            for chrom, strand, pos in zip(_chunk['chrom'], _chunk['strand'], _chunk[_pos_col]))
+            for chrom, strand, pos, weight in _bg_iter:
+                _bedgraph_acc[_condition][strand][chrom][int(pos)] += float(weight)
+                _condition_totals[_condition] += float(weight)
 
             # TSS cluster assignment
             if _has_tss and tss_lookup is not None:
@@ -543,7 +629,45 @@ def _run_analyze_manifest(
             count_matrix[sid] = 0.0
     count_matrix = count_matrix[all_sample_ids]
     count_matrix.index.name = 'cluster_id'
+    if _min_cluster_samples > 1 and not count_matrix.empty:
+        _sample_counts = (count_matrix > 0).sum(axis=1)
+        _keep_cluster_ids = set(_sample_counts[_sample_counts >= _min_cluster_samples].index)
+        _n_before = len(clusters_df)
+        clusters_df = clusters_df[clusters_df['cluster_id'].isin(_keep_cluster_ids)].copy()
+        count_matrix = count_matrix.loc[
+            [cid for cid in count_matrix.index if cid in _keep_cluster_ids]
+        ]
+        print(f"  Kept {len(clusters_df):,}/{_n_before:,} clusters present in >= {_min_cluster_samples} samples")
     print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
+
+    cluster_gene_attributions = None
+    try:
+        clusters_df, cluster_gene_attributions = _build_cluster_gene_attribution_table(
+            args,
+            samples=samples,
+            clusters_df=clusters_df,
+            lookup=lookup,
+            annotation_df=annotation_df,
+            chrom_format=chrom_format,
+        )
+        attr_path = output_dir / 'cluster_gene_attributions.tsv'
+        cluster_gene_attributions.to_csv(attr_path, sep='\t', index=False)
+        n_attr_clusters = cluster_gene_attributions['cluster_id'].nunique() if not cluster_gene_attributions.empty else 0
+        n_attr_genes = cluster_gene_attributions['gene_id'].nunique() if not cluster_gene_attributions.empty else 0
+        print(
+            f"  Cluster gene attributions: {len(cluster_gene_attributions):,} rows, "
+            f"{n_attr_clusters:,} clusters, {n_attr_genes:,} genes → {attr_path}"
+        )
+    except Exception as _attr_exc:
+        mode = getattr(args, 'gene_attribution_mode', 'annotation')
+        if mode not in {'annotation', 'none'}:
+            print(f"ERROR: cluster gene attribution failed for mode '{mode}': {_attr_exc}", flush=True)
+            return 1
+        print(f"  WARNING: cluster gene attribution failed: {_attr_exc}")
+        cluster_gene_attributions = None
+
+    clusters_df.to_csv(clusters_path, sep='\t', index=False)
+    print(f"  Saved clusters to {clusters_path}")
 
     counts_path = output_dir / 'cluster_counts.tsv'
     count_matrix.to_csv(counts_path, sep='\t')
@@ -590,7 +714,11 @@ def _run_analyze_manifest(
                     with open(_tmp, 'w') as _f:
                         _f.write(f'track type=bedGraph name="{_cond}_{_strand_label}" '
                                  f'description="RECTIFY 3\' ends ({_strand_label} strand)"\n')
-                        for _chrom in CHROM_ORDER:
+                        _ordered_chroms = [
+                            *[_chrom for _chrom in CHROM_ORDER if _chrom in _chrom_dict],
+                            *sorted(_chrom for _chrom in _chrom_dict if _chrom not in CHROM_ORDER),
+                        ]
+                        for _chrom in _ordered_chroms:
                             if _chrom not in _chrom_dict:
                                 continue
                             for _pos in sorted(_chrom_dict[_chrom]):
@@ -781,7 +909,13 @@ def _run_analyze_manifest(
         else:
             print("  Gene-level analysis...")
             deseq2_gene_results = run_deseq2_gene_level(
-                count_matrix, clusters_df, sample_metadata, reference_condition, n_cpus=args.threads)
+                count_matrix,
+                clusters_df,
+                sample_metadata,
+                reference_condition,
+                cluster_gene_attributions=cluster_gene_attributions,
+                n_cpus=args.threads,
+            )
             for condition, result_df in deseq2_gene_results.items():
                 result_df.to_csv(tables_dir / f'deseq2_genes_{condition}.tsv', sep='\t')
                 n_sig = (result_df['padj'] < 0.05).sum()
@@ -816,6 +950,9 @@ def _run_analyze_manifest(
         _sys2common = {}
         if 'gene_id' in clusters_df.columns and 'gene_name' in clusters_df.columns:
             for _, _r in clusters_df[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
+                _sys2common[_r['gene_id']] = _r['gene_name']
+        if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+            for _, _r in cluster_gene_attributions[['gene_id', 'gene_name']].dropna().drop_duplicates().iterrows():
                 _sys2common[_r['gene_id']] = _r['gene_name']
 
         def _to_common_names(genes):
@@ -865,7 +1002,13 @@ def _run_analyze_manifest(
         conditions = [c for c in sample_metadata['condition'].unique() if c != reference_condition]
         for condition in conditions:
             shift_df = analyze_cluster_shifts(
-                count_matrix, clusters_df, reference_condition, condition, sample_metadata)
+                count_matrix,
+                clusters_df,
+                reference_condition,
+                condition,
+                sample_metadata,
+                cluster_gene_attributions=cluster_gene_attributions,
+            )
             if not shift_df.empty:
                 shift_df.to_csv(tables_dir / f'shift_analysis_{condition}.tsv', sep='\t', index=False)
                 plot_shift_summary(shift_df, output_path=str(plots_dir / f'shift_summary_{condition}.png'))
@@ -884,7 +1027,10 @@ def _run_analyze_manifest(
 
     # Summary
     print(f"\n[Summary] Generating report...")
-    n_genes = clusters_df['gene_id'].nunique() if 'gene_id' in clusters_df.columns else 0
+    if cluster_gene_attributions is not None and not cluster_gene_attributions.empty:
+        n_genes = cluster_gene_attributions['gene_id'].nunique()
+    else:
+        n_genes = clusters_df['gene_id'].nunique() if 'gene_id' in clusters_df.columns else 0
     summary_df = generate_analysis_summary(
         n_samples=len(sample_names),
         n_clusters=len(clusters_df),

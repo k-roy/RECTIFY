@@ -24,6 +24,7 @@ from typing import Dict, Optional, Tuple
 import logging
 import pysam
 
+from ...utils.genome import get_chrom_sequence
 from .read_edits import (
     clip_read_to_corrected_3prime,
     softclip_read_to_corrected_3prime,
@@ -70,7 +71,7 @@ def _decode_eq_seq_inplace(
     seq = read.query_sequence
     if seq is None or '=' not in seq:
         return False
-    chrom_seq = genome.get(read.reference_name) if genome else None
+    chrom_seq, _chrom_key = get_chrom_sequence(genome, read.reference_name) if genome else (None, None)
     if chrom_seq is None:
         return False
     new_chars = list(seq)
@@ -234,6 +235,111 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
         return _load_corrections_from_single_tsv(corrected_tsv_path)
 
 
+def apply_corrected_edits_to_read(
+    read: pysam.AlignedSegment,
+    correction: Optional[Dict],
+    genome: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Apply the canonical hard-clipped corrected-BAM edits to one read.
+
+    This mutates *read* in place but does not write it.  It is the shared
+    implementation used by the sequential writer, parallel writer, lazy
+    HP-edit-distance scoring, and final corrected-consensus BAM generation.
+
+    Returns True when correction surgery changed the alignment/CIGAR.  Decoding
+    SAM-spec ``=`` shorthand in SEQ is intentionally not counted as "modified",
+    preserving the legacy writer's clipped/unchanged statistics.
+    """
+    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+        return False
+
+    # Decode '='-compressed SEQ so every downstream scorer/writer sees explicit
+    # bases.  This mirrors the legacy write_corrected_bam pre-pass.
+    if genome is not None:
+        _decode_eq_seq_inplace(read, genome)
+
+    if correction is None:
+        return False
+
+    modified = False
+
+    # 5'-edge reanchor pre-pass: when bam_processor's 3'SS rescue used a
+    # reanchored copy of the read (TSV reanchor_clip_len > 0), apply the same
+    # deterministic reanchor here BEFORE realign_exon_blocks so the live CIGAR
+    # matches the geometry that exon_cigar was sized for.
+    if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
+        modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
+
+    # Homopolymer CIGAR surgery: re-align exon blocks with X ops at homopolymer
+    # positions so under-called DRS homopolymers are represented as indels.
+    if genome is not None:
+        modified |= realign_exon_blocks(read, genome)
+
+    # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
+    if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
+        modified |= extend_read_5prime_for_junction_rescue(
+            read,
+            correction['five_prime_position'],
+            correction['five_prime_soft_clip'],
+            correction['strand'],
+            exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
+            upstream_trim=correction.get('five_prime_upstream_trim', 0),
+        )
+
+    # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
+    _icp = correction.get('five_prime_intron_clip_pos', -1)
+    _exon_cig = correction.get('five_prime_exon_cigar', '')
+    if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
+            and correction['five_prime_position'] is not None):
+        modified |= reroute_intronic_tail_5prime_via_junction(
+            read,
+            clip_boundary=_icp,
+            five_prime_position=correction['five_prime_position'],
+            exon_cigar_str=_exon_cig,
+            strand=correction['strand'],
+        )
+    elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
+        modified |= softclip_intronic_tail_5prime(
+            read,
+            clip_boundary=_icp,
+            strand=correction['strand'],
+        )
+
+    # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
+    if correction.get('sc_rescued_seq'):
+        modified |= extend_read_3prime_for_softclip_rescue(
+            read,
+            correction['strand'],
+            correction['sc_homopolymer_extension'],
+            correction['sc_rescued_seq'],
+            correction['sc_original_softclip_len'],
+            hard_clip=True,
+        )
+
+    # Over-call rescue (cat1_plus_1/2): convert terminal overcall geometry.
+    if correction.get('oc_terminal_base'):
+        modified |= extend_read_3prime_for_overcall_rescue(
+            read,
+            correction['strand'],
+            correction['oc_homopolymer_extension'],
+            correction['oc_overcall_count'],
+            correction['oc_terminal_base'],
+        )
+
+    # 3' correction: hard-clip to corrected position (Cat1/4/5/6).
+    modified |= clip_read_to_corrected_3prime(
+        read, correction['corrected_3prime'], correction['strand']
+    )
+
+    # Additional hard-clip: remove any trailing genomic A-run at the 3' end.
+    modified |= _hardclip_trailing_a_run(read, correction['strand'])
+
+    # Tag the final corrected 3' end so it is visible in IGV / samtools view.
+    read.set_tag('cp', correction['corrected_3prime'])
+
+    return modified
+
+
 def write_corrected_bam(
     input_bam_path: str,
     corrected_tsv_path: str,
@@ -281,121 +387,10 @@ def write_corrected_bam(
         for read in bam_in:
             stats['total'] += 1
 
-            if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            # Decode '='-compressed SEQ so every emitted read has explicit
-            # bases (see _decode_eq_seq_inplace docstring).
-            if genome is not None:
-                _decode_eq_seq_inplace(read, genome)
-
-            correction = corrections.get(read.query_name)
-            if correction is None:
-                bam_out.write(read)
-                stats['unchanged'] += 1
-                continue
-
-            modified = False
-
-            # 5'-edge reanchor pre-pass: when bam_processor's 3'SS rescue used
-            # a reanchored copy of the read (TSV reanchor_clip_len > 0), apply
-            # the same deterministic reanchor here BEFORE realign_exon_blocks so
-            # the live CIGAR matches the geometry that exon_cigar was sized for.
-            # Must run before realign — realign mutates body M into per-base
-            # =/X ops which can produce divergent reanchor walks (see
-            # docs/handoffs/debugger_queue.md "Deferred: mapPacBio 5'-edge
-            # reanchor for rescue" — cross-stage CIGAR inconsistency).
-            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
-                modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
-
-            # Homopolymer CIGAR surgery: re-align each exon block with reduced
-            # mismatch penalty at homopolymer ref positions so that nanopore DRS
-            # length errors are represented as indels rather than mismatches.
-            # Global alignment preserves query and reference span by construction.
-            if genome is not None:
-                modified |= realign_exon_blocks(read, genome)
-
-            # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
-            if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
-                modified |= extend_read_5prime_for_junction_rescue(
-                    read,
-                    correction['five_prime_position'],
-                    correction['five_prime_soft_clip'],
-                    correction['strand'],
-                    exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
-                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
-                )
-
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
-            # Fires for reads with no soft-clip but a non-empty five_prime_exon_cigar
-            # (the aligner mapped into the intron using M/X/D ops rather than N).
-            _icp = correction.get('five_prime_intron_clip_pos', -1)
-            _exon_cig = correction.get('five_prime_exon_cigar', '')
-            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
-                    and correction['five_prime_position'] is not None):
-                modified |= reroute_intronic_tail_5prime_via_junction(
-                    read,
-                    clip_boundary=_icp,
-                    five_prime_position=correction['five_prime_position'],
-                    exon_cigar_str=_exon_cig,
-                    strand=correction['strand'],
-                )
-            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
-                # Fallback: no exon CIGAR available (local alignment failed or
-                # intronic sequence too short).  Soft-clip the intronic tail at
-                # clip_boundary so the alignment ends at the exon/intron boundary.
-                modified |= softclip_intronic_tail_5prime(
-                    read,
-                    clip_boundary=_icp,
-                    strand=correction['strand'],
-                )
-
-            # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
-            if correction.get('sc_rescued_seq'):
-                modified |= extend_read_3prime_for_softclip_rescue(
-                    read,
-                    correction['strand'],
-                    correction['sc_homopolymer_extension'],
-                    correction['sc_rescued_seq'],
-                    correction['sc_original_softclip_len'],
-                    hard_clip=True,
-                )
-
-            # Over-call rescue (cat1_plus_1/2): convert the 3' soft-clip
-            # `{overcall_count}S + 1 terminal` to `{hp_ext}D {overcall_count}I 1=`,
-            # extending the alignment by 1 ref position to include the terminal
-            # body match past the genomic HP-A run.
-            if correction.get('oc_terminal_base'):
-                modified |= extend_read_3prime_for_overcall_rescue(
-                    read,
-                    correction['strand'],
-                    correction['oc_homopolymer_extension'],
-                    correction['oc_overcall_count'],
-                    correction['oc_terminal_base'],
-                )
-
-            # 3' correction: hard-clip to corrected position (Cat1/4/5/6).
-            # Cat2 reads already have their 3' end extended outward; this call
-            # will return False for them (corrected >= current_end).
-            modified |= clip_read_to_corrected_3prime(
-                read, correction['corrected_3prime'], correction['strand']
-            )
-
-            # Additional hard-clip: remove any trailing genomic A-run at the 3' end.
-            # After the main correction, A-rich 3' UTR regions are indistinguishable
-            # from poly(A) tail in the read sequence and are clipped away here.
-            # Not applied to the soft-clip BAM, which retains them as aligned bases.
-            modified |= _hardclip_trailing_a_run(read, correction['strand'])
-
-            # Tag the final corrected 3' end so it is readable in IGV / samtools view.
-            # cp:i: = corrected 3' end position, 0-based inclusive reference coordinate.
-            # This equals reference_start (minus strand) or reference_end-1 (plus strand)
-            # after clipping, but is written explicitly so it is visible even for reads
-            # where no correction was applied (corrected == original).
-            read.set_tag('cp', correction['corrected_3prime'])
-
+            correction = None
+            if not (read.is_unmapped or read.is_secondary or read.is_supplementary):
+                correction = corrections.get(read.query_name)
+            modified = apply_corrected_edits_to_read(read, correction, genome)
             bam_out.write(read)
             if modified:
                 stats['clipped'] += 1
@@ -627,6 +622,7 @@ def write_dual_bam(
                     correction['five_prime_soft_clip'],
                     correction['strand'],
                     exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
+                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
                 )
 
             # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
@@ -666,6 +662,14 @@ def write_dual_bam(
                     correction['sc_original_softclip_len'],
                     hard_clip=True,
                 )
+            if correction.get('oc_terminal_base'):
+                hc_modified |= extend_read_3prime_for_overcall_rescue(
+                    read,
+                    correction['strand'],
+                    correction['oc_homopolymer_extension'],
+                    correction['oc_overcall_count'],
+                    correction['oc_terminal_base'],
+                )
             hc_modified |= clip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
             )
@@ -697,6 +701,14 @@ def write_dual_bam(
                     correction['sc_rescued_seq'],
                     correction['sc_original_softclip_len'],
                     hard_clip=False,
+                )
+            if correction.get('oc_terminal_base'):
+                sc_modified |= extend_read_3prime_for_overcall_rescue(
+                    read,
+                    correction['strand'],
+                    correction['oc_homopolymer_extension'],
+                    correction['oc_overcall_count'],
+                    correction['oc_terminal_base'],
                 )
             sc_modified |= softclip_read_to_corrected_3prime(
                 read, correction['corrected_3prime'], correction['strand']
