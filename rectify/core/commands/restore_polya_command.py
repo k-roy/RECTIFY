@@ -391,6 +391,40 @@ def run(args) -> int:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    import sys as _sys_rp
+    import logging as _log_rp
+    from datetime import datetime as _dt_rp, timezone as _tz_rp
+    from time import perf_counter as _perf_rp
+    from rectify.core.provenance import can_skip_stage
+    from rectify.utils.version import get_rectify_git_sha as _get_sha_rp
+
+    _rp_sample_output = output_path.parent
+    _rp_sample_id = output_path.stem
+    _rp_sha = _get_sha_rp()
+    _rp_inputs: dict = {'corrected_tsv': str(corrected_tsv), 'trim_metadata': str(metadata_path)}
+    for _al, _bp in aligner_bam_paths.items():
+        _rp_inputs[f'bam_{_al}'] = str(_bp)
+    _rp_logger = _log_rp.getLogger(__name__)
+
+    _rp_skip = can_skip_stage(
+        stage='restore_polya', sample_output=_rp_sample_output, sample_id=_rp_sample_id,
+        current_inputs=_rp_inputs, current_argv=_sys_rp.argv, rectify_git_sha=_rp_sha,
+        force=getattr(args, 'force_all', False),
+        force_stages=set(getattr(args, 'force_stage', '').split(','))
+                    if getattr(args, 'force_stage', None) else None,
+        accept_prior_provenance=getattr(args, 'accept_prior_provenance', False),
+    )
+    _rp_logger.info("[RESUME] sample=%s stage=restore_polya decision=%s reason=%s",
+        _rp_sample_id, 'SKIP' if _rp_skip.skip else 'RUN', _rp_skip.reason)
+    if _rp_skip.skip:
+        _rp_logger.info("[RESUME] Skipping restore_polya — prior sidecar valid.")
+        return 0
+    if getattr(args, 'dry_run_resume', False):
+        print(f"[dry-run-resume] stage=restore_polya decision=RUN reason={_rp_skip.reason}")
+        return 0
+    _rp_started_at = _dt_rp.now(_tz_rp.utc).isoformat()
+    _t_rp_start = _perf_rp()
+
     print(f"Corrected TSV: {corrected_tsv}")
     print(f"Aligner BAMs:  {aligner_bam_paths}")
     print(f"Trim metadata: {metadata_path}")
@@ -410,6 +444,26 @@ def run(args) -> int:
     print(f"  Unchanged:          {stats['unchanged']:,}")
     print(f"  No metadata:        {stats['skipped_no_meta']:,}")
     print(f"  No trim (polya=0):  {stats['skipped_no_trim']:,}")
+
+    _rp_wall_secs = _perf_rp() - _t_rp_start
+    try:
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        _rp_outputs: dict = {}
+        if output_path.exists():
+            _rp_outputs['bam'] = str(output_path)
+        _rp_record = ProvenanceRecord.from_components(
+            stage='restore_polya', stage_subtype=None, sample_id=_rp_sample_id,
+            sample_output_dir=_rp_sample_output, started_at=_rp_started_at,
+            completed_at=_dt_rp.now(_tz_rp.utc).isoformat(),
+            exit_status=0, inputs=_rp_inputs, outputs=_rp_outputs,
+            stats={k: stats[k] for k in ('total', 'restored', 'unchanged')},
+            skip_check_config={'ignore_argv': ['--threads']},
+            argv=_sys_rp.argv, rectify_git_sha=_rp_sha,
+        )
+        write_stage_sidecar(_rp_record, sample_output=_rp_sample_output)
+        _rp_logger.info("[PROVENANCE] Wrote restore_polya sidecar for %s", _rp_sample_id)
+    except Exception as _rp_exc:
+        _rp_logger.warning("[PROVENANCE] Failed to write restore_polya sidecar (non-fatal): %s", _rp_exc)
 
     return 0
 
@@ -466,3 +520,5 @@ def create_restore_softclip_parser(subparsers):
         default=1,
         help='pysam thread count',
     )
+    from rectify.core.provenance.cli import add_resume_args
+    add_resume_args(restore_sc_parser)

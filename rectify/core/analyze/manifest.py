@@ -132,6 +132,8 @@ def _run_analyze_manifest(
     output_dir: Path,
     plots_dir: Path,
     tables_dir: Path,
+    *,
+    _sidecar_inputs=None,
 ) -> int:
     """
     Memory-efficient manifest-mode analysis pipeline.
@@ -157,6 +159,10 @@ def _run_analyze_manifest(
     five_prime_position counts, then clusters them with a wider window (75 bp default).
     """
     from ...utils.chromosome import normalize_chromosome
+    from datetime import datetime as _dt_manifest, timezone as _tz_manifest
+    from time import perf_counter as _perf_manifest
+    _manifest_stage_started_at = _dt_manifest.now(_tz_manifest.utc).isoformat()
+    _t_manifest_start = _perf_manifest()
 
     print("=" * 70)
     print("RECTIFY Analysis Pipeline (Manifest Mode)")
@@ -1052,5 +1058,35 @@ def _run_analyze_manifest(
     print(f"  Output directory: {output_dir}")
     print(f"  HTML report: {html_path}")
     print("=" * 70)
+
+    _manifest_wall_secs = _perf_manifest() - _t_manifest_start
+    try:
+        import sys as _sys_m
+        import logging as _log_m
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        from rectify.utils.version import get_rectify_git_sha as _get_sha_m
+        _sc_inputs = _sidecar_inputs if _sidecar_inputs is not None else {'manifest': str(args.manifest)}
+        _sc_outputs: dict = {}
+        if html_path.exists():
+            _sc_outputs['html_report'] = str(html_path)
+        _summary_tsv_m = output_dir / 'analysis_summary.tsv'
+        if _summary_tsv_m.exists():
+            _sc_outputs['summary'] = str(_summary_tsv_m)
+        _sc_record = ProvenanceRecord.from_components(
+            stage='analyze', stage_subtype='manifest', sample_id=output_dir.name,
+            sample_output_dir=output_dir, started_at=_manifest_stage_started_at,
+            completed_at=_dt_manifest.now(_tz_manifest.utc).isoformat(),
+            exit_status=0, inputs=_sc_inputs, outputs=_sc_outputs,
+            stats={'wall_seconds': _manifest_wall_secs, 'n_samples': len(samples)},
+            skip_check_config={'ignore_argv': ['--threads', '--verbose']},
+            argv=_sys_m.argv, rectify_git_sha=_get_sha_m(),
+        )
+        write_stage_sidecar(_sc_record, sample_output=output_dir)
+        _log_m.getLogger(__name__).info(
+            "[PROVENANCE] Wrote analyze sidecar for %s", output_dir.name)
+    except Exception as _sc_exc:
+        import logging as _log_m_err
+        _log_m_err.getLogger(__name__).warning(
+            "[PROVENANCE] Failed to write analyze sidecar (non-fatal): %s", _sc_exc)
 
     return 0

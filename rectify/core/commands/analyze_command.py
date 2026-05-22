@@ -52,6 +52,25 @@ from ..analyze.manifest import _run_analyze_manifest, _build_cluster_gene_attrib
 from ...utils.provenance import init_provenance
 
 
+def _collect_analyze_inputs(args: argparse.Namespace) -> dict:
+    """Build the input-hash dict for skip-check and sidecar, resolving per-sample TSV paths."""
+    inputs: dict = {}
+    if getattr(args, 'manifest', None):
+        inputs['manifest'] = str(args.manifest)
+        try:
+            _mdf = pd.read_csv(args.manifest, sep='\t')
+            for _row in _mdf.itertuples():
+                if hasattr(_row, 'sample_id') and hasattr(_row, 'path'):
+                    inputs[f'tsv_{_row.sample_id}'] = str(_row.path)
+        except Exception:
+            pass
+    else:
+        inputs['input'] = str(args.input)
+    if getattr(args, 'annotation', None):
+        inputs['annotation'] = str(args.annotation)
+    return inputs
+
+
 def _make_cluster_lookup(clusters_df):
     try:
         from intervaltree import IntervalTree
@@ -106,9 +125,42 @@ def run_analyze(args: argparse.Namespace) -> int:
     tables_dir = output_dir / 'tables'
     tables_dir.mkdir(exist_ok=True)
 
+    import sys as _sys_analyze
+    import logging as _log_analyze
+    from datetime import datetime as _dt_analyze, timezone as _tz_analyze
+    from time import perf_counter as _perf_analyze
+    from rectify.core.provenance import can_skip_stage
+    from rectify.utils.version import get_rectify_git_sha as _get_sha_analyze
+
+    _sample_id = output_dir.name
+    _rectify_sha_analyze = _get_sha_analyze()
+    _current_inputs = _collect_analyze_inputs(args)
+    _analyze_logger = _log_analyze.getLogger(__name__)
+
+    _skip_decision = can_skip_stage(
+        stage='analyze', sample_output=output_dir, sample_id=_sample_id,
+        current_inputs=_current_inputs, current_argv=_sys_analyze.argv,
+        rectify_git_sha=_rectify_sha_analyze,
+        force=getattr(args, 'force_all', False),
+        force_stages=set(getattr(args, 'force_stage', '').split(','))
+                   if getattr(args, 'force_stage', None) else None,
+        accept_prior_provenance=getattr(args, 'accept_prior_provenance', False),
+    )
+    _analyze_logger.info("[RESUME] sample=%s stage=analyze decision=%s reason=%s",
+        _sample_id, 'SKIP' if _skip_decision.skip else 'RUN', _skip_decision.reason)
+    if _skip_decision.skip:
+        _analyze_logger.info("[RESUME] Skipping analyze stage — prior sidecar valid.")
+        return 0
+    if getattr(args, 'dry_run_resume', False):
+        print(f"[dry-run-resume] stage=analyze decision=RUN reason={_skip_decision.reason}")
+        return 0
+    _stage_started_at = _dt_analyze.now(_tz_analyze.utc).isoformat()
+    _t_analyze_start = _perf_analyze()
+
     # Dispatch to manifest mode if --manifest is provided
     if getattr(args, 'manifest', None):
-        return _run_analyze_manifest(args, output_dir, plots_dir, tables_dir)
+        return _run_analyze_manifest(args, output_dir, plots_dir, tables_dir,
+                                     _sidecar_inputs=_current_inputs)
 
     # Initialize provenance tracking
     provenance = init_provenance(
@@ -694,6 +746,29 @@ def run_analyze(args: argparse.Namespace) -> int:
     print(f"  Provenance: {output_dir / 'PROVENANCE.json'}")
     print("=" * 70)
 
+    _analyze_wall_secs = _perf_analyze() - _t_analyze_start
+    try:
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        _sc_outputs: dict = {}
+        if html_path.exists():
+            _sc_outputs['html_report'] = str(html_path)
+        _summary_tsv = output_dir / 'analysis_summary.tsv'
+        if _summary_tsv.exists():
+            _sc_outputs['summary'] = str(_summary_tsv)
+        _sc_record = ProvenanceRecord.from_components(
+            stage='analyze', stage_subtype=None, sample_id=_sample_id,
+            sample_output_dir=output_dir, started_at=_stage_started_at,
+            completed_at=_dt_analyze.now(_tz_analyze.utc).isoformat(),
+            exit_status=0, inputs=_current_inputs, outputs=_sc_outputs,
+            stats={'wall_seconds': _analyze_wall_secs},
+            skip_check_config={'ignore_argv': ['--threads', '--verbose']},
+            argv=_sys_analyze.argv, rectify_git_sha=_rectify_sha_analyze,
+        )
+        write_stage_sidecar(_sc_record, sample_output=output_dir)
+        _analyze_logger.info("[PROVENANCE] Wrote analyze sidecar for %s", _sample_id)
+    except Exception as _sc_exc:
+        _analyze_logger.warning("[PROVENANCE] Failed to write analyze sidecar (non-fatal): %s", _sc_exc)
+
     return 0
 
 
@@ -956,6 +1031,9 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
              'NOTE: ucsc/ncbi/sgd conversions currently only have lookup tables for S. cerevisiae; '
              'on other species these modes pass through with a warning.',
     )
+
+    from rectify.core.provenance.cli import add_resume_args
+    add_resume_args(parser)
 
     parser.set_defaults(func=run_analyze)
 
