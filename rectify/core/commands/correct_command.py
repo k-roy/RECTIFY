@@ -882,6 +882,10 @@ def run(args):
                 else:
                     variant_output_path = str(Path(_op) / 'corrected_3ends_potential_variants.tsv')
 
+            # Pool reuse: stages._run_correction_per_aligner injects this container
+            # so the same multiprocessing.Pool is shared across all per-aligner calls.
+            _pool_container = getattr(args, 'reuse_pool_container', None)
+
             results, stats = bam_parallel.process_bam_file_parallel(
                 bam_path=bam_to_process,
                 genome_path=str(config['genome_path']),
@@ -906,6 +910,7 @@ def run(args):
                 dt_primed_cDNA=config.get('dt_primed_cDNA', False),
                 min_mapq=config.get('min_mapq', 0),
                 min_aligned_length=config.get('min_aligned_length', 0),
+                reuse_pool_container=_pool_container,
             )
             report = generate_stats_report(stats, protocol=_protocol)
 

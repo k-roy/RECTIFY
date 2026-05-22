@@ -210,15 +210,13 @@ def test_per_aligner_runner_accepts_legacy_tsv(tmp_path: Path, monkeypatch):
     assert tsvs['minimap2'].name == 'corrected_reads.tsv'
 
 
-def test_per_aligner_runner_serial_loop_under_concurrency_auto(
+def test_per_aligner_runner_serial_loop_under_concurrency_one(
     tmp_path: Path, monkeypatch, capsys
 ):
-    """``--aligner-concurrency auto`` keeps the loop sequential and logs budget.
+    """``--aligner-concurrency 1`` forces sequential path and logs the budget.
 
-    Sequential is the Preparatory Commit C invariant: the resolved value is
-    informational only. The acceptance test for Axis B performance is
-    explicitly deferred until the shared region-task API exists below
-    ``correct_command.run``.
+    The resolved value is always 1 regardless of machine class, and the mode
+    label must be "sequential" so operators can confirm the serialization gate.
     """
     from rectify.core.commands.run import stages
 
@@ -241,15 +239,15 @@ def test_per_aligner_runner_serial_loop_under_concurrency_auto(
         output_dir=output_dir,
         genome_path=tmp_path / 'genome.fa',
         annotation_path=None,
-        args=_make_args(threads=16, aligner_concurrency='auto'),
+        args=_make_args(threads=16, aligner_concurrency='1'),
     )
 
     # Sequential execution preserves dict insertion order.
     assert call_order == ['minimap2', 'gapmm2', 'uLTRA']
 
     out = capsys.readouterr().out
-    assert '--aligner-concurrency=auto' in out
-    assert 'loop stays sequential' in out
+    assert '--aligner-concurrency=1' in out
+    assert 'sequential' in out
 
 
 def test_per_aligner_runner_invalid_concurrency_falls_back_to_one(
@@ -278,3 +276,130 @@ def test_per_aligner_runner_invalid_concurrency_falls_back_to_one(
     err = capsys.readouterr().err
     assert 'invalid' in err.lower() or 'WARNING' in err
     assert tsvs['minimap2'].exists()
+
+
+# ---------------------------------------------------------------------------
+# C-II.1 shared-pool tests
+# ---------------------------------------------------------------------------
+
+def _make_args_cluster(threads: int = 8, aligner_concurrency: str = "4") -> argparse.Namespace:
+    """Args namespace that resolves to a shared-pool path on any machine."""
+    return argparse.Namespace(
+        threads=threads,
+        aligner_concurrency=aligner_concurrency,
+        dT_primed_cDNA=False,
+        polya_sequenced=False,
+        organism=None,
+        aligner='minimap2',
+        chunk_size=10000,
+        netseq_dir=None,
+        junction_penalty_table=None,
+        str_penalty_table=None,
+        junction_overhang_table=None,
+        junction_pool_cache=None,
+        filter_spikein=None,
+        streaming=False,
+        write_corrected_bam=False,
+        write_softclip_bam=False,
+    )
+
+
+def test_shared_pool_container_passed_when_ac_gt_1(
+    tmp_path: Path, monkeypatch
+):
+    """When ac > 1, _run_correction receives the same reuse_pool_container list
+    across all per-aligner calls — confirms the shared-pool wiring is threaded.
+    """
+    from rectify.core.commands.run import stages
+
+    per_aligner_bams = _make_per_aligner_bams(tmp_path, ['minimap2', 'gapmm2'])
+    output_dir = tmp_path / 'out'
+
+    seen_containers = []
+
+    def _fake_run_correction(*, output_dir, reuse_pool_container=None, **_kwargs):
+        seen_containers.append(id(reuse_pool_container))
+        _write_manifest(output_dir)
+        return output_dir / 'corrected_reads.manifest.tsv'
+
+    monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
+    # Bypass _bam_has_md_tags so dummy BAMs don't cause FileNotFoundError.
+    monkeypatch.setattr(stages, '_bam_has_md_tags', lambda _p: True)
+
+    stages._run_correction_per_aligner(
+        per_aligner_bams=per_aligner_bams,
+        output_dir=output_dir,
+        genome_path=tmp_path / 'genome.fa',
+        annotation_path=None,
+        args=_make_args_cluster(aligner_concurrency='4'),
+    )
+
+    assert len(seen_containers) == 2, "both aligners should have been processed"
+    # Both calls must receive the SAME container object (same id).
+    assert seen_containers[0] == seen_containers[1], (
+        "reuse_pool_container must be the same list object across all aligner calls"
+    )
+
+
+def test_shared_pool_falls_back_when_has_md_inconsistent(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """Inconsistent MD tags across aligners → fall back to sequential (no container)."""
+    from rectify.core.commands.run import stages
+
+    per_aligner_bams = _make_per_aligner_bams(tmp_path, ['minimap2', 'gapmm2'])
+    output_dir = tmp_path / 'out'
+
+    seen_containers = []
+
+    def _fake_run_correction(*, output_dir, reuse_pool_container=None, **_kwargs):
+        seen_containers.append(reuse_pool_container)
+        _write_manifest(output_dir)
+        return output_dir / 'corrected_reads.manifest.tsv'
+
+    monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
+    # Simulate inconsistent MD tags: minimap2=True, gapmm2=False.
+    bam_names = list(per_aligner_bams.keys())
+    md_map = {str(per_aligner_bams[bam_names[0]]): True, str(per_aligner_bams[bam_names[1]]): False}
+    monkeypatch.setattr(stages, '_bam_has_md_tags', lambda p: md_map.get(str(p), False))
+
+    stages._run_correction_per_aligner(
+        per_aligner_bams=per_aligner_bams,
+        output_dir=output_dir,
+        genome_path=tmp_path / 'genome.fa',
+        annotation_path=None,
+        args=_make_args_cluster(aligner_concurrency='4'),
+    )
+
+    # Fell back to sequential: no reuse_pool_container passed.
+    assert all(c is None for c in seen_containers), (
+        "inconsistent MD tags should fall back to sequential (container=None)"
+    )
+    err = capsys.readouterr().err
+    assert 'inconsistent' in err.lower() or 'WARNING' in err
+
+
+def test_shared_pool_label_in_output(tmp_path: Path, monkeypatch, capsys):
+    """When ac > 1 + consistent has_md, the log should say 'shared pool'."""
+    from rectify.core.commands.run import stages
+
+    per_aligner_bams = _make_per_aligner_bams(tmp_path, ['minimap2'])
+    output_dir = tmp_path / 'out'
+
+    def _fake_run_correction(*, output_dir, **_kwargs):
+        _write_manifest(output_dir)
+        return output_dir / 'corrected_reads.manifest.tsv'
+
+    monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
+    monkeypatch.setattr(stages, '_bam_has_md_tags', lambda _p: True)
+
+    stages._run_correction_per_aligner(
+        per_aligner_bams=per_aligner_bams,
+        output_dir=output_dir,
+        genome_path=tmp_path / 'genome.fa',
+        annotation_path=None,
+        args=_make_args_cluster(aligner_concurrency='4'),
+    )
+
+    out = capsys.readouterr().out
+    assert 'shared pool' in out

@@ -197,6 +197,7 @@ def _run_correction(
     annotation_path: Optional[Path],
     args,
     aligner_bams: Optional[List[Path]] = None,
+    reuse_pool_container: Optional[list] = None,
 ) -> Path:
     """
     Run rectify correct on a BAM, writing corrected_reads.tsv into output_dir.
@@ -286,6 +287,8 @@ def _run_correction(
         junction_pool_cache=getattr(args, 'junction_pool_cache', None),
         debug=False,
         verbose=False,
+        # Pool reuse: injected by _run_correction_per_aligner for ac>1; None otherwise.
+        reuse_pool_container=reuse_pool_container,
     )
 
     correct_command.run(correct_args)
@@ -382,108 +385,221 @@ def _run_correction_per_aligner(
             file=sys.stderr,
         )
         _resolved_ac = 1
+    # Shared pool path (ac > 1): one multiprocessing.Pool across all aligners.
+    # MD tags must be uniform — apply_indel_correction is baked into the pool
+    # worker state once at creation time and can't vary per aligner.
+    _use_shared_pool = False
+    if _resolved_ac > 1:
+        _has_md_per_aligner = {
+            name: _bam_has_md_tags(bam_path)
+            for name, bam_path in per_aligner_bams.items()
+        }
+        if len(set(_has_md_per_aligner.values())) > 1:
+            print(
+                f"    WARNING: per-aligner BAMs have inconsistent MD tags "
+                f"({_has_md_per_aligner}); falling back to sequential correction.",
+                file=sys.stderr,
+            )
+        else:
+            _use_shared_pool = True
+
+    _mode_label = "shared pool" if _use_shared_pool else "sequential"
     print(
         f"    Aligner concurrency: --aligner-concurrency={_ac_value} "
-        f"-> {_resolved_ac} (loop stays sequential; shared region queue deferred)"
+        f"-> {_resolved_ac} ({_mode_label})"
     )
 
     per_aligner_tsvs: Dict[str, Path] = {}
     per_aligner_corrected_bams: Dict[str, Path] = {}
-    for aligner_name, bam_path in per_aligner_bams.items():
-        aligner_output_dir = per_aligner_dir / aligner_name
-        aligner_output_dir.mkdir(exist_ok=True)
 
-        # Resume skip-check: accept manifest (Commit B default) OR raw TSV
-        # (--emit-merged-tsv legacy). The previous tsv-only check meant
-        # manifest-only runs never skipped on resume and silently re-ran the
-        # whole correction stage on every attempt.
-        _canonical = _per_aligner_canonical_output(aligner_output_dir)
-        _output_valid = False
-        if _canonical is not None:
+    if not _use_shared_pool:
+        # Sequential path: one pool per aligner, or no pool (n_threads=1).
+        # This branch is byte-identical to the pre-C-II.1 behavior.
+        for aligner_name, bam_path in per_aligner_bams.items():
+            aligner_output_dir = per_aligner_dir / aligner_name
+            aligner_output_dir.mkdir(exist_ok=True)
+
+            # Resume skip-check: accept manifest (Commit B default) OR raw TSV
+            # (--emit-merged-tsv legacy). The previous tsv-only check meant
+            # manifest-only runs never skipped on resume and silently re-ran the
+            # whole correction stage on every attempt.
+            _canonical = _per_aligner_canonical_output(aligner_output_dir)
+            _output_valid = False
+            if _canonical is not None:
+                try:
+                    import pandas as pd
+                    _df = pd.read_csv(_canonical, sep='\t', nrows=1)
+                    _output_valid = len(_df.columns) > 0
+                except Exception:
+                    _output_valid = False
+
+            if _output_valid:
+                print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
+                per_aligner_tsvs[aligner_name] = _canonical
+                continue
+
+            print(f"    [{aligner_name}] Correcting {bam_path.name}...")
+            # rectify correct uses pysam.fetch() which requires a coordinate-sorted,
+            # indexed BAM.  Aligners that sort internally (uLTRA, deSALT) have a .bai
+            # placed by align_command.py; aligners that emit unsorted output
+            # (mapPacBio, minimap2, gapmm2) do not.  Sort + index to a temp file when
+            # the .bai is absent, then clean up after correction.
+            sorted_bam: Optional[Path] = None
+            correction_bam = bam_path
+            bai_path = Path(str(bam_path) + '.bai')
+            if not bai_path.exists():
+                try:
+                    import pysam as _pysam
+                    sorted_bam = bam_path.with_suffix('.coord_sorted.bam')
+                    print(f"    [{aligner_name}] Coordinate-sorting for correction...")
+                    _pysam.sort('-m', '1G', '-o', str(sorted_bam), str(bam_path))
+                    _pysam.index(str(sorted_bam))
+                    correction_bam = sorted_bam
+                except Exception as _sort_exc:
+                    print(
+                        f"    WARNING: [{aligner_name}] sort failed ({_sort_exc}); "
+                        "skipping correction",
+                        file=sys.stderr,
+                    )
+                    if sorted_bam is not None and sorted_bam.exists():
+                        sorted_bam.unlink(missing_ok=True)
+                    continue
             try:
-                import pandas as pd
-                _df = pd.read_csv(_canonical, sep='\t', nrows=1)
-                _output_valid = len(_df.columns) > 0
-            except Exception:
-                _output_valid = False
-
-        if _output_valid:
-            print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
-            per_aligner_tsvs[aligner_name] = _canonical
-            continue
-
-        print(f"    [{aligner_name}] Correcting {bam_path.name}...")
-        # rectify correct uses pysam.fetch() which requires a coordinate-sorted,
-        # indexed BAM.  Aligners that sort internally (uLTRA, deSALT) have a .bai
-        # placed by align_command.py; aligners that emit unsorted output
-        # (mapPacBio, minimap2, gapmm2) do not.  Sort + index to a temp file when
-        # the .bai is absent, then clean up after correction.
-        sorted_bam: Optional[Path] = None
-        correction_bam = bam_path
-        bai_path = Path(str(bam_path) + '.bai')
-        if not bai_path.exists():
-            try:
-                import pysam as _pysam
-                sorted_bam = bam_path.with_suffix('.coord_sorted.bam')
-                print(f"    [{aligner_name}] Coordinate-sorting for correction...")
-                _pysam.sort('-m', '1G', '-o', str(sorted_bam), str(bam_path))
-                _pysam.index(str(sorted_bam))
-                correction_bam = sorted_bam
-            except Exception as _sort_exc:
+                # Pass ALL per-aligner BAMs so Module 2H (junction refinement) can
+                # build the cross-aligner candidate junction pool — the documented
+                # "correct-first" pipeline order in CLAUDE.md. Without this every
+                # per-aligner correction would run with Module 2H silently disabled.
+                _all_aligner_bams = list(per_aligner_bams.values())
+                _run_correction(
+                    bam_path=correction_bam,
+                    output_dir=aligner_output_dir,
+                    genome_path=genome_path,
+                    annotation_path=annotation_path,
+                    args=args,
+                    aligner_bams=_all_aligner_bams,
+                )
+            except Exception as exc:
                 print(
-                    f"    WARNING: [{aligner_name}] sort failed ({_sort_exc}); "
-                    "skipping correction",
+                    f"    WARNING: [{aligner_name}] correction failed: {exc}",
                     file=sys.stderr,
                 )
-                if sorted_bam is not None and sorted_bam.exists():
+            finally:
+                if sorted_bam is not None:
                     sorted_bam.unlink(missing_ok=True)
-                continue
-        try:
-            # Pass ALL per-aligner BAMs so Module 2H (junction refinement) can
-            # build the cross-aligner candidate junction pool — the documented
-            # "correct-first" pipeline order in CLAUDE.md. Without this every
-            # per-aligner correction would run with Module 2H silently disabled.
-            _all_aligner_bams = list(per_aligner_bams.values())
-            _run_correction(
-                bam_path=correction_bam,
-                output_dir=aligner_output_dir,
-                genome_path=genome_path,
-                annotation_path=annotation_path,
-                args=args,
-                aligner_bams=_all_aligner_bams,
-            )
-        except Exception as exc:
-            print(
-                f"    WARNING: [{aligner_name}] correction failed: {exc}",
-                file=sys.stderr,
-            )
-        finally:
-            if sorted_bam is not None:
-                sorted_bam.unlink(missing_ok=True)
-                sorted_bai = Path(str(sorted_bam) + '.bai')
-                sorted_bai.unlink(missing_ok=True)
+                    sorted_bai = Path(str(sorted_bam) + '.bai')
+                    sorted_bai.unlink(missing_ok=True)
 
-        _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
-        if _canonical_after is not None:
-            per_aligner_tsvs[aligner_name] = _canonical_after
-            # Find the corrected BAM emitted by _run_correction.  Naming
-            # convention: ``{input_bam.stem stripped of .rectified/.consensus}
-            # .rectified_corrected_3end.bam``.  When ``--write-corrected-bam``
-            # was disabled upstream this file won't exist; that's fine —
-            # absence triggers legacy 5-key sort in merge_corrected_tsvs.
-            _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
-            for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
-                if _stem.endswith(_sfx):
-                    _stem = _stem[:-len(_sfx)]
-                    break
-            _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
-            if _corr_bam.exists():
-                per_aligner_corrected_bams[aligner_name] = _corr_bam
-        else:
-            print(
-                f"    WARNING: [{aligner_name}] correction produced no output",
-                file=sys.stderr,
-            )
+            _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
+            if _canonical_after is not None:
+                per_aligner_tsvs[aligner_name] = _canonical_after
+                # Find the corrected BAM emitted by _run_correction.  Naming
+                # convention: ``{input_bam.stem stripped of .rectified/.consensus}
+                # .rectified_corrected_3end.bam``.  When ``--write-corrected-bam``
+                # was disabled upstream this file won't exist; that's fine —
+                # absence triggers legacy 5-key sort in merge_corrected_tsvs.
+                _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
+                for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
+                    if _stem.endswith(_sfx):
+                        _stem = _stem[:-len(_sfx)]
+                        break
+                _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
+                if _corr_bam.exists():
+                    per_aligner_corrected_bams[aligner_name] = _corr_bam
+            else:
+                print(
+                    f"    WARNING: [{aligner_name}] correction produced no output",
+                    file=sys.stderr,
+                )
+
+        return per_aligner_tsvs, per_aligner_corrected_bams
+
+    # Shared pool path: one multiprocessing.Pool is created by the first aligner's
+    # process_bam_file_parallel call (via correct_command.run) and reused for all
+    # subsequent aligners.  Pool lifecycle is managed here via try/finally.
+    _pool_container: list = []
+    try:
+        for aligner_name, bam_path in per_aligner_bams.items():
+            aligner_output_dir = per_aligner_dir / aligner_name
+            aligner_output_dir.mkdir(exist_ok=True)
+
+            _canonical = _per_aligner_canonical_output(aligner_output_dir)
+            _output_valid = False
+            if _canonical is not None:
+                try:
+                    import pandas as pd
+                    _df = pd.read_csv(_canonical, sep='\t', nrows=1)
+                    _output_valid = len(_df.columns) > 0
+                except Exception:
+                    _output_valid = False
+
+            if _output_valid:
+                print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
+                per_aligner_tsvs[aligner_name] = _canonical
+                continue
+
+            print(f"    [{aligner_name}] Correcting {bam_path.name} (shared pool)...")
+            sorted_bam = None
+            correction_bam = bam_path
+            bai_path = Path(str(bam_path) + '.bai')
+            if not bai_path.exists():
+                try:
+                    import pysam as _pysam
+                    sorted_bam = bam_path.with_suffix('.coord_sorted.bam')
+                    print(f"    [{aligner_name}] Coordinate-sorting for correction...")
+                    _pysam.sort('-m', '1G', '-o', str(sorted_bam), str(bam_path))
+                    _pysam.index(str(sorted_bam))
+                    correction_bam = sorted_bam
+                except Exception as _sort_exc:
+                    print(
+                        f"    WARNING: [{aligner_name}] sort failed ({_sort_exc}); "
+                        "skipping correction",
+                        file=sys.stderr,
+                    )
+                    if sorted_bam is not None and sorted_bam.exists():
+                        sorted_bam.unlink(missing_ok=True)
+                    continue
+            try:
+                _all_aligner_bams = list(per_aligner_bams.values())
+                _run_correction(
+                    bam_path=correction_bam,
+                    output_dir=aligner_output_dir,
+                    genome_path=genome_path,
+                    annotation_path=annotation_path,
+                    args=args,
+                    aligner_bams=_all_aligner_bams,
+                    reuse_pool_container=_pool_container,
+                )
+            except Exception as exc:
+                print(
+                    f"    WARNING: [{aligner_name}] correction failed: {exc}",
+                    file=sys.stderr,
+                )
+            finally:
+                if sorted_bam is not None:
+                    sorted_bam.unlink(missing_ok=True)
+                    sorted_bai = Path(str(sorted_bam) + '.bai')
+                    sorted_bai.unlink(missing_ok=True)
+
+            _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
+            if _canonical_after is not None:
+                per_aligner_tsvs[aligner_name] = _canonical_after
+                _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
+                for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
+                    if _stem.endswith(_sfx):
+                        _stem = _stem[:-len(_sfx)]
+                        break
+                _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
+                if _corr_bam.exists():
+                    per_aligner_corrected_bams[aligner_name] = _corr_bam
+            else:
+                print(
+                    f"    WARNING: [{aligner_name}] correction produced no output",
+                    file=sys.stderr,
+                )
+    finally:
+        if _pool_container:
+            _pool_container[0].terminate()
+            _pool_container[0].join()
 
     return per_aligner_tsvs, per_aligner_corrected_bams
 def _combine_corrected_tsvs(

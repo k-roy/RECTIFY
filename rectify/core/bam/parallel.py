@@ -631,6 +631,7 @@ def process_bam_file_parallel(
     dt_primed_cDNA: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
+    reuse_pool_container: Optional[list] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -782,17 +783,37 @@ def process_bam_file_parallel(
 
     all_results = []
 
-    # Process with pool
-    ctx = _get_bam_worker_context()
-    logger.info(
-        "Using multiprocessing start method '%s' for BAM region workers",
-        ctx.get_start_method(),
-    )
-    with ctx.Pool(
-        n_threads,
-        initializer=_init_region_worker_state,
-        initargs=(str(genome_path), polya_model_path, shared_kwargs),
-    ) as pool:
+    # Pool lifecycle — three cases based on reuse_pool_container:
+    #   None        → create + destroy within this call (standard single-aligner path)
+    #   empty list  → first aligner: create pool, store in container for caller to reuse
+    #   non-empty   → subsequent aligner: reuse pool already stored by first aligner
+    import contextlib as _contextlib
+    if reuse_pool_container is not None and reuse_pool_container:
+        _pool_cm = _contextlib.nullcontext(reuse_pool_container[0])
+        logger.info("Reusing shared pool (%d workers).", n_threads)
+    else:
+        ctx = _get_bam_worker_context()
+        logger.info(
+            "Using multiprocessing start method '%s' for BAM region workers",
+            ctx.get_start_method(),
+        )
+        _new_pool = ctx.Pool(
+            n_threads,
+            initializer=_init_region_worker_state,
+            initargs=(str(genome_path), polya_model_path, shared_kwargs),
+        )
+        if reuse_pool_container is not None:
+            # First-of-shared: store for caller, skip lifecycle management here.
+            reuse_pool_container.append(_new_pool)
+            _pool_cm = _contextlib.nullcontext(_new_pool)
+            logger.info(
+                "Created shared pool (%d workers); stored for reuse by subsequent aligners.",
+                n_threads,
+            )
+        else:
+            _pool_cm = _new_pool  # Pool is its own context manager; terminates on __exit__
+
+    with _pool_cm as pool:
         try:
             # Try to use tqdm for progress if available
             from tqdm import tqdm
