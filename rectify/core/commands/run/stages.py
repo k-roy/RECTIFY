@@ -290,10 +290,39 @@ def _run_correction(
 
     correct_command.run(correct_args)
 
-    if not corrected_tsv.exists():
-        raise RuntimeError(f"Correction did not produce output: {corrected_tsv}")
+    # Commit B made the per-region manifest the default artifact:
+    # corrected_reads.tsv is renamed to corrected_reads.region_000.tsv and
+    # corrected_reads.manifest.tsv becomes the canonical entry point. Treat
+    # either as valid output; downstream loaders (_read_corrected_tsv_or_manifest)
+    # accept both. Pass --emit-merged-tsv to force the legacy concatenated form.
+    manifest_path = corrected_tsv.parent / (corrected_tsv.stem + '.manifest.tsv')
+    if manifest_path.exists():
+        return manifest_path
+    if corrected_tsv.exists():
+        return corrected_tsv
+    raise RuntimeError(
+        f"Correction did not produce output: neither {corrected_tsv} "
+        f"nor {manifest_path} exists"
+    )
 
-    return corrected_tsv
+
+def _per_aligner_canonical_output(aligner_output_dir: Path) -> Optional[Path]:
+    """Return the canonical corrected-output path for one aligner, or None.
+
+    Prefers ``corrected_reads.manifest.tsv`` (Commit B default); falls back to
+    ``corrected_reads.tsv`` (legacy ``--emit-merged-tsv`` mode). Used by both
+    the resume skip-check and the post-call success validation in
+    ``_run_correction_per_aligner``.
+    """
+    manifest_path = aligner_output_dir / 'corrected_reads.manifest.tsv'
+    if manifest_path.exists():
+        return manifest_path
+    tsv_path = aligner_output_dir / 'corrected_reads.tsv'
+    if tsv_path.exists():
+        return tsv_path
+    return None
+
+
 def _run_correction_per_aligner(
     per_aligner_bams: Dict[str, Path],
     output_dir: Path,
@@ -305,13 +334,22 @@ def _run_correction_per_aligner(
     Run ``rectify correct`` on each per-aligner BAM independently.
 
     Writes per-aligner outputs to ``output_dir/per_aligner_corrected/{aligner}/``.
-    Skips any aligner whose TSV already exists (safe to resume).
+    Skips any aligner whose canonical output (``corrected_reads.manifest.tsv``
+    or ``corrected_reads.tsv``) already exists and parses (safe to resume).
+
+    Reads ``args.aligner_concurrency`` (default ``'auto'``) and resolves it via
+    :func:`rectify.core.utils.resources.resolve_aligner_concurrency`. The
+    resolved value is currently informational only — the loop runs aligners
+    sequentially. The shared cross-aligner region queue (Axis B performance)
+    is deferred until ``correct_command.run`` exposes a region-task API.
+    Use ``--aligner-concurrency 1`` to assert serial behavior explicitly.
 
     Returns
     -------
     Tuple ``(per_aligner_tsvs, per_aligner_corrected_bams)``:
-        - ``per_aligner_tsvs``: Dict mapping aligner name → corrected_reads.tsv
-          path for each aligner whose correction succeeded.
+        - ``per_aligner_tsvs``: Dict mapping aligner name → canonical
+          corrected-output path (manifest TSV by default, raw TSV under
+          ``--emit-merged-tsv``) for each aligner whose correction succeeded.
         - ``per_aligner_corrected_bams``: Dict mapping aligner name →
           rectified_corrected_3end.bam path for each aligner whose correction
           succeeded AND produced a corrected BAM. Empty when no corrected BAMs
@@ -322,26 +360,56 @@ def _run_correction_per_aligner(
     per_aligner_dir = output_dir / 'per_aligner_corrected'
     per_aligner_dir.mkdir(parents=True, exist_ok=True)
 
+    # Commit C preparatory plumb: resolve the shared per-aligner concurrency
+    # budget. Default policy keeps the loop sequential (auto -> 1 on laptops;
+    # cluster nodes also stay serial until correct_command.run exposes a
+    # region-task API for cross-aligner sharing). The value is logged so
+    # downstream callers and tests can observe the resolved budget.
+    from ...utils.resources import (
+        detect_machine_class as _detect_machine_class,
+        resolve_aligner_concurrency as _resolve_aligner_concurrency,
+    )
+    _ac_value = getattr(args, 'aligner_concurrency', 'auto') or 'auto'
+    _total_threads = int(getattr(args, 'threads', 1) or 1)
+    try:
+        _resolved_ac = _resolve_aligner_concurrency(
+            str(_ac_value), _total_threads, _detect_machine_class()
+        )
+    except ValueError as _ac_exc:
+        print(
+            f"    WARNING: --aligner-concurrency={_ac_value!r} invalid "
+            f"({_ac_exc}); falling back to 1",
+            file=sys.stderr,
+        )
+        _resolved_ac = 1
+    print(
+        f"    Aligner concurrency: --aligner-concurrency={_ac_value} "
+        f"-> {_resolved_ac} (loop stays sequential; shared region queue deferred)"
+    )
+
     per_aligner_tsvs: Dict[str, Path] = {}
     per_aligner_corrected_bams: Dict[str, Path] = {}
     for aligner_name, bam_path in per_aligner_bams.items():
         aligner_output_dir = per_aligner_dir / aligner_name
         aligner_output_dir.mkdir(exist_ok=True)
-        tsv_path = aligner_output_dir / 'corrected_reads.tsv'
 
-        # Validate TSV file exists and is readable (not truncated/corrupt)
-        _tsv_valid = False
-        if tsv_path.exists():
+        # Resume skip-check: accept manifest (Commit B default) OR raw TSV
+        # (--emit-merged-tsv legacy). The previous tsv-only check meant
+        # manifest-only runs never skipped on resume and silently re-ran the
+        # whole correction stage on every attempt.
+        _canonical = _per_aligner_canonical_output(aligner_output_dir)
+        _output_valid = False
+        if _canonical is not None:
             try:
                 import pandas as pd
-                _df = pd.read_csv(tsv_path, sep='\t', nrows=1)
-                _tsv_valid = len(_df) > 0
+                _df = pd.read_csv(_canonical, sep='\t', nrows=1)
+                _output_valid = len(_df.columns) > 0
             except Exception:
-                _tsv_valid = False
+                _output_valid = False
 
-        if _tsv_valid:
-            print(f"    [{aligner_name}] Skipping — TSV exists: {tsv_path}")
-            per_aligner_tsvs[aligner_name] = tsv_path
+        if _output_valid:
+            print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
+            per_aligner_tsvs[aligner_name] = _canonical
             continue
 
         print(f"    [{aligner_name}] Correcting {bam_path.name}...")
@@ -395,8 +463,9 @@ def _run_correction_per_aligner(
                 sorted_bai = Path(str(sorted_bam) + '.bai')
                 sorted_bai.unlink(missing_ok=True)
 
-        if tsv_path.exists():
-            per_aligner_tsvs[aligner_name] = tsv_path
+        _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
+        if _canonical_after is not None:
+            per_aligner_tsvs[aligner_name] = _canonical_after
             # Find the corrected BAM emitted by _run_correction.  Naming
             # convention: ``{input_bam.stem stripped of .rectified/.consensus}
             # .rectified_corrected_3end.bam``.  When ``--write-corrected-bam``
