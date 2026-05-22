@@ -66,7 +66,8 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                        cluster_xf_tier: Dict[int, int],
                        cluster_tail_len: Dict[int, int],
                        use_poa: bool = False,
-                       strand_aware_consensus: bool = False) -> dict:
+                       strand_aware_consensus: bool = False,
+                       cluster_name_prefix: str = "cluster") -> dict:
     """Emit per-cluster consensus sequences as a FASTQ for downstream alignment.
 
     `rectify align` will run the multi-aligner on this FASTQ to produce the final
@@ -186,7 +187,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
             # the comment into a single Z-string aux on the first tag.
             comment = "\t".join(tag_parts)
             qual = "?" * len(trimmed_seq)
-            fq.write(f"@cluster_{cid}\t{comment}\n{trimmed_seq}\n+\n{qual}\n")
+            fq.write(f"@{cluster_name_prefix}_{cid}\t{comment}\n{trimmed_seq}\n+\n{qual}\n")
             written += 1
 
     return dict(input_reads=n_in, written=written, from_singletons=singleton,

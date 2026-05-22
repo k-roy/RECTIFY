@@ -24,6 +24,9 @@ Date: 2026-04-17
 
 import re
 import logging
+import subprocess
+import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -597,6 +600,229 @@ def trim_drs_fastq_polya(
 
 
 # ---------------------------------------------------------------------------
+# Per-read helper shared by sequential and parallel paths
+# ---------------------------------------------------------------------------
+
+
+def _process_mapped_read(
+    read: pysam.AlignedSegment,
+    unaligned_header: pysam.AlignmentHeader,
+    max_error_rate: float,
+    max_consecutive_non_a: int,
+    adapter_window: int,
+) -> Tuple[pysam.AlignedSegment, Dict, int, bool]:
+    """Trim poly-A from one mapped read; return (rec, row, adapter_pass, was_trimmed)."""
+    seq = read.query_sequence or ""
+    strand = "-" if read.is_reverse else "+"
+    quals = list(read.query_qualities or [])
+    rna_seq = reverse_complement(seq) if strand == "-" else seq
+    rna_quals = quals[::-1] if strand == "-" else quals
+    try:
+        pt_tag = int(read.get_tag("pt"))
+    except (KeyError, ValueError):
+        pt_tag = -1
+    polya_len, adapter_seq, _last, adapter_pass = find_polya_and_adapter(
+        rna_seq, max_error_rate=max_error_rate,
+        max_consecutive_non_a=max_consecutive_non_a, adapter_window=adapter_window,
+    )
+    total_trim = polya_len + len(adapter_seq)
+    if polya_len >= 1 and total_trim < len(rna_seq):
+        trimmed_rna_seq = rna_seq[:-total_trim]
+        trimmed_rna_quals = rna_quals[:-total_trim] if rna_quals else []
+        trimmed_3p_seq = rna_seq[-total_trim:]
+        trimmed_3p_quals = rna_quals[-total_trim:] if rna_quals else []
+        was_trimmed = True
+    else:
+        trimmed_rna_seq = rna_seq
+        trimmed_rna_quals = rna_quals
+        trimmed_3p_seq = ""
+        trimmed_3p_quals = []
+        was_trimmed = False
+    rec = _make_unaligned_record(read, trimmed_rna_seq, trimmed_rna_quals, unaligned_header)
+    quals_str = ",".join(str(q) for q in trimmed_3p_quals) if trimmed_3p_quals else ""
+    row: Dict = {
+        "read_id": read.query_name,
+        "strand": strand,
+        "polya_len": polya_len,
+        "adapter_seq": adapter_seq[:50],
+        "adapter_pass": adapter_pass,
+        "pt_tag": pt_tag,
+        "trimmed_3prime_seq": trimmed_3p_seq,
+        "trimmed_3prime_quals": quals_str,
+        "original_seq_len": len(seq),
+        "trimmed_seq_len": len(trimmed_rna_seq),
+    }
+    return rec, row, adapter_pass, was_trimmed
+
+
+# ---------------------------------------------------------------------------
+# Parallel BAM trimming
+# ---------------------------------------------------------------------------
+
+
+def _trim_region_task(
+    bam_path: str,
+    chrom: str,
+    start: int,
+    end: int,
+    out_bam_path: str,
+    max_error_rate: float,
+    max_consecutive_non_a: int,
+    adapter_window: int,
+) -> Tuple[List[Dict], int, int]:
+    """Trim one BAM region in a worker process.
+
+    Returns (metadata_rows, n_trimmed, n_untrimmed).
+    Unmapped reads are skipped here; handled by _trim_unmapped_task.
+    """
+    hdr = pysam.AlignmentHeader.from_dict({"HD": {"VN": "1.6", "SO": "unsorted"}})
+    rows: List[Dict] = []
+    n_trimmed = n_untrimmed = 0
+    with pysam.AlignmentFile(bam_path, "rb") as bam_in, \
+         pysam.AlignmentFile(out_bam_path, "wb", header=hdr) as bam_out:
+        for read in bam_in.fetch(chrom, start, end):
+            if read.is_unmapped or not read.query_sequence:
+                continue
+            rec, row, _, was_trimmed = _process_mapped_read(
+                read, hdr, max_error_rate, max_consecutive_non_a, adapter_window
+            )
+            bam_out.write(rec)
+            rows.append(row)
+            if was_trimmed:
+                n_trimmed += 1
+            else:
+                n_untrimmed += 1
+    return rows, n_trimmed, n_untrimmed
+
+
+def _trim_unmapped_task(
+    bam_path: str,
+    out_bam_path: str,
+) -> List[Dict]:
+    """Pass unmapped reads through to output BAM unchanged. Returns metadata rows."""
+    hdr = pysam.AlignmentHeader.from_dict({"HD": {"VN": "1.6", "SO": "unsorted"}})
+    rows: List[Dict] = []
+    with pysam.AlignmentFile(bam_path, "rb") as bam_in, \
+         pysam.AlignmentFile(out_bam_path, "wb", header=hdr) as bam_out:
+        try:
+            it = bam_in.fetch(contig="*")
+        except (ValueError, KeyError):
+            return rows
+        for read in it:
+            seq = read.query_sequence
+            rec = _make_unaligned_record(
+                read, seq or "", list(read.query_qualities or []) if seq else None, hdr
+            )
+            bam_out.write(rec)
+            if seq is not None:
+                try:
+                    pt_tag = int(read.get_tag("pt"))
+                except (KeyError, ValueError):
+                    pt_tag = -1
+                rows.append({
+                    "read_id": read.query_name,
+                    "strand": "+",
+                    "polya_len": 0,
+                    "adapter_seq": "",
+                    "adapter_pass": 0,
+                    "pt_tag": pt_tag,
+                    "trimmed_3prime_seq": "",
+                    "trimmed_3prime_quals": "",
+                    "original_seq_len": len(seq),
+                    "trimmed_seq_len": len(seq),
+                })
+    return rows
+
+
+def _trim_drs_bam_polya_parallel(
+    input_bam_path: str,
+    output_bam_path: str,
+    metadata_path: Path,
+    max_error_rate: float = 0.0,
+    max_consecutive_non_a: int = 1,
+    adapter_window: int = _ADAPTER_WINDOW,
+    workers: int = 4,
+) -> Dict:
+    """Region-parallel poly-A trimmer.
+
+    Splits the input BAM by coordinate region, processes each region in a
+    worker process, handles unmapped reads in-process, then concatenates
+    outputs via ``samtools cat``.
+
+    Axis-2 safety: ``plan_regions`` opens and closes pysam before the pool is
+    created. Workers receive a string path and open their own fresh handles.
+    """
+    from rectify.core.bam.regions import plan_regions
+
+    input_bam_path = str(input_bam_path)
+    bai = input_bam_path + ".bai"
+    alt_bai = input_bam_path.replace(".bam", ".bai")
+    if not Path(bai).exists() and not Path(alt_bai).exists():
+        logger.info("No BAM index found — indexing %s", input_bam_path)
+        subprocess.run(["samtools", "index", input_bam_path], check=True)
+
+    with tempfile.TemporaryDirectory(prefix="drs_trim_par_") as tmp_str:
+        tmp = Path(tmp_str)
+        plans = plan_regions(input_bam_path, tmp)
+
+        futures: Dict = {}
+        per_region_bams: List[str] = []
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for plan in plans:
+                out_bam = str(tmp / f"{plan.region_id}.bam")
+                per_region_bams.append(out_bam)
+                fut = pool.submit(
+                    _trim_region_task,
+                    input_bam_path, plan.chrom, plan.start, plan.end,
+                    out_bam, max_error_rate, max_consecutive_non_a, adapter_window,
+                )
+                futures[fut] = plan.region_id
+
+            all_rows: List[Dict] = []
+            n_trimmed = n_untrimmed = 0
+            pass_counts: Dict[int, int] = {0: 0, 1: 0, 2: 0}
+            for fut in as_completed(futures):
+                rows, nt, nu = fut.result()
+                all_rows.extend(rows)
+                n_trimmed += nt
+                n_untrimmed += nu
+                for row in rows:
+                    p = row["adapter_pass"]
+                    pass_counts[p] = pass_counts.get(p, 0) + 1
+
+        unmapped_bam = str(tmp / "unmapped.bam")
+        unmap_rows = _trim_unmapped_task(input_bam_path, unmapped_bam)
+        all_rows.extend(unmap_rows)
+
+        existing_bams = [b for b in per_region_bams + [unmapped_bam] if Path(b).exists()]
+        if existing_bams:
+            subprocess.run(
+                ["samtools", "cat", "-o", output_bam_path] + existing_bams,
+                check=True,
+            )
+        else:
+            with pysam.AlignmentFile(input_bam_path, "rb") as _src:
+                _hdr = _make_unaligned_header(_src.header)
+            with pysam.AlignmentFile(output_bam_path, "wb", header=_hdr):
+                pass
+
+        _write_metadata(all_rows, metadata_path)
+
+        stats: Dict = {
+            "total": n_trimmed + n_untrimmed + len(unmap_rows),
+            "trimmed": n_trimmed,
+            "untrimmed": n_untrimmed,
+            "unmapped": len(unmap_rows),
+            "pass_counts": pass_counts,
+        }
+        logger.info(
+            "trim_drs_bam_polya (parallel %d workers): total=%d trimmed=%d untrimmed=%d unmapped=%d",
+            workers, stats["total"], stats["trimmed"], stats["untrimmed"], stats["unmapped"],
+        )
+        return stats
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -610,6 +836,8 @@ def _is_fastq(path: Path) -> bool:
 def run(args) -> int:
     """Entry point called from rectify/cli.py for `rectify trim-polya`."""
     import sys
+    from datetime import datetime as _dt, timezone as _tz
+    from time import perf_counter as _perf
 
     input_path = Path(args.input_bam)  # accepts BAM or FASTQ
     if not input_path.exists():
@@ -624,6 +852,35 @@ def run(args) -> int:
     if sample_stem.endswith('.fastq') or sample_stem.endswith('.fq'):
         sample_stem = Path(sample_stem).stem
 
+    # --- Resume skip-check ---
+    _input_key = 'input_fastq' if _is_fastq(input_path) else 'input_bam'
+    _current_inputs = {_input_key: str(input_path)}
+    from rectify.core.provenance import can_skip_stage
+    from rectify.utils.version import get_rectify_git_sha as _get_sha
+    _drs_trim_sha = _get_sha()
+    _skip = can_skip_stage(
+        stage='drs_trim',
+        sample_output=output_dir,
+        sample_id=sample_stem,
+        current_inputs=_current_inputs,
+        current_argv=sys.argv,
+        rectify_git_sha=_drs_trim_sha,
+        force=getattr(args, 'force_all', False),
+        force_stages=set(getattr(args, 'force_stage', '').split(','))
+                     if getattr(args, 'force_stage', None) else None,
+        accept_prior_provenance=getattr(args, 'accept_prior_provenance', False),
+    )
+    logger.info("[RESUME] sample=%s stage=drs_trim decision=%s reason=%s",
+                sample_stem, 'SKIP' if _skip.skip else 'RUN', _skip.reason)
+    if _skip.skip:
+        return 0
+    if getattr(args, 'dry_run_resume', False):
+        print(f"[dry-run-resume] stage=drs_trim decision=RUN reason={_skip.reason}")
+        return 0
+
+    _stage_started_at = _dt.now(_tz.utc).isoformat()
+    _t_start = _perf()
+
     use_tsv = getattr(args, 'tsv', False)
     meta_ext = '.tsv' if use_tsv else '.parquet'
     metadata_path = output_dir / f"{sample_stem}_polya_trim_metadata{meta_ext}"
@@ -634,6 +891,8 @@ def run(args) -> int:
     print(f"max_error_rate:          {args.max_error_rate}")
     print(f"max_consecutive_non_a:   {args.max_consecutive_non_a}")
     print(f"adapter_window:          {args.adapter_window}")
+
+    _workers = max(1, getattr(args, 'workers', 1) or 1)
 
     if _is_fastq(input_path):
         # FASTQ path: reads are 5'→3' RNA, poly-A at 3' end — no alignment needed
@@ -648,19 +907,33 @@ def run(args) -> int:
             max_consecutive_non_a=args.max_consecutive_non_a,
             adapter_window=args.adapter_window,
         )
+        _outputs = {'output_fastq': str(output_fastq), 'metadata': str(metadata_path)}
     else:
         # BAM path: standard Dorado-aligned DRS BAM
         output_bam = output_dir / f"{sample_stem}.bam"
         print(f"Mode:        BAM")
         print(f"Output BAM:  {output_bam}")
-        stats = trim_drs_bam_polya(
-            input_bam_path=str(input_path),
-            output_bam_path=str(output_bam),
-            metadata_path=str(metadata_path),
-            max_error_rate=args.max_error_rate,
-            max_consecutive_non_a=args.max_consecutive_non_a,
-            adapter_window=args.adapter_window,
-        )
+        if _workers > 1:
+            print(f"Workers:     {_workers} (parallel regions)")
+            stats = _trim_drs_bam_polya_parallel(
+                input_bam_path=str(input_path),
+                output_bam_path=str(output_bam),
+                metadata_path=metadata_path,
+                max_error_rate=args.max_error_rate,
+                max_consecutive_non_a=args.max_consecutive_non_a,
+                adapter_window=args.adapter_window,
+                workers=_workers,
+            )
+        else:
+            stats = trim_drs_bam_polya(
+                input_bam_path=str(input_path),
+                output_bam_path=str(output_bam),
+                metadata_path=str(metadata_path),
+                max_error_rate=args.max_error_rate,
+                max_consecutive_non_a=args.max_consecutive_non_a,
+                adapter_window=args.adapter_window,
+            )
+        _outputs = {'output_bam': str(output_bam), 'metadata': str(metadata_path)}
 
     print(f"\nTrim summary:")
     print(f"  Total reads:      {stats['total']:,}")
@@ -671,6 +944,32 @@ def run(args) -> int:
     print(f"  Pass 0 (no stub): {stats['pass_counts'][0]:,}")
     print(f"  Pass 1 (regex):   {stats['pass_counts'][1]:,}")
     print(f"  Pass 2 (peel):    {stats['pass_counts'][2]:,}")
+
+    # Write stage sidecar (non-fatal on failure)
+    try:
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        _sc_record = ProvenanceRecord.from_components(
+            stage='drs_trim',
+            sample_id=sample_stem,
+            sample_output_dir=output_dir,
+            started_at=_stage_started_at,
+            completed_at=_dt.now(_tz.utc).isoformat(),
+            exit_status=0,
+            inputs=_current_inputs,
+            outputs=_outputs,
+            stats={
+                'wall_seconds': _perf() - _t_start,
+                'total': stats['total'],
+                'trimmed': stats['trimmed'],
+                'untrimmed': stats['untrimmed'],
+                'unmapped': stats.get('unmapped', 0),
+            },
+            argv=sys.argv,
+            rectify_git_sha=_drs_trim_sha,
+        )
+        write_stage_sidecar(_sc_record, sample_output=output_dir)
+    except Exception as _sc_exc:
+        logger.warning("Failed to write drs_trim sidecar: %s", _sc_exc)
 
     return 0
 
@@ -734,3 +1033,12 @@ def create_trim_polya_parser(subparsers):
         default=False,
         help='Write metadata as TSV instead of parquet',
     )
+    trim_polya_parser.add_argument(
+        '--workers',
+        type=int,
+        default=1,
+        help='Number of parallel worker processes for BAM trimming (default: 1 = sequential). '
+             'Requires a sorted, indexed input BAM. Auto-indexes if .bai is absent.',
+    )
+    from rectify.core.provenance.cli import add_resume_args
+    add_resume_args(trim_polya_parser)
