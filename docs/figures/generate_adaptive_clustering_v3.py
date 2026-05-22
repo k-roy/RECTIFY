@@ -82,8 +82,8 @@ def build():
     out.append(text(FIG_W/2, 26, "Adaptive valley clustering",
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
-                    "group nearby CPA sites by peaks-then-valleys; boundaries at midpoints",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    "group nearby CPA sites by peaks-then-valleys; boundaries at valley positions",
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # Three cluster definitions: (center_bp, sigma, peak_height, color, label)
     clusters = [
@@ -106,19 +106,27 @@ def build():
         x = x_to_px(bp)
         out.append(f'<line x1="{x}" x2="{x}" y1="{PLOT_Y_BOT}" y2="{PLOT_Y_BOT+4}" '
                    f'stroke="{PAL["border"]}" stroke-width="1"/>')
-        out.append(text(x, PLOT_Y_BOT + 16, str(bp), size=8.5,
+        out.append(text(x, PLOT_Y_BOT + 16, str(bp), size=10,
                         color=PAL["muted"], anchor="middle"))
     out.append(text((PLOT_X_LEFT + PLOT_X_RIGHT)/2, PLOT_Y_BOT + 32,
                     "Genomic position (bp)",
-                    size=9.5, color=PAL["heading"], anchor="middle", weight="600"))
+                    size=12, color=PAL["heading"], anchor="middle", weight="600"))
 
     # Y axis labels (just gridline marks, no axis line — keeps things minimal)
     for cnt in [10, 20, 30, 40]:
         y = y_to_px(cnt)
         out.append(f'<line x1="{PLOT_X_LEFT - 4}" x2="{PLOT_X_LEFT}" '
                    f'y1="{y}" y2="{y}" stroke="{PAL["border"]}" stroke-width="1"/>')
-        out.append(text(PLOT_X_LEFT - 8, y + 3, str(cnt), size=8.5,
+        out.append(text(PLOT_X_LEFT - 8, y + 3, str(cnt), size=10,
                         color=PAL["muted"], anchor="end"))
+
+    # Y axis label (rotated)
+    y_mid = (PLOT_Y_TOP + PLOT_Y_BOT) / 2.0
+    out.append(
+        f'<text fill="{PAL["heading"]}" font-size="12" font-weight="600" '
+        f'text-anchor="middle" x="20" y="{y_mid:.2f}" '
+        f'transform="rotate(-90 20 {y_mid:.2f})">Read count</text>'
+    )
 
     # ── Cluster boundaries (dashed verticals) ───────────────────────────────
     for bp in boundaries:
@@ -152,7 +160,7 @@ def build():
             f'fill="{PAL["red"]}" stroke="{PAL["red"]}"/>'
         )
         # Cluster label above the triangle
-        out.append(text(x, y - 14, label, size=9.5,
+        out.append(text(x, y - 14, label, size=11,
                         color=color, weight="700", anchor="middle"))
 
     # ── Valley markers (small upright triangles at the bottom) ──────────────
@@ -171,15 +179,15 @@ def build():
     out.append(f'<polygon points="{leg_x-5},{leg_y-3} {leg_x+5},{leg_y-3} {leg_x},{leg_y+4}" '
                f'fill="{PAL["red"]}"/>')
     out.append(text(leg_x + 9, leg_y + 4, "peak",
-                    size=9, color=PAL["heading"]))
+                    size=11, color=PAL["heading"]))
     out.append(f'<polygon points="{leg_x+57},{leg_y+4} {leg_x+67},{leg_y+4} '
                f'{leg_x+62},{leg_y-3}" fill="{PAL["teal"]}"/>')
     out.append(text(leg_x + 71, leg_y + 4, "valley",
-                    size=9, color=PAL["heading"]))
+                    size=11, color=PAL["heading"]))
     out.append(f'<line x1="{leg_x+118}" x2="{leg_x+138}" y1="{leg_y}" y2="{leg_y}" '
                f'stroke="{PAL["muted"]}" stroke-dasharray="3,3"/>')
     out.append(text(leg_x + 142, leg_y + 4, "cluster boundary",
-                    size=9, color=PAL["heading"]))
+                    size=11, color=PAL["heading"]))
 
     out.append(svg_close())
     return "\n".join(out)

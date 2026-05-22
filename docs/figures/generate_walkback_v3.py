@@ -52,8 +52,8 @@ def svg_open(h):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{FIG_W}" height="{h}" '
         f'viewBox="0 0 {FIG_W} {h}">\n'
         f'<defs>'
-        f'<marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" '
-        f'orient="auto" markerUnits="strokeWidth">'
+        f'<marker id="arr" markerWidth="7" markerHeight="7" refX="7" refY="3.5" '
+        f'orient="auto" markerUnits="userSpaceOnUse">'
         f'<path d="M0,0 L0,7 L7,3.5 z" fill="{PAL["blue"]}"/></marker>'
         f'</defs>\n'
         f'<rect fill="{PAL["bg"]}" width="{FIG_W}" height="{h}"/>\n'
@@ -76,7 +76,7 @@ def base_box(x, y, b, highlight=None):
     return (
         f'<rect fill="{fill}" height="{BH}" rx="{BR}" width="{BW}" '
         f'x="{x}" y="{y}" stroke="{bdr}" stroke-width="{sw}"/>'
-        f'<text fill="{BASE_TEXT[b]}" font-size="11" font-weight="600" '
+        f'<text fill="{BASE_TEXT[b]}" font-size="12" font-weight="600" '
         f'text-anchor="middle" x="{x + BW/2}" y="{y + BH/2 + 4}">{b}</text>'
     )
 
@@ -95,7 +95,7 @@ def brace_above(x1, x2, y, color, label, label_dy=-9):
     return (
         f'<path d="M{x1},{y} L{x1},{y-5} L{x2},{y-5} L{x2},{y}" '
         f'fill="none" stroke="{color}" stroke-width="1" opacity="0.7"/>\n'
-        + text(mid, y + label_dy, label, size=8.5, color=color, anchor="middle",
+        + text(mid, y + label_dy, label, size=10, color=color, anchor="middle",
                weight="600")
     )
 
@@ -108,7 +108,7 @@ def h_arrow_left(x_from, x_to, y, color, label=None):
         f'points="{x_to},{y} {x_to+7},{y-3.5} {x_to+7},{y+3.5}"/>',
     ]
     if label:
-        parts.append(text((x_from + x_to) / 2, y + 14, label, size=8.5,
+        parts.append(text((x_from + x_to) / 2, y + 14, label, size=11,
                           color=color, anchor="middle"))
     return "\n".join(parts)
 
@@ -116,10 +116,10 @@ def vert_marker(x, y1, y2, color, label, label_above=True):
     parts = [f'<line stroke="{color}" stroke-width="2" '
              f'x1="{x}" x2="{x}" y1="{y1}" y2="{y2}"/>']
     if label_above:
-        parts.append(text(x, y1 - 5, label, size=9, color=color,
+        parts.append(text(x, y1 - 5, label, size=10, color=color,
                           weight="700", anchor="middle"))
     else:
-        parts.append(text(x, y2 + 14, label, size=9, color=color,
+        parts.append(text(x, y2 + 14, label, size=10, color=color,
                           weight="700", anchor="middle"))
     return "\n".join(parts)
 
@@ -136,7 +136,7 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "walk past A=A pairs AND tail seq errors to the true CPA",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # Sequences (10 positions, indexed 0..9, position 9 = read 3' end).
     # Pre-trim always trims the basecalled tail up to the first non-A — so the
@@ -160,9 +160,9 @@ def build():
 
     # Row labels
     out.append(text(x0 - 12, y_genome + BH/2 + 4, "Genome",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(text(x0 - 12, y_read + BH/2 + 4, "Read",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
 
     # Genome row — highlight A-tract (positions 3-7) with a subtle band
     out.append(row(x0, y_genome, genome))
@@ -177,10 +177,10 @@ def build():
 
     # Brace over A=A pairs (positions 3-8) — case 2 of the walkback
     out.append(brace_above(x_pos(3), x_pos(8) + BW, y_read - 4,
-                           PAL["teal"], "A = A · walk in"))
+                           PAL["teal"], "A = A · walk in", label_dy=-9))
     # Brace over the terminal T (position 9) — case 3 (mismatch, walk in)
     out.append(brace_above(x_pos(9), x_pos(9) + BW, y_read - 4,
-                           PAL["red"], "seq err"))
+                           PAL["red"], "seq err", label_dy=-9))
 
     # Stop marker between positions 2 and 3 (no above-label — the CPA label
     # below the walkback arrow is the canonical anchor)
@@ -196,7 +196,7 @@ def build():
 
     # CPA label below stop marker
     out.append(text(stop_x, y_walk + 32, "true CPA (non-A match)",
-                    size=10, color=PAL["blue"], weight="700", anchor="middle"))
+                    size=11, color=PAL["blue"], weight="700", anchor="middle"))
 
     out.append(svg_close())
     return "\n".join(out)

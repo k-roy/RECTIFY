@@ -16,7 +16,7 @@ import subprocess
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 FIG_W = 760
-FIG_H = 470
+FIG_H = 540
 FONT = "Inter, Helvetica Neue, Helvetica, Arial, sans-serif"
 
 PAL = dict(
@@ -50,8 +50,8 @@ def svg_open(h):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{FIG_W}" height="{h}" '
         f'viewBox="0 0 {FIG_W} {h}">\n'
         f'<defs>'
-        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" '
-        f'orient="auto" markerUnits="strokeWidth">'
+        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="6" refY="3" '
+        f'orient="auto" markerUnits="userSpaceOnUse">'
         f'<path d="M0,0 L0,6 L6,3 z" fill="{PAL["label"]}"/></marker>'
         f'</defs>\n'
         f'<rect fill="{PAL["bg"]}" width="{FIG_W}" height="{h}"/>\n'
@@ -71,11 +71,11 @@ def chip(cx, cy, w, h, label, color, fill, sub=None):
     parts = [
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" '
         f'fill="{fill}" stroke="{color}" stroke-width="1.2"/>',
-        text(cx, cy + (1 if sub else 4), label, size=11, color=color,
+        text(cx, cy + (1 if sub else 4), label, size=12, color=color,
              weight="600", anchor="middle"),
     ]
     if sub:
-        parts.append(text(cx, cy + 14, sub, size=8.5, color=color,
+        parts.append(text(cx, cy + 14, sub, size=11, color=color,
                           anchor="middle"))
     return "\n".join(parts)
 
@@ -92,11 +92,11 @@ def shared_bar(cx, cy, w, h, title, sub=None, fill=None, stroke=None):
     parts = [
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" '
         f'fill="{f}" stroke="{s}" stroke-width="1.2"/>',
-        text(cx, cy + (1 if sub else 4), title, size=11, color=s,
+        text(cx, cy + (1 if sub else 4), title, size=12, color=s,
              weight="700", anchor="middle"),
     ]
     if sub:
-        parts.append(text(cx, cy + 14, sub, size=8.5, color=s,
+        parts.append(text(cx, cy + 14, sub, size=10, color=s,
                           anchor="middle"))
     return "\n".join(parts)
 
@@ -108,18 +108,18 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "correct each aligner first (standardized scoring), then pick the winner",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # ── Layout ───────────────────────────────────────────────────────────────
     cx = FIG_W / 2
     col_x = [180, 380, 580]   # three lanes
     COL_BOX_W = 160           # unified box width across aligner / correct columns
     y_input    = 80
-    y_aligner  = 130
-    y_pool     = 188
-    y_correct  = 252
-    y_consen   = 358
-    y_bam      = 414
+    y_aligner  = 170   # +40px gap from FASTQ (was 130)
+    y_pool     = 228   # maintained gap from aligner
+    y_correct  = 310   # +30px extra gap below pool (was 252)
+    y_consen   = 420   # maintained relative gap from correct
+    y_bam      = 478   # gives 30px bottom margin at FIG_H=540
 
     # ── FASTQ at top ─────────────────────────────────────────────────────────
     out.append(chip(cx, y_input, 130, 32, "FASTQ", PAL["slate"], PAL["slate_l"]))
@@ -156,21 +156,23 @@ def build():
             f'stroke-width="1.2" opacity="0.95"/>'
         )
         out.append(text(x, y_correct - 16, "rectify correct",
-                        size=10.5, color=PAL["indigo"], weight="700",
+                        size=12, color=PAL["indigo"], weight="700",
                         anchor="middle"))
         # mini sub-pills (5'/int/3') inline
         sub_y = y_correct + 8
         sub_labels = ["5′", "int", "3′"]
         sub_w_each = 36
+        sub_gap = 4
+        total_pills_w = len(sub_labels) * sub_w_each + (len(sub_labels) - 1) * sub_gap
         for i, lab in enumerate(sub_labels):
-            sx = x - (sub_w_each + 4) + i * (sub_w_each + 4)
+            sx = x - total_pills_w / 2 + i * (sub_w_each + sub_gap)
             out.append(
                 f'<rect x="{sx}" y="{sub_y - 9}" width="{sub_w_each}" '
                 f'height="18" rx="3" fill="#ffffff" '
                 f'stroke="{PAL["indigo"]}" stroke-width="0.8"/>'
             )
             out.append(text(sx + sub_w_each/2, sub_y + 4, lab,
-                            size=9, color=PAL["indigo"], weight="600",
+                            size=11, color=PAL["indigo"], weight="600",
                             anchor="middle"))
 
         # arrow down to consensus

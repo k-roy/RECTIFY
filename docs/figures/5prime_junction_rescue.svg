@@ -3,26 +3,26 @@
 <rect fill="#ffffff" width="760" height="230"/>
 <g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
 <text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">5′ end junction rescue</text>
-<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="44">extend soft-clipped bases across the splice junction to the canonical donor</text>
-<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="120" y="96.0">Genome</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="44">extend soft-clipped bases across the splice junction to the canonical donor</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="120" y="96.0">Genome</text>
 <rect x="130" y="78" width="160" height="28" rx="4" fill="#4f46e5" stroke="#4f46e5" stroke-width="1"/>
-<text fill="#ffffff" font-size="10.5" font-weight="600" text-anchor="middle" x="210.0" y="96.0">Exon 1</text>
+<text fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle" x="210.0" y="96.0">Exon 1</text>
 <line x1="290" x2="470" y1="92.0" y2="92.0" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5,4"/>
-<text fill="#94a3b8" font-size="8.5" font-weight="400" text-anchor="middle" x="380.0" y="86.0">intron (GT…AG)</text>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="86.0">intron (GT…AG)</text>
 <rect x="470" y="78" width="160" height="28" rx="4" fill="#4f46e5" stroke="#4f46e5" stroke-width="1"/>
-<text fill="#ffffff" font-size="10.5" font-weight="600" text-anchor="middle" x="550.0" y="96.0">Exon 2</text>
-<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="120" y="148.0">Read (before)</text>
+<text fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle" x="550.0" y="96.0">Exon 2</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="120" y="148.0">Read (before)</text>
 <rect x="130" y="130" width="160" height="28" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3"/>
-<text fill="#dc2626" font-size="10" font-weight="600" text-anchor="middle" x="210.0" y="148.0">soft-clipped</text>
+<text fill="#dc2626" font-size="12" font-weight="600" text-anchor="middle" x="210.0" y="148.0">soft-clipped</text>
 <rect x="470" y="130" width="160" height="28" rx="4" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.2"/>
-<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="550.0" y="148.0">aligned</text>
-<text fill="#dc2626" font-size="8.5" font-weight="600" text-anchor="middle" x="210.0" y="124">bases actually match Exon 1</text>
-<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="120" y="200.0">Read (rescued)</text>
+<text fill="#0d9488" font-size="12" font-weight="600" text-anchor="middle" x="550.0" y="148.0">aligned</text>
+<text fill="#dc2626" font-size="11" font-weight="600" text-anchor="middle" x="210.0" y="124">bases actually match Exon 1</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="120" y="200.0">Read (rescued)</text>
 <rect x="130" y="182" width="160" height="28" rx="4" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.2"/>
-<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="210.0" y="200.0">aligned</text>
+<text fill="#0d9488" font-size="12" font-weight="600" text-anchor="middle" x="210.0" y="200.0">aligned</text>
 <line x1="290" x2="470" y1="196.0" y2="196.0" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="4,3"/>
-<text fill="#0d9488" font-size="8.5" font-weight="400" text-anchor="middle" x="380.0" y="190.0">N (splice)</text>
+<text fill="#0d9488" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="190.0">N (splice)</text>
 <rect x="470" y="182" width="160" height="28" rx="4" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.2"/>
-<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="550.0" y="200.0">aligned</text>
+<text fill="#0d9488" font-size="12" font-weight="600" text-anchor="middle" x="550.0" y="200.0">aligned</text>
 </g>
 </svg>

@@ -61,7 +61,7 @@ def exon(x, y, w, h, label, fill=None, stroke=None, label_color=None):
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{f}" stroke="{s}" stroke-width="1"/>\n'
-        + text(x + w/2, y + h/2 + 4, label, size=10.5, color=lc,
+        + text(x + w/2, y + h/2 + 4, label, size=12, color=lc,
                weight="600", anchor="middle")
     )
 
@@ -70,7 +70,7 @@ def softclip(x, y, w, h, label):
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{PAL["red_l"]}" stroke="{PAL["red"]}" stroke-width="1" '
         f'stroke-dasharray="4,3"/>\n'
-        + text(x + w/2, y + h/2 + 4, label, size=10, color=PAL["red"],
+        + text(x + w/2, y + h/2 + 4, label, size=12, color=PAL["red"],
                weight="600", anchor="middle")
     )
 
@@ -80,7 +80,7 @@ def aligned_block(x, y, w, h, label, color=None):
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{PAL["teal_l"]}" stroke="{c}" stroke-width="1.2"/>\n'
-        + text(x + w/2, y + h/2 + 4, label, size=10, color=c,
+        + text(x + w/2, y + h/2 + 4, label, size=12, color=c,
                weight="600", anchor="middle")
     )
 
@@ -89,7 +89,7 @@ def intron_line(x1, x2, y, label="intron"):
     return (
         f'<line x1="{x1}" x2="{x2}" y1="{y}" y2="{y}" '
         f'stroke="{PAL["muted"]}" stroke-width="1.2" stroke-dasharray="5,4"/>\n'
-        + text((x1+x2)/2, y - 6, label, size=8.5, color=PAL["muted"],
+        + text((x1+x2)/2, y - 6, label, size=10, color=PAL["muted"],
                anchor="middle")
     )
 
@@ -98,7 +98,7 @@ def n_op_line(x1, x2, y, label="N (splice)"):
     return (
         f'<line x1="{x1}" x2="{x2}" y1="{y}" y2="{y}" '
         f'stroke="{PAL["teal"]}" stroke-width="1.5" stroke-dasharray="4,3"/>\n'
-        + text((x1+x2)/2, y - 6, label, size=8.5, color=PAL["teal"],
+        + text((x1+x2)/2, y - 6, label, size=10, color=PAL["teal"],
                anchor="middle")
     )
 
@@ -110,7 +110,7 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "extend soft-clipped bases across the splice junction to the canonical donor",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # Layout columns: Exon 1 | intron | Exon 2
     x_e1 = 130
@@ -128,7 +128,7 @@ def build():
     # Row 1: Genome
     y1 = 78
     out.append(text(label_x, y1 + row_h/2 + 4, "Genome",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(exon(x_e1, y1, w_e1, row_h, "Exon 1"))
     out.append(intron_line(x_int_a, x_int_b, y1 + row_h/2, "intron (GT…AG)"))
     out.append(exon(x_e2, y1, w_e2, row_h, "Exon 2"))
@@ -136,19 +136,19 @@ def build():
     # Row 2: Read aligned (before)
     y2 = 130
     out.append(text(label_x, y2 + row_h/2 + 4, "Read (before)",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(softclip(x_e1, y2, w_e1, row_h, "soft-clipped"))
     # No alignment across intron — note the gap
     out.append(aligned_block(x_e2, y2, w_e2, row_h, "aligned"))
     # Annotation above the soft-clip
     out.append(text(x_e1 + w_e1/2, y2 - 6,
                     "bases actually match Exon 1",
-                    size=8.5, color=PAL["red"], anchor="middle", weight="600"))
+                    size=11, color=PAL["red"], anchor="middle", weight="600"))
 
     # Row 3: Read after rescue
     y3 = 182
     out.append(text(label_x, y3 + row_h/2 + 4, "Read (rescued)",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(aligned_block(x_e1, y3, w_e1, row_h, "aligned"))
     out.append(n_op_line(x_int_a, x_int_b, y3 + row_h/2, "N (splice)"))
     out.append(aligned_block(x_e2, y3, w_e2, row_h, "aligned"))

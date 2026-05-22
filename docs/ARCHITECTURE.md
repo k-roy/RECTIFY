@@ -28,6 +28,31 @@ in pre-processing, alignment strategy, and post-correction analysis:
 | **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → pre-trim → per-cluster FASTQ → multi-aligner re-alignment | minimap2 + mapPacBio + gapmm2 | post-align walkback in `cdna-analyze` | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering in `cdna-analyze` |
 | **QuantSeq REV** | pre-aligned BAM | (external alignment) | BWA-MEM (+ BBMap target) | read-vs-ref walkback (inverted: 3'=left) | N/A (3'-biased protocol) |
 
+---
+
+## Key contributions
+
+Two design decisions underpin RECTIFY's correction accuracy:
+
+**1. Correct-first, then compare.**
+Raw alignment scores (MAPQ, AS tag, soft-clip count) are not cross-comparable across
+aligners — one that soft-clips aggressively will always appear "cleaner" than one that
+aligns through mismatches, even when their underlying end calls are identical. RECTIFY
+runs the full correction pipeline independently on each aligner's output, producing
+post-correction features (`five_prime_rescued`, `confidence`, 3′ position agreement)
+on a common scale. The consensus step selects the best-corrected alignment per read
+using these normalized signals. See "Why correct before consensus?" in the
+[Key design decisions](#key-design-decisions) section.
+
+**2. Empirical Nanopore indel costs.**
+Deletion and insertion penalties scale with homopolymer length and base class (AT vs CG),
+calibrated from 9.7 M WT R10.4.1 reads. A deletion at HP=8 carries a penalty of 0.034
+— nearly free — compared to 0.44 at HP=1, because Nanopore basecallers routinely
+under-call long homopolymer runs. See
+[docs/EMPIRICAL_HP_PENALTY_SCORING.md](EMPIRICAL_HP_PENALTY_SCORING.md).
+
+---
+
 **Shared modules** (all tracks): read-vs-reference walkback (`core/correct/walkback.py`),
 per-read splice classification (`core/analyze/splice_summary.py`), CPA clustering,
 gene attribution, DESeq2, GO enrichment, motif discovery, genomic distribution.
@@ -312,6 +337,18 @@ leaf implementations. Rendered natively on GitHub; paste into
 ### CLI dispatch and pipeline orchestration
 
 ```mermaid
+%%{init: {
+  'theme': 'default',
+  'themeVariables': {
+    'fontFamily': 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
+    'fontSize': '16px'
+  },
+  'flowchart': {
+    'nodeSpacing': 55,
+    'rankSpacing': 55,
+    'padding': 12
+  }
+}}%%
 flowchart TD
     CLI["<b>cli.py</b><br/><i>entry point</i>"]
 
@@ -324,6 +361,7 @@ flowchart TD
         TC["drs_trim_command.py<br/><i>rectify trim-polya</i>"]
         AL["align_command.py<br/><i>rectify align</i>"]
         CC["correct_command.py<br/><i>rectify correct</i>"]
+        CON["consensus_command.py<br/><i>rectify consensus</i>"]
         RSC["restore_polya_command.py<br/><i>rectify restore-softclip</i>"]
         AC["analyze_command.py<br/><i>rectify analyze</i>"]
     end
@@ -356,6 +394,18 @@ flowchart TD
 ### Correction engine and analysis internals
 
 ```mermaid
+%%{init: {
+  'theme': 'default',
+  'themeVariables': {
+    'fontFamily': 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
+    'fontSize': '16px'
+  },
+  'flowchart': {
+    'nodeSpacing': 55,
+    'rankSpacing': 60,
+    'padding': 12
+  }
+}}%%
 flowchart TD
     CC["correct_command.py"] --> BP["<b>bam_processor.py</b><br/><i>correction hub</i>"]
 

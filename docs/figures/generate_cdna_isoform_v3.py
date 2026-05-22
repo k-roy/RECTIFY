@@ -57,7 +57,7 @@ def gene_block(x, y, w, h):
     """Filled gene reference block."""
     return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="3" '
             f'fill="{PAL["indigo"]}"/>\n'
-            + text(x + w/2, y + h/2 + 4, "Gene", size=10,
+            + text(x + w/2, y + h/2 + 4, "Gene", size=12,
                    color="#ffffff", weight="600", anchor="middle"))
 
 def read_bar(x1, x2, y, h, color, fill):
@@ -77,21 +77,21 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "T1 cluster by (TSS, CPA)  ·  T2 cluster by CPA only  ·  pairs linked at the same 3′ end",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # ── Genome reference ─────────────────────────────────────────────────────
     label_x = 70
     y_gene = 78
-    gene_x = 110
-    gene_w = 560
+    gene_x = 140
+    gene_w = 530
     gene_h = 26
     out.append(text(label_x, y_gene + gene_h/2 + 4, "Genome",
-                    size=10, color=PAL["label"]))
+                    size=11, color=PAL["label"]))
     out.append(gene_block(gene_x, y_gene, gene_w, gene_h))
 
     # Two CPA cluster positions (3' end) — shared by T1 and T2
-    cpa_a = gene_x + 380   # CPA cluster A
-    cpa_b = gene_x + 510   # CPA cluster B (alternate)
+    cpa_a = gene_x + 360   # CPA cluster A
+    cpa_b = gene_x + 480   # CPA cluster B (alternate)
     # TSS positions (5' end) — only used by T1
     tss = gene_x + 30
 
@@ -100,23 +100,23 @@ def build():
         out.append(f'<line x1="{cx}" x2="{cx}" y1="{y_gene - 4}" '
                    f'y2="{y_gene + gene_h + 4}" stroke="{PAL["muted"]}" '
                    f'stroke-width="1" stroke-dasharray="2,2" opacity="0.6"/>')
-        out.append(text(cx, y_gene - 8, label, size=8.5,
+        out.append(text(cx, y_gene - 8, label, size=10,
                         color=PAL["muted"], anchor="middle"))
 
     # Mark TSS position
     out.append(f'<line x1="{tss}" x2="{tss}" y1="{y_gene - 4}" '
                f'y2="{y_gene + gene_h + 4}" stroke="{PAL["muted"]}" '
                f'stroke-width="1" stroke-dasharray="2,2" opacity="0.6"/>')
-    out.append(text(tss, y_gene - 8, "TSS", size=8.5,
+    out.append(text(tss, y_gene - 8, "TSS", size=10,
                     color=PAL["muted"], anchor="middle"))
 
     # ── Type-1 reads (full-length, UMI-anchored) ─────────────────────────────
     # T1 reads span TSS → CPA. Two clusters: T1@(TSS, CPA_A) and T1@(TSS, CPA_B).
     y_t1_label = 132
     out.append(text(label_x, y_t1_label, "Type 1",
-                    size=10, color=PAL["teal"], weight="700"))
+                    size=11, color=PAL["teal"], weight="700"))
     out.append(text(label_x, y_t1_label + 12, "(full-length)",
-                    size=8.5, color=PAL["muted"]))
+                    size=11, color=PAL["muted"]))
 
     t1_reads = [
         (132, cpa_a),
@@ -132,9 +132,9 @@ def build():
     # ── Type-2 reads (truncated, no UMI — CPA-anchored only) ─────────────────
     y_t2_label = 198
     out.append(text(label_x, y_t2_label, "Type 2",
-                    size=10, color=PAL["orange"], weight="700"))
+                    size=11, color=PAL["orange"], weight="700"))
     out.append(text(label_x, y_t2_label + 12, "(truncated)",
-                    size=8.5, color=PAL["muted"]))
+                    size=11, color=PAL["muted"]))
 
     # T2 reads have random 5' start, fixed 3' end at CPA_A or CPA_B
     t2_reads = [
@@ -163,7 +163,7 @@ def build():
                f'fill="none" stroke="{PAL["heading"]}" stroke-width="1.2" '
                f'stroke-dasharray="3,3"/>')
     out.append(text(cpa_a + 46, y_pair_a + 4, "T1 + T2  ·  CPA A",
-                    size=8.5, color=PAL["heading"], weight="600"))
+                    size=11, color=PAL["heading"], weight="600"))
 
     out.append(f'<path d="M{cpa_b + 22},{t1_reads[2][0] - 2} '
                f'C{cpa_b + 38},{y_pair_b} {cpa_b + 38},{y_pair_b} '
@@ -171,12 +171,12 @@ def build():
                f'fill="none" stroke="{PAL["heading"]}" stroke-width="1.2" '
                f'stroke-dasharray="3,3"/>')
     out.append(text(cpa_b + 46, y_pair_b + 4, "T1 + T2  ·  CPA B",
-                    size=8.5, color=PAL["heading"], weight="600"))
+                    size=11, color=PAL["heading"], weight="600"))
 
     # ── Footer note ──────────────────────────────────────────────────────────
     out.append(text(FIG_W/2, 285,
-                    "linkage rule: same gene + same orientation + |Δ3′| ≤ 5 bp",
-                    size=9, color=PAL["muted"], anchor="middle"))
+                    "linkage rule: same gene + same orientation + |Δ5′| ≤ 5 bp  AND  |Δ3′| ≤ 5 bp",
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     out.append(svg_close())
     return "\n".join(out)

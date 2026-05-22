@@ -12,9 +12,9 @@
   </p>
 </p>
 
-Off-the-shelf aligners misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass** so the bases at the read ends mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site. To address the inherent ambiguity of CPA sites within A-tracts, RECTIFY shifts all 3' ends to the first non-A residue.
+Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class from WT yeast reads), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
 
-One pipeline, three input chemistries.
+One pipeline, three RNA-seq technologies.
 
 <p align="center">
   <img src="docs/figures/pipeline_overview.png" alt="RECTIFY pipeline overview" width="820">
@@ -87,16 +87,28 @@ Each N-cigar op is refined against the **junction pool** (annotated + observed-a
   <img src="docs/figures/splice_classification.png" alt="Splice classification" width="620">
 </p>
 
-#### 3' ends — read-vs-reference walkback
-Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This is the algorithmic heart of RECTIFY: it catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA site. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
+#### 3' ends — two complementary corrections
+The aligner can land the 3' end in the wrong place in either direction. RECTIFY runs **read-vs-reference walkback** (upstream — for poly(A) over-extension into genomic A-tracts) and **HP-aware soft-clip rescue** (downstream — for homopolymer under-calls), so the rectified 3' end converges on the true CPA regardless of which artifact caused the original miss.
+
+**Walkback (upstream).** Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
 
 <p align="center">
   <img src="docs/figures/walkback_readvsref.png" alt="Read-vs-reference walkback" width="680">
 </p>
 
+**HP-aware soft-clip rescue (downstream).** Nanopore basecallers systematically under-call long homopolymers — a genomic 9-T tract may be called as only 6 T's, leaving the next 3 reference bases (often the CPA site itself, plus its immediate context) **soft-clipped** by the aligner because they no longer have a contiguous home in the read. RECTIFY identifies reads whose alignment terminates inside a reference homopolymer with a soft-clipped overhang, and checks whether the overhang matches the genome immediately downstream of the HP. If it does, the alignment is **extended through the HP-gap** (deletion ops for the under-called positions) so the soft-clip is recovered as a proper match — moving the 3' end **further downstream** to the true CPA. This is the opposite directional fix from walkback and runs on the same per-aligner BAMs (`indel_corrector.rescue_softclip_at_homopolymer`).
+
+<p align="center">
+  <img src="docs/figures/softclip_rescue.png" alt="HP-aware soft-clip rescue" width="700">
+</p>
+
 ### (d) Empirical error-rate scoring
 
-When refinement chooses between candidate junctions or end positions, edit operations (mismatch, insertion, deletion) are scored by their **empirical Nanopore error rates** as a function of homopolymer context and base class (AT vs CG). A single-base deletion at HP=8 has ~7× lower penalty than at HP=1, because Nanopore basecallers routinely under-call long homopolymer runs — the scorer should not punish reality. Fixed heuristics (`del=1.0`, `ins=1.25`) are replaced by data-driven values calibrated on 9.7M reads of WT R10.4.1 yeast.
+When refinement chooses between candidate junctions or end positions, edit operations (mismatch, insertion, deletion) are scored by their **empirical per-chemistry error rates** as a function of homopolymer context and base class (AT vs CG). For Nanopore R10.4.1 reads, a deletion at HP=8 carries a penalty of 0.034 — nearly free — versus 0.44 at HP=1, because Nanopore basecallers routinely under-call long homopolymer runs. Each chemistry uses its own calibrated table (DRS, ONT cDNA, QuantSeq REV), all derived from WT *S. cerevisiae* reads.
+
+<p align="center">
+  <img src="docs/figures/hp_scoring.png" alt="Empirical HP deletion penalty curves" width="620">
+</p>
 
 See [docs/EMPIRICAL_HP_PENALTY_SCORING.md](docs/EMPIRICAL_HP_PENALTY_SCORING.md).
 
@@ -217,6 +229,10 @@ Full reference at [readthedocs](https://rectify-rna.readthedocs.io).
 
 Nascent Elongating Transcript Sequencing data captures RNA polymerase II–associated transcripts at single-nucleotide resolution and provides direct ground-truth evidence of CPA intermediates within genomic A-tracts. RECTIFY uses NNLS deconvolution with a point-spread function derived from 5000+ zero-A sites to recover true cleavage positions where DRS alone is ambiguous.
 
+<p align="center">
+  <img src="docs/figures/netseq_deconvolution.png" alt="NET-seq oligo(A) deconvolution" width="760">
+</p>
+
 ```bash
 # Bundled WT yeast NET-seq is auto-detected
 rectify correct reads.bam --organism yeast -o corrected.tsv
@@ -241,7 +257,9 @@ For organism-specific poly(A) models and custom A-tract priors, see [docs/ARCHIT
 
 > Roy KR, Chanfreau GF. Robust mapping of polyadenylated and non-polyadenylated RNA 3' ends at nucleotide resolution by 3'-end sequencing. *Methods*. 2020;176:4-13. [PMID: 31128237](https://pubmed.ncbi.nlm.nih.gov/31128237/)
 
-**RECTIFY 0.9.0** (first public release): manuscript in preparation.
+**RECTIFY 0.9.0** (first public release): manuscript in preparation. · [CITATION.cff](CITATION.cff)
+
+> RECTIFY is pre-1.0; the CLI and output schema may change before the 1.0 release.
 
 ---
 

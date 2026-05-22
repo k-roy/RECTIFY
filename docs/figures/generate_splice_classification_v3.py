@@ -60,7 +60,7 @@ def exon(x, y, w, h, label="", color=None, label_color="#ffffff"):
     parts = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="3" '
              f'fill="{c}"/>']
     if label:
-        parts.append(text(x + w/2, y + h/2 + 4, label, size=10,
+        parts.append(text(x + w/2, y + h/2 + 4, label, size=12,
                           color=label_color, weight="600", anchor="middle"))
     return "\n".join(parts)
 
@@ -93,7 +93,7 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "classify each N-cigar op against annotated splice sites",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # Annotated reference layout — two annotated splice sites at fixed x
     # Exon 1 ends at donor_x; Exon 2 starts at acceptor_x
@@ -107,7 +107,7 @@ def build():
     # ── Reference row ─────────────────────────────────────────────────────────
     y_ref = 80
     out.append(text(x_label, y_ref + row_h/2 + 4, "annotated",
-                    size=10, color=PAL["label"], anchor="end", weight="600"))
+                    size=11, color=PAL["label"], anchor="end", weight="600"))
     out.append(exon(x_e1_a, y_ref, x_e1_b - x_e1_a, row_h, "Exon 1"))
     out.append(exon(x_e2_a, y_ref, x_e2_b - x_e2_a, row_h, "Exon 2"))
     # Faint intron link
@@ -115,7 +115,7 @@ def build():
                f'y2="{y_ref + row_h/2}" stroke="{PAL["muted"]}" '
                f'stroke-width="0.8" stroke-dasharray="3,3"/>')
     out.append(text((donor_x + acceptor_x)/2, y_ref - 4,
-                    "intron", size=8.5, color=PAL["muted"], anchor="middle"))
+                    "intron", size=10, color=PAL["muted"], anchor="middle"))
 
     # ── Vertical dashed lines extending down across all read rows ────────────
     # so the reader can eyeball whether N-op endpoints align with annotation
@@ -126,7 +126,7 @@ def build():
 
     # Helper to draw a labeled read row
     def read_row(y, label, label_color, n_ops, aligned_spans):
-        parts = [text(x_label, y + row_h/2 + 4, label, size=10,
+        parts = [text(x_label, y + row_h/2 + 4, label, size=11,
                       color=label_color, anchor="end", weight="700")]
         for (xa, xb) in aligned_spans:
             parts.append(aligned_block(xa, y, xb - xa, row_h))
@@ -164,9 +164,9 @@ def build():
 
     # Labels above the dashed annotation lines (small, only on top row)
     out.append(text(donor_x, y_rows_top - 4, "donor",
-                    size=8.5, color=PAL["muted"], anchor="middle"))
+                    size=10, color=PAL["muted"], anchor="middle"))
     out.append(text(acceptor_x, y_rows_top - 4, "acceptor",
-                    size=8.5, color=PAL["muted"], anchor="middle"))
+                    size=10, color=PAL["muted"], anchor="middle"))
 
     out.append(svg_close())
     return "\n".join(out)

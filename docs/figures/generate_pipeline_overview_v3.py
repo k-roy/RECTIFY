@@ -62,8 +62,8 @@ def svg_open(h):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{FIG_W}" height="{h}" '
         f'viewBox="0 0 {FIG_W} {h}">\n'
         f'<defs>'
-        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" '
-        f'orient="auto" markerUnits="strokeWidth">'
+        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="6" refY="3" '
+        f'orient="auto" markerUnits="userSpaceOnUse">'
         f'<path d="M0,0 L0,6 L6,3 z" fill="{PAL["label"]}"/></marker>'
         f'</defs>\n'
         f'<rect fill="{PAL["bg"]}" width="{FIG_W}" height="{h}"/>\n'
@@ -80,7 +80,7 @@ def text(x, y, s, size=10, color=None, weight="400", anchor="start", letter_spac
             f'text-anchor="{anchor}"{ls} x="{x}" y="{y}">{s}</text>')
 
 def section_head(x, y, s):
-    return text(x, y, s, size=10, color=PAL["heading"], weight="700",
+    return text(x, y, s, size=11, color=PAL["heading"], weight="700",
                 letter_spacing="0.8")
 
 def chip(cx, cy, w, h, label, color, fill, sub=None):
@@ -90,10 +90,10 @@ def chip(cx, cy, w, h, label, color, fill, sub=None):
     parts = [
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" '
         f'fill="{fill}" stroke="{color}" stroke-width="1.2"/>',
-        text(cx, cy + 4, label, size=11, color=color, weight="600", anchor="middle"),
+        text(cx, cy + 4, label, size=12, color=color, weight="600", anchor="middle"),
     ]
     if sub:
-        parts.append(text(cx, cy + h / 2 + 13, sub, size=8.5,
+        parts.append(text(cx, cy + h / 2 + 13, sub, size=11,
                           color=PAL["muted"], anchor="middle"))
     return "\n".join(parts)
 
@@ -115,7 +115,7 @@ def shared_box(cx, cy, w, h, title, sub=None, title_y=None):
              color=PAL["slate"], weight="700", anchor="middle"),
     ]
     if sub:
-        parts.append(text(cx, title_y + 14, sub, size=8.5,
+        parts.append(text(cx, title_y + 14, sub, size=11,
                           color=PAL["muted"], anchor="middle"))
     return "\n".join(parts)
 
@@ -126,7 +126,7 @@ def pill(cx, cy, w, h, label, color, fill):
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{fill}" stroke="{color}" stroke-width="1"/>\n'
-        + text(cx, cy + 4, label, size=10, color=color, weight="600", anchor="middle")
+        + text(cx, cy + 4, label, size=12, color=color, weight="600", anchor="middle")
     )
 
 def arrow(x1, y1, x2, y2, color=None):
@@ -151,7 +151,7 @@ def build():
                     color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W / 2, 48,
                     "one pipeline · three RNA chemistries",
-                    size=10.5, color=PAL["muted"], anchor="middle"))
+                    size=11.5, color=PAL["muted"], anchor="middle"))
 
     # ── INPUTS ───────────────────────────────────────────────────────────────
     y_inputs_head = 78
@@ -166,43 +166,77 @@ def build():
     # ── PRE-PROCESS (per-protocol pills, just below each chip) ───────────────
     y_pre_label = 153
     out.append(text(COL["drs"], y_pre_label, "trim-polya",
-                    size=9.5, color=PAL["blue"], weight="600", anchor="middle"))
+                    size=11, color=PAL["blue"], weight="600", anchor="middle"))
     out.append(text(COL["cdna"], y_pre_label, "correct-cdna",
-                    size=9.5, color=PAL["teal"], weight="600", anchor="middle"))
+                    size=11, color=PAL["teal"], weight="600", anchor="middle"))
     out.append(text(COL["qsrev"], y_pre_label, "(no pre-process)",
-                    size=9.5, color=PAL["muted"], weight="400", anchor="middle"))
+                    size=11, color=PAL["muted"], weight="400", anchor="middle"))
     out.append(text(FIG_W / 2, y_pre_label + 14,
                     "per-protocol — strip adapters / UMIs / poly(A)",
-                    size=8.5, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
+
+    # ── LAYOUT GEOMETRY ──────────────────────────────────────────────────────
+    # Single ARROW_GAP applied between every adjacent box → uniform visual
+    # rhythm. Arrowhead tips land exactly on box top edges (marker refX=6,
+    # userSpaceOnUse — see svg_open()).
+    cx_funnel = FIG_W / 2
+    ARROW_GAP = 24
+
+    # Multi-aligner box
+    aligner_h = 44
+    y_aligner_top = 218
+    y_aligner_bot = y_aligner_top + aligner_h          # 262
+    y_aligner     = y_aligner_top + aligner_h / 2      # center, 240
+
+    # Junction pool box
+    jpool_h = 32
+    y_jpool_top = y_aligner_bot + ARROW_GAP            # 286
+    y_jpool_bot = y_jpool_top + jpool_h                # 318
+    y_jpool     = y_jpool_top + jpool_h / 2            # 302
+
+    # Correct box
+    correct_h = 88
+    y_correct_top = y_jpool_bot + ARROW_GAP            # 342
+    y_correct_bot = y_correct_top + correct_h          # 430
+    y_correct     = y_correct_top + correct_h / 2      # 386
+
+    # Consensus box
+    consensus_h = 32
+    y_consensus_top = y_correct_bot + ARROW_GAP        # 454
+    y_consensus_bot = y_consensus_top + consensus_h    # 486
+    y_consensus     = y_consensus_top + consensus_h / 2  # 470
+
+    # Rectified BAM box
+    bam_h = 28
+    y_bam_top = y_consensus_bot + ARROW_GAP            # 510
+    y_bam_bot = y_bam_top + bam_h                      # 538
+    y_bam     = y_bam_top + bam_h / 2                  # 524
 
     # ── CONVERGING ARROWS (3 inputs → multi-aligner) ─────────────────────────
-    y_arrow_from = 180
-    y_aligner_top = 218  # top of multi-aligner box
-    cx_funnel = FIG_W / 2
+    # Each arrow drops straight down on the column center and lands on the
+    # aligner box top edge — uniform ARROW_GAP length matches downstream arrows.
+    y_arrow_from = y_aligner_top - ARROW_GAP           # 194
     for key in ("drs", "cdna", "qsrev"):
-        out.append(arrow(COL[key], y_arrow_from, cx_funnel, y_aligner_top))
+        out.append(arrow(COL[key], y_arrow_from, COL[key], y_aligner_top))
 
     # ── MULTI-ALIGNER (parallel, NOT consensus — consensus happens later) ────
-    y_aligner = 240
-    out.append(shared_box(cx_funnel, y_aligner, 520, 44,
+    out.append(shared_box(cx_funnel, y_aligner, 520, aligner_h,
                           "rectify align — run aligners in parallel",
-                          sub="minimap2 + mapPacBio + gapmm2  ·  or bbmap + bwa (--short-read)  ·  each produces its own BAM"))
+                          sub="minimap2 + mapPacBio + gapmm2 · or bbmap + bwa-mem (--short-read) · each produces its own BAM"))
 
     # arrow down to junction pool
-    out.append(arrow(cx_funnel, y_aligner + 22, cx_funnel, y_aligner + 52))
+    out.append(arrow(cx_funnel, y_aligner_bot, cx_funnel, y_jpool_top))
 
     # ── JUNCTION POOL ────────────────────────────────────────────────────────
-    y_jpool = 304
-    out.append(shared_box(cx_funnel, y_jpool, 420, 32,
+    out.append(shared_box(cx_funnel, y_jpool, 420, jpool_h,
                           "junction pool — observed across aligners + annotated DB",
                           sub=None))
 
     # arrow down to correct
-    out.append(arrow(cx_funnel, y_jpool + 16, cx_funnel, y_jpool + 44))
+    out.append(arrow(cx_funnel, y_jpool_bot, cx_funnel, y_correct_top))
 
     # ── CORRECT (5' / introns / 3' sub-pills, applied per aligner) ───────────
-    y_correct = 388  # box center
-    out.append(shared_box(cx_funnel, y_correct, 560, 88,
+    out.append(shared_box(cx_funnel, y_correct, 560, correct_h,
                           "rectify correct — applied per aligner (standardized scoring)",
                           sub=None,
                           title_y=y_correct - 22))
@@ -220,27 +254,25 @@ def build():
     # tiny footnote inside box
     out.append(text(cx_funnel, y_correct + 38,
                     "junction pool informs 5′ rescue + intron refinement",
-                    size=8.5, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # arrow down to consensus
-    out.append(arrow(cx_funnel, y_correct + 44, cx_funnel, y_correct + 70))
+    out.append(arrow(cx_funnel, y_correct_bot, cx_funnel, y_consensus_top))
 
     # ── CONSENSUS (pick best CORRECTED alignment per read) ───────────────────
-    y_consensus = 478
-    out.append(shared_box(cx_funnel, y_consensus, 380, 32,
+    out.append(shared_box(cx_funnel, y_consensus, 380, consensus_h,
                           "consensus — pick best corrected alignment per read",
                           sub=None))
 
     # arrow down to rectified BAM
-    out.append(arrow(cx_funnel, y_consensus + 16, cx_funnel, y_consensus + 42))
+    out.append(arrow(cx_funnel, y_consensus_bot, cx_funnel, y_bam_top))
 
     # ── RECTIFIED BAM ────────────────────────────────────────────────────────
-    y_bam = 526
-    out.append(shared_box(cx_funnel, y_bam, 220, 28,
+    out.append(shared_box(cx_funnel, y_bam, 220, bam_h,
                           "rectified BAM", sub=None))
 
     # divider before downstream
-    out.append(hdivider(y_bam + 30))
+    out.append(hdivider(y_bam_bot + 16))
 
     # ── ANALYZE + DESEQ2 (two rows of chips) ─────────────────────────────────
     y_down_head = 575
@@ -248,7 +280,7 @@ def build():
 
     # row 1: analyze outputs
     y_an = 595
-    out.append(text(60, y_an + 3, "analyze", size=9.5,
+    out.append(text(60, y_an + 3, "analyze", size=11,
                     color=PAL["heading"], weight="600"))
     analyze_items = [
         (240, "5'/3' clusters"),
@@ -260,7 +292,7 @@ def build():
 
     # row 2: DESeq2
     y_de = 625
-    out.append(text(60, y_de + 3, "DESeq2", size=9.5,
+    out.append(text(60, y_de + 3, "DESeq2", size=11,
                     color=PAL["heading"], weight="600"))
     de_items = [
         (170, "gene"),
@@ -272,7 +304,7 @@ def build():
         out.append(pill(cx, y_de, 110, 24, label, PAL["slate"], PAL["slate_l"]))
 
     out.append(text(700, y_de + 3, "* planned",
-                    size=8, color=PAL["muted"], anchor="end"))
+                    size=10, color=PAL["muted"], anchor="end"))
 
     out.append(svg_close())
     return "\n".join(out)

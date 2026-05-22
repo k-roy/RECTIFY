@@ -41,8 +41,8 @@ def svg_open(h):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{FIG_W}" height="{h}" '
         f'viewBox="0 0 {FIG_W} {h}">\n'
         f'<defs>'
-        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" '
-        f'orient="auto" markerUnits="strokeWidth">'
+        f'<marker id="arr" markerWidth="6" markerHeight="6" refX="6" refY="3" '
+        f'orient="auto" markerUnits="userSpaceOnUse">'
         f'<path d="M0,0 L0,6 L6,3 z" fill="{PAL["label"]}"/></marker>'
         f'</defs>\n'
         f'<rect fill="{PAL["bg"]}" width="{FIG_W}" height="{h}"/>\n'
@@ -62,7 +62,7 @@ def block(x, y, w, h, label, fill, stroke, label_color, dashed=False):
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{fill}" stroke="{stroke}" stroke-width="1.2"{da}/>\n'
-        + text(x + w/2, y + h/2 + 4, label, size=10, color=label_color,
+        + text(x + w/2, y + h/2 + 4, label, size=12, color=label_color,
                weight="600", anchor="middle")
     )
 
@@ -74,7 +74,7 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "strip the basecalled poly(A) tail + adapter stub before alignment",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     # Layout — 3 segments: mRNA body | poly(A) tail | adapter stub
     label_x = 130
@@ -86,7 +86,7 @@ def build():
     # Row 1: raw read
     y1 = 78
     out.append(text(label_x, y1 + row_h/2 + 4, "Raw read",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(block(body_x, y1, body_w, row_h, "mRNA body",
                      PAL["teal_l"], PAL["teal"], PAL["teal"]))
     out.append(block(polya_x, y1, polya_w, row_h, "poly(A) tail",
@@ -96,7 +96,7 @@ def build():
 
     # 3' end label
     out.append(text(adapter_x + adapter_w + 8, y1 + row_h/2 + 4,
-                    "3′", size=10, color=PAL["muted"]))
+                    "3′", size=11, color=PAL["muted"]))
 
     # Arrow down with annotation
     arrow_x = body_x + body_w/2
@@ -104,12 +104,12 @@ def build():
                f'x2="{arrow_x}" y2="{y1 + row_h + 36}" '
                f'stroke="{PAL["label"]}" stroke-width="1.4" marker-end="url(#arr)"/>')
     out.append(text(arrow_x + 12, y1 + row_h + 24, "rectify trim-polya",
-                    size=9, color=PAL["heading"], weight="600"))
+                    size=11, color=PAL["heading"], weight="600"))
 
     # Row 2: trimmed read
     y2 = 154
     out.append(text(label_x, y2 + row_h/2 + 4, "Trimmed",
-                    size=10, color=PAL["label"], anchor="end"))
+                    size=11, color=PAL["label"], anchor="end"))
     out.append(block(body_x, y2, body_w, row_h, "mRNA body",
                      PAL["teal_l"], PAL["teal"], PAL["teal"]))
     # Cached metadata block — dashed to show it's no longer in the read

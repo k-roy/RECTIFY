@@ -56,7 +56,7 @@ def block(x, y, w, h, label, fill, stroke, label_color):
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
         f'fill="{fill}" stroke="{stroke}" stroke-width="1.2"/>\n'
-        + text(x + w/2, y + h/2 + 4, label, size=10, color=label_color,
+        + text(x + w/2, y + h/2 + 4, label, size=12, color=label_color,
                weight="600", anchor="middle")
     )
 
@@ -66,7 +66,7 @@ def brace_below(x1, x2, y, color, label):
     return (
         f'<path d="M{x1},{y} L{x1},{y+5} L{x2},{y+5} L{x2},{y}" '
         f'fill="none" stroke="{color}" stroke-width="1" opacity="0.7"/>\n'
-        + text(mid, y + 17, label, size=8.5, color=color, anchor="middle",
+        + text(mid, y + 17, label, size=11, color=color, anchor="middle",
                weight="600")
     )
 
@@ -78,7 +78,7 @@ def build():
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
                     "both strands of each amplicon are sequenced — Dorado does not reverse-complement",
-                    size=10, color=PAL["muted"], anchor="middle"))
+                    size=11, color=PAL["muted"], anchor="middle"))
 
     label_x = 80
     row_h = 30
@@ -100,9 +100,9 @@ def build():
     # ── Row 1: orient = fwd ──────────────────────────────────────────────────
     y1 = 92
     out.append(text(label_x, y1 - 6, "orient = fwd   (≈50% of reads)",
-                    size=10, color=PAL["teal"], weight="700"))
+                    size=11, color=PAL["teal"], weight="700"))
     out.append(text(label_x, y1 + row_h/2 + 4, "5′",
-                    size=10, color=PAL["muted"], anchor="end"))
+                    size=11, color=PAL["muted"], anchor="end"))
 
     fwd_segs = [
         (seg_w["ssp"],  "SSP",         PAL["blue_l"],   PAL["blue"],   PAL["blue"]),
@@ -113,7 +113,7 @@ def build():
     ]
     fwd_bounds = draw_row(y1, fwd_segs)
     out.append(text(x_start + total_w + 6, y1 + row_h/2 + 4, "3′",
-                    size=10, color=PAL["muted"]))
+                    size=11, color=PAL["muted"]))
 
     # Brace under the UMI showing the structured pattern (one annotation is enough)
     umi_x1, umi_x2 = fwd_bounds[1][1], fwd_bounds[1][2]
@@ -123,9 +123,9 @@ def build():
     # ── Row 2: orient = rev (mirror layout) ──────────────────────────────────
     y2 = 220
     out.append(text(label_x, y2 - 6, "orient = rev   (≈50% of reads)",
-                    size=10, color=PAL["orange"], weight="700"))
+                    size=11, color=PAL["orange"], weight="700"))
     out.append(text(label_x, y2 + row_h/2 + 4, "5′",
-                    size=10, color=PAL["muted"], anchor="end"))
+                    size=11, color=PAL["muted"], anchor="end"))
 
     rev_segs = [
         (seg_w["pa"],   "poly(T)",       PAL["green_l"],  PAL["green"],  PAL["green"]),
@@ -136,12 +136,12 @@ def build():
     ]
     rev_bounds = draw_row(y2, rev_segs)
     out.append(text(x_start + total_w + 6, y2 + row_h/2 + 4, "3′",
-                    size=10, color=PAL["muted"]))
+                    size=11, color=PAL["muted"]))
 
     # ── Footer note: correct-cdna normalises both ────────────────────────────
     out.append(text(FIG_W/2, 290,
                     "rectify correct-cdna strips SSP/UMI/GGG and poly(A/T) from both — output is one canonical orientation",
-                    size=9, color=PAL["heading"], weight="600", anchor="middle"))
+                    size=11, color=PAL["heading"], weight="600", anchor="middle"))
 
     out.append(svg_close())
     return "\n".join(out)
