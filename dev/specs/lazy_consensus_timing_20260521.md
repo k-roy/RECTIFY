@@ -212,8 +212,79 @@ isolated HP scoring comparison.
 
 ### Priority optimization targets
 
-1. **Stage raw BAMs to `$SCRATCH` NVMe before merge** — eliminates ~265 s of Lustre cold I/O;
-   expected total ~83–100 s. Implement as a pre-copy step in `split_command.py` chunk merge body.
-2. **Fix ProcessPool shutdown overhead (22 s)** — reuse the `ProcessPoolExecutor` across calls
-   or drain the result queue before `__exit__`; saves ~22 s per chunk merge.
+1. ~~**Stage raw BAMs to `$SCRATCH` NVMe before merge**~~ — **DONE** at commit `f7e6463`
+   (`_stage_raw_bams` context manager in `corrected_consensus.py`; wired into
+   `split_command.py` chunk-merge template and both `single_sample.py` call sites).
+   Expected savings: ~265 s cold Lustre I/O per chunk.
+2. ~~**Fix ProcessPool shutdown overhead (22 s)**~~ — **DONE** at commit `f7e6463`
+   (`pool.shutdown(wait=False)` so queue-drain overlaps with post-scoring merge work).
 3. ~~Make UpSet plot opt-in~~ — low priority; UpSet takes ~3–20 s, dominated by above two issues.
+
+---
+
+## Phase F — NVMe staging + shutdown(wait=False) validation
+
+**Status:** PENDING — not yet submitted  
+**Target commit:** `f7e6463` (Lustre-staging + shutdown-nowait fixes)  
+**Expected outcome:** total lazy path ≈ 83–100 s (from Phase E warm-cache extrapolation)
+
+### Pre-requisites before submitting
+
+1. **Pull `f7e6463` onto Sherlock:**
+   ```bash
+   ssh sherlock 'bash --norc --noprofile -c "
+     cd /oak/stanford/groups/larsms/Users/kevinroy/software/rectify
+     git fetch origin drs-validation-rebuild
+     git merge --ff-only origin/drs-validation-rebuild
+     git log --oneline -3
+   "'
+   ```
+   Confirm HEAD is `f7e6463` before submitting.
+
+2. **Verify `$L_SCRATCH` is available** on the target node (larsms partition always has it;
+   owners nodes may not). The `_stage_raw_bams` context manager falls back to `$SCRATCH` then
+   `/tmp` if `$L_SCRATCH` is unset, so staging still works on owners — but `/tmp` is slower.
+
+### What to measure
+
+Same dataset as C/D/E (`wt_tfiiib_rep3/chunk_008`, 3 aligners, ~15k reads) for direct comparison.
+Config: `lazy_scoring_workers=3`, `threads=8`.
+
+Two-section script:
+
+**(a) Full lazy path** — cold start, same structure as Phase E section (a).
+Expected: merge ≈ 70 s, BAM write ≈ 14–20 s (NVMe-warm for write since HP scoring
+already read BAMs into `$L_SCRATCH` page cache), total ≈ 83–100 s.
+
+**(b) BAM write sub-step breakdown** — warm second pass (reuse same staged BAMs).
+This isolates whether `_stage_raw_bams` eliminated the cold-Lustre penalty from write.
+Compare to Phase E section (b): unsorted write was 13.68 s warm; should be similar.
+
+Log lines to watch for:
+```
+Staged minimap2 BAM to local scratch (NNN MB): /local_scratch/...
+Staged mapPacBio BAM to local scratch ...
+Staged gapmm2 BAM to local scratch ...
+```
+If those don't appear, `$L_SCRATCH` / `$SCRATCH` staging is not firing (check env).
+
+### Interpretation guide
+
+| Total wall | Interpretation |
+|-----------|----------------|
+| < 100 s   | Both fixes working as expected; Lustre cold-read eliminated |
+| 100–200 s | Partial improvement; check whether staging log lines appeared |
+| > 200 s   | Staging not active (env var unset, or BAMs too large for scratch) |
+
+If staging is not firing because `$L_SCRATCH` is undefined on larsms nodes, set
+`scratch_root` explicitly in the timing script via `os.environ.get('L_SCRATCH') or
+os.environ.get('SCRATCH') or str(Path(SCRATCH_WORK))` (pass to `_stage_raw_bams`).
+
+### Script template
+
+Reuse `scripts/timing/phase_e_parallel_timing_20260522.sh` as the base:
+- Remove section (c) cProfile (already done in Phase E)
+- Add staging log capture: grep `Staged` lines from the log to confirm staging fired
+- Add a section noting which scratch path was used
+
+Save result to `TIMING_DIR/phase_f_staging_validation_{JOB_ID}.txt`.
