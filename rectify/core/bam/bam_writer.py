@@ -34,7 +34,7 @@ from .read_edits import (
     softclip_intronic_tail_5prime,
     reroute_intronic_tail_5prime_via_junction,
     realign_exon_blocks,
-    reanchor_5prime_for_rescue,
+    _apply_reanchor_from_clip_len,
     _hardclip_trailing_a_run,
 )
 
@@ -267,8 +267,9 @@ def apply_corrected_edits_to_read(
     # reanchored copy of the read (TSV reanchor_clip_len > 0), apply the same
     # deterministic reanchor here BEFORE realign_exon_blocks so the live CIGAR
     # matches the geometry that exon_cigar was sized for.
-    if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
-        modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
+    _rcl = correction.get('reanchor_clip_len', 0)
+    if _rcl > 0:
+        modified |= _apply_reanchor_from_clip_len(read, _rcl)
 
     # Homopolymer CIGAR surgery: re-align exon blocks with X ops at homopolymer
     # positions so under-called DRS homopolymers are represented as indels.
@@ -449,8 +450,9 @@ def write_softclipped_bam(
             modified = False
 
             # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
-            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
-                modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
+            _rcl = correction.get('reanchor_clip_len', 0)
+            if _rcl > 0:
+                modified |= _apply_reanchor_from_clip_len(read, _rcl)
 
             # Homopolymer CIGAR surgery: re-align exon blocks.
             if genome is not None:
@@ -607,8 +609,9 @@ def write_dual_bam(
             shared_modified = False
 
             # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
-            if genome is not None and correction.get('reanchor_clip_len', 0) > 0:
-                shared_modified |= reanchor_5prime_for_rescue(read, genome, anchor_min_run=10)
+            _rcl = correction.get('reanchor_clip_len', 0)
+            if _rcl > 0:
+                shared_modified |= _apply_reanchor_from_clip_len(read, _rcl)
 
             # Homopolymer CIGAR surgery: re-align exon blocks.
             if genome is not None:

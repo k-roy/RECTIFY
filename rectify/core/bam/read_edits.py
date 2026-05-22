@@ -1716,6 +1716,112 @@ def extend_read_3prime_for_softclip_rescue(
         return True
 
 
+def _apply_reanchor_from_clip_len(
+    read: pysam.AlignedSegment,
+    clip_len: int,
+) -> bool:
+    """Apply the 5'-edge reanchor from a stored clip length without a genome scan.
+
+    Equivalent to ``reanchor_5prime_for_rescue(..., anchor_min_run=10)`` when
+    the caller already knows the output S op length from the TSV's
+    ``reanchor_clip_len`` field.  Replaces the O(read-length) per-base genome
+    comparison with an O(CIGAR-ops) walk to the query split point.
+
+    The split point always falls on an M/=/X op because the anchor run that
+    produced ``clip_len`` must have started on a matching base (S/I/D/N ops
+    cannot begin an anchor run).
+
+    Called from ``apply_corrected_edits_to_read`` when ``reanchor_clip_len > 0``.
+    ``reanchor_5prime_for_rescue`` is unchanged and still used by
+    ``splice_aware_5prime.rescue_3ss_truncation`` at correction time.
+
+    Args:
+        read:     pysam AlignedSegment — modified in-place.
+        clip_len: S op length to produce.  Must equal ``reanchor_clip_len`` from
+                  the correction TSV row for this read.
+
+    Returns:
+        True if the CIGAR was modified; False on degenerate input.
+    """
+    if read.is_unmapped or not read.cigartuples or not read.query_sequence:
+        return False
+    if clip_len <= 0:
+        return False
+    n_q = len(read.query_sequence)
+    if clip_len >= n_q:
+        return False
+
+    cigar = list(read.cigartuples)
+
+    if not read.is_reverse:
+        # + strand: collapse the first clip_len query bases into a leading S.
+        # Walk forward, tracking q_acc (query consumed) and r_acc (ref consumed
+        # from reference_start).
+        q_acc = 0
+        r_acc = 0
+        for i, (op, length) in enumerate(cigar):
+            if op == 5:  # H — not in query_sequence
+                continue
+            if op in (4, 1):  # S, I — query only
+                q_acc += length
+                continue
+            if op in (2, 3):  # D, N — ref only
+                r_acc += length
+                continue
+            # M (0), = (7), X (8) — both
+            offset = clip_len - q_acc  # bases of this op that go into the new S
+            if offset >= length:
+                # Entire op is consumed by the cluster (or exactly fills it).
+                # Continue to find the anchor's op.  D/N ops that follow are
+                # consumed by the walk (advancing r_acc) but are NOT emitted
+                # into the new CIGAR suffix — matching reanchor_5prime_for_rescue,
+                # which builds the suffix as cigar[run_start_idx:] and thus drops
+                # any pre-anchor D/N ops.
+                q_acc += length
+                r_acc += length
+                continue
+            # 0 <= offset < length: anchor starts within (or at the start of)
+            # this op.  Build new CIGAR: leading S, this op trimmed, rest.
+            new_cigar: list = [(4, clip_len)]
+            new_cigar.append((op, length - offset))
+            new_cigar.extend(cigar[i + 1:])
+            read.cigartuples = new_cigar
+            read.reference_start = read.reference_start + r_acc + offset
+            return True
+        return False  # clip_len > total query span — shouldn't happen
+
+    else:
+        # - strand: collapse the last clip_len query bases into a trailing S.
+        # Walk backward from CIGAR tail; reference_start is unchanged.
+        # D/N ops between the anchor and the cluster are skipped (they don't
+        # consume query), so they are naturally excluded from the new CIGAR body
+        # — matching reanchor_5prime_for_rescue's cigar[:run_end_idx] prefix.
+        q_tail = 0
+        for i in range(len(cigar) - 1, -1, -1):
+            op, length = cigar[i]
+            if op == 5:  # H
+                continue
+            if op in (4, 1):  # S, I — query only
+                q_tail += length
+                continue
+            if op in (2, 3):  # D, N — ref only
+                continue
+            # M, =, X — both
+            remaining = clip_len - q_tail  # bases of this op that go into S
+            if remaining >= length:
+                # Entire op goes into the trailing S region; consume and continue.
+                q_tail += length
+                continue
+            # 0 <= remaining < length: split here.
+            new_cigar = list(cigar[:i])
+            if length - remaining > 0:
+                new_cigar.append((op, length - remaining))
+            new_cigar.append((4, clip_len))
+            read.cigartuples = new_cigar
+            return True
+        return False
+
+
 def _hardclip_trailing_a_run(
     read: pysam.AlignedSegment,
     strand: str,
