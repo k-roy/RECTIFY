@@ -1132,3 +1132,64 @@ Sherlock job `25637632`:
 - final corrected consensus BAM: `7.9s`
 - output:
   `/oak/stanford/groups/larsms/Users/kevinroy/projects/TRT/processed_data/rectify/v3_20260429/set2_cpa_machinery/rna15_rep3/chunks/lazy_consensus_target_2f_test/chunk_001`
+
+---
+
+## [2026-05-22] Lazy corrected consensus P0–P3 bug fixes — committed in `1ab71f0`
+
+**Status:** Fixed and committed. Full suite 1219 passed, 35 skipped.
+
+### P0 — DELETED `_correction_requires_transient_edit` fast path (DO NOT RE-ADD)
+
+**Symptom:** 22/36 reads (61%) showed divergent HP-ED values between the lazy
+path and the reference `rectify correct` path in the audit fixture.
+
+**Root cause:** `_correction_requires_transient_edit` returned `False` for any
+read where the TSV row had no surgery fields that could alter the CIGAR. The
+function then skipped `realign_exon_blocks` entirely for that read. But
+`realign_exon_blocks` is NOT just a CIGAR-surgery function — it also computes
+the HP-edit-distance score. Skipping it set those reads' HP-ED to 0 (the
+aligner default), which silently changed winner selection in the consensus step.
+
+**Fix:** Deleted `_correction_requires_transient_edit` in full. `realign_exon_blocks`
+is now called unconditionally — that function has its own cheap internal pre-check
+that returns early when no HP scoring work is required. The old fast path was
+not just premature optimization; it was incorrect.
+
+**Lesson for future agents:** If you see `_correction_requires_transient_edit`
+referenced anywhere (old comments, stale branches, spec drafts), treat it as a
+**deleted error**. Do not re-introduce any "skip HP scoring if no CIGAR changes"
+guard in the lazy consensus path.
+
+### P1 — `_chunk_index_from_path` now raises on unparseable filenames
+
+**Symptom:** Corrupt or non-standard chunk filenames silently returned `None`
+for the chunk index, causing downstream KeyErrors with confusing messages.
+
+**Fix:** `_chunk_index_from_path` in `sidecar.py` now raises `ValueError` on
+unparseable filenames. Callers must handle the exception explicitly.
+
+### P2 — `_load_tsv` drops pre-existing `winning_aligner` column
+
+**Symptom:** When a corrected TSV was written by a previous run that had already
+added a `winning_aligner` column, reloading it caused a duplicate-column error
+in the merge step.
+
+**Fix:** `_load_tsv` in `corrected_consensus.py` drops any pre-existing
+`winning_aligner` column before returning the DataFrame.
+
+### P3 — Removed dead `mv corrected.bam` line; wired `--write-per-aligner-corrected-bams`
+
+**Symptom:** A dead `mv corrected.bam` call at `split_command.py:942-946` ran
+after the new lazy consensus path and tried to rename a file that no longer
+existed, causing a spurious error at the end of successful split runs.
+
+**Fix:** Removed the dead line. Also wired the `--write-per-aligner-corrected-bams`
+CLI flag through `split_command.py` so it propagates to the lazy consensus path.
+
+### Sherlock timing (job 25662145, committed in timing spec)
+
+- Dataset: `wt_tfiiib_rep3/chunk_008`, 3 aligners, ~15k corrected reads.
+- Lazy path: 495 s wall, 286 MB peak RSS.
+- Full path (`rectify correct --write-corrected-bam` × 3): TIMEOUT >81 min.
+- Lower-bound speedup: **>9.9×** (true speedup likely 20–30×).
