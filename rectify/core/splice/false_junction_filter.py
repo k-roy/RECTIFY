@@ -297,14 +297,26 @@ def analyze_junction_for_artifact(
     # Check junction target in genome (if reference available)
     if reference is not None:
         try:
-            target_seq = reference.fetch(
-                read.reference_name,
-                end,
-                min(end + 20, reference.get_reference_length(read.reference_name))
-            )
+            # Target genomic flank mirrors the read-side flank choice above
+            # (NEW-080). Plus strand: the read's poly-A aligns over a genomic
+            # A-tract AFTER the N, so fetch [end, end+20) and score A-richness.
+            # Minus strand: the read's poly-T aligns over a genomic T-run BEFORE
+            # the N, so fetch the upstream flank [start-20, start) and score
+            # T-richness. Fetching [end, end+20) for minus reads looks at the
+            # wrong side of the N and misses the genomic-A-tract artifact signal.
             if strand == '+':
+                target_seq = reference.fetch(
+                    read.reference_name,
+                    end,
+                    min(end + 20, reference.get_reference_length(read.reference_name))
+                )
                 analysis.target_a_richness = calculate_a_richness(target_seq)
             else:
+                target_seq = reference.fetch(
+                    read.reference_name,
+                    max(0, start - 20),
+                    start
+                )
                 analysis.target_a_richness = calculate_t_richness(target_seq)
 
             # Check splice site motifs

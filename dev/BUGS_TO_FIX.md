@@ -8,25 +8,21 @@
 
 ---
 
-### NEW-077 (HIGH) — `bam_processor.py` minus-strand artifact N snap can emit an intronic / skipped coordinate as the 3' end
+### ~~NEW-077 (HIGH) — `bam_processor.py` minus-strand artifact N snap can emit an intronic / skipped coordinate — Fixed by `1ab71f0`, verified 2026-05-23~~
 
-**File:** `rectify/core/bam/bam_processor.py:826-836`.
+**Verified:** the artifact-N rework in `1ab71f0` (2026-05-22) snaps minus-strand to the first ALIGNED base after the N. `rectify/core/bam/bam_processor.py:841-844`: `if strand == '+': current_position = _art.junction_start - 1` else `current_position = _art.junction_end` — exactly the prescribed fix, with an explicit comment (837-840) that `junction_start` would land inside the artifact gap.
 
-**Symptom:** When `current_position` falls inside an artifact N span `[junction_start, junction_end)` on the minus strand, the snap routine sets `current_position = junction_start`. Because `junction_start` is the first base of the SKIPPED (N-op) span in half-open coordinates, the emitted 3' end coordinate lands ON a base that the alignment doesn't cover. Pathogenic for reads whose walkback lands inside an artifact N.
-
-**Likely fix direction:** the target on the minus strand should be the first ALIGNED base on the 3' side (i.e. `junction_end` if interpreting half-open, or the aligned base immediately upstream of the N span — depends on intended geometry). Needs a careful review of what "3' end of the read" means semantically when the polished position falls inside an intron/N span.
+**Original symptom (for history):** the routine used to set `current_position = junction_start` on the minus strand, landing the 3' end on a skipped base.
 
 **Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
 ---
 
-### NEW-078 (HIGH/MEDIUM) — `bam_processor.py` minus-strand artifact ambiguity clipping leaves NET-seq refinement window touching the N span
+### ~~NEW-078 (HIGH/MEDIUM) — `bam_processor.py` minus-strand artifact ambiguity clipping leaves NET-seq window touching the N span — Fixed by `1ab71f0`, verified 2026-05-23~~
 
-**File:** `rectify/core/bam/bam_processor.py:847`.
+**Verified:** `rectify/core/bam/bam_processor.py:855-859` (Case B, minus) now clips `ambiguity_min` to `_art.junction_end` (first aligned base on the 3' side of the N), not `junction_start`, keeping NET-seq refinement off the skipped span.
 
-**Symptom:** Minus-strand ambiguity-range clipping does `ambiguity_min <= junction_start` then sets `ambiguity_min = junction_start`. Because `[start, end)` is half-open, this leaves the refinement window starting at the first SKIPPED base of the N span. Downstream NET-seq refinement can still assign reads into the intronic / N-spanned region.
-
-**Likely fix direction:** clip `ambiguity_min` to the first ALIGNED base outside the N span, not to `junction_start` (which is the boundary of the skipped span). Related to NEW-077 — same root confusion between half-open boundary semantics and aligned-base semantics on the minus strand.
+**Original symptom (for history):** minus-strand clipping set `ambiguity_min = junction_start`, leaving the refinement window starting at the first skipped base.
 
 **Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
@@ -42,13 +38,11 @@
 
 ---
 
-### NEW-080 (MEDIUM) — `false_junction_filter.py` minus-strand wrong-flank lookup against artifact N target
+### ~~NEW-080 (MEDIUM) — `false_junction_filter.py` minus-strand wrong-flank lookup against artifact N target — Fixed 2026-05-23~~
 
-**File:** `rectify/core/splice/false_junction_filter.py:282` (comment) vs `:300` (code).
+**Fix:** the genomic *target* flank now mirrors the (already strand-branched) read-side flank in `analyze_junction_for_artifact`. Plus strand fetches `[end, end+20)` (A-richness); minus strand fetches `[max(0, start-20), start)` (T-richness) — the genomic T-run the read's poly-T aligns over, upstream of the N. Previously `[end, end+20)` was fetched for both strands, so minus-strand genomic-A-tract artifacts were missed unless the `not has_canonical_motif` fallback also fired.
 
-**Symptom:** The comment at line 282 says the minus-strand poly-A side is BEFORE the N (i.e. on the `[start-20, start)` flank), but the code at line 300 always fetches `[end, end+20)` regardless of strand. Plausibly wrong-flank logic on the minus strand. Feeds into the artifact N snap issue tracked as NEW-077.
-
-**Likely fix direction:** branch on strand in the flank lookup; minus strand should fetch the upstream-of-N flank, not the downstream-of-N flank.
+**Verified:** regression test `tests/test_false_junction_filter.py::test_minus_strand_artifact_uses_upstream_genomic_flank` fails pre-fix (`assert 0 == 1`) and passes post-fix; splice blast-radius slice (150 tests) green.
 
 **Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
