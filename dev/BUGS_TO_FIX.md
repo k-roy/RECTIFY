@@ -1,28 +1,10 @@
 # RECTIFY Bugs to Fix
 
-## Last Updated: 2026-05-20 (NEW-076 through NEW-081 added — bedgraph coordinate audit + adjacent coordinate-convention findings from multi-agent audit run)
+## Last Updated: 2026-05-23 (reconciled Open section against verified git/code state for v1.0.0; NEW-066–074 + NEW-076 confirmed landed)
 
 ---
 
 ## Open
-
----
-
-### NEW-076 (HIGH) — `rectify analyze` per-condition bedgraph: 1-bp left shift in `start`/`end` BED columns; wider audit of other bedgraph emitters pending
-
-**Files:** confirmed in `rectify/core/analyze/bedgraph.py:99-100` (FIXED 2026-05-20, uncommitted). Audit pending in `rectify/core/bam/bedgraph_writers.py`, `rectify/core/netseq/netseq_output.py`, `rectify/core/commands/{consensus,run,export,analyze,correct,split}_command.py`, `rectify/core/analyze/manifest.py`, `rectify/data/validation/generate_igv_html.py`.
-
-**Symptom:** Per-condition strand-specific bedgraphs from `rectify analyze` show their 3'-end pileup peak 1 bp to the LEFT of the true position. Caught 2026-05-20 in the He et al cross-modality TRT analysis: CST6 ysh1 peak in `han2023_analyze_wbfix_20260512/analyze/bedgraph/Ysh1AA_plus.bedgraph` at `chrIX 287748 287749` (IGV 287,749) vs the matching DRS bedtools-derived 3'-end peak at `chrIX 287749 287750` (IGV 287,750). Affects DRS, QuantSeq REV, and PCR-cDNA equally — the emitter is protocol-agnostic.
-
-**Root cause:** the writer at `analyze/bedgraph.py:99-100` did `start = pos - 1; end = pos`, treating `corrected_3prime` as 1-based. It is **0-based-inclusive** (from `reference_end - 1` / `reference_start`). Correct: `start = pos; end = pos + 1`. See `dev/audits/bedgraph_coordinate_audit_20260520.md` for the full convention statement and the per-file audit table.
-
-**Fix status:**
-- `analyze/bedgraph.py:99-100` corrected on M1 working tree (uncommitted); 3 regression tests added in `tests/test_analyze.py::TestBedgraphCoordinates`. Verified by toggling the fix off/on (FAIL/PASS).
-- Other emitters listed in the audit doc are NOT YET INSPECTED. Same bug pattern could exist in any of them. The audit doc has a verification recipe (trace each `start`/`end` assignment to its source column; if 0-based, must be `[pos, pos+1)`).
-
-**Blast radius:** every prior `rectify analyze` output's `bedgraph/` subdir has 1-bp-left-shifted per-condition tracks. Clustering, shift analysis, and per-position attribution work from the `corrected_reads.tsv` / `corrected_3ends.tsv` position columns directly and are unaffected; only the bedgraph tracks (used for IGV inspection and cross-track comparison) need regeneration after fix lands.
-
-**See:** `AGENT_FIXES.md` `[2026-05-20]` entry for the first emitter's fix detail; `dev/audits/bedgraph_coordinate_audit_20260520.md` for the audit plan.
 
 ---
 
@@ -50,13 +32,11 @@
 
 ---
 
-### NEW-079 (MEDIUM) — `clustering.py` plus-strand `distance_to_gene_3prime` is off by 1
+### ~~NEW-079 (MEDIUM) — `clustering.py` plus-strand `distance_to_gene_3prime` is off by 1 — Already fixed, verified in code 2026-05-23~~
 
-**File:** `rectify/core/analyze/clustering.py:532`.
+**Verified:** `rectify/core/analyze/clustering.py:530-533` already computes `gene_3prime = gene['end'] - 1` for `+` strand and `gene['start']` for `-` strand — exactly the prescribed fix. `loaders.py:469` confirms the 0-based half-open convention (`start = int(fields[3]) - 1`). No code change needed.
 
-**Symptom:** Uses `gene['end']` as the plus-strand gene 3' coordinate. Loaded annotations are 0-based half-open (per `rectify/core/analyze/loaders.py:411` which does `start - 1, end`), so the last aligned base of the gene is `gene['end'] - 1`, not `gene['end']`. Result: `distance_to_gene_3prime` is 1 bp too large for plus-strand clusters.
-
-**Blast radius:** affects the `distance_to_gene_3prime` column in cluster output only; does NOT affect clustering itself or any downstream call that uses cluster identity rather than gene-3' distance. Low biological impact but easy to clean up — `gene_3prime_pos = gene['end'] - 1` for plus, `gene['start']` for minus.
+**Original symptom (for history):** the bug report claimed `gene['end']` was used as the plus-strand gene 3' coordinate, making `distance_to_gene_3prime` 1 bp too large. The current code does not have this bug.
 
 **Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
@@ -74,11 +54,9 @@
 
 ---
 
-### NEW-081 (LOW) — `analyze_command.py` / `analyze/manifest.py` rDNA exclusion uses inclusive `<= end` against half-open annotations
+### ~~NEW-081 (LOW) — `analyze_command.py` / `analyze/manifest.py` rDNA exclusion uses inclusive `<= end` — Already fixed, verified in code 2026-05-23~~
 
-**Files:** `rectify/core/commands/analyze_command.py:130`; `rectify/core/analyze/manifest.py:217`.
-
-**Symptom:** Both compare `corrected_position <= end` to test rDNA-region membership. If `rdna_regions` are half-open `[start, end)` (consistent with `loaders.py:411`), the `<= end` predicate excludes one EXTRA base at the right edge of each region. Low biological impact (off-by-one at region boundaries; rDNA is large enough that one extra base on each side is noise), but trivial to fix to `< end`.
+**Verified:** both rDNA exclusion sites already use half-open `>= start) & (< end)` — `rectify/core/commands/analyze_command.py:212-213` and `rectify/core/analyze/manifest.py:308-311`. (The `start <= pos <= end` at `analyze_command.py:95` is an unrelated *cluster*-membership lookup with inclusive cluster boundaries, built via `IntervalTree[start:end+1]` at `:80` — correct as-is.) No code change needed.
 
 **Source:** caught by the user's multi-agent coordinate-convention audit, 2026-05-20.
 
@@ -101,7 +79,9 @@
 
 ---
 
-### NEW-074 (MEDIUM) — `consensus.py`: `shutil.copy2()` to NFS without `os.fsync()` risks partial writes
+### ~~NEW-074 (MEDIUM) — `consensus.py`: `shutil.copy2()` to NFS without `os.fsync()` risks partial writes — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `consensus.py:131` `_copy2_and_fsync`.
 
 **File:** `rectify/core/consensus/consensus.py` (~line 1761)
 
@@ -119,7 +99,9 @@ Apply to both the sorted BAM copy and the `.bai` copy at the same location. Alte
 
 ---
 
-### NEW-073 (MEDIUM) — `bam_processor.py`: 17× redundant full BAM scans before correction begins
+### ~~NEW-073 (MEDIUM) — `bam_processor.py`: 17× redundant full BAM scans before correction begins — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `bam/parallel.py:262` `_prescan_bam_once` (one `bam.fetch(until_eof=True)`).
 
 **File:** `rectify/core/bam/bam_processor.py` (lines 1335, 1352, 1768)
 
@@ -136,9 +118,11 @@ For a 200k-read yeast BAM this consumes ~47 min of wall time before correction s
 
 ---
 
-### NEW-072 (MEDIUM) — `multi_aligner.py`: deSALT sort subprocess `stderr=PIPE` with no reader thread risks deadlock
+### ~~NEW-072 (MEDIUM) — `multi_aligner.py`: deSALT/uLTRA sort subprocess deadlock — Not a bug, verified 2026-05-23~~
 
-**File:** `rectify/core/align/multi_aligner.py` (lines 1154–1161, `run_desalt()`)
+**Verified (NO-OP):** in both `run_ultra` (view_proc/sort_proc Popens ~1748-1755) and `run_desalt` (~1958-1965), the `view_proc` sets only `stdout=subprocess.PIPE` (stderr **inherited**) and `sort_proc` sets neither `stdout` nor `stderr` (both inherited). There is no `stderr=PIPE` left undrained, so `sort_proc.communicate()` cannot deadlock. The deadlock pattern requires a producer with `stderr=PIPE` that nothing reads while blocking on the consumer — that is the minimap2 case (~388/399, which correctly drains via a daemon thread), not deSALT/uLTRA. No code change needed.
+
+**File:** `rectify/core/align/multi_aligner.py` (`run_ultra` ~1566, `run_desalt` ~1818)
 
 **Symptom:** `sort_proc` spawned with `stderr=PIPE` (or inheriting parent stderr). If samtools sort writes ≥64 KB of warnings, the OS pipe buffer fills; since no thread drains it, `sort_proc.communicate()` deadlocks. (The minimap2 path already has a drain thread at lines 209–216; deSALT does not.)
 
@@ -155,11 +139,13 @@ sort_proc.wait()
 drain_thread.join()
 ```
 
-**Discovered:** 2026-04-22 post-mortem audit (job 22314279)
+**Discovered:** 2026-04-22 post-mortem audit (job 22314279); closed as not-a-bug 2026-05-23.
 
 ---
 
-### NEW-071 (MEDIUM) — `run_command.py`: `stderr=DEVNULL` on samtools fastq hides error context
+### ~~NEW-071 (MEDIUM) — `run_command.py`: `stderr=DEVNULL` on samtools fastq hides error context — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `single_sample.py:36-55` `_run_samtools_fastq` (no DEVNULL; stderr included in RuntimeError).
 
 **File:** `rectify/core/commands/run_command.py` (line 751, DRS trim → FASTQ conversion)
 
@@ -171,7 +157,9 @@ drain_thread.join()
 
 ---
 
-### NEW-070 (MEDIUM) — `run_command.py`: non-atomic `unlink()` + `rename()` instead of `Path.replace()`
+### ~~NEW-070 (MEDIUM) — `run_command.py`: non-atomic `unlink()` + `rename()` instead of `Path.replace()` — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** atomic `Path.replace` at `single_sample.py:343` and `:790`.
 
 **File:** `rectify/core/commands/run_command.py` (lines 878–879, 1403–1404)
 
@@ -192,7 +180,9 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ---
 
-### NEW-069 (MEDIUM) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check
+### ~~NEW-069 (MEDIUM) — `consensus.py`: `.done` checkpoint sentinel written without BAM validity check — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `consensus.py:137` `_validate_bam_sample`, called at `:863` before trusting checkpoint batches.
 
 **File:** `rectify/core/consensus/consensus.py` (lines 1667, 1698)
 
@@ -204,7 +194,9 @@ Path(_restored_tmp).replace(_restored_bam)
 
 ---
 
-### NEW-068 (MEDIUM) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop
+### ~~NEW-068 (MEDIUM) — `multi_aligner.py`: no assertion that minimap2 succeeded after aligner loop — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `multi_aligner.py:2103`.
 
 **File:** `rectify/core/align/multi_aligner.py` (after aligner loop, ~line 1267)
 
@@ -224,7 +216,9 @@ if 'minimap2' not in results:
 
 ---
 
-### NEW-067 (MEDIUM) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure
+### ~~NEW-067 (MEDIUM) — `align_command.py`: `calmd_bam.replace(rectified_bam)` before index creation leaves BAM without `.bai` on index failure — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** `align_command.py:34-36` (index temp BAM, then atomic replace of bam + bai).
 
 **File:** `rectify/core/commands/align_command.py` (lines 576–579)
 
@@ -248,7 +242,9 @@ if result.returncode == 0 and calmd_bam.stat().st_size > 0:
 
 ---
 
-### NEW-066 (MEDIUM) — uLTRA reuses stale cached database with empty genome, silently produces zero alignments
+### ~~NEW-066 (MEDIUM) — uLTRA reuses stale cached database with empty genome, silently produces zero alignments — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Verified:** fixed in `multi_aligner.py` `run_ultra`.
 
 **File:** `rectify/core/align/multi_aligner.py`, `run_ultra()` (~line 848)
 
@@ -257,6 +253,18 @@ if result.returncode == 0 and calmd_bam.stat().st_size > 0:
 **Root cause:** uLTRA caches its genome index in `{output_bam.stem}_ultra_tmp/database.db`. When the first run fails mid-way (after the `ultra_tmp/` dir is created but before the genome is indexed), the `_tmp_dir` decompressed genome is cleaned up. On retry, uLTRA prints "Database found in directory — using this one" and skips genome indexing. `refs_sequences.fa` is 0 bytes → "Number of ref seqs in fasta: 0" → all chromosomes excluded → zero alignments. `run_ultra()` only checks `sam_path.exists() and sam_path.stat().st_size > 0`, but uLTRA writes a valid-looking SAM with just headers even when it aligned nothing.
 
 **Fix:** After `ultra_out_dir.mkdir()`, check if `database.db` exists but `refs_sequences.fa` is empty or missing — this is the fingerprint of a failed prior indexing run. Remove the stale directory and recreate it so uLTRA re-indexes from scratch. A valid cache (non-empty `refs_sequences.fa`) should be preserved — the index is genome/GTF-derived and is intentionally shared across chunks. Fixed in `multi_aligner.py` `run_ultra()`.
+
+---
+
+### ~~NEW-076 (HIGH) — `rectify analyze` per-condition bedgraph: 1-bp left shift in `start`/`end` BED columns — Fixed (landed on drs-validation-rebuild), verified in code 2026-05-23~~
+
+**Symptom:** Per-condition strand-specific bedgraphs from `rectify analyze` showed their 3'-end pileup peak 1 bp to the LEFT of the true position. Caught 2026-05-20 in the He et al cross-modality TRT analysis: CST6 ysh1 peak in `han2023_analyze_wbfix_20260512/analyze/bedgraph/Ysh1AA_plus.bedgraph` at `chrIX 287748 287749` (IGV 287,749) vs the matching DRS bedtools-derived 3'-end peak at `chrIX 287749 287750` (IGV 287,750). Affected DRS, QuantSeq REV, and PCR-cDNA equally — the emitter is protocol-agnostic.
+
+**Root cause:** the writer treated `corrected_3prime` (which is 0-based-inclusive, from `reference_end - 1` / `reference_start`) as 1-based, doing `start = pos - 1; end = pos`. Correct: `start = pos; end = pos + 1`.
+
+**Fix:** corrected in 3 emitters — `rectify/core/analyze/bedgraph.py`, `rectify/core/analyze/manifest.py`, and `scripts/generate_bedgraph_from_polished.py`. Audit complete (no further bedgraph emitters affected). Regression tests added in `tests/test_analyze.py::TestBedgraphCoordinates`. See `dev/audits/bedgraph_coordinate_audit_20260520.md` for the convention statement and per-file audit table.
+
+**Blast radius:** every prior `rectify analyze` output's `bedgraph/` subdir has 1-bp-left-shifted per-condition tracks and needs regeneration. Clustering, shift analysis, and per-position attribution work from the `corrected_reads.tsv` / `corrected_3ends.tsv` position columns directly and are unaffected.
 
 ---
 

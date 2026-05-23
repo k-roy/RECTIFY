@@ -1,8 +1,9 @@
 # Handoff — drs-validation-rebuild
 
-**Date:** 2026-05-22  
+**Date:** 2026-05-22 (HEAD updated 2026-05-23)  
 **Branch:** `drs-validation-rebuild`  
-**HEAD:** `56bcee6` — `feat(E.3): parallel-aligners default=True + align stage sidecar`
+**HEAD:** `04effa5` — `chore: clean tree` (E.3 `56bcee6` is the prior feature commit)  
+**Current coordination plan:** `dev/specs/v1_0_0_master_plan_20260523.md`
 
 ---
 
@@ -36,14 +37,16 @@
   C-II.1 / Axis B safe-at-scale. See "Open items".
 - NOT VERIFIED: H2 and Sherlock not synced past `5b348ec` (clusters are rsync copies,
   not git repos). Must rsync to `56bcee6` before cluster work.
-- NOT VERIFIED: GitHub not yet pushed — no `git push` executed; explicit user OK
-  required first.
+- PUSH STATUS (2026-05-23): C-II.1 (`55dd212`) is already on `origin`. Only
+  `56bcee6` (E.3) and `04effa5` (chore: clean tree) are ahead of origin.
 
 ---
 
 ## 3. Open items
 
-- **Push to GitHub** (`git push origin drs-validation-rebuild`) — NOT done.
+- **Push to GitHub** (`git push origin drs-validation-rebuild`) — C-II.1
+  (`55dd212`) is already pushed. Only `56bcee6` (E.3) and `04effa5`
+  (chore: clean tree) remain ahead of origin.
   Why deferred: CLAUDE.md instructs never push without explicit user OK;
   concurrent sessions were noted as active. Require explicit "OK to push" before running.
 
@@ -80,11 +83,11 @@
 
 ## 4. Resume command
 
-**Step 1 — push C-II.1 + E.3:**
+**Step 1 — push E.3 + clean-tree commit** (C-II.1 `55dd212` is already on origin):
 ```bash
 # Confirm you want to push, then:
 cd /Users/kevinroy/work/rectify
-git log --oneline origin/drs-validation-rebuild..HEAD  # preview what will push
+git log --oneline origin/drs-validation-rebuild..HEAD  # preview what will push (expect 56bcee6, 04effa5)
 git push origin drs-validation-rebuild
 ```
 

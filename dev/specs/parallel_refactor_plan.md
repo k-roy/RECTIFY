@@ -1,5 +1,34 @@
 # Spec — Default-parallel RECTIFY across DRS, ONT cDNA, and NETSEQ/QSrev
 
+> ## ⚠️ TAXONOMY SUPERSEDED (2026-05-23)
+>
+> The Commit/Phase labels (A, A.5, B, C, C-II, D, E, F) and the checkboxes
+> throughout this document were **never updated as work landed under a
+> different commit taxonomy**. Do NOT trust the checkboxes below. The body
+> is preserved for design rationale only. Use this mapping to the actual
+> commits on `drs-validation-rebuild`:
+>
+> | Plan label (this doc) | Actual state |
+> | --- | --- |
+> | Provenance / sidecar / resume infra ("Commit A / A.5") | **IMPLEMENTED** — `rectify/core/provenance/{sidecar,skip_check,path_resolver,hashing,cluster,cli}.py`, `bam/{regions,bam_writer_parallel,tsv_partition}.py`, `utils/resources.py` all exist on disk |
+> | Lazy corrected consensus | `1ab71f0` |
+> | Lustre/NVMe staging `_stage_raw_bams` | `f7e6463` |
+> | C-II.0 worker-state split | `5db2112` |
+> | C-II.1 shared Pool (`reuse_pool_container`) | `55dd212` |
+> | Commit D reanchor O(CIGAR) | `55089f7` |
+> | analyze + restore_polya sidecar wiring | `8c9f80c` |
+> | E.1 drs_trim parallel + E.2 cdna_stage1 | `9b4bb56` |
+> | E.3 parallel-aligners default + align sidecar | `56bcee6` |
+>
+> **STILL PENDING:** C-II.2 (dynamic shared-region-queue / Axis-B work-stealing);
+> Commit D analyze partial-streaming + merge parallelism (gated on profiling);
+> Commit F NETSEQ region-parallel (gated on profiling); Commit F.5
+> resume-integration test matrix; Commit G docs/CHANGELOG.
+>
+> **Authoritative dispatch map:** `dev/specs/v1_0_0_master_plan_20260523.md`.
+
+---
+
 **Status:** Design — not yet implemented. Commit Zero (profile + audit) gates everything.
 **Owner:** Kevin R. Roy (M1 orchestrator); per-commit execution split between Opus 4.7 (design / judgment) and Sonnet 4.6 subagents (mechanical work). See §11 for the delegation policy.
 **Branch:** `drs-validation-rebuild` (do not target `master` — frozen at 0.9.0).
