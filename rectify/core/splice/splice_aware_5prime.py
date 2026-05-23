@@ -730,6 +730,178 @@ _ACCEPTOR_PRIORITY_PLUS  = {'AG': 0, 'CG': 1, 'TG': 2, 'AT': 3}
 _ACCEPTOR_PRIORITY_MINUS = {'CT': 0, 'CG': 1, 'CA': 2, 'AT': 3}
 
 
+def _peel_candidate_depths(
+    read: pysam.AlignedSegment,
+    genome_seq: str,
+    strand: str,
+    max_peel: int,
+    clean_anchor: int,
+) -> List[int]:
+    """Generate candidate terminal-peel depths (counts of 5'-terminal query bases).
+
+    Walk the alignment inward from the read's 5' end. Each query-consuming
+    position yields a candidate depth (number of query bases peeled from the 5'
+    end so far). Stop generating at the first of:
+      - an existing N op (a real/strong splice gap; detected as a ref-position
+        jump > 1 between consecutive aligned reference bases),
+      - ``clean_anchor`` consecutive clean matches (read base == genome base) —
+        beyond this the read is well-anchored and deeper peels are pointless,
+      - ``max_peel`` query bases.
+
+    Returns depths in ascending order. Clean-match inference works for M-only
+    CIGARs (mapPacBio) because it compares query vs genome directly rather than
+    relying on =/X ops.
+    """
+    if not read.cigartuples or not read.query_sequence:
+        return []
+    try:
+        pairs = read.get_aligned_pairs()
+    except Exception:
+        return []
+    if read.is_reverse:
+        pairs = list(reversed(pairs))
+    # N ops (existing splice gaps) detected from the CIGAR, not from aligned-pair
+    # ref jumps: pysam emits per-base (None, ref) pairs for N just like D, so a
+    # ref-jump heuristic cannot distinguish them.
+    n_intervals = _get_n_op_intervals(read)
+    query_seq = read.query_sequence
+    gs = len(genome_seq)
+    depths: List[int] = []
+    q_from_5p = 0
+    consec_clean = 0
+    for qp, rp in pairs:
+        # Stop at the first existing N op — do not peel across an annotated /
+        # aligner-called intron.
+        if rp is not None and any(s <= rp < e for s, e in n_intervals):
+            break
+        if qp is None:
+            continue  # D op: consumes reference only
+        q_from_5p += 1
+        if rp is not None and 0 <= rp < gs:
+            gb = genome_seq[rp].upper()
+            rb = query_seq[qp].upper()
+            if gb != 'N' and rb == gb:
+                consec_clean += 1
+            else:
+                consec_clean = 0
+        else:
+            consec_clean = 0  # I/S position: not a clean match
+        depths.append(q_from_5p)
+        if consec_clean >= clean_anchor or q_from_5p >= max_peel:
+            break
+    return depths
+
+
+def _terminal_peel_rescue(
+    read: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    candidate_junctions: Set[Tuple[str, int, int]],
+    strand: str,
+    max_edit_frac: float,
+    junction_proximity_bp: int,
+    scan_bp: int,
+    chrom: str,
+    genome_seq: str,
+    baseline: Dict,
+    peel_max_bp: int,
+    peel_clean_anchor: int,
+    accept_margin: float,
+) -> Optional[Dict]:
+    """Multi-hypothesis terminal peel (Module 2F).
+
+    Score several 5'-terminal peel depths against the candidate junctions and
+    return a *strictly better* hypothesis than ``baseline`` (the default
+    single-depth rescue result), or ``None`` to keep the baseline.
+
+    Monotonic by construction: the baseline is always retained unless a deeper
+    peel produces a confident sequence rescue with a strictly lower normalised
+    HP-edit-distance (beyond ``accept_margin``). Ties favour the baseline /
+    no-rescue, per the spec. Default-on behaviour therefore cannot regress below
+    the pre-peel rescue by the edit-distance metric.
+
+    Returns a dict with an added ``'terminal_peel'`` marker when it overrides.
+    """
+    # Gate A — terminal boundary evidence near the 5' end (S/X/I/D). No evidence
+    # => clean terminal alignment => do not peel.
+    if not _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp):
+        return None
+
+    # 5' alignment boundary (first aligned base in transcript orientation).
+    if strand == '+':
+        align_5prime = read.reference_start
+    else:
+        if read.reference_end is None:
+            return None
+        align_5prime = read.reference_end - 1
+
+    # Gate B — at least one candidate 3'SS within reach of a peel of <= peel_max_bp.
+    reach = junction_proximity_bp + peel_max_bp
+    has_nearby = False
+    for j in candidate_junctions:
+        if j[0] != chrom:
+            continue
+        if len(j) >= 4 and j[3] not in (strand, '.', ''):
+            continue
+        edge = j[2] if strand == '+' else j[1]   # intron_end (+) / intron_start (-)
+        if abs(align_5prime - edge) <= reach:
+            has_nearby = True
+            break
+    if not has_nearby:
+        return None
+
+    # Fill-in-only policy: the peel NEVER overrides an existing baseline rescue.
+    # Overriding a correct rescue regressed cat3_minus_1 (901193->901189) and
+    # cat6_minus_1, because the edit-distance-only acceptance discarded the
+    # canonical-donor / shift / ambiguity-window priors the baseline used to land
+    # on the correct junction. The peel only ADDS a rescue where the baseline
+    # produced none. Overriding a *mediocre* existing rescue (the spec's case 1)
+    # requires prior-aware cross-depth scoring and is deferred to a follow-up.
+    if bool(baseline.get('rescued')):
+        return None
+    base_norm = float('inf')
+
+    query_seq = read.query_sequence or ''
+    n_query = len(query_seq)
+    if n_query == 0:
+        return None
+
+    depths = _peel_candidate_depths(read, genome_seq, strand, peel_max_bp, peel_clean_anchor)
+    if not depths:
+        return None
+
+    best_peel: Optional[Dict] = None
+    best_peel_norm = base_norm
+    for d in depths:
+        if d <= 0 or d > n_query:
+            continue
+        peeled = query_seq[:d] if strand == '+' else query_seq[n_query - d:]
+        if not peeled:
+            continue
+        res = _rescue_3ss_truncation_body(
+            read, genome, candidate_junctions, strand,
+            max_edit_frac, junction_proximity_bp, scan_bp,
+            chrom, genome_seq, rescue_seq_override=peeled,
+        )
+        if not res.get('rescued'):
+            continue
+        ed = res.get('edit_distance', -1.0)
+        if ed is None or ed < 0:
+            continue  # snap-type result from override path — ignore
+        qbp = res.get('query_bp', 0) or 0
+        norm = ed / max(1, qbp)
+        # Strictly better than the current best (baseline or a prior peel),
+        # beyond the acceptance margin. Ties favour the incumbent (baseline).
+        if norm < best_peel_norm - accept_margin:
+            best_peel_norm = norm
+            best_peel = res
+
+    if best_peel is None:
+        return None
+    best_peel = dict(best_peel)
+    best_peel['terminal_peel'] = True
+    return best_peel
+
+
 def rescue_3ss_truncation(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -738,6 +910,10 @@ def rescue_3ss_truncation(
     max_edit_frac: float = 0.2,
     junction_proximity_bp: int = 10,
     scan_bp: int = 50,
+    terminal_peel: bool = True,
+    peel_max_bp: int = 100,
+    peel_clean_anchor: int = 10,
+    peel_accept_margin: float = 0.0,
 ) -> Dict:
     """Rescue reads truncated or mis-aligned at the exon 2 / 3' splice site boundary.
 
@@ -844,6 +1020,18 @@ def rescue_3ss_truncation(
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq,
         )
+        # Module 2F: multi-hypothesis terminal peel. Monotonic — only overrides
+        # the baseline when a deeper peel is a strictly-better sequence rescue.
+        if terminal_peel:
+            _peeled = _terminal_peel_rescue(
+                read, genome, candidate_junctions, strand,
+                max_edit_frac, junction_proximity_bp, scan_bp,
+                chrom, genome_seq, baseline=_result,
+                peel_max_bp=peel_max_bp, peel_clean_anchor=peel_clean_anchor,
+                accept_margin=peel_accept_margin,
+            )
+            if _peeled is not None:
+                _result = _peeled
     finally:
         # Restore original read state so callers see no mutation.
         read.cigartuples = _saved_cigartuples
@@ -864,8 +1052,14 @@ def _rescue_3ss_truncation_body(
     scan_bp: int,
     chrom: str,
     genome_seq: str,
+    rescue_seq_override: Optional[str] = None,
 ) -> Dict:
     """Inner body of rescue_3ss_truncation — see that function's docstring.
+
+    ``rescue_seq_override``: when not None, use this sequence as the 5' rescue
+    sequence instead of extracting it via ``_extract_5prime_rescue_seq``. Used by
+    the multi-hypothesis terminal-peel driver to score a specific peel depth.
+    When None (the default) behaviour is byte-identical to the pre-peel code.
 
     Split out so the outer function can wrap the body in a try/finally that
     restores the read's CIGAR/reference_start after an optional reanchor pre-pass.
@@ -890,7 +1084,10 @@ def _rescue_3ss_truncation_body(
     # triggers extraction of all query bases up to and including the last imperfect
     # position.  Clean exon-2 bases at the tail of the window are excluded to
     # prevent inflating edit distance in the junction-matching step.
-    rescue_seq = _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp)
+    if rescue_seq_override is not None:
+        rescue_seq = rescue_seq_override
+    else:
+        rescue_seq = _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp)
     rescue_type_candidate = (
         "softclip" if (five_clip > 0 and rescue_seq)
         else ("mpb_mismatch" if rescue_seq else "none")
@@ -910,7 +1107,10 @@ def _rescue_3ss_truncation_body(
     # Truncating with [:five_clip] would take the LEFTMOST bases (aligned exon-2
     # body) instead.  Use [-five_clip:] for minus strand so the slice selects the
     # actual soft-clipped sequence.
-    if five_clip > 0 and rescue_seq and len(rescue_seq) > five_clip:
+    # Skip this truncation when an explicit override is supplied: the
+    # terminal-peel driver passes a deliberately-deeper peel sequence and must
+    # not have it clipped back to the soft-clip length.
+    if rescue_seq_override is None and five_clip > 0 and rescue_seq and len(rescue_seq) > five_clip:
         if strand == '-':
             rescue_seq = rescue_seq[-five_clip:]
         else:
