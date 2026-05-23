@@ -45,7 +45,8 @@ in `SUPPORTED_ALIGNERS`, validate with `pytest tests/test_consensus_selection.py
 
 ---
 
-### `merge_corrected_tsvs` — Winner-Selection Tie-Breaker Bug
+### ~~`merge_corrected_tsvs` — Winner-Selection Tie-Breaker Bug — Fixed, verified 2026-05-23~~
+**Status:** RESOLVED. `_n_agree` now groups on `(read_id, chrom, corrected_3prime)` (`corrected_consensus.py:1207-1220`), with an explicit comment about the paralog same-chrom case, so a 3-aligner same-chrom position consensus beats a single-aligner outlier on a different chromosome. Historical detail below.
 **File:** `rectify/core/consensus/corrected_consensus.py` — `merge_corrected_tsvs()`
 **Priority:** Medium (correctness; only affects paralog-ambiguous reads)
 
@@ -89,7 +90,8 @@ non-S. cerevisiae data.
 
 ---
 
-### 5' Soft-Clip Rescue — Sequence-Based Matching
+### ~~5' Soft-Clip Rescue — Sequence-Based Matching — Fixed, verified 2026-05-23~~
+**Status:** RESOLVED. Sequence-based rescue is implemented in `rectify/core/splice/splice_aware_5prime.py` (`rescue_3ss_truncation` / `_rescue_3ss_truncation_body`): clipped 5' query bases are compared by HP-aware edit distance against the upstream-exon reference (`_hp_edit_distance(_rseq, exon_seq)`, lines ~1310/1324), and `consensus._rescue_5prime_softclip` rewards an explained clip instead of the old blind `* 2` length penalty. The more ambitious multi-hypothesis terminal-peel refinement (`dev/specs/terminal_junction_peel_2f_plan.md`) remains an opt-in, conditional FUTURE enhancement — not a v1.0.0 blocker. Historical detail below.
 **File:** `rectify/core/consensus/consensus.py` — `score_alignment()`
 **Priority:** High
 
