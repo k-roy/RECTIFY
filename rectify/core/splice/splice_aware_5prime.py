@@ -30,6 +30,7 @@ Date: 2026-03-24
 from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 import array as _array_mod
+import os
 import pysam
 
 from ...utils.genome import standardize_chrom_name
@@ -730,6 +731,36 @@ _ACCEPTOR_PRIORITY_PLUS  = {'AG': 0, 'CG': 1, 'TG': 2, 'AT': 3}
 _ACCEPTOR_PRIORITY_MINUS = {'CT': 0, 'CG': 1, 'CA': 2, 'AT': 3}
 
 
+def _log_peel_screen(path, read, strand, chrom, baseline, peel, depth) -> None:
+    """Append one screening row (case-1 / new-rescue candidate) to ``path``.
+
+    Best-effort and exception-swallowing: screening must NEVER affect correctness
+    or crash a production run. Columns let candidates be categorised offline:
+    a row with baseline_rescued=1 and a differing peel junction is a case-1
+    override candidate (the deferred prior-aware override); baseline_rescued=0 is
+    a new-rescue candidate (what fill-only adds).
+    """
+    try:
+        def _j(d):
+            rj = d.get('rescued_junction')
+            return f"{rj[1]}-{rj[2]}" if rj else "NA"
+        new = (not os.path.exists(path)) or os.path.getsize(path) == 0
+        with open(path, 'a') as fh:
+            if new:
+                fh.write("read_id\tstrand\tchrom\tbaseline_rescued\tbaseline_junction\t"
+                         "baseline_5p\tbaseline_ed\tpeel_junction\tpeel_5p\tpeel_ed\t"
+                         "peel_depth\tpeel_rescue_type\n")
+            fh.write("\t".join(str(x) for x in [
+                read.query_name, strand, chrom, int(bool(baseline.get('rescued'))),
+                _j(baseline), baseline.get('five_prime_corrected', 'NA'),
+                baseline.get('edit_distance', 'NA'),
+                _j(peel), peel.get('five_prime_corrected', 'NA'),
+                peel.get('edit_distance', 'NA'), depth, peel.get('rescue_type', 'NA'),
+            ]) + "\n")
+    except Exception:
+        pass
+
+
 def _peel_candidate_depths(
     read: pysam.AlignedSegment,
     genome_seq: str,
@@ -821,6 +852,15 @@ def _terminal_peel_rescue(
 
     Returns a dict with an added ``'terminal_peel'`` marker when it overrides.
     """
+    # Screening (dry-run) mode: when RECTIFY_PEEL_SCREEN names a log path, run the
+    # comparison even for already-rescued reads to surface case-1 override
+    # candidates, but DO NOT change the (fill-only) production output.
+    screen_path = os.environ.get('RECTIFY_PEEL_SCREEN')
+    base_rescued = bool(baseline.get('rescued'))
+    # Production fill-only fast path: never override an existing rescue.
+    if base_rescued and not screen_path:
+        return None
+
     # Gate A — terminal boundary evidence near the 5' end (S/X/I/D). No evidence
     # => clean terminal alignment => do not peel.
     if not _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp):
@@ -849,16 +889,13 @@ def _terminal_peel_rescue(
     if not has_nearby:
         return None
 
-    # Fill-in-only policy: the peel NEVER overrides an existing baseline rescue.
-    # Overriding a correct rescue regressed cat3_minus_1 (901193->901189) and
-    # cat6_minus_1, because the edit-distance-only acceptance discarded the
-    # canonical-donor / shift / ambiguity-window priors the baseline used to land
-    # on the correct junction. The peel only ADDS a rescue where the baseline
-    # produced none. Overriding a *mediocre* existing rescue (the spec's case 1)
-    # requires prior-aware cross-depth scoring and is deferred to a follow-up.
-    if bool(baseline.get('rescued')):
-        return None
-    base_norm = float('inf')
+    # Acceptance baseline. A peel must beat the baseline's normalised HP-edit
+    # distance to win. When the baseline rescued via sequence (ed >= 0), that ed
+    # is the bar (so screening surfaces only genuine case-1 candidates); when the
+    # baseline did not rescue (or snapped, ed < 0), accept any confident peel.
+    base_ed = baseline.get('edit_distance', -1.0)
+    base_qbp = baseline.get('query_bp', 0) or 0
+    base_norm = (base_ed / max(1, base_qbp)) if (base_rescued and base_ed is not None and base_ed >= 0) else float('inf')
 
     query_seq = read.query_sequence or ''
     n_query = len(query_seq)
@@ -870,6 +907,7 @@ def _terminal_peel_rescue(
         return None
 
     best_peel: Optional[Dict] = None
+    best_depth: Optional[int] = None
     best_peel_norm = base_norm
     for d in depths:
         if d <= 0 or d > n_query:
@@ -894,8 +932,16 @@ def _terminal_peel_rescue(
         if norm < best_peel_norm - accept_margin:
             best_peel_norm = norm
             best_peel = res
+            best_depth = d
 
     if best_peel is None:
+        return None
+    # Screening: log the candidate (case-1 if baseline rescued, else new-rescue)
+    # without changing output.
+    if screen_path:
+        _log_peel_screen(screen_path, read, strand, chrom, baseline, best_peel, best_depth)
+    # Production fill-only: never override an existing baseline rescue.
+    if base_rescued:
         return None
     best_peel = dict(best_peel)
     best_peel['terminal_peel'] = True
