@@ -874,19 +874,29 @@ def _terminal_peel_rescue(
             return None
         align_5prime = read.reference_end - 1
 
-    # Gate B — at least one candidate 3'SS within reach of a peel of <= peel_max_bp.
+    # Gate B — collect candidate 3'SS within reach of a peel of <= peel_max_bp.
+    # We narrow to this nearby subset and pass ONLY it to the per-depth body calls
+    # below (the body scans its candidate set 3x per call with no internal
+    # narrowing). The full junction pool can be ~17k entries in run-all mode, so
+    # scanning it once per peel-depth per read is what blew up to a multi-hour OOM
+    # on high-coverage loci (2026-05-24). A 5'-terminal peel re-aligns a segment
+    # of <= peel_max_bp to an upstream exon, so a 3'SS beyond `reach` can never
+    # win — excluding distant junctions is safe (does not drop a real winner).
     reach = junction_proximity_bp + peel_max_bp
-    has_nearby = False
+    nearby_junctions: Set[Tuple] = set()
+    max_edge_dist = 0
     for j in candidate_junctions:
         if j[0] != chrom:
             continue
         if len(j) >= 4 and j[3] not in (strand, '.', ''):
             continue
         edge = j[2] if strand == '+' else j[1]   # intron_end (+) / intron_start (-)
-        if abs(align_5prime - edge) <= reach:
-            has_nearby = True
-            break
-    if not has_nearby:
+        dist = abs(align_5prime - edge)
+        if dist <= reach:
+            nearby_junctions.add(j)
+            if dist > max_edge_dist:
+                max_edge_dist = dist
+    if not nearby_junctions:
         return None
 
     # Acceptance baseline. A peel must beat the baseline's normalised HP-edit
@@ -902,7 +912,17 @@ def _terminal_peel_rescue(
     if n_query == 0:
         return None
 
-    depths = _peel_candidate_depths(read, genome_seq, strand, peel_max_bp, peel_clean_anchor)
+    # Cap the peel depth at the farthest reachable 3'SS edge (+ the body's
+    # boundary-ambiguity slack). A winning peel must align the 5' boundary onto a
+    # nearby junction edge, so no winner lands deeper than `max_edge_dist`; deeper
+    # depths are pure waste. On poorly-5'-anchored reads (soft-clip / mapPacBio
+    # forced-mismatch) the depth generator would otherwise run all the way to
+    # peel_max_bp=100, costing ~100 DP alignments/read — the per-read half of the
+    # 2026-05-24 hang. The cap shortens the depth list to a strict prefix, so the
+    # same winner is still found.
+    _PEEL_EDGE_SLACK = 15  # matches the body's _MAX_SS_SHIFT junction-slide window
+    effective_max_peel = min(peel_max_bp, max_edge_dist + _PEEL_EDGE_SLACK)
+    depths = _peel_candidate_depths(read, genome_seq, strand, effective_max_peel, peel_clean_anchor)
     if not depths:
         return None
 
@@ -916,7 +936,7 @@ def _terminal_peel_rescue(
         if not peeled:
             continue
         res = _rescue_3ss_truncation_body(
-            read, genome, candidate_junctions, strand,
+            read, genome, nearby_junctions, strand,
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq, rescue_seq_override=peeled,
         )

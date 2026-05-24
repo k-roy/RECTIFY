@@ -92,6 +92,54 @@ def test_peel_skips_clean_terminal_alignment():
     assert res is None, "clean terminal alignment must not trigger a peel"
 
 
+# --- cost bounding (2026-05-24 production-scale hang regression) ------------
+
+def test_peel_bounds_work_against_large_candidate_pool(monkeypatch):
+    """A poorly-5'-anchored read against a ~5k-junction pool must NOT scan the
+    full pool on every peel depth, nor run ~100 depths.
+
+    Regression for the 2026-05-24 run-all hang: the peel looped up to
+    peel_max_bp=100 depths, each scanning the full ~17k candidate set 3x in the
+    body -> multi-hour stall + OOM on high-coverage loci. The fix (a) narrows the
+    body's candidate set to the nearby subset, and (b) caps depth at the farthest
+    reachable junction edge. Here only 2 junctions are near; the rest are 50kb
+    away, so the body must see exactly the 2 nearby ones, and depths must be
+    capped far below 100 (max_edge_dist=3 -> effective_max_peel=18).
+    """
+    import rectify.core.splice.splice_aware_5prime as m
+
+    # 5' soft-clip + 200 mismatched body bases => Gate A fires, no clean anchor,
+    # so the unbounded generator would otherwise run all the way to peel_max_bp.
+    read = _make_read(start=1000, seq="G" * 5 + "A" * 200, cigar=((4, 5), (0, 200)))
+    genome = {"chrI": "C" * 60000}
+
+    near = {("chrI", 980, 1000, "+"), ("chrI", 970, 1003, "+")}  # edges 1000,1003
+    far = {("chrI", 50000 + i, 50100 + i, "+") for i in range(5000)}
+    cands = near | far
+
+    calls = {"n": 0, "max_cand_seen": 0}
+    real_body = m._rescue_3ss_truncation_body
+
+    def _spy(read_, genome_, candidate_junctions, *a, **kw):
+        calls["n"] += 1
+        calls["max_cand_seen"] = max(calls["max_cand_seen"], len(candidate_junctions))
+        return {"rescued": False}
+
+    monkeypatch.setattr(m, "_rescue_3ss_truncation_body", _spy)
+
+    m._terminal_peel_rescue(
+        read, genome, cands, "+", 0.2, 10, 50, "chrI", genome["chrI"],
+        baseline={"rescued": False},
+        peel_max_bp=100, peel_clean_anchor=10, accept_margin=0.0,
+    )
+
+    assert calls["n"] <= 25, f"depth cap failed: {calls['n']} body calls (pre-fix ~100)"
+    assert calls["max_cand_seen"] == len(near), (
+        f"body saw {calls['max_cand_seen']} candidates; must be narrowed to the "
+        f"{len(near)} nearby (pre-fix would be {len(cands)})"
+    )
+
+
 # --- screening (dry-run) mode ----------------------------------------------
 
 def test_screening_does_not_change_production_output(tmp_path, monkeypatch):

@@ -6,6 +6,68 @@ Archive entries into CHANGELOG.md when the session wave is done.
 
 ---
 
+## [2026-05-24] PARTIAL FIX (OOM gone; baseline-rescue perf DEFERRED): 3'SS rescue O(reads x full-pool) on big junction pools
+
+**Status:** Perf/scaling bug, **NOT a correctness bug** (output is correct, just
+slow). Partial fix committed: the **OOM is eliminated**; the full-pool config no
+longer crashes but is still **CPU-bound-slow**. The remaining 87% (baseline
+rescue) is DEFERRED per Kevin's "profile then pause" call (2026-05-24). RECTIFY
+is v0.9.x; manifest mode is experimental — this is a documented 0.9.x limitation,
+NOT a release blocker.
+
+**Symptom:** `rectify run-all --manifest` (DRS, 5% wt+upf1 subset, 556K-read
+minimap2 BAM) hung at `Processing 126 regions across 16 workers / 0%` for 6.5h
+then OOM-killed at the 64GB mem cap (Sherlock job 25846844). Align + poly-A trim
++ Module-2H refine all succeeded first; the stall is in the inline `correct`
+parallel region step. Run-all builds a **16,911-junction pool** from the 5
+aligner BAMs and feeds it into per-read 3'SS rescue; standalone/GFF paths fed
+only ~385 annotated junctions, so this never surfaced before.
+
+**Root cause (py-spy profile, 29,999 samples, single-thread full-pool subset =
+job DIAGE 25923520):** `_hp_edit_distance` (the HP-aware edit-distance DP,
+splice_aware_5prime.py:693-721) is **~86% of all CPU**. Split by caller:
+- **Baseline rescue `_rescue_3ss_truncation_body`: 87.1%** of the hp-ed cost.
+  Two loops scan the FULL candidate set and call `_hp_edit_distance` per
+  candidate, per read: the sequence-rescue loop (**line 1409 = 10,914 samples**)
+  and the Case-4 intronic-snap loop (**lines 1877/1878 = 10,856 samples**).
+  On a big pool in dense alt-splice loci, many introns contain the read's 5'
+  boundary -> many DP calls/read.
+- Terminal peel `_terminal_peel_rescue`: only **12.9%** (already narrowed below).
+- `_align_right_anchored` (local_aligner): ~5%.
+
+The OOM (vs slowness) came from the PEEL: up to `peel_max_bp=100` depths/read,
+each re-scanning the full pool + a DP; `imap` is ordered, so while an early
+high-coverage region stalled, workers buffered the other 125 regions' results
+-> 64GB. Narrowing the peel removed the buffering blow-up (RSS 64GB -> ~14GB).
+
+**Fix SO FAR (committed; localized to `_terminal_peel_rescue`, baseline path
+untouched -> correctness-clean, 238 focused tests + 8 peel tests green):**
+1. Narrow `candidate_junctions` to the nearby subset once/read (Gate B scan),
+   pass that small set to the per-depth body calls -> kills the peel's O(pool)
+   per-depth scan (THIS eliminated the OOM).
+2. Cap peel depth at `max_edge_dist + 15` (farthest reachable 3'SS). NOTE: in
+   dense regions `max_edge_dist` approaches `reach=110`, so this cap is often a
+   no-op — the narrowing did the memory work, not the cap.
+
+**DEFERRED fix (next session — the remaining 87% CPU):** apply the SAME nearby
+narrowing to the BASELINE `_rescue_3ss_truncation_body` candidate loops (lines
+~1409 and ~1877/1878), OR narrow once at `rescue_3ss_truncation` entry, so
+`_hp_edit_distance` is computed only for nearby candidates. Same provably-safe
+argument: a 5'-terminal 3'SS rescue can only win on a junction near the read's
+5' boundary. Best: narrow at the rescue entry so both baseline + peel share it.
+Verify: (a) focused splice/validation tests green; (b) `pytest -m "not slow"`;
+(c) re-run full-pool standalone correct (`--aligner-bams x5`) on the refined BAM
+at `$SCRATCH/rectify_wt_by4742_rep1_25846844_0/...minimap2.junction_refined_*.bam`
+— must COMPLETE (DIAGA GFF-only baseline = 7:56) AND peak <32GB; (d) rescue
+counts within DIAGA ballpark.
+
+**Tooling notes:** py-spy installed in Sherlock rectify env (use
+`py-spy record -f raw --pid <PID>` then aggregate by leaf frame). gdb `py-bt` is
+UNUSABLE on this conda python3.9 (DWARF v5 vs gdb's v2-4) — use py-spy.
+Diagnostic jobs + subset BAM live in `$SCRATCH/rectify_runall_diag_20260524/`.
+
+---
+
 ## [2026-05-24] FIXED: standardize_chrom_name mangled non-yeast chroms (chr5 -> chrV)
 
 **Status:** FIXED at this commit. Validated on human DRS (Sumner SMA chr5).
