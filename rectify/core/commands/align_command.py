@@ -446,6 +446,7 @@ def run_align(args: argparse.Namespace) -> int:
                     threads=n_threads,
                     chunk_idx=_chunk_idx,
                     n_chunks=_n_chunks if _n_chunks > 1 else None,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'gapmm2':
                 run_gapmm2(

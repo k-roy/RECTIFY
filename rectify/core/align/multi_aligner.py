@@ -628,13 +628,15 @@ def run_map_pacbio(
     extra_args: Optional[List[str]] = None,
     chunk_idx: Optional[int] = None,
     n_chunks: Optional[int] = None,
+    max_intron: int = 5000,
 ) -> str:
     """Run BBTools mapPacBio alignment.
 
     mapPacBio is splice-aware for long reads. The mapPacBio.sh script default
     of fastareadlen=6000 causes AssertionErrors on reads >6019 bp; we patch
     the script default to 100000 at install time (see multi_aligner.py).
-    intronlen=50 converts deletions >=50bp to N (intron) CIGAR operations.
+    intronlen controls the maximum intron length recognized as an N-op in CIGAR;
+    use >=100k for mammalian RNA-seq (human introns up to ~2.5 Mbp).
 
     Chunked mode (chunk_idx / n_chunks):
         When chunk_idx is provided, only the reads where
@@ -717,8 +719,8 @@ def run_map_pacbio(
         f'out={sam_path}',
         f'threads={threads}',
         f'path={mpb_index_dir}',
-        'fastareadlen=100000',  # Belt-and-suspenders: also patched in mapPacBio.sh default
-        'intronlen=50',         # Convert large deletions to introns
+        'fastareadlen=100000',       # Belt-and-suspenders: also patched in mapPacBio.sh default
+        f'intronlen={max_intron}',  # Max intron length; use >=100k for mammalian RNA-seq
         'minratio=0.4',
         '-Xmx32g',              # Cap BBTools Java heap at 32 GB to prevent OOM killing neighbours
     ]
