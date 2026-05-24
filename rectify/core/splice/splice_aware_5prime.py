@@ -44,6 +44,19 @@ except ImportError:
 
 
 # =============================================================================
+# Rescue tuning constants
+# =============================================================================
+# Module-level so the bam_processor pool-fetch window can be derived from the
+# SAME values the rescue actually uses. The old _POOL_SEARCH_RADIUS was a magic
+# 10000 sized for a junction_proximity_bp default of 5000 that no longer exists
+# (real default 10) — exactly the vestigial-constant drift dev/PERF_AUDIT.md
+# warns about. Keep these as the single source of truth.
+MAX_SS_SHIFT = 15                  # max splice-site slide explored per candidate
+DEFAULT_JUNCTION_PROXIMITY_BP = 10  # max bp between 5' align end and intron edge
+DEFAULT_PEEL_MAX_BP = 100          # deepest terminal peel attempted
+
+
+# =============================================================================
 # Data Structures
 # =============================================================================
 
@@ -920,7 +933,7 @@ def _terminal_peel_rescue(
     # peel_max_bp=100, costing ~100 DP alignments/read — the per-read half of the
     # 2026-05-24 hang. The cap shortens the depth list to a strict prefix, so the
     # same winner is still found.
-    _PEEL_EDGE_SLACK = 15  # matches the body's _MAX_SS_SHIFT junction-slide window
+    _PEEL_EDGE_SLACK = MAX_SS_SHIFT  # matches the body's junction-slide window
     effective_max_peel = min(peel_max_bp, max_edge_dist + _PEEL_EDGE_SLACK)
     depths = _peel_candidate_depths(read, genome_seq, strand, effective_max_peel, peel_clean_anchor)
     if not depths:
@@ -974,10 +987,10 @@ def rescue_3ss_truncation(
     candidate_junctions: Set[Tuple[str, int, int]],
     strand: Optional[str] = None,
     max_edit_frac: float = 0.2,
-    junction_proximity_bp: int = 10,
+    junction_proximity_bp: int = DEFAULT_JUNCTION_PROXIMITY_BP,
     scan_bp: int = 50,
     terminal_peel: bool = True,
-    peel_max_bp: int = 100,
+    peel_max_bp: int = DEFAULT_PEEL_MAX_BP,
     peel_clean_anchor: int = 10,
     peel_accept_margin: float = 0.0,
 ) -> Dict:
@@ -1217,7 +1230,7 @@ def _rescue_3ss_truncation_body(
     # errors (e.g. 1-based GFF vs 0-based half-open).  Canonical GT-AG is
     # preferred over non-canonical among tied candidates; smaller |shift| is the
     # final tiebreaker to preserve the annotated position when all else is equal.
-    _MAX_SS_SHIFT = 15  # hard cap regardless of run length
+    _MAX_SS_SHIFT = MAX_SS_SHIFT  # hard cap regardless of run length
 
     # Pre-compute N-op intervals from the CIGAR.  Used in two places:
     # 1. Distance gate (below): when a read already has an N-op that matches a

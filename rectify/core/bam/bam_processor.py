@@ -34,7 +34,6 @@ Date: 2026-03-09
 """
 
 from typing import Dict, List, Optional, Tuple
-import bisect as _bisect
 import logging
 
 import pysam
@@ -62,7 +61,13 @@ from ...utils.alignment import (
     extract_soft_clips,
     format_junctions_string,
 )
-from ..splice.splice_aware_5prime import rescue_3ss_truncation as _rescue_3ss
+from ..splice.splice_aware_5prime import (
+    rescue_3ss_truncation as _rescue_3ss,
+    _get_5prime_softclip_len,
+    MAX_SS_SHIFT as _MAX_SS_SHIFT,
+    DEFAULT_JUNCTION_PROXIMITY_BP as _JUNCTION_PROXIMITY_BP,
+    DEFAULT_PEEL_MAX_BP as _PEEL_MAX_BP,
+)
 from ..splice import false_junction_filter as _fjf
 
 # Backwards-compat re-exports for callers that still reach in via this module.
@@ -96,43 +101,51 @@ from .output import write_output_tsv
 
 logger = logging.getLogger(__name__)
 
-# Search radius (bp) for pre-filtering pool junctions near a read's 5' end before
-# passing them to rescue_3ss_truncation. The index is keyed on intron_start, so
-# this must cover: the read-to-3'SS proximity gate (junction_proximity_bp, default
-# 10) + the +/-_MAX_SS_SHIFT slide + the maximum intron length (so a plus-strand
-# junction whose ACCEPTOR is near the read but whose intron_start sits up to one
-# intron-length upstream is still fetched). Yeast introns are <=~1.2 kb, so 2 kb
-# is generous. NOTE: the old value (10000) was sized for a long-since-removed
-# junction_proximity_bp default of 5000; with proximity=10 it pulled every intron
-# in a +/-10 kb window per read and made the rescue's per-candidate HP-edit-distance
-# DP the dominant CPU cost on dense alt-splice loci (2026-05-24). This radius is
-# ONLY used here (no other consumers), so narrowing it is local + safe.
-_POOL_SEARCH_RADIUS = 2000
+# Half-window (bp) for the strand-agnostic pool fetch, EXCLUDING the per-read 5'
+# soft-clip (added at fetch time). The pool is indexed as a per-chrom interval
+# tree keyed on BOTH splice sites, so the fetch asks "which junction intervals
+# come within this window of the read's 5' boundary" — an interval whose NEAR
+# site sits by the read overlaps the window regardless of how far its OTHER site
+# is (human introns can be >100 kb). That makes the fetch intron-length
+# independent, unlike the old intron_start-only bisect (which needed a radius >=
+# the intron length to surface a plus-strand junction by its acceptor).
+#
+# Sized to the rescue's actual reach so no winner is dropped: the baseline
+# sequence rescue accepts a junction edge up to junction_proximity_bp + five_clip
+# away, and the terminal peel reaches junction_proximity_bp + peel_max_bp; both
+# then slide +/-MAX_SS_SHIFT. Derived from the SAME constants the rescue uses
+# (imported above) so it cannot drift the way the old magic 10000 did.
+_POOL_FETCH_HALF_WINDOW = _JUNCTION_PROXIMITY_BP + _PEEL_MAX_BP + _MAX_SS_SHIFT + 5
 
 
 def _build_pool_chrom_index(
     pool_junctions: Optional[set],
-) -> Optional[Dict[str, List[Tuple[int, int]]]]:
-    """Build a per-chromosome sorted index for fast bisect-based pool lookup.
+) -> Optional[Dict[str, 'IntervalTree']]:
+    """Build a per-chromosome interval tree for either-site pool lookup.
 
-    Returns a dict mapping each standardised chromosome name to a list of
-    (intron_start, intron_end) tuples sorted by intron_start.  Returns None
-    if pool_junctions is None or empty.
+    Returns a dict mapping each standardised chromosome name to an IntervalTree
+    of ``[intron_start, intron_end)`` intervals (each carrying its
+    ``(intron_start, intron_end)`` tuple as data).  Returns None if
+    pool_junctions is None or empty.
 
-    Call once before starting BAM processing; pass the result as
-    ``pool_chrom_index`` to the process_bam_* and correct_read_3prime functions.
+    Keying on the whole intron interval (rather than one coordinate) lets the
+    per-read fetch surface a junction whenever EITHER splice site is near the
+    read's 5' boundary OR the read's 5' end sits inside the intron — without a
+    radius that has to scale with intron length.  Call once before BAM
+    processing; pass the result as ``pool_chrom_index``.
     """
     if not pool_junctions:
         return None
-    index: Dict[str, List[Tuple[int, int]]] = {}
+    from intervaltree import IntervalTree
+    index: Dict[str, 'IntervalTree'] = {}
     for entry in pool_junctions:
         chrom_raw, intron_start, intron_end = entry
+        if intron_end <= intron_start:
+            continue  # IntervalTree requires begin < end; skip degenerate entries
         chrom = standardize_chrom_name(chrom_raw)
         if chrom not in index:
-            index[chrom] = []
-        index[chrom].append((intron_start, intron_end))
-    for chrom in index:
-        index[chrom].sort()
+            index[chrom] = IntervalTree()
+        index[chrom][intron_start:intron_end] = (intron_start, intron_end)
     return index
 
 
@@ -404,19 +417,23 @@ def correct_read_3prime(
             _ss_junctions.update(annotated_junctions)
         for _js, _je in _real_junctions:
             _ss_junctions.add((chrom_std, _js, _je))
-        # Add pool junctions (novel + annotated from prescan) near this read's 5' end.
-        # Pool may contain novel junctions absent from the GFF annotation.
-        # Use a bisect-indexed lookup to avoid iterating all 200k+ pool entries per read.
+        # Add pool junctions (novel + annotated from prescan) whose intron comes
+        # within the rescue's reach of this read's 5' boundary. Either-site /
+        # containment lookup via the per-chrom interval tree: a junction is
+        # surfaced whenever its NEAR splice site sits by the read (human introns
+        # can put the far site >100 kb away, so a one-coordinate radius would miss
+        # it) OR the 5' end falls inside the intron (Case-4 snap). The window adds
+        # the read's 5' soft-clip because the baseline sequence rescue reaches a
+        # junction edge up to junction_proximity_bp + five_clip away. The
+        # downstream rescue applies the exact per-loop gate; this is only a safe
+        # superset that keeps the per-read candidate count small.
         if pool_chrom_index:
-            _pool_entries = pool_chrom_index.get(chrom_std)
-            if _pool_entries:
-                _lo = _bisect.bisect_left(_pool_entries,
-                                          (five_prime_position - _POOL_SEARCH_RADIUS,))
-                _hi = _bisect.bisect_right(_pool_entries,
-                                           (five_prime_position + _POOL_SEARCH_RADIUS,
-                                            10 ** 9))
-                for _pjs, _pje in _pool_entries[_lo:_hi]:
-                    _ss_junctions.add((chrom_std, _pjs, _pje))
+            _tree = pool_chrom_index.get(chrom_std)
+            if _tree:
+                _w = _POOL_FETCH_HALF_WINDOW + _get_5prime_softclip_len(read)
+                for _iv in _tree.overlap(five_prime_position - _w,
+                                         five_prime_position + _w + 1):
+                    _ss_junctions.add((chrom_std, _iv.data[0], _iv.data[1]))
         if _ss_junctions:
             _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
             if _3ss_result['rescued']:
