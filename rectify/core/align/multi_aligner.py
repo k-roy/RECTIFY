@@ -135,12 +135,24 @@ def _load_fastq_sequences(reads_path: str) -> Dict[str, Tuple[str, str]]:
 
 
 def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
-    """Return sanitized FASTQ qname -> RN tag for RN-bearing chunk FASTQs."""
+    """Return QNAME -> RN map for an input FASTQ.
+
+    When FASTQ headers carry ``RN:i:`` tags (rectify split output), those are
+    used verbatim.  When no ``RN:i:`` tags are found, sequential integers
+    (0, 1, 2, …) are assigned by read order.  The sequential fallback ensures
+    all aligner BAMs receive consistent ``RN:i`` tags even for non-split
+    FASTQs (e.g. DRS reads from ``samtools fastq``), which enables the
+    RN-keyed K-way consensus merge and bypasses the QNAME-set compatibility
+    check that fails when aligners include different read subsets.
+    """
     from rectify.core.chunking.sidecar import parse_rn_from_fastq_header
 
     opener = gzip.open if str(reads_path).endswith('.gz') else open
-    qname_to_rn: Dict[str, int] = {}
+    tag_map: Dict[str, int] = {}   # built from RN:i: header tags (if present)
+    seq_map: Dict[str, int] = {}   # sequential fallback
     n_dup = 0
+    seq_counter = 0
+
     with opener(reads_path, 'rt') as fh:
         while True:
             try:
@@ -150,27 +162,38 @@ def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
             if not header:
                 break
             try:
-                fh.readline()
-                fh.readline()
-                fh.readline()
+                fh.readline()  # seq
+                fh.readline()  # +
+                fh.readline()  # qual
             except EOFError:
                 break
             if not header.startswith('@'):
                 continue
             qname, rn = parse_rn_from_fastq_header(header)
-            if rn is None:
-                continue
             qname = qname[:254]
-            if qname in qname_to_rn and qname_to_rn[qname] != rn:
-                n_dup += 1
-                continue
-            qname_to_rn[qname] = rn
-    if n_dup:
-        logger.warning(
-            "RN map for %s saw %d duplicate QNAME(s) with conflicting RN tags; "
-            "kept the first mapping", reads_path, n_dup,
-        )
-    return qname_to_rn
+            if rn is not None:
+                if qname in tag_map and tag_map[qname] != rn:
+                    n_dup += 1
+                else:
+                    tag_map[qname] = rn
+            if qname not in seq_map:
+                seq_map[qname] = seq_counter
+                seq_counter += 1
+
+    if tag_map:
+        if n_dup:
+            logger.warning(
+                "RN map for %s saw %d duplicate QNAME(s) with conflicting RN tags; "
+                "kept the first mapping", reads_path, n_dup,
+            )
+        return tag_map
+
+    # No RN:i: tags found — assign sequential integers
+    logger.info(
+        "FASTQ %s: no RN:i tags found; assigned sequential RN for %d reads",
+        reads_path, len(seq_map),
+    )
+    return seq_map
 
 
 def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int]) -> int:
@@ -312,7 +335,8 @@ def run_minimap2(
     annotation_path: Optional[str] = None,
     junc_bonus: int = 9,
     cache_dir: Optional[str] = None,
-    extra_args: Optional[List[str]] = None
+    extra_args: Optional[List[str]] = None,
+    max_intron: int = 5000,
 ) -> str:
     """Run minimap2 alignment with optional junction annotation.
 
@@ -338,7 +362,7 @@ def run_minimap2(
         '-ax', 'splice',
         '-uf',  # Stranded (forward)
         '-k14',  # Smaller k-mer for sensitivity
-        '-G', '5000',  # Max intron size
+        '-G', str(max_intron),  # Max intron size
         '--splice-flank=no',  # Disable for compatibility
         '--secondary=no',
         '--MD',  # Include MD tag for indel correction and alignment identity
@@ -421,6 +445,8 @@ def run_minimap2(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"minimap2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'minimap2')
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
 
 
@@ -1280,7 +1306,8 @@ def run_gapmm2(
     genome_path: str,
     output_bam: str,
     threads: int = 8,
-    extra_args: Optional[List[str]] = None
+    extra_args: Optional[List[str]] = None,
+    max_intron: int = 5000,
 ) -> str:
     """Run gapmm2 alignment with terminal exon refinement.
 
@@ -1340,7 +1367,7 @@ def run_gapmm2(
         # 25.4.5 wheels ship without `type=int` on the argparse arg, so
         # passing `-m 1` made min_mapq the string "1" and TypeError'd on
         # `h.mapq < min_mapq`. Default (int 1) is what we want anyway.
-        '-i', '5000',  # Max intron size (yeast splice range)
+        '-i', str(max_intron),  # Max intron size
         '-o', str(paf_path),
         genome_path,
         reads_input,

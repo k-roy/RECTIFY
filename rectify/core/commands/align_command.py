@@ -228,6 +228,18 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help='Run aligners in parallel (uses more memory)'
     )
 
+    perf_group.add_argument(
+        '--max-intron',
+        type=int,
+        default=5000,
+        metavar='BP',
+        help=(
+            'Maximum intron size passed to minimap2 (-G) and gapmm2 (-i). '
+            'Default 5000 is appropriate for S. cerevisiae. '
+            'Use 500000 or larger for human data.'
+        )
+    )
+
     # Output options
     output_group = parser.add_argument_group('Output options')
     output_group.add_argument(
@@ -422,6 +434,7 @@ def run_align(args: argparse.Namespace) -> int:
                     annotation_path=str(args.annotation) if args.annotation else None,
                     junc_bonus=args.junc_bonus,
                     cache_dir=str(args.output_dir),
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'mapPacBio':
                 _n_chunks = getattr(args, 'mapPacBio_chunks', 1) or 1
@@ -440,6 +453,7 @@ def run_align(args: argparse.Namespace) -> int:
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=n_threads,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'uLTRA':
                 if not args.annotation:
