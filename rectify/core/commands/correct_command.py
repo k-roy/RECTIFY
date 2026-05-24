@@ -773,6 +773,13 @@ def run(args):
                 import gc as _gc
                 _gc.collect()
 
+        # Register genome contigs before annotation loading so non-yeast chrom
+        # names (e.g. human "chr5") survive standardize_chrom_name verbatim and
+        # the GTF-derived junctions/genes key the same way the reads do.
+        if config.get('genome_path'):
+            from ...utils.genome import register_genome_contigs_from_fasta
+            register_genome_contigs_from_fasta(str(config['genome_path']))
+
         # Load annotated junctions for Module 2F (3'SS truncation rescue).
         # Without these, only reads whose own CIGAR contains an N operation near
         # the alignment's 5' end can trigger rescue — truncated reads that end

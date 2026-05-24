@@ -27,6 +27,45 @@ from ..config import (
 )
 
 # =============================================================================
+# Loaded-genome contig registry
+# =============================================================================
+# Names of the contigs present in the genome FASTA currently in use. Populated
+# by load_genome() (and register_genome_contigs_from_fasta() for the main
+# process ahead of annotation loading). standardize_chrom_name() trusts these
+# names verbatim, so non-yeast contigs (e.g. human ``chr5``) are not rewritten
+# by the yeast arabic->roman fallback (which would turn ``chr5`` into ``chrV``).
+_KNOWN_CONTIGS: set = set()
+
+
+def register_genome_contigs(names) -> None:
+    """Record contig names from the active genome so standardize_chrom_name
+    leaves them unchanged. Safe to call repeatedly (idempotent union)."""
+    _KNOWN_CONTIGS.update(names)
+
+
+def register_genome_contigs_from_fasta(genome_path) -> None:
+    """Populate the contig registry from a FASTA's ``.fai`` index without
+    loading sequence. Falls back to scanning ``>`` headers if no index exists.
+    Used early in commands so annotation/junction loading standardizes chroms
+    consistently with the reads (which are registered when the genome loads)."""
+    genome_path = Path(genome_path)
+    fai = Path(str(genome_path) + '.fai')
+    try:
+        if fai.exists():
+            with open(fai) as fh:
+                register_genome_contigs(line.split('\t', 1)[0] for line in fh if line.strip())
+            return
+        import gzip as _gzip
+        _open = _gzip.open if str(genome_path).endswith('.gz') else open
+        with _open(str(genome_path), 'rt') as fh:
+            register_genome_contigs(
+                line[1:].split()[0] for line in fh if line.startswith('>')
+            )
+    except Exception:
+        pass  # registry stays empty -> legacy behaviour, never fatal
+
+
+# =============================================================================
 # Sequence Complement
 # =============================================================================
 
@@ -99,6 +138,7 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
             with open(pickle_path, 'rb') as _fh:
                 genome = _pickle.load(_fh)
             _log.debug("  Loaded %d chromosomes from cache", len(genome))
+            register_genome_contigs(genome.keys())
             return genome
     except Exception as _exc:
         _log.debug("Genome pickle cache unusable (%s); loading from FASTA", _exc)
@@ -115,6 +155,7 @@ def load_genome(genome_path: Path) -> Dict[str, str]:
             genome[record.id] = str(record.seq).upper()
 
     print(f"  Loaded {len(genome)} chromosomes")
+    register_genome_contigs(genome.keys())
 
     # Write pickle cache for next call
     try:
@@ -324,6 +365,12 @@ def standardize_chrom_name(chrom: str) -> str:
     # NCBI format
     if chrom in GENOME_TO_CHROM:
         return GENOME_TO_CHROM[chrom]
+
+    # Contig from the loaded (possibly non-yeast) genome: trust it verbatim so
+    # the yeast arabic->roman fallback below does not rewrite e.g. human "chr5"
+    # into "chrV". Empty registry (no genome loaded) -> legacy behaviour.
+    if chrom in _KNOWN_CONTIGS:
+        return chrom
 
     # Numeric format (chr1 -> chrI)
     roman_map = {

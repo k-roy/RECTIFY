@@ -6,6 +6,39 @@ Archive entries into CHANGELOG.md when the session wave is done.
 
 ---
 
+## [2026-05-24] FIXED: standardize_chrom_name mangled non-yeast chroms (chr5 -> chrV)
+
+**Status:** FIXED at this commit. Validated on human DRS (Sumner SMA chr5).
+
+**Bug:** `standardize_chrom_name()` (rectify/utils/genome.py) unconditionally
+maps `chr1`..`chr16` to yeast roman numerals, so human `chr5` became `chrV`.
+Because gene interval trees are keyed with `normalize_chroms=False` (`chr5`) but
+per-read lookup standardizes to `chrV`, **every** gene attribution missed ->
+empty `gene_id` across all reads. The corrected BAM/TSV chrom column was also
+written as `chrV`. (Latent: `chrV` is a real yeast chrom in CHROM_SIZES, so
+`clamp_position`/`validate_coordinates` silently used the wrong size; on this
+path clamp is a no-op for human via the `inf` default and validate is unused.)
+
+**Fix:** module-level `_KNOWN_CONTIGS` registry in genome.py, populated by
+`load_genome()` (both FASTA + pickle paths) and by
+`register_genome_contigs_from_fasta()` called early in `correct_command` before
+annotation/junction loading. `standardize_chrom_name` returns a registered
+contig verbatim (checked AFTER CHROM_SIZES/GENOME_TO_CHROM, BEFORE the
+arabic->roman fallback). Empty registry => identical legacy behaviour, so yeast
+`chr1`->`chrI` and NCBI->canonical are unchanged (157 targeted tests pass).
+
+**Verified:** patched smoke on human SMN locus -> chrom column `chr5` (was
+`chrV`); `gene_id` populated on 454/547 reads with correct ENSG IDs (SMN1/2,
+SERF1A). Empty `gene_id` only on intergenic/antisense reads.
+
+**Still open (deferred, separate issue):** rectify's `load_annotated_junctions`
+needs explicit `intron` feature rows (SGD convention); gencode GTFs have none,
+so annotated junctions load 0 and native 3'SS rescue is disabled on human data.
+Workaround for human runs: preprocess the GTF to add intron rows derived from
+per-transcript exons. Only affects native Cat3 rescue / junction-guided scoring.
+
+---
+
 ## [2026-05-21] BAM-first 10k correct smoke + RN sidecar check
 
 **Status:** FIRST PASS SUCCEEDED on H2 for TSV correction; follow-up 2H-enabled
