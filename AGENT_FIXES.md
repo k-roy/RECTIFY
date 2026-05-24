@@ -4,6 +4,32 @@ Fast coordination log for active debugging sessions across M1 / H2 / Sherlock.
 **Read this before touching pipeline code. Update it when you find a bug.**
 Archive entries into CHANGELOG.md when the session wave is done.
 
+**Perf work:** see `dev/PERF_AUDIT.md` — playbook for finding/fixing per-read
+over-computation (profile-don't-guess, py-spy recipe, anti-patterns, suspect
+hotspots). The 3'SS-rescue full-pool stall (entry below) is the worked example;
+it is likely not the only such bottleneck.
+
+---
+
+## [2026-05-24] AUDIT: redundant outputs + pipeline over-computation candidates logged in PERF_AUDIT
+
+**Status:** Static audit only; no pipeline behavior changed in this entry.
+
+**Finding:** `dev/PERF_AUDIT.md` now has a comprehensive run-all/align/correct/
+manifest-analysis pass with prioritized findings and an output-necessity ledger.
+Highest-priority items:
+- correct-first `run-all` currently pays for raw pre-correction consensus outputs
+  that the normal corrected-consensus path does not use;
+- manifest analysis defaults still emit bedgraph/genomic-distribution convenience
+  outputs despite the documented manifest memory contract;
+- per-aligner correction can rebuild constant per-sample junction context instead
+  of reusing `prescan`-style caches;
+- streaming correction hand-writes a reduced position-index schema and drops
+  `count_ag_rich`.
+
+**Next action:** use `dev/PERF_AUDIT.md` as the fix queue. Any code fix must get
+focused tests plus a scale rerun/output-equivalence check before being marked done.
+
 ---
 
 ## [2026-05-24] PARTIAL FIX (OOM gone; baseline-rescue perf DEFERRED): 3'SS rescue O(reads x full-pool) on big junction pools

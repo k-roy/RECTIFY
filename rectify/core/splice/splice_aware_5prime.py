@@ -1228,6 +1228,36 @@ def _rescue_3ss_truncation_body(
     # 2. Case 4 intronic-snap (below): already used here.
     _n_intervals = _get_n_op_intervals(read)
 
+    # --- Candidate narrowing (perf, 2026-05-24) ---------------------------------
+    # In run-all mode candidate_junctions can hold ~17k pool junctions within
+    # +/-10kb of the read; on dense alt-splice loci, running the per-candidate
+    # HP-edit-distance DP in the rescue loops below over all of them was ~87% of
+    # CPU (py-spy) and drove the inline-correct stall. Pre-filter ONCE here to the
+    # junctions any loop could actually act on; the three loops below iterate this
+    # narrowed list instead of the full pool.
+    #
+    # Provably non-regressing: a junction is kept iff it (a) overlaps a window
+    # around align_5prime wide enough to cover loop 1's distance gate
+    # (dist <= junction_proximity_bp + five_clip) plus the +/-_MAX_SS_SHIFT slide,
+    # Case 4's containment, and Case 3's proximity; OR (b) matches one of the
+    # read's existing N-ops within junction_proximity_bp (the mapPacBio
+    # _leading_del N-op-match path, where the spanned intron can sit farther from
+    # align_5prime). Anything dropped here would be skipped by the cheap gate at
+    # the top of every loop anyway, so no winning candidate is excluded.
+    _nb_W = junction_proximity_bp + five_clip + _MAX_SS_SHIFT + 5
+    _nb_W2 = junction_proximity_bp + 5
+    _nearby_junctions = []
+    for _j in candidate_junctions:
+        if _j[0] != chrom:
+            continue
+        if len(_j) >= 4 and _j[3] not in (strand, '.', ''):
+            continue
+        if (_j[1] <= align_5prime + _nb_W and _j[2] >= align_5prime - _nb_W) or any(
+            abs(_j[1] - _ns) <= _nb_W2 and abs(_j[2] - _ne) <= _nb_W2
+            for _ns, _ne in _n_intervals
+        ):
+            _nearby_junctions.append(_j)
+
     # Pre-compute the "leading-D" pattern flags ONCE per read.  These are read
     # properties (CIGAR-only), independent of the candidate junction, so hoist
     # them out of the per-junction loop.  Without this hoist, the inner loop
@@ -1277,7 +1307,7 @@ def _rescue_3ss_truncation_body(
     if rescue_seq:
         rescue_len = len(rescue_seq)
         _gs = len(genome_seq)
-        for j_entry in candidate_junctions:
+        for j_entry in _nearby_junctions:
             j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
             if j_chrom != chrom:
                 continue
@@ -1820,7 +1850,7 @@ def _rescue_3ss_truncation_body(
     # Only fires if no existing N-op in the CIGAR already covers this intron
     # (prevents double-rescue for reads that have a correct but off-by-a-few-bp N).
     # _n_intervals already computed above (before the sequence-rescue loop).
-    for j_entry in candidate_junctions:
+    for j_entry in _nearby_junctions:
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
             continue
@@ -1912,7 +1942,7 @@ def _rescue_3ss_truncation_body(
         }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
-    for j_entry in candidate_junctions:
+    for j_entry in _nearby_junctions:
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
             continue

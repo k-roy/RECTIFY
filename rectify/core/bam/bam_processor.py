@@ -96,11 +96,18 @@ from .output import write_output_tsv
 
 logger = logging.getLogger(__name__)
 
-# Search radius (bp) used when pre-filtering pool junctions near a read's 5' end
-# before passing them to rescue_3ss_truncation.  Must be ≥ the junction_proximity_bp
-# default (5000 bp) used inside rescue_3ss_truncation, plus the maximum intron length
-# (yeast: ~1 kb) to also capture minus-strand junctions sorted by intron_start.
-_POOL_SEARCH_RADIUS = 10000
+# Search radius (bp) for pre-filtering pool junctions near a read's 5' end before
+# passing them to rescue_3ss_truncation. The index is keyed on intron_start, so
+# this must cover: the read-to-3'SS proximity gate (junction_proximity_bp, default
+# 10) + the +/-_MAX_SS_SHIFT slide + the maximum intron length (so a plus-strand
+# junction whose ACCEPTOR is near the read but whose intron_start sits up to one
+# intron-length upstream is still fetched). Yeast introns are <=~1.2 kb, so 2 kb
+# is generous. NOTE: the old value (10000) was sized for a long-since-removed
+# junction_proximity_bp default of 5000; with proximity=10 it pulled every intron
+# in a +/-10 kb window per read and made the rescue's per-candidate HP-edit-distance
+# DP the dominant CPU cost on dense alt-splice loci (2026-05-24). This radius is
+# ONLY used here (no other consumers), so narrowing it is local + safe.
+_POOL_SEARCH_RADIUS = 2000
 
 
 def _build_pool_chrom_index(
