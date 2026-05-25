@@ -11,6 +11,73 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-25] BUG (CORRECTNESS): mapPacBio `intronlen`/`maxindel` misconfigured for mammalian RNA — emits ~no N introns
+
+**Status:** Correctness bug in `run_map_pacbio` (multi_aligner.py ~L723). On human
+chr5 ONT DRS, mapPacBio emitted only ~1,046 introns vs 200k–418k for
+minimap2/uLTRA/deSALT on the same reads. Two compounding param errors, confirmed
+against the installed `bbmap.sh --help`:
+
+- `intronlen=500000` (set to `max_intron`) is **backwards**. BBMap help:
+  *"intronlen=999999999 — Set to a lower number like 10 to change 'D' to 'N' in
+  cigar strings for deletions of at least that length."* It is a MINIMUM D→N
+  relabel threshold, not a max. At 500000, only deletions ≥500 kb become `N`;
+  all human introns (1–50 kb) stay `D`. The code comment ("Max intron length;
+  use >=100k for mammalian RNA-seq") is wrong. **Correct: `intronlen=10`–`20`.**
+- `maxindel` is never set → BBMap default **16000**. BBMap help: *"maxindel=16000
+  — Don't look for indels longer than this... Set to >=100k for RNAseq with long
+  introns like mammals."* At 16 kb, mapPacBio cannot even SEARCH across most
+  human introns (soft-clips/fragments instead). **Correct: `maxindel=200000`.**
+
+NOTE: the 2026-05-24 "intronlen fix" (`intronlen=50` → `intronlen=max_intron`)
+was based on a misreading of the param and made intron labeling worse, not
+better. For yeast (introns mostly <1 kb, default maxindel fine) the symptom was
+masked.
+
+**Proper fix (TODO):** in `run_map_pacbio`, set `intronlen=10` (or ~20) and
+`maxindel=max(200000, max_intron)`; fix the comment. Decouple from the
+genome-wide `max_intron` that legitimately feeds minimap2 `-G`.
+
+**Caveat (do not over-invest):** even correctly parameterized, BBMap/mapPacBio
+is a poor fit for ONT DRS spliced alignment (Křižanović 2018: 26.8% correct
+exon-junction spanning on ONT vs GMAP 87.1%; PacBio short-indel error model ≠
+ONT). minimap2 `-ax splice -uf -k14` is the ONT-DRS standard; uLTRA/deSALT are
+the strong splice-aware alternates. Consider whether mapPacBio belongs in an
+ONT splice panel at all before spending effort re-running it.
+
+---
+
+## [2026-05-25] BUG (salvageable, output OK): `rectify align --mapPacBio-chunk-idx K` exits 1 on success
+
+**Status:** Orchestration bug in chunk-idx mode. The chunk alignment **succeeds**
+and writes a valid `{prefix}.mapPacBio.chunk_K_of_N.bam`, but the SLURM task
+**exits 1**, so an `afterok` merge dependency never fires.
+
+**Root cause:** In chunk-idx mode `run_map_pacbio` (multi_aligner.py ~L694)
+redirects its output to the `chunk_K_of_N.bam` path and **returns** that path.
+But `align_command._run_one_aligner` (align_command.py L442-450) does **not
+capture** the return value — it then coord-sorts/indexes (L504-512) and validates
+(L590-599) the original `output_bam` = standard `{prefix}.mapPacBio.bam`, which
+chunk-idx mode never writes → "output BAM is missing or empty; treating as
+failed" → "No aligners succeeded" → exit 1.
+
+**Evidence:** Sumner SMA_GSB2713 chunk array (job 26040807, 2026-05-25): all 8
+`chunk_K_of_8.bam` produced (~53 MB each) yet tasks 0-7 FAILED with exit 1.
+
+**Workaround (used):** chunk BAMs are valid. Merge mode
+(`rectify align --aligners mapPacBio --mapPacBio-chunks N` with **no**
+`--chunk-idx`) is unaffected — it writes the standard path, so the post-step
+succeeds. So ignore the spurious chunk-task exit-1 and run merge directly (guard
+on all N chunk BAMs existing). Do NOT use `--dependency=afterok` on the chunk
+array (it will never be satisfied); gate the merge on chunk-BAM presence instead.
+
+**Proper fix (TODO, not yet done):** in `_run_one_aligner`, capture
+`run_map_pacbio(...)`'s returned path and use it for coord-sort + validation
+(or skip coord-sort/validation when `mapPacBio_chunk_idx is not None`). Same
+pattern would let chunk tasks exit 0 and `afterok` merges work as intended.
+
+---
+
 ## [2026-05-24] AUDIT: redundant outputs + pipeline over-computation candidates logged in PERF_AUDIT
 
 **Status:** Static audit only; no pipeline behavior changed in this entry.
