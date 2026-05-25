@@ -1404,6 +1404,294 @@ def run_gapmm2(
     return str(output_bam)
 
 
+def run_winnowmap2(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    repetitive_kmers: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    extra_args: Optional[List[str]] = None,
+    max_intron: int = 5000,
+) -> str:
+    """Run winnowmap2 alignment for long-read RNA-seq.
+
+    Winnowmap2 uses weighted minimizers to suppress false alignments in repetitive
+    regions (e.g., SMN1/SMN2 on human chr5).  It requires a list of high-frequency
+    k-mers built from the reference genome via ``meryl``.
+
+    The repetitive k-mer list is cached in cache_dir (or adjacent to the genome)
+    and reused on subsequent runs.
+
+    Args:
+        reads_path: Path to FASTQ file
+        genome_path: Path to genome FASTA
+        output_bam: Path for output name-sorted BAM
+        threads: Number of threads
+        repetitive_kmers: Pre-computed repetitive k-mers file (skips meryl build)
+        cache_dir: Directory to cache meryl database and repetitive k-mers
+        extra_args: Additional winnowmap arguments
+        max_intron: Maximum intron size (-G)
+
+    Returns:
+        Path to output BAM file
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    genome_path = str(genome_path)
+
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+
+    genome_stem = Path(genome_path).name.split('.')[0]
+    cache = Path(cache_dir) if cache_dir else Path(genome_path).parent / '.winnowmap_cache'
+    rep_kmers_path = Path(repetitive_kmers) if repetitive_kmers else (
+        cache / f'{genome_stem}_repetitive_k15.txt'
+    )
+
+    if not rep_kmers_path.exists():
+        meryl_bin = shutil.which('meryl')
+        if not meryl_bin:
+            raise RuntimeError(
+                "meryl not found on PATH; required for winnowmap2 repetitive-kmer build. "
+                "Install: conda install -c bioconda meryl"
+            )
+        cache.mkdir(parents=True, exist_ok=True)
+        meryl_db = cache / f'{genome_stem}_merylDB'
+        logger.info(f"winnowmap2: building meryl k15 database at {meryl_db}...")
+        count_result = subprocess.run(
+            [meryl_bin, 'count', 'k=15', f'output={meryl_db}', genome_path],
+            capture_output=True, text=True, timeout=ALIGNER_TIMEOUT,
+        )
+        if count_result.returncode != 0:
+            raise RuntimeError(
+                f"meryl count failed (exit {count_result.returncode}): "
+                f"{count_result.stderr[-500:]}"
+            )
+        logger.info("winnowmap2: extracting repetitive k-mers...")
+        with open(rep_kmers_path, 'w') as fh:
+            print_result = subprocess.run(
+                [meryl_bin, 'print', 'greater-than', 'distinct=0.9998', str(meryl_db)],
+                stdout=fh, stderr=subprocess.PIPE, text=True, timeout=ALIGNER_TIMEOUT,
+            )
+        if print_result.returncode != 0:
+            rep_kmers_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"meryl print failed (exit {print_result.returncode}): "
+                f"{print_result.stderr[-500:]}"
+            )
+        logger.info(f"winnowmap2: repetitive k-mers → {rep_kmers_path}")
+
+    winnowmap_bin = shutil.which('winnowmap') or shutil.which('winnowmap2')
+    if not winnowmap_bin:
+        raise RuntimeError(
+            "winnowmap not found on PATH. Install: conda install -c bioconda winnowmap"
+        )
+
+    cmd = [
+        winnowmap_bin,
+        '-W', str(rep_kmers_path),
+        '-ax', 'splice',
+        '-uf',
+        '-k14',
+        '-G', str(max_intron),
+        '--secondary=no',
+        '--MD',
+        '-y',
+        '-t', str(threads),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend([genome_path, str(reads_path)])
+
+    logger.info(f"Running winnowmap2: {' '.join(cmd[:8])}...")
+
+    sam_output = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
+        stdin=sam_output.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    sam_output.stdout.close()
+
+    import threading
+    _wm_err: list = []
+    def _drain_wm():
+        _wm_err.append(sam_output.stderr.read())
+    _dt = threading.Thread(target=_drain_wm, daemon=True)
+    _dt.start()
+
+    try:
+        _, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        sam_output.kill()
+        raise RuntimeError(f"winnowmap2/samtools timed out after {ALIGNER_TIMEOUT}s")
+    finally:
+        _dt.join()
+
+    sam_output.wait()
+    if sam_output.returncode != 0:
+        wm_err = _wm_err[0].decode(errors='replace') if _wm_err else ''
+        raise RuntimeError(
+            f"winnowmap2 failed (exit {sam_output.returncode}): {wm_err[-500:]}"
+        )
+    if sort_proc.returncode != 0:
+        raise RuntimeError(f"samtools sort failed: {sort_stderr.decode()}")
+
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
+    logger.info(f"winnowmap2 complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'winnowmap2')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    return str(output_bam)
+
+
+def run_minisplice_mm2(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    model_path: Optional[str] = None,
+    model_cali_path: Optional[str] = None,
+    splice_scores: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    annotation_path: Optional[str] = None,
+    junc_bonus: int = 9,
+    extra_args: Optional[List[str]] = None,
+    max_intron: int = 5000,
+) -> str:
+    """Run minisplice + minimap2 with deep-learning splice-site scores.
+
+    Minisplice scores candidate splice sites across the genome using a trained
+    neural network model, then passes those scores to minimap2 via ``--spsc``
+    to improve junction accuracy on ONT DRS data.
+
+    The predict step (``minisplice predict``) is cached per genome in cache_dir
+    (or adjacent to the genome) and reused on subsequent runs.
+
+    Args:
+        reads_path: Path to FASTQ file
+        genome_path: Path to genome FASTA
+        output_bam: Path for output name-sorted BAM
+        threads: Number of threads
+        model_path: Path to minisplice model file (e.g. vi2-7k.kan)
+        model_cali_path: Optional calibration file (-c flag)
+        splice_scores: Pre-computed splice site scores TSV (skips predict step)
+        cache_dir: Directory to cache predicted splice scores
+        annotation_path: Optional GFF/GTF for minimap2 junction annotation
+        junc_bonus: minimap2 junction bonus score
+        extra_args: Additional minimap2 arguments
+        max_intron: Maximum intron size (-G)
+
+    Returns:
+        Path to output BAM file
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    genome_path = str(genome_path)
+
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+
+    genome_stem = Path(genome_path).name.split('.')[0]
+    cache = Path(cache_dir) if cache_dir else Path(genome_path).parent / '.minisplice_cache'
+    scores_path = (
+        Path(splice_scores) if splice_scores
+        else cache / f'{genome_stem}_splice_scores.tsv'
+    )
+
+    if not scores_path.exists():
+        if not model_path:
+            raise RuntimeError(
+                "minisplice_mm2 requires either --minisplice-model (path to a "
+                "minisplice model file, e.g. vi2-7k.kan) or --minisplice-scores "
+                "(pre-computed splice site scores TSV)."
+            )
+        minisplice_bin = shutil.which('minisplice')
+        if not minisplice_bin:
+            raise RuntimeError(
+                "minisplice not found on PATH. Install: conda install -c bioconda minisplice"
+            )
+        cache.mkdir(parents=True, exist_ok=True)
+        predict_cmd = [minisplice_bin, 'predict', '-t', str(threads)]
+        if model_cali_path:
+            predict_cmd.extend(['-c', model_cali_path])
+        predict_cmd.extend([model_path, genome_path])
+        logger.info(f"minisplice_mm2: predicting splice sites → {scores_path}...")
+        with open(scores_path, 'w') as fh:
+            pred_result = subprocess.run(
+                predict_cmd, stdout=fh, stderr=subprocess.PIPE,
+                text=True, timeout=ALIGNER_TIMEOUT,
+            )
+        if pred_result.returncode != 0:
+            scores_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"minisplice predict failed (exit {pred_result.returncode}): "
+                f"{pred_result.stderr[-500:]}"
+            )
+        logger.info(f"minisplice_mm2: splice scores → {scores_path}")
+
+    cmd = [
+        shutil.which('minimap2') or 'minimap2',
+        f'--spsc={scores_path}',
+        '-ax', 'splice',
+        '-uf',
+        '-k14',
+        '-G', str(max_intron),
+        '--splice-flank=no',
+        '--secondary=no',
+        '--MD',
+        '-y',
+        '-t', str(threads),
+    ]
+    if annotation_path:
+        cmd.extend(get_minimap2_junc_args(
+            annotation_path=annotation_path,
+            junc_bonus=junc_bonus,
+            cache_dir=str(cache),
+        ))
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend([genome_path, str(reads_path)])
+
+    logger.info(f"Running minisplice_mm2: {' '.join(cmd[:8])}...")
+
+    sam_output = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
+        stdin=sam_output.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    sam_output.stdout.close()
+
+    import threading
+    _ms_err: list = []
+    def _drain_ms():
+        _ms_err.append(sam_output.stderr.read())
+    _dt = threading.Thread(target=_drain_ms, daemon=True)
+    _dt.start()
+
+    try:
+        _, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        sam_output.kill()
+        raise RuntimeError(f"minisplice_mm2/samtools timed out after {ALIGNER_TIMEOUT}s")
+    finally:
+        _dt.join()
+
+    sam_output.wait()
+    if sam_output.returncode != 0:
+        ms_err = _ms_err[0].decode(errors='replace') if _ms_err else ''
+        raise RuntimeError(
+            f"minisplice_mm2 (minimap2) failed (exit {sam_output.returncode}): {ms_err[-500:]}"
+        )
+    if sort_proc.returncode != 0:
+        raise RuntimeError(f"samtools sort failed: {sort_stderr.decode()}")
+
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
+    logger.info(f"minisplice_mm2 complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'minisplice_mm2')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    return str(output_bam)
+
+
 def _dedup_gtf_attrs(attr_str: str) -> str:
     """Remove duplicate attribute keys from a GTF attribute string.
 

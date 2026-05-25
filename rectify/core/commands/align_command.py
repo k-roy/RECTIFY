@@ -86,11 +86,14 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     aligner_group.add_argument(
         '--aligners',
         nargs='+',
-        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa', 'all', 'none'],
+        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa',
+                 'winnowmap2', 'minisplice_mm2', 'all', 'none'],
         default=['all'],
         help=(
             'Aligners to run. "all" = minimap2 + mapPacBio + gapmm2 (long-read, default); '
             'with --short-read "all" = bbmap + bwa. '
+            '"winnowmap2" and "minisplice_mm2" are opt-in extras (not in "all"); '
+            'winnowmap2 requires meryl on PATH; minisplice_mm2 requires --minisplice-model. '
             'Use "none" to run only --junction-aligners (deSALT/uLTRA). (default: all)'
         )
     )
@@ -190,6 +193,45 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--desalt-path',
         default='deSALT',
         help='Path to deSALT executable'
+    )
+
+    aligner_group.add_argument(
+        '--winnowmap-repetitive-kmers',
+        default=None,
+        metavar='FILE',
+        help=(
+            'Pre-computed repetitive k-mers file for winnowmap2 (output of '
+            '"meryl print greater-than distinct=0.9998 <merylDB>"). '
+            'If omitted, meryl is invoked automatically and the result cached '
+            'adjacent to the genome.'
+        )
+    )
+
+    aligner_group.add_argument(
+        '--minisplice-model',
+        default=None,
+        metavar='FILE',
+        help=(
+            'Path to minisplice model file (e.g. vi2-7k.kan). '
+            'Required for minisplice_mm2 unless --minisplice-scores is provided.'
+        )
+    )
+
+    aligner_group.add_argument(
+        '--minisplice-model-cali',
+        default=None,
+        metavar='FILE',
+        help='Optional minisplice calibration file (-c flag for minisplice predict).'
+    )
+
+    aligner_group.add_argument(
+        '--minisplice-scores',
+        default=None,
+        metavar='FILE',
+        help=(
+            'Pre-computed splice site scores TSV from "minisplice predict". '
+            'If provided, the predict step is skipped.'
+        )
     )
 
     # Junction annotation
@@ -325,6 +367,8 @@ def run_align(args: argparse.Namespace) -> int:
         run_desalt,
         run_bbmap,
         run_bwa_mem,
+        run_winnowmap2,
+        run_minisplice_mm2,
         check_aligner_available,
     )
 
@@ -364,11 +408,20 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = getattr(args, 'bbmap_path', 'bbmap.sh')
         elif aligner == 'bwa':
             exec_path = getattr(args, 'bwa_path', 'bwa')
+        elif aligner == 'winnowmap2':
+            exec_path = 'winnowmap'  # binary is named 'winnowmap'; check_aligner_available handles fallback
+        elif aligner == 'minisplice_mm2':
+            exec_path = 'minimap2'  # uses system minimap2 with --spsc flag
         else:
             logger.warning(f"Unknown aligner: {aligner}")
             return aligner, None
 
-        if not check_aligner_available(exec_path):
+        if aligner == 'winnowmap2':
+            import shutil as _shutil
+            if not (_shutil.which('winnowmap') or _shutil.which('winnowmap2')):
+                logger.warning("winnowmap not found on PATH, skipping winnowmap2")
+                return aligner, None
+        elif not check_aligner_available(exec_path):
             logger.warning(f"{aligner} not found at {exec_path}, skipping")
             return aligner, None
 
@@ -490,6 +543,30 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     threads=n_threads,
                     bwa_path=exec_path,
+                )
+            elif aligner == 'winnowmap2':
+                run_winnowmap2(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                    repetitive_kmers=getattr(args, 'winnowmap_repetitive_kmers', None),
+                    cache_dir=str(args.output_dir),
+                    max_intron=getattr(args, 'max_intron', 5000),
+                )
+            elif aligner == 'minisplice_mm2':
+                run_minisplice_mm2(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                    model_path=getattr(args, 'minisplice_model', None),
+                    model_cali_path=getattr(args, 'minisplice_model_cali', None),
+                    splice_scores=getattr(args, 'minisplice_scores', None),
+                    cache_dir=str(args.output_dir),
+                    annotation_path=str(args.annotation) if args.annotation else None,
+                    junc_bonus=args.junc_bonus,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
 
             _elapsed = _time.perf_counter() - _t_aligner

@@ -1,0 +1,165 @@
+# mapPacBio (BBMap): parameters, ONT-DRS suitability, long-read fragility, chunking
+
+`mapPacBio.sh` is BBMap's long-read mode (BBTools, Brian Bushnell). RECTIFY runs
+it via `run_map_pacbio()` in `multi_aligner.py`. It is the only non-minimap2-based
+aligner in the panel, so it adds algorithmic diversity to the consensus — but it
+is **PacBio-tuned and a weak fit for noisy ONT (especially direct-RNA) spliced
+alignment** (see "ONT suitability" below). Read this before trusting its intron
+calls or adding it to an ONT panel.
+
+---
+
+## Parameter semantics — `intronlen` and `maxindel` (read this first)
+
+Both are easy to misconfigure, and misconfiguration silently produces almost **no
+spliced (`N`) introns**. Verbatim from the installed `bbmap.sh --help`:
+
+> `intronlen=999999999` — *"Set to a lower number like 10 to change 'D' to 'N' in
+> cigar strings for deletions of at least that length. This is used by Cufflinks;
+> 'N' implies an intron while 'D' implies a deletion."*
+>
+> `maxindel=16000` — *"Don't look for indels longer than this. Lower is faster.
+> Set to >=100k for RNAseq with long introns like mammals."*
+
+- **`intronlen` is a MINIMUM D→N relabel threshold, not a maximum.** It does not
+  change mapping — only whether a found gap is written `N` (intron) or `D`
+  (deletion). At `intronlen=500000`, only deletions ≥500 kb become `N`; every
+  human intron (mostly 1–50 kb) stays `D`. **Set it LOW: `intronlen=10`–`20`.**
+- **`maxindel` caps the largest gap BBMap will SEARCH for.** At the default
+  16000, mapPacBio cannot span introns >16 kb — it soft-clips/fragments the read
+  instead. For mammalian RNA, **set `maxindel=200000`** (Bushnell's explicit
+  guidance). `strictmaxindel=f` (default) means larger indels may still be found
+  opportunistically, but the search is not directed beyond `maxindel`.
+
+These compound: with `intronlen` too high AND `maxindel` at default, you get
+near-zero `N` ops. **Empirical (human chr5 ONT DRS, 2026-05-25):** mapPacBio
+emitted only ~1,046 introns vs 200k–418k for minimap2/uLTRA/deSALT on the same
+reads — the signature of this misconfiguration.
+
+> ⚠️ The 2026-05-24 "intronlen fix" (`intronlen=50` → `intronlen=max_intron`) was
+> based on a misreading of the docs and made labeling worse. For yeast (introns
+> <1 kb, default `maxindel` adequate) the symptom is masked. See AGENT_FIXES.md.
+
+**Correct RECTIFY invocation** (`run_map_pacbio`, multi_aligner.py ~L723):
+
+```
+intronlen=10            # relabel any deletion >=10 bp as an intron (N)
+maxindel=200000         # actually search across mammalian-scale introns
+```
+
+Decouple these from the genome-wide `--max-intron` that legitimately feeds
+minimap2's `-G` and gapmm2's terminal window — they are different parameters.
+
+---
+
+## ONT direct-RNA suitability
+
+BBMap's error model assumes PacBio-style short indels, which does not match noisy
+ONT (especially direct-RNA) reads. In the Křižanović 2018 long-read splice-aligner
+benchmark, BBMap correctly spanned exon–exon junctions in only **~26.8 %** of ONT
+reads (GMAP 87.1 %), aligned a smaller fraction of reads overall, and produced
+more mispositioned alignments. The community standard for ONT spliced alignment is
+**minimap2 `-ax splice -uf -k14`** (`-uf` forces forward transcript strand for
+stranded DRS; `-k14` for noisy reads); uLTRA and deSALT are the strong
+splice-aware alternates.
+
+**Recommendation:** do not rely on mapPacBio for ONT-DRS junctions. For an ONT
+panel that already contains minimap2 + uLTRA + deSALT, mapPacBio is the weakest
+member; weigh whether its consensus diversity is worth the cost before including
+it. (Source: Křižanović 2018, PMC6192213; uLTRA paper PMC8665758.)
+
+---
+
+## Long-read fragility (fastareadlen, read splitting, assertions)
+
+mapPacBio asserts/crashes on long reads unless handled:
+
+- **`fastareadlen`**: the `mapPacBio.sh` wrapper defaults to 6000; reads >6019 bp
+  trigger `AssertionError`. RECTIFY sets `fastareadlen=100000` **and** splits
+  reads >`MAX_MPB_READ_LENGTH` (~6 kb) via `split_long_reads()` /
+  `stitch_split_bam()` (mpb_split_reads.py) before alignment.
+- **`printOutputStats` count assertion** (e.g. `198+137+0+135+0+0 = 470 != 471`,
+  `align2.BBMapPacBio`): BBMap crashes reconciling read counts. RECTIFY tolerates
+  the related `realign_new` AssertionError ("BBMap spliced greflen overflow",
+  upstream BBTools issue #19) by **accepting the partial SAM** and logging
+  `"accepting partial SAM — N read(s) lost"`. A **direct** `mapPacBio.sh` call
+  that bypasses RECTIFY's read-splitting + partial-SAM tolerance will hit these
+  crashes on long ONT reads — do not benchmark mapPacBio outside `run_map_pacbio`.
+- **QNAME sanitization** (`_sanitize_mpb_fastq`, `trd=t`): ONT Dorado headers
+  embed run metadata; mapPacBio copies the full header into the SAM QNAME, which
+  violates the 254-char SAM limit and makes `samtools view` exit 1
+  ("query name too long"). RECTIFY strips space- and tab-separated comments.
+
+---
+
+## 6 h `ALIGNER_TIMEOUT` and chunking
+
+`ALIGNER_TIMEOUT = 21600 s` (multi_aligner.py:232) caps each aligner subprocess.
+Large samples (≳400k reads) exceed it on a single mapPacBio pass. Use the built-in
+interleaved chunking:
+
+```bash
+# one task per chunk (1/N of reads, even read-length distribution):
+rectify align <reads> --aligners mapPacBio --mapPacBio-chunks 8 --mapPacBio-chunk-idx K ...
+# merge (NO --chunk-idx) once all N chunk BAMs exist:
+rectify align <reads> --aligners mapPacBio --mapPacBio-chunks 8 ...
+```
+
+> ⚠️ **chunk-idx exit-1 bug:** in chunk-idx mode the chunk alignment succeeds and
+> writes `{prefix}.mapPacBio.chunk_K_of_N.bam`, but the task **exits 1** —
+> `align_command._run_one_aligner` validates the standard `mapPacBio.bam` path,
+> not the chunk path `run_map_pacbio` actually returned. The chunk BAMs are
+> valid. **Do not put `--dependency=afterok` on the chunk array** (it will never
+> be satisfied); gate the merge on all N chunk BAMs existing instead. Merge mode
+> is unaffected (it writes the standard path). See AGENT_FIXES.md 2026-05-25.
+
+Chunk-local `RN:i` tags collide across chunks (each chunk reindexes its own
+FASTQ); they are corrected downstream by the consensus step's QNAME→RN
+reinjection, so merged-then-consensus output is correct.
+
+---
+
+## `pt:i` tag embedded in the read NAME
+
+mapPacBio embeds the poly-A `pt:i:N` tag into the QNAME (not as a SAM aux tag).
+The separator depends on processing stage:
+
+- **Direct output (pre-sort):** space-separated — `UUID pt:i:25`.
+- **After `samtools sort`/`merge`:** the space becomes `_` (BAM forbids spaces in
+  QNAME) — `UUID_pt:i:25`.
+
+```python
+if " pt:i:" in name: clean = name.split(" pt:i:")[0]   # pre-sort
+if "_pt:i:" in name: clean = name.split("_pt:i:")[0]   # sorted/merged
+```
+
+---
+
+## Verifying mapPacBio works
+
+```bash
+rectify align --reads <reads.fastq.gz> --genome <genome.fa> \
+    --aligners mapPacBio --max-intron 200000 \
+    --output /tmp/mpb_smoke --threads 8
+samtools flagstat /tmp/mpb_smoke/*.mapPacBio.bam
+# sanity: spliced reads should produce N ops, not just D:
+samtools view /tmp/mpb_smoke/*.mapPacBio.bam | awk '$6 ~ /N/' | wc -l
+```
+
+If the `N`-op count is near zero on a mammalian RNA sample, suspect the
+`intronlen`/`maxindel` misconfiguration above.
+
+---
+
+## Failure modes quick-reference
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| ~0 `N` introns on mammalian RNA | `intronlen` too high (D not relabeled to N) | `intronlen=10`–`20` |
+| Few junctions; long introns soft-clipped | `maxindel` at default 16000 | `maxindel=200000` |
+| `AssertionError` on reads >6019 bp | `fastareadlen` too small / no read splitting | RECTIFY patches `fastareadlen=100000` + splits >6 kb reads; run via `run_map_pacbio` |
+| `printOutputStats ... X != Y` crash | BBMap stats / `realign_new` overflow on long reads | RECTIFY accepts partial SAM; don't invoke `mapPacBio.sh` directly |
+| `samtools view: query name too long`, exit 1 | Full ONT header copied to QNAME | `trd=t` / `_sanitize_mpb_fastq` |
+| chunk task exits 1 but chunk BAM exists | chunk-idx path-validation bug | ignore exit code; gate merge on chunk-BAM presence (no `afterok`) |
+| Subprocess killed at 21600 s | `ALIGNER_TIMEOUT` on a large sample | chunk with `--mapPacBio-chunks N` |
+| Mispositioned / missing junctions on ONT | BBMap PacBio error model ≠ ONT | use minimap2/uLTRA/deSALT; consider dropping mapPacBio from ONT panels |

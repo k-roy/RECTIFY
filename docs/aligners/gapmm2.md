@@ -59,6 +59,20 @@ with opener(reads_path, 'rt') as src, open(tmp_fastq, 'w') as dst:
         dst.write(f'@{clean_name}\n{seq}{plus}{qual}')
 ```
 
+## gapmm2 CLI: PAF-only output (no SAM mode)
+
+The gapmm2 CLI (v25.4.5) only outputs PAF or GFF3:
+
+```
+-f , --out-format   output format [paf,gff3] (default: paf)
+```
+
+There is no `-a` / SAM flag. Piping `gapmm2 ... | samtools sort` fails with
+`samtools sort: failed to read header from "-"`. To get a BAM from the CLI,
+write PAF to a file and parse the `cs:Z:` diff-string tags (introns encoded
+as `~XYlenXY`). RECTIFY's `run_gapmm2()` uses the Python API (`mappy` +
+`edlib`) and handles PAF→BAM internally.
+
 ## gapmm2 PAF → BAM: sequence injection required
 
 gapmm2 outputs PAF format only (no SAM/BAM). PAF does not carry query
@@ -102,3 +116,98 @@ if "_pt:i:" in name:
 
 This has been encountered multiple times when extracting validation
 reads from DRS-trimmed dev-run outputs.
+
+(For the full mapPacBio parameter/suitability story, see
+[mapPacBio.md](mapPacBio.md).)
+
+---
+
+## Performance: the terminal-refinement loop is the bottleneck (not mapping, not `-i`)
+
+gapmm2 = minimap2 mapping + a single-threaded Python edlib loop that rescues
+terminal exons minimap2 soft-clipped. On large mammalian samples that refinement
+loop dominates and blows past the 6 h `ALIGNER_TIMEOUT` (multi_aligner.py:232).
+
+**Empirical (human chr5 ONT DRS, CNTL_HB53 = 883,350 reads, 2026-05-25):**
+
+- `-i` / `--max-intron` (the edlib terminal-window size) has **no effect on wall
+  time**: 582 s → 606 s across `-i` ∈ {10k…500k} on a 3,000-read subset (~6 %
+  spread). It is NOT the bottleneck — and a larger window rescues slightly more
+  terminal exons for free, so do **not** cap it for speed.
+- Decomposition: chr5 mappy index build is only ~5 s; per-read cost ≈ **0.19
+  s/read** (v25.4.5) → full sample ≈ **46–50 h** single-threaded.
+- v25.8.12 (uses the minimap2 **binary** when on PATH) with `--no-refine` maps
+  1,000 reads in **7 s** (~6 min full sample) — mapping is essentially free. With
+  refinement on it is **0.116 s/read** (~28 h). The refinement loop is the entire
+  bottleneck; the binary upgrade only buys ~1.6×. gapmm2 `--no-refine` ≈ plain
+  minimap2 (redundant with the panel's minimap2).
+
+**Node architecture note (2026-05-25):** SG-NEx A549 chr5, 10k-read benchmark on sh02-03n47
+(old Sherlock Intel node) took **4,644 s → 0.46 s/read**: ~2× slower than AMD Milan larsms
+nodes. A separate Intel owners-queue node (sh04-05n15) measured **0.21 s/read** vs 0.19 s/read
+on AMD Milan — ~10% variance between similar-generation Intel nodes. Treat 0.19–0.21 s/read
+as the range for modern nodes (AMD Milan / recent Intel); old sh02 Intel is ~0.45 s/read.
+
+**Scaling fix (if gapmm2 is needed):** the cost is per-read, so chunk the FASTQ
+into N parts and run gapmm2 per part in parallel (no built-in chunking — wrap it:
+split → parallel `rectify align --aligners gapmm2` → `samtools merge`), keeping
+`-i` large. The per-chunk index build (~5 s) is negligible.
+
+### Minimum-overhang gate: precision improvement + potential speedup
+
+gapmm2 triggers terminal refinement for **any** terminal soft-clip: `h.q_st > 0`
+(5′ clip) or `len(seq) > h.q_en` (3′ clip) in `align.py`. It pays the full
+per-attempt cost — window fetch + `find_all_splice` + edlib — for a 2 bp clip
+exactly as for a 200 bp one.
+
+A two-line in-place patch gates those triggers on a minimum overhang (same
+pattern as the prior `--min-mapq` argparse fix — apply per-install):
+
+```python
+MIN_OVERHANG = 10
+if h.q_st >= MIN_OVERHANG: ...               # was: if h.q_st > 0
+if (len(seq) - h.q_en) >= MIN_OVERHANG: ...  # was: if len(seq) > h.q_en
+```
+
+**Measured** (v25.8.12 binary path, 3,000-read CNTL_HB53 subset, `GATE=10`,
+2026-05-25 — `env GAPMM2_MIN_OVERHANG` gate):
+
+- **Speed: only ~10 %** (220 s → 199 s). The gate skipped 28.6 % of refinement
+  *calls*, but those are the **cheap** ones — short clips where `find_all_splice`
+  finds nothing and edlib barely runs. The expensive calls are the long overhangs
+  the gate deliberately keeps. So the gate is **not** a meaningful speedup; the
+  small-overhang attempts are not where the time goes. **Chunking remains the only
+  real speed fix.**
+- **Precision: clean win.** The gate dropped 98 introns (315 → 217, keeps 69 %),
+  and **100 % of the dropped introns were novel/unannotated — 0 annotated (real)
+  junctions lost.** Confirms short clips are the forced-GT-AG artifact source
+  (≥85 % of gapmm2's unique introns; see next section). Genuine short terminal
+  exons are rare and already covered by uLTRA/deSALT.
+
+**Bottom line:** apply the ≥10 bp gate for **quality** (a near-free artifact filter
+on gapmm2's terminal rescues), not for speed. It stacks with chunking; it does not
+replace it. (The initial "this should be a big speedup" hypothesis was wrong — a
+good reminder to measure: the synthetic `-i` microbenchmark and the speedup
+intuition both missed where the cost actually is.)
+
+## Does gapmm2 recover real junctions the other aligners miss?
+
+Per-read intron comparison vs minimap2/uLTRA/deSALT/mapPacBio (CNTL_21.8 and
+SMA_GSB2394, 2026-05-25): only **1.3–1.8 %** of gapmm2 introns are unique to
+gapmm2 for that read, and **~85 % of those uniques are novel/unannotated** with an
+artifact signature (clustered forced GT-AG terminal rescues to the same acceptor
+with scattered donors). Only ~550–840 unique introns/sample match an annotated
+GENCODE junction (~0.2 % of gapmm2's introns). Net: small genuine contribution,
+bundled with ~5× as many likely artifacts, ~98 % redundant with uLTRA/deSALT.
+
+**SG-NEx A549 chr5 10k-read benchmark (2026-05-25):** on a 10k-read subset gapmm2
+achieved 97.2% GT-AG at **4,644 s** (sh02 Intel, 0.46 s/read). After correcting a strand
+bug in `compute_junction_stats.py` (the BAM-based script omitted `aln.is_reverse` handling
+— reverse-strand reads had donor/acceptor swapped, producing ~50% spurious non-canonical),
+the corrected figures are: minimap2 91.6%, minisplice_mm2 96.0%, **winnowmap2 99.0%**,
+gapmm2 97.2%. Winnowmap2 matches or exceeds gapmm2's GT-AG at 1/516th the wall time; the
+forced GT-AG terminal rescues are not the differentiator that initially appeared.
+
+**Decision (Sumner ONT-DRS chr5, 2026-05-25):** gapmm2 dropped from the human-DRS
+panel — marginal real-junction yield does not justify ~200 chunked array tasks
+(hourly billing), and uLTRA/deSALT already cover splice-aware terminal exons.
