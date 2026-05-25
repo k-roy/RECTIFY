@@ -720,7 +720,14 @@ def run_map_pacbio(
         f'threads={threads}',
         f'path={mpb_index_dir}',
         'fastareadlen=100000',       # Belt-and-suspenders: also patched in mapPacBio.sh default
-        f'intronlen={max_intron}',  # Max intron length; use >=100k for mammalian RNA-seq
+        # BBMap `intronlen` is the MIN deletion length relabeled D->N (Cufflinks
+        # convention), NOT a max — keep it small or real introns stay D-ops.
+        'intronlen=10',
+        # `maxindel` caps the largest gap BBMap will SEARCH for; the default 16000
+        # cannot span mammalian introns (read gets soft-clipped instead). Decoupled
+        # from `max_intron` (which feeds minimap2 -G / gapmm2): BBMap needs >=200k
+        # for human RNA. See docs/aligners/mapPacBio.md.
+        f'maxindel={max(200000, max_intron)}',
         'minratio=0.4',
         '-Xmx32g',              # Cap BBTools Java heap at 32 GB to prevent OOM killing neighbours
     ]
