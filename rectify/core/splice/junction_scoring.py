@@ -25,7 +25,7 @@ import logging
 import os
 import time
 from bisect import bisect_left, bisect_right
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import numpy as _np
@@ -63,6 +63,216 @@ _X = 8   # sequence mismatch (X)
 
 _QUERY_CONSUMING: FrozenSet[int] = frozenset([_M, _I, _S, _EQ, _X])
 _REF_CONSUMING:   FrozenSet[int] = frozenset([_M, _D, _EQ, _X])
+_MATCH_OPS:       FrozenSet[int] = frozenset([_M, _EQ])  # consume query+ref, no indel
+
+# Minimum clean exon overhang (bp) on BOTH flanks for an observed N-op to seed a
+# pool junction. Aligners (notably gapmm2) occasionally emit a tiny-anchor
+# spurious split — e.g. 4M4250N223M, a 4 bp anchor before a 4.25 kb "intron" —
+# which then propagates to many cleanly-aligned reads during 3'SS rescue. A real
+# junction is crossed by reads with a substantial clean anchor, so requiring one
+# here keeps real junctions while dropping the artifacts. Kevin 2026-05-24.
+DEFAULT_MIN_JUNCTION_ANCHOR = 10
+
+# Aligner → independent algorithm family. The pool concordance relaxation
+# (build_junction_pool) treats agreement ACROSS distinct families as independent
+# evidence that a short-anchor junction is real, but agreement WITHIN a family is
+# not: gapmm2 wraps minimap2 (mappy + edlib), so a systematic minimap2 mis-seed at
+# a genomic A-tract is replicated by gapmm2 — counting them as two votes would
+# re-admit the very artifacts the anchor floor drops. minimap2/gapmm2 = one family;
+# uLTRA (annotation-graph collinear chaining), mapPacBio (BBMap), and deSALT (RdBG)
+# are each algorithmically independent. Kevin 2026-05-25.
+ALIGNER_FAMILY: Dict[str, str] = {
+    "minimap2": "minimap2",
+    "gapmm2": "minimap2",      # minimap2 wrapper (mappy) + edlib terminal refinement
+    "ultra": "ultra",          # annotation-guided collinear chaining (MEM)
+    "mappacbio": "bbmap",      # BBMap long-read mode
+    "desalt": "desalt",        # de Bruijn graph / deBGA (RdBG)
+}
+DEFAULT_RELAX_MIN_FAMILIES = 2
+
+
+def _family_from_bam_path(path: str) -> str:
+    """Infer the algorithm family from a per-aligner BAM filename.
+
+    Matches a known aligner token anywhere in the basename (robust to suffixes
+    like ``.namesorted``). An unrecognised name maps to the shared ``"?"``
+    sentinel so it cannot satisfy the cross-family relaxation on its own — an
+    unknown panel falls back to the pure hard floor rather than relaxing
+    unsoundly.
+    """
+    base = os.path.basename(path).lower()
+    for aln, fam in ALIGNER_FAMILY.items():
+        if aln in base:
+            return fam
+    return "?"
+
+
+def _resolve_families(
+    aligner_bams: List[str],
+    aligner_families: Optional[List[str]],
+) -> List[str]:
+    """Per-BAM family list: explicit ``aligner_families`` if given (mapped through
+    ``ALIGNER_FAMILY``), else inferred from each BAM filename."""
+    if aligner_families is not None and len(aligner_families) == len(aligner_bams):
+        return [ALIGNER_FAMILY.get(a.lower(), a.lower()) for a in aligner_families]
+    return [_family_from_bam_path(bp) for bp in aligner_bams]
+
+
+def _merge_del_into_intron(
+    cigartuples: List[Tuple[int, int]],
+) -> List[Tuple[int, int]]:
+    """Collapse any run of adjacent D/N ops containing an N into a single N op.
+
+    D (deletion) and N (intron skip) both consume reference and not query, so an
+    aligner's ``1D112N`` is geometrically identical to ``113N`` — the split is a
+    representational quirk that leaves a phantom deletion abutting the junction.
+    RECTIFY treats them as one intron: this normalises ``...M 1D 112N M...`` to
+    ``...M 113N M...`` so junction extraction and the anchor check see the real
+    exon match adjacent to the junction. Pure-deletion runs (no N) are untouched.
+    """
+    if not cigartuples:
+        return cigartuples
+    out: List[Tuple[int, int]] = []
+    i, n = 0, len(cigartuples)
+    while i < n:
+        op = cigartuples[i][0]
+        if op in (_D, _N):
+            run_len = 0
+            has_n = False
+            j = i
+            while j < n and cigartuples[j][0] in (_D, _N):
+                run_len += cigartuples[j][1]
+                has_n = has_n or cigartuples[j][0] == _N
+                j += 1
+            if has_n:
+                out.append((_N, run_len))
+            else:
+                out.extend(cigartuples[i:j])  # pure deletion(s) — keep as-is
+            i = j
+        else:
+            out.append(cigartuples[i])
+            i += 1
+    return out
+
+
+def _is_real_nucleotide_seq(seq: str) -> bool:
+    """True if seq is composed only of A/C/G/T/N (real bases, not '=' encoding)."""
+    return bool(seq) and all(b in "ACGTNacgtn" for b in seq)
+
+
+def _is_low_complexity_anchor(seq: str) -> bool:
+    """True if seq is a period-1/2/3 repeat (homopolymer, di- or tri-nucleotide).
+
+    A short anchor over low-complexity sequence matches spuriously in many
+    places, so it should not be trusted to define a junction boundary.
+    """
+    if not seq:
+        return True
+    s = seq.upper()
+    n = len(s)
+    for period in (1, 2, 3):
+        if n >= period and all(s[i] == s[i % period] for i in range(n)):
+            return True
+    return False
+
+
+def _seq_periodicity(seq: str) -> float:
+    """Graded low-complexity score: fraction of bases consistent with the best
+    period-1/2/3 repeat. 1.0 = a perfect homopolymer / di- / tri-nucleotide
+    repeat (matches ``_is_low_complexity_anchor``); diverse sequence sits near
+    0.4–0.5. Motif-agnostic — measures repeat structure, never splice motifs.
+    """
+    s = seq.upper()
+    n = len(s)
+    if n == 0:
+        return 1.0
+    best = 0.0
+    for period in (1, 2, 3):
+        if n < period:
+            continue
+        m = sum(1 for i in range(n) if s[i] == s[i % period])
+        f = m / n
+        if f > best:
+            best = f
+    return best
+
+
+def _junction_worst_flank_periodicity(
+    genome: Dict[str, str],
+    chrom: str,
+    intron_start: int,
+    intron_end: int,
+    window: int = 10,
+    reach: int = 30,
+) -> float:
+    """Worst-flank low-complexity score for a junction's genomic anchors.
+
+    For each exon flank (``reach`` bp immediately abutting the intron on the
+    upstream and downstream sides), slide a ``window``-bp window and take the
+    MINIMUM periodicity over windows — i.e. the most-complex window that flank
+    offers. Then return the MAX over the two flanks: a junction is well-anchored
+    only if BOTH flanks contain at least one complex (uniquely-placeable) window,
+    so the worst flank governs. A genomic A-tract flank yields ~1.0; a flank with
+    any diverse 10-mer within ``reach`` yields its complex window's low score
+    (this is what lets ``...AGCTGAGTC|AAAA...`` pass — the diverse prefix anchors
+    it). Returns 0.0 when the genome/chrom is unavailable (cannot assess → caller
+    must not flag on this dimension).
+    """
+    chrom_seq = genome.get(chrom) if genome else None
+    if not chrom_seq:
+        return 0.0
+    L = len(chrom_seq)
+
+    def _flank_min(seq: str) -> float:
+        seq = seq.upper()
+        if len(seq) < window:
+            return _seq_periodicity(seq) if seq else 1.0
+        return min(_seq_periodicity(seq[i:i + window])
+                   for i in range(len(seq) - window + 1))
+
+    left = chrom_seq[max(0, intron_start - reach):intron_start]
+    right = chrom_seq[intron_end:min(L, intron_end + reach)]
+    return max(_flank_min(left), _flank_min(right))
+
+
+def _junction_anchor_ok(
+    cigar: List[Tuple[int, int]],
+    idx: int,
+    qpos: int,
+    query_seq: str,
+    min_overhang: int,
+) -> bool:
+    """Whether the N-op at ``cigar[idx]`` has a trustworthy exon anchor on both
+    flanks.
+
+    ``qpos`` is the query coordinate at the N-op (N consumes no query, so it is
+    both the end of the left op and the start of the right op). Requires the
+    immediately-flanking ops to be match ops (M/=) of length >= ``min_overhang``
+    — which guarantees no indel within the anchor, and for =/X aligners no
+    mismatch either — and the ``min_overhang`` anchor bases on each side to be
+    non-low-complexity.
+    """
+    if min_overhang <= 0:
+        return True
+    if idx == 0 or idx == len(cigar) - 1:
+        return False  # junction at a read edge has no flanking exon
+    lop, llen = cigar[idx - 1]
+    rop, rlen = cigar[idx + 1]
+    if lop not in _MATCH_OPS or llen < min_overhang:
+        return False
+    if rop not in _MATCH_OPS or rlen < min_overhang:
+        return False
+    if not query_seq:
+        return True  # length/indel gate already passed; cannot complexity-check
+    left_anchor = query_seq[qpos - min_overhang:qpos]
+    right_anchor = query_seq[qpos:qpos + min_overhang]
+    # Only judge complexity on real nucleotide sequence. Some BAMs store SEQ as
+    # '=' (reference-match encoding); pysam returns literal '=' chars, which are
+    # not assessable for complexity — fall back to the length/indel gate.
+    for anchor in (left_anchor, right_anchor):
+        if _is_real_nucleotide_seq(anchor) and _is_low_complexity_anchor(anchor):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +407,7 @@ def collect_junctions_from_bam(
                 if chrom_filter and chrom != chrom_filter:
                     continue
                 pos = read.reference_start
-                for op, length in read.cigartuples:
+                for op, length in _merge_del_into_intron(read.cigartuples):
                     if op == _N:
                         if max_junction_size is None or length <= max_junction_size:
                             junctions.add((chrom, pos, pos + length))
@@ -208,13 +418,24 @@ def collect_junctions_from_bam(
     return junctions
 
 
-def collect_junction_counts_from_bam(
+def _collect_junction_counts_core(
     bam_path: str,
     chrom_filter: Optional[str] = None,
     max_junction_size: Optional[int] = None,
-) -> Counter[Junction]:
-    """Count N-op intervals from a BAM file."""
-    junctions: Counter[Junction] = Counter()
+    min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
+) -> Tuple[Counter, Counter]:
+    """One pass over a BAM → ``(anchor_pass_counts, raw_counts)``.
+
+    ``anchor_pass_counts`` counts only N-ops with a trustworthy exon anchor on
+    both flanks (see ``_junction_anchor_ok``). ``raw_counts`` counts EVERY
+    observed (size-filtered) N-op junction regardless of anchor quality, so the
+    pool builder can apply the cross-aligner concordance relaxation: a real
+    junction whose every supporting read has a short anchor (e.g. a short
+    exon-1) is kept when independently called by multiple aligners, while a
+    single-aligner tiny-anchor artifact is dropped.
+    """
+    anchor: Counter = Counter()
+    raw: Counter = Counter()
     try:
         with pysam.AlignmentFile(bam_path, 'rb') as bam:
             for read in bam:
@@ -228,16 +449,41 @@ def collect_junction_counts_from_bam(
                 chrom = standardize_chrom_name(read.reference_name)
                 if chrom_filter and chrom != chrom_filter:
                     continue
+                cigar = _merge_del_into_intron(read.cigartuples)
+                query_seq = read.query_sequence or ""
                 pos = read.reference_start
-                for op, length in read.cigartuples:
-                    if op == _N:
-                        if max_junction_size is None or length <= max_junction_size:
-                            junctions[(chrom, pos, pos + length)] += 1
+                qpos = 0
+                for idx, (op, length) in enumerate(cigar):
+                    if op == _N and (max_junction_size is None
+                                     or length <= max_junction_size):
+                        j = (chrom, pos, pos + length)
+                        raw[j] += 1
+                        if _junction_anchor_ok(
+                                cigar, idx, qpos, query_seq, min_anchor_overhang):
+                            anchor[j] += 1
                     if op in _REF_CONSUMING:
                         pos += length
+                    if op in _QUERY_CONSUMING:
+                        qpos += length
     except Exception as exc:
-        logger.warning("collect_junction_counts_from_bam(%s): %s", bam_path, exc)
-    return junctions
+        logger.warning("_collect_junction_counts_core(%s): %s", bam_path, exc)
+    return anchor, raw
+
+
+def collect_junction_counts_from_bam(
+    bam_path: str,
+    chrom_filter: Optional[str] = None,
+    max_junction_size: Optional[int] = None,
+    min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
+) -> Counter[Junction]:
+    """Count N-op intervals from a BAM file (anchor-passing junctions only).
+
+    Only N-ops with a trustworthy exon anchor on both flanks (see
+    ``_junction_anchor_ok``) are counted, so a tiny-anchor spurious split does
+    not seed a pool junction. ``min_anchor_overhang=0`` disables the filter.
+    """
+    return _collect_junction_counts_core(
+        bam_path, chrom_filter, max_junction_size, min_anchor_overhang)[0]
 
 
 def build_junction_pool(
@@ -246,19 +492,47 @@ def build_junction_pool(
     chrom_filter: Optional[str] = None,
     min_observed_support: int = 1,
     max_junction_size: Optional[int] = None,
+    min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
+    relax_min_families: int = DEFAULT_RELAX_MIN_FAMILIES,
+    aligner_families: Optional[List[str]] = None,
 ) -> Tuple[Set[Junction], Set[Junction]]:
     """Build union of annotated + per-aligner junctions.
+
+    An observed junction enters the pool when EITHER:
+
+    * it has well-anchored support — at least ``min_observed_support`` reads
+      (summed across aligners) cross it with a clean ≥ ``min_anchor_overhang``
+      exon anchor on both flanks (the hard low floor that drops tiny-anchor
+      artifacts); OR
+    * it has cross-FAMILY concordance — it is independently reported by
+      ``>= relax_min_families`` distinct algorithm families (the relaxation
+      escape hatch). Agreement is counted across INDEPENDENT families, not raw
+      aligners: gapmm2 wraps minimap2, so a minimap2+gapmm2 pair is one vote, not
+      two, and a systematic minimap2 mis-seed cannot relax itself in. This
+      recovers real junctions whose every supporting read has a short anchor
+      (e.g. a short exon-1) when genuinely orthogonal aligners agree, while still
+      dropping single-family tiny-anchor splits.
 
     Args:
         aligner_bams:         Paths to per-aligner BAMs (pre-consensus).
         annotated_junctions:  Set of (chrom, start, end[, strand]) tuples from
                               ``load_annotated_junctions()``.
         chrom_filter:         Optional chromosome to restrict to.
-        min_observed_support: Minimum total read support across all aligner BAMs
-                              required for observed, non-annotated junctions.
-                              Annotated junctions are always retained.
+        min_observed_support: Minimum well-anchored read support across all
+                              aligner BAMs for an observed junction.
         max_junction_size:    Optional maximum observed N-op length to include.
-                              Annotated junctions are always retained.
+        min_anchor_overhang:  Clean exon overhang required on both flanks for a
+                              read to count toward anchored support.
+        relax_min_families:   Number of DISTINCT independent algorithm families
+                              that must report a junction for the concordance
+                              relaxation to admit it without anchored support.
+                              ``<= 0`` disables the relaxation (pure hard floor).
+                              The unknown-family sentinel never counts, so an
+                              unrecognised panel falls back to the hard floor.
+        aligner_families:     Optional per-BAM family labels (same order/length as
+                              ``aligner_bams``); mapped through ``ALIGNER_FAMILY``.
+                              When omitted, family is inferred from each BAM
+                              filename (the ``<sample>.<aligner>.bam`` convention).
 
     Returns:
         (all_junctions, annotated_set) where annotated_set is the normalised
@@ -276,60 +550,63 @@ def build_junction_pool(
     all_j: Set[Junction] = set(annot_3)
     min_observed_support = max(1, int(min_observed_support))
 
+    # Per-aligner (anchor_pass_counts, raw_counts).
+    per_bam: List[Tuple[Counter, Counter]] = []
     if not aligner_bams:
-        # No aligner BAMs — pool is just the annotated set.
         pass
     elif len(aligner_bams) == 1:
-        # Single aligner — avoid fork overhead.
-        observed_counts = collect_junction_counts_from_bam(
-            aligner_bams[0],
-            chrom_filter=chrom_filter,
-            max_junction_size=max_junction_size,
-        )
-        all_j.update(
-            j for j, n in observed_counts.items()
-            if n >= min_observed_support
-        )
+        per_bam.append(_collect_junction_counts_core(
+            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang))
     else:
-        # Multiple aligners — process in parallel (one process per BAM).
-        observed_counts: Counter[Junction] = Counter()
         try:
             from concurrent.futures import ProcessPoolExecutor
             n_workers = min(len(aligner_bams), os.cpu_count() or 4)
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [
-                    ex.submit(
-                        collect_junction_counts_from_bam,
-                        bp,
-                        chrom_filter,
-                        max_junction_size,
-                    )
+                    ex.submit(_collect_junction_counts_core, bp, chrom_filter,
+                              max_junction_size, min_anchor_overhang)
                     for bp in aligner_bams
                 ]
-                for fut in futures:
-                    observed_counts.update(fut.result())
+                per_bam = [fut.result() for fut in futures]
         except (OSError, PermissionError, NotImplementedError) as exc:
             logger.warning(
                 "build_junction_pool: ProcessPoolExecutor unavailable (%s); "
                 "falling back to sequential BAM scans",
                 exc,
             )
-            for bp in aligner_bams:
-                observed_counts.update(
-                    collect_junction_counts_from_bam(
-                        bp,
-                        chrom_filter,
-                        max_junction_size=max_junction_size,
-                    )
-                )
-        all_j.update(
-            j for j, n in observed_counts.items()
-            if n >= min_observed_support
-        )
+            per_bam = [
+                _collect_junction_counts_core(
+                    bp, chrom_filter, max_junction_size, min_anchor_overhang)
+                for bp in aligner_bams
+            ]
+
+    # Accumulate anchored support (summed reads) and the set of DISTINCT
+    # algorithm families reporting each junction (for the concordance relaxation).
+    families = _resolve_families(aligner_bams, aligner_families)
+    anchor_total: Counter = Counter()
+    family_report: Dict[Junction, Set[str]] = defaultdict(set)
+    for (anchor_c, raw_c), fam in zip(per_bam, families):
+        anchor_total.update(anchor_c)
+        for j in raw_c:
+            family_report[j].add(fam)
+
+    n_anchored = n_relaxed = 0
+    for j in set(anchor_total) | set(family_report):
+        if anchor_total[j] >= min_observed_support:
+            all_j.add(j)
+            n_anchored += 1
+        elif relax_min_families > 0:
+            # Count distinct REAL families; the "?" unknown sentinel never counts.
+            n_fam = len(family_report.get(j, frozenset()) - {"?"})
+            if n_fam >= relax_min_families:
+                all_j.add(j)
+                n_relaxed += 1
 
     logger.debug(
-        "build_junction_pool: %d annotated, %d observed-support>=%d, %d total",
-        len(annot_3), len(all_j - annot_3), min_observed_support, len(all_j),
+        "build_junction_pool: %d annotated, %d anchored-support>=%d, "
+        "%d family-concordance-relaxed (>=%d families), %d total",
+        len(annot_3), n_anchored, min_observed_support,
+        n_relaxed, relax_min_families, len(all_j),
     )
     return all_j, annot_3
 

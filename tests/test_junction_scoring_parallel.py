@@ -72,7 +72,9 @@ def test_empty_bam_list_returns_annotated_only():
 def test_single_bam_sequential_path(bam_minimap2):
     """With 1 BAM the sequential path fires and returns the correct union."""
     annotated: set = set()
-    pool, annot_3 = build_junction_pool([bam_minimap2], annotated)
+    # Disable the anchor filter here: this test exercises the sequential/union
+    # machinery, not the pool-quality filter (covered by test_junction_anchor_filter).
+    pool, annot_3 = build_junction_pool([bam_minimap2], annotated, min_anchor_overhang=0)
     # Must contain at least what collect_junctions_from_bam returns directly.
     direct = collect_junctions_from_bam(bam_minimap2)
     for j in direct:
@@ -93,8 +95,11 @@ def test_two_bams_parallel_path_matches_sequential(bam_minimap2, bam_gapmm2):
     j2 = collect_junctions_from_bam(bam_gapmm2)
     expected = j1 | j2
 
-    # Parallel path: 2 BAMs triggers ProcessPoolExecutor.
-    pool_parallel, _ = build_junction_pool([bam_minimap2, bam_gapmm2], annotated)
+    # Parallel path: 2 BAMs triggers ProcessPoolExecutor. Anchor filter off —
+    # this verifies the parallel union machinery, not pool quality.
+    pool_parallel, _ = build_junction_pool(
+        [bam_minimap2, bam_gapmm2], annotated, min_anchor_overhang=0
+    )
 
     assert pool_parallel == expected, (
         f"Parallel path returned {len(pool_parallel)} junctions, "
@@ -114,7 +119,7 @@ def test_three_bams_parallel_path_matches_sequential(bam_minimap2, bam_gapmm2, b
     expected = j1 | j2 | j3
 
     pool_parallel, _ = build_junction_pool(
-        [bam_minimap2, bam_gapmm2, bam_desalt], annotated
+        [bam_minimap2, bam_gapmm2, bam_desalt], annotated, min_anchor_overhang=0
     )
 
     assert pool_parallel == expected, (
@@ -153,6 +158,7 @@ def test_min_observed_support_filters_observed_junctions_but_keeps_annotated(
         [bam_minimap2, bam_gapmm2],
         {annotated_unique},
         min_observed_support=2,
+        min_anchor_overhang=0,  # isolate the support filter from the anchor filter
     )
 
     assert annotated_unique in pool
