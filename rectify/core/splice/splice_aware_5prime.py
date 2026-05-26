@@ -1521,6 +1521,8 @@ def _rescue_3ss_truncation_body(
                             _best_local_shift_abs = _shift_abs
                             exon_seq = _cand
                             _eff_intron_start = _eff_start
+                        if _best_local_ed == 0:
+                            break  # perfect match at this offset — tiebreakers are shift-only, skip remaining offsets
 
                 if not exon_seq:
                     continue
@@ -1653,6 +1655,8 @@ def _rescue_3ss_truncation_body(
                             _best_local_shift_abs = _shift_abs
                             exon_seq = _cand
                             _eff_intron_end = _eff_end
+                        if _best_local_ed == 0:
+                            break  # perfect match at this offset — tiebreakers are shift-only, skip remaining offsets
 
                 if not exon_seq:
                     continue

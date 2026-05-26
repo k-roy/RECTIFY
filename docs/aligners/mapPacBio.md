@@ -50,6 +50,12 @@ maxindel=200000         # actually search across mammalian-scale introns
 Decouple these from the genome-wide `--max-intron` that legitimately feeds
 minimap2's `-G` and gapmm2's terminal window — they are different parameters.
 
+**Fix validated (SMA_GSB2394 human chr5 ONT DRS, full 61k reads via rectify,
+2026-05-25):** fixed params recovered **108,840 introns vs 158** with the broken
+params — a **689×** difference. The broken params were catastrophic for splicing;
+the fix works. (multi_aligner.py corrected 2026-05-25; original Sherlock copy
+backed up as `multi_aligner.py.bak_20260525`.)
+
 ---
 
 ## ONT direct-RNA suitability
@@ -63,10 +69,27 @@ more mispositioned alignments. The community standard for ONT spliced alignment 
 stranded DRS; `-k14` for noisy reads); uLTRA and deSALT are the strong
 splice-aware alternates.
 
-**Recommendation:** do not rely on mapPacBio for ONT-DRS junctions. For an ONT
-panel that already contains minimap2 + uLTRA + deSALT, mapPacBio is the weakest
-member; weigh whether its consensus diversity is worth the cost before including
-it. (Source: Křižanović 2018, PMC6192213; uLTRA paper PMC8665758.)
+**Measured on this data (SMA_GSB2394, fixed params, vs minimap2/uLTRA/deSALT,
+2026-05-25):** even correctly configured, mapPacBio is the **noisy outlier**.
+**21.7 %** of its introns (23,590) are unique — found by no other aligner for that
+read (>5 bp) — and **97.7 %** of those uniques (23,037) are also >5 bp from any
+annotated GENCODE junction ("novel"). It contributes only ~553 unique *annotated*
+junctions — the same as gapmm2 — among ~23k low-quality ones. Note "novel" here
+conflates two cases a ±5 bp check can't separate: **fully spurious** introns
+(invented where no junction exists) and **mispositioned-real** introns (a real
+junction placed >5 bp off — BBMap's known ONT imprecision). Both are bad for
+precise junction / 3′-end calling, but it is NOT proven they are all fake. The
+robust signal is the **disagreement rate**: 21.7 % unique vs the panel, against
+gapmm2's 1.8 % — mapPacBio is the outlier regardless. (To split spurious from
+mispositioned, re-classify the novel-unique introns at a wider, e.g. ±50 bp,
+annotation tolerance.)
+
+**Recommendation:** do **not** include mapPacBio in an ONT-DRS splice panel. The
+three purpose-built ONT/long-read splice aligners (minimap2 + uLTRA + deSALT) are
+cleaner; mapPacBio's unique contribution is ~98 % artifact. Dropped from the
+human-DRS panel 2026-05-25. Keep mapPacBio for **yeast**, where BBMap's
+short-indel error model fits and it has earned its place. (Sources: Křižanović
+2018 PMC6192213; uLTRA PMC8665758.)
 
 ---
 

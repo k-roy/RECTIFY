@@ -27,6 +27,18 @@ This is correctness-safe: N-op-matched junctions are the *evidence basis* for th
 
 ---
 
+## [2026-05-26] PERF: `_rescue_3ss_truncation_body` offset-loop early exit on ED=0 — FIXED
+
+**Status:** Fixed at `splice_aware_5prime.py:_rescue_3ss_truncation_body` (plus and minus strand offset loops). Tests green (1318 passed, 1 xfailed). Deployed to Sherlock.
+
+**Root cause:** Within each (junction, shift) pair, the offset loop iterates up to `_off_limit` (≤110) offsets and calls `_hp_edit_distance` for each. Once a perfect match (ED=0) is found at a given offset, the remaining offsets for that shift cannot improve the result — the tiebreaker tuple `(not _in_amb, not _donor_ok, _shift_abs)` depends only on the shift, not on the offset. Iterating further offsets wastes CPU without any possibility of changing the winner.
+
+**Fix:** Add `if _best_local_ed == 0: break` immediately after the per-offset update block (both plus-strand ~line 1524 and minus-strand ~line 1655). This exits the offset loop early as soon as a perfect match is found at the current shift.
+
+**Correctness argument:** The tiebreaker has three components: `_in_amb` (junction ambiguity status — fixed per junction), `_donor_ok` (junction validity — fixed per junction), and `_shift_abs` (absolute shift — fixed per shift). None depend on `_off`. A different offset at the same shift would produce the same or worse ED and the same tiebreaker, so skipping it cannot change which (junction, shift, offset) triplet wins overall. NOTE: shift-loop and junction-loop breaks on ED=0 are UNSAFE — different shifts/junctions can tie at ED=0 but differ on tiebreakers (e.g., a later junction may have `_in_amb=True` which is preferred). Only the inner offset loop is safe to break early.
+
+---
+
 ## [2026-05-26] PERF: global `junction_pool.pkl` inflated by deSALT nosec artifact junctions — DIAGNOSED
 
 **Status:** Diagnosed. deSALT nopool resubmit running (job 26131450). Pool rebuild strategy TBD.
