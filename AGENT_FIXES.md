@@ -11,6 +11,34 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-26] PERF: global `junction_pool.pkl` inflated by deSALT nosec artifact junctions — DIAGNOSED
+
+**Status:** Diagnosed. deSALT nopool resubmit running (job 26131450). Pool rebuild strategy TBD.
+
+**Symptom:** deSALT solo smoke jobs (26128808, 26130266) stuck with 0 region checkpoints for
+25+ min in Module 2H (`_score_hp_anchored` / `_precompute_del_costs`). Stack moving but rate
+is ~0 regions/hr. Used the `--junction-pool-cache` pre-built pool.
+
+**Root cause:** `chunks/junction_pool.pkl` contains 1,685,525 junctions vs 385 annotated.
+Scoring 1.68M junctions per read × reads per region in pure Python (base Python 3.12 lacks
+Numba) is computationally infeasible regardless of stack movement. Intron length distribution:
+median 87 bp, p99 110 KB, max 448 KB — impossible for yeast (max known intron ~1 KB).
+46,724 junctions are >10 KB. The pool was almost certainly built from a prior run that included
+deSALT nosec BAMs; the htslib fetch() corruption produces reads with artifact N-ops at random
+genomic positions, all of which get collected into the global pool.
+
+**Immediate fix:** Resubmit without `--junction-pool-cache` (job 26131450: `run_desalt_nopool.sh`).
+Per-region discovery will use only junctions seen in local reads, expected ~1K–10K vs 1.68M.
+
+**Longer-term options:**
+1. Rebuild pool from non-deSALT aligners only (minimap2, mapPacBio, gapmm2, minisplice)
+2. Filter pool by max intron length (<10 KB for yeast, <1 MB for human) and min support (≥3 reads)
+3. Don't use global pool for deSALT single-aligner runs at all
+
+**Do NOT reuse `chunks/junction_pool.pkl`** until it is rebuilt without deSALT-nosec contributions.
+
+---
+
 ## [2026-05-26] PERF: `align_clip_to_exon` O(clip_len²) hang for deeply-intronic reads — FIXED
 
 **Status:** Fixed at `local_aligner.py:align_clip_to_exon`. Deployed when M1→Sherlock rsync runs.
