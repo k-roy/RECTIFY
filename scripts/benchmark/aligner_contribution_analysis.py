@@ -341,13 +341,15 @@ def compute_upset_from_per_aligner_tsvs(
     aligners = sorted(aligner_tsvs.keys())
 
     aligner_corrections: Dict[str, Dict[str, str]] = {}
-    for aligner, path in aligner_tsvs.items():
+    for aligner, path_or_list in aligner_tsvs.items():
         corrections: Dict[str, str] = {}
-        with open(path, newline="") as fh:
-            reader = csv.DictReader(fh, delimiter="\t")
-            for row in reader:
-                ca = row.get("correction_applied", "none") or "none"
-                corrections[row["read_id"]] = ca
+        paths = [path_or_list] if isinstance(path_or_list, str) else path_or_list
+        for path in paths:
+            with open(path, newline="") as fh:
+                reader = csv.DictReader(fh, delimiter="\t")
+                for row in reader:
+                    ca = row.get("correction_applied", "none") or "none"
+                    corrections[row["read_id"]] = ca
         aligner_corrections[aligner] = corrections
         print(f"[INFO]   {aligner}: {len(corrections):,} reads", file=sys.stderr)
 
@@ -399,12 +401,15 @@ def compute_upset_from_per_aligner_tsvs(
         print(f"  ... ({len(rows) - 15} more patterns)")
 
 
-def find_per_aligner_tsvs(per_aligner_correct_dir: str) -> Dict[str, str]:
-    """Discover {aligner: corrected_reads.tsv} from a per-aligner correct directory.
+def find_per_aligner_tsvs(per_aligner_correct_dir: str) -> Dict[str, object]:
+    """Discover {aligner: tsv_path_or_list} from a per-aligner correct directory.
 
-    Expected layout: <dir>/{aligner}/corrected_reads.tsv
+    Handles two layouts:
+      - single file:  <dir>/{aligner}/corrected_reads.tsv
+      - region files: <dir>/{aligner}/corrected_reads.manifest.tsv
+                      + corrected_reads.region_NNN.tsv (produced by --threads>1 runs)
     """
-    result: Dict[str, str] = {}
+    result: Dict[str, object] = {}
     base = Path(per_aligner_correct_dir)
     if not base.is_dir():
         return result
@@ -414,6 +419,16 @@ def find_per_aligner_tsvs(per_aligner_correct_dir: str) -> Dict[str, str]:
         tsv = sub / "corrected_reads.tsv"
         if tsv.exists() and tsv.stat().st_size > 0:
             result[sub.name] = str(tsv)
+            continue
+        # Fall back to manifest/region format (produced by --threads>1 runs)
+        manifest = sub / "corrected_reads.manifest.tsv"
+        if manifest.exists():
+            region_tsvs = sorted(
+                p for p in sub.glob("corrected_reads.region_*.tsv")
+                if not p.name.endswith("_stats.tsv")
+            )
+            if region_tsvs:
+                result[sub.name] = [str(p) for p in region_tsvs]
     return result
 
 
