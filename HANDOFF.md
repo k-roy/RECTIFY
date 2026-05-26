@@ -129,6 +129,26 @@
   alignment (hunch: mapPacBio).
 - **Commit-Zero-B profiling** (size perf items C-II.2 / D / F) — pending.
 
+## 3b. NEW since this doc was written (2026-05-26)
+
+- **rRNA/Pol III exclusion wired into `correct`** — committed **`cf5ebb9`**.
+  `correct` now skips Module 2F 3'SS rescue for reads in rDNA/tRNA/SNR6/RDN5
+  regions (default-on, `--include-rdna` to disable; threaded through the parallel
+  worker; gate in `correct_read_3prime`). Root-cause fix for the manifest stall
+  (the heaviest regions are these non-mRNA loci, dropped downstream by `analyze`
+  regardless). Tests: `tests/test_correct_rdna_exclusion.py` (3) + 135 focused
+  green. **NOT yet cluster-scale-verified** — needs `cf5ebb9` synced to Sherlock
+  then a run.
+- **Manifest job 26065710 was scancelled** — it advanced past the 0% hang but
+  soft-hung at region 29/126 for 4 h (~216 s/region). py-spy: workers pegged in
+  `_hp_edit_distance` in the *baseline* rescue. The dual-site fix collapsed
+  candidates on average but loop-1's ~341× shift×offset DP-per-candidate (left
+  untouched) still dominates on high-coverage loci — which is exactly why the
+  rRNA exclusion above is the right fix.
+- **ACTIVE: task #12 (handed to fresh legs)** — profile the top-1% most
+  expensive reads in `correct` (POST-exclusion) + deep-dive speedups / dead-end
+  flagging. See §4 resume.
+
 ## 4. Resume command
 
 **Resume by re-centering on the ORIGINAL goals. The perf thread has LANDED
