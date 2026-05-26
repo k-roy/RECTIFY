@@ -11,6 +11,22 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-26] PERF: `_rescue_3ss_truncation_body` O(N) junction iteration on dense splice loci — FIXED
+
+**Status:** Fixed at `splice_aware_5prime.py:_rescue_3ss_truncation_body`. Tests green (1318 passed). Deploy: commit + push + rsync + resubmit.
+
+**Symptom:** After the `_terminal_peel_rescue` K=20 peel-path cap (entry below), py-spy on WM2/MSP/A549 jobs showed stacks STILL pinned at `rescue_3ss_truncation:1110` → `_rescue_3ss_truncation_body` via the DIRECT base-rescue path (not through `_terminal_peel_rescue`). Workers at 99% CPU with near-zero checkpoint progress on human chr5.
+
+**Root cause:** `_rescue_3ss_truncation_body` collects `_nearby_junctions` via the proximity filter at lines ~1260–1285. On junction-dense human chr5 (SMN1/SMN2 locus), the filter can admit 50–200+ junctions even in the direct-rescue call path (not just the peel path). The inner loops then iterate all junctions × N_shifts × N_offsets × `_hp_edit_distance` calls — O(N × 40K ops) per read, with N=200+.
+
+**Fix:** Partitioned K=25 cap immediately after `_nearby_junctions` collection (lines ~1287–1316):
+- When `_n_intervals` is populated (mapPacBio leading-D path): preserve all N-op-matched junctions first (they can sit far from `align_5prime` and would be wrongly dropped by edge-distance sort), then apply the K budget to the remaining proximity-only junctions.
+- When `_n_intervals` is empty (MSP, WM2, and most non-mapPacBio reads): simple sort-by-edge-distance + slice.
+
+This is correctness-safe: N-op-matched junctions are the *evidence basis* for the mapPacBio leading-D hypothesis; dropping them would silently regress rescue rates. The partition collapses to a no-op when N ≤ 25.
+
+---
+
 ## [2026-05-26] PERF: global `junction_pool.pkl` inflated by deSALT nosec artifact junctions — DIAGNOSED
 
 **Status:** Diagnosed. deSALT nopool resubmit running (job 26131450). Pool rebuild strategy TBD.

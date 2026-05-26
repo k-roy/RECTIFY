@@ -1284,6 +1284,37 @@ def _rescue_3ss_truncation_body(
         ):
             _nearby_junctions.append(_j)
 
+    # Cap to K closest junctions when the set is large.  On junction-dense loci
+    # (human chr5 SMN1/SMN2) the proximity filter can still admit 50-200+ entries.
+    # The rescue loops below call _hp_edit_distance O(N × N_shifts) per read; with
+    # N=200+ this is ~10k DP calls per read. Keeping the K closest by edge distance
+    # reduces N to ≤25 in the pathological case.
+    #
+    # Partitioned cap: junctions admitted via N-op match (mapPacBio _leading_del path,
+    # line 1281 OR-branch) can sit far from align_5prime — sorting by edge distance
+    # would drop them.  Preserve all N-op-matched junctions; apply the distance-based
+    # cap only to the remainder.  When _n_intervals is empty (non-mapPacBio, typical
+    # for MSP/WM2), the else-branch is the simple O(1) sort-and-slice.
+    _MAX_RESCUE_JUNCTIONS = 25
+    if len(_nearby_junctions) > _MAX_RESCUE_JUNCTIONS:
+        _edge_key = lambda _j: abs(align_5prime - (_j[2] if strand == '+' else _j[1]))
+        if _n_intervals:
+            _n_matched = [
+                _j for _j in _nearby_junctions
+                if any(abs(_j[1] - _ns) <= _nb_W2 and abs(_j[2] - _ne) <= _nb_W2
+                       for _ns, _ne in _n_intervals)
+            ]
+            _n_match_set = set(_n_matched)
+            _prox_only = sorted(
+                (_j for _j in _nearby_junctions if _j not in _n_match_set),
+                key=_edge_key,
+            )
+            _budget = max(0, _MAX_RESCUE_JUNCTIONS - len(_n_matched))
+            _nearby_junctions = _n_matched + _prox_only[:_budget]
+        else:
+            _nearby_junctions.sort(key=_edge_key)
+            _nearby_junctions = _nearby_junctions[:_MAX_RESCUE_JUNCTIONS]
+
     # Pre-compute the "leading-D" pattern flags ONCE per read.  These are read
     # properties (CIGAR-only), independent of the candidate junction, so hoist
     # them out of the per-junction loop.  Without this hoist, the inner loop
