@@ -92,6 +92,36 @@ human-readiness issues along the way.
 
 ## 5. Remaining goals (in order)
 
+> ### ⭐ HIGH PRIORITY — train a human empirical error model (DRS + cDNA)
+>
+> Mirror the yeast empirical HP/STR penalty tables for human, using human DRS **and**
+> cDNA data. The yeast model lives at
+> `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/`
+> (`penalty_scores.tsv` = DRS, `penalty_scores_cdna.tsv` + `_umi1/_umi2/_umi3plus`,
+> `penalty_scores_qsrev.tsv`, `str_penalty_scores.tsv`, `junction_overhang_table.tsv`).
+> Produce the `homo_sapiens/penalty_tables/` analogs (at minimum DRS + cDNA, plus the
+> per-UMI-depth cDNA variants if UMI cDNA is used).
+>
+> - **Method:** `scripts/calibration/empirical_cigar_error_profiler.py` derives per-`(op,
+>   base_class AT/CG, HP-length)` error rates at positions where **all aligners agree**
+>   (multi-aligner consensus), normalized to the HP=1 substitution baseline per
+>   `docs/EMPIRICAL_HP_PENALTY_SCORING.md`. Consumer/loader is
+>   `rectify/core/splice/hp_penalty.py` — confirm it resolves per-organism table paths
+>   (and that `correct`/refinement actually load the human tables once present).
+> - **Inputs:** human DRS + human cDNA. SG-NEx carries both directRNA and PCR-/direct-cDNA
+>   for the same cell lines (A549/Hct116/…); the Sumner cohort has DRS + PCR-cDNA. Use
+>   public cell-line data for anything shipped; patient data prototyping-only.
+> - **Hard dependency on the re-align:** the profiler trusts multi-aligner *consensus*, so it
+>   must train on alignments produced with `--max-intron 500000` + the chrom fix — **not** the
+>   current `-G 5000` BAMs, whose consensus is intron-cap-contaminated (§3.2). Sequence this
+>   after goal 1.
+> - **Watch-outs:** (a) chr5 alone is likely too thin for rare HP/STR contexts — prefer
+>   multi-chromosome/full-genome (the yeast model used the whole genome, 9.7M reads);
+>   (b) **error models are chemistry-specific** — SG-NEx is **R9.4**, whereas the yeast table
+>   and the Sumner patient data are **R10.4.1**. An SG-NEx-trained table will not transfer
+>   cleanly to R10.4.1 Sumner production; train the production DRS table on R10.4.1 human data
+>   and record basecaller + chemistry in the table provenance.
+
 1. **Re-align A549 with `--max-intron 500000`** from `trim/a549_chr5_trimmed.fastq.gz`
    (4-aligner panel; trim step + read set unaffected). Then re-run `correct`
    (without `--annotation`, or *with* it once `961c844` is validated) → `classify`
