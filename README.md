@@ -1,15 +1,13 @@
 <p align="center">
-  <h1 align="center">RECTIFY</h1>
-  <p align="center">
-    <b>R</b>NA 5' and 3' <b>E</b>nd <b>C</b>orrection <b>T</b>ool with <b>I</b>ntron re<b>F</b>inement and ambiguit<b>Y</b> resolution
-  </p>
-  <p align="center">
-    <a href="https://pypi.org/project/rectify-rna/"><img src="https://img.shields.io/pypi/v/rectify-rna?color=blue&label=PyPI" alt="PyPI"></a>
-    <a href="https://rectify-rna.readthedocs.io"><img src="https://img.shields.io/readthedocs/rectify-rna?label=docs" alt="Docs"></a>
-    <a href="https://github.com/k-roy/RECTIFY/actions"><img src="https://img.shields.io/github/actions/workflow/status/k-roy/RECTIFY/tests.yml?branch=master&label=tests" alt="Tests"></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
-    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python 3.8+"></a>
-  </p>
+  <img src="docs/branding/rectify_banner_light.png#gh-light-mode-only" alt="RECTIFY — Nanopore RNA Alignment Correction" width="700">
+  <img src="docs/branding/rectify_banner_dark.png#gh-dark-mode-only"  alt="RECTIFY — Nanopore RNA Alignment Correction" width="700">
+</p>
+<p align="center">
+  <a href="https://pypi.org/project/rectify-rna/"><img src="https://img.shields.io/pypi/v/rectify-rna?color=blue&label=PyPI" alt="PyPI"></a>
+  <a href="https://rectify-rna.readthedocs.io"><img src="https://img.shields.io/readthedocs/rectify-rna?label=docs" alt="Docs"></a>
+  <a href="https://github.com/k-roy/RECTIFY/actions"><img src="https://img.shields.io/github/actions/workflow/status/k-roy/RECTIFY/tests.yml?branch=master&label=tests" alt="Tests"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python 3.8+"></a>
 </p>
 
 Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class from WT yeast reads), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
@@ -17,7 +15,7 @@ Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-j
 One pipeline, three RNA-seq technologies.
 
 <p align="center">
-  <img src="docs/figures/pipeline_overview.png?v=2" alt="RECTIFY pipeline overview" width="820">
+  <img src="docs/figures/pipeline_overview.png" alt="RECTIFY pipeline overview" width="820">
 </p>
 
 ---
@@ -48,8 +46,8 @@ Nanopore reads carry non-genomic sequence — basecalled poly(A), template-switc
 | **QSrev**    | *(none)*                | Reads carry no poly(A); strand inversion is handled at the correction step |
 
 <p align="center">
-  <img src="docs/figures/polya_pretrim.png?v=2" alt="DRS poly(A) pre-trim" width="660">
-  <img src="docs/figures/cdna_umi_architecture.png?v=2" alt="ONT PCR-cDNA UMI architecture" width="660">
+  <img src="docs/figures/polya_pretrim.png" alt="DRS poly(A) pre-trim" width="660">
+  <img src="docs/figures/cdna_umi_architecture.png" alt="ONT PCR-cDNA UMI architecture" width="660">
 </p>
 
 ### (b) Multi-aligner (parallel) + junction pool
@@ -57,7 +55,7 @@ Nanopore reads carry non-genomic sequence — basecalled poly(A), template-switc
 `rectify align` runs **minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT** in parallel for long reads, or **bbmap + bwa** for short reads (`--short-read`). Aligners disagree on junctions within reads for several reasons — inherent ambiguity at homopolymer donor/acceptor sites, differing gap-open penalties, different handling of soft-clips — so running them in parallel gives RECTIFY a panel of candidate alignments per read to reconcile. **Each aligner produces its own BAM** with its own junction set; junctions observed across all BAMs are unioned with the annotated splice database to form a shared **junction pool** that the correction step uses to rescue partial alignments.
 
 <p align="center">
-  <img src="docs/figures/multi_aligner_consensus.png?v=2" alt="Multi-aligner pipeline" width="720">
+  <img src="docs/figures/multi_aligner_consensus.png" alt="Multi-aligner pipeline" width="720">
 </p>
 
 ### (c) `rectify correct` — repair each aligner's output
@@ -68,7 +66,7 @@ The three corrections (5' / introns / 3') run **per aligner** so every alignment
 Long reads spanning splice junctions often carry soft-clipped 5' bases that match the upstream exon — the aligner couldn't extend through the junction. RECTIFY checks each soft-clipped overhang against the **junction pool** from (b) and, if it matches a nearby donor, extends the alignment across the junction to that donor.
 
 <p align="center">
-  <img src="docs/figures/5prime_junction_rescue.png?v=2" alt="5' junction rescue" width="660">
+  <img src="docs/figures/5prime_junction_rescue.png" alt="5' junction rescue" width="660">
 </p>
 
 > *Note:* in direct RNA, the read's 5' end is also affected by 5'→3' degradation, so this corrects alignment artifacts but does not guarantee TSS recovery.
@@ -84,7 +82,7 @@ Each N-cigar op is refined against the **junction pool** (annotated + observed-a
 | `novel`          | Neither end of any N-op matches any annotated site                         |
 
 <p align="center">
-  <img src="docs/figures/splice_classification.png?v=2" alt="Splice classification" width="620">
+  <img src="docs/figures/splice_classification.png" alt="Splice classification" width="620">
 </p>
 
 #### 3' ends — two complementary corrections
@@ -93,13 +91,13 @@ The aligner can land the 3' end in the wrong place in either direction. RECTIFY 
 **Walkback (upstream).** Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
 
 <p align="center">
-  <img src="docs/figures/walkback_readvsref.png?v=2" alt="Read-vs-reference walkback" width="680">
+  <img src="docs/figures/walkback_readvsref.png" alt="Read-vs-reference walkback" width="680">
 </p>
 
 **HP-aware soft-clip rescue (downstream).** Nanopore basecallers systematically under-call long homopolymers — a genomic 9-T tract may be called as only 6 T's, leaving the next 3 reference bases (often the CPA site itself, plus its immediate context) **soft-clipped** by the aligner because they no longer have a contiguous home in the read. RECTIFY identifies reads whose alignment terminates inside a reference homopolymer with a soft-clipped overhang, and checks whether the overhang matches the genome immediately downstream of the HP. If it does, the alignment is **extended through the HP-gap** (deletion ops for the under-called positions) so the soft-clip is recovered as a proper match — moving the 3' end **further downstream** to the true CPA. This is the opposite directional fix from walkback and runs on the same per-aligner BAMs (`indel_corrector.rescue_softclip_at_homopolymer`).
 
 <p align="center">
-  <img src="docs/figures/softclip_rescue.png?v=2" alt="HP-aware soft-clip rescue" width="700">
+  <img src="docs/figures/softclip_rescue.png" alt="HP-aware soft-clip rescue" width="700">
 </p>
 
 ### (d) Empirical error-rate scoring
@@ -107,7 +105,7 @@ The aligner can land the 3' end in the wrong place in either direction. RECTIFY 
 When refinement chooses between candidate junctions or end positions, edit operations (mismatch, insertion, deletion) are scored by their **empirical per-chemistry error rates** as a function of homopolymer context and base class (AT vs CG). For Nanopore R10.4.1 reads, a deletion at HP=8 carries a penalty of 0.034 — nearly free — versus 0.44 at HP=1, because Nanopore basecallers routinely under-call long homopolymer runs. Each chemistry uses its own calibrated table (DRS, ONT cDNA, QuantSeq REV), all derived from WT *S. cerevisiae* reads.
 
 <p align="center">
-  <img src="docs/figures/hp_scoring.png?v=2" alt="Empirical HP deletion penalty curves" width="620">
+  <img src="docs/figures/hp_scoring.png" alt="Empirical HP deletion penalty curves" width="620">
 </p>
 
 See [docs/EMPIRICAL_HP_PENALTY_SCORING.md](docs/EMPIRICAL_HP_PENALTY_SCORING.md).
@@ -126,7 +124,7 @@ Run on the rectified BAM.
 A valley-based adaptive clustering algorithm groups nearby corrected 5' ends (TSS) and 3' ends (CPA) into discrete usage clusters. The same algorithm runs separately on each end.
 
 <p align="center">
-  <img src="docs/figures/adaptive_clustering.png?v=2" alt="Adaptive clustering" width="600">
+  <img src="docs/figures/adaptive_clustering.png" alt="Adaptive clustering" width="600">
 </p>
 
 ### Splice junction analysis
@@ -136,7 +134,7 @@ Per-read splice classifications from step (c) are aggregated into per-junction t
 `rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.
 
 <p align="center">
-  <img src="docs/figures/cdna_isoform_clustering.png?v=2" alt="cDNA isoform clustering" width="720">
+  <img src="docs/figures/cdna_isoform_clustering.png" alt="cDNA isoform clustering" width="720">
 </p>
 
 ---
@@ -230,7 +228,7 @@ Full reference at [readthedocs](https://rectify-rna.readthedocs.io).
 Nascent Elongating Transcript Sequencing data captures RNA polymerase II–associated transcripts at single-nucleotide resolution and provides direct ground-truth evidence of CPA intermediates within genomic A-tracts. RECTIFY uses NNLS deconvolution with a point-spread function derived from 5000+ zero-A sites to recover true cleavage positions where DRS alone is ambiguous.
 
 <p align="center">
-  <img src="docs/figures/netseq_deconvolution.png?v=2" alt="NET-seq oligo(A) deconvolution" width="760">
+  <img src="docs/figures/netseq_deconvolution.png" alt="NET-seq oligo(A) deconvolution" width="760">
 </p>
 
 ```bash
