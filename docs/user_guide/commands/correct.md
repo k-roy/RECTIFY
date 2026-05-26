@@ -69,7 +69,7 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 | `--ONT-cDNA` | off | Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). Poly(A) tail IS present as a 3' soft-clip. Enables poly(A) trimming + indel correction; disables AG-mispriming. Do NOT combine with `--dT-primed-cDNA`. |
 | `--short-read` | off | Input is short-read data (Illumina/Aviti ≤150 bp). Disables poly(A)-tail trimming, A-tract correction, and indel modules. Pair with `rectify align --short-read` (bbmap + bwa). |
 
-*(deprecated aliases retained for backwards compatibility: `--polya-sequenced` / `--no-polya-sequenced`. Use the current flags above for new pipelines.)*
+*(deprecated alias retained for backwards compatibility: `--polya-sequenced` (maps to `--dT-primed-cDNA`). Use the current flags above for new pipelines. Note: `--no-polya-sequenced` is a deprecated alias for `rectify run-all`, not for `rectify correct`.)*
 
 ### Poly(A) handling
 
@@ -100,7 +100,7 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--ag-threshold` | 0.65 | AG-richness threshold (0–1) for mispriming flag |
+| `--ag-threshold` | 17.0 | Weighted AG-richness composite score threshold for mispriming flag. Range 0.0–34.5; default 17.0 is calibrated for yeast DRS data. This is NOT a simple fraction — do not use values in the 0–1 range. |
 
 ### Output options
 
@@ -111,6 +111,41 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 | `--write-softclipped-bam` | Like `--write-corrected-bam` but poly(A) bases are soft-clipped (visible in IGV) |
 | `--write-bedgraph PREFIX` | Write strand-specific bedGraph files (`PREFIX.plus.bedgraph` / `PREFIX.minus.bedgraph`) for NET-seq fractional pileups |
 | `--report` | Write QC report to this path (`.html` or `.pdf`) |
+
+### Junction refinement (Module 2H)
+
+Provide per-aligner BAMs to activate post-consensus N-op refinement: every intron N-op in
+the winning BAM is re-scored against all candidate junctions observed across all aligner BAMs
+within a search radius, and replaced with the best sequence-supported junction.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--aligner-bams BAM` | (none) | Per-aligner BAM for junction candidate pool. Repeat for each aligner: `--aligner-bams minimap2.bam --aligner-bams gapmm2.bam`. Accepts plain paths or `aligner:path` pairs. When supplied, enables Module 2H. |
+| `--junction-hp-pen FLOAT` | 0.25 | Homopolymer indel penalty for junction scoring (0 < value ≤ 1.0). Lower values tolerate poly-T/A undercalling errors near splice sites. 0.25 is recommended for Nanopore DRS. |
+| `--junction-search-radius BP` | 5000 | Search radius (bp) around each N-op for candidate junctions. Covers the longest known yeast intron (~1 kb) with margin. |
+| `--junction-window BP` | 15 | Edit-distance window half-width for split-alignment scoring (bp on each side of the junction). |
+| `--junction-max-slide BP` | 10 | Maximum query split displacement for split-alignment scoring (±bp). |
+| `--junction-max-boundary-shift BP` | 50 | Maximum allowed shift of either intron boundary when applying a junction replacement. Prevents false-positive matches from junctions in neighbouring genes. |
+| `--junction-penalty-table PATH` | (heuristic) | Path to empirical HP-context penalty table (`penalty_scores.tsv`) produced by `empirical_cigar_error_profiler.py`. Overrides heuristic del/ins costs with per-HP-length values derived from multi-aligner agreement on this dataset. |
+| `--str-penalty-table PATH` | (none) | Path to STR penalty table (`str_penalty_scores.tsv`). Scores dinucleotide/trinucleotide repeat contexts with empirical STR-specific penalties alongside `--junction-penalty-table`. |
+
+See [Multi-Aligner Consensus](../../algorithms/multi_aligner_consensus.md) and
+[docs/EMPIRICAL_HP_PENALTY_SCORING.md](../../EMPIRICAL_HP_PENALTY_SCORING.md) for scoring details.
+
+### Checkpoint / resume / sidecar
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--checkpoint-dir DIR` | (none) | Directory for per-region checkpoint sentinels and the variant-scan pickle. Enables resume: completed regions are skipped on re-run, the variant scan pickle is reloaded, and the partial output TSV is appended to. Has no effect without `--streaming`. On H2/Sherlock, use `$L_SCRATCH/rectify_ckpt`. |
+| `--tmp-dir DIR` | `$TMPDIR` | Scratch directory for intermediate per-region BAM files used by the parallel BAM writer. On H2/Sherlock, pass `$L_SCRATCH/rectify_regions` for fast local disk. |
+| `--variant-scan-cache PKL` | (none) | Pre-computed variant scan pickle from `rectify prescan`. Skips the Pass-1 all-reads scan (Module 2D). Use when running per-chunk correction with a shared scan built from the merged BAM. |
+| `--junction-pool-cache PKL` | (none) | Pre-computed junction pool pickle from `rectify prescan`. Skips the aligner-BAM junction collection step (Module 2H). |
+| `--emit-merged-tsv` | off | Also emit a legacy concatenated `corrected_reads.tsv` alongside the `corrected_reads.manifest.tsv`. For downstream scripts not yet migrated to accept manifests. |
+| `--force-all` | off | Ignore all sidecars; rerun every stage unconditionally. |
+| `--force-stage NAME[,NAME...]` | (none) | Force-rerun specific stages (e.g. `analyze,correct`). Stages downstream of a forced stage are also forced. |
+| `--accept-prior-provenance` | off | Treat git SHA mismatch between prior and current run as non-blocking. Use only for cosmetic commits (docs, comments) that don't affect output bytes. |
+| `--dry-run-resume` | off | Print the SKIP/RUN decision for each stage (with diff of which input or argv changed) and exit. No work done. |
+| `--legacy-single-threaded` | off | Force the pre-parallel single-threaded BAM writer. For debugging correctness regressions only. **DEPRECATED** — will be removed in a future release. |
 
 ### Performance
 

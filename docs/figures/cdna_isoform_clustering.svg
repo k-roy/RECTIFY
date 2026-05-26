@@ -1,181 +1,53 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="740" viewBox="0 0 760 740">
-<rect fill="#ffffff" width="760" height="740"/>
-<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
-<text fill="#1e293b" font-size="16" font-weight="bold" text-anchor="middle" x="380" y="26">Isoform Clustering: UMI-Anchored vs pA-Tail-Anchored Reads</text>
-
-<!-- ===== PANEL 1: Type-1 (5' UMI-anchored) ===== -->
-<text fill="#2563eb" font-size="12" font-weight="bold" letter-spacing="0.6" x="50" y="58">TYPE-1 — 5' UMI-ANCHORED</text>
-<text fill="#64748b" font-size="10" x="310" y="58">(XT:i:1, SSP+UMI captured → real TSS)</text>
-
-<!-- Gene model -->
-<text fill="#64748b" font-size="11" x="14" y="94">Gene</text>
-<rect x="80" y="78" width="110" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="135" y="96">Exon 1</text>
-<line x1="190" y1="91" x2="250" y2="91" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
-<rect x="250" y="78" width="90" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="295" y="96">Exon 2</text>
-<line x1="340" y1="91" x2="400" y2="91" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
-<rect x="400" y="78" width="130" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="465" y="96">Exon 3</text>
-
-<!-- TSS marker -->
-<line stroke="#2563eb" stroke-width="2" x1="80" x2="80" y1="68" y2="108"/>
-<text fill="#2563eb" font-size="10" font-weight="600" x="60" y="66">TSS</text>
-
-<!-- CPA site marker -->
-<line stroke="#059669" stroke-width="2" x1="530" x2="530" y1="68" y2="108"/>
-<text fill="#059669" font-size="10" font-weight="600" x="536" y="66">CPA</text>
-
-<!-- Read cluster -->
-<text fill="#64748b" font-size="10" x="14" y="132">Reads</text>
-
-<!-- Read 1: full length -->
-<rect x="80" y="118" width="34" height="20" rx="3" fill="#2563eb"/>
-<text fill="#ffffff" font-size="8" font-weight="600" text-anchor="middle" x="97" y="132">UMI</text>
-<rect x="114" y="118" width="416" height="20" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="114" y="118" width="416" height="20" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="9" x="122" y="132">read 1 — full-length, reaches CPA</text>
-
-<!-- Read 2: full length -->
-<rect x="80" y="142" width="34" height="20" rx="3" fill="#2563eb"/>
-<text fill="#ffffff" font-size="8" font-weight="600" text-anchor="middle" x="97" y="156">UMI</text>
-<rect x="114" y="142" width="416" height="20" rx="3" fill="#2563eb" opacity="0.15"/>
-<rect x="114" y="142" width="416" height="20" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="9" x="122" y="156">read 2 — full-length</text>
-
-<!-- Read 3: 3'-truncated -->
-<rect x="80" y="166" width="34" height="20" rx="3" fill="#2563eb"/>
-<text fill="#ffffff" font-size="8" font-weight="600" text-anchor="middle" x="97" y="180">UMI</text>
-<rect x="114" y="166" width="276" height="20" rx="3" fill="#2563eb" opacity="0.10"/>
-<rect x="114" y="166" width="276" height="20" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8" stroke-dasharray="4,2"/>
-<text fill="#2563eb" font-size="9" x="122" y="180">read 3 — 3' truncated, same UMI → merged</text>
-
-<!-- Read 4: more truncated -->
-<rect x="80" y="190" width="34" height="20" rx="3" fill="#2563eb"/>
-<text fill="#ffffff" font-size="8" font-weight="600" text-anchor="middle" x="97" y="204">UMI</text>
-<rect x="114" y="190" width="196" height="20" rx="3" fill="#2563eb" opacity="0.10"/>
-<rect x="114" y="190" width="196" height="20" rx="3" fill="none" stroke="#2563eb" stroke-width="0.8" stroke-dasharray="4,2"/>
-<text fill="#2563eb" font-size="9" x="122" y="204">read 4 — 3' truncated, same UMI → merged</text>
-
-<!-- Shared 5' anchor line -->
-<line stroke="#2563eb" stroke-width="1.5" stroke-dasharray="4,3" x1="80" x2="80" y1="116" y2="214"/>
-
-<!-- Key principle callout -->
-<rect x="556" y="118" width="186" height="68" rx="5" fill="#2563eb" opacity="0.08"/>
-<text fill="#2563eb" font-size="10" font-weight="600" x="566" y="136">UMI = molecule identity</text>
-<text fill="#475569" font-size="9" x="566" y="152">5' = real TSS (SSP captured)</text>
-<text fill="#475569" font-size="9" x="566" y="168">3' truncation absorbed by UMI</text>
-
-<!-- Isoform clustering note -->
-<text fill="#2563eb" font-size="10" font-weight="600" x="556" y="204">Isoform = (gene, 5'-group, 3'-group)</text>
-
-<line stroke="#e2e8f0" stroke-width="1" x1="40" x2="720" y1="228" y2="228"/>
-
-<!-- ===== PANEL 2: Type-2 (3' pA-tail-anchored) ===== -->
-<text fill="#d97706" font-size="12" font-weight="bold" letter-spacing="0.6" x="50" y="256">TYPE-2 — 3' pA-TAIL-ANCHORED</text>
-<text fill="#64748b" font-size="10" x="320" y="256">(XT:i:2, SSP-less → 5' is truncation noise)</text>
-
-<!-- Gene model -->
-<text fill="#64748b" font-size="11" x="14" y="292">Gene</text>
-<rect x="80" y="276" width="110" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="135" y="294">Exon 1</text>
-<line x1="190" y1="289" x2="250" y2="289" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
-<rect x="250" y="276" width="90" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="295" y="294">Exon 2</text>
-<line x1="340" y1="289" x2="400" y2="289" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
-<rect x="400" y="276" width="130" height="26" rx="4" fill="#6366f1"/>
-<text fill="#ffffff" font-size="10" font-weight="600" text-anchor="middle" x="465" y="294">Exon 3</text>
-
-<!-- CPA site marker -->
-<line stroke="#059669" stroke-width="2" x1="530" x2="530" y1="268" y2="306"/>
-<text fill="#059669" font-size="10" font-weight="600" x="536" y="280">CPA</text>
-
-<!-- Reads — independent molecules -->
-<text fill="#64748b" font-size="10" x="14" y="332">Reads</text>
-
-<rect x="140" y="318" width="390" height="20" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="140" y="318" width="390" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="9" x="148" y="332">molecule A — no UMI, independent</text>
-
-<rect x="220" y="342" width="310" height="20" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="220" y="342" width="310" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="9" x="228" y="356">molecule B — independent, same CPA</text>
-
-<rect x="310" y="366" width="220" height="20" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="310" y="366" width="220" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="9" x="318" y="380">molecule C — independent</text>
-
-<rect x="380" y="390" width="150" height="20" rx="3" fill="#d97706" opacity="0.15"/>
-<rect x="380" y="390" width="150" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="9" x="388" y="404">molecule D</text>
-
-<!-- Shared 3' CPA line -->
-<line stroke="#059669" stroke-width="1.5" stroke-dasharray="4,3" x1="530" x2="530" y1="316" y2="414"/>
-
-<!-- Variable 5' bracket -->
-<path d="M140,314 L134,314 L134,414 L140,414" fill="none" stroke="#dc2626" stroke-width="1.2" opacity="0.7"/>
-<text fill="#dc2626" font-size="9" font-weight="600" x="128" y="358" text-anchor="end">random</text>
-<text fill="#dc2626" font-size="9" font-weight="600" x="128" y="372" text-anchor="end">5' ends</text>
-<text fill="#dc2626" font-size="8" x="128" y="388" text-anchor="end">(noise)</text>
-
-<!-- Key principle callout -->
-<rect x="556" y="318" width="186" height="68" rx="5" fill="#d97706" opacity="0.08"/>
-<text fill="#d97706" font-size="10" font-weight="600" x="566" y="336">No UMI → no dedup possible</text>
-<text fill="#475569" font-size="9" x="566" y="352">Each read = independent molecule</text>
-<text fill="#475569" font-size="9" x="566" y="368">3' CPA shared ≠ same molecule</text>
-
-<!-- Isoform clustering note -->
-<text fill="#d97706" font-size="10" font-weight="600" x="556" y="404">Isoform = (gene, *, 3'-group)</text>
-<text fill="#64748b" font-size="9" x="556" y="420">5' grouping skipped</text>
-
-<line stroke="#e2e8f0" stroke-width="1" x1="40" x2="720" y1="440" y2="440"/>
-
-<!-- ===== PANEL 3: Merging Asymmetry + Reconciliation ===== -->
-<text fill="#0d9488" font-size="12" font-weight="bold" letter-spacing="0.6" x="50" y="468">MERGING ASYMMETRY + T1 ↔ T2 RECONCILIATION</text>
-
-<!-- Asymmetry comparison boxes -->
-<rect x="50" y="484" width="310" height="60" rx="6" fill="#2563eb" opacity="0.06"/>
-<rect x="50" y="484" width="310" height="60" rx="6" fill="none" stroke="#2563eb" stroke-width="0.8"/>
-<text fill="#2563eb" font-size="10" font-weight="600" x="62" y="504">T1: UMI absorbs 3' truncation</text>
-<text fill="#475569" font-size="9" x="62" y="520">4 reads (2 full + 2 truncated) → 1 molecule</text>
-<text fill="#475569" font-size="9" x="62" y="536">Isoform uses both 5' and 3' positions</text>
-
-<rect x="400" y="484" width="310" height="60" rx="6" fill="#d97706" opacity="0.06"/>
-<rect x="400" y="484" width="310" height="60" rx="6" fill="none" stroke="#d97706" stroke-width="0.8"/>
-<text fill="#d97706" font-size="10" font-weight="600" x="412" y="504">T2: no dedup (no molecule identity)</text>
-<text fill="#475569" font-size="9" x="412" y="520">4 reads at same CPA = 4 independent molecules</text>
-<text fill="#475569" font-size="9" x="412" y="536">Isoform uses only 3' position (count reads)</text>
-
-<!-- Reconciliation row -->
-<rect x="100" y="568" width="200" height="44" rx="6" fill="#2563eb" opacity="0.10"/>
-<rect x="100" y="568" width="200" height="44" rx="6" fill="none" stroke="#2563eb" stroke-width="1"/>
-<text fill="#2563eb" font-size="10" font-weight="600" text-anchor="middle" x="200" y="588">T1 cluster (UMI dedup)</text>
-<text fill="#64748b" font-size="9" text-anchor="middle" x="200" y="604">TSS + CPA + XU</text>
-
-<!-- Bidirectional arrow -->
-<line x1="300" y1="590" x2="440" y2="590" stroke="#0d9488" stroke-width="1.8"/>
-<polygon fill="#0d9488" points="440,590 432,586 432,594"/>
-<polygon fill="#0d9488" points="300,590 308,586 308,594"/>
-<text fill="#0d9488" font-size="9" font-weight="600" text-anchor="middle" x="370" y="580">|Δ5'| ≤ 5 AND |Δ3'| ≤ 5</text>
-
-<!-- T2 cluster box -->
-<rect x="440" y="568" width="200" height="44" rx="6" fill="#d97706" opacity="0.10"/>
-<rect x="440" y="568" width="200" height="44" rx="6" fill="none" stroke="#d97706" stroke-width="1"/>
-<text fill="#d97706" font-size="10" font-weight="600" text-anchor="middle" x="540" y="588">T2 cluster (no dedup)</text>
-<text fill="#64748b" font-size="9" text-anchor="middle" x="540" y="604">CPA only; each read = 1 molecule</text>
-
-<!-- Result annotation -->
-<text fill="#0d9488" font-size="10" font-weight="600" x="660" y="586">→ XL:Z tag</text>
-<text fill="#64748b" font-size="9" x="660" y="604">+ t1t2_pairs.tsv</text>
-
-<!-- Biology notes -->
-<text fill="#94a3b8" font-size="9" font-style="italic" text-anchor="middle" x="380" y="642">T1 = full-length (cap → CPA, SSP+UMI proves identity)</text>
-<text fill="#94a3b8" font-size="9" font-style="italic" text-anchor="middle" x="380" y="658">T2 = 5'-truncated (XRN1 decay intermediates or technical; no identity marker)</text>
-<text fill="#94a3b8" font-size="9" font-style="italic" text-anchor="middle" x="380" y="674">Singleton UMIs in T1 confirm low PCR duplication → each T2 read is an independent molecule</text>
-
-<!-- Source note -->
-<text fill="#b0b8c4" font-size="8" font-style="italic" text-anchor="middle" x="380" y="726">Implementation: rectify/core/cdna_correct_command.py::assign_isoforms(), reconcile_t1_t2_pairs()</text>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="310" viewBox="0 0 760 310">
+<rect fill="#ffffff" width="760" height="310"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">cDNA isoform clustering</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="44">T1 cluster by (TSS, CPA)  ·  T2 cluster by CPA only  ·  pairs linked at the same 3′ end</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="start" x="70" y="95.0">Genome</text>
+<rect x="140" y="78" width="530" height="26" rx="3" fill="#4f46e5"/>
+<text fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle" x="405.0" y="95.0">Gene</text>
+<line x1="500" x2="500" y1="74" y2="108" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,2" opacity="0.6"/>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="500" y="70">CPA A</text>
+<line x1="620" x2="620" y1="74" y2="108" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,2" opacity="0.6"/>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="620" y="70">CPA B</text>
+<line x1="170" x2="170" y1="74" y2="108" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,2" opacity="0.6"/>
+<text fill="#94a3b8" font-size="10" font-weight="400" text-anchor="middle" x="170" y="70">TSS</text>
+<text fill="#0d9488" font-size="11" font-weight="700" text-anchor="start" x="70" y="132">Type 1</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="start" x="70" y="144">(full-length)</text>
+<rect x="170" y="129.0" width="330" height="6" rx="2" fill="#ccfbf1" stroke="#0d9488" stroke-width="1"/>
+<line x1="170" x2="170" y1="127.0" y2="137.0" stroke="#0d9488" stroke-width="2"/>
+<line x1="500" x2="500" y1="127.0" y2="137.0" stroke="#0d9488" stroke-width="2"/>
+<rect x="170" y="140.0" width="330" height="6" rx="2" fill="#ccfbf1" stroke="#0d9488" stroke-width="1"/>
+<line x1="170" x2="170" y1="138.0" y2="148.0" stroke="#0d9488" stroke-width="2"/>
+<line x1="500" x2="500" y1="138.0" y2="148.0" stroke="#0d9488" stroke-width="2"/>
+<rect x="170" y="151.0" width="450" height="6" rx="2" fill="#ccfbf1" stroke="#0d9488" stroke-width="1"/>
+<line x1="170" x2="170" y1="149.0" y2="159.0" stroke="#0d9488" stroke-width="2"/>
+<line x1="620" x2="620" y1="149.0" y2="159.0" stroke="#0d9488" stroke-width="2"/>
+<rect x="170" y="162.0" width="450" height="6" rx="2" fill="#ccfbf1" stroke="#0d9488" stroke-width="1"/>
+<line x1="170" x2="170" y1="160.0" y2="170.0" stroke="#0d9488" stroke-width="2"/>
+<line x1="620" x2="620" y1="160.0" y2="170.0" stroke="#0d9488" stroke-width="2"/>
+<text fill="#d97706" font-size="11" font-weight="700" text-anchor="start" x="70" y="198">Type 2</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="start" x="70" y="210">(truncated)</text>
+<rect x="340" y="195.0" width="160" height="6" rx="2" fill="#fed7aa" stroke="#d97706" stroke-width="1"/>
+<line x1="500" x2="500" y1="193.0" y2="203.0" stroke="#d97706" stroke-width="2"/>
+<line x1="340" x2="340" y1="193" y2="203" stroke="#d97706" stroke-width="1" stroke-dasharray="2,2"/>
+<rect x="420" y="206.0" width="80" height="6" rx="2" fill="#fed7aa" stroke="#d97706" stroke-width="1"/>
+<line x1="500" x2="500" y1="204.0" y2="214.0" stroke="#d97706" stroke-width="2"/>
+<line x1="420" x2="420" y1="204" y2="214" stroke="#d97706" stroke-width="1" stroke-dasharray="2,2"/>
+<rect x="390" y="217.0" width="110" height="6" rx="2" fill="#fed7aa" stroke="#d97706" stroke-width="1"/>
+<line x1="500" x2="500" y1="215.0" y2="225.0" stroke="#d97706" stroke-width="2"/>
+<line x1="390" x2="390" y1="215" y2="225" stroke="#d97706" stroke-width="1" stroke-dasharray="2,2"/>
+<rect x="460" y="228.0" width="160" height="6" rx="2" fill="#fed7aa" stroke="#d97706" stroke-width="1"/>
+<line x1="620" x2="620" y1="226.0" y2="236.0" stroke="#d97706" stroke-width="2"/>
+<line x1="460" x2="460" y1="226" y2="236" stroke="#d97706" stroke-width="1" stroke-dasharray="2,2"/>
+<rect x="500" y="239.0" width="120" height="6" rx="2" fill="#fed7aa" stroke="#d97706" stroke-width="1"/>
+<line x1="620" x2="620" y1="237.0" y2="247.0" stroke="#d97706" stroke-width="2"/>
+<line x1="500" x2="500" y1="237" y2="247" stroke="#d97706" stroke-width="1" stroke-dasharray="2,2"/>
+<path d="M522,130 C538,181.5 538,181.5 522,222" fill="none" stroke="#475569" stroke-width="1.2" stroke-dasharray="3,3"/>
+<text fill="#475569" font-size="11" font-weight="600" text-anchor="start" x="546" y="185.5">T1 + T2  ·  CPA A</text>
+<path d="M642,152 C658,203.5 658,203.5 642,244" fill="none" stroke="#475569" stroke-width="1.2" stroke-dasharray="3,3"/>
+<text fill="#475569" font-size="11" font-weight="600" text-anchor="start" x="666" y="207.5">T1 + T2  ·  CPA B</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="285">linkage rule: same gene + same orientation + |Δ5′| ≤ 5 bp  AND  |Δ3′| ≤ 5 bp</text>
 </g>
 </svg>

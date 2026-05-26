@@ -108,6 +108,7 @@ source from GitHub and compiles it (requires `gcc` and `zlib`).
 | `pysam` | ≥ 0.19 | BAM file I/O |
 | `numpy` | ≥ 1.20 | Numerical computing |
 | `pandas` | ≥ 1.3 | Data manipulation |
+| `pyarrow` | ≥ 8.0 | Read-number sidecar parquet I/O |
 | `pyBigWig` | ≥ 0.3.18 | BigWig export |
 | `biopython` | ≥ 1.79 | Sequence utilities |
 | `tqdm` | ≥ 4.60 | Progress bars |

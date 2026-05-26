@@ -7,10 +7,9 @@ This command is the final step in the chunked parallel alignment workflow: after
 BAMs simultaneously, scores each aligner's alignment per read, and writes the
 best-aligner-per-read result to a single rectified BAM.
 
-It uses the same scoring logic as `rectify align`: effective 5' clip penalty (−2 per bp),
-5' rescue attempt via NW alignment to the upstream exon, A-tract 3' depth (−1 per A, capped
-at 10), 3' non-poly(A) terminal errors (−2 per bp, capped at 10), and junction-proximity
-errors (−1 per error, capped at 10).
+It uses the same scoring logic as `rectify align`: effective 5' clip penalty (-2 per bp),
+5' rescue attempt via NW alignment to the upstream exon, 3' non-poly(A) terminal errors
+(-2 per bp, capped at 10), and junction-proximity errors (-1 per error, capped at 10).
 
 ---
 
@@ -67,6 +66,8 @@ rectify consensus \
 | `--prefix` | No | Output file prefix (default: derived from first BAM name) |
 | `--annotation` | No | Gene annotation GFF/GTF for junction scoring |
 | `--chimeric` | No | Use chimeric CIGAR assembly (experimental) |
+| `--read-num-sidecar PATH` | No | Path to `<sample>.read_num_sidecar.parquet` from `rectify split`. If omitted, RECTIFY looks beside the input BAMs for a matching sidecar. |
+| `--no-bedgraph` | No | Skip bedGraph/bigWig generation after consensus selection. By default, strand-specific 3' and 5' end coverage files are written from `corrected_reads.tsv` if present in the output directory. |
 | `--verbose` | No | Verbose logging |
 
 ---
@@ -107,3 +108,19 @@ Use `rectify consensus` when:
 - At least 2 aligner BAMs are required. For a single-aligner output, use `rectify align --aligners minimap2 --no-consensus` instead.
 - All input BAMs must be coordinate-sorted and indexed (`.bai` file present).
 - The genome path is used only for `samtools calmd` (MD-tag recalculation). It must be bgzip-compressed or uncompressed — a gzip-only file will be auto-converted.
+
+## Restoring FASTQ Comment Tags
+
+When a read-number sidecar is available, pass it explicitly:
+
+```bash
+rectify consensus minimap2:sample.minimap2.bam mapPacBio:sample.mapPacBio.bam \
+  --genome genome.fa -o results/ --read-num-sidecar sample.read_num_sidecar.parquet
+```
+
+If omitted, `rectify consensus` looks beside the input BAMs for a matching
+`*.read_num_sidecar.parquet`. With a sidecar, consensus restores SAM-format
+FASTQ comment tags such as `XA:Z:*` and `XC:i:*` onto the winning output record
+without overwriting tags already produced by an aligner. BAMs without RN tags
+remain supported; they use the existing normalized-QNAME merge path and simply
+skip sidecar restoration.
