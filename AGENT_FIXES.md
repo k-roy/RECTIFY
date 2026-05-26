@@ -11,6 +11,59 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-26] PERF: `align_clip_to_exon` O(clip_len²) hang for deeply-intronic reads — FIXED
+
+**Status:** Fixed at `local_aligner.py:align_clip_to_exon`. Deployed when M1→Sherlock rsync runs.
+
+**Symptom:** winnowmap2 A549 correction (job 26124625) hung from spawn: 8 workers at 99%
+CPU for 80+ min, 0 new region checkpoints. deSALT solo-seq smoke (26123608) would hit the
+same code path. py-spy on worker PID 204961 (sh02-17n28) showed stack pinned for 79+ min at
+`_align_left_anchored:317` ← `align_clip_to_exon` ← `_rescue_3ss_truncation_body:1939`
+← `_terminal_peel_rescue` ← `rescue_3ss_truncation` ← `correct_read_3prime`.
+
+**Root cause:** `align_clip_to_exon` dispatches to `_align_right_anchored` (+ strand) or
+`_align_left_anchored` (− strand) — both are O(Q×R) pure-Python Gotoh DP where Q = clip_len
+and R ≈ clip_len + max_indel. When `_rescue_3ss_truncation_body` Case 4 computes
+`_intronic_seq4 = _get_intronic_query_bases(read, _clip_bd4, strand)` for a read whose 5'
+end is deeply inside an intron (e.g., 70k+ bp from the exon boundary), `clip_len` can be
+tens of thousands of bases → Q×R ≈ 5B cells → hours of runtime in Python.
+
+**Fix:** 500 bp guard at the top of `align_clip_to_exon` (after the `clip_len == 0` check).
+Clips longer than 500 bp return an all-M fallback CIGAR identical to the existing
+`not ref_region` early-return semantics. Biological 5' clips at exon boundaries are <100 bp;
+clips >500 bp are artifact/pathology (read mapped deeply inside an intron).
+
+**Confirmed callers of `align_clip_to_exon`:**
+- `splice_aware_5prime.py:1817` (Case 1/2 `_exon_cigar_str`)
+- `splice_aware_5prime.py:1939` (Case 4 `_exon_cigar_str4`)  ← where the hang fires
+- `junction_refiner.py:717`
+All three are covered by the entry-point guard.
+
+---
+
+## [2026-05-26] PERF: A549 `_hp_edit_distance` slow (not hung) on junction-dense region
+
+**Status:** Confirmed slow progress, not a hang. No code change required.
+
+**Symptom:** A549 workers (PIDs 59510, 59527, 59544 on sh02-10n14, job 26104022) at 99%
+CPU; appeared to "stop" at 451 checkpoints. Multi-sample py-spy showed stacks MOVING
+(different `_hp_edit_distance` lines and call sites across 5 samples, including a direct
+`rescue_3ss_truncation:1097` call with no `_terminal_peel_rescue`). By end of diagnosis
+checkpoint count had grown to 455.
+
+**Root cause:** Dense alternative-splice region in human genome — many candidate junctions
+within 110 bp of read 5' end triggers O(N_junctions × N_depths × N_shifts × N_offsets)
+`_hp_edit_distance` calls. Each call is bounded to 200×200 = 40K ops (by `_HP_ED_MAX_LEN`)
+but the outer multiplication (100 depths × 50 junctions × 341 shift/offset combos) is
+expensive. The `effective_max_peel` cap and candidate narrowing (both on Sherlock) limit
+but don't eliminate the cost on pathologically dense loci.
+
+**Action:** Left running. A549 job will complete eventually. If future runs hit the same
+dense locus as a bottleneck, consider capping `len(nearby_junctions)` in
+`_terminal_peel_rescue` to the K closest junctions (K=10–20).
+
+---
+
 ## [2026-05-25] BUG (CORRECTNESS): mapPacBio `intronlen`/`maxindel` misconfigured for mammalian RNA — emits ~no N introns
 
 **Status:** Correctness bug in `run_map_pacbio` (multi_aligner.py ~L723). On human

@@ -760,6 +760,17 @@ def align_clip_to_exon(
     if clip_len == 0:
         return [], intron_start if strand == '+' else intron_end
 
+    # Guard: O(clip_len²) Python Gotoh DP is prohibitive for long intronic reads.
+    # Biological 5' clips at exon boundaries are <100 bp; clips >500 are
+    # artifact/pathology (e.g. a read mapped deeply inside an intron).  Return an
+    # all-M CIGAR identical to the existing `not ref_region` early-return semantics.
+    _MAX_CLIP_ALIGN_LEN = 500
+    if clip_len > _MAX_CLIP_ALIGN_LEN:
+        if strand == '+':
+            return [(_OP_M, clip_len)], max(0, intron_start - clip_len)
+        else:
+            return [(_OP_M, clip_len)], intron_end
+
     if strand == '+':
         region_start = max(0, intron_start - clip_len - max_indel)
         ref_region = genome_seq[region_start:intron_start]
