@@ -896,8 +896,7 @@ def _terminal_peel_rescue(
     # of <= peel_max_bp to an upstream exon, so a 3'SS beyond `reach` can never
     # win — excluding distant junctions is safe (does not drop a real winner).
     reach = junction_proximity_bp + peel_max_bp
-    nearby_junctions: Set[Tuple] = set()
-    max_edge_dist = 0
+    _nearby_with_dist: List[Tuple[int, Tuple]] = []
     for j in candidate_junctions:
         if j[0] != chrom:
             continue
@@ -906,11 +905,25 @@ def _terminal_peel_rescue(
         edge = j[2] if strand == '+' else j[1]   # intron_end (+) / intron_start (-)
         dist = abs(align_5prime - edge)
         if dist <= reach:
-            nearby_junctions.add(j)
-            if dist > max_edge_dist:
-                max_edge_dist = dist
-    if not nearby_junctions:
+            _nearby_with_dist.append((dist, j))
+    if not _nearby_with_dist:
         return None
+
+    # Cap to K closest junctions before the per-depth body calls.
+    # Each depth calls _rescue_3ss_truncation_body which runs _hp_edit_distance
+    # O(depths × N_junctions × N_shifts) times.  On junction-dense loci (e.g.
+    # human chr5 SMN1/SMN2) the uncapped set can contain 50-200+ entries within
+    # `reach`, making this O(100 × 200 × 40) = 800k DP calls per read.
+    # Keeping only the K closest is provably non-regressing: a peel aligns the
+    # 5' boundary to a 3'SS edge; among all nearby edges the closest ones are
+    # the most likely geometric match.  The body's own proximity window further
+    # narrows the set anyway, so distant junctions almost never win.
+    _MAX_NEARBY_JUNCTIONS = 20
+    if len(_nearby_with_dist) > _MAX_NEARBY_JUNCTIONS:
+        _nearby_with_dist.sort(key=lambda x: x[0])
+        _nearby_with_dist = _nearby_with_dist[:_MAX_NEARBY_JUNCTIONS]
+    nearby_junctions: Set[Tuple] = {jd[1] for jd in _nearby_with_dist}
+    max_edge_dist = max(jd[0] for jd in _nearby_with_dist)
 
     # Acceptance baseline. A peel must beat the baseline's normalised HP-edit
     # distance to win. When the baseline rescued via sequence (ed >= 0), that ed

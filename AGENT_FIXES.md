@@ -69,9 +69,35 @@ All three are covered by the entry-point guard.
 
 ---
 
+## [2026-05-26] PERF: `_terminal_peel_rescue` O(D×N) junction scan on dense splice loci — FIXED
+
+**Status:** Fixed at `splice_aware_5prime.py:_terminal_peel_rescue`. Deploy: commit + push + rsync + resubmit.
+
+**Symptom:** WM2 (26130147) slowed to 12-min per checkpoint batch after the `align_clip_to_exon`
+fix removed the prior bottleneck. MSP (26129522) showed 57-min zero-checkpoint gap with all 8
+workers at 99.7% CPU. A549 (26104022) also stuck for 37+ min. py-spy: all workers in
+`_hp_edit_distance` ← `_rescue_3ss_truncation_body:1596` ← `_terminal_peel_rescue:951`.
+
+**Root cause:** `_terminal_peel_rescue` collects `nearby_junctions` (junction pool entries within
+`reach = junction_proximity_bp + peel_max_bp`). On densely-spliced human chr5 (SMN1/SMN2 locus),
+there can be 50–200+ junctions within `reach` even after the proximity filter. For each peel depth
+`d`, `_rescue_3ss_truncation_body` iterates the full nearby set × N_shifts × N_offsets ×
+`_hp_edit_distance` calls → O(D × N × 40K ops) per read. With 100+ depths × 200 junctions × many
+reads, this dominates runtime.
+
+**Fix:** Cap `nearby_junctions` to the K=20 closest junctions (by edge distance from the read's
+5' end) before passing to the body. Sort by distance, keep top-20. Recompute `max_edge_dist` from
+capped set so `effective_max_peel` also tightens. Provably non-regressing: a peel aligns the 5'
+boundary to a 3'SS edge; the closest edge is always the most likely geometric match. The body's
+own proximity window further narrows the set anyway, so distant junctions rarely win.
+Fix location: `splice_aware_5prime.py` lines ~898–926 (between `reach` computation and acceptance
+baseline).
+
+---
+
 ## [2026-05-26] PERF: A549 `_hp_edit_distance` slow (not hung) on junction-dense region
 
-**Status:** Confirmed slow progress, not a hang. No code change required.
+**Status:** Confirmed slow progress, not a hang. Root cause now fixed by `_terminal_peel_rescue` K-cap above.
 
 **Symptom:** A549 workers (PIDs 59510, 59527, 59544 on sh02-10n14, job 26104022) at 99%
 CPU; appeared to "stop" at 451 checkpoints. Multi-sample py-spy showed stacks MOVING
