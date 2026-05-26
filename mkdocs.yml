@@ -32,6 +32,8 @@ theme:
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+  logo: branding/rectify_mark.svg
+  favicon: branding/rectify_favicon.png
   font:
     text: Roboto
     code: Roboto Mono
