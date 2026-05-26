@@ -505,11 +505,16 @@ real fetch window), `n_op_intervals`, `is_excluded`, and the emitted outcome
   6000 reads each, single-thread. Job 26151151 (profile) + 26152138 (py-spy + cross-chrom).
 - **py-spy** (job 26152138) on the single worst read of each aligner, 200 Hz × 25 s.
 - Output TSVs copied to M1: `dev/perf_task12_results/profile_{aligner}.{top1pct,all}.tsv`.
+- **Cross-chrom corroboration (job 26152138):** a stride-40 (1-of-40) pass over the WHOLE
+  coord-sorted BAM (8000 sampled reads spanning all 16 chroms) was run for gapmm2 + minimap2
+  to test the chrI-only limitation. It is decisive — see Headline (B). TSVs:
+  `dev/perf_task12_results/profile_{gapmm2,minimap2}_xchrom.{top1pct,all}.tsv`.
 - **Limitations:** (1) yeast only — human chr5 dense-splice loci (per the
-  `[2026-05-26] A549 _hp_edit_distance slow` AGENT_FIXES entry) may differ; (2) the 6000-read
-  pass is **chrI-only** (`fetch(until_eof=True)` on a coord-sorted BAM starts at chrI) —
-  chrI is splice-sparse, so the `n_pool_nearby` numbers are a lower bound (a stride-40
-  cross-chrom pass was run to check this; see below); (3) `apply_indel_correction` was left
+  `[2026-05-26] A549 _hp_edit_distance slow` AGENT_FIXES entry) likely look like the
+  cross-chrom (B) profile or worse, not the chrI (A) profile; (2) the **chrI 6k pass is a
+  splice-sparse LOWER bound** (`fetch(until_eof=True)` starts at chrI) — always read it
+  alongside the cross-chrom (B) numbers, which are the representative picture; (3)
+  `apply_indel_correction` was left
   **OFF** so the profile isolates the 3'SS-rescue cost — production `correct` enables 2C by
   default (`not skip_indel_correction and not is_short_read`). The production 2C cost adds
   on top of the 3'SS-rescue cost shown here (per Part II, `2C_indel_correction` was 5–14 s
@@ -518,17 +523,42 @@ real fetch window), `n_op_intervals`, `is_excluded`, and the emitted outcome
 
 ## Headline
 
-**The candidate-explosion hotspot is GONE.** Pre-fix (Part II) the median rescue candidate
-count was ~388–398/read; post-fix the **top-1% median `n_pool_nearby` is 0–4**. The K=25
-cap + dual-site fetch + anchor floor did their job: HP-edit-distance is no longer driven by
-a per-read pool scan. **What remains is a tiny number of extreme outliers** — single reads
-at 1.8 s / 6.5 s / 12.3 s — and the per-read time is now wildly outlier-concentrated:
+**The pre-fix per-read pool *scan* is gone, but on splice-DENSE chromosomes the
+candidate-driven HP-ED cost RESURGES — and a few catastrophic reads (one at 292 SECONDS)
+dominate.** The chrI-only pass looked clean (top-1% median candidates 0–4); the cross-chrom
+stride pass (below) shows the chrI numbers were a splice-sparse lower bound. Two views:
+
+**(A) chrI 6k subset (splice-sparse — LOWER BOUND):** candidate counts look collapsed
+(top-1% median `n_pool_nearby` 0–4), cost is a handful of outliers at 1.8 / 6.5 / 12.3 s.
 
 | Aligner (chrI 6k) | total | p50 | p99 | max | top-1% share | top-1% no-ops | top-1% rescued |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | minimap2 | 6.15 s | 0.58 ms | 1.56 ms | **1761 ms** | 38.5% | 52/60 (12.7% of top time) | 4 |
 | mapPacBio | 21.0 s | 0.49 ms | 1.55 ms | **6476 ms** | 83.8% | 29/60 (1.6%) | 25 |
 | gapmm2 | 29.85 s | 0.60 ms | 2.14 ms | **12349 ms** | 86.7% | 33/60 (20.5%) | 23 |
+
+**(B) cross-chrom stride-40 8k subset (spans all chroms — the REAL picture):** total time is
+**20–100× higher** than chrI; the worst single read is **292 s** (gapmm2 chrIV:1360492);
+top-1% candidate medians rise to **6** and the worst reads carry **3–28 nearby candidates**
+(some ABOVE the K=25 cap); **most expensive reads are PRODUCTIVE rescues, not dead ends**
+(72–74 of top-80 five_rescued).
+
+| Aligner (xchrom 8k) | total | p50 | p95 | p99 | max | top-1% share | top-1% no-ops | top-1% median cand |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| minimap2_xchrom | **618 s** | 0.81 ms | 84.6 ms | 331 ms | **87194 ms** | 83.9% | 4/80 (0.9%) | 6 |
+| gapmm2_xchrom | **595 s** | 0.76 ms | 90.0 ms | 296 ms | **292124 ms** | 84.0% | 7/80 (1.4%) | 6 |
+
+The cross-chrom disjoint classes confirm the candidate-driven cost is back at scale:
+- **minimap2_xchrom:** `nearby_cand_productive` = **61.5%** (1533 reads), high-op 17.6%,
+  large-clip 14.0%, dead-end-noops 6.5%. **235 reads exceed the K=25 cap (45 s).**
+- **gapmm2_xchrom:** `large_subguard_5clip` = **62.6%** (just 7 reads — the 292/45/31 s
+  monsters), `nearby_cand_productive` 22.0%, dead-end-noops 7.1%, bigN 2.9%. **167 reads
+  exceed the K=25 cap = 300 s = HALF the total.**
+
+So the K=25 cap (`25d7a30`) helps but is *insufficient* on dense loci: reads with 27+
+candidates still hit the ceiling, and the worst reads combine **large 5' clip + many
+candidates + high op count** into a single catastrophic DP volume (the 292 s read has
+five_clip=131, n_cigar_ops=100, n_pool_nearby=27).
 
 ## py-spy: the residual cost is uniformly `_hp_edit_distance`
 
@@ -578,6 +608,16 @@ Per-aligner dominant driver:
   n_N=88240, alone = 12.3 s ≈ 41% of total), plus dead-end no-ops (16.8%) and large clips
   (15.1%). The 88 kb N is a gapmm2 mis-relabel; the cost is still the DP volume, not the N.
 
+**Cross-chrom (xchrom 8k) disjoint classes — the representative picture (see Headline B):**
+on dense chroms the dominant class shifts to **productive candidate-driven rescue**, NOT
+dead ends: minimap2_xchrom `nearby_cand_productive` 61.5% / high-op 17.6% / large-clip 14.0%
+/ dead-end-noop 6.5%; gapmm2_xchrom `large_subguard_5clip` 62.6% (7 monster reads) /
+`nearby_cand_productive` 22.0% / dead-end-noop 7.1%. **167 gapmm2 + 235 minimap2 reads
+exceed the K=25 cap (300 s + 45 s respectively)** — i.e. half of gapmm2's total cross-chrom
+cost is in reads that hit the candidate ceiling. The cost is genuine rescue work on
+candidate-rich reads, so the lever is per-candidate DP-skipping (#1) and a tighter/unified
+candidate cap (#3), NOT blanket read skipping.
+
 ## Dead-end classes (reads where rescue can never succeed → should early-skip)
 
 The cleanest flaggable dead-end class: **`is_noop=1 AND (n_pool_nearby>0 OR n_op_intervals>0)`**
@@ -586,14 +626,20 @@ rescue, no 3' shift, no category). Whole-set burden:
 
 | Aligner | dead-end-with-work reads | their time | % of total |
 | --- | ---: | ---: | ---: |
-| gapmm2 | 862 | 5.64 s | **18.9%** |
-| minimap2 | 838 | 0.49 s | 7.9% |
-| mapPacBio | 334 | 0.29 s | 1.4% |
+| gapmm2 (chrI) | 862 | 5.64 s | **18.9%** |
+| minimap2 (chrI) | 838 | 0.49 s | 7.9% |
+| mapPacBio (chrI) | 334 | 0.29 s | 1.4% |
+| gapmm2_xchrom | 2274 | 42.2 s | 7.1% |
+| minimap2_xchrom | 2248 | 40.0 s | 6.5% |
 
 These are reads near a junction (or with an N-op) whose `rescue_seq` matches NO candidate
 exon-1 window well enough — they exhaust the full shift×offset×DP search and return "none".
 They are genuine dead ends: the DP can be skipped entirely if a *cheap* pre-gate proves no
-candidate can match.
+candidate can match. NOTE: on the representative cross-chrom set the dead-end fraction is
+SMALLER (6.5–7.1%) than on chrI (because dense chroms have more *productive* candidate-rich
+reads inflating the denominator) — but in absolute terms it is still 40+ s/8k reads, and the
+same cheap pre-gate that skips dead-ends (#1) also skips the hopeless *candidates within*
+productive reads, so it attacks both the dead-end and the productive-but-bloated classes.
 
 ## Concrete speedup + dead-end-flagging recommendations (UNVERIFIED — propose, don't ship)
 
@@ -618,12 +664,17 @@ Per the standing advisor guidance, do NOT touch the shift×offset windows themse
    **Risk:** changes which window scores best on legitimately long short-exon-1 reads —
    verify on the validation set.
 
-3. **Extend the K cap to annotated + `_real_junctions`, not just pool-fetched.** Today the
-   K=25 cap (`bam_processor` / `_rescue_3ss_truncation_body`) bounds only the pool subset;
-   annotated and read-own N-op junctions are added unconditionally. On chrI this is fine
-   (sparse), but it is why `n_pool_nearby=0` reads still run many DP calls. Apply the same
-   edge-distance K cap to the *union* (preserving N-op-matched ones, as the existing
-   partition does). **Risk:** low for yeast, must check human dense loci.
+3. **Unify + tighten the K cap (the cross-chrom data shows K=25 is insufficient on dense
+   loci).** Today the K=25 cap (`_rescue_3ss_truncation_body`) bounds only the pool-fetched
+   subset; annotated + read-own N-op junctions are added unconditionally. The cross-chrom run
+   is hard evidence this matters: **167 gapmm2 reads exceed 25 nearby candidates and account
+   for 300 s = HALF of gapmm2's 595 s total**; 235 minimap2 reads (45 s). The worst read (292 s)
+   has n_pool_nearby=27. Apply the edge-distance K cap to the *union* of annotated + pool +
+   N-op-matched candidates (preserving N-op-matched ones, as the existing partition does), and
+   consider lowering K (e.g. 10–15) on dense loci. **Risk:** could drop a real rescue if the
+   correct junction is the 26th-closest — bound the risk by ranking annotated junctions ahead
+   of novel ones and verifying rescue-count equivalence. This is independent of #1 and stacks
+   with it.
 
 4. **Leave the `align_clip_to_exon` 500 bp guard (`da18965`) alone — it does NOT apply to
    this hotspot.** The 456 bp minimap2 outlier sits just under the guard, so it looked like a
@@ -647,8 +698,11 @@ Per the standing advisor guidance, do NOT touch the shift×offset windows themse
 - Profiler: `dev/profile_correct_reads.py` (M1 + Sherlock
   `…/software/rectify/dev/`). Sbatch: `dev/profile_correct_task12.sbatch`,
   `dev/profile_pyspy_task12.sbatch`.
-- Top-1% + all-row TSVs (M1): `dev/perf_task12_results/profile_{minimap2,mapPacBio,gapmm2}.{top1pct,all}.tsv`.
-- Sherlock run dirs: `$SCRATCH/rectify_perf_task12_20260526_114334/` (profile),
+- Top-1% + all-row TSVs (M1): `dev/perf_task12_results/profile_{minimap2,mapPacBio,gapmm2}.{top1pct,all}.tsv`
+  (chrI 6k) and `profile_{gapmm2,minimap2}_xchrom.{top1pct,all}.tsv` (cross-chrom 8k).
+- py-spy folded stacks (Sherlock): `…_pyspy_…/stacks_{minimap2,mapPacBio,gapmm2}.folded`
+  (all three → ~100% `_hp_edit_distance` inner DP).
+- Sherlock run dirs: `$SCRATCH/rectify_perf_task12_20260526_114334/` (chrI profile),
   `$SCRATCH/rectify_perf_task12_pyspy_20260526_115051/` (py-spy `.folded` + cross-chrom).
 - Jobs: 26151151 (profile), 26152138 (py-spy + cross-chrom stride). Sherlock rectify synced
   to `c1d0e83` (`bam_processor.py` was the only file behind; md5-verified) before running.
