@@ -817,6 +817,34 @@ def run(args):
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
         _protocol = 'dt_cdna' if is_dt_primed else ('ont_cdna' if is_ont_cdna else 'drs')
 
+        # Build rRNA / Pol III exclusion detector (mirrors `analyze`'s default-on
+        # exclusion). rDNA, tRNAs, SNR6, RDN5, etc. are dropped downstream by
+        # `analyze`, yet they are the highest-coverage loci and running Module 2F
+        # 3'SS rescue over them dominates correct-stage wall time. When enabled,
+        # reads mapping into an excluded region skip the (pointless, expensive)
+        # 3'SS rescue but still receive every other correction. `--include-rdna`
+        # disables this.
+        _exclusion_detector = None
+        _exclude_rdna = not getattr(args, 'include_rdna', False)
+        if _exclude_rdna and config.get('annotation_path'):
+            try:
+                from ..exclusion_regions import ExclusionRegionDetector
+                _exclusion_detector = ExclusionRegionDetector(flanking_bp=100)
+                _n_excl = _exclusion_detector.load_from_gff(
+                    Path(str(config['annotation_path'])),
+                    exclude_tRNA=True, exclude_snRNA=True,
+                    exclude_rDNA=True, exclude_mito=False,
+                )
+                logger.info(
+                    "Module 2F exclusion: %d regions (rDNA/Pol III) — 3'SS rescue skipped there",
+                    _n_excl,
+                )
+                if _n_excl == 0:
+                    _exclusion_detector = None
+            except Exception as _e:
+                logger.warning("Could not build exclusion detector (proceeding without): %s", _e)
+                _exclusion_detector = None
+
         if streaming_mode:
             if n_threads > 1:
                 # Parallel streaming: region workers + stream output to disk
@@ -918,6 +946,7 @@ def run(args):
                 min_mapq=config.get('min_mapq', 0),
                 min_aligned_length=config.get('min_aligned_length', 0),
                 reuse_pool_container=_pool_container,
+                exclusion_detector=_exclusion_detector,
             )
             report = generate_stats_report(stats, protocol=_protocol)
 
@@ -1385,6 +1414,9 @@ if __name__ == '__main__':
     parser.add_argument('--skip-polya-trim', action='store_true')
     parser.add_argument('--skip-indel-correction', action='store_true')
     parser.add_argument('--skip-3ss-rescue', dest='skip_3ss_rescue', action='store_true')
+    parser.add_argument('--include-rdna', action='store_true',
+                        help="Run 3'SS rescue on rDNA/Pol III regions too "
+                             "(default: excluded for speed; analyze drops them downstream)")
     parser.add_argument('--skip-variant-aware', action='store_true',
                         help='Skip variant-aware homopolymer rescue (enabled by default)')
     parser.add_argument('--netseq-dir', type=Path)
@@ -1530,6 +1562,16 @@ def create_correct_parser(subparsers):
              "terminal 5' rescue from annotated junctions, pooled junctions, "
              "and read-own N-ops without disabling annotation-dependent gene "
              "attribution."
+    )
+
+    module_group.add_argument(
+        '--include-rdna',
+        action='store_true',
+        help="Run Module 2F 3'SS rescue on rDNA / Pol III regions (tRNAs, SNR6, "
+             "RDN5, RPR1, SCR1) too. Default: these are EXCLUDED from rescue — "
+             "they are the highest-coverage non-mRNA loci, dominate correct-stage "
+             "wall time, and are dropped downstream by `analyze` regardless. Reads "
+             "there still receive all other corrections."
     )
 
     module_group.add_argument(

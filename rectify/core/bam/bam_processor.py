@@ -277,6 +277,7 @@ def correct_read_3prime(
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     dt_primed_cDNA: bool = False,
+    exclusion_detector: Optional['ExclusionRegionDetector'] = None,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -411,7 +412,19 @@ def correct_read_3prime(
     # Module 2F: 3'SS truncation rescue (post-consensus).
     # Corrects five_prime_position for reads truncated or soft-clipped at the
     # exon 2 / 3' splice site boundary.
-    if apply_3ss_rescue and (annotated_junctions or _real_junctions or pool_chrom_index):
+    #
+    # rRNA / Pol III exclusion: rDNA, tRNAs, SNR6, RDN5, etc. are dropped
+    # downstream by `analyze`, yet they dominate correct-stage wall time because
+    # these are the highest-coverage loci and 3'SS rescue runs its O(n*m) HP-edit
+    # distance per read there. Skip the rescue for reads mapping into an excluded
+    # region — they are not alt-spliced mRNA and need no 3'SS rescue. (The read
+    # still gets all other corrections + a normal corrected_3end row; only the
+    # expensive, pointless rescue is skipped.)
+    _excluded_region = bool(
+        exclusion_detector is not None
+        and exclusion_detector.is_excluded(chrom_std, five_prime_position)
+    )
+    if apply_3ss_rescue and not _excluded_region and (annotated_junctions or _real_junctions or pool_chrom_index):
         _ss_junctions: set = set()
         if annotated_junctions:
             _ss_junctions.update(annotated_junctions)

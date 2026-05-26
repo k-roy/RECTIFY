@@ -493,6 +493,7 @@ def _process_region_worker(
     dt_primed_cDNA: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
+    exclusion_detector: Optional['ExclusionRegionDetector'] = None,
 ) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
@@ -585,6 +586,7 @@ def _process_region_worker(
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
                 dt_primed_cDNA=dt_primed_cDNA,
+                exclusion_detector=exclusion_detector,
             )
             results.extend(read_results)
 
@@ -632,6 +634,7 @@ def process_bam_file_parallel(
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     reuse_pool_container: Optional[list] = None,
+    exclusion_detector: Optional['ExclusionRegionDetector'] = None,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -767,6 +770,7 @@ def process_bam_file_parallel(
         dt_primed_cDNA=dt_primed_cDNA,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
+        exclusion_detector=exclusion_detector,
     )
     region_tasks = [(region, bam_path, variant_aware_rescue) for region in regions]
 
