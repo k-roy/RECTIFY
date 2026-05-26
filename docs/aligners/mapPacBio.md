@@ -84,12 +84,33 @@ gapmm2's 1.8 % — mapPacBio is the outlier regardless. (To split spurious from
 mispositioned, re-classify the novel-unique introns at a wider, e.g. ±50 bp,
 annotation tolerance.)
 
-**Recommendation:** do **not** include mapPacBio in an ONT-DRS splice panel. The
-three purpose-built ONT/long-read splice aligners (minimap2 + uLTRA + deSALT) are
-cleaner; mapPacBio's unique contribution is ~98 % artifact. Dropped from the
-human-DRS panel 2026-05-25. Keep mapPacBio for **yeast**, where BBMap's
-short-indel error model fits and it has earned its place. (Sources: Křižanović
-2018 PMC6192213; uLTRA PMC8665758.)
+**Consensus-level proof — and an HP-ED metric vulnerability (SMA_GSB2394,
+2026-05-26).** The artifact-count alone isn't the verdict (the consensus is
+supposed to discard losing alignments). So we ran the 4-aligner consensus with
+fixed mapPacBio and looked at what it actually *selects*: mapPacBio **sole-wins
+38,126 reads (39 %)** — won, with no other aligner agreeing (`Xn==1`). But on
+exactly those reads, the three aligners it beat had **97–98 %** annotated
+junctions while mapPacBio's winning junctions were only **77 %** annotated
+(18,290 novel). Its unique contribution there: **503 real vs 17,067 novel
+(1:34)**. So **HP-ED selected the strictly worse alignment.** Mechanism: HP-ED
+scores N-ops as *free* and penalizes soft-clips ~1/base, so mapPacBio's
+`maxindel=200000` habit of converting soft-clips into (spurious) introns makes it
+win regardless of junction correctness. The consensus *selects* mapPacBio's
+artifacts rather than filtering them. (Counterintuitively, the param fix makes
+mapPacBio MORE harmful: broken-params it won mostly *unspliced* reads — no
+junctions to get wrong; fixed-params it wins *spliced* reads with bad junctions.)
+
+> ⚠️ **Latent HP-ED vulnerability (independent of mapPacBio):** any aligner that
+> over-converts soft-clips to N-ops can game the consensus score, since N is free
+> and soft-clips are penalized. Worth a metric rebalance (e.g. a penalty for
+> unannotated/non-canonical N-ops). See [[feedback_hp_edit_distance_semantics]].
+
+**Recommendation:** do **not** include mapPacBio in an ONT-DRS splice panel — it
+*degrades* the consensus, replacing 97–98 %-annotated alignments with 77 % ones on
+the reads it wins. Use minimap2 + uLTRA + deSALT. Dropped from the human-DRS panel
+2026-05-26. Keep mapPacBio for **yeast**, where BBMap's short-indel error model
+fits and it has earned its place. (Sources: Křižanović 2018 PMC6192213; uLTRA
+PMC8665758.)
 
 ---
 
