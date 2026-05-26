@@ -475,3 +475,180 @@ Greps used: `no_consensus`, `junc_bed_path`, `comparison_summary`, `cat5_candida
   (periodicity validation, `--annotation` tractability, A549 equivalence).
 - Diagnostic jobs A–F + py-spy folded stacks: `$SCRATCH/rectify_runall_diag_20260524/`.
 - 10k timing run dirs + copied artifacts: see Part II.
+
+---
+
+# Part IV — Per-read profile POST all 2026-05-26 fixes (task #12, 2026-05-26)
+
+**Baseline: HEAD `c1d0e83`** (NOT `cf5ebb9` as the task brief stated). Between
+`cf5ebb9` and `c1d0e83` the loop-1 shift×offset cost the brief said was "deliberately
+left untouched" was in fact ALREADY narrowed by four commits: `da18965`
+(`align_clip_to_exon` 500 bp guard), `fe1bb69` (terminal-peel K=20 cap), `25d7a30`
+(baseline `_rescue_3ss_truncation_body` K=25 candidate cap), `5ceb243` (offset-loop ED=0
+early-exit), plus `cf5ebb9` (rRNA/Pol III exclusion). The "soft-hung at region 29/126 /
+216 s per region" anecdote in the brief predates the K-caps — do NOT expect to reproduce
+it on current code. The right question, answered here: **given all those fixes, what STILL
+dominates `correct_read_3prime` and which reads are dead ends?**
+
+## Method
+
+Standalone profiler `dev/profile_correct_reads.py` (NOT a hot-path change) replicates the
+`correct` setup exactly: load genome + GFF, build the cross-aligner junction pool from the
+4 staged per-aligner BAMs, build `pool_chrom_index` via `_build_pool_chrom_index`, build
+the `ExclusionRegionDetector` (rDNA/Pol III, default-on), build gene interval trees; then
+time `correct_read_3prime` per read recording chrom/pos/strand/mapq, CIGAR complexity
+(n_ops, n_S/I/D/N/X, ref_len), 5'-softclip len, `n_pool_nearby` (pool candidates in the
+real fetch window), `n_op_intervals`, `is_excluded`, and the emitted outcome
+(five_rescued / three_shifted / no-op). Sorts by elapsed, writes top-1% + all rows to TSV.
+
+- **Input:** Sherlock staged `wt_by4742_rep1.{minimap2,mapPacBio,gapmm2}.bam` (yeast DRS),
+  6000 reads each, single-thread. Job 26151151 (profile) + 26152138 (py-spy + cross-chrom).
+- **py-spy** (job 26152138) on the single worst read of each aligner, 200 Hz × 25 s.
+- Output TSVs copied to M1: `dev/perf_task12_results/profile_{aligner}.{top1pct,all}.tsv`.
+- **Limitations:** (1) yeast only — human chr5 dense-splice loci (per the
+  `[2026-05-26] A549 _hp_edit_distance slow` AGENT_FIXES entry) may differ; (2) the 6000-read
+  pass is **chrI-only** (`fetch(until_eof=True)` on a coord-sorted BAM starts at chrI) —
+  chrI is splice-sparse, so the `n_pool_nearby` numbers are a lower bound (a stride-40
+  cross-chrom pass was run to check this; see below); (3) `apply_indel_correction` was left
+  **OFF** so the profile isolates the 3'SS-rescue cost — production `correct` enables 2C by
+  default (`not skip_indel_correction and not is_short_read`). The production 2C cost adds
+  on top of the 3'SS-rescue cost shown here (per Part II, `2C_indel_correction` was 5–14 s
+  on human, smaller on yeast); it is a separate, already-logged open finding and does not
+  affect the 3'SS-rescue conclusions below.
+
+## Headline
+
+**The candidate-explosion hotspot is GONE.** Pre-fix (Part II) the median rescue candidate
+count was ~388–398/read; post-fix the **top-1% median `n_pool_nearby` is 0–4**. The K=25
+cap + dual-site fetch + anchor floor did their job: HP-edit-distance is no longer driven by
+a per-read pool scan. **What remains is a tiny number of extreme outliers** — single reads
+at 1.8 s / 6.5 s / 12.3 s — and the per-read time is now wildly outlier-concentrated:
+
+| Aligner (chrI 6k) | total | p50 | p99 | max | top-1% share | top-1% no-ops | top-1% rescued |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| minimap2 | 6.15 s | 0.58 ms | 1.56 ms | **1761 ms** | 38.5% | 52/60 (12.7% of top time) | 4 |
+| mapPacBio | 21.0 s | 0.49 ms | 1.55 ms | **6476 ms** | 83.8% | 29/60 (1.6%) | 25 |
+| gapmm2 | 29.85 s | 0.60 ms | 2.14 ms | **12349 ms** | 86.7% | 33/60 (20.5%) | 23 |
+
+## py-spy: the residual cost is uniformly `_hp_edit_distance`
+
+py-spy on the single worst read of **all three** aligners (the 1761 ms minimap2 / 6476 ms
+mapPacBio / 12349 ms gapmm2 reads) showed **~100% of samples in `_hp_edit_distance`,
+lines 727–734 = the inner O(n×m) DP cell loop.** NOT `align_clip_to_exon` (Gotoh), NOT
+`get_aligned_pairs`/genome-slicing, NOT 2C. So even after the candidate cap, the leaf cost
+is the same DP as before — just reached via a different driver. The DP is reached
+`(candidates) × (shift range ~21) × (offset range ≤ junction_proximity_bp)` times per read,
+each call up to the 200×200 `_HP_ED_MAX_LEN` cap. The K=25 cap bounds *candidates*; it does
+**not** bound the shift×offset product per candidate, and the ED=0 early-exit (`5ceb243`)
+only fires when a perfect match exists — **dead-end reads (no good match) never hit ED=0,
+so they pay the full shift×offset×DP cost.**
+
+Why these specific reads stay expensive even with `n_pool_nearby=0`:
+- **Annotated junctions + the read's own `_real_junctions` bypass the K=25 pool cap**
+  (`bam_processor.py` ~L429–432 add them to `_ss_junctions` unconditionally; the cap is on
+  the pool-fetched subset). A read near several annotated 3'SS still feeds many candidates.
+- The **mapPacBio leading-D N-op-matched** junctions are *deliberately preserved* past the
+  cap (correctness — they are the evidence basis), so garbled high-op mapPacBio reads run
+  the full DP on every N-op-matched junction.
+- A **large 5' soft-clip** (e.g. the 456 bp minimap2 outlier) yields a long `rescue_seq`
+  (capped at 200), making each DP call hit the 200×200 ceiling — maximal per-call cost.
+
+## Disjoint cost-class attribution (chrI 6k, by precedence)
+
+Classes are assigned by precedence (bigN > large-clip > high-op > dead-end-noop > productive
+> other) so percentages are disjoint and sum to ~100%. ("other" = the long tail of normal
+reads at baseline ~0.5 ms each — not a hotspot.)
+
+| Class (precedence) | minimap2 | mapPacBio | gapmm2 |
+| --- | ---: | ---: | ---: |
+| `bigN_artifact_intron` (n_N>2 kb) | 0.0% (1 rd) | 0% (0) | **49.9%** (28 rd) |
+| `large_subguard_5clip` (100–499 bp clip) | **32.8%** (23 rd) | 0% (0) | 15.1% (12 rd) |
+| `high_cigar_op` (≥50 CIGAR ops) | 9.9% (571 rd) | **83.1%** (1500 rd) | 8.3% (1796 rd) |
+| `deadend_noop_with_cands` (no-op, n_pool_nearby>0) | 7.7% (813 rd) | 1.3% (310 rd) | **16.8%** (754 rd) |
+| `nearby_cand_productive` | 0.9% | 5.7% | 3.0% |
+| `other` (baseline tail) | 48.6% | 9.9% | 6.9% |
+
+Per-aligner dominant driver:
+- **minimap2** — large (but sub-500-guard) 5' soft-clips: 23 reads = 33% of total. The
+  `da18965` 500 bp `align_clip_to_exon` guard does NOT catch these (the worst is 456 bp).
+- **mapPacBio** — garbled high-CIGAR-op alignments (≥50 ops): 1500 reads = 83%. These are
+  the BBMap PacBio-error-model artifacts on ONT (see the mapPacBio `intronlen`/`maxindel`
+  AGENT_FIXES entries) — many N-op-matched candidates each running the full DP.
+- **gapmm2** — `bigN_artifact_intron` (a single read with an **88 kb spurious N-op**,
+  n_N=88240, alone = 12.3 s ≈ 41% of total), plus dead-end no-ops (16.8%) and large clips
+  (15.1%). The 88 kb N is a gapmm2 mis-relabel; the cost is still the DP volume, not the N.
+
+## Dead-end classes (reads where rescue can never succeed → should early-skip)
+
+The cleanest flaggable dead-end class: **`is_noop=1 AND (n_pool_nearby>0 OR n_op_intervals>0)`**
+— reads that RUN the rescue DP (had candidates) but emit zero correction (no five_prime
+rescue, no 3' shift, no category). Whole-set burden:
+
+| Aligner | dead-end-with-work reads | their time | % of total |
+| --- | ---: | ---: | ---: |
+| gapmm2 | 862 | 5.64 s | **18.9%** |
+| minimap2 | 838 | 0.49 s | 7.9% |
+| mapPacBio | 334 | 0.29 s | 1.4% |
+
+These are reads near a junction (or with an N-op) whose `rescue_seq` matches NO candidate
+exon-1 window well enough — they exhaust the full shift×offset×DP search and return "none".
+They are genuine dead ends: the DP can be skipped entirely if a *cheap* pre-gate proves no
+candidate can match.
+
+## Concrete speedup + dead-end-flagging recommendations (UNVERIFIED — propose, don't ship)
+
+Per the standing advisor guidance, do NOT touch the shift×offset windows themselves; cut the
+*number of DP calls* or *skip provably-hopeless reads*. Candidates, in priority order:
+
+1. **Cheap pre-gate before the shift×offset DP (kills the dead-end class).** For each
+   candidate junction, before the `for _shift … for _off … _hp_edit_distance` block, compute
+   a *cheap* lower-bound on achievable ED — e.g. a k-mer (k=6–8) presence/Jaccard between
+   `rescue_seq` and the exon-1 window at the unshifted position, or a single Hamming at
+   shift=0. If the best cheap score across all shifts of that candidate already exceeds
+   `max_edit_frac * rescue_len`, skip the full DP for that candidate. Dead-end reads (no
+   candidate can match) then skip ALL DP calls. **Risk:** a too-aggressive bound drops real
+   rescues — must verify rescue-count equivalence (Part I discipline). This is the
+   "flag dead-ends early" idea the audit was circling, now grounded: the 862 gapmm2 dead-end
+   reads (18.9%) are the target.
+
+2. **Cap `rescue_seq` length used in the DP (helps the large-clip class).** A 456 bp clip is
+   truncated to `five_clip` then the DP caps at 200 — but a real exon-1 boundary match needs
+   only the ~20–40 bp adjacent to the splice site. Truncating `rescue_seq` to e.g. the 60 bp
+   nearest the 5' boundary before the DP would shrink each call from 200×200 to ~60×~80.
+   **Risk:** changes which window scores best on legitimately long short-exon-1 reads —
+   verify on the validation set.
+
+3. **Extend the K cap to annotated + `_real_junctions`, not just pool-fetched.** Today the
+   K=25 cap (`bam_processor` / `_rescue_3ss_truncation_body`) bounds only the pool subset;
+   annotated and read-own N-op junctions are added unconditionally. On chrI this is fine
+   (sparse), but it is why `n_pool_nearby=0` reads still run many DP calls. Apply the same
+   edge-distance K cap to the *union* (preserving N-op-matched ones, as the existing
+   partition does). **Risk:** low for yeast, must check human dense loci.
+
+4. **Leave the `align_clip_to_exon` 500 bp guard (`da18965`) alone — it does NOT apply to
+   this hotspot.** The 456 bp minimap2 outlier sits just under the guard, so it looked like a
+   candidate for tightening 500→150 bp — but py-spy showed its cost is in `_hp_edit_distance`,
+   NOT the Gotoh `align_clip_to_exon`. Tightening the guard would not touch the large-clip
+   hotspot; recommendation #2 (cap `rescue_seq` length fed to the DP) is the actual lever for
+   that class. Recorded here only to prevent a future agent from chasing the guard.
+
+5. **(mapPacBio-specific, low ROI) reconsider mapPacBio in the ONT panel.** The high-op class
+   is 83% of mapPacBio's correct-stage cost and stems from BBMap's PacBio error model
+   producing garbled ONT alignments (Křižanović 2018; see mapPacBio AGENT_FIXES). The cost
+   is real rescue work, not waste — but it is the worst aligner-per-read profile. Per the
+   `[2026-05-25]` entry, whether mapPacBio belongs in an ONT splice panel at all is the
+   higher-leverage question than micro-optimizing its rescue.
+
+**None of these are shipped.** Each needs the Part I verification discipline (focused tests
++ `pytest -m "not slow"` + scale rerun + rescue-count/output equivalence) before landing.
+
+## Artifacts
+
+- Profiler: `dev/profile_correct_reads.py` (M1 + Sherlock
+  `…/software/rectify/dev/`). Sbatch: `dev/profile_correct_task12.sbatch`,
+  `dev/profile_pyspy_task12.sbatch`.
+- Top-1% + all-row TSVs (M1): `dev/perf_task12_results/profile_{minimap2,mapPacBio,gapmm2}.{top1pct,all}.tsv`.
+- Sherlock run dirs: `$SCRATCH/rectify_perf_task12_20260526_114334/` (profile),
+  `$SCRATCH/rectify_perf_task12_pyspy_20260526_115051/` (py-spy `.folded` + cross-chrom).
+- Jobs: 26151151 (profile), 26152138 (py-spy + cross-chrom stride). Sherlock rectify synced
+  to `c1d0e83` (`bam_processor.py` was the only file behind; md5-verified) before running.
