@@ -318,6 +318,106 @@ def write_cross_tab(
 
 
 # ---------------------------------------------------------------------------
+# UpSet analysis — per-aligner correction membership
+# ---------------------------------------------------------------------------
+
+def compute_upset_from_per_aligner_tsvs(
+    aligner_tsvs: Dict[str, str],
+    output_dir: str,
+    sample_name: str = "",
+) -> None:
+    """Build UpSet membership table from per-aligner single-aligner correct TSVs.
+
+    For each read, determines which aligners would apply any correction.
+    A read is "correctable" by aligner A if A's correction_applied != "none".
+
+    Outputs upset_data.tsv with columns:
+        member_aligners        — pipe-separated capable-aligner set
+        n_aligners_capable     — size of that set
+        count                  — number of reads with this membership
+        sample                 — sample name
+        member_{aligner}       — 0/1 column per aligner (for upsetplot)
+    """
+    aligners = sorted(aligner_tsvs.keys())
+
+    aligner_corrections: Dict[str, Dict[str, str]] = {}
+    for aligner, path in aligner_tsvs.items():
+        corrections: Dict[str, str] = {}
+        with open(path, newline="") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                ca = row.get("correction_applied", "none") or "none"
+                corrections[row["read_id"]] = ca
+        aligner_corrections[aligner] = corrections
+        print(f"[INFO]   {aligner}: {len(corrections):,} reads", file=sys.stderr)
+
+    all_reads: set = set()
+    for d in aligner_corrections.values():
+        all_reads.update(d.keys())
+    print(
+        f"[INFO] UpSet: {len(all_reads):,} unique reads across {len(aligners)} aligners",
+        file=sys.stderr,
+    )
+
+    pattern_counts: Dict[frozenset, int] = defaultdict(int)
+
+    for read_id in all_reads:
+        capable = frozenset(
+            a for a in aligners
+            if aligner_corrections[a].get(read_id, "none") not in ("none", "")
+        )
+        pattern_counts[capable] += 1
+
+    rows = []
+    for pattern, count in sorted(pattern_counts.items(), key=lambda x: -x[1]):
+        row: dict = {
+            "member_aligners": "|".join(sorted(pattern)) if pattern else "(none_corrected)",
+            "n_aligners_capable": len(pattern),
+            "count": count,
+            "sample": sample_name,
+        }
+        for a in aligners:
+            row[f"member_{a}"] = int(a in pattern)
+        rows.append(row)
+
+    fieldnames = (
+        ["member_aligners", "n_aligners_capable", "count", "sample"]
+        + [f"member_{a}" for a in aligners]
+    )
+    path = os.path.join(output_dir, "upset_data.tsv")
+    write_tsv(path, rows, fieldnames=fieldnames)
+    print(f"[INFO] -> {path}", file=sys.stderr)
+
+    n_reads = len(all_reads)
+    print(f"\n=== UpSet: Correction Membership Patterns ({n_reads:,} reads) ===")
+    print(f"{'Pattern':<45} {'Count':>8} {'Pct':>6}")
+    print("-" * 63)
+    for row in rows[:15]:
+        pct = 100.0 * row["count"] / n_reads if n_reads else 0.0
+        print(f"{row['member_aligners']:<45} {row['count']:>8,} {pct:>5.1f}%")
+    if len(rows) > 15:
+        print(f"  ... ({len(rows) - 15} more patterns)")
+
+
+def find_per_aligner_tsvs(per_aligner_correct_dir: str) -> Dict[str, str]:
+    """Discover {aligner: corrected_reads.tsv} from a per-aligner correct directory.
+
+    Expected layout: <dir>/{aligner}/corrected_reads.tsv
+    """
+    result: Dict[str, str] = {}
+    base = Path(per_aligner_correct_dir)
+    if not base.is_dir():
+        return result
+    for sub in sorted(base.iterdir()):
+        if not sub.is_dir():
+            continue
+        tsv = sub / "corrected_reads.tsv"
+        if tsv.exists() and tsv.stat().st_size > 0:
+            result[sub.name] = str(tsv)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -326,8 +426,8 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument(
-        "--samples", nargs="+", required=True, metavar="DIR",
-        help="Sample directories (each containing corrected_reads.tsv and chunk aligner_summary.tsv files)",
+        "--samples", nargs="+", metavar="DIR",
+        help="Sample directories (each with corrected_reads.tsv + aligner_summary chunks)",
     )
     p.add_argument(
         "--output", "-o", required=True, metavar="DIR",
@@ -345,12 +445,50 @@ def parse_args():
         "--skip-loo", action="store_true",
         help="Skip leave-one-out simulation (faster if only win-rate needed)",
     )
+    p.add_argument(
+        "--per-aligner-correct-dir", metavar="DIR",
+        help=(
+            "Directory with {aligner}/corrected_reads.tsv subdirs for UpSet analysis. "
+            "Skips win-rate + LOO passes; outputs upset_data.tsv only."
+        ),
+    )
+    p.add_argument(
+        "--upset-sample-name", metavar="NAME", default="",
+        help="Sample label written to upset_data.tsv (used with --per-aligner-correct-dir)",
+    )
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     os.makedirs(args.output, exist_ok=True)
+
+    # UpSet-only mode: per-aligner single-aligner correct directory
+    if args.per_aligner_correct_dir:
+        print(
+            f"[INFO] UpSet mode: scanning {args.per_aligner_correct_dir}",
+            file=sys.stderr,
+        )
+        aligner_tsvs = find_per_aligner_tsvs(args.per_aligner_correct_dir)
+        if not aligner_tsvs:
+            print(
+                f"[ERROR] No {'{aligner}/corrected_reads.tsv'} found in "
+                f"{args.per_aligner_correct_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"[INFO]   Found {len(aligner_tsvs)} aligners: {', '.join(sorted(aligner_tsvs))}",
+            file=sys.stderr,
+        )
+        compute_upset_from_per_aligner_tsvs(
+            aligner_tsvs, args.output, sample_name=args.upset_sample_name
+        )
+        return
+
+    if not args.samples:
+        print("[ERROR] --samples is required unless --per-aligner-correct-dir is given.", file=sys.stderr)
+        sys.exit(1)
 
     annotated_junctions: Optional[set] = None
     if args.annotation:
