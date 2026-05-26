@@ -29,6 +29,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 import pysam
 import pytest
 
@@ -408,3 +409,78 @@ def test_mixed_panel_pooled_includes_untagged(synth_bam_dir):
     # contribution. With 4 identical reads, each per-key value is 4x what
     # one read contributes; summing tagged (3) is 3/4 of pooled.
     assert total_summed * 4 == total_pooled * 3
+
+
+# ---------------------------------------------------------------------------
+# usable_mask (variant / high-conf masking) tests
+# ---------------------------------------------------------------------------
+
+def _mismatch_panel(tmp_path):
+    """Two-aligner panel: one read perfectly matching ref[0:50] except a single
+    substitution at position 10 (so exactly one strict-consensus X event)."""
+    header = _make_header()
+    sub_pos = 10
+    seq = list(_REF_SEQ[0:50])
+    seq[sub_pos] = 'A' if seq[sub_pos] != 'A' else 'C'
+    seq = ''.join(seq)
+    reads = [_make_read(header, 'r1', seq, '50M', pos=0)]
+    bam_a = _write_bam(tmp_path / 'mm_a.bam', reads, header)
+    bam_b = _write_bam(tmp_path / 'mm_b.bam', list(reads), header)
+    return {'bam_a': bam_a, 'bam_b': bam_b,
+            'ref_seqs': {_REF_NAME: _REF_SEQ}, 'sub_pos': sub_pos}
+
+
+def _count_only(chunk_bams, ref_seqs, usable_mask=None):
+    counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
+    profiler.profile_chunk(
+        chunk_bams=chunk_bams, ref_seqs=ref_seqs,
+        min_aligners=2, max_reads=None, counts=counts,
+        usable_mask=usable_mask,
+    )
+    return counts
+
+
+def test_usable_mask_excludes_masked_substitution(tmp_path):
+    """The single substitution at the masked position is dropped; everything
+    else is unchanged. This is the het-allele-masking guarantee."""
+    p = _mismatch_panel(tmp_path)
+    cb = {'aligner_a': p['bam_a'], 'aligner_b': p['bam_b']}
+
+    c0 = _count_only(cb, p['ref_seqs'])
+    x0 = sum(v for (op, _, _), v in c0.items() if op == 'X')
+    assert x0 == 1, f'expected exactly one X event, got {x0}: {dict(c0)}'
+
+    mask = {_REF_NAME: np.ones(len(_REF_SEQ), dtype=bool)}
+    mask[_REF_NAME][p['sub_pos']] = False
+    c1 = _count_only(cb, p['ref_seqs'], usable_mask=mask)
+    x1 = sum(v for (op, _, _), v in c1.items() if op == 'X')
+    assert x1 == 0, f'masked substitution should be excluded, got {x1}'
+    # M counts (all other positions) are untouched by masking one X position.
+    m0 = sum(v for (op, _, _), v in c0.items() if op == 'M')
+    m1 = sum(v for (op, _, _), v in c1.items() if op == 'M')
+    assert m1 == m0
+
+
+def test_usable_mask_absent_chrom_excludes_everything(tmp_path):
+    """A mask that omits the read's chromosome excludes the whole read group
+    (conservative: no confidence calls there)."""
+    p = _mismatch_panel(tmp_path)
+    cb = {'aligner_a': p['bam_a'], 'aligner_b': p['bam_b']}
+    mask = {'some_other_chrom': np.ones(10, dtype=bool)}
+    c = _count_only(cb, p['ref_seqs'], usable_mask=mask)
+    assert sum(c.values()) == 0
+
+
+def test_load_usable_mask_bed_and_none(tmp_path):
+    ref_seqs = {'chr1': 'ACGT' * 10}  # length 40
+    # No args -> no masking.
+    assert profiler.load_usable_mask(ref_seqs, None, None) is None
+    # BED-only: positions start excluded, only [5,15) turned on.
+    bed = tmp_path / 'hc.bed'
+    bed.write_text('chr1\t5\t15\n')
+    m = profiler.load_usable_mask(ref_seqs, None, bed)
+    assert m['chr1'][4] == False  # noqa: E712
+    assert m['chr1'][5] == True   # noqa: E712
+    assert m['chr1'][14] == True  # noqa: E712
+    assert m['chr1'][15] == False  # noqa: E712
+    assert int(m['chr1'].sum()) == 10

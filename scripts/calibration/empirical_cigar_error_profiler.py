@@ -883,8 +883,20 @@ def profile_chunk(
     str_counts_by_bin: Optional[Dict[str, Dict[Tuple[str, str, int], int]]] = None,
     reads_per_bin: Optional[Dict[str, int]] = None,
     umi_lookup: Optional[Dict[str, int]] = None,
+    usable_mask: Optional[Dict[str, "np.ndarray"]] = None,
 ) -> Tuple[int, int]:
     """Profile one chunk, updating *counts* (and optionally *union_counts*) in place.
+
+    usable_mask (optional, for diploid/outbred genomes):
+        dict[chrom] -> bool ndarray (length = chrom length). A reference
+        position is counted only where usable_mask[chrom][pos] is True. Built
+        from --exclude-vcf (mask known variant sites, indels expanded) and/or
+        --high-conf-bed (restrict to high-confidence intervals). When a chrom
+        is absent from the mask it is treated as fully excluded if a mask was
+        supplied at all. This prevents heterozygous alleles from being counted
+        as substitution "errors" -- critical for the HP=1 substitution baseline
+        that normalizes the whole penalty table. Unmodified/isogenic data
+        (e.g. yeast, IVT) can omit it.
 
     Two classes of aligner are handled:
 
@@ -1019,6 +1031,17 @@ def profile_chunk(
         if ref_seq is None:
             continue
 
+        # Per-chrom usable-position mask (variant / high-conf filtering).
+        # None => no masking for this chrom. If a mask was supplied globally
+        # but this chrom is absent, skip the whole read group (conservative:
+        # we have no confidence calls there).
+        if usable_mask is not None:
+            usable_chrom = usable_mask.get(chrom)
+            if usable_chrom is None:
+                continue
+        else:
+            usable_chrom = None
+
         # --- UMI bin lookup (once per read, before per-range loops) ---
         # The bin label drives parallel per-bin counters; reads with no UMI
         # tag (or no matching bin) get bin_label=None — those still feed the
@@ -1144,6 +1167,9 @@ def profile_chunk(
                 any_sub_pos: Set[int] = set(
                     (np.where(any_x_mask)[0] + rng_start).tolist()
                 )
+                if usable_chrom is not None:
+                    any_del_pos = {p for p in any_del_pos if usable_chrom[p]}
+                    any_sub_pos = {p for p in any_sub_pos if usable_chrom[p]}
             else:
                 any_del_pos = set()
                 any_sub_pos = set()
@@ -1151,6 +1177,8 @@ def profile_chunk(
             # Count strict M positions (iterate only matched positions — small subset)
             for _rel in np.where(m_mask)[0]:
                 pos = int(_rel) + rng_start
+                if usable_chrom is not None and not usable_chrom[pos]:
+                    continue
                 ref_base = ref_seq[pos]
                 hp_len = int(hp_arr[pos])
                 if hp_len == 1 and str_counts is not None:
@@ -1178,6 +1206,8 @@ def profile_chunk(
             strict_error_events: List[Tuple[int, str, str]] = []
             for _rel in np.where(d_mask | x_mask)[0]:
                 pos = int(_rel) + rng_start
+                if usable_chrom is not None and not usable_chrom[pos]:
+                    continue
                 ref_base = ref_seq[pos]
                 op_type = 'D' if d_mask[_rel] else 'X'
                 strict_error_events.append((pos, op_type, ref_base))
@@ -1814,6 +1844,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help='Reference genome FASTA (must be indexed with samtools faidx).')
     p.add_argument('--output-dir', type=Path, required=True,
                    help='Output directory for TSVs and plots.')
+    p.add_argument('--exclude-vcf', type=Path, default=None, metavar='VCF',
+                   help='Mask reference positions overlapping records in this VCF '
+                        '(bgzipped+tabix; indels expanded by REF length). For diploid/'
+                        'outbred samples this excludes heterozygous/variant alleles that '
+                        'would otherwise be counted as substitution "errors", biasing the '
+                        'HP=1 substitution baseline. Not needed for isogenic/unmodified '
+                        'data (yeast, IVT).')
+    p.add_argument('--high-conf-bed', type=Path, default=None, metavar='BED',
+                   help='Restrict counting to reference positions inside these intervals '
+                        '(e.g. a GIAB high-confidence-regions BED). Positions outside, and '
+                        'whole chromosomes absent from the BED, are excluded.')
     p.add_argument('--protocol', choices=['drs', 'cdna', 'qsrev'], default='drs',
                    help='Sequencing protocol. Controls (a) default --aligners panel '
                         '(qsrev=bbmap+bwa; drs/cdna=5-aligner long-read panel) and '
@@ -1938,7 +1979,8 @@ def _worker(args_tuple):
     """
     (chunk_idx, run_dir, n_chunks, aligners, ref_seqs,
      min_aligners, max_reads, isolation_flank, exclude_5p_bp, exclude_3p_bp,
-     do_union, do_str, do_strand, umi_tag, umi_bins, umi_lookup) = args_tuple
+     do_union, do_str, do_strand, umi_tag, umi_bins, umi_lookup,
+     usable_mask) = args_tuple
 
     local_counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
     local_union: Optional[Dict[Tuple[str, str, int], int]] = (
@@ -1988,7 +2030,8 @@ def _worker(args_tuple):
                   union_counts_by_bin=local_union_by_bin,
                   str_counts_by_bin=local_str_by_bin,
                   reads_per_bin=local_reads_per_bin,
-                  umi_lookup=umi_lookup)
+                  umi_lookup=umi_lookup,
+                  usable_mask=usable_mask)
 
     def _freeze(d):
         return {k: dict(v) for k, v in d.items()} if d is not None else None
@@ -2025,6 +2068,54 @@ def _merge_counts_by_bin(
             target[bin_label] = defaultdict(int)
         for k, v in sub.items():
             target[bin_label][k] += v
+
+
+def load_usable_mask(
+    ref_seqs: Dict[str, str],
+    vcf_path: Optional[Path],
+    bed_path: Optional[Path],
+) -> Optional[Dict[str, np.ndarray]]:
+    """Build per-chrom boolean 'usable' arrays from an exclude-VCF and/or a
+    high-conf BED. Returns None when neither is given (no masking).
+
+    Memory: one bool array per chrom (1 byte/base, ~3.1 GB for GRCh38). Built
+    once in the parent; on Linux (fork) it is shared copy-on-write with --run-dir
+    workers, but is also pickled per chunk — so for large genomes prefer the
+    in-process --aligner-bams path (no pickling)."""
+    if vcf_path is None and bed_path is None:
+        return None
+    default_val = bed_path is None  # BED given => start excluded; else start usable
+    mask: Dict[str, np.ndarray] = {
+        chrom: np.full(len(seq), default_val, dtype=bool)
+        for chrom, seq in ref_seqs.items()
+    }
+    if bed_path is not None:
+        n_iv = 0
+        with open(bed_path) as fh:
+            for line in fh:
+                if not line or line[0] == '#':
+                    continue
+                f = line.rstrip('\n').split('\t')
+                if len(f) < 3:
+                    continue
+                arr = mask.get(f[0])
+                if arr is not None:
+                    arr[int(f[1]):int(f[2])] = True
+                    n_iv += 1
+        log.info('  high-conf BED: %d intervals loaded', n_iv)
+    if vcf_path is not None:
+        vf = pysam.VariantFile(str(vcf_path))
+        n_var = 0
+        for rec in vf.fetch():
+            arr = mask.get(rec.chrom)
+            if arr is not None:
+                reflen = len(rec.ref) if rec.ref else 1
+                arr[rec.start:rec.start + reflen] = False
+                n_var += 1
+        log.info('  exclude-VCF: %d records masked', n_var)
+    usable_bp = sum(int(a.sum()) for a in mask.values())
+    log.info('  usable positions after masking: %.1f Mb', usable_bp / 1e6)
+    return mask
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -2083,6 +2174,12 @@ def main(argv: Optional[List[str]] = None) -> None:
              len(ref_seqs),
              sum(len(s) for s in ref_seqs.values()) / 1e6)
 
+    # --- Variant / high-conf position mask (optional; diploid/outbred genomes) ---
+    usable_mask = load_usable_mask(ref_seqs, args.exclude_vcf, args.high_conf_bed)
+    if usable_mask is not None:
+        log.info('Variant/high-conf masking ACTIVE (exclude-vcf=%s, high-conf-bed=%s)',
+                 args.exclude_vcf, args.high_conf_bed)
+
     # --- Accumulators ---
     counts: Dict[Tuple[str, str, int], int] = defaultdict(int)
     union_counts: Optional[Dict[Tuple[str, str, int], int]] = (
@@ -2134,6 +2231,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         str_counts_by_bin=str_counts_by_bin,
         reads_per_bin=reads_per_bin,
         umi_lookup=umi_lookup,
+        usable_mask=usable_mask,
     )
 
     if args.aligner_bams:
@@ -2167,7 +2265,7 @@ def main(argv: Optional[List[str]] = None) -> None:
              min_aligners, args.max_reads, args.isolation_flank,
              args.exclude_5p_bp, args.exclude_3p_bp,
              args.union, args.str_repeat, args.strand_split,
-             args.umi_tag, args.umi_bin_specs, umi_lookup)
+             args.umi_tag, args.umi_bin_specs, umi_lookup, usable_mask)
             for chunk_idx in chunk_indices
         ]
 
