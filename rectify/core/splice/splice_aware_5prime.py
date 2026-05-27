@@ -646,6 +646,21 @@ def _edit_distance(s1: str, s2: str) -> int:
 # ---------------------------------------------------------------------------
 _HP_ED_MAX_LEN = 200          # sequences longer than this are truncated
 _HP_ED_STRIDE  = _HP_ED_MAX_LEN + 1          # row stride (m+1 dimension)
+# Perf cap for the 3'SS-rescue DP (PERF_AUDIT.md rec #2, large_5prime_clip class):
+# only the bases ADJACENT to the splice donor determine the boundary; distal
+# exon-1 bases add _hp_edit_distance cost (up to 200x200 per call) without
+# improving boundary precision. The rescue scoring sequence is capped to this
+# many donor-adjacent bases. Surgery (align_clip_to_exon) still uses the full
+# clip, so CIGAR geometry is unaffected — only junction *selection* is capped.
+#
+# Value 100 (not the 60 the audit sketched): an empirical pre-cap vs post-cap diff
+# on real upf1Δ DRS (chrII+chrIV minimap2; 217 rescued >60bp clips) found cap=60
+# produced one 1-bp donor slide where distal bases broke an ED-tie toward the
+# canonical AC donor; cap>=80 reproduced the uncapped result exactly (0 diffs).
+# 100 keeps full rescue-outcome equivalence with margin while still shrinking the
+# DP ~4x (100x100 vs 200x200) on the median 244bp archetype clip. Lower toward 60
+# if perf demands it and the 1-bp slide is acceptable.
+_RESCUE_DP_CAP = 100
 _hp_ed_dp  = _array_mod.array('d', [0.0] * _HP_ED_STRIDE * _HP_ED_STRIDE)
 _hp_ed_del = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
 _hp_ed_ins = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
@@ -1484,6 +1499,15 @@ def _rescue_3ss_truncation_body(
                 else:
                     _rseq = rescue_seq
                     _rlen = rescue_len
+                    # Perf cap: donor-adjacent bases (plus strand) sit at the END of
+                    # _rseq (rescue_seq[-1] abuts intron_start). Keep the last
+                    # _RESCUE_DP_CAP; the candidate window auto-shrinks (built from
+                    # _rlen). Skipped for the dist==0 mapPacBio-overshoot branch above
+                    # (self-limits via _n_intr) and for terminal-peel overrides, which
+                    # pass a deliberately-deeper sequence (mirrors the L~1231 gate).
+                    if rescue_seq_override is None and _rlen > _RESCUE_DP_CAP:
+                        _rseq = _rseq[-_RESCUE_DP_CAP:]
+                        _rlen = _RESCUE_DP_CAP
                 if not _rseq:
                     continue
 
@@ -1636,6 +1660,14 @@ def _rescue_3ss_truncation_body(
                 else:
                     _rseq = rescue_seq
                     _rlen = rescue_len
+                    # Perf cap: donor-adjacent bases (minus strand) sit at the START
+                    # of _rseq (rescue_seq[0] abuts intron_end). Keep the first
+                    # _RESCUE_DP_CAP; the candidate window auto-shrinks (built from
+                    # _rlen). Skipped for the dist==0 mapPacBio-overshoot branch above
+                    # and for terminal-peel overrides (deliberately-deeper sequence).
+                    if rescue_seq_override is None and _rlen > _RESCUE_DP_CAP:
+                        _rseq = _rseq[:_RESCUE_DP_CAP]
+                        _rlen = _RESCUE_DP_CAP
                 if not _rseq:
                     continue
 

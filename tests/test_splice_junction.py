@@ -709,6 +709,24 @@ class TestMPBRescue:
 # rescue_3ss_truncation  (post-consensus, splice_aware_5prime.py)
 # =============================================================================
 
+def _distinct_seq(n: int, seed: int = 1) -> str:
+    """Deterministic, ~aperiodic ACGT string with no run > 2 bp.
+
+    Keeps the HP-aware DP scoring sequences by identity (no homopolymer
+    free-rides) and makes any 60-mer window uniquely placeable, so a
+    _RESCUE_DP_CAP test that slices the wrong end of the clip lands at a
+    different position (or fails to rescue) rather than matching by accident.
+    """
+    import random
+    rng = random.Random(seed)
+    out: list = []
+    for _ in range(n):
+        choices = [b for b in 'ACGT'
+                   if not (len(out) >= 2 and out[-1] == b and out[-2] == b)]
+        out.append(rng.choice(choices))
+    return ''.join(out)
+
+
 class MockRead:
     """Minimal pysam.AlignedSegment substitute for unit tests."""
 
@@ -994,6 +1012,52 @@ class TestRescue3SSTruncation:
         )
         r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='+')
         assert r['rescue_type'] == 'none'
+
+    # ---- Large 5' clip: _RESCUE_DP_CAP truncation (PERF_AUDIT.md rec #2) ----
+
+    def test_plus_large_clip_capped_still_rescues(self):
+        """A 150 bp plus-strand soft-clip (> _RESCUE_DP_CAP) still rescues to the
+        correct donor. The cap keeps the donor-ADJACENT bases (_rseq[-CAP:], the
+        end abutting intron_start); a wrong-end slice would land at a shifted
+        position or fail to rescue. exon1[0,180) intron[180,280) exon2[280,380)."""
+        exon1 = _distinct_seq(180, seed=11)
+        genome = {'chrL': exon1 + 'N' * 100 + 'C' * 100}
+        junction = {('chrL', 180, 280)}
+        clip = exon1[30:180]              # donor-adjacent 150 bp of exon1 (> cap)
+        read = MockRead(
+            reference_name='chrL',
+            reference_start=280,
+            reference_end=380,
+            is_reverse=False,
+            query_sequence=clip + 'C' * 100,
+            cigartuples=[(4, 150), (0, 100)],
+        )
+        r = rescue_3ss_truncation(read, genome, junction, strand='+')
+        assert r['rescued'] is True, r
+        assert r['rescue_type'] == 'softclip', r
+        assert r['rescued_junction'] == ('chrL', 180, 280), r
+        assert r['five_prime_corrected'] == 179, r   # intron_start - 1
+
+    def test_minus_large_clip_capped_still_rescues(self):
+        """Minus-strand symmetric: 150 bp soft-clip at the transcript-5' (high
+        genomic coord) end. The cap keeps the donor-adjacent bases (_rseq[:CAP],
+        the end abutting intron_end). body[0,100) intron[100,200) exon2[200,380)."""
+        exon2 = _distinct_seq(180, seed=22)
+        genome = {'chrW': 'A' * 100 + 'N' * 100 + exon2}   # 'chrM' is reserved → chrMito
+        junction = {('chrW', 100, 200)}
+        clip = exon2[0:150]              # donor-adjacent 150 bp (intron_end side, > cap)
+        read = MockRead(
+            reference_name='chrW',
+            reference_start=10,
+            reference_end=100,
+            is_reverse=True,
+            query_sequence='A' * 90 + clip,
+            cigartuples=[(0, 90), (4, 150)],
+        )
+        r = rescue_3ss_truncation(read, genome, junction, strand='-')
+        assert r['rescued'] is True, r
+        assert r['rescue_type'] == 'softclip', r
+        assert r['five_prime_corrected'] == 200, r   # intron_end
 
 
 # =============================================================================

@@ -11,6 +11,27 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-27] BUG: validation cat3_minus_2 fails on HEAD (4 tests) — pre-existing, human-track-owned
+
+**Status:** OPEN, NOT mine. Flagging for the human-data track. Found while landing the
+`_RESCUE_DP_CAP` perf change (unrelated).
+
+**Symptom:** `tests/test_validation_reads.py::TestCategory3JunctionRescue` fails 4 tests, all
+`cat3_minus_2` (chrII:365845–366503, − strand, 5' junction rescue):
+`test_5prime_exact_position[cat3_minus_2-366584]`, `test_5prime_exon_cigar_set[cat3_minus_2]`,
+`test_correction_applied_includes_five_prime_rescued[cat3_minus_2]`,
+`test_cat3_minus_2_rescued_aligners_have_clean_intron_cigar`.
+
+**Proven independent of the perf cap:** toggling `_RESCUE_DP_CAP` to 1e9 (≡ pre-cap behavior)
+on 2026-05-27 reproduced all 4 failures identically; cat3_minus_2's clip is also well below the
+cap. So a *different* recent commit broke it — suspect something in the
+`91d8336`(repeat-expansion skip) → `41f21bd` window (rescue / consensus / data area). The
+consensus read in `validation_reads.bam` carries an N-op (no soft-clip); the rescue runs on the
+per-aligner BAMs, so the regression is in that path, not the repeat-expansion gate (its `_clip5`
+on the consensus read is empty). Human-track owns; not diagnosed further here.
+
+---
+
 ## [2026-05-26] BUG: winnowmap2 align path broken on any from-scratch genome (TWO bugs) — #2 FIXED (d89b10b), #1 OPEN
 
 **Status:** Bug #2 **FIXED** by human-track commit `d89b10b` (2026-05-27, `-k14`→`-k15`,
