@@ -1,6 +1,8 @@
 <p align="center">
   <img src="docs/branding/rectify_banner_light.png#gh-light-mode-only" alt="RECTIFY — Nanopore RNA Alignment Correction" width="700">
   <img src="docs/branding/rectify_banner_dark.png#gh-dark-mode-only"  alt="RECTIFY — Nanopore RNA Alignment Correction" width="700">
+  <br>
+  <em><b>R</b>NA 5' and 3' <b>E</b>nd <b>C</b>orrection <b>T</b>ool with <b>I</b>ntron re<b>F</b>inement and ambiguit<b>Y</b> resolution</em>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/rectify-rna/"><img src="https://img.shields.io/pypi/v/rectify-rna?color=blue&label=PyPI" alt="PyPI"></a>
