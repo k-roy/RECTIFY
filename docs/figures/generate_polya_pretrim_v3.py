@@ -115,7 +115,7 @@ def build():
     # Cached metadata block — dashed to show it's no longer in the read
     out.append(block(polya_x, y2, polya_w + adapter_w, row_h,
                      "cached as soft-clip metadata",
-                     "#ffffff", PAL["muted"], PAL["muted"], dashed=True))
+                     PAL["bg"], PAL["muted"], PAL["muted"], dashed=True))
 
     out.append(svg_close())
     return "\n".join(out)
