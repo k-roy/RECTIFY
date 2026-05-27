@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="540" viewBox="0 0 760 540">
+<defs><marker id="arr" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,6 L6,3 z" fill="#94a3b8"/></marker></defs>
+<rect fill="#0f172a" width="760" height="540"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#f1f5f9" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">Multi-aligner pipeline</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="44">correct each aligner first (standardized scoring), then pick the winner</text>
+<rect x="315.0" y="64.0" width="130" height="32" rx="6" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="84">FASTQ</text>
+<line x1="380.0" y1="96" x2="180" y2="154" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="380.0" y1="96" x2="380" y2="154" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="380.0" y1="96" x2="580" y2="154" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="100.0" y="155.0" width="160" height="30" rx="6" fill="#172554" stroke="#60a5fa" stroke-width="1.2"/>
+<text fill="#60a5fa" font-size="12" font-weight="600" text-anchor="middle" x="180" y="171">minimap2</text>
+<text fill="#60a5fa" font-size="11" font-weight="400" text-anchor="middle" x="180" y="184">raw BAM</text>
+<line x1="180" y1="185" x2="180" y2="211" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="300.0" y="155.0" width="160" height="30" rx="6" fill="#042f2e" stroke="#2dd4bf" stroke-width="1.2"/>
+<text fill="#2dd4bf" font-size="12" font-weight="600" text-anchor="middle" x="380" y="171">mapPacBio</text>
+<text fill="#2dd4bf" font-size="11" font-weight="400" text-anchor="middle" x="380" y="184">raw BAM</text>
+<line x1="380" y1="185" x2="380" y2="211" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="500.0" y="155.0" width="160" height="30" rx="6" fill="#431407" stroke="#fb923c" stroke-width="1.2"/>
+<text fill="#fb923c" font-size="12" font-weight="600" text-anchor="middle" x="580" y="171">gapmm2</text>
+<text fill="#fb923c" font-size="11" font-weight="400" text-anchor="middle" x="580" y="184">raw BAM</text>
+<line x1="580" y1="185" x2="580" y2="211" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="100.0" y="209.0" width="560" height="38" rx="6" fill="#451a03" stroke="#fbbf24" stroke-width="1.2"/>
+<text fill="#fbbf24" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="229">junction pool</text>
+<text fill="#fbbf24" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="242">union of aligner junctions  +  annotated splice DB</text>
+<line x1="180" y1="247" x2="180" y2="278" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="380" y1="247" x2="380" y2="278" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="580" y1="247" x2="580" y2="278" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="100.0" y="278.0" width="160" height="64" rx="6" fill="#1e1b4b" stroke="#818cf8" stroke-width="1.2" opacity="0.95"/>
+<text fill="#818cf8" font-size="12" font-weight="700" text-anchor="middle" x="180" y="294">rectify correct</text>
+<rect x="122.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="140.0" y="322">5′</text>
+<rect x="162.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="180.0" y="322">int</text>
+<rect x="202.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="220.0" y="322">3′</text>
+<line x1="180" y1="342.0" x2="180" y2="403" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="300.0" y="278.0" width="160" height="64" rx="6" fill="#1e1b4b" stroke="#818cf8" stroke-width="1.2" opacity="0.95"/>
+<text fill="#818cf8" font-size="12" font-weight="700" text-anchor="middle" x="380" y="294">rectify correct</text>
+<rect x="322.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="340.0" y="322">5′</text>
+<rect x="362.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="380.0" y="322">int</text>
+<rect x="402.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="420.0" y="322">3′</text>
+<line x1="380" y1="342.0" x2="380" y2="403" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="500.0" y="278.0" width="160" height="64" rx="6" fill="#1e1b4b" stroke="#818cf8" stroke-width="1.2" opacity="0.95"/>
+<text fill="#818cf8" font-size="12" font-weight="700" text-anchor="middle" x="580" y="294">rectify correct</text>
+<rect x="522.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="540.0" y="322">5′</text>
+<rect x="562.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="580.0" y="322">int</text>
+<rect x="602.0" y="309" width="36" height="18" rx="3" fill="#ffffff" stroke="#818cf8" stroke-width="0.8"/>
+<text fill="#818cf8" font-size="11" font-weight="600" text-anchor="middle" x="620.0" y="322">3′</text>
+<line x1="580" y1="342.0" x2="580" y2="403" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="150.0" y="403.0" width="460" height="34" rx="6" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="421">consensus</text>
+<text fill="#cbd5e1" font-size="10" font-weight="400" text-anchor="middle" x="380.0" y="434">pick best CORRECTED alignment per read</text>
+<line x1="380.0" y1="437" x2="380.0" y2="462" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="270.0" y="463.0" width="220" height="30" rx="6" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="482">rectified BAM</text>
+</g>
+</svg>

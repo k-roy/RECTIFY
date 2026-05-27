@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="640" viewBox="0 0 760 640">
+<defs><marker id="arr" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,6 L6,3 z" fill="#94a3b8"/></marker></defs>
+<rect fill="#0f172a" width="760" height="640"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#f1f5f9" font-size="18" font-weight="700" text-anchor="middle" x="380.0" y="28">RECTIFY</text>
+<text fill="#64748b" font-size="11.5" font-weight="400" text-anchor="middle" x="380.0" y="48">one pipeline · three RNA chemistries</text>
+<text fill="#cbd5e1" font-size="11" font-weight="700" text-anchor="start" letter-spacing="0.8" x="60" y="78">INPUTS</text>
+<rect x="45.0" y="81.0" width="180" height="38" rx="6" fill="#172554" stroke="#60a5fa" stroke-width="1.2"/>
+<text fill="#60a5fa" font-size="12" font-weight="600" text-anchor="middle" x="135" y="104">ONT DRS</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="135" y="132.0">direct RNA</text>
+<rect x="290.0" y="81.0" width="180" height="38" rx="6" fill="#042f2e" stroke="#2dd4bf" stroke-width="1.2"/>
+<text fill="#2dd4bf" font-size="12" font-weight="600" text-anchor="middle" x="380" y="104">ONT PCR-cDNA</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380" y="132.0">UMI, full-length</text>
+<rect x="535.0" y="81.0" width="180" height="38" rx="6" fill="#431407" stroke="#fb923c" stroke-width="1.2"/>
+<text fill="#fb923c" font-size="12" font-weight="600" text-anchor="middle" x="625" y="104">QuantSeq REV</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="625" y="132.0">short read, antisense</text>
+<text fill="#60a5fa" font-size="11" font-weight="600" text-anchor="middle" x="135" y="153">trim-polya</text>
+<text fill="#2dd4bf" font-size="11" font-weight="600" text-anchor="middle" x="380" y="153">correct-cdna</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="625" y="153">(no pre-process)</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="167">per-protocol — strip adapters / UMIs / poly(A)</text>
+<line x1="135" y1="194" x2="135" y2="218" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="380" y1="194" x2="380" y2="218" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<line x1="625" y1="194" x2="625" y2="218" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="120.0" y="218.0" width="520" height="44" rx="8" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="242.0">rectify align — run aligners in parallel</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="256.0">minimap2 + mapPacBio + gapmm2 · or bbmap + bwa-mem (--short-read) · each produces its own BAM</text>
+<line x1="380.0" y1="262" x2="380.0" y2="286" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="170.0" y="286.0" width="420" height="32" rx="8" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="306.0">junction pool — observed across aligners + annotated DB</text>
+<line x1="380.0" y1="318" x2="380.0" y2="342" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="100.0" y="342.0" width="560" height="88" rx="8" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="364.0">rectify correct — applied per aligner (standardized scoring)</text>
+<rect x="150.0" y="385.0" width="130" height="26" rx="4" fill="#1e1b4b" stroke="#818cf8" stroke-width="1"/>
+<text fill="#818cf8" font-size="12" font-weight="600" text-anchor="middle" x="215.0" y="402.0">5' ends</text>
+<rect x="315.0" y="385.0" width="130" height="26" rx="4" fill="#1e1b4b" stroke="#818cf8" stroke-width="1"/>
+<text fill="#818cf8" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="402.0">introns</text>
+<rect x="480.0" y="385.0" width="130" height="26" rx="4" fill="#1e1b4b" stroke="#818cf8" stroke-width="1"/>
+<text fill="#818cf8" font-size="12" font-weight="600" text-anchor="middle" x="545.0" y="402.0">3' ends</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="424.0">junction pool informs 5′ rescue + intron refinement</text>
+<line x1="380.0" y1="430" x2="380.0" y2="454" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="190.0" y="454.0" width="380" height="32" rx="8" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="474.0">consensus — pick best corrected alignment per read</text>
+<line x1="380.0" y1="486" x2="380.0" y2="510" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arr)"/>
+<rect x="270.0" y="510.0" width="220" height="28" rx="8" fill="#1e293b" stroke="#cbd5e1" stroke-width="1.2"/>
+<text fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle" x="380.0" y="528.0">rectified BAM</text>
+<line x1="60" x2="700" y1="554" y2="554" stroke="#1e293b" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="11" font-weight="700" text-anchor="start" letter-spacing="0.8" x="60" y="575">DOWNSTREAM</text>
+<text fill="#cbd5e1" font-size="11" font-weight="600" text-anchor="start" x="60" y="598">analyze</text>
+<rect x="175.0" y="583.0" width="130" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="240" y="599">5'/3' clusters</text>
+<rect x="315.0" y="583.0" width="130" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="380" y="599">splice tables</text>
+<rect x="465.0" y="583.0" width="130" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="530" y="599">isoforms (cDNA)</text>
+<text fill="#cbd5e1" font-size="11" font-weight="600" text-anchor="start" x="60" y="628">DESeq2</text>
+<rect x="115.0" y="613.0" width="110" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="170" y="629">gene</text>
+<rect x="235.0" y="613.0" width="110" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="290" y="629">3' cluster</text>
+<rect x="370.0" y="613.0" width="110" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="425" y="629">5' cluster*</text>
+<rect x="515.0" y="613.0" width="110" height="24" rx="4" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+<text fill="#cbd5e1" font-size="12" font-weight="600" text-anchor="middle" x="570" y="629">splice junction*</text>
+<text fill="#64748b" font-size="10" font-weight="400" text-anchor="end" x="700" y="628">* planned</text>
+</g>
+</svg>

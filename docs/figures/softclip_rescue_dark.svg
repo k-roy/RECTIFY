@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="310" viewBox="0 0 760 310">
+<defs><marker id="arr_t" markerWidth="7" markerHeight="7" refX="7" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,7 L7,3.5 z" fill="#2dd4bf"/></marker></defs>
+<rect fill="#0f172a" width="760" height="310"/>
+<g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
+<text fill="#f1f5f9" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">HP-aware soft-clip rescue (3′ end)</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="44">extend the alignment downstream through under-called homopolymer bases to recover the soft-clipped CPA region</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="end" x="202" y="97.0">Reference</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="end" x="202" y="149.0">Read (raw)</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="end" x="202" y="239.0">Read (rescued)</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="216" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="230.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="246" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="260.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="276" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="290.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="306" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="320.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="336" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="350.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="366" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="396" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="410.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="426" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="440.0" y="97.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="456" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="470.0" y="97.0">T</text>
+<rect fill="#172554" height="26" rx="3" width="28" x="486" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#93c5fd" font-size="12" font-weight="600" text-anchor="middle" x="500.0" y="97.0">G</text>
+<rect fill="#064e3b" height="26" rx="3" width="28" x="516" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#6ee7b7" font-size="12" font-weight="600" text-anchor="middle" x="530.0" y="97.0">A</text>
+<rect fill="#3b0764" height="26" rx="3" width="28" x="546" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#d8b4fe" font-size="12" font-weight="600" text-anchor="middle" x="560.0" y="97.0">C</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="576" y="80" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="590.0" y="97.0">T</text>
+<path d="M216,76 L216,71 L484,71 L484,76" fill="none" stroke="#fb923c" stroke-width="1" opacity="0.7"/>
+<text fill="#fb923c" font-size="10" font-weight="600" text-anchor="middle" x="350.0" y="67">9-T homopolymer</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="216" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="230.0" y="149.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="246" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="260.0" y="149.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="276" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="290.0" y="149.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="306" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="320.0" y="149.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="336" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="350.0" y="149.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="366" y="132" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="149.0">T</text>
+<rect fill="#450a0a" height="26" rx="3" width="28" x="486" y="132" stroke="#f87171" stroke-width="1.0" stroke-dasharray="3,2"/><text fill="#93c5fd" font-size="12" font-weight="600" text-anchor="middle" x="500.0" y="149.0">G</text>
+<rect fill="#450a0a" height="26" rx="3" width="28" x="516" y="132" stroke="#f87171" stroke-width="1.0" stroke-dasharray="3,2"/><text fill="#6ee7b7" font-size="12" font-weight="600" text-anchor="middle" x="530.0" y="149.0">A</text>
+<rect fill="#450a0a" height="26" rx="3" width="28" x="546" y="132" stroke="#f87171" stroke-width="1.0" stroke-dasharray="3,2"/><text fill="#d8b4fe" font-size="12" font-weight="600" text-anchor="middle" x="560.0" y="149.0">C</text>
+<rect fill="#450a0a" height="26" rx="3" width="28" x="576" y="132" stroke="#f87171" stroke-width="1.0" stroke-dasharray="3,2"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="590.0" y="149.0">T</text>
+<line stroke="#f87171" stroke-width="1.8" stroke-dasharray="3,2" x1="395" x2="395" y1="128" y2="162"/>
+<text fill="#f87171" font-size="10" font-weight="600" text-anchor="middle" x="395" y="125">apparent 3′ end</text>
+<path d="M486,162 L486,167 L604,167 L604,162" fill="none" stroke="#f87171" stroke-width="1" opacity="0.7"/>
+<text fill="#f87171" font-size="10" font-weight="600" text-anchor="middle" x="545.0" y="180">soft-clipped (matches genome 3 nt downstream)</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="216" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="230.0" y="239.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="246" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="260.0" y="239.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="276" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="290.0" y="239.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="306" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="320.0" y="239.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="336" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="350.0" y="239.0">T</text>
+<rect fill="#431407" height="26" rx="3" width="28" x="366" y="222" stroke="#334155" stroke-width="0.7"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="380.0" y="239.0">T</text>
+<rect fill="#1e293b" height="26" rx="3" width="28" x="396" y="222" stroke="#64748b" stroke-width="0.8" stroke-dasharray="3,2"/><text fill="#64748b" font-size="14" font-weight="400" text-anchor="middle" x="410.0" y="240.0">·</text>
+<rect fill="#1e293b" height="26" rx="3" width="28" x="426" y="222" stroke="#64748b" stroke-width="0.8" stroke-dasharray="3,2"/><text fill="#64748b" font-size="14" font-weight="400" text-anchor="middle" x="440.0" y="240.0">·</text>
+<rect fill="#1e293b" height="26" rx="3" width="28" x="456" y="222" stroke="#64748b" stroke-width="0.8" stroke-dasharray="3,2"/><text fill="#64748b" font-size="14" font-weight="400" text-anchor="middle" x="470.0" y="240.0">·</text>
+<rect fill="#042f2e" height="26" rx="3" width="28" x="486" y="222" stroke="#2dd4bf" stroke-width="1.2"/><text fill="#93c5fd" font-size="12" font-weight="600" text-anchor="middle" x="500.0" y="239.0">G</text>
+<rect fill="#042f2e" height="26" rx="3" width="28" x="516" y="222" stroke="#2dd4bf" stroke-width="1.2"/><text fill="#6ee7b7" font-size="12" font-weight="600" text-anchor="middle" x="530.0" y="239.0">A</text>
+<rect fill="#042f2e" height="26" rx="3" width="28" x="546" y="222" stroke="#2dd4bf" stroke-width="1.2"/><text fill="#d8b4fe" font-size="12" font-weight="600" text-anchor="middle" x="560.0" y="239.0">C</text>
+<rect fill="#042f2e" height="26" rx="3" width="28" x="576" y="222" stroke="#2dd4bf" stroke-width="1.2"/><text fill="#fdba74" font-size="12" font-weight="600" text-anchor="middle" x="590.0" y="239.0">T</text>
+<path d="M396,218 L396,213 L484,213 L484,218" fill="none" stroke="#cbd5e1" stroke-width="1" opacity="0.7"/>
+<text fill="#cbd5e1" font-size="10" font-weight="600" text-anchor="middle" x="440.0" y="209">3 HP-undercall gap (deletion ops)</text>
+<line stroke="#2dd4bf" stroke-width="2" x1="605" x2="605" y1="218" y2="252"/>
+<text fill="#2dd4bf" font-size="10" font-weight="700" text-anchor="middle" x="605" y="266">true 3′ end</text>
+<line stroke="#2dd4bf" stroke-width="1.5" x1="395" x2="602" y1="286" y2="286" marker-end="url(#arr_t)"/>
+<text fill="#2dd4bf" font-size="10" font-weight="600" text-anchor="middle" x="500.0" y="280">extend alignment downstream</text>
+</g>
+</svg>
