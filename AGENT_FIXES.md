@@ -11,6 +11,43 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-05-26] BUG: winnowmap2 align path broken on any from-scratch genome (TWO bugs) — #2 FIXED (d89b10b), #1 OPEN
+
+**Status:** Bug #2 **FIXED** by human-track commit `d89b10b` (2026-05-27, `-k14`→`-k15`,
+deployed to Sherlock). Bug #1 (meryl `output=` syntax) **empirically confirmed real, left OPEN
+per Kevin's 2026-05-27 instruction** — see below. The winnowmap2/meryl code in `multi_aligner.py`
+is owned by the concurrent human-data track (see `HANDOFF_2026-05-26_yeast_perf_aligner.md` §3).
+Found during the yeast aligner-swap-in eval (Sherlock job 26231454).
+
+**Bug #1 — meryl `output=<db>` syntax — CONFIRMED REAL, OPEN.**
+`multi_aligner.py:1469` builds `[meryl, 'count', 'k=15', f'output={meryl_db}', genome]`.
+Tested directly on Sherlock (2026-05-27, env `rectify` meryl): the installed meryl **rejects**
+`output=<db>` with `Can't interpret 'output=...': not a meryl command, option, or recognized
+input file`. It wants `output <db>` as two separate tokens. So this DOES break the FIRST
+from-scratch winnowmap2 build on any genome. ("meryl built fine" in the eval refers to the
+*workaround* `winnowmap2_fix.sbatch`, which used the correct `output <db>` syntax — NOT the
+in-code path.) Code left unchanged per Kevin's instruction; until fixed, from-scratch winnowmap2
+builds need the rep-kmers pre-built externally (workaround in `winnowmap2_fix.sbatch`). Fix when
+ready: `f'output={meryl_db}'` → `'output', str(meryl_db)`.
+
+**Bug #2 — meryl-k vs winnowmap-k mismatch — FIXED (`d89b10b`).**
+Was: `multi_aligner.py:1469` runs `meryl count k=15` (→ `_repetitive_k15.txt`) but :1502 called
+`winnowmap ... -k14`; winnowmap requires meryl-count-k == winnowmap-`-k`, so it failed with
+`input list of k-mers and winnowmap parameter k are inconsistent` (exit -6). Fixed to `-k15`
+(matches the meryl build and winnowmap's documented map-ont default).
+
+**a549 implication (for the human track to validate):** the handoff says a549 winnowmap2
+"only works via a cached DB." Given bug #2, that cached rep-kmers DB must have been
+hand-built at k=14 to match the `-k14` call, OR a549 winnowmap2 silently produced no/garbage
+output. Worth confirming the a549 winnowmap2 BAM is actually valid.
+
+**Eval impact:** winnowmap2 produced NO BAM, so the yeast swap-in eval has data for 4
+aligners only (minimap2, gapmm2, minisplice_mm2, deSALT). winnowmap2 conclusion is pending
+these fixes. Note winnowmap2 is itself an mm2-derivative, so prior expectation (like minisplice)
+is it collapses onto minimap2 on the small, low-repeat yeast genome.
+
+---
+
 ## [2026-05-26] PERF: `_rescue_3ss_truncation_body` O(N) junction iteration on dense splice loci — FIXED
 
 **Status:** Fixed at `splice_aware_5prime.py:_rescue_3ss_truncation_body`. Tests green (1318 passed). Deploy: commit + push + rsync + resubmit.
