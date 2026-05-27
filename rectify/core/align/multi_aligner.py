@@ -1499,7 +1499,10 @@ def run_winnowmap2(
         '-W', str(rep_kmers_path),
         '-ax', 'splice',
         '-uf',
-        '-k14',
+        # k MUST match the meryl repetitive-kmer build (k=15 above / _repetitive_k15.txt);
+        # winnowmap errors "input list of k-mers and winnowmap parameter k are inconsistent"
+        # otherwise. 15 is also winnowmap's documented map-ont default.
+        '-k15',
         '-G', str(max_intron),
         '--secondary=no',
         '--MD',
