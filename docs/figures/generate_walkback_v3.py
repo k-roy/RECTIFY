@@ -16,7 +16,7 @@ import subprocess
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 FIG_W = 760
-FIG_H = 240
+FIG_H = 260
 FONT = "Inter, Helvetica Neue, Helvetica, Arial, sans-serif"
 
 PAL = dict(
@@ -28,10 +28,10 @@ PAL = dict(
     divider = "#e2e8f0",
     bg      = "#ffffff",
     blue    = "#2563eb",
-    green   = "#059669",
+    green   = "#059669",   green_l  = "#d1fae5",
     teal    = "#0d9488",
     teal_l  = "#ccfbf1",
-    orange  = "#d97706",
+    orange  = "#d97706",   orange_l = "#fed7aa",
     red     = "#dc2626",
     red_l   = "#fee2e2",
     A_f = "#dcfce7",  A_t = "#166534",
@@ -138,24 +138,28 @@ def build():
                     "walk past A=A pairs AND tail seq errors to the true CPA",
                     size=11, color=PAL["muted"], anchor="middle"))
 
-    # Sequences (10 positions, indexed 0..9, position 9 = read 3' end).
-    # Pre-trim always trims the basecalled tail up to the first non-A — so the
-    # trimmed read's 3' end IS that first non-A (often a seq error T over a
-    # genomic A). Walkback then walks past it (case 3 mismatch) and through
-    # the A=A pairs (case 2) until it hits the true CPA (case 1 non-A match).
-    # Position 2 = T/T match, non-A → true CPA, walkback stops here
-    # Positions 3-8 = A/A → case 2 (A=A, walk in)
-    # Position 9 = T/A → case 3 (terminal seq error after pre-trim, walk in)
-    genome = "CCTAAAAAAA"
-    read   = "CCTAAAAAAT"
+    # Sequences.
+    # Positions 0-9 = trimmed read aligned to genome.
+    #   Position 2 = T/T match, non-A → true CPA, walkback stops here
+    #   Positions 3-8 = A/A → case 2 (A=A, walk in)
+    #   Position 9 = T/A → case 3 (terminal seq error after pre-trim, walk in)
+    # Positions 10-13 = pA tail that pre-trim removed (non-genomic, faded green)
+    # Positions 14-15 = DRS adapter stub "TC" that pre-trim removed (orange)
+    genome    = "CCTAAAAAAA"  # 10 genomic bases
+    read_aln  = "CCTAAAAAAT"  # 10 trimmed-read bases (aligned portion)
+    pa_tail   = "AAAA"        # 4 pA tail bases removed by pre-trim
+    adapter   = "TC"          # DRS adapter stub removed by pre-trim
 
-    # Layout — content centered horizontally within 760px canvas
-    n_bases = len(genome)
-    content_w = n_bases * (BW + GAP) - GAP
-    x0 = (FIG_W - content_w) // 2 + 30  # +30 to balance row labels on the left
-    y_genome = 80
-    y_read   = 132
-    n = len(genome)
+    n_genome = len(genome)           # 10
+    n_pa     = len(pa_tail)          # 4
+    n_ada    = len(adapter)          # 2
+    n_total  = n_genome + n_pa + n_ada  # 16
+
+    # Layout — center on all 16 positions
+    content_w = n_total * (BW + GAP) - GAP   # 478
+    x0 = (FIG_W - content_w) // 2 + 30       # +30 balances row labels
+    y_genome = 82
+    y_read   = 134
     x_pos = lambda i: x0 + i * (BW + GAP)
 
     # Row labels
@@ -164,34 +168,74 @@ def build():
     out.append(text(x0 - 12, y_read + BH/2 + 4, "Read",
                     size=11, color=PAL["label"], anchor="end"))
 
-    # Genome row — highlight A-tract (positions 3-7) with a subtle band
+    # Genome row (positions 0-9 only)
     out.append(row(x0, y_genome, genome))
+    # Genome continuation indicator — dashed line showing genome goes on
+    genome_end_x = x_pos(n_genome - 1) + BW
+    out.append(f'<line x1="{genome_end_x + 4}" x2="{x_pos(n_total - 1) + BW + 4}" '
+               f'y1="{y_genome + BH/2}" y2="{y_genome + BH/2}" '
+               f'stroke="{PAL["muted"]}" stroke-width="1" '
+               f'stroke-dasharray="3,4" opacity="0.5"/>')
 
-    # Read row — highlight the residual tail (positions 3-8) with subtle teal;
-    # the T at position 9 is the terminal seq error (where pre-trim stopped).
+    # Read row — aligned portion (positions 0-9) with walkback highlights
     read_highlights = {
         i: (PAL["teal_l"], PAL["teal"]) for i in range(3, 9)
     }
     read_highlights[9] = (PAL["red_l"], PAL["red"])  # terminal seq error
-    out.append(row(x0, y_read, read, highlights=read_highlights))
+    out.append(row(x0, y_read, read_aln, highlights=read_highlights))
 
-    # Brace over A=A pairs (positions 3-8) — case 2 of the walkback
+    # Pre-trim separator (dashed vertical between position 9 and 10)
+    sep_x = x_pos(n_genome) - (GAP // 2) - 1
+    out.append(f'<line stroke="{PAL["heading"]}" stroke-width="1.4" '
+               f'stroke-dasharray="4,3" '
+               f'x1="{sep_x}" x2="{sep_x}" '
+               f'y1="{y_genome - 4}" y2="{y_read + BH + 4}"/>')
+
+    # pA tail boxes (positions 10-13) — faded green, dashed border
+    for i, b in enumerate(pa_tail):
+        xi = x_pos(n_genome + i)
+        out.append(f'<rect fill="{PAL["green_l"]}" height="{BH}" rx="{BR}" '
+                   f'width="{BW}" x="{xi}" y="{y_read}" '
+                   f'stroke="{PAL["green"]}" stroke-width="0.8" '
+                   f'stroke-dasharray="3,2" opacity="0.7"/>')
+        out.append(f'<text fill="{PAL["green"]}" font-size="12" font-weight="600" '
+                   f'text-anchor="middle" x="{xi + BW/2}" '
+                   f'y="{y_read + BH/2 + 4}" opacity="0.7">{b}</text>')
+
+    # Adapter boxes (positions 14-15) — orange
+    for i, b in enumerate(adapter):
+        xi = x_pos(n_genome + n_pa + i)
+        out.append(f'<rect fill="{PAL["orange_l"]}" height="{BH}" rx="{BR}" '
+                   f'width="{BW}" x="{xi}" y="{y_read}" '
+                   f'stroke="{PAL["orange"]}" stroke-width="1.2"/>')
+        out.append(f'<text fill="{PAL["orange"]}" font-size="12" font-weight="600" '
+                   f'text-anchor="middle" x="{xi + BW/2}" '
+                   f'y="{y_read + BH/2 + 4}">{b}</text>')
+
+    # 3' label at far right
+    out.append(text(x_pos(n_total - 1) + BW + 8, y_read + BH/2 + 4,
+                    "3′", size=11, color=PAL["muted"]))
+
+    # Braces over the read row
+    # A=A pairs (positions 3-8)
     out.append(brace_above(x_pos(3), x_pos(8) + BW, y_read - 4,
                            PAL["teal"], "A = A · walk in", label_dy=-9))
-    # Brace over the terminal T (position 9) — case 3 (mismatch, walk in)
+    # Terminal seq error (position 9)
     out.append(brace_above(x_pos(9), x_pos(9) + BW, y_read - 4,
                            PAL["red"], "seq err", label_dy=-9))
+    # Pre-trimmed region (positions 10-15)
+    out.append(brace_above(x_pos(n_genome), x_pos(n_total - 1) + BW, y_read - 4,
+                           PAL["muted"], "removed by pre-trim", label_dy=-9))
 
-    # Stop marker between positions 2 and 3 (no above-label — the CPA label
-    # below the walkback arrow is the canonical anchor)
+    # Stop marker between positions 2 and 3
     stop_x = x_pos(3) - 1
     out.append(f'<line stroke="{PAL["blue"]}" stroke-width="2" '
                f'x1="{stop_x}" x2="{stop_x}" '
                f'y1="{y_read - 6}" y2="{y_read + BH + 6}"/>')
 
-    # Walkback arrow under read row
+    # Walkback arrow under read row (from trimmed-read right end to stop)
     y_walk = y_read + BH + 28
-    out.append(h_arrow_left(x_pos(n-1) + BW, stop_x, y_walk,
+    out.append(h_arrow_left(x_pos(n_genome - 1) + BW, stop_x, y_walk,
                             PAL["blue"], "walk back from 3′ end"))
 
     # CPA label below stop marker

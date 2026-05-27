@@ -12,7 +12,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python 3.8+"></a>
 </p>
 
-Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class from WT yeast reads), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
+Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class, with bundled tables for *S. cerevisiae* and *H. sapiens*), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
 
 One pipeline, three RNA-seq technologies.
 
@@ -76,7 +76,7 @@ Long reads spanning splice junctions often carry soft-clipped 5' bases that matc
   <img src="docs/figures/5prime_junction_rescue_dark.png#gh-dark-mode-only" alt="5' junction rescue" width="660">
 </p>
 
-> *Note:* in direct RNA, the read's 5' end is also affected by 5'→3' degradation, so this corrects alignment artifacts but does not guarantee TSS recovery.
+> *Note:* in direct RNA, the read's 5' end is affected by two factors: (1) 5'→3' degradation before capture, and (2) incomplete sequencing as the RNA translocates through the nanopore — so 5' junction rescue corrects alignment artifacts but does not guarantee full TSS recovery. For ONT cDNA, the presence of a terminal template-switching primer distinguishes full-length from truncated reads.
 
 #### Introns — splice junction refinement and classification
 Each N-cigar op is refined against the **junction pool** (annotated + observed-across-aligners) with homopolymer-aware scoring, then classified per read:
@@ -96,7 +96,7 @@ Each N-cigar op is refined against the **junction pool** (annotated + observed-a
 #### 3' ends — two complementary corrections
 The aligner can land the 3' end in the wrong place in either direction. RECTIFY runs **read-vs-reference walkback** (upstream — for poly(A) over-extension into genomic A-tracts) and **HP-aware soft-clip rescue** (downstream — for homopolymer under-calls), so the rectified 3' end converges on the true CPA regardless of which artifact caused the original miss.
 
-**Walkback (upstream).** Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
+**Walkback (upstream).** Basecalling errors in the pA tail mean that the trimmed sequences can still contain non-genomic, pA tail fragments which align to genomic regions. Scan the alignment from the 3' end inward. Walk past every A — whether the genome at that position is also A or not — and stop at the first non-A base where read matches reference. This catches **internal priming** at genomic A-tracts, where the read's own poly(A) tail aligns over genomic A's so the apparent 3' end overshoots the true CPA. The pre-trim in step (a) anchors the scan at the boundary of basecalled poly(A), letting walkback focus on genomic A-tract ambiguity rather than the poly(A) tail itself.
 
 <p align="center">
   <img src="docs/figures/walkback_readvsref.png#gh-light-mode-only" alt="Read-vs-reference walkback" width="680">
@@ -112,7 +112,7 @@ The aligner can land the 3' end in the wrong place in either direction. RECTIFY 
 
 ### (d) Empirical error-rate scoring
 
-When refinement chooses between candidate junctions or end positions, edit operations (mismatch, insertion, deletion) are scored by their **empirical per-chemistry error rates** as a function of homopolymer context and base class (AT vs CG). For Nanopore R10.4.1 reads, a deletion at HP=8 carries a penalty of 0.034 — nearly free — versus 0.44 at HP=1, because Nanopore basecallers routinely under-call long homopolymer runs. Each chemistry uses its own calibrated table (DRS, ONT cDNA, QuantSeq REV), all derived from WT *S. cerevisiae* reads.
+When refinement chooses between candidate junctions or end positions, edit operations (mismatch, insertion, deletion) are scored by their **empirical per-chemistry error rates** as a function of homopolymer context and base class (AT vs CG). For Nanopore R10.4.1 reads, a deletion at HP=8 carries a penalty of ~0.032 — nearly free — versus 0.44 at HP=1, because Nanopore basecallers routinely under-call long homopolymer runs; penalties reach a floor around HP ≥ 9 (AT) and HP ≥ 7 (CG). Each chemistry uses its own calibrated table (DRS, ONT cDNA, QuantSeq REV), derived from *S. cerevisiae* (R10.4.1) reads. **Human *H. sapiens* DRS tables are now bundled** (GM12878 IVT RNA004): AT penalties closely match yeast, and both species show the same floor behavior.
 
 <p align="center">
   <img src="docs/figures/hp_scoring.png#gh-light-mode-only" alt="Empirical HP deletion penalty curves" width="620">
@@ -143,7 +143,7 @@ A valley-based adaptive clustering algorithm groups nearby corrected 5' ends (TS
 Per-read splice classifications from step (c) are aggregated into per-junction tables: annotated/alternative/novel counts and junction-shift frequencies. The `alternative`/`novel` fraction is the readout for the NMD-AS isoform audit (surveillance-mutant studies where unproductive transcripts accumulate).
 
 ### Isoform characterization (ONT cDNA only)
-`rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.
+`rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. 5' and 3' end variation within each cluster is bounded by a configurable window (default ±5 bp). Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.
 
 <p align="center">
   <img src="docs/figures/cdna_isoform_clustering.png#gh-light-mode-only" alt="cDNA isoform clustering" width="720">
@@ -167,24 +167,50 @@ The corrected BAMs feed four independent DESeq2 analyses. A gene that looks flat
 
 ## Quick start
 
+> Full quickstart guides: [ONT DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md) · [ONT cDNA](docs/quickstart_cdna.md)
+
 ```bash
 pip install rectify-rna
+```
 
-# ONT DRS — bundled yeast genome, full pipeline + DESeq2
+### ONT DRS
+
+```bash
+# One command — bundled yeast genome, full pipeline + DESeq2
 rectify run-all reads.bam --organism yeast --output-dir results/
 
-# ONT PCR-cDNA (PCB114.24) — three-stage UMI-aware
+# Step by step (any organism)
+rectify trim-polya reads.bam     --genome genome.fa -o trimmed.bam
+rectify align      trimmed.bam   --genome genome.fa --annotation genes.gff -o aligned/
+rectify correct    aligned/*.bam --genome genome.fa --annotation genes.gff -o corrected.tsv
+rectify analyze    corrected.tsv --gff genes.gff -o results/
+```
+
+### ONT PCR-cDNA (PCB114.24)
+
+```bash
 rectify correct-cdna  pcb114.bam --reference genome.fa -o out/
 rectify align         out/stage1_consensus.fastq.gz --genome genome.fa -o out/
 rectify cdna-analyze  out/stage1.rectified.bam --reference genome.fa --gff genes.gff -o out/
+```
 
-# QuantSeq REV — pre-align with --short-read first (passing FASTQ
-# straight to `rectify correct` falls back to minimap2-only, wrong panel)
+### QuantSeq REV
+
+```bash
+# Pass FASTQ to `rectify align --short-read` first — piping straight to
+# `rectify correct` bypasses the proper short-read aligner panel.
 rectify align   reads.fastq.gz --short-read --genome genome.fa -o aligned.bam
 rectify correct aligned.bam    --short-read --dT-primed-cDNA --genome genome.fa -o corrected.tsv
+```
 
-# Multi-sample manifest mode
+### Multi-sample and HPC
+
+```bash
+# Manifest mode — run all samples in one invocation
 rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf -o results/
+
+# Large datasets: split BAM into chunks and run as a SLURM/SGE job array, then merge.
+# See docs/quickstart.md for an HPC job-array template.
 ```
 
 **Bundled for *S. cerevisiae*:** genome, SGD annotations, GO terms, WT NET-seq, 64K pre-computed A-tract CPA sites. No external files needed for yeast.
@@ -195,9 +221,11 @@ rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf
 
 ```bash
 pip install rectify-rna                                # core
-pip install rectify-rna[visualize]                     # +plots
+pip install rectify-rna[visualize]                     # +plots (cairosvg, matplotlib)
 conda install -c conda-forge -c bioconda rectify-rna   # +MEME for motif discovery
 ```
+
+`[visualize]` is not bundled by default because `cairosvg` depends on the native Cairo graphics library. On most systems `pip install rectify-rna[visualize]` works out of the box; use the conda install if you encounter Cairo linking errors.
 
 ---
 
@@ -261,7 +289,7 @@ For organism-specific poly(A) models and custom A-tract priors, see [docs/ARCHIT
 
 - **Algorithms** — [docs/algorithms/](docs/algorithms/) · [empirical HP scoring](docs/EMPIRICAL_HP_PENALTY_SCORING.md) · [3' indel correction](docs/algorithms/3prime_indel_correction.md) · [multi-aligner consensus](docs/algorithms/multi_aligner_consensus.md)
 - **Architecture / internals** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (SAM tag namespace, walkback wrappers, module call graph)
-- **Quickstarts** — [DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md)
+- **Quickstarts** — [DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md) · [ONT cDNA](docs/quickstart_cdna.md)
 
 ---
 

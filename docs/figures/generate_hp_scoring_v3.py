@@ -4,10 +4,12 @@ HP scoring / empirical deletion-penalty figure for the RECTIFY README — v3.
 
 Design intent (per dev/figures/STYLE_GUIDE.md):
   - 760px wide, SVG-native (matches the rest of the README figure set)
-  - Line chart: deletion penalty score vs homopolymer length (HP 1-8)
+  - Line chart: deletion penalty score vs homopolymer length (HP 1-12)
   - Two series: AT empirical (blue solid), CG empirical (orange dashed)
-  - CG HP=7 and HP=8 rendered as hollow markers (extrapolated/low-count)
-  - Endpoint value labels at HP=1 and HP=8 for each curve
+  - Shows penalty floor at HP≥9 (AT) and HP≥7 (CG)
+  - CG HP≥9 rendered as hollow markers (low-count / floor region)
+  - Values from H. sapiens GM12878 IVT RNA004 (match yeast R10.4.1 closely)
+  - Endpoint value labels at HP=1 and HP=12 for each curve
 """
 
 import os
@@ -32,12 +34,16 @@ PAL = dict(
 )
 
 # ── Data ─────────────────────────────────────────────────────────────────────
+# Values from H. sapiens GM12878 IVT RNA004 (SQK-RNA004, dorado rna004_130bps_sup@v5.1.0)
+# AT closely matches yeast R10.4.1; CG floor is at HP≥7.
 
-HP = list(range(1, 9))  # 1..8
+HP = list(range(1, 13))  # 1..12
 
-AT_VALS = {1: 0.44, 2: 0.43, 3: 0.30, 4: 0.17, 5: 0.12, 6: 0.08, 7: 0.056, 8: 0.034}
-CG_VALS = {1: 0.85, 2: 0.84, 3: 0.70, 4: 0.55, 5: 0.38, 6: 0.28, 7: 0.22, 8: 0.18}
-CG_EXTRAPOLATED = {7, 8}  # hollow markers — low-count data
+AT_VALS = {1: 0.46, 2: 0.38, 3: 0.30, 4: 0.18, 5: 0.13, 6: 0.075,
+           7: 0.047, 8: 0.032, 9: 0.029, 10: 0.029, 11: 0.029, 12: 0.029}
+CG_VALS = {1: 0.76, 2: 0.76, 3: 0.67, 4: 0.36, 5: 0.16, 6: 0.080,
+           7: 0.053, 8: 0.053, 9: 0.053, 10: 0.053, 11: 0.053, 12: 0.053}
+CG_EXTRAPOLATED = set(range(9, 13))  # hollow markers — low-count / floor region
 
 # ── Plot geometry ─────────────────────────────────────────────────────────────
 
@@ -53,7 +59,7 @@ Y_TICKS = [0, 0.25, 0.50, 0.75, 1.00]
 X_TICKS = HP
 
 def px_x(hp):
-    return PLOT_L + (hp - 1) / 7.0 * PLOT_W
+    return PLOT_L + (hp - 1) / 11.0 * PLOT_W
 
 def px_y(v):
     return PLOT_B - (v / Y_MAX) * PLOT_H_PX
@@ -114,8 +120,8 @@ def build():
                     "Empirical Nanopore deletion penalty vs homopolymer length",
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W / 2, 48,
-                    "Longer HP runs are routinely under-called — "
-                    "calibrated from 9.7 M WT R10.4.1 yeast reads",
+                    "S. cerevisiae (R10.4.1) + H. sapiens (GM12878 RNA004) — "
+                    "penalty floor at HP ≥ 9 (AT) and HP ≥ 7 (CG)",
                     size=11, color=PAL["muted"], anchor="middle"))
 
     # ── Horizontal gridlines ─────────────────────────────────────────────────
@@ -171,7 +177,7 @@ def build():
     for hp in HP:
         out.append(circle_marker(hp, AT_VALS[hp], PAL["blue"], filled=True))
 
-    # CG: filled squares for HP=1-6, hollow for HP=7-8 (low-count extrapolation)
+    # CG: filled squares for HP=1-8, hollow for HP=9-12 (low-count / floor region)
     for hp in HP:
         filled = hp not in CG_EXTRAPOLATED
         out.append(square_marker(hp, CG_VALS[hp], PAL["orange"], filled=filled))
@@ -179,27 +185,44 @@ def build():
     # ── Endpoint value labels ─────────────────────────────────────────────────
     # AT HP=1 label (above-right of the point)
     x1_at, y1_at = px_x(1), px_y(AT_VALS[1])
-    out.append(text(x1_at + 8, y1_at - 7, "0.44",
+    out.append(text(x1_at + 8, y1_at - 7, "0.46",
                     size=10, color=PAL["blue"], weight="600"))
 
-    # AT HP=8 label (above-left of the point)
-    x8_at, y8_at = px_x(8), px_y(AT_VALS[8])
-    out.append(text(x8_at - 8, y8_at - 9, "0.034",
+    # AT HP=12 floor label (above-left of the last point)
+    x12_at, y12_at = px_x(12), px_y(AT_VALS[12])
+    out.append(text(x12_at - 8, y12_at - 9, "0.029",
                     size=10, color=PAL["blue"], weight="600", anchor="end"))
 
     # CG HP=1 label (above-right, offset to avoid overlap with AT label)
     x1_cg, y1_cg = px_x(1), px_y(CG_VALS[1])
-    out.append(text(x1_cg + 8, y1_cg - 7, "0.85",
+    out.append(text(x1_cg + 8, y1_cg - 7, "0.76",
                     size=10, color=PAL["orange"], weight="600"))
 
-    # CG HP=8 label (below-left of the point)
-    x8_cg, y8_cg = px_x(8), px_y(CG_VALS[8])
-    out.append(text(x8_cg - 8, y8_cg + 17, "0.18†",
+    # CG HP=12 floor label (above-right of the last point, slightly below AT label)
+    x12_cg, y12_cg = px_x(12), px_y(CG_VALS[12])
+    out.append(text(x12_cg - 8, y12_cg + 17, "0.053†",
                     size=10, color=PAL["orange"], weight="600", anchor="end"))
+
+    # ── Floor annotation lines ────────────────────────────────────────────────
+    # AT floor (HP ≥ 9)
+    y_at_floor = px_y(AT_VALS[9])
+    x_floor_at_start = px_x(9)
+    out.append(f'<line x1="{x_floor_at_start:.2f}" x2="{PLOT_R}" '
+               f'y1="{y_at_floor:.2f}" y2="{y_at_floor:.2f}" '
+               f'stroke="{PAL["blue"]}" stroke-width="0.8" '
+               f'stroke-dasharray="3,4" opacity="0.4"/>')
+
+    # CG floor (HP ≥ 7)
+    y_cg_floor = px_y(CG_VALS[7])
+    x_floor_cg_start = px_x(7)
+    out.append(f'<line x1="{x_floor_cg_start:.2f}" x2="{PLOT_R}" '
+               f'y1="{y_cg_floor:.2f}" y2="{y_cg_floor:.2f}" '
+               f'stroke="{PAL["orange"]}" stroke-width="0.8" '
+               f'stroke-dasharray="3,4" opacity="0.4"/>')
 
     # Extrapolated footnote
     out.append(text((PLOT_L + PLOT_R) / 2, PLOT_B + 58,
-                    "† low-count extrapolation (HP=7–8 CG)",
+                    "† floor / low-count region (HP ≥ 9 CG, n ≤ 3,500 positions)",
                     size=10, color=PAL["muted"], anchor="middle"))
 
     # ── Legend ───────────────────────────────────────────────────────────────
@@ -228,7 +251,7 @@ def build():
                f'width="7" height="7" '
                f'fill="{PAL["orange"]}" stroke="{PAL["orange"]}" stroke-width="1.5"/>')
     out.append(text(LEG_X + swatch_w + 7, ry2 + 4,
-                    "CG bases (C, G)  ·  hollow = extrapolated",
+                    "CG bases (C, G)  ·  hollow = floor / low-count (HP ≥ 9)",
                     size=11, color=PAL["heading"]))
 
     out.append(svg_close())
