@@ -12,6 +12,7 @@ Design intent (per dev/figures/STYLE_GUIDE.md):
 import os
 import subprocess
 import math
+import random
 
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -85,16 +86,20 @@ def build():
                     "group nearby CPA sites by peaks-then-valleys; boundaries at valley positions",
                     size=11, color=PAL["muted"], anchor="middle"))
 
+    # Reproducible noise for realistic bar heights
+    rng = random.Random(42)
+
     # Three cluster definitions: (center_bp, sigma, peak_height, color, label)
+    # Narrow sigma values give sharper, more realistic peaks.
     clusters = [
-        (22, 3.0, 38, PAL["blue"],   "Cluster 1"),
-        (50, 3.5, 26, PAL["orange"], "Cluster 2"),
-        (80, 3.2, 16, PAL["green"],  "Cluster 3"),
+        (22, 1.5, 42, PAL["blue"],   "Cluster 1"),
+        (50, 1.8, 28, PAL["orange"], "Cluster 2"),
+        (80, 1.6, 17, PAL["green"],  "Cluster 3"),
     ]
-    # Valley positions (between adjacent clusters) — picked as midpoints
-    valleys = [38, 68]
-    # Cluster boundaries (dashed verticals) — extends to plot edges
-    boundaries = [12, 38, 68, 92]
+    # Valley positions (tight clusters → valleys are deeper)
+    valleys = [36, 65]
+    # Cluster boundaries
+    boundaries = [15, 36, 65, 88]
 
     # ── Axes ────────────────────────────────────────────────────────────────
     # X axis baseline
@@ -138,13 +143,17 @@ def build():
     # ── Histogram bars ──────────────────────────────────────────────────────
     bar_w = 4
     for (center, sigma, peak, color, _) in clusters:
-        # Generate bars from center - 4*sigma to center + 4*sigma at 1bp resolution
-        bp_min = max(0, int(center - 4 * sigma))
-        bp_max = min(X_MAX, int(center + 4 * sigma) + 1)
+        # Generate bars at 1bp resolution with ±12% Poisson-like jitter
+        bp_min = max(0, int(center - 5 * sigma))
+        bp_max = min(X_MAX, int(center + 5 * sigma) + 1)
         for bp in range(bp_min, bp_max + 1):
-            v = peak * gauss(center, sigma, bp)
-            if v < 0.6:
+            base_v = peak * gauss(center, sigma, bp)
+            if base_v < 0.5:
                 continue
+            # Add realistic noise: proportional to sqrt(count) ≈ Poisson
+            noise_scale = max(0.08, 0.12 * math.sqrt(base_v / peak))
+            v = base_v * (1.0 + rng.gauss(0, noise_scale))
+            v = max(0.3, v)
             x = x_to_px(bp) - bar_w / 2
             h = (v / Y_MAX) * PLOT_H
             y = PLOT_Y_BOT - h

@@ -1,40 +1,57 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="240" viewBox="0 0 760 240">
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="260" viewBox="0 0 760 260">
 <defs><marker id="arr" markerWidth="7" markerHeight="7" refX="7" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,7 L7,3.5 z" fill="#2563eb"/></marker></defs>
-<rect fill="#ffffff" width="760" height="240"/>
+<rect fill="#ffffff" width="760" height="260"/>
 <g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
 <text fill="#1e293b" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">Read-vs-reference walkback</text>
 <text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="middle" x="380.0" y="44">walk past A=A pairs AND tail seq errors to the true CPA</text>
-<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="249" y="97.0">Genome</text>
-<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="249" y="149.0">Read</text>
-<rect fill="#f3e8ff" height="26" rx="3" width="28" x="261" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="275.0" y="97.0">C</text>
-<rect fill="#f3e8ff" height="26" rx="3" width="28" x="291" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="305.0" y="97.0">C</text>
-<rect fill="#ffedd5" height="26" rx="3" width="28" x="321" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="335.0" y="97.0">T</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="351" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="365.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="381" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="395.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="411" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="425.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="441" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="455.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="471" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="485.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="501" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="515.0" y="97.0">A</text>
-<rect fill="#dcfce7" height="26" rx="3" width="28" x="531" y="80" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="545.0" y="97.0">A</text>
-<rect fill="#f3e8ff" height="26" rx="3" width="28" x="261" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="275.0" y="149.0">C</text>
-<rect fill="#f3e8ff" height="26" rx="3" width="28" x="291" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="305.0" y="149.0">C</text>
-<rect fill="#ffedd5" height="26" rx="3" width="28" x="321" y="132" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="335.0" y="149.0">T</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="351" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="365.0" y="149.0">A</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="381" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="395.0" y="149.0">A</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="411" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="425.0" y="149.0">A</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="441" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="455.0" y="149.0">A</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="471" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="485.0" y="149.0">A</text>
-<rect fill="#ccfbf1" height="26" rx="3" width="28" x="501" y="132" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="515.0" y="149.0">A</text>
-<rect fill="#fee2e2" height="26" rx="3" width="28" x="531" y="132" stroke="#dc2626" stroke-width="1.2"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="545.0" y="149.0">T</text>
-<path d="M351,128 L351,123 L529,123 L529,128" fill="none" stroke="#0d9488" stroke-width="1" opacity="0.7"/>
-<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="440.0" y="119">A = A · walk in</text>
-<path d="M531,128 L531,123 L559,123 L559,128" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.7"/>
-<text fill="#dc2626" font-size="10" font-weight="600" text-anchor="middle" x="545.0" y="119">seq err</text>
-<line stroke="#2563eb" stroke-width="2" x1="350" x2="350" y1="126" y2="164"/>
-<line stroke="#2563eb" stroke-width="1.5" x1="559" x2="350" y1="186" y2="186"/>
-<polygon fill="#2563eb" points="350,186 357,182.5 357,189.5"/>
-<text fill="#2563eb" font-size="11" font-weight="400" text-anchor="middle" x="454.5" y="200">walk back from 3′ end</text>
-<text fill="#2563eb" font-size="11" font-weight="700" text-anchor="middle" x="350" y="218">true CPA (non-A match)</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="159" y="99.0">Genome</text>
+<text fill="#64748b" font-size="11" font-weight="400" text-anchor="end" x="159" y="151.0">Read</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="171" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="185.0" y="99.0">C</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="201" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="215.0" y="99.0">C</text>
+<rect fill="#ffedd5" height="26" rx="3" width="28" x="231" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="245.0" y="99.0">T</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="261" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="275.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="291" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="305.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="321" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="335.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="351" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="365.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="381" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="395.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="411" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="425.0" y="99.0">A</text>
+<rect fill="#dcfce7" height="26" rx="3" width="28" x="441" y="82" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="455.0" y="99.0">A</text>
+<line x1="473" x2="653" y1="95.0" y2="95.0" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,4" opacity="0.5"/>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="171" y="134" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="185.0" y="151.0">C</text>
+<rect fill="#f3e8ff" height="26" rx="3" width="28" x="201" y="134" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#6b21a8" font-size="12" font-weight="600" text-anchor="middle" x="215.0" y="151.0">C</text>
+<rect fill="#ffedd5" height="26" rx="3" width="28" x="231" y="134" stroke="#cbd5e1" stroke-width="0.7"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="245.0" y="151.0">T</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="261" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="275.0" y="151.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="291" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="305.0" y="151.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="321" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="335.0" y="151.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="351" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="365.0" y="151.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="381" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="395.0" y="151.0">A</text>
+<rect fill="#ccfbf1" height="26" rx="3" width="28" x="411" y="134" stroke="#0d9488" stroke-width="1.2"/><text fill="#166534" font-size="12" font-weight="600" text-anchor="middle" x="425.0" y="151.0">A</text>
+<rect fill="#fee2e2" height="26" rx="3" width="28" x="441" y="134" stroke="#dc2626" stroke-width="1.2"/><text fill="#9a3412" font-size="12" font-weight="600" text-anchor="middle" x="455.0" y="151.0">T</text>
+<line stroke="#475569" stroke-width="1.4" stroke-dasharray="4,3" x1="469" x2="469" y1="78" y2="164"/>
+<rect fill="#d1fae5" height="26" rx="3" width="28" x="471" y="134" stroke="#059669" stroke-width="0.8" stroke-dasharray="3,2" opacity="0.7"/>
+<text fill="#059669" font-size="12" font-weight="600" text-anchor="middle" x="485.0" y="151.0" opacity="0.7">A</text>
+<rect fill="#d1fae5" height="26" rx="3" width="28" x="501" y="134" stroke="#059669" stroke-width="0.8" stroke-dasharray="3,2" opacity="0.7"/>
+<text fill="#059669" font-size="12" font-weight="600" text-anchor="middle" x="515.0" y="151.0" opacity="0.7">A</text>
+<rect fill="#d1fae5" height="26" rx="3" width="28" x="531" y="134" stroke="#059669" stroke-width="0.8" stroke-dasharray="3,2" opacity="0.7"/>
+<text fill="#059669" font-size="12" font-weight="600" text-anchor="middle" x="545.0" y="151.0" opacity="0.7">A</text>
+<rect fill="#d1fae5" height="26" rx="3" width="28" x="561" y="134" stroke="#059669" stroke-width="0.8" stroke-dasharray="3,2" opacity="0.7"/>
+<text fill="#059669" font-size="12" font-weight="600" text-anchor="middle" x="575.0" y="151.0" opacity="0.7">A</text>
+<rect fill="#fed7aa" height="26" rx="3" width="28" x="591" y="134" stroke="#d97706" stroke-width="1.2"/>
+<text fill="#d97706" font-size="12" font-weight="600" text-anchor="middle" x="605.0" y="151.0">T</text>
+<rect fill="#fed7aa" height="26" rx="3" width="28" x="621" y="134" stroke="#d97706" stroke-width="1.2"/>
+<text fill="#d97706" font-size="12" font-weight="600" text-anchor="middle" x="635.0" y="151.0">C</text>
+<text fill="#94a3b8" font-size="11" font-weight="400" text-anchor="start" x="657" y="151.0">3′</text>
+<path d="M261,130 L261,125 L439,125 L439,130" fill="none" stroke="#0d9488" stroke-width="1" opacity="0.7"/>
+<text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="350.0" y="121">A = A · walk in</text>
+<path d="M441,130 L441,125 L469,125 L469,130" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.7"/>
+<text fill="#dc2626" font-size="10" font-weight="600" text-anchor="middle" x="455.0" y="121">seq err</text>
+<path d="M471,130 L471,125 L649,125 L649,130" fill="none" stroke="#94a3b8" stroke-width="1" opacity="0.7"/>
+<text fill="#94a3b8" font-size="10" font-weight="600" text-anchor="middle" x="560.0" y="121">removed by pre-trim</text>
+<line stroke="#2563eb" stroke-width="2" x1="260" x2="260" y1="128" y2="166"/>
+<line stroke="#2563eb" stroke-width="1.5" x1="469" x2="260" y1="188" y2="188"/>
+<polygon fill="#2563eb" points="260,188 267,184.5 267,191.5"/>
+<text fill="#2563eb" font-size="11" font-weight="400" text-anchor="middle" x="364.5" y="202">walk back from 3′ end</text>
+<text fill="#2563eb" font-size="11" font-weight="700" text-anchor="middle" x="260" y="220">true CPA (non-A match)</text>
 </g>
 </svg>
