@@ -645,6 +645,12 @@ BUNDLED_GENOMES = {
                 'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores.tsv',
                 'str_penalty_table':       'genomes/homo_sapiens/penalty_tables/str_penalty_scores.tsv',
             },
+            'qsrev': {
+                # GM12878 QuantSeq REV (PRJNA1391471), bwa + minimap2-sr consensus, GIAB-masked.
+                # Illumina: substitution-dominated, indels ~absent (D penalties at the 10.0 cap).
+                # str + overhang intentionally fall back to DRS (no qsrev STR derived).
+                'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores_qsrev.tsv',
+            },
         },
     },
 }
