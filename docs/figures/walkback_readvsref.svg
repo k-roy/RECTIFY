@@ -45,7 +45,7 @@
 <path d="M261,130 L261,125 L439,125 L439,130" fill="none" stroke="#0d9488" stroke-width="1" opacity="0.7"/>
 <text fill="#0d9488" font-size="10" font-weight="600" text-anchor="middle" x="350.0" y="121">A = A · walk in</text>
 <path d="M441,130 L441,125 L469,125 L469,130" fill="none" stroke="#dc2626" stroke-width="1" opacity="0.7"/>
-<text fill="#dc2626" font-size="10" font-weight="600" text-anchor="middle" x="455.0" y="121">seq err</text>
+<text fill="#dc2626" font-size="10" font-weight="600" text-anchor="end" x="467" y="121">seq err</text>
 <path d="M471,130 L471,125 L649,125 L649,130" fill="none" stroke="#94a3b8" stroke-width="1" opacity="0.7"/>
 <text fill="#94a3b8" font-size="10" font-weight="600" text-anchor="middle" x="560.0" y="121">removed by pre-trim</text>
 <line stroke="#2563eb" stroke-width="2" x1="260" x2="260" y1="128" y2="166"/>

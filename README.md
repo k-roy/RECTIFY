@@ -167,7 +167,7 @@ The corrected BAMs feed four independent DESeq2 analyses. A gene that looks flat
 
 ## Quick start
 
-> Full quickstart guides: [ONT DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md) · [ONT cDNA](docs/quickstart_cdna.md)
+> Full quickstarts: [ONT DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md)
 
 ```bash
 pip install rectify-rna
@@ -189,18 +189,27 @@ rectify analyze    corrected.tsv --gff genes.gff -o results/
 ### ONT PCR-cDNA (PCB114.24)
 
 ```bash
-rectify correct-cdna  pcb114.bam --reference genome.fa -o out/
-rectify align         out/stage1_consensus.fastq.gz --genome genome.fa -o out/
-rectify cdna-analyze  out/stage1.rectified.bam --reference genome.fa --gff genes.gff -o out/
+# One command
+rectify run-all reads.bam --protocol cdna --organism yeast --output-dir results/
+
+# Step by step (any organism)
+rectify correct-cdna  pcb114.bam                      --reference genome.fa -o out/
+rectify align         out/stage1_consensus.fastq.gz    --genome genome.fa -o out/
+rectify cdna-analyze  out/stage1.rectified.bam         --reference genome.fa --gff genes.gff -o out/
 ```
 
 ### QuantSeq REV
 
 ```bash
-# Pass FASTQ to `rectify align --short-read` first — piping straight to
-# `rectify correct` bypasses the proper short-read aligner panel.
+# One command
+rectify run-all reads.fastq.gz --short-read --dT-primed-cDNA --genome genome.fa \
+    --annotation genes.gff --output-dir results/
+
+# Step by step — pass FASTQ to `rectify align --short-read` first;
+# piping straight to `rectify correct` bypasses the proper short-read aligner panel.
 rectify align   reads.fastq.gz --short-read --genome genome.fa -o aligned.bam
-rectify correct aligned.bam    --short-read --dT-primed-cDNA --genome genome.fa -o corrected.tsv
+rectify correct aligned.bam    --short-read --dT-primed-cDNA  --genome genome.fa -o corrected.tsv
+rectify analyze corrected.tsv  --gff genes.gff -o results/
 ```
 
 ### Multi-sample and HPC
@@ -289,7 +298,7 @@ For organism-specific poly(A) models and custom A-tract priors, see [docs/ARCHIT
 
 - **Algorithms** — [docs/algorithms/](docs/algorithms/) · [empirical HP scoring](docs/EMPIRICAL_HP_PENALTY_SCORING.md) · [3' indel correction](docs/algorithms/3prime_indel_correction.md) · [multi-aligner consensus](docs/algorithms/multi_aligner_consensus.md)
 - **Architecture / internals** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (SAM tag namespace, walkback wrappers, module call graph)
-- **Quickstarts** — [DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md) · [ONT cDNA](docs/quickstart_cdna.md)
+- **Quickstarts** — [DRS](docs/quickstart.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md)
 
 ---
 

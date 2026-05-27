@@ -41,6 +41,12 @@ def svg_open(h):
         f'<?xml version="1.0" encoding="utf-8" ?>\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{FIG_W}" height="{h}" '
         f'viewBox="0 0 {FIG_W} {h}">\n'
+        f'<defs>'
+        f'<clipPath id="plot-clip">'
+        f'<rect x="{PLOT_X_LEFT}" y="{PLOT_Y_TOP}" '
+        f'width="{PLOT_X_RIGHT - PLOT_X_LEFT}" height="{PLOT_Y_BOT - PLOT_Y_TOP}"/>'
+        f'</clipPath>'
+        f'</defs>\n'
         f'<rect fill="{PAL["bg"]}" width="{FIG_W}" height="{h}"/>\n'
         f'<g font-family="{FONT}">'
     )
@@ -91,10 +97,11 @@ def build():
 
     # Three cluster definitions: (center_bp, sigma, peak_height, color, label)
     # Narrow sigma values give sharper, more realistic peaks.
+    # Peak heights kept well below Y_MAX so labels don't collide with the title.
     clusters = [
-        (22, 1.5, 42, PAL["blue"],   "Cluster 1"),
-        (50, 1.8, 28, PAL["orange"], "Cluster 2"),
-        (80, 1.6, 17, PAL["green"],  "Cluster 3"),
+        (22, 1.5, 34, PAL["blue"],   "Cluster 1"),
+        (50, 1.8, 26, PAL["orange"], "Cluster 2"),
+        (80, 1.6, 15, PAL["green"],  "Cluster 3"),
     ]
     # Valley positions (tight clusters → valleys are deeper)
     valleys = [36, 65]
@@ -140,8 +147,9 @@ def build():
                    f'stroke="{PAL["muted"]}" stroke-width="1" '
                    f'stroke-dasharray="3,3" opacity="0.55"/>')
 
-    # ── Histogram bars ──────────────────────────────────────────────────────
+    # ── Histogram bars (clipped to plot area) ──────────────────────────────
     bar_w = 4
+    out.append(f'<g clip-path="url(#plot-clip)">')
     for (center, sigma, peak, color, _) in clusters:
         # Generate bars at 1bp resolution with ±12% Poisson-like jitter
         bp_min = max(0, int(center - 5 * sigma))
@@ -159,6 +167,7 @@ def build():
             y = PLOT_Y_BOT - h
             out.append(f'<rect x="{x}" y="{y}" width="{bar_w}" height="{h}" '
                        f'fill="{color}" opacity="0.85"/>')
+    out.append('</g>')
 
     # ── Peak markers (small inverted triangles above peaks) ─────────────────
     for (center, sigma, peak, color, label) in clusters:

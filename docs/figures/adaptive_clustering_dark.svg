@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="280" viewBox="0 0 760 280">
+<defs><clipPath id="plot-clip"><rect x="80" y="80" width="640" height="150"/></clipPath></defs>
 <rect fill="#0f172a" width="760" height="280"/>
 <g font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif">
 <text fill="#f1f5f9" font-size="14" font-weight="700" text-anchor="middle" x="380.0" y="26">Adaptive valley clustering</text>
@@ -31,41 +32,43 @@
 <line x1="310.4" x2="310.4" y1="80" y2="230" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
 <line x1="496.0" x2="496.0" y1="80" y2="230" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
 <line x1="643.2" x2="643.2" y1="80" y2="230" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>
-<rect x="193.2" y="225.55279538295812" width="4" height="4.447204617041868" fill="#60a5fa" opacity="0.85"/>
-<rect x="199.6" y="208.97953235754954" width="4" height="21.02046764245045" fill="#60a5fa" opacity="0.85"/>
-<rect x="206.0" y="165.82643206223565" width="4" height="64.17356793776435" fill="#60a5fa" opacity="0.85"/>
-<rect x="212.4" y="94.37728532007276" width="4" height="135.62271467992724" fill="#60a5fa" opacity="0.85"/>
-<rect x="218.8" y="74.91141856349657" width="4" height="155.08858143650343" fill="#60a5fa" opacity="0.85"/>
-<rect x="225.20000000000002" y="124.16168046319316" width="4" height="105.83831953680684" fill="#60a5fa" opacity="0.85"/>
-<rect x="231.6" y="163.52840028446684" width="4" height="66.47159971553316" fill="#60a5fa" opacity="0.85"/>
-<rect x="238.0" y="209.1405633267229" width="4" height="20.85943667327708" fill="#60a5fa" opacity="0.85"/>
-<rect x="244.4" y="225.5790225480566" width="4" height="4.420977451943411" fill="#60a5fa" opacity="0.85"/>
-<rect x="366.0" y="227.76293725286666" width="4" height="2.237062747133342" fill="#fb923c" opacity="0.85"/>
-<rect x="372.40000000000003" y="220.9457179776224" width="4" height="9.054282022377592" fill="#fb923c" opacity="0.85"/>
-<rect x="378.79999999999995" y="201.38087627860165" width="4" height="28.619123721398356" fill="#fb923c" opacity="0.85"/>
-<rect x="385.2" y="170.0844977920586" width="4" height="59.91550220794138" fill="#fb923c" opacity="0.85"/>
-<rect x="391.6" y="138.91066316123428" width="4" height="91.08933683876572" fill="#fb923c" opacity="0.85"/>
-<rect x="398.0" y="134.30285218954472" width="4" height="95.69714781045528" fill="#fb923c" opacity="0.85"/>
-<rect x="404.4" y="150.15819894689804" width="4" height="79.84180105310195" fill="#fb923c" opacity="0.85"/>
-<rect x="410.8" y="172.13255234575368" width="4" height="57.86744765424631" fill="#fb923c" opacity="0.85"/>
-<rect x="417.20000000000005" y="201.0718825171332" width="4" height="28.928117482866814" fill="#fb923c" opacity="0.85"/>
-<rect x="423.6" y="221.08128786962715" width="4" height="8.918712130372864" fill="#fb923c" opacity="0.85"/>
-<rect x="430.0" y="227.80233943728254" width="4" height="2.19766056271746" fill="#fb923c" opacity="0.85"/>
-<rect x="564.4" y="227.07986093736665" width="4" height="2.9201390626333477" fill="#4ade80" opacity="0.85"/>
-<rect x="570.8" y="220.28629694427076" width="4" height="9.713703055729242" fill="#4ade80" opacity="0.85"/>
-<rect x="577.2" y="201.55317653681826" width="4" height="28.44682346318174" fill="#4ade80" opacity="0.85"/>
-<rect x="583.6" y="174.76205994849664" width="4" height="55.23794005150336" fill="#4ade80" opacity="0.85"/>
-<rect x="590.0" y="159.56845645184723" width="4" height="70.43154354815277" fill="#4ade80" opacity="0.85"/>
-<rect x="596.4000000000001" y="178.9340135489229" width="4" height="51.06598645107711" fill="#4ade80" opacity="0.85"/>
-<rect x="602.8" y="199.92063445464353" width="4" height="30.079365545356463" fill="#4ade80" opacity="0.85"/>
-<rect x="609.1999999999999" y="218.78985491014532" width="4" height="11.210145089854668" fill="#4ade80" opacity="0.85"/>
-<rect x="615.6" y="227.02371797207206" width="4" height="2.976282027927927" fill="#4ade80" opacity="0.85"/>
-<polygon points="215.8,51.5 225.8,51.5 220.8,58.5" fill="#f87171" stroke="#f87171"/>
-<text fill="#60a5fa" font-size="11" font-weight="700" text-anchor="middle" x="220.8" y="44.5">Cluster 1</text>
-<polygon points="395.0,104.0 405.0,104.0 400.0,111.0" fill="#f87171" stroke="#f87171"/>
-<text fill="#fb923c" font-size="11" font-weight="700" text-anchor="middle" x="400.0" y="97.0">Cluster 2</text>
-<polygon points="587.0,145.25 597.0,145.25 592.0,152.25" fill="#f87171" stroke="#f87171"/>
-<text fill="#4ade80" font-size="11" font-weight="700" text-anchor="middle" x="592.0" y="138.25">Cluster 3</text>
+<g clip-path="url(#plot-clip)">
+<rect x="193.2" y="226.3998819766804" width="4" height="3.6001180233196077" fill="#60a5fa" opacity="0.85"/>
+<rect x="199.6" y="212.98343095611153" width="4" height="17.016569043888456" fill="#60a5fa" opacity="0.85"/>
+<rect x="206.0" y="178.049968812286" width="4" height="51.950031187714" fill="#60a5fa" opacity="0.85"/>
+<rect x="212.4" y="120.21018335434462" width="4" height="109.78981664565538" fill="#60a5fa" opacity="0.85"/>
+<rect x="218.8" y="104.45210074187817" width="4" height="125.54789925812183" fill="#60a5fa" opacity="0.85"/>
+<rect x="225.20000000000002" y="144.3213603749659" width="4" height="85.6786396250341" fill="#60a5fa" opacity="0.85"/>
+<rect x="231.6" y="176.18965737313982" width="4" height="53.81034262686018" fill="#60a5fa" opacity="0.85"/>
+<rect x="238.0" y="213.1137893597281" width="4" height="16.886210640271923" fill="#60a5fa" opacity="0.85"/>
+<rect x="244.4" y="226.4211134912839" width="4" height="3.5788865087160944" fill="#60a5fa" opacity="0.85"/>
+<rect x="366.0" y="227.92272744909047" width="4" height="2.0772725509095316" fill="#fb923c" opacity="0.85"/>
+<rect x="372.40000000000003" y="221.59245240779222" width="4" height="8.407547592207763" fill="#fb923c" opacity="0.85"/>
+<rect x="378.79999999999995" y="203.42509940155867" width="4" height="26.574900598441328" fill="#fb923c" opacity="0.85"/>
+<rect x="385.2" y="174.3641765211973" width="4" height="55.63582347880271" fill="#fb923c" opacity="0.85"/>
+<rect x="391.6" y="145.41704436400326" width="4" height="84.58295563599674" fill="#fb923c" opacity="0.85"/>
+<rect x="398.0" y="141.1383627474344" width="4" height="88.8616372525656" fill="#fb923c" opacity="0.85"/>
+<rect x="404.4" y="155.86118473640533" width="4" height="74.13881526359467" fill="#fb923c" opacity="0.85"/>
+<rect x="410.8" y="176.26594146391415" width="4" height="53.73405853608587" fill="#fb923c" opacity="0.85"/>
+<rect x="417.20000000000005" y="203.13817662305223" width="4" height="26.861823376947758" fill="#fb923c" opacity="0.85"/>
+<rect x="423.6" y="221.71833873608233" width="4" height="8.28166126391766" fill="#fb923c" opacity="0.85"/>
+<rect x="430.0" y="227.95931519176236" width="4" height="2.040684808237641" fill="#fb923c" opacity="0.85"/>
+<rect x="564.4" y="227.42340670944117" width="4" height="2.5765932905588365" fill="#4ade80" opacity="0.85"/>
+<rect x="570.8" y="221.42908553906244" width="4" height="8.570914460937566" fill="#4ade80" opacity="0.85"/>
+<rect x="577.2" y="204.89986165013377" width="4" height="25.10013834986624" fill="#4ade80" opacity="0.85"/>
+<rect x="583.6" y="181.26064113102646" width="4" height="48.73935886897354" fill="#4ade80" opacity="0.85"/>
+<rect x="590.0" y="167.85452039868875" width="4" height="62.145479601311266" fill="#4ade80" opacity="0.85"/>
+<rect x="596.4000000000001" y="184.94177666081433" width="4" height="45.05822333918568" fill="#4ade80" opacity="0.85"/>
+<rect x="602.8" y="203.45938334233253" width="4" height="26.540616657667464" fill="#4ade80" opacity="0.85"/>
+<rect x="609.1999999999999" y="220.10869550895177" width="4" height="9.891304491048235" fill="#4ade80" opacity="0.85"/>
+<rect x="615.6" y="227.37386879888712" width="4" height="2.6261312011128766" fill="#4ade80" opacity="0.85"/>
+</g>
+<polygon points="215.8,81.5 225.8,81.5 220.8,88.5" fill="#f87171" stroke="#f87171"/>
+<text fill="#60a5fa" font-size="11" font-weight="700" text-anchor="middle" x="220.8" y="74.5">Cluster 1</text>
+<polygon points="395.0,111.5 405.0,111.5 400.0,118.5" fill="#f87171" stroke="#f87171"/>
+<text fill="#fb923c" font-size="11" font-weight="700" text-anchor="middle" x="400.0" y="104.5">Cluster 2</text>
+<polygon points="587.0,152.75 597.0,152.75 592.0,159.75" fill="#f87171" stroke="#f87171"/>
+<text fill="#4ade80" font-size="11" font-weight="700" text-anchor="middle" x="592.0" y="145.75">Cluster 3</text>
 <polygon points="306.4,228 314.4,228 310.4,222" fill="#2dd4bf" stroke="#2dd4bf"/>
 <polygon points="492.0,228 500.0,228 496.0,222" fill="#2dd4bf" stroke="#2dd4bf"/>
 <polygon points="485,57 495,57 490,64" fill="#f87171"/>
