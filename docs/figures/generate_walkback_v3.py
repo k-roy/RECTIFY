@@ -220,9 +220,13 @@ def build():
     # A=A pairs (positions 3-8)
     out.append(brace_above(x_pos(3), x_pos(8) + BW, y_read - 4,
                            PAL["teal"], "A = A · walk in", label_dy=-9))
-    # Terminal seq error (position 9)
-    out.append(brace_above(x_pos(9), x_pos(9) + BW, y_read - 4,
-                           PAL["red"], "seq err", label_dy=-9))
+    # Terminal seq error (position 9) — right-anchor label to stay left of separator
+    bx1, bx2 = x_pos(9), x_pos(9) + BW
+    by = y_read - 4
+    out.append(f'<path d="M{bx1},{by} L{bx1},{by-5} L{bx2},{by-5} L{bx2},{by}" '
+               f'fill="none" stroke="{PAL["red"]}" stroke-width="1" opacity="0.7"/>')
+    out.append(text(bx2 - 2, by - 9, "seq err", size=10,
+                    color=PAL["red"], anchor="end", weight="600"))
     # Pre-trimmed region (positions 10-15)
     out.append(brace_above(x_pos(n_genome), x_pos(n_total - 1) + BW, y_read - 4,
                            PAL["muted"], "removed by pre-trim", label_dy=-9))
