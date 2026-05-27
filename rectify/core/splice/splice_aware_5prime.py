@@ -1072,6 +1072,28 @@ def rescue_3ss_truncation(
     if not genome_seq:
         return _no_rescue(read, strand)
 
+    # Short-circuit: a 5' soft-clip that is itself a long low-period repeat
+    # expansion ((AAG)n / (CTT)n etc.) is a Nanopore DRS basecaller artifact
+    # (motor slippage at RNA secondary structure), NOT a missed upstream intron.
+    # Rescuing it is wasted work — the low-complexity clip is compared against
+    # every candidate junction in the pool (~10k+ on human) and matches many
+    # spuriously — and any "rescue" produced is wrong. On human RNA004 DRS ~90% of
+    # reads entering rescue with a >=30 bp 5' soft-clip are these artifacts (clips
+    # up to ~200 kb). Real Cat3 rescues have a diverse exon-1 5' clip that does NOT
+    # trigger this, so they are unaffected. See core/splice/repeat_expansion.py.
+    from .repeat_expansion import is_repeat_expansion
+    _cigar = read.cigartuples
+    _seq = read.query_sequence
+    if _cigar and _seq:
+        if strand == '+':
+            _clip5 = _seq[:_cigar[0][1]] if _cigar[0][0] == 4 else ""
+        else:
+            _clip5 = _seq[-_cigar[-1][1]:] if _cigar[-1][0] == 4 else ""
+        if is_repeat_expansion(_clip5):
+            _res = _no_rescue(read, strand)
+            _res['repeat_expansion'] = True
+            return _res
+
     # 5'-edge reanchor pre-pass (for mapPacBio-style reads whose 5' edge has a
     # tight X/I/D cluster blocking soft-clip-based rescue). reanchor_5prime_for_rescue
     # walks from the 5' edge to find the first sustained match run (≥10 bp) and
@@ -2044,6 +2066,7 @@ def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:
         'query_bp': 0,
         'five_prime_exon_cigar': '',
         'five_prime_upstream_trim': 0,
+        'repeat_expansion': False,
     }
 
 
