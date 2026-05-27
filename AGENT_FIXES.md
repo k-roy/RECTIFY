@@ -11,24 +11,35 @@ it is likely not the only such bottleneck.
 
 ---
 
-## [2026-05-27] BUG: validation cat3_minus_2 fails on HEAD (4 tests) — pre-existing, human-track-owned
+## [2026-05-27] BUG: validation cat3_minus_2 (4 tests) regressed by 5ceb243 offset early-exit — FIXED
 
-**Status:** OPEN, NOT mine. Flagging for the human-data track. Found while landing the
-`_RESCUE_DP_CAP` perf change (unrelated).
+**Status:** FIXED at `_rescue_3ss_truncation_body` (both strand offset loops). Bisected to the
+breaking commit; fix gates the early-exit on the current `_ed`, not the cumulative
+`_best_local_ed`. Independent of the `_RESCUE_DP_CAP` perf change.
 
-**Symptom:** `tests/test_validation_reads.py::TestCategory3JunctionRescue` fails 4 tests, all
-`cat3_minus_2` (chrII:365845–366503, − strand, 5' junction rescue):
-`test_5prime_exact_position[cat3_minus_2-366584]`, `test_5prime_exon_cigar_set[cat3_minus_2]`,
-`test_correction_applied_includes_five_prime_rescued[cat3_minus_2]`,
-`test_cat3_minus_2_rescued_aligners_have_clean_intron_cigar`.
+**Symptom:** `tests/test_validation_reads.py::TestCategory3JunctionRescue` failed 4 `cat3_minus_2`
+tests (chrII, − strand, 5' junction rescue): the minus-strand canonical-AC rescue landed at
+intron_end **366598 with N(76)D(6)** instead of the expected **366584 with clean N(82)** (+14bp
+donor mis-placement, equivalence-extension never absorbs the D).
 
-**Proven independent of the perf cap:** toggling `_RESCUE_DP_CAP` to 1e9 (≡ pre-cap behavior)
-on 2026-05-27 reproduced all 4 failures identically; cat3_minus_2's clip is also well below the
-cap. So a *different* recent commit broke it — suspect something in the
-`91d8336`(repeat-expansion skip) → `41f21bd` window (rescue / consensus / data area). The
-consensus read in `validation_reads.bam` carries an N-op (no soft-clip); the rescue runs on the
-per-aligner BAMs, so the regression is in that path, not the repeat-expansion gate (its `_clip5`
-on the consensus read is empty). Human-track owns; not diagnosed further here.
+**Bisect (2026-05-27, M1 worktree):** 8e8dc8c / bd20f9e / 25d7a30 PASS (366584); **5ceb243
+FAILS (366598)**; HEAD same. So `5ceb243` ("perf(splice): offset-loop ED=0 early exit") is the
+breaking commit. Also confirmed independent of `_RESCUE_DP_CAP` (cap-toggle identical; clip 25bp).
+
+**Root cause:** 5ceb243 added `if _best_local_ed == 0: break` to the offset loop. But
+`_best_local_ed` is initialized ONCE before the `for _shift` loop and accumulates across shifts.
+So once *any* shift reaches ED=0, every *subsequent* shift breaks after only its first offset —
+skipping the offset a later (e.g. canonical-donor) shift needs to win. The commit's safety claim
+("tiebreakers are shift-only, later offsets can't change the winner") is true per-shift but the
+break was keyed on the cross-shift cumulative value.
+
+**Fix:** gate the break on `_ed == 0` (the current offset's distance), not `_best_local_ed`. This
+breaks only the current shift's remaining offsets (the legitimate perf intent) and reproduces the
+pre-5ceb243 (25d7a30) selection exactly, while keeping the per-shift early-exit. Verified: the 4
+cat3_minus_2 tests + the cat3 class green; full `pytest -m "not slow"` clean. NOTE: this also
+restores `test_plus_offset_junction_rescued` to its correct `xfail` state (5ceb243 had
+accidentally flipped it to XPASS — the underlying `_off`-tracking design item it tracks is
+unaffected by this fix).
 
 ---
 

@@ -1567,8 +1567,16 @@ def _rescue_3ss_truncation_body(
                             _best_local_shift_abs = _shift_abs
                             exon_seq = _cand
                             _eff_intron_start = _eff_start
-                        if _best_local_ed == 0:
-                            break  # perfect match at this offset — tiebreakers are shift-only, skip remaining offsets
+                        if _ed == 0:
+                            # Perfect match at THIS (shift, offset): later offsets of the
+                            # same shift can't beat ED=0 and share its shift-fixed
+                            # tiebreakers, so skip them. Must gate on _ed, NOT the
+                            # cumulative _best_local_ed (initialized once before the shift
+                            # loop): keying on the cumulative value makes every shift AFTER
+                            # the first ED=0 shift break after only its first offset,
+                            # skipping the offset a later (e.g. canonical-donor) shift needs.
+                            # That regressed cat3_minus_2 (see AGENT_FIXES 2026-05-27).
+                            break
 
                 if not exon_seq:
                     continue
@@ -1709,8 +1717,11 @@ def _rescue_3ss_truncation_body(
                             _best_local_shift_abs = _shift_abs
                             exon_seq = _cand
                             _eff_intron_end = _eff_end
-                        if _best_local_ed == 0:
-                            break  # perfect match at this offset — tiebreakers are shift-only, skip remaining offsets
+                        if _ed == 0:
+                            # Gate on _ed, NOT cumulative _best_local_ed — see the
+                            # plus-strand mirror above (regressed cat3_minus_2 when keyed
+                            # on the cumulative value; AGENT_FIXES 2026-05-27).
+                            break
 
                 if not exon_seq:
                     continue
