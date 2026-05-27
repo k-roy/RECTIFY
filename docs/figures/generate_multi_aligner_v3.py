@@ -168,7 +168,7 @@ def build():
             sx = x - total_pills_w / 2 + i * (sub_w_each + sub_gap)
             out.append(
                 f'<rect x="{sx}" y="{sub_y - 9}" width="{sub_w_each}" '
-                f'height="18" rx="3" fill="#ffffff" '
+                f'height="18" rx="3" fill="{PAL["bg"]}" '
                 f'stroke="{PAL["indigo"]}" stroke-width="0.8"/>'
             )
             out.append(text(sx + sub_w_each/2, sub_y + 4, lab,
