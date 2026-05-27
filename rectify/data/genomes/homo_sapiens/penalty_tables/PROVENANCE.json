@@ -1,0 +1,25 @@
+{
+  "table": "homo_sapiens DRS HP/STR penalty tables (penalty_scores.tsv)",
+  "date": "2026-05-27",
+  "organism": "homo_sapiens",
+  "sample": "GM12878 (= NA12878 = GIAB HG001), whole-transcriptome IVT (in-vitro-transcribed, unmodified RNA)",
+  "data": "ENA ERR15839422 (PRJEB102644), 31,086,477 reads",
+  "chemistry": "ONT direct RNA SQK-RNA004",
+  "basecaller": "dorado 0.8.1, model rna004_130bps_sup@v5.1.0",
+  "reference": "GRCh38.primary_assembly (GENCODE v44)",
+  "aligners": "minimap2 + uLTRA + deSALT (3-aligner strict consensus); gapmm2 dropped (too slow on human); mapPacBio dropped (games HP-ED consensus)",
+  "max_intron": "--max-intron 100000 (minimap2 -G)",
+  "trim": "NO trim-polya; --exclude-3prime-bp 50 used instead (IVT poly-A ~15bp; functionally equivalent to trim for internal-HP rates; yeast used trim + (0,0) exclusion)",
+  "masking": "GIAB HG001 NISTv4.2.1 small-variant VCF (3,893,341 records masked, indels expanded) + high-confidence-regions BED (restrict); usable = 2507.9 Mb of chr1-22",
+  "isolation_flank": 10,
+  "consensus_reads": "~8.4M reads common to all 3 aligners (minimap2 8.93M / uLTRA 8.94M / deSALT 8.65M mapped); chr1-22 only (GIAB benchmark scope)",
+  "compute": "Sherlock: 45-chunk align array (96GB/task) -> per-aligner merge -> 22-chrom parallel profiler -> sum error_counts -> compute_rates+derive_penalties",
+  "HP1_substitution_baseline": "AT 0.14% / CG 0.22% (penalty 1.0 by definition)",
+  "caveats": [
+    "IVT (unmodified) -> avoids A-to-I-editing inflation of the AT substitution anchor, but lacks modification-induced miscalls present in NATIVE Sumner RNA",
+    "wholeIVT carries a T7/RT error signature",
+    "STR table (str_penalty_scores.tsv) + junction_overhang_table.tsv NOT yet generated (follow-up)",
+    "model-version note: GM12878 ref is rna004 v5.1.0; Sumner production is v5.0.0/v5.2.0 (same chemistry family)"
+  ],
+  "validation": "chr20 draft matched (D AT HP4 0.196->0.184 genome-wide); matches yeast R10.4.1 shape closely"
+}

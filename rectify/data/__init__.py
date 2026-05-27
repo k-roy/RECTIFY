@@ -41,6 +41,11 @@ ORGANISM_ALIASES = {
     'saccer': 'saccharomyces_cerevisiae',
     'saccer3': 'saccharomyces_cerevisiae',
     'sc': 'saccharomyces_cerevisiae',
+    'human': 'homo_sapiens',
+    'hsapiens': 'homo_sapiens',
+    'hs': 'homo_sapiens',
+    'hg38': 'homo_sapiens',
+    'grch38': 'homo_sapiens',
 }
 
 # Cache for loaded NET-seq data
@@ -616,6 +621,29 @@ BUNDLED_GENOMES = {
                 'junction_penalty_table':  'genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores_qsrev.tsv',
                 'str_penalty_table':       'genomes/saccharomyces_cerevisiae/penalty_tables/str_penalty_scores_qsrev.tsv',
                 # No 'junction_overhang_table' entry → resolver falls back to DRS.
+            },
+        },
+    },
+    'homo_sapiens': {
+        # Genome + annotation are NOT bundled (too large); supply via --genome / --annotation.
+        # Empirical penalty tables — GM12878 IVT RNA004, GIAB HG001 v4.2.1 masked.
+        # See genomes/homo_sapiens/penalty_tables/PENALTY_TABLE.md for derivation.
+        # junction_overhang_table intentionally omitted → resolver falls back to DRS
+        # (overhang calibration needs rectify-correct output on human; deferred).
+        'junction_penalty_table': {
+            'file': 'genomes/homo_sapiens/penalty_tables/penalty_scores.tsv',
+            'version': 'gm12878_ivt_rna004_20260527',
+            'source': 'GM12878 IVT RNA004 (ENA ERR15839422), minimap2/uLTRA/deSALT consensus, GIAB-masked, isotonic AT/CG HP penalties',
+        },
+        'str_penalty_table': {
+            'file': 'genomes/homo_sapiens/penalty_tables/str_penalty_scores.tsv',
+            'version': 'gm12878_ivt_rna004_20260527',
+            'source': 'GM12878 IVT RNA004, STR slippage penalties (chr1-22, GIAB-masked)',
+        },
+        'protocols': {
+            'drs': {
+                'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores.tsv',
+                'str_penalty_table':       'genomes/homo_sapiens/penalty_tables/str_penalty_scores.tsv',
             },
         },
     },
