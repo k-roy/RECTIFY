@@ -655,6 +655,12 @@ BUNDLED_GENOMES = {
                 # str + overhang intentionally fall back to DRS (no qsrev STR derived).
                 'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores_qsrev.tsv',
             },
+            'cdna': {
+                # GM12878 PCR-cDNA (PRJNA1391471), minimap2 + uLTRA consensus, GIAB-masked,
+                # 21-of-22 chroms (chr14 deferred — task hung at 5h, marginal contribution).
+                # str + overhang fall back to DRS (no cdna STR / overhang derived).
+                'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores_cdna.tsv',
+            },
         },
     },
 }
