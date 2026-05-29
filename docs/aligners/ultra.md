@@ -141,3 +141,19 @@ Expected: nonzero mapped count.  If mapped = 0 or the BAM is absent, check
 | `GLIBCXX_3.4.30 not found` | Vendored namfinder built against newer GLIBCXX | `conda install -c bioconda namfinder` |
 | `AssertionError` near 89–99 % of annotation | SGD overlapping exon triggers uLTRA internal assert | Run `scripts/setup/setup_rectify_env.sh` to patch |
 | `FileNotFoundError: uLTRA requires a sibling GTF` | No `.gtf` next to `.gff.gz` | `gffread <ann.gff.gz> -T -o <ann.gtf>` |
+
+---
+
+## Primary-alignment & duplicate handling
+
+`rectify align` passes **no secondary-suppression flag** to uLTRA — its command is
+`pipeline --ont --disable_infer -t <n> --prefix ...` (`multi_aligner.py:2066-2076`),
+with no uLTRA secondary control and no post-hoc dedup. Whether uLTRA emits secondary
+records by default is not determinable from rectify source. This is safe for 3′-end
+counting because `rectify correct` skips `is_secondary`/`is_supplementary` records
+regardless of which aligner produced them.
+
+What `rectify correct` does **not** guard against is duplicate **primary** records
+in an external BAM (e.g. a doubled input FASTQ) → 2× double-counted 3′ ends. See the
+canonical writeup and cross-aligner table in
+[minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).

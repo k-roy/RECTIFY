@@ -106,3 +106,17 @@ Pre-computing splice scores once per genome and sharing them across samples
 | `minisplice_mm2 requires --minisplice-model` | neither `--minisplice-model` nor `--minisplice-scores` given | provide one of the two |
 | `minimap2 failed` with `--spsc` not recognized | minimap2 version doesn't support `--spsc` | use the minisplice-patched minimap2 or upgrade minimap2 |
 | Low GT-AG (same as plain minimap2) | model mismatch (e.g., PCR-cDNA model used for DRS) | use a DRS-appropriate model (e.g., `vi2-7k.kan`) |
+
+---
+
+## Primary-alignment & duplicate handling
+
+minisplice_mm2 is minimap2 + `--spsc` splice scores; `rectify align` passes
+**`--secondary=no`** in the same command (`multi_aligner.py:1673`), so output BAMs
+carry no secondary records. Supplementary records are dropped by `rectify correct`'s
+`is_supplementary` filter, as with minimap2.
+
+The unguarded hazard for *all* aligners is duplicate **primary** records in an
+external BAM, which `rectify correct` does **not** dedup → 2× double-counted 3′
+ends. See the canonical writeup and cross-aligner table in
+[minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).

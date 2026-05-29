@@ -1,0 +1,20 @@
+{
+  "task": "#13 — genome-wide expensive-read panel + cost-archetype categorization for `rectify correct` Module 2F 3'SS rescue",
+  "created": "2026-05-26T15:45 PDT",
+  "m1_head": "c52966c",
+  "sherlock_sync": "non-git rsync copy at c52966c (md5-verified: splice_aware_5prime.py fd08277413eee13a62d5b3501ffc5aa6, bam_processor.py da93825181b23293088fc5841aae7b40, junction_scoring.py 05a6f25412c87f2d90eb3a23c4412d99 — all match M1)",
+  "profiler": "dev/profile_correct_reads.py (extended with --cost-threshold-ms streaming panel mode + --summary-out; md5 055184d5dfd8de9dba6f4ce48472b71e, synced+verified to Sherlock)",
+  "sbatch": "dev/profile_panel_task13.sbatch (5-task array, one per aligner)",
+  "pyspy_sbatch": "dev/profile_pyspy_task13.sbatch (worst-read-per-aligner py-spy, PANEL_DIR-driven)",
+  "categorizer": "dev/categorize_perf_panel.py",
+  "input_bams": "Sherlock $SCRATCH/rectify_wt_by4742_rep1_25846844_0/wt_by4742_rep1.{minimap2,mapPacBio,gapmm2,deSALT,uLTRA}.bam (yeast DRS, wt BY4742 rep1, trimmed+aligned)",
+  "pool_built_from": "all 5 per-aligner BAMs (mirrors `correct`); pool = 3,459 junctions (385 annotated); exclusion regions = 610 (rDNA/Pol III default-on)",
+  "sweep_config": "genome-wide stride-5 (1 of every 5 primary reads, spans all 16 chroms), max-reads 120000/aligner, cost-threshold 500 ms, junction-max-size 10000, apply_indel_correction OFF (isolates 2F cost, matches Part IV methodology)",
+  "threshold_calibration": "from Part IV c1d0e83 xchrom stride-40 8k data: gapmm2 42 reads >500ms, minimap2 59. Scaling to stride-5 (~8x reads) projects ~340-470/aligner -> 5-aligner panel ~1000-1500 reads (target range).",
+  "slurm_array_job": "26175498 (5 tasks, larsms partition, sh03-08n22 — larsms has ONLY 2 nodes so --exclude is a no-op; AVX-512 SIGILL handled by env MKL_DEBUG_CPU_TYPE=5, verified no SIGILL)",
+  "sherlock_outdir": "$SCRATCH/rectify_perf_panel_t13_26175498/ (profile_<aligner>.panel.tsv + summary_<aligner>.tsv)",
+  "status_2026-05-26T16:00": "PARTIAL HARVEST. Panel array 26175498 still RUNNING (~80 min wall, crawling — single-thread + heavy per-read tail; reached chrVII of XVI). Each aligner flushed its FIRST 200 >500ms reads (chrI-chrVII, incl. dense chrIV) = 1000 pooled reads, rsynced to M1 dev/perf_panel_t13_results/. Reads 201+ are buffered in Python and flush only at job close(); the full-genome panel + summary_*.tsv (with histogram + panel-share-of-total denominator) will appear when jobs finish. The 1000-read chrI-VII sample is the basis for Part V's archetype table; full sweep continuing in background for later harvest. py-spy job 26181308 QUEUED (PD) on the worst read/aligner.",
+  "pyspy_target_reads": "gapmm2=90cadd2e (320s, chrIV, n_pool=31>K25, five_clip=93, n_ops=109); minimap2=6712970a (300s, chrIV, five_clip=131, n_pool=31); uLTRA=9f444fa1 (181s, five_clip=497); mapPacBio=2712dbba (154s, n_ops=129); deSALT=82367f92 (114s, n_ops=86)",
+  "pyspy_result": "CONFIRMED (job 26181577, dir $SCRATCH/rectify_perf_pyspy_t13_20260526_155731/). gapmm2 99.9% / minimap2 99.7% / mapPacBio 99.7% of py-spy samples in _hp_edit_distance inner DP (splice_aware_5prime.py:731,732,734). NOT align_clip_to_exon/get_aligned_pairs/2C — matches Part IV. deSALT+uLTRA still profiling at harvest. Folded stacks copied to M1 dev/perf_panel_t13_results/stacks_{gapmm2,minimap2,mapPacBio}.folded. The 26181308 first attempt failed exit 141/SIGPIPE (head closing a pipefail pipe); fixed by dropping set -e/pipefail.",
+  "notes": "K=25 cap (bam_processor _ss_junctions -> rescue_3ss_truncation -> _rescue_3ss_truncation_body _nearby_junctions, splice_aware_5prime.py L1276-1316) IS unified across annotated+real+pool for the proximity-gated portion; only N-op-matched junctions are preserved past the cap. Part IV's 'annotated bypass the cap' framing is inaccurate — verified against code."
+}

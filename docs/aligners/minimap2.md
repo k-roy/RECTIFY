@@ -85,3 +85,110 @@ samtools view /tmp/mm2_smoke/*.minimap2.bam \
 
 If the largest `N` op tops out near 5,000 on human data, `-G` is still at the
 yeast default — `--max-intron` was not raised.
+
+---
+
+## ⚠️ Duplicate **primary** alignments → 2× double-counted 3′ ends (external-BAM hazard)
+
+> **This section is the canonical writeup of secondary/supplementary/duplicate
+> handling for the whole panel.** Each aligner doc carries a short
+> "Primary-alignment & duplicate handling" note pointing back here; the
+> cross-aligner table below is the single source of truth.
+
+**Incident (by4742 in-house DRS, 2026-05-29).** The pre-existing minimap2 BAMs in
+`projects/TRT/intermediate_data/nanopore/inhouse_by4742_dst1_4nqo/` contain **every
+read as TWO byte-identical PRIMARY alignment records** (same QNAME, POS, CIGAR,
+both FLAG 0/16 — neither secondary nor supplementary). Measured on `wt_by4742_rep1`:
+
+```
+chrI:    300,010 records / 149,752 distinct QNAMEs        ≈ 2.0×
+chrMito: 1,656 primary QNAMEs each appearing exactly 2×   (-F 0x900)
+```
+
+The source **Dorado BAMs are clean** (`samtools view -F 0x900 | cut -f1 | sort |
+uniq -d` → 0 duplicates). The duplication was introduced by the *external*
+alignment command that produced these intermediate BAMs —
+`minimap2 -ax splice -G 3000` (no `--secondary=no`), fed a FASTQ that contained
+each read twice (doubled/concatenated input or the file passed twice). It is **not
+a rectify-produced artifact** and **not** a secondary/supplementary-alignment
+problem.
+
+**Why it matters:** `rectify correct` emits one `corrected_3ends.tsv` row per
+processed read and counts each `corrected_3prime` once. Two identical primaries →
+two rows → the per-position pileup and every emitted bedgraph are inflated **~2×**.
+Verified empirically: a chrI smoke processed 281,088 primary records for ~149,752
+distinct reads — exactly the doubling.
+
+### "Restrict to primary alignments" — already done, but it does NOT fix this case
+
+`rectify correct` already restricts to primary alignments. Every BAM-iteration loop
+skips unmapped/secondary/supplementary and nothing else
+(`rectify/core/bam/parallel.py:946-954`; non-parallel fallback
+`rectify/core/bam/bam_processor.py:1112-1117`):
+
+```python
+if read.is_unmapped:      continue   # 0x4
+if read.is_secondary:     continue   # 0x100
+if read.is_supplementary: continue   # 0x800
+```
+
+So secondary/supplementary records from **any** aligner are dropped before 3′-end
+counting — that protection is real and panel-wide. **But the by4742 duplicates are
+PRIMARY records**, so this filter keeps both. Two gaps in `rectify correct` let them
+through (verified by code audit, 2026-05-29):
+
+- It does **not** inspect the duplicate flag (`0x400` / `read.is_duplicate`) — a read
+  marked by `samtools markdup` is still processed as a normal primary.
+- It does **not** deduplicate by `query_name`. The `seen_read_ids`/`is_primary_result`
+  mechanism (`parallel.py:367-369`) gates *summary-stat counters only* (NET-seq
+  proportional row-splitting); it does not suppress TSV rows or position counts.
+
+The two existing one-primary-per-read protections both live in `rectify align` and
+**never touch an external BAM handed to `rectify correct`**:
+`_dedup_desalt_bam()` (deSALT-only) and the consensus winner-promotion
+(`rectify/core/consensus/consensus.py:646`, `flag &= ~0x900`) — and per-aligner
+`rectify correct` runs *before* the consensus merge ([[per_aligner_rescue_runs_first]]).
+`tests/test_no_duplicate_primaries.py` exercises only the consensus path; the
+per-aligner `correct` → TSV path has no such test or guard.
+
+### Cross-aligner secondary-suppression status (`rectify align`)
+
+What flag (if any) `rectify align` passes to keep each aligner from emitting
+secondary alignments. `rectify correct` filters secondary/supplementary records
+regardless, so these flags are belt-and-suspenders — the real, unguarded hazard is
+duplicate **primaries**, which only an upstream/data fault produces.
+
+| Aligner | rectify-align secondary control | Source | Clean primaries? |
+|---|---|---|---|
+| **minimap2** | `--secondary=no` | `multi_aligner.py:367` | ✓ |
+| **winnowmap2** | `--secondary=no` | `multi_aligner.py:1531` | ✓ |
+| **minisplice_mm2** | `--secondary=no` | `multi_aligner.py:1673` | ✓ |
+| **gapmm2** | PAF output; PAF→BAM marks `tp:A`≠`P` as `0x100`; also dedups duplicate UUIDs in the input FASTQ pre-align | `multi_aligner.py:1269-1271`; [gapmm2.md](gapmm2.md) Issue 2 | ✓ |
+| **bwa mem** | `-M` (marks split hits secondary → filtered) | `multi_aligner.py:1068-1072` | ✓ |
+| **deSALT** | no flag; post-filtered by `_dedup_desalt_bam()` on `(name,flag,chrom,pos,cigar)` (deSALT emits each aln `-N`× by default) | `multi_aligner.py:2131-2166`; [deSALT.md](deSALT.md) | ✓ (after dedup) |
+| **mapPacBio** | **no secondary-control flag passed**; BBMap default behavior not determinable from rectify source | `multi_aligner.py:739-757` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
+| **bbmap** (short-read) | `ambiguous=best` (picks one best site; not a secondary-record control) | `multi_aligner.py:940-958` | as above |
+| **uLTRA** | **no secondary-control flag passed** | `multi_aligner.py:2066-2076` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
+
+`rectify align` does **no** `samtools markdup`/`rmdup` and **no** `view -F 0x900`
+post-filter (audit: zero hits in `rectify/`); deSALT's `_dedup_desalt_bam` is the
+only physical dedup, and it's deSALT-specific.
+
+### Remediation
+
+1. **Preferred — re-align through rectify.** A `rectify align` / `rectify run-all`
+   pass produces clean BAMs (`--secondary=no`) *and* applies the DRS poly-A/adapter
+   pre-trim, so externally-doubled BAMs become moot. This is the correct fix when
+   the upstream FASTQ provenance is suspect.
+2. **If reusing an external BAM you cannot re-align:** dedup *before* `rectify correct`.
+   `samtools view -F 0x900` will **not** help (the dups are primary). Dedup by
+   coordinate+name, e.g. `samtools markdup -r` after `collate`+`fixmate`, or keep one
+   record per `(QNAME,FLAG,RNAME,POS,CIGAR)` tuple (the `_dedup_desalt_bam` pattern).
+3. **Last resort — dedup the output.** `corrected_3ends.tsv` is dedup-able by
+   `read_id`; this also collapses any region-shard boundary dups. Do this only if
+   (1)/(2) are impossible, since the wasted ~2× correct-stage compute remains.
+
+**Recommended code hardening (not yet implemented):** give `rectify correct` an
+opt-in `--dedup-primary` (skip `is_duplicate`, and/or keep first record per
+`query_name`) so the per-aligner path is robust to malformed external BAMs the way
+the consensus path already is. Tracked for AGENT_FIXES.md if adopted.

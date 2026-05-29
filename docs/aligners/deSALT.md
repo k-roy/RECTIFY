@@ -55,6 +55,14 @@ deSALT dedup: <n_total> → <n_kept> alignments (<n_removed> duplicates removed)
 If you read deSALT BAMs that have **not** passed through `run_desalt()`, expect
 ~N× inflated alignment counts — dedup before any per-alignment counting.
 
+**Relation to the panel-wide duplicate hazard.** deSALT's `-N`-slot inflation is
+the one case `rectify align` physically dedups (on `(name,flag,chrom,pos,cigar)`).
+This is deSALT-specific and runs *inside* `rectify align` only — it does not
+protect an external BAM handed straight to `rectify correct`. `rectify correct`
+skips `is_secondary`/`is_supplementary` but does **not** dedup identical
+**primary** records or honor `0x400`. See the canonical cross-aligner table and
+the by4742 incident in [minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).
+
 ---
 
 ## Deterministic SIGSEGV / OOM crashes — empty-BAM fallback

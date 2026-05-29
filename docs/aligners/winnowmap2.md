@@ -96,3 +96,18 @@ rectify align <reads.fastq.gz> --genome <genome.fa> \
 | `winnowmap not found` | winnowmap not installed | `conda install -c bioconda winnowmap` |
 | `meryl count failed` | gzipped genome (some meryl versions) | Decompress genome first: `zcat genome.fa.gz > genome.fa` |
 | Empty BAM | Genome path mismatch | Confirm genome path is uncompressed FASTA |
+
+---
+
+## Primary-alignment & duplicate handling
+
+`rectify align` passes **`--secondary=no`** to winnowmap (`multi_aligner.py:1531`;
+see the `-W ... --secondary=no --MD -y` line under "How RECTIFY runs it"), so
+rectify-produced winnowmap2 BAMs carry no secondary records. Supplementary records
+from chimeric/split reads can still occur (winnowmap, like minimap2, has no flag to
+suppress them) but are dropped by `rectify correct`'s `is_supplementary` filter.
+
+The unguarded hazard for *all* aligners is duplicate **primary** records in an
+external BAM (e.g. a doubled input FASTQ), which `rectify correct` does **not**
+dedup → 2× double-counted 3′ ends. See the canonical writeup and cross-aligner
+table in [minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).

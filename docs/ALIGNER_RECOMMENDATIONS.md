@@ -19,6 +19,15 @@ Rectify uses a five-aligner consensus panel for yeast. For human/large-genome DR
 
 To add an aligner, see [Adding Aligners](#adding-aligners-to-the-production-panel) below.
 
+> **Secondary / supplementary / duplicate-primary handling** is documented once,
+> canonically, in [minimap2.md → Duplicate primary alignments](aligners/minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard)
+> (cross-aligner table + the by4742 2× external-BAM incident). Each aligner doc
+> carries a short "Primary-alignment & duplicate handling" note pointing there.
+> Summary: `rectify correct` filters `is_secondary`/`is_supplementary` for all
+> aligners, but does **not** dedup identical **primary** records or honor `0x400`
+> — so a doubled external BAM 2×-inflates 3′-end counts. Re-align through rectify
+> (clean `--secondary=no` + DRS pre-trim) rather than trusting external BAMs.
+
 ---
 
 ## Benchmark: Human chr5 10k DRS Reads (SG-NEx A549, 2026-05-25)

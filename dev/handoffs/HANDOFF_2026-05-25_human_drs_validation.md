@@ -215,3 +215,73 @@ Helpers are ready: `_seq_periodicity`, `_junction_worst_flank_periodicity` in
 never by canonical dinucleotide (GT-AG), to preserve unbiased discovery of non-canonical
 junctions. The periodicity check is complexity-based (repeat structure), not motif-based —
 keep it that way.
+
+---
+
+## 8. Addendum — periodicity earn-its-keep test RESOLVED: DROP (2026-05-26)
+
+§7.3 Task 3 (periodicity earn-its-keep on human) was run. **Verdict: no separation
+on human either → the periodicity dimension is dropped**, matching the yeast no-op.
+`_add_chimera_flag` and `calibrate_junction_overhang.py` were **not** modified.
+
+### Test design
+- Ground truth (spurious): the 6 confirmed mapPacBio sole-win, novel-unique
+  GAA-bridging artifacts in `mpb_fixed_test/SMA_GSB2394_chr5/gamed_examples.tsv`
+  (derived by `scripts/16_find_gamed.py`, periodicity-independent — sole-win + novel
+  + unique, so an unbiased test set). Introns 2.5–35.7 kb.
+- Ground truth (real): 300 random GENCODE annotated chr5 introns (definitely-real;
+  a more conservative "real" set than concordant calls).
+- Dataset: SMA_GSB2394 4-aligner panel, all on the same trimmed fastq —
+  minimap2/uLTRA/deSALT from Stage A (`alignments/`, minimap2 `--max-intron 500000`),
+  mapPacBio from `mpb_fixed_test` (`--max-intron 200000`, post param-fix).
+- Repro: `dev/periodicity_sanity_human.py` (run on Sherlock in the rectify env).
+
+### Results
+**Current `_junction_worst_flank_periodicity` (min over 30bp window, reach=30):**
+
+| set | n | median | max | ≥0.8 |
+|---|---|---|---|---|
+| gamed | 6 | 0.350 | 0.700 | 0/6 |
+| annotated | 300 | 0.400 | 0.700 | 0/300 |
+
+Zero separation. 0/6 artifacts flagged.
+
+**Boundary-adjacent variant** (periodicity of the k bp immediately abutting the
+intron, max over both flanks — probes boundary-local repeat the min-over-window
+deliberately ignores):
+
+| k | gamed per-junction | gamed median | annot median | annot ≥0.8 |
+|---|---|---|---|---|
+| 6 | 0.67 0.67 0.83 0.50 0.83 1.0 | 0.750 | 0.667 | 39% |
+| 10 | 0.50 0.60 0.70 0.60 0.40 1.0 | 0.600 | 0.600 | 9% |
+| 12 | 0.67 0.50 0.75 0.42 0.58 1.0 | 0.625 | 0.583 | 2% |
+
+Only **1 of 6** (chr5:134060894, a poly-T-flank junction — a *different*,
+homopolymer mechanism) is reliably high (1.0). The other 5 GAA-bridging artifacts
+sit inside the annotated distribution.
+
+### Decisive finding (the confound)
+**Real annotated splice boundaries are themselves frequently low-complexity**
+(39% of annotated introns score ≥0.8 boundary periodicity at k=6 — polypyrimidine
+tracts, GC-rich exon starts). No threshold tight enough to spare real junctions also
+catches the artifacts. A population test cannot overturn this: it would only
+re-characterize the spurious side; the real-side overlap is what kills it.
+
+### Why genomic-flank periodicity is the wrong probe
+The artifact's low-complexity lives in the **READ** (Nanopore GAA-triplet basecall
+expansion), not the genomic landing site. The genomic flank carries only a *short*
+boundary-local GAA/AAG motif (enough for mapPacBio to seed), then diverse sequence.
+**Any future earn-its-keep attempt should look read-side** (soft-clip content /
+read-sequence periodicity), not genomic flanks — and would need a new ground truth,
+since real splice boundaries are repetitive.
+
+### Belt-and-suspenders context
+These artifacts are mapPacBio-specific, and mapPacBio is **dropped from the human
+production panel** (minimap2 + uLTRA + deSALT). The remaining long-range chimeric
+risk is already handled by the existing overhang/chimera gate + the pool anchor floor
++ cross-family concordance relaxation (`junction_scoring.py`). Periodicity adds
+nothing.
+
+The helpers `_seq_periodicity` / `_junction_worst_flank_periodicity` remain in
+`junction_scoring.py` (used by the pool anchor-quality check via
+`_is_low_complexity_anchor`); only the *consensus-soft-gate wiring* is dropped.

@@ -211,3 +211,23 @@ forced GT-AG terminal rescues are not the differentiator that initially appeared
 **Decision (Sumner ONT-DRS chr5, 2026-05-25):** gapmm2 dropped from the human-DRS
 panel — marginal real-junction yield does not justify ~200 chunked array tasks
 (hourly billing), and uLTRA/deSALT already cover splice-aware terminal exons.
+
+---
+
+## Primary-alignment & duplicate handling
+
+gapmm2 emits PAF, which rectify converts to BAM in `_paf_to_bam()`. Secondary
+alignments are handled at conversion: any PAF record with `tp:A` ≠ `P` is marked
+`FLAG |= 0x100` (`multi_aligner.py:1269-1271`), so `rectify correct`'s `is_secondary`
+filter drops them. Separately, `run_gapmm2()` **deduplicates the input FASTQ by UUID
+before alignment** (Issue 2 above) — it skips empty-sequence placeholders and
+subsequent occurrences of the same read name. So a doubled input FASTQ that would
+2×-inflate minimap2 is *collapsed* by gapmm2's pre-align dedup — a useful contrast,
+and the reason gapmm2's per-read counts can legitimately differ from the other
+aligners on the same (duplicated) input.
+
+That pre-align dedup lives inside `run_gapmm2()` and does not protect an external BAM
+fed to `rectify correct`. The panel-wide unguarded hazard remains duplicate
+**primary** records in a BAM `rectify correct` reads directly. See the canonical
+writeup and cross-aligner table in
+[minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).

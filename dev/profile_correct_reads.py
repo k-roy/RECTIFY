@@ -81,11 +81,23 @@ def main():
     ap.add_argument('--sample-stride', type=int, default=1,
                     help='take 1 of every N reads (spread the sample across all '
                          'chromosomes instead of just chrI). 1 = first max-reads.')
+    ap.add_argument('--cost-threshold-ms', type=float, default=None,
+                    help='task #13 panel mode: stream EVERY read whose '
+                         'correct_read_3prime elapsed_ms >= this threshold to the '
+                         'panel TSV, while accumulating whole-set aggregates '
+                         '(total reads scanned, total time, percentile histogram) '
+                         'instead of buffering all rows. Use with --sample-stride to '
+                         'sweep the whole BAM genome-wide. When set, --max-reads is '
+                         'interpreted as a cap on reads PROFILED (post-stride), not a '
+                         'hard stop, and the top1pct/all TSVs are not written.')
     ap.add_argument('--pyspy-read', default='',
                     help='if set, run correct_read_3prime on ONLY this read_id, '
                          'repeated --pyspy-repeat times (for py-spy targeting). '
                          'Skips the normal profile.')
     ap.add_argument('--pyspy-repeat', type=int, default=200)
+    ap.add_argument('--summary-out', default='',
+                    help='task #13 panel mode: write a one-row TSV of whole-set '
+                         'aggregates (reads scanned, total time, panel size + share).')
     ap.add_argument('--apply-indel-correction', action='store_true',
                     help='match production correct (2C indel correction ON). Off by '
                          'default so the profile isolates the 3SS-rescue cost.')
@@ -182,6 +194,26 @@ def main():
               f"= {1000*dt/args.pyspy_repeat:.1f}ms/call", file=sys.stderr)
         return
 
+    cols = ['read_id', 'elapsed_ms', 'chrom', 'pos5', 'strand', 'mapq', 'aligner',
+            'ref_len', 'query_len', 'n_cigar_ops', 'five_clip', 'max_clip',
+            'n_S', 'n_I', 'n_D', 'n_N', 'n_X', 'n_op_intervals', 'n_pool_nearby',
+            'is_excluded', 'five_rescued', 'three_shifted', 'corr_category', 'is_noop']
+
+    # ---- task #13 panel mode: stream reads above a cost threshold ----
+    panel_mode = args.cost_threshold_ms is not None
+    panel_fh = None
+    panel_n = 0          # reads written to panel
+    panel_ms = 0.0       # total time of panel reads
+    if panel_mode:
+        out_panel = f"{args.out_prefix}.panel.tsv"
+        panel_fh = open(out_panel, 'w')
+        panel_fh.write('\t'.join(cols) + '\n')
+        # log10-ish histogram buckets (ms) for whole-set time concentration
+        hist_edges = [0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0,
+                      250.0, 500.0, 1000.0, 5000.0, 1e9]
+        hist_cnt = [0] * (len(hist_edges) - 1)
+        hist_ms = [0.0] * (len(hist_edges) - 1)
+
     rows = []
     n = 0
     seen = 0
@@ -245,7 +277,7 @@ def main():
         three_shifted = (orig3 is not None and corr3 is not None and orig3 != corr3)
         is_noop = (not five_rescued) and (not three_shifted) and (corr_cat is None)
 
-        rows.append({
+        row = {
             'read_id': read.query_name,
             'elapsed_ms': elapsed_ms,
             'chrom': chrom_std,
@@ -266,8 +298,54 @@ def main():
             'three_shifted': int(three_shifted),
             'corr_category': corr_cat if corr_cat is not None else '',
             'is_noop': int(is_noop),
-        })
+        }
+
+        if panel_mode:
+            # whole-set aggregates (don't buffer every row).
+            # n_total_time already accumulated above (line ~264).
+            # histogram bucket
+            for _b in range(len(hist_edges) - 1):
+                if elapsed_ms < hist_edges[_b + 1]:
+                    hist_cnt[_b] += 1
+                    hist_ms[_b] += elapsed_ms
+                    break
+            if elapsed_ms >= args.cost_threshold_ms:
+                panel_fh.write('\t'.join(str(row[c]) for c in cols) + '\n')
+                panel_n += 1
+                panel_ms += elapsed_ms
+                if (panel_n % 200) == 0:
+                    panel_fh.flush()
+        else:
+            rows.append(row)
     bam.close()
+
+    # ---- panel-mode summary + early return ----
+    if panel_mode:
+        panel_fh.close()
+        print(f"\n===== PANEL SUMMARY (aligner={args.aligner_label or '?'}) =====")
+        print(f"reads scanned (post-stride): {n}   stride={args.sample_stride}")
+        print(f"total correct time: {n_total_time/1000:.2f}s")
+        print(f"threshold: >= {args.cost_threshold_ms:.1f} ms")
+        print(f"panel reads (>= threshold): {panel_n}   "
+              f"panel time: {panel_ms/1000:.2f}s "
+              f"({100*panel_ms/n_total_time if n_total_time else 0:.1f}% of total)")
+        print("time concentration histogram (ms bucket: n_reads  sum_s  %total_time):")
+        for _b in range(len(hist_edges) - 1):
+            lab = f"[{hist_edges[_b]:.2f},{hist_edges[_b+1]:.2f})"
+            pct = 100 * hist_ms[_b] / n_total_time if n_total_time else 0
+            print(f"  {lab:>22}: {hist_cnt[_b]:>8}  {hist_ms[_b]/1000:>8.2f}s  {pct:5.1f}%")
+        if args.summary_out:
+            with open(args.summary_out, 'w') as sfh:
+                sfh.write("aligner\treads_scanned\tstride\ttotal_time_s\tthreshold_ms\t"
+                          "panel_reads\tpanel_time_s\tpanel_share_pct\n")
+                sfh.write(f"{args.aligner_label}\t{n}\t{args.sample_stride}\t"
+                          f"{n_total_time/1000:.3f}\t{args.cost_threshold_ms}\t"
+                          f"{panel_n}\t{panel_ms/1000:.3f}\t"
+                          f"{100*panel_ms/n_total_time if n_total_time else 0:.2f}\n")
+        print(f"wrote: {args.out_prefix}.panel.tsv")
+        if args.summary_out:
+            print(f"wrote: {args.summary_out}")
+        return
 
     rows.sort(key=lambda r: r['elapsed_ms'], reverse=True)
     total_ms = sum(r['elapsed_ms'] for r in rows)
@@ -276,11 +354,7 @@ def main():
     top = rows[:top1pct_n]
     top_ms = sum(r['elapsed_ms'] for r in top)
 
-    # write top-1% TSV
-    cols = ['read_id', 'elapsed_ms', 'chrom', 'pos5', 'strand', 'mapq', 'aligner',
-            'ref_len', 'query_len', 'n_cigar_ops', 'five_clip', 'max_clip',
-            'n_S', 'n_I', 'n_D', 'n_N', 'n_X', 'n_op_intervals', 'n_pool_nearby',
-            'is_excluded', 'five_rescued', 'three_shifted', 'corr_category', 'is_noop']
+    # write top-1% TSV  (cols defined above, before the read loop)
     out_top = f"{args.out_prefix}.top1pct.tsv"
     with open(out_top, 'w') as fh:
         fh.write('\t'.join(cols) + '\n')

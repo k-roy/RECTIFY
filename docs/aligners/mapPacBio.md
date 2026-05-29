@@ -207,3 +207,42 @@ If the `N`-op count is near zero on a mammalian RNA sample, suspect the
 | chunk task exits 1 but chunk BAM exists | chunk-idx path-validation bug | ignore exit code; gate merge on chunk-BAM presence (no `afterok`) |
 | Subprocess killed at 21600 s | `ALIGNER_TIMEOUT` on a large sample | chunk with `--mapPacBio-chunks N` |
 | Mispositioned / missing junctions on ONT | BBMap PacBio error model ≠ ONT | use minimap2/uLTRA/deSALT; consider dropping mapPacBio from ONT panels |
+
+---
+
+## Primary-alignment & duplicate handling
+
+`rectify align` passes **no secondary-suppression flag** to mapPacBio — its command
+is `ref/in/out/threads/path/fastareadlen/intronlen/maxindel/minratio/-Xmx`
+(`multi_aligner.py:739-757`), with no `secondary=` argument and no post-hoc dedup.
+BBMap's default secondary-output behavior is not determinable from rectify source.
+This is safe for 3′-end counting because `rectify correct` skips
+`is_secondary`/`is_supplementary` records regardless of producing aligner.
+
+> **Empirical (2026-05-29): mapPacBio emits MULTIPLE records all flagged
+> PRIMARY for a multi-mapping read** — it does *not* set the secondary
+> (`0x100`) bit on the extra hits. Observed on yeast upf1Δ DRS: one read had
+> three primary records (`flag=0` chrI+, `flag=0` chrIX+, `flag=16` chrXI−),
+> another had two (chrII− no-intron, chrVII− with-intron). Consequences:
+> - **Selecting "the" mapPacBio alignment by first-non-secondary record is
+>   unsafe** — it lands on an arbitrary locus. Disambiguate by expected
+>   chromosome / best score (e.g. the validation-bundle builder
+>   `scripts/validation_data/upf1d_2026_05/build_upf1d_validation.py` picks the
+>   primary on the intended chrom, preferring the N-op-bearing record).
+> - **The `is_secondary` skip does NOT filter these** (they aren't flagged
+>   secondary), so a mapPacBio multi-mapper reaches `rectify correct` as several
+>   primaries → it can be processed/counted more than once. This is the same
+>   class of hazard as the duplicate-primary case noted below, but produced by
+>   the aligner itself rather than a doubled input FASTQ. Another reliability
+>   mark against mapPacBio (cf. its junk 5′ force-extension that raw-ED
+>   under-penalizes — see ALIGNER_RECOMMENDATIONS / the panel-drop rationale).
+
+Note that mapPacBio reindexes per chunk, so chunk-local `RN:i` tags collide across
+chunks (corrected downstream by the consensus QNAME→RN reinjection — see "6 h
+`ALIGNER_TIMEOUT` and chunking" above); that is a tag-collision issue, not record
+duplication.
+
+The unguarded hazard for *all* aligners is duplicate **primary** records in an
+external BAM (e.g. a doubled input FASTQ), which `rectify correct` does **not**
+dedup → 2× double-counted 3′ ends. See the canonical writeup and cross-aligner
+table in [minimap2.md](minimap2.md#-duplicate-primary-alignments--2-double-counted-3-ends-external-bam-hazard).

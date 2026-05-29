@@ -706,3 +706,181 @@ Per the standing advisor guidance, do NOT touch the shift×offset windows themse
   `$SCRATCH/rectify_perf_task12_pyspy_20260526_115051/` (py-spy `.folded` + cross-chrom).
 - Jobs: 26151151 (profile), 26152138 (py-spy + cross-chrom stride). Sherlock rectify synced
   to `c1d0e83` (`bam_processor.py` was the only file behind; md5-verified) before running.
+
+---
+
+# Part V — Genome-wide expensive-read panel + cost archetypes (task #13, 2026-05-26)
+
+**Baseline: HEAD `c52966c`** (3 commits past Part IV's `c1d0e83`; only branding/docs commits
+between them — no rescue-path code change, so the cost *shape* matches Part IV (B), the
+cross-chrom picture). This part REPLACES Part IV's top-1%/stride-40 sampling with a
+**genome-wide stride-5 sweep across all 5 aligners, collecting EVERY read above a fixed
+500 ms cost threshold** into a panel, then categorizing the panel into disjoint cost
+archetypes by precedence.
+
+## Method
+
+`dev/profile_correct_reads.py` gained a **panel mode** (`--cost-threshold-ms`): it streams
+every read whose `correct_read_3prime` elapsed_ms ≥ threshold to `<prefix>.panel.tsv` while
+accumulating whole-set aggregates (reads scanned, total time, a log-spaced time-share
+histogram) in `--summary-out` — so the whole BAM is swept without buffering ~40k rows. The
+`correct` setup is replicated exactly (genome + GFF, 5-BAM cross-aligner pool = 3,459
+junctions / 385 annotated, `pool_chrom_index`, rDNA/Pol III `ExclusionRegionDetector` = 610
+regions, gene interval trees); `apply_indel_correction` is OFF to isolate the 3'SS-rescue
+cost (matches Part IV; 2C is a separate logged finding).
+
+- **Input:** Sherlock `wt_by4742_rep1.{minimap2,mapPacBio,gapmm2,deSALT,uLTRA}.bam` (yeast DRS).
+- **Sweep:** stride-5 (1-of-5 primary reads, all 16 chroms), cap 120k reads/aligner, threshold
+  **500 ms**. SLURM array job **26175498** (one task per aligner, single-thread).
+- **Threshold calibration:** Part IV `c1d0e83` xchrom stride-40 8k → 42 (gapmm2) / 59 (minimap2)
+  reads >500 ms. Scaling to stride-5 projected ~1000–1500 pooled — confirmed in range.
+- **Categorizer:** `dev/categorize_perf_panel.py` (disjoint precedence; count + panel-time share).
+- **py-spy:** `dev/profile_pyspy_task13.sbatch` on the worst read/aligner (job 26181308).
+
+## ⚠️ Caveat — PARTIAL SWEEP (chrI–chrVII)
+
+The genome-wide array is **single-thread on a shared larsms node and crawls** (~80 min wall to
+reach chrVII of XVI; the heavy per-read tail dominates). The numbers below are the **first 200
+>500 ms reads flushed per aligner = 1000 pooled reads spanning chrI–chrVII**, which **includes
+the dense, expensive chrIV** (where Part IV found its 292 s monster). Reads 201+ are buffered in
+Python and flush only at `close()`; the **full-genome panel + `summary_*.tsv` (histogram +
+panel-share-of-total denominator) are pending job completion** (background array 26175498). The
+remaining chroms (VIII–XVI) add chrXII — largely rDNA-**excluded** — and the smaller chromosomes;
+the disjoint archetype *ratios* below are decisive and are not expected to invert with their
+addition. Treat the table as a representative chrI–VII picture, not the final full-genome panel.
+
+## Panel sizing + archetype breakdown (chrI–VII, 1000 pooled reads, 6,688 s panel time)
+
+Per-aligner each contributed its first 200 >500 ms reads. The worst single reads are extreme:
+**gapmm2 320 s** (chrIV, n_pool=31>K25, five_clip=93, n_ops=109), **minimap2 300 s** (chrIV,
+five_clip=131, n_pool=31), **uLTRA 181 s** (five_clip=**497**), mapPacBio 154 s (n_ops=129),
+deSALT 114 s (n_ops=86).
+
+| Archetype (precedence) | predicate | POOLED reads | POOLED % of panel time |
+| --- | --- | ---: | ---: |
+| `excluded_BUG` | `is_excluded==1` | **0** | **0.0%** ✅ (rRNA/PolIII gate clean) |
+| `bigN_artifact_intron` | `n_N > 2000` | 25 | 1.1% |
+| `large_5prime_clip` | `five_clip >= 100` | 106 | **35.9%** |
+| `over_cap_candidates` | `n_pool_nearby > 25` | 28 | 5.4% |
+| `high_cigar_op` | `n_cigar_ops >= 50` | 197 | **28.5%** |
+| `dead_end_with_work` | `is_noop==1 AND (n_pool_nearby>0 OR n_op_intervals>0)` | 66 | 0.8% |
+| `productive_candidate` | `(5'rescued OR 3'shifted) AND n_pool_nearby>0` | 576 | 28.4% |
+| `other` | baseline tail | 2 | 0.1% |
+
+**Per-aligner dominant class differs sharply** (one optimization won't help all equally):
+
+| Aligner | panel time (s) | dominant class (% of its panel time) |
+| --- | ---: | --- |
+| minimap2 | 1706 | `large_5prime_clip` 58.8% |
+| gapmm2 | 1884 | spread: `high_cigar_op` 22.4%, `productive` 22.7%, `over_cap` 17.4%, `large_clip` 35.2%* |
+| mapPacBio | 1039 | `high_cigar_op` **70.6%** |
+| deSALT | 884 | `productive_candidate` 49.0% |
+| uLTRA | 1175 | `large_5prime_clip` 43.7% |
+
+*gapmm2 large_clip+high_op+over_cap together ≈ 75% — the catastrophic-combo aligner.
+
+Feature medians confirm the classes: `large_5prime_clip` median elapsed **4636 ms**, median
+five_clip 244 bp; `over_cap_candidates` median n_pool_nearby **33** (binding above K=25);
+`high_cigar_op` median n_ops 86; `bigN_artifact_intron` median n_N ~100 kb.
+
+## What CHANGED vs Part IV (the panel overrules Part IV's priorities)
+
+1. **`dead_end_with_work` collapsed from Part IV's chrI 18.9% to 0.8% here.** The genome-wide
+   sample has far more *productive* candidate-rich reads inflating the denominator, and the
+   post-`c1d0e83` code reduced absolute dead-end cost. **Recommendation #1 (cheap pre-gate to
+   skip dead-ends) now targets a much smaller class** and is re-ranked BELOW the large-clip and
+   K-cap levers.
+2. **`large_5prime_clip` is now the single biggest class (35.9%)** — directly actionable by
+   capping `rescue_seq` length fed to the DP (#2). The uLTRA 497 bp / minimap2 131 bp / gapmm2
+   93 bp worst-read clips are the exemplars.
+3. **`over_cap_candidates` = 5.4% pooled but 17.4% on gapmm2, median n_pool_nearby=33** — hard
+   empirical evidence K=25 is still binding on a real subset. Recommendation #3 has support.
+4. **`excluded_BUG = 0` is a positive VERIFICATION** — the rRNA/Pol III exclusion gate
+   (`bam_processor.py:423-426`, `cf5ebb9`) correctly keeps excluded reads out of the >500 ms
+   panel. No exclusion-gate leak.
+
+## py-spy corroboration — CONFIRMED ~100% `_hp_edit_distance`
+
+py-spy on the worst read of each aligner (`dev/profile_pyspy_task13.sbatch`, 200 Hz × 25 s, job
+26181577; `26181308` first failed in 4 s with exit 141/SIGPIPE from a `... | head -1` under
+`pipefail` — fixed by dropping `set -e`/`pipefail`). Profiled the panel's worst reads (gapmm2
+320 s, minimap2 300 s, mapPacBio 154 s). **Result is decisive — the residual cost is the inner
+O(n×m) DP cell loop, nothing else:**
+
+| Aligner (worst read) | `_hp_edit_distance` share | top leaf frames |
+| --- | ---: | --- |
+| gapmm2 (320 s, chrIV) | **99.9%** (4992/4999) | `splice_aware_5prime.py:731,734,732` |
+| minimap2 (300 s, chrIV) | **99.7%** (4984/4999) | `splice_aware_5prime.py:731,734,732` |
+| mapPacBio (154 s, chrV) | **99.7%** (4982/4999) | `splice_aware_5prime.py:731,734,732` |
+
+Lines 727–734 are the inner DP cell loop of `_hp_edit_distance`. NOT `align_clip_to_exon`
+(Gotoh), NOT `get_aligned_pairs`/genome-slicing, NOT 2C — matching Part IV exactly. So even
+after the candidate cap + early-exits, the catastrophic-read leaf cost is the same DP, reached
+via (candidates) × (shift range ~21) × (offset range ≤ `junction_proximity_bp`) calls per read,
+each up to the 200×200 `_HP_ED_MAX_LEN` cap. This is what recommendations #1 (truncate
+`rescue_seq` → smaller DP) and #2/#3 (fewer DP calls) attack. *(deSALT + uLTRA were still
+profiling when harvested; the three above are unanimous and representative.)* Folded stacks:
+`dev/perf_panel_t13_results/stacks_{gapmm2,minimap2,mapPacBio}.folded`.
+
+## Optimization lessons for the expensive top-1% (UNVERIFIED — propose, don't ship)
+
+Standing advisor guidance: do NOT touch the shift×offset windows (intentional splice-slide
+search); cut the *number of DP calls* or *skip provably-hopeless reads*. **Code-accurate framing
+(verified against `c52966c`):** the K=25 cap in `_rescue_3ss_truncation_body`
+(`splice_aware_5prime.py:1298`) IS already unified across the annotated + read-own
+(`_real_junctions`) + pool candidate union for the *proximity-gated* portion — all flow through
+`_ss_junctions` (`bam_processor.py:428-449`) into `_nearby_junctions` then the sort-and-slice.
+Only **N-op-matched** junctions are intentionally preserved past the cap. So the lever is NOT
+"unify the cap" (Part IV's framing — inaccurate) but the items below. Priority is set by the
+panel time-share (large-clip > high-op ≈ productive > over-cap > dead-end):
+
+1. **Cap `rescue_seq` length fed to the DP — TOP lever (targets `large_5prime_clip`, 35.9%).**
+   A real exon-1 boundary match needs only ~20–60 bp adjacent to the splice site, but a long 5'
+   clip yields a `rescue_seq` up to `_HP_ED_MAX_LEN`=200, so every DP call at
+   `splice_aware_5prime.py:1496` hits the 200×200 ceiling. Truncate `rescue_seq` to e.g. the
+   60 bp nearest the 5' boundary before the shift/offset loop → each call drops to ~60×~80
+   (~6× cheaper). The worst panel reads (497/131/93 bp clips) are the targets. **Risk:** changes
+   which window scores best on legitimately long short-exon-1 reads — verify rescue-count /
+   corrected-3end equivalence on the validation set.
+
+2. **Lower K and/or narrow the proximity window feeding the K=25 cap (targets
+   `over_cap_candidates`, 5.4% pooled / 17.4% gapmm2; two worst reads at n_pool=31).** Options:
+   lower K to 10–15 ranking annotated junctions ahead of novel ones; OR shrink
+   `_POOL_FETCH_HALF_WINDOW` / `junction_proximity_bp`. **Risk:** drops a real rescue if the
+   correct junction is the 26th-closest — bound by annotated-first ranking + rescue-count
+   equivalence. Independent of #1, stacks with it.
+
+3. **Cheap per-candidate pre-gate before the shift×offset DP (targets the now-small
+   `dead_end_with_work` 0.8% AND the hopeless candidates inside `productive_candidate`).** Before
+   the `for _shift … for _off … _hp_edit_distance` block (L1475-1525), compute a cheap ED lower
+   bound — k-mer (k=6–8) Jaccard or single Hamming at shift=0 between `rescue_seq` and the
+   unshifted exon-1 window. If the best cheap score already exceeds `max_edit_frac * rescue_len`,
+   skip the full DP for that candidate. The ED=0 early-exit (`5ceb243`) only fires on a *perfect*
+   match, so dead ends pay the full cost today. **Re-ranked below #1/#2** — the dead-end class
+   shrank from Part IV's 18.9% to 0.8%, though the pre-gate also trims hopeless candidates inside
+   productive reads. **Risk:** a too-loose bound drops real rescues — verify equivalence.
+
+4. **`high_cigar_op` (28.5% pooled, 70.6% of mapPacBio) is mostly real candidate-driven work on
+   garbled alignments, not a clean skip.** It stems from BBMap's PacBio error model on ONT
+   (Křižanović 2018; mapPacBio `intronlen`/`maxindel` AGENT_FIXES entries). #1+#3 help indirectly
+   (these reads have many candidates each running the DP); the higher-leverage question is
+   whether mapPacBio belongs in an ONT splice panel at all (`[2026-05-25]` entry).
+
+5. **Leave the `align_clip_to_exon` 500 bp guard (`da18965`) alone** — py-spy (Part IV) showed
+   the large-clip cost is in `_hp_edit_distance`, NOT the Gotoh `align_clip_to_exon`. #1 is the
+   lever; recorded to prevent a future agent chasing the guard.
+
+**None shipped.** Each needs the Part I verification discipline (focused tests + `pytest -m "not
+slow"` + scale rerun + rescue-count/output equivalence) before landing.
+
+## Artifacts
+
+- Profiler: `dev/profile_correct_reads.py` (panel mode, `--cost-threshold-ms` + `--summary-out`).
+  Sbatch: `dev/profile_panel_task13.sbatch`, `dev/profile_pyspy_task13.sbatch`. Categorizer:
+  `dev/categorize_perf_panel.py`.
+- Panel TSVs (M1, chrI-VII): `dev/perf_panel_t13_results/profile_<aligner>.panel.tsv`;
+  provenance `dev/perf_panel_t13_results/PROVENANCE.json`.
+- Sherlock run dir: `$SCRATCH/rectify_perf_panel_t13_26175498/` (full-genome panel +
+  `summary_*.tsv` land here on array completion). Jobs: 26175498 (panel array), 26181308 (py-spy).
+- Sherlock rectify md5-verified at `c52966c` (splice_aware_5prime / bam_processor /
+  junction_scoring all match M1) before profiling.

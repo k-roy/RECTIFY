@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 256"
+     role="img" aria-label="RECTIFY">
+  <rect width="840" height="256" fill="#ffffff" />
+  <g font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="700" letter-spacing="3">
+    <text x="388" y="178" text-anchor="end" font-size="140"
+          fill="#1e293b">RECT</text>
+    <text x="452" y="178" text-anchor="start" font-size="140"
+          fill="#1e293b">FY</text>
+  </g>
+  <path d="M 406,200 L 420,36 L 434,200 Z" fill="#0d9488" stroke="#0f766e" stroke-width="2" stroke-linejoin="round" />
+  <path d="M 415,208 L 420,220 L 425,208 Z" fill="#0f766e" />
+  <text x="420" y="232" text-anchor="middle"
+        font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="16" font-weight="500"
+        letter-spacing="3" fill="#475569">NANOPORE  RNA  ALIGNMENT  CORRECTION</text>
+</svg>
