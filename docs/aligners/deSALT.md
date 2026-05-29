@@ -132,7 +132,190 @@ a pipeline failure.
 | ~N× inflated alignment counts | deSALT duplicate-output bug (`-N` slots) | use `run_desalt()` (auto-dedups) or dedup on (name,flag,chrom,pos,cigar) |
 | Empty `.deSALT.bam`; exit 139/137 in logs | deterministic SIGSEGV/OOM in `Loop-ProcessReads` | tolerated fallback (other aligners proceed); upstream issue #49 |
 | SIGSEGV when annotation passed | deSALT `-G` flag crashes on yeast GTF | RECTIFY omits `-G`; don't add it |
-| `double free or corruption` | deSALT forked inside a multithreaded process | run deSALT sequentially, outside the thread pool |
+| `double free or corruption` at deSALT launch | deSALT forked inside a multithreaded process | run deSALT sequentially, outside the thread pool |
+| `ValueError: file has no sequences defined (mode='rb')` in consensus after deSALT exit 139/137/-11/-9 | empty-BAM placeholder is `@HD`-only (no `@SQ`); consensus name-sort fails | **`_create_empty_name_sorted_bam` must include `@SQ` lines** — read `<genome>.fai` and synthesize. See "cDNA align: empty-BAM placeholder missing @SQ" below. |
+| `double free or corruption (!prev)` in `rectify correct` on a deSALT BAM (human DRS) | malformed MD tag `…(N0)+^0` from chr4qter / chr7q telomeric N-padded regions; pysam aborts parsing it | Drop or sanitize MD tag from deSALT BAMs before `rectify correct` (or skip reads whose MD ends with `^0`). See "Malformed MD tags from subtelomeric N-runs" below. |
+
+---
+
+## cDNA align: empty-BAM placeholder missing @SQ — bug, not workaround
+
+**Found 2026-05-28** while debugging human GM12878 PCR-cDNA alignment.
+
+When deSALT crashes with one of the recognized exits (`139 / 137 / -11 / -9`),
+`run_desalt()` correctly catches it and calls `_create_empty_name_sorted_bam`
+(multi_aligner.py:551) to emit a placeholder so the consensus step can proceed
+with the remaining aligners. The placeholder, however, contains **only one
+header line:**
+
+```
+@HD	VN:1.6	SO:queryname
+```
+
+No `@SQ` lines for the reference contigs. On yeast that survived by accident
+(`samtools sort -n` on the placeholder happened to succeed in the historical
+path), but in `rectify align`'s current consensus pipeline the placeholder
+flows into `consensus._ensure_name_sorted` → `samtools sort -n` → reopen with
+pysam → **`ValueError: file has no sequences defined (mode='rb') — is it
+SAM/BAM format? Consider opening with check_sq=False`**.
+
+Reproduced 2026-05-28 on cDNA chunk 2 (one of 8 chunks): deSALT exited −11 in
+the second-pass loop, the placeholder was emitted, consensus crashed.
+
+**Fix (applied 2026-05-29):** `_create_empty_name_sorted_bam` now accepts an
+optional `genome_path` argument; both `run_desalt()` call sites pass it. When
+provided, the function reads `<genome_path>.fai` and synthesises
+`@SQ\tSN:<seq>\tLN:<len>` lines into the placeholder header. The original
+`@HD`-only behaviour is preserved when `genome_path` is omitted (backwards
+compatible — no current caller omits it, but the parameter is `Optional` to
+keep test/utility paths working). Implementation:
+
+```python
+def _create_empty_name_sorted_bam(output_bam: Path,
+                                   genome_path: Optional[str] = None) -> None:
+    header = [b'@HD\tVN:1.6\tSO:queryname']
+    if genome_path:
+        fai = Path(str(genome_path) + '.fai')
+        if fai.exists():
+            with open(fai) as fh:
+                for line in fh:
+                    parts = line.rstrip('\n').split('\t', 2)
+                    if len(parts) >= 2:
+                        header.append(f'@SQ\tSN:{parts[0]}\tLN:{parts[1]}'.encode())
+    payload = b'\n'.join(header) + b'\n'
+    result = subprocess.run(['samtools', 'view', '-bS', '-o', str(output_bam)],
+                            input=payload, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(...)
+```
+
+This makes the placeholder a valid header-only BAM that pysam will accept with
+default `check_sq=True`. The change is backwards-compatible: callers that don't
+pass `genome_path` (none currently exist in the codebase, but future ones)
+still get the historical `@HD`-only placeholder.
+
+---
+
+## Malformed MD tags from subtelomeric N-runs — `rectify correct` aborts
+
+**Found 2026-05-28** while debugging human GM12878 DRS junction_overhang
+calibration.
+
+### Symptom
+
+`rectify correct -j N` on a deSALT human DRS BAM aborts with
+`*** Error in 'python': double free or corruption (!prev): 0x... ***` (SIGABRT,
+exit 134). Symptom present at `-j 4` and `-j 1` — **not a multiprocessing or
+spawn-pool issue.** Pure data-dependence in `rectify correct`'s pysam-using
+hot path.
+
+In the production junction_overhang run on whole-genome GM12878 IVT, 2 of 22
+per-chrom tasks failed this way (chr4, chr7). chr8/15/16 and the other 17
+chroms completed cleanly with the same code path and the same BAM source.
+
+### Forensic bisection (2026-05-28, this session)
+
+The full chr4 deSALT BAM (638,482 reads) was bisected by coordinate down to a
+single triggering read. Every level halved/quartered the surviving range until
+one read remained:
+
+| Step | Range | Reads | Result |
+|------|-------|-------|--------|
+| Halves | chr4:0–95M | 317,444 | OK (11 min) |
+| | chr4:95M–190M | 320k | CRASH |
+| Quarters | chr4:95M–119M (q1) | 69k | OK |
+| | chr4:119M–143M (q2) | clean | OK |
+| | chr4:143M–167M (q3) | 69k | OK |
+| | **chr4:167M–190M (q4)** | 70,088 | **CRASH @ 73 s** |
+| q4 quarters | chr4:167M–172.8M (q4a) | 17k | OK |
+| | chr4:172.8M–178.6M (q4b) | 16k | OK |
+| | chr4:178.6M–184.4M (q4c) | 17k | OK |
+| | **chr4:184.4M–190.214M (q4d)** | 19,320 | **CRASH @ 74 s** |
+| q4d quarters | q4da/b/c | OK | |
+| | **chr4:188.75M–190.214M (q4dd)** | 7,377 | **CRASH @ 18 s** |
+| q4dd quarters | dd1/dd2/dd3 | OK | |
+| | **chr4:189.848M–190.214M (q4dd4)** | 3,124 | **CRASH @ 26 s** |
+| 4 × 91 kb | dd4a/b/c | OK | |
+| | **chr4:190.1225M–190.2146M (dd4d)** | 909 | **CRASH** |
+| 4 × 23 kb | dd4d1/dd4d2/dd4d3 | OK | |
+| | **chr4:190.1915M–190.2146M (dd4d4)** | 145 | **CRASH** |
+| 4 × 6 kb | dd4d4a/dd4d4b | OK | |
+| | **chr4:190.203M–190.2088M (dd4d4c)** | 61 | CRASH |
+| | **chr4:190.2088M–190.2146M (dd4d4d)** | **1** | **CRASH (single read!)** |
+
+The 1-read BAM was the smoking gun.
+
+### The trigger read
+
+```
+QNAME:  6bf557b1-019f-4432-be1f-a7498a493bab
+RNAME:  chr4    POS: 190,203,757    MAPQ: 60    FLAG: 16 (reverse, primary)
+SEQLEN: 2,822 bp
+CIGAR:  1S 145M 31D 26M 5D 289M 1D 4M 1D 278M 1I 6M 1I 74M
+        59453N 3D 21M 12D 21M 45N 1D 40M 1D 7M 5I 28M 91I 1M 50N
+        10M 12D 22M 1751S
+MD:     ...A103(N0){65}^0
+```
+
+The MD ends with **65 consecutive `N0` markers** (each = "an `N` ref base, then
+0 matching bases") followed by **`^0`** — a deletion-marker with no base
+letters (the SAM spec requires `^` to be followed by ACGT/N, not a digit). The
+deSALT MD-emitter walks off the end of the genomic reference into the
+chr4qter N-padded subtelomeric block and serializes the run incorrectly.
+
+### Confirmation
+
+Stripping the MD tag from this one read produces a BAM that `rectify correct
+-j 1` processes cleanly in 1 second. Re-introducing the MD tag re-triggers the
+crash deterministically. The CIGAR (with its 59-kb N op and 1,751-bp soft
+clip) is **not** the trigger — the no-MD smoke succeeded with the same CIGAR.
+
+### Hypothesis (not yet AddressSanitized)
+
+Pysam's MD-tag parsing path (likely `get_aligned_pairs(with_seq=True)` or
+`get_reference_sequence()`) allocates a buffer sized from the cumulative `N`
+runs, then either over-writes when consuming the malformed `^0` (treating the
+digit `0` as both the deletion-length and the start of the next op), or
+double-frees the buffer when retrying. The crash is in glibc malloc, so
+`fsanitize=address` on a pysam build should pinpoint the line within a single
+run.
+
+### Mitigations (pick one)
+
+1. **Strip MD tags from deSALT BAMs before `rectify correct`.** Cheapest. The
+   `rectify correct` walkback algorithm does not require MD — it reads
+   sequence and reference independently. Drop with:
+   ```bash
+   samtools view -h foo.deSALT.bam | awk 'BEGIN{OFS="\t"} \
+     /^@/{print; next} \
+     {out=$1; for(i=2;i<=11;i++) out=out OFS $i; \
+      for(i=12;i<=NF;i++) if (substr($i,1,5)!="MD:Z:") out=out OFS $i; \
+      print out}' | samtools view -bS -o foo.deSALT.noMD.bam -
+   ```
+2. **Skip the bad reads at ingest time.** Filter records whose MD tag matches
+   `/(N0){5,}\^0/` (or any `\^\d`) before passing to pysam.
+3. **Recompute the MD with `samtools calmd`.** Produces a correct MD from the
+   reference — but doesn't help if the reference itself contains the N-padded
+   block (calmd will re-emit `N0…` markers, just without the trailing `^0`).
+   Tested: untested in this session; expected to help only for the `^0` part.
+4. **Patch pysam upstream.** Strongest, slowest. Requires building pysam with
+   AddressSanitizer to confirm the over-write location.
+
+In production we worked around the bug by dropping chr4 + chr7 deSALT
+contributions from the WG junction_overhang calibration (calibrate script
+already skips missing per-aligner TSVs; 20 of 22 chroms contributed 3-aligner
+unanimous concordance, the other 2 contributed minimap2 + uLTRA).
+
+### Files on Sherlock (preserved 2026-05-28)
+
+| File | Path |
+|------|------|
+| 1-read trigger BAM | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d.bam` |
+| Full chr4 deSALT BAM | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr4/chr4.deSALT.bam` |
+| chr7 deSALT BAM (same failure mode) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr7/chr7.deSALT.bam` |
+| Smoke crash log (-j 1) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_j1_26621424.out` |
+| MD-stripped smoke (passes) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d_noMD_corrected.tsv` |
+| Bisect sbatch scripts | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_*.sbatch` |
 
 ---
 

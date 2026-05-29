@@ -548,11 +548,35 @@ def _apply_calmd_eq(bam_path: Path, genome_path: str, threads: int = 1) -> None:
 _DESALT_CRASH_EXITS = frozenset({139, 137, -11, -9})
 
 
-def _create_empty_name_sorted_bam(output_bam: Path) -> None:
-    """Write a valid empty name-sorted BAM (header-only) to output_bam."""
+def _create_empty_name_sorted_bam(
+    output_bam: Path,
+    genome_path: Optional[str] = None,
+) -> None:
+    """Write a valid empty name-sorted BAM (header-only) to ``output_bam``.
+
+    When ``genome_path`` is provided, ``@SQ`` lines are synthesised from
+    ``<genome_path>.fai`` and prepended after the ``@HD`` line. This is
+    required for downstream consumers that open the BAM with pysam's default
+    ``check_sq=True`` (e.g. the consensus name-sort step in
+    ``rectify align``) — a placeholder with only ``@HD`` raises
+    ``ValueError: file has no sequences defined``. Callers that don't supply
+    ``genome_path`` get the historical ``@HD``-only behaviour.
+    """
+    header_lines: List[bytes] = [b'@HD\tVN:1.6\tSO:queryname']
+    if genome_path:
+        fai_path = Path(str(genome_path) + '.fai')
+        if fai_path.exists():
+            with open(fai_path) as fh:
+                for line in fh:
+                    parts = line.rstrip('\n').split('\t', 2)
+                    if len(parts) >= 2:
+                        header_lines.append(
+                            f'@SQ\tSN:{parts[0]}\tLN:{parts[1]}'.encode()
+                        )
+    payload = b'\n'.join(header_lines) + b'\n'
     result = subprocess.run(
         ['samtools', 'view', '-bS', '-o', str(output_bam)],
-        input=b'@HD\tVN:1.6\tSO:queryname\n',
+        input=payload,
         capture_output=True,
     )
     if result.returncode != 0:
@@ -2272,7 +2296,7 @@ def run_desalt(
                 "Upstream bug: github.com/ydLiu-HIT/deSALT",
                 result.returncode,
             )
-            _create_empty_name_sorted_bam(output_bam)
+            _create_empty_name_sorted_bam(output_bam, genome_path)
             return str(output_bam)
         raise RuntimeError(f"deSALT failed (exit {result.returncode}): {result.stderr}")
 
@@ -2311,7 +2335,7 @@ def run_desalt(
             "emitting empty BAM; chunk will use 4-aligner consensus.",
             view_proc.returncode, sort_proc.returncode,
         )
-        _create_empty_name_sorted_bam(output_bam)
+        _create_empty_name_sorted_bam(output_bam, genome_path)
         return str(output_bam)
 
     sam_path.unlink(missing_ok=True)
