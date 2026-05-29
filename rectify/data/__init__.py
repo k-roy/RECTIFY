@@ -628,8 +628,6 @@ BUNDLED_GENOMES = {
         # Genome + annotation are NOT bundled (too large); supply via --genome / --annotation.
         # Empirical penalty tables — GM12878 IVT RNA004, GIAB HG001 v4.2.1 masked.
         # See genomes/homo_sapiens/penalty_tables/PENALTY_TABLE.md for derivation.
-        # junction_overhang_table intentionally omitted → resolver falls back to DRS
-        # (overhang calibration needs rectify-correct output on human; deferred).
         'junction_penalty_table': {
             'file': 'genomes/homo_sapiens/penalty_tables/penalty_scores.tsv',
             'version': 'gm12878_ivt_rna004_20260527',
@@ -640,10 +638,16 @@ BUNDLED_GENOMES = {
             'version': 'gm12878_ivt_rna004_20260527',
             'source': 'GM12878 IVT RNA004, STR slippage penalties (chr1-22, GIAB-masked)',
         },
+        'junction_overhang_table': {
+            'file': 'genomes/homo_sapiens/penalty_tables/junction_overhang_table.tsv',
+            'version': 'gm12878_ivt_rna004_20260527',
+            'source': 'GM12878 IVT RNA004, whole-genome chr1-22, 3-aligner unanimous concordance, 5th percentile (6149 obs, 31–116131 bp introns)',
+        },
         'protocols': {
             'drs': {
                 'junction_penalty_table':  'genomes/homo_sapiens/penalty_tables/penalty_scores.tsv',
                 'str_penalty_table':       'genomes/homo_sapiens/penalty_tables/str_penalty_scores.tsv',
+                'junction_overhang_table': 'genomes/homo_sapiens/penalty_tables/junction_overhang_table.tsv',
             },
             'qsrev': {
                 # GM12878 QuantSeq REV (PRJNA1391471), bwa + minimap2-sr consensus, GIAB-masked.
