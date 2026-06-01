@@ -38,6 +38,45 @@ All other operations are expressed relative to this substitution baseline.
 
 ---
 
+## Cross-Modality: Which Platform Undercalls Homopolymers Most?
+
+Rectify ships protocol-specific calibrations (DRS / cDNA / QuantSeq-REV). Computed on an
+**identical absolute metric** — `D/(M+D+X)`, A/T runs — they quantify a long-standing
+expectation: **ONT direct-RNA (DRS) undercalls homopolymers far more than ONT PCR-cDNA or
+Illumina QuantSeq-REV (Han)**, and the gap grows with run length.
+
+![Empirical homopolymer error rates by sequencing modality](figures/hp_error_rates_by_modality.png)
+
+| A/T HP len | DRS del | cDNA del | Han del | DRS / cDNA | DRS / Han |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1  | 0.54%  | 0.12% | 0.032% | 4.4× | 16.7× |
+| 6  | 2.92%  | 0.68% | 0.036% | 4.3× | 81×   |
+| 8  | 7.16%  | 1.66% | 0.130% | 4.3× | 55×   |
+| 12 | 12.73% | 5.66% | 0.744% | 2.3× | 17×   |
+
+- **DRS is highest at every run length** — ≈2–4.5× cDNA (both ONT) and 17–81× Han (Illumina).
+- The **absolute** and **net (deletions − insertions)** gaps widen monotonically with length;
+  the **fold** over Han peaks mid-tract (~81× at HP 6) and compresses at the longest runs as
+  cDNA and even Han begin to undercall too.
+- DRS **insertions fall** at long HP, so net length loss is overwhelmingly DRS-specific.
+
+**Observed-rate tables** (one per platform, same metric):
+`rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/error_rates_{drs,cdna,qsrev}.tsv`.
+
+> ⚠️ **Do not** compare the `rate_mean` column across the bundled `penalty_scores_*.tsv` tables:
+> the DRS table reports the **conditional** rate `D/(D+X)` (its 2026-04-22 profiler never tracked
+> M), while cDNA/QuantSeq-REV report the **absolute** `D/(M+D+X)`. The penalty *scores* are
+> unaffected (the `sub(HP1)/rate` normalization cancels the denominator), but cross-modality rate
+> comparisons must use the `error_rates_*.tsv` tables above. See the
+> [penalty_tables README](../rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/README.md).
+
+**In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS
+is the only modality whose poly-T/poly-U tract 3′ ends *saturate inside the tract* (lock at ~the
+9th T), while cDNA and Han track the last templated T. Full analysis and figures:
+`handoffs/REPORT_hp_undercalling_termination_20260531.html` (lab workspace).
+
+---
+
 ## Why It Matters: Old Heuristics vs Empirical Values
 
 | Operation | Context | Empirical penalty (AT) | Old heuristic | Factor off |
@@ -307,4 +346,4 @@ the empirical table and works correctly with the default heuristics as well.
 ---
 
 *Author: Kevin R. Roy — kevinrjroy@gmail.com*  
-*Last updated: 2026-05-01*
+*Last updated: 2026-05-31 (added cross-modality DRS/cDNA/QuantSeq-REV homopolymer error-rate comparison)*

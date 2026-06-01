@@ -148,6 +148,78 @@ QuantSeq REV to calibrate a meaningful intron-size-binned threshold.
 
 ---
 
+## Observed error-rate tables (per platform) — `error_rates_<platform>.tsv`
+
+In addition to the derived `penalty_scores_*` tables, the directory ships the **raw observed
+error rates** each platform's penalties are built from, one table per platform:
+
+| File | Platform | Source run |
+|---|---|---|
+| `error_rates_drs.tsv`   | DRS (ONT direct RNA, R10.4.1) | `error_profile_strand_20260501` (wt_by4742_rep1; mm2/mapPacBio/uLTRA; **M-tracked**) |
+| `error_rates_cdna.tsv`  | cDNA (ONT PCR-cDNA)           | `error_profile_cdna_20260518/pooled` (mm2/mapPacBio/gapmm2 + uLTRA/deSALT; M-tracked) |
+| `error_rates_qsrev.tsv` | Han QuantSeq-REV (Illumina)   | `error_profile_qsrev_20260517` wt_R1+wt_R2 (bbmap/bwa; M-tracked) |
+
+**Schema:** `op_type {D,I,X}` · `base_class {AT,CG}` · `hp_length` · `count` · `total_positions` ·
+`rate`. The first two lines are `#` provenance comments.
+
+![Empirical homopolymer error rates by sequencing modality](../../../../../docs/figures/hp_error_rates_by_modality.png)
+
+**Metric — identical across all three:** `rate = op_count / (M + D + X)` at that
+`(base_class, hp_length)` — the **absolute** rate (`compute_rates` denominator). This is the key
+point: these tables are mutually comparable, so they can be used directly for cross-modality
+error-rate comparisons (e.g. "which chemistry undercalls homopolymers most").
+
+**Observed A/T homopolymer rates (absolute) — headline numbers:**
+
+| HP len | DRS del | cDNA del | QSrev del | DRS ins | cDNA ins | QSrev ins |
+|---|---|---|---|---|---|---|
+| 1  | 0.54% | 0.12% | 0.032% | 0.12% | 0.10% | 0.000% |
+| 6  | 2.92% | 0.68% | 0.036% | 0.98% | 0.68% | 0.031% |
+| 8  | 7.16% | 1.66% | 0.130% | 0.72% | 1.20% | 0.145% |
+| 12 | 12.73%| 5.66% | 0.744% | 0.20% | 1.36% | 0.224% |
+
+DRS deletion rate rises steeply with run length and is **3–4.5× cDNA and 17–81× QSrev**; DRS
+*insertions fall* at long HP, so net length-loss `(D−I)` is overwhelmingly DRS-specific. cDNA is
+intermediate (both ONT); QSrev (Illumina) is near-flat until very long runs. Deep-dive:
+`handoffs/REPORT_hp_undercalling_termination_20260531.html`.
+
+### ⚠ Metric-consistency caveat for the bundled `penalty_scores_*` `rate_mean` column
+
+The `rate_mean` column **in the bundled `penalty_scores_*.tsv` is NOT comparable across platforms
+as shipped**, because the DRS table was calibrated by the 2026-04-22 profiler **before M (match)
+events were tracked**:
+
+| | DRS `penalty_scores.tsv` | cDNA / QSrev | the new `error_rates_*.tsv` |
+|---|---|---|---|
+| `rate_mean` definition | **conditional** `D/(D+X)` | absolute `D/(M+D+X)` | absolute `D/(M+D+X)` (all 3) |
+| AT hp1 deletion value | 0.7267 | ~0.0012 / 0.0003 | 0.0054 / 0.0012 / 0.0003 |
+
+This does **not** affect the derived penalties: `penalty = sub_rate(hp1)/rate` cancels the shared
+denominator, so conditional- and absolute-derived penalty *scores* agree. But anyone reading the
+`rate_mean` column for a cross-modality rate comparison must use the `error_rates_*.tsv` tables
+above (uniform absolute metric), **not** the `penalty_scores_*` `rate_mean` columns.
+
+**Recommended (not yet done — production-penalty change, needs sign-off):** regenerate the DRS
+`penalty_scores.tsv` from an M-tracking run so its shipped `rate_mean` is absolute like the others.
+`error_profile_strand_20260501` already has M (used for `error_rates_drs.tsv` here) but differs from
+the 2026-04-22 penalty run in aligner panel (3 vs 5 aligners); a clean fix re-runs the 5-aligner
+DRS profile with the current (M-tracking) profiler.
+
+### Per-platform calibration parameters (provenance at a glance)
+
+| Property | DRS | cDNA | QSrev |
+|---|---|---|---|
+| `--isolation-flank` | 10 | 10 | 10 |
+| read-coord exclusion (5′,3′) | (0, 0) | (50, 50) | **(10, 16)** — relaxed for 76 bp reads |
+| aligner concordance panel | 5 long-read | 5 long-read | 2 short-read (bbmap/bwa) |
+| M tracked (absolute rate) | penalty run: **no**; `error_rates_drs.tsv`: yes | yes | yes |
+
+The QuantSeq read-coord exclusion is deliberately relaxed to `(10, 16)` because the original
+`(30, 50)` would drop every 76 bp read — this is the "shorter reads need less flanking" caveat, and
+it is the *only* intended cross-platform parameter difference. (`isolation-flank` stays 10 for all.)
+
+---
+
 ## Regeneration
 
 DRS — uses the legacy invocation (preserved for byte-identical reproducibility):
