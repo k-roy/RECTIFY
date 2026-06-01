@@ -71,7 +71,11 @@ def _read_counts(
         for _, row in df.iterrows():
             hp_counts[(row['op_type'], row['ref_base'], int(row['hp_length']))] += int(row['count'])
 
+        # Prefer the raw-count file; fall back to str_error_rates.tsv, which also carries an
+        # integer `count` column (older / per-chunk --aligner-bams runs only wrote the rates file).
         str_tsv = d / 'str_error_counts.tsv'
+        if not str_tsv.exists():
+            str_tsv = d / 'str_error_rates.tsv'
         if str_tsv.exists():
             sdf = pd.read_csv(str_tsv, sep='\t')
             for _, row in sdf.iterrows():
@@ -149,18 +153,16 @@ def main(argv=None):
     print(f'Wrote: {out_pen} ({len(pen_df)} rows)')
 
     if str_counts:
-        # Reuse the profiler's STR-output writer for format parity
-        _write_str_outputs(str_counts, BUNDLE_DIR, args.max_hp)
-        # The writer emits str_penalty_scores.tsv (no suffix); rename it
-        emitted = BUNDLE_DIR / 'str_penalty_scores.tsv'
-        if emitted.exists() and emitted != out_str:
-            shutil.move(emitted, out_str)
-            print(f'Wrote: {out_str}')
-        # Also tidy up str_error_counts.tsv / str_error_rates.tsv side-effects
-        for stray in ('str_error_counts.tsv', 'str_error_rates.tsv'):
-            stray_path = BUNDLE_DIR / stray
-            if stray_path.exists():
-                stray_path.unlink()
+        # Reuse the profiler's STR-output writer for format parity, but write into a temp dir
+        # so the unsuffixed str_penalty_scores.tsv (= the production DRS STR table) is never
+        # clobbered when bundling a protocol-suffixed table. Move only the penalty table out.
+        import tempfile
+        with tempfile.TemporaryDirectory() as _td:
+            _write_str_outputs(str_counts, Path(_td), args.max_hp)
+            emitted = Path(_td) / 'str_penalty_scores.tsv'
+            if emitted.exists():
+                shutil.move(str(emitted), str(out_str))
+                print(f'Wrote: {out_str}')
     else:
         print(f'  (no STR counts — skipping {out_str.name})')
 

@@ -1742,6 +1742,15 @@ def _write_str_outputs(
         out_path, sep='\t', index=False, float_format='%.6f')
     log.info('Wrote: %s', out_path)
 
+    # Raw counts (incl. M denominator rows) — the canonical file bundle_protocol_tables.py
+    # pools across chunks/replicates. Without this, per-chunk STR cannot be re-pooled and
+    # bundling yields 0 STR events (the per-chunk --aligner-bams route only wrote rates).
+    counts_path = output_dir / 'str_error_counts.tsv'
+    (df[['op_type', 'unit', 'n_copies', 'count']]
+     .sort_values(['op_type', 'unit', 'n_copies'])
+     .to_csv(counts_path, sep='\t', index=False))
+    log.info('Wrote: %s', counts_path)
+
     # Console summary: top STR contexts by deletion rate
     del_df = (
         df[df['op_type'] == 'D']

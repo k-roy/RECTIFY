@@ -26,7 +26,7 @@ rather than crashing on `None`.
 
 ## Files
 
-### DRS (default — calibrated 2026-04-22; verified clean of `=` SEQ encoding)
+### DRS (default — **regenerated 2026-06-01** from by4742 RNA004, M-tracking/absolute)
 
 | File | Purpose |
 |---|---|
@@ -34,20 +34,27 @@ rather than crashing on `None`.
 | `str_penalty_scores.tsv`     | Dinucleotide / trinucleotide STR slippage penalties |
 | `junction_overhang_table.tsv`| Minimum overhang threshold per intron-size bin |
 
-**Calibration sample:** `wt_by4742_rep1` (BY4742 wild-type DRS, R10.4.1
-flowcell, Dorado basecaller). 5-aligner concordance panel:
-minimap2 + mapPacBio + deSALT + uLTRA + gapmm2.
-**Read-coord exclusion:** none (5'=0, 3'=0).
-**Calibrator script:** `scripts/calibration/empirical_cigar_error_profiler.py`
-(commit at calibration time predates the protocol-aware refactor).
+**Calibration sample (current):** `wt_by4742_rep{1,2,3}` (BY4742 wild-type DRS,
+**SQK-RNA004**, basecall model `rna004_130bps_hac@v5.2.0`; H2 deposit
+`by4742-wt-upf1D_polya_drs_2025`). 5-aligner concordance panel:
+minimap2 + mapPacBio + deSALT + uLTRA + gapmm2; 21 chunks; 6.39 B HP events;
+Sherlock job 27113242. **Read-coord exclusion:** none (5'=0, 3'=0).
+BY4742 is S288C-isogenic → clean isolated-base (HP=1) baseline.
 
-**`=` SEQ encoding check (2026-05-17):** the cDNA/QSrev calibration cycle
-surfaced a profiler bug where `=` characters in BAM SEQ (SAM/BAM spec
-"matches reference at this position" compression) were being miscounted as
-substitutions, silently zeroing M counts. Verified the DRS dev_run BAMs at
-`/oak/.../dev_runs/wt_by4742_rep1_drs_trim_20260417/` contain real
-nucleotide bases (no `=`), so the bundled DRS table is unaffected and does
-not need regeneration.
+**Why regenerated (2026-06-01):** the prior bundled DRS table (calibrated
+2026-04-22) used the **conditional** rate `D/(D+X)` because that profiler
+version never accumulated M (match) events. As shown below, the
+conditional-vs-absolute choice does **not** cancel across HP length, so the
+old table under-weighted long-homopolymer deletions ~8–16× at HP≥8 and did
+not reproduce this repo's own documented empirical penalties (0.44/0.17/0.033
+at HP 1/4/8). The current table is **absolute** `D/(M+D+X)` and reproduces them
+(0.438/0.173/0.032). STR table regenerated in the same pass (see STR fix below).
+The "R10.4.1" chemistry label in older docs was a mislabel — DRS is RNA004.
+
+**Cross-validation:** the lab's W303-background cpa anchor-away DRS
+(`PRJNA1229592`) gives identical long-HP rates (confirming chemistry) but a
+variant-inflated HP1–3 baseline vs the S288C reference (W303 SNPs, no variant
+masking) — which is why the S288C-isogenic by4742 is the correct substrate.
 
 ### cDNA — calibrated 2026-05-17/18 (UMI-bin-stratified)
 
@@ -155,71 +162,53 @@ error rates** each platform's penalties are built from, one table per platform:
 
 | File | Platform | Source run |
 |---|---|---|
-| `error_rates_drs.tsv`   | DRS (ONT direct RNA, R10.4.1) | `error_profile_strand_20260501` (wt_by4742_rep1; mm2/mapPacBio/uLTRA; **M-tracked**) |
-| `error_rates_cdna.tsv`  | cDNA (ONT PCR-cDNA)           | `error_profile_cdna_20260518/pooled` (mm2/mapPacBio/gapmm2 + uLTRA/deSALT; M-tracked) |
-| `error_rates_qsrev.tsv` | Han QuantSeq-REV (Illumina)   | `error_profile_qsrev_20260517` wt_R1+wt_R2 (bbmap/bwa; M-tracked) |
+| `error_rates_drs.tsv`   | DRS (ONT direct RNA, RNA004) | by4742 RNA004, v3 set1 wt_by4742 rep1-3, 5-aligner, 21 chunks, **job 27113242** (M-tracked) |
+| `error_rates_cdna.tsv`  | cDNA (ONT PCR-cDNA)          | `error_profile_cdna_20260518/pooled` (mm2/mapPacBio/gapmm2 + uLTRA/deSALT; M-tracked) |
+| `error_rates_qsrev.tsv` | Han QuantSeq-REV (Illumina)  | `error_profile_qsrev_20260517` wt_R1+wt_R2 (bbmap/bwa; M-tracked) |
 
 **Schema:** `op_type {D,I,X}` · `base_class {AT,CG}` · `hp_length` · `count` · `total_positions` ·
-`rate`. The first two lines are `#` provenance comments.
+`rate`. The first two lines are `#` provenance comments. **All three calibrations are BY4742
+background** (DRS = by4742 RNA004; cDNA = by4742 PCB114 UMI-consensus; QuantSeq-REV = Han 2023,
+PRJNA906143, BY4742) on an **identical absolute metric** `rate = op_count / (M+D+X)` — so the tables
+are mutually comparable and the cross-modality comparison isolates chemistry, not strain.
 
-![Empirical homopolymer error rates by sequencing modality](../../../../../docs/figures/hp_error_rates_by_modality.png)
+![RECTIFY empirical error rates and derived penalties by modality](../../../../../docs/figures/penalty_tables_by_modality.png)
 
-**Metric — identical across all three:** `rate = op_count / (M + D + X)` at that
-`(base_class, hp_length)` — the **absolute** rate (`compute_rates` denominator). This is the key
-point: these tables are mutually comparable, so they can be used directly for cross-modality
-error-rate comparisons (e.g. "which chemistry undercalls homopolymers most").
+**Observed A/T homopolymer deletion rates (absolute) — headline numbers:**
 
-**Observed A/T homopolymer rates (absolute) — headline numbers:**
-
-| HP len | DRS del | cDNA del | QSrev del | DRS ins | cDNA ins | QSrev ins |
-|---|---|---|---|---|---|---|
-| 1  | 0.54% | 0.12% | 0.032% | 0.12% | 0.10% | 0.000% |
-| 6  | 2.92% | 0.68% | 0.036% | 0.98% | 0.68% | 0.031% |
-| 8  | 7.16% | 1.66% | 0.130% | 0.72% | 1.20% | 0.145% |
-| 12 | 12.73%| 5.66% | 0.744% | 0.20% | 1.36% | 0.224% |
+| HP len | DRS del | cDNA del | QSrev del |
+|---|---|---|---|
+| 1  | 0.54% | 0.12% | 0.032% |
+| 6  | 2.92% | 0.68% | 0.036% |
+| 8  | 7.16% | 1.66% | 0.130% |
+| 12 | 12.73%| 5.66% | 0.744% |
 
 DRS deletion rate rises steeply with run length and is **3–4.5× cDNA and 17–81× QSrev**; DRS
 *insertions fall* at long HP, so net length-loss `(D−I)` is overwhelmingly DRS-specific. cDNA is
 intermediate (both ONT); QSrev (Illumina) is near-flat until very long runs. Deep-dive:
 `handoffs/REPORT_hp_undercalling_termination_20260531.html`.
 
-### ⚠ Metric-consistency caveat for the bundled `penalty_scores_*` `rate_mean` column
+### Metric note — why DRS was regenerated (✅ RESOLVED 2026-06-01)
 
-The `rate_mean` column **in the bundled `penalty_scores_*.tsv` is NOT comparable across platforms
-as shipped**, because the DRS table was calibrated by the 2026-04-22 profiler **before M (match)
-events were tracked**:
+The bundled `penalty_scores_*` `rate_mean` column is the **absolute** rate `D/(M+D+X)` for all three
+modalities — but the DRS table only became so after the 2026-06-01 regeneration. The prior DRS table
+(2026-04-22) reported the **conditional** rate `D/(D+X)` (that profiler never tracked M), and this
+does **change the derived penalties across HP length** (an earlier note here wrongly claimed it
+cancels). The normalization `penalty = sub_rate(HP=1)/rate(op,HP)` cancels the denominator **only at
+fixed HP**: `penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)` → 1.0 at HP=1, growing with
+run length. Proven on identical pooled counts (5.2 B DRS events): D/AT penalty ratio
+conditional÷absolute = **1.01 at HP=1 → 9.7× at HP=8 → 16× at HP=12**. The old conditional DRS table
+therefore under-weighted long-homopolymer deletions ~8–16× at HP≥8 and missed the documented empirics
+(0.44/0.17/0.033 at HP 1/4/8); the current absolute table reproduces them (0.438/0.173/0.032). This was
+a **behavior-changing production fix** (long-HP deletions ~8–16× cheaper in DRS junction/3′ scoring),
+applied to `penalty_scores.tsv` + `str_penalty_scores.tsv` on 2026-06-01.
 
-| | DRS `penalty_scores.tsv` | cDNA / QSrev | the new `error_rates_*.tsv` |
-|---|---|---|---|
-| `rate_mean` definition | **conditional** `D/(D+X)` | absolute `D/(M+D+X)` | absolute `D/(M+D+X)` (all 3) |
-| AT hp1 deletion value | 0.7267 | ~0.0012 / 0.0003 | 0.0054 / 0.0012 / 0.0003 |
-
-**This DOES affect the derived penalties** (corrected 2026-06-01 — an earlier note here and in
-`docs/EMPIRICAL_HP_PENALTY_SCORING.md` wrongly claimed it cancels). The normalization
-`penalty = sub_rate(HP=1)/rate(op,HP)` cancels the denominator **only at fixed HP**, not *across*
-HP lengths: `penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)`, which is 1.0 at HP=1 but
-grows with run length because the homopolymer error fraction rises. Demonstrated on identical pooled
-counts (5.2 B DRS events): the D/AT penalty ratio conditional÷absolute is **1.01 at HP=1 → 9.7× at
-HP=8 → 16× at HP=12**. Consequently the **bundled DRS `penalty_scores.tsv` (conditional) under-weights
-how expected long-homopolymer deletions are by ~8–16× at HP≥8**, and it diverges from this repo's own
-documented empirical penalties (`docs/EMPIRICAL_HP_PENALTY_SCORING.md`: 0.44 / 0.17 / 0.033 at HP 1/4/8)
-— a regenerated absolute-metric table reproduces those (0.438 / 0.173 / 0.032). The absolute metric is
-correct and consistent with the cDNA/QSrev tables. Use the `error_rates_*.tsv` tables for any
-cross-modality rate comparison, **not** the `penalty_scores_*` `rate_mean` columns.
-
-**Recommended — BEHAVIOR-CHANGING fix, needs sign-off** (this is *not* cosmetic: it makes long-HP
-deletions ~8–16× cheaper in DRS junction/3′ scoring, matching the documented empirics). Regenerate
-`penalty_scores.tsv` + `str_penalty_scores.tsv` from an M-tracking 5-aligner run. **In progress
-2026-06-01:** chunked profiler over the v3 5-aligner alignments (`drs_reprofile_20260531`, Sherlock
-job 27113242/27209596; pooled `penalty_scores_drs_absolute.tsv` already reproduces the documented
-0.44/0.17/0.033). Provenance caveat: this calibrates on **v3-vintage trimmed/bypass alignments**
-(the original 2026-04-22 `dev_runs/...20260412` inputs were deleted), so it is a fresh calibration on
-current data, not a byte-for-byte re-run of the original. **STR caveat:** `str_penalty_scores.tsv`
-shares the same conditional-metric issue but did **not** regenerate via this per-chunk
-`--aligner-bams` route — the per-chunk profiler emits `str_penalty_scores.tsv`/`str_error_rates.tsv`
-but not the `str_error_counts.tsv` the bundler pools, so pooled STR counts came back 0. STR regen
-needs a `--run-dir` (symlink-farm) pass or a profiler tweak to emit per-chunk `str_error_counts.tsv`
-— tracked as a follow-up.
+**STR fix (2026-06-01):** the per-chunk `--aligner-bams` profiler route did not emit the
+`str_error_counts.tsv` the bundler pools (only `str_error_rates.tsv`/`str_penalty_scores.tsv`), so STR
+initially pooled to 0. Fixed by (a) `_write_str_outputs` now also writing `str_error_counts.tsv`, and
+(b) `bundle_protocol_tables.py` falling back to `str_error_rates.tsv` (which carries the integer count
+column) when the counts file is absent — plus the STR bundle path now writes via a temp dir so it can
+no longer clobber the production unsuffixed `str_penalty_scores.tsv`. STR repooled to 120.8 M events.
 
 ### Per-platform calibration parameters (provenance at a glance)
 

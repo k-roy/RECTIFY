@@ -63,15 +63,16 @@ Illumina QuantSeq-REV (Han)**, and the gap grows with run length.
 **Observed-rate tables** (one per platform, same metric):
 `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/error_rates_{drs,cdna,qsrev}.tsv`.
 
-> ⚠️ **Do not** compare the `rate_mean` column across the bundled `penalty_scores_*.tsv` tables:
-> the DRS table reports the **conditional** rate `D/(D+X)` (its 2026-04-22 profiler never tracked
-> M), while cDNA/QuantSeq-REV report the **absolute** `D/(M+D+X)`. Use the `error_rates_*.tsv`
-> tables above for cross-modality rate comparison. **And note (corrected 2026-06-01):** this metric
-> choice *does* change the derived penalties across HP length — the `sub(HP1)/rate` normalization
-> cancels only at fixed HP (`penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)`: 1.0 at
-> HP=1, ~16× at HP=12 on identical counts), so the bundled DRS penalties under-weight long-homopolymer
-> deletions by ~8–16× at HP≥8 — diverging from the documented 0.44/0.17/0.033 above (which an
-> absolute-metric regen reproduces). See the
+> ✅ **Resolved 2026-06-01.** All three bundled `penalty_scores_*.tsv` now report the **absolute**
+> rate `D/(M+D+X)`. The DRS table previously reported the **conditional** `D/(D+X)` (its 2026-04-22
+> profiler never tracked M), and that choice *does* change the derived penalties across HP length —
+> the `sub(HP1)/rate` normalization cancels only at fixed HP (`penalty_cond/penalty_abs =
+> error_frac(HP)/error_frac(HP=1)`: 1.0 at HP=1, ~16× at HP=12 on identical counts), so the old DRS
+> penalties under-weighted long-homopolymer deletions ~8–16× at HP≥8 and missed the documented
+> 0.44/0.17/0.033 above. The DRS table was **regenerated from by4742 RNA004 with M-tracking** and now
+> reproduces them (0.438/0.173/0.032). Per-platform observed rates:
+> `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/error_rates_{drs,cdna,qsrev}.tsv`;
+> full per-modality figure in the
 > [penalty_tables README](../rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/README.md).
 
 **In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS
