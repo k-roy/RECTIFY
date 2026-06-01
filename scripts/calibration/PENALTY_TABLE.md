@@ -62,9 +62,18 @@ The `error_profile_strand_20260501` run properly tracks M, giving **absolute** r
 | Conditional (old) | D/(D+X) | 0.727 | 72.7% of errors are deletions |
 | Absolute (new) | D/(M+D+X) | 0.0054 | 0.54% of positions are deleted |
 
-The penalty formula uses whichever rate is in `rate_mean` — the normalization cancels
-the difference as long as deletion and substitution rates are computed consistently from
-the same denominator. Both tables are internally consistent and produce valid penalties.
+> **⚠️ Correction (2026-06-01):** an earlier version of this note claimed "the normalization
+> cancels the difference … both tables produce valid penalties." **That is wrong across HP
+> lengths.** The penalty `sub_rate(HP=1)/rate(op,HP)` cancels the denominator only at *fixed* HP;
+> across HP, `penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)`, which is 1.0 at HP=1 but
+> grows with run length (the HP error fraction rises). Demonstrated on identical pooled counts
+> (5.2 B DRS events): the D/AT penalty ratio conditional÷absolute is 1.01 at HP=1, 9.7× at HP=8,
+> 16× at HP=12. So a **conditional**-derived table (e.g. the bundled DRS `penalty_scores.tsv` from
+> `error_profile_20260422`) **under-weights long-homopolymer deletions by ~8–16× at HP≥8** and does
+> NOT reproduce this repo's documented empirical penalties (0.44/0.17/0.033 at HP 1/4/8); an
+> absolute-metric regen does (0.438/0.173/0.032). **Always derive penalties from M-tracking
+> (absolute) counts.** The conditional table is mis-calibrated at long HP, not merely a different
+> presentation of the same penalties.
 
 ### Penalty Formula
 

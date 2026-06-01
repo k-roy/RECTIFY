@@ -65,9 +65,13 @@ Illumina QuantSeq-REV (Han)**, and the gap grows with run length.
 
 > ⚠️ **Do not** compare the `rate_mean` column across the bundled `penalty_scores_*.tsv` tables:
 > the DRS table reports the **conditional** rate `D/(D+X)` (its 2026-04-22 profiler never tracked
-> M), while cDNA/QuantSeq-REV report the **absolute** `D/(M+D+X)`. The penalty *scores* are
-> unaffected (the `sub(HP1)/rate` normalization cancels the denominator), but cross-modality rate
-> comparisons must use the `error_rates_*.tsv` tables above. See the
+> M), while cDNA/QuantSeq-REV report the **absolute** `D/(M+D+X)`. Use the `error_rates_*.tsv`
+> tables above for cross-modality rate comparison. **And note (corrected 2026-06-01):** this metric
+> choice *does* change the derived penalties across HP length — the `sub(HP1)/rate` normalization
+> cancels only at fixed HP (`penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)`: 1.0 at
+> HP=1, ~16× at HP=12 on identical counts), so the bundled DRS penalties under-weight long-homopolymer
+> deletions by ~8–16× at HP≥8 — diverging from the documented 0.44/0.17/0.033 above (which an
+> absolute-metric regen reproduces). See the
 > [penalty_tables README](../rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/README.md).
 
 **In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS

@@ -194,16 +194,28 @@ events were tracked**:
 | `rate_mean` definition | **conditional** `D/(D+X)` | absolute `D/(M+D+X)` | absolute `D/(M+D+X)` (all 3) |
 | AT hp1 deletion value | 0.7267 | ~0.0012 / 0.0003 | 0.0054 / 0.0012 / 0.0003 |
 
-This does **not** affect the derived penalties: `penalty = sub_rate(hp1)/rate` cancels the shared
-denominator, so conditional- and absolute-derived penalty *scores* agree. But anyone reading the
-`rate_mean` column for a cross-modality rate comparison must use the `error_rates_*.tsv` tables
-above (uniform absolute metric), **not** the `penalty_scores_*` `rate_mean` columns.
+**This DOES affect the derived penalties** (corrected 2026-06-01 — an earlier note here and in
+`docs/EMPIRICAL_HP_PENALTY_SCORING.md` wrongly claimed it cancels). The normalization
+`penalty = sub_rate(HP=1)/rate(op,HP)` cancels the denominator **only at fixed HP**, not *across*
+HP lengths: `penalty_cond/penalty_abs = error_frac(HP)/error_frac(HP=1)`, which is 1.0 at HP=1 but
+grows with run length because the homopolymer error fraction rises. Demonstrated on identical pooled
+counts (5.2 B DRS events): the D/AT penalty ratio conditional÷absolute is **1.01 at HP=1 → 9.7× at
+HP=8 → 16× at HP=12**. Consequently the **bundled DRS `penalty_scores.tsv` (conditional) under-weights
+how expected long-homopolymer deletions are by ~8–16× at HP≥8**, and it diverges from this repo's own
+documented empirical penalties (`docs/EMPIRICAL_HP_PENALTY_SCORING.md`: 0.44 / 0.17 / 0.033 at HP 1/4/8)
+— a regenerated absolute-metric table reproduces those (0.438 / 0.173 / 0.032). The absolute metric is
+correct and consistent with the cDNA/QSrev tables. Use the `error_rates_*.tsv` tables for any
+cross-modality rate comparison, **not** the `penalty_scores_*` `rate_mean` columns.
 
-**Recommended (not yet done — production-penalty change, needs sign-off):** regenerate the DRS
-`penalty_scores.tsv` from an M-tracking run so its shipped `rate_mean` is absolute like the others.
-`error_profile_strand_20260501` already has M (used for `error_rates_drs.tsv` here) but differs from
-the 2026-04-22 penalty run in aligner panel (3 vs 5 aligners); a clean fix re-runs the 5-aligner
-DRS profile with the current (M-tracking) profiler.
+**Recommended — BEHAVIOR-CHANGING fix, needs sign-off** (this is *not* cosmetic: it makes long-HP
+deletions ~8–16× cheaper in DRS junction/3′ scoring, matching the documented empirics). Regenerate
+`penalty_scores.tsv` + `str_penalty_scores.tsv` from an M-tracking 5-aligner run. **In progress
+2026-06-01:** chunked profiler over the v3 5-aligner alignments (`drs_reprofile_20260531`, Sherlock
+job 27113242/27209596; pooled `penalty_scores_drs_absolute.tsv` already reproduces the documented
+0.44/0.17/0.033). Provenance caveat: this calibrates on **v3-vintage trimmed/bypass alignments**
+(the original 2026-04-22 `dev_runs/...20260412` inputs were deleted), so it is a fresh calibration on
+current data, not a byte-for-byte re-run of the original. `str_penalty_scores.tsv` shares the same
+conditional-metric issue and is regenerated in the same pass.
 
 ### Per-platform calibration parameters (provenance at a glance)
 
