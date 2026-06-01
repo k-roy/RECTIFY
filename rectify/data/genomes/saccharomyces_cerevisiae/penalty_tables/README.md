@@ -8,10 +8,10 @@ picks the matching table:
 
 | Caller flags | Resolved tables | Underlying calibration |
 |---|---|---|
-| `--Scer` (no protocol flags) | `*.tsv` (DRS — back-compat default) | BY4742 wild-type direct RNA-seq, R10.4.1 / Dorado |
+| `--Scer` (no protocol flags) | `*.tsv` (DRS — back-compat default) | BY4742 wild-type direct RNA-seq, RNA004 / Dorado |
 | `--Scer --dT-primed-cDNA` | `*_cdna.tsv` pooled (falls back to DRS if absent) | ONT PCR-cDNA, UMI-consensus, BY4742 wt_rep2 |
 | `--Scer --ONT-cDNA` | per-UMI-bin `*_cdna_umi{1,2,3plus}.tsv` + pooled fallback, routed per-read by `XC` tag | ONT PCR-cDNA, UMI-consensus, BY4742 wt_rep2 |
-| `--Scer --short-read --dT-primed-cDNA` | `*_qsrev.tsv` (overhang falls back to DRS) | Han 2023 QuantSeq REV WT (76 bp Illumina) |
+| `--Scer --short-read --dT-primed-cDNA` | `*_qsrev.tsv` (overhang falls back to DRS) | BY4742 QSrev WT (76 bp Illumina; PRJNA906143) |
 
 The `--ONT-cDNA` path uses a `PenaltyTableSet` (Module 2H, built at startup)
 rather than a single static table: each read's `XC:i:N` tag (UMI cluster size
@@ -123,7 +123,7 @@ adapter bleed at both ends.
 | `str_penalty_scores_qsrev.tsv` | not bundled — STR profiling yielded 0 events; resolver falls back to DRS |
 | `junction_overhang_table_qsrev.tsv` | not bundled — falls back to DRS table |
 
-**Calibration sample:** Han et al. 2023 QuantSeq REV WT (`wt_R1` + `wt_R2`,
+**Calibration sample:** BY4742 QSrev WT (`wt_R1` + `wt_R2`,
 76 bp single-end Illumina). 2-aligner concordance panel: bbmap + bwa.
 **Read-coord exclusion:** (5'=10 bp, 3'=16 bp) — keeps ~50 bp interior; the
 handoff's original (30, 50) would have dropped every read at 76 bp.
@@ -164,12 +164,12 @@ error rates** each platform's penalties are built from, one table per platform:
 |---|---|---|
 | `error_rates_drs.tsv`   | DRS (ONT direct RNA, RNA004) | by4742 RNA004, v3 set1 wt_by4742 rep1-3, 5-aligner, 21 chunks, **job 27113242** (M-tracked) |
 | `error_rates_cdna.tsv`  | cDNA (ONT PCR-cDNA)          | `error_profile_cdna_20260518/pooled` (mm2/mapPacBio/gapmm2 + uLTRA/deSALT; M-tracked) |
-| `error_rates_qsrev.tsv` | Han QuantSeq-REV (Illumina)  | `error_profile_qsrev_20260517` wt_R1+wt_R2 (bbmap/bwa; M-tracked) |
+| `error_rates_qsrev.tsv` | BY4742 QSrev (Illumina)  | `error_profile_qsrev_20260517` wt_R1+wt_R2 (bbmap/bwa; M-tracked) |
 
 **Schema:** `op_type {D,I,X}` · `base_class {AT,CG}` · `hp_length` · `count` · `total_positions` ·
 `rate`. The first two lines are `#` provenance comments. **All three calibrations are BY4742
-background** (DRS = by4742 RNA004; cDNA = by4742 PCB114 UMI-consensus; QuantSeq-REV = Han 2023,
-PRJNA906143, BY4742) on an **identical absolute metric** `rate = op_count / (M+D+X)` — so the tables
+background** (DRS = by4742 RNA004; cDNA = by4742 PCB114 UMI-consensus; QSrev = BY4742,
+PRJNA906143) on an **identical absolute metric** `rate = op_count / (M+D+X)` — so the tables
 are mutually comparable and the cross-modality comparison isolates chemistry, not strain.
 
 ![RECTIFY empirical error rates and derived penalties by modality](../../../../../docs/figures/penalty_tables_by_modality.png)

@@ -121,7 +121,7 @@ _DEFAULT_ALIGNERS_BY_PROTOCOL: Dict[str, List[str]] = {
 _PROTOCOL_EXCLUSION_DEFAULTS: Dict[str, Tuple[int, int]] = {
     'drs':   (0, 0),
     'cdna':  (50, 50),
-    # QSrev: 76-bp Han 2023 reads forced a smaller budget than the handoff's
+    # QSrev: 76-bp BY4742 QSrev reads forced a smaller budget than the handoff's
     # (30, 50). (10, 16) keeps ~50 bp interior while still masking the dT-primer
     # adapter remnant (5') and the residual A-tract walkback near the 3' end.
     # Approved by Kevin 2026-05-17.
@@ -820,7 +820,7 @@ def _normalise_read_name(name: str) -> str:
         while bwa / minimap2 / etc. strip at the first whitespace. SAM spec
         forbids whitespace in QNAME, so the strip is the correct normalisation.
         Without this, bbmap+bwa BAMs have an empty intersection at scale
-        (verified 2026-05-17 on Han 2023 QSrev — 783k bbmap, 834k bwa, 0 common
+        (verified 2026-05-17 on BY4742 QSrev — 783k bbmap, 834k bwa, 0 common
         before fix; 779k common after).
       * mapPacBio's `_pt:i:N` poly-A-length suffix.
     """

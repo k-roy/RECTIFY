@@ -6,7 +6,7 @@
 #$ -l h_data=8G,h_rt=4:00:00
 #$ -o /u/scratch/k/kevinroy/calibration_2026_05/qsrev/slurm_logs/qsrev_cal_$JOB_ID.log
 #
-# Han 2023 QSrev (Illumina QuantSeq REV, 76 bp) penalty-table calibration.
+# BY4742 QSrev (Illumina QuantSeq REV, 76 bp; PRJNA906143) penalty-table calibration.
 # Driver: scripts/calibration/empirical_cigar_error_profiler.py --protocol qsrev
 #
 # Wall budget: split <5 min, align ~30 min (8 chunks x 2 aligners x 2 samples,

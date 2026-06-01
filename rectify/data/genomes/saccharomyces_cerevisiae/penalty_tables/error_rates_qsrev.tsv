@@ -1,4 +1,4 @@
-# platform=qsrev	error_profile_qsrev_20260517 wt_R1+wt_R2 (Han QuantSeq-REV, Illumina; aligners bbmap/bwa; M-tracked)
+# platform=qsrev	error_profile_qsrev_20260517 wt_R1+wt_R2 (BY4742 QSrev (QuantSeq-REV), Illumina; PRJNA906143; aligners bbmap/bwa; M-tracked)
 # rate = op_count / (M+D+X) at that (base_class, hp_length); absolute, identical metric across platforms
 op_type	base_class	hp_length	count	total_positions	rate
 D	AT	1	53568	166182415	0.000322

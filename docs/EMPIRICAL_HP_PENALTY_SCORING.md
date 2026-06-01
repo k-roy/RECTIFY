@@ -43,21 +43,21 @@ All other operations are expressed relative to this substitution baseline.
 Rectify ships protocol-specific calibrations (DRS / cDNA / QuantSeq-REV). Computed on an
 **identical absolute metric** — `D/(M+D+X)`, A/T runs — they quantify a long-standing
 expectation: **ONT direct-RNA (DRS) undercalls homopolymers far more than ONT PCR-cDNA or
-Illumina QuantSeq-REV (Han)**, and the gap grows with run length.
+Illumina QSrev**, and the gap grows with run length.
 
 ![Empirical homopolymer error rates by sequencing modality](figures/hp_error_rates_by_modality.png)
 
-| A/T HP len | DRS del | cDNA del | Han del | DRS / cDNA | DRS / Han |
+| A/T HP len | DRS del | cDNA del | QSrev del | DRS / cDNA | DRS / QSrev |
 |:---:|:---:|:---:|:---:|:---:|:---:|
 | 1  | 0.54%  | 0.12% | 0.032% | 4.4× | 16.7× |
 | 6  | 2.92%  | 0.68% | 0.036% | 4.3× | 81×   |
 | 8  | 7.16%  | 1.66% | 0.130% | 4.3× | 55×   |
 | 12 | 12.73% | 5.66% | 0.744% | 2.3× | 17×   |
 
-- **DRS is highest at every run length** — ≈2–4.5× cDNA (both ONT) and 17–81× Han (Illumina).
+- **DRS is highest at every run length** — ≈2–4.5× cDNA (both ONT) and 17–81× QSrev (Illumina).
 - The **absolute** and **net (deletions − insertions)** gaps widen monotonically with length;
-  the **fold** over Han peaks mid-tract (~81× at HP 6) and compresses at the longest runs as
-  cDNA and even Han begin to undercall too.
+  the **fold** over QSrev peaks mid-tract (~81× at HP 6) and compresses at the longest runs as
+  cDNA and even QSrev begin to undercall too.
 - DRS **insertions fall** at long HP, so net length loss is overwhelmingly DRS-specific.
 
 **Observed-rate tables** (one per platform, same metric):
@@ -77,7 +77,7 @@ Illumina QuantSeq-REV (Han)**, and the gap grows with run length.
 
 **In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS
 is the only modality whose poly-T/poly-U tract 3′ ends *saturate inside the tract* (lock at ~the
-9th T), while cDNA and Han track the last templated T. Full analysis and figures:
+9th T), while cDNA and QSrev track the last templated T. Full analysis and figures:
 `handoffs/REPORT_hp_undercalling_termination_20260531.html` (lab workspace).
 
 ---

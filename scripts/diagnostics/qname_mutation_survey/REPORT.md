@@ -191,7 +191,7 @@ set1 but is structurally possible.
 | Protocol | Source | QNAME form | Pattern |
 |---|---|---|---|
 | DRS (ONT Dorado) | set1 wt_rep1 chunk FASTQ | @<uuid>\tpt:i:<N> | All 4 aligners produce bare UUID (IDENTITY); _clean_fastq strips tab+pt:i; mapPacBio sanitizer strips space comment (when first read has space) |
-| QuantSeq REV | Han 2023 wt_R1 BBmap (pre-fix) | @SRR.accession <N> length=76 | BBmap emits full comment; BWA emits bare accession -- MISMATCH confirmed; _normalize_bam_read_name handles underscore-encoded form |
+| QuantSeq REV | BY4742 QSrev wt_R1 BBmap (pre-fix) | @SRR.accession <N> length=76 | BBmap emits full comment; BWA emits bare accession -- MISMATCH confirmed; _normalize_bam_read_name handles underscore-encoded form |
 | PCR-cDNA (ONT) | validation_reads_cdna.bam | @<uuid> (bare) | IDENTITY across all aligners (no comment in these reads) |
 
 ---
