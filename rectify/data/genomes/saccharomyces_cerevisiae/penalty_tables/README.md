@@ -214,8 +214,12 @@ deletions ~8–16× cheaper in DRS junction/3′ scoring, matching the documente
 job 27113242/27209596; pooled `penalty_scores_drs_absolute.tsv` already reproduces the documented
 0.44/0.17/0.033). Provenance caveat: this calibrates on **v3-vintage trimmed/bypass alignments**
 (the original 2026-04-22 `dev_runs/...20260412` inputs were deleted), so it is a fresh calibration on
-current data, not a byte-for-byte re-run of the original. `str_penalty_scores.tsv` shares the same
-conditional-metric issue and is regenerated in the same pass.
+current data, not a byte-for-byte re-run of the original. **STR caveat:** `str_penalty_scores.tsv`
+shares the same conditional-metric issue but did **not** regenerate via this per-chunk
+`--aligner-bams` route — the per-chunk profiler emits `str_penalty_scores.tsv`/`str_error_rates.tsv`
+but not the `str_error_counts.tsv` the bundler pools, so pooled STR counts came back 0. STR regen
+needs a `--run-dir` (symlink-farm) pass or a profiler tweak to emit per-chunk `str_error_counts.tsv`
+— tracked as a follow-up.
 
 ### Per-platform calibration parameters (provenance at a glance)
 
