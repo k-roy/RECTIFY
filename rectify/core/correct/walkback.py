@@ -455,7 +455,16 @@ def walkback_3prime_guarded(
             len(chrom_seq), _raw_3p + early_exit_min_homopolymer_len + 1
         )
         _hp_window = chrom_seq[_w_start:_w_end].upper()
-        if stop_base * early_exit_min_homopolymer_len not in _hp_window:
+        # Bypass guard if the read's 3' end lands ON the stop base
+        # (genomic A for +strand).  That is precisely the single-A
+        # termination case the walkback was designed to correct; requiring
+        # AAAA would silently suppress the correction.
+        _base_at_3p = (
+            chrom_seq[_raw_3p].upper()
+            if 0 <= _raw_3p < len(chrom_seq)
+            else ""
+        )
+        if _base_at_3p != stop_base and stop_base * early_exit_min_homopolymer_len not in _hp_window:
             return None
 
     # -------------------------------------------------------------------
@@ -857,6 +866,7 @@ def walkback_drs_full(
     poly_noise_window: int = 50,
     tail_context_k: int = 4,
     max_scan_depth: int = 1000,
+    early_exit_min_homopolymer_len: int = 4,
 ) -> Optional[dict]:
     """DRS production walkback — :func:`walkback_3prime_guarded` with the
     DRS strand→side/stop_base mapping pre-wired and poly-A-artifact N-op
@@ -897,4 +907,5 @@ def walkback_drs_full(
         poly_noise_window=poly_noise_window,
         tail_context_k=tail_context_k,
         max_scan_depth=max_scan_depth,
+        early_exit_min_homopolymer_len=early_exit_min_homopolymer_len,
     )

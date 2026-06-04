@@ -4,10 +4,83 @@ Fast coordination log for active debugging sessions across M1 / H2 / Sherlock.
 **Read this before touching pipeline code. Update it when you find a bug.**
 Archive entries into CHANGELOG.md when the session wave is done.
 
+> **[2026-05-29] OPS NOTICE — M1 is sluggish. Offload moderately-heavy work to a login node.**
+> All agents: do NOT run moderately-heavy in-process work on M1 right now (anything
+> loading multiple bedgraphs/BAMs, bootstraps/permutations, or peaking toward ~1 GB).
+> Push it to an **H2/Sherlock login node** — `ssh hoffman2 'bash -lc "..."'` (no qsub,
+> no queue, far more headroom than M1's crowded desktop). Reserve M1 for editing, git,
+> reading, and single small scripts. Escalate to a compute allocation (sdev/qrsh/sbatch)
+> only for OOM-risk or subprocess fan-out (numpy on a Sherlock *compute* node needs the
+> AVX-512 constraint; H2 login is friction-free). See memory `feedback-m1-memory-discipline`.
+
 **Perf work:** see `dev/PERF_AUDIT.md` — playbook for finding/fixing per-read
 over-computation (profile-don't-guess, py-spy recipe, anti-patterns, suspect
 hotspots). The 3'SS-rescue full-pool stall (entry below) is the worked example;
 it is likely not the only such bottleneck.
+
+---
+
+## [2026-06-04] BUG: DRS +strand lone-A terminus not corrected by walkback — FIXED
+
+**Status:** FIXED in `walkback_3prime_guarded` (early-exit bypass when 3' base == stop_base).
+
+**Symptom:** ~1.60% of DRS reads (146,826 in wt_by4742_rep1, 9.18 M) had `corrected_3prime`
+on a genomic A. cDNA corrected 3' ends are 0.000% on A (walkback correctly walks all the way
+back). Strand-skewed 43:1 (+). 96% had `original_3prime == corrected_3prime` (no movement);
+86% flagged `correction_applied = atract_ambiguity`. Discovered during cDNA isoform atlas
+analysis: `analyses/cdna_isoform_atlas_20260604/results/DRS_walkback_bug.md`.
+
+**Root cause:** `walkback_3prime_guarded` (DRS +strand path) has an early-exit guard at
+`rectify/core/correct/walkback.py:437–459` that returns `None` when the 22bp window around
+the 3' end contains no run of ≥4 A's ("AAAA").  A read ending on a **lone** genomic A (one
+A flanked by non-A on both sides) fails this check → walkback never fires → position stays on
+the genomic A.  The −strand path deliberately has NO such guard, which directly explains the
+43:1 strand skew.
+
+**Fix** (`walkback_3prime_guarded`, lines ~453–465): added a `_base_at_3p` bypass — skip the
+AAAA-run check if the 3' base itself IS the stop base (A for +strand, T for −strand):
+
+    _base_at_3p = chrom_seq[_raw_3p].upper() if 0 <= _raw_3p < len(chrom_seq) else ""
+    if _base_at_3p != stop_base and stop_base * early_exit_min_homopolymer_len not in _hp_window:
+        return None  # original guard, applied only when 3' end is NOT on A
+
+**Tests:** `TestLoneATerminationFix` added to `tests/test_walkback_readvsref.py`; all 20
+walkback tests pass, including the existing parity check vs `find_polya_boundary`.
+
+**Residual / known limitation:** the bypass operates on `read.reference_end - 1` (the raw
+aligner-placed 3' end).  If Module 2C (indel correction) in `bam_processor.py` already moved
+`current_position` off the raw end (which occurs for ~4% of the buggy reads), the bypass
+won't fire for those reads. Impact is minor; no code change needed now — note for future
+`bam_processor` refactor (thread `current_position` into the early-exit).
+
+**Note from DRS_walkback_bug.md:** the bug doc also flagged that Module 1 (atract ambiguity,
+`bam_processor.py:618-629`) annotates `atract_ambiguity` but never updates `current_position`.
+That is a separate concern: Module 2E (walkback) handles position update correctly; Module 1
+is a pure annotator. The ~1.6% A-on-CPA cases are explained by Module 2E early-exiting, NOT
+by Module 1 missing a position update. The strand-skew (43:1 +/-) is the decisive evidence.
+
+---
+
+## [2026-05-30] FOLLOW-UP (deferred, gated): bundled DRS penalty_scores.tsv lacks empirical insertion rows
+
+**Status:** OPEN — deferred by Kevin to the penalty-table maintainers; NOT a wind-down item.
+
+**What:** the bundled yeast **DRS** `penalty_scores.tsv` has only 5 trivial I-rows (counts 1–3)
+because it was generated *before* the profiler's insertion-counting code existed (insertion path
+`39458d3` landed 2026-05-17 13:43, **7 min after** the table commit `ba602c3` 13:36; DRS table
+never regenerated). So HP-ED scoring on DRS uses the flat `--default-ins 1.25` fallback instead of
+empirical per-HP-length insertion penalties. **Verified 2026-05-29** (Sherlock jobs 26829646 /
+26834583): HP over-calls are real (~1%/HP position, peak hp6 ~1.35%) and the gap is NOT the
+`--isolation-flank` filter (controlled flank10-vs-0 refuted that). Only DRS is stale — the cDNA
+(33 I-rows) and qsrev (25) tables were regenerated 05-20 (`ed331e7`) after the insertion code.
+
+**Why deferred (gated):** regenerating the DRS table SHIFTS production HP-ED winner-selection. Doing
+it right needs (a) the original provenance — WT by4742 full-read **5-aligner** panel (the upf1Δ
+3-aligner 500k subset used for grounding is the wrong genotype + wrong panel for a production WT
+table); (b) re-staging those inputs (the `wt_by4742_rep1_chunked_20260412` dev-run was cleaned);
+(c) a pre/post HP-ED winner diff on real DRS data + advisor review before swapping the bundled
+table. Full context + grounding numbers: `dev/specs/SPEC_overcall_rescue_and_ed_metric_20260529.md`
+(INVESTIGATION FINDINGS) and memory `feedback_bundled_drs_table_lacks_insertions`.
 
 ---
 

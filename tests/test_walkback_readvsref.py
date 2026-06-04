@@ -402,6 +402,74 @@ class TestGuardedNopClassification:
 
 
 # ---------------------------------------------------------------------------
+# Regression: lone-A termination bug (2026-06-04).
+# DRS +strand reads whose 3' end lands on a lone genomic A (no AAAA run in
+# the surrounding window) must be corrected to the upstream non-A boundary.
+# The old early-exit guard (requires AAAA) silently suppressed this, causing
+# ~1.6 % of DRS reads to retain corrected_3prime on a genomic A.
+# ---------------------------------------------------------------------------
+class TestLoneATerminationFix:
+    """Walkback must fire on +strand reads ending on a lone genomic A even
+    when there is no AAAA run in the 25bp early-exit window."""
+
+    def test_lone_a_terminus_corrects_to_non_a_boundary(self):
+        """Build a +strand read whose 3' alignment ends ON a single genomic A
+        (one A, flanked by non-A on both sides).  Pre-fix (early-exit with
+        min_len=4) returned None; post-fix returns a 1bp correction to the
+        upstream non-A base.
+        """
+        # Genome: ...GCTGCTGCTGCTGCTGCTGCTGCA|TCGATCGATCG...
+        #                                     ^pos 24 = A (lone)
+        #                                      ^pos 25 = T (first non-A upstream stop)
+        # Read extends to pos 24 (the lone A) with a poly-A tail covering it.
+        chrom_seq = "GCTGCTGCTGCTGCTGCTGCTGCA" + "TCGATCGATCG"
+        # Build read: aligned 24 bases (0..23), last ref base = A at index 23
+        # Seq: 24 bases matching genome, last is A (poly-A + genomic A overlap)
+        read_seq = "GCTGCTGCTGCTGCTGCTGCTGCA"
+        read = _make_read(
+            chrom="chrI",
+            start=0,
+            seq=read_seq,
+            cigar=((0, len(read_seq)),),  # 24M
+            is_reverse=False,
+        )
+        # Confirm the 3' base in genome is 'A' and no AAAA in ±20bp window
+        assert chrom_seq[read.reference_end - 1].upper() == "A"
+        window = chrom_seq[max(0, read.reference_end - 21):read.reference_end + 5].upper()
+        assert "AAAA" not in window, f"window has AAAA — not a lone-A test: {window}"
+
+        result = walkback_drs_full(read, chrom_seq)
+        assert result is not None, (
+            "walkback returned None for a lone-A terminus — early-exit bypass not working"
+        )
+        assert result["corrected_pos"] < read.reference_end - 1, (
+            "corrected_pos should be upstream of the genomic A"
+        )
+        assert result["correction_bp"] >= 1
+
+    def test_non_a_terminus_no_aaaa_still_returns_none(self):
+        """A +strand read ending on a non-A base with no AAAA in the window
+        must still return None — the early-exit guard must not be lifted."""
+        chrom_seq = "GCTGCTGCTGCTGCTGCTGCTGCG" + "TCGATCGATCG"
+        # Last aligned base = G (pos 23) — not A
+        read_seq = "GCTGCTGCTGCTGCTGCTGCTGCG"
+        read = _make_read(
+            chrom="chrI",
+            start=0,
+            seq=read_seq,
+            cigar=((0, len(read_seq)),),
+            is_reverse=False,
+        )
+        assert chrom_seq[read.reference_end - 1].upper() != "A"
+        window = chrom_seq[max(0, read.reference_end - 21):read.reference_end + 5].upper()
+        assert "AAAA" not in window
+        result = walkback_drs_full(read, chrom_seq)
+        assert result is None, (
+            "walkback fired on a non-A terminus without AAAA context — false positive"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Parity: walkback_drs_full == find_polya_boundary on the bundled validation
 # BAM. find_polya_boundary is the legacy DRS production walkback;
 # walkback_drs_full is the protocol-agnostic guarded core. This test is the
