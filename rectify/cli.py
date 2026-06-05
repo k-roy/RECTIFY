@@ -146,6 +146,12 @@ Citation:
     from .core.commands.netseq_command import add_netseq_parser
     add_netseq_parser(subparsers)
 
+    # =========================================================================
+    # netseq-cpa command (NET-seq CPA-intermediate capture via soft-clipped oligo-A)
+    # =========================================================================
+    from .core.commands.netseq_cpa_command import create_netseq_cpa_parser
+    create_netseq_cpa_parser(subparsers)
+
     # trim-polya command (parser wired in rectify.core.commands.drs_trim_command)
     from .core.commands.drs_trim_command import create_trim_polya_parser
     create_trim_polya_parser(subparsers)
@@ -244,6 +250,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'netseq':
         from .core.commands import netseq_command
         sys.exit(netseq_command.run_netseq(args))
+    elif args.command == 'netseq-cpa':
+        from .core.commands import netseq_cpa_command
+        sys.exit(netseq_cpa_command.run(args))
     elif args.command == 'trim-polya':
         from .core.commands import drs_trim_command
         sys.exit(drs_trim_command.run(args))
