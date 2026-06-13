@@ -20,6 +20,37 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-06-12] FINDING: lone-A walkback bug is ~6× worse on human DRS; recurrence is structural
+
+**Context:** Sumner human chr5 DRS (corrected 2026-05-26, PREDATES `1b1db38`). Measured corrected
+3' ends on a gene-strand A with CORRECT 0-based coords (corrected_3prime is 0-based-inclusive —
+do NOT treat as 1-based; that bug produced a phantom "77% on A / walkback over-walks 1-2 bp" that
+was retracted). Real numbers (CNTL_21.8): **9.94%** of corrected ends on A (vs yeast 1.6%), signature
+**+strand 105:1 / 98% no-move / 79% atract_ambiguity** — the SAME [2026-06-04] lone-A guard bug, just
+heavier on A-rich human 3'UTRs + v5.2.0-basecaller reads. When `polya_walkback` DOES fire it is correct
+(0.01% on A) — the residual is reads the GUARD skips, not the walk failing.
+
+**Why it keeps recurring (the user's lament — "fixed definitively 2-3×"):** production uses
+`walkback_3prime_guarded` (line 319+) with 3 accreted early-exit guards (large-deletion, intron-boundary,
+`early_exit_homopolymer_check`). The clean core `walkback_3prime` (43–186) is never buggy. Each guard
+suppresses a real poly-A-noise artifact but ALSO skips legitimate walkback for short/lone-A cases; fixes
+are per-guard patches (`30d2280` remove Case-2, `77ced6e` bridging guard, `1b1db38` lone-A bypass,
+`a1728eb` cat1 regression) → whack-a-mole. **Structural fix:** always run the core walk; guards may only
+VETO positively-identified artifacts, never skip the walk. **Add a CI regression metric:** assert +strand
+corrected-on-A rate ≈ biological ~2% (the strand-skew is the canary). Repro: Sumner
+`apa_3prime/{onA_check,onA_decomp}.py`.
+
+**VERIFIED 2026-06-12 (eve):** re-corrected all 11 Sumner samples at HEAD (job 29376801) → pooled
+corrected-on-A **7.09% → 0.08% (88×)**, every sample ≤0.27%. So fix `1b1db38` IS sufficient on the
+6×-heavier human case. The Sumner production outputs should come from the re-correction
+(`correct_HEAD_20260612/`), not the May-26 pre-fix run. Recurrence-prevention (structural guard
+refactor + CI on-A-strand-skew metric) still stands — this just confirms the current patch holds here.
+**→ Scoped as a fresh-agent TODO: `dev/specs/TODO_walkback_guard_refactor_20260613.md`** (self-contained:
+problem, line numbers, Option A guard-inversion + Option B post-condition fallback, CI metric, guardrails,
+verification scripts). Pick this up to end the "fixed it for the final time" cycle.
+
+---
+
 ## [2026-06-04] BUG: DRS +strand lone-A terminus not corrected by walkback — FIXED
 
 **Status:** FIXED in `walkback_3prime_guarded` (early-exit bypass when 3' base == stop_base).
