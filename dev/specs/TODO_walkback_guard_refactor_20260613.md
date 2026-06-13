@@ -109,3 +109,38 @@ Add a test that fails if the regression returns:
 - [ ] Cat1–9 byte-identity + full walkback test set still green.
 - [ ] Re-verify on one Sumner sample (on-A ≤ ~0.3%); note result in AGENT_FIXES.
 - [ ] CHANGELOG + AGENT_FIXES updated; this TODO marked done.
+
+---
+
+## ADDENDUM (2026-06-13, Kevin) — target is **100% non-A**; SUPERSEDES the "≤2%" framing in §3/§5
+
+The body above (drafted by an agent) hedged toward "on-A ≤ ~2%" citing PolyASite's cross-tissue
+observation that ~2% of CPA sites sit on a genomic A. **That biological caveat does NOT apply here —
+RECTIFY's DRS policy overrides it.** Authoritative design policy:
+
+- **DRS captures the poly-A tail by definition.** Assume **every** read 3′ end carries an (A)₁₀₊ tail.
+  A DRS read's 3′ end IS the cleavage site + poly-A; DRS reads truncate at the **5′** end, never the 3′.
+  So there is **no** "read legitimately ends mid-transcript on a genomic A" case to protect (delete that
+  category from §1/§3 reasoning).
+- **Poly-A not visible in the read ⇒ basecalling error** (Dorado mis-/under-called the homopolymer). The
+  true 3′ end is still the CPA, so **still walk back.**
+- **RECTIFY policy = left-shift every 3′ end to the first non-A, uniformly.** Therefore the TARGET is
+  **100% of corrected DRS 3′ ends on a non-A.** A nonzero on-A fraction (incl. the current 0.08%) is an
+  **inconsistency/bug to eliminate**, not a feature. Partial correction is sloppy and wrong by policy.
+- Genuine genomic-A CPAs are **deliberately left-shifted too** — because (a) an A-CPA is indistinguishable
+  from a tail-A aligned over it, (b) DRS semantics make the poly-A assumption universal, (c) consistency.
+  **Do NOT add exceptions to "preserve" A-CPAs.**
+
+**Implications (override §3–§5 accordingly):**
+- The `early_exit_homopolymer_check`'s genomic-A-tract proxy is **invalid** under this policy: most CPAs
+  are non-A and the poly-A may be basecall-truncated, so "genome has no A×4 near the 3′ end" is NOT a
+  reason to skip the walk. It must **never** short-circuit a read whose 3′ end is on a stop-base.
+- **Option B (post-condition) is a HARD GUARANTEE, not a safety net:** no DRS 3′ end may remain on a
+  stop-base when any inward non-stop anchor exists in the read's aligned span. If none exists within
+  `max_scan_depth`, **extend the scan** — an anchor must exist inward unless the entire aligned read is a
+  stop-base run (enumerate + log those as the ONLY permitted residual; expected ≈ 0).
+- **CI metric (revised, override §5):** assert corrected-on-stop-base rate **≈ 0%** (target 0 on the
+  fixture; alarm above ~0.1%) and enumerate every residual with its reason. Keep the +/- strand-skew canary.
+- **Acceptance (revised §8):** Sumner re-corrected on-A should be **~0%**, not 0.08% — decompose the
+  current 0.08% (`onA_decomp.py` on `correct_HEAD_20260612/`: guard-misfire vs scan-depth-exceeded vs
+  all-A-read) and drive it to zero, don't accept it.
