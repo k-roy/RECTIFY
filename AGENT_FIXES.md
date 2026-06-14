@@ -65,9 +65,37 @@ every match looks like a mismatch and the scan can't anchor. **Do NOT byte-ident
 via the raw bundled BAM.** The authoritative guardrail is `test_validation_reads.py` (it realigns
 to real SEQ; cat1→10611 is impossible under `=`-pathology, so green proves real-SEQ operation).
 
-**Still open:** (a) Kevin to confirm cat2_minus_2 CPA (128102 vs 128117 — outward vs inward
-boundary of the tail). (b) Sumner human-DRS on-A re-verification (~0%) deferred — needs a Sherlock
-session; ready-to-run via `apa_3prime/onA_check.py` on a HEAD re-correction. See memory
+**Sumner human-DRS verification (DONE 2026-06-14, job 29551915+29552532, `correct_20260614_walkbackfix/`):**
+pooled on-A **7.09% → 0.0749%** (2532/3.38M reads), strand-balanced (+0.073% / −0.076%; the 105:1
++strand skew is GONE = lone-A bug dead). All 11 samples 0.046–0.265%. Matches the prior `1b1db38`
+point-patch (0.08%) but achieved structurally + skew-free.
+
+**Universal non-A post-condition (DONE 2026-06-14, Kevin approved option A; `bam_processor.py`
+before `result['corrected_3prime'] = current_position`):** the 0.0749% walkbackfix residual was NOT
+the lone-A bug — it was rescue/correction modules landing on a stop base by design (74% `homopolymer_rescue`
+= variant-aware `rescue_polya_prefix_in_softclip`, whose internal-priming premise "a genomic-A CPA is
+real" is exactly what the 100%-non-A policy overrides; 11% `indel_correction`; 7% `atract_ambiguity`).
+**Fix = one chokepoint:** after all modules settle the corrected 3' end, if it is on a gene-strand
+stop base, re-anchor via the **guard-respecting** `walkback_drs_full` (which defers to real introns /
+large-dels — NOT a fresh genomic scan, which would re-cross them), or revert to the raw 3' end when
+walkback can't anchor off the stop base. Reverts rescue CIGAR-surgery metadata (`sc_*`/`oc_*`/
+`homopolymer_rescue_bases`) + retags `polya_walkback` so the output BAM CIGAR stays coherent, and
+collapses ambiguity so NET-seq (NEW-065) can't reintroduce a poly-A base. Generalizes the walkback's
+own `_enforce_non_stop_anchor` from "walkback returned None" to "ANY path left the end on a stop base".
+
+**Result (job 29554774+29554900, `correct_20260614_postcond/`):** pooled Sumner on-A
+**0.0749% → 0.0056%** (190/3.38M), strand-balanced (+0.0014% / −0.0096%); the homopolymer_rescue /
+indel / softclip on-A classes are eliminated. The 190-read residual is almost entirely
+`atract_ambiguity` ± `polya_walkback` — the addendum's permitted "no inward non-A anchor in the
+artifact-permitted range" class (≈0). Cat1–9 e2e green (108 passed/8 skipped) — the post-condition is
+a no-op there (no Cat read sits on a stop base), so its efficacy is verified on real human DRS, not in
+the bundled CI; `TestCorrectedEndsAreNonA` remains the regression gate.
+
+**Still open — cat2_minus_2 ACCURACY (not policy):** lands at 128102 (non-A, satisfies policy + CI),
+but that's the OUTWARD side of the poly-A tail; the true CPA is 128117 (toward the SYN8 body). The
+universal post-condition does NOT move it (128102 is already non-A). Fixing it needs a `softclip_rescue`
+read-evidence change (don't extend the 3' end across a poly-A tract) — deferred as a focused follow-up
+per Kevin. PNG for eye-verification: `/tmp/cat2m2/cat2_minus_2_CPA_boundary.png`. See memory
 `feedback_drs_100pct_nonA_policy`.
 
 ---

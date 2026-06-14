@@ -940,6 +940,72 @@ def correct_read_3prime(
                     result['ambiguity_range'] = result['ambiguity_max'] - result['ambiguity_min']
 
     # Update corrected position (after all position-moving corrections)
+    # Universal 100%-non-A enforcement (AGENT_FIXES [2026-06-14]).
+    #
+    # RECTIFY's DRS policy left-shifts EVERY corrected 3' end to the first
+    # non-A: the pre-trim removes the poly-A tail, so a corrected end parked on
+    # a gene-strand stop base (genomic A on +, genomic T on −) is always wrong.
+    # The walkback's own _enforce_non_stop_anchor only covers the "walkback
+    # returned None" path; this generalizes the guarantee to "ANY module
+    # (homopolymer_rescue / indel_correction / atract / raw) left the end on a
+    # stop base". Rather than a fresh genomic scan (which would re-cross real
+    # introns / large dels), re-anchor via the guard-respecting walkback; if
+    # that can't anchor off the stop base, revert the offending extension to
+    # the raw 3' end when IT is non-A. This is the single chokepoint that
+    # drives the corrected-on-stop-base rate to ~0 (see TestCorrectedEndsAreNonA
+    # and the Sumner human-DRS verification).
+    if genome:
+        _cs_enf, _ = get_chrom_sequence(genome, chrom)
+        _stop_enf = 'A' if strand == '+' else 'T'
+        if (
+            _cs_enf
+            and 0 <= current_position < len(_cs_enf)
+            and _cs_enf[current_position].upper() == _stop_enf
+        ):
+            _target = None
+            _wb_enf = walkback_drs_full(
+                read, _cs_enf, artifact_analyses=_artifact_analyses
+            )
+            if (
+                _wb_enf is not None
+                and 0 <= _wb_enf['corrected_pos'] < len(_cs_enf)
+                and _cs_enf[_wb_enf['corrected_pos']].upper() != _stop_enf
+            ):
+                _target = _wb_enf['corrected_pos']
+            elif (
+                0 <= original_position < len(_cs_enf)
+                and _cs_enf[original_position].upper() != _stop_enf
+            ):
+                # walkback could not anchor off the stop base — the offending
+                # module extended past the raw 3' end onto a stop base; revert
+                # to the (non-A) raw 3' end.
+                _target = original_position
+            if _target is not None:
+                current_position = _target
+                # Revert rescue CIGAR-surgery metadata so the output BAM CIGAR
+                # stays coherent with the re-anchored position (the walkback /
+                # raw path uses trimming, not CIGAR surgery).
+                for _k in (
+                    'sc_homopolymer_extension', 'sc_rescued_seq',
+                    'sc_original_softclip_len', 'oc_homopolymer_extension',
+                    'oc_overcall_count', 'oc_terminal_base',
+                    'homopolymer_rescue_bases',
+                ):
+                    result.pop(_k, None)
+                for _t in ('softclip_rescue', 'overcall_rescue',
+                           'homopolymer_rescue'):
+                    while _t in result['correction_applied']:
+                        result['correction_applied'].remove(_t)
+                if 'polya_walkback' not in result['correction_applied']:
+                    result['correction_applied'].append('polya_walkback')
+                # Mark as walkback so the NET-seq poly-A filter (NEW-065) treats
+                # the re-anchored position as the safe fallback and collapse the
+                # ambiguity window so NET-seq cannot move it back onto a stop base.
+                polya_walkback_applied = True
+                result['ambiguity_min'] = current_position
+                result['ambiguity_max'] = current_position
+                result['ambiguity_range'] = 0
+
     result['corrected_3prime'] = current_position
 
     # Update ambiguity window for indel/rescue corrections that moved the position

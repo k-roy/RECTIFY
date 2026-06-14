@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     genomic T (RNA A).
   - Added CI gate `TestCorrectedEndsAreNonA` asserting zero corrected DRS 3' ends on a
     gene-strand stop base (strand-skew enumerated as the regression canary).
+  - **Universal non-A post-condition in `bam_processor`**: after every correction module
+    settles the 3' end, if it lands on a gene-strand stop base it is re-anchored via the
+    guard-respecting walkback (or reverted to the raw 3' end), with rescue CIGAR-surgery
+    metadata reverted for coherence. This catches the rescue modules that previously
+    extended onto a genomic A by design (notably variant-aware `homopolymer_rescue`).
+    Verified on human DRS (Sumner chr5, 11 samples): corrected-on-A 7.09% → 0.0056%.
 
 ## [0.9.0] - 2026-05-16
 
