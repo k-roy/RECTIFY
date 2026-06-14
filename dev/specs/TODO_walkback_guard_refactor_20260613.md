@@ -1,6 +1,9 @@
 # TODO (fresh agent): stop the walkback lone-A regression structurally
 
-**Status:** scoped, not started · **Drafted:** 2026-06-13 · **Owner:** unassigned
+**Status:** DONE 2026-06-13 (Option A removed early_exit; Option B `_enforce_non_stop_anchor`;
+softclip_rescue stop-base block removed; CI `TestCorrectedEndsAreNonA` green; Cat1–9 e2e green on
+H2). See AGENT_FIXES [2026-06-13]. Remaining: Kevin to confirm cat2_minus_2 CPA (128102 vs 128117);
+Sumner on-A re-verify deferred (needs Sherlock session). · **Drafted:** 2026-06-13 · **Owner:** done
 **Read first:** `AGENT_FIXES.md` entries [2026-06-04] + [2026-06-12]; this spec is self-contained otherwise.
 
 ---
@@ -103,12 +106,14 @@ Add a test that fails if the regression returns:
 
 ## 8. Deliverables checklist
 
-- [ ] Option B invariant implemented (guarded never emits a stop-base anchor; fallback to core).
-- [ ] Option A: `early_exit_homopolymer_check` demoted to provably-safe short-circuit (or removed).
-- [ ] CI on-A-rate + strand-skew regression test added and green.
-- [ ] Cat1–9 byte-identity + full walkback test set still green.
-- [ ] Re-verify on one Sumner sample (on-A ≤ ~0.3%); note result in AGENT_FIXES.
-- [ ] CHANGELOG + AGENT_FIXES updated; this TODO marked done.
+- [x] Option B invariant implemented (`_enforce_non_stop_anchor`; guard-respecting fallback to core).
+- [x] Option A: `early_exit_homopolymer_check` **removed** (the provably-safe short-circuit reopened
+      the cat1 regression — always scan instead).
+- [x] CI on-A-rate + strand-skew regression test added and green (`TestCorrectedEndsAreNonA`).
+- [x] Cat1–9 e2e + full walkback test set still green (108 passed / 8 skipped on H2; 61 M1 units).
+      (Bonus: removed the `softclip_rescue` −strand stop-base block that the new gate surfaced.)
+- [ ] Re-verify on one Sumner sample (on-A ~0%); **deferred** — needs a Sherlock session (note in AGENT_FIXES).
+- [x] CHANGELOG + AGENT_FIXES updated; this TODO marked done.
 
 ---
 

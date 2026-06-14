@@ -316,6 +316,65 @@ _g_rb   = _array_mod.array('B', [0] * _GUARD_SCRATCH_N)  # ASCII ord of read bas
 _g_gb   = _array_mod.array('B', [0] * _GUARD_SCRATCH_N)  # ASCII ord of genome base
 
 
+def _enforce_non_stop_anchor(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    three_prime_side: str,
+    stop_base: str,
+    original_3prime: int,
+    result: Optional[dict],
+    guard_clipped: bool,
+) -> Optional[dict]:
+    """Option B post-condition (AGENT_FIXES [2026-06-13]).
+
+    Enforce the §3 invariant: the guarded walkback never leaves the 3' end
+    parked on a stop base (genomic A/T) when an inward non-stop anchor exists
+    *and* no artifact guard deliberately restricted the scan. Fires only when
+    all of:
+
+      * the guarded path returned ``None`` (the caller would keep
+        ``original_3prime`` as the 3' end), and
+      * ``original_3prime`` sits on a stop base, and
+      * no real-N-op / large-deletion guard clipped the scan
+        (``guard_clipped`` is ``False``).
+
+    When a guard fired, its restriction is authoritative — the on-stop-base
+    outcome is then either intentional (the left-side real-N-op fallback,
+    which returns a non-``None`` result and is therefore left untouched here)
+    or a legitimate artifact rejection (large-del bridge / real intron), and
+    must NOT be overridden by a clean-core re-run that would cross the very
+    boundary the guard drew.
+
+    In the narrow remaining case it re-runs the unguarded clean core
+    :func:`walkback_3prime` (which is never ``max_scan_depth``-capped) and
+    adopts its non-stop anchor. This makes the on-stop-base regression class
+    structurally impossible for the suppressor path and additionally rescues
+    the ``max_scan_depth`` truncation edge, without re-introducing any artifact
+    the guards reject. After Option A removed the homopolymer suppressor this
+    is a no-op on the bundled Cat1–9 reads (their anchors lie well within
+    ``max_scan_depth``), so byte-identity is preserved.
+    """
+    if result is not None or guard_clipped:
+        return result
+    if not (0 <= original_3prime < len(chrom_seq)):
+        return result
+    if chrom_seq[original_3prime].upper() != stop_base:
+        return result  # already off the stop base — invariant already holds
+    _, corr, applied = walkback_3prime(
+        read, chrom_seq, three_prime_side, stop_base=stop_base
+    )
+    if applied == APPLIED_WALKBACK and corr != original_3prime:
+        polya_len = abs(original_3prime - corr)
+        if polya_len > 0:
+            return {
+                'corrected_pos': corr,
+                'original_pos': original_3prime,
+                'polya_aligned_bp': polya_len,
+                'correction_bp': polya_len,
+            }
+    return result
+
+
 def walkback_3prime_guarded(
     read: pysam.AlignedSegment,
     chrom_seq: str,
@@ -418,54 +477,31 @@ def walkback_3prime_guarded(
 
     stop_ord = ord(stop_base)
 
-    # Early-exit homopolymer check (right-side / plus-strand-style only).
+    # Early-exit homopolymer suppressor REMOVED (Option A, AGENT_FIXES
+    # [2026-06-13]; see dev/specs/TODO_walkback_guard_refactor_20260613.md).
     #
-    # For side='right' walkback, the poly-A tail aligns over a genomic
-    # A-tract at the 3' end. If the genome immediately around the 3' end
-    # does not contain a ``stop_base × N`` homopolymer, there's no
-    # poly-A-over-A-tract artifact to correct — skip the expensive scan
-    # for performance AND for conservatism (don't correct reads where the
-    # artifact is not biologically plausible).
+    # The legacy ``early_exit_homopolymer_check`` returned ``None`` (no walk)
+    # whenever the genome around the 3' end lacked a ``stop_base × N``
+    # homopolymer. That genomic-A proxy is invalid under RECTIFY's DRS policy:
+    # DRS captures the poly-A tail by definition, so every 3' end is a CPA +
+    # (basecall-visible-or-not) poly-A tail, and the absence of a genomic
+    # A-tract is NOT a reason to skip the walk. The suppressor was the
+    # recurring source of the +strand "lone-A" regression (a read ending ON a
+    # genomic A, or whose A-context the window missed, was silently left parked
+    # on the stop base) and had to be point-patched once per release
+    # (`30d2280`, `77ced6e`, `1b1db38`, `a1728eb`) — guard-soup whack-a-mole.
     #
-    # For side='left' walkback we deliberately do NOT apply this check.
-    # On the genome ``+`` strand at a minus-strand-gene CPA site, the
-    # bases preceding the alignment start can be A's (mRNA strand T's) or
-    # T's depending on local sequence context, so a genomic stop_base
-    # homopolymer is not a reliable proxy for whether a correction is
-    # needed there. (Historical note: this matches the legacy
-    # ``find_polya_boundary`` behavior for minus-strand reads.)
-    if (
-        early_exit_homopolymer_check
-        and three_prime_side == THREE_PRIME_SIDE_RIGHT
-        and early_exit_min_homopolymer_len > 0
-    ):
-        _raw_3p = read.reference_end - 1
-        # Window extended upstream by 20 bp to also catch the
-        # "force-aligned past the pA tail" pattern (e.g. mapPacBio
-        # cat1_plus_1: 3' end at chrXIV:10617, with the genomic A-tract
-        # 7 bp upstream at chrXIV[10600..10610]). The narrower legacy
-        # window (_raw_3p - 1 only) made walkback exit early for these
-        # alignments, leaving the corrected 3' end stuck at the
-        # force-anchored position. The main scan's tail-context guard
-        # (lines below) correctly rejects fake anchors with leading
-        # pA-mismatch runs; widening the entry condition lets the guard
-        # do its job.
-        _w_start = max(0, _raw_3p - 20)
-        _w_end = min(
-            len(chrom_seq), _raw_3p + early_exit_min_homopolymer_len + 1
-        )
-        _hp_window = chrom_seq[_w_start:_w_end].upper()
-        # Bypass guard if the read's 3' end lands ON the stop base
-        # (genomic A for +strand).  That is precisely the single-A
-        # termination case the walkback was designed to correct; requiring
-        # AAAA would silently suppress the correction.
-        _base_at_3p = (
-            chrom_seq[_raw_3p].upper()
-            if 0 <= _raw_3p < len(chrom_seq)
-            else ""
-        )
-        if _base_at_3p != stop_base and stop_base * early_exit_min_homopolymer_len not in _hp_window:
-            return None
+    # A "provably-safe terminal short-circuit" (skip when the 3' end is a
+    # non-stop read==genome match) was tried and rejected: it reopened the
+    # cat1 regression (`a1728eb`), because an aligner that force-aligns past
+    # the poly-A tail can leave a *coincidental* single terminal match after a
+    # run of pA mismatches — that terminal base looks anchored but the true CPA
+    # is inward, and only the main scan's tail-context guard catches it.
+    #
+    # So: NEVER short-circuit. Always run the full scan; Guards 1-3 restrict
+    # (but never suppress) where the walk may anchor. The ``early_exit_*``
+    # parameters are retained as accepted no-ops for caller back-compat.
+    _ = (early_exit_homopolymer_check, early_exit_min_homopolymer_len)
 
     # -------------------------------------------------------------------
     # Build the scratch arrays for the local-to-3'-end region.
@@ -636,11 +672,23 @@ def walkback_3prime_guarded(
                 true_cpa = refp
                 break
 
+        # Did a real-N-op or large-deletion guard restrict the scan range?
+        # When one did, a None / on-stop-base outcome is the guard's
+        # authoritative decision and the Option B post-condition must NOT
+        # override it (it would cross the boundary the guard drew).
+        _guard_clipped = (scan_lo != 0) or (scan_hi != n)
+
         if true_cpa is None:
-            return None
+            return _enforce_non_stop_anchor(
+                read, chrom_seq, three_prime_side, stop_base,
+                original_3prime, None, _guard_clipped,
+            )
         polya_len = original_3prime - true_cpa
         if polya_len <= 0:
-            return None
+            return _enforce_non_stop_anchor(
+                read, chrom_seq, three_prime_side, stop_base,
+                original_3prime, None, _guard_clipped,
+            )
         return {
             'corrected_pos': true_cpa,
             'original_pos': original_3prime,
@@ -768,11 +816,24 @@ def walkback_3prime_guarded(
         if last_pre_n_gb == stop_base and last_pre_n_refp is not None:
             true_cpa = last_pre_n_refp
 
+    # Did a real-N-op (scan_hi clip) or large-deletion (scan_lo raise) guard
+    # restrict the scan range? If so the Option B post-condition must defer to
+    # the guard (see :func:`_enforce_non_stop_anchor`). The deliberate
+    # real-N-op fallback above returns a non-None result, so it is never
+    # touched by the post-condition regardless.
+    _guard_clipped = (scan_hi != n) or (scan_lo != 0)
+
     if true_cpa is None:
-        return None
+        return _enforce_non_stop_anchor(
+            read, chrom_seq, three_prime_side, stop_base,
+            original_3prime, None, _guard_clipped,
+        )
     polya_len = true_cpa - original_3prime
     if polya_len <= 0:
-        return None
+        return _enforce_non_stop_anchor(
+            read, chrom_seq, three_prime_side, stop_base,
+            original_3prime, None, _guard_clipped,
+        )
     return {
         'corrected_pos': true_cpa,
         'original_pos': original_3prime,

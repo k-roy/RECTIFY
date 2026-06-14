@@ -20,6 +20,58 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-06-13] FIX: walkback guard-refactor (structural) + softclip_rescue stop-base bug + CI 100%-non-A gate
+
+**Status:** DONE. Implements `dev/specs/TODO_walkback_guard_refactor_20260613.md` (+ ADDENDUM:
+target is **100% non-A**, not ≤2%). Cat1–9 e2e green on H2 (108 passed / 8 skipped); 61 M1
+walkback/indel unit tests green.
+
+**What changed (3 files):**
+
+1. **`rectify/core/correct/walkback.py` — Option A: removed `early_exit_homopolymer_check`.**
+   The genomic-A-tract proxy is invalid under the DRS 100%-non-A policy (pre-trim removes the
+   tail; absence of a genomic A×4 is NOT a reason to skip the walk) and was the recurring lone-A
+   suppressor (`30d2280`/`77ced6e`/`1b1db38`/`a1728eb` whack-a-mole). A "provably-safe terminal
+   short-circuit" (skip when 3' end is a non-stop read==genome match) was **tried and rejected** —
+   it reopened the cat1 regression, because a force-aligned-past-pA read can have a *coincidental*
+   single terminal match after a pA-mismatch run that only the main scan's tail-context guard
+   catches. So: **never short-circuit; always scan.** Guards 1–3 only *restrict* the anchor.
+
+2. **`rectify/core/correct/walkback.py` — Option B: `_enforce_non_stop_anchor` post-condition.**
+   When the guarded walk returns None and would leave the end on a stop base **and no real-N-op /
+   large-del guard clipped the scan**, re-run the unguarded clean core (never `max_scan_depth`-
+   capped) and adopt its non-stop anchor. Guard-respecting → defers to genuine artifact rejections
+   and the deliberate left-side real-N-op fallback (the addendum's permitted all-A-span residual);
+   also rescues the `max_scan_depth` truncation edge. No-op on Cat1–9 (anchors well within depth).
+
+3. **`rectify/core/correct/indel_corrector.py` — removed the cat2_minus_2 "TTGC motif" 2-bp
+   deletion-extension block** in `rescue_softclip_at_homopolymer` (−strand path). It hard-coded
+   the 2026-05-18 directive and re-extended *past* the strip-trailing-T's guard onto genome
+   chrI:128096 (a T = RNA A) — a 100%-non-A violation. Kevin (2026-06-13): the directive came from
+   a **+strand** case and was mis-applied to this −strand read after the validation bundle was
+   regenerated → **superseded, removed.** cat2_minus_2 now lands at 128102 (first non-A;
+   genome[128102]=A → RNA T). NOTE: 128102 is the outward-side non-A boundary of the genomic
+   T-run; inward/gene-body-side non-A is 128117 — final CPA boundary pending Kevin confirmation.
+
+4. **`tests/test_validation_reads.py` — CI metric `TestCorrectedEndsAreNonA`** (the §5 gate):
+   asserts **0** corrected DRS 3' ends on a gene-strand stop base, enumerating any residual with
+   strand (the +strand skew is the canary). Updated the pinned cat2_minus_2 exact position
+   128096→128102.
+
+**The `=`-SEQ trap (don't repeat my detour):** `rectify/data/validation/validation_reads.bam`
+stores SEQ with SAM `=` match-encoding, so `pysam.query_sequence` returns literal `=` for match
+positions. Calling `walkback_drs_full` directly on those reads compares `ord('=')` to the genome →
+every match looks like a mismatch and the scan can't anchor. **Do NOT byte-identity-probe walkback
+via the raw bundled BAM.** The authoritative guardrail is `test_validation_reads.py` (it realigns
+to real SEQ; cat1→10611 is impossible under `=`-pathology, so green proves real-SEQ operation).
+
+**Still open:** (a) Kevin to confirm cat2_minus_2 CPA (128102 vs 128117 — outward vs inward
+boundary of the tail). (b) Sumner human-DRS on-A re-verification (~0%) deferred — needs a Sherlock
+session; ready-to-run via `apa_3prime/onA_check.py` on a HEAD re-correction. See memory
+`feedback_drs_100pct_nonA_policy`.
+
+---
+
 ## [2026-06-12] FINDING: lone-A walkback bug is ~6× worse on human DRS; recurrence is structural
 
 **Context:** Sumner human chr5 DRS (corrected 2026-05-26, PREDATES `1b1db38`). Measured corrected

@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **DRS 3' ends now land on a non-A 100% of the time** (walkback guard-refactor +
+  soft-clip-rescue stop-base fix). RECTIFY's DRS policy left-shifts every corrected
+  3' end to the first non-A (the pre-trim removes the poly-A tail, so a corrected end
+  parked on a genomic A/T — an RNA A — is always a bug). Three changes:
+  - **Removed the `early_exit_homopolymer_check` suppressor** from the poly-A walkback
+    (`walkback.py`). Its "no genomic A-tract near the 3' end ⇒ skip the walk" heuristic
+    was invalid (the poly-A can be basecall-truncated) and was the recurring source of
+    the +strand lone-A regression. The walkback now always scans; the artifact guards
+    only *restrict* where the anchor may land, never suppress the walk.
+  - **Added an `_enforce_non_stop_anchor` post-condition** that re-runs the unguarded
+    core (uncapped) if the guarded walk would leave the end on a stop base and no
+    artifact guard clipped the scan — making the on-stop-base regression class
+    structurally impossible while preserving every artifact rejection.
+  - **Removed a soft-clip-rescue special case** (`indel_corrector.rescue_softclip_at_
+    homopolymer`, −strand) that could extend a 3' end through the poly-A tail onto a
+    genomic T (RNA A).
+  - Added CI gate `TestCorrectedEndsAreNonA` asserting zero corrected DRS 3' ends on a
+    gene-strand stop base (strand-skew enumerated as the regression canary).
+
 ## [0.9.0] - 2026-05-16
 
 **First public release of RECTIFY.** Prior 2.x and 3.x versions were internal

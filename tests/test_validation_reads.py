@@ -496,7 +496,7 @@ class TestCategory2SoftClipRescue:
         ('cat2_plus_1',  23754),    # chrI mapPacBio 9D 34= alignment ends at 23755 → corr=23754
         ('cat2_plus_2',  8605),     # chrVI consensus shifted -1 bp from legacy 8606 after Phase A/B
         ('cat2_minus_1', 186),      # chrV mapPacBio winner; pre-extends
-        ('cat2_minus_2', 128096),   # chrI softclip_rescue −17 bp from raw 128113 (2-bp del extension absorbs A@128100+T@128101 to reach TTGC motif at 128096-128099); user directive 2026-05-18
+        ('cat2_minus_2', 128102),   # chrI softclip_rescue lands on the first non-A (genome[128102]=A → RNA T). The legacy 128096 (the TTGC-motif 2-bp-deletion extension, 2026-05-18 directive) put the 3' end on a genomic T = RNA A, violating the 100%-non-A DRS policy; that +strand-derived motif block was removed 2026-06-13 (AGENT_FIXES). NOTE: 128102 is the outward-side non-A boundary of the genomic T-run; the inward/gene-body-side non-A is 128117 — final CPA boundary pending Kevin's confirmation.
     ])
     def test_3prime_exact_position(self, corrected, raw_reads, label, expected_3prime):
         read = raw_reads[label]
@@ -1376,3 +1376,72 @@ class TestPolyASoftClippedBam:
             # from the original pA_tail_trimmed BAM (pre-existing).  We just
             # assert the read is still present.
             assert sc5 >= 0 and sc3 >= 0  # always true; confirms read is present
+
+
+# ---------------------------------------------------------------------------
+# CI regression metric — the +strand lone-A walkback bug must stay dead.
+# See AGENT_FIXES [2026-06-13] and
+# dev/specs/TODO_walkback_guard_refactor_20260613.md (§5, ADDENDUM).
+# ---------------------------------------------------------------------------
+class TestCorrectedEndsAreNonA:
+    """100%-non-A policy gate for DRS 3' ends.
+
+    RECTIFY's DRS policy left-shifts every corrected 3' end to the first
+    non-A (DRS captures the poly-A tail by definition, so the genome base at
+    a corrected gene-strand 3' end must never be a stop base: genomic ``A``
+    for ``+``-strand genes, genomic ``T`` for ``-``-strand genes — both are an
+    ``A`` on the RNA strand).
+
+    A corrected end parked on a stop base is the recurrence signature of the
+    suppressed-walk regression that has been "definitively fixed" several
+    times (early_exit_homopolymer_check, the lone-A bypass, the cat1 patch).
+    The +/- strand skew (historically 105:1 +) is its canary. Target on this
+    fixture: **zero**. Every residual is enumerated with strand + position so
+    a future regression names exactly which reads broke. The large-N
+    complement is the Sumner human-DRS on-A check (~0%); see AGENT_FIXES.
+    """
+
+    @pytest.fixture(scope='class')
+    def genome_dict(self, genome_path):
+        from rectify.utils.genome import load_genome
+        return load_genome(str(genome_path))
+
+    def test_no_corrected_3prime_on_stop_base(self, corrected, raw_reads, genome_dict):
+        from rectify.config import CHROM_TO_GENOME
+        residuals = []
+        n_plus = n_minus = 0
+        onA_plus = onA_minus = 0
+        for label, read in raw_reads.items():
+            row = corrected.get(read.query_name)
+            if row is None:
+                continue
+            chrom = read.reference_name
+            seq = genome_dict.get(chrom) or genome_dict.get(
+                CHROM_TO_GENOME.get(chrom, ''), '')
+            if not seq:
+                continue
+            pos = int(row['corrected_3prime'])
+            if not (0 <= pos < len(seq)):
+                continue
+            is_minus = read.is_reverse  # DRS: BAM strand == gene strand
+            stop_base = 'T' if is_minus else 'A'
+            if is_minus:
+                n_minus += 1
+            else:
+                n_plus += 1
+            gb = seq[pos].upper()
+            if gb == stop_base:
+                if is_minus:
+                    onA_minus += 1
+                else:
+                    onA_plus += 1
+                residuals.append(
+                    f"{label} ({'-' if is_minus else '+'}strand) "
+                    f"corrected_3prime={pos} genome[{pos}]={gb} == stop_base"
+                )
+        # Hard gate: target 0 on the fixture; alarm on any residual.
+        assert not residuals, (
+            f"{len(residuals)} corrected DRS 3' end(s) parked on a stop base "
+            f"(violates 100%-non-A policy). on-A skew +:{onA_plus} -:{onA_minus} "
+            f"of {n_plus}+/{n_minus}- reads:\n  " + "\n  ".join(residuals)
+        )
