@@ -374,8 +374,9 @@ def create_run_parser(subparsers):
     )
 
     # Organism / bundled reference
-    from rectify.data import add_organism_args
+    from rectify.data import add_organism_args, add_junction_anchor_args
     add_organism_args(run_parser)
+    add_junction_anchor_args(run_parser)
 
     # Optional correction arguments
 

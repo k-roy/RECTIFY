@@ -168,10 +168,23 @@ mapPacBio was dropped from the human panel because it **games the HP-ED consensu
 (scored N-ops as free → it relabeled noisy soft-clips as spurious introns and
 sole-won 39% of human chr5 reads with only 77%-annotated junctions vs 97–98% for
 the aligners it beat). The **junction-local perfect-match anchor gate** (consensus
-`_add_chimera_flag`, `min_junction_anchor_bp`, default off / human=10) fixes this:
-on A549 chr5 it cut spurious consensus junctions −25% while *preserving* annotated
-ones (+0.3%). **Under the gate, mapPacBio contributes legitimately and is
-re-admissible to the human panel.** Detail: memory `project-hped-anchor-gate`;
+`_add_chimera_flag`, `min_junction_anchor_bp`) fixes this: on A549 chr5 it cut
+spurious consensus junctions −25% while *preserving* annotated ones (+0.3%).
+**Under the gate, mapPacBio contributes legitimately and is re-admitted to the
+human panel.**
+
+**Productionized (2026-06-14).** The gate threshold is now a first-class CLI
+arg, `--min-junction-anchor-bp K`, on `rectify run-all` and `rectify split`,
+resolved per-organism when unset (sentinel `None`): **human = 10, yeast = 0,
+custom/unset = 0** (`rectify.data.resolve_min_junction_anchor_bp`). So a human
+run invoked the canonical way — `--organism human --genome GRCh38.fa` (which
+also auto-wires the bundled human penalty tables) — gets the gate ON by default;
+yeast (`--Scer`) stays byte-identical. An explicit `--min-junction-anchor-bp`
+always wins. mapPacBio remains in the default split panel; `rectify split`
+emits a **co-activation warning** if mapPacBio is in the panel while the gate
+resolves to 0 (e.g. a human run that passed `--genome` only without
+`--organism human`) — pass `--organism human`, `--min-junction-anchor-bp 10`,
+or `--skip-map-pacbio`. Detail: memory `project-hped-anchor-gate`;
 [mapPacBio.md](aligners/mapPacBio.md).
 
 ## Adding Aligners to the Production Panel
@@ -196,8 +209,10 @@ re-admissible to the human panel.** Detail: memory `project-hped-anchor-gate`;
 
 **Last Updated**: 2026-06-14  
 **Status**: Yeast panel = 5 aligners (minimap2, mapPacBio, gapmm2, uLTRA, deSALT).
-Human/large-genome = minimap2 + uLTRA + deSALT (gapmm2 dropped: timing; mapPacBio
-**re-admissible under the anchor gate** — see "mapPacBio re-admission" above).
+Human/large-genome = minimap2 + uLTRA + deSALT + **mapPacBio (re-admitted under
+the anchor gate, productionized 2026-06-14** — `--min-junction-anchor-bp`,
+human default 10; gapmm2 still dropped on timing). See "mapPacBio re-admission"
+above.
 2026-06-14 orthogonality survey: **GMAP / Graphmap2 / Magic-BLAST** under
 evaluation as orthogonal additions toward a diverse 5+-family human panel
 (smoke-test job 29546795); winnowmap2 + minisplice integrable but algorithmically

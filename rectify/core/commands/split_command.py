@@ -211,8 +211,9 @@ Examples:
         help='Annotation GFF/GTF path (written into generated scripts)'
     )
 
-    from rectify.data import add_organism_args
+    from rectify.data import add_organism_args, add_junction_anchor_args
     add_organism_args(script_group)
+    add_junction_anchor_args(script_group)
     script_group.add_argument(
         '--other-aligners', nargs='+',
         default=OTHER_ALIGNERS_DEFAULT,
@@ -972,6 +973,7 @@ def _chunk_merge_body(
     output_dir: Path, genome: str, annot: str,
     python_path: str, rectify_src: str,
     junction_overhang_table: str = '',
+    min_junction_anchor_bp: int = 0,
 ) -> str:
     """Per-chunk merge: merge corrected TSVs → consensus BAM → polya BAM."""
     limits = _thread_limits_block('$CHUNK_MERGE_CPUS')
@@ -1089,6 +1091,7 @@ merge_corrected_tsvs(
     genome=genome,
     overhang_table=_overhang_table,
     lazy_scoring_workers=THREADS,
+    min_junction_anchor_bp={min_junction_anchor_bp},
 )
 merged = pd.read_csv(CHUNK_OUT/'corrected_reads.tsv', sep='\\t', low_memory=False)
 log.info('Merged: %d reads', merged['read_id'].nunique())
@@ -1578,6 +1581,22 @@ def _generate_scripts(
     skip_mpb       = getattr(args, 'skip_map_pacbio', False)
     all_aligners   = (['mapPacBio'] if not skip_mpb else []) + other_aligners
 
+    # Junction-anchor consensus gate threshold baked into the chunk-merge script.
+    from rectify.data import resolve_min_junction_anchor_bp
+    min_junction_anchor_bp = resolve_min_junction_anchor_bp(args)
+    # Co-activation guard: mapPacBio is only safe in the panel while the gate is
+    # active. A gate-off run with mapPacBio re-opens the spurious-intron gaming
+    # vector the gate exists to close (see memory project-hped-anchor-gate).
+    if (not skip_mpb) and min_junction_anchor_bp == 0:
+        print(
+            "WARNING: mapPacBio is in the aligner panel but the junction-anchor "
+            "gate is OFF (min_junction_anchor_bp=0). On human/spliced data this "
+            "re-opens the spurious-intron gaming vector mapPacBio was gated for. "
+            "Pass --organism human (gate=10), --min-junction-anchor-bp 10, or "
+            "--skip-map-pacbio.",
+            file=sys.stderr,
+        )
+
     n_other_tasks = n_chunks * len(other_aligners)
     log_pat      = str(log_dir / '%A_%a')   # SLURM pattern; ignored by UGE/PBS headers
     log_pat_job  = str(log_dir / '%j')      # non-array SLURM pattern
@@ -1678,6 +1697,7 @@ def _generate_scripts(
         n_chunks, all_aligners, sample_prefix, output_dir, genome_str, annot_str,
         python_path, rectify_src,
         junction_overhang_table=junction_overhang_table,
+        min_junction_anchor_bp=min_junction_anchor_bp,
     )
     chunk_merge_body_str = chunk_merge_body_str.replace(
         _SCHEDULER_HEADER_PLACEHOLDER_CHUNK_MERGE, chunk_merge_headers

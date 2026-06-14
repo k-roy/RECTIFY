@@ -233,6 +233,7 @@ def _process_one_sample(
                         _raw_bams_s1 = {
                             a: str(p) for a, p in _sample_per_aligner_bams.items()
                         } if _sample_per_aligner_bams else {}
+                        from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
                         with _stage_raw_bams(_raw_bams_s1) as _staged_s1:
                             merge_corrected_tsvs(
                                 per_aligner_tsvs=per_aligner_tsvs,
@@ -245,6 +246,7 @@ def _process_one_sample(
                                 genome=_merge_genome,
                                 overhang_table=_overhang_table,
                                 lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
+                                min_junction_anchor_bp=_resolve_anchor(args),
                             )
                             _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
                             identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
@@ -620,6 +622,7 @@ def _run_single_sample(args) -> int:
                 _raw_bams_s2 = {
                     a: str(p) for a, p in per_aligner_bams.items()
                 } if per_aligner_bams else {}
+                from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
                 with _stage_raw_bams(_raw_bams_s2) as _staged_s2:
                     corrected_tsv = merge_corrected_tsvs(
                         per_aligner_tsvs=per_aligner_tsvs,
@@ -632,6 +635,7 @@ def _run_single_sample(args) -> int:
                         genome=_merge_genome,
                         overhang_table=_overhang_table,
                         lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
+                        min_junction_anchor_bp=_resolve_anchor(args),
                     )
                     # Identify Cat5 candidates (reads where aligners contribute unique introns)
                     _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'

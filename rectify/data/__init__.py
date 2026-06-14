@@ -1028,6 +1028,76 @@ def add_organism_args(parser_or_group) -> None:
     )
 
 
+# ── Junction-anchor consensus gate defaults ────────────────────────────────
+# The junction-local perfect-match anchor gate (see
+# ``rectify.core.consensus.corrected_consensus``) requires a spliced (N-op)
+# alignment to carry a perfect-match anchor of >= this many bp abutting the
+# junction before it may win winner-selection — closing the mapPacBio
+# "relabel-noisy-soft-clip-as-spurious-intron" gaming vector. 0 disables the
+# gate (byte-identical legacy behavior).
+#
+#   yeast (saccharomyces_cerevisiae) -> 0 : keeps the validated pipeline AND the
+#       valued yeast mapPacBio panel byte-identical.
+#   human (homo_sapiens)             -> 10: validated A/B (A549 chr5 DRS,
+#       2026-06-13): -25% spurious junctions, +0.3% annotated; real introns
+#       carry a ~13 bp anchor vs ~2 bp for spurious mapPacBio splits.
+#   unset / unknown organism         -> 0 : conservative — undeclared runs stay
+#       byte-identical; opt in with --organism or --min-junction-anchor-bp.
+JUNCTION_ANCHOR_DEFAULTS = {
+    'homo_sapiens': 10,
+    'saccharomyces_cerevisiae': 0,
+}
+DEFAULT_MIN_JUNCTION_ANCHOR_BP = 0
+
+
+def default_min_junction_anchor_bp(organism: Optional[str]) -> int:
+    """Per-organism default junction-anchor gate threshold (bp).
+
+    human -> 10, yeast -> 0, unset/unknown -> 0 (gate off, byte-identical).
+    """
+    if organism is None:
+        return DEFAULT_MIN_JUNCTION_ANCHOR_BP
+    return JUNCTION_ANCHOR_DEFAULTS.get(
+        normalize_organism(organism), DEFAULT_MIN_JUNCTION_ANCHOR_BP
+    )
+
+
+def resolve_min_junction_anchor_bp(args) -> int:
+    """Resolve the effective junction-anchor gate threshold from CLI args.
+
+    An explicit ``--min-junction-anchor-bp`` (``args.min_junction_anchor_bp``
+    not None) always wins; otherwise the per-organism default applies. Safe on
+    any ``Namespace`` — returns the conservative default (0) when neither
+    attribute is present.
+    """
+    explicit = getattr(args, 'min_junction_anchor_bp', None)
+    if explicit is not None:
+        return int(explicit)
+    return default_min_junction_anchor_bp(getattr(args, 'organism', None))
+
+
+def add_junction_anchor_args(parser_or_group) -> None:
+    """Attach ``--min-junction-anchor-bp`` to a parser or argument group.
+
+    Default ``None`` is a sentinel meaning "use the per-organism default"
+    (human=10, yeast=0, unset=0); resolve with
+    :func:`resolve_min_junction_anchor_bp`.
+    """
+    parser_or_group.add_argument(
+        '--min-junction-anchor-bp',
+        dest='min_junction_anchor_bp',
+        type=int,
+        default=None,
+        metavar='K',
+        help='Minimum junction-local perfect-match anchor (bp) a spliced '
+             '(N-op) alignment must carry to win consensus winner-selection; '
+             'guards against aligners (notably mapPacBio) relabeling noisy '
+             'soft-clips as spurious introns. 0 disables the gate. Default: '
+             'per-organism (human=10, yeast=0, custom=0). Recurrent '
+             'cross-read-supported junctions are spared regardless.',
+    )
+
+
 def resolve_reference_paths(
     args,
     *,
