@@ -160,11 +160,70 @@ def _cigar_aligned_bases(read) -> int:
     return sum(length for op, length in read.cigartuples if op in (0, 7, 8))
 
 
+_NO_JUNCTION_ANCHOR = 10 ** 9  # sentinel for reads with no N-ops (never gated)
+
+
+def _cigar_min_junction_anchor(read, genome: Optional[Dict[str, str]]) -> int:
+    """Min over all N-ops of the junction-local perfect-match anchor (both flanks).
+
+    For each intron (N-op), walk outward from the junction on each flank and count
+    consecutive read bases that exactly match the genome, stopping at the first
+    mismatch or non-aligned op.  Returns the minimum of (left, right) anchors across
+    every N-op in the read — the gate is only as strong as the weakest flank of the
+    weakest junction.  Reads with no N-ops (or no genome) return a large sentinel so
+    they are never flagged by the anchor gate.
+
+    A read base of ``=`` is the SAM match-encoding (BBMap/mapPacBio write ``=``/``X``
+    CIGAR ops with an ``=``-encoded SEQ); it counts as a match.  For aligners that
+    emit literal bases under ``M`` ops, the base is compared to the genome directly.
+    Genome is required to resolve literal-base matches; without it the read is not
+    gated.
+    """
+    ct = read.cigartuples
+    if not ct:
+        return _NO_JUNCTION_ANCHOR
+    chrom = read.reference_name
+    gseq: Optional[str] = (genome or {}).get(chrom) if genome else None
+    query: Optional[str] = read.query_sequence
+    if gseq is None or query is None:
+        return _NO_JUNCTION_ANCHOR
+
+    def _match(qb: str, gb: str) -> bool:
+        return qb == '=' or qb.upper() == gb.upper()
+
+    ref_pos = read.reference_start
+    q_pos = 0
+    best = _NO_JUNCTION_ANCHOR
+    G = len(gseq)
+    L = len(query)
+    for op, length in ct:
+        if op == 3:  # N — measure anchors at (q_pos, ref_pos) | (q_pos, ref_pos+length)
+            # left flank: walk back from the base just 5' of the intron
+            la = 0
+            q = q_pos - 1
+            r = ref_pos - 1
+            while q >= 0 and r >= 0 and _match(query[q], gseq[r]):
+                la += 1; q -= 1; r -= 1
+            # right flank: walk forward from the base just 3' of the intron
+            ra = 0
+            q = q_pos
+            r = ref_pos + length
+            while q < L and r < G and _match(query[q], gseq[r]):
+                ra += 1; q += 1; r += 1
+            best = min(best, la, ra)
+        # advance positions (ref-consuming: M,D,N,=,X ; query-consuming: M,I,S,=,X)
+        if op in (0, 2, 3, 7, 8):
+            ref_pos += length
+        if op in (0, 1, 4, 7, 8):
+            q_pos += length
+    return best
+
+
 def _read_hp_edit_distances(
     bam_path: str,
     genome: Optional[Dict[str, str]] = None,
     penalty_table=None,
-) -> Dict[str, Tuple[float, int]]:
+) -> Dict[str, Tuple[float, int, int]]:
     """Read a corrected BAM and return {bare_read_id: (hp_edit_distance, aligned_bases)}.
 
     ``hp_edit_distance`` is the HP-aware edit distance from ``_cigar_hp_edit_distance``.
@@ -173,7 +232,7 @@ def _read_hp_edit_distances(
     """
     if _pysam is None:
         raise RuntimeError("pysam is required to compute HP edit distances from BAM")
-    results: Dict[str, Tuple[float, int]] = {}
+    results: Dict[str, Tuple[float, int, int]] = {}
     try:
         with _pysam.AlignmentFile(bam_path, "rb") as bam:
             for read in bam:
@@ -183,6 +242,7 @@ def _read_hp_edit_distances(
                 results[rid] = (
                     _cigar_hp_edit_distance(read, genome, penalty_table),
                     _cigar_aligned_bases(read),
+                    _cigar_min_junction_anchor(read, genome),
                 )
     except Exception as exc:
         logger.warning("Failed to compute HP edit distances from %s: %s", bam_path, exc)
@@ -243,7 +303,7 @@ def _read_hp_edit_distances_from_raw_bam(
     *,
     strict: bool = True,
     read_id_filter: Optional[Set[str]] = None,
-) -> Dict[str, Tuple[float, int]]:
+) -> Dict[str, Tuple[float, int, int]]:
     """Compute HP edit distances after applying TSV corrections in memory.
 
     This is the lazy equivalent of reading a materialized per-aligner corrected
@@ -267,7 +327,7 @@ def _read_hp_edit_distances_from_raw_bam(
         else None
     )
     seen_corrected_ids: Set[str] = set()
-    results: Dict[str, Tuple[float, int]] = {}
+    results: Dict[str, Tuple[float, int, int]] = {}
 
     try:
         with _pysam.AlignmentFile(bam_path, "rb") as bam:
@@ -285,6 +345,7 @@ def _read_hp_edit_distances_from_raw_bam(
                 results[read_id] = (
                     _cigar_hp_edit_distance(read, genome, penalty_table),
                     _cigar_aligned_bases(read),
+                    _cigar_min_junction_anchor(read, genome),
                 )
     except Exception:
         if strict:
@@ -314,7 +375,7 @@ def _read_hp_edit_distances_from_raw_bam(
     return results
 
 
-def _score_hp_distances_for_aligner(args: Tuple[str, str, Optional[str], Optional[Dict[str, str]], Any, bool, Optional[Set[str]]]) -> Tuple[str, Dict[str, Tuple[float, int]]]:
+def _score_hp_distances_for_aligner(args: Tuple[str, str, Optional[str], Optional[Dict[str, str]], Any, bool, Optional[Set[str]]]) -> Tuple[str, Dict[str, Tuple[float, int, int]]]:
     """Process-pool worker for one aligner's HP edit-distance scan."""
     aligner_name, bam_path, tsv_path, genome, penalty_table, strict, read_id_filter = args
     if tsv_path is None:
@@ -332,7 +393,7 @@ def _score_hp_distances_for_aligner(args: Tuple[str, str, Optional[str], Optiona
     )
 
 
-def _score_corrected_bam_for_aligner(args: Tuple[str, str, Optional[Dict[str, str]], Any]) -> Tuple[str, Dict[str, Tuple[float, int]]]:
+def _score_corrected_bam_for_aligner(args: Tuple[str, str, Optional[Dict[str, str]], Any]) -> Tuple[str, Dict[str, Tuple[float, int, int]]]:
     """Process-pool worker for one corrected BAM HP edit-distance scan."""
     aligner_name, bam_path, genome, penalty_table = args
     return aligner_name, _read_hp_edit_distances(str(bam_path), genome, penalty_table)
@@ -576,6 +637,18 @@ _MAX_OVERHANG_ERROR    = 0.20   # max allowed hp_ed / (left_ov + right_ov)
 # early with flag=0 for junction-free reads).
 _MIN_ALIGNED_BASES     = 50
 
+# Junction-local perfect-match anchor gate (off by default — 0 disables it).
+# An N-op alignment is flagged suspicious when the exact-match run of read bases
+# immediately abutting the intron (on its weaker flank) is shorter than this,
+# UNLESS every junction in the read is rescued by the cross-read support
+# relaxation (recurrent real junctions are spared).  Empirically (A549 chr5 DRS,
+# 2026-06-13) real introns have a ~13 bp median min-flank perfect-match anchor vs
+# ~2 bp for spurious mapPacBio splits; K≈10 rejects ~94% of spurious while the
+# support relaxation rescues real-but-noisy-anchor junctions.  Default 0 keeps the
+# pipeline (and the valued yeast mapPacBio panel) byte-identical; human runs set 10.
+# See memory project-hped-anchor-gate.
+_MIN_JUNCTION_ANCHOR   = 0
+
 
 def _compute_junction_stats(all_df: "pd.DataFrame") -> Dict[Tuple[int, int], Tuple[int, int]]:
     """Build a per-junction support dictionary from the concatenated all_df.
@@ -625,6 +698,7 @@ def _add_chimera_flag(
     long_intron_overhang: int = _LONG_INTRON_OVERHANG,
     max_overhang_error: float = _MAX_OVERHANG_ERROR,
     min_aligned_bases: int = _MIN_ALIGNED_BASES,
+    min_junction_anchor_bp: int = _MIN_JUNCTION_ANCHOR,
 ) -> "pd.Series":
     """Return a 0/1 Series indicating whether each row in rep_df has a suspicious intron.
 
@@ -693,6 +767,13 @@ def _add_chimera_flag(
     # aligned_bases is optional — only present when per-aligner corrected BAMs were supplied
     has_aligned_col = 'aligned_bases' in rep_df.columns
     aln_bases_col   = rep_df['aligned_bases'].fillna(0).astype(int) if has_aligned_col else None
+    # min_junction_anchor is optional — only present when HP-ED scoring ran; the gate
+    # is off unless min_junction_anchor_bp > 0 (default keeps behavior byte-identical)
+    anchor_gate_on  = min_junction_anchor_bp > 0 and 'min_junction_anchor' in rep_df.columns
+    anchor_col      = (
+        rep_df['min_junction_anchor'].fillna(_NO_JUNCTION_ANCHOR).astype('int64')
+        if anchor_gate_on else None
+    )
 
     flags: List[int] = []
     for i, idx in enumerate(rep_df.index):
@@ -762,6 +843,26 @@ def _add_chimera_flag(
             # Failed both strict and relaxed checks
             row_is_chimeric = True
             break
+
+        # ── Junction-local perfect-match anchor gate ─────────────────────
+        # An N-op may only win the consensus by splitting a noisy read if the
+        # exact-match run abutting the intron is long enough.  Spurious
+        # mapPacBio splits leave a ~2 bp anchor; real introns ~13 bp.  Real
+        # but noisy-anchor junctions are recurrent → spared when EVERY junction
+        # in the read is rescued by the cross-read support relaxation.  This is
+        # the per-aligner discriminator read-support alone cannot provide
+        # (the harmful wins are sole-wins, support=1).
+        if not row_is_chimeric and anchor_gate_on:
+            anchor = int(anchor_col.iat[i])
+            if anchor < min_junction_anchor_bp:
+                all_supported = True
+                for js, je in juncs:
+                    cnt, max_ov = junction_stats.get((js, je), (0, 0))
+                    if not (cnt >= min_junction_support and max_ov >= good_overhang_bp):
+                        all_supported = False
+                        break
+                if not all_supported:
+                    row_is_chimeric = True
 
         flags.append(1 if row_is_chimeric else 0)
 
@@ -932,6 +1033,7 @@ def merge_corrected_tsvs(
     overhang_table: Optional[OverhangTable] = None,
     strict_lazy_identity: bool = True,
     lazy_scoring_workers: int = 1,
+    min_junction_anchor_bp: int = _MIN_JUNCTION_ANCHOR,
 ) -> Path:
     """
     Merge N per-aligner corrected TSVs into a single corrected_reads.tsv.
@@ -1130,12 +1232,13 @@ def merge_corrected_tsvs(
                         aligner_name,
                         len(ed_dict),
                     )
-                    for rid, (ed, ab) in ed_dict.items():
+                    for rid, (ed, ab, anchor) in ed_dict.items():
                         ed_rows.append({
                             'read_id': rid,
                             '_aligner': aligner_name,
                             'hp_edit_distance': ed,
                             'aligned_bases': ab,
+                            'min_junction_anchor': anchor,
                         })
             finally:
                 # All results consumed; release workers in background so the
@@ -1175,18 +1278,24 @@ def merge_corrected_tsvs(
                     aligner_name,
                     len(ed_dict),
                 )
-                for rid, (ed, ab) in ed_dict.items():
+                for rid, (ed, ab, anchor) in ed_dict.items():
                     ed_rows.append({
                         'read_id': rid,
                         '_aligner': aligner_name,
                         'hp_edit_distance': ed,
                         'aligned_bases': ab,
+                        'min_junction_anchor': anchor,
                     })
         if ed_rows:
             ed_df = pd.DataFrame(ed_rows)
             all_df = all_df.merge(ed_df, on=['read_id', '_aligner'], how='left')
             all_df['hp_edit_distance'] = all_df['hp_edit_distance'].fillna(float('inf'))
             all_df['aligned_bases']    = all_df['aligned_bases'].fillna(0).astype(int)
+            # reads not scored (no HP-ED) get the no-junction sentinel so the
+            # anchor gate never fires on them
+            all_df['min_junction_anchor'] = (
+                all_df['min_junction_anchor'].fillna(_NO_JUNCTION_ANCHOR).astype('int64')
+            )
             logger.info("HP edit distances joined for %d aligner×read pairs", len(ed_rows))
         else:
             logger.warning("No HP edit distances computed — falling back to legacy sort")
@@ -1241,7 +1350,9 @@ def merge_corrected_tsvs(
         logger.info("No junction-overhang table supplied — using OverhangTable.default()")
     logger.info("Applying chimeric-junction overhang filter ...")
     junc_stats = _compute_junction_stats(all_df)
-    chimera_flags = _add_chimera_flag(rep_df, _ov_table, junc_stats)
+    chimera_flags = _add_chimera_flag(
+        rep_df, _ov_table, junc_stats, min_junction_anchor_bp=min_junction_anchor_bp,
+    )
     rep_df['_chimera_ok'] = chimera_flags
     n_flagged = int(chimera_flags.sum())
     n_total   = len(chimera_flags)
