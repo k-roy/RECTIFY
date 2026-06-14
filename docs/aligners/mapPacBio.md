@@ -7,6 +7,20 @@ is **PacBio-tuned and a weak fit for noisy ONT (especially direct-RNA) spliced
 alignment** (see "ONT suitability" below). Read this before trusting its intron
 calls or adding it to an ONT panel.
 
+> **Human-panel status (2026-06-14): re-admissible under the HP-ED anchor gate.**
+> mapPacBio was dropped from the human panel because it **games the HP-ED
+> consensus** — the scorer treated N-ops (introns) as free, so mapPacBio relabeled
+> noisy 3′ soft-clips as spurious introns and **sole-won 39% of human chr5 reads
+> with only 77%-annotated junctions** (vs 97–98% for the aligners it beat; unique
+> real:novel ≈ 1:34). The **junction-local perfect-match anchor gate** in
+> `_add_chimera_flag` (`min_junction_anchor_bp`; default 0=off, human=10) closes
+> this: on A549 chr5 it cut spurious consensus junctions **−25%** while *preserving*
+> annotated ones (+0.3%), demoting mapPacBio's 0-anchor splits to clean competitors.
+> Under the gate mapPacBio contributes legitimately. The drop was a *metric*
+> vulnerability, not a tuning failure (params were already correct — see below).
+> Detail: memory `project-hped-anchor-gate`; ALIGNER_RECOMMENDATIONS.md →
+> "mapPacBio re-admission".
+
 ---
 
 ## Parameter semantics — `intronlen` and `maxindel` (read this first)
