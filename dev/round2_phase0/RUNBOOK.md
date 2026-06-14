@@ -101,7 +101,12 @@ Ensembl GTF.109 matches. (GENCODE `chr5` would need a `sed 's/^chr//'`.)
 ### Step A — finish depth pool (running)
 `logs/02_deepen.log` → produces `data/a549_pooled_chr5_6.bam` (rep1+4+5+6, chr5+6).
 
-### Step B — data-driven locus selection (coverage ∩ stress-structure)
+### Step B — data-driven locus selection (coverage ∩ stress-structure) — ✅ DONE
+**Implemented in `select_loci.py`; output `selected_loci.tsv` (28 loci) + `<P0>/coverage/`.**
+From 1838 chr5/6 MANE transcripts → 205 short-internal-exon candidates → 28 pass coverage
+(≥50 spliced reads) + inclusion (short-exon mean depth ≥10, inclusion ratio ≥0.10). Top:
+TGFBI, IK, HSD17B4, UBE2B, ANXA6; dense-junction TRIO(56)/XPO5(31)/SNX14(28). Rerun
+`select_loci.py` to retune `MAX_SHORT/MIN_SPLICED/MIN_INCL_*`. Original method below:
 The principled selection (A549 is SRRM4-low → don't bet on neuronal microexons; use short
 internal exons in the isoform A549 actually transcribes — see `apriori_stress_loci_NOTES.md`):
 1. From the Ensembl GTF, list internal exons ≤30 bp (and genes with ≥3 junctions in <3 kb) on chr5/6.

@@ -1,9 +1,10 @@
 # HANDOFF — Round-2 cDNA Phase-0 empirical kill-gate
 
 **Session:** 2026-06-14 · **Branch:** `walkback-guard-refactor-todo` · **Repo:** `~/work/rectify`
-**One-line state:** Phase-0 apparatus is built + validated (15/15 tests) and the human DRS
-substrate is staged & deep — but **the empirical GO/NO-GO verdict has NOT been produced yet**
-(no real read has been aligned→lifted→scored). Next agent runs RUNBOOK Steps B→G.
+**One-line state:** Phase-0 apparatus is built + validated (15/15 tests), the human DRS substrate
+is staged & deep, and **Step B (data-driven locus selection) is DONE** — 28 covered, short-exon /
+multi-junction loci in `selected_loci.tsv`. But **the empirical GO/NO-GO verdict has NOT been
+produced yet** (no real read aligned→lifted→scored). Next agent runs RUNBOOK Steps C→G.
 
 Read first: `RUNBOOK.md` (this dir) and the MASTER spec
 `dev/specs/SPEC_round2_cdna_discovery_assignment_20260614.md`. **Phase 0 gates everything: if it
@@ -25,6 +26,12 @@ returns NO-GO, STOP — do not build the production library/lift-over.**
 - Fetched SG-NEx A549 rep1 genome BAM, subset chr5+6, ran a micro-exon coverage check → the 6
   a-priori micro-exon genes are **uncovered in A549**; pivoted to data-driven locus selection.
 - Deepened the pool (rep1+4+5+6) → `a549_pooled_chr5_6.bam` (**COMPLETE**, see §2).
+- **Step B DONE** (`select_loci.py`): from 1838 chr5/6 MANE transcripts, 205 have a short internal
+  exon (≤30 bp); **28 pass coverage + inclusion** → `selected_loci.tsv`. Top: TGFBI (1895 spliced
+  reads, 25 bp exon, 16 junc), IK, HSD17B4, UBE2B, ANXA6; dense-junction stressors TRIO (56 junc),
+  XPO5 (31), SNX14 (28). (True ≤15 bp micro-exons that are *included* are scarce in A549 — SRRM4-low
+  — so the set leans on 18–30 bp short exons + dense junctions; honest A549 reality, still a real
+  seed-aligner stressor.)
 - Wrote `RUNBOOK.md` (Steps A–G) and memory `project_round2_cdna_phase0.md`.
 
 ## 2. What's verified
@@ -47,11 +54,12 @@ returns NO-GO, STOP — do not build the production library/lift-over.**
 
 ## 3. Open items
 
-- **Data-driven locus selection still owed** (RUNBOOK Step B). Why this way: the 6 a-priori
-  micro-exon genes (DIAPH1/MYO10/ABLIM3/KIF3A/TRIO/MPC1 — `apriori_stress_loci_NOTES.md`) have
-  ~0 A549 coverage, and A549 is SRRM4-low so neuronal microexons are skipped. Must select loci by
-  **coverage ∩ short-internal-exon structure** in the pooled BAM, not an a-priori list. Top
-  covered spliced loci already seen: EEF1A1, ATG10, RPS18, TRIM41.
+- **Locus selection DONE** (was the riskiest discovery step) → `selected_loci.tsv` (28 loci).
+  Recommended Step-C starting subset (mix of depth + junction-density): **TGFBI, IK, HSD17B4,
+  ANXA6, TRIO, XPO5** (+ DIAPH1 as a sanity cross-check — its a-priori 9 bp micro-exon was
+  uncovered, but its MANE 27 bp internal exon IS included at 305 spliced reads). Don't re-run
+  selection; `select_loci.py` is rerunnable if you want different thresholds
+  (`MAX_SHORT/MIN_SPLICED/MIN_INCL_*`).
 - **Harness is uncommitted** (`?? dev/round2_phase0/`). Why deferred: I don't commit without
   Kevin's say-so, and the branch HEAD moved during the session (concurrent-session caution).
   Stage explicitly (`git add dev/round2_phase0/`), never `git add -A`.
@@ -64,12 +72,13 @@ returns NO-GO, STOP — do not build the production library/lift-over.**
 
 ## 4. Resume command
 
-**Resume:** the depth pool is DONE — go straight to RUNBOOK **Step B**.
-1. Confirm pool: `ssh sherlock 'bash --norc --noprofile -c "source /home/groups/larsms/users/kevinroy/anaconda3/etc/profile.d/conda.sh; conda activate rectify; samtools idxstats /oak/stanford/groups/larsms/Users/kevinroy/projects/rectify_round2_phase0/data/a549_pooled_chr5_6.bam | head"'` → expect chr5≈664k, chr6≈486k reads.
-2. Run Step B (data-driven locus select): scan the Ensembl GTF.109 for internal exons ≤30 bp on chr5/6, intersect with per-gene spliced-read depth in the pooled BAM, keep genes with ≥~50 spliced reads AND a short internal exon, **confirm short-exon inclusion** via `samtools depth` (PSI proxy). Write `coverage/selected_loci.tsv`.
-3. Then Steps C→G per RUNBOOK. Before any verdict, run **Step F.0** (real-read lift round-trip) — if it fails, fix `liftover.py` before scoring.
-4. Verify the harness still passes first: `cd ~/work/rectify && /Users/kevinroy/miniconda3/bin/python dev/round2_phase0/test_phase0.py` (expect 15/15).
-- No background jobs are still running (the deepen `nohup` finished). Nothing to poll.
+**Resume:** pool is built and Step B is done — go straight to RUNBOOK **Step C** (build the hand cDNA library for the selected loci).
+1. Verify the harness still passes: `cd ~/work/rectify && /Users/kevinroy/miniconda3/bin/python dev/round2_phase0/test_phase0.py` (expect 15/15).
+2. Read `selected_loci.tsv` (28 loci, committed in this dir AND at `<P0>/coverage/`). Start with **TGFBI, IK, HSD17B4, ANXA6, TRIO, XPO5** (+DIAPH1 cross-check).
+3. Step C — for each selected gene, build the padded-cDNA + `liftover.Block` block-map from its MANE exon chain (Ensembl GTF.109) ∪ any de-novo gate-passed chain seen in Round-1; `CdnaModel.validate(genome)` the 1:1 identity; spike-test a non-canonical gate-passed junction survives.
+4. Step D — extract the selected-locus reads from `<P0>/data/a549_pooled_chr5_6.bam` → fastq → CHUNKED 5-aligner Round-1 (`min_junction_anchor_bp=10`, owners + AVX-512, `sherlock-sbatch` skill), keeping uLTRA's per-read record.
+5. Steps E→G per RUNBOOK. **Before any verdict, run Step F.0** (real-read lift round-trip) — if it fails, fix `liftover.py` before scoring. NO-GO ⇒ STOP and record the falsifier.
+- No background jobs are running (the deepen `nohup` finished). Nothing to poll.
 - ControlMaster discipline: only Kevin re-establishes the Sherlock master; batch SSH calls; if "Permission denied" appears, use `ssh -O check sherlock` (don't hammer).
 
 ## 5. Files touched
@@ -79,11 +88,18 @@ All under `~/work/rectify/dev/round2_phase0/` — **ALL [uncommitted]** (`?? dev
 - `score_phase0.py` [uncommitted] — win-guard + BLOCKER-1 fix + verdict; imports production `_cigar_*`.
 - `test_phase0.py` [uncommitted] — 15 unit tests (run with base miniconda python).
 - `RUNBOOK.md` [uncommitted] — Steps A–G, substrate, findings, GO criteria.
-- `apriori_stress_loci_NOTES.md` [uncommitted] — the (uncovered) a-priori loci, relocated from the Sumner scratch dir (wrong workspace).
-- `HANDOFF.md` [uncommitted] — this file.
+- `apriori_stress_loci_NOTES.md` — the (uncovered) a-priori loci, relocated from the Sumner scratch dir (wrong workspace).
+- `select_loci.py` — Step-B selection script (rerunnable on Sherlock in rectify env).
+- `selected_loci.tsv` — **the 28 selected loci** (Step B output; also at `<P0>/coverage/`).
+- `HANDOFF.md` — this file.
+
+(`liftover.py`/`score_phase0.py`/`test_phase0.py`/`RUNBOOK.md`/`apriori_stress_loci_NOTES.md`
+were committed `c607524`; `select_loci.py`/`selected_loci.tsv`/this updated HANDOFF are the new
+uncommitted delta — stage with `git add dev/round2_phase0/`.)
 
 Cluster artifacts (Sherlock, `/oak/.../Users/kevinroy/projects/rectify_round2_phase0/`):
-`data/a549_pooled_chr5_6.bam` (+rep1/4/5/6 sources), `microexons.tsv`,
-`coverage/microexon_inclusion.tsv`, `01_fetch_subset_coverage.sh`, `02_deepen.sh`, `logs/`.
+`data/a549_pooled_chr5_6.bam` (+rep1/4/5/6 sources), `select_loci.py`,
+`coverage/selected_loci.tsv`, `coverage/microexon_inclusion.tsv`, `microexons.tsv`,
+`01_fetch_subset_coverage.sh`, `02_deepen.sh`, `logs/`.
 
 Memory written: `project_round2_cdna_phase0.md` (+ index line in `MEMORY.md`).
