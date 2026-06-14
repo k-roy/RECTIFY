@@ -76,16 +76,32 @@ junction must survive into the library. Junction-wobble snap W=3 to highest-supp
 
 ## 5. Round-2 aligners (non-spliced, contiguous to transcript)
 
+**Reframe (Kevin 2026-06-14):** because the Round-2 reference is PRE-SPLICED, splice-awareness
+is NOT required — so the entire "disqualified: not splice-aware" class from
+`docs/aligners/EVALUATED_AND_DISQUALIFIED.md` is RE-OPENED for Round 2. The only surviving gate
+is **noisy-ONT contiguous mapping** + **one soft-clipped record per read** (NOT split/multi-HSP).
+Non-splice-aligner survey 2026-06-14 (memory `project-aligner-orthogonality-panel` follow-up).
+
 | Aligner | Role | Invocation | Note |
 |---|---|---|---|
-| **minimap2** | PRIMARY | `-ax map-ont -N 100 -p 0.8 -Y`, NO splice/`-G` | installed |
-| **mapPacBio** | secondary | long-read mode, `intronlen=0 maxindel=100` | installed (compute-node) |
-| **GMAP→cDNA** | tie-breaker | `-n 1`, NO `--nofails` | installed (works; smoke 2026-06-14) |
-| ~~BLAT, Magic-BLAST~~ | DROP | — | BLAT >95%-id (unfit raw ONT); Magic-BLAST emits pathological mega-gapped CIGARs on ONT DRS (smoke 2026-06-14) |
+| **minimap2** | PRIMARY | `-ax map-ont -N 100 -p 0.8 -Y`, NO splice/`-G` | installed; minimizer-chain |
+| **LAST** | NEW LEAD | `-uNEAR` preset, **omit `last-split`**, `maf-convert sam` | bioconda `last` (GPL-3); adaptive variable-length seeds + LEARNED error model — orthogonal seeding; ONT-native; one soft-clip record per read iff last-split omitted |
+| **mapPacBio** | secondary | long-read mode, `intronlen=0 maxindel=100` | installed; k-mer+affine |
+| **GMAP→cDNA** | tie-breaker | `-n 1`, NO `--nofails` | installed (works; smoke 2026-06-14); oligomer-hash |
+| **Magic-BLAST** | re-test (Kevin's Q) | **`-reftype transcriptome`** (`-splice F`) | bioconda; genome mega-gap pathology MECHANICALLY gone on contiguous ref (no introns to span); read-indexed BLAST = diverse. GATE on measured HSP-fragmentation rate. |
+| ~~BLAT~~ | SKIP | — | design floor ≥95% id; raw ONT ~90% below spec; PSL blocks not soft-clips; restrictive license. (corrected-reads-only, not our substrate) |
+| ~~NGMLR, lra, vacmap~~ | SKIP | — | split-by-design (SA/supplementary), diversity partial (lra=minimizer), or source-only deploy (vacmap) |
+| ~~winnowmap2, bwa-mem, blastn~~ | SKIP | — | winnowmap2 redundant (mm2 derivative); bwa-mem ont2d fails noise; blastn not a read mapper |
 
 `-Y` preserves soft-clips (clips into pad must be visible to lift-over). **`--for-only` is
 PER-PROTOCOL**: correct for DRS; for PCR-cDNA it silently drops the antisense half unless
 `ont_cdna` pre-oriented the reads — VERIFY (grep XS/XR), branch by protocol.
+
+**Split-vs-clip gate (Phase-0 sub-test for EVERY Round-2 aligner):** measure
+supplementary/secondary count, SA-tag frequency, and records-per-query (`samtools flagstat`) on
+a handful of real reads. A tool that fragments a read into multiple partial records instead of one
+soft-clipped record is unusable for clean lift-over — this is the single test that gates LAST and
+Magic-BLAST alike (and is why the SV mappers skip).
 
 ## 6. Read-subset gate (cost control)
 
