@@ -1,0 +1,59 @@
+{
+ "analysis": "Round-2 cDNA discovery->assignment — Phase-0 empirical kill-gate",
+ "date": "2026-06-14",
+ "verdict": "NO-GO",
+ "substrate": {
+  "dataset": "SG-NEx A549 directRNA replicate1+4+5+6",
+  "chemistry": "ONT direct-RNA RNA002 / R9.4.1",
+  "caveat": "A549 is SRRM4-low (micro-exon-poor); RNA002 not RNA004. Multi-junction case well-tested (TRIO 56 junc, XPO5 31); micro-exon sub-case under-tested."
+ },
+ "refs": {
+  "genome": "Ensembl GRCh38.dna.primary_assembly chr5+6 (Ensembl naming '5'/'6')",
+  "annotation": "Ensembl GTF.109",
+  "chr5_6_fa_sha16": "bc084c55a53d4854"
+ },
+ "loci": ["TGFBI", "IK", "HSD17B4", "ANXA6", "TRIO", "XPO5", "DIAPH1"],
+ "library": {
+  "n_cdna": 42,
+  "composition": "7 MANE + 35 Round-1 read-supported k>=10 gate-passed de-novo chains",
+  "pad_bp": 1500,
+  "min_chain_support": 3
+ },
+ "round1": "minimap2(-ax splice -uf -k14 --max-intron 500000) + uLTRA(annotation-guided, GTF.109) + deSALT(ont1d -T); per-aligner rectify correct (DRS default, --organism homo_sapiens, no --annotation)",
+ "round2": "minimap2 -ax map-ont --for-only -N100 -p0.8 -Y (mapPacBio dropped: 6019bp read-length cap on full-length DRS + HP-ED gaming)",
+ "scoring": {
+  "min_junction_anchor_bp": 10,
+  "epsilon": 1.0,
+  "baseline": "CORRECTED genome winner + corrected uLTRA record (advisor: raw baseline => false-GO)",
+  "cdna_side": "RAW lifted (no walkback) — conservative: pad/3' soft-clip stays a penalty",
+  "penalty_scores_sha16": "5d7e48c14103a3ee",
+  "str_penalty_sha16": "bb3b116a736b996e",
+  "scorer_corrected_consensus_sha16": "354b4b2161fb44d0"
+ },
+ "result": {
+  "genome_mapped_population": {
+   "eligible_reads": 4579,
+   "total_cdna_wins": 417,
+   "spliced_wins": 11,
+   "attributed_structural_spliced_wins": 7,
+   "single_exon_wins": 406,
+   "single_exon_null_floor_pct": "hard lower bound 8.87 (406/4579; true rate higher; spec leak bar is 5%)",
+   "trivial_win_leak_all_reads": 0.899,
+   "trivial_win_leak_spliced_only": 0.364,
+   "net_hp_ed_reduction": 1059.9,
+   "ultra_specific_win_frac": 1.0
+  },
+  "genome_unmapped_population": {
+   "total_unmapped_reads": 844262,
+   "reads_mapping_to_cdna_library": 642,
+   "confident_placements_frac80_ident85": 182,
+   "confident_spliced_rescues": 0,
+   "note": "all 182 confident placements single-exon; the 17 spliced cDNA-hits are 68-83% identity force-fits of low-quality reads, several genome-mappable anyway"
+  }
+ },
+ "lift_validation_F0": "PASS — 833 real spliced reads round-tripped, 660(+)/173(-), 0 mismatches (matched-pair semantic comparison)",
+ "verdict_basis": "NO-GO holds against THREE controls: (1) corrected-genome baseline, (2) single-exon null-control floor exceeds 5% bar, (3) selection-bias check — 0 confident spliced rescues among 844k genome-unmapped reads.",
+ "rectify_commit_M1": "5a40cbc (branch drs-validation-rebuild); Sherlock/H2 are rsync copies",
+ "script": "dev/round2_phase0/cluster/*.{sbatch,py}",
+ "cluster_workdir": "Sherlock /oak/stanford/groups/larsms/Users/kevinroy/projects/rectify_round2_phase0/round2/"
+}

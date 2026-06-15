@@ -9,6 +9,28 @@
 
 Rectify uses a five-aligner consensus panel for yeast. For human/large-genome DRS, gapmm2 is dropped (see [gapmm2.md](aligners/gapmm2.md) — its per-read terminal-refinement loop costs ~28–50 h single-threaded on human scale).
 
+### Direct-to-genome (Round-1, splice-aware) candidate panel — by algorithmic family
+
+Five **distinct seeding/alignment families**, the algorithmic breadth the
+2026-06-14 orthogonality survey targeted. (This is the genome-aligned, N-op-junction
+consensus panel; the Round-2 cDNA non-splice bake-off — minimap2-no-splice · LAST ·
+mapPacBio · GMAP→cDNA · Magic-BLAST — is a separate, Phase-0-gated panel.)
+
+| Aligner | Algorithmic family | Human / large-genome | Yeast | Notes |
+|---|---|---|---|---|
+| **minimap2** | minimizer-chain + base-level DP | ✅ core | ✅ core | reference family |
+| **uLTRA** | MEM + annotation-guided | ✅ core | ✅ core | GTF-guided; strong on annotated junctions |
+| **deSALT** | de-Bruijn graph (2-pass) | ✅ core | ✅ core | orthogonal to minimizer chaining |
+| **mapPacBio** (BBMap) | k-mer + affine DP | ✅ re-admitted **under the anchor gate** | ✅ core | dropped earlier for HP-ED gaming; `--min-junction-anchor-bp` (human=10) makes it safe — see [mapPacBio re-admission](#mappacbio-re-admission-via-the-hp-ed-anchor-gate) |
+| **gapmm2** | minimizer-chain + terminal refinement | ❌ dropped (timing ~28–50 h) | ✅ core | yeast 5th member |
+| **GMAP** | oligomer-hash + own splice DP | ❌ **rejected** — A549 chr5 full-panel test 2026-06-14 | — | Fails all three pre-registered bars: annotated_rate 70.2% (bar ≥95%), anchor median 4 bp (bar ~13 bp), STOLE-correct 3271 > ADDED-correct 745 (4.4× net harm). Net junction effect: annotated −4011 (−0.4%), novel +6002 (+20.9%). GMAP wins displace better alignments from minimap2/deSALT and introduce spurious novel junctions at the same rate as K=0 mapPacBio. |
+
+**Human panel = 4 aligners** (minimap2 + uLTRA + deSALT + mapPacBio under anchor gate).
+No viable 5th family identified: gapmm2 dropped on timing (~28–50 h); GMAP rejected
+on quality (2026-06-14 full-panel test, 319k reads, K=10). **LAST** is *not* a
+genome-panel candidate: no native spliced alignment → Round-2 cDNA (pre-spliced
+reference) lead instead.
+
 | Aligner | Notes | Doc |
 |---------|-------|-----|
 | **minimap2** | Splice-aware, general-purpose. Key pitfall: `-G` defaults to 5000 (yeast); pass `--max-intron 500000` for human data. | [minimap2.md](aligners/minimap2.md) |
