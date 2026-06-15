@@ -650,7 +650,10 @@ _MIN_ALIGNED_BASES     = 50
 _MIN_JUNCTION_ANCHOR   = 0
 
 
-def _compute_junction_stats(all_df: "pd.DataFrame") -> Dict[Tuple[int, int], Tuple[int, int]]:
+def _compute_junction_stats(
+    all_df: "pd.DataFrame",
+    min_junction_anchor_bp: int = 0,
+) -> Dict[Tuple[int, int], Tuple[int, int]]:
     """Build a per-junction support dictionary from the concatenated all_df.
 
     For each (intron_start, intron_end) pair, returns:
@@ -662,14 +665,28 @@ def _compute_junction_stats(all_df: "pd.DataFrame") -> Dict[Tuple[int, int], Tup
 
     This is used by the short-intron relaxation: if a short intron is reported
     by many reads and at least one has good overhang, it is almost certainly real.
+
+    When min_junction_anchor_bp > 0 and the 'min_junction_anchor' column is present,
+    only rows whose per-read perfect-match anchor meets the threshold contribute to
+    the support count.  This ensures that the rescue escape hatch for low-anchor
+    alignments (e.g. GMAP with median 4 bp anchor) requires at least one K-quality
+    sequence observation to vouch for the junction — not just a high observation count
+    from consistently low-quality reads.
     """
     junc_stats: Dict[Tuple[int, int], Tuple[int, int]] = {}  # {(js,je): (count, max_min_ov)}
 
-    aln_start_col = all_df.get('alignment_start', pd.Series(0, index=all_df.index)).fillna(0)
-    aln_end_col   = all_df.get('alignment_end',   pd.Series(0, index=all_df.index)).fillna(0)
-    junc_col      = all_df.get('junctions',       pd.Series('',  index=all_df.index))
+    aln_start_col  = all_df.get('alignment_start', pd.Series(0, index=all_df.index)).fillna(0)
+    aln_end_col    = all_df.get('alignment_end',   pd.Series(0, index=all_df.index)).fillna(0)
+    junc_col       = all_df.get('junctions',       pd.Series('',  index=all_df.index))
+    anchor_gate_on = min_junction_anchor_bp > 0 and 'min_junction_anchor' in all_df.columns
+    anchor_col     = (
+        all_df['min_junction_anchor'].fillna(_NO_JUNCTION_ANCHOR).astype('int64')
+        if anchor_gate_on else None
+    )
 
     for idx in all_df.index:
+        if anchor_gate_on and int(anchor_col.iat[idx]) < min_junction_anchor_bp:
+            continue  # this row's junctions don't meet K-quality; skip its votes
         junc_str  = junc_col.iat[idx] if idx < len(junc_col) else ''
         aln_start = int(aln_start_col.iat[idx])
         aln_end   = int(aln_end_col.iat[idx])
@@ -1158,7 +1175,7 @@ def merge_corrected_tsvs(
             .reset_index()
         )
         _preview_ov_table = overhang_table if overhang_table is not None else OverhangTable.default()
-        preview_junc_stats = _compute_junction_stats(all_df)
+        preview_junc_stats = _compute_junction_stats(all_df, min_junction_anchor_bp=min_junction_anchor_bp)
         preview_chimera_flags = _add_chimera_flag(rep_preview, _preview_ov_table, preview_junc_stats)
         rep_preview['_chimera_ok'] = preview_chimera_flags
         rep_preview['_effective_chimera_ok'] = (
@@ -1349,7 +1366,7 @@ def merge_corrected_tsvs(
     if overhang_table is None:
         logger.info("No junction-overhang table supplied — using OverhangTable.default()")
     logger.info("Applying chimeric-junction overhang filter ...")
-    junc_stats = _compute_junction_stats(all_df)
+    junc_stats = _compute_junction_stats(all_df, min_junction_anchor_bp=min_junction_anchor_bp)
     chimera_flags = _add_chimera_flag(
         rep_df, _ov_table, junc_stats, min_junction_anchor_bp=min_junction_anchor_bp,
     )

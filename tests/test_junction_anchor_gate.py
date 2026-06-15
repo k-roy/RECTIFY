@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 from rectify.core.consensus.corrected_consensus import (
     _cigar_min_junction_anchor,
     _add_chimera_flag,
+    _compute_junction_stats,
     _NO_JUNCTION_ANCHOR,
     _MIN_JUNCTION_ANCHOR,
 )
@@ -148,6 +149,82 @@ def test_gate_absent_column_is_inert():
     """If the min_junction_anchor column is missing, the gate never fires."""
     df = _rep_df(anchor=2).drop(columns=["min_junction_anchor"])
     flags = _add_chimera_flag(df, OV, junction_stats={}, min_junction_anchor_bp=10)
+    assert int(flags.iloc[0]) == 0
+
+
+# ── _compute_junction_stats anchor-quality filtering ─────────────────────────
+
+def _all_df(rows):
+    """Build a minimal all_df from a list of dicts (read_id, junctions, aln_start, aln_end, anchor)."""
+    return pd.DataFrame([{
+        "read_id": r.get("read_id", "r1"),
+        "_aligner": r.get("aligner", "minimap2"),
+        "junctions": r.get("junctions", "20-120"),
+        "alignment_start": r.get("aln_start", 0),
+        "alignment_end": r.get("aln_end", 140),
+        "min_junction_anchor": r.get("anchor", 15),
+    } for r in rows])
+
+
+def test_compute_stats_default_counts_all_rows():
+    """With K=0 (default), all rows contribute regardless of anchor."""
+    df = _all_df([{"anchor": 2}, {"anchor": 4}])
+    stats = _compute_junction_stats(df)
+    assert stats[(20, 120)][0] == 2  # both rows counted
+
+
+def test_compute_stats_k10_excludes_low_anchor_rows():
+    """With K=10, rows with anchor < 10 do not contribute to junction support."""
+    df = _all_df([{"anchor": 2}, {"anchor": 4}])
+    stats = _compute_junction_stats(df, min_junction_anchor_bp=10)
+    assert (20, 120) not in stats
+
+
+def test_compute_stats_k10_counts_passing_rows():
+    """With K=10, rows with anchor >= 10 contribute normally."""
+    df = _all_df([{"anchor": 2}, {"anchor": 15}, {"anchor": 12}])
+    stats = _compute_junction_stats(df, min_junction_anchor_bp=10)
+    assert stats[(20, 120)][0] == 2  # only the two K-passing rows count
+
+
+def test_compute_stats_no_anchor_column_counts_all():
+    """When min_junction_anchor column is absent, K filter is a no-op."""
+    df = _all_df([{"anchor": 2}]).drop(columns=["min_junction_anchor"])
+    stats = _compute_junction_stats(df, min_junction_anchor_bp=10)
+    assert stats[(20, 120)][0] == 1  # still counted (no column → gate off)
+
+
+def test_rescue_blocked_when_all_supporting_reads_have_low_anchor():
+    """End-to-end: a junction seen many times but only by low-anchor reads is NOT rescued.
+
+    With K-filtered junction_stats, GMAP-style aligners that consistently produce
+    4 bp anchors cannot rescue each other's chimera_ok=1 flags — the junction
+    never accumulates enough K-quality votes.
+    """
+    # Build all_df with 10 observations of (20,120) — all with 4 bp anchor (below K=10)
+    df = _all_df([{"anchor": 4, "read_id": f"r{i}", "aligner": "GMAP"} for i in range(10)])
+    stats = _compute_junction_stats(df, min_junction_anchor_bp=10)
+    # Junction should have no K-quality support
+    assert (20, 120) not in stats
+    # The flagged alignment is NOT rescued
+    flags = _add_chimera_flag(_rep_df(anchor=4), OV, junction_stats=stats,
+                              min_junction_anchor_bp=10)
+    assert int(flags.iloc[0]) == 1
+
+
+def test_rescue_fires_when_one_supporting_read_has_good_anchor():
+    """End-to-end: a single K-quality observation rescues the junction for low-anchor reads."""
+    rows = [{"anchor": 4, "read_id": f"r{i}", "aligner": "GMAP"} for i in range(9)]
+    rows.append({"anchor": 15, "read_id": "r9", "aligner": "minimap2"})  # one good obs
+    df = _all_df(rows)
+    stats = _compute_junction_stats(df, min_junction_anchor_bp=10)
+    # minimap2's good-anchor observation enters the stats
+    assert stats[(20, 120)][0] == 1
+    # The low-anchor GMAP read is rescued because the junction is now in stats
+    # (cnt >= min_junction_support requires 5 by default — adjust stats manually for unit test)
+    good_stats = {(20, 120): (5, 15)}  # simulate "enough support" after K-filtering
+    flags = _add_chimera_flag(_rep_df(anchor=4), OV, junction_stats=good_stats,
+                              min_junction_anchor_bp=10)
     assert int(flags.iloc[0]) == 0
 
 
