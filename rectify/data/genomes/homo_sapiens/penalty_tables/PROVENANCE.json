@@ -18,8 +18,9 @@
   "caveats": [
     "IVT (unmodified) -> avoids A-to-I-editing inflation of the AT substitution anchor, but lacks modification-induced miscalls present in NATIVE Sumner RNA",
     "wholeIVT carries a T7/RT error signature",
-    "STR table (str_penalty_scores.tsv) + junction_overhang_table.tsv NOT yet generated (follow-up)",
-    "model-version note: GM12878 ref is rna004 v5.1.0; Sumner production is v5.0.0/v5.2.0 (same chemistry family)"
+    "str_penalty_scores.tsv + junction_overhang_table.tsv DONE 2026-05-27/29 (this caveat is resolved); cDNA + QuantSeq junction tables also bundled (penalty_scores_cdna.tsv 21/22 autosomes, chr14 deferred; penalty_scores_qsrev.tsv)",
+    "model-version note: GM12878 ref is rna004 v5.1.0; Sumner production is v5.0.0/v5.2.0 (same chemistry family)",
+    "still open (external/compute-bound): native-RNA004 validation of this IVT table, per-UMI-depth cDNA bins (need UMI cDNA e.g. Sumner PCB114.24), committed 9-category human validation read set (HANDOFF_2026-05-25 §5)"
   ],
   "validation": "chr20 draft matched (D AT HP4 0.196->0.184 genome-wide); matches yeast R10.4.1 shape closely"
 }

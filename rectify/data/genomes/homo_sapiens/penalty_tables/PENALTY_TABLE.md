@@ -5,20 +5,32 @@ tables, consumed by `rectify correct` / `run` junction refinement (Module 2H)
 and 3'SS rescue scoring. Auto-resolved for `--organism homo_sapiens` (aliases:
 `human`, `hg38`, `grch38`) via `rectify/data/__init__.py` `BUNDLED_GENOMES`.
 
-## Files (DRS)
+## Files
 
-| File | Contents |
-| --- | --- |
-| `penalty_scores.tsv` | HP-context deletion/substitution/insertion penalties, AT/CG base-class split, isotonic-smoothed |
-| `str_penalty_scores.tsv` | STR (di/tri-nucleotide repeat) slippage penalties by (unit, n_copies) |
-| `error_rates.tsv`, `error_counts.tsv` | Raw rates + counts the penalties derive from |
-| `PROVENANCE.json` | Machine-readable provenance |
+| File | Protocol | Contents |
+| --- | --- | --- |
+| `penalty_scores.tsv` | DRS | HP-context deletion/substitution/insertion penalties, AT/CG base-class split, isotonic-smoothed |
+| `str_penalty_scores.tsv` | DRS | STR (di/tri-nucleotide repeat) slippage penalties by (unit, n_copies) |
+| `junction_overhang_table.tsv` | DRS | Min-overhang vs intron-size (whole-genome 3-aligner unanimous concordance) |
+| `penalty_scores_cdna.tsv` | cDNA | HP-context penalties from GM12878 PCR-cDNA (junction table only) |
+| `penalty_scores_qsrev.tsv` | QuantSeq REV | HP-context penalties from GM12878 QuantSeq REV (Illumina; junction table only) |
+| `error_rates.tsv`, `error_counts.tsv`, `error_rates_cdna.tsv`, `error_rates_qsrev.tsv` | — | Raw rates + counts the penalties derive from |
+| `PROVENANCE.json` | — | Machine-readable provenance |
 
-`junction_overhang_table.tsv` is intentionally **not** bundled for human — its
-calibration needs `rectify correct` output (`corrected_reads.tsv`), which carries
-the documented human-`correct` performance caveat; the resolver falls back to the
-DRS default. cDNA (`_cdna` + per-UMI-depth `_umi1/2/3plus`) and QuantSeq
-(`_qsrev`) tables are pending separate human data (see project notes).
+**Protocol routing** (`rectify/data/__init__.py` `BUNDLED_GENOMES['homo_sapiens']`):
+
+- **DRS** (default): all three tables above (HP + STR + overhang).
+- **cDNA** (`--dT-primed-cDNA`): `penalty_scores_cdna.tsv` for the junction
+  table; STR and overhang **fall back to the DRS tables** (no human cDNA STR /
+  overhang derived). There are **no human per-UMI-depth bins**
+  (`_umi1/_umi2/_umi3plus`) — unlike yeast, a `bin=` request falls back to the
+  pooled cDNA table. Per-UMI human tables await UMI-tagged cDNA (e.g. Sumner
+  PCB114.24).
+- **QuantSeq REV** (`--short-read --dT-primed-cDNA`): `penalty_scores_qsrev.tsv`
+  for the junction table; STR and overhang fall back to DRS.
+
+Coverage gaps recorded in provenance: the cDNA table covers **21 of 22 autosomes**
+(chr14 deferred — profiler task hung at 5 h, marginal contribution).
 
 ## Derivation (2026-05-27)
 
@@ -28,9 +40,14 @@ DRS default. cDNA (`_cdna` + per-UMI-depth `_umi1/2/3plus`) and QuantSeq
 - **Chemistry:** ONT direct RNA **SQK-RNA004**; dorado 0.8.1, model
   `rna004_130bps_sup@v5.1.0`.
 - **Reference:** GRCh38 primary assembly (GENCODE v44).
-- **Aligners:** minimap2 + uLTRA + deSALT, strict 3-aligner consensus,
-  `--max-intron 100000`. gapmm2 dropped (too slow on human); mapPacBio dropped
-  (games HP-ED consensus). ~8.4M reads common to all 3 aligners (chr1–22).
+- **Aligners:** minimap2 + uLTRA + deSALT, strict 3-aligner consensus.
+  gapmm2 dropped (too slow on human); mapPacBio dropped (games HP-ED consensus).
+  ~8.4M reads common to all 3 aligners (chr1–22). The **HP / STR** tables used the
+  `--max-intron 100000` align. The **`junction_overhang_table.tsv` is a separate
+  whole-genome derivation** (`calibrate_junction_overhang.py`, 3-aligner unanimous,
+  5th percentile, 6,149 concordant observations, introns 31–116,131 bp) — its
+  header reports `n_concordant: 3` (the enforced value; the generator previously
+  printed the unclamped default 4).
 - **Masking:** GIAB HG001 NISTv4.2.1 small-variant VCF (3.89M records, indels
   expanded) excluded + restricted to the high-confidence-regions BED (chr1–22);
   `--exclude-3prime-bp 50` (poly-A boundary; IVT poly-A ~15 bp ≈ trim-equivalent
