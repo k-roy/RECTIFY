@@ -6,7 +6,25 @@
 
 ## Open
 
-**None.** As of 2026-05-23 every tracked NEW-### bug has been verified resolved
+### NEW-082 (MEDIUM) — gapmm2 v25.8.12 drops most reads (6/36 on M1) during `rectify align`
+**File:** `rectify/core/align/multi_aligner.py` (gapmm2 invocation) + the gapmm2 binary
+**Found:** 2026-06-01 (M1), during the cat2_plus_1 validation-bundle re-align.
+
+`rectify align --aligners minimap2 gapmm2 --junction-aligners uLTRA` on the 36 DRS validation
+reads emitted **6/36** primary records from gapmm2 while minimap2 and uLTRA emitted all 36
+(read `61b0c014` was among those gapmm2 silently dropped). gapmm2 reports `SUCCESS` and writes a
+BAM — but it's missing ~83% of input reads. M1 gapmm2 is **v25.8.12**. This blocks regenerating
+the DRS validation bundle (see TODO "Regenerate the DRS validation bundle").
+
+**Likely area:** a gapmm2-version behavior/filter change (cf. the earlier `--min-mapq type=int`
+gapmm2 argparse bug in memory `feedback_gapmm2_argparse_bug`). **To verify:** run gapmm2 directly
+on the trimmed FASTQ and diff its read set vs minimap2; check whether dropped reads share a
+trait (mapq, terminal-HP, length); confirm the gapmm2 version pinned in the H2/Sherlock prod
+rectify envs and whether they also drop reads. Pin/patch gapmm2 to emit one primary per input read.
+
+---
+
+**Previously: None.** As of 2026-05-23 every tracked NEW-### bug has been verified resolved
 in the current `drs-validation-rebuild` code: NEW-066–074 + NEW-076 landed in
 prior commits; NEW-077/078 fixed by the `1ab71f0` artifact-N rework; NEW-080
 fixed in `cc86cc0`; NEW-079/081 already correct in code; NEW-075 (dT-primed

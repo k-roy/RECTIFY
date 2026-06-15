@@ -188,8 +188,29 @@ their specific data types.
 
 ---
 
+## Overlap QA — check before finalizing
+
+Annotated tracks, multi-panel browsers, lollipop/scatter labels, and dendrograms routinely ship
+with text / legend / panel overlaps that are easy to miss by eye. QA for overlaps before treating
+a figure as done:
+
+- **If the `figure-qa` skill is available** (a local matplotlib overlap detector at
+  `~/.claude/skills/figure-qa/`): run it on the figure script and resolve flagged collisions.
+  For these gene-track / lollipop schematics text is *intentionally* drawn on data boxes/bars, so
+  focus on the **text–text and legend overlaps** (`find_overlaps(fig, include_data=False)`) — those
+  are the real readability problems; text-on-box hits are expected.
+- **Without that skill**: render at final DPI and inspect the dense regions, or detect
+  programmatically from each artist's `get_window_extent(renderer)` pixel bbox (call
+  `fig.canvas.draw()` first). Gotcha: tick/axis labels on an `axis('off')` panel still report
+  `get_visible()==True` but are never drawn (matplotlib only sets `ax.axison=False`) — skip them
+  (gate on `ax.axison`) or they masquerade as overlaps.
+
+---
+
 ## What NOT to do
 
+- **Don't declare a figure done without an overlap check** — annotations, legends, and tick
+  labels collide silently; run `figure-qa` (or check `get_window_extent` bboxes) and fix them first.
 - **Don't call `ax.plot()` per read** in stacked read plots — use `draw_stacked_reads`.
 - **Don't skip `verify_strands`** in metagene — the visual is the last place to
   catch a strand bug.

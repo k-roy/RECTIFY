@@ -196,9 +196,12 @@ question (Item 2) and an optional cosmetic display fix (Item 1). Evidence below.
   | deSALT    | 8703    | **8704**  | `atract_ambiguity,overcall_rescue` *(chrVI map; 8704 = the T)* |
   | mapPacBio | 10617   | **10611** | `polya_walkback`              |
 
-  **`overcall_rescue` fires at HEAD for all four soft-clipping aligners** and
-  lands on the terminal T. mapPacBio force-aligns through to 10617 (no 3′
-  soft-clip → overcall GATE1 not met) and reaches the **same** T via walkback
+  **`overcall_rescue` fires at HEAD for the soft-clipping aligners** and lands on
+  the terminal T. (minimap2/gapmm2/uLTRA map this read to chrXIV:10611=T; deSALT
+  maps it cross-chrom to chrVI:8704, the homologous T — also via overcall_rescue;
+  so the chrXIV-mapping aligners agree on 10611=T.) mapPacBio force-aligns through
+  to 10617 (no 3′ soft-clip → overcall GATE1 not met) and reaches the **same** T
+  via walkback
   (which stops at 10611=T, the first non-A read=ref agreement past the run — it
   does NOT enter the A-run). The bundled `corrected_3ends.tsv` (consensus winner,
   commit `e39089e`) likewise shows `orig=corr=10611`. Every path lands on the T.
@@ -209,20 +212,38 @@ question (Item 2) and an optional cosmetic display fix (Item 1). Evidence below.
 - **Biology (user-confirmed 2026-05-29): the terminal T IS the true 3′ end** for
   this geometry — which is exactly what HEAD already produces. No regression.
 
-### Item 2 sub-finding — the "5 I-rows" scarcity is a PROFILER METHODOLOGY artifact, not evidence over-calls are absent
+### Item 2 sub-finding — the "5 I-rows" scarcity is a PROFILER-VERSION artifact, not evidence over-calls are absent (and NOT the isolation filter)
 
-- The bundled DRS `penalty_scores.tsv` was generated with
-  `--isolation-flank 10 --union` (README:156–160). The profiler's insertion path
-  (`empirical_cigar_error_profiler.py:1290` "Phase 5") requires `isolation_flank`
-  clean flanking matches on **both** sides of the inserted position
-  (`:1313–1318`). **HP over-calls occur precisely where there is no clean 10 bp
-  flank** (inside/adjacent to the homopolymer run), so they are structurally
-  excluded — even on the permissive `--union` path. README:139 even records "no
-  insertion events at HP=1 anywhere in 6.99M × 2 reads," and insertions are
-  consequently handled by a flat `--default-ins 1.25` baseline (README:143–144).
-- **Consequence:** the current error table **cannot** confirm or deny the HP
-  over-call premise — it is blind to it by design. To ground Item 2 you must
-  re-profile insertions WITHOUT the isolation requirement in HP context (e.g. an
+- The bundled DRS `penalty_scores.tsv` has 5 trivial I-rows (counts 1–3) and
+  README:139 records "no insertion events at HP=1 anywhere in 6.99M × 2 reads";
+  insertions consequently fall back to a flat `--default-ins 1.25` baseline
+  (README:143–144).
+- **Initial hypothesis (the `--isolation-flank 10` filter hid them) was TESTED
+  and REFUTED.** A controlled re-run on the same upf1Δ 3-aligner data at flank=10
+  vs flank=0 (only that variable changed) shows flank=10 still yields **56 I-rows
+  / 1.23M I-events** (vs 60 / 2.13M at flank=0) — the filter reduces insertions
+  ~42% but does NOT hide them. Strict (≥2-of-3) ≈ union at both flanks. (Caveat:
+  the control panel is minimap2 + gapmm2 (mm2-family) + deSALT at `min_aligners=2`;
+  the *bundled* table is **5-aligner STRICT** — a config not separately tested, and
+  5-way exact-position agreement could itself suppress I-rows.)
+- **Cause — profiler version (strongly indicated by git, not definitively proven).**
+  The insertion path itself
+  (`empirical_cigar_error_profiler.py:1290` "Phase 5" + the `any_ins_before`
+  union counting) was added in commit `39458d3` (2026-05-17 **13:43**), **7 minutes
+  AFTER** `penalty_scores.tsv` was committed (`ba602c3`, 13:36), and the DRS table
+  was never regenerated afterward. So the bundled table was produced by a profiler
+  build with no working insertion counting — hence the near-zero I-rows and the
+  README "no insertion events" note. The current profiler, at the *same* documented
+  flags (flank=10, union), finds 55,673 `I A` hp1 events in 500k reads where the
+  bundling run reported zero. The 50,000× gap points to a code-version difference
+  rather than data or the isolation filter (both of which the control rules out);
+  the one alternative not separately excluded is 5-aligner strict agreement.
+  Caveat: the README documents a `--union` flag that didn't exist at the 13:36
+  commit, so it isn't a reliable record of how the bundled table was actually made.
+- **Consequence:** the bundled production penalty tables simply lack empirical
+  insertion penalties (built before insertion profiling existed). Re-profiling
+  with the current profiler — at *any* isolation_flank — populates them. To ground
+  Item 2 (done above): re-profile insertions with the current profiler (e.g. an
   HP-aware insertion tally with `isolation_flank=0`, or a dedicated 3′-boundary
   over-call survey), then measure over-call rate vs HP length. The spec's
   possibility #2 ("profiler under-captures insertions") is the correct branch.
@@ -230,12 +251,14 @@ question (Item 2) and an optional cosmetic display fix (Item 1). Evidence below.
 ### Revised action items (supersede §1 and §2 above)
 
 **Item 1 (display ED) — safe, in-scope, optional:**
-- [ ] (cosmetic) Give the *renderer's* `_cigar_raw_edit_distance` an S<X (e.g.
-      S=0.5) asymmetry so reviewers see honest-abstention vs forced-wrong-call
-      reflected in the review columns. Does NOT touch production selection.
-- [ ] Do NOT change `score_alignment` for this reason — the 5′ gaming path is
-      already equalized via `effective_five_prime_clip`; body-mismatch non-scoring
-      is intentional. Any production-scorer change is a separate, gated effort.
+- [x] **DONE 2026-05-30.** Renderer's `_cigar_raw_edit_distance` now charges
+      `S/H = _SOFTCLIP_ED_COST (0.5)` per base vs `X = 1.0` — honest abstention <
+      forced wrong call. Display-only (the two secondary annotation sites bumped
+      `.0f`→`.1f` to show the half-integers). Verified: `19S`→9.5 vs `19X`→19.0;
+      renderer parses; no test asserts this metric so nothing broke.
+- [x] Confirmed NOT changing `score_alignment` — the 5′ gaming path is already
+      equalized via `effective_five_prime_clip`; body-mismatch non-scoring is
+      intentional. Any production-scorer change remains a separate, gated effort.
 
 **Item 2 (over-call rescue) — feature works at HEAD; only the GROUNDING survives:**
 - [x] Biology decided (user, 2026-05-29): terminal-T is the true 3′ end — which is
@@ -243,11 +266,59 @@ question (Item 2) and an optional cosmetic display fix (Item 1). Evidence below.
 - [x] ~~Implement walkback ↔ overcall arbitration~~ **MOOT** — arbitration is
       already overcall-first (`bam_processor.py:758` before `:802`) and overcall
       rescue already fires at HEAD. No production change.
-- [ ] **Re-profile HP insertions with `isolation_flank=0`** (HP-aware) to quantify
-      the real over-call rate vs HP length — the one piece of authorized work that
-      survives. Independent of `cat1_plus_1`; it answers "how common are HP
-      over-calls / is dedicated over-call handling worth keeping" and fixes the
-      `isolation_flank=10` blindness documented above. *(In progress.)*
-- [ ] (optional) Promote `cat1_plus_1` to a committed regression read that asserts
-      `corrected_3prime == terminal-T` so the working behaviour can't silently
-      regress (the in-tree review markdown was already stale).
+- [x] **Re-profiled HP insertions with `isolation_flank=0`** (Sherlock job
+      `26829646`, upf1Δ rep1 DRS, minimap2+gapmm2+deSALT, 500k reads,
+      `--isolation-flank 0 --union --str-repeat`; output
+      `$SCRATCH/oc_grounding_isoflank0_20260529/`).
+      **Result — HP over-calls are abundant and HP-length-dependent at flank=0:**
+      - I-rows: **60** (vs 5 in the bundled flank=10 table), ~2.12M I-events.
+      - Over-call rate (`I AT`, base-class aggregated) rises with HP length:
+        hp1 0.26% → hp3 1.08% → **hp6 1.35% (peak)** → declines to ~0.4–0.7% by
+        hp10–12. Per-base curves match (`I A` hp1 0.24%→hp6 1.36%; `I T` similar).
+        Support is large (`I A` hp2 = 261k, hp3 = 191k; `I T` hp2 = 275k).
+      - **Not single-aligner noise:** strict (≥2-of-3 aligners agree on the
+        insertion position) gives **2,118,184** I-events vs union's **2,125,903**
+        — 0.4% apart, both 60 rows. The over-calls are multi-aligner-concordant,
+        which argues against the "flank=0 admits messy-alignment artifacts" reading.
+      - Magnitude vs under-call: deletions still dominate and rise monotonically
+        (D `A`: hp1 1.1% → hp5 3.0% → hp10 10.4%); HP over-calls run ~⅓–½ the
+        deletion rate at short-to-mid HPs.
+      - **Causal attribution — control RAN (job `26834583`, COMPLETED).** Same
+        upf1Δ data at `--isolation-flank 10` (only that var changed): **56 I-rows /
+        1.23M events** (strict and union both). So the filter is **NOT** why the
+        bundled table is empty — it only trims insertions ~42%. The real cause is
+        **profiler version**: insertion counting (commit `39458d3`) was added 7 min
+        *after* the bundled table was committed (`ba602c3`) and the DRS table was
+        never regenerated. Over-call abundance is robust to flank choice and to
+        strict-vs-union → the feature is solidly justified.
+- [x] **ALREADY COMMITTED** — `tests/test_validation_reads.py::test_3prime_exact_position`
+      already asserts `cat1_plus_1 → corrected_3prime == 10611` ("via overcall_rescue,
+      terminal T past genomic A-run"). Re-verified passing 2026-05-30 (8/8 cat1 tests).
+      No new test needed; the working behaviour is already locked.
+
+**Downstream finding (separate track, NOT in this commit) — production penalty
+tables under-represent insertions:**
+- The bundled DRS `penalty_scores.tsv` was built by a profiler version that
+  predated working insertion counting (see Item 2 sub-finding: insertion code
+  `39458d3` landed 7 min after the table commit `ba602c3`; never regenerated). So
+  its HP-insertion penalties are absent and fall back to the flat `--default-ins
+  1.25` baseline. The current profiler (grounding run, any isolation_flank) shows
+  the empirical insertion penalty varies strongly with HP length (e.g. union
+  penalty_score: hp1 1.25 → hp6 0.24 → hp15 1.65). Regenerating the production
+  tables with the current profiler would make HP-ED scoring insertion-accurate —
+  but this **shifts production HP-ED rankings**, so it is a gated change (same
+  discipline as Item 1: pre/post on real data + advisor review), to be raised with
+  the penalty-table maintainers, not bundled here.
+- **CHECKED 2026-05-30:** the cDNA (`penalty_scores_cdna.tsv`, 33 I-rows) and qsrev
+  (`penalty_scores_qsrev.tsv`, 25 I-rows) tables — regenerated 05-20 in `ed331e7`,
+  after the insertion code — **already carry proper I-rows**. Only the **DRS**
+  `penalty_scores.tsv` (5 trivial I-rows) is stale. So the fix is narrow: regenerate
+  the DRS table alone.
+- **NOT done in this session (deliberately).** Doing it right needs (a) the original
+  production provenance — WT by4742 full-read **5-aligner** panel, not the upf1Δ
+  3-aligner 500k subset used for grounding (that subset is wrong genotype + wrong
+  panel for a production WT table); (b) those input BAMs re-staged (the
+  `wt_by4742_rep1_chunked_20260412` dev-run was cleaned); and (c) a pre/post HP-ED
+  winner-selection diff on real DRS data + advisor review before the bundled table
+  is swapped. This is its own task for the penalty-table maintainers, not a
+  wind-down item.

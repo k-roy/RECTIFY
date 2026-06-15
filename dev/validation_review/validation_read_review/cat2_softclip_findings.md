@@ -305,3 +305,26 @@ WRONG cluster.
 
 **Plotter could ship the read-level column now if you want it before the
 sample-wide piece lands.** Just say the word.
+
+---
+
+## ✅ RESOLUTION — cat2_plus_1 (2026-06-01)
+
+**The minimap2 "clip" (EER 56.6, corrected 3′=23711) is a STALE-BUNDLE ARTIFACT, not a real
+behavior, and needs no walkback/trim/softclip-rescue/cigar-surgery change.** Full root-cause:
+
+- `polya_walkback` is **not** involved — `walkback_drs_full` returns `None` for this read.
+- `trim-polya` is correct — removed only the 12-base tail (`trimmed_3prime_seq`=12 A's).
+- **Every current minimap2 aligns this read THROUGH with a clean single 9-bp deletion**
+  (`…49M 9D 39M 8S`, 3′=23759): M1 binary 2.28, M1 mappy 2.30, **H2 & Sherlock production
+  2.30-r1287**, and a fresh M1 conda 2.30 build. Confirmed re-align: minimap2 & uLTRA → 9D through.
+- Controlled for version (changelog 2.28→2.30 shows no relevant change), arch, conda build, flags,
+  junc-bed (the bundle's was EMPTY), and read seq — the 47H clip reproduced in **none**. It was a
+  one-off artifact of the original bundle build (only unrecoverable variable: the since-deleted exact
+  input fastq). Production aligns these A-tract reads correctly.
+
+**Figure-refresh status (deferred):** regenerating the committed bundle to show the through-alignment
+is a maintenance task blocked by (a) M1 gapmm2 v25.8.12 dropping 30/36 reads, (b) H2 `rectify align`
+env/aligner-path setup, and (c) `tests/test_validation_reads.py` assertions on this read's 3′ end
+(23711→~23758) needing a deliberate update. Do it as a focused pass once gapmm2 is fixed, not ad hoc.
+Full detail: memory `project_cat2_plus1_minimap2_clip`.

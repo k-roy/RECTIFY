@@ -905,6 +905,15 @@ def _split_m_into_eqx(
     return _coalesce_adjacent_same_op(out)
 
 
+# Display-only ED weighting: a soft/hard clip is a principled abstention
+# ("I don't know how to align these bases"), whereas a forced X/I/D is a
+# confident wrong call. Charging the clip LESS than a mismatch keeps an
+# over-aggressive aligner (e.g. mapPacBio force-aligning where others honestly
+# soft-clip) from looking competitive in the review ED columns. This affects
+# ONLY the rendered "raw ED" review numbers — production winner selection lives
+# in rectify.core.consensus.scoring.score_alignment and is unchanged.
+_SOFTCLIP_ED_COST = 0.5
+
 def _cigar_raw_edit_distance(read, chrom_seq: Optional[str]) -> float:
     """Compute the raw (flat-penalty) edit distance for a corrected read.
 
@@ -915,7 +924,9 @@ def _cigar_raw_edit_distance(read, chrom_seq: Optional[str]) -> float:
       D          : 1 per base
       I          : 1 per base
       N (intron) : 0
-      S, H       : 1 per base
+      S, H       : ``_SOFTCLIP_ED_COST`` (0.5) per base — an honest abstention is
+                   charged less than a forced mismatch (display-only asymmetry;
+                   see module note above ``_SOFTCLIP_ED_COST``).
     """
     if read is None or read.cigartuples is None:
         return 0.0
@@ -944,10 +955,10 @@ def _cigar_raw_edit_distance(read, chrom_seq: Optional[str]) -> float:
         elif op == 3:              # N
             ref_pos += length
         elif op == 4:              # S
-            total += length
+            total += length * _SOFTCLIP_ED_COST
             q_pos += length
         elif op == 5:              # H
-            total += length
+            total += length * _SOFTCLIP_ED_COST
         # P (6): no advance
     return total
 
@@ -1680,7 +1691,7 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
         first_name = stripped.split(",", 1)[0].strip()
         hp, raw = aligner_ed_map.get(first_name, (None, None))
         eer_s = f"{hp:.1f}" if hp is not None else "—"
-        raw_s = f"{raw:.0f}" if raw is not None else "—"
+        raw_s = f"{raw:.1f}" if raw is not None else "—"
         return eer_s, raw_s
 
     # Layout: row labels just LEFT of the axis (transAxes coords); ED
@@ -2325,7 +2336,7 @@ def render(
             if n in aligner_ed_map:
                 hp, raw = aligner_ed_map[n]
                 hp_s = f"{hp:.1f}" if hp is not None else "—"
-                raw_s = f"{raw:.0f}" if raw is not None else "—"
+                raw_s = f"{raw:.1f}" if raw is not None else "—"
                 eds.append(f"{n} HP {hp_s} / raw {raw_s}")
         if not eds:
             return label
@@ -2631,7 +2642,7 @@ def render(
         chunks = []
         for (lbl, cn, st, en, hp, raw) in cross_chrom_rows:
             hp_s = f"{hp:.1f}" if hp is not None else "—"
-            raw_s = f"{raw:.0f}" if raw is not None else "—"
+            raw_s = f"{raw:.1f}" if raw is not None else "—"
             chunks.append(f"{lbl} on {cn}:{st:,}–{en:,}  "
                           f"(EER ED {hp_s} / raw {raw_s})")
         fig.text(0.5, 0.010,

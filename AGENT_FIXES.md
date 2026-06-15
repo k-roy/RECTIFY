@@ -20,6 +20,61 @@ it is likely not the only such bottleneck.
 
 ---
 
+## [2026-06-14] FEAT: strip terminal (AAG/GAA)n triplet-repeat basecaller artifact in DRS pre-trim
+
+**Status:** DONE. Implements `dev/specs/TODO_aag_pretrim_strip_20260614.md`. Trim-level fix +
+validation only (a full Sumner re-align/re-correct of all 11 samples is a separate decision,
+NOT done here).
+
+**Problem:** Dorado v5.2.0 / RNA004 mis-basecalls the poly-A homopolymer tail as a low-period
+multi-base repeat `(AAG/GAA)ₙ` (read-side artifact, period-3, k=3). The DRS pre-trim's poly-A
+scan finds no terminal A-run, reports `polya_len≈1`, and the artifact is carried into alignment
+and force-aligned (the cat2_minus_2 11D-bridge mess).
+
+**Fix (`rectify/core/commands/drs_trim_command.py`):** new `_find_terminal_repeat_block` peels a
+terminal low-period **multi-base** repeat block BEFORE the poly-A scan, exposing any genuine
+poly-A behind it. Reuses `repeat_expansion.dominant_repeat_period` (no new motif scanner). Key
+correctness point the spec under-specified: **poly-A is period-consistent for *every* k**, so a
+naive period walk merges the genuine poly-A run into the artifact block and destroys recovery.
+Two-stage algorithm: (1) coarse extent = longest terminal phase-walk over candidate periods, to
+identify the *true* period via `dominant_repeat_period`; (2) re-walk at the true period for the
+precise 5' boundary, anchored on the leftmost on-phase non-A base. Off-phase basecall errors
+tolerated (break at 2 consecutive, mirroring `_scan_polya`); purity gate (`min_frac=0.8`) bounds
+body absorption; multi-base-motif rule = strict no-op on pure poly-A.
+
+`find_polya_and_adapter` now returns a **6-tuple** (added `repeat_len`, `repeat_motif`); all 5
+return points + 3 callers + parallel path + `_trim_unmapped_task` metadata updated. **Critical:**
+the trim-decision condition is now `(polya_len >= 1 or repeat_len > 0)` — the dominant artifact
+case has `polya_len=0` (the (GAA)ₙ replaced the tail) yet must still be peeled.
+
+**CLI:** `--strip-repeat-expansion` (BooleanOptionalAction, **default ON**), `--repeat-min-len`
+(default **15**), `--repeat-min-frac` (default 0.8). New metadata columns `repeat_len`/`repeat_motif`.
+
+**Validation (2026-06-14, Sherlock):**
+- **Yeast no-op PROVEN:** 0/36 Cat1–9 validation reads trigger the strip; 0 `polya_len` changes
+  vs strip-off. (This decided default-ON being safe for the validation suite.)
+- **CNTL_21.8 (Sumner SMA), 20k primary, measured at the shipped `min_len=15`:** terminal-GAA
+  fraction on trimmed 3' ends **42.6% → 3.5%**; strip fires on 40.5% of reads, motif 99.9% `AAG`;
+  14.2% of reads recover poly-A≥10 behind the artifact (median `polya_len` 1→4). Residual 3.5% =
+  artifacts >150bp (adapter_window cap) + sub-15bp short blocks now intentionally spared + low-purity
+  edges. (At `min_len=9` the residual was 2.3% / fired 41.7% / recovery 14.6%, p5=17 — that
+  characterization run is what informed the min_len choice below; the 15-numbers above are the
+  shipped config.)
+- **min_len=15** chosen from the CNTL_21.8 block-length distribution (median 59bp, p5=17; only
+  2.9% of fired reads in 9–14bp) — keeps ~97% of true artifacts while sparing genuine short
+  GAA/AAG genomic tracts (SMA = repeat-disease context). Confirmed with Kevin.
+- Unit tests: `tests/test_drs_trim_repeat_strip.py` (15 tests, M1+Sherlock green). NOTE: the spec
+  pointed at `tests/test_polya_trimming.py` but that tests a *different* module
+  (`rectify.core.polya.polya_trimmer`); a dedicated file was created instead.
+
+**NOT exercised by `test_validation_reads*.py`** — that suite runs `rectify correct` on pre-built
+per-aligner BAMs, never `trim-polya`, so it is orthogonal to this change. Run anyway as a
+no-regression / import check: **124 passed, 85 skipped, EXIT=0** (Sherlock compute-node sbatch job
+29577944; the login node throttles the `--annotation` correct fan-out → use a compute node, not
+login, for this suite).
+
+---
+
 ## [2026-06-13] FIX: walkback guard-refactor (structural) + softclip_rescue stop-base bug + CI 100%-non-A gate
 
 **Status:** DONE. Implements `dev/specs/TODO_walkback_guard_refactor_20260613.md` (+ ADDENDUM:

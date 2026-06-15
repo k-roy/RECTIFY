@@ -183,6 +183,25 @@ script `62_compute_cluster_com.py` can be retired.
 
 ## Validation
 
+### Regenerate the DRS validation bundle — stale cat2_plus_1 minimap2 clip
+**Files:** `rectify/data/validation/aligners/*.bam`, `rectify/data/validation/rectified/`,
+`dev/validation_review/.../cat2_softclip_review_pngs/cat2_plus_1.png`
+**Priority:** Medium · **Blocked by:** the gapmm2 read-dropping bug (BUGS_TO_FIX NEW-082)
+
+The committed bundle's `minimap2.trimmed.bam` for cat2_plus_1 (read `61b0c014`, chrI A-tract)
+carries a **stale soft-clip** (corrected 3′=23711, EER ED 56.6, `…49M 47H`). Root-caused
+2026-06-01 as a **one-off artifact of the original bundle build** — NOT walkback/trim/version/
+flags/junc-bed/arch. Every current minimap2 (incl. production 2.30-r1287 on H2/Sherlock) aligns
+this read **through** with a clean single 9-bp deletion (`…49M 9D 39M 8S`, 3′=23759). Full
+diagnosis: `dev/validation_review/validation_read_review/cat2_softclip_findings.md` (RESOLUTION
+section) + memory `project_cat2_plus1_minimap2_clip`.
+
+**To do (focused pass, once NEW-082 is fixed):** re-align the validation reads with all 5 aligners
+(needs working gapmm2 + a configured H2/prod align env), `update_validation_aligner_bams.py` the
+fresh records, re-run `rectify correct`, re-render via `generate_review_report.py --arm drs`, and
+**update the `tests/test_validation_reads.py` assertions** for this read (3′ 23711→~23758). Confirm
+minimap2/gapmm2/uLTRA join deSALT/mapPacBio's through-cluster (EER 56.6 → ~15).
+
 ### Regenerate `rectify/data/validation/corrected_3ends.tsv`
 **File:** `rectify/data/validation/corrected_3ends.tsv` (currently deleted in working tree)
 **Priority:** Medium
@@ -210,6 +229,38 @@ The new names assert that T=T (plus) and A=A (minus) matches are GENUINE exon bo
 rather than poly-A false stops to skip past. **Author intent and biological justification
 need explicit verification** before treating this as a stable contract; see the inline
 NOTE block at the top of the regression section in the test file.
+
+---
+
+## Validation-set selector — latent cat7 bug (for future yeast agents)
+
+### cat7 (alt-splice) selection ranks by intron length, not aligner support
+**Priority:** Medium — latent; masked on yeast, surfaced on human 2026-06-12.
+
+The validation-set down-selection ranks cat7 (non-canonical unannotated junction)
+candidates by **longest intron**. On human (A549 chr5) this enshrined single-aligner
+277–453 kb mismapping artifacts as "correct behavior" — exactly wrong for a regression
+fixture. Fixed in the **human** scratch scripts (2026-06-12) by ranking on
+**cross-aligner support** (`same_intron` agreement count across the aligner panel — the
+same machinery cat5/6/9 already use; guardrail-compliant: prune by support, never by
+motif). See `~/igv_data/a549_validation/scripts/{classify_candidates,select_validation}.py`
+and `rectify/dev/handoffs/STATUS_human_validation_readset.md`.
+
+**Yeast has the same latent flaw** — yeast introns max ~800 bp, so "longest" never
+pulled artifacts, but the heuristic is still wrong in principle. **If a future yeast
+agent regenerates the committed yeast validation set, port the length→support cat7 fix**
+so the yeast cat7 exemplars are multi-aligner-confirmed, not just long.
+
+### Reconcile Sherlock `correct_command.py` `--netseq` arm back to M1
+**Priority:** Medium — cross-cluster divergence.
+
+Sherlock's rsync rectify (`/oak/.../software/rectify`) carries an **uncommitted `--netseq`
+arm** in `rectify/core/commands/correct_command.py` that is *ahead* of M1 HEAD `9f613a6`
+(every delta is `is_netseq`-gated → DRS/cDNA paths byte-identical, which is why it was
+safe to leave during the 2026-06-12 human-validation work). M1 ALSO has its own
+uncommitted WIP on this file. These need reconciling into one committed state on M1 (M1
+authoritative; do NOT discard the Sherlock netseq work — cherry-pick it back per
+CLAUDE.md). Until then the file differs across M1-WIP / M1-HEAD / Sherlock.
 
 ---
 
