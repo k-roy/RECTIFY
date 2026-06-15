@@ -193,12 +193,26 @@ def main():
     cpa_regress = 0
     novelty_suspect = 0
     weak_wins = 0
+    # PRE-REGISTERED DECISION METRIC (2026-06-15, opus independent review):
+    # the *only* mechanism that produced genuine rescues on the DRS substrates was the cDNA
+    # placing a junction the genome aligner MISSED, by a real HP-ED margin (the 3 existence
+    # proofs gained +8..+13). Multi-junction "wins" at equal junction count gained ~1.0 (ε-floor
+    # jitter) and single-exon clip wins were the walkback/CPA-pad artifact. So the GO decision is
+    # made on this count/rate, NOT the leak ratio (cleaning jitter would drop the ratio and
+    # manufacture a false GO). A strong junction-increasing win = cDNA spans MORE junctions than
+    # the genome winner AND beats it by >= STRONG_GAIN hp-ed. The DRS floor for this rate was
+    # ~3/5644 = 0.05%; a cDNA-protocol GO requires materially clearing that floor.
+    STRONG_GAIN = 5.0
+    strong_jxn_wins = 0
     for row, d in zip(rows, v.decisions):
         if not d.cdna_wins:
             continue
         gwin = row["gwin"]; cdna = row["cdna"]; cmeta = row["cmeta"]; gm = row["gmeta"]
         if row["is_weak"]:
             weak_wins += 1
+        if (cmeta["n_junc"] > gwin.n_junctions
+                and (d.hp_ed_genome - d.hp_ed_cdna) >= STRONG_GAIN):
+            strong_jxn_wins += 1
         # CPA regression: cDNA 3' end vs genome winner 3' end
         cpa_shift = None
         if gm:
@@ -225,10 +239,13 @@ def main():
         for w in win_rows:
             fh.write("\t".join(str(w.get(c, "")) for c in cols) + "\n")
 
+    strong_rate = (strong_jxn_wins / v.n_eligible) if v.n_eligible else 0.0
     summary = v.summary()
     extra = (
         f"  absolute counts            : eligible={v.n_eligible} wins={v.n_cdna_wins} "
         f"weak_wins={weak_wins} beat_ultra={v.n_wins_beating_ultra} no_cause={v.n_wins_no_cause}\n"
+        f"  *** STRONG junction-increasing wins (DECISION METRIC): {strong_jxn_wins} "
+        f"({strong_rate*100:.3f}% of eligible)  [DRS floor was 0.05%] ***\n"
         f"  uLTRA-absent eligible reads: {ultra_absent} (cDNA wins among these count as beating uLTRA)\n"
         f"  [gate] CPA-regression wins (>|{args.cpa_tol}|bp 3' shift): {cpa_regress}  [falsifier if >0]\n"
         f"  [gate] novelty-suppression suspects: {novelty_suspect}  [falsifier if >0]\n"
@@ -241,6 +258,7 @@ def main():
     with open(out / "verdict.json", "w") as fh:
         json.dump(dict(go_base=go_base, go_final=go_final, n_eligible=v.n_eligible,
                        n_cdna_wins=v.n_cdna_wins, weak_wins=weak_wins,
+                       strong_jxn_wins=strong_jxn_wins, strong_jxn_win_rate=strong_rate,
                        n_wins_beating_ultra=v.n_wins_beating_ultra,
                        trivial_win_leak=v.trivial_win_leak,
                        ultra_specific_win_frac=v.ultra_specific_win_frac,

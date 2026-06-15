@@ -146,8 +146,18 @@ def attribute_win(cdna: Candidate, genome_winner: Candidate) -> Optional[str]:
     # spanned-multi-junction: same junction count (>=2) but materially more aligned bases
     if cdna.n_junctions >= 2 and cdna.aligned_bases > genome_winner.aligned_bases:
         return "spanned_multi_junction"
-    # recovered-clip: the genome winner carried a real soft-clip the cDNA placed as matches
-    if genome_winner.genome_softclip_bp >= 20 and cdna.aligned_bases > genome_winner.aligned_bases:
+    # recovered-clip: the genome winner carried a real soft-clip the cDNA placed as matches.
+    # FIX (2026-06-15, opus independent review): require the cDNA win to span >=1 junction.
+    # Without this, single-exon reads (cdna.n_junctions==0) qualified as "recovered_clip"
+    # whenever the padded cDNA swallowed a 3' soft-clip the genome walkback correctly
+    # hard-clipped (poly-A / non-genomic) -- the walkback/CPA-pad asymmetry wearing a
+    # structural-cause costume, not a junction rescue. Those are NOT structural wins; on the
+    # DRS substrates they were the bulk of the inflated "structural" count and several were
+    # active CPA regressions. A genuine clip recovery in this method is the genome failing to
+    # SEED ACROSS A JUNCTION, so the recovering candidate must carry a junction.
+    if (cdna.n_junctions >= 1
+            and genome_winner.genome_softclip_bp >= 20
+            and cdna.aligned_bases > genome_winner.aligned_bases):
         return "recovered_clip"
     return None
 

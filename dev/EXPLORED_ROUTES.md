@@ -10,12 +10,15 @@ that mechanism still applies.
 
 ## 1. Round-2 cDNA "discovery → assignment" alignment
 
-**Dates:** scoped 2026-06-14; A549 kill-gate 2026-06-14; brain RNA004 kill-gate 2026-06-15
+**Dates:** scoped 2026-06-14; A549 dRNA kill-gate 2026-06-14; brain RNA004 kill-gate 2026-06-15;
+opus independent review + A549 **PCR-cDNA** kill-gate 2026-06-15 → **ROUTE CLOSED** (3 substrates floored).
 **Spec:** `dev/specs/SPEC_round2_cdna_discovery_assignment_20260614.md`
-**Apparatus:** `dev/round2_phase0/` (harness + cluster scripts)
+**Apparatus:** `dev/round2_phase0/` (harness + cluster scripts); independent review
+`dev/round2_phase0/INDEPENDENT_REVIEW_opus_20260615.md`
 **Cluster workdirs:**
-- A549: `sherlock:/oak/.../projects/rectify_round2_phase0/round2/`
-- Brain: `sherlock:/oak/.../projects/rectify_round2_phase0/brain_rna004/`
+- A549 dRNA: `sherlock:/oak/.../projects/rectify_round2_phase0/round2/`
+- Brain dRNA: `sherlock:/oak/.../projects/rectify_round2_phase0/brain_rna004/`
+- A549 PCR-cDNA: `sherlock:/oak/.../projects/rectify_round2_phase0/cdna_a549/`
 
 ### What was proposed
 
@@ -113,6 +116,36 @@ included), DIAPH1 (9 bp, 100%), ABLIM3 (8 bp, 100%) are all expressed and includ
 result (7 structural wins, 94.9% leak) is indistinguishable from A549. The micro-exon use
 case does not create a rescuable population on ONT DRS at these loci.
 
+### Substrate 3 — SG-NEx A549 PCR-cDNA, full-length (2026-06-15, opus independent review)
+
+The opus review found the prior aggregate verdict had never looked at individual winning reads.
+Doing so surfaced **3 genuine existence proofs** (TRIO/MPC1, +8..+13 HP-ED, the genome
+soft-clipped 9–57 bp at a junction near the read's 5′ end and the cDNA placed it) — so the
+mechanism is REAL but the rescuable population is ~0.05%. Every proof was a junction near a read
+TERMINUS with a short anchor; since ONT dRNA is 3′-biased/5′-truncated, the hypothesis was that
+**full-length PCR-cDNA** (reads reach both ends) would enlarge that population. Tested on the SAME
+A549 cells / loci / 42-cDNA library, only the protocol changed (controlled).
+
+Two real bugs in the prior verdict were fixed for this run: (1) `attribute_win` counted single-exon
+3′-pad-swallow clip-recoveries as "structural" (the walkback/CPA-pad confound in disguise) — now
+requires `cdna.n_junctions ≥ 1`; (2) the decision metric is now the **pre-registered count/rate of
+strong junction-increasing wins** (cdna_njunc > genome_njunc AND HP-ED gain ≥ 5), NOT the leak ratio
+(cleaning jitter would drop the ratio and manufacture a false GO).
+
+| Substrate | strong junction-increasing wins | rate | genuine (CPA-stable) |
+|---|---|---|---|
+| A549 dRNA (truncated) | 1 | 0.022% | 1 |
+| A549 PCR-cDNA (full-length) | 4 | 0.120% | ~3 (1 had a 1,112 bp CPA shift = misplacement) |
+| DRS floor (both prior substrates) | 3 | 0.05% | 3 |
+
+**NO-GO, route CLOSED.** F.0 lift validated again (975 reads, 0 mismatches). The truncation
+hypothesis is **directionally supported but negligible**: removing 5′-truncation lifted genuine
+rescues from 1 → ~3 reads (0.09%) — same noise-floor order, not a material clearing of the floor.
+CPA-regression wins ROSE to 57 (vs 25/5 on dRNA): the round is net-HARMFUL for a 3′-end pipeline.
+**Root cause confirmed across 3 substrates:** minimap2 splice-mode already places essentially all
+junction-spanning reads at any read terminus — there is no genome-unseedable junction-read pool for
+a contiguous cDNA aligner to rescue, and read completeness does not create one.
+
 ### What stays valid (do not discard with the feature)
 
 - **The apparatus is correct and tested.** The lift-over (`liftover.py`), win-guard
@@ -129,15 +162,17 @@ case does not create a rescuable population on ONT DRS at these loci.
 
 ### Conditions that would justify revisiting
 
-The NO-GO is substrate- and algorithm-specific. It would be worth revisiting if:
-- A substrate can be identified where a substantial fraction of reads span junctions that
-  minimap2 consistently fails to seed (e.g., extremely compact micro-exons <6 bp, or reads
-  from a highly divergent strain/species where k-mer seeding breaks down systematically).
-- The aligner panel changes in a way that leaves a larger weakened-read pool (e.g., if
-  uLTRA is replaced with a less annotation-sensitive aligner).
-- Direct evidence from IGV shows reads that visually span a junction but have a soft-clip
-  at one end that a cDNA aligner fixes — that would be an existence proof justifying a
-  targeted re-run on those specific reads.
+The NO-GO now spans 3 substrates (A549 dRNA, brain dRNA, A549 PCR-cDNA) and the two most
+plausible revisit conditions have been EXHAUSTED: the micro-exon case (brain RNA004, micro-exons
+expressed) and the read-completeness/truncation case (full-length PCR-cDNA, same cells). Both
+floored. What remains genuinely untested:
+- A **highly divergent strain/species** where k-mer seeding breaks down systematically (would
+  produce a real genome-unseedable pool). NOTE: yeast is OUT — the anchor gate is off by default,
+  so Round 2 refuses to run; a non-S288C/divergent organism with the gate ON would be needed.
+- The aligner panel changing to leave a larger weakened-read pool (e.g., uLTRA replaced with a
+  less annotation-sensitive aligner) — but this is engineering the input to manufacture headroom.
 
-Without such evidence, do not re-open: the apparatus is ready and the prior verdicts are
-the answer.
+Given 3 floored substrates and a confirmed intrinsic root cause (minimap2 splice-mode already
+seeds junction-spanning reads at any terminus), do NOT re-open without a divergent-seeding
+substrate AND a prior existence-proof that the genome-unseedable pool is large there. The
+apparatus is ready; the verdicts are the answer.
