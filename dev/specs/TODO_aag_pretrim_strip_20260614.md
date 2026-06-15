@@ -1,6 +1,9 @@
 # TODO (fresh agent): strip the (AAG)ₙ/(GAA)ₙ triplet-repeat basecaller artifact in DRS pre-trim
 
-**Status:** scoped, not started · **Drafted:** 2026-06-14 · **Owner:** unassigned
+**Status:** ✅ DONE 2026-06-14 (impl + unit tests + Sherlock validation; default-ON, min_len=15
+confirmed with Kevin). See AGENT_FIXES.md [2026-06-14] / CHANGELOG [Unreleased]/Added. NOTE:
+landed on branch `walkback-guard-refactor-todo` (the active feature branch where this TODO was
+drafted), not directly on `drs-validation-rebuild`. · **Drafted:** 2026-06-14 · **Owner:** unassigned
 **Read first:** memory `project_sumner_lab` (the "(AAG)n/(GAA)n re-confirmed" 2026-06-14 bullet) and
 `triplet-repeat-expansion-artifact-readside`. This spec is self-contained otherwise.
 
@@ -145,10 +148,15 @@ artifact prevalence is queryable post-trim. (Parquet preferred; TSV fallback alr
 
 ## 9. Deliverables checklist
 
-- [ ] Triplet-repeat strip added to `find_polya_and_adapter`, accounted for in its return (all callers correct).
-- [ ] Reuses `repeat_expansion.is_repeat_expansion` / `dominant_repeat_period` (no new motif scanner).
-- [ ] `repeat_len`/`repeat_motif` metadata columns + CLI flag(s).
-- [ ] Unit tests (recover-behind, strip-replaced, clean-no-op, incidental-codon-not-stripped) green.
-- [ ] No-op proven on old-cohort + yeast validation; full validation suite green.
-- [ ] CNTL_21.8 re-trim: terminal-GAA 43%→~0; blocked-poly-A reads recover realistic `polya_len`. Numbers in AGENT_FIXES.
-- [ ] CHANGELOG + AGENT_FIXES updated; this TODO marked done; memory `project_sumner_lab` updated.
+- [x] Triplet-repeat strip added to `find_polya_and_adapter` (`_find_terminal_repeat_block`), 6-tuple return; all 5 returns + 3 callers + parallel path + `_trim_unmapped_task` updated. Trim-decision now `(polya_len>=1 or repeat_len>0)`.
+- [x] Reuses `repeat_expansion.dominant_repeat_period` (no new motif scanner). (Used `dominant_repeat_period` directly rather than `is_repeat_expansion` — same detector, gives frac/period for the two-stage boundary.)
+- [x] `repeat_len`/`repeat_motif` metadata columns + CLI flags (`--strip-repeat-expansion` default ON, `--repeat-min-len` 15, `--repeat-min-frac` 0.8).
+- [x] Unit tests `tests/test_drs_trim_repeat_strip.py` (15 tests) green on M1+Sherlock. (Spec pointed at `test_polya_trimming.py` = wrong module; dedicated file created.)
+- [x] No-op proven on yeast validation (0/36 Cat1–9 reads fire, 0 `polya_len` changes); full `test_validation_reads*.py` suite green (124 passed / 85 skipped, sbatch job 29577944) — orthogonal (never calls the trimmer), run as a no-regression/import check.
+- [x] CNTL_21.8 re-trim (at shipped `min_len=15`): terminal-GAA 42.6%→3.5%; fires 40.5% (99.9% AAG); 14.2% of reads recover poly-A≥10 behind the artifact (median `polya_len` 1→4). (At min_len=9: 2.3% / 41.7% / 14.6% — the characterization run that set min_len.) Numbers in AGENT_FIXES.
+- [x] CHANGELOG + AGENT_FIXES updated; this TODO marked done; memory `project_sumner_lab` updated.
+
+**Implementation notes / deviations from spec:**
+- Spec's naive "peel terminal repeat then scan" misses that **poly-A is period-consistent for every k** → a single-period walk merges the genuine poly-A into the block. Solved with a two-stage walk (coarse extent → identify true period → re-walk at true period), boundary anchored on the leftmost on-phase non-A base.
+- `min_len=15` (not the spec's 9): chosen from the CNTL_21.8 block-length distribution + SMA repeat-disease context (genuine short GAA tracts). Confirmed with Kevin.
+- **OUT of scope (unchanged):** full 11-sample Sumner re-align/re-correct; cat2_minus_2 softclip_rescue fix.

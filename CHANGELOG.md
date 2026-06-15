@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DRS pre-trim now strips the terminal `(AAG/GAA)ₙ` triplet-repeat basecaller
+  artifact** (`rectify trim-polya`). Dorado v5.2.0 / RNA004 mis-basecalls the poly-A
+  homopolymer tail as a low-period multi-base repeat with no terminal A-run, so the
+  poly-A scan misses it and the artifact is force-aligned downstream. The trimmer now
+  peels a terminal low-period **multi-base** repeat block before the poly-A scan
+  (`_find_terminal_repeat_block`), exposing any genuine poly-A behind it. The boundary
+  is anchored on the repeat's non-A phase, so a poly-A run 5′ of the artifact is
+  preserved (poly-A homopolymers are period-consistent at every period and would
+  otherwise be merged into the block). Reuses the existing motif-agnostic
+  `repeat_expansion` detector — strict no-op on clean poly-A tails (no motif gating).
+  - New flags: `--strip-repeat-expansion` / `--no-strip-repeat-expansion` (default ON),
+    `--repeat-min-len` (default 15), `--repeat-min-frac` (default 0.8).
+  - New trim-metadata columns: `repeat_len`, `repeat_motif`.
+  - Measured on Sumner SMA `CNTL_21.8` (RNA004) at the default `min_len=15`: terminal-GAA
+    fraction on trimmed 3′ ends 42.6% → 3.5%; strict no-op on the yeast Cat1–9 validation
+    reads (0/36 fire).
+
 ### Fixed
 
 - **DRS 3' ends now land on a non-A 100% of the time** (walkback guard-refactor +

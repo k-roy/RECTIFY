@@ -33,6 +33,11 @@ from typing import Dict, List, Optional, Tuple
 import pysam
 
 from ...utils.genome import reverse_complement
+from ..splice.repeat_expansion import (
+    dominant_repeat_period,
+    DEFAULT_K_RANGE as _REPEAT_K_RANGE,
+    _MIN_REPEATS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,18 @@ _ADAPTER_RE = re.compile(r'[TU][CTU]{0,10}$')
 _PASS2_MAX_STUB = 15       # max stub length to try peeling in pass 2
 _MIN_POLYA_PASS2 = 5       # min poly(A) length required to accept a pass-2 call
 _ADAPTER_WINDOW = 150      # last N bases of RNA-oriented sequence to analyse
+
+# Terminal (AAG/GAA)n triplet-repeat basecaller-artifact strip (Dorado RNA004).
+# The poly-A homopolymer is mis-basecalled as a low-period multi-base repeat that
+# the poly-A scan cannot see (no terminal A-run). We peel that block before the
+# poly-A scan so the artifact is not carried into alignment. Strict no-op on clean
+# poly-A: the block must contain periodic non-A bases (see _find_terminal_repeat_block).
+# min_len=15 chosen from the CNTL_21.8 block-length distribution (2026-06-14): real
+# artifacts are long (median 59 bp, p5=17), only ~2.9% of fired reads fall in 9-14 bp.
+# 15 keeps ~97% of true artifacts while sparing genuine short GAA/AAG genomic tracts —
+# important in the SMA (repeat-disease) patient context where short expansions are biology.
+_REPEAT_MIN_LEN = 15       # >= 5 tandem copies of a triplet
+_REPEAT_MIN_FRAC = 0.8     # canonical-motif purity required to peel
 
 # ---------------------------------------------------------------------------
 # Core detection functions
@@ -117,13 +134,114 @@ def _scan_polya(seq: str, max_error_rate: float = 0.0, max_consecutive_non_a: in
     return n - polya_start
 
 
+def _find_terminal_repeat_block(
+    window: str,
+    min_len: int = _REPEAT_MIN_LEN,
+    min_frac: float = _REPEAT_MIN_FRAC,
+    k_range: Tuple[int, ...] = _REPEAT_K_RANGE,
+) -> Tuple[int, str]:
+    """Locate a terminal low-period MULTI-BASE repeat block (the (AAG/GAA)n Dorado
+    RNA004 basecaller artifact) at the 3' end of an RNA-oriented ``window``.
+
+    Returns ``(block_len, canonical_motif)`` — the number of 3'-terminal bases to
+    peel and the dominant repeat motif — or ``(0, '')`` when no block qualifies.
+
+    The block's 5' boundary is anchored on the leftmost *on-phase non-A* base, so a
+    pure poly-A run immediately 5' of the artifact is **preserved** for the
+    downstream poly-A scan (the 4.8% "blocked poly-A" recovery case). This anchoring
+    is the key correctness condition: poly-A satisfies *every* period trivially, so a
+    naive period walk would merge the genuine poly-A run into the artifact block and
+    destroy poly-A recovery.
+
+    Strict no-op on clean poly-A/poly-T: the walk is anchored on a non-A base and the
+    final gate rejects single-base motifs (``len(set(motif)) <= 1`` on
+    :func:`dominant_repeat_period`'s result — the same multi-base rule as
+    :func:`is_repeat_expansion`), so a pure homopolymer tail never qualifies. Off-phase
+    basecall errors are tolerated (break only at 2 consecutive, mirroring
+    ``_scan_polya``); the purity gate then bounds how far the block may absorb
+    non-periodic flanking sequence.
+    """
+    n = len(window)
+    if n < min_len:
+        return 0, ''
+
+    # Anchor phase on the rightmost non-A base. The artifact carries the periodic
+    # non-A signal; trailing A's of the final repeat unit (e.g. the "AA" of a
+    # terminal ...GAA) sit 3' of r and are included via window[lo:].
+    r = -1
+    for i in range(n - 1, -1, -1):
+        if window[i] != 'A':
+            r = i
+            break
+    if r < 0:
+        return 0, ''  # pure-A window: no multi-base repeat at any period
+
+    def _walk(k: int) -> int:
+        """Leftmost (5') boundary of the terminal period-k repeat block: the
+        index of the furthest on-phase non-A base reachable from r without
+        crossing a full period of A's (poly-A/body) or 2 consecutive off-phase
+        non-A bases (left the repeat; a lone off-phase base is a tolerated
+        basecall error)."""
+        phase = r % k
+        lo = r
+        consec_a = 0
+        off_phase = 0
+        i = r - 1
+        while i >= 0:
+            b = window[i]
+            if b == 'A':
+                consec_a += 1
+                off_phase = 0
+                if consec_a >= k:
+                    break
+            else:
+                consec_a = 0
+                if i % k == phase:
+                    lo = i
+                    off_phase = 0
+                else:
+                    off_phase += 1
+                    if off_phase > 1:
+                        break
+            i -= 1
+        return lo
+
+    ks = [k for k in k_range if n >= k * _MIN_REPEATS]
+    if not ks:
+        return 0, ''
+
+    # Stage 1 — coarse extent: the longest terminal repeat over candidate periods
+    # (smallest lo). A wrong period yields a shorter or accidentally-purer
+    # sub-block; using the longest extent guarantees the true repeat is fully
+    # captured so dominant_repeat_period can identify its real period below.
+    coarse_lo = min(_walk(k) for k in ks)
+    if n - coarse_lo < min_len:
+        return 0, ''
+    coarse = dominant_repeat_period(window[coarse_lo:], min_frac, k_range)
+    if coarse is None or len(set(coarse[1])) <= 1:
+        return 0, ''  # not a multi-base repeat (e.g. pure poly-A) -> strict no-op
+
+    # Stage 2 — precise boundary at the true period, then gate.
+    final_lo = _walk(coarse[0])
+    block = window[final_lo:]
+    if len(block) < min_len:
+        return 0, ''
+    res = dominant_repeat_period(block, min_frac, k_range)
+    if res is None or len(set(res[1])) <= 1 or res[2] < min_frac:
+        return 0, ''
+    return len(block), res[1]
+
+
 def find_polya_and_adapter(
     seq: str,
     max_error_rate: float = 0.0,
     max_consecutive_non_a: int = 1,
     min_polya: int = 1,
     adapter_window: int = _ADAPTER_WINDOW,
-) -> Tuple[int, str, str, int]:
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
+) -> Tuple[int, str, str, int, int, str]:
     """Detect poly(A) tail and adapter stub from a 3'-oriented read window.
 
     Three-pass algorithm:
@@ -139,11 +257,16 @@ def find_polya_and_adapter(
         adapter_window: Only inspect the last N bases (default 150).
 
     Returns:
-        (polya_len, adapter_seq, last_base, adapter_pass) where:
-          polya_len    - detected poly(A) tail length in bp (0 if none)
+        (polya_len, adapter_seq, last_base, adapter_pass, repeat_len, repeat_motif) where:
+          polya_len    - detected poly(A) tail length in bp (0 if none); measured on
+                         the window *after* the repeat block (if any) is peeled
           adapter_seq  - detected adapter stub (empty string for pass 0)
           last_base    - last base of poly(A)-trimmed sequence (quality check)
           adapter_pass - 0/1/2 (see above)
+          repeat_len   - length of the terminal (AAG/GAA)n artifact block peeled (0
+                         if none / strip disabled). Sits 3' of polya_len; callers fold
+                         it into total_trim = repeat_len + polya_len + len(adapter_seq).
+          repeat_motif - canonical motif of the peeled block ('' if none)
     """
     # Restrict analysis to the last adapter_window bases for efficiency
     if len(seq) > adapter_window:
@@ -153,7 +276,7 @@ def find_polya_and_adapter(
 
     n = len(window)
     if n == 0:
-        return 0, '', '', 0
+        return 0, '', '', 0, 0, ''
 
     # --- Pass 1: regex adapter detection ---
     m = _ADAPTER_RE.search(window)
@@ -167,13 +290,31 @@ def find_polya_and_adapter(
 
     n = len(window)
     if n == 0:
-        return 0, adapter_seq, '', adapter_pass
+        return 0, adapter_seq, '', adapter_pass, 0, ''
+
+    # --- Terminal (AAG/GAA)n triplet-repeat artifact strip ---
+    # Peel the basecaller artifact block (if any) BEFORE the poly-A scan: the
+    # mis-basecalled tail has no terminal A-run, so _scan_polya cannot see it and the
+    # artifact would otherwise be force-aligned. Peeling exposes any genuine poly-A
+    # run 5' of the artifact for the scan below.
+    repeat_len = 0
+    repeat_motif = ''
+    if strip_repeat:
+        repeat_len, repeat_motif = _find_terminal_repeat_block(
+            window, min_len=repeat_min_len, min_frac=repeat_min_frac,
+        )
+        if repeat_len:
+            window = window[:-repeat_len]
+
+    n = len(window)
+    if n == 0:
+        return 0, adapter_seq, '', adapter_pass, repeat_len, repeat_motif
 
     last_base = window[-1]
     polya_len = _scan_polya(window, max_error_rate, max_consecutive_non_a)
 
     if polya_len >= min_polya:
-        return polya_len, adapter_seq, last_base, adapter_pass
+        return polya_len, adapter_seq, last_base, adapter_pass, repeat_len, repeat_motif
 
     # --- Pass 2: iterative peel for stubs with A-basecalling errors ---
     # Only activates when last_base is not 'A'
@@ -191,9 +332,9 @@ def find_polya_and_adapter(
             polya_len2 = _scan_polya(candidate, max_error_rate, max_consecutive_non_a)
             if polya_len2 >= _MIN_POLYA_PASS2:
                 combined_adapter = (stub + adapter_seq)[:adapter_window]
-                return polya_len2, combined_adapter, candidate[-1], 2
+                return polya_len2, combined_adapter, candidate[-1], 2, repeat_len, repeat_motif
 
-    return 0, adapter_seq, last_base, adapter_pass
+    return 0, adapter_seq, last_base, adapter_pass, repeat_len, repeat_motif
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +476,9 @@ def trim_drs_bam_polya(
     max_consecutive_non_a: int = 1,
     adapter_window: int = _ADAPTER_WINDOW,
     threads: int = 1,
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
 ) -> Dict:
     """Trim poly(A) tails and adapter stubs from a Dorado-aligned DRS BAM.
 
@@ -416,21 +560,26 @@ def trim_drs_bam_polya(
                 except (KeyError, ValueError):
                     pt_tag = -1
 
-                # Detect poly(A) + adapter
-                polya_len, adapter_seq, _last_base, adapter_pass = find_polya_and_adapter(
+                # Detect poly(A) + adapter (+ terminal (AAG/GAA)n artifact)
+                polya_len, adapter_seq, _last_base, adapter_pass, repeat_len, repeat_motif = find_polya_and_adapter(
                     rna_seq,
                     max_error_rate=max_error_rate,
                     max_consecutive_non_a=max_consecutive_non_a,
                     adapter_window=adapter_window,
+                    strip_repeat=strip_repeat,
+                    repeat_min_len=repeat_min_len,
+                    repeat_min_frac=repeat_min_frac,
                 )
                 stats['pass_counts'][adapter_pass] += 1
 
-                total_trim = polya_len + len(adapter_seq)
+                total_trim = polya_len + repeat_len + len(adapter_seq)
 
-                # Only trim when poly(A) is actually detected (polya_len >= 1).
-                # Reads with polya_len=0 are genuine non-polyadenylated transcripts
-                # (~2% of DRS reads) — do not trim even if adapter stub was detected.
-                if polya_len >= 1 and total_trim < len(rna_seq):
+                # Trim when a poly(A) tail (polya_len >= 1) OR a terminal repeat-
+                # expansion artifact (repeat_len > 0) is detected. The artifact case
+                # often has polya_len=0 (the (GAA)n replaced the tail outright) yet
+                # must still be peeled so it is not force-aligned. Reads with neither
+                # are genuine non-polyadenylated transcripts — left untrimmed.
+                if (polya_len >= 1 or repeat_len > 0) and total_trim < len(rna_seq):
                     # Record the exact bases removed (RNA-oriented)
                     trimmed_3prime_seq = rna_seq[-total_trim:]
                     trimmed_3prime_quals = rna_quals[-total_trim:] if rna_quals else []
@@ -463,6 +612,8 @@ def trim_drs_bam_polya(
                     'polya_len': polya_len,
                     'adapter_seq': adapter_seq[:50],
                     'adapter_pass': adapter_pass,
+                    'repeat_len': repeat_len,
+                    'repeat_motif': repeat_motif,
                     'pt_tag': pt_tag,
                     'trimmed_3prime_seq': trimmed_3prime_seq,
                     'trimmed_3prime_quals': quals_str,
@@ -493,6 +644,9 @@ def trim_drs_fastq_polya(
     max_error_rate: float = 0.0,
     max_consecutive_non_a: int = 1,
     adapter_window: int = _ADAPTER_WINDOW,
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
 ) -> dict:
     """Trim poly(A) tails from a DRS FASTQ where reads are already 5'→3' RNA.
 
@@ -551,16 +705,19 @@ def trim_drs_fastq_polya(
             read_id = header[1:].split()[0] if header.startswith('@') else header[1:]
 
             # DRS reads are already 5'→3'; poly-A is at the 3' end
-            polya_len, adapter_seq, _last_base, adapter_pass = find_polya_and_adapter(
+            polya_len, adapter_seq, _last_base, adapter_pass, repeat_len, repeat_motif = find_polya_and_adapter(
                 seq,
                 max_error_rate=max_error_rate,
                 max_consecutive_non_a=max_consecutive_non_a,
                 adapter_window=adapter_window,
+                strip_repeat=strip_repeat,
+                repeat_min_len=repeat_min_len,
+                repeat_min_frac=repeat_min_frac,
             )
             stats['pass_counts'][adapter_pass] += 1
-            total_trim = polya_len + len(adapter_seq)
+            total_trim = polya_len + repeat_len + len(adapter_seq)
 
-            if polya_len >= 1 and total_trim < len(seq):
+            if (polya_len >= 1 or repeat_len > 0) and total_trim < len(seq):
                 trimmed_3prime_seq  = seq[-total_trim:]
                 trimmed_3prime_qual = qual[-total_trim:] if qual else ''
                 trimmed_seq  = seq[:-total_trim]
@@ -582,6 +739,8 @@ def trim_drs_fastq_polya(
                 'polya_len':           polya_len,
                 'adapter_seq':         adapter_seq[:50],
                 'adapter_pass':        adapter_pass,
+                'repeat_len':          repeat_len,
+                'repeat_motif':        repeat_motif,
                 'pt_tag':              -1,
                 'trimmed_3prime_seq':  trimmed_3prime_seq,
                 'trimmed_3prime_quals': quals_str,
@@ -610,6 +769,9 @@ def _process_mapped_read(
     max_error_rate: float,
     max_consecutive_non_a: int,
     adapter_window: int,
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
 ) -> Tuple[pysam.AlignedSegment, Dict, int, bool]:
     """Trim poly-A from one mapped read; return (rec, row, adapter_pass, was_trimmed)."""
     seq = read.query_sequence or ""
@@ -621,12 +783,14 @@ def _process_mapped_read(
         pt_tag = int(read.get_tag("pt"))
     except (KeyError, ValueError):
         pt_tag = -1
-    polya_len, adapter_seq, _last, adapter_pass = find_polya_and_adapter(
+    polya_len, adapter_seq, _last, adapter_pass, repeat_len, repeat_motif = find_polya_and_adapter(
         rna_seq, max_error_rate=max_error_rate,
         max_consecutive_non_a=max_consecutive_non_a, adapter_window=adapter_window,
+        strip_repeat=strip_repeat, repeat_min_len=repeat_min_len,
+        repeat_min_frac=repeat_min_frac,
     )
-    total_trim = polya_len + len(adapter_seq)
-    if polya_len >= 1 and total_trim < len(rna_seq):
+    total_trim = polya_len + repeat_len + len(adapter_seq)
+    if (polya_len >= 1 or repeat_len > 0) and total_trim < len(rna_seq):
         trimmed_rna_seq = rna_seq[:-total_trim]
         trimmed_rna_quals = rna_quals[:-total_trim] if rna_quals else []
         trimmed_3p_seq = rna_seq[-total_trim:]
@@ -646,6 +810,8 @@ def _process_mapped_read(
         "polya_len": polya_len,
         "adapter_seq": adapter_seq[:50],
         "adapter_pass": adapter_pass,
+        "repeat_len": repeat_len,
+        "repeat_motif": repeat_motif,
         "pt_tag": pt_tag,
         "trimmed_3prime_seq": trimmed_3p_seq,
         "trimmed_3prime_quals": quals_str,
@@ -669,6 +835,9 @@ def _trim_region_task(
     max_error_rate: float,
     max_consecutive_non_a: int,
     adapter_window: int,
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
 ) -> Tuple[List[Dict], int, int]:
     """Trim one BAM region in a worker process.
 
@@ -684,7 +853,9 @@ def _trim_region_task(
             if read.is_unmapped or not read.query_sequence:
                 continue
             rec, row, _, was_trimmed = _process_mapped_read(
-                read, hdr, max_error_rate, max_consecutive_non_a, adapter_window
+                read, hdr, max_error_rate, max_consecutive_non_a, adapter_window,
+                strip_repeat=strip_repeat, repeat_min_len=repeat_min_len,
+                repeat_min_frac=repeat_min_frac,
             )
             bam_out.write(rec)
             rows.append(row)
@@ -725,6 +896,8 @@ def _trim_unmapped_task(
                     "polya_len": 0,
                     "adapter_seq": "",
                     "adapter_pass": 0,
+                    "repeat_len": 0,
+                    "repeat_motif": "",
                     "pt_tag": pt_tag,
                     "trimmed_3prime_seq": "",
                     "trimmed_3prime_quals": "",
@@ -742,6 +915,9 @@ def _trim_drs_bam_polya_parallel(
     max_consecutive_non_a: int = 1,
     adapter_window: int = _ADAPTER_WINDOW,
     workers: int = 4,
+    strip_repeat: bool = True,
+    repeat_min_len: int = _REPEAT_MIN_LEN,
+    repeat_min_frac: float = _REPEAT_MIN_FRAC,
 ) -> Dict:
     """Region-parallel poly-A trimmer.
 
@@ -775,6 +951,7 @@ def _trim_drs_bam_polya_parallel(
                     _trim_region_task,
                     input_bam_path, plan.chrom, plan.start, plan.end,
                     out_bam, max_error_rate, max_consecutive_non_a, adapter_window,
+                    strip_repeat, repeat_min_len, repeat_min_frac,
                 )
                 futures[fut] = plan.region_id
 
@@ -892,6 +1069,14 @@ def run(args) -> int:
     print(f"max_consecutive_non_a:   {args.max_consecutive_non_a}")
     print(f"adapter_window:          {args.adapter_window}")
 
+    _strip_repeat = getattr(args, 'strip_repeat_expansion', True)
+    _repeat_min_len = getattr(args, 'repeat_min_len', _REPEAT_MIN_LEN)
+    _repeat_min_frac = getattr(args, 'repeat_min_frac', _REPEAT_MIN_FRAC)
+    print(f"strip_repeat_expansion:  {_strip_repeat}")
+    if _strip_repeat:
+        print(f"repeat_min_len:          {_repeat_min_len}")
+        print(f"repeat_min_frac:         {_repeat_min_frac}")
+
     _workers = max(1, getattr(args, 'workers', 1) or 1)
 
     if _is_fastq(input_path):
@@ -906,6 +1091,9 @@ def run(args) -> int:
             max_error_rate=args.max_error_rate,
             max_consecutive_non_a=args.max_consecutive_non_a,
             adapter_window=args.adapter_window,
+            strip_repeat=_strip_repeat,
+            repeat_min_len=_repeat_min_len,
+            repeat_min_frac=_repeat_min_frac,
         )
         _outputs = {'output_fastq': str(output_fastq), 'metadata': str(metadata_path)}
     else:
@@ -923,6 +1111,9 @@ def run(args) -> int:
                 max_consecutive_non_a=args.max_consecutive_non_a,
                 adapter_window=args.adapter_window,
                 workers=_workers,
+                strip_repeat=_strip_repeat,
+                repeat_min_len=_repeat_min_len,
+                repeat_min_frac=_repeat_min_frac,
             )
         else:
             stats = trim_drs_bam_polya(
@@ -932,6 +1123,9 @@ def run(args) -> int:
                 max_error_rate=args.max_error_rate,
                 max_consecutive_non_a=args.max_consecutive_non_a,
                 adapter_window=args.adapter_window,
+                strip_repeat=_strip_repeat,
+                repeat_min_len=_repeat_min_len,
+                repeat_min_frac=_repeat_min_frac,
             )
         _outputs = {'output_bam': str(output_bam), 'metadata': str(metadata_path)}
 
@@ -1021,6 +1215,32 @@ def create_trim_polya_parser(subparsers):
             'stop at 2+ consecutive). Prevents consuming upstream gene-body sequence '
             'even when --max-error-rate > 0.'
         ),
+    )
+    trim_polya_parser.add_argument(
+        '--strip-repeat-expansion',
+        dest='strip_repeat_expansion',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Peel a terminal (AAG/GAA)n triplet-repeat basecaller artifact (Dorado '
+            'RNA004) before the poly(A) scan, exposing any genuine poly(A) behind it. '
+            'Strict no-op on clean poly(A) tails. Use --no-strip-repeat-expansion to '
+            'disable.'
+        ),
+    )
+    trim_polya_parser.add_argument(
+        '--repeat-min-len',
+        dest='repeat_min_len',
+        type=int,
+        default=_REPEAT_MIN_LEN,
+        help='Minimum terminal repeat-block length (bp) to peel (default: %(default)s).',
+    )
+    trim_polya_parser.add_argument(
+        '--repeat-min-frac',
+        dest='repeat_min_frac',
+        type=float,
+        default=_REPEAT_MIN_FRAC,
+        help='Minimum canonical-motif purity to peel a repeat block (default: %(default)s).',
     )
     trim_polya_parser.add_argument(
         '--prefix',
