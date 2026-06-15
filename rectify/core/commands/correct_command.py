@@ -291,7 +291,12 @@ def validate_inputs(args) -> dict:
     # dT-primed cDNA flag enables AG mispriming detection (a cDNA-synthesis artifact).
     # Poly(A) trimming and indel correction are always enabled — the poly-A tail is
     # present in both DRS and dT-primed cDNA reads and always requires correction.
-    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    is_netseq = getattr(args, 'netseq', False)
+    # NET-seq (yeast single-end + human mNET-seq read 2) is antisense with the
+    # nascent 3' end / poly(A) on the read 5' side — geometry identical to QuantSeq
+    # REV — so it routes through the same validated antisense walkback (gene strand
+    # = opposite of BAM strand; CPA at the read 5' end).
+    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False) or is_netseq
     # ONT PCR-cDNA (e.g. SQK-PCB114): same strand convention as DRS (no flip);
     # poly-A tail IS present as a 3' soft-clip from minimap2 alignment.
     # AG mispriming disabled (no oligo-dT priming step).
@@ -361,6 +366,9 @@ def validate_inputs(args) -> dict:
         # Antisense protocol flag: when True, gene strand = opposite of read strand.
         # Passed through to correct_read_3prime to flip 3' end assignment.
         'dt_primed_cDNA': is_dt_primed,
+        # NET-seq CPA-intermediate arm: routes the antisense walkback (via
+        # dt_primed_cDNA) but labels the protocol 'netseq' for stats/provenance.
+        'is_netseq': is_netseq,
         # ONT PCR-cDNA flag: same strand convention as DRS (no strand flip).
         # Poly-A IS in the read as a right soft-clip; AG mispriming is disabled.
         # Used for stats protocol label only — no bam_processor behaviour changes needed.
@@ -421,7 +429,12 @@ def run(args):
     # Validate inputs
     logger.info("Validating inputs...")
     config = validate_inputs(args)
-    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False)
+    is_netseq = getattr(args, 'netseq', False)
+    # NET-seq (yeast single-end + human mNET-seq read 2) is antisense with the
+    # nascent 3' end / poly(A) on the read 5' side — geometry identical to QuantSeq
+    # REV — so it routes through the same validated antisense walkback (gene strand
+    # = opposite of BAM strand; CPA at the read 5' end).
+    is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False) or is_netseq
     is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     is_short_read = getattr(args, 'short_read', False)
 
@@ -815,7 +828,7 @@ def run(args):
         # Choose processing mode
         _t_proc = _time.perf_counter()
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
-        _protocol = 'dt_cdna' if is_dt_primed else ('ont_cdna' if is_ont_cdna else 'drs')
+        _protocol = 'netseq' if is_netseq else ('dt_cdna' if is_dt_primed else ('ont_cdna' if is_ont_cdna else 'drs'))
 
         # Build rRNA / Pol III exclusion detector (mirrors `analyze`'s default-on
         # exclusion). rDNA, tRNAs, SNR6, RDN5, etc. are dropped downstream by
@@ -1496,6 +1509,17 @@ def create_correct_parser(subparsers):
              'convention is the same as DRS: is_reverse=True → minus-strand gene. '
              'Enables poly(A) trimming and indel correction; disables AG mispriming '
              '(no oligo-dT priming step). Do NOT use --dT-primed-cDNA for this protocol.'
+    )
+    tech_group.add_argument(
+        '--netseq',
+        dest='netseq',
+        action='store_true',
+        default=False,
+        help='Input is NET-seq / mNET-seq (Pol II-associated nascent RNA). Antisense '
+             'chemistry with the nascent 3\' end + non-templated poly(A) on the read 5\' '
+             'side (geometry identical to QuantSeq REV) — routes the antisense poly(A) '
+             'walkback to call CPA cleavage intermediates. For paired-end mNET-seq, isolate '
+             'read 2 first (see `rectify netseq-cpa`). Labels the protocol \'netseq\'.',
     )
     tech_group.add_argument(
         '--short-read',
