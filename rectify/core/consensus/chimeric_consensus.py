@@ -95,6 +95,11 @@ class ChimericResult:
     three_prime_aligner: str = ""
     # All scores for stats
     all_segment_scores: List[ChimericSegment] = field(default_factory=list)
+    # True when this result came from a fallback path (no usable sync points /
+    # CIGAR build failed) rather than genuine multi-aligner stitching.  Used by
+    # ChimericStats to separate real segment wins from degenerate single-aligner
+    # pass-throughs so a measurement can't be confounded by fallback rate.
+    is_fallback: bool = False
 
 
 # ============================================================================
@@ -1059,12 +1064,43 @@ def _fallback_simple_selection(
         five_prime_aligner=best_aligner,
         interior_aligners=[best_aligner],
         three_prime_aligner=best_aligner,
+        is_fallback=True,
     )
 
 
 # ============================================================================
 # Statistics aggregation
 # ============================================================================
+
+def _classify_term(winner: 'SegmentScore', loser: 'SegmentScore') -> str:
+    """Classify the term that separated `winner` from `loser` on one contested
+    segment.  Checked in priority order so the dominant motif/structure term is
+    attributed before the residue-level fallback:
+
+      annotated    — winner placed more annotated junctions than the loser
+      canonical    — winner placed more canonical (GT-AG) junctions
+      false_3prime — loser carried a spurious 3' junction the winner did not
+      softclip     — loser soft-clipped more (the "went for it" overhang term)
+      indel        — loser carried more insertions+deletions
+      residue      — decided on matches/mismatches only (no structural term)
+
+    This lets a downstream measurement see whether GMAP's segment wins/losses
+    ride on the annotated (+8) term — which is DEAD when annotated_junctions is
+    empty — versus the canonical (+5/-3) term, separating signal from the
+    load_annotated_junctions confound.
+    """
+    if winner.n_annotated_junctions > loser.n_annotated_junctions:
+        return 'annotated'
+    if winner.n_canonical_junctions > loser.n_canonical_junctions:
+        return 'canonical'
+    if loser.has_false_3prime_junction and not winner.has_false_3prime_junction:
+        return 'false_3prime'
+    if loser.n_softclip > winner.n_softclip:
+        return 'softclip'
+    if (loser.n_insertions + loser.n_deletions) > (winner.n_insertions + winner.n_deletions):
+        return 'indel'
+    return 'residue'
+
 
 @dataclass
 class ChimericStats:
@@ -1095,17 +1131,37 @@ class ChimericStats:
     avg_segments_per_read: float = 0.0
     avg_agreement_fraction: float = 0.0
 
+    # ---- Loss/win-reason instrumentation (the measurement of WHY a segment
+    # went the way it did).  Without this, a GMAP-vs-rest segment comparison
+    # repeats the annotation-off confound: if `annotated_junctions` is empty
+    # (the load_annotated_junctions exon-GTF bug), the annotated (+8) term is
+    # dead and every junction decision collapses onto the canonical (+5/-3)
+    # term — so we must record which term actually decided each contested
+    # segment, not just who won.
+    # `decisive_term`: across all CONTESTED (>1 distinct score) scored
+    # segments, what term separated winner from runner-up.
+    decisive_term: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Per-aligner: segments it competed in (was scored) and won.
+    segments_competed_by_aligner: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    segments_won_by_aligner: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Per-aligner loss reasons: when this aligner LOST a contested segment,
+    # which winner-favouring term beat it (annotated / canonical / false_3prime
+    # / softclip / other).
+    loss_reason_by_aligner: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    # Per-aligner win reasons: when this aligner WON a contested segment, what
+    # the winning margin rode on (same term vocabulary).
+    win_reason_by_aligner: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+
     def update(self, result: ChimericResult):
         """Update stats with one read's chimeric result."""
         self.total_reads += 1
 
-        if result.is_chimeric:
+        if result.is_fallback:
+            self.fallback_reads += 1
+        elif result.is_chimeric:
             self.chimeric_reads += 1
-        elif result.n_segments == 1 and result.segment_winners:
-            if result.segment_winners[0][0] == 'whole':
-                self.single_aligner_reads += 1
-            else:
-                self.single_aligner_reads += 1
         else:
             self.single_aligner_reads += 1
 
@@ -1135,6 +1191,31 @@ class ChimericStats:
                 self.interior_by_aligner[aligner] += 1
                 self.interior_bases_by_aligner[aligner] += n_bases
 
+        # ---- Loss/win-reason: only contested scored segments carry this.
+        # Agreement segments and single-candidate segments are skipped.
+        for seg in result.all_segment_scores:
+            scores = getattr(seg, 'scores', None)
+            if not scores or len(scores) < 2:
+                continue
+            winner = seg.winning_aligner
+            if winner not in scores:
+                continue
+            distinct = {round(s.score, 6) for s in scores.values()}
+            contested = len(distinct) > 1
+            for aligner in scores:
+                self.segments_competed_by_aligner[aligner] += 1
+            self.segments_won_by_aligner[winner] += 1
+            if not contested:
+                continue
+            w = scores[winner]
+            for aligner, s in scores.items():
+                if aligner == winner:
+                    continue
+                reason = _classify_term(w, s)
+                self.loss_reason_by_aligner[aligner][reason] += 1
+                self.win_reason_by_aligner[winner][reason] += 1
+                self.decisive_term[reason] += 1
+
     def finalize(self):
         """Compute derived statistics."""
         if self.total_reads > 0:
@@ -1161,6 +1242,15 @@ class ChimericStats:
             'three_prime_bases': dict(self.three_prime_bases_by_aligner),
             'interior_bases': dict(self.interior_bases_by_aligner),
             'overall_segment_wins': dict(self.overall_by_aligner),
+            'decisive_term': dict(self.decisive_term),
+            'segments_competed_by_aligner': dict(self.segments_competed_by_aligner),
+            'segments_won_by_aligner': dict(self.segments_won_by_aligner),
+            'loss_reason_by_aligner': {
+                a: dict(d) for a, d in self.loss_reason_by_aligner.items()
+            },
+            'win_reason_by_aligner': {
+                a: dict(d) for a, d in self.win_reason_by_aligner.items()
+            },
         }
 
     def log_summary(self):
@@ -1206,5 +1296,39 @@ class ChimericStats:
                 logger.info(f"    {a:<15} {self.five_prime_bases_by_aligner.get(a,0):>10,} "
                              f"{self.interior_bases_by_aligner.get(a,0):>10,} "
                              f"{self.three_prime_bases_by_aligner.get(a,0):>10,}")
+
+        # ---- Decisive-term breakdown (the annotation-off confound check) ----
+        if self.decisive_term:
+            total_contested = sum(self.decisive_term.values())
+            logger.info("")
+            logger.info(f"  Contested-segment decisions (n={total_contested:,}) "
+                         f"— which term separated winner from runner-up:")
+            for term in ('annotated', 'canonical', 'false_3prime',
+                         'softclip', 'indel', 'residue'):
+                n = self.decisive_term.get(term, 0)
+                if n:
+                    logger.info(f"    {term:<14} {n:>10,} "
+                                 f"({100*n/max(1,total_contested):.1f}%)")
+            if self.decisive_term.get('annotated', 0) == 0:
+                logger.info("    NOTE: 0 decisions on the annotated term — if "
+                             "annotated_junctions is empty (exon-GTF bug), the "
+                             "+8 reward is dead and junction calls ride on the "
+                             "canonical term only.")
+
+        # ---- Per-aligner win/loss reasons (GMAP signal vs gaming) ----
+        reason_aligners = sorted(set(
+            list(self.win_reason_by_aligner.keys()) +
+            list(self.loss_reason_by_aligner.keys())
+        ))
+        if reason_aligners:
+            logger.info("")
+            logger.info("  Per-aligner contested win/loss reasons:")
+            for a in reason_aligners:
+                won = self.segments_won_by_aligner.get(a, 0)
+                competed = self.segments_competed_by_aligner.get(a, 0)
+                wr = dict(self.win_reason_by_aligner.get(a, {}))
+                lr = dict(self.loss_reason_by_aligner.get(a, {}))
+                logger.info(f"    {a:<12} won {won:,}/{competed:,} contested  "
+                             f"win_terms={wr}  loss_terms={lr}")
 
         logger.info("=" * 60)

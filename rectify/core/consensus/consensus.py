@@ -537,7 +537,7 @@ def _restore_sequence_from_aligner_reads(
     )
 
 
-def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None):
+def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None):
     """Process a batch of reads and write best alignments to output BAM."""
     if use_chimeric:
         from .chimeric_consensus import select_best_chimeric, build_chimeric_read
@@ -547,6 +547,12 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
 
         if use_chimeric:
             chimeric_result = select_best_chimeric(aligner_reads, genome, annotated_junctions)
+
+            # Measure the SELECTOR (segment wins / fallback rate / loss-reason)
+            # independent of whether the BAM write below succeeds — a dropped
+            # read still reflects what select_best_chimeric decided.
+            if chimeric_stats is not None:
+                chimeric_stats.update(chimeric_result)
 
             # Pick a template read with a valid sequence (gapmm2 yields None).
             # Pass 1: prefer a read whose sequence length matches the chimeric CIGAR
@@ -802,6 +808,14 @@ def run_consensus_selection(
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
 
+    # Per-region / loss-reason instrumentation for the chimeric path.  Only
+    # instantiated when use_chimeric is on; a JSON sidecar + log summary are
+    # emitted at the end so a GMAP-segment-win measurement is reproducible.
+    chimeric_stats = None
+    if use_chimeric:
+        from .chimeric_consensus import ChimericStats
+        chimeric_stats = ChimericStats()
+
     sidecar_reader = None
     if read_num_sidecar:
         from rectify.core.chunking.sidecar import ReadNumSidecar
@@ -963,6 +977,7 @@ def run_consensus_selection(
                     annotated_junctions, out_bam, stats,
                     use_chimeric=use_chimeric,
                     read_num_sidecar=sidecar_reader,
+                    chimeric_stats=chimeric_stats,
                 )
                 read_batch = []
                 raw_read_batch = []
@@ -998,6 +1013,7 @@ def run_consensus_selection(
                 annotated_junctions, out_bam, stats,
                 use_chimeric=use_chimeric,
                 read_num_sidecar=sidecar_reader,
+                chimeric_stats=chimeric_stats,
             )
             n_batches += 1
             if checkpoint_dir:
@@ -1139,6 +1155,22 @@ def run_consensus_selection(
     logger.info(f"  Batches processed: {n_batches}")
     logger.info(f"[TIMING] run_consensus_selection total: {_time.perf_counter() - _t_total:.1f}s")
 
+    # ── Chimeric instrumentation: human-readable summary + JSON sidecar ──────
+    # The sidecar (`<output_bam>.chimeric_stats.json`) carries the per-region
+    # segment wins, fallback rate, and contested-segment loss-reason breakdown
+    # so a GMAP-segment measurement is reproducible and the annotation-off
+    # confound is auditable after the fact.
+    if chimeric_stats is not None:
+        chimeric_stats.log_summary()
+        try:
+            import json as _json_cs
+            _cs_path = output_bam + '.chimeric_stats.json'
+            with open(_cs_path, 'w') as _csf:
+                _json_cs.dump(chimeric_stats.summary_dict(), _csf, indent=2)
+            logger.info(f"  Chimeric stats sidecar: {_cs_path}")
+        except Exception as _cs_err:
+            logger.warning("Failed to write chimeric stats sidecar (%s)", _cs_err)
+
     return stats
 
 
@@ -1198,6 +1230,33 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int, s
     from ...utils.genome import standardize_chrom_name
 
     junctions = set()
+    # Buffer exon coordinates per transcript so we can DERIVE introns when the
+    # annotation has no explicit `intron` records (the common case: GENCODE /
+    # Ensembl exon-GTFs).  Without this, an exon-only GTF loads 0 junctions and
+    # silently disables junction-guided scoring (the annotated +8 reward in the
+    # chimeric score_segment path goes dead).  The exon path is a strict
+    # FALLBACK: if any `intron` record is present (e.g. the yeast SGD GTF/GFF),
+    # the intron set is returned unchanged and exon derivation never runs — so
+    # intron-bearing annotations stay byte-identical.
+    exons_by_tx: Dict[Tuple[str, str, str], List[Tuple[int, int]]] = defaultdict(list)
+
+    def _parse_tx_id(attr: str) -> str:
+        # GTF: transcript_id "X";   GFF3: transcript_id=X / Parent=X
+        for key in ('transcript_id', 'Parent'):
+            idx = attr.find(key)
+            if idx == -1:
+                continue
+            rest = attr[idx + len(key):].lstrip(' =')
+            if rest.startswith('"'):
+                end = rest.find('"', 1)
+                return rest[1:end] if end != -1 else rest[1:]
+            # unquoted: up to ';' or whitespace
+            for sep in (';', '\t', ' '):
+                j = rest.find(sep)
+                if j != -1:
+                    rest = rest[:j]
+            return rest.strip()
+        return ''
 
     import gzip as _gzip
     _open = _gzip.open if str(annotation_path).endswith('.gz') else open
@@ -1220,12 +1279,42 @@ def load_annotated_junctions(annotation_path: str) -> Set[Tuple[str, int, int, s
                 end = int(parts[4])  # Already exclusive in GFF end
                 strand = parts[6] if parts[6] in ('+', '-') else '+'
                 junctions.add((chrom, start, end, strand))
+            elif feature_type == 'exon':
+                tid = _parse_tx_id(parts[8])
+                if tid:
+                    chrom = standardize_chrom_name(parts[0])
+                    strand = parts[6] if parts[6] in ('+', '-') else '+'
+                    exons_by_tx[(chrom, tid, strand)].append(
+                        (int(parts[3]), int(parts[4]))
+                    )
+
+    # FALLBACK: no explicit intron records → derive from adjacent exons.
+    if len(junctions) == 0 and exons_by_tx:
+        for (chrom, _tid, strand), exons in exons_by_tx.items():
+            exons.sort()
+            for i in range(len(exons) - 1):
+                # intron spans [prev_exon_end, next_exon_start-1] in 1-based
+                # inclusive GTF coords → (0-based start, exclusive end):
+                #   start_0 = prev_exon_end   (= prev_exon_end_1based, since
+                #             0-based intron start is the base after the exon)
+                #   end     = next_exon_start - 1
+                intron_start = exons[i][1]          # 0-based: first intronic base
+                intron_end = exons[i + 1][0] - 1    # exclusive end
+                if intron_end > intron_start:
+                    junctions.add((chrom, intron_start, intron_end, strand))
+        if junctions:
+            logger.info(
+                "load_annotated_junctions: 0 explicit intron records; derived "
+                "%d introns from %d exon-bearing transcripts in %s",
+                len(junctions), len(exons_by_tx), annotation_path,
+            )
 
     if len(junctions) == 0:
         logger.warning(
             "load_annotated_junctions: 0 junctions loaded from %s. "
             "Check that the file exists, is readable, and contains 'intron' "
-            "feature records (column 3). Junction-guided scoring will be disabled.",
+            "or 'exon' feature records (column 3). Junction-guided scoring "
+            "will be disabled.",
             annotation_path,
         )
     else:
