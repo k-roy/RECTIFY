@@ -881,6 +881,21 @@ def select_best_chimeric(
                 adjusted.append((q_start, q_end, seg_type))
         raw_segments = adjusted
 
+    # ---- Normalize annotated junctions for the segment scorer ----
+    # score_segment tests 3-tuple (chrom, start, end) membership, but
+    # load_annotated_junctions (and the fallback / winner-take-all scorer in
+    # scoring.py) use 4-tuples (chrom, start, end, strand). Passing the 4-tuple
+    # set straight through meant the membership test NEVER matched, so the
+    # annotated +8 reward was silently dead in the chimeric path for every
+    # organism. Project to 3-tuples here (strand-agnostic — identical intron
+    # coordinates on opposite strands are vanishingly rare). The original set is
+    # still handed to _fallback_simple_selection, whose scorer unpacks strand.
+    annotated_for_segments = annotated_junctions
+    if annotated_junctions:
+        _sample = next(iter(annotated_junctions))
+        if len(_sample) >= 4:
+            annotated_for_segments = {j[:3] for j in annotated_junctions}
+
     # ---- Score each aligner per segment ----
     chimeric_segments = []
     for q_start, q_end, seg_type in raw_segments:
@@ -907,7 +922,7 @@ def select_best_chimeric(
                 seg.cigar_events[name] = seg_events
 
                 score_result = score_segment(
-                    seg_events, seg_type, chrom, genome, annotated_junctions
+                    seg_events, seg_type, chrom, genome, annotated_for_segments
                 )
                 score_result.aligner = name
                 seg.scores[name] = score_result

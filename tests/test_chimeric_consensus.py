@@ -359,3 +359,32 @@ class TestSelectBestChimericFallback:
 
         mock_fallback.assert_called_once()
         assert result.chimeric_cigar != bad_cigar
+
+
+# ---------------------------------------------------------------------------
+# Annotated-junction arity fix: score_segment tests 3-tuples (chrom,start,end),
+# but load_annotated_junctions / the fallback scorer use 4-tuples (with strand).
+# select_best_chimeric now projects 4-tuples -> 3-tuples for the segment scorer
+# so the annotated +8 reward actually fires (it was silently dead before).
+# ---------------------------------------------------------------------------
+
+def test_score_segment_annotated_arity_and_projection():
+    from rectify.core.consensus.chimeric_consensus import score_segment, CigarEvent
+
+    # single intron (N op) spanning ref 1000..1100; genome all-A so no canonical
+    # motif fires and the annotated term is the only thing under test.
+    ev = CigarEvent(op=3, length=100, q_start=50, q_end=50, r_start=1000, r_end=1100)
+    genome = {'chr5': 'A' * 2000}
+
+    # 3-tuple set: MATCHES (the contract score_segment expects)
+    s3 = score_segment([ev], 'interior', 'chr5', genome, {('chr5', 1000, 1100)})
+    assert s3.n_annotated_junctions == 1
+
+    # 4-tuple set (as load_annotated_junctions emits): does NOT match — the bug
+    s4 = score_segment([ev], 'interior', 'chr5', genome, {('chr5', 1000, 1100, '+')})
+    assert s4.n_annotated_junctions == 0
+
+    # the projection select_best_chimeric now applies fixes it (strand-agnostic)
+    proj = {j[:3] for j in {('chr5', 1000, 1100, '+')}}
+    sp = score_segment([ev], 'interior', 'chr5', genome, proj)
+    assert sp.n_annotated_junctions == 1
