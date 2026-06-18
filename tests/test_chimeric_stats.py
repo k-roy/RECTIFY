@@ -127,6 +127,28 @@ def test_uncontested_segment_not_in_loss_reasons():
     assert st.segments_won_by_aligner['minimap2'] == 1
 
 
+def test_annotated_loss_with_own_novel_flagged():
+    """A loser that loses on the annotated term while carrying its OWN novel
+    canonical junction is flagged as discovery-suppression (the GMAP number)."""
+    seg = ChimericSegment(q_start=0, q_end=50, position='interior',
+                          winning_aligner='minimap2')
+    seg.scores = {
+        'minimap2': SegmentScore(aligner='minimap2', score=13,
+                                 n_annotated_junctions=1),
+        'GMAP': SegmentScore(aligner='GMAP', score=5,
+                             n_novel_canonical_junctions=1),  # novel candidate
+    }
+    res = _result(is_chimeric=True, n_segments=1,
+                  segment_winners=[('interior', 'minimap2', 0, 50)],
+                  all_segment_scores=[seg])
+    st = ChimericStats()
+    st.update(res)
+    assert st.loss_reason_by_aligner['GMAP']['annotated'] == 1
+    assert st.annotated_loss_with_own_novel_by_aligner['GMAP'] == 1
+    d = st.summary_dict()
+    assert d['annotated_loss_with_own_novel_by_aligner']['GMAP'] == 1
+
+
 def test_summary_dict_is_json_serializable():
     import json
     seg = ChimericSegment(q_start=0, q_end=50, position='interior',

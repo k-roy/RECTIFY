@@ -362,29 +362,88 @@ class TestSelectBestChimericFallback:
 
 
 # ---------------------------------------------------------------------------
-# Annotated-junction arity fix: score_segment tests 3-tuples (chrom,start,end),
-# but load_annotated_junctions / the fallback scorer use 4-tuples (with strand).
-# select_best_chimeric now projects 4-tuples -> 3-tuples for the segment scorer
-# so the annotated +8 reward actually fires (it was silently dead before).
+# Ambiguity-aware, support-gated junction scoring.
+#   * canonical motif is checked within the junction's sequence-ambiguity window
+#   * annotated match normalizes both sides to the leftmost equivalent coordinate
+#   * the annotated +8 bonus is gated on a minimum flanking anchor (read support)
+#   * a canonical-but-uncatalogued junction is tracked as a novel candidate, not
+#     scored as wrong
 # ---------------------------------------------------------------------------
 
-def test_score_segment_annotated_arity_and_projection():
-    from rectify.core.consensus.chimeric_consensus import score_segment, CigarEvent
+# Genome with a single clean GT..AG intron at [100,154), no flanking ambiguity.
+_G = 'C' * 100 + 'GT' + 'T' * 50 + 'AG' + 'C' * 100   # seq[100:102]=GT, seq[152:154]=AG
 
-    # single intron (N op) spanning ref 1000..1100; genome all-A so no canonical
-    # motif fires and the annotated term is the only thing under test.
-    ev = CigarEvent(op=3, length=100, q_start=50, q_end=50, r_start=1000, r_end=1100)
-    genome = {'chr5': 'A' * 2000}
 
-    # 3-tuple set: MATCHES (the contract score_segment expects)
-    s3 = score_segment([ev], 'interior', 'chr5', genome, {('chr5', 1000, 1100)})
-    assert s3.n_annotated_junctions == 1
+def _junc_events(anchor):
+    """[M(anchor), N over intron [100,154), M(anchor)] — anchor bp each flank."""
+    from rectify.core.consensus.chimeric_consensus import CigarEvent
+    return [
+        CigarEvent(0, anchor, 0, anchor, 100 - anchor, 100),
+        CigarEvent(3, 54, anchor, anchor, 100, 154),
+        CigarEvent(0, anchor, anchor, 2 * anchor, 154, 154 + anchor),
+    ]
 
-    # 4-tuple set (as load_annotated_junctions emits): does NOT match — the bug
-    s4 = score_segment([ev], 'interior', 'chr5', genome, {('chr5', 1000, 1100, '+')})
-    assert s4.n_annotated_junctions == 0
 
-    # the projection select_best_chimeric now applies fixes it (strand-agnostic)
-    proj = {j[:3] for j in {('chr5', 1000, 1100, '+')}}
-    sp = score_segment([ev], 'interior', 'chr5', genome, proj)
-    assert sp.n_annotated_junctions == 1
+def test_normalize_and_window_helpers():
+    from rectify.core.consensus.chimeric_consensus import (
+        normalize_junction, junction_ambiguity_window)
+    seq = ['C'] * 30
+    seq[9] = seq[19] = 'A'; seq[8] = seq[18] = 'A'; seq[7] = 'C'; seq[17] = 'G'
+    s = ''.join(seq)
+    assert normalize_junction(10, 20, s) == (8, 18)      # slides left 2
+    assert junction_ambiguity_window(10, 20, s)[0] == 2  # l_amb == 2
+
+
+def test_canonical_within_window_and_support_gate():
+    from rectify.core.consensus.chimeric_consensus import score_segment
+    g = {'chrT': _G}
+    # well-anchored, canonical, catalogued (set already normalized; no ambiguity)
+    s = score_segment(_junc_events(20), 'interior', 'chrT', g, {('chrT', 100, 154)})
+    assert s.n_canonical_junctions == 1
+    assert s.n_annotated_junctions == 1        # supported -> bonus applies
+    assert s.score == 13.0                     # +5 canonical +8 annotated
+
+    # SHORT anchor (5 < 10): catalogued but unsupported -> bonus withheld
+    s2 = score_segment(_junc_events(5), 'interior', 'chrT', g, {('chrT', 100, 154)})
+    assert s2.n_annotated_junctions == 0
+    assert s2.n_annotated_unsupported == 1
+    assert s2.score == 5.0                     # +5 canonical only
+
+
+def test_novel_canonical_not_penalized_as_wrong():
+    from rectify.core.consensus.chimeric_consensus import score_segment
+    g = {'chrT': _G}
+    # canonical junction, empty catalog -> novel candidate, +5 (not annotated)
+    s = score_segment(_junc_events(20), 'interior', 'chrT', g, set())
+    assert s.n_canonical_junctions == 1
+    assert s.n_novel_canonical_junctions == 1
+    assert s.n_annotated_junctions == 0
+    assert s.score == 5.0
+
+
+def test_annotated_match_is_ambiguity_aware():
+    """A read junction written at an ambiguity-shifted coordinate still matches a
+    catalog entry once both are normalized to the leftmost equivalent position."""
+    from rectify.core.consensus.chimeric_consensus import (
+        score_segment, CigarEvent, normalize_junction)
+    # intron flanked by a poly-A run so [105,115) slides left to [100,110)
+    g = 'C' * 100 + 'A' * 20 + 'C' * 100
+    assert normalize_junction(105, 115, g) == (100, 110)
+    catalog = {('chrA', 100, 110)}             # normalized catalog
+    ev = [CigarEvent(0, 20, 0, 20, 85, 105),
+          CigarEvent(3, 10, 20, 20, 105, 115),
+          CigarEvent(0, 20, 20, 40, 115, 135)]
+    s = score_segment(ev, 'interior', 'chrA', {'chrA': g}, catalog)
+    assert s.n_annotated_junctions == 1        # matched despite +5bp coordinate shift
+
+
+def test_normalized_annotation_set_cached_and_projects():
+    from rectify.core.consensus.chimeric_consensus import _normalized_annotation_set
+    g = {'chrA': 'C' * 100 + 'A' * 20 + 'C' * 100}
+    # 4-tuples (as load_annotated_junctions emits) -> projected to 3-tuples and
+    # normalized to leftmost (105,115)->(100,110)
+    raw = {('chrA', 105, 115, '+')}
+    norm = _normalized_annotation_set(raw, g)
+    assert norm == {('chrA', 100, 110)}
+    # identity cache: same object returns the same normalized set
+    assert _normalized_annotation_set(raw, g) is norm

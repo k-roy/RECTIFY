@@ -35,6 +35,125 @@ logger = logging.getLogger(__name__)
 CANONICAL_5SS = {'GT', 'GC'}
 CANONICAL_3SS = {'AG'}
 
+# Splice junctions are coordinate-ambiguous: when the bases flanking the donor
+# and acceptor repeat, the SAME spliced product can be written with the intron
+# shifted by a few bp. A junction (intron [start,end)) slides left by 1 with an
+# identical spliced product iff seq[start-1] == seq[end-1] (the base leaving the
+# 3' end of exon1 equals the base leaving the 3' end of the intron); it slides
+# right by 1 iff seq[start] == seq[end]. This is the same base-equality slide
+# used by junction_refiner._apply_junction_replacement's pure-slide fast path
+# and the _l_amb/_r_amb windows in splice_aware_5prime. Comparing junctions by
+# exact coordinate (the old behaviour) charges an aligner that placed the SAME
+# junction one bp over as a mismatch — so all junction comparisons below
+# normalize to the LEFTMOST equivalent coordinate first.
+_JUNCTION_AMBIGUITY_MAX_SHIFT = 15  # matches splice_aware_5prime.MAX_SS_SHIFT
+# The annotated bonus is GATED on read support: only trust an annotated match
+# when the read's own alignment anchors the junction with at least this many
+# contiguous matched bases on the SHORTER flank. Otherwise the catalog would
+# override read evidence (forcing a short-overhang junction onto an annotated
+# site and suppressing genuine nearby novel junctions). Matches the human
+# anchor-gate K (corrected_consensus _MIN_JUNCTION_ANCHOR / K=10).
+_ANNOTATED_SUPPORT_MIN_ANCHOR = 10
+
+
+def normalize_junction(start: int, end: int, seq: str,
+                       max_shift: int = _JUNCTION_AMBIGUITY_MAX_SHIFT) -> Tuple[int, int]:
+    """Left-normalize a junction to the leftmost ambiguity-equivalent coordinate.
+
+    Slides the intron left while ``seq[start-1] == seq[end-1]`` (the base-equality
+    slide that preserves the spliced product). Two junctions that are
+    ambiguity-equivalent normalize to the same (start, end), so a normalized set
+    membership test is an ambiguity-aware match. Bounded by ``max_shift``.
+    """
+    shifts = 0
+    while (shifts < max_shift and start > 0 and end > 0
+           and start - 1 < len(seq) and end - 1 < len(seq)
+           and seq[start - 1].upper() == seq[end - 1].upper()):
+        start -= 1
+        end -= 1
+        shifts += 1
+    return start, end
+
+
+def junction_ambiguity_window(start: int, end: int, seq: str,
+                              max_shift: int = _JUNCTION_AMBIGUITY_MAX_SHIFT) -> Tuple[int, int]:
+    """Return (l_amb, r_amb): how many bp the junction may slide left / right
+    while preserving the spliced product (the sequence-ambiguity window)."""
+    l_amb = 0
+    while (l_amb < max_shift and start - 1 - l_amb >= 0 and end - 1 - l_amb >= 0
+           and seq[start - 1 - l_amb].upper() == seq[end - 1 - l_amb].upper()):
+        l_amb += 1
+    r_amb = 0
+    while (r_amb < max_shift and start + r_amb < len(seq) and end + r_amb < len(seq)
+           and seq[start + r_amb].upper() == seq[end + r_amb].upper()):
+        r_amb += 1
+    return l_amb, r_amb
+
+
+def _full_junction_anchor(full_events, junc_start: int, junc_end: int):
+    """True flanking anchor (min of the two contiguous matched runs) for a
+    junction, measured from the aligner's FULL alignment — NOT the per-segment
+    clipped events. Segmentation puts the agreed flanking exon into agreement
+    runs and bounds the interior disagreement segment tightly around the
+    junction, so a segment-local anchor under-counts the real read support and
+    the support gate would fail spuriously. Returns None if the junction isn't
+    found in full_events (caller falls back to segment-local)."""
+    if not full_events:
+        return None
+    for i, ev in enumerate(full_events):
+        if ev.op == 3 and ev.r_start == junc_start and ev.r_end == junc_end:
+            left = (full_events[i - 1].length
+                    if i > 0 and full_events[i - 1].op in (0, 7, 8) else 0)
+            right = (full_events[i + 1].length
+                     if i + 1 < len(full_events) and full_events[i + 1].op in (0, 7, 8) else 0)
+            return min(left, right)
+    return None
+
+
+def _canonical_within_window(start: int, end: int, seq: str,
+                             l_amb: int, r_amb: int) -> bool:
+    """True if ANY ambiguity-equivalent placement of the junction yields a
+    canonical (GT/GC..AG) motif. The biologically real junction is the canonical
+    placement, so an aligner that landed one bp off a canonical site within the
+    window still gets canonical credit."""
+    for s in range(-l_amb, r_amb + 1):
+        js, je = start + s, end + s
+        if js < 0 or je > len(seq) or je - 2 < 0:
+            continue
+        five_ss = seq[js:js + 2].upper()
+        three_ss = seq[je - 2:je].upper()
+        if five_ss in CANONICAL_5SS and three_ss in CANONICAL_3SS:
+            return True
+    return False
+
+
+# Cache the normalized annotation set by identity: load_annotated_junctions
+# returns one set per run reused across every read, so normalizing (and 4→3
+# tuple projection) once instead of per-read keeps the hot path cheap.
+_ANNOT_NORM_CACHE: Dict[int, Tuple[object, Set[Tuple[str, int, int]]]] = {}
+
+
+def _normalized_annotation_set(annotated_junctions, genome):
+    """Left-normalize the annotation set to leftmost ambiguity-equivalent
+    coordinates (and project any 4-tuples down to (chrom,start,end)), cached by
+    object identity so it runs ONCE per run, not once per read."""
+    if not annotated_junctions:
+        return annotated_junctions
+    key = id(annotated_junctions)
+    hit = _ANNOT_NORM_CACHE.get(key)
+    if hit is not None and hit[0] is annotated_junctions:
+        return hit[1]
+    norm = set()
+    for j in annotated_junctions:
+        chrom, s, e = j[0], j[1], j[2]
+        seq = genome.get(chrom, "")
+        if seq:
+            s, e = normalize_junction(s, e, seq)
+        norm.add((chrom, s, e))
+    _ANNOT_NORM_CACHE.clear()  # single annotation set per run; bound the cache
+    _ANNOT_NORM_CACHE[key] = (annotated_junctions, norm)
+    return norm
+
 
 # ============================================================================
 # Data structures
@@ -64,6 +183,14 @@ class SegmentScore:
     n_junctions: int = 0
     n_canonical_junctions: int = 0
     n_annotated_junctions: int = 0
+    # Canonical (GT-AG within the ambiguity window) but NOT in the annotation set:
+    # a de-novo novel-junction candidate. Tracked so the annotated-bonus tuning
+    # can't silently suppress discovery (a novel canonical junction must not be
+    # scored as "wrong" merely for being absent from the catalog).
+    n_novel_canonical_junctions: int = 0
+    # Annotated match that FAILED the read-support gate (short anchor) — the
+    # catalog wanted it but the read didn't earn it; bonus withheld.
+    n_annotated_unsupported: int = 0
     has_false_3prime_junction: bool = False
 
 
@@ -189,9 +316,10 @@ def build_query_ref_map(read: pysam.AlignedSegment) -> Dict[int, int]:
 
 def find_sync_points(
     qr_maps: Dict[str, Dict[int, int]],
+    min_aligners: Optional[int] = None,
 ) -> List[Tuple[int, int]]:
     """
-    Find query positions where ALL aligners map to the same reference position.
+    Find query positions where aligners agree on a reference position.
 
     These "sync points" are natural boundaries for chimeric selection: at these
     positions, we can switch from one aligner's CIGAR to another's without any
@@ -199,29 +327,62 @@ def find_sync_points(
 
     Args:
         qr_maps: Dict mapping aligner_name -> {query_pos: ref_pos}
+        min_aligners: Seam stringency.
+            * None (default) → require ALL aligners present at the position to
+              agree (the original behaviour; byte-identical).
+            * int k → a sync point forms where ≥ k aligners agree on the SAME
+              ref position. MUST be a STRICT majority (k > n/2) so the agreed
+              ref is unique — otherwise two disjoint groups could each hit k
+              and the seam ref would be ambiguous (phantom-bridge risk). Values
+              that are not a strict majority are raised to one.
 
     Returns:
-        Sorted list of (query_pos, ref_pos) sync points
+        Sorted list of (query_pos, ref_pos) sync points. Under k-of-n, ref_pos
+        is the majority-agreed reference position.
     """
     if not qr_maps or len(qr_maps) < 2:
         return []
 
     aligner_names = list(qr_maps.keys())
+    n = len(aligner_names)
 
-    # Find query positions present in ALL aligners
-    common_qpos = set(qr_maps[aligner_names[0]].keys())
-    for name in aligner_names[1:]:
-        common_qpos &= set(qr_maps[name].keys())
+    # ---- ALL-agree mode (default): unchanged, byte-identical ----
+    if min_aligners is None:
+        common_qpos = set(qr_maps[aligner_names[0]].keys())
+        for name in aligner_names[1:]:
+            common_qpos &= set(qr_maps[name].keys())
+        if not common_qpos:
+            return []
+        sync_points = []
+        for qpos in sorted(common_qpos):
+            ref_positions = {qr_maps[name][qpos] for name in aligner_names}
+            if len(ref_positions) == 1:
+                sync_points.append((qpos, ref_positions.pop()))
+        return sync_points
 
-    if not common_qpos:
+    # ---- k-of-n mode: strict-majority agreement on a unique ref ----
+    # Enforce strict majority so the agreed ref position is unique.
+    k = max(int(min_aligners), n // 2 + 1)
+    if k > n:
         return []
 
-    # Filter to positions where all aligners agree on ref_pos
+    # Positions present in at least k aligners are the only candidates.
+    qpos_counts: Dict[int, int] = defaultdict(int)
+    for name in aligner_names:
+        for qpos in qr_maps[name]:
+            qpos_counts[qpos] += 1
+
     sync_points = []
-    for qpos in sorted(common_qpos):
-        ref_positions = {qr_maps[name][qpos] for name in aligner_names}
-        if len(ref_positions) == 1:
-            sync_points.append((qpos, ref_positions.pop()))
+    for qpos in sorted(q for q, c in qpos_counts.items() if c >= k):
+        ref_votes: Dict[int, int] = defaultdict(int)
+        for name in aligner_names:
+            r = qr_maps[name].get(qpos)
+            if r is not None:
+                ref_votes[r] += 1
+        # Strict majority (k > n/2) guarantees at most one ref can reach k.
+        best_ref, best_votes = max(ref_votes.items(), key=lambda kv: kv[1])
+        if best_votes >= k:
+            sync_points.append((qpos, best_ref))
 
     return sync_points
 
@@ -395,6 +556,8 @@ def score_segment(
     chrom: str,
     genome: Dict[str, str],
     annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    annotated_min_anchor: int = _ANNOTATED_SUPPORT_MIN_ANCHOR,
+    aligner_full_events: Optional[List[CigarEvent]] = None,
 ) -> SegmentScore:
     """
     Score a segment from one aligner based on its position in the read.
@@ -407,12 +570,25 @@ def score_segment(
                      is better than extending into genomic A-tracts. Penalize
                      false 3' junctions from A-tract alignment.
 
+    Junction scoring is AMBIGUITY-AWARE: the canonical-motif check slides within
+    the junction's sequence-ambiguity window, and the annotated match normalizes
+    both the read junction and the catalog to the leftmost equivalent coordinate
+    (so the same junction written one bp over is not charged as a mismatch). The
+    annotated +8 bonus is GATED on read support (a minimum flanking anchor) so
+    the catalog breaks ties rather than overriding read evidence — a junction the
+    aligner FORCED onto a catalogued site with a short overhang earns no bonus,
+    and a genuine novel canonical junction nearby is not suppressed.
+
     Args:
         events: CigarEvent list for this segment from one aligner
         position: 'five_prime', 'interior', 'three_prime', or 'agreement'
         chrom: Chromosome name
         genome: Dict mapping chrom -> sequence
-        annotated_junctions: Optional set of (chrom, start, end) tuples
+        annotated_junctions: Optional set of (chrom, start, end) tuples. MUST be
+            left-normalized (see normalize_junction); select_best_chimeric does
+            this once per run.
+        annotated_min_anchor: minimum contiguous matched bases on the SHORTER
+            flank of a junction for its annotated bonus to apply.
 
     Returns:
         SegmentScore with detailed breakdown
@@ -422,7 +598,7 @@ def score_segment(
 
     seq = genome.get(chrom, "")
 
-    for ev in events:
+    for idx, ev in enumerate(events):
         if ev.op in (0, 7, 8):  # M/=/X: aligned bases
             score_obj.n_matches += ev.length
             # Small reward per aligned base in terminal segments
@@ -461,21 +637,53 @@ def score_segment(
             junc_start = ev.r_start
             junc_end = ev.r_end
 
-            # Check canonical splice site motifs
-            if seq and junc_start >= 0 and junc_end <= len(seq):
-                five_ss = seq[junc_start:junc_start + 2].upper()
-                three_ss = seq[junc_end - 2:junc_end].upper()
+            # Flanking anchor = contiguous matched bases immediately on each side
+            # (read support for the junction). Prefer the FULL alignment's anchor
+            # — the per-segment events are clipped tightly around the disagreement
+            # so a segment-local anchor under-counts real support and the gate
+            # would fail spuriously. Fall back to segment-local if the junction
+            # isn't located in the full events.
+            min_anchor = _full_junction_anchor(aligner_full_events, junc_start, junc_end)
+            if min_anchor is None:
+                left_anchor = (events[idx - 1].length
+                               if idx > 0 and events[idx - 1].op in (0, 7, 8) else 0)
+                right_anchor = (events[idx + 1].length
+                                if idx + 1 < len(events) and events[idx + 1].op in (0, 7, 8) else 0)
+                min_anchor = min(left_anchor, right_anchor)
 
-                if five_ss in CANONICAL_5SS and three_ss in CANONICAL_3SS:
+            # Canonical motif, ambiguity-aware (any equivalent placement GT-AG).
+            is_canonical = False
+            if seq and junc_start >= 0 and junc_end <= len(seq):
+                l_amb, r_amb = junction_ambiguity_window(junc_start, junc_end, seq)
+                is_canonical = _canonical_within_window(
+                    junc_start, junc_end, seq, l_amb, r_amb
+                )
+                if is_canonical:
                     score_obj.n_canonical_junctions += 1
                     score += 5.0
                 else:
                     score -= 3.0
 
-            # Check annotated junction match
-            if annotated_junctions and (chrom, junc_start, junc_end) in annotated_junctions:
-                score_obj.n_annotated_junctions += 1
-                score += 8.0
+            # Annotated match, ambiguity-aware: normalize the read junction to the
+            # leftmost equivalent coordinate and test against the (pre-normalized)
+            # catalog. Bonus is GATED on read support.
+            is_annotated = False
+            if annotated_junctions and seq:
+                njs, nje = normalize_junction(junc_start, junc_end, seq)
+                is_annotated = (chrom, njs, nje) in annotated_junctions
+            if is_annotated:
+                if min_anchor >= annotated_min_anchor:
+                    score_obj.n_annotated_junctions += 1
+                    score += 8.0
+                else:
+                    # Catalog wanted it but the read didn't anchor it — withhold
+                    # the bonus so annotation can't override weak read evidence.
+                    score_obj.n_annotated_unsupported += 1
+            elif is_canonical:
+                # Canonical but not catalogued = de-novo novel-junction candidate.
+                # Must NOT be treated as wrong; tracked so the bonus tuning can be
+                # audited for discovery suppression.
+                score_obj.n_novel_canonical_junctions += 1
 
             # Detect false 3' junctions (A-tract artifacts)
             if position == 'three_prime' and seq:
@@ -890,11 +1098,7 @@ def select_best_chimeric(
     # organism. Project to 3-tuples here (strand-agnostic — identical intron
     # coordinates on opposite strands are vanishingly rare). The original set is
     # still handed to _fallback_simple_selection, whose scorer unpacks strand.
-    annotated_for_segments = annotated_junctions
-    if annotated_junctions:
-        _sample = next(iter(annotated_junctions))
-        if len(_sample) >= 4:
-            annotated_for_segments = {j[:3] for j in annotated_junctions}
+    annotated_for_segments = _normalized_annotation_set(annotated_junctions, genome)
 
     # ---- Score each aligner per segment ----
     chimeric_segments = []
@@ -922,7 +1126,8 @@ def select_best_chimeric(
                 seg.cigar_events[name] = seg_events
 
                 score_result = score_segment(
-                    seg_events, seg_type, chrom, genome, annotated_for_segments
+                    seg_events, seg_type, chrom, genome, annotated_for_segments,
+                    aligner_full_events=all_events[name],
                 )
                 score_result.aligner = name
                 seg.scores[name] = score_result
@@ -1168,6 +1373,22 @@ class ChimericStats:
     # the winning margin rode on (same term vocabulary).
     win_reason_by_aligner: Dict[str, Dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    # ---- Discovery accounting (guards against the annotated bonus silently
+    # suppressing novel junctions). novel_canonical_won: novel canonical
+    # junctions the WINNER carried into consensus, per aligner. The key number
+    # for the GMAP question — annotated_loss_with_own_novel: segments an aligner
+    # LOST on the annotated term while ITS OWN losing segment carried a
+    # canonical-but-uncatalogued junction (i.e. a novel candidate the catalog
+    # bonus outscored). A large value = the annotated win/loss ratio is
+    # penalizing discovery, not measuring correctness.
+    novel_canonical_won_by_aligner: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    annotated_loss_with_own_novel_by_aligner: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Support-gate diagnostic: of annotated junctions in the consensus winner,
+    # how many earned the bonus (anchor ok) vs were withheld (short anchor). If
+    # `unsupported` swamps `supported`, the gate is eating real junctions (likely
+    # an anchor-truncation artifact), not filtering genuine short overhangs.
+    annotated_supported: int = 0
+    annotated_unsupported: int = 0
 
     def update(self, result: ChimericResult):
         """Update stats with one read's chimeric result."""
@@ -1223,6 +1444,12 @@ class ChimericStats:
             if not contested:
                 continue
             w = scores[winner]
+            # Novel canonical junctions the winner carried into consensus.
+            self.novel_canonical_won_by_aligner[winner] += getattr(
+                w, 'n_novel_canonical_junctions', 0)
+            # Support-gate diagnostic (consensus winner's annotated junctions).
+            self.annotated_supported += getattr(w, 'n_annotated_junctions', 0)
+            self.annotated_unsupported += getattr(w, 'n_annotated_unsupported', 0)
             for aligner, s in scores.items():
                 if aligner == winner:
                     continue
@@ -1230,6 +1457,11 @@ class ChimericStats:
                 self.loss_reason_by_aligner[aligner][reason] += 1
                 self.win_reason_by_aligner[winner][reason] += 1
                 self.decisive_term[reason] += 1
+                # Discovery-suppression flag: lost on the annotated term while
+                # ITS OWN losing segment carried a novel canonical junction.
+                if reason == 'annotated' and getattr(
+                        s, 'n_novel_canonical_junctions', 0) > 0:
+                    self.annotated_loss_with_own_novel_by_aligner[aligner] += 1
 
     def finalize(self):
         """Compute derived statistics."""
@@ -1266,6 +1498,11 @@ class ChimericStats:
             'win_reason_by_aligner': {
                 a: dict(d) for a, d in self.win_reason_by_aligner.items()
             },
+            'novel_canonical_won_by_aligner': dict(self.novel_canonical_won_by_aligner),
+            'annotated_loss_with_own_novel_by_aligner': dict(
+                self.annotated_loss_with_own_novel_by_aligner),
+            'annotated_supported': self.annotated_supported,
+            'annotated_unsupported': self.annotated_unsupported,
         }
 
     def log_summary(self):
