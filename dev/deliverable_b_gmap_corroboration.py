@@ -25,6 +25,7 @@ from rectify.core.consensus.chimeric_consensus import (
     normalize_junction, _canonical_within_window, junction_ambiguity_window,
 )
 from rectify.core.consensus.consensus import load_annotated_junctions
+from rectify.utils.genome import register_genome_contigs_from_fasta
 
 PANEL = ["minimap2", "uLTRA", "deSALT", "mapPacBio", "GMAP"]
 RECURRENCE_MIN = 5          # GMAP anchored reads to call "recurrent"
@@ -50,6 +51,11 @@ def main():
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
+    # CRITICAL: register the human contigs so standardize_chrom_name trusts
+    # 'chr5' verbatim instead of the empty-registry roman fallback (chr5->chrV),
+    # which would silently skip every read (guardrail #6). Must precede any
+    # collect_junction_counts_from_bam / load_annotated_junctions call.
+    register_genome_contigs_from_fasta(args.genome)
     seq = load_chrom_seq(args.genome, args.chrom)
     print(f"[B] {args.chrom} loaded: {len(seq):,} bp", file=sys.stderr)
 
@@ -77,6 +83,15 @@ def main():
             n += 1
         print(f"[B] {aligner}: {n:,} anchored junctions -> {len(stratified):,} cum normalized",
               file=sys.stderr)
+
+    # Fail LOUD on a silent-zero (e.g. chrom-standardization mismatch): a real
+    # chr5 panel has tens of thousands of anchored junctions.
+    gmap_total = sum(1 for per in stratified.values() if per.get("GMAP", 0))
+    if len(stratified) < 100 or gmap_total < 100:
+        raise RuntimeError(
+            f"suspiciously few junctions (total={len(stratified)}, GMAP={gmap_total}) "
+            "— likely a chrom-standardization mismatch (chr5->chrV). Aborting rather "
+            "than writing a fake-null result.")
 
     # Classify GMAP's junctions
     buckets = {"independently_corroborated": [], "gmap_only_recurrent": [],
