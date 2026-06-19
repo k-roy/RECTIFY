@@ -81,6 +81,11 @@ dev = [
     "black>=22.0.0",
     "flake8>=4.0.0",
     "mypy>=0.950",
+    # Required by the cDNA validation suite (tests/test_validation_reads_cdna.py):
+    # walk_back_anchor_and_tail uses edlib for fuzzy 3' adapter anchoring. Without
+    # it, _find_adapter_anchor_pos returns None and the poly-A tail length is
+    # over-counted via the 200 bp fallback window, breaking the locked baselines.
+    "edlib>=1.3",
 ]
 docs = [
     "mkdocs>=1.5.0",
