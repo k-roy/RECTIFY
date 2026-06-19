@@ -1039,6 +1039,57 @@ def _stage_raw_bams(
         shutil.rmtree(stage_dir, ignore_errors=True)
 
 
+def _chimeric_winner_read_ids(
+    rep_df: "pd.DataFrame",
+    winner_df: "pd.DataFrame",
+    junction_stats: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None,
+    min_junction_support: int = _MIN_JUNCTION_SUPPORT,
+) -> Set[str]:
+    """read_ids whose WINNING alignment should be hard-dropped (no salvageable junction).
+
+    The winner is the per-read MIN of ``_effective_chimera_ok``, so a winning row with
+    ``_effective_chimera_ok == 1`` means NO aligner scored 0 — every candidate for that
+    read failed QC ("door A").
+
+    Refinement (when ``junction_stats`` is given): the anchor gate flags a read on its
+    WEAKEST junction, so a multi-junction read with three clean annotated junctions and
+    one noisy-anchor junction is flagged — dropping it wholesale discards the clean
+    junctions and the read's 3' end.  To avoid that collateral, restrict the drop to
+    flagged winners whose junctions are ALL unsupported (cross-read support
+    ``count < min_junction_support``) — i.e. NO salvageable junction.  A flagged winner
+    with ≥1 supported junction is spared.  Flagged winners with no junctions (e.g. the
+    minimal-aligned-bases case) are left to the separate minimal-anchor hard filter.
+
+    Without ``junction_stats`` (back-compat / no support computed): falls back to the
+    blunt rule (all flagged winners).  Returns an empty set when ``_effective_chimera_ok``
+    is absent (fallback / no-BAM path).
+    """
+    if '_effective_chimera_ok' not in rep_df.columns:
+        return set()
+    cols = ['read_id', '_aligner', '_effective_chimera_ok']
+    if junction_stats is not None and 'junctions' in rep_df.columns:
+        cols.append('junctions')
+    winner_flag = rep_df[cols].merge(winner_df, on='read_id', how='inner')
+    winner_flag = winner_flag[winner_flag['_aligner'] == winner_flag['_winning_aligner']]
+    flagged = winner_flag[winner_flag['_effective_chimera_ok'] == 1]
+
+    if junction_stats is None or 'junctions' not in flagged.columns:
+        return set(flagged['read_id'])
+
+    drop: Set[str] = set()
+    for rid, junc_str in zip(flagged['read_id'], flagged['junctions']):
+        juncs = _parse_junctions_list(junc_str if isinstance(junc_str, str) else '')
+        if not juncs:
+            continue  # no junctions → minimal-anchor case, handled elsewhere
+        all_unsupported = all(
+            junction_stats.get((js, je), (0, 0))[0] < min_junction_support
+            for (js, je) in juncs
+        )
+        if all_unsupported:
+            drop.add(rid)
+    return drop
+
+
 def merge_corrected_tsvs(
     per_aligner_tsvs: Dict[str, Path],
     output_tsv: Path,
@@ -1051,6 +1102,7 @@ def merge_corrected_tsvs(
     strict_lazy_identity: bool = True,
     lazy_scoring_workers: int = 1,
     min_junction_anchor_bp: int = _MIN_JUNCTION_ANCHOR,
+    drop_chimeric_winners: bool = False,
 ) -> Path:
     """
     Merge N per-aligner corrected TSVs into a single corrected_reads.tsv.
@@ -1116,6 +1168,13 @@ def merge_corrected_tsvs(
     lazy_scoring_workers:
         Number of aligner-level workers for HP edit-distance scoring. Each
         worker scans one BAM and applies one aligner's corrections in memory.
+    drop_chimeric_winners:
+        When True, hard-drop reads whose WINNING alignment is still chimera-flagged
+        (_effective_chimera_ok == 1) — i.e. every aligner's alignment for that read
+        failed QC ("door A"), so the consensus would otherwise emit the least-bad
+        spurious splice.  A precision-for-recall trade for human DRS; off by default
+        (K=0 / yeast byte-identical).  Requires the HP-ED path (the
+        _effective_chimera_ok column); a no-op if that column is absent.
 
     Returns
     -------
@@ -1433,6 +1492,37 @@ def merge_corrected_tsvs(
                 len(minimal_ids), _MIN_ALIGNED_BASES,
             )
             winner_df = winner_df[~winner_df['read_id'].isin(minimal_ids)]
+
+    # ── Hard-filter: drop reads with NO QC-passing alignment across aligners ──
+    # When the winning alignment is itself still chimera-flagged, every candidate
+    # aligner for that read was flagged (the winner is the per-read MIN of
+    # _effective_chimera_ok, so a winner==1 means no aligner scored 0) — the "door A"
+    # case.  Such reads have no QC-passing alignment present; the soft flag only
+    # re-orders within the read, so the consensus still emits the least-bad spurious
+    # splice.  When enabled, drop them entirely (TSV + consensus BAM) rather than
+    # inject junctions no aligner could place cleanly.  This does NOT swap in a better
+    # alignment (none exists) — it is a precision-for-recall trade, off by default so
+    # the K=0 / yeast path is byte-identical.  Validated on A549 chr5 DRS: door-A reads
+    # contribute spurious novel junctions no aligner resolves (see
+    # ALIGNER_RECOMMENDATIONS.md + memory project-junction-dq-penalty for why a
+    # within-flagged *penalty* cannot fix these — only dropping them does).
+    if drop_chimeric_winners:
+        if '_effective_chimera_ok' not in rep_df.columns:
+            logger.warning(
+                "drop_chimeric_winners=True but no _effective_chimera_ok column "
+                "(HP-ED path did not run — no BAMs supplied?). Filter is a NO-OP."
+            )
+        chimeric_ids = _chimeric_winner_read_ids(
+            rep_df, winner_df, junction_stats=junc_stats,
+            min_junction_support=_MIN_JUNCTION_SUPPORT,
+        )
+        if chimeric_ids:
+            logger.info(
+                "Hard-filtering %d reads whose winning alignment is still chimeric "
+                "(no QC-passing alignment across aligners)",
+                len(chimeric_ids),
+            )
+            winner_df = winner_df[~winner_df['read_id'].isin(chimeric_ids)]
 
     # ── Comparison summary (always built; written to file only if requested) ─
     summary = rep_df.merge(winner_df, on='read_id', how='left')
