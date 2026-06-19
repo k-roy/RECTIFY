@@ -39,12 +39,14 @@ minimap2 `splice:sr`.
 - NOT VERIFIED: `samfixcigar.py` output equivalence; the conda env actually solving (exact-pin risk); any
   aligner run end-to-end on human; index builds.
 
-## OPEN / IN FLIGHT (watcher `bxkf5bzga` on the M1; harness-notifies on completion)
-1. **COMPASS conda env build** from `$W/COMPASS/COMPASS_environment.yml` — login-node nohup, sentinel
-   `$W/.env_rc` (rc), log `$W/env_build.log`. EXACT build-string pins (python3.7.11, star=2.7.10a, etc.) →
-   slow solve, **MAY FAIL**. Bundles all 6 aligners + cutadapt/gffread/picard/samtools/bedtools/pysam/openjdk8.
-2. **FASTQ pull** job **30227283** (SLURM owners) — 3 reps → `$W/fastq/replicate{1,3,5}/` (~25GB total from
-   `s3://sg-nex-data/data/sequencing_data_illumina/fastq/SGNex_A549_Illumina_replicate{1,3,5}_run1/`).
+## OPEN / IN FLIGHT
+- **FASTQ pull DONE** (job 30227283 COMPLETED) → `$W/fastq/replicate{1,3,5}/` (rep1 7.4G, rep3 8.6G, rep5 7.9G).
+- **COMPASS conda env build — RESCUE in flight, job 30230396** (compute-node, sentinel `$W/.env_rc`, log
+  `$W/env_build2.<jid>.out`). The first attempt (login-node nohup, EXACT-pin full-lock yml) was SIGKILLed
+  (rc=137, login resource limit). Rescue uses `$W/COMPASS_env_minimal.yml` (15 tools, version-pinned only,
+  build-unpinned; classic solver — no libmamba available). If THIS fails: check the log for an unsatisfiable
+  pin and relax that version (e.g. drop blast/magicblast pins), or reuse aligner_bench + add only the
+  missing tools (magicblast, cutadapt, gffread, picard via `conda install`).
 
 ## RESUME (concrete, with branch logic)
 **Step A — check the env build:**
