@@ -32,6 +32,7 @@ minimap2 `splice:sr`.
 - **FASTQ DONE** (job 30227283) — 3 reps in `$W/fastq/replicate{1,3,5}/` (~24G).
 - **P1 config edits DONE + pushed** to k-roy/COMPASS branch `human-a549` (commit ce59139): COMPASS.sh (GENOME_VERSION=GRCh38_gencode_v44, MAX_INTRON_LENGTH 2000->500000, READ_LENGTH 150, portable COMPASS_DIR, skip SGD gffread, ALIGNERS_FILE .tsv, SAMFIXCIGAR->samfixcigar.py) + process_reads_and_align.sh (cutadapt drop poly-T/A arms; jvarkit->python samfixcigar) + samfixcigar.py + make_human_introns.py. M1 clone `~/work/COMPASS` on branch human-a549.
 - **P1 COMPLETE + VALIDATED.** Env fully working: samtools upgraded to 1.17 (job 30249088; the 1.7 libcrypto issue); ALL 6 aligners + samtools RUN (`--version`): STAR 2.7.10a, hisat2 2.2.1, magicblast 1.5.0, BBMap 38.84, cutadapt 2.6, GSNAP gsnap.sse42 (sse42 SIMD → no AVX-512 SIGILL). **samfixcigar.py VALIDATED** by synthetic test (known mismatches at [5,20,35] → CIGAR `5=1X14=1X14=1X14=`, exact). [The 0/1875 on a real ONT BAM was a reference-mismatch/NM confound, not a bug — in-pipeline samfixcigar uses the SAME ref COMPASS aligns to.]
+- **P2 SMOKE TEST DISPATCHED** (job 30288918, partition **larsms** = 256GB NON-PREEMPT, 16 cores, 12h). Runs the subsampled (100k-read) end-to-end pipeline on rep1: stages FASTQ (cat lanes -> fastq/A549_rep1_R{1,2}.fastq.gz), builds ALL indices (STAR/HISAT2/GSNAP/BLAST) into genome_references/, runs 6 aligners + samfixcigar.py + per-read arbitration. Sentinel `$W/.smoke_rc`, log `$W/smoke.<jid>.out`, watcher `bd2k5prv0`. **Big-mem decision:** COMPASS needs no AVX-512 → runs on larsms AMD Milan; `hisat2-build --ss --exon` (NO --snp) needs ~16-30GB (NOT the 160GB SNP-graph figure) so 256GB is ample + non-preempt protects the one-time index builds.
 - **P2 STAGED.** Sherlock `$W/COMPASS` on branch `human-a549` (ce59139). `$W/COMPASS/genome_references/`: `GRCh38_gencode_v44.fasta`(→symlink)+`.fai`, `GRCh38_gencode_v44.gtf`(→symlink), `GRCh38_gencode_v44_introns.tsv` (402k).
 - **ENV FIX:** the build reported rc=0 but **samtools 1.7 did NOT RUN** (libcrypto.so.1.0.0 missing) — 'env built' only meant execs EXIST. Upgraded samtools to >=1.15 in the compass env (view/sort/index/depth syntax is stable). LESSON: verify tools RUN (`--version`), not just `which`.
 - Genome choice LOCKED: align to **chr-named GENCODE GRCh38.primary_assembly.genome.fa** + gencode v44 GTF
@@ -47,7 +48,7 @@ minimap2 `splice:sr`.
   aligner run end-to-end on human; index builds.
 
 ## OPEN / IN FLIGHT
-- **Nothing running.** P1 done+validated, P2 staged. NEXT = P2 index builds + the first end-to-end run.
+- **COMPASS smoke test RUNNING** — job 30288918 (larsms), watcher `bd2k5prv0`. Builds indices (the long pole: gmap_build ~1-2h, STAR ~1h, hisat2-build ~30-60m, makeblastdb ~10m) then aligns 100k reads × 6 aligners + arbitrates. UNPROVEN pipeline → check `$W/smoke.<jid>.out` early for path/conda/FASTQ-glob errors; watch the hisat2-build step for OOM.
 
 ## RESUME (concrete, with branch logic)
 **Step A — env is BUILT (done); just activate + sanity-check:**
@@ -56,12 +57,16 @@ minimap2 `splice:sr`.
 
 **Step A2 — P1 is DONE (config pushed to human-a549 ce59139, env validated). NEXT = P2.**
 
-**Step B(P2) — run the SUBSAMPLED end-to-end smoke test (builds all indices + runs the 6-aligner pipeline + arbitration on 100k reads of one rep):**
-1. Stage FASTQ for a rep: concat the SG-NEx lane files → `$W/COMPASS/fastq/A549_rep1_R1.fastq.gz` + `_R2.fastq.gz` (gz files concat with `cat`): `cat $W/fastq/replicate1/*_R1*.fastq.gz > $W/COMPASS/fastq/A549_rep1_R1.fastq.gz` (and _R2).
-2. Smoke run (BIG MEM job — index builds): copy COMPASS.sh→COMPASS_smoke.sh, `sed -i 's/READS_TO_PROCESS=-1/READS_TO_PROCESS=100000/' COMPASS_smoke.sh`, then in an sbatch (compass env, owners, **~120G mem** for STAR(~32G)+HISAT2 index builds, ~6h): `cd $W/COMPASS && sh COMPASS_smoke.sh A549_rep1`. Indices build into genome_references/ (STAR_annotated_150_bp_SJDB_index, HISAT2_annotated_index, GSNAP/, BLAST/) and are reused for the full run.
-   ⚠ **HISAT2 RISK:** `hisat2-build --ss --exon` for human can be very memory-heavy. If it OOMs, build the BASIC HISAT2 index (no --ss/--exon) + pass `--known-splicesite-infile` at align time (a small process_reads_and_align.sh edit). Watch the smoke log for the HISAT2 build step.
-   ⚠ Poll tight (unproven pipeline): index builds fail fast on path/mem; check the log at ~5-10 min.
-3. If the smoke test passes (per-rep COMPASS junction TSV produced) → scale to full reads (READS_TO_PROCESS=-1) × all 3 reps (chunked), then P4 (family-concordance back-propagation) + P5 (re-validate 111).
+**Step B(P2) — smoke test is DISPATCHED (job 30288918, larsms). Monitor + branch:**
+1. `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.smoke_rc 2>/dev/null || echo RUNNING'`.
+2. RUNNING → `tail $W/smoke.<jid>.out`. Index-build order in the log: HISAT2 (hisat2-build) -> STAR (genomeGenerate) -> BLAST (makeblastdb) -> GSNAP (gmap_build), then per-aligner alignment of the 100k subsample, then samfixcigar + arbitration.
+3. **SMOKE_RC=0** → pipeline validated end-to-end. Per-rep COMPASS junction TSV in `$W/COMPASS/COMPASS_junctions/`. NEXT: scale to FULL reads (revert READS_TO_PROCESS to -1) × all 3 reps (rep1/3/5; concat lanes each; chunk one job per rep on larsms), reusing the built indices. Then P4 + P5.
+4. **HISAT2 OOM** (smoke fails in hisat2-build, OUT_OF_ME) → build BASIC HISAT2 index (drop --ss/--exon, ~6GB) + pass `--known-splicesite-infile <ss.txt>` at align time (edit process_reads_and_align.sh lines ~146-160); OR re-dispatch to Sherlock `bigmem` (up to 4TB) or SCG (see CLUSTER MEMORY below).
+5. **Other failure** → read `$W/smoke.<jid>.out`; common: path (genome_references symlinks), conda (env compass), FASTQ glob (lane names), STAR_OVERHANG. Fix on the human-a549 branch, push, re-pull on Sherlock, resubmit.
+
+## CLUSTER MEMORY (for heavy steps)
+- **Sherlock `larsms`**: 256GB, NON-PREEMPT, AMD Milan (no AVX-512 — fine for COMPASS). CHOSEN for the index builds. Sherlock `bigmem`: up to 4TB (preemptable/QOS). `owners`: big nodes (256GB-4TB) but preempt.
+- **SCG** (`ssh scg.stanford.edu`, larsms acct, shares OAK only — NOT Sherlock scratch): `batch` (default, 75 nodes) ~389GB+; `gssc`/`nih_s10` ~1TB; GPU partitions ~2TB. Use for >256GB or GPU work, but data must be on OAK first (stage from Sherlock scratch). scg-sbatch skill in the SGTC workspace.
 
 **Step B — P1 human config edits (in `~/work/COMPASS`, commit to a `human-a549` branch, push authorized):**
 - `COMPASS.sh`: set GENOME/FASTA → `…/refs/GRCh38.primary_assembly.genome.fa`; GTF → gencode v44;
