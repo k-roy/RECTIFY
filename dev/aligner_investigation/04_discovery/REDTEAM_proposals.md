@@ -47,7 +47,7 @@ pip-install with no dependencies of consequence" — both understate real plumbi
 | C6 | Per-aligner corrected BAM (`{stem}.rectified_corrected_3end.bam`) **already produced on disk** at the single-sample call site, "simply never collected" | **TRUE (with caveat)** | `stages.py:194,205` passes `corrected_bam=corrected_bam_path` into `correct_command.run`; but `_run_correction_per_aligner` (`:240-334`) **returns only TSV paths** — the BAM is written but not globbed back. The ensemble-selection §1 "wiring not computation" framing is accurate. Caveat: BAM-write is conditional on correction succeeding and on `correct_command` honouring `corrected_bam` for every aligner. |
 | C7 | `--splice-flank=no` is a "compatibility" flag, **not** a proven 3'-accuracy mechanism | **TRUE** | `multi_aligner.py:252` literal comment `# Disable for compatibility` (contradicts CLAUDE.md's "important for 3' end accuracy"). chaining_dp's caveat is correct. |
 | C8 | deSALT runs with **no `-x` ONT preset** (null ~13% model) | **TRUE** | `run_desalt` (`:1506+`) builds `aln`+index+`extra_args`; no `-x` hardcoded |
-| C9 | mapPacBio sets `intronlen=50` but **no `maxindel`** | **TRUE** | `run_map_pacbio` `:513-515` sets `fastareadlen,intronlen=50,minratio=0.4`, no `maxindel`. (`run_bbmap` short-read at `:674` *does* set `maxindel=100000` — do not confuse the two.) |
+| C9 | mapPacBio sets `intronlen=50` but **no `maxindel`** | **TRUE on master · SUPERSEDED on build** | On master `run_map_pacbio` set `fastareadlen,intronlen=50,minratio=0.4` with no `maxindel`. **⚠️ BUILD CORRECTION:** the build sets `intronlen=10` (`multi_aligner.py:749`) **and** an explicit `maxindel=max(200000, max_intron)` (`:754`) — the missing-`maxindel` concern (redteam_denovo B5) is RESOLVED. (`run_bbmap` short-read still sets `maxindel=100000` separately — do not confuse the two.) |
 | C10 | dorado `pt:i` tail length **already parsed/stored** | **TRUE** | `drs_trim_command.py:240,411,462` (`get_tag('pt')`, `pt_tag`, parquet column) |
 | C11 | RECTIFY already owns `_score_hp_dp_numba` (Numba NW DP), `HpPenaltyTable.del_cost/ins_cost`, `local_aligner.py` (Gotoh affine) | **TRUE in code; PARTIALLY MISLEADING at runtime** | All three exist (`hp_penalty.py:44,261,270`; `local_aligner.py:21-27`). **But** `numba` is not importable here, so `_score_hp_dp_numba is None` → Module 2H runs the **pure-Python fallback**. "Only the call site is new" hides a real perf dependency. *(Build note: the Numba-availability concern is environment-specific and still stands; the separate "penalty tables absent" claim it was bundled with — see C13 — does NOT hold on the build.)* |
 | C12 | `extra_args` passthrough exists on the minimap2 wrapper (so flag sweeps are zero-code) | **TRUE** | `multi_aligner.py:269-270` `if extra_args: cmd.extend(extra_args)` |
@@ -120,7 +120,7 @@ proposal over-reaches) · **REJECT**.
 | P4b 3'-end-anchored chaining bonus | **DESCOPE** | No minimap2 flag exists; needs a patch or RECTIFY re-chain. High risk (can pull 3' into a genomic A-run), fights P3. Defer. |
 | P4c RMQ-vs-range for short reads | **KEEP (hygiene)** | Already implicitly true (separate short-read aligners); document + verify band. |
 | P5 explicit cross-read CPA consensus (replace `_n_agree`) | **KEEP-WITH-CAVEATS** | Overlaps splice_junctions P1 + ensemble §2. **Dominant risk (author-flagged): over-homogenization erases real APA heterogeneity** — the entire point of a 3' study. Snap only within HP-noise radius. Cross-chunk peak pooling under SLURM arrays is non-trivial (not "plumbing"). |
-| P6/P7/P8 deSALT `-x`, mapPacBio `maxindel`, minimap2 `--end-bonus` sweep | **KEEP** | All one-line config A/Bs (C8/C9); P8 explicitly diagnostic-only (do not ship a blunt end-bonus — it fights P3). |
+| P6/P7/P8 deSALT `-x`, mapPacBio `maxindel`, minimap2 `--end-bonus` sweep | **KEEP** | All one-line config A/Bs (C8/C9); P8 explicitly diagnostic-only (do not ship a blunt end-bonus — it fights P3). *(Build note: mapPacBio `maxindel` is already set to `max(200000,max_intron)` on the build — P7 becomes "tune the set value," not "add a missing cap.")* |
 | P9 Z-drop terminal model | **REJECT (subsumed)** | Author says "no separate work." |
 
 ### File: improve_splice_junctions.md
@@ -297,9 +297,10 @@ REJECT outright: KSW2 fork, full transformer correction, FM embeddings, monolith
   *principled* replacement for the heuristic 2B/2E/2G stack); **lineage-weighted de-herding** of
   `_n_agree` (ensemble §2 — the lineage observation is correct and the fix is sound); the **mispriming
   terminal veto** (3prime P5 — useful, self-contained, low-risk).
-- **High-value but mostly WIRING of existing behaviour (not new science):** wiring Path A
-  (ensemble §1 — the BAMs already exist, C6); `pt:i` prior (data already parsed, C10); the harness
-  (standard benchmarking).
+- **High-value but mostly WIRING of existing behaviour (not new science):** ~~wiring Path A
+  (ensemble §1 — the BAMs already exist, C6)~~ **— already DONE on the build (raw-BAM HP-ED path is
+  the production default); the residual is the N-op calibrated cost above**; `pt:i` prior (data already
+  parsed, C10); the harness (standard benchmarking).
 - **Repackaged / over-claimed:** the "unified graph index" (seeding P4 — author concedes the shippable
   form is "ensemble glue, not a new index"); cross-read consensus is **deSALT's existing mechanism**
   re-implemented post-hoc (real value, but not novel); the GBDT/SpliceAI/foundation-model items are
