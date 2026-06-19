@@ -1,13 +1,6 @@
 # Long-Read Aligner Investigation — Index & Executive Overview
 
-> **⚠️ READ FIRST — build corrections.** Several load-bearing findings in this
-> investigation were verified against a `master`-derived working tree and are **now wrong on
-> the build the team actually runs** (`origin/drs-validation-rebuild`). The authoritative
-> reconciliation — with build `file:line` evidence — is
-> [`CORRECTIONS_vs_DRS_BUILD.md`](./CORRECTIONS_vs_DRS_BUILD.md). The most affected claims
-> ("HP-edit-distance never runs in production"; "empirical penalty tables absent") have been
-> **retracted/softened inline** below and in `ROADMAP.md`; the originals survive only in the
-> unedited `03_adversarial/` and `04_discovery/` docs (cross-reference that file when reading them).
+> All code-level claims verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **What this is.** A multi-agent investigation into the long-read RNA-seq aligners RECTIFY
 uses (and one it doesn't) for ONT direct-RNA / cDNA *S. cerevisiae* alignment. **The PRIMARY
@@ -30,7 +23,6 @@ or **HYPOTHESIS** (plausible, untested).
 dev/aligner_investigation/
 ├── README.md                         ← you are here (index + executive overview)
 ├── SPLICE_JUNCTION_PLACEMENT.md      ← ★ HEADLINE DELIVERABLE: junction-placement validation & improvement (PRIMARY goal)
-├── CORRECTIONS_vs_DRS_BUILD.md       ← ⚠ build re-verification (origin/drs-validation-rebuild); retracts/softens several findings
 ├── ROADMAP.md                        ← prioritized, dependency-ordered improvement plan (junction-first)
 ├── 01_investigation/                 ← per-aligner source-level dossiers
 │   ├── minimap2.md                   minimizer seed-chain-align; the ONT-DRS baseline
@@ -51,9 +43,9 @@ dev/aligner_investigation/
 └── 04_discovery/                     ← improvement proposals (synthesized in ROADMAP.md)
     ├── improve_seeding_indexing.md   syncmer/HPC/strobemer seeding; CPA-anchor priors
     ├── improve_chaining_dp.md        poly-A-aware terminal DP; HP-aware realign; error-model gaps
-    ├── improve_splice_junctions.md   cross-read junction consensus; calibrated scorer; N-op cost  (⚠ Path-A "wiring" already DONE on build — see CORRECTIONS)
+    ├── improve_splice_junctions.md   cross-read junction consensus; calibrated scorer; N-op cost
     ├── improve_3prime_cpa.md         unified terminal CPA solver; pt:i fusion; mispriming veto  (secondary — 3′/CPA already handled)
-    ├── improve_ensemble_selection.md de-herd _n_agree; reliability weights; abstain  (⚠ "wire Path A" item already DONE on build — see CORRECTIONS)
+    ├── improve_ensemble_selection.md de-herd _n_agree; reliability weights; abstain
     ├── improve_ml_learned.md         GBDT selector; signal/dwell fusion; honest "where ML is overkill"
     └── REDTEAM_proposals.md          adversarial review of the 6 dossiers → 9 de-duped items + roadmap
 ```
@@ -63,17 +55,14 @@ dev/aligner_investigation/
 1. **`SPLICE_JUNCTION_PLACEMENT.md`** — the headline deliverable and the project's primary
    goal: how each aligner places junctions, how RECTIFY refines/selects them, and the
    junction-placement validation strategy. Start here.
-2. **`CORRECTIONS_vs_DRS_BUILD.md`** — the build re-verification. Read before trusting any
-   "HP-edit-distance / penalty-table" claim in the older red-team/discovery docs.
-3. **`02_synthesis/COMPARISON.md`** — the master table and the share/differ analysis.
-4. **`03_adversarial/redteam_winrates_selection.md`** — read before you believe any win-rate
-   claim (but apply the corrections in #2 — its "Path B is what production runs" conclusion is
-   retracted on the build).
-5. **`02_synthesis/DEEP_DIVE.md` §7** — the 3′-end / CPA failure-mode crux (secondary; explains
+2. **`02_synthesis/COMPARISON.md`** — the master table and the share/differ analysis.
+3. **`03_adversarial/redteam_winrates_selection.md`** — read before you believe any win-rate
+   claim.
+4. **`02_synthesis/DEEP_DIVE.md` §7** — the 3′-end / CPA failure-mode crux (secondary; explains
    why an ensemble exists).
-6. Per-aligner dossiers in `01_investigation/` as needed (start with `deSALT.md`, `mapPacBio_bbmap.md`,
+5. Per-aligner dossiers in `01_investigation/` as needed (start with `deSALT.md`, `mapPacBio_bbmap.md`,
    `minimap2.md`).
-7. **`04_discovery/REDTEAM_proposals.md`** then **`ROADMAP.md`** for what to do next.
+6. **`04_discovery/REDTEAM_proposals.md`** then **`ROADMAP.md`** for what to do next.
 
 ---
 
@@ -129,38 +118,29 @@ the dossiers + `multi_aligner.py`):
 ## The reported win rates — and the caveat that must come first
 
 CLAUDE.md reports correct-first win rates of **deSALT 78.9% · mapPacBio 18.2% · uLTRA 2% ·
-gapmm2 0.8% · minimap2 0.1%**, and frames them as biology. **The adversarial review
-(`redteam_winrates_selection.md`) shows this framing is not safe** — but note one of its
-central planks has been **retracted on the build** (see callout):
+gapmm2 0.8% · minimap2 0.1%**, and frames them as biology. The adversarial review
+(`redteam_winrates_selection.md`) shows this framing is not safe.
 
-> **⚠️ BUILD CORRECTION (see `CORRECTIONS_vs_DRS_BUILD.md` Claim 2 / §A).** The original
-> red-team conclusion — *"selection is a legacy popularity vote; the HP-edit-distance path never
-> runs; the win rates were produced by Path B"* — is **OUTDATED-FALSE on
-> `origin/drs-validation-rebuild`**. Both production merge call sites now pass per-aligner **raw**
-> BAMs + genome (`single_sample.py:238-250`; generated split body `split_command.py:1085-1094`),
-> and `merge_corrected_tsvs` gained a lazy raw-BAM path that sets
-> `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`
-> (`corrected_consensus.py:1262`) → **Path A (HP-edit-distance) runs in production.** The legacy
-> 5-level `_n_agree` popularity sort (Path B) still exists but is the **documented FALLBACK only**
-> (no BAMs/genome, or BAM staging fails). The "lineage" argument below is therefore retracted; the
-> single-dataset / un-committed caution still stands.
+The selection metric that produces these figures is **HP-edit-distance (Path A), which runs in
+production**: both merge call sites pass per-aligner **raw** BAMs + genome
+(`single_sample.py:238-250`; generated split body `split_command.py:1085-1094`), and
+`merge_corrected_tsvs` sets `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`
+(`corrected_consensus.py:1262`) — a lazy raw-BAM path computes the HP-edit distance in memory
+without materializing corrected BAMs. The legacy 5-level `_n_agree` popularity sort exists but is
+the **fallback only** (no BAMs/genome supplied, or BAM staging yields no rows).
 
 - **These are NOT a clean accuracy ranking.** They are the output of a **single dataset**
   (`wt_by4742_rep1`, one R10.4.1 yeast DRS run) with **no committed provenance** — no script,
   count table, or verified `aligner_summary.tsv` artifact in the repo derives these exact figures.
-  (FACT, code-verified.)
-- **The selection metric on the build is HP-edit-distance (Path A), not the popularity vote** —
-  so the older "produced by the legacy sort" lineage argument **no longer applies to a fresh build
-  run** (retracted; see callout). The figures remain a **single-dataset, un-committed metric
-  output**, and whether they are pre- or post-v3.3.0-fix is still unconfirmed (an `index_col`
-  parsing bug corrupted minimap2/gapmm2/uLTRA read_ids and a `_pt:i:N` normalization bug let
-  mapPacBio win isolated groups — both fixed in v3.3.0, but the lineage of these specific rates is
-  unverified).
-- **deSALT's lead may still reflect output style, not raw 3′ accuracy** (HYPOTHESIS). Its
+  (FACT, code-verified.) Whether they are pre- or post-v3.3.0-fix is also unconfirmed (an
+  `index_col` parsing bug corrupted minimap2/gapmm2/uLTRA read_ids and a `_pt:i:N` normalization
+  bug let mapPacBio win isolated groups — both fixed in v3.3.0, but the lineage of these specific
+  rates is unverified).
+- **deSALT's lead may reflect output style, not raw 3′ accuracy** (HYPOTHESIS). Its
   cross-read homogeneity makes other aligners' junctions agree, which can advantage it under any
   agreement-sensitive tiebreaker; the deSALT dossier calls its *raw* 3′ ends "imprecise," so the
-  win is unlikely to be raw-3′-accuracy-driven. This is now a hypothesis about **junction
-  homogeneity**, not an attribution to `_n_agree` specifically.
+  win is unlikely to be raw-3′-accuracy-driven. This is a hypothesis about **junction
+  homogeneity**, not an attribution to any specific tiebreaker term.
 
 **Bottom line:** the *mechanisms* in the dossiers (RdBG breadth, cross-read pooling, full-SW boundary,
 annotation snapping) are real and well-sourced; the *attribution of a specific win-rate percentage to
@@ -200,12 +180,9 @@ Four corrections materially change how the dossiers should be read:
    not biology.** Every "aligner X wins because it is more accurate" claim is downgraded to **untested
    hypothesis** (one yeast sample, no committed provenance), and several (deSALT junction-homogeneity
    advantage, uLTRA annotation-circularity) are **plausibly biased toward output style, not accuracy**.
-   *(redteam_winrates)*
-   > **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md` Claim 2 / §A).** The red-team's *"selection
-   > runs a legacy popularity sort; the HP-edit-distance / corrected-3′-end path does not even run"*
-   > conclusion is **retracted on the build**: both call sites pass per-aligner raw BAMs + genome →
-   > `use_hp_ed=True` (`corrected_consensus.py:1262`) → **Path A (HP-edit-distance) runs in
-   > production**; the `_n_agree` popularity sort is the **fallback only**.
+   The selection metric itself is HP-edit-distance (Path A), which runs in production
+   (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`); the
+   `_n_agree` popularity sort is the fallback only. *(redteam_winrates)*
 2. **minimap2 `--splice-flank=no` is "compatibility," not "3′ accuracy."** The live code comment is
    `# Disable for compatibility` (`multi_aligner.py:252`); CLAUDE.md's "important for 3′ end accuracy"
    rationale is asserted, not the author's stated reason. The elaborate mechanistic story built on it
@@ -222,17 +199,13 @@ Four corrections materially change how the dossiers should be read:
 One lower-tier flag worth carrying: **deSALT runs no `-x` ONT preset** (the `null` ~13% model, never
 A/B-tested against `-x ont2d`).
 
-> **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md` Claim 4e / §C).** The old "mapPacBio sets no
-> `maxindel`, relies on BBMap's soft ~16000 default" flag is **stale on the build**: mapPacBio now
-> runs `intronlen=10` (not 50) **and** an explicit `maxindel=max(200000, max_intron)`
-> (`multi_aligner.py:749,754`) — the previously-missing cap is set. The `redteam_denovo` B5 concern
-> is RESOLVED.
+mapPacBio runs `intronlen=10` and an explicit `maxindel=max(200000, max_intron)`
+(`multi_aligner.py:749,754`), so the intron threshold and the long-indel cap are both set
+explicitly.
 
 ---
 
 *FACT claims trace to the dossiers, the cited papers/repos, or `rectify/core/align/multi_aligner.py`
 and `corrected_consensus.py` (read directly). INFERENCE/HYPOTHESIS claims — above all the win-rate
 causal chains — are synthesis, not assertions by the tool authors, and are explicitly flagged as such.
-Code claims marked with a **⚠ BUILD CORRECTION** callout were re-verified against
-`origin/drs-validation-rebuild` in `CORRECTIONS_vs_DRS_BUILD.md`; where the build differs from the
-older `master`-derived dossiers, the build is authoritative.*
+All code-level claims were verified against `origin/drs-validation-rebuild` @ 366c885.*

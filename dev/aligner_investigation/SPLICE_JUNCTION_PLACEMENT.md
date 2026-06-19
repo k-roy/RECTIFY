@@ -1,11 +1,6 @@
 # Splice-Junction Placement in RECTIFY — Validation & Improvement
 
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** This file was verified against the
-> `master`-derived working tree. Two load-bearing findings are **retracted on the real build**:
-> (1) §2 "empirical penalty tables ABSENT from this checkout" — the tables ARE bundled and
-> auto-resolved by `--Scer`; (2) §2 "CRITICAL FINDING — junction quality does NOT drive
-> production selection" — Path A (HP-edit-distance) runs in production on the build. See
-> `CORRECTIONS_vs_DRS_BUILD.md` (sections A, B, D). Inline callouts mark every correction.
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Headline deliverable.** Primary goal: **validating and improving splice-junction
 placement** in RECTIFY's correct-first long-read RNA-seq pipeline (ONT DRS/cDNA,
@@ -126,25 +121,18 @@ property, demoted here), not on splice quality.
 | **Signature junction failure** | ±1–few bp jitter | long-range chimeric N | circular on novel | per-read inhomogeneity; slow | no internal-junction value | splice-blind misplacement |
 | **Junction win contribution** | 0.1% | **78.9%** | 2% | n/a | 0.8% | 18.2% |
 
-*(All win rates are RECTIFY-internal and single-dataset. **⚠️ BUILD CORRECTION (vs
-`drs-validation-rebuild`):** the qualifier "measured under the legacy selection path, NOT a
-junction-quality metric" is **RETRACTED for the build** — on `drs-validation-rebuild` the
-production path runs Path A (HP-edit-distance, a junction-aware quality metric); see §2. The
-single-dataset / un-committed-artifact caution still stands.)*
+*(All win rates are RECTIFY-internal and single-dataset. They are produced by Path A
+(HP-edit-distance, a junction-aware quality metric — see §2). The single-dataset /
+un-committed-artifact caution stands.)*
 
 ---
 
 ## 2. How RECTIFY currently validates / refines / selects junctions
 
 RECTIFY has a genuinely sophisticated **junction-refinement** layer (Module 2H) and a
-**validation** layer.
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** This section originally concluded with
-> a "CRITICAL FINDING" that "in production, junction quality is **not** the actual
-> winner-selection criterion." **That conclusion is RETRACTED on the build** — see the rewritten
-> "CRITICAL FINDING" block at the end of this section. On `drs-validation-rebuild`, both
-> production call sites pass per-aligner raw BAMs + genome, so `use_hp_ed=True` and Path A
-> (HP-edit-distance) runs in production.
+**validation** layer. Junction quality drives production winner selection via HP-edit-distance
+(Path A) — both production call sites pass per-aligner raw BAMs + genome, so `use_hp_ed=True`
+and Path A runs (detailed in the CRITICAL FINDING block at the end of this section).
 
 ### Module 2H — `refine_read_junctions` (FACT, verified in `junction_refiner.py`)
 For every `N`-op in every read, 2H scores candidate junctions and re-snaps the boundary:
@@ -173,29 +161,23 @@ For every `N`-op in every read, 2H scores candidate junctions and re-snaps the b
   consensus site or cross-read support count is ever computed** (each read is refined in
   isolation against a static list).
 
-### Empirical `--junction-penalty-table` (FACT — and a CRITICAL gap)
+### Empirical `--junction-penalty-table` (FACT — bundled and auto-resolved)
 `HpPenaltyTable.from_tsv` (`hp_penalty.py`) loads base-class-split (AT/CG) HP del/ins
 penalties; `--str-penalty-table` adds STR slippage costs. When present, these replace the
 heuristic step-function (`del(HP=1)=1.0, del(HP≥4)=0.5, ins=1.25`).
-- ~~**CRITICAL (FACT):** the `.tsv` tables and the entire `common/scripts/nanopore/` tree
-  (incl. the generator) are **ABSENT from this checkout** — only the loader + CLAUDE.md docs
-  exist. … **So the heuristic fallback is what actually runs.**~~
-  > **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** **RETRACTED.** The tables ARE
-  > bundled on the build for both organisms with protocol variants:
-  > `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/{penalty_scores.tsv,
-  > penalty_scores_cdna.tsv, penalty_scores_cdna_umi1/2/3plus.tsv, penalty_scores_qsrev.tsv,
-  > str_penalty_scores.tsv, junction_overhang_table.tsv}` and a parallel `homo_sapiens/`
-  > set; the generator is `scripts/calibration/empirical_cigar_error_profiler.py`. They are
-  > **auto-resolved by `--Scer` by default** (protocol-routed): `resolve_reference_paths()`
-  > fills `args.junction_penalty_table`/`str_penalty_table`/`junction_overhang_table` from
-  > bundled data when empty (`rectify/data/__init__.py:1188-1208`, routed via
-  > `get_bundled_junction_penalty_table` `:835`), and the global CLI hook calls it
-  > (`rectify/cli.py:198-199`). **So the empirical tables — not the heuristic fallback — are
-  > what runs by default on the build.** The "absent → heuristic fallback" finding was true
-  > only of the master checkout.
-- **Numba (sub-claim, still environment-dependent):** Numba was not importable in the master
-  checkout → 2H ran the pure-Python DP fallback (`REDTEAM_proposals.md` C11). Numba
-  availability is environment-specific and unrelated to the table-bundling correction above.
+- **FACT:** the empirical tables are **bundled** for both organisms with protocol variants:
+  `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/{penalty_scores.tsv,
+  penalty_scores_cdna.tsv, penalty_scores_cdna_umi1/2/3plus.tsv, penalty_scores_qsrev.tsv,
+  str_penalty_scores.tsv, junction_overhang_table.tsv}` and a parallel `homo_sapiens/` set; the
+  generator is `scripts/calibration/empirical_cigar_error_profiler.py`. They are **auto-resolved
+  by `--Scer` by default** (protocol-routed): `resolve_reference_paths()` fills
+  `args.junction_penalty_table`/`str_penalty_table`/`junction_overhang_table` from bundled data
+  when empty (`rectify/data/__init__.py:1188-1208`, routed via `get_bundled_junction_penalty_table`
+  `:835`), and the global CLI hook calls it (`rectify/cli.py:198-199`). So the empirical tables —
+  not the heuristic fallback — are what runs by default.
+- **Numba (sub-claim, environment-dependent):** when Numba is not importable, 2H runs the
+  pure-Python DP fallback (`REDTEAM_proposals.md` C11). Numba availability is environment-specific
+  and independent of the table bundling.
 
 ### Chimera-overhang filter (FACT — `calibrate_junction_overhang.py` + `_add_chimera_flag`)
 Empirically calibrates `min_overhang(intron_size)` from **concordant multi-aligner reads
@@ -216,52 +198,46 @@ junction has insufficient flanking overhang for its intron size; chimeric aligne
   (A-rich downstream + genomic A-tract target + non-GT-AG) and absorbs them as large
   deletions — a 3'-end-protection module, demoted here.
 
-### CRITICAL FINDING (REVISED) — junction quality DOES drive production selection on the build
-`merge_corrected_tsvs` (`corrected_consensus.py`) has two sort paths, switched *on master* by
-`use_hp_ed = bool(per_aligner_corrected_bams)` (line 662):
-- **Path A (HP-edit-distance)** — sort `(read_id, _effective_chimera_ok, hp_edit_distance,
-  _span)`. The closest thing to junction-quality selection.
+### CRITICAL FINDING — junction quality drives production selection
+`merge_corrected_tsvs` (`corrected_consensus.py`) has two sort paths, switched by
+`use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)` (`corrected_consensus.py:1262`):
+- **Path A (HP-edit-distance, production default)** — sort `(read_id, _effective_chimera_ok,
+  hp_edit_distance, _span)`. The junction-quality selection criterion.
 - **Path B (legacy popularity vote, FALLBACK)** — sort `(read_id, _five_rescued, _chimera_ok,
   _conf_rank, _n_agree, _span, _n_junc)`. `_n_agree` = count of rows sharing
   `(read_id, corrected_3prime)` — a **majority-vote popularity** term.
 
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** On master, "both production call sites
-> pass NO `per_aligner_corrected_bams` → `use_hp_ed=False` → Path B runs" was correct. **On the
-> build this is RETRACTED.** The gate is widened to
-> `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`
-> (`corrected_consensus.py:1262`), and a lazy raw-BAM HP path (`:1264-1364`) computes
-> HP-edit-distance in memory from raw BAM + TSV. **Both production call sites pass
-> `per_aligner_raw_bams` + `genome`:** `run/single_sample.py:238-250` and
-> `split_command.py:1085-1094`. → `use_hp_ed=True` → **Path A runs in production.** Path B is the
-> documented fallback only (no BAMs/genome supplied, or staging fails → `ed_rows` empty →
-> `use_hp_ed=False`, `:1377`).
+Both production call sites pass `per_aligner_raw_bams` + `genome`
+(`run/single_sample.py:238-250` and `split_command.py:1085-1094`), so `use_hp_ed=True` and a lazy
+raw-BAM HP path (`:1264-1364`) computes HP-edit-distance in memory from raw BAM + TSV. **Path A
+runs in production.** Path B is the documented fallback only (no BAMs/genome supplied, or staging
+fails → `ed_rows` empty → `use_hp_ed=False`, `:1377`).
 
-Therefore, *on the build*:
+Therefore:
 1. **Junction quality IS a selection key in production** — `hp_edit_distance` (the
-   junction-aware quality term) is computed and is the primary non-flag discriminator. ~~never
-   computed~~. (On the master tree, and in the Path B fallback, it is not computed and selection
-   falls back to rescue flag / chimera flag / self-reported confidence / 3'-position popularity.)
+   junction-aware quality term) is computed and is the primary non-flag discriminator. (In the
+   Path B fallback it is not computed and selection falls back to rescue flag / chimera flag /
+   self-reported confidence / 3'-position popularity.)
 2. **N-ops cost 0** in `_cigar_hp_edit_distance` (verified: `op == 3: ref_pos += length
    # free pass`; `corrected_consensus.py:142-143`). An aligner that invents a long false intron
    pays **nothing** for the skipped reference and can *lower* its edit distance by replacing
-   mismatches with a free `N` — a "free false-intron" exploit. **⚠️ BUILD CORRECTION (vs
-   `drs-validation-rebuild`):** beyond the binary overhang flag, a NEW **junction-anchor gate**
-   backstops this — `_cigar_min_junction_anchor` (`:166-220`) + the `_add_chimera_flag` anchor
-   branch (`:868-882`) flag an N-op winner chimeric when its junction-local perfect-match anchor
-   is below `min_junction_anchor_bp`. The gate is **organism-gated**
-   (`rectify/data/__init__.py:1053-1062`; `_MIN_JUNCTION_ANCHOR=0` at `corrected_consensus.py:650`):
-   **human default 10 bp, yeast 0 (gate OFF).** So on **yeast** the overhang filter is still the
-   only defense and "free false-intron" holds; on **human** the anchor gate adds a graded
-   structural defense.
-3. **Aligner-style coupling, reframed** (HYPOTHESIS): on the Path B *fallback*, deSALT's
-   homogeneous junctions → many aligners share `corrected_3prime` → high `_n_agree` → herd-bias
-   win; uLTRA's GTF-snap is annotation-circular. **Under Path A (the build default), `_n_agree`
-   is not a sort key**, so the herd-bias mechanism does not apply to production runs; the residual
-   style-coupling concern is that an output style minimizing HP-edit-distance (clean `=`/`X`,
-   free `N`) can still couple to wins independent of biological accuracy. The
-   78.9/18.2/2/0.8/0.1 spread is a **metric output on one dataset, possibly pre-v3.3.0-fix**
-   (`index_col`/`_pt:i:N` bugs that stopped 3 aligners competing) — **HYPOTHESIS as biology**
-   (this caution is unaffected by the build correction).
+   mismatches with a free `N` — a "free false-intron" exploit. Beyond the binary overhang flag, a
+   **junction-anchor gate** backstops this: `_cigar_min_junction_anchor` (`:166-220`) + the
+   `_add_chimera_flag` anchor branch (`:868-882`) flag an N-op winner chimeric when its
+   junction-local perfect-match anchor is below `min_junction_anchor_bp`. The gate is
+   **organism-gated** (`rectify/data/__init__.py:1053-1062`; `_MIN_JUNCTION_ANCHOR=0` at
+   `corrected_consensus.py:650`): **human default 10 bp, yeast 0 (gate OFF).** So on **yeast** the
+   overhang filter is the only defense and the free-false-intron exploit is live; on **human** the
+   anchor gate adds a graded structural defense. The calibrated N-op cost remains the open item
+   (J1).
+3. **Aligner-style coupling** (HYPOTHESIS): under Path A, an output style minimizing
+   HP-edit-distance (clean `=`/`X`, free `N`) can couple to wins independent of biological
+   accuracy. On the Path B *fallback*, deSALT's homogeneous junctions → many aligners share
+   `corrected_3prime` → high `_n_agree` → herd-bias win, and uLTRA's GTF-snap is
+   annotation-circular; `_n_agree` is not a Path A sort key, so the herd-bias mechanism does not
+   apply to production runs. The 78.9/18.2/2/0.8/0.1 spread is a **metric output on one dataset,
+   possibly pre-v3.3.0-fix** (`index_col`/`_pt:i:N` bugs that stopped 3 aligners competing) —
+   **HYPOTHESIS as biology.**
 
 ---
 
@@ -283,11 +259,9 @@ validation reads that exercise them:
 **Net:** the failure modes are **complementary** — minimap2/mapPacBio jitter and miss
 micro-exons; deSALT/uLTRA recover structure but deSALT chimeras and uLTRA is circular;
 gapmm2 adds only terminal exons. This complementarity is the justification for the ensemble
-+ 2H union pool — and it is realized **only if junction quality actually drives selection**.
-**⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the original text said "which today (§2)
-it does not." On the build, junction quality (HP-edit-distance, Path A) **does** drive
-production selection — so the precondition for the ensemble paying off is met on
-`drs-validation-rebuild` (it was not met on master).
++ 2H union pool — and it is realized **because junction quality drives selection**: junction
+quality (HP-edit-distance, Path A) drives production winner selection (§2), so the precondition
+for the ensemble paying off is met.
 
 ---
 
@@ -335,13 +309,14 @@ popularity vote."
   truth set, emits a `junction_accuracy.tsv` (per aligner and per pipeline stage: raw → 2H):
   exact-match rate, median |shift|, canonical rate, micro-exon recall, false-novel rate.
 - **Commit provenance**: the exact dataset, commit hash, aligner versions, penalty-table
-  presence (**on the build: bundled + auto-resolved by `--Scer`**; on master: absent →
-  heuristic), Numba availability, and which sort path ran (**on the build: Path A by default**).
-  This directly answers the `redteam_winrates` "is the spread a metric artifact?" question.
+  presence (bundled + auto-resolved by `--Scer`), Numba availability, and which sort path ran
+  (Path A by default). This directly answers the `redteam_winrates` "is the spread a metric
+  artifact?" question.
 - **Path-A/B ablation** (zero-oracle, do first): run the same TSVs through
-  `merge_corrected_tsvs` with and without `per_aligner_corrected_bams` and diff
-  `winning_aligner` counts. If the spread moves, the win rates are a selection-metric
-  artifact — settled with no truth set needed.
+  `merge_corrected_tsvs` with and without `per_aligner_corrected_bams`/`per_aligner_raw_bams`
+  and diff `winning_aligner` counts. Both are live paths (Path A default, Path B fallback). If
+  the spread moves, the win rates are a selection-metric artifact — settled with no truth set
+  needed.
 
 ---
 
@@ -357,17 +332,15 @@ risk · red-team verdict · caveat.
   **Effort:** days. **Risk:** none. **Red-team verdict:** KEEP — "the single correct do-first"
   (`REDTEAM_proposals` E0). **Caveat:** needs no truth set; gates every value claim below.
 
-### J1 (HIGHEST) — Fix N-op-cost-0 (the J1(b) wiring is already DONE on the build)
-- **Mechanism:** (a) charge each `N`-op a **small calibrated open cost** = −logP(novel intron
-  of this length at this site) instead of 0, in `_cigar_hp_edit_distance`; ~~(b) collect the
-  already-produced per-aligner corrected BAMs and pass them to `merge_corrected_tsvs` so Path A
-  actually runs~~.
-  > **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** **J1(b) is already implemented on the
-  > build.** Both production call sites pass `per_aligner_raw_bams` + `genome` and a lazy raw-BAM
-  > HP path (`corrected_consensus.py:1264-1364`) runs Path A without materializing corrected BAMs
-  > (`single_sample.py:238-250`, `split_command.py:1085-1094`). **Only J1(a) — the calibrated
-  > N-op open cost — remains open.** The human-only junction-anchor gate already backstops the
-  > free-`N` exploit structurally (see §2); a calibrated N-cost would generalize that to yeast.
+### J1 (HIGHEST) — Calibrated N-op open cost (the BAM wiring already exists)
+- **Mechanism:** charge each `N`-op a **small calibrated open cost** = −logP(novel intron
+  of this length at this site) instead of 0, in `_cigar_hp_edit_distance`. The BAM-wiring half
+  is already done: both production call sites pass `per_aligner_raw_bams` + `genome` and a lazy
+  raw-BAM HP path (`corrected_consensus.py:1264-1364`) runs Path A without materializing corrected
+  BAMs (`single_sample.py:238-250`, `split_command.py:1085-1094`), so HP-edit-distance already
+  ranks aligners. **Only the calibrated N-op open cost remains open.** The human-only
+  junction-anchor gate already backstops the free-`N` exploit structurally (see §2); a calibrated
+  N-cost would generalize that to yeast.
 - **Failure fixed:** the free-false-intron exploit (§2). **Effort:** low (the wiring is done;
   only the N-cost calibration remains). **Risk:** medium — must validate cat7/cat9 before
   default-on. **Red-team verdict:** KEEP-WITH-CAVEATS (the most-emphasized correctness gap).
@@ -375,13 +348,10 @@ risk · red-team verdict · caveat.
   a gate, violating the PERMANENT no-gate policy.
 
 ### J2 — Validate / version the bundled empirical junction penalty tables
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** The original premise — "the tables are
-> currently absent; regenerate + commit them" — is **wrong on the build.** The tables ARE
-> bundled (per-organism, protocol-routed) and **auto-resolved by `--Scer`** (see §2:
-> `rectify/data/genomes/*/penalty_tables/`, `data/__init__.py:1188-1208`, `cli.py:198-199`).
-> J2 is therefore **re-scoped** from "regenerate the absent tables" to "**validate / version the
-> already-bundled tables**."
-- **Mechanism (re-scoped):** confirm the bundled `penalty_scores.tsv` / `str_penalty_scores.tsv`
+The tables are bundled (per-organism, protocol-routed) and **auto-resolved by `--Scer`** (see §2:
+`rectify/data/genomes/*/penalty_tables/`, `data/__init__.py:1188-1208`, `cli.py:198-199`). J2 is
+therefore to **validate / version the already-bundled tables**, not to regenerate absent ones.
+- **Mechanism:** confirm the bundled `penalty_scores.tsv` / `str_penalty_scores.tsv`
   (and protocol variants `penalty_scores_cdna*.tsv`, `penalty_scores_qsrev.tsv`) match the
   current chemistry/sample; record their provenance + generation command
   (`scripts/calibration/empirical_cigar_error_profiler.py`); pin a version so a recalibration is

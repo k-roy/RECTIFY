@@ -10,28 +10,16 @@ verified constraints from `02_synthesis/{COMPARISON.md,DEEP_DIVE.md}` and
 `03_adversarial/redteam_winrates_selection.md`; and **the actual RECTIFY source** (every code claim
 below was checked, not taken on the proposals' word).
 
-> **Build note:** the code claims below were checked against the **`master`-derived working tree**;
-> see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Two
-> environment/code claims are SUPERSEDED on the build** and are corrected inline: (1) "the empirical
-> penalty/STR tables are absent" was a **master-checkout artifact** — the tables are **bundled** under
-> `rectify/data/genomes/*/penalty_tables/` and `--Scer`-auto-resolved (C13 below); (2) Path A
-> (HP-edit-distance) is **wired and runs in production** (both merge call sites pass raw BAMs + genome),
-> so the "wire the dead path on" framing (C1/C6, §1, roadmap E0/E1) is largely DONE. The Numba-import
-> sub-claim (C11) is environment-dependent and unchanged.
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Environment note that colours several verdicts.** In this checkout: `edlib` imports; **`mappy`,
-`parasail`, `lightgbm`, `scikit-learn`, and `numba` do NOT import**; `minimap2` is not on `PATH`;
-the empirical `penalty_scores.tsv` / `str_penalty_scores.tsv` and the entire
-`common/scripts/nanopore/` tree are **absent** *(in this **master** checkout)*. This matters: multiple
-proposals assert "the Numba DP kernel already exists, only the call site is new" or "LightGBM is a
-pip-install with no dependencies of consequence" — both understate real plumbing cost here.
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the "penalty tables absent" half of this note
-> is a **master-checkout artifact only.** On the build the tables ARE present and `--Scer`-resolved:
-> `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/{penalty_scores.tsv,
-> penalty_scores_cdna*.tsv, penalty_scores_qsrev.tsv, str_penalty_scores.tsv, junction_overhang_table.tsv}`,
-> auto-filled by `rectify/data/__init__.py:1188-1208` via the CLI hook `cli.py:198-199`. The
-> **Numba-not-importable** sub-claim is genuinely environment-specific and is left standing.
+`parasail`, `lightgbm`, `scikit-learn`, and `numba` do NOT import**; `minimap2` is not on `PATH`. This
+matters: multiple proposals assert "the Numba DP kernel already exists, only the call site is new" or
+"LightGBM is a pip-install with no dependencies of consequence" — both understate real plumbing cost
+here. The bundled penalty/STR/overhang tables ARE present and `--Scer`-resolved
+(`rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/{penalty_scores.tsv,
+penalty_scores_cdna*.tsv, penalty_scores_qsrev.tsv, str_penalty_scores.tsv, junction_overhang_table.tsv}`,
+auto-filled by `rectify/data/__init__.py:1188-1208` via the CLI hook `cli.py:198-199`).
 
 ---
 
@@ -39,17 +27,17 @@ pip-install with no dependencies of consequence" — both understate real plumbi
 
 | # | Claim (proposal) | Verdict | Evidence checked |
 |---|---|---|---|
-| C1 | Production selection runs the **legacy 5-level sort** (Path B); HP-edit-distance (Path A) is gated by `use_hp_ed = bool(per_aligner_corrected_bams)` and never wired | **TRUE** | `corrected_consensus.py:662` `use_hp_ed = bool(...)`; Path B key at `:749-752` (`_five_rescued,_chimera_ok,_conf_rank,_n_agree,_span,_n_junc`); Path A key at `:744-746` |
-| C2 | `_n_agree` is a **popularity vote** (count of rows sharing `(read_id, corrected_3prime)`) | **TRUE** | `:693-698` `groupby(...).size()→_n_agree`; it is the dominant non-flag Path-B discriminator |
+| C1 | Production selection runs **HP-edit-distance (Path A)**; the legacy 5-level sort (Path B) is the fallback | **TRUE** | `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)` (`corrected_consensus.py:1262`; lazy raw-BAM path `:1264-1364`); both call sites pass raw BAMs + genome (`single_sample.py:238-250`, `split_command.py:1085-1094`). Path B fallback key (`_five_rescued,_chimera_ok,_conf_rank,_n_agree,_span,_n_junc`) used only when `use_hp_ed=False` (`:1377`) |
+| C2 | `_n_agree` is a **popularity vote** (count of rows sharing `(read_id, corrected_3prime)`) | **TRUE (fallback only)** | `:693-698` `groupby(...).size()→_n_agree`; it is the dominant non-flag Path-B discriminator — but Path B is the fallback, not the production default (C1) |
 | C3 | **N-ops cost 0** ("free pass") in HP-edit-distance | **TRUE** | `_cigar_hp_edit_distance` `:68-69` `op == 3: ref_pos += length  # free pass`; docstring `:12` "N (intron): 0 — free pass" |
-| C4 | `single_sample.py:495` passes **no BAMs / no genome / no penalty table** to the merge | **TRUE** | `:495-500` passes only `per_aligner_tsvs,output_tsv,summary_tsv,overhang_table` |
-| C5 | `split_command.py:985` builds `corrected_bams` but does **not** feed them to the merge | **TRUE** | builds dict at `:970-978`, merge at `:985` omits it; uses BAMs only for the consensus BAM at `:1000-1014` |
-| C6 | Per-aligner corrected BAM (`{stem}.rectified_corrected_3end.bam`) **already produced on disk** at the single-sample call site, "simply never collected" | **TRUE (with caveat)** | `stages.py:194,205` passes `corrected_bam=corrected_bam_path` into `correct_command.run`; but `_run_correction_per_aligner` (`:240-334`) **returns only TSV paths** — the BAM is written but not globbed back. The ensemble-selection §1 "wiring not computation" framing is accurate. Caveat: BAM-write is conditional on correction succeeding and on `correct_command` honouring `corrected_bam` for every aligner. |
+| C4 | `single_sample.py` passes per-aligner **raw BAMs + genome** to the merge → Path A active | **TRUE** | `single_sample.py:238-250` passes `per_aligner_raw_bams=…, genome=…`; merge activates the lazy raw-BAM HP path (C1) |
+| C5 | `split_command.py` passes per-aligner **raw BAMs + genome** to the merge → Path A active | **TRUE** | `split_command.py:1085-1094` passes `per_aligner_raw_bams=…, genome=…`; merge activates the lazy raw-BAM HP path (C1) |
+| C6 | Path A runs **without materializing per-aligner corrected BAMs** (lazy raw-BAM path) | **TRUE** | `merge_corrected_tsvs` lazy path `:1264-1364` reads HP-ED directly from raw BAMs + genome, so no corrected-BAM globbing is required; the "wiring not computation" framing of ensemble §1 is therefore already realized in production. |
 | C7 | `--splice-flank=no` is a "compatibility" flag, **not** a proven 3'-accuracy mechanism | **TRUE** | `multi_aligner.py:252` literal comment `# Disable for compatibility` (contradicts CLAUDE.md's "important for 3' end accuracy"). chaining_dp's caveat is correct. |
 | C8 | deSALT runs with **no `-x` ONT preset** (null ~13% model) | **TRUE** | `run_desalt` (`:1506+`) builds `aln`+index+`extra_args`; no `-x` hardcoded |
-| C9 | mapPacBio sets `intronlen=50` but **no `maxindel`** | **TRUE on master · SUPERSEDED on build** | On master `run_map_pacbio` set `fastareadlen,intronlen=50,minratio=0.4` with no `maxindel`. **⚠️ BUILD CORRECTION:** the build sets `intronlen=10` (`multi_aligner.py:749`) **and** an explicit `maxindel=max(200000, max_intron)` (`:754`) — the missing-`maxindel` concern (redteam_denovo B5) is RESOLVED. (`run_bbmap` short-read still sets `maxindel=100000` separately — do not confuse the two.) |
+| C9 | mapPacBio sets `intronlen=10` **and** an explicit `maxindel=max(200000, max_intron)` | **TRUE** | `run_map_pacbio` sets `intronlen=10` (`multi_aligner.py:749`) and `maxindel=max(200000, max_intron)` (`:754`) — the missing-`maxindel` concern (redteam_denovo B5) does not apply. (`run_bbmap` short-read sets `maxindel=100000` separately — do not confuse the two.) |
 | C10 | dorado `pt:i` tail length **already parsed/stored** | **TRUE** | `drs_trim_command.py:240,411,462` (`get_tag('pt')`, `pt_tag`, parquet column) |
-| C11 | RECTIFY already owns `_score_hp_dp_numba` (Numba NW DP), `HpPenaltyTable.del_cost/ins_cost`, `local_aligner.py` (Gotoh affine) | **TRUE in code; PARTIALLY MISLEADING at runtime** | All three exist (`hp_penalty.py:44,261,270`; `local_aligner.py:21-27`). **But** `numba` is not importable here, so `_score_hp_dp_numba is None` → Module 2H runs the **pure-Python fallback**. "Only the call site is new" hides a real perf dependency. *(Build note: the Numba-availability concern is environment-specific and still stands; the separate "penalty tables absent" claim it was bundled with — see C13 — does NOT hold on the build.)* |
+| C11 | RECTIFY already owns `_score_hp_dp_numba` (Numba NW DP), `HpPenaltyTable.del_cost/ins_cost`, `local_aligner.py` (Gotoh affine) | **TRUE in code; PARTIALLY MISLEADING at runtime** | All three exist (`hp_penalty.py:44,261,270`; `local_aligner.py:21-27`). **But** `numba` is not importable here, so `_score_hp_dp_numba is None` → Module 2H runs the **pure-Python fallback**. "Only the call site is new" hides a real perf dependency. This Numba-availability concern is environment-specific and stands. |
 | C12 | `extra_args` passthrough exists on the minimap2 wrapper (so flag sweeps are zero-code) | **TRUE** | `multi_aligner.py:269-270` `if extra_args: cmd.extend(extra_args)` |
 | C13 | Empirical penalty table exists on disk to consume | **FALSE on master · SUPERSEDED (TRUE) on build** | On the master checkout `penalty_scores.tsv` / `str_penalty_scores.tsv` and `common/scripts/nanopore/` are **absent**. **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the tables ARE bundled — `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/{penalty_scores.tsv, penalty_scores_cdna*.tsv, penalty_scores_qsrev.tsv, str_penalty_scores.tsv, junction_overhang_table.tsv}` — and `--Scer` auto-resolves them (`rectify/data/__init__.py:1188-1208`; `cli.py:198-199`); the generator `scripts/calibration/empirical_cigar_error_profiler.py` is also present. So on the build, proposals "reusing the empirical table" consume the **bundled** table; the open work is **validate/version**, not regenerate. |
 | C14 | `--aligner-bams` wired into `rectify correct` enables Module 2H | **TRUE** | `correct_command.py:304,451,500` (`_run_2h` gated on `aligner_bams` + annotation) |

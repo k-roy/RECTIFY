@@ -1,12 +1,12 @@
 # Improvement Roadmap — Long-Read Aligner SPLICE-JUNCTION Program for RECTIFY
 
-> **⚠️ READ FIRST.** This roadmap was re-led **junction-first** (the project's primary goal) and
-> reconciled against the build the team runs (`origin/drs-validation-rebuild`). Two structural
-> corrections from [`CORRECTIONS_vs_DRS_BUILD.md`](./CORRECTIONS_vs_DRS_BUILD.md) change the work:
-> (1) **Path A (HP-edit-distance) already runs in production** — "wire Path A on" is DONE, only the
-> calibrated N-op cost remains open; (2) **the empirical penalty/STR/overhang tables are bundled and
-> auto-resolved by `--Scer`** — the "regenerate the absent tables" item becomes "validate / version
-> the bundled tables." Both originals survive uncorrected in `04_discovery/`; this roadmap is authoritative.
+> All code-level claims verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
+This roadmap is led **junction-first** (the project's primary goal). Two structural facts about the
+build shape the work: (1) **Path A (HP-edit-distance) runs in production** — only the calibrated
+N-op cost remains open; (2) **the empirical penalty/STR/overhang tables are bundled and
+auto-resolved by `--Scer`** — so the table item is "validate / version the bundled tables," not
+"regenerate absent ones."
 
 **What this is.** The forward-looking deliverable. **The primary goal is validating and improving
 SPLICE-JUNCTION PLACEMENT**; 3′-end / CPA resolution is **already well-handled** by RECTIFY and is
@@ -34,17 +34,13 @@ NET-seq alone is not enough:
   Path B ablation** is pure code: re-run `merge_corrected_tsvs` on the committed per-aligner TSVs with
   and without per-aligner raw BAMs, confirm whether the cited 79/18/2/0.8/0.1 are post-v3.3.0-fix, and
   commit an `aligner_summary.tsv` + `PROVENANCE.json`. This **settles whether the win-rate spread moves
-  between the two live paths, with zero accuracy assumptions.**
-
-  > **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md` Claim 2 / §A).** This is now an **ablation of
-  > two LIVE paths**, not "wire a dead path on." On the build, both production call sites pass
-  > per-aligner **raw** BAMs + genome (`single_sample.py:238-250`; generated split body
-  > `split_command.py:1085-1094`), and `use_hp_ed = bool(per_aligner_corrected_bams or
-  > per_aligner_raw_bams)` (`corrected_consensus.py:1262`) → **Path A (HP-edit-distance) runs in
-  > production**; the `_n_agree` popularity sort is the documented **fallback only**. The ablation still
-  > has value (does the metric change between Path A and the Path-B fallback?), but the premise "the
-  > corrected BAMs Path A needs exist on disk but are never collected" is **superseded** — Path A is
-  > already wired via the lazy raw-BAM path. **Do this first; it is days of work.**
+  between the two live paths, with zero accuracy assumptions.** This is an **ablation of two live
+  paths**: both production call sites pass per-aligner **raw** BAMs + genome
+  (`single_sample.py:238-250`; generated split body `split_command.py:1085-1094`), and
+  `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)` (`corrected_consensus.py:1262`)
+  → Path A (HP-edit-distance) runs in production; the `_n_agree` popularity sort is the fallback only.
+  The ablation answers "does the metric change between Path A and the Path-B fallback?" **Do this
+  first; it is days of work.**
 
 - **NET-seq is circular and is NOT a sufficient oracle.** NET-seq is used as *both* the tuning signal
   (for every proposed model/weight/prior) *and* the validation oracle, *and* it is already partially
@@ -72,10 +68,10 @@ here) so cross-references still resolve.
 
 | # | Item | Mechanism (1 line) | Junction failure it fixes | Effort | Risk | Verdict | Key caveat |
 |---|---|---|---|---|---|---|---|
-| **3** | **Calibrated N-op cost** (do first among junction work) | Charge each intron −logP(novel intron here) instead of 0 in `_cigar_hp_edit_distance` | `N` ops are **cost 0** → an aligner invents a false intron to lower its HP-edit distance and win | S | Low–Med | **KEEP (highest junction priority)** | Must be a *calibrated* cost, not a fixed gate (PERMANENT no-gate policy). ⚠ Path A (which consumes this score) **already runs** — see build correction below; and a junction-anchor gate already backstops free-N on human only |
+| **3** | **Calibrated N-op cost** (do first among junction work) | Charge each intron −logP(novel intron here) instead of 0 in `_cigar_hp_edit_distance` | `N` ops are **cost 0** → an aligner invents a false intron to lower its HP-edit distance and win | S | Low–Med | **KEEP (highest junction priority)** | Must be a *calibrated* cost, not a fixed gate (PERMANENT no-gate policy). Path A (which consumes this score) already runs; a junction-anchor gate backstops free-N on human (10 bp) but is off on yeast (0), so on yeast this cost is the primary defense |
 | **8j** | **Cross-read junction consensus + de-herded weights** | Pool every `N`-op across all 5 aligner BAMs + annotation into a per-locus consensus; re-snap with `_score_junction` as a per-read veto; weight agreement by reliability, not raw count | Per-read junction inhomogeneity (the trait deSALT wins on) — now available to all five, de-biased | M | **High** | **KEEP-WITH-CAVEATS** | **Over-snapping collapses genuine alt-5′/3′SS isoforms <50 bp apart (real in yeast RP genes)** — snap only within `max_boundary_shift=50`; per-read sequence veto mandatory; weights empirical, tiebreaker-only |
 | **7** | **Calibrated junction scorer + splice-strength (MaxEnt/PWM)** | Replace 2H's brittle lexicographic tuple with a log-odds: HP-seq support + yeast MaxEnt/PWM **splice strength** + cross-read support + small annotation prior | Hand-tuned tier ordering is brittle/non-comparable; RECTIFY has **NO positive splice-strength term** (only canonical tiers) | M | Med | **KEEP-WITH-CAVEATS** | MaxEnt is metazoan-trained → retrain a yeast PWM; `w_ann` small (annotation circularity); build behind a swappable `splice_strength()` interface |
-| **2t** | **Validate / version the bundled penalty + overhang tables** | Confirm the auto-resolved `penalty_scores.tsv` / `str_penalty_scores.tsv` / `junction_overhang_table.tsv` are correct for the run; pin versions + provenance | Mis-scored HP-deletion junctions (dominant ONT boundary error) under a stale or wrong-protocol table | S | Low | **KEEP (re-scoped)** | ⚠ Tables are **bundled and auto-resolved by `--Scer`**, NOT absent — see build correction. Validate, do not "regenerate"; R10.4.1 + *S. cerevisiae*-specific, must not transfer to HiFi/other organisms |
+| **2t** | **Validate / version the bundled penalty + overhang tables** | Confirm the auto-resolved `penalty_scores.tsv` / `str_penalty_scores.tsv` / `junction_overhang_table.tsv` are correct for the run; pin versions + provenance | Mis-scored HP-deletion junctions (dominant ONT boundary error) under a stale or wrong-protocol table | S | Low | **KEEP** | Tables are bundled at `rectify/data/genomes/*/penalty_tables/` and auto-resolved by `--Scer`. Validate, do not regenerate; R10.4.1 + *S. cerevisiae*-specific, must not transfer to HiFi/other organisms |
 | **5j** | **De-novo micro-exon recovery (≤~6–10 nt)** | GMAP-style: probe a ≤10 nt exon inside an `N`-op when flanking consensus exons leave unexplained boundary error; accept only if both splice sites clear a MaxEnt gate (item 7) AND cross-read support (item 8j) ≥ N | Micro-exon misses (de-novo, works where uLTRA's annotation-injection can't) | M | Med–High | **DESCOPE → metazoan** | Yeast has few micro-exons; **no validation read exercises this** (needs a cat10 + SIRV control); double gate essential; defer to metazoan port |
 
 ### B. Secondary — 3′/CPA (already-handled) + selection infrastructure
@@ -85,23 +81,22 @@ primary goal. These items are retained for completeness but are **lower priority
 
 | # | Item | Mechanism (1 line) | Failure mode it fixes | Effort | Risk | Verdict | Key caveat |
 |---|---|---|---|---|---|---|---|
-| **1** | **Win-rate provenance + Path A/B ablation harness** | Re-run the merge both ways on committed TSVs; commit `aligner_summary.tsv` + `PROVENANCE.json` | Win rates are un-committed and possibly a metric artifact | XS | Low | **KEEP (do first, zero-oracle)** | Needs no oracle. ⚠ Now an ablation of **two live paths** — Path A already runs (build correction) |
-| **2** | **Wire Path A** (HP-edit-distance selection) | — | Production allegedly sorts on `_n_agree` popularity, not corrected quality | — | — | **DONE ON BUILD** | ⚠ **Already wired** via the lazy raw-BAM path (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`). Only the calibrated N-op cost (item 3) remains open. See build correction |
+| **1** | **Win-rate provenance + Path A/B ablation harness** | Re-run the merge both ways on committed TSVs; commit `aligner_summary.tsv` + `PROVENANCE.json` | Win rates are un-committed and possibly a metric artifact | XS | Low | **KEEP (do first, zero-oracle)** | Needs no oracle. An ablation of **two live paths** — Path A already runs |
+| **2** | **Wire Path A** (HP-edit-distance selection) | — | — | — | — | **DONE** | Path A runs in production via the lazy raw-BAM path (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`). Only the calibrated N-op cost (item 3) remains open |
 | **6** | **ONE unified poly-A-aware terminal CPA solver** | A two-state (genomic→tail) terminal DP OR a window re-scoring pass — the CPA is the body→tail transition | Every aligner soft-clips / slips the 3′ end into a genomic A-run | M | **High** | **DEMOTED — 3′/CPA already handled** | A 3′-end solver, **not a junction improvement**; rewrites the most heavily-patched code path; validate cat1/cat2 shifts exactly if ever attempted |
-| **4** | **Cheap config A/Bs** | deSALT `-x ont2d`; minimap2 `-k`/`-w` & `--end-bonus` sweep; `pt:i` prior in 2E | Possible free sensitivity on the top aligner; HP 3′ drift | XS–S | Low | **KEEP (mixed)** | ⚠ mapPacBio `maxindel` is **already set** on the build (item 4e correction) — drop it. `pt:i` prior is a 3′ signal (demoted). deSALT `-x ont2d` (junction-relevant) is the keeper |
+| **4** | **Cheap config A/Bs** | deSALT `-x ont2d`; minimap2 `-k`/`-w` & `--end-bonus` sweep; `pt:i` prior in 2E | Possible free sensitivity on the top aligner; HP 3′ drift | XS–S | Low | **KEEP (mixed)** | mapPacBio `maxindel` is already set (`maxindel=max(200000, max_intron)`) — drop it. `pt:i` prior is a 3′ signal (demoted). deSALT `-x ont2d` (junction-relevant) is the keeper |
 | **5** | **Mispriming terminal veto (cDNA)** | Reuse the genomic-downstream-A detector as a bounded terminal-placement penalty under `--dT-primed-cDNA` | Oligo-dT false CPAs on genomic A-runs (QuantSeq) | S | Low | **DEMOTED — 3′/CPA** | A cDNA 3′-end artifact, not a junction mechanism; DRS-exempt; penalty/flag, never a hard gate |
 | **9** | **Calibrated per-read confidence + abstain** | Emit a calibrated `selection_confidence`; flag coin-flip reads so downstream APA can filter | `confidence` is a self-assessed 3-bucket flag; contested calls pollute APA/DESeq2 | M | Low–Med | **KEEP-WITH-CAVEATS** | Calibration target is NET-seq → inherits the circularity; `sklearn.isotonic` not importable in this checkout |
 
-> **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md`).** Three items above changed materially on
-> `origin/drs-validation-rebuild`: **(Claim 2/§A)** item 2 "wire Path A" is **DONE** — both call sites
-> pass raw BAMs + genome and `use_hp_ed=True` runs in production; the legacy `_n_agree` popularity sort
-> is the **fallback only**. **(Claim 1/§B)** the empirical penalty/STR/overhang tables are **bundled**
-> (`rectify/data/genomes/*/penalty_tables/`) and **auto-resolved by `--Scer`** (protocol-routed,
-> `data/__init__.py:1188-1208`, hooked at `cli.py:198-199`) — item 2t is "validate," not "regenerate."
-> **(Claim 3/§D)** the **N-op-cost-0** exploit (item 3) now has a **junction-anchor gate backstop**
-> (`_cigar_min_junction_anchor` + `_add_chimera_flag`), default **10 bp on human, 0/off on yeast**
-> (`data/__init__.py:1053-1062`) — so on yeast the overhang filter is still the only structural defense
-> and item 3 retains full priority; on human the gate already adds a graded defense.
+**Build context for these items.** Item 2 ("wire Path A") is **done** — both call sites pass raw BAMs
++ genome and `use_hp_ed=True` runs in production; the `_n_agree` popularity sort is the fallback only.
+The empirical penalty/STR/overhang tables are **bundled** (`rectify/data/genomes/*/penalty_tables/`)
+and **auto-resolved by `--Scer`** (protocol-routed, `data/__init__.py:1188-1208`, hooked at
+`cli.py:198-199`) — so item 2t is "validate," not "regenerate." The **N-op-cost-0** exploit (item 3)
+has a **junction-anchor gate backstop** (`_cigar_min_junction_anchor` + `_add_chimera_flag`), default
+**10 bp on human, 0/off on yeast** (`data/__init__.py:1053-1062`) — so on yeast the overhang filter
+is the only structural defense and item 3 retains full priority, while on human the gate adds a graded
+defense.
 
 ### REJECTED (with one-line reasons)
 
@@ -133,7 +128,7 @@ recovery** (item 5j; low yeast value, no validation read exercises it — defer 
 PHASE 0 — measurement, no oracle needed (DO FIRST, days)
   [1] Win-rate provenance + Path A/B ablation harness
       → answers "does the spread move between the two LIVE paths?" with ZERO accuracy assumptions.
-      ⚠ Path A already runs in production (build correction) — this is an ablation, not a wiring task.
+      Path A already runs in production — this is an ablation of two live paths, not a wiring task.
 
 PHASE 1 — build the REAL junction oracle (gating cost, WEEKS; the true critical path)
   [O] Procure a genuinely orthogonal JUNCTION truth set — short-read RNA-seq split-read
@@ -141,7 +136,7 @@ PHASE 1 — build the REAL junction oracle (gating cost, WEEKS; the true critica
       documented multi-exon transcripts + micro-exons — PLUS curated SGD intron coords.
       (A 3′/CPA truth set is secondary — CPA is already handled.)
   [2t] Validate / version the BUNDLED empirical penalty + overhang tables (NOT regenerate —
-       they are bundled and auto-resolved by --Scer; build correction).
+       they are bundled and auto-resolved by --Scer).
   *** Until [O] exists, ≥4-aligner concordance + cat3/cat7/cat9 are sanity checks, not an oracle. ***
 
 PHASE 2 — junction-placement core (PRIMARY; depends on [1], partly on [O])
@@ -155,7 +150,7 @@ PHASE 2 — junction-placement core (PRIMARY; depends on [1], partly on [O])
 
 PHASE 3 — cheap, orthogonal, low-risk wins (config + already-ingested data)
   [4]  deSALT -x ont2d A/B (junction-relevant on the top aligner); minimap2 k/w sweep.
-       (Drop mapPacBio maxindel — already set on build; pt:i / --end-bonus are 3′ signals, demoted.)
+       (Drop mapPacBio maxindel — already set; pt:i / --end-bonus are 3′ signals, demoted.)
   [9]  Calibrated per-read selection confidence + abstain.
 
 PHASE 4 — SECONDARY: 3′/CPA (already handled) + research ceilings
@@ -166,7 +161,7 @@ PHASE 4 — SECONDARY: 3′/CPA (already handled) + research ceilings
 ```
 
 **Why this order.** Phase 0 is pure code and settles whether the win-rate spread is metric-sensitive
-(now an ablation of two live paths, not a wiring task). Phase 1 builds the **junction** oracle — the
+(an ablation of two live paths, not a wiring task). Phase 1 builds the **junction** oracle — the
 unglamorous, expensive truth-set work the discovery files under-cost (and validates the already-bundled
 tables rather than regenerating absent ones). Phase 2 is the **primary junction-placement program**:
 the calibrated N-op cost feeding the live Path-A score, cross-read junction consensus, and a calibrated

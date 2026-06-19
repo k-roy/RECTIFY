@@ -83,7 +83,7 @@ kernel, too-strong wording) · **SUSPECT** (questionable / unverifiable) · **CO
 | B2 | mapPacBio defaults: `build=1 overwrite=true minratio=0.40 fastareadlen=6000 ambiguous=best minscaf=100 startpad=10000 stoppad=10000 midpad=6000` | **FACT** | `mapPacBio.sh` literal default-args line verified verbatim. |
 | B3 | Affine weights +100 / −127 / −51; 6 bytes/base; usemodulo ≈3 bytes; "recommended for Nanopore"; "dominated by short indels" | **FACT** | BBMapGuide.txt verified verbatim for all five. |
 | **B4** | **"Default k = 13"** | **OVERSTATED** | BBMapGuide.txt mentions `k=13` only as a **memory-estimation example** (`stats.sh … k=13`), not as the index default. BBMap's actual default index k *is* 13, but the cited guide passage does not assert it as the default — the `[FACT]` label leans on a passage that doesn't say what's claimed. Soften to "k=13 is the standard/typical build; guide uses it as the canonical example." |
-| **B5** | **maxindel default 16000; RECTIFY sets `maxindel=100000` only in short-read `run_bbmap`, NOT for mapPacBio (only `intronlen=50`)** | **FACT✓src but INCOMPLETE / SUSPECT GAP** | Source confirms: mapPacBio cmd (lines 506–517) sets `intronlen=50, minratio=0.4, fastareadlen=100000, -Xmx32g` — **no `maxindel`**. BBMapGuide says default maxindel=16000 (a *soft* limit). BUT web sources conflict on whether **PacBio mode** uses a smaller maxindel (one search hit claimed "pacbio modes … default of 100"; another "6000"). If mapPacBio's effective maxindel is below yeast intron size and it's a hard cap, some introns could be missed. The dossier asserts introns are found as "scored gaps subject to maxindel" but never checks mapPacBio's *own* maxindel default or whether RECTIFY should set it. **Recommend verifying mapPacBio's effective maxindel default and documenting why RECTIFY relies on the soft-limit + intronlen=50 alone.** |
+| **B5** | **mapPacBio sets `intronlen=10` and an explicit `maxindel=max(200000, max_intron)`** | **FACT✓src — RESOLVED** | Source confirms: `run_map_pacbio` sets `intronlen=10` (`multi_aligner.py:749`) and `maxindel=max(200000, max_intron)` (`multi_aligner.py:754`), alongside `minratio=0.4, fastareadlen=100000, -Xmx32g`. The earlier "no `maxindel` cap on the long-read path" concern is fully resolved: mapPacBio does not rely on BBMap's soft ~16000 default — its `maxindel` is ≥200 kb and scales with `max_intron`, so yeast introns (<1 kb) and even long mammalian introns are safely within the searched range. The D→N threshold is `intronlen=10`, not 50. |
 | B6 | "BBMap is splice-aware"; splices found as scored deletions then D→N reclassified via intronlen; no GT-AG model | **FACT/PI** | BBMap is marketed "splice-aware" (Bushnell title) and the D→N intronlen mechanism is documented. "No GT-AG model in the core scorer" is INFERENCE but consistent with BBMap docs (no splice-signal scoring described). Reasonable. |
 | B7 | 6 kb ceiling / AssertionError ~6019 bp; RECTIFY patches fastareadlen=100000 + pre-splits at MAX_MPB_READ_LENGTH=6000 + stitches | **FACT✓src** | `run_map_pacbio` lines 513, 522–609; `MAX_MPB_READ_LENGTH=6000`. Verified. The "~6019 bp" exact threshold is RECTIFY-docstring-sourced, fine. |
 | B8 | `pt:i:N` is Dorado's poly-A tag, not BBMap output; mapPacBio copies header→QNAME; RECTIFY strips `_pt:i:` | **FACT✓src** | pt strip at lines 578–598 verified; Dorado `--estimate-poly-a` pt tag is correct attribution. |
@@ -106,12 +106,11 @@ kernel, too-strong wording) · **SUSPECT** (questionable / unverifiable) · **CO
    memory-calc example; change `[FACT — default k=13]` to
    `[FACT — k=13 is the standard build / canonical example; guide does not state it as a hard default]`.
 
-3. **mapPacBio B5 — maxindel for mapPacBio is unverified and possibly load-bearing.**
-   Add an explicit note: RECTIFY sets `intronlen=50` but **no `maxindel`** for mapPacBio
-   (verified, lines 506–517), relying on BBMap's default (16000, a *soft* limit). Verify
-   mapPacBio's *effective* default maxindel (sources conflict: 16000 vs PacBio-mode
-   smaller) and state whether yeast introns (<1 kb) are safely within it. As written the
-   dossier implies maxindel=16000 applies to mapPacBio without checking the PacBio preset.
+3. **mapPacBio B5 — RESOLVED.** mapPacBio sets `intronlen=10` (`multi_aligner.py:749`) and
+   an explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:754`). The cap is ≥200 kb
+   and scales with `max_intron`, so it does not rely on BBMap's soft ~16000 default; yeast
+   introns (<1 kb) are comfortably within the searched range. The dossier now states this
+   directly. No further action.
 
 4. **All four — win-rate numbers (M8, D7, G8, B11).** Add one sentence per dossier:
    "The 78.9% / 18.2% / 2% / 0.8% / 0.1% win rates are RECTIFY-internal measurements
@@ -164,13 +163,13 @@ README/inference-level, not independently confirmed at the source line. RECTIFY-
 integration (clean FASTQ, cs-overrun skip, PAF→BAM) is fully source-verified. Minor:
 confirm `--cs=short`.
 
-**mapPacBio_bbmap.md — MEDIUM-HIGH confidence.** The crucial disambiguation (BBMap
+**mapPacBio_bbmap.md — HIGH confidence.** The crucial disambiguation (BBMap
 `align2.BBMapPacBio` ≠ minimap2 map-pb) is correct and the script defaults + affine
-weights + memory figures verified verbatim. Two soft spots: the "default k=13" label
-overreaches what the cited guide passage actually says, and **maxindel for mapPacBio is
-asserted/implied but never actually verified for the PacBio preset** — a real, possibly
-biology-relevant gap given RECTIFY sets only `intronlen=50`. RECTIFY-side quirks
-(pt-strip, 6 kb split/stitch, unmapped guard) are fully source-verified.
+weights + memory figures verified verbatim. One soft spot remains: the "default k=13" label
+overreaches what the cited guide passage actually says. The earlier maxindel concern is
+resolved — mapPacBio sets `intronlen=10` and an explicit `maxindel=max(200000, max_intron)`
+(`multi_aligner.py:749,754`), so long introns are safely within the searched range. RECTIFY-side
+quirks (pt-strip, 6 kb split/stitch, unmapped guard) are fully source-verified.
 
 ---
 
@@ -190,12 +189,10 @@ biology-relevant gap given RECTIFY sets only `intronlen=50`. RECTIFY-side quirks
 - **One genuine internal contradiction:** minimap2 `--splice-flank=no` rationale
   (code comment "compatibility" vs CLAUDE.md/dossier "3' end accuracy").
 
-- **One under-verified, biology-relevant gap:** mapPacBio's effective `maxindel` default
-  vs yeast intron sizes, given RECTIFY sets only `intronlen=50` and no `maxindel`.
-
 - **Coordinate/parameter hygiene is excellent** — the RECTIFY-side claims I sampled
-  (gapmm2 `-i 5000`/`-m` omission, mapPacBio `intronlen=50`/pt-strip/split-stitch,
-  minimap2 flag set, deSALT no-`-x`/no-`-G`) all matched `multi_aligner.py` exactly.
+  (gapmm2 `-i 5000`/`-m` omission, mapPacBio `intronlen=10` + `maxindel=max(200000, max_intron)`/
+  pt-strip/split-stitch, minimap2 flag set, deSALT no-`-x`/no-`-G`) all matched
+  `multi_aligner.py` exactly.
 
 ---
 

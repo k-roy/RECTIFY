@@ -8,14 +8,7 @@ long-read ensemble (ONT DRS/cDNA, *S. cerevisiae*).
 RECTIFY source `rectify/core/splice/{junction_refiner,junction_scoring,hp_penalty,
 calibrate_junction_overhang}.py` and `corrected_consensus.py`; CLAUDE.md v3.1.x / v3.3.0 notes.
 
-> **Build note:** code-level claims here were verified against `master`; see
-> `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Two
-> premises below are now SUPERSEDED on the build** and are corrected inline: (1) F1's "HP-edit-distance
-> selection does not run; production runs the legacy popularity vote" is RETRACTED — both production
-> merge call sites pass per-aligner raw BAMs + genome, so `use_hp_ed=True` and Path A (HP-ED) runs in
-> production (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`).
-> (2) The penalty/STR/overhang tables are **bundled and `--Scer`-auto-resolved**, not absent — so J2 is
-> re-scoped from "regenerate" to "validate/version the bundled tables," and J1 step (b) is already DONE.
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Convention.** Each proposal is tagged **ESTABLISHED** (the mechanism exists in a published
 aligner / standard method, we are porting it) or **NOVEL** (not done this way in the surveyed
@@ -28,31 +21,21 @@ impact · validation · risk*.
 
 Before the proposals, two findings from the adversarial pass change what is worth building:
 
-**(F1) The production winner-selection is NOT the metric the dossiers describe.**
-`redteam_winrates_selection.md` establishes (from the **master** code) that both production call sites of
-`merge_corrected_tsvs` — `run/single_sample.py:495` and `split_command.py:985` — pass **no
-per-aligner BAMs**, so `use_hp_ed = False` and selection runs the **legacy 5-level sort**
-(`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc`). The HP-edit-distance path
-and "selection on corrected 3'-end" described in the docstring/dossiers **do not run**. The
-dominant non-flag discriminator `_n_agree` is a **popularity vote**: the aligner sitting in the
-majority cluster wins ties. deSALT's "homogeneous junctions" therefore plausibly win by **herd
-bias** (it makes other aligners agree with it), not demonstrated accuracy. uLTRA's GTF-snapping is
-**annotation-circular** ("snapped-to-GTF = correct" is assumed, not tested).
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** F1's headline ("HP-edit-distance does not
-> run; production runs the legacy popularity vote") is **RETRACTED on the build.** Both production
-> merge call sites now pass per-aligner **raw** BAMs + genome, and `merge_corrected_tsvs` gained a
-> lazy raw-BAM HP path that activates without materializing corrected BAMs:
-> `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`
-> (`corrected_consensus.py:1262`; lazy path `:1264-1364`); single-sample call site
-> `single_sample.py:238-250` and chunked/split call site `split_command.py:1085-1094` both pass
-> `per_aligner_raw_bams=… , genome=…`. So **Path A (HP-edit-distance on corrected 3'-ends) runs in
-> production on the build.** What survives: the **legacy 5-level sort is still the fallback** (when no
-> BAMs/genome are supplied, or if BAM staging yields no rows → `use_hp_ed=False`,
-> `corrected_consensus.py:1377`), and `_n_agree` is still a popularity vote *as a description of that
-> fallback*. The herd-bias and uLTRA annotation-circularity critiques remain valid concerns for the
-> fallback path and for any selection that leans on cross-aligner agreement — but they no longer
-> describe the default production metric.
+**(F1) Winner-selection runs HP-edit-distance (Path A) in production; the popularity vote is the fallback.**
+Both production call sites of `merge_corrected_tsvs` — `single_sample.py:238-250` and
+`split_command.py:1085-1094` — pass per-aligner **raw** BAMs + genome, and `merge_corrected_tsvs`
+activates the lazy raw-BAM HP path without materializing corrected BAMs:
+`use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)` (`corrected_consensus.py:1262`;
+lazy path `:1264-1364`). So **Path A (HP-edit-distance on corrected 3'-ends) is the default production
+metric.** The **legacy 5-level sort** (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span,
+_n_junc`) is the **fallback only** — used when no BAMs/genome are supplied, or if BAM staging yields no
+rows (`use_hp_ed=False`, `corrected_consensus.py:1377`). In that fallback the dominant non-flag
+discriminator `_n_agree` is a **popularity vote**: the aligner sitting in the majority cluster wins
+ties, so deSALT's "homogeneous junctions" can win by **herd bias** (it makes other aligners agree with
+it) rather than demonstrated accuracy, and uLTRA's GTF-snapping is **annotation-circular** ("snapped-to-GTF
+= correct" is assumed, not tested). These herd-bias and annotation-circularity critiques apply to the
+fallback path and to any selection that leans on cross-aligner agreement — they do not describe the
+default production metric.
 
 **Consequence:** A better junction *scorer* (Proposals 1–2) is **already wired into the default
 selection metric on the build** (Path A scores HP-aware corrected positions); the remaining
@@ -204,9 +187,9 @@ concordance data. The scorer plugs into `_score_junction`'s return as an added t
 **calibration harness + held-out evaluation**, not the model.
 
 ### Expected impact
-**High.** On the build, HP-ED selection (Path A) is **already the live production metric** (see the
-F1 build correction above), so a *calibrated* score `S(r,J)` upgrades the metric that already drives
-selection — it does not need a "wire a dead path on" step. As a pure 2H refinement upgrade it is
+**High.** HP-ED selection (Path A) is the live production metric (see F1), so a *calibrated* score
+`S(r,J)` upgrades the metric that already drives selection — no separate wire-in step is needed. As a
+pure 2H refinement upgrade it is
 **medium** (2H already gets most cat9 reads right). The big win is replacing the lexicographic HP-ED
 tuple / `_n_agree` fallback with a calibrated `S(r,J)`, which is the redteam's #1 recommended fix.
 
@@ -371,36 +354,32 @@ the CNN must *beat* the PWM on yeast to justify itself (it likely won't).
 | **4** | **P3 — De-novo micro-exon recovery** | Low (yeast) | Med | ESTABLISHED | GMAP/uLTRA capability, annotation-free; but yeast has few micro-exons — defer, or save for metazoan. |
 | **5** | **P5 — Learned CNN splice model** | Low (yeast) | High | ESTABLISHED | Not worth it for compact well-annotated yeast; build PWM/MaxEnt now, keep a CNN-swappable interface for the metazoan port. |
 
-**Cross-cutting prerequisite (do first, ~free):** the **provenance + Path A/B ablation** from
-`redteam_winrates_selection.md` (experiments 1–2). Confirm whether the cited 78.9/18.2/2/0.8/0.1 win
-rates are post-v3.3.0-fix and which sort path produced them, and **commit `aligner_summary.tsv`**.
-Without this, we cannot tell whether any proposal *improves* selection or merely changes a metric that
-was never the intended one. This single audit gates the value claims of P1–P4.
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the Path A/B "ablation" is now an ablation of
-> **two live paths**, not "wire a dead path on": Path A (HP-ED) is the production default on the build
-> (both call sites pass raw BAMs + genome — `corrected_consensus.py:1262`, `single_sample.py:238-250`,
-> `split_command.py:1085-1094`) and Path B is the fallback. The win-rate *provenance* caution still
-> stands (single dataset, un-committed artifact), but the specific "they came from the legacy sort"
-> explanation no longer applies to a fresh build run.
+**Cross-cutting prerequisite (do first, ~free):** the **provenance + Path A-vs-B-fallback ablation**
+from `redteam_winrates_selection.md` (experiments 1–2). Path A (HP-ED) is the production default (both
+call sites pass raw BAMs + genome — `corrected_consensus.py:1262`, `single_sample.py:238-250`,
+`split_command.py:1085-1094`) and Path B is the fallback, so this is an ablation of **two live paths**.
+Confirm the cited 78.9/18.2/2/0.8/0.1 win rates are post-v3.3.0-fix and **commit `aligner_summary.tsv`**
+(the win-rate provenance caution stands: single dataset, un-committed artifact). Without this we cannot
+tell whether any proposal *improves* selection or merely changes the metric. This single audit gates the
+value claims of P1–P4.
 
 ---
 
 ## Honest caveats carried from the adversarial pass
 
-- **Win rates are one dataset, possibly pre-fix.** deSALT's "homogeneity → wins" is plausibly herd
-  bias (`_n_agree` popularity), not accuracy; P1 must be validated against **orthogonal truth
-  (NET-seq, novel-junction sets)**, not internal agreement — internal homogeneity is the exact
-  quantity that can be gamed.
+- **Win rates are one dataset, possibly pre-fix.** Under the fallback popularity sort, deSALT's
+  "homogeneity → wins" could be herd bias (`_n_agree` popularity), not accuracy; P1 must be validated
+  against **orthogonal truth (NET-seq, novel-junction sets)**, not internal agreement — internal
+  homogeneity is the exact quantity that can be gamed.
 - **uLTRA's micro-exon / annotation strength is circular** on yeast; P3/P4 deliberately route around
   it with de-novo splice-strength gating.
-- **N-ops are currently free** in HP-edit-distance — any scorer change must charge introns their
-  calibrated improbability or it inherits the same exploit. *(N=0 is CONFIRMED on the build,
-  `corrected_consensus.py:142-143`; on yeast the overhang filter is the main defense, while human
-  adds a junction-anchor gate, default 10 bp — yeast default 0/off.)*
+- **N-ops are currently free** in HP-edit-distance (cost 0, `corrected_consensus.py:142-143`) — any
+  scorer change must charge introns their calibrated improbability or it inherits the same exploit. On
+  yeast the overhang filter is the main defense; the junction-anchor gate defaults OFF at 0 bp for
+  yeast (10 bp for human).
 - **MaxEnt/SpliceAI are metazoan-trained** — yeast needs a retrained PWM/MaxEnt; the CNN is deferred.
 - **All penalty/splice tables are R10.4.1 + S. cerevisiae-specific** and must not transfer to HiFi or
-  other organisms without recalibration. *(Build correction: these tables are **bundled** under
+  other organisms without recalibration. These tables are **bundled** under
   `rectify/data/genomes/*/penalty_tables/` for S. cerevisiae and H. sapiens with protocol variants,
   and `--Scer` auto-resolves them — so the open work is "validate/version the bundled tables" (J2),
-  not "regenerate absent tables.")*
+  not "regenerate absent tables."

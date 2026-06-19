@@ -1,6 +1,6 @@
 # mapPacBio / BBMap (BBTools) — Source-Level Investigation
 
-> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Corrected on the build:** mapPacBio uses `intronlen=10` (not 50) and now sets an explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:749,754`); the redteam_denovo B5 "no maxindel" concern is RESOLVED. These corrections are applied inline below.
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 > **Scope.** This report covers **BBMap's `mapPacBio.sh`** (Java class `align2.BBMapPacBio`),
 > a component of Brian Bushnell's **BBTools** suite. RECTIFY uses it as a Tier-1 splice-aware
@@ -124,24 +124,17 @@ encoding. A `sam=1.3` flag exists to force legacy `M` for tools that need it.
   BBMap. It is a **soft limit**: "indels longer than maxindel … may still be found" unless
   `strictmaxindel` is set. For organisms with long introns (human) the guide recommends
   `maxindel=200k`. RECTIFY's short-read `run_bbmap()` sets `maxindel=100000` to allow
-  yeast-scale gaps. **[FACT — BBMap guide + RECTIFY source line 674.]**
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** On the build, `run_map_pacbio()` **does**
-> set `maxindel` explicitly — `multi_aligner.py:754` `f'maxindel={max(200000, max_intron)}'` (≥200 kb
-> for human RNA, scales with `max_intron`). The "no `maxindel` cap on the long-read path" statement
-> below (and the redteam_denovo B5 "possibly load-bearing gap") is **stale and now RESOLVED**:
-> mapPacBio no longer relies on BBMap's soft ~16000 default for long introns.
+  yeast-scale gaps. **[FACT — BBMap guide + RECTIFY source line 674.]** On the long-read path,
+  `run_map_pacbio()` sets `maxindel` explicitly — `multi_aligner.py:754`
+  `f'maxindel={max(200000, max_intron)}'` (≥200 kb for human RNA, scaling with `max_intron`) —
+  so mapPacBio never relies on BBMap's soft ~16000 default for long introns.
 
 - **`intronlen`** — any reference gap (deletion) **≥ `intronlen` is re-encoded as an `N`
   (intron-skip) CIGAR op** instead of `D`. The guide's RNA-seq example uses `intronlen=20`.
   RECTIFY sets **`intronlen=10`** for mapPacBio and **`intronlen=20`** for vanilla
-  bbmap (line 673). **[FACT — build `multi_aligner.py:749`; vs master, which used `intronlen=50`.]**
-
-> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** mapPacBio's D→N threshold on the build is
-> **`intronlen=10`** (`multi_aligner.py:749`), not `intronlen=50` as recorded against master. Every
-> sentence below that cites `intronlen=50` is corrected to `intronlen=10` — yeast introns (typically
-> >50 bp) still reliably become `N` ops; the lower threshold also reclassifies short introns and any
-> ≥10 bp deletion-gap into `N`.
+  bbmap (line 673). **[FACT — `multi_aligner.py:749`.]** Yeast introns (typically >50 bp) still
+  reliably become `N` ops; the 10 bp threshold also reclassifies short introns and any ≥10 bp
+  deletion-gap into `N`.
 
 The mechanism: BBMap's affine DP can open a long reference gap when the alignment score favors
 it (subject to `maxindel`); `intronlen` is purely the **D→N reclassification threshold** applied

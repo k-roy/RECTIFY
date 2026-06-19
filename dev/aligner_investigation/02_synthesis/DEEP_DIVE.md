@@ -1,6 +1,6 @@
 # Long-Read Splice Aligner Deep Dive — Granular Operation, Per-Aligner
 
-> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Corrected inline:** mapPacBio `intronlen=50` → `intronlen=10` and explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:749,754`). The §7 "correct-first / HP-aware selection" narrative is **CONFIRMED on the build**: both production merge call sites pass per-aligner raw BAMs + genome, so HP-edit-distance (Path A) runs in production, and the empirical penalty tables are bundled + `--Scer`-auto-resolved.
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Scope.** Function/equation-level operational walkthroughs for the five aligners in RECTIFY's
 correct-first ensemble, distilled from the `01_investigation/` dossiers and verified against
@@ -105,7 +105,6 @@ start, hence ~4/5 of all reads *(INFER)*.
 
 **RECTIFY invocation (build `multi_aligner.py:749,754`):** `mapPacBio.sh ref=… in=… out=… path=<shared bbmap_index>
 fastareadlen=100000 intronlen=10 maxindel=max(200000,max_intron) minratio=0.4 -Xmx32g` (+ pre-split reads >6 kb, stitch after).
-*(On master this was `intronlen=50` with no explicit `maxindel`; see CORRECTIONS_vs_DRS_BUILD.md C.)*
 
 ### Seed → vote → DP
 1. **Index:** **all-k-mer** hash (every reference k-mer, k=13), key→genomic-site list; ≈6 B/ref base;

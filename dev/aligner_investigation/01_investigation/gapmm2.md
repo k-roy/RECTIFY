@@ -1,6 +1,6 @@
 # gapmm2 — Source-Level Investigation
 
-> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild` (flag sets CONFIRMED — gapmm2 `-i` max-intron; penalty tables present & auto-resolved on the build).
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Tool:** `gapmm2` ("gapped alignment using minimap2 — align transcripts to genome")
 **Author:** Jon Palmer (`nextgenusfs`) · **Repo:** https://github.com/nextgenusfs/gapmm2 · **PyPI/Bioconda:** `gapmm2`

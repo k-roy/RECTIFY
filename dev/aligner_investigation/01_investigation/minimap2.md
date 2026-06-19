@@ -1,6 +1,6 @@
 # minimap2 — Source-Level Investigation (Long-Read Splice Aligner)
 
-> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild` (flag sets CONFIRMED — minimap2 set + `-y`; penalty tables present & auto-resolved on the build).
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
 
 **Scope:** minimap2 as used by RECTIFY for ONT direct RNA-seq (DRS) / cDNA splice
 alignment in *S. cerevisiae*. Grounded in the RECTIFY wrapper
