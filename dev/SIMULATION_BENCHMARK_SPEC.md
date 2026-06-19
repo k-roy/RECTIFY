@@ -91,6 +91,25 @@ and to SIZE the panel-failure tail on realistic data (open question Q1).
 Tier-1 generation is light (M1-OK). Tier-2 NanoSim/badread + the 5-aligner panel over simulated reads is
 heavy → **Sherlock, chunked/owners/AVX-512** (or H2). Do not relay simulated BAMs through the M1.
 
+## ⚠ VERTICAL-SLICE FINDING (2026-06-18) — the HP stratum MUST be discriminating, v1 was not
+The thin slice (`dev/bench/hp_vertical_slice.py`) ran end-to-end and exposed a real spec gap: an
+**isolated, cleanly-flanked HP run is NON-DISCRIMINATING** — **BOTH** minimap2 AND the live flat-affine DP
+(`align_exon_block_global`, the one C1 upgrades) scored **1.000** run-length accuracy AND position-exact
+concordance on every length cell (L=1..12, n=480 each). Reason: when a read genuinely has L−k bases,
+faithfully aligning it to the ref(L) yields a k-gap somewhere in the run, and any in-run placement is
+ambiguity-equivalent → every aligner is trivially correct. Both arms saturating identically PROVES the
+harness works AND that the stratum cannot separate flat-affine from anything — including C1. **A benchmark where the
+incumbent scores 100% cannot separate the concepts.**
+Implication — the HP stratum (and C1's claimed value) lives at the HARD boundary cases, NOT isolated runs:
+- **indel-vs-substitution tradeoff at run boundaries** (where `homo_mismatch=−2` and the length-law DIVERGE
+  from flat affine — a boundary substitution can be scored as a mismatch OR absorbed as an indel-shift);
+- **run-bleeds-into-flank ambiguity** (flank shares the run base → the run LENGTH itself is ambiguous and
+  the length-law prior must pick it);
+- **adjacent runs / cross-boundary placement** (left-alignment lands in the wrong run);
+- **combined background noise** (substitutions co-occurring with the length error).
+v2 of the generator must construct these. A candidate ablation only counts if minimap2 is BELOW ceiling on
+it. This may also re-prioritize C1: its isolated-run benefit looks small; the action is at boundaries/noise.
+
 ## Reconciliation with crafter `benchmark_coupling` (design-side view, folded 2026-06-18)
 The design doc's per-concept ablations impose extra requirements my draft missed — fold these in:
 - **min cell count = 100 per (run_length, base) and per (STR unit, n_copies):** below `min_count=100`
