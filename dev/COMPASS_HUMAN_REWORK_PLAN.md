@@ -45,11 +45,15 @@ is only 14.5% sensitive on known positives — STEP 0). Work happens INSIDE the 
 
 ## Phase 2 — multi-aligner alignment (heavy, chunked SLURM on Sherlock owners + AVX-512 constraint)
 - Build human indices once: STAR (~30GB RAM at build; sjdbOverhang=READ_LENGTH-1), HISAT2 (--ss/--exon),
-  GSNAP (gmap_build + gtf_splicesites + iit_store), BBMap (auto). Idempotent skip-checks.
+  GSNAP (gmap_build + gtf_splicesites + iit_store), Magic-BLAST (makeblastdb), BBMap (auto). Idempotent skip-checks.
 - Align 3 reps × panel, end-to-end/no-softclip, numbered reads, samfixcigar→SAM1.4, name-sort. Chunk per
-  (rep × aligner). **Initial panel (defer Magic-BLAST):** STAR default+noncanonical, HISAT2 default+
-  noncanonical, GSNAP, BBMap, + minimap2 splice:sr (RECTIFY addition). GSNAP/HISAT2 SIMD → sse42/nosimd to
-  avoid SIGILL on AVX-512-excluded nodes; smoke-test one chunk before the array.
+  (rep × aligner). **FULL 6-aligner COMPASS panel (PI decision 2026-06-18 — match COMPASS spec):** BBMap,
+  STAR default+noncanonical, HISAT2 default+noncanonical, Magic-BLAST, GSNAP — + minimap2 splice:sr
+  (RECTIFY addition). GSNAP/HISAT2/Magic-BLAST SIMD → sse42/nosimd to avoid SIGILL on AVX-512-excluded
+  nodes; smoke-test one chunk before the array. Magic-BLAST on the 3GB human genome is the heaviest member
+  (cap `-num_threads 12` for memory) — budget for it; it is the slow pole, not deferred.
+- **Push authorized (PI 2026-06-18):** the human-adapted COMPASS may be pushed to github.com/k-roy/COMPASS
+  (no active watchers) — use a branch (e.g. `human-a549`), not a force-push to master.
 
 ## Phase 3 — per-read arbitration
 - Run `compare_splice_junctions_from_multiple_aligners.py` (human-adapted) → per-rep COMPASS junction TSV.
