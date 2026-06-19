@@ -2557,9 +2557,13 @@ echo "  Align + consensus done: $(date)"
 
 [ -f "$RECTIFIED_BAM" ] || {{ echo "ERROR: rectified BAM not found: $RECTIFIED_BAM" >&2; exit 1; }}
 
-# Copy as .consensus.bam so the shared final-merge collects it
-cp "$RECTIFIED_BAM" "$CONSENSUS_OUT"
-[ -f "$RECTIFIED_BAM.bai" ] && cp "$RECTIFIED_BAM.bai" "$CONSENSUS_OUT.bai" || true
+# Copy as .consensus.bam so the shared final-merge collects it.
+# Atomic: write to .tmp then mv (same FS) so a preemption mid-copy never leaves a
+# truncated BAM that the idempotent skip above would mistake for a finished chunk.
+cp "$RECTIFIED_BAM" "$CONSENSUS_OUT.tmp"
+[ -f "$RECTIFIED_BAM.bai" ] && cp "$RECTIFIED_BAM.bai" "$CONSENSUS_OUT.bai.tmp" || true
+mv "$CONSENSUS_OUT.tmp" "$CONSENSUS_OUT"
+[ -f "$CONSENSUS_OUT.bai.tmp" ] && mv "$CONSENSUS_OUT.bai.tmp" "$CONSENSUS_OUT.bai" || true
 echo "  Consensus BAM: $(du -sh "$CONSENSUS_OUT" | cut -f1)"
 
 rm -rf "$SCRATCH_WORK"

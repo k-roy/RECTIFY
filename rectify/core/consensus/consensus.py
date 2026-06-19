@@ -443,13 +443,28 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
         except StopIteration:
             current_reads[aligner] = None
 
+    def _n_ops(r: pysam.AlignedSegment) -> int:
+        return sum(1 for op, _ in (r.cigartuples or []) if op == 3)
+
+    def _mate_key(r: pysam.AlignedSegment):
+        # Paired short-read: R1 and R2 share one RN/QNAME but are DISTINCT reads
+        # and must be adjudicated separately. Without this split the per-aligner
+        # collapse below would keep only the more-spliced mate via max(_n_ops) and
+        # silently drop the other — ~half the paired junction evidence, biased
+        # against the less-spliced mate. Unpaired data → None (single bucket →
+        # byte-identical to the original single-record-per-aligner behaviour).
+        return r.is_read2 if r.is_paired else None
+
     try:
         while any(r is not None for r in current_reads.values()):
             min_read_id = min(
                 (_merge_key(r, use_rn_key) for r in current_reads.values() if r is not None),
                 key=_merge_key_sort_value,
             )
-            group = {}
+            # Collect ALL records with this key per aligner. Both mates of a pair
+            # share the key and are adjacent under name-sort, so they are gathered
+            # here together (this does NOT rely on cross-aligner mate ordering).
+            per_aligner: Dict[str, List[pysam.AlignedSegment]] = {}
             for aligner in list(current_reads.keys()):
                 read = current_reads[aligner]
                 if read is not None and _merge_key(read, use_rn_key) == min_read_id:
@@ -463,16 +478,27 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
                         current_reads[aligner] = nxt
                     except StopIteration:
                         current_reads[aligner] = None
-                    if len(candidates) == 1:
-                        group[aligner] = candidates[0]
-                    else:
-                        def _n_ops(r: pysam.AlignedSegment) -> int:
-                            return sum(1 for op, _ in (r.cigartuples or []) if op == 3)
-                        group[aligner] = max(
-                            candidates,
-                            key=lambda r: _n_ops(r),
-                        )
-            yield min_read_id, group
+                    per_aligner[aligner] = candidates
+
+            # Partition each aligner's records by mate, then emit ONE group per
+            # mate (one record per aligner — the existing downstream contract).
+            # Same-mate duplicates (e.g. an aligner's multimappers) still collapse
+            # to the most-spliced record. Unpaired → a single None bucket.
+            mate_buckets: Dict[object, Dict[str, pysam.AlignedSegment]] = defaultdict(dict)
+            for aligner, cands in per_aligner.items():
+                by_mate: Dict[object, List[pysam.AlignedSegment]] = defaultdict(list)
+                for c in cands:
+                    by_mate[_mate_key(c)].append(c)
+                for mk, lst in by_mate.items():
+                    mate_buckets[mk][aligner] = lst[0] if len(lst) == 1 else max(lst, key=_n_ops)
+
+            # Deterministic mate order: None (unpaired) first, then R1 (False),
+            # then R2 (True). Avoids None-vs-bool comparison errors.
+            # Unpaired data yields the bare key (byte-identical to the original
+            # contract); paired data yields (read_id, mate) so R1/R2 stay distinct.
+            for mate_key in sorted(mate_buckets, key=lambda m: (m is not None, m)):
+                out_key = min_read_id if mate_key is None else (min_read_id, mate_key)
+                yield out_key, mate_buckets[mate_key]
     finally:
         for bam in bams.values():
             bam.close()

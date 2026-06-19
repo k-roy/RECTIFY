@@ -944,6 +944,16 @@ def run_bbmap(
         _in_args = [f'in1={reads_path}', f'in2={reads2_path}']
     else:
         _in_args = [f'in={reads_path}']
+    # Intron sizing: COMPASS's human panel uses maxindel=200000 pairlen=200000
+    # (MAX_INTRON_LENGTH=200000). The single-end yeast path keeps the smaller
+    # cap. pairlen (bbmap default ~32kb) must match maxindel for paired mode or
+    # mates spanning long introns are not flagged proper-pair / are placed
+    # differently than the rest of the COMPASS panel.
+    if reads2_path:
+        _maxindel = 200000
+        _bbmap_intron_args = [f'maxindel={_maxindel}', f'pairlen={_maxindel}']
+    else:
+        _bbmap_intron_args = ['maxindel=100000']
     cmd = [
         bbmap_path,
         f'ref={genome_path}',
@@ -952,7 +962,7 @@ def run_bbmap(
         f'threads={threads}',
         f'path={bbmap_index_dir}',
         'intronlen=20',      # Gaps ≥20 bp → N-op (intron skip) in CIGAR
-        'maxindel=100000',   # Allow yeast-scale introns (up to ~1 kb)
+        *_bbmap_intron_args,  # maxindel (+ pairlen when paired)
         'minratio=0.56',     # Default short-read sensitivity
         'ambiguous=best',
         'trd=t',             # Trim read description: keep only the first
@@ -1434,13 +1444,34 @@ def run_magicblast(
     paths = _compass_index_paths(genome_path)
     idx = blast_index if blast_index else str(paths.blast_index)
     sam_path = output_bam.with_suffix('.sam')
-    cmd = _build_magicblast_cmd(reads_path, reads2_path, idx, sam_path, threads=threads)
-    logger.info("Running magicblast: %s ...", ' '.join(cmd[:6]))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
-    if result.returncode != 0:
-        raise RuntimeError(f"magicblast failed: {result.stderr[-1000:]}")
 
-    _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    # Magic-BLAST gz support is version-dependent (older builds choke on a gzipped
+    # -query). Decompress defensively to scratch beside the output so the wrapper
+    # is version-independent. RN map / QNAME validation still use the originals.
+    _tmp_inputs: List[Path] = []
+
+    def _ensure_plain(p) -> str:
+        if not _is_gz(p):
+            return str(p)
+        plain = output_bam.parent / f'.mb_{output_bam.stem}_{Path(str(p)[:-3]).name}'
+        with gzip.open(str(p), 'rb') as fin, open(plain, 'wb') as fout:
+            shutil.copyfileobj(fin, fout)
+        _tmp_inputs.append(plain)
+        return str(plain)
+
+    try:
+        r1_plain = _ensure_plain(reads_path)
+        r2_plain = _ensure_plain(reads2_path)
+        cmd = _build_magicblast_cmd(r1_plain, r2_plain, idx, sam_path, threads=threads)
+        logger.info("Running magicblast: %s ...", ' '.join(cmd[:6]))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+        if result.returncode != 0:
+            raise RuntimeError(f"magicblast failed: {result.stderr[-1000:]}")
+        _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    finally:
+        for t in _tmp_inputs:
+            t.unlink(missing_ok=True)
+
     return _finalize_short_read_bam(
         output_bam, genome_path, reads_path, 'magicblast', qname_to_rn, threads
     )
