@@ -160,7 +160,12 @@ def _parse_bam_args(bam_args: list) -> dict:
     Raises ValueError for malformed or missing entries.
     """
     result = {}
-    valid_aligners = {'minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa'}
+    valid_aligners = {
+        'minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa',
+        # COMPASS short-read panel
+        'STAR_default', 'STAR_noncanonical', 'HISAT2_default', 'HISAT2_noncanonical',
+        'magicblast', 'gsnap',
+    }
     for token in bam_args:
         if ':' not in token:
             raise ValueError(

@@ -893,6 +893,7 @@ def run_bbmap(
     threads: int = 8,
     extra_args: Optional[List[str]] = None,
     bbmap_path: Optional[str] = None,
+    reads2_path: Optional[str] = None,
 ) -> str:
     """Run vanilla BBMap for short-read splice-aware alignment (Illumina/Aviti).
 
@@ -937,10 +938,16 @@ def run_bbmap(
     bbmap_index_dir = Path(genome_path).parent / 'bbmap_index'
     bbmap_index_dir.mkdir(parents=True, exist_ok=True)
 
+    # Paired-end (COMPASS short-read): in1=/in2= with mate-2 supplied. Single-end
+    # keeps the legacy in= form.
+    if reads2_path:
+        _in_args = [f'in1={reads_path}', f'in2={reads2_path}']
+    else:
+        _in_args = [f'in={reads_path}']
     cmd = [
         bbmap_path,
         f'ref={genome_path}',
-        f'in={reads_path}',
+        *_in_args,
         f'out={sam_path}',
         f'threads={threads}',
         f'path={bbmap_index_dir}',
@@ -1117,6 +1124,357 @@ def run_bwa_mem(
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bwa')
     _inject_rn_into_bam(str(output_bam), qname_to_rn)
     return str(output_bam)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# COMPASS short-read aligner panel (paired-end)
+# ══════════════════════════════════════════════════════════════════════════
+# STAR_default / STAR_noncanonical, HISAT2_default / HISAT2_noncanonical,
+# Magic-BLAST, GSNAP. Invocations + flags are ported verbatim from the COMPASS
+# process_reads_and_align.sh aligner block. Three deliberate differences:
+#
+#   1. gzipped input. COMPASS fed UNCOMPRESSED renumbered reads (@N_R1); RECTIFY
+#      feeds gzipped chunk FASTQs (with RN:i comments), so gz-aware flags are
+#      added per tool — STAR `--readFilesCommand zcat`, GSNAP `--gunzip`; HISAT2,
+#      Magic-BLAST and bbmap read .gz natively.
+#   2. No samfixcigar. COMPASS reformatted CIGARs to =/X for its OWN junction
+#      comparison code. RECTIFY's consensus scoring reads the genome directly and
+#      handles plain `M` ops, so that step is dropped; `_apply_calmd_eq`
+#      normalizes MD/NM (and =/X) natively, same as the bbmap/bwa wrappers.
+#   3. Read identity. COMPASS renumbered headers destructively; RECTIFY keeps the
+#      original QNAME and re-derives the shared RN via `_inject_rn_into_bam`
+#      (both mates share one bare QNAME + RN — see split_fastq_paired).
+#
+# Index layout mirrors COMPASS exactly so the prebuilt indices under
+# genome_references/ are reused with no extra arguments:
+#   REFERENCE_DIR   = <genome FASTA parent>
+#   GENOME_VERSION  = basename(FASTA) minus the fasta extension
+#   STAR_GENOME_DIR = REFERENCE_DIR/STAR_annotated_<read_length>_bp_SJDB_index
+#   HISAT2_INDEX    = REFERENCE_DIR/HISAT2_annotated_index/<GENOME_VERSION>
+#   SPLICE_SITES    = REFERENCE_DIR/HISAT2_annotated_index/<GV>_splice_sites.txt
+#   BLAST_INDEX     = REFERENCE_DIR/BLAST/<GENOME_VERSION>
+#   GSNAP_GENOME_DIR= REFERENCE_DIR/GSNAP  (-d <GENOME_VERSION>)
+
+from collections import namedtuple as _namedtuple
+
+_CompassIndexPaths = _namedtuple(
+    '_CompassIndexPaths',
+    'ref_dir genome_version star_dir hisat2_index splice_sites blast_index gsnap_dir',
+)
+
+_FASTA_EXTS = ('.fasta.gz', '.fa.gz', '.fna.gz', '.fasta', '.fa', '.fna')
+
+
+def _genome_version(genome_path) -> str:
+    """basename(FASTA) with the fasta extension removed (COMPASS GENOME_VERSION)."""
+    name = Path(genome_path).name
+    for ext in _FASTA_EXTS:
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return Path(genome_path).stem
+
+
+def _compass_index_paths(genome_path, read_length: int = 150) -> _CompassIndexPaths:
+    """Derive the COMPASS index paths from the genome FASTA + read length."""
+    ref_dir = Path(genome_path).resolve().parent
+    gv = _genome_version(genome_path)
+    hisat2_dir = ref_dir / 'HISAT2_annotated_index'
+    return _CompassIndexPaths(
+        ref_dir=ref_dir,
+        genome_version=gv,
+        star_dir=ref_dir / f'STAR_annotated_{read_length}_bp_SJDB_index',
+        hisat2_index=hisat2_dir / gv,
+        splice_sites=hisat2_dir / f'{gv}_splice_sites.txt',
+        blast_index=ref_dir / 'BLAST' / gv,
+        gsnap_dir=ref_dir / 'GSNAP',
+    )
+
+
+def _is_gz(p) -> bool:
+    return str(p).endswith('.gz')
+
+
+# ── Pure command builders (unit-testable without the binaries) ───────────────
+
+def _build_star_cmd(reads_r1, reads_r2, star_genome_dir, out_prefix, threads,
+                    read_length: int = 150, noncanonical: bool = False) -> List[str]:
+    cmd = [
+        'STAR',
+        '--runThreadN', str(threads),
+        '--genomeDir', str(star_genome_dir),
+        '--sjdbOverhang', str(read_length - 1),
+        '--readFilesIn', str(reads_r1), str(reads_r2),
+        '--outFileNamePrefix', str(out_prefix),
+        '--alignEndsType', 'EndToEnd',
+        '--outSAMattributes', 'NH', 'HI', 'NM', 'MD', 'AS', 'nM', 'jM', 'jI', 'XS',
+    ]
+    if _is_gz(reads_r1):
+        cmd += ['--readFilesCommand', 'zcat']
+    if noncanonical:
+        cmd += ['--scoreGapNoncan', '0']
+    return cmd
+
+
+def _build_hisat2_cmd(reads_r1, reads_r2, hisat2_index, splice_sites, out_sam,
+                     threads, min_intron, max_intron, novel_sj_out, summary_out,
+                     noncanonical: bool = False) -> List[str]:
+    cmd = [
+        'hisat2',
+        '--known-splicesite-infile', str(splice_sites),
+        '--no-softclip',
+        '--threads', str(threads),
+        '--time', '--reorder',
+        '-x', str(hisat2_index),
+        '-1', str(reads_r1), '-2', str(reads_r2),
+        '-S', str(out_sam),
+        '--min-intronlen', str(min_intron),
+        '--max-intronlen', str(max_intron),
+    ]
+    if noncanonical:
+        cmd += ['--pen-noncansplice', '0']
+    cmd += [
+        '--rna-strandness', 'RF',
+        '--novel-splicesite-outfile', str(novel_sj_out),
+        '--summary-file', str(summary_out),
+        '--new-summary',
+    ]
+    return cmd
+
+
+def _build_magicblast_cmd(reads_r1, reads_r2, blast_index, out_sam,
+                         threads: int = 12) -> List[str]:
+    return [
+        'magicblast',
+        '-query', str(reads_r1),
+        '-query_mate', str(reads_r2),
+        '-db', str(blast_index),
+        '-md_tag', '-fr', '-no_query_id_trim',
+        '-infmt', 'fastq',
+        '-num_threads', str(threads),
+        '-max_db_word_count', '10',
+        '-out', str(out_sam),
+    ]
+
+
+def _build_gsnap_cmd(reads_r1, reads_r2, gsnap_dir, genome_version, out_sam,
+                    threads) -> List[str]:
+    cmd = [
+        'gsnap',
+        '-D', str(gsnap_dir),
+        '-d', str(genome_version),
+        f'--use-splicing={genome_version}',
+        str(reads_r1), str(reads_r2),
+        '--output-file', str(out_sam),
+        f'--nthreads={threads}',
+        '--ambig-splice-noclip',
+        '--novelsplicing=1',
+        '--add-paired-nomappers',
+        '--sam-extended-cigar',
+        '--format=sam',
+    ]
+    if _is_gz(reads_r1):
+        cmd.append('--gunzip')
+    return cmd
+
+
+def _sam_to_name_sorted_bam(sam_path, output_bam, threads: int) -> None:
+    """``samtools view -bS | samtools sort -n`` then delete the SAM."""
+    sam_path = Path(sam_path)
+    view_proc = subprocess.Popen(
+        ['samtools', 'view', '-bS', str(sam_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-n', '-@', str(threads), '-o', str(output_bam)],
+        stdin=view_proc.stdout, stderr=subprocess.PIPE,
+    )
+    view_proc.stdout.close()
+    try:
+        _, sort_stderr = sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+        if sort_proc.returncode != 0:
+            raise RuntimeError(
+                f"samtools sort failed for {sam_path.name}: "
+                f"{sort_stderr.decode(errors='replace')[-500:]}"
+            )
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        sort_proc.communicate()
+        view_proc.communicate()
+        raise RuntimeError(f"samtools sort timed out for {sam_path.name}")
+    finally:
+        sam_path.unlink(missing_ok=True)
+    view_proc.wait()
+    if view_proc.returncode not in (0, -9):
+        raise RuntimeError(
+            f"samtools view failed for {sam_path.name} (exit {view_proc.returncode})"
+        )
+
+
+def _require_binary(name: str) -> str:
+    resolved = shutil.which(name)
+    if not resolved:
+        raise FileNotFoundError(
+            f"{name} not found on PATH. Activate the conda env with the COMPASS "
+            f"short-read aligner panel installed (STAR, hisat2, magicblast, gsnap)."
+        )
+    return resolved
+
+
+def _finalize_short_read_bam(output_bam: Path, genome_path: str, reads_r1: str,
+                            aligner_name: str, qname_to_rn, threads: int) -> str:
+    """Shared post-alignment steps: calmd → QNAME validate → RN inject."""
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
+    validate_post_alignment_qnames(str(output_bam), str(reads_r1), aligner_name)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    logger.info("%s complete: %s", aligner_name, output_bam)
+    return str(output_bam)
+
+
+def run_star(
+    reads_path: str,
+    reads2_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    read_length: int = 150,
+    noncanonical: bool = False,
+    star_genome_dir: Optional[str] = None,
+) -> str:
+    """STAR paired-end splice-aware alignment (COMPASS default / non-canonical).
+
+    noncanonical=True adds ``--scoreGapNoncan 0`` (COMPASS STAR_noncanonical).
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    _require_binary('STAR')
+
+    paths = _compass_index_paths(genome_path, read_length=read_length)
+    star_dir = Path(star_genome_dir) if star_genome_dir else paths.star_dir
+    out_prefix = str(output_bam.with_suffix('')) + '.'  # STAR appends 'Aligned.out.sam'
+    cmd = _build_star_cmd(
+        reads_path, reads2_path, star_dir, out_prefix, threads,
+        read_length=read_length, noncanonical=noncanonical,
+    )
+    label = 'STAR_noncanonical' if noncanonical else 'STAR_default'
+    logger.info("Running %s: %s ...", label, ' '.join(cmd[:6]))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    if result.returncode != 0:
+        raise RuntimeError(f"{label} failed: {result.stderr[-1000:]}")
+
+    sam_path = Path(out_prefix + 'Aligned.out.sam')
+    _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    return _finalize_short_read_bam(
+        output_bam, genome_path, reads_path, label, qname_to_rn, threads
+    )
+
+
+def run_hisat2(
+    reads_path: str,
+    reads2_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    min_intron: int = 20,
+    max_intron: int = 200000,
+    noncanonical: bool = False,
+    hisat2_index: Optional[str] = None,
+    splice_sites: Optional[str] = None,
+) -> str:
+    """HISAT2 paired-end splice-aware alignment (COMPASS default / non-canonical).
+
+    noncanonical=True adds ``--pen-noncansplice 0`` (COMPASS HISAT2_noncanonical).
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    _require_binary('hisat2')
+
+    paths = _compass_index_paths(genome_path)
+    idx = hisat2_index if hisat2_index else str(paths.hisat2_index)
+    ss = splice_sites if splice_sites else str(paths.splice_sites)
+    sam_path = output_bam.with_suffix('.sam')
+    label = 'HISAT2_noncanonical' if noncanonical else 'HISAT2_default'
+    novel_sj = str(output_bam.with_suffix('.novel_splicesites.txt'))
+    summary = str(output_bam.with_suffix('.summary.txt'))
+    cmd = _build_hisat2_cmd(
+        reads_path, reads2_path, idx, ss, sam_path, threads,
+        min_intron, max_intron, novel_sj, summary, noncanonical=noncanonical,
+    )
+    logger.info("Running %s: %s ...", label, ' '.join(cmd[:6]))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    if result.returncode != 0:
+        raise RuntimeError(f"{label} failed: {result.stderr[-1000:]}")
+
+    _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    return _finalize_short_read_bam(
+        output_bam, genome_path, reads_path, label, qname_to_rn, threads
+    )
+
+
+def run_magicblast(
+    reads_path: str,
+    reads2_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 12,
+    blast_index: Optional[str] = None,
+) -> str:
+    """Magic-BLAST paired-end alignment (splice-site agnostic, COMPASS panel).
+
+    Threads default to 12 — COMPASS deliberately caps Magic-BLAST threads to
+    avoid OOM from its high per-thread memory use.
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    _require_binary('magicblast')
+
+    paths = _compass_index_paths(genome_path)
+    idx = blast_index if blast_index else str(paths.blast_index)
+    sam_path = output_bam.with_suffix('.sam')
+    cmd = _build_magicblast_cmd(reads_path, reads2_path, idx, sam_path, threads=threads)
+    logger.info("Running magicblast: %s ...", ' '.join(cmd[:6]))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    if result.returncode != 0:
+        raise RuntimeError(f"magicblast failed: {result.stderr[-1000:]}")
+
+    _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    return _finalize_short_read_bam(
+        output_bam, genome_path, reads_path, 'magicblast', qname_to_rn, threads
+    )
+
+
+def run_gsnap(
+    reads_path: str,
+    reads2_path: str,
+    genome_path: str,
+    output_bam: str,
+    threads: int = 8,
+    gsnap_genome_dir: Optional[str] = None,
+    genome_version: Optional[str] = None,
+) -> str:
+    """GSNAP paired-end splice-aware alignment (COMPASS panel)."""
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    _require_binary('gsnap')
+
+    paths = _compass_index_paths(genome_path)
+    gdir = gsnap_genome_dir if gsnap_genome_dir else str(paths.gsnap_dir)
+    gv = genome_version if genome_version else paths.genome_version
+    sam_path = output_bam.with_suffix('.sam')
+    cmd = _build_gsnap_cmd(reads_path, reads2_path, gdir, gv, sam_path, threads)
+    logger.info("Running gsnap: %s ...", ' '.join(cmd[:6]))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    if result.returncode != 0:
+        raise RuntimeError(f"gsnap failed: {result.stderr[-1000:]}")
+
+    _sam_to_name_sorted_bam(sam_path, output_bam, threads)
+    return _finalize_short_read_bam(
+        output_bam, genome_path, reads_path, 'gsnap', qname_to_rn, threads
+    )
 
 
 def _cs_long_to_cigar(cs: str, query_len: int, query_start: int, query_end: int,
@@ -2358,12 +2716,14 @@ def run_multi_aligner(
     annotation_path: Optional[str] = None,
     config: Optional[MultiAlignerConfig] = None,
     threads: int = 8,
-    aligners: Optional[List[str]] = None
+    aligners: Optional[List[str]] = None,
+    reads2_path: Optional[str] = None,
+    read_length: int = 150,
 ) -> Dict[str, str]:
     """Run multiple aligners on the same reads.
 
     Args:
-        reads_path: Path to FASTQ file
+        reads_path: Path to FASTQ file (R1 for paired-end)
         genome_path: Path to genome FASTA
         output_dir: Output directory for BAM files
         sample_name: Sample name for output files
@@ -2371,6 +2731,10 @@ def run_multi_aligner(
         config: Optional MultiAlignerConfig
         threads: Number of threads per aligner
         aligners: List of aligners to run (default: all enabled)
+        reads2_path: Mate-2 (R2) FASTQ for paired-end short-read aligners
+            (bbmap, STAR_*, HISAT2_*, magicblast, gsnap). When None those
+            aligners run single-end where supported.
+        read_length: Read length for STAR sjdbOverhang / index selection.
 
     Returns:
         Dict mapping aligner name to output BAM path
@@ -2398,8 +2762,21 @@ def run_multi_aligner(
         if config.bwa_mem.enabled:
             aligners.append('bwa')
 
+    # COMPASS short-read aligners are run paired-end; they need a mate-2 FASTQ.
+    _paired_required = {
+        'STAR_default', 'STAR_noncanonical', 'HISAT2_default',
+        'HISAT2_noncanonical', 'magicblast', 'gsnap',
+    }
+
     for aligner in aligners:
         output_bam = output_dir / f"{sample_name}.{aligner}.sorted.bam"
+
+        if aligner in _paired_required and not reads2_path:
+            logger.error(
+                "Aligner %s requires a mate-2 (R2) FASTQ (reads2_path); skipping. "
+                "Pass paired chunk FASTQs from `rectify split --read2`.", aligner,
+            )
+            continue
 
         try:
             if aligner == 'minimap2':
@@ -2435,7 +2812,8 @@ def run_multi_aligner(
                     genome_path=genome_path,
                     output_bam=str(output_bam),
                     threads=threads,
-                    extra_args=config.bbmap.extra_args
+                    extra_args=config.bbmap.extra_args,
+                    reads2_path=reads2_path,
                 )
             elif aligner == 'bwa':
                 results['bwa'] = run_bwa_mem(
@@ -2444,6 +2822,41 @@ def run_multi_aligner(
                     output_bam=str(output_bam),
                     threads=threads,
                     extra_args=config.bwa_mem.extra_args
+                )
+            elif aligner in ('STAR_default', 'STAR_noncanonical'):
+                results[aligner] = run_star(
+                    reads_path=reads_path,
+                    reads2_path=reads2_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
+                    read_length=read_length,
+                    noncanonical=(aligner == 'STAR_noncanonical'),
+                )
+            elif aligner in ('HISAT2_default', 'HISAT2_noncanonical'):
+                results[aligner] = run_hisat2(
+                    reads_path=reads_path,
+                    reads2_path=reads2_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
+                    noncanonical=(aligner == 'HISAT2_noncanonical'),
+                )
+            elif aligner == 'magicblast':
+                results['magicblast'] = run_magicblast(
+                    reads_path=reads_path,
+                    reads2_path=reads2_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=min(threads, 12),
+                )
+            elif aligner == 'gsnap':
+                results['gsnap'] = run_gsnap(
+                    reads_path=reads_path,
+                    reads2_path=reads2_path,
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
                 )
             else:
                 logger.warning(f"Unknown aligner: {aligner}")
