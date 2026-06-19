@@ -1,5 +1,7 @@
 # Learned / ML Approaches for Long-Read RNA-seq Alignment & 3'-End Determination in RECTIFY
 
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
 **Author role:** Algorithmic-discovery researcher proposing *learned* methods to advance
 RECTIFY's alignment + 3'-end/CPA pipeline.
 **Inputs read:** `02_synthesis/{COMPARISON.md, DEEP_DIVE.md}`, `01_investigation/ont_drs_ecosystem.md`,
@@ -14,13 +16,15 @@ is published and works on this data type) or **NOVEL/SPECULATIVE** (no precedent
 problem). I am explicit about where ML is *overkill* for a compact, well-annotated 12 Mb yeast
 genome versus where it genuinely buys accuracy.
 
-**One caveat that governs everything (from `redteam_winrates_selection.md`).** The headline win
-rates (deSALT 78.9 / mapPacBio 18.2 / …) are a **single-dataset popularity vote** produced by a
-legacy 5-level sort, not a measured accuracy comparison. There is **no committed ground-truth
-concordance table**. *Before any ML model is trained or any heuristic is declared "beaten," a
-held-out truth set and a committed `aligner_summary.tsv` must exist* (Experiments 1–3 of that
-red-team). **ML cannot fix an unmeasured objective.** This is the precondition for every idea
-here, and it is itself the highest-value, lowest-effort work — but it is *not* ML.
+**One caveat that governs everything.** The headline win rates (deSALT 78.9 / mapPacBio 18.2 / …)
+are a **single-dataset** result from the live HP-edit-distance selector (`use_hp_ed=True`; both
+merge call sites pass per-aligner BAMs + genome), not the legacy popularity sort. They are still
+**un-committed** — there is **no committed ground-truth concordance table** — and the HP-ED score
+they reflect has known biases (N-ops cost 0; no explicit 3'-end term). *Before any ML model is
+trained or any heuristic is declared "beaten," a held-out truth set and a committed
+`aligner_summary.tsv` must exist.* **ML cannot fix an unmeasured objective.** This is the
+precondition for every idea here, and it is itself the highest-value, lowest-effort work — but it
+is *not* ML.
 
 ---
 
@@ -28,7 +32,7 @@ here, and it is itself the highest-value, lowest-effort work — but it is *not*
 
 | Problem | ML verdict | Why |
 |---|---|---|
-| **Winner/consensus selection** (replace heuristic sort) | **ML genuinely helps** | The current sort is a hand-tuned 5-key tiebreaker with a documented herd-bias flaw; features are cheap; a GBDT over them is the textbook fix. **#1 ranked.** |
+| **Winner/consensus selection** (augment the HP-ED selector) | **ML genuinely helps** | The live selector ranks on a single HP-edit-distance scalar (N-ops free, no 3'-end term) with a fixed lexicographic tail; features are cheap; a GBDT that learns their interactions is the textbook augmentation. **#1 ranked.** |
 | **Poly-A / CPA boundary from raw signal** | **ML helps IF signal is retained** | The information that disambiguates the CPA (dwell time) is *destroyed by basecalling*; only a signal/dwell model recovers it. But it requires squiggle access RECTIFY does not currently keep. **High impact, high plumbing cost.** |
 | **Splice-site scoring (SpliceAI/Pangolin-style)** | **Overkill for yeast, real for metazoan** | Yeast has ~300 introns, nearly all annotated, strongly canonical GT-AG. A learned splice CNN is solving a problem the GTF + a 2-line canonical prior already solves. Banked as a **metazoan-only** future module. |
 | **Seq2seq alignment post-correction (transformer over the window)** | **Mostly overkill / high overfit risk** | RECTIFY's deterministic HP-aware DP modules (2C/2E/2G/2H) already encode the error model interpretably. A transformer would be a less-auditable reimplementation trained on 36 reads. **Not worth it now.** |
@@ -43,23 +47,27 @@ here, and it is itself the highest-value, lowest-effort work — but it is *not*
 ### The model
 A **gradient-boosted decision tree** (LightGBM/XGBoost) — or a tiny 2-layer MLP — that, for each
 `(read_id, aligner)` candidate row, outputs P(this aligner's corrected call is the true CPA /
-true junction). Replace the legacy 5-level sort
-(`corrected_consensus.py::merge_corrected_tsvs` Path B) with `argmax` over this score. GBDT, not
-deep net: tabular features, tens-of-thousands of training rows, full feature interpretability
+true junction). Augment or replace the live HP-edit-distance ranking
+(`corrected_consensus.py::merge_corrected_tsvs`, `use_hp_ed=True`) with `argmax` over this score.
+GBDT, not deep net: tabular features, tens-of-thousands of training rows, full feature interpretability
 (SHAP), and CPU inference in microseconds/row — mandatory under the SLURM no-GPU norm.
 
 ### Features (all already computed per row)
-- `hp_edit_distance` (`_cigar_hp_edit_distance`) — already the intended Path-A key.
+- `hp_edit_distance` (`_cigar_hp_edit_distance`) — the live selector's ranking scalar; the model
+  learns when to trust it rather than ranking on it alone (and can charge a learned N-op cost the
+  current scalar leaves free).
 - splice strength: canonical-tier of each N-op, annotation membership, junction overhang
   (`junction_overhang_table`), 2H refiner score.
-- cross-read support: `_n_agree` (kept as a *feature*, demoted from being the decider),
+- cross-read support: `_n_agree` (a fallback-path popularity term; kept here as a *feature*),
   cross-read junction count at this locus.
+- junction-anchor length (`_cigar_min_junction_anchor`) — the flank-anchor signal the N-op gate
+  uses, exposed so the model can discount unsupported introns the free-N-op scalar currently ignores.
 - aligner identity (one-hot) — lets the model *learn* deSALT-junction / mapPacBio-CPA
   specialization instead of it being asserted in CLAUDE.md.
 - poly-A: `pt:i` dorado tail length, `polya_score`, distance from soft-clip boundary to genomic
   homopolymer, walk-back magnitude (2E), soft-clip-rescue magnitude (2G).
 - self-confidence flag `confidence` — kept as a feature, but the model learns *how much* to trust
-  it rather than using it as a raw tiebreaker (fixes red-team confounder #7).
+  it rather than using it as a raw tiebreaker.
 
 ### Training data RECTIFY has
 - **Labels = NET-seq.** `saccharomyces_cerevisiae_netseq_wt.tsv.gz` is a genome-wide, per-base,
@@ -73,10 +81,11 @@ deep net: tabular features, tens-of-thousands of training rows, full feature int
   trustworthy than a singleton.
 
 ### Baseline to beat
-The legacy 5-level sort (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc`).
-**Metric:** fraction of reads whose selected CPA lands within ±N bp of a NET-seq peak on a
-**held-out chromosome** (chromosome-level split — see overfit note). Must beat the heuristic by a
-margin that survives replicate cross-validation.
+The live HP-edit-distance selector (key `[_effective_chimera_ok, hp_edit_distance, _span]`, with
+N-ops free), and the legacy fallback sort (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span,
+_n_junc`) as a secondary reference. **Metric:** fraction of reads whose selected CPA lands within
+±N bp of a NET-seq peak on a **held-out chromosome** (chromosome-level split — see overfit note).
+Must beat the HP-ED selector by a margin that survives replicate cross-validation.
 
 ### Inference cost & feasibility
 Trivial. A LightGBM model is a few hundred KB, scores millions of rows/sec on one CPU core, drops
@@ -85,9 +94,9 @@ and pure-CPU). **Feasibility: HIGH.** This is the single most actionable ML idea
 
 ### Validation
 - Held-out **chromosome** split (never a random row split — rows from the same locus leak).
-- Compare against the heuristic on NET-seq concordance *and* on replicate reproducibility.
-- The selector must be A/B-ablatable (red-team Experiment 2): ship it behind a flag so the legacy
-  sort remains the falsifiable baseline.
+- Compare against the live HP-ED selector on NET-seq concordance *and* on replicate reproducibility.
+- The selector must be A/B-ablatable: ship it behind a flag so the HP-ED selector (and the legacy
+  fallback sort) remain the falsifiable baselines.
 
 ### Overfit / reproducibility risk: **LOW–MEDIUM**
 - Risk: GBDT can memorize locus-specific quirks. Mitigation: chromosome-split CV, shallow trees
@@ -97,10 +106,10 @@ and pure-CPU). **Feasibility: HIGH.** This is the single most actionable ML idea
   script + label-generation code. A model that can't be regenerated from committed code is
   banned.
 
-### Expected impact: **HIGH.** This is the one place the adversarial review *proves* the current
-mechanism is weak (herd-bias popularity vote, self-reported confidence). A learned selector trained
-on an orthogonal truth signal (NET-seq) replaces a popularity vote with a calibrated accuracy
-estimate — exactly the gap the red-team identified.
+### Expected impact: **HIGH.** The live HP-ED selector ranks on a single edit-distance scalar with
+N-ops free and no explicit 3'-end term — a known-incomplete objective. A learned selector trained on
+an orthogonal truth signal (NET-seq) replaces that scalar with a calibrated, multi-feature accuracy
+estimate that can express the interactions (and the N-op cost) the fixed key cannot.
 
 ---
 
@@ -271,7 +280,7 @@ ranked last.
 
 | Rank | Proposal | Tag | Impact | Effort | Verdict |
 |---|---|---|---|---|---|
-| **1** | **Learned winner SELECTOR (GBDT) trained on NET-seq labels** (§1) | ESTABLISHED | **High** | **Low** | **BUILD FIRST.** Directly fixes the proven selection-mechanism flaw; cheap; CPU-only; interpretable. |
+| **1** | **Learned winner SELECTOR (GBDT) trained on NET-seq labels** (§1) | ESTABLISHED | **High** | **Low** | **BUILD FIRST.** Augments the live HP-ED selector's incomplete objective (free N-ops, no 3'-end term); cheap; CPU-only; interpretable. |
 | **2a** | **Use dorado `pt:i` as a Bayesian prior in 2E walk-back** (§2) | ESTABLISHED | Med-High | **Very low** | **BUILD NOW.** No new model; data already ingested. |
 | **2b** | **Signal/dwell (Remora-style) CPA fusion** (§2) | NOVEL fusion | **High ceiling** | **High (POD5 plumbing)** | **Scope as funded R&D**, not a quick win. The only path to sub-bp CPA in long A-tracts. |
 | **3** | **SpliceAI/Pangolin junction scorer in Module 2H** (§3) | ESTABLISHED | **Metazoan: High** / Yeast: ~Nil | Low (precompute) | **DEFER to metazoan.** Skip for yeast. |
@@ -281,9 +290,10 @@ ranked last.
 
 ### The precondition that outranks all ML (from `redteam_winrates_selection.md`)
 **Build the ground-truth concordance harness first** (NET-seq / replicate-based per-aligner
-accuracy, committed `aligner_summary.tsv`, Path A vs Path B ablation). It is the objective every
-model in §1–§4 trains and validates against. **No ML proposal here is creditable until a held-out
-truth metric exists** — and that harness is itself low-effort, high-value, and not ML. Said plainly:
+accuracy, committed `aligner_summary.tsv`, HP-ED-selector vs learned-selector vs fallback-sort
+ablation). It is the objective every model in §1–§4 trains and validates against. **No ML proposal
+here is creditable until a held-out truth metric exists** — and that harness is itself low-effort,
+high-value, and not ML. Said plainly:
 the most valuable next step is *measurement*, and the highest-impact *learned* method (§1 selector)
 is the natural first consumer of that measurement.
 

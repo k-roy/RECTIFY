@@ -1,5 +1,7 @@
 # Improving Chaining & Base-Level DP for bp-Accurate 3′-End Alignment in RECTIFY
 
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
 **Goal.** Propose concrete, rankable improvements to the *state of the art* in chaining and
 base-level dynamic programming for long-read RNA-seq alignment, specifically to win the metric
 RECTIFY actually cares about: **bp-accurate 3′ end / cleavage-and-polyadenylation site (CPA)** on
@@ -12,16 +14,17 @@ reports. The proposals below respect the verified caveats:
 - minimap2's `--splice-flank=no` carries the live source comment `# Disable for compatibility`
   (`multi_aligner.py:252`); it is **not** a proven 3′-accuracy mechanism (redteam_denovo M7).
 - Win rates (deSALT 78.9 / mapPacBio 18.2 / uLTRA 2 / gapmm2 0.8 / minimap2 0.1) are
-  **single-dataset, unprovenanced**, and — per `redteam_winrates_selection.md` — were produced by
-  the **legacy Path-B sort** (`_five_rescued`, `_chimera_ok`, `_conf_rank`, `_n_agree` popularity),
-  **not** by HP-edit-distance on corrected 3′ ends. The "aligner X is more accurate because it
-  wins" story is an **untested hypothesis**. Proposals here therefore (a) do **not** rely on the
-  causal story, and (b) include a ground-truth concordance harness so improvements are measured
+  **single-dataset and un-committed**. They were produced by the live **HP-edit-distance selector**
+  (`use_hp_ed=True`; both merge call sites pass per-aligner BAMs + genome), not by the legacy
+  popularity sort — but the "aligner X is more accurate because it wins" story is still an
+  **untested hypothesis** on one yeast DRS sample. Proposals here therefore (a) do **not** rely on
+  the causal story, and (b) include a ground-truth concordance harness so improvements are measured
   against truth, not against the selection metric.
 - deSALT runs with **no `-x` ONT preset** (`null` ≈13% divergence model) — possibly mistuned, never
   A/B-tested (COMPARISON §6.1).
-- mapPacBio sets `intronlen=50` but **no `maxindel`** (relies on BBMap's soft 16000 default;
-  redteam_denovo B5).
+- mapPacBio sets `intronlen=10` (the minimum deletion length relabeled D→N) and an explicit
+  `maxindel=max(200000, max_intron)`, so it does **not** rely on BBMap's soft 16000 default — the
+  search bound is sized from `max_intron` (multi_aligner.py:749,754).
 
 **What RECTIFY already has** (verified on disk — this drives feasibility):
 - `rectify/core/splice/hp_penalty.py::HpPenaltyTable` — parses the AT/CG `penalty_scores.tsv`
@@ -34,25 +37,29 @@ reports. The proposals below respect the verified caveats:
 - `rectify/core/splice/junction_refiner.py` (Module 2H) — post-consensus N-op refinement.
 - `edlib` is importable; **`mappy` and `parasail` are NOT currently importable** in this env
   (matters for "patch the aligner" vs "shell out" feasibility).
-- **Caveat:** the referenced `common/scripts/nanopore/error_profile_*/penalty_scores.tsv` is
-  **not present on disk** in this checkout — only the `HpPenaltyTable` loader and CLAUDE.md numbers
-  exist. Any proposal consuming the empirical table must first **regenerate/commit it** (see P0).
+- The empirical penalty / STR / overhang tables **are bundled** at
+  `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/` (with protocol
+  variants — `penalty_scores.tsv`, `penalty_scores_cdna.tsv`, `str_penalty_scores.tsv`,
+  `junction_overhang_table.tsv`) and are **auto-resolved by `--Scer`**. Any proposal consuming
+  them does not need to regenerate them; the open work is validating/versioning them (see P0).
 
 ---
 
-## P0 (prerequisite, not a proposal): make the metric and the table real
+## P0 (prerequisite, not a proposal): make the metric measurable
 
-Two cheap blockers gate everything below; do them first or the impact numbers are unmeasurable.
+One cheap blocker gates everything below; do it first or the impact numbers are unmeasurable.
 
 1. **Commit a ground-truth 3′-end harness.** Build a held-out CPA truth set (Quant-seq / 3′-seq
    peaks, or NET-seq-refined CPAs already bundled in `rectify/data/*netseq*`) and a per-aligner
    *corrected*-3′-end concordance script. Report `|corrected_3prime − truth|` distribution **per
    aligner, independent of selection**. Without this, "improved accuracy" cannot be distinguished
-   from "won the popularity sort" (`redteam_winrates_selection.md` (d)#3). **ESTABLISHED method.**
-2. **Regenerate + commit `penalty_scores.tsv`** (the AT/CG HP del/ins/sub table) and
-   `str_penalty_scores.tsv`. The loader exists; the data file is missing here. **ESTABLISHED.**
+   from "won the selection metric". **ESTABLISHED method.**
 
-These are effort-light and impact-multiplying; they are assumed done before P1–P8 are validated.
+The penalty / STR tables are already bundled and `--Scer`-resolved (`penalty_scores.tsv`,
+`str_penalty_scores.tsv` under `rectify/data/genomes/.../penalty_tables/`), so no regeneration is
+needed before P1–P8; the only table work is validating/versioning them for the target chemistry.
+
+This harness is effort-light and impact-multiplying; it is assumed done before P1–P8 are validated.
 
 ---
 
@@ -91,7 +98,7 @@ from junction window to 3′ window) is new. **(1a) LOW** — KSW2 fork + no map
 indel — and thus `reference_end` — lands. Medium-effort for (1b).
 
 **Validation.** P0 concordance harness, ablation: tables-on vs tables-off on the 3′ window;
-expect the corrected-3′ error distribution to tighten and the `_n_agree` herd to grow *for the
+expect the corrected-3′ error distribution to tighten and cross-aligner agreement to grow *for the
 right reason* (reads converge on the table-supported CPA).
 
 **Risk.** Tables are **R10.4.1/yeast-specific** (COMPARISON §5; must not transfer to HiFi/other
@@ -219,9 +226,10 @@ one chain on noisy ends.
 net CPA-concordance gain (P0). Guard against (4a) inflating false termini via the existing
 overhang/chimera filter.
 
-**Risk.** (4a) more candidates → more chances for a wrong terminus to win the popularity sort —
-**must** be paired with P0 truth measurement and the chimera filter. (4b) end-anchor bonus can pull
-the 3′ end into a genomic A-run — must compose with P3's poly-A state, not fight it.
+**Risk.** (4a) more candidates → more chances for a wrong terminus to win selection (now via a
+lower HP-edit-distance, since N-ops are free) — **must** be paired with P0 truth measurement and
+the chimera filter. (4b) end-anchor bonus can pull the 3′ end into a genomic A-run — must compose
+with P3's poly-A state, not fight it.
 
 ---
 
@@ -230,17 +238,19 @@ the 3′ end into a genomic A-run — must compose with P3's poly-A state, not f
 **Mechanism.** The synthesis's strongest *structural* differentiator is deSALT's **cross-read exon
 pooling**: it integrates all reads' skeletons, agrees on consensus exon boundaries, and snaps each
 noisy read to them — producing *homogeneous* junctions (DEEP_DIVE §2-3; verified FACT-PAPER,
-redteam_denovo D4). RECTIFY currently gets this only *implicitly* and accidentally, via the
-`_n_agree` popularity tiebreaker — which `redteam_winrates_selection.md` (b)#4 flags as **herd
-bias, not accuracy**. **Make it explicit and principled:** after correction, build a per-locus
-**cross-read CPA/junction histogram** (pool all reads' corrected 3′ ends and N-op boundaries), then
-**snap each read's corrected 3′ end to the nearest well-supported peak** within a small radius —
-the same operation RECTIFY's `analyze` clustering already does for count matrices, but fed *back*
-into per-read correction. This gives deSALT's homogeneity to *every* aligner's reads, and converts
-`_n_agree` from a popularity vote into a real, defensible consensus signal.
+redteam_denovo D4). RECTIFY's live HP-edit-distance selector ranks each read's aligners on a
+genome-anchored edit distance, so cross-read homogeneity enters only *implicitly* (and, in the
+fallback sort, via the `_n_agree` popularity tiebreaker — herd bias, not accuracy). **Make it
+explicit and principled:** after correction, build a per-locus **cross-read CPA/junction histogram**
+(pool all reads' corrected 3′ ends and N-op boundaries), then **snap each read's corrected 3′ end to
+the nearest well-supported peak** within a small radius — the same operation RECTIFY's `analyze`
+clustering already does for count matrices, but fed *back* into per-read correction. This gives
+deSALT's homogeneity to *every* aligner's reads, and supplies a real, defensible cross-read consensus
+signal that the HP-ED selector's 3′-end term (and the fallback `_n_agree`) can consume.
 
 **Failure fixed.** Per-read junction/CPA idiosyncrasy (minimap2/gapmm2/mapPacBio "commit per-read in
-isolation", COMPARISON §3d); and the *metric* problem that selection is currently popularity-driven.
+isolation", COMPARISON §3d); and the absence of an explicit, de-herded cross-read consensus the
+selector can lean on.
 
 **Feasibility.** **MEDIUM.** The clustering primitives exist (`analyze` IntervalTree). The work is
 plumbing a two-pass correction (pass 1 = correct + collect peaks; pass 2 = snap), which fits the
@@ -273,13 +283,14 @@ deSALT runs `null` (~13%) on ONT DRS (COMPARISON §6.1; verified). **Mechanism/f
 **Validation:** A/B `null` vs `ont2d` on P0 harness. **Risk:** could *worsen* sensitivity (null
 evidently works); purely empirical. **ESTABLISHED** (vendor preset). **Effort: trivial.**
 
-### 7. Set/verify mapPacBio `maxindel` for yeast introns
-mapPacBio sets `intronlen=50` but no `maxindel`, relying on the soft 16000 default (redteam_denovo
-B5). Yeast introns <1 kb are within it, but **verify it's a soft limit in PacBio mode** (web
-sources conflict; some cite a small PacBio-mode default). **Mechanism:** add explicit
-`maxindel=2000` (covers yeast introns, bounds runaway gaps). **Feasibility:** one arg. **Impact:**
-low-but-safety (guards against silently missed introns inflating false termini). **Risk:** too-small
-→ missed long introns. **ESTABLISHED.**
+### 7. Audit mapPacBio's `maxindel` sizing for yeast introns
+mapPacBio already sets `intronlen=10` and an explicit `maxindel=max(200000, max_intron)`
+(multi_aligner.py:749,754), so it does **not** rely on BBMap's soft 16000 default — the search
+bound is derived from the same `max_intron` that feeds minimap2 `-G` / gapmm2 `-i`. The residual
+work is a **soundness audit, not a fix:** confirm `max_intron` is set appropriately for the target
+organism (yeast introns <1 kb sit far inside 200k) and that an oversized `maxindel` does not inflate
+runaway-gap search cost. **Mechanism:** verify/tune the `max_intron` input. **Feasibility:** config.
+**Impact:** low/safety. **Risk:** too-small `max_intron` → missed long introns. **ESTABLISHED.**
 
 ### 8. `--end-bonus` sweep for minimap2 (controlled, not the splice-flank red herring)
 `--end-bonus 0` is the *documented* reason minimap2 soft-clips poly-A (minimap2 §6, M9 — properly
@@ -334,13 +345,13 @@ KSW2 unless a windowed RECTIFY DP provably can't reach a measured target.
 
 | Rank | Proposal | Impact | Effort | Risk | Tag |
 |---|---|---|---|---|---|
-| **1** | **P0** ground-truth harness + commit penalty table | (gates all) | Low | Low | ESTABLISHED |
+| **1** | **P0** ground-truth harness (penalty tables already bundled) | (gates all) | Low | Low | ESTABLISHED |
 | **2** | **P3** poly-A-aware two-state terminal DP (CPA = transition) | **Highest** (core failure) | Med | Med (protocol gating) | NOVEL kernel, established spirit |
 | **3** | **P2** HP-aware full-SW realign of 3′ window | **Highest** (mapPacBio edge, cheap, all aligners) | Low-Med | Low-Med | ESTABLISHED+NOVEL |
 | **4** | **P6** deSALT `-x ont2d` A/B | Unknown, possibly large on top aligner | **Trivial** | Low | ESTABLISHED |
 | **5** | **P1b** empirical gap costs into the realign DP | High (CPA placement) | Med | Med (chemistry-specific) | ESTABLISHED+NOVEL |
 | **6** | **P4a** harvest sub-optimal terminal chains | Medium | Low | Med (false termini) | ESTABLISHED |
-| **7** | **P5** explicit cross-read CPA consensus (replace `_n_agree`) | Med-High (defensibility) | Med-High | **High (kills APA signal)** | ESTABLISHED+NOVEL |
+| **7** | **P5** explicit cross-read CPA consensus (feed the selector's 3′ term) | Med-High (defensibility) | Med-High | **High (kills APA signal)** | ESTABLISHED+NOVEL |
 | **8** | **P8** minimap2 `--end-bonus` sweep (diagnostic only) | Low (diagnostic) | Trivial | Med if shipped | ESTABLISHED |
 | **9** | **P7** mapPacBio `maxindel` safety | Low/safety | Trivial | Low | ESTABLISHED |
 | **10** | **P4b** 3′-end-anchored chaining bonus | Med (if it works) | Med-High | Med-High | NOVEL |

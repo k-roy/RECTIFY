@@ -1,5 +1,7 @@
 # Making Alignment Itself CPA-Accurate — Discovery Proposals
 
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
 **Goal.** bp-accurate 3'-end / cleavage-and-polyadenylation (CPA) site determination from ONT
 direct-RNA (DRS) / dT-primed cDNA long reads, by making the **aligner / DP terminal behavior**
 report a CPA-correct `reference_end` *at alignment time*, reducing reliance on post-hoc correction
@@ -35,14 +37,16 @@ Three caveats from the adversarial pass constrain every claim below and must tra
    SQANTI3/LAPA flag/cluster, they do not place per-read CPA. The gap below is **CPA-aware terminal
    alignment**, which genuinely no aligner does.
 
-3. **The win-rate spread (deSALT 78.9 / mapPacBio 18.2 / …) is a single-dataset selection-metric
-   artifact, not a measured per-aligner CPA-accuracy ranking** (redteam_winrates, decisive finding:
-   production runs the *legacy 5-level sort* — `_n_agree` popularity + `_conf_rank` self-confidence —
-   **not** HP-edit-distance, and never sorts on 3'-end position). **Consequence for THIS document:**
-   we must not assume "deSALT is the most CPA-accurate backbone." Every proposal that touches selection
-   or claims an accuracy improvement must be validated against an **orthogonal CPA truth set**
-   (NET-seq, QuantSeq/3'-seq, validation cat1/cat2), independent of the selection metric. This is not
-   optional rigor — it is the precondition for any of these proposals being more than a hypothesis.
+3. **The win-rate spread (deSALT 78.9 / mapPacBio 18.2 / …) is a single-dataset number, not a
+   measured per-aligner CPA-accuracy ranking.** Production runs the live HP-edit-distance selector
+   (`use_hp_ed=True`; both call sites pass per-aligner BAMs + genome), which ranks on a
+   genome-anchored edit distance over the corrected CIGAR — not the legacy popularity sort. But that
+   score still does not *directly* sort on 3'-end position (it scores CIGAR fit, with N-ops free), so
+   a win does not establish CPA accuracy. **Consequence for THIS document:** we must not assume
+   "deSALT is the most CPA-accurate backbone." Every proposal that touches selection or claims an
+   accuracy improvement must be validated against an **orthogonal CPA truth set** (NET-seq,
+   QuantSeq/3'-seq, validation cat1/cat2), independent of the selection metric. This is not optional
+   rigor — it is the precondition for any of these proposals being more than a hypothesis.
 
 **Why move correction into alignment at all?** Post-hoc correction is provably good at *length-
 independent* fixes (2E walk-back uses the **reference** genome, so HP miscount doesn't matter). But it
@@ -144,8 +148,9 @@ basecalled A-run, which loses bases. Projecting `q_body_end` through the CIGAR t
 - a **prior/anchor** in Proposal 1's terminal DP (constrain the body/tail boundary to agree with `pt`),
   and/or
 - a **per-read confidence weight**: reads where signal-CPA, basecalled-CPA, and aligner-end agree get
-  high confidence; disagreements flag ambiguous CPAs (better than the current self-assessed
-  `_conf_rank`, which redteam_winrates flags as gameable).
+  high confidence; disagreements flag ambiguous CPAs (a calibrated quantity, unlike the emitted
+  self-assessed `confidence`/`_conf_rank` flag, which carries no notion of the HP-ED margin the live
+  selector used).
 
 ### Specific failure mode fixed
 The *root cause* in ONT DRS: a long poly-A produces a low-variance current segment whose **length is in
@@ -196,16 +201,17 @@ proposal moves a **soft** version of this signal *upstream*:
   (the HP-ambiguous case), break the tie toward the candidate nearest a NET-seq peak — exactly the
   "annotation/canonical as tie-breaker, never a gate" policy CLAUDE.md mandates for Module 2H, applied
   to CPA instead of splice junctions.
-- **Selection prior:** replace the gameable `_n_agree` popularity / `_conf_rank` self-confidence
-  tiebreakers (redteam_winrates confounders 1, 7) with **distance-to-orthogonal-CPA** as the
-  tiebreaker. This directly addresses the decisive redteam finding that production selection rewards
-  *herd agreement*, not accuracy. An external 3'-end signal is the field's documented gold standard
+- **Selection prior:** add **distance-to-orthogonal-CPA** as a tiebreaker term in the live HP-edit-distance
+  selector (and the fallback `_n_agree`/`_conf_rank` tiebreakers). The HP-ED score ranks CIGAR fit and
+  leaves N-ops free, so it does not directly reward landing on the true 3'-end position; an external
+  3'-end anchor supplies the missing CPA-correctness signal. This is the field's documented gold standard
   (`ont_drs §5.1`: 3'-Seq/Iso-Seq quantify PAS more reliably than computational tools).
 
 ### Specific failure mode fixed
 - HP-ambiguous CPA ties that Proposals 1/2 cannot resolve from the read alone.
-- **The selection-metric bias** (redteam_winrates §c): `_n_agree`/`_conf_rank` are popularity/self-report,
-  not accuracy. An orthogonal anchor turns the tiebreaker into a truth-correlated quantity.
+- **The selection-metric gap:** the HP-ED score does not sort on 3'-end position (and the fallback's
+  `_n_agree`/`_conf_rank` are popularity/self-report). An orthogonal anchor turns the tiebreaker into a
+  truth-correlated quantity.
 
 ### Feasibility
 **Medium.** The signal loader, deconvolution, and per-position query already exist
@@ -218,7 +224,8 @@ same `_CANONICAL_HP_PRIOR = 0.5`-style bounded discount that Module 2H uses.
 ### Expected impact
 **Medium on bp-accuracy directly** (most reads are already resolved by Proposals 1/2); **high on
 selection correctness and on the *validity of the win-rate claim itself*.** This is the proposal that
-converts the win-rate numbers from "selection-metric artifact" into "orthogonally-validated CPA accuracy."
+gives the HP-ED selector a CPA-position term and turns the win-rate numbers from "single-dataset and
+selector-bound" into "orthogonally-validated CPA accuracy."
 
 ### Validation
 - **Leave-one-out NET-seq:** hold out a NET-seq sample (use `_pan` to guide, validate against `_wt`, or
@@ -337,9 +344,9 @@ protocol.
 | Rank | Proposal | Impact on CPA bp-accuracy | Effort | Est/Novel | One-line rationale |
 |---|---|---|---|---|---|
 | **1** | **P1a — unified terminal re-scoring pass** | **Highest** | **Low** | NOVEL (placement) | Reuses 2E/2G logic as one per-aligner pre-correction CPA solver; attacks the dominant HP-A-tract error; makes raw ends ≈ corrected ends. |
-| **2** | **P2 Phase A — `pt:i` signal fusion** | High (orthogonal) | Low-Med | NOVEL | Adds genuinely new (signal) information the basecall loses; cheap because `pt` is already in the pipeline; gates ambiguous CPAs better than `_conf_rank`. |
+| **2** | **P2 Phase A — `pt:i` signal fusion** | High (orthogonal) | Low-Med | NOVEL | Adds genuinely new (signal) information the basecall loses; cheap because `pt` is already in the pipeline; gates ambiguous CPAs better than the emitted self-confidence flag. |
 | **3** | **P5 — mispriming terminal veto (cDNA)** | High (cDNA only) | Low-Med | ESTABLISHED concept / NOVEL placement | Stops oligo-dT false CPAs before selection; reuses the existing genomic-downstream-A detector. |
-| **4** | **P3 — NET-seq/3'-seq soft prior in selection** | Med (bp); High (selection validity) | Medium | ESTABLISHED analogue | Replaces gameable `_n_agree`/`_conf_rank` tiebreakers with truth-correlated anchors; converts win-rate claim from artifact to validated. |
+| **4** | **P3 — NET-seq/3'-seq soft prior in selection** | Med (bp); High (selection validity) | Medium | ESTABLISHED analogue | Adds a truth-correlated CPA-position term to the live HP-ED selector (which leaves N-ops free and does not sort on 3'-end position); converts win-rate claim from selector-bound to validated. |
 | **5** | **P4 — 3'-tight/5'-loose DP asymmetry** | Low-Med (defensive) | Med-Low | NOVEL treatment | Stops 5' motor-fall-off noise from perturbing 3' CPA; consolidates Cat3 into a DP prior. |
 | (later) | **P1b / P2 Phase B** — true DP terminal state / dwell fusion | Highest ceiling | High | NOVEL | Research-grade; do only after the low-effort versions quantify the remaining gap. |
 
@@ -370,6 +377,7 @@ critique, because it never lets a prior override read evidence.
 3. **No-regression gate:** the full 708-test suite (incl. `test_validation_reads.py`,
    `test_junction_refiner.py`, `test_bam_writer.py`) must stay green; CPA shifts that change cat
    expectations require explicit, justified test updates (per the v3.2.x precedent in `CLAUDE.md`).
-4. **Path A vs Path B decision** (redteam_winrates experiment 2): any selection-touching proposal (P3)
-   must first resolve the docstring-vs-production mismatch — wire the HP-edit-distance path or fix the
-   docstring — so the metric being improved is the metric that actually runs.
+4. **Selector calibration baseline** (redteam_winrates experiment 2): any selection-touching proposal
+   (P3) must measure against the live HP-edit-distance selector that actually runs — including its known
+   biases (N-ops cost 0; no explicit 3'-end term) — so the metric being improved is the production metric,
+   not the legacy fallback sort.

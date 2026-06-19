@@ -1,5 +1,7 @@
 # Improving Seeding & Indexing for RECTIFY — Algorithmic Discovery Proposals
 
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
 **Goal.** Improve the state of the art in *seeding & indexing* for long-read RNA-seq alignment
 in RECTIFY's context: ONT DRS / dT-primed cDNA (R10.4.1) + PacBio HiFi, where the deliverable
 is a **base-accurate 3' end (CPA)** and **sequence-supported splice junctions**, not raw mapping
@@ -21,11 +23,13 @@ API to monkey-patch — everything is subprocess + BAM/PAF parsing.
 Two findings from `03_adversarial/` bound what we can claim and how we must validate:
 
 1. **The win-rate causal story is not load-bearing.** Production winner selection
-   (`merge_corrected_tsvs`, both call sites) passes **no per-aligner BAMs**, so it runs the **legacy
-   5-level popularity sort** (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc`) —
-   *not* HP-edit-distance and *not* 3'-end accuracy. The "deSALT 78.9% because cross-read junctions"
-   chain is an UNTESTED hypothesis on a single yeast DRS sample with unconfirmed pre/post-`index_col`-fix
-   provenance. **Therefore: do NOT justify a seeding change by "it will raise aligner X's win rate."**
+   (`merge_corrected_tsvs`, both call sites) passes per-aligner BAMs + genome, so it runs the live
+   **HP-edit-distance selector** (`use_hp_ed=True`) — a genome-anchored quality score on the
+   corrected CIGAR — with the legacy 5-level popularity sort
+   (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc`) as fallback only. But the
+   "deSALT 78.9% because cross-read junctions" chain is still an UNTESTED hypothesis on a single
+   yeast DRS sample, and the HP-ED score itself has known biases (N-ops cost 0; no explicit 3'-end
+   term). **Therefore: do NOT justify a seeding change by "it will raise aligner X's win rate."**
    Justify it by a *ground-truth concordance* metric (below) measured independently of selection.
 
 2. **There is no committed accuracy oracle yet.** The single most valuable enabling work for *any*

@@ -92,69 +92,60 @@ contradict `CLAUDE.md` — in which case `CLAUDE.md` must be corrected (a featur
 
 ---
 
-## §1 — Make the HP-aware / corrected-3'-end path actually run  [ESTABLISHED, Rank 2]
+## §1 — Calibrate the live HP-edit-distance selector  [ESTABLISHED, Rank 2]
 
-**Mechanism.** Collect the already-written per-aligner corrected BAMs and pass them
-(plus genome dict + penalty table) into both `merge_corrected_tsvs` call sites, flipping
-`use_hp_ed=True`.
+**Mechanism.** The HP-edit-distance path already runs in production: both `merge_corrected_tsvs`
+call sites pass per-aligner BAMs + genome, so `use_hp_ed=True` and reads are ranked on a
+genome-anchored quality score over the corrected CIGAR. The work here is not to wire it on
+but to fix the two known calibration weaknesses in the score so it ranks for CPA accuracy,
+not merely CIGAR fit.
 
-Exact changes:
-1. **`run/stages.py:_run_correction_per_aligner`** — additionally return a
-   `Dict[aligner -> corrected_bam_path]` (the `{stem}.rectified_corrected_3end.bam`
-   already produced at line ~194's `corrected_bam_path`). Glob it back per aligner
-   exactly as the TSV is globbed at line 327.
-2. **`run/single_sample.py:495`** — pass `per_aligner_corrected_bams=<that dict>`,
-   `genome=<loaded genome dict>`, `penalty_table=<loaded HpPenaltyTable or None>` to
-   `merge_corrected_tsvs`. The genome dict is already loaded upstream for correction;
-   thread `--junction-penalty-table` through (it already exists as a CLI flag).
-3. **`split_command.py:985`** — the generated script already builds `corrected_bams`
-   (line 970). Add `per_aligner_corrected_bams=corrected_bams`, load the genome
-   pickle/`--Scer` data, and the penalty table (`OVERHANG_TABLE_PATH` sibling). One
-   added kwarg + two loads in the heredoc.
+Two changes, both in `_cigar_hp_edit_distance` / the merge key in
+`corrected_consensus.py`:
 
-Decision forced by the redteam: the docstring (lines 9–17) says HP-edit-distance is
-primary, production disables it. Either wire it (this item) **or** delete the docstring
-claim. Wiring is correct — Path B's `_n_agree` is a popularity proxy, not accuracy.
+1. **Charge N-ops a calibrated cost.** Today an intron N-op costs **0** (a free pass);
+   the only backstop is `_cigar_min_junction_anchor`, a flank-anchor gate that defaults to
+   `min_junction_anchor_bp=0` on yeast (off; human uses 10 bp). So an aligner inventing a
+   long false intron pays nothing and can *lower* its edit distance to win. **Fix:** add a
+   per-N-op opening cost — a flat `+1.0`, or, better, a splice-strength-discounted cost that
+   waives the charge for canonical / annotated / cross-read-supported junctions and applies
+   it to unsupported ones. This is the single live open lever the build exposes. NOVEL sub-fix.
+2. **Add an explicit 3'-end term to the key.** HP-edit-distance scores CIGAR fit, not CPA
+   position. **Fix:** add a 3'-end tiebreaker = distance from the read's `corrected_3prime`
+   to a **weighted** cross-aligner consensus position (see §2, not raw `_n_agree`), inserted
+   *after* `hp_edit_distance`, *before* `_span`.
 
-**Bias it fixes.** Replaces majority-popularity (`_n_agree`, herd-amplified) and
-self-reported `_conf_rank` with a genome-anchored quality score on the **corrected**
-CIGAR. Removes the documented-vs-actual metric mismatch (redteam claims 2–3).
+**Bias it fixes.** The free-N-op bias (a fabricated intron buys a lower edit distance with no
+penalty on yeast) and the absence of a CPA-position term in the ranking key. Both are
+properties of the *live* selector, not of a dead code path.
 
-**Expected impact.** High but **must be measured (§5), not assumed**: Path A could
-*change* the win-rate spread substantially. Two known Path-A weaknesses to fix in the
-same PR (otherwise §1 trades one bias for another):
-- **N-ops are free (cost 0)** (lines 124–125): an aligner inventing a long false intron
-  pays nothing and can *lower* its edit distance. Currently the only guard is the binary
-  chimera/overhang flag. **Fix:** add a small per-N-op opening cost (e.g. `+1.0`, or a
-  splice-strength-discounted cost) so an N must "pay its way" with canonical signal /
-  cross-read support. NOVEL sub-fix.
-- **3'-end position is still absent from the Path-A key.** HP-edit-distance scores CIGAR
-  fit, not CPA accuracy. **Fix:** add a 3'-end tiebreaker term = distance from the read's
-  `corrected_3prime` to a **weighted** cross-aligner consensus position (see §2, not raw
-  `_n_agree`), inserted *after* hp_edit_distance, *before* `_span`.
+**Expected impact.** High but **must be measured (§5), not assumed**: a calibrated N-op cost
+re-ranks exactly the contested spliced reads where a spurious intron currently wins, and the
+3'-end term aligns the selector with the actual deliverable (CPA). Both changes can move the
+win-rate spread.
 
-**Validation/ablation.** §5 harness: Path A vs Path B diff; then ablate
-{N-cost on/off}, {3'-term on/off}. Validation set: `tests/test_consensus_selection.py`
-(40 tests, real `wt_by4742_rep1`) must still pass; extend it to assert Path A runs (BAMs
-present) on the bundled data.
+**Validation/ablation.** §5 harness: ablate {N-cost on/off}, {3'-term on/off}, and sweep the
+junction-anchor gate (`min_junction_anchor_bp`) from 0 → human-style 10. Validation set:
+`tests/test_consensus_selection.py` (40 tests, real `wt_by4742_rep1`) must still pass; extend
+it to assert the N-op cost re-ranks the known free-intron cases on the bundled data.
 
-**Risk.** Medium. Path A on 100M-read production means computing HP-edit-distance over
-every aligner's full corrected BAM — added I/O + CPU at the merge. Mitigate: the corrected
-BAMs are already on `$SCRATCH` at that point; compute per-chunk (split path) so it
-parallelizes. Behavioural risk: win rates shift → downstream NET-seq/APA numbers shift;
-gate behind a flag (`--hp-edit-selection`) defaulting **on** only after §5 confirms it
+**Risk.** Medium. The HP path already runs on production BAMs, so the added cost is only the
+extra per-N-op accounting, not new I/O. Behavioural risk: a too-aggressive N-op charge could
+penalize genuine introns at noisy junctions → tie it to splice strength / the anchor gate, not
+a flat penalty, and gate the change behind a flag defaulting **on** only after §5 confirms it
 improves ground-truth concordance (§3).
 
 ---
 
-## §2 — Correlation-aware / weighted consensus (de-bias `_n_agree`)  [NOVEL, Rank 3]
+## §2 — Correlation-aware / weighted consensus (de-bias cross-aligner agreement)  [NOVEL, Rank 3]
 
-**Mechanism.** `_n_agree` counts aligners landing on the same `corrected_3prime` with
-**equal weight 1.0**. But minimap2, gapmm2, and mapPacBio... — actually three of five
-share *minimap2 lineage* (minimap2 native; gapmm2 wraps minimap2 for the body; uLTRA
-falls back to minimap2 on >10% out-of-annotation reads). deSALT (RdBG) and mapPacBio
-(BBMap, independent Java engine) are the only structurally-independent callers. So a
-"3-vote majority" can be **one shared minimap2 decision counted three times.**
+**Mechanism.** Any cross-aligner agreement signal — the §1 3'-end consensus term in the live
+HP-ED path, and `_n_agree` in the fallback sort — counts aligners landing on the same
+`corrected_3prime` with **equal weight 1.0**. But three of five aligners share *minimap2
+lineage* (minimap2 native; gapmm2 wraps minimap2 for the body; uLTRA falls back to minimap2
+on >10% out-of-annotation reads). deSALT (RdBG) and mapPacBio (BBMap, independent Java engine)
+are the only structurally-independent callers. So a "3-vote majority" can be **one shared
+minimap2 decision counted three times.**
 
 Replace the raw count with an **effective vote** that down-weights correlated aligners:
 
@@ -171,16 +162,17 @@ empirically (§3 / §5 harness): pairwise agreement rate `ρ_ab` over a held-out
 weight = inverse of summed redundancy (a Vandermonde/Hoeffding-style decorrelation, or
 simply `w_a ∝ 1 / Σ_b ρ_ab`). This is the standard *correlated-ensemble* correction.
 
-**Bias it fixes.** Herd bias (redteam confounder 1, claim 4): an aligner whose *output
-style* makes the minimap2 family agree wins a popularity tiebreaker independent of truth.
-deSALT's "78.9%" is partly cross-read-pooling making others agree, not raw 3' accuracy
-(the deSALT dossier itself calls deSALT's *raw* 3' ends "imprecise").
+**Bias it fixes.** Herd bias: an aligner whose *output style* makes the minimap2 family
+agree wins an agreement tiebreaker independent of truth. deSALT's "78.9%" is partly
+cross-read-pooling making others agree, not raw 3' accuracy (the deSALT dossier itself
+calls deSALT's *raw* 3' ends "imprecise").
 
-**Feasibility.** Localized to `corrected_consensus.py`. Replace the `groupby().size()`
-at lines 693–698 with a weighted aggregate (map `_aligner → w_a`, sum weights per
-`(read_id, corrected_3prime)`). Add a `--aligner-weights` TSV (default = lineage
-weights baked in). ~30 lines. Apply identically as the §1 3'-end tiebreaker term so
-Path A and Path B share one de-herded consensus definition.
+**Feasibility.** Localized to `corrected_consensus.py`. Replace the equal-weight
+`groupby().size()` agreement count with a weighted aggregate (map `_aligner → w_a`, sum
+weights per `(read_id, corrected_3prime)`). Add a `--aligner-weights` TSV (default = lineage
+weights baked in). ~30 lines. Apply identically to the §1 3'-end consensus term and the
+fallback `_n_agree` so the live HP-ED path and the fallback sort share one de-herded
+consensus definition.
 
 **Expected impact.** High on *correctness of contested reads* (reads where the
 independent caller disagrees with the minimap2 herd are exactly the hard cases). Modest
@@ -220,9 +212,9 @@ three orthogonal internal signals, then feed the result as `w_a` into §2 / §6:
 Combine into `w_a` = product (or logistic blend) of the three; recompute periodically,
 commit the table.
 
-**Bias it fixes.** Equal voting (redteam: every accuracy claim is UNTESTED). Replaces
-"all aligners vote equally / self-report confidence" with data-driven reliability,
-and supplies the empirical correlation/weight inputs §2 and §6 need.
+**Bias it fixes.** Equal voting (every per-aligner accuracy claim is currently UNTESTED).
+Replaces "all aligners agree-vote equally / self-report confidence" with data-driven
+reliability, and supplies the empirical correlation/weight inputs §2 and §6 need.
 
 **Feasibility.** Medium. NET-seq concordance reuses `netseq_refiner.py` machinery.
 Dawid–Skene EM is ~50 lines (or `scikit-learn`-free hand roll). Lives in a new
@@ -258,10 +250,11 @@ held-out reads, so the number is *calibrated*, not a raw heuristic rank. Add an
 aligner) confirms the position, set `selection_confidence` low and a `_abstain=1` flag
 so downstream APA can filter rather than commit a coin-flip CPA.
 
-**Bias it fixes.** Today `confidence` is `select.py`'s 3-bucket *aligner-agreement* flag
-(`_CONFIDENCE_RANK high/med/low`), self-assessed and uncalibrated (redteam confounder 7).
-Downstream APA/DESeq2 treats every selected CPA as equally trustworthy; contested
-coin-flip reads contaminate cluster boundaries and differential 3'-UTR calls.
+**Bias it fixes.** Today the emitted `confidence` is `select.py`'s 3-bucket *aligner-agreement*
+flag (`_CONFIDENCE_RANK high/med/low`), self-assessed and uncalibrated, and it carries no
+notion of the HP-ED margin the live selector actually used. Downstream APA/DESeq2 treats every
+selected CPA as equally trustworthy; contested coin-flip reads contaminate cluster boundaries
+and differential 3'-UTR calls.
 
 **Feasibility.** Medium. The features are already computed in the merge (or added by
 §1–§3). Calibration is `sklearn.isotonic`/`IsotonicRegression` or hand-rolled. Add the
@@ -288,28 +281,29 @@ abstained reads reduces depth; expose as opt-in.
 
 **Mechanism.** Frame selection as **learning-to-rank** over the per-read aligner
 candidates. Features per (read, aligner): hp_edit_distance, Δ-to-runner-up,
-N-op count / splice strength / canonical tier, **weighted** cross-read support (§2),
-aligner identity (one-hot), aligner reliability weight (§3), chimera flag, aligned_bases,
-span, 5'-rescue flag. Label = "is the corrected CPA within ±k bp of the NET-seq /
-replicate-consensus truth" (§3). Train a gradient-boosted ranker (LightGBM `lambdarank`)
-or a small pairwise logistic model; the heuristic sort is the baseline.
+N-op count / splice strength / canonical tier / junction-anchor length, **weighted**
+cross-read support (§2), aligner identity (one-hot), aligner reliability weight (§3),
+chimera flag, aligned_bases, span, 5'-rescue flag. Label = "is the corrected CPA within ±k bp
+of the NET-seq / replicate-consensus truth" (§3). Train a gradient-boosted ranker (LightGBM
+`lambdarank`) or a small pairwise logistic model; the live HP-ED selector is the baseline.
 
-**Bias it fixes.** The hand-tuned lexicographic sort imposes a fixed feature *priority*
-(`_five_rescued > _chimera_ok > … `) and hard tier boundaries that the redteam shows are
-fragile (e.g. the `int(score)` floor bug history in `junction_refiner.py`). A learned
-ranker discovers feature *interactions* (e.g. "trust mapPacBio's CPA only when no splice
-nearby") that a fixed sort cannot express.
+**Bias it fixes.** The live HP-ED selector ranks on a single scalar edit distance plus a
+fixed lexicographic tail (`_effective_chimera_ok > hp_edit_distance > _span`), with N-ops
+free and no learned feature interactions. A learned ranker discovers interactions (e.g.
+"trust mapPacBio's CPA only when no splice nearby", "discount an N-op only when its anchor is
+short") that the fixed HP-ED key plus the §1 hand-set N-op cost cannot express — it augments
+or replaces the HP-ED scalar with a calibrated, multi-feature score.
 
 **Feasibility.** Large — needs §5 (harness), §3 (labels), and a feature-extraction pass.
 Keep it **offline/advisory first**: ship as `dev/.../learned_selector.py` that re-ranks
 the §5 harness output; only promote into `merge_corrected_tsvs` (behind
-`--selector model.txt`) if it beats the heuristic on held-out NET-seq concordance by a
-margin that survives cross-dataset validation.
+`--selector model.txt`) if it beats the live HP-ED selector on held-out NET-seq concordance
+by a margin that survives cross-dataset validation.
 
 **Expected impact.** Medium and *uncertain* — this is a ceiling probe. If a learned
-ranker barely beats a well-wired Path A (§1) + de-herded consensus (§2), that is itself
-the valuable finding: it means the heuristic captures the signal and the win rates are
-metric-bound, not model-bound. If it wins big, there is real interaction structure left
+ranker barely beats a calibrated HP-ED selector (§1) + de-herded consensus (§2), that is
+itself the valuable finding: it means the HP-ED score captures the signal and the win rates
+are metric-bound, not model-bound. If it wins big, there is real interaction structure left
 on the table.
 
 **Validation/ablation.** Train/test split by **chromosome** (avoid locus leakage) and by
@@ -331,9 +325,10 @@ annotation), cross-dataset gate, keep heuristic as default fallback.
   is the established Module 2H / `junction_refiner.py` policy (`_CANONICAL_HP_PRIOR=0.5`,
   "annotation/canonical are tie-breakers, never gates"). Re-introducing a candidate gate
   is explicitly forbidden in CLAUDE.md.
-- **The deprecated raw-BAM path** (`scoring.py` junction-proximity penalty, `select.py`
-  tiebreakers) is **not** on the correct-first path and should be either deleted or
-  clearly marked deprecated so future readers stop attributing production behaviour to it
-  (redteam claim 6 shows the dossiers already made this error).
+- **The deprecated raw-BAM consensus path** (`scoring.py` junction-proximity penalty,
+  `select.py` tiebreakers) is **not** on the correct-first path and should be either deleted
+  or clearly marked deprecated so future readers stop attributing production behaviour to it.
+  (Note this is distinct from the live raw-BAM HP-ED path inside `merge_corrected_tsvs`, which
+  *is* production: when only raw BAMs are available, HP-ED is computed lazily in memory.)
 - **Order of operations:** §5 → §1 → (§2 + §3 together, since §2's empirical weights come
   from §3) → §4 → §6. §5 must land first or none of the others can be evidenced.
