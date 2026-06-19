@@ -1,5 +1,7 @@
 # mapPacBio / BBMap (BBTools) — Source-Level Investigation
 
+> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Corrected on the build:** mapPacBio uses `intronlen=10` (not 50) and now sets an explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:749,754`); the redteam_denovo B5 "no maxindel" concern is RESOLVED. These corrections are applied inline below.
+
 > **Scope.** This report covers **BBMap's `mapPacBio.sh`** (Java class `align2.BBMapPacBio`),
 > a component of Brian Bushnell's **BBTools** suite. RECTIFY uses it as a Tier-1 splice-aware
 > long-read aligner (`run_map_pacbio()` in `rectify/core/align/multi_aligner.py`, ~line 418),
@@ -123,10 +125,23 @@ encoding. A `sam=1.3` flag exists to force legacy `M` for tools that need it.
   `strictmaxindel` is set. For organisms with long introns (human) the guide recommends
   `maxindel=200k`. RECTIFY's short-read `run_bbmap()` sets `maxindel=100000` to allow
   yeast-scale gaps. **[FACT — BBMap guide + RECTIFY source line 674.]**
+
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** On the build, `run_map_pacbio()` **does**
+> set `maxindel` explicitly — `multi_aligner.py:754` `f'maxindel={max(200000, max_intron)}'` (≥200 kb
+> for human RNA, scales with `max_intron`). The "no `maxindel` cap on the long-read path" statement
+> below (and the redteam_denovo B5 "possibly load-bearing gap") is **stale and now RESOLVED**:
+> mapPacBio no longer relies on BBMap's soft ~16000 default for long introns.
+
 - **`intronlen`** — any reference gap (deletion) **≥ `intronlen` is re-encoded as an `N`
   (intron-skip) CIGAR op** instead of `D`. The guide's RNA-seq example uses `intronlen=20`.
-  RECTIFY sets **`intronlen=50`** for mapPacBio (line 514) and **`intronlen=20`** for vanilla
-  bbmap (line 673). **[FACT.]**
+  RECTIFY sets **`intronlen=10`** for mapPacBio and **`intronlen=20`** for vanilla
+  bbmap (line 673). **[FACT — build `multi_aligner.py:749`; vs master, which used `intronlen=50`.]**
+
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** mapPacBio's D→N threshold on the build is
+> **`intronlen=10`** (`multi_aligner.py:749`), not `intronlen=50` as recorded against master. Every
+> sentence below that cites `intronlen=50` is corrected to `intronlen=10` — yeast introns (typically
+> >50 bp) still reliably become `N` ops; the lower threshold also reclassifies short introns and any
+> ≥10 bp deletion-gap into `N`.
 
 The mechanism: BBMap's affine DP can open a long reference gap when the alignment score favors
 it (subject to `maxindel`); `intronlen` is purely the **D→N reclassification threshold** applied
@@ -138,8 +153,9 @@ boundaries against the genome.
 
 **Implication for RECTIFY:** because mapPacBio finds introns as *scored* gaps (full DP), its
 junction boundaries are sequence-optimal within the window, complementing deSALT's
-splice-graph approach. The `intronlen=50` choice means yeast introns (typically >50 bp,
-often 100s of bp) reliably become `N` ops, while shorter homopolymer/error deletions stay `D`.
+splice-graph approach. The `intronlen=10` choice means yeast introns (typically >50 bp,
+often 100s of bp) reliably become `N` ops; with the threshold at 10 bp, short introns and any
+≥10 bp deletion-gap are also reclassified to `N`, while shorter homopolymer/error deletions stay `D`.
 
 ---
 
@@ -278,8 +294,9 @@ is hard to beat — hence a strong but second-place 18.2 %.
 - **[FACT/INFERENCE]** **Homopolymers & very long introns**: long-read homopolymer indel noise
   can still admit multiple near-equal DP placements (RECTIFY adds HP-aware correction precisely
   because no aligner, including BBMap, nails every homopolymer boundary). Very long introns
-  approach/exceed `maxindel` and may be missed or mis-scored unless `maxindel` is raised, at a
-  speed cost.
+  approach/exceed `maxindel` and may be missed or mis-scored — but on the build this is mitigated:
+  RECTIFY sets `maxindel=max(200000, max_intron)` explicitly (`multi_aligner.py:754`), so the cap
+  scales to the organism rather than relying on BBMap's soft ~16000 default.
 - **[FACT]** **Operational quirks imported from DRS data**: propagates `pt:i:N` into QNAME and
   emits unmapped duplicate records — both require RECTIFY-side post-processing.
 

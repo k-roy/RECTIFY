@@ -1,5 +1,7 @@
 # uLTRA — Source-Level Technical Investigation
 
+> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild` (flag sets CONFIRMED — uLTRA `--ont --disable_infer`; penalty tables present & auto-resolved on the build).
+
 **Tool:** uLTRA — annotation-guided long-read RNA splice aligner (Sahlin & Mäkinen, *Bioinformatics* 2021).
 **Repo:** `github.com/ksahlin/ultra` (GPL-3.0).
 **Role in RECTIFY:** Tier-2, annotation-**REQUIRED** aligner. Invoked from `rectify/core/align/multi_aligner.py::run_ultra` (~line 1265) as:

@@ -1,10 +1,22 @@
-# Improvement Roadmap — Long-Read Aligner / 3′-End Program for RECTIFY
+# Improvement Roadmap — Long-Read Aligner SPLICE-JUNCTION Program for RECTIFY
 
-**What this is.** The forward-looking deliverable: the six discovery dossiers in `04_discovery/`,
-synthesized **through the lens of `04_discovery/REDTEAM_proposals.md`** (which fact-checked every code
-claim against RECTIFY source, found the redundancies, and ordered the work by dependency). The six
-files proposed ~30 sub-ideas; after de-duplication they reduce to **~9 distinct work items**. This
-roadmap lists each retained item once, with its red-team verdict, then a dependency-ordered phased plan.
+> **⚠️ READ FIRST.** This roadmap was re-led **junction-first** (the project's primary goal) and
+> reconciled against the build the team runs (`origin/drs-validation-rebuild`). Two structural
+> corrections from [`CORRECTIONS_vs_DRS_BUILD.md`](./CORRECTIONS_vs_DRS_BUILD.md) change the work:
+> (1) **Path A (HP-edit-distance) already runs in production** — "wire Path A on" is DONE, only the
+> calibrated N-op cost remains open; (2) **the empirical penalty/STR/overhang tables are bundled and
+> auto-resolved by `--Scer`** — the "regenerate the absent tables" item becomes "validate / version
+> the bundled tables." Both originals survive uncorrected in `04_discovery/`; this roadmap is authoritative.
+
+**What this is.** The forward-looking deliverable. **The primary goal is validating and improving
+SPLICE-JUNCTION PLACEMENT**; 3′-end / CPA resolution is **already well-handled** by RECTIFY and is
+demoted to a clearly secondary section. This synthesizes the six discovery dossiers in `04_discovery/`
+**through the lens of `04_discovery/REDTEAM_proposals.md`** (which fact-checked every code claim against
+RECTIFY source, found the redundancies, and ordered the work by dependency) and
+**`SPLICE_JUNCTION_PLACEMENT.md`** (the headline junction deliverable). The six files proposed ~30
+sub-ideas; after de-duplication they reduce to **~9 distinct work items**. This roadmap lists each
+retained item once, with its red-team verdict, then a dependency-ordered phased plan that **leads with
+junction-placement work**.
 
 **Tagging.** **FACT** = code/source-verified. **INFERENCE** = reasoned. **HYPOTHESIS** = plausible,
 untested on committed ground truth. Effort: **XS / S / M / L**. Verdict (red-team):
@@ -14,16 +26,25 @@ untested on committed ground truth. Effort: **XS / S / M / L**. Verdict (red-tea
 
 ## ⚠️ The measurement problem comes first (Phase 0) — and be honest about it
 
-Every discovery file says "build the NET-seq concordance harness first." That is **necessary but not
-sufficient**, and the red-team (`REDTEAM_proposals.md §3.3, §4`) exposes why:
+Even though the primary goal is junction placement, **the cheapest unblocker is still a
+zero-oracle measurement step**, and the red-team (`REDTEAM_proposals.md §3.3, §4`) exposes why
+NET-seq alone is not enough:
 
 - **The cheapest real unblocker needs NO oracle at all.** The win-rate **provenance audit + Path A vs
   Path B ablation** is pure code: re-run `merge_corrected_tsvs` on the committed per-aligner TSVs with
-  and without per-aligner BAMs, confirm whether the cited 79/18/2/0.8/0.1 are post-v3.3.0-fix, and
-  commit an `aligner_summary.tsv` + `PROVENANCE.json`. This **settles whether the win-rate spread is a
-  metric artifact with zero accuracy assumptions** (FACT — both call sites verified to omit BAMs;
-  the corrected BAMs Path A needs *already exist on disk*, `stages.py:194`, "simply never collected").
-  **Do this first. It is days of work and unblocks every other claim.**
+  and without per-aligner raw BAMs, confirm whether the cited 79/18/2/0.8/0.1 are post-v3.3.0-fix, and
+  commit an `aligner_summary.tsv` + `PROVENANCE.json`. This **settles whether the win-rate spread moves
+  between the two live paths, with zero accuracy assumptions.**
+
+  > **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md` Claim 2 / §A).** This is now an **ablation of
+  > two LIVE paths**, not "wire a dead path on." On the build, both production call sites pass
+  > per-aligner **raw** BAMs + genome (`single_sample.py:238-250`; generated split body
+  > `split_command.py:1085-1094`), and `use_hp_ed = bool(per_aligner_corrected_bams or
+  > per_aligner_raw_bams)` (`corrected_consensus.py:1262`) → **Path A (HP-edit-distance) runs in
+  > production**; the `_n_agree` popularity sort is the documented **fallback only**. The ablation still
+  > has value (does the metric change between Path A and the Path-B fallback?), but the premise "the
+  > corrected BAMs Path A needs exist on disk but are never collected" is **superseded** — Path A is
+  > already wired via the lazy raw-BAM path. **Do this first; it is days of work.**
 
 - **NET-seq is circular and is NOT a sufficient oracle.** NET-seq is used as *both* the tuning signal
   (for every proposed model/weight/prior) *and* the validation oracle, *and* it is already partially

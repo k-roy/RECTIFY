@@ -8,6 +8,15 @@ long-read ensemble (ONT DRS/cDNA, *S. cerevisiae*).
 RECTIFY source `rectify/core/splice/{junction_refiner,junction_scoring,hp_penalty,
 calibrate_junction_overhang}.py` and `corrected_consensus.py`; CLAUDE.md v3.1.x / v3.3.0 notes.
 
+> **Build note:** code-level claims here were verified against `master`; see
+> `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Two
+> premises below are now SUPERSEDED on the build** and are corrected inline: (1) F1's "HP-edit-distance
+> selection does not run; production runs the legacy popularity vote" is RETRACTED — both production
+> merge call sites pass per-aligner raw BAMs + genome, so `use_hp_ed=True` and Path A (HP-ED) runs in
+> production (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`).
+> (2) The penalty/STR/overhang tables are **bundled and `--Scer`-auto-resolved**, not absent — so J2 is
+> re-scoped from "regenerate" to "validate/version the bundled tables," and J1 step (b) is already DONE.
+
 **Convention.** Each proposal is tagged **ESTABLISHED** (the mechanism exists in a published
 aligner / standard method, we are porting it) or **NOVEL** (not done this way in the surveyed
 tools). Every proposal carries: *mechanism · failure mode addressed · feasibility · expected
@@ -20,7 +29,7 @@ impact · validation · risk*.
 Before the proposals, two findings from the adversarial pass change what is worth building:
 
 **(F1) The production winner-selection is NOT the metric the dossiers describe.**
-`redteam_winrates_selection.md` establishes (from the code) that both production call sites of
+`redteam_winrates_selection.md` establishes (from the **master** code) that both production call sites of
 `merge_corrected_tsvs` — `run/single_sample.py:495` and `split_command.py:985` — pass **no
 per-aligner BAMs**, so `use_hp_ed = False` and selection runs the **legacy 5-level sort**
 (`_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc`). The HP-edit-distance path
@@ -30,10 +39,26 @@ majority cluster wins ties. deSALT's "homogeneous junctions" therefore plausibly
 bias** (it makes other aligners agree with it), not demonstrated accuracy. uLTRA's GTF-snapping is
 **annotation-circular** ("snapped-to-GTF = correct" is assumed, not tested).
 
-**Consequence:** A better junction *scorer* (Proposals 1–2) is only worth building if it is
-actually wired into selection. The single highest-leverage change is to **make a principled,
-per-read junction quality score a first-class selection key** — replacing the popularity vote with
-a defensible quality term. Several proposals below therefore double as the fix for F1.
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** F1's headline ("HP-edit-distance does not
+> run; production runs the legacy popularity vote") is **RETRACTED on the build.** Both production
+> merge call sites now pass per-aligner **raw** BAMs + genome, and `merge_corrected_tsvs` gained a
+> lazy raw-BAM HP path that activates without materializing corrected BAMs:
+> `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`
+> (`corrected_consensus.py:1262`; lazy path `:1264-1364`); single-sample call site
+> `single_sample.py:238-250` and chunked/split call site `split_command.py:1085-1094` both pass
+> `per_aligner_raw_bams=… , genome=…`. So **Path A (HP-edit-distance on corrected 3'-ends) runs in
+> production on the build.** What survives: the **legacy 5-level sort is still the fallback** (when no
+> BAMs/genome are supplied, or if BAM staging yields no rows → `use_hp_ed=False`,
+> `corrected_consensus.py:1377`), and `_n_agree` is still a popularity vote *as a description of that
+> fallback*. The herd-bias and uLTRA annotation-circularity critiques remain valid concerns for the
+> fallback path and for any selection that leans on cross-aligner agreement — but they no longer
+> describe the default production metric.
+
+**Consequence:** A better junction *scorer* (Proposals 1–2) is **already wired into the default
+selection metric on the build** (Path A scores HP-aware corrected positions); the remaining
+high-leverage work is to make that score *calibrated and principled* (Proposal 2) and to charge
+N-ops their true cost (Proposal 4 / J1a), rather than to "turn a dead path on." Several proposals
+below therefore sharpen — rather than replace — the live HP-ED selection.
 
 **(F2) "8-nt exon" is unsupported; the real micro-exon floor is ~6 nt** (`redteam_annotation`
 U9: minimap2 issue #253 is a 6-nt exon; the uLTRA paper bins ≤10 nt at ~60% accuracy). Micro-exon

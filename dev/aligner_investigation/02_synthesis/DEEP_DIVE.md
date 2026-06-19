@@ -1,5 +1,7 @@
 # Long-Read Splice Aligner Deep Dive — Granular Operation, Per-Aligner
 
+> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Corrected inline:** mapPacBio `intronlen=50` → `intronlen=10` and explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:749,754`). The §7 "correct-first / HP-aware selection" narrative is **CONFIRMED on the build**: both production merge call sites pass per-aligner raw BAMs + genome, so HP-edit-distance (Path A) runs in production, and the empirical penalty tables are bundled + `--Scer`-auto-resolved.
+
 **Scope.** Function/equation-level operational walkthroughs for the five aligners in RECTIFY's
 correct-first ensemble, distilled from the `01_investigation/` dossiers and verified against
 `rectify/core/align/multi_aligner.py`. Then a cross-cutting advantage/disadvantage matrix and the
@@ -101,8 +103,9 @@ start, hence ~4/5 of all reads *(INFER)*.
 
 **NOT minimap2's `map-pb` preset** — this is Bushnell's Java `align2.BBMapPacBio`, a distinct engine.
 
-**RECTIFY invocation (verified L500-516):** `mapPacBio.sh ref=… in=… out=… path=<shared bbmap_index>
-fastareadlen=100000 intronlen=50 minratio=0.4 -Xmx32g` (+ pre-split reads >6 kb, stitch after).
+**RECTIFY invocation (build `multi_aligner.py:749,754`):** `mapPacBio.sh ref=… in=… out=… path=<shared bbmap_index>
+fastareadlen=100000 intronlen=10 maxindel=max(200000,max_intron) minratio=0.4 -Xmx32g` (+ pre-split reads >6 kb, stitch after).
+*(On master this was `intronlen=50` with no explicit `maxindel`; see CORRECTIONS_vs_DRS_BUILD.md C.)*
 
 ### Seed → vote → DP
 1. **Index:** **all-k-mer** hash (every reference k-mer, k=13), key→genomic-site list; ≈6 B/ref base;
@@ -117,9 +120,10 @@ fastareadlen=100000 intronlen=50 minratio=0.4 -Xmx32g` (+ pre-split reads >6 kb,
    chain-anchored extension that stops at first-good-enough.
 
 ### Splice handling (no GT-AG model)
-The affine DP opens long reference gaps when score favors it (subject to `maxindel`); **`intronlen=50`
-reclassifies any `D` ≥50 bp into an `N`** op afterward. Introns are discovered as *scored gaps*, then
-relabeled — no canonical-site scorer. Emits **`=`/`X` CIGARs** (directly consumable by RECTIFY surgery).
+The affine DP opens long reference gaps when score favors it (subject to `maxindel`, set explicitly on
+the build to `max(200000, max_intron)`); **`intronlen=10` reclassifies any `D` ≥10 bp into an `N`** op
+afterward. Introns are discovered as *scored gaps*, then relabeled — no canonical-site scorer. Emits
+**`=`/`X` CIGARs** (directly consumable by RECTIFY surgery).
 
 ### Why precise at the 3' end
 A full DP scores the whole window and snaps the terminal-exon boundary to the single best-scoring column;

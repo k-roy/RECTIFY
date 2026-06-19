@@ -1,5 +1,7 @@
 # gapmm2 — Source-Level Investigation
 
+> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild` (flag sets CONFIRMED — gapmm2 `-i` max-intron; penalty tables present & auto-resolved on the build).
+
 **Tool:** `gapmm2` ("gapped alignment using minimap2 — align transcripts to genome")
 **Author:** Jon Palmer (`nextgenusfs`) · **Repo:** https://github.com/nextgenusfs/gapmm2 · **PyPI/Bioconda:** `gapmm2`
 **Role in RECTIFY:** Tier‑1 aligner in the 5‑aligner ensemble; invoked as `gapmm2 -t <n> -i 5000 -o out.paf genome reads`; PAF (with `cs` tags) is converted to BAM. Win rate ≈ **0.8%**.

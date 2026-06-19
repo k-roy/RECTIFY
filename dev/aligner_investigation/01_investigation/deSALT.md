@@ -1,5 +1,7 @@
 # deSALT — Source-Level Technical Investigation
 
+> **Build note:** code-level claims here were verified against `master`; see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild` (flag sets CONFIRMED — deSALT no `-x`/`-G`; penalty tables present & auto-resolved on the build).
+
 **Tool:** deSALT (De Bruijn graph-based Spliced Aligner for Long Transcriptome reads)
 **Version in RECTIFY:** v1.5.6 (vendored Linux/x86_64 binary, 773 KB)
 **Repo:** https://github.com/ydLiu-HIT/deSALT (depends on a bundled fork of deBGA)
