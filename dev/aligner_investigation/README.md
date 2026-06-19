@@ -39,7 +39,7 @@ dev/aligner_investigation/
 ├── 03_adversarial/                   ← skeptical red-team of the above
 │   ├── redteam_denovo.md             fact-checks minimap2/deSALT/gapmm2/mapPacBio dossiers
 │   ├── redteam_annotation_ecosystem.md  fact-checks uLTRA/pacbio/ont_drs dossiers
-│   └── redteam_winrates_selection.md ⚠ the load-bearing audit: win rates ≠ accuracy ranking
+│   └── redteam_winrates_selection.md  the load-bearing audit: win rates ≠ accuracy ranking
 └── 04_discovery/                     ← improvement proposals (synthesized in ROADMAP.md)
     ├── improve_seeding_indexing.md   syncmer/HPC/strobemer seeding; CPA-anchor priors
     ├── improve_chaining_dp.md        poly-A-aware terminal DP; HP-aware realign; error-model gaps

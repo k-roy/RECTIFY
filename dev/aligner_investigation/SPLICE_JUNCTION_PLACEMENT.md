@@ -359,7 +359,7 @@ therefore to **validate / version the already-bundled tables**, not to regenerat
   chemistry/protocol (the tables are R10.4.1 + *S. cerevisiae*-specific and must not transfer to
   HiFi/other organisms). **Effort:** low–medium (no regeneration needed unless the bundled
   tables are found stale; if they are, regeneration is gated on a working aligner panel + a
-  labelled run — deSALT fails on some chunks). **Risk:** low. **Red-team verdict:** KEEP, re-scoped.
+  labelled run — deSALT fails on some chunks). **Risk:** low. **Red-team verdict:** KEEP.
   **Caveat:** tables are R10.4.1 + *S. cerevisiae*-specific; verify protocol routing
   (drs/cdna/qsrev) picks the intended variant.
 

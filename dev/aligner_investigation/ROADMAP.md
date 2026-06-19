@@ -198,13 +198,11 @@ because the tools they assume are missing here:
   **`minimap2` is not on `PATH`**. So: Module 2H's Numba DP falls back to pure Python ("only the call
   site is new" hides a perf dependency); the GBDT/sklearn-calibration items (9) are not runnable as-is;
   the minimap2 `--print-seeds` / flag-sweep items need the binary installed first.
-- > **⚠️ BUILD CORRECTION (`CORRECTIONS_vs_DRS_BUILD.md` Claim 1/§B).** The old caveat that
-  > `penalty_scores.tsv` / `str_penalty_scores.tsv` and the `common/scripts/nanopore/` tree are
-  > **ABSENT** describes only the *master* checkout. **On the build they are bundled** at
-  > `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/` (with protocol
-  > variants) and **auto-resolved by `--Scer`** (`data/__init__.py:1188-1208`; `cli.py:198-199`). Any
-  > DP proposal consuming the empirical table should **validate/version the bundled table** (item 2t),
-  > not regenerate an absent one. (Numba availability remains environment-dependent — unchanged.)
+- The empirical penalty/STR/overhang tables are **bundled** at
+  `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/` (with protocol
+  variants) and **auto-resolved by `--Scer`** (`data/__init__.py:1188-1208`; `cli.py:198-199`). Any
+  DP proposal consuming the empirical table should **validate/version the bundled table** (item 2t),
+  not regenerate an absent one. (Numba availability remains environment-dependent.)
 
 ---
 
@@ -212,11 +210,10 @@ because the tools they assume are missing here:
 
 1. **Fix the N-op-cost-0 free-intron exploit + cross-read junction consensus** (items 3 + 8j). This is
    the primary-goal core: charge each `N`-op a *calibrated* −logP(novel intron here) so it feeds the
-   **Path-A HP-edit-distance score that already runs** (no wiring needed — see build correction), and
-   pool junctions across all 5 aligners into a de-biased consensus re-snapped under a per-read sequence
-   veto. Together these make **junction quality**, not output style, decide placement. Validate
-   cat7/cat9 do not regress before default-on. *(Note: "wire Path A on" is DONE on the build; only the
-   N-op cost remains open.)*
+   **Path-A HP-edit-distance score that already runs** (no wiring needed), and pool junctions across
+   all 5 aligners into a de-biased consensus re-snapped under a per-read sequence veto. Together these
+   make **junction quality**, not output style, decide placement. Validate cat7/cat9 do not regress
+   before default-on. (Path A is already wired; only the N-op cost remains open.)
 
 2. **Procure a genuinely orthogonal JUNCTION truth set** (Phase 1, item O). Short-read RNA-seq
    split-read junctions (STAR `SJ.out.tab`) on the same sample, and/or a SIRV/sequin control with
@@ -233,5 +230,5 @@ because the tools they assume are missing here:
    2H's brittle lexicographic tuple.
 
 *(The cheap config A/Bs in item 4 — especially deSALT `-x ont2d` on the top aligner — are nearly free
-and junction-relevant, worth doing alongside; mapPacBio `maxindel` is already set on the build, so drop
-it. 3′/CPA items 5/6 are secondary — CPA is already well-handled.)*
+and junction-relevant, worth doing alongside; mapPacBio `maxindel` is already set, so drop it. 3′/CPA
+items 5/6 are secondary — CPA is already well-handled.)*
