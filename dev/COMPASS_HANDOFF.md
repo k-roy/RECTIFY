@@ -30,6 +30,8 @@ minimap2 `splice:sr`.
   env pins openjdk8). **NOT YET VALIDATED** against a chr-named BAM — do that when wiring P3.
 - **COMPASS conda env BUILT** (rc=0, job 30230396) — env `compass` at `/home/groups/larsms/users/kevinroy/anaconda3/envs/compass`. All 6 aligners (bbmap.sh / STAR 2.7.10a / hisat2 2.2.1 / magicblast 1.5.0 / gsnap+gmap_build 2021.05.27) + makeblastdb + cutadapt 2.6 + gffread + picard + samtools 1.7 + pysam 0.15.3 verified runnable (`conda run -n compass`). Built from `$W/COMPASS_env_minimal.yml` (15-tool version-pinned minimal; the full-lock yml SIGKILLed on the login node, so the rescue used a compute-node job + minimal env).
 - **FASTQ DONE** (job 30227283) — 3 reps in `$W/fastq/replicate{1,3,5}/` (~24G).
+- **P1 config edits DONE + pushed** to k-roy/COMPASS branch `human-a549` (commit ce59139): COMPASS.sh (GENOME_VERSION=GRCh38_gencode_v44, MAX_INTRON_LENGTH 2000->500000, READ_LENGTH 150, portable COMPASS_DIR, skip SGD gffread, ALIGNERS_FILE .tsv, SAMFIXCIGAR->samfixcigar.py) + process_reads_and_align.sh (cutadapt drop poly-T/A arms; jvarkit->python samfixcigar) + samfixcigar.py + make_human_introns.py. M1 clone `~/work/COMPASS` on branch human-a549.
+- **ENV FIX:** the build reported rc=0 but **samtools 1.7 did NOT RUN** (libcrypto.so.1.0.0 missing) — 'env built' only meant execs EXIST. Upgraded samtools to >=1.15 in the compass env (view/sort/index/depth syntax is stable). LESSON: verify tools RUN (`--version`), not just `which`.
 - Genome choice LOCKED: align to **chr-named GENCODE GRCh38.primary_assembly.genome.fa** + gencode v44 GTF
   (both at `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/refs/`) → output junctions
   are `chr5`, matching the 111, NO chrom-name harmonization needed.
@@ -43,7 +45,7 @@ minimap2 `splice:sr`.
   aligner run end-to-end on human; index builds.
 
 ## OPEN / IN FLIGHT
-- **Nothing currently running.** Env BUILT + FASTQ DONE (both above). Gating dependency (the env) is resolved → ready to start **P1** (Step B). No live jobs/watchers.
+- **samtools upgrade in flight** (bg task `biwhixfr1`, `conda install -n compass samtools>=1.15`). When done: re-verify all 6 aligners + samtools RUN, then VALIDATE `samfixcigar.py` (subset a chr-named human BAM e.g. `…/sgnex_a549/alignments/a549_chr5_trimmed.minimap2.bam` chr5:1-1.5M, run `python $W/samfixcigar.py sub.bam fixed.bam <GRCh38.primary_assembly.genome.fa>`, check X-op count == NM-indels). Then P2 index builds.
 
 ## RESUME (concrete, with branch logic)
 **Step A — env is BUILT (done); just activate + sanity-check:**
