@@ -7,6 +7,14 @@ through the M1). Deep context: `dev/COMPASS_HUMAN_REWORK_PLAN.md` (the phased pl
 `dev/COMPASS_SHORTREAD_SCOPING.md` (scoping + STEP-0), `dev/ALIGNER_INVESTIGATION_SYNTHESIS.md` (de-herding +
 design insights). COMPASS codebase map is in this session's transcript; key facts reproduced below.
 
+## ⭐ MAJOR FIND (2026-06-19) — PRIOR HUMAN COMPASS PIPELINE EXISTS; ADOPT IT (do not keep patching yeast scripts)
+An Oak/scratch search found a COMPLETE, SUCCESSFUL prior human COMPASS run (PRPF18 RNA-seq, GRCh38, Jan-Feb 2022, all 7 aligners end-to-end through junctions + DESeq2). **We had been re-deriving it.**
+- **Human scripts (Oak, persistent):** `/oak/stanford/groups/larsms/Users/kevinroy/projects/collaborations/COMPASS/main/scripts/` (+ `archived/`): `COMPASS_human.sh` (driver), `process_reads_and_align_human.sh`, `compare_splice_junctions_from_multiple_aligners_human.py`, `COMPASS_functions_human.py`, `add_exonic_intronic_sequence_human.py`, `COMPASS_filtering_human.R`, `compare_individual_aligners_human.R`, `COMPASS_combine_junction_tables_from_multiple_samples.py`. THESE handle human-scale coords/naming — START HERE.
+- **Prebuilt GRCh38 indices (scratch, EXPIRE ~2026-07-02 purge):** `/scratch/users/kevinroy/COMPASS_alignments_archive/genome_references/GRCh38/` — bbmap/STAR(75bp)/HISAT2/GSNAP/BLAST + `GRCh38_latest_genomic.fasta/.gtf/.fai/.dict` (**NCBI RefSeq, NC_0000xx names**) + the HISAT2 `_splice_sites.txt` = the human INTRONS_FILE. `log/human/` has the exact resolved aligner commands.
+- **CANONICAL human BBMap params (the fix):** `maxindel=200000 pairlen=200000 intronlen=20` (I used 500000 -> 37% spurious deletions). 2022 used BBMap DEFAULTS (ambig=best; NO ambig=random/xstag=us — my instinct there was wrong for matching the tested setup).
+- **Human INTRONS_FILE = HISAT2 `hisat2_extract_splice_sites.py gencode.gtf > splice_sites.txt`** (NOT my make_human_introns.py GTF-derived TSV; different coord convention).
+- KEY FORK (needs PI): the prebuilt indices are NCBI-RefSeq (NC_ names) + STAR@75bp. Our 111 candidates are GENCODE chr5. EITHER reuse NCBI indices (save hours; convert NC_000005->chr5 for the 111 intersection; STAR still rebuild @150bp) OR rebuild on GENCODE chr-named. Indices expire 2026-07-02 -> decide soon.
+
 ## CONTEXT (why this exists)
 COMPASS = the PI's own published short-read splice-junction tool (github.com/k-roy/COMPASS, Roy et al. 2023
 NAR PMID 37956322): per-READ best-alignment arbitration across 6 aligners. We are **adapting it from yeast
