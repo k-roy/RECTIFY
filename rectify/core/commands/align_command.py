@@ -76,9 +76,30 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=False,
         help=(
             'Input is short-read data (Illumina/Aviti ≤150 bp). When set, "all" '
-            'expands to bbmap + bwa instead of minimap2 + mapPacBio + gapmm2. '
+            'expands to bbmap + bwa (single-end) or the full COMPASS panel '
+            '(bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap) when --read2 is '
+            'given, instead of minimap2 + mapPacBio + gapmm2. '
             'Ignored if --aligners is specified explicitly.'
         ),
+    )
+    parser.add_argument(
+        '-2', '--read2',
+        dest='read2',
+        type=Path,
+        default=None,
+        help=(
+            'Mate-2 (R2) FASTQ for paired-end short-read alignment. The COMPASS '
+            'panel aligners (STAR/HISAT2/magicblast/gsnap) and bbmap run paired '
+            'when this is set. Use the paired chunk FASTQs from '
+            '`rectify split --read2`.'
+        ),
+    )
+    parser.add_argument(
+        '--read-length',
+        dest='read_length',
+        type=int,
+        default=150,
+        help='Read length for STAR sjdbOverhang / index selection (default: 150).',
     )
 
     # Aligner selection
@@ -87,11 +108,14 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--aligners',
         nargs='+',
         choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa',
-                 'winnowmap2', 'minisplice_mm2', 'all', 'none'],
+                 'winnowmap2', 'minisplice_mm2',
+                 'STAR_default', 'STAR_noncanonical', 'HISAT2_default',
+                 'HISAT2_noncanonical', 'magicblast', 'gsnap',
+                 'all', 'none'],
         default=['all'],
         help=(
             'Aligners to run. "all" = minimap2 + mapPacBio + gapmm2 (long-read, default); '
-            'with --short-read "all" = bbmap + bwa. '
+            'with --short-read "all" = bbmap + bwa, or the COMPASS panel when --read2 is set. '
             '"winnowmap2" and "minisplice_mm2" are opt-in extras (not in "all"); '
             'winnowmap2 requires meryl on PATH; minisplice_mm2 requires --minisplice-model. '
             'Use "none" to run only --junction-aligners (deSALT/uLTRA). (default: all)'
@@ -349,7 +373,13 @@ def run_align(args: argparse.Namespace) -> int:
         aligners = []
     elif 'all' in aligners:
         if getattr(args, 'short_read', False):
-            aligners = ['bbmap', 'bwa']
+            if getattr(args, 'read2', None):
+                # Paired short-read → full COMPASS panel (the 111-adjudication set)
+                aligners = ['bbmap', 'STAR_default', 'STAR_noncanonical',
+                            'HISAT2_default', 'HISAT2_noncanonical',
+                            'magicblast', 'gsnap']
+            else:
+                aligners = ['bbmap', 'bwa']
         else:
             aligners = ['minimap2', 'mapPacBio', 'gapmm2']
 
@@ -369,8 +399,17 @@ def run_align(args: argparse.Namespace) -> int:
         run_bwa_mem,
         run_winnowmap2,
         run_minisplice_mm2,
+        run_star,
+        run_hisat2,
+        run_magicblast,
+        run_gsnap,
         check_aligner_available,
     )
+
+    # Paired-end (short-read COMPASS panel) mate-2 FASTQ + read length for STAR.
+    _reads2 = getattr(args, 'read2', None)
+    _reads2 = str(_reads2) if _reads2 else None
+    _read_length = getattr(args, 'read_length', 150) or 150
 
     # Generate junction BED if needed
     junc_bed_path = None
@@ -412,6 +451,18 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = 'winnowmap'  # binary is named 'winnowmap'; check_aligner_available handles fallback
         elif aligner == 'minisplice_mm2':
             exec_path = 'minimap2'  # uses system minimap2 with --spsc flag
+        elif aligner in ('STAR_default', 'STAR_noncanonical', 'HISAT2_default',
+                         'HISAT2_noncanonical', 'magicblast', 'gsnap'):
+            # COMPASS short-read panel: binary resolved inside the wrapper
+            # (_require_binary); all are paired-end and need a mate-2 FASTQ.
+            exec_path = None
+            if not _reads2:
+                logger.error(
+                    "Aligner %s needs paired reads; pass --read2 R2.fastq.gz "
+                    "(or paired chunk FASTQs from `rectify split --read2`). Skipping.",
+                    aligner,
+                )
+                return aligner, None
         else:
             logger.warning(f"Unknown aligner: {aligner}")
             return aligner, None
@@ -535,6 +586,7 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     threads=n_threads,
                     bbmap_path=exec_path,
+                    reads2_path=_reads2,
                 )
             elif aligner == 'bwa':
                 run_bwa_mem(
@@ -543,6 +595,41 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     threads=n_threads,
                     bwa_path=exec_path,
+                )
+            elif aligner in ('STAR_default', 'STAR_noncanonical'):
+                run_star(
+                    reads_path=str(args.reads),
+                    reads2_path=_reads2,
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                    read_length=_read_length,
+                    noncanonical=(aligner == 'STAR_noncanonical'),
+                )
+            elif aligner in ('HISAT2_default', 'HISAT2_noncanonical'):
+                run_hisat2(
+                    reads_path=str(args.reads),
+                    reads2_path=_reads2,
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
+                    noncanonical=(aligner == 'HISAT2_noncanonical'),
+                )
+            elif aligner == 'magicblast':
+                run_magicblast(
+                    reads_path=str(args.reads),
+                    reads2_path=_reads2,
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=min(n_threads, 12),
+                )
+            elif aligner == 'gsnap':
+                run_gsnap(
+                    reads_path=str(args.reads),
+                    reads2_path=_reads2,
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    threads=n_threads,
                 )
             elif aligner == 'winnowmap2':
                 run_winnowmap2(
