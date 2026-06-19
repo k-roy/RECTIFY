@@ -92,3 +92,30 @@ GT-AG-within-window was NOT evidence of truth — these were recurrent ONT-platf
 Caveat: spot-checked the top 3 of the 111 in coordinate detail; the class-level signal (110/111 zero
 Illumina reads at exact coords) + these three make the artifact verdict robust. Single marginal case had
 2-4 reads in 1 rep.
+
+---
+
+# CAVEATS + STAR-independent coverage check (2026-06-18, after PI challenge on the gold-standard assumption)
+
+PI rightly challenged trusting the SG-NEx Illumina BAMs as a gold standard. Provenance + checks:
+- **I did NOT align these reads — SG-NEx did.** `@PG`: **STAR 2.6.0c, SINGLE-PASS** (no `--twopassMode`),
+  Ensembl-91 GRCh38 index, ~74M primary reads/rep. **STAR is well-documented as poor for NOVEL junctions
+  (high FDR; 2-pass can make it worse), so the split-read 0/111 result is confounded by STAR's novel-junction
+  insensitivity** and must NOT be treated as definitive on its own.
+- Triage of the 111 (3 reps): **0 in low-coverage, 0 in long-intron (>590kb alignIntronMax)** — all 111 loci
+  ARE expressed/covered by Illumina (often thousands of reads). So "undetectable due to low expression" is
+  NOT the explanation. 20/111 have a competing junction within 50bp (clear artifacts); 91 "covered, no
+  competing-within-50bp" (but the top-3 spot-checks had real junctions 185–6553bp away → the 50bp window
+  undercounts artifacts).
+- **STAR-INDEPENDENT coverage test (does GMAP's intron actually splice out?):** inside/flank coverage ratio
+  for ALL 111 is **>0.5** (min 0.785; many >1.0, e.g. 181237516-181239425 ratio 1.46). A real intron is
+  DEPLETED inside (spliced out); these are NOT depleted → the "intron" sequence is present in the
+  transcriptome → consistent with GMAP fabricating splices in expressed/contiguous sequence. This test does
+  NOT rely on STAR detecting junctions (intron-interior coverage = contiguous reads, not junction-spanning),
+  so it survives the STAR critique. Residual alt-explanation: intron retention with a minor spliced form
+  (the split-read test argues against a spliced subpopulation, but that test is STAR-confounded).
+
+**STATUS: the 111 are LIKELY artifacts (coverage test is strong + STAR-independent), but the split-read
+validation must be REDONE properly** with a multi-aligner short-read consensus (bbmap + minimap2 + a third),
+COMPASS-integrated — NOT STAR alone. The positive-control 14.3% and the whole "validated 87" set ALSO need
+re-deriving under the proper pipeline before being trusted. → see the COMPASS-short-read scoping effort.
