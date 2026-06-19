@@ -10,12 +10,28 @@ verified constraints from `02_synthesis/{COMPARISON.md,DEEP_DIVE.md}` and
 `03_adversarial/redteam_winrates_selection.md`; and **the actual RECTIFY source** (every code claim
 below was checked, not taken on the proposals' word).
 
+> **Build note:** the code claims below were checked against the **`master`-derived working tree**;
+> see `../CORRECTIONS_vs_DRS_BUILD.md` for re-verification vs `origin/drs-validation-rebuild`. **Two
+> environment/code claims are SUPERSEDED on the build** and are corrected inline: (1) "the empirical
+> penalty/STR tables are absent" was a **master-checkout artifact** — the tables are **bundled** under
+> `rectify/data/genomes/*/penalty_tables/` and `--Scer`-auto-resolved (C13 below); (2) Path A
+> (HP-edit-distance) is **wired and runs in production** (both merge call sites pass raw BAMs + genome),
+> so the "wire the dead path on" framing (C1/C6, §1, roadmap E0/E1) is largely DONE. The Numba-import
+> sub-claim (C11) is environment-dependent and unchanged.
+
 **Environment note that colours several verdicts.** In this checkout: `edlib` imports; **`mappy`,
 `parasail`, `lightgbm`, `scikit-learn`, and `numba` do NOT import**; `minimap2` is not on `PATH`;
 the empirical `penalty_scores.tsv` / `str_penalty_scores.tsv` and the entire
-`common/scripts/nanopore/` tree are **absent**. This matters: multiple proposals assert
-"the Numba DP kernel already exists, only the call site is new" or "LightGBM is a pip-install with
-no dependencies of consequence" — both understate real plumbing cost here.
+`common/scripts/nanopore/` tree are **absent** *(in this **master** checkout)*. This matters: multiple
+proposals assert "the Numba DP kernel already exists, only the call site is new" or "LightGBM is a
+pip-install with no dependencies of consequence" — both understate real plumbing cost here.
+
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the "penalty tables absent" half of this note
+> is a **master-checkout artifact only.** On the build the tables ARE present and `--Scer`-resolved:
+> `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/{penalty_scores.tsv,
+> penalty_scores_cdna*.tsv, penalty_scores_qsrev.tsv, str_penalty_scores.tsv, junction_overhang_table.tsv}`,
+> auto-filled by `rectify/data/__init__.py:1188-1208` via the CLI hook `cli.py:198-199`. The
+> **Numba-not-importable** sub-claim is genuinely environment-specific and is left standing.
 
 ---
 
@@ -33,16 +49,21 @@ no dependencies of consequence" — both understate real plumbing cost here.
 | C8 | deSALT runs with **no `-x` ONT preset** (null ~13% model) | **TRUE** | `run_desalt` (`:1506+`) builds `aln`+index+`extra_args`; no `-x` hardcoded |
 | C9 | mapPacBio sets `intronlen=50` but **no `maxindel`** | **TRUE** | `run_map_pacbio` `:513-515` sets `fastareadlen,intronlen=50,minratio=0.4`, no `maxindel`. (`run_bbmap` short-read at `:674` *does* set `maxindel=100000` — do not confuse the two.) |
 | C10 | dorado `pt:i` tail length **already parsed/stored** | **TRUE** | `drs_trim_command.py:240,411,462` (`get_tag('pt')`, `pt_tag`, parquet column) |
-| C11 | RECTIFY already owns `_score_hp_dp_numba` (Numba NW DP), `HpPenaltyTable.del_cost/ins_cost`, `local_aligner.py` (Gotoh affine) | **TRUE in code; PARTIALLY MISLEADING at runtime** | All three exist (`hp_penalty.py:44,261,270`; `local_aligner.py:21-27`). **But** `numba` is not importable here, so `_score_hp_dp_numba is None` → Module 2H runs the **pure-Python fallback**. "Only the call site is new" hides a real perf dependency. |
+| C11 | RECTIFY already owns `_score_hp_dp_numba` (Numba NW DP), `HpPenaltyTable.del_cost/ins_cost`, `local_aligner.py` (Gotoh affine) | **TRUE in code; PARTIALLY MISLEADING at runtime** | All three exist (`hp_penalty.py:44,261,270`; `local_aligner.py:21-27`). **But** `numba` is not importable here, so `_score_hp_dp_numba is None` → Module 2H runs the **pure-Python fallback**. "Only the call site is new" hides a real perf dependency. *(Build note: the Numba-availability concern is environment-specific and still stands; the separate "penalty tables absent" claim it was bundled with — see C13 — does NOT hold on the build.)* |
 | C12 | `extra_args` passthrough exists on the minimap2 wrapper (so flag sweeps are zero-code) | **TRUE** | `multi_aligner.py:269-270` `if extra_args: cmd.extend(extra_args)` |
-| C13 | Empirical penalty table exists on disk to consume | **FALSE (in this checkout)** | `penalty_scores.tsv` / `str_penalty_scores.tsv` and `common/scripts/nanopore/` are **absent**. chaining_dp's P0 caveat is correct; every proposal "reusing the empirical table" must FIRST regenerate it, and regeneration itself depends on aligners + a labelled run. |
+| C13 | Empirical penalty table exists on disk to consume | **FALSE on master · SUPERSEDED (TRUE) on build** | On the master checkout `penalty_scores.tsv` / `str_penalty_scores.tsv` and `common/scripts/nanopore/` are **absent**. **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the tables ARE bundled — `rectify/data/genomes/{saccharomyces_cerevisiae,homo_sapiens}/penalty_tables/{penalty_scores.tsv, penalty_scores_cdna*.tsv, penalty_scores_qsrev.tsv, str_penalty_scores.tsv, junction_overhang_table.tsv}` — and `--Scer` auto-resolves them (`rectify/data/__init__.py:1188-1208`; `cli.py:198-199`); the generator `scripts/calibration/empirical_cigar_error_profiler.py` is also present. So on the build, proposals "reusing the empirical table" consume the **bundled** table; the open work is **validate/version**, not regenerate. |
 | C14 | `--aligner-bams` wired into `rectify correct` enables Module 2H | **TRUE** | `correct_command.py:304,451,500` (`_run_2h` gated on `aligner_bams` + annotation) |
 | C15 | NET-seq tables bundled (`netseq_{wt,pan}`, `atract`) | **TRUE** | `rectify/data/saccharomyces_cerevisiae_netseq_{wt,pan}.tsv.gz`, `..._atract_netseq.tsv.gz` |
 
-**Net:** the proposals' factual base is unusually solid — the win-rate/selection critique (C1-C6) is
-fully code-verified, and the "RECTIFY already has the machinery" claims (C11, C14) are real. The two
-soft spots are **C11 runtime** (numba absent → Python fallback) and **C13** (the empirical table the
-DP proposals consume does not exist yet and is itself gated on a working aligner panel + labelled run).
+**Net:** the proposals' factual base was unusually solid *against master* — the win-rate/selection
+critique (C1-C6) was code-verified there, and the "RECTIFY already has the machinery" claims (C11, C14)
+are real. **On the build, two of these are SUPERSEDED:** C1/C4/C5/C6 (Path A not wired) — both merge
+call sites now pass raw BAMs + genome → `use_hp_ed=True` → **Path A runs in production** (see
+`CORRECTIONS_vs_DRS_BUILD.md` §A); and C13 (tables absent) — the tables are **bundled and
+`--Scer`-resolved**. The remaining soft spot is **C11 runtime** (numba absent → Python fallback), which
+is environment-specific and unchanged. C2 (`_n_agree` popularity) and C3 (N=0) stay TRUE on the build —
+but C2 describes the **fallback** path, not the production default, and C3's "only defense is binary" is
+yeast-specific (human adds a junction-anchor gate).
 
 ---
 
@@ -56,7 +77,7 @@ proposal over-reaches) · **REJECT**.
 | Sub-idea | Verdict | One-line reason |
 |---|---|---|
 | §5 Win-rate harness + provenance + Path A/B ablation | **KEEP** | Cheapest, unblocks every accuracy claim in all six files. The single correct "do-first." |
-| §1 Wire Path A (collect existing corrected BAMs, flip `use_hp_ed`) | **KEEP-WITH-CAVEATS** | Pure wiring (C6); but **must** ship with the N-op-cost fix (C3) and a 3'-term, or it trades `_n_agree` herd bias for the N=0 free-intron exploit. Gate behind a flag; measure on §3 truth, do not default-on by assumption. |
+| §1 Wire Path A (collect existing corrected BAMs, flip `use_hp_ed`) | **MOSTLY DONE on build** | **⚠️ BUILD CORRECTION:** this wiring already exists on the build via the lazy raw-BAM path — both call sites pass `per_aligner_raw_bams` + `genome` and `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)` (`corrected_consensus.py:1262`; `single_sample.py:238-250`; `split_command.py:1085-1094`). Remaining open work is **only the N-op calibrated cost** (C3 / splice P4), so Path A doesn't trade `_n_agree` herd bias for the N=0 free-intron exploit. Measure on §3 truth. |
 | §2 Correlation-aware / lineage-weighted consensus (de-herd `_n_agree`) | **KEEP-WITH-CAVEATS** | The lineage insight (3 of 5 share minimap2 lineage) is real and the strongest novel idea in this file. But hand-set weights `{minimap2:0.5,...}` are themselves an unvalidated prior; only ship empirical-ρ weights from §3, and only as a tiebreaker term. |
 | §3 Ground-truth-free per-aligner weighting (NET-seq + replicate + Dawid–Skene EM) | **KEEP-WITH-CAVEATS** | NET-seq concordance is the defensible signal; **but the EM annotator-reliability arm is circular** (it can converge to "trust the herd" — the exact bias being removed). Keep NET-seq + replicate; treat EM as advisory only, seeded by NET-seq, self excluded. Replicate concordance needs replicates that may not exist. |
 | §4 Calibrated per-read confidence + abstain | **KEEP-WITH-CAVEATS** | High downstream value (APA), but calibration target is NET-seq → inherits §3's circularity; needs `sklearn.isotonic` which **does not import here**. Real, not free. |

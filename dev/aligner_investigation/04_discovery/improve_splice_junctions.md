@@ -204,9 +204,11 @@ concordance data. The scorer plugs into `_score_junction`'s return as an added t
 **calibration harness + held-out evaluation**, not the model.
 
 ### Expected impact
-**High** — *if* wired into selection (F1). As a pure 2H refinement upgrade, **medium** (2H already
-gets most cat9 reads right). The big win is replacing `_n_agree` popularity with `S(r,J)` as the
-selection key, which is the redteam's #1 recommended fix.
+**High.** On the build, HP-ED selection (Path A) is **already the live production metric** (see the
+F1 build correction above), so a *calibrated* score `S(r,J)` upgrades the metric that already drives
+selection — it does not need a "wire a dead path on" step. As a pure 2H refinement upgrade it is
+**medium** (2H already gets most cat9 reads right). The big win is replacing the lexicographic HP-ED
+tuple / `_n_agree` fallback with a calibrated `S(r,J)`, which is the redteam's #1 recommended fix.
 
 ### Validation
 - All 146 `test_junction_refiner.py` + `test_consensus_selection.py` tests must pass with default and
@@ -363,7 +365,7 @@ the CNN must *beat* the PWM on yeast to justify itself (it likely won't).
 
 | Rank | Proposal | Impact | Effort | Est. tag | One-line rationale |
 |---|---|---|---|---|---|
-| **1** | **P2 — Unified calibrated scorer + wire into selection** | High | Med | NOVEL combo | Fixes F1 (popularity→quality), adds the splice-strength model RECTIFY lacks; everything else builds on it. |
+| **1** | **P2 — Unified calibrated scorer (sharpen the live HP-ED metric)** | High | Med | NOVEL combo | HP-ED already runs in production on the build; P2 makes it *calibrated* (quality, not lexicographic tuple) and adds the splice-strength model RECTIFY lacks; everything else builds on it. |
 | **2** | **P1 — Cross-read junction consensus (first-class)** | High | Med | ESTABLISHED/NOVEL | Generalizes deSALT's winning mechanism to all 5 aligners, de-biased; tightens homogeneity → better CPA. |
 | **3** | **P4 — Calibrated novel-junction handling** | Med-High | Low | NOVEL synthesis | Mostly free given P1+P2; closes the N=0 free-intron loophole + kills annotation-circularity. |
 | **4** | **P3 — De-novo micro-exon recovery** | Low (yeast) | Med | ESTABLISHED | GMAP/uLTRA capability, annotation-free; but yeast has few micro-exons — defer, or save for metazoan. |
@@ -374,6 +376,13 @@ the CNN must *beat* the PWM on yeast to justify itself (it likely won't).
 rates are post-v3.3.0-fix and which sort path produced them, and **commit `aligner_summary.tsv`**.
 Without this, we cannot tell whether any proposal *improves* selection or merely changes a metric that
 was never the intended one. This single audit gates the value claims of P1–P4.
+
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** the Path A/B "ablation" is now an ablation of
+> **two live paths**, not "wire a dead path on": Path A (HP-ED) is the production default on the build
+> (both call sites pass raw BAMs + genome — `corrected_consensus.py:1262`, `single_sample.py:238-250`,
+> `split_command.py:1085-1094`) and Path B is the fallback. The win-rate *provenance* caution still
+> stands (single dataset, un-committed artifact), but the specific "they came from the legacy sort"
+> explanation no longer applies to a fresh build run.
 
 ---
 
@@ -386,7 +395,12 @@ was never the intended one. This single audit gates the value claims of P1–P4.
 - **uLTRA's micro-exon / annotation strength is circular** on yeast; P3/P4 deliberately route around
   it with de-novo splice-strength gating.
 - **N-ops are currently free** in HP-edit-distance — any scorer change must charge introns their
-  calibrated improbability or it inherits the same exploit.
+  calibrated improbability or it inherits the same exploit. *(N=0 is CONFIRMED on the build,
+  `corrected_consensus.py:142-143`; on yeast the overhang filter is the main defense, while human
+  adds a junction-anchor gate, default 10 bp — yeast default 0/off.)*
 - **MaxEnt/SpliceAI are metazoan-trained** — yeast needs a retrained PWM/MaxEnt; the CNN is deferred.
 - **All penalty/splice tables are R10.4.1 + S. cerevisiae-specific** and must not transfer to HiFi or
-  other organisms without recalibration.
+  other organisms without recalibration. *(Build correction: these tables are **bundled** under
+  `rectify/data/genomes/*/penalty_tables/` for S. cerevisiae and H. sapiens with protocol variants,
+  and `--Scer` auto-resolves them — so the open work is "validate/version the bundled tables" (J2),
+  not "regenerate absent tables.")*

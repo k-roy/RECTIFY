@@ -357,29 +357,41 @@ risk · red-team verdict · caveat.
   **Effort:** days. **Risk:** none. **Red-team verdict:** KEEP — "the single correct do-first"
   (`REDTEAM_proposals` E0). **Caveat:** needs no truth set; gates every value claim below.
 
-### J1 (HIGHEST) — Fix N-op-cost-0 + wire junction quality into selection
+### J1 (HIGHEST) — Fix N-op-cost-0 (the J1(b) wiring is already DONE on the build)
 - **Mechanism:** (a) charge each `N`-op a **small calibrated open cost** = −logP(novel intron
-  of this length at this site) instead of 0, in `_cigar_hp_edit_distance`; (b) collect the
-  **already-produced** per-aligner corrected BAMs (they are written to disk but never globbed
-  back — `REDTEAM_proposals` C6) and pass them to `merge_corrected_tsvs` so **Path A
-  (hp_edit_distance) actually runs**, behind a flag, shipped together with the N-cost fix.
-- **Failure fixed:** the free-false-intron exploit (§2) + the herd-bias popularity vote
-  replacing junction quality. **Effort:** low–medium (mostly wiring). **Risk:** medium —
-  flipping `_n_agree` for `hp_edit_distance` trades one bias for another unless N-cost lands
-  with it; must validate cat7/cat9 before default-on. **Red-team verdict:** KEEP-WITH-CAVEATS
-  (the most-emphasized correctness gap). **Caveat:** the N-cost must be *calibrated*, not a
-  fixed penalty — a fixed penalty re-introduces a gate, violating the PERMANENT no-gate policy.
+  of this length at this site) instead of 0, in `_cigar_hp_edit_distance`; ~~(b) collect the
+  already-produced per-aligner corrected BAMs and pass them to `merge_corrected_tsvs` so Path A
+  actually runs~~.
+  > **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** **J1(b) is already implemented on the
+  > build.** Both production call sites pass `per_aligner_raw_bams` + `genome` and a lazy raw-BAM
+  > HP path (`corrected_consensus.py:1264-1364`) runs Path A without materializing corrected BAMs
+  > (`single_sample.py:238-250`, `split_command.py:1085-1094`). **Only J1(a) — the calibrated
+  > N-op open cost — remains open.** The human-only junction-anchor gate already backstops the
+  > free-`N` exploit structurally (see §2); a calibrated N-cost would generalize that to yeast.
+- **Failure fixed:** the free-false-intron exploit (§2). **Effort:** low (the wiring is done;
+  only the N-cost calibration remains). **Risk:** medium — must validate cat7/cat9 before
+  default-on. **Red-team verdict:** KEEP-WITH-CAVEATS (the most-emphasized correctness gap).
+  **Caveat:** the N-cost must be *calibrated*, not a fixed penalty — a fixed penalty re-introduces
+  a gate, violating the PERMANENT no-gate policy.
 
-### J2 — Commit / regenerate the empirical junction penalty table
-- **Mechanism:** regenerate `penalty_scores.tsv` + `str_penalty_scores.tsv` (currently absent,
-  §2) via the documented profiler over a labelled run, and **commit them** so the AT/CG
-  base-class HP del/ins costs that `--junction-penalty-table` loads are actually used (today
-  the heuristic fallback runs everywhere). **Failure fixed:** mis-scored HP-deletion junctions
-  (the dominant ONT error at boundaries) under the coarse heuristic. **Effort:** medium
-  (regeneration is gated on a working aligner panel + labelled run; deSALT fails on some
-  chunks). **Risk:** low (it is recalibration of an existing, validated mechanism). **Red-team
-  verdict:** KEEP — a real prerequisite the discovery docs glossed (C13). **Caveat:** tables
-  are R10.4.1 + *S. cerevisiae*-specific; must not transfer to HiFi/other organisms.
+### J2 — Validate / version the bundled empirical junction penalty tables
+> **⚠️ BUILD CORRECTION (vs `drs-validation-rebuild`):** The original premise — "the tables are
+> currently absent; regenerate + commit them" — is **wrong on the build.** The tables ARE
+> bundled (per-organism, protocol-routed) and **auto-resolved by `--Scer`** (see §2:
+> `rectify/data/genomes/*/penalty_tables/`, `data/__init__.py:1188-1208`, `cli.py:198-199`).
+> J2 is therefore **re-scoped** from "regenerate the absent tables" to "**validate / version the
+> already-bundled tables**."
+- **Mechanism (re-scoped):** confirm the bundled `penalty_scores.tsv` / `str_penalty_scores.tsv`
+  (and protocol variants `penalty_scores_cdna*.tsv`, `penalty_scores_qsrev.tsv`) match the
+  current chemistry/sample; record their provenance + generation command
+  (`scripts/calibration/empirical_cigar_error_profiler.py`); pin a version so a recalibration is
+  auditable. **Failure fixed:** silent drift between the bundled tables and the run's
+  chemistry/protocol (the tables are R10.4.1 + *S. cerevisiae*-specific and must not transfer to
+  HiFi/other organisms). **Effort:** low–medium (no regeneration needed unless the bundled
+  tables are found stale; if they are, regeneration is gated on a working aligner panel + a
+  labelled run — deSALT fails on some chunks). **Risk:** low. **Red-team verdict:** KEEP, re-scoped.
+  **Caveat:** tables are R10.4.1 + *S. cerevisiae*-specific; verify protocol routing
+  (drs/cdna/qsrev) picks the intended variant.
 
 ### J3 — Cross-read junction consensus as a first-class step (generalize deSALT)
 - **Mechanism:** insert a `JunctionConsensus` build between alignment and per-read 2H: pool
@@ -438,18 +450,23 @@ risk · red-team verdict · caveat.
 
 ## If you do only three things for junction placement
 
-1. **J0 + J1 — make junction quality actually decide selection.** Run the zero-oracle
-   Path-A/B ablation and commit `aligner_summary.tsv`; then **fix the N-op-cost-0 free-intron
-   exploit and wire the already-on-disk per-aligner corrected BAMs into `merge_corrected_tsvs`**
-   so `hp_edit_distance` (not `_n_agree` popularity) ranks aligners. Today, junction quality is
-   not a selection criterion at all — nothing else matters until this is true.
+1. **J0 + J1 — make junction quality decide selection well.** Run the zero-oracle Path-A/B
+   ablation and commit `aligner_summary.tsv`; then **fix the N-op-cost-0 free-intron exploit**
+   so `hp_edit_distance` ranks aligners robustly. **⚠️ BUILD CORRECTION (vs
+   `drs-validation-rebuild`):** the original "wire the already-on-disk per-aligner corrected BAMs
+   into `merge_corrected_tsvs` so hp_edit_distance (not `_n_agree`) ranks aligners — today
+   junction quality is not a selection criterion at all" is **RETRACTED**: that wiring is DONE on
+   the build (lazy raw-BAM path; Path A is the production default), so junction quality already
+   ranks aligners. The remaining J1 work is the **calibrated N-op cost** (J1a) — relevant for
+   yeast, where the anchor gate is off by default.
 2. **J3 — cross-read junction consensus across all five aligners**, de-biased by a calibrated
    support score and protected by a per-read sequence veto + a hard APA-preservation radius.
    This generalizes the single mechanism that makes deSALT the leader, with the over-
    homogenization risk explicitly bounded.
 3. **J4 (+ J2) — add the splice-strength signal RECTIFY lacks.** Build a yeast MaxEnt/PWM
-   donor/acceptor model behind a swappable interface and fold it (plus the regenerated,
-   currently-absent empirical penalty table) into a single calibrated junction scorer that
-   feeds selection — replacing the brittle lexicographic tuple with a comparable, calibrated
-   quantity. **Validate everything against ≥4-aligner concordance + cat3/cat7/cat9 + an
-   orthogonal short-read split-read junction set — never against internal agreement alone.**
+   donor/acceptor model behind a swappable interface and fold it (plus the **already-bundled,
+   `--Scer`-auto-resolved** empirical penalty tables — see §2/J2; *not* "currently absent" as the
+   master-tree draft stated) into a single calibrated junction scorer that feeds selection —
+   replacing the brittle lexicographic tuple with a comparable, calibrated quantity. **Validate
+   everything against ≥4-aligner concordance + cat3/cat7/cat9 + an orthogonal short-read
+   split-read junction set — never against internal agreement alone.**
