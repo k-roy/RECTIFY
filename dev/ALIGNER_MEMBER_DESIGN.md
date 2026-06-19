@@ -438,3 +438,24 @@ map** that distinguishes a basecaller HP error from a real variant (`min_variant
 - (b) C6-MVP is a **new P-phase after C3 (LLR) and before/with C4**, because it depends on the calibrated
   emission (C3) and feeds the discovery-FDR track (§8). C6-FULL (phasing+ploidy) is **deferred to a later
   cycle**, gated on C6-MVP showing variant-induced FDR is material on the benchmark.
+
+
+---
+
+# INVESTIGATION INTEGRATION (2026-06-18) — see dev/ALIGNER_INVESTIGATION_SYNTHESIS.md
+
+The cloud-agent aligner investigation (re-verified vs the build via CORRECTIONS) converges on this design
+and adds critical refinements. Headline flip: **junction quality ALREADY drives production selection**
+(HP-edit-distance Path A is live) → we are sharpening a live metric. Critical ADDs to fold in:
+- **#1 HP-length-law DP MUST charge each N-op a CALIBRATED −logP(novel intron), not 0** (the live
+  free-false-intron exploit, J1a). NOT a fixed penalty (that re-introduces a gate, violating the PERMANENT
+  no-candidate-gate policy). + add a **positive splice-strength term** (yeast PWM/MaxEnt, swappable iface) —
+  RECTIFY has none today (only canonical/non-canonical tiers).
+- **#3 LLR/posterior arbitration MUST de-herd correlated aligners** — minimap2/gapmm2/uLTRA share lineage
+  (~3× over-count); only deSALT + mapPacBio are independent → lineage/empirical-ρ weights. Add a calibrated
+  per-read `selection_confidence` + `_abstain` flag.
+- **#4 POA over-homogenization guards are MANDATORY** (per-read veto + tight max_boundary_shift +
+  shared-boundary-anchoring) or it erases alt-SS isoforms <50bp apart; validate vs orthogonal truth only.
+- **#2 CPA decoder scope DOWN to the realizable** (`pt:i` tail-length Bayesian prior + 3′-tight/5′-loose DP
+  asymmetry + cDNA mispriming veto); full dwell/Remora is blocked on POD5 squiggle RECTIFY doesn't retain.
+- **#5 FracMinHash** has no investigation analogue — genuinely novel, keep.
