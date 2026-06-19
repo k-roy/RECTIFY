@@ -73,3 +73,37 @@ re-alignment is even needed. Cheap, decisive, uses data already on disk.
    (The immediate experiment needs only Layer A.)
 5. Sign-off on the "inconclusive" escape hatch so a 0/111 is not over-read as "artifact."
 6. Architecture: confirm back-propagate-to-COMPASS (vs a RECTIFY module) and whether a shared junction lib is wanted.
+
+---
+
+# PI DECISIONS (2026-06-18) + STEP 0 RESULT
+
+**PI answers to the open questions:** (1) run STEP 0 — done; (2) the COMPASS paper = **Roy et al. 2023
+NAR, PMID 37956322** (note: the *paper* describes COMPASS as STAR+BBMap; the *repo* has since expanded to
+6 aligners — BBMap, STAR×2, HISAT2×2, Magic-BLAST, GSNAP); (3) **wire up FULL per-read COMPASS arbitration
+(Layer B)**, not just cross-family concordance; (4) **do it INSIDE the COMPASS repo** (github.com/k-roy/COMPASS,
+cloned to ~/work/COMPASS) — confirms the back-propagate-to-COMPASS architecture.
+
+**STEP 0 result (existing STAR BAMs, no compute) — STAR sensitivity IS the bottleneck, not expression:**
+| set | total | validated/total | EXPRESSED | validated/EXPRESSED |
+| --- | --- | --- | --- | --- |
+| the_111 | 111 | 0 (0.0%) | 111/111 (ALL expressed) | 0 (0.0%) |
+| corrob_609 | 609 | 87 (14.3%) | 567 | 82 (14.5%) |
+The expressed-denominator fix barely moved the positive control (14.3%→14.5%) → STAR is genuinely
+insensitive to these (mostly novel) junctions; a 14.5%-on-known-positives detector CANNOT adjudicate the
+111. **Verdict stays INCONCLUSIVE; the multi-aligner COMPASS rework is REQUIRED** to build a sensitive,
+calibrated detector before any keep-GMAP / artifact call. The 111 are all expressed (not a coverage issue),
+which keeps them genuinely open rather than dismissible.
+
+**COMPASS core algorithm (README + paper, definitive):** per-read best alignment = FEWEST MISMATCHES vs
+reference; ties (same score, different junction) broken by ungapped>gapped → annotated>unannotated →
+shorter>longer intron; **soft-clipping DISABLED** (force full-read mapping so mismatches can't hide);
+cutadapt 3' trim; samfixcigar CIGAR reformatting; then ambiguous-junction adjustment to species splice
+signals + branchpoint selection + unspliced-read splicing-efficiency.
+
+**Deferred RECTIFY TODO (for the next RECTIFY agent — PI said leave it):** uncommitted RECTIFY working-tree
+changes NOT pushed — the `docs/figures/aligner_panel/` schematics (aligner_schematics.py + fig1/2/3
+png/svg, exclude __pycache__), `docs/figures/generate_splice_classification_v3.py` + regenerated
+splice_classification.png/svg, `docs/ALIGNER_RECOMMENDATIONS.md` (+4/-2), `dev/TODO.md` (+79). The
+`drop_chimeric_winners` filter + test were already committed (366c885). Scratch to leave: `dev/_bb_*`,
+`_oc_*`, `_smoke_*`, `_spotcheck_*`, `README_preview.html`, `scripts/validation_data/upf1d_2026_05/stage/`.
