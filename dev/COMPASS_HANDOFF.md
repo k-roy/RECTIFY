@@ -31,6 +31,8 @@ minimap2 `splice:sr`.
 - **COMPASS conda env BUILT** (rc=0, job 30230396) — env `compass` at `/home/groups/larsms/users/kevinroy/anaconda3/envs/compass`. All 6 aligners (bbmap.sh / STAR 2.7.10a / hisat2 2.2.1 / magicblast 1.5.0 / gsnap+gmap_build 2021.05.27) + makeblastdb + cutadapt 2.6 + gffread + picard + samtools 1.7 + pysam 0.15.3 verified runnable (`conda run -n compass`). Built from `$W/COMPASS_env_minimal.yml` (15-tool version-pinned minimal; the full-lock yml SIGKILLed on the login node, so the rescue used a compute-node job + minimal env).
 - **FASTQ DONE** (job 30227283) — 3 reps in `$W/fastq/replicate{1,3,5}/` (~24G).
 - **P1 config edits DONE + pushed** to k-roy/COMPASS branch `human-a549` (commit ce59139): COMPASS.sh (GENOME_VERSION=GRCh38_gencode_v44, MAX_INTRON_LENGTH 2000->500000, READ_LENGTH 150, portable COMPASS_DIR, skip SGD gffread, ALIGNERS_FILE .tsv, SAMFIXCIGAR->samfixcigar.py) + process_reads_and_align.sh (cutadapt drop poly-T/A arms; jvarkit->python samfixcigar) + samfixcigar.py + make_human_introns.py. M1 clone `~/work/COMPASS` on branch human-a549.
+- **P1 COMPLETE + VALIDATED.** Env fully working: samtools upgraded to 1.17 (job 30249088; the 1.7 libcrypto issue); ALL 6 aligners + samtools RUN (`--version`): STAR 2.7.10a, hisat2 2.2.1, magicblast 1.5.0, BBMap 38.84, cutadapt 2.6, GSNAP gsnap.sse42 (sse42 SIMD → no AVX-512 SIGILL). **samfixcigar.py VALIDATED** by synthetic test (known mismatches at [5,20,35] → CIGAR `5=1X14=1X14=1X14=`, exact). [The 0/1875 on a real ONT BAM was a reference-mismatch/NM confound, not a bug — in-pipeline samfixcigar uses the SAME ref COMPASS aligns to.]
+- **P2 STAGED.** Sherlock `$W/COMPASS` on branch `human-a549` (ce59139). `$W/COMPASS/genome_references/`: `GRCh38_gencode_v44.fasta`(→symlink)+`.fai`, `GRCh38_gencode_v44.gtf`(→symlink), `GRCh38_gencode_v44_introns.tsv` (402k).
 - **ENV FIX:** the build reported rc=0 but **samtools 1.7 did NOT RUN** (libcrypto.so.1.0.0 missing) — 'env built' only meant execs EXIST. Upgraded samtools to >=1.15 in the compass env (view/sort/index/depth syntax is stable). LESSON: verify tools RUN (`--version`), not just `which`.
 - Genome choice LOCKED: align to **chr-named GENCODE GRCh38.primary_assembly.genome.fa** + gencode v44 GTF
   (both at `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/refs/`) → output junctions
@@ -45,12 +47,21 @@ minimap2 `splice:sr`.
   aligner run end-to-end on human; index builds.
 
 ## OPEN / IN FLIGHT
-- **samtools upgrade in flight** (bg task `biwhixfr1`, `conda install -n compass samtools>=1.15`). When done: re-verify all 6 aligners + samtools RUN, then VALIDATE `samfixcigar.py` (subset a chr-named human BAM e.g. `…/sgnex_a549/alignments/a549_chr5_trimmed.minimap2.bam` chr5:1-1.5M, run `python $W/samfixcigar.py sub.bam fixed.bam <GRCh38.primary_assembly.genome.fa>`, check X-op count == NM-indels). Then P2 index builds.
+- **Nothing running.** P1 done+validated, P2 staged. NEXT = P2 index builds + the first end-to-end run.
 
 ## RESUME (concrete, with branch logic)
 **Step A — env is BUILT (done); just activate + sanity-check:**
 `ssh sherlock` then `conda activate compass` (or prefix commands with `conda run -n compass`). Confirm `which STAR hisat2 gsnap magicblast bbmap.sh makeblastdb cutadapt`. If ever broken, rebuild: `sbatch /scratch/users/kevinroy/compass_a549/env_build.sbatch` (minimal yml). Then proceed to Step B.
 
+
+**Step A2 — P1 is DONE (config pushed to human-a549 ce59139, env validated). NEXT = P2.**
+
+**Step B(P2) — run the SUBSAMPLED end-to-end smoke test (builds all indices + runs the 6-aligner pipeline + arbitration on 100k reads of one rep):**
+1. Stage FASTQ for a rep: concat the SG-NEx lane files → `$W/COMPASS/fastq/A549_rep1_R1.fastq.gz` + `_R2.fastq.gz` (gz files concat with `cat`): `cat $W/fastq/replicate1/*_R1*.fastq.gz > $W/COMPASS/fastq/A549_rep1_R1.fastq.gz` (and _R2).
+2. Smoke run (BIG MEM job — index builds): copy COMPASS.sh→COMPASS_smoke.sh, `sed -i 's/READS_TO_PROCESS=-1/READS_TO_PROCESS=100000/' COMPASS_smoke.sh`, then in an sbatch (compass env, owners, **~120G mem** for STAR(~32G)+HISAT2 index builds, ~6h): `cd $W/COMPASS && sh COMPASS_smoke.sh A549_rep1`. Indices build into genome_references/ (STAR_annotated_150_bp_SJDB_index, HISAT2_annotated_index, GSNAP/, BLAST/) and are reused for the full run.
+   ⚠ **HISAT2 RISK:** `hisat2-build --ss --exon` for human can be very memory-heavy. If it OOMs, build the BASIC HISAT2 index (no --ss/--exon) + pass `--known-splicesite-infile` at align time (a small process_reads_and_align.sh edit). Watch the smoke log for the HISAT2 build step.
+   ⚠ Poll tight (unproven pipeline): index builds fail fast on path/mem; check the log at ~5-10 min.
+3. If the smoke test passes (per-rep COMPASS junction TSV produced) → scale to full reads (READS_TO_PROCESS=-1) × all 3 reps (chunked), then P4 (family-concordance back-propagation) + P5 (re-validate 111).
 
 **Step B — P1 human config edits (in `~/work/COMPASS`, commit to a `human-a549` branch, push authorized):**
 - `COMPASS.sh`: set GENOME/FASTA → `…/refs/GRCh38.primary_assembly.genome.fa`; GTF → gencode v44;
