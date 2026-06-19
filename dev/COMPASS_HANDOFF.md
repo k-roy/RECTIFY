@@ -47,10 +47,10 @@ minimap2 `splice:sr`.
 - NOT VERIFIED: `samfixcigar.py` output equivalence; any
   aligner run end-to-end on human; index builds.
 
-## OPEN / IN FLIGHT
-- **Smoke test (job 30288918) DONE — infra VALIDATED, 3 bugs found+fixed.** ALL indices built (incl HISAT2 --ss--exon on 256GB larsms — big-mem question SETTLED, no OOM); 6/7 aligners aligned (GSNAP/HISAT2x2/MagicBLAST/STARx2 = 25-45M BAMs; BBMap empty 12K). Bugs fixed on human-a549 (347a997): (1) introns TSV must be 5-col HEADERLESS (COMPASS_functions.py:40 reads names=[chrom,start,stop,strand,intron_type]) — make_human_introns.py now emits that; (2) analyze_*_SEQUENCE.py->_ELEMENTS.py in COMPASS.sh; (3) dead `picard CreateSequenceDictionary -R` neutralized (jvarkit-only).
-- **compare_splice RE-RUN in flight (job 30304658, watcher `b5tux263i`)** — 6-aligner arbitration on the CACHED smoke alignments + fixed 5-col introns. Sentinel `$W/.compare_rc`. If COMPARE_RC=0 + a `*_COMPASS_splice_junctions.tsv` appears → CORE VALIDATED on human.
-- **BBMap TODO** (dropped from sample_aligner_info.tsv for now): empty 12K BAM (~60% 'error rate' in bbmap log; the -R was an unrelated picard bug). Diagnose + re-add as the splice-agnostic family.
+## OPEN / IN FLIGHT (2026-06-19)
+- **compare_splice (arbitration) — human-scale OOM, retrying.** 64G OOM-killed (rc137); 402k annotated introns + 6 BAMs blow past 64G (yeast had ~400 introns). Resubmitted at **200G** (job 30313255, larsms, watcher `b0qv97ts4`). If it still OOMs, get_ambiguous_junctions_in_annotated_introns (enumerates all ambiguity-equivalent positions for every intron) may need a memory-leaner pass, or use bigmem (4TB).
+- **BBMap (non-negotiable per PI) — diagnosed, fix pending the Oak/scratch search.** It MAPS fine (82%, 79.9% mated) but: (1) keeps the full GENCODE header as ref name ('chr1 1' vs 'chr1') → samfixcigar KeyError emptied its BAM (samfixcigar HARDENED, 0668db5: split()[0] + per-read try/except); REAL fix = whitespace-clean genome FASTA + BBMap index rebuild so @SQ uses 'chr1'. (2) maxindel=500000 → 37% spurious 500kb DELETIONS not introns; BBMap manual wants `ambig=random ... xstag=us` (missing). **Apply the PI's canonical human-COMPASS BBMap params from the Oak/scratch search** (agent aa4657a4) before re-running; then rebuild bbmap index + re-add to sample_aligner_info.tsv.
+- **Oak/scratch search IN FLIGHT** (agent aa4657a4): find prior human-COMPASS dev work — canonical BBMap params + any reusable clean human genome / prebuilt indices.
 
 ## RESUME (concrete, with branch logic)
 **Step A — env is BUILT (done); just activate + sanity-check:**
