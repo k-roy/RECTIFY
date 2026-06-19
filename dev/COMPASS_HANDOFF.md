@@ -48,7 +48,9 @@ minimap2 `splice:sr`.
   aligner run end-to-end on human; index builds.
 
 ## OPEN / IN FLIGHT
-- **COMPASS smoke test RUNNING** — job 30288918 (larsms), watcher `bd2k5prv0`. Builds indices (the long pole: gmap_build ~1-2h, STAR ~1h, hisat2-build ~30-60m, makeblastdb ~10m) then aligns 100k reads × 6 aligners + arbitrates. UNPROVEN pipeline → check `$W/smoke.<jid>.out` early for path/conda/FASTQ-glob errors; watch the hisat2-build step for OOM.
+- **Smoke test (job 30288918) DONE — infra VALIDATED, 3 bugs found+fixed.** ALL indices built (incl HISAT2 --ss--exon on 256GB larsms — big-mem question SETTLED, no OOM); 6/7 aligners aligned (GSNAP/HISAT2x2/MagicBLAST/STARx2 = 25-45M BAMs; BBMap empty 12K). Bugs fixed on human-a549 (347a997): (1) introns TSV must be 5-col HEADERLESS (COMPASS_functions.py:40 reads names=[chrom,start,stop,strand,intron_type]) — make_human_introns.py now emits that; (2) analyze_*_SEQUENCE.py->_ELEMENTS.py in COMPASS.sh; (3) dead `picard CreateSequenceDictionary -R` neutralized (jvarkit-only).
+- **compare_splice RE-RUN in flight (job 30304658, watcher `b5tux263i`)** — 6-aligner arbitration on the CACHED smoke alignments + fixed 5-col introns. Sentinel `$W/.compare_rc`. If COMPARE_RC=0 + a `*_COMPASS_splice_junctions.tsv` appears → CORE VALIDATED on human.
+- **BBMap TODO** (dropped from sample_aligner_info.tsv for now): empty 12K BAM (~60% 'error rate' in bbmap log; the -R was an unrelated picard bug). Diagnose + re-add as the splice-agnostic family.
 
 ## RESUME (concrete, with branch logic)
 **Step A — env is BUILT (done); just activate + sanity-check:**
