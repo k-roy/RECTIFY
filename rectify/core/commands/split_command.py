@@ -38,6 +38,7 @@ Author: Kevin R. Roy
 
 import argparse
 import gzip
+import hashlib
 import json
 import logging
 import math
@@ -157,6 +158,16 @@ Examples:
             'Step-4 restore-softclip can be invoked later). Without --drs, '
             "the BAM is dumped via `samtools fastq -T '*'` (aux tags kept "
             'as FASTQ comments, no trimming).'
+        ),
+    )
+    parser.add_argument(
+        '-2', '--read2', type=Path, default=None,
+        help=(
+            'Mate-2 (R2) FASTQ for paired-end short-read data. When given, the '
+            'positional argument is treated as R1 and chunking is pair-aware: '
+            'both mates share one RN and land in the same chunk, emitting paired '
+            'chunk FASTQs (_chunk_NNN_of_MMM_R1/_R2). Implies short-read paired '
+            'mode (use with --short-read).'
         ),
     )
     parser.add_argument(
@@ -431,6 +442,166 @@ def split_fastq(
             sidecar_writer.close()
 
     return chunk_paths
+
+
+def _strip_mate_suffix(qname: str) -> str:
+    """Drop a trailing ``/1`` or ``/2`` mate suffix from a FASTQ qname token.
+
+    Paired-end aligners pair mates by IDENTICAL QNAME and distinguish them by
+    the R1/R2 input file, so both mates must carry the same bare name. The
+    ``@READID 1:N:0:...`` Casava form already shares the ``READID`` token (the
+    ``1``/``2`` is in the comment, stripped by ``split_fastq_header``); only the
+    older ``@READID/1`` form needs trimming.
+    """
+    if len(qname) >= 2 and qname[-2] == '/' and qname[-1] in ('1', '2'):
+        return qname[:-2]
+    return qname
+
+
+def _derive_paired_prefix(input_r1: Path) -> str:
+    """Derive a sample prefix from an R1 filename, stripping the fastq ext and
+    a trailing ``_R1`` / ``_1`` mate token (``A549_rep1_R1.fastq.gz`` → ``A549_rep1``)."""
+    name = input_r1.name
+    for suffix in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    else:
+        name = input_r1.stem
+    for mate_tok in ('_R1', '_r1', '.R1', '_1'):
+        if name.endswith(mate_tok):
+            return name[:-len(mate_tok)]
+    return name
+
+
+def split_fastq_paired(
+    input_r1: Path,
+    input_r2: Path,
+    output_dir: Path,
+    n_chunks: int,
+    prefix: str = '',
+    write_read_num_sidecar: bool = True,
+) -> Tuple[List[Path], List[Path]]:
+    """Split paired-end FASTQs into n_chunks paired files via round-robin over PAIRS.
+
+    RECTIFY's chunking infra is single-end; this is the pair-aware variant. The
+    invariants that keep proper-pairs intact across chunking:
+
+      - Round-robin is over the PAIR index, not the record index. Both mates of
+        pair ``p`` share ``read_num = p`` and land in the SAME chunk
+        (``chunk_idx = p % n_chunks``) at the same local position. The legacy
+        single-end formula ``read_num = local_idx * n_chunks + chunk_idx`` is
+        therefore unchanged per-pair, so ``reconstruct_posthoc_sidecar_from_chunks``
+        works on the R1 chunks without modification.
+      - Both mate records in a chunk carry the SAME bare QNAME (``/1``,``/2``
+        stripped) plus the SAME ``RN:i:<p>`` tag, so paired aligners pair them by
+        identical QNAME and the RN-keyed consensus merge groups them natively.
+      - The read-num sidecar stores ONE row per pair (keyed by ``read_num``); its
+        seq/qual fingerprint covers R1. R1/R2 pairing integrity is structural
+        (shared pair index → same chunk + local position), not fingerprinted.
+
+    A mismatch between mate qnames raises ``ValueError`` — this catches an
+    R1/R2 desync (the exact failure mode round-robin would otherwise scatter
+    silently) at split time rather than deep in alignment.
+
+    Returns ``(r1_chunk_paths, r2_chunk_paths)``.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not prefix:
+        prefix = _derive_paired_prefix(input_r1)
+
+    r1_paths = [
+        output_dir / f"{prefix}_chunk_{k:03d}_of_{n_chunks:03d}_R1.fastq.gz"
+        for k in range(n_chunks)
+    ]
+    r2_paths = [
+        output_dir / f"{prefix}_chunk_{k:03d}_of_{n_chunks:03d}_R2.fastq.gz"
+        for k in range(n_chunks)
+    ]
+    r1_files = [gzip.open(str(p), 'wt') for p in r1_paths]
+    r2_files = [gzip.open(str(p), 'wt') for p in r2_paths]
+    sidecar_writer = None
+    try:
+        if write_read_num_sidecar:
+            # source_fastq records R1; the combined sha binds both mate files so a
+            # swapped/truncated R2 is detectable in provenance.
+            combined_sha = hashlib.sha256(
+                f"{sha256_file(input_r1)}:{sha256_file(input_r2)}".encode()
+            ).hexdigest()
+            sidecar_writer = ReadNumSidecarWriter(
+                output_dir / f"{prefix}.read_num_sidecar.parquet",
+                sample_id=prefix,
+                source_fastq=input_r1,
+                source_fastq_sha256=combined_sha,
+                chunk_count=n_chunks,
+            )
+
+        pair_idx = 0
+        with _open_fastq(input_r1) as f1, _open_fastq(input_r2) as f2:
+            while True:
+                h1 = f1.readline()
+                h2 = f2.readline()
+                if not h1 and not h2:
+                    break
+                if not h1 or not h2:
+                    raise ValueError(
+                        f"R1/R2 record count mismatch near pair {pair_idx}: "
+                        f"{input_r1} and {input_r2} have unequal lengths"
+                    )
+                s1, p1, q1 = f1.readline(), f1.readline(), f1.readline()
+                s2, p2, q2 = f2.readline(), f2.readline(), f2.readline()
+                if not q1 or not q2:
+                    raise ValueError(
+                        f"Truncated FASTQ record at pair {pair_idx} "
+                        f"in {input_r1} / {input_r2}"
+                    )
+
+                qn1, comment1 = split_fastq_header(h1)
+                qn2, comment2 = split_fastq_header(h2)
+                base1 = _strip_mate_suffix(qn1)
+                base2 = _strip_mate_suffix(qn2)
+                if base1 != base2:
+                    raise ValueError(
+                        f"Mate qname mismatch at pair {pair_idx}: R1 {qn1!r} vs "
+                        f"R2 {qn2!r} (bare {base1!r} != {base2!r}). R1/R2 FASTQs are "
+                        f"out of sync; chunking would scatter mates."
+                    )
+
+                chunk_idx = pair_idx % n_chunks
+                chunk_id = f"chunk_{chunk_idx:03d}_of_{n_chunks:03d}"
+                if sidecar_writer is not None:
+                    sidecar_writer.add(
+                        pair_idx, base1, comment1, chunk_id, s1, q1
+                    )
+
+                d1 = r1_files[chunk_idx]
+                d1.write(format_fastq_header_with_rn(base1, comment1, pair_idx))
+                d1.write(s1 if s1.endswith('\n') else s1 + '\n')
+                d1.write(p1 if p1.endswith('\n') else p1 + '\n')
+                d1.write(q1 if q1.endswith('\n') else q1 + '\n')
+
+                d2 = r2_files[chunk_idx]
+                d2.write(format_fastq_header_with_rn(base1, comment2, pair_idx))
+                d2.write(s2 if s2.endswith('\n') else s2 + '\n')
+                d2.write(p2 if p2.endswith('\n') else p2 + '\n')
+                d2.write(q2 if q2.endswith('\n') else q2 + '\n')
+
+                pair_idx += 1
+
+        logger.info(
+            "Split %d read pairs into %d paired chunks (~%d pairs/chunk)",
+            pair_idx, n_chunks, pair_idx // n_chunks if n_chunks else 0,
+        )
+    finally:
+        for fh in r1_files:
+            fh.close()
+        for fh in r2_files:
+            fh.close()
+        if sidecar_writer is not None:
+            sidecar_writer.close()
+
+    return r1_paths, r2_paths
 
 
 # ── Script header builders ───────────────────────────────────────────────────
@@ -2274,6 +2445,87 @@ def _generate_short_read_scripts(
     logger.info("  Submit chain:  bash %s", output_dir / 'submit_pipeline.sh')
 
 
+def _run_split_paired(args: argparse.Namespace) -> int:
+    """Paired-end split: chunk R1/R2 by pair, shared RN, paired chunk FASTQs."""
+    input_r1 = args.reads
+    input_r2 = args.read2
+    if not input_r2.exists():
+        logger.error("Mate-2 (R2) file not found: %s", input_r2)
+        return 1
+    if input_r1.suffix == '.bam' or input_r2.suffix == '.bam':
+        logger.error("Paired-end mode (--read2) requires FASTQ inputs, not BAM.")
+        return 1
+
+    logger.info("Counting read pairs in %s / %s ...", input_r1, input_r2)
+    n_r1 = count_reads(input_r1)
+    n_r2 = count_reads(input_r2)
+    if n_r1 != n_r2:
+        logger.error(
+            "R1/R2 read-count mismatch: %s has %d, %s has %d — not a valid pair set",
+            input_r1, n_r1, input_r2, n_r2,
+        )
+        return 1
+    n_pairs = n_r1
+
+    if args.n_chunks is not None:
+        n_chunks = args.n_chunks
+        if n_chunks < 1:
+            logger.error("--n-chunks must be >= 1")
+            return 1
+    else:
+        target = getattr(args, 'target_reads_per_chunk', DEFAULT_TARGET_READS)
+        n_chunks = compute_n_chunks(n_pairs, target)
+        logger.info("  Auto-sized: %d pairs / %d target = %d chunks (min %d, max %d)",
+                    n_pairs, target, n_chunks, MIN_CHUNKS, MAX_CHUNKS)
+
+    logger.info("  Total pairs:       %s", f"{n_pairs:,}")
+    logger.info("  Chunks:            %d", n_chunks)
+    logger.info("  ~pairs per chunk:  %s", f"{math.ceil(n_pairs / n_chunks):,}")
+
+    if args.dry_run:
+        return 0
+
+    prefix = args.prefix or _derive_paired_prefix(input_r1)
+
+    logger.info("Splitting paired %s + %s into %d chunks → %s",
+                input_r1, input_r2, n_chunks, args.output_dir)
+    r1_paths, r2_paths = split_fastq_paired(
+        input_r1=input_r1,
+        input_r2=input_r2,
+        output_dir=args.output_dir,
+        n_chunks=n_chunks,
+        prefix=prefix,
+    )
+
+    manifest = {
+        'paired': True,
+        'input_r1': str(input_r1.resolve()),
+        'input_r2': str(input_r2.resolve()),
+        'n_pairs': n_pairs,
+        'n_chunks': n_chunks,
+        'pairs_per_chunk': math.ceil(n_pairs / n_chunks),
+        'chunks_r1': [str(p) for p in r1_paths],
+        'chunks_r2': [str(p) for p in r2_paths],
+        'read_num_sidecar': str(
+            (args.output_dir / f'{prefix}.read_num_sidecar.parquet').resolve()
+        ),
+    }
+    manifest_path = args.output_dir / 'chunks_manifest.json'
+    with open(str(manifest_path), 'w') as fh:
+        json.dump(manifest, fh, indent=2)
+    logger.info("Manifest: %s", manifest_path)
+
+    if getattr(args, 'generate_slurm', False):
+        # Paired short-read SLURM generation (full COMPASS panel) is wired in P4.
+        logger.warning(
+            "Paired chunk FASTQs + sidecar written. --generate-slurm for the "
+            "paired short-read COMPASS pipeline is not yet wired (P4); chunks are "
+            "ready for the array generator."
+        )
+
+    return 0
+
+
 def run_split(args: argparse.Namespace) -> int:
     """Run split command."""
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -2282,6 +2534,13 @@ def run_split(args: argparse.Namespace) -> int:
     if not args.reads.exists():
         logger.error("Reads file not found: %s", args.reads)
         return 1
+
+    # ── Paired-end (short-read) branch ────────────────────────────────────
+    # When --read2 is given, the positional `reads` is R1. Pair-aware chunking
+    # keeps both mates together (shared RN, same chunk) and emits paired chunk
+    # FASTQs. This path is self-contained and returns early.
+    if getattr(args, 'read2', None) is not None:
+        return _run_split_paired(args)
 
     # ── BAM input: convert to FASTQ once ──────────────────────────────────
     # For DRS BAMs (--drs), use the same Step-0 trim run-all performs:
