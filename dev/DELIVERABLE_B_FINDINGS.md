@@ -47,3 +47,48 @@ curated splice DBs. recurrence + GT-AG ≠ proof.
 
 Raw 39 MB JSON stays on Sherlock scratch (`/scratch/users/kevinroy/deliverable_b/gmap_corroboration.json`,
 purgeable; regenerable from the committed driver). Only this doc + the 111-row TSV are kept durably.
+
+---
+
+# SG-NEx Illumina short-read VALIDATION of the candidates (2026-06-18) — VERDICT-CHANGING
+
+Job chain 30208125 (pull) → 30208350 (validate). Driver `dev/sgnex_illumina_validate.py`. A junction is
+"validated" with ≥2 anchored split reads in ≥2 of the 3 A549 Illumina replicates (ambiguity-normalized).
+
+| set | validated | rate | any Illumina read (≥1) |
+| --- | --- | --- | --- |
+| **the_111** (GMAP-only recurrent novels) | **0 / 111** | **0.0%** | **1 / 111** |
+| corrob_609 (multi-aligner novels, POSITIVE control) | 87 / 609 | 14.3% | 163 / 609 (100 with ≥5 reads, 62 in 3/3 reps) |
+| noncanon 3000 (NEGATIVE control) | 21 / 3000 | 0.7% | — |
+
+## Verdict: the 111 GMAP-only recurrent novels are GMAP ARTIFACTS, NOT novel biology
+The method works (positive control shows a clear graded real signal: 100 junctions with ≥5 reads, 62 in
+3/3 reps; negative control at the 0.7% noise floor). The 111 are **NOT low-coverage/undetectable** — their
+loci are heavily expressed and heavily spliced in Illumina:
+- 5:171388191-171388472 (GMAP 109 reads): real Illumina junction **171388006-171390050 = 14,931 reads**,
+  acceptor **+1,578 bp** away; GMAP's exact coord = 0.
+- 5:181237624-181238158 (GMAP 61): real **181237719-181238098 = 8,594 reads**, donor +95 / acceptor −60 bp
+  off (NOT an ambiguity-window shift).
+- 5:179821705-179829510 (GMAP 52, ~7.8kb): real **179821141-179822957 = 1,721 reads**, acceptor **−6,553 bp**
+  (GMAP fabricated a spurious long-range splice).
+So GMAP places junctions tens-of-bp to kilobases from the real, heavily-supported splice sites. recurrence +
+GT-AG-within-window was NOT evidence of truth — these were recurrent ONT-platform artifacts.
+
+## Consequences
+1. **GMAP's "fenced seat" is in serious doubt.** Its headline unique value — the ~111/127 recurrent novel
+   junctions — does NOT survive orthogonal validation. Combined with 89.5% non-canonical noise, GMAP's
+   UNIQUE contribution is artifact; any real value is only via the MULTI-aligner-corroborated set (where the
+   87 short-read-validated junctions live), not its solo calls. → revisit the keep-GMAP decision.
+2. **Vindicates the two-validity-claims rule** (advisor) and the PI's instinct to pull short reads: ONT
+   recurrence (placement mechanics within one platform) ≠ error-model realism. The orthogonal gold standard
+   caught artifacts the ONT-only analysis rated as promising.
+3. **Design-doc impact:** the de-novo discovery track must require orthogonal/short-read corroboration, NOT
+   recurrence+motif (which passed all 111 false positives). Strengthens the §8 abstain band + the C6
+   variant-aware guard + LLR arbitration. "Recurrent + GT-AG" is necessary, not sufficient.
+4. **The real novels are the 87** short-read-validated members of the 609 multi-aligner set (esp. the 62 in
+   3/3 reps) — a high-confidence chr5 novel-junction set worth carrying forward (some may be genuinely
+   novel vs annotation; intersect with gencode to confirm).
+
+Caveat: spot-checked the top 3 of the 111 in coordinate detail; the class-level signal (110/111 zero
+Illumina reads at exact coords) + these three make the artifact verdict robust. Single marginal case had
+2-4 reads in 1 rep.
