@@ -12,6 +12,16 @@ placement matches truth" does. The whole design is built around position-exact t
 **ambiguity-aware match** (`normalize_junction` / `_canonical_within_window`, `chimeric_consensus.py:59-155`)
 so a correct call one bp into a donor/acceptor repeat is not charged FP.
 
+## Two distinct validity claims (do NOT let one stand in for the other)
+Simulation validates **placement MECHANICS** — did the DP put the indel/junction where truth says — but
+it CANNOT validate that badread/NanoSim's error distribution matches real RNA004. Tuning the
+HP-length-law / emission against simulated errors and trusting a green number = **hill-climbing into the
+simulator's error model** (the same artifact trap as the internal score, one level up). Therefore:
+- **Simulation = placement-mechanics truth** (this benchmark).
+- **Error-model REALISM = real-data corroboration** (Deliverable B's read-level GMAP corroboration; future
+  SIRV/sequin spike-ins). A simulation win is necessary, not sufficient — it must transfer to real data.
+Keep the two claims separate in every report; never let a simulation number substitute for transfer.
+
 ## Two-tier architecture
 The requirements split cleanly into "discriminate the concepts" (needs controlled, by-construction truth)
 and "external validity / size the tail" (needs realistic whole-transcriptome reads). Build both.
