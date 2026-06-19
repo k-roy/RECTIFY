@@ -44,18 +44,20 @@ minimap2 `splice:sr`.
 - **COMPASS conda env build — RESCUE in flight, job 30230396** (compute-node, sentinel `$W/.env_rc`, log
   `$W/env_build2.<jid>.out`). The first attempt (login-node nohup, EXACT-pin full-lock yml) was SIGKILLed
   (rc=137, login resource limit). Rescue uses `$W/COMPASS_env_minimal.yml` (15 tools, version-pinned only,
-  build-unpinned; classic solver — no libmamba available). If THIS fails: check the log for an unsatisfiable
+  build-unpinned; classic solver — no libmamba available). **AS OF BATON-PASS: job 30230396 RUNNING ~42min, STILL in 'Collecting package metadata' — the classic bioconda solver is SLOW; 3h wall, watcher `by010lz0z` active.** If THIS fails: check the log for an unsatisfiable
   pin and relax that version (e.g. drop blast/magicblast pins), or reuse aligner_bench + add only the
   missing tools (magicblast, cutadapt, gffread, picard via `conda install`).
 
 ## RESUME (concrete, with branch logic)
-**Step A — check the env build:**
+**Step A — check the env build (job 30230396, sentinel `$W/.env_rc`, log `$W/env_build2.<jid>.out`, watcher `by010lz0z`):**
 `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.env_rc 2>/dev/null || echo RUNNING'`
-- If `RUNNING` → wait / `tail $W/env_build.log`.
-- If `0` → env OK (`conda activate compass`). Proceed to Step B.
-- If non-zero (FAILED) → RESCUE: strip the `=<build>` hash from each line in a copy of the yml (version-only
-  pins), e.g. `sed -E 's/=[^=]+$//' COMPASS_environment.yml`, OR `conda install -n base mamba` then
-  `mamba env create`. Re-run; then Step B.
+- `RUNNING` → the classic conda solver is SLOW (≥42 min on repodata at baton-pass); give it the 3h wall.
+  If it TIMEOUTs or is still stuck collecting metadata: FASTER-SOLVER fallback — `conda install -n base
+  conda-libmamba-solver -y` then `conda env create -f $W/COMPASS_env_minimal.yml --solver libmamba`; OR reuse
+  the existing `aligner_bench` env (already has STAR/GSNAP/BBMap/samtools) and `conda install` ONLY the
+  missing tools (magicblast, cutadapt, gffread, picard, hisat2) — fastest path to unblock P1/P2.
+- `0` → `conda activate compass`; verify the 6 aligners present (`conda list | grep -iE 'star|hisat2|gmap|magicblast|bbmap'`); proceed to Step B.
+- non-zero → read `env_build2.<jid>.out` for the unsatisfiable pin; relax that version (likely `blast`/`magicblast`); resubmit.
 
 **Step B — P1 human config edits (in `~/work/COMPASS`, commit to a `human-a549` branch, push authorized):**
 - `COMPASS.sh`: set GENOME/FASTA → `…/refs/GRCh38.primary_assembly.genome.fa`; GTF → gencode v44;
