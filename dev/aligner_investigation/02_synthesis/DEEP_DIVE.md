@@ -221,6 +221,83 @@ Value = the rare read where its edlib terminal recovery is **uniquely** correct 
 
 ---
 
+## 5b. GMAP — sandwich-DP splice-model-first aligner (external contrast — NOT in the panel, no win-rate)
+
+**Role.** GMAP is investigated as an **algorithmic contrast / candidate**, *not* a member of RECTIFY's
+5-aligner ensemble — it has **no win-rate** here. It is the historically dominant annotation-free Iso-Seq
+mapper (the de-facto PacBio mapper before minimap2) and the cleanest external example of **splice-model-first**
+junction placement. *(See `01_investigation/gmap.md`.)*
+
+**Iso-Seq invocation (ecosystem recipe, not a RECTIFY wrapper):**
+`gmap -d <db> -D <dbdir> -f samse -n 0 --no-chimeras -t N input.fasta > aln.sam`
+
+### Index = sampled oligomer hash + IIT
+A *sampled* genomic k-mer lookup table (not a suffix tree): default **k=15**, two-level scheme with a
+**basesize=12 offset prefix** resolved by a compressed **gamma-pointer** layer over the remaining 3 positions,
+oligomers **sampled every 3 bp** (fixed stride). Build RAM scales with k (k=15 → **~4 GB** mammalian; trivial
+on yeast). **IIT** (Interval Index Tree) files hold optional splice-site / SNP auxiliary data for tolerant modes.
+
+### Stage 1 — approximate mapping (oligomer hash → diagonalization)
+Each sampled query 15-mer is looked up in the genomic hash → candidate genomic positions. GMAP
+**diagonalizes** these hits — groups them by `(genomic − query)` offset, so all seeds of one ungapped exon
+segment fall on (nearly) the same diagonal. Well-supported diagonals define **candidate genomic regions**.
+Up to `-n/--npaths = 5` paths survive (`-n 0` ⇒ 1, or 2 if a chimera is found); best = primary.
+
+### Stage 2 — oligomer chaining + **sandwich DP** (the distinctive stage)
+Within a region, scattered same-diagonal seeds are chained into ordered HSPs (ungapped exon blocks),
+allowing diagonal *jumps*: a jump where genomic offset grows far faster than query offset is a **candidate
+intron**; a small balanced jump is an indel. When two anchored exon segments flank an unresolved gap, GMAP
+runs **two dynamic programs simultaneously from both anchored ends toward the middle** (the donor-side DP
+extending right, the acceptor-side DP extending left) and solves for the single intron position that
+**maximizes (alignment score + splice-site score)**. This is the structural contrast with the panel: every
+panel aligner emits the intron as a long gap op inside *one* left-to-right banded DP (cost = two-piece affine
+gap + a GT-AG bonus); GMAP **brackets the gap between two anchors and searches the boundary jointly from both
+sides** — letting it slide the exon/intron boundary onto the position that is simultaneously the best base
+alignment *and* the strongest splice signal, even when basecall errors sit at the junction.
+`--min-intronlength` (9) is GMAP's own **N-vs-D** decision boundary; `-K` bounds intron span (man 1000000 /
+src 200000 ⚠).
+
+### Stage 3 — nucleotide DP + microexon + chimera
+Nucleotide-level DP (`dynprog*.c`) resolves remaining mismatches/indels and the exact intron boundaries
+within the Stage-2 skeleton, producing the base-perfect alignment and SAM CIGAR (`N` for introns). The DP
+absorbs substantial SNPs/small indels without breaking the exon chain (a SNP-tolerant IIT mode and
+`--cross-species` extend this). **De novo microexon detection:** a tiny internal exon is inserted only if a
+flanking **splice-site probability** exceeds `--microexon-spliceprob` (src 0.95 / man 0.90 ⚠) — uLTRA-class
+small-exon competence, but annotation-free, from the splice model. **Chimera / read-through detection:** if a
+query margin (`--chimera-margin`, src 30 / man 40 ⚠) can't align to the same locus, GMAP searches for the
+remainder elsewhere and reports a two-part alignment (`-n 0` forces 2 paths).
+
+### Splice model = the algorithmic signature
+Boundary placement is **sequence-based** and evaluated on the genome, with the canonical signal as a
+**reward, never a gate**: `GT-AG > GC-AG/AT-AC > non-canonical`, magnitude set by `--canonical-mode 0/1/2`
+where **2 (conditional)** *down-weights* the canonical bonus on high-identity reads (won't bend a clean
+alignment to fake GT-AG) and *up-weights* it on noisy reads (pull an ambiguous boundary onto real signal).
+Modern builds add **MaxEnt** novel-splice scoring (GSNAP→GMAP), superseding the 2005 "no probabilistic model"
+core. **No cross-read consensus** — each read is refined independently against genome + model.
+
+### Why it is not a panel fit
+- **Speed is disqualifying.** Per-read nucleotide/sandwich DP, single-threaded per alignment; independent
+  benchmarks put **minimap2 ≥ ~30× faster** (Li 2018). Throughput is read-parallel only (no within-alignment
+  SIMD in the classic path) → wall-time-prohibitive at modern Iso-Seq/ONT depth — fatal for RECTIFY's
+  chunked-alignment HPC mandate.
+- **No 3'-end benefit.** GMAP has **no poly-A awareness** — it aligns the in-read A-run as ordinary sequence,
+  so on ONT DRS the DP can slip the 3' exon end into a genomic A-run, leaving the CPA imprecise — *the exact
+  artifact RECTIFY corrects*. Its splice model helps internal junctions but does **nothing** for the unspliced
+  3' terminal exon / CPA where RECTIFY's value lies. (Same limitation as deSALT/minimap2; GMAP is no better.)
+- **Per-read isolation.** No cross-read exon consensus (unlike deSALT) → junctions can be placed a few bp
+  apart between reads of the same isoform — the inhomogeneity correct-first selection penalizes.
+
+### Relevance to RECTIFY (INFER)
+GMAP's sandwich DP is the **closest external analogue to RECTIFY's sequence-first junction refiner** (Module 2H,
+`junction_refiner.py`): both score junctions sequence-first, treat canonical as a tie-breaker/prior never a
+gate, and slide the boundary onto the best-supported site. GMAP proves the policy can live inside the aligner;
+RECTIFY decouples it as a post-hoc refinement and avoids GMAP's speed cost. As a candidate aligner GMAP would
+likely earn only a **low win-rate** specialist slot (its de novo microexon + divergence/SNP tolerance, on
+difficult loci, competing with uLTRA's niche but annotation-free), if any — speed + no 3'-end benefit argue
+against inclusion in the production panel.
+
+---
+
 ## 6. Cross-Cutting Advantages & Disadvantages Matrix
 
 | Aligner | Signature advantage | Signature disadvantage | Independent failure mode (why kept) |
@@ -230,6 +307,7 @@ Value = the rare read where its edlib terminal recovery is **uniquely** correct 
 | **mapPacBio** | Column-optimal full-SW boundary = best CPA precision | 6 kb ceiling; RAM/JVM-slow; no GT-AG model | Exact unspliced 3' ends deSALT can't beat |
 | **uLTRA** | Exact GTF junctions; 8-nt micro-exon recovery | Annotation-bound; poly-A stripped; brittle | Annotated multi-exon isoform junctions |
 | **gapmm2** | edlib terminal-exon recovery (short 5' exons) | Body=minimap2; PAF-only; rarely distinctive | The unique edlib-recovered terminus no one else found |
+| **GMAP** *(contrast — NOT in panel, no win-rate)* | Accurate **annotation-free** de novo splice sites (sandwich DP joint base+splice optimum); strong **SNP/indel + divergence tolerance**; de novo microexon; **sandwich-DP precedent** for RECTIFY's sequence-first refiner | **Disqualifying speed** (≥30× slower than minimap2; **single-threaded per-alignment DP**, read-parallel only); **no poly-A / ONT-homopolymer / 3'-end awareness**; **per-read isolation** (no cross-read consensus) | n/a — not in panel; investigated as algorithmic contrast / candidate (low expected win-rate if ever added) |
 
 ---
 
@@ -257,6 +335,12 @@ ensemble + correct-first selection.
   alignment end. It offers a clean junction backbone but **zero CPA precision**. *(uLTRA §"Weaknesses")*
 - **gapmm2 — inherits minimap2's 3'-end drift** for the body, fixing only orphan terminal exons via edlib;
   the cs-overrun bug occasionally over-runs the query span at the terminus. *(gapmm2 §5.2, §7)*
+- **GMAP — splice-strong but 3'-end-blind (external contrast, not in panel).** Despite the strongest
+  *internal*-junction placement of any aligner surveyed (sandwich DP, joint base+splice optimum), GMAP offers
+  **NO 3'-end / CPA benefit to RECTIFY**: it has no poly-A model and aligns the in-read A-run as ordinary
+  sequence, so on ONT DRS the DP slips the unspliced terminal-exon end into a downstream genomic A-run exactly
+  as deSALT/minimap2 do. Its splice strength does nothing for the terminal exon where RECTIFY's value lies —
+  it would be just another upstream aligner whose 3' end RECTIFY's correct-first logic must clean. *(gmap.md §6, §8.2)*
 
 ### Why ensemble + correct-first recovers truth
 1. **Aligner choice is read-dependent.** No single aligner is uniformly best at the noisy 3' terminal exon.
