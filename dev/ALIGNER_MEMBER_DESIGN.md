@@ -364,3 +364,77 @@ The existing fence test pins **behavioral invariants (relative orderings), NOT e
 
 6. Q-recalibration scope: ship Q-blind first and add the recalibration table only where its ablation shows non-negative lift (C2/C3/C4 each ablate it separately). Confirm this conservative default vs wiring Q everywhere up front given the per-basecaller maintenance burden.
 
+
+
+---
+
+# ADDENDUM — two user-proposed novelty adds (2026-06-18)
+
+Two PI-proposed adds, assessed + grounded against the live tree. Both fit the architecture; both
+remain hypotheses-pending-ablation on the benchmark.
+
+## Add (a) — generalize the empirical error table into the emission model (STRENGTHENS C1/C3)
+**Status: already the spine; the add is a generalization, not a new concept.** C1/C3's meta-lever already
+wires `HpPenaltyTable` (`−log P` from `scripts/calibration/empirical_cigar_error_profiler.py`) into the
+DP. The profiler currently keys emissions on `(op_type, ref_base, hp_run_length, strand)` — i.e. the
+empirical model is **homopolymer/STR-conditioned only**. The add: broaden the conditioning context so the
+WHOLE emission (match/mismatch/indel) is empirical, not just the in-run gap term — candidate contexts:
+short k-mer / dinucleotide neighborhood, position-in-read (basecaller drift), and base-quality decile.
+- **Honest novelty:** LOW as method (this is a context-richer pair-HMM emission — see C3 prior-art:
+  Dindel/GATK). The orthogonality is the **ONT-chemistry-specific empirical table**, not the DP.
+- **Integration:** extend `empirical_cigar_error_profiler` key tuple + `HpPenaltyTable` lookup signature;
+  the C1 recurrence already consumes a per-position cost vector, so richer context is a table swap, not a
+  recurrence change. Strict backward-compat: HP-only context = today's behavior (an ablation arm).
+- **Guardrail:** more context cells ⇒ the `min_count=100/cell` benchmark floor bites harder (sparse
+  high-order contexts silently nullify to flat → false refute). Add context cells ONLY where the cell
+  count clears the floor on TRAIN; fall back to the marginal (HP-only) cost otherwise (hierarchical
+  back-off). This is the FDR-safe way to add context.
+- **Ablation:** richer-context emission must beat HP-only-context on position-exact (ambiguity-aware)
+  indel concordance on held-out TEST; refuted if back-off-to-marginal is never beaten.
+
+## Add (b) — variant / haplotype-aware alignment (NEW CONCEPT C6) — defensively load-bearing for discovery
+**Status: partially already built.** RECTIFY already ships `run_variant_aware_scan` (`variant_scan.py`) →
+`VariantAwareHomopolymerRescue` (`indel_corrector.py`): a single-pass position-level **variant-frequency
+map** that distinguishes a basecaller HP error from a real variant (`min_variant_fraction=0.8`,
+`min_reads_for_variant_call=5`). Today that map only gates **HP rescue**. C6 extends it.
+- **Why it matters for CO-PRIMARY discovery (the load-bearing reason):** a standing germline/somatic
+  variant (SNP or indel) near a splice site can shift the local alignment and **fabricate a "novel"
+  junction**, OR a variant in the exon can be mis-charged as a mismatch that the DP "repairs" with a
+  spurious micro-indel. Both directly **inflate the de-novo (esp. non-canonical) discovery FDR** that §8
+  is built to control. A variant-aware reference reclassifies variant-induced pseudo-junctions BEFORE the
+  discovery LLR sees them. C6 is therefore not just an accuracy add — it is a first-class **discovery-FDR
+  guard**, complementary to §8's abstain band.
+- **Two tiers (MVP → frontier):**
+  - **C6-MVP (variant-aware emission, dependency-light):** reuse the existing variant-frequency scan to
+    build a per-position alt-allele set; in the C1/C3 emission, a read base matching a **supported alt
+    allele** is scored as a MATCH-to-variant (`−log P(match)`), not a mismatch — so the DP stops
+    "repairing" real variants with micro-indels/junctions. The discovery track must mark any junction
+    whose donor/acceptor falls within `±k` of a supported variant as **variant-adjacent → abstain unless
+    independently corroborated** (ties into §8 + the Deliverable-B corroboration logic). No new external
+    dep (in-house pileup-style scan already exists).
+  - **C6-FULL (haplotype phasing + ploidy inference — the frontier, genuinely novel):** phase the
+    supported variants into haplotypes and realign against the **allele-aware (diploid/polyploid)**
+    reference. A549 is an **aneuploid** cancer line, so this needs **ploidy / copy-number-aware allele
+    inference** (allele fractions are not 0.5/1.0) — this is the genuinely novel, research-grade piece and
+    where the orthogonality is strongest (NO panel aligner is haplotype-aware). Gate FULL behind MVP
+    proving variant-induced FDR is non-trivial on the benchmark.
+- **Orthogonality:** all 5 panel aligners align to a flat haploid reference → variant-induced errors are a
+  CORRELATED family they all share; a variant-aware member's error mode (variant-call FDR / mis-phasing)
+  is independent.
+- **Dependency cost:** MVP light (reuses in-house scan; no torch/no external caller — explicitly NOT
+  clair3/deepvariant). FULL adds a phasing step (in-house or a light tool); ploidy inference is compute,
+  not a heavy dep.
+- **Benchmark requirement (MUST land in P0 — see SIMULATION_BENCHMARK_SPEC.md):** a **standing-variant
+  stratum** — simulated reads carrying known SNPs/indels at known positions, het vs hom, near vs far from
+  junctions/CPA, and at non-Mendelian VAFs (to mimic aneuploid A549) — so we can MEASURE (1) how much
+  variant-induced junction/indel FDR the current flat-reference panel suffers, and (2) C6's reduction of
+  it. Without this stratum C6 is unfalsifiable.
+- **Ablation:** with the variant stratum, exact junction/indel FDR with vs without C6-MVP variant-aware
+  emission; FULL must additionally reduce error at heterozygous/allele-specific loci over MVP. Refuted if
+  variant-induced FDR is negligible on the benchmark (then C6 is descoped — a measured decision).
+
+## Roadmap placement
+- (a) folds into **C1 Phase 2 / C3** (table generalization with hierarchical back-off) — no new phase.
+- (b) C6-MVP is a **new P-phase after C3 (LLR) and before/with C4**, because it depends on the calibrated
+  emission (C3) and feeds the discovery-FDR track (§8). C6-FULL (phasing+ploidy) is **deferred to a later
+  cycle**, gated on C6-MVP showing variant-induced FDR is material on the benchmark.

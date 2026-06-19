@@ -33,6 +33,7 @@ Strata (one generator each, parameterized, with a per-read truth row):
 | Paralog loci | SMN1/SMN2-style near-duplicates, known true locus | true locus per read | window-selection, POA mis-clustering |
 | Panel-failure | reads constructed to defeat seed-chain (high divergence / chimeric) | true origin | FracMinHash fallback + TAIL SIZE |
 | Coverage × Q | singleton→deep pools; Q deciles, BOTH calibrated AND deliberately-miscalibrated phred | true bases, true Q | POA pooling, soft-decision (isolate recalibration gain) |
+| **Standing variants (C6)** | reads carrying KNOWN SNPs/indels at known positions: het vs hom, near vs far from junctions/CPA, at non-Mendelian VAFs (mimic aneuploid A549) | true variant set per locus + true junction/CPA truth | C6 variant/haplotype-aware alignment; measures variant-induced discovery FDR |
 
 ### Tier 2 — REALISTIC transcriptome simulation (external validity + global recall/FDR)
 Whole-transcriptome ONT reads with per-read origin → junction truth, for global novel-junction recall+FDR
@@ -66,6 +67,10 @@ and to SIZE the panel-failure tail on realistic data (open question Q1).
 - tied-indel placement agreement on STR; window-selection accuracy on paralogs
 - fallback recovery rate vs a random-window null **+ the size of the panel-failure tail**
 - consensus accuracy under integer-score **vs** calibrated-LR (replicate 0.09→1.07; show LR holds)
+- **variant-induced junction/indel FDR with vs without C6** (variant-aware emission), stratified
+  het/hom and variant-adjacent vs variant-distant junctions — the measurement that decides whether C6 is
+  material or descoped (a variant near a splice site can fabricate a "novel" non-canonical junction →
+  this is a first-class CO-PRIMARY-discovery FDR guard, complementary to the §8 abstain band)
 
 ## Two META-requirements every ablation inherits
 1. **Held-out train/test split** for any calibrated table (HP-length-law, CPA) — else the win is
