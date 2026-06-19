@@ -416,6 +416,67 @@ class TestSelectBestAlignment:
         # Winner must be a1 or a2 (both agree with majority 3' end)
         assert result.best_aligner in ('a1', 'a2')
 
+    def test_tiebreak_compass_vs_rectify_diverge(self):
+        # Discriminating test: the two tiebreak orders must pick DIFFERENT winners
+        # on the same score-tied input, or the param does nothing.
+        #
+        #   al_ungapped: no introns        → score 0
+        #   al_gapped:   one annotated intron, no clips/errors → score 0 (a real tie:
+        #                scoring penalizes neither gaps nor annotation)
+        #
+        # COMPASS order (ungapped > gapped > annotated > shorter-intron) → ungapped wins.
+        # RECTIFY order (3'-agree > annotated > canonical)               → annotated/gapped wins.
+        annotated = {('chrI', 500, 700, '+')}
+        al_ungapped = _make_alignment_info(
+            aligner='aaa_ungapped',
+            junctions=[],
+            effective_five_prime_clip=0,
+            effective_three_prime_clip=0,
+        )
+        al_gapped = _make_alignment_info(
+            aligner='zzz_gapped',
+            junctions=[(500, 700)],
+            effective_five_prime_clip=0,
+            effective_three_prime_clip=0,
+            canonical_count=1,
+        )
+
+        def _fresh():
+            # Clone so per-call mutation (is_best / junction_score) does not leak.
+            return {
+                'aaa_ungapped': replace(al_ungapped),
+                'zzz_gapped': replace(al_gapped),
+            }
+
+        r_compass = select_best_alignment(
+            _fresh(), self._genome(), annotated_junctions=annotated, tiebreak='compass'
+        )
+        assert r_compass.best_aligner == 'aaa_ungapped'
+
+        r_rectify = select_best_alignment(
+            _fresh(), self._genome(), annotated_junctions=annotated, tiebreak='rectify'
+        )
+        assert r_rectify.best_aligner == 'zzz_gapped'
+
+    def test_tiebreak_default_is_rectify(self):
+        # Default (no tiebreak arg) must match explicit 'rectify' — long-read callers
+        # are unaffected by the new param.
+        annotated = {('chrI', 500, 700, '+')}
+        al_ungapped = _make_alignment_info(aligner='aaa_ungapped', junctions=[],
+                                           effective_five_prime_clip=0)
+        al_gapped = _make_alignment_info(aligner='zzz_gapped', junctions=[(500, 700)],
+                                         effective_five_prime_clip=0, canonical_count=1)
+        default = select_best_alignment(
+            {'aaa_ungapped': replace(al_ungapped), 'zzz_gapped': replace(al_gapped)},
+            self._genome(), annotated_junctions=annotated,
+        )
+        assert default.best_aligner == 'zzz_gapped'  # rectify order: annotated wins
+
+    def test_tiebreak_invalid_raises(self):
+        al = _make_alignment_info(aligner='minimap2')
+        with pytest.raises(ValueError):
+            select_best_alignment({'minimap2': al}, self._genome(), tiebreak='bogus')
+
     def test_confidence_high_when_all_agree(self):
         junctions = [(500, 700)]
         al1 = _make_alignment_info(aligner='a1', junctions=junctions, effective_five_prime_clip=0)

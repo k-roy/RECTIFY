@@ -759,6 +759,12 @@ def run_align(args: argparse.Namespace) -> int:
         use_chimeric = getattr(args, 'chimeric_consensus', False)
         if use_chimeric:
             logger.info("Chimeric consensus enabled (experimental) — segments scored independently")
+        # Short-read mode adjudicates novel junctions with the COMPASS published
+        # tiebreak order (ungapped > gapped > annotated > shorter-intron); an
+        # explicit --tiebreak overrides. Long-read keeps the rectify order.
+        _tiebreak = getattr(args, 'tiebreak', None)
+        if not _tiebreak:
+            _tiebreak = 'compass' if getattr(args, 'short_read', False) else 'rectify'
         stats = run_consensus_selection(
             bam_paths=successful_aligners,
             genome=genome,
@@ -766,6 +772,7 @@ def run_align(args: argparse.Namespace) -> int:
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
             checkpoint_dir=getattr(args, 'checkpoint_dir', None),
+            tiebreak=_tiebreak,
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")
 

@@ -20,6 +20,7 @@ def select_best_alignment(
     alignments: Dict[str, AlignmentInfo],
     genome: Dict[str, str],
     annotated_junctions: Optional[Set[Tuple[str, int, int, str]]] = None,
+    tiebreak: str = 'rectify',
 ) -> ConsensusResult:
     """
     Select the best alignment from multiple aligners for a single read.
@@ -28,10 +29,29 @@ def select_best_alignment(
         alignments: Dict mapping aligner name to AlignmentInfo
         genome: Dict mapping chrom to sequence
         annotated_junctions: Optional set of (chrom, start, end, strand) for annotated junctions
+        tiebreak: Tiebreak ordering applied when multiple aligners share the top
+            junction score. Two orders are supported:
+
+            - ``'rectify'`` (default, long-read end-correction mode): prefer the
+              alignment whose corrected 3' end agrees with the majority, then more
+              annotated junctions, then more canonical (GT/AG) splice sites. This
+              is the established long-read order and is kept byte-identical.
+            - ``'compass'`` (short-read splice-junction mode): the COMPASS published
+              order ``ungapped > gapped > annotated > shorter-intron`` — prefer the
+              alignment with no introns, then more annotated junctions, then the
+              shorter total intron length. On a score tie this conservatively favors
+              the simplest explanation, which is what lets the short-read panel flag
+              suspected false junctions as artifacts. The function default stays
+              ``'rectify'`` so existing long-read callers are unaffected; the
+              short-read entrypoint passes ``tiebreak='compass'`` explicitly.
 
     Returns:
         ConsensusResult with best alignment selected
     """
+    if tiebreak not in ('rectify', 'compass'):
+        raise ValueError(
+            f"tiebreak must be 'rectify' or 'compass', got {tiebreak!r}"
+        )
     if not alignments:
         return ConsensusResult(
             read_id="",
@@ -69,24 +89,55 @@ def select_best_alignment(
     if len(tied_aligners) == 1:
         best_aligner = tied_aligners[0]
     else:
-        # Tiebreaker 1: prefer alignment whose corrected 3' end agrees with majority
-        all_corrected = [a.corrected_3prime for a in alignments.values()
-                         if a.corrected_3prime is not None]
-        def _count_3prime_agreement(aligner_name):
-            pos = alignments[aligner_name].corrected_3prime
-            return sum(1 for p in all_corrected if p == pos) if pos is not None else 0
-
-        # Tiebreaker 2: prefer alignment with more annotated junctions
-        # Tiebreaker 3: prefer alignment with more canonical splice sites (GT/AG)
-        def _tiebreak_key(aligner_name):
+        # Number of this alignment's junctions that match an annotated intron.
+        # Shared by both tiebreak orders.
+        def _n_annotated(aligner_name):
             a = alignments[aligner_name]
-            n_annotated = 0
-            if annotated_junctions and a.junctions:
-                n_annotated = sum(
-                    1 for junc in a.junctions
-                    if (a.chrom, junc[0], junc[1], a.strand) in annotated_junctions
+            if not (annotated_junctions and a.junctions):
+                return 0
+            return sum(
+                1 for junc in a.junctions
+                if (a.chrom, junc[0], junc[1], a.strand) in annotated_junctions
+            )
+
+        if tiebreak == 'compass':
+            # COMPASS published order: ungapped > gapped > annotated > shorter-intron.
+            # Encoded as a tuple maximized by max():
+            #   is_ungapped   1 if the alignment has no introns (prefer ungapped)
+            #   n_annotated   more annotated junctions preferred
+            #   -intron_len   shorter total intron length preferred (negate to maximize)
+            #   canonical     more canonical GT/AG splice sites (scientific tiebreaker,
+            #                 not part of the published order but harmless and improves
+            #                 determinism vs. raw name fallback)
+            #   aligner_name  deterministic final fallback
+            def _tiebreak_key(aligner_name):
+                a = alignments[aligner_name]
+                is_ungapped = 0 if a.junctions else 1
+                total_intron_len = sum(end - start for start, end in a.junctions)
+                return (
+                    is_ungapped,
+                    _n_annotated(aligner_name),
+                    -total_intron_len,
+                    a.canonical_count,
+                    aligner_name,
                 )
-            return (_count_3prime_agreement(aligner_name), n_annotated, a.canonical_count)
+        else:
+            # RECTIFY long-read order (kept byte-identical):
+            # Tiebreaker 1: prefer alignment whose corrected 3' end agrees with majority
+            all_corrected = [a.corrected_3prime for a in alignments.values()
+                             if a.corrected_3prime is not None]
+            def _count_3prime_agreement(aligner_name):
+                pos = alignments[aligner_name].corrected_3prime
+                return sum(1 for p in all_corrected if p == pos) if pos is not None else 0
+
+            # Tiebreaker 2: prefer alignment with more annotated junctions
+            # Tiebreaker 3: prefer alignment with more canonical splice sites (GT/AG)
+            def _tiebreak_key(aligner_name):
+                return (
+                    _count_3prime_agreement(aligner_name),
+                    _n_annotated(aligner_name),
+                    alignments[aligner_name].canonical_count,
+                )
 
         best_aligner = max(tied_aligners, key=_tiebreak_key)
 

@@ -2026,6 +2026,7 @@ time $PYTHON -m rectify consensus \\
     "bwa:$BWA_CORR_BAM" \\
     --genome "$GENOME" \\
     --annotation "$ANNOT" \\
+    --tiebreak compass \\
     --prefix "$PREFIX" \\
     -o "$SCRATCH_WORK/"
 echo "  Consensus done: $(date)"

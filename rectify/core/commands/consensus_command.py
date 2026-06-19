@@ -136,6 +136,20 @@ Examples:
         )
     )
 
+    parser.add_argument(
+        '--tiebreak',
+        choices=['rectify', 'compass'],
+        default='rectify',
+        help=(
+            'Tiebreak order when multiple aligners share the top junction score. '
+            '"rectify" (default, long-read): 3\'-agreement > annotated > canonical. '
+            '"compass" (short-read splice-junction mode): ungapped > gapped > '
+            'annotated > shorter-intron — the COMPASS published order, which on a '
+            'score tie favors the simplest explanation. The short-read pipeline '
+            'passes --tiebreak compass.'
+        )
+    )
+
     return parser
 
 
@@ -376,6 +390,7 @@ def run_consensus(args: argparse.Namespace) -> int:
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
             read_num_sidecar=str(read_num_sidecar) if read_num_sidecar is not None else None,
+            tiebreak=getattr(args, 'tiebreak', 'rectify'),
         )
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")
