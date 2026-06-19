@@ -128,7 +128,7 @@ proposal over-reaches) · **REJECT**.
 | Sub-idea | Verdict | One-line reason |
 |---|---|---|
 | P1 Cross-read junction consensus (first-class step) | **KEEP-WITH-CAVEATS** | Generalizes deSALT's mechanism to all 5 aligners — real. **Same over-homogenization risk as chaining_dp P5** (collapses genuine alt-5'/3'SS isoforms <50 bp apart, which exist in yeast RP genes). The per-read sequence veto + shared-boundary-anchoring mitigations are necessary, not optional. |
-| P2 Unified calibrated junction scorer (MaxEnt + HP + cross-read + annotation prior, logistic fit) | **KEEP-WITH-CAVEATS** | The right direction (replace the brittle lexicographic tuple with a calibrated score). **But:** (a) MaxEnt is metazoan-trained → must retrain a yeast PWM; (b) `sklearn` for the logistic fit **does not import here**; (c) the calibration set (≥4-aligner concordance) is itself herd-defined → partial circularity; (d) wiring it into selection collides with the C1 problem — it only helps "if wired into selection," same dependency as ensemble §1. |
+| P2 Unified calibrated junction scorer (MaxEnt + HP + cross-read + annotation prior, logistic fit) | **KEEP-WITH-CAVEATS** | The right direction (replace the brittle lexicographic tuple with a calibrated score). **But:** (a) MaxEnt is metazoan-trained → must retrain a yeast PWM; (b) `sklearn` for the logistic fit **does not import here**; (c) the calibration set (≥4-aligner concordance) is itself herd-defined → partial circularity; (d) ~~wiring it into selection collides with the C1 problem~~ **— corrected: HP-ED selection (Path A) already runs in production on the build, so P2 sharpens the *live* metric rather than depending on a separate "wire-in" step (the ensemble §1 dependency is resolved).** |
 | P3 De-novo micro-exon recovery (≤10 nt) | **DESCOPE → metazoan** | Author honest: low yeast value (few micro-exons), no validation read exercises it, NET-seq can't validate it (3'-assay). Needs P2 first. Defer. |
 | P4 Calibrated novel-junction handling (charge N-ops their improbability) | **KEEP** | Directly fixes C3 (N=0 free-intron exploit) the *right* way (calibrated cost, not a fixed gate). Mostly free given P2. Highest correctness-per-effort in this file. |
 | P5 SpliceAI/Pangolin CNN | **DESCOPE → metazoan, interface-only** | Same as ml_learned §3 — **dedup**. Build the swappable interface, defer the CNN. |
@@ -236,8 +236,10 @@ under-weight:**
 
 **Therefore the truly correct "do-first" is two-pronged and bigger than any file states:**
   1. **(a)** the win-rate provenance + Path A/B ablation (ensemble §5 / redteam exp 1-2) — cheap, pure
-     code, no oracle needed. This alone settles whether the win rates are a metric artifact and whether
-     to wire Path A. **This is the genuine cheapest unblocker.**
+     code, no oracle needed. This alone settles whether the win rates are a metric artifact. **This is
+     the genuine cheapest unblocker.** *(Build correction: "whether to wire Path A" is moot — Path A is
+     already wired and runs in production on the build; the ablation is now of two live paths, A vs the
+     B fallback.)*
   2. **(b)** a **non-NET-seq** CPA truth set (Quant-seq / 3'-seq, or at minimum a held-out NET-seq
      sample from a *different run*, plus annotated-intron junction truth for spliced reads). Until (b)
      exists, NET-seq concordance is a sanity check, not an oracle, and **no ML/weight/prior proposal is
@@ -248,15 +250,19 @@ under-weight:**
 
 ```
 TIER 0 — measurement, no oracle needed (DO FIRST, days)
-  [E0] Win-rate provenance + Path A/B ablation harness        (ensemble §5; redteam exp 1-2,5)
+  [E0] Win-rate provenance + Path A-vs-B-fallback ablation harness   (ensemble §5; redteam exp 1-2,5)
        → answers "is the spread a metric artifact?" with ZERO accuracy assumptions.
-  [E1] Wire Path A (collect existing corrected BAMs, C6) BUT only behind a flag,
-       SHIPPED TOGETHER WITH the N-op calibrated cost (C3 fix = splice P4)         (ensemble §1 + splice P4)
+       BUILD: Path A is ALREADY the production default (raw-BAM HP-ED path,
+       corrected_consensus.py:1262 / single_sample.py:238-250 / split_command.py:1085-1094) —
+       this is an ablation of two live paths, NOT "turn a dead path on."
+  [E1] N-op calibrated cost (C3 fix = splice P4) — the ONLY remaining open J1 item; the
+       Path-A wiring itself is DONE on the build.                                (splice P4)
 
 TIER 1 — build the REAL oracle (gating cost, weeks; the program's true critical path)
   [O0] Non-NET-seq CPA truth set (Quant-seq/3'-seq or cross-run held-out) +
        annotated-intron junction truth + seed-exon-recall instrumentation.
-       Regenerate the absent penalty table (C13) as part of this.                  (all P0s, merged)
+       VALIDATE/VERSION the bundled penalty tables (C13) as part of this — they are
+       already shipped + --Scer-auto-resolved on the build, NOT absent.            (all P0s, merged)
   *** Until [O0] exists, everything below is a hypothesis. ***
 
 TIER 2 — cheap, orthogonal, low-risk wins (config + already-ingested data)
