@@ -28,6 +28,8 @@ minimap2 `splice:sr`.
 - **samfixcigar replacement** `$W/samfixcigar.py` — pysam, rewrites `M`→`=`/`X` vs reference (COMPASS needs
   SAM-1.4 ops for its mismatch scoring). Replaces jvarkit (its gradle build FAILED — needs JDK17, COMPASS
   env pins openjdk8). **NOT YET VALIDATED** against a chr-named BAM — do that when wiring P3.
+- **COMPASS conda env BUILT** (rc=0, job 30230396) — env `compass` at `/home/groups/larsms/users/kevinroy/anaconda3/envs/compass`. All 6 aligners (bbmap.sh / STAR 2.7.10a / hisat2 2.2.1 / magicblast 1.5.0 / gsnap+gmap_build 2021.05.27) + makeblastdb + cutadapt 2.6 + gffread + picard + samtools 1.7 + pysam 0.15.3 verified runnable (`conda run -n compass`). Built from `$W/COMPASS_env_minimal.yml` (15-tool version-pinned minimal; the full-lock yml SIGKILLed on the login node, so the rescue used a compute-node job + minimal env).
+- **FASTQ DONE** (job 30227283) — 3 reps in `$W/fastq/replicate{1,3,5}/` (~24G).
 - Genome choice LOCKED: align to **chr-named GENCODE GRCh38.primary_assembly.genome.fa** + gencode v44 GTF
   (both at `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/refs/`) → output junctions
   are `chr5`, matching the 111, NO chrom-name harmonization needed.
@@ -36,28 +38,17 @@ minimap2 `splice:sr`.
 - Strandedness = **RF/dUTP (0.999)** on the existing SG-NEx STAR BAM → matches COMPASS's default assumption
   (`COMPASS_functions.py:216`); NO strand flip needed.
 - introns TSV chr5 count (18,451) ≈ Deliverable-B annotated count (18,450) → consistent.
-- NOT VERIFIED: `samfixcigar.py` output equivalence; the conda env actually solving (exact-pin risk); any
+- `compass` env: all 6 aligner execs + makeblastdb/cutadapt runnable via `conda run -n compass`.
+- NOT VERIFIED: `samfixcigar.py` output equivalence; any
   aligner run end-to-end on human; index builds.
 
 ## OPEN / IN FLIGHT
-- **FASTQ pull DONE** (job 30227283 COMPLETED) → `$W/fastq/replicate{1,3,5}/` (rep1 7.4G, rep3 8.6G, rep5 7.9G).
-- **COMPASS conda env build — RESCUE in flight, job 30230396** (compute-node, sentinel `$W/.env_rc`, log
-  `$W/env_build2.<jid>.out`). The first attempt (login-node nohup, EXACT-pin full-lock yml) was SIGKILLed
-  (rc=137, login resource limit). Rescue uses `$W/COMPASS_env_minimal.yml` (15 tools, version-pinned only,
-  build-unpinned; classic solver — no libmamba available). **AS OF BATON-PASS: job 30230396 RUNNING ~42min, STILL in 'Collecting package metadata' — the classic bioconda solver is SLOW; 3h wall, watcher `by010lz0z` active.** If THIS fails: check the log for an unsatisfiable
-  pin and relax that version (e.g. drop blast/magicblast pins), or reuse aligner_bench + add only the
-  missing tools (magicblast, cutadapt, gffread, picard via `conda install`).
+- **Nothing currently running.** Env BUILT + FASTQ DONE (both above). Gating dependency (the env) is resolved → ready to start **P1** (Step B). No live jobs/watchers.
 
 ## RESUME (concrete, with branch logic)
-**Step A — check the env build (job 30230396, sentinel `$W/.env_rc`, log `$W/env_build2.<jid>.out`, watcher `by010lz0z`):**
-`ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.env_rc 2>/dev/null || echo RUNNING'`
-- `RUNNING` → the classic conda solver is SLOW (≥42 min on repodata at baton-pass); give it the 3h wall.
-  If it TIMEOUTs or is still stuck collecting metadata: FASTER-SOLVER fallback — `conda install -n base
-  conda-libmamba-solver -y` then `conda env create -f $W/COMPASS_env_minimal.yml --solver libmamba`; OR reuse
-  the existing `aligner_bench` env (already has STAR/GSNAP/BBMap/samtools) and `conda install` ONLY the
-  missing tools (magicblast, cutadapt, gffread, picard, hisat2) — fastest path to unblock P1/P2.
-- `0` → `conda activate compass`; verify the 6 aligners present (`conda list | grep -iE 'star|hisat2|gmap|magicblast|bbmap'`); proceed to Step B.
-- non-zero → read `env_build2.<jid>.out` for the unsatisfiable pin; relax that version (likely `blast`/`magicblast`); resubmit.
+**Step A — env is BUILT (done); just activate + sanity-check:**
+`ssh sherlock` then `conda activate compass` (or prefix commands with `conda run -n compass`). Confirm `which STAR hisat2 gsnap magicblast bbmap.sh makeblastdb cutadapt`. If ever broken, rebuild: `sbatch /scratch/users/kevinroy/compass_a549/env_build.sbatch` (minimal yml). Then proceed to Step B.
+
 
 **Step B — P1 human config edits (in `~/work/COMPASS`, commit to a `human-a549` branch, push authorized):**
 - `COMPASS.sh`: set GENOME/FASTA → `…/refs/GRCh38.primary_assembly.genome.fa`; GTF → gencode v44;
