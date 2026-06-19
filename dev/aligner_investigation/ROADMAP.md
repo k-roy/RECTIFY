@@ -24,7 +24,7 @@ untested on committed ground truth. Effort: **XS / S / M / L**. Verdict (red-tea
 
 ---
 
-## ⚠️ The measurement problem comes first (Phase 0) — and be honest about it
+## The measurement problem comes first (Phase 0) — and be honest about it
 
 Even though the primary goal is junction placement, **the cheapest unblocker is still a
 zero-oracle measurement step**, and the red-team (`REDTEAM_proposals.md §3.3, §4`) exposes why

@@ -40,7 +40,7 @@ default production metric.
 **Consequence:** A better junction *scorer* (Proposals 1–2) is **already wired into the default
 selection metric on the build** (Path A scores HP-aware corrected positions); the remaining
 high-leverage work is to make that score *calibrated and principled* (Proposal 2) and to charge
-N-ops their true cost (Proposal 4 / J1a), rather than to "turn a dead path on." Several proposals
+N-ops their true cost (Proposal 4 / J1a), rather than to wire on a new path. Several proposals
 below therefore sharpen — rather than replace — the live HP-ED selection.
 
 **(F2) "8-nt exon" is unsupported; the real micro-exon floor is ~6 nt** (`redteam_annotation`

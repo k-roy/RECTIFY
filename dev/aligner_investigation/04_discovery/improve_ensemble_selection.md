@@ -1,31 +1,41 @@
 # Improving the Ensemble / Consensus / Winner-Selection Layer
 
+> Verified against `origin/drs-validation-rebuild` @ 366c885 (2026-06-19).
+
 **Scope.** Concrete, prioritized improvements to RECTIFY's per-read aligner-selection
 (`merge_corrected_tsvs` in `rectify/core/consensus/corrected_consensus.py`) and the
-deprecated raw-BAM consensus path (`scoring.py` / `select.py`). Grounded in the
-adversarial finding (`03_adversarial/redteam_winrates_selection.md`): **production
-runs the legacy 5-level sort (Path B), in which 3'-end accuracy enters only as a
-popularity vote (`_n_agree`); the HP-edit-distance path (Path A) is never wired in;
-the win rates (78.9/18.2/2/0.8/0.1) have no committed provenance and are confounded
-by herd correlation, coverage gaps, and two historical parsing bugs.**
+deprecated raw-BAM consensus path (`scoring.py` / `select.py`). The selection layer in
+production is the **HP-edit-distance path ("Path A")**: both merge call sites pass
+per-aligner BAMs (corrected when available, raw otherwise) plus the genome, so
+`use_hp_ed` is `True` and reads are ranked by a genome-anchored HP-aware edit distance
+on the corrected CIGAR — not by a popularity vote. The legacy 5-level sort that scores
+3'-end agreement via `_n_agree` is the **fallback only**, used when no BAMs reach the
+merge. The remaining open levers are therefore *charging N-ops a calibrated cost*
+(they are currently free) and *de-biasing / weighting the live HP-ED selector*, not
+"turning Path A on." The win rates (78.9/18.2/2/0.8/0.1) remain single-dataset and
+un-committed; they reflect the HP-ED selector, not the legacy sort.
 
 **Convention.** **ESTABLISHED** = standard, published, or already-half-built in the
 repo. **NOVEL** = a new design proposed here. Each item: *mechanism → bias it fixes →
 feasibility (exact files) → expected impact → validation/ablation → risk.*
 
 Code facts verified this pass:
-- Path switch: `corrected_consensus.py:662` `use_hp_ed = bool(per_aligner_corrected_bams)`.
-- Path A key (lines 740–747): `[_effective_chimera_ok, hp_edit_distance, _span]`.
-- Path B key (lines 749–752): `[_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc]`.
-- `_n_agree` (lines 693–698): count of rows sharing `(read_id, corrected_3prime)` — popularity.
-- Call site 1 (`run/single_sample.py:495`): passes **no** BAMs/genome/penalty table.
-- Call site 2 (`split_command.py:985`): builds `corrected_bams` (line 970) for the
-  consensus BAM but does **not** feed them to the merge.
-- **Key enabling fact:** `_run_correction_per_aligner` (`run/stages.py:240`) already
-  writes a corrected BAM `{stem}.rectified_corrected_3end.bam` into each
-  `per_aligner_corrected/{aligner}/` dir. **The BAMs Path A needs already exist on
-  disk at the single-sample call site — they are simply never collected.** Wiring is a
-  dict-build, not new computation.
+- Path switch: `corrected_consensus.py:1262` `use_hp_ed = bool(per_aligner_corrected_bams or per_aligner_raw_bams)`.
+- Path A key: `[_effective_chimera_ok, hp_edit_distance, _span]`.
+- Path B (fallback) key: `[_five_rescued, _chimera_ok, _conf_rank, _n_agree, _span, _n_junc]`.
+- `_n_agree`: count of rows sharing `(read_id, corrected_3prime)` — popularity; used in
+  the fallback path only.
+- HP-ED cost model (`_cigar_hp_edit_distance`): D = HP-aware del_cost (fallback 1.0),
+  I = HP-aware ins_cost (fallback 1.25), soft-clip = 1.0/base, **N (intron) = 0 — a free
+  pass**. A junction-anchor gate (`_cigar_min_junction_anchor`) can veto under-anchored
+  N-ops, but it defaults to `min_junction_anchor_bp=0` (off; the human profile uses 10 bp,
+  yeast 0). So on yeast a spurious intron is currently under-penalized — the live open lever.
+- Both call sites wire Path A: the single-sample path and `split_command.py` pass
+  per-aligner BAMs + genome into `merge_corrected_tsvs`. When only raw BAMs are available,
+  a lazy raw-BAM HP path computes HP-ED in memory rather than from pre-written corrected BAMs.
+- `_run_correction_per_aligner` writes a corrected BAM `{stem}.rectified_corrected_3end.bam`
+  into each `per_aligner_corrected/{aligner}/` dir; these feed the corrected-BAM HP path
+  when present.
 
 ---
 
@@ -34,49 +44,51 @@ Code facts verified this pass:
 | Rank | Item | Type | Effort | Impact |
 |---|---|---|---|---|
 | 1 | **§5 Win-rate harness + provenance** (do FIRST — unblocks every other claim) | ESTABLISHED | XS | Foundational |
-| 2 | **§1 Wire Path A** (HP-edit-distance) through both call sites | ESTABLISHED | S | High |
-| 3 | **§2 Correlation-aware / weighted consensus** (de-herd `_n_agree`) | NOVEL | S–M | High |
+| 2 | **§1 Calibrate the live HP-ED selector** (charge N-ops a cost; add a 3'-end term) | ESTABLISHED | S | High |
+| 3 | **§2 Correlation-aware / weighted consensus** (de-herd cross-aligner agreement) | NOVEL | S–M | High |
 | 4 | **§4 Calibrated per-read confidence + abstain** | NOVEL | M | High (downstream APA) |
 | 5 | **§3 Ground-truth-free aligner weighting** (NET-seq / replicate concordance) | NOVEL | M | Medium–High |
 | 6 | **§6 Learned selector** (gradient-boosted ranker over read features) | NOVEL | L | Medium (ceiling probe) |
 
 Rationale: §5 is the cheapest and gates the credibility of everything else (you cannot
-claim §1–§6 "helped" without a regenerable number). §1 is a near-pure wiring fix that
-makes the documented metric actually run. §2/§4 are small principled changes with
-outsized correctness leverage. §3 supplies the weights §2/§6 consume. §6 is the
-research ceiling-probe, last because it needs §5's harness + §3's labels.
+claim §1–§6 "helped" without a regenerable number). §1 fixes the two known biases in the
+*already-running* HP-ED selector (free N-ops; no explicit 3'-end term). §2/§4 are small
+principled changes with outsized correctness leverage. §3 supplies the weights §2/§6
+consume. §6 is the research ceiling-probe, last because it needs §5's harness + §3's labels.
 
 ---
 
 ## §5 — Reproducible win-rate measurement harness + provenance  [ESTABLISHED, Rank 1]
 
 **Mechanism.** A committed script `dev/aligner_investigation/04_discovery/measure_winrates.py`
-that: (1) takes a directory of committed per-aligner `corrected_reads.tsv` (+ optional
-corrected BAMs), (2) calls `merge_corrected_tsvs` **twice** — once Path B (no BAMs),
-once Path A (BAMs+genome+penalty table) — (3) writes `aligner_summary.tsv` with
-`winning_aligner` counts, %, n-present denominator, and per-read tie statistics for
-each path, and (4) emits a `PROVENANCE.json` (input dataset, git SHA, both v3.3.0 bug
-fixes confirmed-applied, command line, date). Add a pytest that asserts the committed
-summary reproduces to ±0 reads from the committed TSVs.
+that: (1) takes a directory of committed per-aligner `corrected_reads.tsv` (+ corrected or
+raw BAMs), (2) calls `merge_corrected_tsvs` under both selectors — the production HP-ED
+path (BAMs+genome+penalty table) and the legacy fallback sort (no BAMs) — (3) writes
+`aligner_summary.tsv` with `winning_aligner` counts, %, n-present denominator, and per-read
+tie statistics for each, and (4) emits a `PROVENANCE.json` (input dataset, git SHA, both
+v3.3.0 bug fixes confirmed-applied, command line, date). Add a pytest that asserts the
+committed summary reproduces to ±0 reads from the committed TSVs.
 
-**Bias it fixes.** The numbers in `CLAUDE.md:81` exist only as a bare assertion with no
-artifact; they may predate the `index_col` and `_pt:i:N` fixes (redteam confounders
-3–4). Without regeneration, no proposed change can be evaluated.
+**Bias it fixes.** The numbers in `CLAUDE.md` exist only as a bare assertion with no
+committed artifact; they may predate the `index_col` and `_pt:i:N` fixes. Without
+regeneration, no proposed change can be evaluated, and the live HP-ED selector's behaviour
+cannot be separated from its calibration weaknesses (§1).
 
 **Feasibility.** Pure orchestration of an existing function. No core changes. Inputs:
 the committed `wt_by4742_rep1` validation per-aligner TSVs already in
 `rectify/data/validation/`. ~80 lines.
 
 **Expected impact.** Converts every downstream claim from "asserted" to "measured."
-Likely outcome: Path A vs Path B win rates **differ materially** — which is itself the
-headline result (proves the spread is a metric artifact, redteam experiment 2).
+Likely outcome: the HP-ED selector and the legacy fallback produce **materially different**
+win rates — quantifying how much of the published spread is selector-bound, and giving §1's
+N-op-cost / 3'-end-term changes a measurable baseline.
 
 **Validation/ablation.** The harness *is* the validation substrate for §1–§6. Add the
-"disable `_n_agree`/`_conf_rank`, random tie-break" ablation (redteam exp. 5) and the
-denominator-normalization (per-aligner n-present, redteam confounder 2) as flags.
+"disable `_n_agree`/`_conf_rank`, random tie-break" ablation (fallback path) and the
+denominator-normalization (per-aligner n-present) as flags.
 
 **Risk.** None to production (dev-only). Only risk is that regenerated numbers
-contradict `CLAUDE.md:81` — in which case `CLAUDE.md` must be corrected (a feature).
+contradict `CLAUDE.md` — in which case `CLAUDE.md` must be corrected (a feature).
 
 ---
 

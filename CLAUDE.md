@@ -8,9 +8,9 @@ patterns for future developers and AI agents working on this codebase.
 > + GMAP contrast) — source-level dossiers, comparison, adversarial fact-checks,
 > and prioritized splice-junction-placement improvements — lives in
 > [`dev/aligner_investigation/`](dev/aligner_investigation/). Start with
-> `README.md`; `SPLICE_JUNCTION_PLACEMENT.md` is the headline deliverable and
-> `CORRECTIONS_vs_DRS_BUILD.md` re-verifies every code-level claim against the
-> `drs-validation-rebuild` build.
+> `README.md`; `SPLICE_JUNCTION_PLACEMENT.md` is the headline deliverable. All
+> code-level claims are verified against the `drs-validation-rebuild` build
+> (commit 366c885).
 
 ---
 

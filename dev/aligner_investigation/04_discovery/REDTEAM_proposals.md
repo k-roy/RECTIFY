@@ -45,7 +45,8 @@ auto-filled by `rectify/data/__init__.py:1188-1208` via the CLI hook `cli.py:198
 
 **Net:** the proposals' factual base is solid, and the "RECTIFY already has the machinery" claims (C11,
 C14) are real. **Path A (HP-edit-distance) runs in production** — both merge call sites pass raw BAMs +
-genome → `use_hp_ed=True` (C1/C4/C5/C6) — so the "wire the dead path on" framing is already realized; the
+genome → `use_hp_ed=True` (C1/C4/C5/C6) — so the "collect per-aligner BAMs so Path A runs" proposal is
+already implemented; the
 remaining open item in that cluster is charging N-ops a calibrated cost (C3). The penalty/STR/overhang
 tables are **bundled and `--Scer`-resolved** (C13). The remaining soft spot is **C11 runtime** (numba
 absent → Python fallback), which is environment-specific. C2 (`_n_agree` popularity) describes the
@@ -79,7 +80,7 @@ proposal over-reaches) · **REJECT**.
 | §2b Remora/dwell signal fusion | **REJECT (now) / defer to funded R&D** | Requires POD5 retention RECTIFY does not keep + signal↔ref anchoring + per-read signal I/O against the chunked-SLURM budget. Author concedes this. Not a discovery deliverable. |
 | §3 SpliceAI/Pangolin junction scorer | **DESCOPE → metazoan-only, deferred** | Author correctly says NIL for yeast (~300 canonical introns). Keep only as the interface stub (shared with splice_junctions P5). |
 | §4 full seq2seq/transformer correction | **REJECT** | Author agrees: 36-read training set, opaque, replaces auditable DP. |
-| §4 narrow "learn the penalty table" | **KEEP-WITH-CAVEATS** | Defensible — but it is just *recalibrating the empirical table* (C13), which must be regenerated anyway. Fold into the table-regeneration work, not a separate ML track. |
+| §4 narrow "learn the penalty table" | **KEEP-WITH-CAVEATS** | Defensible — but it is just *recalibrating the bundled empirical table* (C13). Fold into the table validate/version work, not a separate ML track. |
 | §5 foundation-model embeddings | **REJECT** | Author agrees; GPU cost violates SLURM design; one speculative chimera aside. |
 
 ### File: improve_3prime_cpa.md
@@ -98,16 +99,16 @@ proposal over-reaches) · **REJECT**.
 
 | Sub-idea | Verdict | One-line reason |
 |---|---|---|
-| P0 ground-truth harness + regenerate penalty table | **KEEP** | Same harness as everyone else (**dedup**); plus the table regeneration (C13) which is a real, non-trivial prerequisite the other files gloss. |
+| P0 ground-truth harness + validate/version penalty table | **KEEP** | Same harness as everyone else (**dedup**); plus validating/versioning the bundled tables (C13), a real prerequisite the other files gloss. |
 | P3 poly-A-aware two-state terminal DP (CPA = G→T transition column) | **KEEP-WITH-CAVEATS** | The most *principled* idea across all six files — replaces the 2B/2E/2G heuristic stack with one optimal boundary. **But it is the SAME target as 3prime_cpa P1a** (one is a 2-state DP, the other a re-scoring pass — they CONFLICT, see below) and it depends on the numba kernel that is **not compiled here** (C11). Pick ONE of {P3 two-state DP, P1a re-scoring}; do not build both. |
 | P2 HP-aware full-SW realign of 3' window | **KEEP-WITH-CAVEATS** | `edlib` is importable (true); window is cheap. But it overlaps P1a/P3 heavily — it is a third spelling of "re-place the terminal indel with a better DP." Consolidate. |
-| P1b empirical gap costs into realign DP | **DESCOPE** | Depends on the absent table (C13) and the absent numba kernel; chemistry-specific. Fold into P3 once the table exists. |
+| P1b empirical gap costs into realign DP | **DESCOPE** | Depends on the bundled table (C13) and the numba kernel (not importable here, C11); chemistry-specific. Fold into P3. |
 | P1a KSW2 fork | **REJECT** | Author defers; correct. |
 | P4a harvest sub-optimal terminal chains (`--secondary=yes -N`) | **KEEP-WITH-CAVEATS** | Cheap flag change (C12), genuinely addresses "post-correction can't recover an unseeded exon." But more candidates → more chances for a wrong terminus to win Path B's popularity sort — **must** land after §1/§5, never before. |
 | P4b 3'-end-anchored chaining bonus | **DESCOPE** | No minimap2 flag exists; needs a patch or RECTIFY re-chain. High risk (can pull 3' into a genomic A-run), fights P3. Defer. |
 | P4c RMQ-vs-range for short reads | **KEEP (hygiene)** | Already implicitly true (separate short-read aligners); document + verify band. |
 | P5 explicit cross-read CPA consensus (replace `_n_agree`) | **KEEP-WITH-CAVEATS** | Overlaps splice_junctions P1 + ensemble §2. **Dominant risk (author-flagged): over-homogenization erases real APA heterogeneity** — the entire point of a 3' study. Snap only within HP-noise radius. Cross-chunk peak pooling under SLURM arrays is non-trivial (not "plumbing"). |
-| P6/P7/P8 deSALT `-x`, mapPacBio `maxindel`, minimap2 `--end-bonus` sweep | **KEEP** | All one-line config A/Bs (C8/C9); P8 explicitly diagnostic-only (do not ship a blunt end-bonus — it fights P3). *(Build note: mapPacBio `maxindel` is already set to `max(200000,max_intron)` on the build — P7 becomes "tune the set value," not "add a missing cap.")* |
+| P6/P7/P8 deSALT `-x`, mapPacBio `maxindel`, minimap2 `--end-bonus` sweep | **KEEP** | All one-line config A/Bs (C8/C9); P8 explicitly diagnostic-only (do not ship a blunt end-bonus — it fights P3). mapPacBio `maxindel` is already set to `max(200000,max_intron)` (C9), so P7 is "tune the set value," not "add a missing cap." |
 | P9 Z-drop terminal model | **REJECT (subsumed)** | Author says "no separate work." |
 
 ### File: improve_splice_junctions.md
@@ -115,7 +116,7 @@ proposal over-reaches) · **REJECT**.
 | Sub-idea | Verdict | One-line reason |
 |---|---|---|
 | P1 Cross-read junction consensus (first-class step) | **KEEP-WITH-CAVEATS** | Generalizes deSALT's mechanism to all 5 aligners — real. **Same over-homogenization risk as chaining_dp P5** (collapses genuine alt-5'/3'SS isoforms <50 bp apart, which exist in yeast RP genes). The per-read sequence veto + shared-boundary-anchoring mitigations are necessary, not optional. |
-| P2 Unified calibrated junction scorer (MaxEnt + HP + cross-read + annotation prior, logistic fit) | **KEEP-WITH-CAVEATS** | The right direction (replace the brittle lexicographic tuple with a calibrated score). **But:** (a) MaxEnt is metazoan-trained → must retrain a yeast PWM; (b) `sklearn` for the logistic fit **does not import here**; (c) the calibration set (≥4-aligner concordance) is itself herd-defined → partial circularity; (d) ~~wiring it into selection collides with the C1 problem~~ **— corrected: HP-ED selection (Path A) already runs in production on the build, so P2 sharpens the *live* metric rather than depending on a separate "wire-in" step (the ensemble §1 dependency is resolved).** |
+| P2 Unified calibrated junction scorer (MaxEnt + HP + cross-read + annotation prior, logistic fit) | **KEEP-WITH-CAVEATS** | The right direction (replace the brittle lexicographic tuple with a calibrated score). **But:** (a) MaxEnt is metazoan-trained → must retrain a yeast PWM; (b) `sklearn` for the logistic fit **does not import here**; (c) the calibration set (≥4-aligner concordance) is itself herd-defined → partial circularity. (d) HP-ED selection (Path A) already runs in production, so P2 sharpens the *live* metric rather than depending on a separate wire-in step (the ensemble §1 dependency is resolved). |
 | P3 De-novo micro-exon recovery (≤10 nt) | **DESCOPE → metazoan** | Author honest: low yeast value (few micro-exons), no validation read exercises it, NET-seq can't validate it (3'-assay). Needs P2 first. Defer. |
 | P4 Calibrated novel-junction handling (charge N-ops their improbability) | **KEEP** | Directly fixes C3 (N=0 free-intron exploit) the *right* way (calibrated cost, not a fixed gate). Mostly free given P2. Highest correctness-per-effort in this file. |
 | P5 SpliceAI/Pangolin CNN | **DESCOPE → metazoan, interface-only** | Same as ml_learned §3 — **dedup**. Build the swappable interface, defer the CNN. |
@@ -222,11 +223,10 @@ under-weight:**
   partly baked into the corrected positions being scored.
 
 **Therefore the truly correct "do-first" is two-pronged and bigger than any file states:**
-  1. **(a)** the win-rate provenance + Path A/B ablation (ensemble §5 / redteam exp 1-2) — cheap, pure
-     code, no oracle needed. This alone settles whether the win rates are a metric artifact. **This is
-     the genuine cheapest unblocker.** *(Build correction: "whether to wire Path A" is moot — Path A is
-     already wired and runs in production on the build; the ablation is now of two live paths, A vs the
-     B fallback.)*
+  1. **(a)** the win-rate provenance + Path A-vs-B-fallback ablation (ensemble §5 / redteam exp 1-2) —
+     cheap, pure code, no oracle needed. This alone settles whether the win rates are a metric artifact.
+     **This is the genuine cheapest unblocker.** Path A is already wired and runs in production, so the
+     ablation is of two live paths — A (the default) vs the B fallback.
   2. **(b)** a **non-NET-seq** CPA truth set (Quant-seq / 3'-seq, or at minimum a held-out NET-seq
      sample from a *different run*, plus annotated-intron junction truth for spliced reads). Until (b)
      exists, NET-seq concordance is a sanity check, not an oracle, and **no ML/weight/prior proposal is
@@ -239,17 +239,17 @@ under-weight:**
 TIER 0 — measurement, no oracle needed (DO FIRST, days)
   [E0] Win-rate provenance + Path A-vs-B-fallback ablation harness   (ensemble §5; redteam exp 1-2,5)
        → answers "is the spread a metric artifact?" with ZERO accuracy assumptions.
-       BUILD: Path A is ALREADY the production default (raw-BAM HP-ED path,
+       Path A is the production default (raw-BAM HP-ED path,
        corrected_consensus.py:1262 / single_sample.py:238-250 / split_command.py:1085-1094) —
-       this is an ablation of two live paths, NOT "turn a dead path on."
-  [E1] N-op calibrated cost (C3 fix = splice P4) — the ONLY remaining open J1 item; the
-       Path-A wiring itself is DONE on the build.                                (splice P4)
+       this is an ablation of two live paths, A (default) vs the B fallback.
+  [E1] N-op calibrated cost (C3 fix = splice P4) — the ONLY remaining open item in this
+       cluster; the Path-A wiring itself is DONE.                                (splice P4)
 
 TIER 1 — build the REAL oracle (gating cost, weeks; the program's true critical path)
   [O0] Non-NET-seq CPA truth set (Quant-seq/3'-seq or cross-run held-out) +
        annotated-intron junction truth + seed-exon-recall instrumentation.
        VALIDATE/VERSION the bundled penalty tables (C13) as part of this — they are
-       already shipped + --Scer-auto-resolved on the build, NOT absent.            (all P0s, merged)
+       shipped + --Scer-auto-resolved.                                            (all P0s, merged)
   *** Until [O0] exists, everything below is a hypothesis. ***
 
 TIER 2 — cheap, orthogonal, low-risk wins (config + already-ingested data)
@@ -284,10 +284,9 @@ REJECT outright: KSW2 fork, full transformer correction, FM embeddings, monolith
   *principled* replacement for the heuristic 2B/2E/2G stack); **lineage-weighted de-herding** of
   `_n_agree` (ensemble §2 — the lineage observation is correct and the fix is sound); the **mispriming
   terminal veto** (3prime P5 — useful, self-contained, low-risk).
-- **High-value but mostly WIRING of existing behaviour (not new science):** ~~wiring Path A
-  (ensemble §1 — the BAMs already exist, C6)~~ **— already DONE on the build (raw-BAM HP-ED path is
-  the production default); the residual is the N-op calibrated cost above**; `pt:i` prior (data already
-  parsed, C10); the harness (standard benchmarking).
+- **High-value but mostly WIRING of existing behaviour (not new science):** Path A is already wired
+  (raw-BAM HP-ED path is the production default, C6); the residual is the N-op calibrated cost above;
+  `pt:i` prior (data already parsed, C10); the harness (standard benchmarking).
 - **Repackaged / over-claimed:** the "unified graph index" (seeding P4 — author concedes the shippable
   form is "ensemble glue, not a new index"); cross-read consensus is **deSALT's existing mechanism**
   re-implemented post-hoc (real value, but not novel); the GBDT/SpliceAI/foundation-model items are

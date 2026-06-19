@@ -101,10 +101,10 @@ biased toward canonical dinucleotides. It touches only ~7% of termini (5'-biased
 ### mapPacBio (BBMap) — NO splice model; N-ops only as large indels
 **FACT.** `align2.BBMapPacBio` has **no GT-AG / splice-graph model**. Introns are discovered
 as **scored long deletions** by its full affine DP (match +100 / mismatch −127 / 2nd-consec
-−51), then any `D ≥ intronlen=50` is **reclassified to `N`** afterward. RECTIFY sets
-`intronlen=50` but **no `maxindel`** (relies on BBMap's soft default ~16000;
-`redteam_denovo.md` B5 flags this as an unverified, possibly load-bearing gap for very long
-yeast-cluster introns). Junctions are sequence-optimal *within the DP window* but
+−51), then any `D ≥ intronlen=10` is **reclassified to `N`** afterward. RECTIFY sets
+`intronlen=10` and an explicit `maxindel=max(200000, max_intron)` (`multi_aligner.py:749,754`),
+so very long yeast-cluster introns stay within the indel cap. Junctions are sequence-optimal
+*within the DP window* but
 canonically blind. Wins **18.2%** — primarily on unspliced terminal exons (a 3'-end
 property, demoted here), not on splice quality.
 
@@ -422,21 +422,18 @@ therefore to **validate / version the already-bundled tables**, not to regenerat
 
 1. **J0 + J1 — make junction quality decide selection well.** Run the zero-oracle Path-A/B
    ablation and commit `aligner_summary.tsv`; then **fix the N-op-cost-0 free-intron exploit**
-   so `hp_edit_distance` ranks aligners robustly. **⚠️ BUILD CORRECTION (vs
-   `drs-validation-rebuild`):** the original "wire the already-on-disk per-aligner corrected BAMs
-   into `merge_corrected_tsvs` so hp_edit_distance (not `_n_agree`) ranks aligners — today
-   junction quality is not a selection criterion at all" is **RETRACTED**: that wiring is DONE on
-   the build (lazy raw-BAM path; Path A is the production default), so junction quality already
-   ranks aligners. The remaining J1 work is the **calibrated N-op cost** (J1a) — relevant for
-   yeast, where the anchor gate is off by default.
+   so `hp_edit_distance` ranks aligners robustly. The BAM wiring is already done (lazy raw-BAM
+   path; Path A is the production default), so junction quality already ranks aligners; the
+   remaining J1 work is the **calibrated N-op cost** — relevant for yeast, where the anchor gate
+   is off by default.
 2. **J3 — cross-read junction consensus across all five aligners**, de-biased by a calibrated
    support score and protected by a per-read sequence veto + a hard APA-preservation radius.
    This generalizes the single mechanism that makes deSALT the leader, with the over-
    homogenization risk explicitly bounded.
 3. **J4 (+ J2) — add the splice-strength signal RECTIFY lacks.** Build a yeast MaxEnt/PWM
-   donor/acceptor model behind a swappable interface and fold it (plus the **already-bundled,
-   `--Scer`-auto-resolved** empirical penalty tables — see §2/J2; *not* "currently absent" as the
-   master-tree draft stated) into a single calibrated junction scorer that feeds selection —
-   replacing the brittle lexicographic tuple with a comparable, calibrated quantity. **Validate
+   donor/acceptor model behind a swappable interface and fold it (plus the already-bundled,
+   `--Scer`-auto-resolved empirical penalty tables — see §2/J2) into a single calibrated junction
+   scorer that feeds selection — replacing the brittle lexicographic tuple with a comparable,
+   calibrated quantity. **Validate
    everything against ≥4-aligner concordance + cat3/cat7/cat9 + an orthogonal short-read
    split-read junction set — never against internal agreement alone.**
