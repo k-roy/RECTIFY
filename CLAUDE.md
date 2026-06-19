@@ -3,6 +3,15 @@
 This file documents non-obvious design decisions, known pitfalls, and
 patterns for future developers and AI agents working on this codebase.
 
+> **Aligner investigation (research notes):** A deep multi-agent study of the
+> long-read RNA-seq aligners (minimap2, deSALT, uLTRA, gapmm2, mapPacBio/BBMap,
+> + GMAP contrast) — source-level dossiers, comparison, adversarial fact-checks,
+> and prioritized splice-junction-placement improvements — lives in
+> [`dev/aligner_investigation/`](dev/aligner_investigation/). Start with
+> `README.md`; `SPLICE_JUNCTION_PLACEMENT.md` is the headline deliverable. All
+> code-level claims are verified against the `drs-validation-rebuild` build
+> (commit 366c885).
+
 ---
 
 ## ⚠️ CHUNKING IS MANDATORY FOR FASTQ INPUTS (CRITICAL — NON-NEGOTIABLE)

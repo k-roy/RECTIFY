@@ -13,6 +13,12 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
+# Defer annotation evaluation so PEP 585 builtin generics (e.g. ``list[str]``)
+# used below remain valid on Python 3.8, which the project still supports
+# (requires-python = ">=3.8"). Without this, ``CANONICAL_CHROMS: list[str]``
+# is evaluated at import time and raises TypeError on 3.8.
+from __future__ import annotations
+
 from typing import Dict
 
 # =============================================================================

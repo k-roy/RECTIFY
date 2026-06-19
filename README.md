@@ -299,6 +299,7 @@ For organism-specific poly(A) models and custom A-tract priors, see [docs/ARCHIT
 - **Algorithms** — [docs/algorithms/](docs/algorithms/) · [empirical HP scoring](docs/EMPIRICAL_HP_PENALTY_SCORING.md) · [3' indel correction](docs/algorithms/3prime_indel_correction.md) · [multi-aligner consensus](docs/algorithms/multi_aligner_consensus.md)
 - **Architecture / internals** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (SAM tag namespace, walkback wrappers, module call graph)
 - **Quickstarts** — [DRS](docs/quickstart.md) · [ONT cDNA](docs/quickstart_cdna.md) · [QuantSeq REV](docs/quickstart_quantseq_rev.md)
+- **Aligner investigation (research notes)** — [dev/aligner_investigation/](dev/aligner_investigation/): source-level dossiers on the long-read splice aligners, comparison, adversarial fact-checks, and splice-junction-placement improvement roadmap
 
 ---
 
