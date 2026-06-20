@@ -1,0 +1,168 @@
+# HANDOFF — RECTIFY short-read P5 RUN on Sherlock (2026-06-19)
+
+Picks up `dev/HANDOFF_SHORTREAD.md` (P1–P4 code done, committed, locally tested; pre-flight green).
+This doc tracks the **P5 cluster run** of the paired short-read COMPASS pipeline on A549 to adjudicate
+the **111 GMAP-only recurrent novels** (`dev/gmap_only_recurrent_novels_chr5.tsv`).
+
+## Key correction to the original handoff's assumption
+The original handoff said run rectify **in the compass env**. That is WRONG: the `compass` conda env is
+**Python 3.7.12 / pysam 0.15.3**, and rectify requires **py≥3.8** (it dies at import — `config.py:33` uses
+py3.9 generic subscription). Resolution:
+- **Run rectify in the `rectify` conda env** (`/home/groups/larsms/users/kevinroy/anaconda3/envs/rectify`,
+  **py3.9.23 / pysam 0.23.3**) via `python -m rectify` (NOT a pip console-script — we do NOT `pip install`,
+  to avoid mutating the shared env; `cd $RECTIFY_SRC` puts our branch on sys.path).
+- The 4 specialized COMPASS aligners (**STAR, hisat2, magicblast, gsnap**) live ONLY in the `compass` env.
+  They are exposed to the rectify env via **symlinks in `$HOME/.rectify/bin/`** (already on the generated
+  script's PATH). Verified all 4 load via symlink with compass NOT on PATH (RPATH/$ORIGIN resolves). bbmap.sh,
+  samtools, java come from the rectify env (fine).
+
+## Done
+- Deployed branch `drs-validation-rebuild` (local HEAD `b4d4b48`, incl. all P1–P5 commits through `2e0388c`)
+  to Sherlock: `rsync --max-size=2M` (drops 2GB bundled yeast data) → `/scratch/users/kevinroy/compass_a549/rectify_src`.
+- Bumped two generator constants in `rectify/core/commands/split_command.py` (local + redeployed):
+  `SR_ALIGN_CORRECT_MEM_GB 32→64` (STAR loads a **29G** human index; sequential panel → peak ≈ one STAR;
+  32G OOMs) and `SR_ALIGN_CORRECT_TIME '1:30:00'→'6:00:00'` (per-chunk 7-aligner index loads dominate;
+  larsms is non-preempt). **NOT yet committed in git.**
+- Generated + READ the smoke scripts (caught nothing wrong — the ANNOT path that looked off was just the
+  COMPASS gtf symlink `.resolve()`-d to its real target `rectify_human_validation/.../gencode.v44.annotation.gtf`;
+  identical file, 3,424,194 lines).
+
+## Verified
+- `rectify split --help` (deployed code) shows `-2/--read2 --read-length -n --short-read --generate-slurm
+  --python-path --rectify-src --slurm-partition --slurm-account`.
+- All 4 aligner symlinks load: STAR 2.7.10a, hisat2 2.2.1, magicblast 1.5.0, gsnap (runs; SSE4.2 note only).
+- `for aligner in aligners:` in `multi_aligner.py:2802` is **sequential** → mem sizing = one STAR.
+- Subsampled smoke input = **100k pairs** each (`A549_rep1_subsampled_{1,2}.fastq.gz`).
+
+## CONSENSUS HANG — root-caused and FIXED (the big one; uncommitted)
+Smoke attempt 2 ran the panel but then **hung ~2h in consensus** on 25k pairs. faulthandler traceback:
+`select_best_alignment → score_alignment → _rescue_5prime_softclip → edit_distance`. Root cause
+(`select.py:71-75`): the per-read 5' soft-clip rescue pool was built by scanning **every annotated
+junction on the read's whole chromosome** (~tens of thousands) — O(reads × junctions_on_chrom), which is
+fine for chr5-only long-read (deliverable_b) but hangs genome-wide at short-read scale (~50k reads). The
+rescue only ever inspects junctions within `search_window_bp=300` of the read 5' boundary, so the chrom
+scan was pure waste.
+**Fix** (`select.py`): a memoized per-chrom **position index** (sorted start/end arrays + bisect) over
+`annotated_junctions`; the candidate pool is now a locus window `[read_lo-350, read_hi+350]` query — a
+**window-superset of the rescue's ≤300bp reach ⇒ byte-identical scoring**, O(log n) per read. The
+`annotated_junctions` SET is kept intact for the `_n_annotated` tiebreak membership test. Helps the
+long-read path identically.
+**Verified in tight loop** (no SLURM burn): `repro2_consensus.py` on the 5 smoke BAMs went from >2h-hang →
+**DONE 50.6s**, output BAM 64,586 records (= merge groups), **28,009 spliced N-op reads present**.
+
+## gsnap + magicblast FAIL (panel currently 5/7) — env/tool issues, NOT code
+- **gsnap**: compass env has GMAP workers (`gmap.sse42`,`gmap.nosimd`) but **NO gsnap worker binaries**
+  (`gsnap.sse42`/`.nosimd` absent) — the `gsnap` dispatcher prints "does not exist" for every ISA and exits
+  in 0.1s. The GSNAP half of the gmap/gsnap package was never installed. Fix = install complete gmap/gsnap
+  (e.g. `conda install -n <env> -c bioconda gmap`, then re-point the `~/.rectify/bin/gsnap` symlink).
+- **magicblast**: `.bam` has a valid `@HD` header but **0 records**; `samtools view failed ...magicblast.sam
+  (exit 1)`. magicblast 1.5.0 (2019) emitted a SAM the rectify-env samtools rejected. Fix = inspect raw SAM /
+  samtools-version compat / params in `run_magicblast`.
+- 5 working = bbmap + STAR_default + STAR_noncanonical + HISAT2_default + HISAT2_noncanonical (the sensitive
+  splice-aware workhorses). **USER CHOSE: fix env for full 7/7 before the run.**
+
+### gsnap FIX (done, validated)
+gmap/gsnap **2021-05-27** workers (`gsnap.sse42`,`gsnap.nosimd`,`gsnapl.*`) DO exist in compass/bin — the
+dispatcher just looks for `gsnap.<isa>` **next to argv[0]** (= the `~/.rectify/bin` symlink dir), where only
+`gsnap` itself was symlinked. Fix = symlinked the 4 workers into `~/.rectify/bin` too. `gsnap --version` via
+that PATH now resolves `gsnap.sse42` cleanly (only a harmless `avx2 does not exist` note). **No env mutation.**
+The GSNAP index was built with this same gmap 2021-05-27 → compatible.
+
+### magicblast FIX (done, validated on subset; code change)
+magicblast 1.5.0 under `-no_query_id_trim` keeps the whole multi-token FASTQ header (rectify-split injects
+`RN:i:N` + the Casava comment) and spills those tokens into SAM cols 2-3, shifting the mandatory fields →
+FLAG="RN:i:0" → samtools view exit 1 → 0 records. Dropping `-no_query_id_trim` makes magicblast fail
+differently (rc=1). **Fix** (`multi_aligner.py::run_magicblast._ensure_plain`): rewrite every input-FASTQ
+header to its bare QNAME (first whitespace token) before magicblast; RN is re-applied afterward from the
+qname→RN map in `_finalize_short_read_bam` (keyed on bare qname). Verified on a 1k-pair subset: SAM columns
+correct, `samtools view` rc=0, 2273 records. **Uncommitted.**
+
+## Test suite (user /goal: all tests pass) — GREEN after fixes
+Full `pytest tests/` in the `rectify` env (py3.9), bundled data deployed (54M, indexes excluded):
+- My 4 changes cause **zero regressions** — the 9 initial "failures" were all missing-bundled-data
+  artifacts of the `--max-size=2M` deploy (yeast genome/gff); they pass once `rectify/data` is present.
+- **Added regression tests**: `tests/test_consensus_locus_index.py` (window index correctness +
+  far-junction scoring invariance), `tests/test_magicblast_header_strip.py` (bare-qname strip + gz +
+  `check_aligner_available(None)` no-raise). Also hardened `check_aligner_available(None)→False` and
+  refactored the magicblast strip into module-level `_write_bare_qname_fastq` (testable).
+- **One pre-existing failure resolved, not mine**: `test_bam_parallel_state::…_deterministic` is a golden-
+  hash test whose golden (recorded 2026-05-22 @55089f7) went stale when later 3'SS-rescue commits
+  (bd20f9e/961c844/cf5ebb9/0c1773b) legitimately changed `process_bam_file_parallel` output. Proven not
+  mine: baseline `select.py` yields the IDENTICAL observed hash; output is deterministic (stable across
+  runs). Re-recorded the golden to `4f326833…` with documented rationale. (It was masked earlier because
+  it's skipped when bundled data is absent.)
+
+## Tool maintenance check (user-requested 2026-06-19) — both ACTIVELY maintained; ours are OLD
+- **GMAP/GSNAP**: latest bioconda **2025.07.31** (Sep 2025); releases throughout 2024–2025; maintained by
+  Thomas Wu / Genentech. **We run 2021-05-27** (~4 yr old). Functional (index built with same version).
+- **Magic-BLAST**: GitHub commits into **Apr 2025**; latest tagged release **1.7.2 (Apr 2023)**. **We run
+  1.5.0 (Aug 2019)** — ancient; its SAM-column mangling (now worked around) is plausibly fixed in 1.7.x.
+- **Recommendation**: for the production/publishable run, consider upgrading both (esp. magicblast → 1.7.2)
+  in a fresh env, then drop the magicblast header-strip workaround if 1.7.x handles multi-token headers.
+  Not blocking — current fixes make the 2019/2021 versions produce correct 7/7 output.
+
+## 7/7 END-TO-END VALIDATED (chunk-0, 2026-06-19 ~22:25)
+Full `rectify align --short-read --read2 --aligners all` on smoke chunk 0 (25k pairs), 7m31s total:
+- **All 7 aligners contribute**: By-aligner winners `{STAR_noncanonical 16822, STAR_default 1241,
+  HISAT2_noncanonical 6067, bbmap 5206, gsnap 6583, magicblast 33459, HISAT2_default 5}` — gsnap+magicblast
+  fixed and winning.
+- **Consensus 187s for 69,383 (RN,mate) groups, no hang** (locus-index fix holds at full panel). 5' rescue
+  intact (3,456 rescued, edit=0 matches in debug log).
+- **Both mates survive**: records-per-RN dominated by 2 (10,223 RN); only 110 RN (0.5%) single-record →
+  adversarial mate-drop bug absent. Rectified BAM 69,383 records (multimapper/secondary records inflate
+  >2/RN; fine for junction extraction).
+Output: `/scratch/users/kevinroy/compass_a549/chunk0_7aligner_test/chunk0test.rectified.bam`.
+
+## Bug fixed before smoke could pass (commit-worthy, uncommitted)
+First smoke (`30367486`) fast-failed: `align_command._run_one_aligner` sets `exec_path=None` for the
+COMPASS panel (binary resolved inside the wrapper) but still called `check_aligner_available(None)` →
+`shutil.which(None)` → TypeError. **Fix** (`align_command.py:475`): guard the check with
+`exec_path is not None and not check_aligner_available(exec_path)`. This dispatch path had never executed
+(handoff said so). Redeployed; COMPASS dispatch branches (583–629) otherwise present and correct.
+
+## STATUS 2026-06-19 ~22:40 — pipeline 7/7 validated, tests green, NOT yet launched full run
+Both smoke arrays (30367486, 30367768) were cancelled — the first hit the consensus hang; the second was
+superseded by the direct chunk-0 7/7 validation (see below) once all bugs were fixed. **No cluster job is
+currently running.** The pipeline is validated end-to-end at 7/7 on a real chunk; the FULL ~500-chunk A549
+run has NOT been launched yet (awaiting go-ahead). The deployed code (`…/compass_a549/rectify_src`) carries
+all fixes; `~/.rectify/bin` has all aligner symlinks incl. gsnap workers.
+
+## Resume — concrete branch logic
+SSH ControlMaster `sherlock` is open; never tear it down; retry transient sshd errors serially.
+Check the smoke:
+```
+ssh sherlock "sacct -j 30367486 -X -o JobID,State,Elapsed,MaxRSS,Start,End; \
+  ls -la /scratch/users/kevinroy/compass_a549/rectify_sr_smoke/chunk_outputs/ 2>&1"
+```
+- **If all 4 tasks COMPLETED** → run the acceptance checks (per-chunk log shows all 7 aligners succeeding;
+  merged BAM has **two records per RN** — the adversarial-review mate-drop fix; N-op junctions present):
+  ```
+  L=/scratch/users/kevinroy/compass_a549/rectify_sr_smoke/logs
+  grep -iE "aligner|STAR|hisat|magicblast|gsnap|bbmap|reads|error|0 reads" $L/30367486_0.out | head -60
+  # both-mates check on a chunk consensus BAM:
+  source .../conda.sh && conda activate rectify
+  samtools view .../chunk_outputs/A549_rep1_subsampled_chunk_000_of_004.consensus.bam | \
+    grep -oE "RN:i:[0-9]+" | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+  ```
+  If both-mates and 7-aligners pass → proceed to FULL run.
+- **If any task FAILED** → read `$L/30367486_<task>.err`; most likely causes: an aligner not found on PATH
+  (symlink/PATH), STAR `versionGenome … INCOMPATIBLE` (regenerate index, ~30min), or OOM (bump mem again).
+
+### FULL run (after smoke passes)
+The split of the FULL 42M-pair fastq (7.5GB gz) is heavy — run it AS A JOB, not on the login node.
+Generate with the same flags but input `$W/COMPASS/fastq/A549_rep1_R{1,2}.fastq.gz` and **no `-n`**
+(auto-size ~500 chunks via `--target-reads-per-chunk`). Then `bash submit_pipeline.sh`. Drop a sentinel,
+refresh THIS handoff.
+
+### Deliverable (P5 step 4) — TOOLING NOT YET WRITTEN
+Junction extraction from the merged consensus BAM + the 111-adjudication (positive control: annotated chr5
+junctions HIGH; negative ≈0; `111 ∩ COMPASS`) has **no code yet**. WRITE IT DURING the full run.
+Report the three numbers together — near-zero `111 ∩ COMPASS` only means "artifact" if the positive control passed.
+
+## Files
+- Deployed code: `/scratch/users/kevinroy/compass_a549/rectify_src/` (rsync target; re-sync after local edits).
+- rectify env python: `/home/groups/larsms/users/kevinroy/anaconda3/envs/rectify/bin/python`.
+- Aligner symlinks: `$HOME/.rectify/bin/{STAR,hisat2,magicblast,gsnap}` → compass env.
+- Smoke: `/scratch/users/kevinroy/compass_a549/rectify_sr_smoke/`.
+- Local generator edit (uncommitted): `rectify/core/commands/split_command.py` lines 108–110.
+- Source of truth for aligner params: Sherlock `…/compass_a549/COMPASS/process_reads_and_align.sh`.
