@@ -10,10 +10,65 @@ The streaming orchestration that drives this per-read selection across a
 full multi-aligner BAM set lives in ``consensus.run_consensus_selection``.
 """
 
+import bisect
 from typing import Dict, Optional, Set, Tuple
 
 from .extract import AlignmentInfo, ConsensusResult
 from .scoring import score_alignment
+
+
+# Memoized per-chrom position index over an annotated-junction set. Lets the
+# per-read 5' soft-clip rescue pool be built by locus window instead of a full
+# chrom-wide scan, turning O(reads × junctions_on_chrom) — which hangs at
+# genome-wide short-read scale — into O(reads × log n). Keyed by id() of the
+# set (stable for a consensus run, the same object is threaded through every
+# per-read call); the stored ref guards against id reuse after GC.
+_ANNOT_INDEX_CACHE: dict = {}
+
+
+def _annot_index(annotated_junctions):
+    key = id(annotated_junctions)
+    cached = _ANNOT_INDEX_CACHE.get(key)
+    if cached is not None and cached[0] is annotated_junctions:
+        return cached[1]
+    by_chrom: Dict[str, Tuple[list, list]] = {}
+    for j in annotated_junctions:
+        chrom = j[0]
+        starts, ends = by_chrom.setdefault(chrom, ([], []))
+        starts.append((j[1], j))
+        ends.append((j[2], j))
+    index = {}
+    for chrom, (by_start, by_end) in by_chrom.items():
+        by_start.sort(key=lambda x: x[0])
+        by_end.sort(key=lambda x: x[0])
+        index[chrom] = (
+            [k for k, _ in by_start], [v for _, v in by_start],
+            [k for k, _ in by_end], [v for _, v in by_end],
+        )
+    _ANNOT_INDEX_CACHE[key] = (annotated_junctions, index)
+    return index
+
+
+def _query_annot_window(annotated_junctions, chrom, lo, hi):
+    """Annotated junctions on ``chrom`` whose start OR end lies in [lo, hi].
+
+    A superset of everything ``_rescue_5prime_softclip`` can match (it filters
+    to ≤ ``search_window_bp`` of the read's 5' boundary), so restricting the
+    annotated pool to this window leaves the scoring result byte-identical.
+    """
+    idx = _annot_index(annotated_junctions)
+    entry = idx.get(chrom)
+    if entry is None:
+        return set()
+    skeys, svals, ekeys, evals = entry
+    out: Set[Tuple[str, int, int, str]] = set()
+    i = bisect.bisect_left(skeys, lo)
+    while i < len(skeys) and skeys[i] <= hi:
+        out.add(svals[i]); i += 1
+    i = bisect.bisect_left(ekeys, lo)
+    while i < len(ekeys) and ekeys[i] <= hi:
+        out.add(evals[i]); i += 1
+    return out
 
 
 def select_best_alignment(
@@ -69,10 +124,27 @@ def select_best_alignment(
     chrom_for_read = list(alignments.values())[0].chrom
     candidate_junctions: Set[Tuple[str, int, int, str]] = set()
     if annotated_junctions:
-        # Only keep annotated junctions on the same chrom to avoid scanning everything
-        for j in annotated_junctions:
-            if j[0] == chrom_for_read:
-                candidate_junctions.add(j)
+        # Locus-scoped annotated pool: a window-superset of the rescue's ≤300bp
+        # reach around this read, so it is byte-identical to a full chrom scan
+        # but O(log n) per read instead of O(n) (the chrom-wide scan hangs at
+        # genome-wide short-read scale — ~tens of thousands of junctions/chrom
+        # × ~50k reads).
+        _pos = []
+        for _a in alignments.values():
+            _rs = getattr(_a, 'reference_start', None)
+            _re = getattr(_a, 'reference_end', None)
+            if _rs is not None:
+                _pos.append(_rs)
+            if _re is not None:
+                _pos.append(_re)
+        if _pos:
+            candidate_junctions |= _query_annot_window(
+                annotated_junctions, chrom_for_read, min(_pos) - 350, max(_pos) + 350)
+        else:
+            # No positional info (shouldn't happen) — fall back to chrom scan.
+            for j in annotated_junctions:
+                if j[0] == chrom_for_read:
+                    candidate_junctions.add(j)
     for alignment in alignments.values():
         for junc_start, junc_end in alignment.junctions:
             candidate_junctions.add((alignment.chrom, junc_start, junc_end, alignment.strand))
