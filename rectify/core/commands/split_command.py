@@ -106,8 +106,8 @@ SHORT_READ_ALIGNERS_DEFAULT = ['bbmap', 'bwa']
 
 # Short-read resource specs — lighter than long-read (no Java heap, smaller BAMs)
 SR_ALIGN_CORRECT_CORES  = 4
-SR_ALIGN_CORRECT_MEM_GB = 32
-SR_ALIGN_CORRECT_TIME   = '1:30:00'
+SR_ALIGN_CORRECT_MEM_GB = 64   # STAR loads ~29G human index (sequential panel); 32G OOMs
+SR_ALIGN_CORRECT_TIME   = '6:00:00'   # per-chunk 7-aligner index loads dominate; larsms non-preempt
 
 SR_FINAL_MERGE_CORES  = 8
 SR_FINAL_MERGE_MEM_GB = 32
