@@ -127,7 +127,9 @@ currently running.** The pipeline is validated end-to-end at 7/7 on a real chunk
 run has NOT been launched yet (awaiting go-ahead). The deployed code (`…/compass_a549/rectify_src`) carries
 all fixes; `~/.rectify/bin` has all aligner symlinks incl. gsnap workers.
 
-## FULL RUN LAUNCHED 2026-06-20 — split+chain job `30431657`
+## FULL RUN LAUNCHED 2026-06-20 — split+chain job `30432422`
+(First attempt 30431657 fast-failed on the `set -u` + conda-activate trap — conda's java_home.sh
+references unbound JAVA_HOME; fixed sbatch to `set -o pipefail` only. Resubmitted as 30432422.)
 Submitted `/scratch/users/kevinroy/compass_a549/cmp_sr_full_split.sbatch`. It:
 1. `rectify split` the full 42M-pair A549_rep1 (R1/R2) into **500 chunks** → `$W/rectify_sr_full/`
    (~4h at observed throughput; writes sentinel `$W/.sr_full_split_rc` with the rc).
@@ -143,7 +145,7 @@ ssh sherlock "squeue -u kevinroy -o '%.14i %.16j %.8T %.10M %R'; echo ---; \
   ls $W/rectify_sr_full/chunk_outputs/*.consensus.bam 2>/dev/null | wc -l; \
   ls $W/rectify_sr_full/final/ 2>/dev/null"
 ```
-- **split job 30431657 RUNNING** → wait (~4h).
+- **split job 30432422 RUNNING** → wait (~4h).
 - **`.sr_full_split_rc` absent & job gone** → split died; check `$W/logs/cmp_sr_split_*.{out,err}`.
 - **`.sr_full_split_rc` == 0** → array was chain-submitted; find it: `squeue`/`sacct --name=A549_rep1_sr`.
   - array tasks idempotent (`.consensus.bam` skip + atomic copy) → safe to requeue / re-`sbatch
