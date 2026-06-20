@@ -77,6 +77,38 @@ header to its bare QNAME (first whitespace token) before magicblast; RN is re-ap
 qname→RN map in `_finalize_short_read_bam` (keyed on bare qname). Verified on a 1k-pair subset: SAM columns
 correct, `samtools view` rc=0, 2273 records. **Uncommitted.**
 
+## ALIGNER-VERSION SENSITIVITY EXPERIMENT (user-requested 2026-06-20)
+Goal: confidence aligner version plays a minimal role. Head-to-head on the SAME reads (100k-pair
+A549_rep1 subsample), identical rectify pipeline, differing ONLY in aligner binaries/indices.
+- Installed (COMPASS-pinned): STAR 2.7.10a, HISAT2 2.2.1, magicblast 1.5.0, gsnap 2021-05-27, bbmap 38.18.
+  Latest: STAR 2.7.11b, HISAT2 2.2.1 (==, project dormant), magicblast 1.7.2, gmap/gsnap 2025.07.31, bbmap 39.79.
+- Env `compass_latest` BUILT (via **micromamba** — classic conda solver OOMs on the login node; conda has
+  no libmamba solver plugin and Sherlock curl is flaky, so micromamba binary was fetched on the M1 and
+  rsync'd to `~/bin/micromamba`). Installed: STAR 2.7.11b, HISAT2 2.2.2, magicblast 1.6.0 (bioconda's
+  newest is 1.7.0; solver picked 1.6.0), gsnap 2024-11-20, bbmap 39.26, samtools 1.21. Path:
+  `/home/groups/larsms/users/kevinroy/anaconda3/envs/compass_latest`.
+- **Invocation**: env has its own python 3.12, so run rectify via the ABSOLUTE rectify-env python with
+  `PATH=compass_latest/bin:$PATH` (aligners + their wrapper-siblings — gsnap workers, hisat2-align-s,
+  bbmap jar — all resolve from that one dir; no symlinks needed). Testing whether STAR 2.7.11b / gsnap
+  2024 read the existing indices; rebuild only incompatible ones into `genome_references_latest/`.
+- Baseline (COMPASS-pinned panel on the 100k subsample) → `$W/ver_cmp/compass/cmpver.rectified.bam`.
+- Latest panel → `$W/ver_cmp/latest/latestver.rectified.bam`.
+- Compare: `dev/compass_version_compare.py` (chr5 Jaccard, depth Spearman, novel-junction agreement,
+  111∩each). High concordance ⇒ version minimal role. (Separate from the main full run job 30432422.)
+- **Index compatibility tested**: STAR 2.7.11b READS the existing 2.7.4a index (reuse); HISAT2 2.2.2 reads
+  2.2.1 index (reuse); BLAST db reused; bbmap builds on-the-fly. **gsnap 2024 CANNOT read the 2021 gmap
+  index (rc=9)** → rebuilt with latest `gmap_build` (COMPASS recipe: gmap_build + `gtf_splicesites|awk
+  '$4>9'|iit_store`). `genome_references_latest/` = symlinks to reusable + fresh GSNAP/.
+- **Chained jobs**: `gsnap_latest_build` **30443075** (~1-2h, sentinel `$W/.gsnap_latest_build_rc`) →
+  `latest_panel_cmp` **30443095** (`afterok` dep; runs latest panel on the 100k subsample then the
+  comparison, writes `$W/ver_cmp/version_compare.json` + sentinel `$W/.latest_cmp_rc`). COMPASS-pinned
+  baseline already done: `$W/ver_cmp/compass/cmpver.rectified.bam` (all 7 aligners, 311,614 reads).
+- **RESUME (experiment)**: `cat $W/.latest_cmp_rc` → if `0`, read `$W/ver_cmp/version_compare.json`
+  (jaccard_all, novel_jaccard, depth_spearman, 111_in_compass_pinned vs 111_in_latest, verdict). If a job
+  failed: `sacct --name=gsnap_latest_build,latest_panel_cmp`; gsnap build logs `$W/logs/gsnap_latest_build_*`.
+  Versions: STAR 2.7.10a→2.7.11b, HISAT2 2.2.1→2.2.2, magicblast 1.5.0→1.6.0, gsnap 2021-05-27→2024-11-20,
+  bbmap 38.18→39.26.
+
 ## Test suite (user /goal: all tests pass) — GREEN after fixes
 Full `pytest tests/` in the `rectify` env (py3.9), bundled data deployed (54M, indexes excluded):
 - My 4 changes cause **zero regressions** — the 9 initial "failures" were all missing-bundled-data
