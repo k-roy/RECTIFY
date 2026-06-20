@@ -127,7 +127,37 @@ currently running.** The pipeline is validated end-to-end at 7/7 on a real chunk
 run has NOT been launched yet (awaiting go-ahead). The deployed code (`…/compass_a549/rectify_src`) carries
 all fixes; `~/.rectify/bin` has all aligner symlinks incl. gsnap workers.
 
-## Resume — concrete branch logic
+## FULL RUN LAUNCHED 2026-06-20 — split+chain job `30431657`
+Submitted `/scratch/users/kevinroy/compass_a549/cmp_sr_full_split.sbatch`. It:
+1. `rectify split` the full 42M-pair A549_rep1 (R1/R2) into **500 chunks** → `$W/rectify_sr_full/`
+   (~4h at observed throughput; writes sentinel `$W/.sr_full_split_rc` with the rc).
+2. On rc==0, chains `bash $W/rectify_sr_full/submit_pipeline.sh` → submits the **500-task array**
+   (`A549_rep1_sr`, 64G/6h/task, idempotent `.consensus.bam` skip) + `afterok` final merge.
+
+### RESUME — concrete branch logic for the full run
+SSH `sherlock` open; never tear down ControlMaster; retry transient sshd serially. Env: `rectify` conda
+env + `export PATH=$PATH:$HOME/.rectify/bin`. `$W=/scratch/users/kevinroy/compass_a549`.
+```
+ssh sherlock "squeue -u kevinroy -o '%.14i %.16j %.8T %.10M %R'; echo ---; \
+  cat $W/.sr_full_split_rc 2>/dev/null; echo '--- chunks done ---'; \
+  ls $W/rectify_sr_full/chunk_outputs/*.consensus.bam 2>/dev/null | wc -l; \
+  ls $W/rectify_sr_full/final/ 2>/dev/null"
+```
+- **split job 30431657 RUNNING** → wait (~4h).
+- **`.sr_full_split_rc` absent & job gone** → split died; check `$W/logs/cmp_sr_split_*.{out,err}`.
+- **`.sr_full_split_rc` == 0** → array was chain-submitted; find it: `squeue`/`sacct --name=A549_rep1_sr`.
+  - array tasks idempotent (`.consensus.bam` skip + atomic copy) → safe to requeue / re-`sbatch
+    rectify_sr_full/run_array_short_read.sh` if some failed.
+  - **all 500 `.consensus.bam` present + merge COMPLETED** → final merged BAM in `rectify_sr_full/final/`.
+    Proceed to adjudication (below).
+- **`.sr_full_split_rc` != 0** → split failed; do NOT expect an array. Read split err.
+
+### ADJUDICATION (P5 step 4) — tool now BUILT: `dev/compass_shortread_adjudicate_111.py`
+Run AFTER the merged BAM exists (see that script's header for the exact command). Reports the 3 numbers:
+positive control (annotated chr5 junctions HIGH), negative (~0), and `111 ∩ COMPASS`. Near-zero
+intersection ⇒ the 111 are artifacts — ONLY valid if the positive control passed.
+
+## (superseded) Resume — concrete branch logic
 SSH ControlMaster `sherlock` is open; never tear it down; retry transient sshd errors serially.
 Check the smoke:
 ```
