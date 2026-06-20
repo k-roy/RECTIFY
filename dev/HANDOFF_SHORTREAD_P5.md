@@ -124,6 +124,22 @@ Full `pytest tests/` in the `rectify` env (py3.9), bundled data deployed (54M, i
   runs). Re-recorded the golden to `4f326833…` with documented rationale. (It was masked earlier because
   it's skipped when bundled data is absent.)
 
+## ALIGNER-VERSION EXPERIMENT — RESULT (2026-06-20): version plays a NEGLIGIBLE role
+Head-to-head on the same 100k-pair A549 subsample, identical rectify pipeline.
+- **gsnap caveat**: gsnap 2024-11-20 removed `--ambig-splice-noclip` (rectify's shared wrapper passes it for
+  gsnap 2021), so latest gsnap won't drop into the COMPASS flags unchanged → gsnap excluded from BOTH sides
+  for a clean matched comparison (its version effect is UNtested, not shown-minimal). The other 4 distinct
+  tools all upgraded cleanly: STAR 2.7.10a→2.7.11b, HISAT2 2.2.1→2.2.2, magicblast 1.5.0→1.6.0, bbmap 38.18→39.26.
+- **CLEAN 6v6** (`$W/ver_cmp/version_compare_6v6.json`, bbmap+STAR×2+HISAT2×2+magicblast, pinned vs latest):
+  - chr5 junctions 1661 vs 1662; **jaccard_all 0.9982**, **depth Spearman 0.9998**.
+  - novel-junction Jaccard **0.9954 at ≥1 read**, **1.0 at ≥2/≥3/≥5/≥10 reads** (the single ≥1-read
+    discordant junction is one 1-read call — detection-boundary noise, not algorithmic).
+  - **111∩panel = 0 for BOTH** versions → the artifact conclusion is version-invariant.
+- (As-is 7-pinned vs 6-latest, gsnap-confounded: jaccard 0.969, depth 0.971, novel 0.924 — conservative floor.)
+- **Conclusion**: for STAR/HISAT2/magicblast/bbmap, latest vs COMPASS-pinned produce IDENTICAL well-supported
+  junctions; aligner version does not change the 111 result. gsnap-2024 inclusion would need a small
+  version-aware flag tweak in `_build_gsnap_cmd` (drop `--ambig-splice-noclip` when unsupported).
+
 ## Tool maintenance check (user-requested 2026-06-19) — both ACTIVELY maintained; ours are OLD
 - **GMAP/GSNAP**: latest bioconda **2025.07.31** (Sep 2025); releases throughout 2024–2025; maintained by
   Thomas Wu / Genentech. **We run 2021-05-27** (~4 yr old). Functional (index built with same version).

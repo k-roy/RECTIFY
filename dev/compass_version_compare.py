@@ -99,6 +99,20 @@ def main():
     novel_union = novel_a | novel_b
     novel_jaccard = len(novel_shared) / len(novel_union) if novel_union else 0.0
 
+    # Depth-thresholded novel Jaccard: removes the low-support detection-boundary
+    # noise floor (1-2 read junctions near threshold are sampling noise, not
+    # algorithmic disagreement). novel_X(T) = novel junctions with >=T anchored
+    # reads in panel X. T=1 reproduces novel_jaccard above.
+    novel_jaccard_by_min_depth = {}
+    novel_counts_by_min_depth = {}
+    for T in (1, 2, 3, 5, 10):
+        na = {j for j in novel_a if A[j] >= T}
+        nb = {j for j in novel_b if B[j] >= T}
+        u = na | nb
+        novel_jaccard_by_min_depth[T] = round(len(na & nb) / len(u), 4) if u else None
+        novel_counts_by_min_depth[T] = {args.label_a: len(na), args.label_b: len(nb),
+                                        'shared': len(na & nb)}
+
     # The 111 on each panel.
     novels111 = set()
     with open(args.novels) as fh:
@@ -119,6 +133,8 @@ def main():
         'jaccard_all': round(jaccard, 4),
         'depth_spearman_on_shared': depth_corr,
         'novel_jaccard': round(novel_jaccard, 4),
+        'novel_jaccard_by_min_depth': novel_jaccard_by_min_depth,
+        'novel_counts_by_min_depth': novel_counts_by_min_depth,
         f'novel_{args.label_a}': len(novel_a), f'novel_{args.label_b}': len(novel_b),
         'novel_shared': len(novel_shared),
         'novels_111_total': len(novels111),
