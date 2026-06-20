@@ -37,10 +37,16 @@ import pytest
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "b267b1da6b8533a84b3701c7b1974f7666fba80fd602667d62bbfb80f1017c95"
+    "4f32683302c33bdf1aeaec6f7252d223816dc700d0c09959280bffe819512cb3"
 )
-# Recorded 2026-05-22 at HEAD 55089f7 from validation_reads.minimap2.bam
-# (36 reads) with the args in test_process_bam_file_parallel_deterministic.
+# Re-recorded 2026-06-19 (drs-validation-rebuild). The prior golden
+# (b267b1da…, recorded 2026-05-22 at 55089f7) went stale when later 3'SS-rescue
+# commits legitimately changed process_bam_file_parallel output —
+# bd20f9e (narrow 3'SS-rescue candidates), 961c844 (interval-tree pool index),
+# cf5ebb9 (skip 3'SS rescue on rDNA/Pol III), 0c1773b (DRS 3'-end fix).
+# Output is deterministic (stable observed hash across runs) and independent of
+# the short-read consensus locus-index change (verified: baseline select.py
+# produces the identical hash). 36 reads from validation_reads.minimap2.bam.
 
 
 def _stable_hash_results(results):
