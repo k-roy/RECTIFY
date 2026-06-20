@@ -472,7 +472,7 @@ def run_align(args: argparse.Namespace) -> int:
             if not (_shutil.which('winnowmap') or _shutil.which('winnowmap2')):
                 logger.warning("winnowmap not found on PATH, skipping winnowmap2")
                 return aligner, None
-        elif not check_aligner_available(exec_path):
+        elif exec_path is not None and not check_aligner_available(exec_path):
             logger.warning(f"{aligner} not found at {exec_path}, skipping")
             return aligner, None
 

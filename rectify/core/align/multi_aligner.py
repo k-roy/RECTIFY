@@ -323,8 +323,32 @@ class MultiAlignerConfig:
 
 
 def check_aligner_available(aligner: str) -> bool:
-    """Check if an aligner is available in PATH."""
+    """Check if an aligner is available in PATH.
+
+    Returns False for a None exec path. The COMPASS short-read aligners
+    (STAR/HISAT2/magicblast/gsnap) resolve their binary inside the wrapper via
+    ``_require_binary`` and pass ``exec_path=None`` to the dispatcher's
+    availability pre-check; ``shutil.which(None)`` would raise TypeError, so we
+    short-circuit (callers already guard, this is belt-and-suspenders)."""
+    if aligner is None:
+        return False
     return shutil.which(aligner) is not None
+
+
+def _write_bare_qname_fastq(src: str, dst: str) -> None:
+    """Copy a FASTQ to ``dst`` (decompressing gz), rewriting every header to its
+    bare QNAME — the first whitespace token.
+
+    Neutralises multi-token FASTQ headers that Magic-BLAST mangles under
+    ``-no_query_id_trim``: rectify-split injects ``RN:i:N`` plus the original
+    Casava comment, and magicblast spills those tokens into SAM columns 2-3,
+    shifting the mandatory fields so samtools rejects the SAM. RN is re-applied
+    afterwards from the qname->RN map in ``_finalize_short_read_bam``.
+    """
+    fin = gzip.open(src, 'rt') if _is_gz(src) else open(src, 'rt')
+    with fin, open(dst, 'wt') as fout:
+        for i, line in enumerate(fin):
+            fout.write(line.split(None, 1)[0] + '\n' if i % 4 == 0 else line)
 
 
 def run_minimap2(
@@ -1451,11 +1475,17 @@ def run_magicblast(
     _tmp_inputs: List[Path] = []
 
     def _ensure_plain(p) -> str:
-        if not _is_gz(p):
-            return str(p)
-        plain = output_bam.parent / f'.mb_{output_bam.stem}_{Path(str(p)[:-3]).name}'
-        with gzip.open(str(p), 'rb') as fin, open(plain, 'wb') as fout:
-            shutil.copyfileobj(fin, fout)
+        # Magic-BLAST mangles multi-token FASTQ headers under -no_query_id_trim:
+        # rectify-split injects `RN:i:N` plus the original Casava comment, and
+        # magicblast spills those tokens into SAM columns 2-3, shifting the
+        # mandatory fields so samtools rejects the SAM (FLAG becomes "RN:i:0").
+        # Rewrite every header to its bare QNAME (first whitespace token); RN is
+        # re-applied afterwards from the qname->RN map in
+        # _finalize_short_read_bam. Also decompresses gz (older magicblast chokes
+        # on a gzipped -query), so this runs for plain inputs too.
+        stem = Path(str(p)[:-3] if _is_gz(p) else str(p)).name
+        plain = output_bam.parent / f'.mb_{output_bam.stem}_{stem}.fastq'
+        _write_bare_qname_fastq(str(p), str(plain))
         _tmp_inputs.append(plain)
         return str(plain)
 
