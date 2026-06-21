@@ -220,10 +220,15 @@ ssh sherlock "squeue -u kevinroy -o '%.14i %.16j %.8T %.10M %R'; echo ---; \
     Proceed to adjudication (below).
 - **`.sr_full_split_rc` != 0** → split failed; do NOT expect an array. Read split err.
 
-### ADJUDICATION (P5 step 4) — tool now BUILT: `dev/compass_shortread_adjudicate_111.py`
-Run AFTER the merged BAM exists (see that script's header for the exact command). Reports the 3 numbers:
-positive control (annotated chr5 junctions HIGH), negative (~0), and `111 ∩ COMPASS`. Near-zero
-intersection ⇒ the 111 are artifacts — ONLY valid if the positive control passed.
+### ADJUDICATION (P5 step 4) — CLUSTER-DURABLE, chained on the merge
+Tool: `dev/compass_shortread_adjudicate_111.py`. Submitted as SLURM job **30455867**
+(`afterok:30443247` the merge), so it runs on the cluster independent of the M1 watcher →
+writes `$W/rectify_sr_full/adjudication_111.json` + sentinel `$W/.adjudication_111_rc`.
+Reports positive control (annotated chr5 junctions HIGH), negative (~0), and `111 ∩ COMPASS`.
+Near-zero intersection ⇒ the 111 are artifacts — ONLY valid if the positive control passed.
+**RESUME**: `cat $W/.adjudication_111_rc`; if `0`, read `$W/rectify_sr_full/adjudication_111.json`
+(`POSITIVE_control_...`, `NEGATIVE_control_decoys_in_compass`, `INTERSECTION_111_in_compass`, `verdict`).
+Chain: array `30443246` (500 tasks, ~5-wide × ~15-18min ≈ ~1 day) → merge `30443247` → adjudicate `30455867`.
 
 ## (superseded) Resume — concrete branch logic
 SSH ControlMaster `sherlock` is open; never tear it down; retry transient sshd errors serially.
