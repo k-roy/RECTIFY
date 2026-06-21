@@ -109,6 +109,27 @@ A549_rep1 subsample), identical rectify pipeline, differing ONLY in aligner bina
   Versions: STAR 2.7.10a→2.7.11b, HISAT2 2.2.1→2.2.2, magicblast 1.5.0→1.6.0, gsnap 2021-05-27→2024-11-20,
   bbmap 38.18→39.26.
 
+## chr5 PREFILTER feasibility (user question 2026-06-20) — single aligner is NOT sufficient
+Q: can a fast single-aligner pass prefilter reads to chr5 (avoid running the 7-panel on all reads, since
+chr5 is only **4.8%** of mapped reads — measured)? Validated on the 100k subsample vs the all-reads truth
+(`cmpver`); metric = chr5 junctions the prefilter MISSES.
+- **STAR EndToEnd (COMPASS config)**: captured 2362/~7400 consensus chr5 pairs; **missed 543/1655 junctions
+  (33%), 258/421 novel (61%)**. jaccard 0.67.
+- **STAR permissive** (Local + `--outFilterScoreMinOverLread 0.3 --outFilterMatchNminOverLread 0.3
+  --outFilterMultimapNmax 200 --seedSearchStartLmax 30`): better but still **missed 149/1655 (9%)**, and the
+  misses are NOT low-depth noise — **novel junctions missed: 43% at ≥2 reads, 53% at ≥3, 55% at ≥10**. jaccard
+  0.90, novel-Jaccard 0.74.
+- **Mechanism / CONCLUSION**: the consensus chr5 read set is the UNION of 7 heterogeneous aligners and is
+  **magicblast-dominated (magicblast wins 44% of consensus reads)**; magicblast (BLAST-based) maps spliced/
+  divergent reads no STAR config reproduces. So **a single aligner cannot prefilter at chrom level accurately**
+  for this multi-aligner consensus — it drops ~half the well-supported NOVEL junctions (the category the 111
+  live in). The whole-genome ALL-READS alignment is therefore not merely conservative, it is **required** for
+  faithful novel-junction recovery. A faithful prefilter would need a multi-aligner union INCLUDING magicblast
+  (the slow, dominant one) → ~no net speedup. **Decision: keep the all-reads run; the prefilter shortcut is
+  refuted by data.** (111∩=0 in both prefilter and all-reads here, but that is coincidental to the 111 being
+  absent everywhere; for novel-junction discovery generally the single-aligner prefilter would mislead.)
+- Killed the strict full-data prefilter job (30466878); no single-aligner fast-track relaunched.
+
 ## Test suite (user /goal: all tests pass) — GREEN after fixes
 Full `pytest tests/` in the `rectify` env (py3.9), bundled data deployed (54M, indexes excluded):
 - My 4 changes cause **zero regressions** — the 9 initial "failures" were all missing-bundled-data
