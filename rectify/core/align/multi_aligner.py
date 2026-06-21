@@ -1290,8 +1290,30 @@ def _build_magicblast_cmd(reads_r1, reads_r2, blast_index, out_sam,
     ]
 
 
+_GSNAP_AMBIG_SUPPORT = None
+
+
+def _gsnap_supports_ambig_noclip() -> bool:
+    """Whether the gsnap on PATH accepts ``--ambig-splice-noclip``.
+
+    GSNAP 2024-11-20 removed this flag (present through the COMPASS-pinned
+    2021-05-27). Probed once via ``gsnap --help`` and cached; on any probe error
+    we assume supported (the legacy default) so behaviour is unchanged when the
+    binary is the pinned one.
+    """
+    global _GSNAP_AMBIG_SUPPORT
+    if _GSNAP_AMBIG_SUPPORT is None:
+        try:
+            r = subprocess.run(['gsnap', '--help'], capture_output=True,
+                               text=True, timeout=30)
+            _GSNAP_AMBIG_SUPPORT = '--ambig-splice-noclip' in (r.stdout + r.stderr)
+        except Exception:
+            _GSNAP_AMBIG_SUPPORT = True
+    return _GSNAP_AMBIG_SUPPORT
+
+
 def _build_gsnap_cmd(reads_r1, reads_r2, gsnap_dir, genome_version, out_sam,
-                    threads) -> List[str]:
+                    threads, ambig_splice_noclip: bool = True) -> List[str]:
     cmd = [
         'gsnap',
         '-D', str(gsnap_dir),
@@ -1300,7 +1322,11 @@ def _build_gsnap_cmd(reads_r1, reads_r2, gsnap_dir, genome_version, out_sam,
         str(reads_r1), str(reads_r2),
         '--output-file', str(out_sam),
         f'--nthreads={threads}',
-        '--ambig-splice-noclip',
+    ]
+    # GSNAP >=2024 dropped --ambig-splice-noclip; omit it when unsupported.
+    if ambig_splice_noclip:
+        cmd.append('--ambig-splice-noclip')
+    cmd += [
         '--novelsplicing=1',
         '--add-paired-nomappers',
         '--sam-extended-cigar',
@@ -1526,7 +1552,8 @@ def run_gsnap(
     gdir = gsnap_genome_dir if gsnap_genome_dir else str(paths.gsnap_dir)
     gv = genome_version if genome_version else paths.genome_version
     sam_path = output_bam.with_suffix('.sam')
-    cmd = _build_gsnap_cmd(reads_path, reads2_path, gdir, gv, sam_path, threads)
+    cmd = _build_gsnap_cmd(reads_path, reads2_path, gdir, gv, sam_path, threads,
+                           ambig_splice_noclip=_gsnap_supports_ambig_noclip())
     logger.info("Running gsnap: %s ...", ' '.join(cmd[:6]))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
     if result.returncode != 0:
