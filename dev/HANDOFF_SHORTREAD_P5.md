@@ -137,8 +137,26 @@ Head-to-head on the same 100k-pair A549 subsample, identical rectify pipeline.
   - **111∩panel = 0 for BOTH** versions → the artifact conclusion is version-invariant.
 - (As-is 7-pinned vs 6-latest, gsnap-confounded: jaccard 0.969, depth 0.971, novel 0.924 — conservative floor.)
 - **Conclusion**: for STAR/HISAT2/magicblast/bbmap, latest vs COMPASS-pinned produce IDENTICAL well-supported
-  junctions; aligner version does not change the 111 result. gsnap-2024 inclusion would need a small
-  version-aware flag tweak in `_build_gsnap_cmd` (drop `--ambig-splice-noclip` when unsupported).
+  junctions; aligner version does not change the 111 result.
+- **IMPORTANT setup nuance**: `genome_references_latest/` fasta was a SYMLINK; rectify's
+  `_compass_index_paths` does `Path(genome).resolve().parent`, and `.resolve()` followed the symlink back to
+  the OLD dir — so the 6v6 "latest" panel actually used the OLD indices with the LATEST binaries (a clean
+  binary-version isolation, still valid). Fixed by HARDLINKING the fasta+fai into `genome_references_latest/`
+  so ref_dir resolves there (needed for gsnap's rebuilt index to be used).
+- **gsnap 2024 — NOT a drop-in** (committed flag fix `_gsnap_supports_ambig_noclip`): (1) removed
+  `--ambig-splice-noclip` (worked around); (2) requires a freshly-built index (rebuilt); (3) **~100x slower**
+  — its new `localdb` mode allocs 12.4G and runs **13.6 queries/sec** (vs gsnap 2021 fast), so the full-100k
+  rectify run hit a wall and exited nonzero at 512s. Standalone on 1k pairs it returns rc=0 / correct output,
+  so the version is fine, just impractically slow as configured. Direct gsnap-2021-vs-2024 junction
+  comparison on a 12k-pair subset: ATTEMPTED but **gsnap 2024 SIGSEGV**s on read
+  `K00151:...:1112:3752:43128` (`Access_emergency_cleanup`), truncating output (12594 vs gsnap2021's 25828
+  records; 55 vs 238 chr5 junctions) → comparison guardrail correctly refused. So gsnap 2024-11-20 is
+  **broken on this A549 data** (crash bug), making its version effect untestable — which is itself the
+  strongest reproducibility argument for KEEPING the COMPASS-pinned gsnap 2021-05-27.
+- **FINAL ANSWER (user's question)**: aligner version plays a NEGLIGIBLE role for STAR/HISAT2/magicblast/bbmap
+  (6v6: novel-Jaccard 1.0 at ≥2 reads, 111∩=0 on both). gsnap-latest is not a drop-in and crashes here, so
+  pinning gsnap (as COMPASS does) is the right call; its junctions are corroborated by the other 6 aligners
+  in consensus anyway. Net: the 111-artifact conclusion is robust to aligner version.
 
 ## Tool maintenance check (user-requested 2026-06-19) — both ACTIVELY maintained; ours are OLD
 - **GMAP/GSNAP**: latest bioconda **2025.07.31** (Sep 2025); releases throughout 2024–2025; maintained by
