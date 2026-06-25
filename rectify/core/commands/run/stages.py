@@ -43,6 +43,8 @@ def _run_alignment(
     chimeric_consensus: bool = True,
     ultra_path: str = 'uLTRA',
     desalt_path: str = 'deSALT',
+    gmap_path: str = 'gmap',
+    gmap_db: Optional[str] = None,
     mapPacBio_chunks: int = 1,
     checkpoint_dir: Optional[str] = None,
     short_read: bool = False,
@@ -142,6 +144,8 @@ def _run_alignment(
         gapmm2_path='gapmm2',
         ultra_path=ultra_path,
         desalt_path=desalt_path,
+        gmap_path=gmap_path,
+        gmap_db=gmap_db,
         mapPacBio_chunks=mapPacBio_chunks,
         mapPacBio_chunk_idx=None,  # merge mode: look for existing chunk BAMs
         # Use the canonical sample_id as prefix so the rectified BAM lands at

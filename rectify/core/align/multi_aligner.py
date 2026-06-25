@@ -2796,6 +2796,164 @@ def run_desalt(
     return str(output_bam)
 
 
+def run_gmap(
+    reads_path: str,
+    genome_path: str,
+    output_bam: str,
+    annotation_path: Optional[str] = None,
+    threads: int = 8,
+    gmap_db: Optional[str] = None,
+    gmap_path: str = 'gmap',
+    max_intron: int = 5000,
+    extra_args: Optional[List[str]] = None,
+) -> str:
+    """Run GMAP, the splice-aware long-read / cDNA aligner (GSNAP's sibling).
+
+    GMAP needs a pre-built database (build once with:
+    ``gmap_build -D <dir> -d <name> genome.fa``). Pass the built db directory via
+    ``gmap_db`` (``<dir>/<name>``); otherwise a ``gmap_db/<genome_stem>`` directory
+    adjacent to ``genome_path`` is used. The db is NOT auto-built here — building is
+    a one-time setup step (slow, and racy if many users trigger it at once).
+
+    On any GMAP/samtools failure this emits an empty name-sorted BAM (like deSALT)
+    so the consensus proceeds with the remaining aligners rather than aborting.
+
+    Args:
+        reads_path: Path to FASTQ (gz ok; cleaned/decompressed internally)
+        genome_path: Genome FASTA (used for default db discovery + calmd)
+        output_bam: Output BAM path
+        annotation_path: Accepted for API compatibility; unused (GMAP is de-novo)
+        threads: Threads
+        gmap_db: Path to a built GMAP db directory (``<-D dir>/<-d name>``)
+        gmap_path: gmap executable (default 'gmap')
+        max_intron: Max intron length (yeast-safe default 5000)
+        extra_args: Extra gmap arguments
+
+    Returns:
+        Path to output BAM
+    """
+    output_bam = Path(output_bam)
+    output_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    gmap_exec = shutil.which(gmap_path) or shutil.which('gmap')
+    if not gmap_exec:
+        raise FileNotFoundError(
+            "gmap not found in PATH. Install with: rectify install-aligners --gmap "
+            "(or conda install -c bioconda gmap)"
+        )
+
+    # Resolve the built GMAP db. A built db dir <dir>/<name>/ contains
+    # <name>.genomecomp (deterministic marker of a complete gmap_build).
+    def _is_built_gmap_db(p: Path) -> bool:
+        return p.is_dir() and (
+            (p / f"{p.name}.genomecomp").exists() or any(p.glob('*.genomecomp'))
+        )
+
+    if gmap_db:
+        db_dir = Path(gmap_db)
+        if not _is_built_gmap_db(db_dir):
+            raise FileNotFoundError(
+                f"GMAP db at {db_dir} is missing or incomplete. "
+                f"Build it with: gmap_build -D {db_dir.parent} -d {db_dir.name} <genome.fa>"
+            )
+    else:
+        genome_p = Path(genome_path)
+        stem = genome_p.name.split('.')[0]
+        candidates = [
+            genome_p.parent / 'gmap_db' / stem,
+            genome_p.parent / 'gmap_db' / genome_p.parent.name,
+        ]
+        db_dir = next((c for c in candidates if _is_built_gmap_db(c)), None)
+        if db_dir is None:
+            tried = ', '.join(str(c) for c in candidates)
+            raise FileNotFoundError(
+                f"GMAP db not found adjacent to {genome_path}. Looked at: {tried}. "
+                f"Build it with: gmap_build -D <dir> -d <name> <genome.fa>"
+            )
+
+    qname_to_rn = _load_fastq_rn_map(str(reads_path))
+
+    # GMAP reads plain FASTQ; reuse the shared cleaner (decompress, strip DRS
+    # auxiliary read-name tags, drop empty-seq / duplicate-UUID records).
+    logger.info("Preparing FASTQ for GMAP")
+    tmp_cleaned_fastq = _clean_fastq(reads_path, output_bam.parent)
+    reads_input = str(tmp_cleaned_fastq)
+
+    sam_path = output_bam.with_suffix('.sam')
+    cmd = [
+        gmap_exec,
+        '-D', str(db_dir.parent),
+        '-d', db_dir.name,
+        '-t', str(threads),
+        '-f', 'samse',                 # SAM output, single-end
+        '--npaths', '1',               # best path only (avoid multimapper flood)
+        '--max-intronlength-middle', str(max_intron),
+        '--max-intronlength-ends', str(max_intron),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.append(reads_input)
+
+    logger.info(f"Running GMAP: {' '.join(cmd[:8])}...")
+
+    try:
+        with open(sam_path, 'w') as _sam_out:
+            result = subprocess.run(
+                cmd, stdout=_sam_out, stderr=subprocess.PIPE, text=True,
+                timeout=ALIGNER_TIMEOUT,
+            )
+    finally:
+        tmp_cleaned_fastq.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        sam_path.unlink(missing_ok=True)
+        logger.warning(
+            "GMAP failed (exit %d) — emitting empty BAM; chunk uses the remaining "
+            "aligners. stderr: %s",
+            result.returncode, (result.stderr or '')[-500:],
+        )
+        _create_empty_name_sorted_bam(output_bam, genome_path)
+        return str(output_bam)
+
+    if not sam_path.exists() or sam_path.stat().st_size == 0:
+        sam_path.unlink(missing_ok=True)
+        logger.warning("GMAP produced no output — emitting empty BAM.")
+        _create_empty_name_sorted_bam(output_bam, genome_path)
+        return str(output_bam)
+
+    # SAM → coordinate-sorted BAM
+    view_proc = subprocess.Popen(
+        ['samtools', 'view', '-bS', str(sam_path)], stdout=subprocess.PIPE
+    )
+    sort_proc = subprocess.Popen(
+        ['samtools', 'sort', '-@', str(threads), '-o', str(output_bam)],
+        stdin=view_proc.stdout,
+    )
+    view_proc.stdout.close()
+    try:
+        sort_proc.communicate(timeout=ALIGNER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sort_proc.kill()
+        view_proc.kill()
+        raise RuntimeError(f"samtools sort (GMAP) timed out after {ALIGNER_TIMEOUT}s")
+    view_proc.wait()
+    if view_proc.returncode != 0 or sort_proc.returncode != 0:
+        sam_path.unlink(missing_ok=True)
+        logger.warning(
+            "GMAP SAM→BAM failed (view %s / sort %s) — emitting empty BAM.",
+            view_proc.returncode, sort_proc.returncode,
+        )
+        _create_empty_name_sorted_bam(output_bam, genome_path)
+        return str(output_bam)
+
+    sam_path.unlink(missing_ok=True)
+    _apply_calmd_eq(output_bam, genome_path, threads=threads)
+    logger.info(f"GMAP complete: {output_bam}")
+    validate_post_alignment_qnames(str(output_bam), str(reads_path), 'gmap')
+    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    return str(output_bam)
+
+
 def run_multi_aligner(
     reads_path: str,
     genome_path: str,

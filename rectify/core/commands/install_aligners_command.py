@@ -268,6 +268,18 @@ def check_mapp_pacbio() -> bool:
     return False
 
 
+def check_gmap() -> bool:
+    logger.info("=== GMAP ===")
+    if _check_available('gmap'):
+        logger.info("  Reminder: GMAP also needs a one-time database build:")
+        logger.info("    gmap_build -D <dir> -d <name> genome.fa")
+        return True
+    logger.info("  GMAP is a C toolkit (gmap/gsnap/gmap_build); install via conda:")
+    logger.info("    conda install -c bioconda gmap")
+    logger.info("  Then build the db once: gmap_build -D <dir> -d <name> genome.fa")
+    return False
+
+
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 def create_install_aligners_parser(subparsers) -> argparse.ArgumentParser:
@@ -304,6 +316,8 @@ Examples:
                         help='Install gapmm2 via pip')
     target.add_argument('--ultra', action='store_true',
                         help='Install uLTRA via pip')
+    target.add_argument('--gmap', action='store_true',
+                        help='Check GMAP (conda: gmap); print db-build reminder')
     target.add_argument('--mapp-pacbio', action='store_true',
                         help='Print conda install instructions for mapPacBio/BBMap')
     target.add_argument('--check', action='store_true',
@@ -334,6 +348,7 @@ def _check_all_aligners():
         ('gapmm2',      'gapmm2'),
         ('uLTRA',       'uLTRA'),
         ('deSALT',      'deSALT'),
+        ('gmap',        'gmap'),
     ]
     logger.info("Aligner availability:")
     for name, cmd in aligners:
@@ -383,6 +398,9 @@ def run_install_aligners(args: argparse.Namespace) -> int:
 
     if do_all or args.mapp_pacbio:
         results['mapPacBio'] = check_mapp_pacbio()
+
+    if do_all or args.gmap:
+        results['gmap'] = check_gmap()
 
     if not results:
         logger.info("No aligners specified. Use --all or --desalt/--minimap2/etc.")

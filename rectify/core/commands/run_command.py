@@ -510,12 +510,13 @@ def create_run_parser(subparsers):
     run_parser.add_argument(
         '--junction-aligners',
         nargs='+',
-        choices=['uLTRA', 'deSALT'],
+        choices=['uLTRA', 'deSALT', 'gmap'],
         default=None,
         metavar='ALIGNER',
         help=(
             'Junction-aware aligners for the consensus pool '
-            '(choices: uLTRA, deSALT). Requires --annotation. '
+            '(choices: uLTRA, deSALT, gmap). uLTRA requires --annotation; '
+            'gmap requires a pre-built db (--gmap-db). '
             'When omitted, defaults to [] (disabled) under --short-read and '
             '[uLTRA, deSALT] under long-read. '
             'Pass --no-junction-aligners to explicitly disable.'
@@ -557,6 +558,22 @@ def create_run_parser(subparsers):
         '--desalt-path',
         default='deSALT',
         help='Path to deSALT executable (used with --junction-aligners deSALT)'
+    )
+
+    run_parser.add_argument(
+        '--gmap-path',
+        default='gmap',
+        help='Path to gmap executable (used with --junction-aligners gmap)'
+    )
+
+    run_parser.add_argument(
+        '--gmap-db',
+        default=None,
+        metavar='DIR',
+        help=(
+            'Pre-built GMAP database directory (used with --junction-aligners gmap). '
+            'Build once with: gmap_build -D <dir> -d <name> <genome.fa>'
+        )
     )
 
     # BAM output options

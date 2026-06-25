@@ -125,13 +125,14 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     aligner_group.add_argument(
         '--junction-aligners',
         nargs='+',
-        choices=['uLTRA', 'deSALT'],
+        choices=['uLTRA', 'deSALT', 'gmap'],
         default=[],
         metavar='ALIGNER',
         help=(
-            'Opt-in junction-mode aligners to add to the consensus pool '
-            '(choices: uLTRA, deSALT). Requires --annotation. '
-            'Value is unknown/untested — benchmark before using in production.'
+            'Opt-in splice-aware aligners to add to the consensus pool '
+            '(choices: uLTRA, deSALT, gmap). uLTRA requires --annotation; '
+            'gmap requires a pre-built db (see --gmap-db). '
+            'Benchmark before using in production.'
         )
     )
 
@@ -217,6 +218,23 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--desalt-path',
         default='deSALT',
         help='Path to deSALT executable'
+    )
+
+    aligner_group.add_argument(
+        '--gmap-path',
+        default='gmap',
+        help='Path to gmap executable'
+    )
+
+    aligner_group.add_argument(
+        '--gmap-db',
+        default=None,
+        metavar='DIR',
+        help=(
+            'Pre-built GMAP database directory (<-D dir>/<-d name>). If omitted, '
+            'a gmap_db/<genome_stem> dir adjacent to the genome is used. '
+            'Build once with: gmap_build -D <dir> -d <name> <genome.fa>'
+        )
     )
 
     aligner_group.add_argument(
@@ -395,6 +413,7 @@ def run_align(args: argparse.Namespace) -> int:
         run_gapmm2,
         run_ultra,
         run_desalt,
+        run_gmap,
         run_bbmap,
         run_bwa_mem,
         run_winnowmap2,
@@ -443,6 +462,8 @@ def run_align(args: argparse.Namespace) -> int:
             exec_path = getattr(args, 'ultra_path', 'uLTRA')
         elif aligner == 'deSALT':
             exec_path = getattr(args, 'desalt_path', 'deSALT')
+        elif aligner == 'gmap':
+            exec_path = getattr(args, 'gmap_path', 'gmap')
         elif aligner == 'bbmap':
             exec_path = getattr(args, 'bbmap_path', 'bbmap.sh')
         elif aligner == 'bwa':
@@ -578,6 +599,17 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     annotation_path=str(args.annotation) if args.annotation else None,
                     threads=n_threads,
+                )
+            elif aligner == 'gmap':
+                run_gmap(
+                    reads_path=str(args.reads),
+                    genome_path=str(args.genome),
+                    output_bam=str(output_bam),
+                    annotation_path=str(args.annotation) if args.annotation else None,
+                    threads=n_threads,
+                    gmap_db=getattr(args, 'gmap_db', None),
+                    gmap_path=exec_path,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'bbmap':
                 run_bbmap(
@@ -724,8 +756,13 @@ def run_align(args: argparse.Namespace) -> int:
                 f"(threads: {alloc_summary}, total≤{args.threads})"
             )
 
-            parallel_batch = [a for a in remaining if a != 'deSALT']
-            sequential_batch = [a for a in remaining if a == 'deSALT']
+            # deSALT and gmap run sequentially after the parallel pool: deSALT
+            # crashes when forked inside a multithreaded process, and gmap is slow
+            # + spawns its own worker threads, so a dedicated full-thread pass is
+            # both safer and faster than contending in the parallel batch.
+            _seq = ('deSALT', 'gmap')
+            parallel_batch = [a for a in remaining if a not in _seq]
+            sequential_batch = [a for a in remaining if a in _seq]
 
             with ThreadPoolExecutor(max_workers=max(1, len(parallel_batch))) as pool:
                 futures = {pool.submit(_run_one_aligner, a): a for a in parallel_batch}
