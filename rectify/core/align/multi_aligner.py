@@ -668,6 +668,28 @@ def _sanitize_mpb_fastq(src_path: str, dst_path: str) -> None:
             fout.write(qual)
 
 
+def _bbtools_xmx_gb(genome_path: str) -> int:
+    """Java heap (GB) for BBTools (mapPacBio / bbmap), sized to the genome.
+
+    BBTools' wrapper scripts set ``-Xms`` equal to ``-Xmx``, so an oversized
+    ``-Xmx`` force-commits that much at JVM startup and OOM-crashes the JVM under
+    a cgroup memory limit. This was observed crashing mapPacBio on yeast (the old
+    hard-coded ``-Xmx32g`` while gmap/uLTRA were also resident on a 48 GB task).
+    Yeast-scale references need only a few GB; mammalian BBMap indexes need
+    ~24-32 GB. Size from the (possibly gzipped) FASTA on disk: >80 MB ~ mammalian.
+    Override with the RECTIFY_BBTOOLS_XMX_GB env var if needed.
+    """
+    import os as _os
+    _env = _os.environ.get('RECTIFY_BBTOOLS_XMX_GB')
+    if _env and _env.isdigit():
+        return int(_env)
+    try:
+        gsize = Path(genome_path).stat().st_size
+    except OSError:
+        gsize = 0
+    return 32 if gsize > 80_000_000 else 8
+
+
 def run_map_pacbio(
     reads_path: str,
     genome_path: str,
@@ -777,7 +799,9 @@ def run_map_pacbio(
         # for human RNA. See docs/aligners/mapPacBio.md.
         f'maxindel={max(200000, max_intron)}',
         'minratio=0.4',
-        '-Xmx32g',              # Cap BBTools Java heap at 32 GB to prevent OOM killing neighbours
+        # Heap sized to the genome (BBTools sets -Xms==-Xmx; an oversized value
+        # force-commits at JVM start and OOM-crashes under a cgroup). See helper.
+        f'-Xmx{_bbtools_xmx_gb(genome_path)}g',
     ]
 
     if extra_args:
@@ -995,7 +1019,7 @@ def run_bbmap(
                              # (e.g. 'SRR.123 123 length=76') while BWA truncates
                              # to the bare accession — consensus K-way merge
                              # then fails to join cross-aligner reads.
-        '-Xmx32g',
+        f'-Xmx{_bbtools_xmx_gb(genome_path)}g',   # genome-sized heap (see helper)
     ]
 
     if extra_args:
