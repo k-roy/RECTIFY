@@ -101,26 +101,44 @@ def _rectify(*args) -> List[str]:
 # Output parsing
 # ---------------------------------------------------------------------------
 
-def _load_tsv_first_row(tsv: Path) -> Dict[str, Dict]:
-    """Return first output row per read_id."""
+def _resolve_corrected_tsvs(out_dir: Path, base: str = 'corrected_reads') -> List[Path]:
+    """Find the corrected-reads TSV(s) `rectify correct` produced.
+
+    Streaming/chunked correction writes per-region files
+    (``corrected_reads.region_000.tsv`` …) + a manifest rather than a single
+    ``corrected_reads.tsv``. Prefer a monolithic file if present (older layout),
+    else return the sorted region TSVs.
+    """
+    mono = out_dir / f'{base}.tsv'
+    if mono.exists():
+        return [mono]
+    return sorted(out_dir.glob(f'{base}.region_*.tsv'))
+
+
+def _load_tsv_first_row(tsv) -> Dict[str, Dict]:
+    """Return first output row per read_id (accepts a path or list of paths)."""
+    paths = [tsv] if isinstance(tsv, (str, Path)) else list(tsv)
     rows: Dict[str, Dict] = {}
-    with open(tsv) as f:
-        reader = csv.DictReader(f, delimiter='\t')
-        for row in reader:
-            rid = row.get('read_id', '')
-            if rid not in rows:
-                rows[rid] = row
+    for p in paths:
+        with open(p) as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            for row in reader:
+                rid = row.get('read_id', '')
+                if rid not in rows:
+                    rows[rid] = row
     return rows
 
 
-def _load_tsv_all_rows(tsv: Path) -> Dict[str, List[Dict]]:
-    """Return all output rows per read_id (for Cat6 multi-peak)."""
+def _load_tsv_all_rows(tsv) -> Dict[str, List[Dict]]:
+    """Return all output rows per read_id (accepts a path or list of paths)."""
+    paths = [tsv] if isinstance(tsv, (str, Path)) else list(tsv)
     rows: Dict[str, List[Dict]] = {}
-    with open(tsv) as f:
-        reader = csv.DictReader(f, delimiter='\t')
-        for row in reader:
-            rid = row.get('read_id', '')
-            rows.setdefault(rid, []).append(row)
+    for p in paths:
+        with open(p) as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            for row in reader:
+                rid = row.get('read_id', '')
+                rows.setdefault(rid, []).append(row)
     return rows
 
 
@@ -471,10 +489,15 @@ def run(args: argparse.Namespace) -> int:
 
     if r.returncode != 0:
         return 1
-    print(f'  Correction finished in {elapsed:.0f}s  → {tsv_path.name}')
 
-    corrected = _load_tsv_first_row(tsv_path)
-    all_rows  = _load_tsv_all_rows(tsv_path)
+    tsv_files = _resolve_corrected_tsvs(out_dir)
+    if not tsv_files:
+        print(f'  [{FAIL}] rectify correct produced no corrected_reads TSV in {out_dir}')
+        return 1
+    print(f'  Correction finished in {elapsed:.0f}s  → {", ".join(p.name for p in tsv_files)}')
+
+    corrected = _load_tsv_first_row(tsv_files)
+    all_rows  = _load_tsv_all_rows(tsv_files)
 
     # --- Run checks ---------------------------------------------------------
     print(f'\nChecking correction categories:')
