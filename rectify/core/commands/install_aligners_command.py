@@ -231,7 +231,14 @@ def install_gapmm2(force: bool = False) -> bool:
         return True
     logger.info("  Installing gapmm2 via pip...")
     try:
-        _run([sys.executable, '-m', 'pip', 'install', 'gapmm2>=0.2'])
+        # Pin to 25.4.5 — MUST match pyproject.toml [aligners]. gapmm2 25.4.13+
+        # regressed inside splice_aligner_minimap2's `ts:` tag check: 25.8.12
+        # SILENTLY DROPS every single-exon (unspliced) read because minimap2 only
+        # emits the ts:A: transcript-strand tag for spliced alignments (verified
+        # 2026-06-24: 25.8.12 emits 10/35 validation reads, 25.4.5 emits 35/35).
+        # The old `gapmm2>=0.2` here is what let the broken 25.8.12 onto the M1.
+        # See BUGS_TO_FIX NEW-082.
+        _run([sys.executable, '-m', 'pip', 'install', 'gapmm2==25.4.5'])
         return True
     except subprocess.CalledProcessError:
         logger.error("  pip install gapmm2 failed")

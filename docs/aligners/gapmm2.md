@@ -1,5 +1,15 @@
 # gapmm2: DRS aux tags + duplicate UUIDs + PAF→BAM sequence injection
 
+> ⚠ **PINNED to `gapmm2==25.4.5`** (`pyproject.toml` + `install_aligners_command.py`).
+> **Do NOT upgrade.** gapmm2 25.4.13+ added a `splice_aligner_minimap2` code path
+> (used whenever the `minimap2` binary is on PATH) whose tag loop does
+> `if ts is None: continue` — and minimap2 emits the `ts:A:` transcript-strand tag
+> **only for spliced alignments**, so 25.8.12 **silently drops every single-exon
+> (unspliced) read** (10/35 validation reads vs 25.4.5's 35/35; the drop is invisible
+> in `--debug`). The faster 25.8.12 binary-path timings quoted in the Performance
+> section below are real, but that version is **unusable** until upstream restores
+> tolerance for non-spliced alignments. BUGS_TO_FIX NEW-082 (root-caused 2026-06-24).
+
 `run_gapmm2()` in `multi_aligner.py` always writes a cleaned,
 deduplicated FASTQ before calling gapmm2. Two separate issues require
 this.
