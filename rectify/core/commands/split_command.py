@@ -2330,11 +2330,27 @@ if [[ "$SRC_SIZE" -ne "$DST_SIZE" ]]; then
 fi
 echo "  Size verified: $SRC_SIZE bytes"
 
-# ── Clean up scratch ──────────────────────────────────────────────────────────
+# ── Clean up scratch (guarded) ────────────────────────────────────────────────
+# Only reclaim the working dir if the verified persistent copy lives OUTSIDE it.
+# If OAK_OUT is inside OUTDIR (e.g. the default scratch 'final/' when no real
+# --oak-output-dir was given), a blind `rm -rf "$OUTDIR"` would delete the ONLY
+# copy of the merged BAM — so preserve it and drop only the bulky intermediates.
 echo ""
 echo "=== Cleaning up scratch ==="
-rm -rf "$OUTDIR"
-echo "  Removed: $OUTDIR"
+case "$OAK_OUT/" in
+  "$OUTDIR"/*)
+    echo "  OAK_OUT is inside OUTDIR — NOT removing it (that would delete the merged BAM)."
+    echo "  Merged BAM kept at: $OAK_OUT"
+    echo "  Pass --oak-output-dir on a durable path (e.g. /oak/...) to enable full cleanup."
+    rm -rf "$OUTDIR/chunk_outputs" "$OUTDIR/merged" 2>/dev/null || true
+    rm -f "$OUTDIR"/*_R1.fastq.gz "$OUTDIR"/*_R2.fastq.gz 2>/dev/null || true
+    echo "  Reclaimed intermediates (chunk_outputs, merged, chunk FASTQs); kept $OAK_OUT"
+    ;;
+  *)
+    rm -rf "$OUTDIR"
+    echo "  Removed: $OUTDIR (merged BAM is durable at $OAK_OUT)"
+    ;;
+esac
 
 echo ""
 echo "======================================"
