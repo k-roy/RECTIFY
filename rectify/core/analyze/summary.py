@@ -297,6 +297,20 @@ def generate_consensus_html_report(
             f"<td>{_pct(count)}</td></tr>\n"
         )
 
+    # Build aligner-combo rows. Keys are frozensets of the aligner panel that
+    # was available/compared for each read (diagnoses which combos dominate and
+    # where panel coverage is uneven). May be absent on older stats dicts.
+    by_aligner_combo = stats.get('by_aligner_combo', {})
+    combo_rows = ""
+    for combo, count in sorted(
+        by_aligner_combo.items(), key=lambda x: -x[1]
+    ):
+        label = '+'.join(sorted(combo)) if combo else '(none)'
+        combo_rows += (
+            f"<tr><td>{label}</td><td>{count:,}</td>"
+            f"<td>{_pct(count)}</td></tr>\n"
+        )
+
     # Build summary rows
     summary_rows = (
         f"<tr><td>Total reads</td><td>{total:,}</td><td>100%</td></tr>\n"
@@ -311,6 +325,17 @@ def generate_consensus_html_report(
             f"<tr><td>Chimeric reads</td><td>{chimeric:,}</td>"
             f"<td>{_pct(chimeric)}</td></tr>\n"
         )
+
+    combo_section = ""
+    if combo_rows:
+        combo_section = f"""
+<h2>Aligner Combination Breakdown</h2>
+<p style="color:#7f8c8d;font-size:13px;">Panel of aligners available/compared per read.</p>
+<table>
+  <tr><th>Aligner Combination</th><th>Reads</th><th>Percent of Total</th></tr>
+  {combo_rows}
+</table>
+"""
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     html = f"""<!DOCTYPE html>
@@ -349,7 +374,7 @@ def generate_consensus_html_report(
   <tr><th>Metric</th><th>Count</th><th>Percent of Total</th></tr>
   {summary_rows}
 </table>
-
+{combo_section}
 </div>
 </body>
 </html>

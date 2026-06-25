@@ -59,6 +59,14 @@ def _cluster_chrom_strand_group(args):
         cluster_start = cluster_positions.min()
         cluster_end = cluster_positions.max()
         modal_position = int(np.median(cluster_positions))
+        # Read-weighted center-of-mass (signal centroid). Floor of the
+        # count-weighted mean position, in the same coordinate convention as
+        # start/end/modal_position. Distinct from modal_position (unweighted
+        # median) and from the peak; this is the anchor point downstream
+        # motif-window extraction wants. See dev/TODO.md "Emit cluster COM".
+        cluster_com = int(np.floor(
+            np.dot(cluster_positions, cluster_counts) / total_reads
+        ))
 
         clusters.append({
             'cluster_id': f'cluster_{start_id + local_id:06d}',
@@ -67,6 +75,7 @@ def _cluster_chrom_strand_group(args):
             'start': int(cluster_start),
             'end': int(cluster_end),
             'modal_position': modal_position,
+            'cluster_com': cluster_com,
             'n_positions': len(cluster_positions),
             'n_reads': int(total_reads),
         })
@@ -108,13 +117,14 @@ def cluster_cpa_sites(
             - chrom, strand: Genomic location
             - start, end: Cluster boundaries
             - modal_position: Median position (best estimate of true CPA)
+            - cluster_com: Read-weighted center-of-mass (signal centroid)
             - n_positions: Number of unique positions in cluster
             - n_reads: Total read count
     """
     if positions_df.empty:
         return pd.DataFrame(columns=[
             'cluster_id', 'chrom', 'strand', 'start', 'end',
-            'modal_position', 'n_positions', 'n_reads'
+            'modal_position', 'cluster_com', 'n_positions', 'n_reads'
         ])
 
     # Add count column if not present
@@ -196,7 +206,8 @@ def cluster_cpa_sites_adaptive(
     if positions_df.empty:
         return pd.DataFrame(columns=[
             'cluster_id', 'chrom', 'strand', 'start', 'end',
-            'modal_position', 'n_positions', 'n_reads', 'cluster_width'
+            'modal_position', 'cluster_com', 'n_positions', 'n_reads',
+            'cluster_width'
         ])
 
     # Add count column if not present
@@ -244,6 +255,13 @@ def cluster_cpa_sites_adaptive(
             if total_reads < min_reads:
                 continue
 
+            # Read-weighted center-of-mass (signal centroid). Floor of the
+            # count-weighted mean position, same coordinate convention as
+            # start/end/modal_position. See dev/TODO.md "Emit cluster COM".
+            cluster_com = int(np.floor(
+                np.dot(cluster_positions, cluster_counts) / total_reads
+            ))
+
             clusters.append({
                 'cluster_id': f'cluster_{cluster_id:06d}',
                 'chrom': chrom,
@@ -251,6 +269,7 @@ def cluster_cpa_sites_adaptive(
                 'start': int(left_bound),
                 'end': int(right_bound),
                 'modal_position': int(peak_pos),
+                'cluster_com': cluster_com,
                 'n_positions': len(cluster_positions),
                 'n_reads': int(total_reads),
                 'cluster_width': int(right_bound - left_bound + 1),

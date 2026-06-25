@@ -189,6 +189,60 @@ class TestClusterCpaSites:
         assert len(clusters) == 0
 
 
+class TestClusterCenterOfMass:
+    """Tests for the read-weighted cluster_com column (dev/TODO.md)."""
+
+    def _skewed_df(self):
+        # Two positions in one cluster, weighted 9:1 toward 100.
+        # Read-weighted COM = floor((100*9 + 110*1)/10) = 101.
+        # Unweighted median (modal_position) = 105 — deliberately distinct.
+        return pd.DataFrame({
+            'chrom': ['chr1', 'chr1'],
+            'strand': ['+', '+'],
+            'corrected_position': [100, 110],
+            '_count': [9, 1],
+        })
+
+    def test_fixed_distance_com_is_read_weighted(self):
+        clusters = cluster_cpa_sites(
+            self._skewed_df(), cluster_distance=25, min_reads=1,
+            count_col='_count',
+        )
+        assert len(clusters) == 1
+        row = clusters.iloc[0]
+        assert 'cluster_com' in clusters.columns
+        assert int(row['cluster_com']) == 101
+        # COM must differ from the unweighted modal/median position.
+        assert int(row['modal_position']) == 105
+        assert int(row['n_reads']) == 10
+
+    def test_adaptive_com_is_read_weighted(self):
+        # Tight 5-position cluster with the count mass piled on the right edge
+        # (104, count 16) but a left tail. Weighted COM = floor(2070/20) = 103,
+        # distinct from the peak (modal_position) at 104.
+        df = pd.DataFrame({
+            'chrom': ['chr1'] * 5,
+            'strand': ['+'] * 5,
+            'corrected_position': [100, 101, 102, 103, 104],
+            '_count': [1, 1, 1, 1, 16],
+        })
+        clusters = cluster_cpa_sites_adaptive(
+            df, max_cluster_radius=25,
+            min_peak_separation=10, min_reads=1, count_col='_count',
+        )
+        assert len(clusters) == 1
+        row = clusters.iloc[0]
+        assert 'cluster_com' in clusters.columns
+        assert int(row['cluster_com']) == 103
+        # Adaptive modal_position is the peak (highest-count position) = 104.
+        assert int(row['modal_position']) == 104
+
+    def test_empty_input_has_com_column(self):
+        empty = pd.DataFrame(columns=['chrom', 'strand', 'corrected_position'])
+        assert 'cluster_com' in cluster_cpa_sites(empty, min_reads=1).columns
+        assert 'cluster_com' in cluster_cpa_sites_adaptive(empty, min_reads=1).columns
+
+
 class TestBuildClusterCountMatrix:
     """Tests for build_cluster_count_matrix function."""
 

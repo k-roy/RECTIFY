@@ -373,6 +373,14 @@ def write_consensus_stats_tsv(stats: dict, output_path: str) -> None:
             if chimeric:
                 f.write(f"chimeric_reads\t{chimeric}\t{100.0*chimeric/total:.2f}\tChimeric reads (multi-aligner segments)\n")
 
+        # Per aligner-combination breakdown (the panel available/compared per
+        # read). Keys are frozensets of aligner names; rendered as '+'-joined.
+        by_combo = stats.get('by_aligner_combo', {})
+        for combo, count in sorted(by_combo.items(), key=lambda x: -x[1]):
+            label = '+'.join(sorted(combo)) if combo else 'none'
+            pct = 100.0 * count / total if total else 0.0
+            f.write(f"aligner_combo_{label}\t{count}\t{pct:.2f}\tReads with aligner panel {label}\n")
+
     logger.info(f"Wrote consensus aligner stats to {output_path}")
 
 
