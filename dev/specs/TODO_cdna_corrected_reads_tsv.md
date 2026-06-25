@@ -1,4 +1,12 @@
-# TODO — cDNA pipeline should emit a `corrected_reads.tsv` (DRS-equivalent)
+# ✅ DONE 2026-06-25 — cDNA pipeline emits `corrected_reads.tsv` (DRS-equivalent)
+
+**Resolved:** `rectify cdna-analyze` now writes `corrected_reads.tsv` (per-molecule, one row
+per cluster) alongside clusters.tsv, with DRS-identical column names (read_id, chrom, strand,
+original_3prime, corrected_3prime, alignment_start, alignment_end, polya_length, n_reads,
+read_subtype, gene_id). Projection: corrected_3prime=anchor, strand={fwd:+,rev:-}[orient],
+original_3prime = aln_end-1 (+) / aln_start (-). Test: test_cdna_analyze_synthetic_minimal.
+Original task below.
+
 
 **Filed:** 2026-05-30 (Kevin's request). **Effort:** small — the data already exists.
 

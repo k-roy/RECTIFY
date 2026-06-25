@@ -213,7 +213,8 @@ def test_cdna_analyze_synthetic_minimal(tmp_path):
     rc = cdna_analyze_command.run(args)
     assert rc == 0, "run() should return 0 on success"
 
-    for name in ("clusters.tsv", "isoforms.tsv", "t1t2_pairs.tsv",
+    for name in ("clusters.tsv", "corrected_reads.tsv", "isoforms.tsv",
+                 "t1t2_pairs.tsv",
                  "consensus_tagged.bam", "consensus_tagged.bam.bai"):
         assert (out / name).exists(), f"missing output: {name}"
 
@@ -254,6 +255,29 @@ def test_cdna_analyze_synthetic_minimal(tmp_path):
     assert cl2[idx_gene] == "gene_B", f"cl2 gene={cl2[idx_gene]!r}"
     assert cl2[idx_xs] == "antisense"
     assert cl2[idx_orient] == "fwd"
+
+    # ── corrected_reads.tsv (DRS-equivalent per-molecule) ────────────────
+    cr_lines = (out / "corrected_reads.tsv").read_text().rstrip("\n").split("\n")
+    cr_header, cr_rows = cr_lines[0], cr_lines[1:]
+    cr_cols = cr_header.split("\t")
+    # DRS-identical column names so a single loader works across modalities.
+    for required in ("chrom", "strand", "corrected_3prime", "original_3prime",
+                     "alignment_start", "alignment_end", "gene_id"):
+        assert required in cr_cols, f"corrected_reads.tsv missing column {required!r}"
+    # One row per molecule (= one per cluster).
+    assert len(cr_rows) == 3, f"expected 3 molecule rows, got {len(cr_rows)}"
+    _ci = {c: i for i, c in enumerate(cr_cols)}
+    # All synthetic records are orient=fwd → strand '+', and
+    # corrected_3prime must equal the cluster anchor.
+    cl_anchor_idx = cols.index("anchor")
+    anchors = {r.split("\t")[cl_anchor_idx] for r in rows}
+    for row in cr_rows:
+        p = row.split("\t")
+        assert p[_ci["strand"]] == "+", f"orient fwd should map to strand '+', got {p[_ci['strand']]!r}"
+        assert p[_ci["corrected_3prime"]] in anchors, (
+            f"corrected_3prime {p[_ci['corrected_3prime']]!r} not among cluster anchors {anchors}")
+        # original_3prime (+ strand) = alignment_end - 1
+        assert int(p[_ci["original_3prime"]]) == int(p[_ci["alignment_end"]]) - 1
 
     # ── isoforms.tsv ─────────────────────────────────────────────────────
     iso_lines = (out / "isoforms.tsv").read_text().rstrip("\n").split("\n")

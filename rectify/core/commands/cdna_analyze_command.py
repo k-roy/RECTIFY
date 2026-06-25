@@ -14,6 +14,9 @@ bucketing in `correct-cdna`.
 
 Outputs (in --out directory):
   - clusters.tsv          per-cluster manifest with corrected positions
+  - corrected_reads.tsv   per-molecule (UMI-consensus) 3' ends, DRS-equivalent
+                          schema (chrom/strand/corrected_3prime/...) so DRS and
+                          cDNA 3'-end analyses share one loader
   - isoforms.tsv          isoform-level aggregation
   - t1t2_pairs.tsv        Type-1↔Type-2 reconciliation pairs
   - consensus_tagged.bam  the input BAM rewritten with the newly computed
@@ -224,6 +227,32 @@ def run(args) -> int:
                     f"\t{cluster_xr[cid]}\n")
     log.info("Wrote cluster manifest → %s", manifest)
 
+    # DRS-equivalent per-molecule corrected_reads.tsv: one row per UMI-consensus
+    # molecule (= one cluster), with column names identical to the DRS
+    # corrected_reads.tsv so a single loader works across modalities
+    # (load_index(usecols=['chrom','strand','corrected_3prime'])). Projection:
+    # corrected_3prime=anchor; strand={fwd:+, rev:-}[orient]; original_3prime is
+    # the raw alignment 3' end in the DRS 0-based convention (+ -> aln_end-1,
+    # - -> aln_start). See dev/specs/TODO_cdna_corrected_reads_tsv.md.
+    _orient_to_strand = {"fwd": "+", "rev": "-"}
+    corrected_reads = args.out / "corrected_reads.tsv"
+    with corrected_reads.open("w") as f:
+        f.write("read_id\tchrom\tstrand\toriginal_3prime\tcorrected_3prime"
+                "\talignment_start\talignment_end\tpolya_length\tn_reads"
+                "\tread_subtype\tgene_id\n")
+        for cid, c in enumerate(clusters):
+            r0 = c[0]
+            strand = _orient_to_strand.get(r0.orient, ".")
+            original_3prime = (r0.aln_end - 1) if strand == "+" else r0.aln_start
+            mol_id = cluster_umi[cid] or f"mol_{cid}"
+            gene_str = cluster_xg.get(cid) or ""
+            f.write(f"{mol_id}\t{r0.chrom}\t{strand}\t{original_3prime}"
+                    f"\t{r0.anchor}\t{r0.aln_start}\t{r0.aln_end}"
+                    f"\t{cluster_tail_len[cid]}\t{len(c)}\t{r0.read_subtype}"
+                    f"\t{gene_str}\n")
+    log.info("Wrote per-molecule corrected_reads.tsv → %s (%d molecules)",
+             corrected_reads, len(clusters))
+
     iso_path = args.out / "isoforms.tsv"
     with iso_path.open("w") as f:
         f.write("isoform_id\tgene\tchrom\torient\tread_type\tread_subtype\tn_clusters\tn_reads_total"
@@ -301,7 +330,7 @@ def create_cdna_analyze_parser(subparsers):
             'the post-align CIGAR, then runs gene assignment, isoform clustering '
             '(directional, tol5/tol3), and Type-1↔Type-2 same-orient pairing on the '
             'post-align coordinates.\n\n'
-            'Output: clusters.tsv (per-cluster manifest), isoforms.tsv (isoform-level '
+            'Output: clusters.tsv (per-cluster manifest), corrected_reads.tsv (per-molecule DRS-equivalent 3 ends), isoforms.tsv (isoform-level '
             'aggregation), t1t2_pairs.tsv (T1↔T2 reconciliation), consensus_tagged.bam '
             '(input BAM rewritten with the new XA/XG/XS/XI/XL tags).'
         ),
@@ -314,7 +343,7 @@ def create_cdna_analyze_parser(subparsers):
         '-o', '--out',
         dest='out',
         required=True,
-        help='Output directory (clusters.tsv, isoforms.tsv, t1t2_pairs.tsv, consensus_tagged.bam)',
+        help='Output directory (clusters.tsv, corrected_reads.tsv, isoforms.tsv, t1t2_pairs.tsv, consensus_tagged.bam)',
     )
     cdna_analyze_parser.add_argument(
         '--gff',
