@@ -54,7 +54,8 @@ SKIP = _yellow('SKIP')
 # ---------------------------------------------------------------------------
 
 def _data_dir() -> Path:
-    return Path(__file__).parent.parent / 'data'
+    # rectify/core/commands/test_command.py -> rectify/data/validation
+    return Path(__file__).parent.parent.parent / 'data' / 'validation'
 
 
 def _bundled_bam() -> Path:

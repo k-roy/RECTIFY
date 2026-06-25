@@ -119,26 +119,17 @@ where = ["."]
 include = ["rectify*"]
 namespaces = false
 
+# Patterns match the real on-disk layout. The previous list pointed at a stale
+# data/output/ tree (the validation data moved to data/validation/), so wheels
+# shipped without the `rectify test` BAM. Glob the real dirs so this can't drift.
 [tool.setuptools.package-data]
 rectify = [
-    "data/models/*.json",
     "data/*.tsv.gz",
-    "data/genomes/**/*.gz",
+    "data/genomes/**/*",
     "data/motif_databases/*.meme",
-    "data/output/validation_reads.bam",
-    "data/output/validation_reads.bam.bai",
-    "data/output/validation_reads.fastq.gz",
-    "data/output/validation_reads_igv.html",
-    "data/output/aligners/*.bam",
-    "data/output/aligners/*.bai",
-    "data/output/rectified/*.bam",
-    "data/output/rectified/*.bai",
-    "data/output/rectified/*.bedgraph",
-    "data/VALIDATION_READS.md",
-    "data/corrected_3ends.tsv",
-    "data/corrected_3ends_stats.tsv",
-    "data/corrected_3ends_index.bed.gz",
+    "data/validation/**/*",
     "data/bin/**/*",
+    "slurm_profiles/*.yaml",
 ]
 
 [tool.pytest.ini_options]
