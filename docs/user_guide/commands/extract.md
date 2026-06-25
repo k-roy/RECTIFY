@@ -36,35 +36,47 @@ rectify extract reads.bam --Scer -o features.tsv
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `input` | — | Input BAM file |
+| `bam` | — | Input BAM file |
 | `-o, --output` | — | Output TSV file |
 | `--genome` | — | Reference genome FASTA |
 | `--annotation` | — | Gene annotation GFF/GTF |
-| `--Scer` | — | Bundled *S. cerevisiae* data |
-| `-j, --threads` | auto | Number of threads |
+| `--Scer` / `--organism` | — | Use bundled *S. cerevisiae* data |
+| `--include-sequence` | off | Add the read `sequence` column |
+| `--include-quality` | off | Add the per-base `quality` column |
+| `--include-junctions` | on | Add `n_junctions` / `junctions` / `is_spliced` |
+| `--include-softclips` | on | Add soft-clip length columns |
+| `--include-context` | off | Add downstream genomic context (requires `--genome`; with `--context-length`) |
+| `--spliced-only` | off | Emit only spliced reads |
+| `--streaming` | off | Stream output to file (lower memory) |
+| `--chunk-size` | — | Reads per chunk in streaming mode |
 
 ---
 
 ## Output columns
+
+Always present:
 
 | Column | Description |
 |--------|-------------|
 | `read_id` | Read name |
 | `chrom` | Chromosome |
 | `strand` | `+` or `-` |
-| `five_prime_raw` | Raw 5' end position (0-based) |
-| `three_prime_raw` | Raw 3' end position (0-based) |
-| `alignment_start` | Leftmost aligned position (0-based) |
-| `alignment_end` | Rightmost aligned position + 1 (exclusive) |
-| `n_junctions` | Number of splice junctions |
-| `junctions` | Comma-separated list of `start:end` junction coordinates |
-| `five_prime_soft_clip` | Soft-clipped bases at 5' end |
-| `three_prime_soft_clip` | Soft-clipped bases at 3' end |
-| `five_prime_soft_clip_seq` | Sequence of 5' soft-clipped bases |
-| `three_prime_soft_clip_seq` | Sequence of 3' soft-clipped bases |
-| `polya_length` | Total poly(A) length (aligned + soft-clipped) |
+| `reference_start` | Leftmost aligned position (0-based) |
+| `reference_end` | Rightmost aligned position + 1 (exclusive) |
+| `five_prime` | 5' end position (0-based, strand-aware) |
+| `three_prime` | 3' end position (0-based, strand-aware) |
+| `aligned_length` | Reference bases consumed by the alignment |
 | `mapq` | Mapping quality |
-| `alignment_identity` | Fraction of aligned positions matching reference |
+
+Optional (added by the matching `--include-*` flag):
+
+| Column | Added by |
+|--------|----------|
+| `n_junctions`, `junctions`, `is_spliced` | `--include-junctions` (on by default) |
+| `left_softclip`, `right_softclip`, `five_prime_softclip`, `three_prime_softclip` | `--include-softclips` (on by default) |
+| `downstream_context` | `--include-context` |
+| `sequence` | `--include-sequence` |
+| `quality` | `--include-quality` |
 
 ---
 

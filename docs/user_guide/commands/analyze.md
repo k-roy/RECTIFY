@@ -116,16 +116,15 @@ GO enrichment runs automatically when `--go-annotations` is provided; the bundle
 | File | Description |
 |------|-------------|
 | `cpa_clusters.tsv` | CPA site clusters with read counts per sample |
-| `cluster_gene_mapping.tsv` | Cluster → gene attribution |
-| `tables/deseq2_genes_*.tsv` | Gene-level DE results |
-| `tables/deseq2_clusters_*.tsv` | Cluster-level DE results |
-| `tables/shift_results.tsv` | APA shift analysis |
-| `tables/go_enrichment_*.tsv` | GO enrichment |
-| `tables/motif_summary_*.tsv` | Enriched motifs |
+| `tables/deseq2_genes_{condition}.tsv` | Gene-level DE results |
+| `tables/deseq2_clusters_{condition}.tsv` | Cluster-level DE results |
+| `tables/shift_analysis_{condition}.tsv` | APA shift analysis |
+| `tables/go_enrichment_up_{condition}.tsv` / `go_enrichment_down_{condition}.tsv` | GO enrichment (up / down) |
+| `tables/motif_summary_{condition}.tsv` | Enriched motifs |
 | `motifs/*/` | STREME motif files and logos |
 | `plots/pca_samples.png` | PCA of samples by cluster usage |
-| `plots/heatmap_top_clusters.png` | Heatmap of top DE clusters |
-| `analysis_report.html` | Comprehensive HTML summary |
+| `plots/sample_heatmap.png` | Sample-clustering heatmap |
+| `report.html` | Comprehensive HTML summary |
 
 ---
 

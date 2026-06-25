@@ -7,9 +7,11 @@ Hot rules for `rectify run-all` / `rectify split` / `rectify correct` on HPC.
 ## ⚠️ Chunking is mandatory for FASTQ inputs
 
 **NEVER run `rectify run-all` on a FASTQ file without `--chunked-alignment`
-(or use `rectify split`).** Enforced by a confirmation prompt in
-`run_command.py` that requires typing `I UNDERSTAND THE RISKS`.
-`--force-no-chunking` bypasses the prompt; do not use on HPC.
+(or use `rectify split`).** This is a documented operating convention, **not**
+enforced by the code: there is no confirmation prompt and no abort — when
+`--chunked-alignment` is absent, `run_command.py` runs FASTQ alignment inline.
+Passing `--chunked-alignment` (or using `rectify split`) for FASTQ on HPC is
+therefore the operator's responsibility.
 
 **Why:**
 - BGZF BAM writes to Oak NFS: ~1 MB/min under concurrent load.
@@ -77,7 +79,16 @@ rectify correct (on consensus.bam only)            ← WRONG: single correction,
 
 - **Aligner selection quality**: Winners are chosen based on CORRECTED 3' end positions, not raw alignment scores. Raw alignments are noisy; correction reveals which aligner found the true CPA.
 - **Junction refinement (Module 2H)**: `--aligner-bams` feeds all 5 per-aligner BAMs to every correction run. Without it, Module 2H is disabled.
-- **Win rates reflect biology**: deSALT 78.9%, mapPacBio 18.2%, uLTRA 2%, gapmm2 0.8%, minimap2 0.1% — these are from correct-first. Consensus-first gives different (worse) results.
+- **Win rates reflect biology**: in one correct-first run with the full panel
+  (Tier-1 + the opt-in Tier-2 aligners enabled), per-read win shares were
+  deSALT 78.9%, mapPacBio 18.2%, uLTRA 2%, gapmm2 0.8%, minimap2 0.1%.
+  Consensus-first gives different (worse) results. deSALT's strong showing here
+  is exactly why the Tier-2 splice aligners (uLTRA + deSALT) **default ON** for
+  long-read `rectify run-all` — the win-rate figures above come from that default
+  5-aligner panel. They default OFF only for `rectify align` (which defaults to
+  Tier-1 alone) and for short-read mode; pass `--no-junction-aligners` to disable
+  them in run-all. (Empirical, single-run figures — rerun on your own data before
+  quoting.)
 
 ### `split_command.py` pipeline order: FIXED (correct-first)
 
@@ -205,7 +216,7 @@ Inserts two DRS-specific steps around the standard pipeline:
 
 | Step | Action | Implementation |
 |---|---|---|
-| **0** | Poly(A)+adapter pre-trimming | `trim_drs_bam_polya()` → `samtools fastq -T pt` |
+| **0** | Poly(A)+adapter pre-trimming | `trim_drs_bam_polya()` → trimmed FASTQ via `samtools fastq` (without `-T pt`) |
 | 1 | Multi-aligner alignment | normal, on trimmed FASTQ |
 | 2 | Correction | normal |
 | 3 | Analysis | normal |
@@ -256,7 +267,7 @@ NFS-backed shared storage under concurrent load inflates wall time 2–3×.
 `run_command._run_single_sample()` handles this automatically:
 
 ```python
-from rectify.slurm import make_job_scratch_dir, sync_outputs
+from rectify.slurm import make_job_scratch_dir, sync_to_oak
 
 scratch = make_job_scratch_dir('rectify_single')  # None if no scratch
 work_dir = scratch if scratch else output_dir
@@ -264,7 +275,7 @@ work_dir = scratch if scratch else output_dir
 # ... all alignment + correction + analysis writes to work_dir ...
 
 if scratch:
-    sync_outputs(scratch, output_dir)  # rsync everything back
+    sync_to_oak(scratch, output_dir)  # rsync everything back
     shutil.rmtree(scratch)
 ```
 

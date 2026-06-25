@@ -79,4 +79,5 @@ RNA panel member** — the orthogonal gains are in the classical (GMAP, Magic-BL
 and graph/ONT-specialized (Graphmap2) families, not in new seeds.
 
 See ALIGNER_RECOMMENDATIONS.md → "Algorithmic Orthogonality Survey" for the
-accepted candidates and the headline benchmark-gap finding.
+candidate evaluations (their current status — GMAP rejected-final, Graphmap2 /
+Magic-BLAST smoke-gated) and the headline benchmark-gap finding.

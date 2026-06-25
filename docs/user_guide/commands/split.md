@@ -62,8 +62,8 @@ rectify split reads.fastq.gz -o chunks/ --generate-slurm --Scer
 | `--scheduler` | slurm | Target scheduler for generated headers (`slurm`, `uge`, `pbs`) |
 | `--slurm-partition` | — | SLURM partition(s) |
 | `--slurm-account` | — | SLURM account |
-| `--uge-queue` | `long.q` | UGE/SGE queue name (`-q`) |
-| `--uge-pe` | `smp` | UGE/SGE parallel environment (`-pe`) |
+| `--uge-queue` | — | UGE/SGE queue name (`-q`); omit on Hoffman2 campus jobs |
+| `--uge-pe` | `shared` | UGE/SGE parallel environment (`-pe`; Hoffman2 = `shared`) |
 | `--pbs-queue` | `workq` | PBS queue name (`-q`) |
 | `--python-path` | `python` | Explicit path to Python interpreter |
 | `--rectify-src` | `.` | Path to RECTIFY source checkout (working directory for generated scripts) |
@@ -89,16 +89,25 @@ output_dir/
 └── chunks_manifest.json               # JSON listing all chunk paths
 ```
 
-With `--generate-slurm`:
+With `--generate-slurm` (correct-first long-read pipeline):
 
-```
+```text
 output_dir/
 ├── ...chunk files...
 ├── chunks_manifest.json
-├── run_array_align.sh          # submit this first
-├── run_merge_and_consensus.sh  # run after array completes
-└── slurm_logs/                 # log directory (created at submit time)
+├── run_array_mapPacBio.sh          # mapPacBio alignment array (omitted with --skip-map-pacbio)
+├── run_array_others.sh             # minimap2/gapmm2/uLTRA/deSALT alignment array
+├── run_merge_aligners.sh           # merge per-aligner BAMs
+├── run_prescan.sh                  # variant + junction prescan
+├── run_array_correct_<aligner>.sh  # per-aligner correction arrays
+├── run_array_chunk_merge.sh        # per-chunk merge → consensus
+├── run_final_merge.sh              # final merge
+├── submit_pipeline.sh              # submits the whole DAG with dependencies
+└── logs/                           # log directory
 ```
+
+The simplest way to run everything is `bash output_dir/submit_pipeline.sh`,
+which submits each stage with the correct inter-job dependencies.
 
 ---
 
@@ -114,38 +123,29 @@ rectify split reads.fastq.gz \
     --genome genome.fa.gz --annotation genes.gff.gz
 ```
 
-### Step 2 — Submit array (80 tasks: 16 chunks × 5 aligners)
+### Step 2 — Submit the pipeline
 
 ```bash
-sbatch /scratch/chunks/run_array_align.sh
+bash /scratch/chunks/submit_pipeline.sh
 ```
 
-Each task ID decodes as:
+`submit_pipeline.sh` submits each generated stage (alignment arrays → merge →
+prescan → per-aligner correction arrays → chunk-merge → final merge →
+consensus) with the correct inter-job dependencies, following the correct-first
+ordering. The alignment array tasks run `rectify align --no-consensus`, writing
+one sorted BAM per (chunk, aligner) pair; the correction and merge stages then
+produce the final consensus BAM.
 
-```bash
-CHUNK_IDX=$(( SLURM_ARRAY_TASK_ID % N_CHUNKS ))   # 0–15
-ALIGNER_IDX=$(( SLURM_ARRAY_TASK_ID / N_CHUNKS ))  # 0–4
-```
-
-Tasks run `rectify align --no-consensus`, writing one sorted BAM per (chunk, aligner) pair.
-
-### Step 3 — Merge and consensus (after array completes)
-
-```bash
-bash /scratch/chunks/run_merge_and_consensus.sh
-```
-
-This script:
-1. `samtools merge` per aligner — combines all chunk BAMs into one sorted BAM per aligner
-2. `rectify consensus` — selects the best aligner per read and writes the final rectified BAM
+You can also submit the individual array scripts by hand (e.g.
+`sbatch run_array_others.sh`) if you need finer control.
 
 ---
 
 ## Scheduler compatibility
 
-The generated `run_array_align.sh` uses `SLURM_ARRAY_TASK_ID` and `SLURM_CPUS_PER_TASK`.
-
-For non-SLURM schedulers, add a shim at the top of the array script body:
+The generated array scripts use `SLURM_ARRAY_TASK_ID` and `SLURM_CPUS_PER_TASK`.
+Generate non-SLURM headers directly with `--scheduler {uge,pbs}`, or add a shim
+at the top of an array script body:
 
 | Scheduler | Task ID | CPUs |
 |-----------|---------|------|
@@ -153,7 +153,7 @@ For non-SLURM schedulers, add a shim at the top of the array script body:
 | UGE/SGE | `SGE_TASK_ID` (1-based) | `NSLOTS` |
 | PBS/Torque | `PBS_ARRAY_INDEX` | `PBS_NUM_PPN` |
 
-**UGE/SGE shim** (add before the `CHUNK_IDX=` line):
+**UGE/SGE shim**:
 
 ```bash
 # UGE compatibility shim

@@ -36,7 +36,7 @@ Between each pair of adjacent peaks, find the local minimum (the "valley"). The 
 
 **Step 3: Assign boundaries**
 
-Each cluster extends from valley to valley. The cluster peak is the most-used position within the cluster.
+Each cluster extends from valley to valley. The cluster's representative position (`modal_position`) is the median position of the cluster's reads (an unweighted median — despite the historical "modal" name, it is not the most-used position).
 
 ```
 Position:  ...100  101  102  103  104  105  106  107  108  109  110...
@@ -53,14 +53,20 @@ Cluster 2: positions 105-110, peak=107
 
 ```python
 def cluster_cpa_sites_adaptive(
-    positions,            # Dict: chrom → [{'pos': int, 'strand': str, 'count': float}]
-    min_cluster_size=10,  # Minimum reads to keep a cluster
-    prominence_threshold=0.3,  # Min peak prominence relative to neighbors
+    positions_df,             # DataFrame of CPA positions (chrom, strand, corrected_position, …)
+    max_cluster_radius=10,    # Max distance (bp) from peak to cluster boundary
+    min_peak_separation=5,    # Min distance (bp) between distinct peaks
+    min_reads=5,              # Minimum total reads to keep a cluster
+    chrom_col='chrom',
+    strand_col='strand',
+    position_col='corrected_position',
+    count_col=None,
 ):
     """
     Valley-based CPA clustering.
 
-    Returns: DataFrame with cluster_id, chrom, strand, start, end, peak_pos, count
+    Returns: DataFrame with columns cluster_id, chrom, strand, start, end,
+    modal_position, cluster_com, n_positions, n_reads, cluster_width
     """
 ```
 
@@ -72,15 +78,23 @@ After clustering, a count matrix (clusters × samples) is built using a streamin
 
 **Pass 1:** Aggregate positions across all samples → find peaks → cluster
 
-**Pass 2:** For each sample, stream reads in 100k-row chunks, look up cluster membership via `IntervalTree`, accumulate in a dict
+**Pass 2:** For each sample, stream positions in 100k-row chunks (the manifest
+loop in `analyze/manifest.py`), look up cluster membership via `IntervalTree`,
+and accumulate per-`(cluster, sample)` counts in a dict.
+
+`build_cluster_count_matrix()` assembles the final matrix from the streamed
+positions and cluster definitions:
 
 ```python
-def build_cluster_count_matrix(manifest_path, clusters, chunk_size=100_000):
-    """
-    Streaming count matrix. Peak RAM: O(clusters × samples).
-
-    Returns: count_matrix (DataFrame), sample_ids, cluster_ids
-    """
+def build_cluster_count_matrix(
+    positions_df,                 # CPA positions with a `sample` column
+    clusters_df,                  # cluster definitions from cluster_cpa_sites_adaptive
+    sample_col='sample',
+    position_col='corrected_position',
+    count_col=None,
+    fraction_col=None,            # optional fractional (proportional) weights
+):
+    """Cluster × sample count matrix via O(log n) IntervalTree lookup."""
 ```
 
 The IntervalTree lookup is O(log n) per read, making this efficient for large datasets.
@@ -89,26 +103,30 @@ The IntervalTree lookup is O(log n) per read, making this efficient for large da
 
 ## Cluster parameters
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `--merge-distance` | 25 bp | Fixed-distance merge for simple clustering mode |
+| Flag (`rectify analyze`) | Default | Effect |
+|--------------------------|---------|--------|
+| `--cluster-distance` | 25 bp | Fixed-distance merge for the simple clustering mode |
 | `--min-reads` | 5 | Discard clusters with fewer total reads |
-| `--min-samples` | 1 | Discard clusters seen in fewer samples |
-| `prominence_threshold` | 0.3 | Discard peaks shorter than 30% of the tallest neighbor |
+| `--max-cluster-radius` | 10 bp | Adaptive: max distance from peak to cluster boundary |
+| `--min-peak-sep` | 5 bp | Adaptive: minimum separation between distinct CPA peaks |
+| `--min-cluster-samples` | 2 | Discard clusters seen in fewer than N samples |
 
 ---
 
 ## Output
 
-`cpa_clusters.tsv`:
+`cpa_clusters.tsv` (adaptive mode adds `cluster_width`):
 
 ```tsv
-cluster_id   chrom  strand  start   end     peak_pos  total_count
-CLU_chrI_1   chrI   +       34500   34530   34521     1205
-CLU_chrI_2   chrI   +       34580   34620   34601     342
+cluster_id      chrom  strand  start   end     modal_position  cluster_com  n_positions  n_reads
+cluster_000001  chrI   +       34500   34530   34521           34520        14           1205
+cluster_000002  chrI   +       34580   34620   34601           34600        9            342
 ```
 
-Each cluster is mapped to a gene via `cluster_gene_mapping.tsv` using the gene attribution module.
+`modal_position` is the **median** position of the cluster's reads (an unweighted
+median; the "modal" name is historical and it is *not* the most-used position).
+`cluster_com` is the read-weighted center of mass (signal centroid). Clusters are
+attributed to genes by the gene-attribution module during analysis.
 
 ---
 

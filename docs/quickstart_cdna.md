@@ -58,19 +58,24 @@ possible input for splice-junction calling.
 
 ## Installation
 
-The cDNA pipeline requires three extra dependencies beyond the core `rectify-rna`
-package:
+UMI clustering (`rapidfuzz`) and per-cluster re-alignment (`mappy`) ship with
+the core `rectify-rna` package. For the best consensus quality, install the
+`[cdna-correct]` extra, which adds fuzzy adapter anchoring (`edlib`) and
+abPOA consensus (`pyabpoa`):
 
 ```bash
-pip install rectify-rna
-pip install pyabpoa rapidfuzz mappy
+pip install "rectify-rna[cdna-correct]"
 ```
 
-| Package | Role |
-|---------|------|
-| `pyabpoa` | Partial-order-alignment (POA) consensus across PCR siblings |
-| `rapidfuzz` | Fast Levenshtein distance for UMI clustering |
-| `mappy` | In-process minimap2 for per-cluster consensus re-alignment |
+| Package | Role | Tier |
+|---------|------|------|
+| `rapidfuzz` | Fast Levenshtein distance for UMI clustering | core |
+| `mappy` | In-process minimap2 for per-cluster consensus re-alignment | core |
+| `edlib` | Fuzzy (Lev≤2) adapter-anchor alignment | `[cdna-correct]` |
+| `pyabpoa` | Partial-order-alignment (POA) consensus across PCR siblings | `[cdna-correct]` |
+
+Without the `[cdna-correct]` extras, `correct-cdna` falls back to exact-match
+adapter anchors and pileup-style consensus — still functional, just less robust.
 
 ---
 
@@ -89,16 +94,11 @@ pip install pyabpoa rapidfuzz mappy
 
 ---
 
-## One command
-
-```bash
-# Bundled yeast genome — all three stages in sequence
-rectify run-all reads.bam --protocol cdna --organism yeast --output-dir results/
-```
-
----
-
 ## Step by step
+
+The cDNA pipeline runs as three explicit stages. Because Stage 1 deduplicates
+by UMI *before* alignment, there is no single `run-all` shortcut for cDNA — run
+the three commands in sequence.
 
 ### Stage 1 — UMI extraction + abPOA consensus
 
@@ -126,12 +126,7 @@ rectify correct-cdna pcb114.bam \
 4. **abPOA consensus.** For multi-read clusters, build a partial-order-alignment
    consensus across the PCR siblings' cDNA inserts (SSP/UMI/GGG already
    stripped). Singleton clusters pass through unchanged.
-5. **Cross-orientation merge.** Pairs a `fwd` and `rev` consensus that share the
-   same UMI **and** whose anchors are within `--max-cross-orient-span` bp
-   (default 3000 bp for yeast; increase for larger genomes). This recovers
-   full-length isoforms whose two orientations each covered complementary halves
-   of the mRNA span.
-6. **Output.** Writes `out/stage1_consensus.fastq.gz` — one record per UMI
+5. **Output.** Writes `out/stage1_consensus.fastq.gz` — one record per UMI
    cluster, with per-cluster metadata on TAB-separated FASTQ comment fields so
    `minimap2 -y` can propagate them as BAM aux fields in Stage 2.
 
@@ -142,8 +137,9 @@ rectify correct-cdna pcb114.bam \
 | `--umi-edit-distance` | 3 | Levenshtein threshold for UMI clustering. 3 is empirically validated; ≥ 5 starts admitting random collisions |
 | `--anchor-window-bp` | 25 | ±bp window on basecalled-3' for same-locus grouping |
 | `--per-cluster-cap` | 200 | Drops anchor buckets with >N reads. Required: polyA-pileup hot-spots (rDNA loci on chrXII) have thousands of distinct molecules at the same anchor and are computationally expensive |
-| `--min-cluster-size` | 1 | `1` emits singletons; `2` requires at least two PCR siblings before building a consensus |
 | `--region CHROM` | — | Restrict to one chromosome for smoke-testing |
+| `--no-poa` | off | Skip abPOA; use pileup-style consensus instead (faster, lower quality) |
+| `--no-mask-rdna` | off | Disable rDNA masking (see Gotchas — not recommended) |
 
 ### Stage 2 — Multi-aligner consensus
 
@@ -219,10 +215,14 @@ out/
 ├── stage1.rectified.bam        # Stage 2: multi-aligner consensus BAM (→ input to Stage 3)
 ├── stage1.rectified.bam.bai
 ├── clusters.tsv                 # Stage 3: per-cluster manifest
+├── corrected_reads.tsv          # Stage 3: per-molecule 3' ends, DRS-equivalent columns
 ├── isoforms.tsv                 # Stage 3: isoform-level aggregation
 ├── t1t2_pairs.tsv               # Stage 3: Type-1 / Type-2 same-molecule links
 └── consensus_tagged.bam         # Stage 3: BAM with XA / XG / XS / XI / XL tags added
 ```
+
+The `corrected_reads.tsv` emitted here uses the same per-read column schema as
+the DRS `rectify correct` output, so a single loader works across modalities.
 
 ### `clusters.tsv` — one row per UMI cluster
 
@@ -277,8 +277,9 @@ the gene strand:
 | `rev` | SSP_RC found at the basecalled 3' end → the read traversed the molecule in the other direction |
 
 Both orientations of the same molecule share the same UMI. `rectify correct-cdna`
-clusters `fwd` and `rev` reads separately and then pairs their consensuses via
-the cross-orientation merge.
+clusters `fwd` and `rev` reads separately (each within its own anchor bucket);
+same-molecule reconciliation across read types happens later, in the Stage 3
+Type-1 ↔ Type-2 pairing.
 
 > `fwd`/`rev` does **not** correlate directly with BAM `FLAG is_reverse`. A
 > `fwd`-orient read (SSP at basecalled 5') may map to either BAM strand depending
@@ -286,19 +287,20 @@ the cross-orientation merge.
 
 ---
 
-## QC — `cdna_stats.tsv`
+## QC — Stage 1 summary
 
-After Stage 1:
+Stage 1 (`rectify correct-cdna`) prints a per-run QC summary to the console and
+writes a provenance sidecar (JSON) alongside the FASTQ output. The console
+summary reports:
 
-| Field | Meaning |
-|-------|---------|
-| `input_reads_total` | Total BAM records processed |
-| `input_reads_with_umi` | Reads where SSP + UMI were extracted (~82% typical) |
-| `distinct_clusters` | Final UMI clusters after directional grouping |
-| `mean_cluster_size` | Average PCR sibling count per cluster |
-| `pct_reads_in_size1_cluster` | Fraction of input reads in singleton clusters (= dedup compression inverse) |
-| `pct_clusters_paired_cross_orient` | Stage 2 success rate — fraction of clusters where a matching cross-orient partner was found |
-| `mean_consensus_length`, `mean_consensus_qual` | Quality indicators for the abPOA consensus |
+- Total reads processed and the consensus-method breakdown (singletons passed
+  through, multi-read POA/pileup, fallback).
+- **Read-type breakdown** — Type-1 (SSP + UMI captured) vs Type-2 (SSP-less,
+  5'-truncated), with per-type read and cluster counts. ~80 % Type-1 is typical
+  for clean PCB114 yeast data; a much lower fraction suggests a chemistry
+  mismatch or heavy truncation (see Gotchas).
+- **XF tier breakdown** — full-length confidence tier counts.
+- polyA-pileup buckets dropped by `--per-cluster-cap`.
 
 ---
 
@@ -312,24 +314,6 @@ same genomic anchor, and naive UMI clustering inside them is computationally
 expensive. By default, `rectify correct-cdna` masks reads overlapping
 `rRNA_gene` loci in the GFF annotation. **Do not disable this (`--no-mask-rdna`)
 unless you have manually filtered chrXII reads beforehand.**
-
-### Cross-orientation span filter
-
-The Stage 2 cross-orient merge pairs `fwd` and `rev` consensuses by shared UMI
-**within a genomic span filter** (`--max-cross-orient-span`, default 3000 bp for
-yeast). This filter is mandatory: empirically, ~95% of cross-orient UMI matches
-are random collisions; only pairs within the expected mRNA span are true
-same-molecule pairs. Without the filter, thousands of unrelated molecules would
-be incorrectly merged.
-
-For organisms with larger average mRNA span (e.g., *H. sapiens*), increase this
-value:
-
-```bash
-rectify correct-cdna pcb114.bam --reference genome.fa --gff genes.gff \
-    --max-cross-orient-span 200000 \
-    -o out/
-```
 
 ### `--per-cluster-cap` protects against O(N²) hot-spots
 
@@ -347,8 +331,9 @@ Reads where the SSP motif is not found (basecaller errors in the structured
 adapter, or reads truncated before reaching the SSP) are classified as Type-2.
 They are **not dropped** — they contribute valid corrected 3' ends but are
 excluded from UMI-anchored deduplication. This is expected behaviour.
-Check `pct_reads_with_umi` in `cdna_stats.tsv`; values below ~70 % suggest
-a chemistry mismatch (wrong SSP motif or UMI length) or very heavy truncation.
+Check the Type-1 fraction in the Stage 1 console summary; a Type-1 fraction
+well below ~70 % suggests a chemistry mismatch (wrong SSP motif or UMI length)
+or very heavy truncation.
 
 ### Do not mix Type-1 and Type-2 for isoform-level analyses
 
@@ -371,20 +356,34 @@ per-strand error profiles are expected to differ substantially.
 
 ## Multi-sample analysis
 
+The cDNA pipeline has no single-command multi-sample mode. Run the three
+stages per sample (e.g. in a shell loop), build an analyze manifest whose
+`path` column points at each sample's Stage 3 `corrected_reads.tsv`, then run
+`rectify analyze --manifest` for the combined differential analysis.
+
 ```bash
-# Manifest TSV: sample_id, path, condition
-rectify run-all \
-    --manifest manifest.tsv \
-    --protocol cdna \
-    --organism yeast \
+# Input manifest (input.tsv): columns sample_id, bam, condition
+# Process each sample through all three stages.
+printf 'sample_id\tpath\tcondition\n' > corrected_manifest.tsv
+while IFS=$'\t' read -r sample bam condition; do
+    rectify correct-cdna "$bam"                                       --reference genome.fa --gff genes.gff -o "results/$sample/"
+    rectify align         "results/$sample/stage1_consensus.fastq.gz" --genome genome.fa --prefix stage1 -o "results/$sample/"
+    rectify cdna-analyze  "results/$sample/stage1.rectified.bam"      --reference genome.fa --gff genes.gff -o "results/$sample/"
+    # Record the per-sample corrected TSV for the combined analyze step
+    printf '%s\t%s\t%s\n' "$sample" "results/$sample/corrected_reads.tsv" "$condition" >> corrected_manifest.tsv
+done < <(tail -n +2 input.tsv)
+
+# Combined analysis across conditions
+rectify analyze /dev/null \
+    --manifest corrected_manifest.tsv \
+    --annotation genes.gff \
     --reference wt \
-    -o results/
+    --run-deseq2 \
+    -o results/combined/
 ```
 
-The manifest format is the same as DRS (see [DRS quick start](quickstart.md)).
-Each sample is processed through all three cDNA stages independently; the
-`combined/` directory aggregates isoform clusters and runs DESeq2 on CPA-site
-counts across conditions.
+The `combined/` directory aggregates CPA-site clusters and runs DESeq2 on
+CPA-site counts across conditions.
 
 ---
 
@@ -392,19 +391,10 @@ counts across conditions.
 
 Stage 1 (`rectify correct-cdna`) is the most memory-intensive step — plan for
 ~4–8 GB RAM per sample at yeast scale. Stage 2 (`rectify align`) fans out to
-the multi-aligner panel and benefits most from parallelism.
-
-For SLURM job arrays:
-
-```bash
-# One array task per sample; Stage 1 + 2 + 3 chained in each task
-rectify run-all --manifest manifest.tsv --protocol cdna --organism yeast \
-    --profile rectify/slurm_profiles/hpc_cpu.yaml \
-    -o results/
-```
-
-See the [HPC SLURM guide](user_guide/hpc_slurm.md) for the task-array template
-and recommended per-sample memory sizing.
+the multi-aligner panel and benefits most from parallelism. For SLURM, run one
+array task per sample with the three stages chained inside each task (see the
+[HPC SLURM guide](user_guide/hpc_slurm.md) for the task-array template and
+per-sample memory sizing).
 
 ---
 

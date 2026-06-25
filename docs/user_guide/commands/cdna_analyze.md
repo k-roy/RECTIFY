@@ -73,7 +73,7 @@ rectify cdna-analyze out/stage1.rectified.bam \
 | Argument | Description |
 |----------|-------------|
 | `bam` | Consensus BAM from [`rectify align`](align.md) on the `correct-cdna` FASTQ |
-| `-o, --out` | Output directory (will contain `clusters.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, `consensus_tagged.bam`) |
+| `-o, --out` | Output directory (will contain `clusters.tsv`, `corrected_reads.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, `consensus_tagged.bam`) |
 | `--reference` | Genome FASTA — required for walkback (XA tail-length recomputation) |
 | `--gff` | Genome annotation GFF3 — required for gene tree and `XS` classification |
 
@@ -105,6 +105,7 @@ rectify cdna-analyze out/stage1.rectified.bam \
 | File | Description |
 |------|-------------|
 | `<out>/clusters.tsv` | Per-cluster manifest (one row per UMI cluster) |
+| `<out>/corrected_reads.tsv` | Per-molecule (UMI-consensus) corrected 3' ends, with DRS-identical columns so a single loader works across modalities |
 | `<out>/isoforms.tsv` | Isoform-level aggregation (one row per isoform after `tol-5`/`tol-3` grouping) |
 | `<out>/t1t2_pairs.tsv` | Type-1 / Type-2 reconciliation pairs (one row per same-molecule link) |
 | `<out>/consensus_tagged.bam` | Input BAM rewritten with the new `XA` / `XG` / `XS` / `XI` / `XL` tags added per record. Indexed. |

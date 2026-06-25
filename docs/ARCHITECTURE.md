@@ -83,22 +83,23 @@ Dorado-aligned BAM (with pt:i: tags)
     │
     ▼
 [Step 1: Alignment]        multi-aligner rectification pipeline
-    │                      Tier 1 (default): minimap2 + mapPacBio + gapmm2
-    │                      Tier 2 (opt-in):  + deSALT, + uLTRA
+    │                      Tier 1: minimap2 + mapPacBio + gapmm2
+    │                      Tier 2 (ON by default for long-read run-all): + deSALT, + uLTRA
+    │                      (disable with --no-junction-aligners; default panel = 5 aligners)
     │
-    │  Phase 1: mapPacBio alone (all threads)
-    │  Phase 2: minimap2 + gapmm2 in parallel
+    │  Each enabled aligner is launched in turn with the full thread budget
+    │  (no in-process parallel pool across aligners).
     │
     │  Per aligner BAM → extract AlignmentInfo:
     │    • effective 5' clip  (MD-free, genome-only)
     │    • 5' clip rescue     (single-pass, scoring only — no position change)
-    │    • A-tract 3' depth   (genome-only estimate)
     │    • 3' terminal errors (non-poly-A clip)
     │    • junction-proximity errors
+    │    • A-tract 3' depth   (genome-only; informational, NOT scored)
     │
     │  Composite score → select best aligner per read
-    │  Tiebreakers: canonical GT-AG → annotated →
-    │               majority 3' vote → wider span
+    │  Tiebreakers (rectify order): majority 3' vote →
+    │               annotated junctions → canonical GT-AG
     ▼
     <sample>.<aligner>.bam  (one per aligner, name-sorted)
     │
@@ -121,25 +122,27 @@ Dorado-aligned BAM (with pt:i: tags)
     │                      ⑧ NET-seq refinement (optional, resolves ambiguous windows)
     │                      ⑨ Spike-in read filtering
     ▼
-    per_aligner_corrected/{aligner}/corrected_3ends.tsv   (one per aligner)
+    per_aligner_corrected/{aligner}/corrected_reads.tsv   (one per aligner)
     per_aligner_corrected/{aligner}/corrected.bam         (one per aligner, opt-in)
     │
     ▼
 [Step 3: Consensus]        select best corrected output per read    corrected_consensus.py
     │   For each read, selects the winning aligner from the per-aligner corrected TSVs.
-    │   Selection criteria (in priority order):
-    │     1. five_prime_rescued   — prefer aligner where Cat3 rescue fired (1 > 0)
-    │     2. confidence           — prefer 'high' > 'medium' > 'low'
-    │     3. corrected_3prime agreement — prefer position agreed on by most aligners
-    │     4. alignment span       — prefer wider alignment
-    │     5. n_junctions          — prefer more junctions (more completely spliced)
-    │   Winner's corrected row is kept; winning aligner name written to XA tag.
+    │   `corrected_consensus.py` carries two selection orders (the choice between
+    │   them is an architectural decision still pending — see CLAUDE.md / HANDOFF):
+    │     • Legacy (production): five_prime_rescued → confidence
+    │       ('high'>'medium'>'low') → corrected_3prime majority agreement →
+    │       alignment span → n_junctions.
+    │     • HP-edit-distance: primary = hp_edit_distance (ascending),
+    │       tiebreak = alignment span (descending).
+    │   Winner's corrected row is kept; winning aligner name recorded in the
+    │   winning_aligner column.
     ▼
-    corrected_3ends.tsv           merged per-read corrected positions (winning aligner only)
+    corrected_reads.tsv           merged per-read corrected positions (winning aligner only)
                                   columns include: chrom, strand, original_3prime,
                                   corrected_3prime, five_prime_position, polya_length,
-                                  junctions_str, n_junctions, confidence, winning_aligner, …
-    corrected_3ends_index.bed.gz  position-count summary: one row per unique
+                                  junctions, n_junctions, confidence, winning_aligner, …
+    corrected_reads_index.bed.gz  position-count summary: one row per unique
                                   (chrom, corrected_3prime, strand) with read count.
                                   ~300× smaller than the per-read TSV; used by
                                   manifest-mode analysis to skip re-reading every read.
@@ -250,7 +253,8 @@ Pre-aligned BAM (minimap2)
     │     ⑤ Type-1 ↔ Type-2 reconciliation (same orient + |Δ5'|≤5 + |Δ3'|≤5)
     │
     ▼
-    Outputs: clusters.tsv · isoforms.tsv · t1t2_pairs.tsv · consensus_tagged.bam
+    Outputs: clusters.tsv · corrected_reads.tsv (per-molecule, DRS-equivalent
+             columns) · isoforms.tsv · t1t2_pairs.tsv · consensus_tagged.bam
     Tags added by cdna-analyze: XG (gene) · XS (sense/antisense) · XI (isoform_id) · XL (T1↔T2 partner cid)
 ```
 
@@ -279,7 +283,7 @@ Pre-aligned BAM (BWA-MEM or user-supplied)
     │     stop_base = "A" (scan through A-tract from left)
     │   Strand handling: BAM strand = opposite of gene strand
     ▼
-    corrected_3ends.tsv → standard analysis pipeline
+    corrected_reads.tsv → standard analysis pipeline
 ```
 
 ---
@@ -427,7 +431,7 @@ flowchart TD
         UMI["UMI extraction<br/><i>regex SSP match</i>"]
         DC["directional clustering<br/><i>Lev ≤ 3, 2× rule</i>"]
         POA["abPOA consensus<br/><i>XR ≥ 2 → polished</i>"]
-        ISO["isoform clustering<br/><i>T1 (3'-anchored)<br/>T2 (5'-anchored)</i>"]
+        ISO["isoform clustering<br/><i>T1 (5'-anchored, uses 5'+3')<br/>T2 (3'-anchored, 3'-only)</i>"]
         REC["T1↔T2 reconciliation<br/><i>|Δ5'| ≤ 5, |Δ3'| ≤ 5</i>"]
         UMI --> DC --> POA --> ISO --> REC
     end
@@ -474,7 +478,7 @@ rectify/                              ← git repo root
 │   ├── core/                         pipeline step implementations
 │   │   │
 │   │   ├── unified_record.py         unified read record dataclass
-│   │   ├── position_index.py         per-position read-count index (corrected_3ends_index.bed.gz)
+│   │   ├── position_index.py         per-position read-count index (corrected_reads_index.bed.gz)
 │   │   ├── exclusion_regions.py      blacklist regions (repetitive elements, etc.)
 │   │   ├── spikein_filter.py         spike-in construct detection and filtering
 │   │   │
@@ -651,7 +655,7 @@ rectify/                              ← git repo root
 │       ├── build_pan_mutant_netseq_database.py   build pan-mutant NET-seq TSV
 │       └── create_atract_netseq_reference.py     build A-tract NET-seq TSV
 │
-├── tests/                            pytest suite (46 test files; 934 passing + 28 skipped + 4 deselected, ≈1 min)
+├── tests/                            pytest suite (`pytest -m "not slow"` runs in ≈1 min)
 ├── docs/                             MkDocs source for RTD
 │   └── ARCHITECTURE.md               this file
 ├── conda-recipe/                     conda-forge recipe (meta.yaml)
@@ -669,7 +673,7 @@ rectify/                              ← git repo root
 
 ### Layer 1: Entry point
 
-**`cli.py`** — Builds the top-level `argparse` parser and 22 subparsers.
+**`cli.py`** — Builds the top-level `argparse` parser and its subparsers.
 Each subparser delegates to a `create_*_parser()` function in the
 corresponding `core/commands/*_command.py`. A global `--Scer` / `--organism`
 hook in `main()` calls `rectify.data.resolve_reference_paths(args)` after
@@ -707,11 +711,14 @@ discovery only fire in multi-sample mode (need multiple conditions for
 statistics). Also resolves bundled genome/annotation paths transparently.
 
 When `--drs` is passed with a BAM input, `_run_single_sample()` automatically
-inserts Step 0 (`trim_drs_bam_polya` → `samtools fastq -T pt`) before alignment
-and Step 4 (`restore_polya_softclips`) after correction. The poly(A) trim
-metadata parquet is written to the Oak output directory so it survives
-`$SCRATCH` purge; the trimmed FASTQ is written to `$SCRATCH/drs_trim/` for
-alignment I/O.
+inserts Step 0 (`trim_drs_bam_polya`, then `samtools fastq` **without** `-T pt`)
+before alignment and Step 4 (`restore_polya_softclips`) after correction. The
+poly(A) trim metadata parquet is written to the Oak output directory so it
+survives `$SCRATCH` purge; the trimmed FASTQ is written to `$SCRATCH/drs_trim/`
+for alignment I/O. (The `pt:i:` tag is deliberately kept out of the FASTQ read
+name — embedding it produces duplicate QNAMEs after sorting; poly(A) lengths
+live in the parquet instead. See
+[Pipeline order and I/O](architecture/pipeline_and_io.md).)
 
 **`core/commands/batch_command.py`** — Parallel batch correction across samples.
 In interactive mode, auto-sizes a `ThreadPoolExecutor` to available CPUs
@@ -726,7 +733,7 @@ works on all three schedulers without modification.
 
 **`core/commands/correct_command.py`** — Step 2 orchestrator (DRS / generic): validates
 inputs, sets thread limits, calls `core/bam/parallel.process_bam_file_parallel()`
-or `core/bam/parallel.process_bam_streaming()`, writes `corrected_3ends.tsv` and stats report.
+or `core/bam/parallel.process_bam_streaming()`, writes `corrected_reads.tsv` and stats report.
 
 **`core/commands/cdna_correct_command.py`** — ONT cDNA pipeline Stage 1
 (`rectify correct-cdna`). Implements the upstream half of the PCB114.24
@@ -767,7 +774,9 @@ produced by `rectify align` on the Stage-1 FASTQ. Per record:
    same gene+orient with `|Δ5'|≤5 ∧ |Δ3'|≤5`. Writes `XL:i` (partner cid)
    on both records.
 
-Outputs: `clusters.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, and a tagged
+Outputs: `clusters.tsv`, `corrected_reads.tsv` (one row per UMI-consensus
+molecule, with DRS-equivalent columns so a single loader works across
+modalities), `isoforms.tsv`, `t1t2_pairs.tsv`, and a tagged
 `consensus_tagged.bam` (input BAM rewritten with the new XA/XG/XS/XI/XL
 tags added).
 
@@ -779,10 +788,16 @@ Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 
 ### Layer 3: Alignment (Step 1)
 
-**`core/align/multi_aligner.py`** — Runs all enabled aligners in parallel
-subprocesses. Tier 1 (default): minimap2, mapPacBio, gapmm2. Tier 2
-(opt-in via `--aligners`): deSALT (high-sensitivity splice aligner) and
-uLTRA (annotation-guided graph aligner, requires GTF). Each aligner
+**`core/align/multi_aligner.py`** — Runs each enabled aligner as a subprocess,
+launched in turn with the full per-job thread budget (no in-process pool across
+aligners; coarse parallelism comes from the chunked SLURM array pipeline).
+Tier 1: minimap2, mapPacBio, gapmm2. Tier 2: deSALT (high-sensitivity splice
+aligner) and uLTRA (annotation-guided aligner, requires a GFF/GTF). For
+**long-read `rectify run-all`, Tier 2 is ON by default** (the default panel is
+all 5 aligners; disable with `--no-junction-aligners`). For the bare
+`rectify align` command and for short-read mode, Tier 2 is OFF by default and is
+opted in via `--junction-aligners deSALT uLTRA`. `gmap` (and winnowmap2 /
+minisplice) remain opt-in `--junction-aligners` choices everywhere. Each aligner
 produces a sorted, indexed BAM. Junction annotations from GFF are passed
 to minimap2 via `--junc-bed` to improve splice site accuracy while keeping
 scoring annotation-blind (novel junctions are still discoverable). Returns
@@ -808,9 +823,15 @@ back together with corrected CIGAR strings.
 
 The key insight driving the design is: **it is cheaper to select the right
 alignment before correction than to correct a bad alignment after the fact**.
-`extract_alignment_info()` in `consensus.py` is called for every read from
+`extract_alignment_info()` (defined in `core/consensus/extract.py`, re-exported
+through `consensus.py` for backwards compatibility) is called for every read from
 every aligner's BAM. It computes five signals from the raw alignment using
-genome sequence alone (no MD tags required at this stage):
+genome sequence alone (no MD tags required at this stage). The scoring helpers
+referenced below (`score_alignment`, `_get_effective_5prime_clip`,
+`_rescue_5prime_softclip`, `_get_effective_3prime_clip`,
+`_count_junction_proximity_errors`) live in `core/consensus/scoring.py`, and the
+per-read winner selection (`select_best_alignment`) lives in
+`core/consensus/select.py`:
 
 **Signal 1 — Effective 5' clip (`_get_effective_5prime_clip`):**
 Scans up to 20 bp from the 5' end for terminal imperfections.
@@ -837,11 +858,12 @@ fragment. **It does not change positions or CIGARs** — it only affects
 the alignment's score for the purposes of aligner selection.
 
 **Signal 3 — A-tract 3' depth (`calculate_atract_ambiguity`):**
-Using genome sequence, estimates how far the aligner's 3' end is from the
-true CPA site in A-tract regions. `downstream_a_count` (A's downstream of
-the raw 3' end within 10 bp) quantifies how deep into the A-tract the aligner
-landed. Penalty: −1 per downstream A, capped at 10. The full MD-tag-dependent
-walk-back correction runs later in `rectify correct` (Module 2C/2E).
+Using genome sequence, estimates how far the aligner's 3' end sits inside a
+downstream A-tract (`three_prime_atract_depth`). This is recorded as
+informational metadata but is **deliberately not scored**: an aligner that
+extends further into a genomic A-tract is more informative, not worse, and the
+walk-back assigns the CPA regardless of where the raw alignment ends. The full
+MD-tag-dependent walk-back correction runs later in `rectify correct`.
 
 **Signal 4 — 3' non-poly(A) terminal errors (`_get_effective_3prime_clip`):**
 Scans the 3' terminal region for non-A/T errors — mismatches or indels that
@@ -855,18 +877,20 @@ produce clean junction handling (mapPacBio is typically best here).
 **Composite score:**
 ```
 score = − 2 × effective_5prime_clip     (0 if rescued)
-        − 1 × atract_depth              (capped at 10)
         − 2 × effective_3prime_clip     (capped at 10)
         − 1 × junction_proximity_errors (capped at 10)
+# three_prime_atract_depth is NOT a score term (see Signal 3).
 ```
 
-**Tiebreakers** (in order when scores are equal):
-1. Most canonical GT-AG junctions
+**Tiebreakers** (default 'rectify' order, applied when scores are equal):
+1. Most 3' agreement — `corrected_3prime` matching the majority across aligners
 2. Most annotated junction matches
-3. Majority vote on `corrected_3prime` (genome-only estimate)
-4. Wider reference span (more of the transcript covered)
+3. Most canonical GT-AG splice sites
 
-The winning aligner's raw BAM record is written to `consensus.bam`. MD tags
+(The short-read 'compass' entrypoint uses a different tie order:
+ungapped > more-annotated > shorter-intron > canonical.)
+
+The winning aligner's raw BAM record is written to the consensus BAM. MD tags
 are added via `samtools calmd` to enable the MD-dependent modules in
 `rectify correct`.
 
@@ -991,8 +1015,9 @@ annotated → smallest boundary shift. **Annotation never overrides a
 better-scoring junction.**
 
 Fast path: reads already at an annotated canonical-tier-0 junction skip
-scoring entirely (255× speedup). Requires `--aligner-bams` for novel
-junction discovery.
+scoring entirely (a large speedup on typical datasets where most reads sit at
+correct annotated GT-AG junctions). Novel-junction discovery requires
+`--aligner-bams` to supply the candidate pool.
 
 **⑧ `core/netseq/netseq_refiner.py`** — For reads whose corrected position falls in an
 ambiguous window: queries NET-seq signal, deconvolves the PSF spread caused
@@ -1018,8 +1043,10 @@ Support modules called by `bam_processor`:
 
 | File | Responsibility |
 |------|---------------|
-| `core/consensus/consensus.py` | `extract_alignment_info`, `score_alignment`, `select_best_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
-| `core/align/multi_aligner.py` | Per-aligner subprocess management, two-phase scheduling |
+| `core/consensus/extract.py` | `extract_alignment_info`, `extract_junctions_from_cigar` |
+| `core/consensus/scoring.py` | `score_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
+| `core/consensus/select.py` | `select_best_alignment` |
+| `core/align/multi_aligner.py` | Per-aligner subprocess management (sequential launch, full thread budget each) |
 | `core/bam/bam_processor.py` | Per-read correction core: `correct_read_3prime` calls all modules in order |
 | `core/bam/parallel.py` | Region-parallel / streaming wrappers around `correct_read_3prime` |
 | `core/splice/splice_aware_5prime.py` | Module 2F: full Cat3/Cat4 5' junction rescue |
@@ -1038,11 +1065,15 @@ Support modules called by `bam_processor`:
 ### Layer 5: Analysis (Step 5)
 
 **`core/analyze/clustering.py`** — Groups corrected 3' positions into CPA
-site clusters. Two algorithms:
-- Fixed-distance (default, `--cluster-distance 25`): reads within 25 bp
-  on the same strand are merged. O(n log n).
-- Adaptive valley-based (`--adaptive-clustering`): finds valleys in the
-  read-depth histogram to split clusters at natural breakpoints.
+site clusters. Two algorithms, applied to different position types:
+- **CPA clustering always uses the adaptive valley-based algorithm**
+  (`cluster_cpa_sites_adaptive`): it finds valleys in the read-depth histogram
+  to split clusters at natural breakpoints. There is no flag to switch it off;
+  it is tuned via `--max-cluster-radius`, `--min-peak-sep`, and `--min-reads`.
+- **TSS (5'-end) clustering uses the fixed-distance algorithm**
+  (`cluster_cpa_sites`): reads within a fixed window on the same strand are
+  merged (O(n log n)). The CPA `--cluster-distance` default is 25 bp; the TSS
+  window defaults to 75 bp (DRS 5' ends are noisier).
 After clustering, `annotate_clusters_with_genes()` uses an IntervalTree to
 attribute each cluster to the gene whose 3' region it falls in.
 
@@ -1229,7 +1260,7 @@ R64-5-1). Other organisms require user-supplied files.
 | `motif_databases/` | MEME-format poly(A) signal motif databases |
 | `models/` | Trained poly(A) tail JSON models |
 | `validation/validation_reads.bam` | 36 test reads for CI/regression testing |
-| `validation/corrected_3ends.tsv` | Expected correction output for CI comparison |
+| `validation/corrected_reads.tsv` | Expected correction output for CI comparison |
 | `validation/aligners/*.bam` | Per-aligner test BAMs (minimap2, mapPacBio, gapmm2, deSALT, uLTRA) |
 | `validation/rectified/*.bam` | Rectified output BAMs (corrected, trimmed, soft-clipped) |
 
@@ -1275,7 +1306,7 @@ aligners and reliably identify which aligner produced the best starting
 point for each individual read. The consensus step then selects winners
 using these normalized signals rather than raw alignment scores.
 
-The lightweight pre-correction scoring signals in `consensus.py`
+The lightweight pre-correction scoring signals in `core/consensus/scoring.py`
 (`_get_effective_5prime_clip`, `_rescue_5prime_softclip`, etc.) are retained
 as the scoring mechanism used by the standalone `rectify consensus` subcommand,
 which operates on raw alignment BAMs without per-aligner correction.
@@ -1379,7 +1410,7 @@ This ensures novel splice sites are not penalized.
 
 **3. Memory-efficient streaming for large datasets.**
 `--streaming` mode processes reads in 10,000-read chunks with O(1) peak RAM
-relative to BAM size. The `corrected_3ends_index.bed.gz` position count file
+relative to BAM size. The `corrected_reads_index.bed.gz` position count file
 (~300× smaller than per-read TSV) further accelerates multi-sample analysis
 by making Pass 1 and Pass 2 near-instant.
 

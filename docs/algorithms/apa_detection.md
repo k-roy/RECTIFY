@@ -21,30 +21,33 @@ The two archetypal isoforms are:
 
 ## APA isoform detection
 
-RECTIFY groups CPA clusters into APA isoforms per gene:
+RECTIFY groups reads into APA isoforms per gene by the triplet
+`(gene, junction signature, 3' cluster)`:
 
 ```python
 @dataclass
 class APAIsoform:
     isoform_id: str
     gene_id: str
-    cluster_ids: List[str]              # Which clusters constitute this isoform
-    usage_per_sample: Dict[str, float]  # sample_id → fraction of gene's reads
-
-@dataclass
-class GeneAPAProfile:
-    gene_id: str
-    isoforms: List[APAIsoform]
-    mean_read_count: int
-    has_proximal_distal: bool           # Does this gene have clear prox/dist sites?
+    gene_name: str
+    chrom: str
+    strand: str
+    tes_position: int                   # Transcript end site (3' end) position
+    tes_cluster_id: Optional[str]       # CPA cluster this TES belongs to
+    junction_signature: Tuple[Tuple[int, int], ...]  # Sorted (donor, acceptor) pairs
+    supporting_reads: List[str]         # Read IDs supporting this isoform
+    is_canonical_tes: bool              # TES matches the annotated gene end
 ```
 
 ```python
-def detect_apa_isoforms(gene_clusters, count_matrix):
+def detect_apa_isoforms(records, gene_attributions,
+                        cluster_assignments=None, min_reads_per_isoform=3,
+                        annotated_tes=None, tes_tolerance=50):
     """
-    Group clusters into isoforms by proximity and usage correlation.
+    Detect APA isoforms by grouping reads by (gene, junction signature, TES
+    cluster).
 
-    Returns: Dict[gene_id, GeneAPAProfile]
+    Returns: List[APAIsoform]
     """
 ```
 
@@ -52,22 +55,26 @@ def detect_apa_isoforms(gene_clusters, count_matrix):
 
 ## Proximal / distal site identification
 
-For each gene with ≥ 2 clusters:
+For genes with multiple transcript end sites (TES):
 
 ```python
-def identify_proximal_distal_tes(gene_id, clusters, threshold_bp=200):
+def identify_proximal_distal_tes(profiles, min_tes_difference=100):
     """
-    Classify clusters as proximal or distal based on distance from stop codon.
+    Classify each gene's TES usage as proximal (shorter 3' UTR) vs distal
+    (longer 3' UTR) based on genomic position and strand.
 
-    threshold_bp: clusters within this distance of the stop codon are "proximal"
+    profiles: Dict[gene_id, GeneAPAProfile]
+    min_tes_difference: minimum bp between TES to classify prox/dist
 
-    Returns: (proximal_cluster_id, distal_cluster_id) or (None, None)
+    Returns: DataFrame of per-gene proximal/distal TES assignments
     """
 ```
 
-For plus-strand genes:
-- **Proximal** = cluster closest to stop codon (smallest genomic coordinate past stop)
-- **Distal** = cluster furthest from stop codon (largest coordinate)
+- **Proximal** = the TES giving the shorter 3' UTR (closer to the stop codon)
+- **Distal** = the TES giving the longer 3' UTR (farther from the stop codon)
+
+(Strand is accounted for: "closer to the stop codon" means smaller genomic
+coordinate on the plus strand and larger on the minus strand.)
 
 ---
 
@@ -77,38 +84,46 @@ For plus-strand genes:
 
 ### Jensen-Shannon divergence
 
-For each gene with ≥ 2 clusters, the shift is measured by Jensen-Shannon divergence between the condition and reference usage distributions:
+For each gene with ≥ 2 clusters, the shift magnitude is measured by the
+Jensen-Shannon divergence between the two conditions' cluster-usage
+distributions. RECTIFY computes it via `scipy.spatial.distance.jensenshannon`
+(base 2) and squares the returned distance, so the reported
+`distribution_divergence` is the JSD itself, bounded in [0, 1]:
 
-```
-JSD(P || Q) = ½ KL(P || M) + ½ KL(Q || M)
-where M = ½(P + Q)
-```
-
-JSD is symmetric and bounded in [0, 1]:
-- **JSD = 0**: identical usage distribution
-- **JSD = 1**: completely different distributions
+- **0**: identical usage distribution
+- **1**: completely disjoint distributions
 
 ```python
-def analyze_cluster_shifts(count_matrix, metadata, reference_condition):
+def analyze_cluster_shifts(count_matrix, clusters_df, condition_a, condition_b,
+                           sample_metadata, cluster_gene_attributions=None,
+                           min_total_counts=20):
     """
-    Compute per-gene APA shifts.
+    Compare cluster-usage distributions between two conditions, per gene.
 
-    Returns: DataFrame with gene_id, js_divergence, direction, proximal_delta, distal_delta, padj
+    Returns a DataFrame with: gene_id, gene_name, n_clusters,
+    major_cluster_a, major_cluster_b, shift_bp, shift_direction,
+    distribution_divergence.
     """
 ```
 
 ### Shift direction
 
-For genes with proximal and distal sites:
+`shift_bp` is the change in the major cluster's position between conditions,
+and `shift_direction` summarizes it:
 
-| `direction` | `proximal_delta` | Meaning |
-|-------------|-----------------|---------|
-| `proximal_shift` | positive | More reads at proximal site |
-| `distal_shift` | negative | More reads at distal site |
+| `shift_direction` | Meaning |
+|-------------------|---------|
+| `downstream` | major CPA site moved downstream (3' UTR lengthening) |
+| `upstream` | major CPA site moved upstream (3' UTR shortening) |
+| `same` | major cluster unchanged |
+| `unknown` | a major cluster could not be determined in one condition |
 
-### Statistical significance
+A boolean `same_major` column is also emitted (true when the major cluster id is
+identical across the two conditions).
 
-P-values from a permutation test (1000 permutations of condition labels) are adjusted using Benjamini-Hochberg FDR. The default significance threshold is `padj < 0.05`.
+This function reports shift magnitude and direction; it does not itself compute
+a per-gene p-value. (Cluster- and gene-level differential-usage significance —
+`padj`, `log2FoldChange` — comes from the DESeq2 step below.)
 
 ---
 
@@ -131,14 +146,14 @@ A gene where total expression is unchanged but CPA usage shifts will show:
 
 | File | Content |
 |------|---------|
-| `tables/shift_results.tsv` | Gene-level shift analysis (JSD, direction, padj) |
-| `tables/deseq2_clusters_*.tsv` | Cluster-level differential expression |
-| `cpa_clusters.tsv` | Cluster definitions with peak positions |
-| `cluster_gene_mapping.tsv` | Cluster → gene attribution |
+| `tables/shift_analysis_{condition}.tsv` | Gene-level shift analysis (`shift_bp`, `shift_direction`, `distribution_divergence`) |
+| `tables/deseq2_clusters_{condition}.tsv` | Cluster-level differential usage (`padj`, `log2FoldChange`, `baseMean`) |
+| `tables/deseq2_genes_{condition}.tsv` | Gene-level differential usage |
+| `cpa_clusters.tsv` | Cluster definitions (`modal_position`, `cluster_com`, …) |
 
 ---
 
 ## See also
 
 - [Adaptive Clustering](adaptive_clustering.md) — how CPA positions become clusters
-- [Output Formats](../user_guide/output_formats.md) — column definitions for `shift_results.tsv`
+- [Output Formats](../user_guide/output_formats.md) — column definitions for `shift_analysis_{condition}.tsv`

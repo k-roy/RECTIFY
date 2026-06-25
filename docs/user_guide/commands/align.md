@@ -2,36 +2,41 @@
 
 Multi-aligner consensus alignment for direct RNA and long-read sequencing.
 
-Runs up to five aligners in parallel, attempts to rescue soft-clips through annotated splice junctions, scores alignments by canonical GT-AG sites and annotation matches, and writes the best alignment per read to a rectified BAM.
+By default it runs the three-aligner long-read panel (minimap2, mapPacBio, gapmm2); `--junction-aligners` adds the opt-in splice-aware aligners uLTRA and deSALT for the full five-aligner panel. It attempts to rescue soft-clips through annotated splice junctions, scores alignments by canonical GT-AG sites and annotation matches, and writes the best alignment per read to a rectified BAM.
 
 ---
 
 ## Usage
 
 ```bash
-rectify align <reads> [options] -o <output.bam>
+rectify align <reads> [options] -o <output_dir>
 ```
+
+The output is a **directory**: per-aligner BAMs are written as
+`<prefix>.<aligner>.bam`, and the consensus result as
+`<prefix>.rectified.bam` (the `<prefix>` defaults to the input file stem; set
+it with `--prefix`).
 
 ## Examples
 
 ```bash
-# Default 3-aligner consensus
+# Default 3-aligner consensus (minimap2 + mapPacBio + gapmm2)
 rectify align reads.fastq.gz \
     --genome genome.fa.gz \
     --annotation genes.gff.gz \
-    -o aligned.bam
+    -o aligned/
 
 # Bundled yeast data
-rectify align reads.fastq.gz --Scer -o aligned.bam
+rectify align reads.fastq.gz --Scer -o aligned/
 
 # 5-aligner consensus (add uLTRA + deSALT)
 rectify align reads.fastq.gz \
     --Scer \
     --junction-aligners uLTRA deSALT \
-    -o aligned.bam
+    -o aligned/
 
 # Single aligner (faster, less accurate)
-rectify align reads.fastq.gz --Scer --aligner minimap2 -o aligned.bam
+rectify align reads.fastq.gz --Scer --aligners minimap2 -o aligned/
 ```
 
 ---
@@ -41,38 +46,43 @@ rectify align reads.fastq.gz --Scer --aligner minimap2 -o aligned.bam
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `reads` | — | Input FASTQ or FASTQ.GZ file |
-| `-o, --output` | — | Output BAM file |
+| `-o, --output-dir` | — | Output directory for BAM files |
+| `--prefix` | input stem | Output file-name prefix |
 | `--genome` | — | Reference genome FASTA |
 | `--annotation` | — | Gene annotation GFF/GTF (for junction BED) |
 | `--Scer` | — | Bundled *S. cerevisiae* data |
-| `--aligner` | minimap2 | Primary aligner choice |
-| `--junction-aligners` | — | Add optional junction-mode aligners: `uLTRA`, `deSALT` |
+| `--aligners` | all | Base aligners to run (`all` = minimap2 + mapPacBio + gapmm2 for long-read); pass a subset (e.g. `minimap2`) or `none` |
+| `--junction-aligners` | (none) | Add opt-in splice-aware aligners: `uLTRA`, `deSALT`, `gmap` |
 | `--chimeric-consensus` | off | Use chimeric CIGAR assembly (experimental) |
-| `--ultra-path` | auto | Path to uLTRA executable |
-| `--desalt-path` | auto | Path to deSALT executable |
-| `-j, --threads` | auto | Threads for alignment |
+| `--ultra-path` | `uLTRA` | Path to uLTRA executable |
+| `--desalt-path` | `deSALT` | Path to deSALT executable |
+| `--parallel-aligners` | off | Run base aligners in parallel (phase 2) |
+| `-t, --threads` | 8 | Threads per aligner |
 
 ---
 
 ## Aligners
 
-### Default (always run)
+### Default base panel (long-read)
 
 | Aligner | Strengths |
 |---------|-----------|
 | **minimap2** | Fast, splice-aware; uses junction BED annotation for improved accuracy |
-| **mapPacBio** (pbmm2) | PacBio RNA mode; forces mismatches at splice junctions for fair scoring |
-| **gapmm2** | Gap-aware minimap2 variant; handles reads with large indels |
+| **mapPacBio** (BBMap's `mapPacBio.sh`) | PacBio long-read RNA mode |
+| **gapmm2** | Gap-aware minimap2 wrapper (pinned to `==25.4.5`); handles reads with large indels |
 
 ### Optional (add with `--junction-aligners`)
 
 | Aligner | When to use |
 |---------|-------------|
-| **uLTRA** | Small exons (11–20 nt); annotation-guided collinear chaining |
-| **deSALT** | Additional De Bruijn graph mapper; can resolve some complex junctions |
+| **uLTRA** | Small exons; annotation-guided collinear chaining (requires `--annotation`) |
+| **deSALT** | Additional reference-graph mapper; can resolve some complex junctions |
+| **gmap** | Splice-aware mapper; requires a pre-built database (see `--gmap-db`) |
+
+Benchmark any opt-in junction aligner against your data before relying on it in production.
 
 !!! note "Two-phase scheduler"
-    mapPacBio is ~10× slower than other aligners. RECTIFY runs it alone with all threads first (phase 1), then runs the remaining aligners in parallel (phase 2). This prevents resource contention and is faster than running all aligners together.
+    mapPacBio is ~10× slower than the other aligners. With `--parallel-aligners`, RECTIFY runs mapPacBio alone with all threads first (phase 1), then runs the remaining aligners in parallel (phase 2). This avoids resource contention and is faster than running every aligner at once.
 
 ---
 
@@ -104,7 +114,7 @@ Key flags:
 - `-uf`: forward-strand only (correct for direct RNA)
 - `-k14`: smaller k-mer for sensitivity on noisy nanopore reads
 - `-G 5000`: max intron size (for yeast)
-- `--splice-flank=no`: disables GT-AG bonus (important for 3' end accuracy)
+- `--splice-flank=no`: disables the GT-AG splice-flank model (set for compatibility / 3' end accuracy)
 - `--MD`: required for indel artifact correction downstream
 
 ---
@@ -116,13 +126,13 @@ For datasets where a single 5-aligner run exceeds available wall time, use
 pair as a SLURM array task. See [`rectify split`](split.md) for the complete workflow.
 
 ```bash
-# Quick summary: 16 chunks × 5 aligners = 80 array tasks
+# Quick summary. mapPacBio gets its own array script; the remaining
+# aligners (default --other-aligners = minimap2 gapmm2 uLTRA deSALT) share
+# the "others" array.
 rectify split reads.fastq.gz -n 16 -o chunks/ \
     --generate-slurm \
-    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
     --genome genome.fa --annotation genes.gff
-sbatch chunks/run_array_align.sh          # submit 80-task array
-bash  chunks/run_merge_and_consensus.sh   # run after array completes
+bash chunks/submit_pipeline.sh   # submits the full DAG with dependencies
 ```
 
 ---

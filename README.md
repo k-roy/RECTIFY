@@ -9,7 +9,7 @@
   <a href="https://rectify-rna.readthedocs.io"><img src="https://img.shields.io/readthedocs/rectify-rna?label=docs" alt="Docs"></a>
   <a href="https://github.com/k-roy/RECTIFY/actions"><img src="https://img.shields.io/github/actions/workflow/status/k-roy/RECTIFY/tests.yml?branch=master&label=tests" alt="Tests"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python 3.8+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.9%2B-blue.svg" alt="Python 3.9+"></a>
 </p>
 
 Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class, with bundled tables for *S. cerevisiae* and *H. sapiens*), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
@@ -183,25 +183,24 @@ pip install rectify-rna
 
 ```bash
 # One command — bundled yeast genome, full pipeline + DESeq2
-rectify run-all reads.bam --organism yeast --output-dir results/
+rectify run-all reads.bam --drs --organism yeast --output-dir results/
 
 # Step by step (any organism)
-rectify trim-polya reads.bam     --genome genome.fa -o trimmed.bam
-rectify align      trimmed.bam   --genome genome.fa --annotation genes.gff -o aligned/
-rectify correct    aligned/*.bam --genome genome.fa --annotation genes.gff -o corrected.tsv
-rectify analyze    corrected.tsv --gff genes.gff -o results/
+rectify trim-polya reads.bam                  --genome genome.fa -o trimmed.bam
+rectify align      trimmed.bam                 --genome genome.fa --annotation genes.gff -o aligned/
+rectify correct    aligned/trimmed.rectified.bam --genome genome.fa --annotation genes.gff -o corrected.tsv
+rectify analyze    corrected.tsv              --annotation genes.gff -o results/
 ```
 
 ### ONT PCR-cDNA (PCB114.24)
 
-```bash
-# One command
-rectify run-all reads.bam --protocol cdna --organism yeast --output-dir results/
+The cDNA pipeline runs as three explicit stages (Stage 1 deduplicates by UMI
+*before* alignment, so there is no single `run-all` shortcut):
 
-# Step by step (any organism)
-rectify correct-cdna  pcb114.bam                      --reference genome.fa -o out/
-rectify align         out/stage1_consensus.fastq.gz    --genome genome.fa -o out/
-rectify cdna-analyze  out/stage1.rectified.bam         --reference genome.fa --gff genes.gff -o out/
+```bash
+rectify correct-cdna  pcb114.bam                      --reference genome.fa --gff genes.gff -o out/
+rectify align         out/stage1_consensus.fastq.gz   --genome genome.fa --prefix stage1 -o out/
+rectify cdna-analyze  out/stage1.rectified.bam        --reference genome.fa --gff genes.gff -o out/
 ```
 
 ### QuantSeq REV
@@ -213,9 +212,9 @@ rectify run-all reads.fastq.gz --short-read --dT-primed-cDNA --genome genome.fa 
 
 # Step by step — pass FASTQ to `rectify align --short-read` first;
 # piping straight to `rectify correct` bypasses the proper short-read aligner panel.
-rectify align   reads.fastq.gz --short-read --genome genome.fa -o aligned.bam
-rectify correct aligned.bam    --short-read --dT-primed-cDNA  --genome genome.fa -o corrected.tsv
-rectify analyze corrected.tsv  --gff genes.gff -o results/
+rectify align   reads.fastq.gz --short-read --genome genome.fa --prefix sample -o aligned/
+rectify correct aligned/sample.rectified.bam --short-read --dT-primed-cDNA --genome genome.fa -o corrected.tsv
+rectify analyze corrected.tsv  --annotation genes.gff -o results/
 ```
 
 ### Multi-sample and HPC
@@ -235,25 +234,27 @@ rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf
 ## Installation
 
 ```bash
-pip install rectify-rna                                # core
-pip install rectify-rna[visualize]                     # +plots (cairosvg, matplotlib)
-conda install -c conda-forge -c bioconda rectify-rna   # +MEME for motif discovery
+pip install rectify-rna                                            # core
+pip install rectify-rna[visualize]                                 # +plots (matplotlib, seaborn)
+conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna # +MEME for motif discovery
 ```
 
-`[visualize]` is not bundled by default because `cairosvg` depends on the native Cairo graphics library. On most systems `pip install rectify-rna[visualize]` works out of the box; use the conda install if you encounter Cairo linking errors.
+The `[visualize]` extra adds `matplotlib` and `seaborn` for metagene plots, genome-browser figures, and heatmaps. The cDNA UMI-consensus extras (`pip install rectify-rna[cdna-correct]`) add `edlib` + `pyabpoa`.
 
 ---
 
 ## Output
 
+`rectify correct` writes a per-read `corrected_3ends.tsv` (one row per read). Selected columns:
+
 ```
-read_id   │ chrom │ strand │ original │ corrected │ shift │ confidence │ polya_len │ qc_flags
-read001   │ chrI  │   +    │  147592  │   147585  │  -7   │    HIGH    │    42     │   PASS
-read002   │ chrI  │   +    │  147594  │   147591  │  -3   │   MEDIUM   │    38     │   PASS
-read003   │ chrII │   +    │  283109  │   283104  │  -5   │    LOW     │    31     │ AG_RICH
+read_id │ chrom │ strand │ original_3prime │ corrected_3prime │ polya_length │ confidence │ qc_flags
+read001 │ chrI  │   +    │     147592      │      147585      │      42      │    high    │   PASS
+read002 │ chrI  │   +    │     147594      │      147591      │      38      │   medium   │   PASS
+read003 │ chrII │   +    │     283109      │      283104      │      31      │    low     │ AG_RICH
 ```
 
-`rectify analyze` produces: `clusters.tsv`, `deseq2_gene_results.tsv`, `deseq2_cluster_results.tsv`, `shift_results.tsv` (APA shifts), `go_enrichment.tsv`, and `motif_results/`.
+`rectify analyze` produces (per condition): `cpa_clusters.tsv`, `deseq2_genes_<condition>.tsv`, `deseq2_clusters_<condition>.tsv`, `shift_analysis_<condition>.tsv` (APA shifts), `go_enrichment_up_<condition>.tsv` / `go_enrichment_down_<condition>.tsv`, and `motif_summary_<condition>.tsv`.
 
 ---
 
@@ -268,7 +269,6 @@ read003   │ chrII │   +    │  283109  │   283104  │  -5   │    LOW  
 | `rectify correct`      | 5'/intron/3' end correction per read                                           |
 | `rectify cdna-analyze` | ONT cDNA Stage 3: post-align isoform assembly + T1↔T2 linkage                 |
 | `rectify analyze`      | Clustering, DESeq2, GO, motifs                                                 |
-| `rectify analyze splice` | Per-read splice classification                                               |
 | `rectify export`       | Corrected positions → bigWig/bedGraph                                          |
 | `rectify aggregate`    | Reads → 3'-end / 5'-end / junction datasets                                    |
 | `rectify netseq`       | NET-seq A-tract refinement (see below)                                         |

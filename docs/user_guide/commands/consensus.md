@@ -23,7 +23,8 @@ rectify consensus ALIGNER:BAM [ALIGNER:BAM ...] \
 ```
 
 Each positional argument is an `aligner:path` pair. Accepted aligner names:
-`minimap2`, `mapPacBio`, `gapmm2`, `uLTRA`, `deSALT`.
+`minimap2`, `mapPacBio`, `gapmm2`, `uLTRA`, `deSALT` (long-read); `bbmap`,
+`bwa` (short-read).
 
 ## Examples
 
@@ -61,11 +62,13 @@ rectify consensus \
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `ALIGNER:BAM` | Yes (≥2) | Per-aligner BAMs as `name:path` pairs |
-| `--genome` | Yes | Reference genome FASTA (for MD-tag recalculation) |
+| `--genome` | No* | Reference genome FASTA (for MD-tag recalculation). *Optional when `--Scer`/`--organism` is set |
 | `-o, --output-dir` | Yes | Output directory |
 | `--prefix` | No | Output file prefix (default: derived from first BAM name) |
-| `--annotation` | No | Gene annotation GFF/GTF for junction scoring |
+| `--annotation` | No | Gene annotation GFF/GTF for annotated-junction scoring |
+| `--Scer` / `--organism` | No | Use bundled reference data instead of `--genome`/`--annotation` |
 | `--chimeric` | No | Use chimeric CIGAR assembly (experimental) |
+| `--tiebreak {rectify,compass}` | No | Tiebreaker policy when aligners are tied on junction score |
 | `--read-num-sidecar PATH` | No | Path to `<sample>.read_num_sidecar.parquet` from `rectify split`. If omitted, RECTIFY looks beside the input BAMs for a matching sidecar. |
 | `--no-bedgraph` | No | Skip bedGraph/bigWig generation after consensus selection. By default, strand-specific 3' and 5' end coverage files are written from `corrected_reads.tsv` if present in the output directory. |
 | `--verbose` | No | Verbose logging |
@@ -74,20 +77,24 @@ rectify consensus \
 
 ## Output
 
-```
+```text
 output_dir/
-└── <prefix>.consensus.bam      # coordinate-sorted, indexed, MD-tagged
-└── <prefix>.consensus.bam.bai
+├── <prefix>.consensus.bam               # coordinate-sorted, indexed, MD-tagged
+├── <prefix>.consensus.bam.bai
+└── <prefix>.consensus_aligner_stats.tsv # per-aligner selection summary
 ```
 
-The output BAM carries per-read tags:
+The output BAM carries per-read tags (lowercase second character, chosen to
+avoid colliding with the cDNA pipeline's `XA`/`XC` UMI tags):
 
 | Tag | Type | Description |
 |-----|------|-------------|
-| `XA` | String | Winning aligner name (`minimap2`, `mapPacBio`, etc.) |
-| `XC` | Integer | Confidence level (0=low, 1=medium, 2=high) |
-| `XN` | Integer | Number of aligners agreeing with winner |
-| `XR` | Integer | 5' rescue flag (1 = soft-clip rescued through splice junction) |
+| `Xa` | String | Winning aligner name (`minimap2`, `mapPacBio`, etc.) |
+| `Xc` | — | Confidence level of the selection |
+| `Xn` | Integer | Number of aligners agreeing with the winner |
+| `Xt` | String | Comma-separated tied aligners (set only when there was a tie) |
+| `Xj` | Integer | 5' rescue flag (`1` = soft-clip rescued through a splice junction) |
+| `Xv` | Integer | `1` if a false junction was removed during selection |
 
 ---
 

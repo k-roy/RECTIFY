@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.8 or later
+- Python 3.9 or later
 - A Unix-like system (Linux, macOS)
 
 ## PyPI (recommended)
@@ -52,16 +52,18 @@ pytest
 |---------|-----------|---------|-------|
 | [minimap2](https://github.com/lh3/minimap2) | Yes (default) | conda/bioconda | Long-read splice-aware aligner |
 | [mapPacBio](https://sourceforge.net/projects/bbmap/) (BBMap) | Recommended | conda/bioconda (`bbmap`) | PacBio RNA mode; improves junction accuracy |
-| [gapmm2](https://github.com/nextgenusfs/gapmm2) | Recommended | pip or conda | Gap-aware minimap2 variant |
+| [gapmm2](https://github.com/nextgenusfs/gapmm2) | Recommended | `pip install "gapmm2==25.4.5"` | Gap-aware minimap2 variant. Pin to 25.4.5 — newer releases silently drop single-exon reads |
 | [uLTRA](https://github.com/ksahlin/ultra) | Optional | pip or conda | Annotation-guided collinear chaining; best for small exons (11–20 nt) |
 | [deSALT](https://github.com/ydLiu-HIT/deSALT) | Optional | **vendored** (Linux/x86_64) | De Bruijn graph mapper; bundled binary used automatically |
 
 ### Quickest install
 
 ```bash
-# minimap2, mapPacBio (BBMap), gapmm2 via conda
+# minimap2, mapPacBio (BBMap) via conda
 conda install -c bioconda minimap2 bbmap
-pip install gapmm2 ultra-bioinformatics    # pip-installable aligners
+# pip-installable aligners. gapmm2 MUST be pinned to 25.4.5 — 25.4.13+ silently
+# drops single-exon alignments via a ts:-tag regression.
+pip install "gapmm2==25.4.5" ultra-bioinformatics
 
 # deSALT: vendored Linux/x86_64 binary is bundled — no install needed.
 # For other platforms, or to install system-wide:
@@ -122,7 +124,9 @@ rectify --version
 # RECTIFY 0.9.0
 
 rectify --help
-# Usage: rectify [correct|run-all|align|split|consensus|analyze|export|extract|aggregate|netseq|validate|train-polya|batch|install-aligners] ...
+# Usage: rectify {run-all,correct,align,trim-polya,correct-cdna,cdna-analyze,
+#                 analyze,consensus,export,aggregate,netseq,validate,batch,
+#                 install-aligners, ...} ...
 
 # Check aligner availability
 rectify install-aligners --check

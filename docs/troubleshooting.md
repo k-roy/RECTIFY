@@ -32,12 +32,11 @@ pip install "rectify-rna[visualize]"
 ### `mkdir: ~/.rectify/bin: Permission denied` during `rectify install-aligners`
 
 You are on a read-only home directory (some HPC environments mount it
-read-only on compute nodes). Set `RECTIFY_BIN_DIR` to a writable location:
+read-only on compute nodes). Point `--install-dir` at a writable location:
 
 ```bash
-export RECTIFY_BIN_DIR=/scratch/$USER/rectify_bin
-rectify install-aligners --all
-export PATH="$RECTIFY_BIN_DIR:$PATH"
+rectify install-aligners --all --install-dir /scratch/$USER/rectify_bin
+export PATH="/scratch/$USER/rectify_bin:$PATH"
 ```
 
 ---

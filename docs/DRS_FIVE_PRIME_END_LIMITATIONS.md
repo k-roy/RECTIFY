@@ -106,9 +106,9 @@ It is worth noting what DRS does well: **3' end and poly(A) tail resolution**.
 - Internal priming artifacts that plague dT-primed cDNA libraries are largely absent.
 
 This asymmetry is why rectify focuses on 3' end correction as its primary output.
-The `five_prime_position` column is retained in `corrected_3ends.tsv` and can be
-used for rough 5' coverage analysis, but should **not** be interpreted as a reliable
-TSS measurement.
+The `five_prime_position` column is retained in the per-read `corrected_reads.tsv`
+and can be used for rough 5' coverage analysis, but should **not** be interpreted as
+a reliable TSS measurement.
 
 ---
 
@@ -157,7 +157,7 @@ a convenience output. **This output should be interpreted with these caveats in 
 - The 75 bp clustering window (vs 25 bp for 3' ends) reflects the known noisiness
   of DRS 5' ends — it is not a sign that 5' clustering is working well, it is an
   acknowledgment that 5' calls are imprecise.
-- `five_prime_position` in `corrected_3ends.tsv` reflects where the aligner found
+- `five_prime_position` in `corrected_reads.tsv` reflects where the aligner found
   the 5' end of the read, which for most reads is NOT the true TSS.
 - The 5' cluster counts are useful for **relative comparisons** between conditions
   (e.g., detecting shifts in read 5' coverage between WT and upf1Δ), but should not

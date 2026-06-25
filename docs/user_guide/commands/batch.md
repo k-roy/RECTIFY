@@ -36,24 +36,31 @@ rectify batch \
 
 ## Arguments
 
+One of `--manifest` / `--bams` is required.
+
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--manifest, -m` | — | Sample manifest TSV |
+| `--manifest, -m` | — | Sample manifest TSV with columns `sample_id`, `bam_path`, `[condition]` |
+| `--bams` | — | BAM files to process directly (alternative to `--manifest`) |
 | `-o, --output-dir` | — | Output directory |
-| `--profile` | — | SLURM profile YAML |
-| `--Scer` | — | Bundled *S. cerevisiae* data |
+| `--profile` | — | SLURM profile YAML/JSON. When provided, generates (and optionally submits) a SLURM array job |
+| `--slurm` | off | Generate a SLURM array script using the inline `--partition`/`--time`/`--mem`/`--cpus` defaults (manual alternative to `--profile`) |
+| `--Scer` / `--organism` | — | Use bundled *S. cerevisiae* data |
 | `--genome` | — | Reference genome FASTA |
 | `--annotation` | — | Gene annotation GFF/GTF |
 | `--reference` | auto | Reference condition for DESeq2 |
+| `--partition` / `--time` / `--mem` / `--cpus` | profile | Inline SLURM header overrides |
+| `--workers` | auto | Parallel workers for interactive (non-SLURM) mode |
 | `--submit` | off | Submit generated scripts immediately |
 
 ---
 
 ## Generated scripts
 
-### `results/slurm/rectify_batch_correct.sh`
+### `results/rectify_batch_correct.sh`
 
-A SLURM array job with one task per sample:
+A SLURM array job with one task per sample (the body below is an illustrative
+sketch; the generated script differs in detail):
 
 ```bash
 #!/bin/bash
@@ -63,7 +70,7 @@ A SLURM array job with one task per sample:
 #SBATCH --time=8:00:00
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=8
-#SBATCH --output=results/slurm/correct_%A_%a.log
+#SBATCH --output=results/slurm_logs/rectify_correct_%A_%a.log
 
 # Thread limits (critical for SLURM compliance)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -86,7 +93,7 @@ rsync -a results/sample_${SLURM_ARRAY_TASK_ID}/ \
 rm -rf $SCRATCH_DIR
 ```
 
-### `results/slurm/rectify_batch_analyze.sh`
+### `results/rectify_batch_analyze.sh`
 
 Submitted with `--dependency=afterok:<array_job_id>`:
 
@@ -129,10 +136,10 @@ See [HPC / SLURM](../hpc_slurm.md) for detailed best practices.
 
 ```bash
 # Submit array job
-ARRAY_JOB=$(sbatch --parsable results/slurm/rectify_batch_correct.sh)
+ARRAY_JOB=$(sbatch --parsable results/rectify_batch_correct.sh)
 
 # Submit analysis after array completes
-sbatch --dependency=afterok:$ARRAY_JOB results/slurm/rectify_batch_analyze.sh
+sbatch --dependency=afterok:$ARRAY_JOB results/rectify_batch_analyze.sh
 ```
 
 ---
@@ -140,6 +147,6 @@ sbatch --dependency=afterok:$ARRAY_JOB results/slurm/rectify_batch_analyze.sh
 ## Monitoring
 
 ```bash
-squeue -u $USER                  # Check running jobs
-tail -f results/slurm/correct_*.log   # Live log tail
+squeue -u $USER                          # Check running jobs
+tail -f results/slurm_logs/rectify_correct_*.log   # Live log tail
 ```

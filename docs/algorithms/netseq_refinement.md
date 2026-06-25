@@ -1,10 +1,12 @@
 # NET-seq Refinement
 
-NET-seq refinement is an **optional** post-correction step that snaps 3' ends to NET-seq signal peaks within a search window. It is only active when `--netseq-table` is provided; without it the step is skipped entirely.
+NET-seq refinement is an **optional** post-correction step that snaps 3' ends to NET-seq signal peaks within the read's ambiguity window. It is only active when `--netseq-dir` is provided to `rectify correct`; without it the step is skipped entirely.
 
 NET-seq runs as the final refinement step, after all main 3' end correction modules (2E pre → 2F → 2A → 2B → 2C → 2D → 2G → 2E main → 2H) have completed. For reads in A-tract regions where the walk-back algorithm cannot uniquely resolve the true CPA position, NET-seq signal is used to guide the final position assignment.
 
-**Implementation:** `rectify/core/netseq/netseq_refiner.py`, `rectify/core/netseq/netseq_deconvolution.py`
+**Implementation:** `rectify/core/netseq/netseq_refiner.py` (`NetseqLoader`,
+`refine_with_netseq`), `rectify/core/analyze/deconvolution.py`
+(`DEFAULT_PSF`, `load_psf`, `build_convolution_matrix`, `deconvolve_signal`).
 
 ---
 
@@ -45,7 +47,13 @@ The spreading width depends on the downstream A-tract length. The point-spread f
 
 ## NNLS deconvolution
 
-RECTIFY derives the PSF from 5,000+ **zero-A control sites** — positions where the genome immediately downstream has no A's. At these sites, all NET-seq signal must originate from the true CPA (no spreading possible), so the signal width measures the PSF directly.
+The point-spread function is an **empirical 0A-site PSF**: it is the observed
+offset distribution `P(observed_position = j | true_CPA = i)` measured at
+**zero-A control sites** — positions where the genome immediately downstream
+has no A's, so all NET-seq signal must originate from the true CPA (no spreading
+possible). RECTIFY ships a `DEFAULT_PSF` derived from WT NET-seq (GSE25107 +
+GSE159603), peaking at ~54% on the true position; `load_psf()` can load a
+sample- or organism-specific PSF table instead.
 
 The observed NET-seq signal `y` is modeled as:
 
@@ -55,68 +63,69 @@ y = A · x + ε
 
 where:
 - `y` = observed signal vector (counts at each genomic position)
-- `A` = convolution matrix derived from the PSF
+- `A` = convolution matrix built from the PSF (`build_convolution_matrix`)
 - `x` = true CPA signal (what we want to recover)
 - `ε` = noise
 
-RECTIFY solves for `x` using **Non-negative Least Squares (NNLS)**, which enforces `x ≥ 0` (counts can't be negative):
+RECTIFY solves for `x` using **Non-negative Least Squares (NNLS)** with L2
+regularization, which enforces `x ≥ 0` (counts can't be negative):
 
 ```python
-from scipy.optimize import nnls
-
-def deconvolve_signal(observed, psf, region_start, region_end):
+def deconvolve_signal(observed, convolution_matrix=None, tract_length=None,
+                      psf=None, regularization=None):
     """
-    NNLS deconvolution of NET-seq signal.
+    NNLS deconvolution of NET-seq signal (L2-regularized).
 
-    Returns: deconvolved_signal, residual
+    Returns the deconvolved signal array (recovered per-position peak
+    intensities). Implemented in rectify/core/analyze/deconvolution.py.
     """
-    A = build_convolution_matrix(psf, len(observed))
-    x, residual = nnls(A, observed)
-    return x, residual
 ```
 
 ---
 
 ## Refinement workflow
 
-For reads flagged as `ATRACT_AMBIGUOUS` (A-count downstream > 15):
+For reads whose corrected 3' end carries a non-zero A-tract `ambiguity_range`
+(i.e. it sits inside a genomic A/T-tract), `refine_with_netseq()` operates over
+the `[ambiguity_min, ambiguity_max]` window:
 
-1. Look up NET-seq signal in the ±50 bp window around the candidate CPA positions
-2. Apply NNLS deconvolution
-3. Find the peak of the deconvolved signal
-4. If the deconvolved peak is within the ambiguous window: set corrected position to peak
-5. If no clear peak: retain the walk-back position with `LOW` confidence
+1. Extract the NET-seq signal across the ambiguity window
+2. Optionally deconvolve it with NNLS to remove the oligo(A)-spreading artifact
+3. Find peaks in the (deconvolved) signal
+4. Return either a winner-take-all position or a proportional split of the read
+   across the most likely true CPA sites (`proportional_split=True`)
+5. The resulting `netseq_confidence` can downgrade the read's `confidence`
+   (e.g. to `low`) when no clear peak is found
 
 ```python
-class NetseqRefiner:
+def refine_with_netseq(netseq_loader, chrom, ambiguity_min, ambiguity_max,
+                       strand, original_position, use_deconvolution=True,
+                       psf=None, proportional_split=True):
     """
-    Resolves A-tract ambiguity using pre-loaded NET-seq data.
-
-    The refiner is initialized once with the NET-seq BigWig files
-    and called per-read. Uses an LRU cache (default 10,000 entries)
-    to avoid redundant BigWig lookups.
+    Refine a CPA position using NET-seq signal across the ambiguity window.
+    Returns a single assignment dict, or a list of proportional assignments.
     """
-
-    def refine_position(self, chrom, strand, candidate_positions, genome):
-        """
-        Select best CPA position from candidates using NET-seq.
-
-        Returns: (position, confidence_boost)
-        """
 ```
+
+Signal access goes through `NetseqLoader`, initialized once with NET-seq signal
+(BigWig files via `load_bigwig`/`load_directory`, or the bundled per-organism TSV
+arrays via `load_bundled`) and reused per read; it keeps a thread-safe LRU cache
+(`MAX_CACHE_SIZE = 10000`) to avoid redundant signal lookups.
 
 ---
 
 ## Bundled data (yeast)
 
-For *S. cerevisiae*, RECTIFY bundles pre-processed WT NET-seq BigWigs:
+For *S. cerevisiae*, RECTIFY bundles pre-processed NET-seq 3'-end references as
+gzipped TSVs (auto-detected when `--Scer` is set):
 
-- `netseq/wt_plus.bw` — plus strand
-- `netseq/wt_minus.bw` — minus strand
+- `saccharomyces_cerevisiae_netseq_wt.tsv.gz` — wild-type NET-seq 3' ends
+- `saccharomyces_cerevisiae_netseq_pan.tsv.gz` — pan-mutant reference (broader coverage)
+- `saccharomyces_cerevisiae_atract_netseq.tsv.gz` — A-tract-focused reference
 
-These are deconvolved from oligo(A)-spreading and represent the true CPA signal. Auto-detected when `--Scer` is set.
-
-For custom NET-seq data (other organisms or mutant conditions):
+To process custom NET-seq data (other organisms or mutant conditions), run
+`rectify netseq` on the NET-seq BAM(s) — it extracts 3' ends, applies NNLS
+deconvolution, and writes per-read parquet plus RPM-normalized bedgraphs:
 
 ```bash
 rectify netseq my_netseq.bam \
@@ -124,30 +133,25 @@ rectify netseq my_netseq.bam \
     --gff genes.gff.gz \
     -o netseq_processed/
 
-# Then use the processed BigWigs:
+# Then point correction at the processed NET-seq directory:
 rectify correct reads.bam \
     --genome genome.fa.gz \
     --netseq-dir netseq_processed/ \
-    -o corrected.tsv
+    -o corrected_reads.tsv
 ```
 
 ---
 
-## PSF parameters
+## PSF representation
 
-The PSF is characterized by:
-
-- **σ (sigma)**: standard deviation of the Gaussian spreading (default: 25 bp)
-- **Window**: ±3σ = ±75 bp around each CPA site
-- **Min signal**: minimum NET-seq counts to accept a deconvolution result
-
-The PSF can be updated for a new organism by training on zero-A control sites:
-
-```python
-from rectify.core.analyze.deconvolution import fit_psf_from_controls
-
-psf = fit_psf_from_controls(netseq_bigwigs, zero_a_sites, genome)
-```
+The PSF is **not** a parametric Gaussian — it is an empirical offset
+distribution indexed by `offset = observed − true` and normalized to sum to 1.
+The bundled `DEFAULT_PSF` (in `rectify/core/analyze/deconvolution.py`) places
+the majority of mass at offset 0 with a downstream tail reflecting
+oligo(A)-spreading. `load_psf(filepath)` reads an alternative PSF table (the 0A
+slice, `acount == 0`) when adapting to a new chemistry or organism, and
+`deconvolve_signal(..., regularization=...)` controls the L2 strength applied
+during NNLS.
 
 ---
 

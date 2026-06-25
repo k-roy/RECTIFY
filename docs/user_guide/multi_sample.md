@@ -1,12 +1,13 @@
 # Multi-Sample Analysis
 
-RECTIFY's multi-sample mode enables differential expression, APA detection, GO enrichment, and motif discovery across conditions. It uses a streaming pipeline that keeps peak RAM to a few MB regardless of dataset size.
+RECTIFY's multi-sample mode enables differential expression, APA detection, GO enrichment, and motif discovery across conditions. It uses a streaming pipeline that never loads more than one sample's data into memory, keeping peak RAM low regardless of dataset size.
 
 ---
 
 ## The manifest file
 
-Provide a tab-separated manifest with three required columns:
+Provide a tab-separated manifest. `sample_id` and `path` are required;
+`condition` is required for differential analysis (DESeq2 / APA / GO):
 
 ```tsv
 sample_id	path	condition
@@ -32,11 +33,11 @@ rectify run-all \
 
 `rectify run-all --manifest` runs the complete pipeline:
 
-```
+```text
 For each sample (parallel):
     ├─ Align (if FASTQ) — multi-aligner consensus
     ├─ Correct 3' ends — walk-back + NET-seq refinement
-    └─ Write corrected_3ends.tsv + corrected_3ends_index.bed.gz
+    └─ Write corrected_reads.tsv
 
 Combined analysis (after all samples):
     ├─ Pass 1: stream positions → adaptive clustering
@@ -72,7 +73,7 @@ The `manifest.tsv` `path` column should point to the corrected TSVs (or their pa
 
 ### Memory efficiency
 
-RECTIFY never loads all samples at once. For 21 samples / 150M reads, peak RAM is ~4 GB regardless of depth.
+RECTIFY never loads all samples at once — it streams one sample at a time, so peak RAM stays roughly flat as the number of samples grows.
 
 **Three memory tiers:**
 
@@ -80,9 +81,9 @@ RECTIFY never loads all samples at once. For 21 samples / 150M reads, peak RAM i
 
 2. **Two-pass streaming**:
     - *Pass 1*: each sample's TSV is read sequentially; positions aggregated to unique (chrom, strand, pos) → counts; combined for clustering
-    - *Pass 2*: positions streamed in 100k-row chunks; cluster membership looked up via IntervalTree; counts accumulated in a dict
+    - *Pass 2*: positions streamed in chunks; cluster membership looked up via IntervalTree; counts accumulated in a dict
 
-3. **Position index** (`corrected_3ends_index.bed.gz`) — written by `rectify correct` alongside the full TSV; pre-aggregated counts ~300× smaller; when present, both passes use it instead of the full TSV
+3. **Optional position index** (`<tsv-stem>_index.bed.gz`, e.g. `corrected_reads_index.bed.gz`) — a pre-aggregated count file (~300× smaller). When present beside a sample's TSV, the loader uses it instead of the full TSV; otherwise it falls back to reading the TSV. Generate one with `write_position_index` (see below) if you want the speed-up.
 
 ### Reference condition matching
 
@@ -92,24 +93,23 @@ RECTIFY never loads all samples at once. For 21 samples / 150M reads, peak RAM i
 
 ## Output structure
 
-```
+```text
 results/
 ├── wt_rep1/
-│   ├── corrected_3ends.tsv
-│   ├── corrected_3ends_index.bed.gz
-│   ├── alignment_features.tsv
-│   └── processing_stats.tsv
+│   ├── corrected_reads.tsv
+│   ├── corrected_consensus.bam
+│   └── cpa_clusters.tsv
 ├── wt_rep2/ ...
 ├── ko_rep1/ ...
 ├── ko_rep2/ ...
 └── combined/
     ├── cpa_clusters.tsv
-    ├── cluster_gene_mapping.tsv
     ├── tables/
-    │   ├── deseq2_genes_ko_vs_wt.tsv
-    │   ├── deseq2_clusters_ko_vs_wt.tsv
-    │   ├── shift_results.tsv
-    │   ├── go_enrichment_ko.tsv
+    │   ├── deseq2_genes_ko.tsv
+    │   ├── deseq2_clusters_ko.tsv
+    │   ├── shift_analysis_ko.tsv
+    │   ├── go_enrichment_up_ko.tsv
+    │   ├── go_enrichment_down_ko.tsv
     │   └── motif_summary_ko.tsv
     ├── motifs/
     │   └── ko/
@@ -117,8 +117,8 @@ results/
     │       └── *.meme
     ├── plots/
     │   ├── pca_samples.png
-    │   └── heatmap_top_clusters.png
-    └── analysis_report.html
+    │   └── sample_heatmap.png
+    └── report.html
 ```
 
 ---
@@ -136,8 +136,8 @@ samples = ['wt_rep1', 'wt_rep2', 'ko_rep1', 'ko_rep2']
 base = Path('results/')
 
 def gen_index(sample):
-    tsv = str(base / sample / 'corrected_3ends.tsv')
-    write_position_index(tsv, tsv)  # writes alongside the TSV
+    tsv = str(base / sample / 'corrected_reads.tsv')
+    write_position_index(tsv, tsv)  # writes <stem>_index.bed.gz alongside the TSV
 
 with ThreadPoolExecutor(max_workers=4) as ex:
     list(ex.map(gen_index, samples))
@@ -160,7 +160,7 @@ Cluster-level analysis detects isoform-specific changes that gene-level counts w
 
 ## APA shift analysis
 
-`shift_results.tsv` reports genes whose CPA site usage distribution changes significantly between conditions, quantified by Jensen-Shannon divergence. Genes are classified as `proximal_shift` (more reads at upstream CPA sites) or `distal_shift` (more reads at downstream CPA sites).
+`tables/shift_analysis_{condition}.tsv` reports genes whose CPA site usage distribution changes significantly between conditions, quantified by Jensen-Shannon divergence. Genes are classified as `proximal_shift` (more reads at upstream CPA sites) or `distal_shift` (more reads at downstream CPA sites).
 
 ---
 
@@ -168,7 +168,8 @@ Cluster-level analysis detects isoform-specific changes that gene-level counts w
 
 - **Bedgraph generation is skipped** — generate per-sample bigWigs separately:
   ```bash
-  rectify export results/wt_rep1/corrected_3ends.tsv --genome genome.fa -o tracks/wt_rep1/
+  rectify export results/wt_rep1/corrected_reads.tsv --genome genome.fa \
+      --position-col corrected_3prime -o tracks/wt_rep1/
   ```
 - **Genomic distribution analysis is skipped** (requires per-read alignment coordinates)
 - Both steps can be run from the full per-read TSV if needed

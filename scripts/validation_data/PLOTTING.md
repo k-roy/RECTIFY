@@ -403,17 +403,17 @@ after refactors):
 | `render_bedgraph` | 650 | 3'-end pileup bar chart |
 | `render_axis_ticks` | 680 | Bottom tick row (strand-aware xlim) |
 | Junction-zoom helpers | 747–786 | `_zoom_visual_x`, `_zoom_ref_positions`, `_collect_corrected_junctions` |
-| `_split_m_into_eqx`, `_coalesce_adjacent_same_op` | 814, 829 | CIGAR normalization for the overview |
-| `_cigar_raw_edit_distance` | 908 | raw ED for the ED columns |
-| `load_correction_panel_data` | 1007 | Per-aligner ED + winner info from summary_tsv |
-| `render_correction_panel` | 1204 | Legacy text panel — currently unused (`panel_data` is always None at render call site) |
-| `render_zoom_ref_row` | 1408 | Junction-zoom ref row (RNA-strand-correct donor/acceptor) |
-| `render_zoom_alignment_row` | 1489 | Junction-zoom alignment row (one per track per junction) |
-| `render_zoom_ticks` | 1607 | Junction-zoom tick row |
-| `render_overview` | 1631 | Schematic painted-CIGAR overview (strand-aware xlim; ED columns; divergence shading gated by toggle) |
-| `needs_overview`, `overview_window` | 2070, 2081 | Auto-decide overview window |
-| `render` | 2090 | Top-level orchestrator, builds gridspec, dispatches per-panel |
-| `main` | 2858 | CLI |
+| `_coalesce_adjacent_same_op`, `_split_m_into_eqx` | 814, 829 | CIGAR normalization for the overview |
+| `_cigar_raw_edit_distance` | 917 | raw ED for the ED columns |
+| `load_correction_panel_data` | 1018 | Per-aligner ED + winner info from summary_tsv |
+| `render_correction_panel` | 1215 | Legacy text panel — currently unused (`panel_data` is always None at render call site) |
+| `render_zoom_ref_row` | 1419 | Junction-zoom ref row (RNA-strand-correct donor/acceptor) |
+| `render_zoom_alignment_row` | 1500 | Junction-zoom alignment row (one per track per junction) |
+| `render_zoom_ticks` | 1618 | Junction-zoom tick row |
+| `render_overview` | 1642 | Schematic painted-CIGAR overview (strand-aware xlim; ED columns; divergence shading gated by toggle) |
+| `needs_overview`, `overview_window` | 2081, 2092 | Auto-decide overview window |
+| `render` | 2101 | Top-level orchestrator, builds gridspec, dispatches per-panel |
+| `main` | 2869 | CLI |
 
 ---
 
@@ -421,7 +421,7 @@ after refactors):
 
 1. **Cat5 per-segment provenance overlay** — DEFERRED. Needs data-side
    restoration of the chimeric segment-provenance tags
-   (`XA`/`XS`/`Xz` per the original schema). See
+   (`Xa`/`Xg`/`Xz` per the validation-BAM tag schema). See
    `validation_read_review/cat5_chimeric_findings.md` for the unblock
    path. Once the debugger emits per-segment provenance (either as BAM
    tags or as a sidecar TSV), the plotter overlay is a moderate

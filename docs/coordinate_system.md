@@ -114,7 +114,7 @@ RECTIFY converts GFF coordinates to 0-based on load. All internal coordinates ar
 
 All positions in RECTIFY output files are **0-based**:
 
-- `corrected_3ends.tsv`: `original_position`, `corrected_position` — 0-based
+- `corrected_reads.tsv`: `original_3prime`, `corrected_3prime` — 0-based
 - `cpa_clusters.tsv`: `start`, `end` — 0-based half-open
 - BigWig/BedGraph: 0-based half-open (standard for these formats)
 

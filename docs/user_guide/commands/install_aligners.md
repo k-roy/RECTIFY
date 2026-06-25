@@ -1,6 +1,8 @@
 # rectify install-aligners
 
-Download and install external aligners required by `rectify align`.
+Download, install, or check external aligners used by `rectify align`. The
+default long-read panel is minimap2 + mapPacBio + gapmm2; uLTRA, deSALT, and
+GMAP are opt-in (`--junction-aligners`).
 
 ---
 
@@ -8,7 +10,7 @@ Download and install external aligners required by `rectify align`.
 
 ```bash
 rectify install-aligners [--all] [--desalt] [--minimap2] [--gapmm2] [--ultra] \
-    [--mapp-pacbio] [--check] [--install-dir DIR] [--force]
+    [--gmap] [--mapp-pacbio] [--check] [--install-dir DIR] [--force]
 ```
 
 ## Examples
@@ -37,8 +39,9 @@ rectify install-aligners --desalt --minimap2 --install-dir ~/.local/bin --force
 | `--all` | Install all supported aligners |
 | `--desalt` | Install deSALT (see below for platform logic) |
 | `--minimap2` | Download pre-built Linux/x86_64 minimap2 binary |
-| `--gapmm2` | Install gapmm2 via `pip install gapmm2` |
-| `--ultra` | Install uLTRA via `pip install ultra-bioinformatics` |
+| `--gapmm2` | Install gapmm2 via `pip install gapmm2==25.4.5` (pinned — see note below) |
+| `--ultra` | Install uLTRA via `pip install ultra-bioinformatics` (its `namfinder` helper is vendored with RECTIFY) |
+| `--gmap` | Check for GMAP and print the conda install + one-time database-build reminder (not pip-installable) |
 | `--mapp-pacbio` | Print conda install instructions for BBMap/mapPacBio (not pip-installable) |
 | `--install-dir DIR` | Target directory (default: `~/.rectify/bin/`) |
 | `--force` | Reinstall even if the aligner is already on `PATH` |
@@ -51,9 +54,15 @@ rectify install-aligners --desalt --minimap2 --install-dir ~/.local/bin --force
 |---------|-----------------|-----|-------|--------------|
 | **minimap2** | No | No | bioconda | Yes (GitHub release binary) |
 | **mapPacBio** | No | No | bioconda (`bbmap`) | No |
-| **gapmm2** | No | Yes | bioconda | — |
+| **gapmm2** | No | Yes (`==25.4.5`) | bioconda | — |
 | **uLTRA** | No | Yes | bioconda | — |
+| **GMAP** | No | No | bioconda (`gmap`) | No |
 | **deSALT** | **Yes (Linux/x86_64)** | No | bioconda | Yes (GitHub source) |
+
+!!! warning "gapmm2 is pinned to `==25.4.5`"
+    `--gapmm2` installs exactly `gapmm2==25.4.5` to match `pyproject.toml`.
+    Versions `25.4.13`+ silently drop single-exon (unspliced) reads via a
+    `ts:` transcript-strand tag regression — do not upgrade past the pin.
 
 ---
 
@@ -101,6 +110,21 @@ conda install -c bioconda bbmap
 ```
 
 The `--mapp-pacbio` flag prints this instruction and exits.
+
+---
+
+## GMAP
+
+GMAP is a C toolkit (`gmap` / `gsnap` / `gmap_build`) and is not pip-installable.
+Install via conda and build a database once before use:
+
+```bash
+conda install -c bioconda gmap
+gmap_build -D <dir> -d <name> genome.fa
+```
+
+The `--gmap` flag checks whether `gmap` is on `PATH` and prints these
+reminders; it does not install GMAP itself.
 
 ---
 

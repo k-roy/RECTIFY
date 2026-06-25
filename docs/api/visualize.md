@@ -3,10 +3,12 @@
 Visualization subpackage. Requires `pip install rectify-rna[visualize]` (adds `matplotlib` and `seaborn`).
 
 ```python
-# Check if visualization is available
-import rectify
-if rectify.visualize:
+# Visualization deps are optional; guard the import
+try:
     from rectify.visualize.metagene import MetagenePipeline
+    HAVE_VISUALIZE = True
+except ImportError:
+    HAVE_VISUALIZE = False
 ```
 
 ---
@@ -115,32 +117,29 @@ Plotting utilities and style helpers.
 ## Example: metagene around CPA sites
 
 ```python
+import pandas as pd
+import matplotlib.pyplot as plt
 from rectify.visualize.metagene import MetagenePipeline, MetageneConfig
-
-config = MetageneConfig(
-    flank_upstream=200,
-    flank_downstream=200,
-    bin_width=1,
-    normalize_by_transcript_length=False,
+from rectify.visualize.metagene_loaders import (
+    loci_from_bed,
+    position_index_from_bigwig,
 )
 
+config = MetageneConfig(window_upstream=200, window_downstream=200)
 pipeline = MetagenePipeline(config)
-pipeline.load_regions(
-    'cpa_clusters.bed',      # BED file with CPA cluster positions
-    filter=lambda r: r['count'] > 50,  # Only clusters with > 50 reads
-)
 
-# Aggregate signal from corrected BAM
-signal_matrix = pipeline.aggregate(
-    bam_path='corrected.bam',
-    output_prefix='metagene_wt',
-)
+# Loci (regions) as a DataFrame, plus a position index of the signal.
+# position_index_from_bigwig returns (PositionIndex, total_signal) per strand.
+loci = pd.DataFrame(loci_from_bed('cpa_clusters.bed', center='start'))
+position_index, _total = position_index_from_bigwig('wt.plus.bw', strand='+')
 
-# Plot
-pipeline.plot(
-    signal_matrix,
-    output_path='metagene_wt.png',
-    title='WT 3\' end signal around CPA sites',
-    colormap='Blues',
-)
+result = pipeline.compute_profile(loci, position_index)
+
+fig, ax = plt.subplots()
+pipeline.plot_profile(ax, result, label="WT 3' ends")
+ax.set_title("WT 3' end signal around CPA sites")
+fig.savefig('metagene_wt.png', dpi=200)
 ```
+
+The exact loader and `position_index_from_*` arguments depend on your input
+format — see the `metagene_loaders` reference above.

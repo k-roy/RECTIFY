@@ -46,7 +46,7 @@ Input: FASTQ or BAM
 │                                                               │
 │   └─ NET-seq refinement (NNLS deconvolution, optional)        │
 │                                                               │
-│   Output: corrected_3ends.tsv + corrected_3ends_index.bed.gz  │
+│   Output: corrected_reads.tsv + corrected_reads_index.bed.gz  │
 └───────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -71,7 +71,7 @@ Input: FASTQ or BAM
 |------|-------------|
 | [3' End Indel Correction](3prime_indel_correction.md) | Walk-back algorithm for poly(A)/A-tract artifacts |
 | [Soft-Clip Rescue](softclip_rescue.md) | 5' junction rescue and 3' homopolymer rescue |
-| [Multi-Aligner Consensus](multi_aligner_consensus.md) | Scoring and selection across up to 5 aligners |
+| [Multi-Aligner Consensus](multi_aligner_consensus.md) | Scoring and selection across the Tier-1 trio (+ opt-in Tier-2 aligners) |
 | [False Junction Handling](false_junction_handling.md) | Removing spurious junctions from poly(A) artifacts |
 | [NET-seq Refinement](netseq_refinement.md) | NNLS deconvolution of oligo(A)-spreading |
 | [Adaptive Clustering](adaptive_clustering.md) | Valley-based CPA site grouping |
@@ -134,7 +134,7 @@ Simple poly(A) trimming fails when poly(A) tails land on genomic A-tracts: the b
 
 ### Why multi-aligner consensus?
 
-No single aligner handles all read types optimally. minimap2 is fast but aggressive about placing junctions; mapPacBio forces mismatches at junction boundaries; gapmm2 handles large indels better. Running all three and selecting per-read avoids systematic biases.
+No single aligner handles all read types optimally. minimap2 is fast but aggressive about placing junctions; mapPacBio forces mismatches at junction boundaries; gapmm2 adds terminal-exon homopolymer refinement. Running the Tier-1 trio (minimap2 + mapPacBio + gapmm2) and selecting per-read avoids systematic biases. For long-read `rectify run-all`, the splice-aware aligners uLTRA + deSALT are included **by default** (disable with `--no-junction-aligners`); for the bare `rectify align` command they are opt-in via `--junction-aligners`. `gmap` (and winnowmap2 / minisplice) remain opt-in everywhere for harder splice cases.
 
 ### Why cluster-level DESeq2?
 

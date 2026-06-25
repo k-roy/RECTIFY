@@ -64,7 +64,9 @@ Multi-aligner consensus selection.
 
 ## multi_aligner
 
-Aligner wrappers for minimap2, mapPacBio, gapmm2, uLTRA, and deSALT.
+Aligner wrappers. The documented long-read panel is minimap2, mapPacBio,
+gapmm2, uLTRA, and deSALT; additional opt-in wrappers (GMAP, Winnowmap2,
+Minisplice, plus short-read bbmap/bwa) also live in this module.
 
 ::: rectify.core.align.multi_aligner
     options:

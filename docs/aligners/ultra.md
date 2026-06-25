@@ -147,7 +147,7 @@ Expected: nonzero mapped count.  If mapped = 0 or the BAM is absent, check
 ## Primary-alignment & duplicate handling
 
 `rectify align` passes **no secondary-suppression flag** to uLTRA — its command is
-`pipeline --ont --disable_infer -t <n> --prefix ...` (`multi_aligner.py:2066-2076`),
+`pipeline --ont --disable_infer --t <n> --prefix ...` (`run_ultra`, `multi_aligner.py:2537-2542`),
 with no uLTRA secondary control and no post-hoc dedup. Whether uLTRA emits secondary
 records by default is not determinable from rectify source. This is safe for 3′-end
 counting because `rectify correct` skips `is_secondary`/`is_supplementary` records

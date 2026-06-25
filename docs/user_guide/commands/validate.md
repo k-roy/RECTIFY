@@ -74,28 +74,42 @@ Per-read validation results:
 | Column | Description |
 |--------|-------------|
 | `read_id` | Read name |
-| `corrected_position` | Position being validated |
-| `nearest_ground_truth` | Closest ground truth position |
-| `distance_bp` | Distance from ground truth (signed) |
-| `netseq_support` | NET-seq signal at corrected position |
-| `validated` | Boolean — within tolerance |
+| `chrom` | Chromosome |
+| `strand` | `+` or `-` |
+| `original_3prime` | 3' end before correction |
+| `corrected_3prime` | 3' end after correction (the position validated) |
+| `ground_truth_position` | Nearest ground truth position |
+| `ground_truth_source` | `netseq`, `annotation`, etc. |
+| `distance_from_truth` | Corrected-position distance from ground truth (signed) |
+| `original_distance` | Original-position distance from ground truth |
+| `is_correct_exact` / `is_correct_1bp` / `is_correct_2bp` | Match flags at increasing tolerance |
+| `improvement_bp` | Distance improvement from correction |
+| `validation_status` | Per-read validation outcome |
+| `correction_applied` | Whether a correction was applied |
 | `confidence` | `HIGH`, `MEDIUM`, `LOW` |
 
 ### Summary statistics (printed to stdout)
 
-```
-Validation summary:
-  Total reads: 45,231
-  Exact match (±1 bp):   88.3%
-  Match at ±2 bp:        91.7%
-  Match at ±5 bp:        94.2%
-  Mean distance: -0.3 bp (negative = upstream of ground truth)
+The summary reports corrected-position accuracy, the original (pre-correction)
+accuracy for comparison, and the net improvement — for example:
 
-By correction type:
-  No correction needed:  52.1%  — 99.1% at ±1 bp
-  Shifted 1–5 bp:        31.4%  — 95.3% at ±1 bp
-  Shifted 6–15 bp:       12.8%  — 78.2% at ±1 bp
-  Shifted >15 bp:         3.7%  — 61.0% at ±1 bp
+```text
+Corrected Position Accuracy:
+  Exact match:            ...
+  Within 1 bp:            ...
+  Within 2 bp:            ...
+  Within 5 bp:            ...
+
+Original Position Accuracy (Before Correction):
+  Exact match:            ...
+  Within 1 bp:            ...
+  Within 2 bp:            ...
+
+Improvement Over Original:
+  Improved:               ...
+  Unchanged:              ...
+  Worsened:               ...
+  Net ±1bp improvement:   ...
 ```
 
 ---

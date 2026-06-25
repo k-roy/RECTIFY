@@ -28,19 +28,14 @@ from rectify.utils.genome import load_genome, reverse_complement
 
 ```python
 from rectify.core.bam.parallel import process_bam_streaming
-from rectify.utils.genome import load_genome
-
-genome = load_genome('genome.fa.gz')
 
 stats = process_bam_streaming(
     bam_path='reads.bam',
-    genome=genome,
+    genome_path='genome.fa.gz',   # a path, not a loaded genome
     output_path='corrected.tsv',
-    num_processes=8,
-    streaming=True,
     chunk_size=10000,
 )
-print(f"Corrected {stats.total_reads} reads, mean shift: {stats.mean_shift:.1f} bp")
+print(f"Reads in BAM: {stats.total_reads_in_bam}, processed: {stats.reads_processed}")
 ```
 
 ### Cluster CPA positions
@@ -49,9 +44,16 @@ print(f"Corrected {stats.total_reads} reads, mean shift: {stats.mean_shift:.1f} 
 from rectify.core.analyze.clustering import cluster_cpa_sites_adaptive
 import pandas as pd
 
-# positions: list of dicts with 'chrom', 'strand', 'pos', 'count'
-positions = {'chrI': [{'pos': 34521, 'strand': '+', 'count': 150}, ...]}
-clusters = cluster_cpa_sites_adaptive(positions, min_cluster_size=10)
+# A DataFrame with chrom / strand / corrected_position columns
+# (count_col is optional; pass it to weight clusters by read count).
+positions_df = pd.DataFrame({
+    'chrom': ['chrI', 'chrI'],
+    'strand': ['+', '+'],
+    'corrected_position': [34521, 34530],
+})
+clusters = cluster_cpa_sites_adaptive(
+    positions_df, max_cluster_radius=10, min_peak_separation=5, min_reads=5,
+)
 ```
 
 ### Load genome
@@ -66,13 +68,19 @@ seq = fetch_genomic_sequence(genome, 'chrI', 34500, 34550, strand='+')
 ### Run metagene analysis
 
 ```python
+import matplotlib.pyplot as plt
 from rectify.visualize.metagene import MetagenePipeline, MetageneConfig
 
-config = MetageneConfig(flank_upstream=200, flank_downstream=200, bin_width=1)
+config = MetageneConfig(window_upstream=200, window_downstream=200)
 pipeline = MetagenePipeline(config)
-pipeline.load_regions('genes.bed')
-signal = pipeline.aggregate('corrected.bam', 'output_prefix')
-pipeline.plot(signal, 'metagene.png', title='CPA metagene')
+
+# loci (DataFrame of regions) + position_index of the signal — see the
+# metagene_loaders reference and rectify.visualize docs for builders.
+result = pipeline.compute_profile(loci, position_index)
+
+fig, ax = plt.subplots()
+pipeline.plot_profile(ax, result, label="3' ends")
+fig.savefig('metagene.png', dpi=200)
 ```
 
 ---

@@ -5,6 +5,13 @@ unusual seeding in the survey, but **no published ONT direct-RNA track record** 
 the smoke-test must first confirm it produces usable spliced alignments on noisy
 ONT reads at all (Sherlock job 29546795).
 
+> **Note — two distinct Magic-BLAST uses.** A `run_magicblast()` wrapper already
+> ships in `multi_aligner.py`, but it is the **COMPASS short-read, paired-end,
+> splice-site-agnostic** path (one of the COMPASS Illumina/AVITI aligners that
+> require a mate-2 FASTQ). This doc concerns the *separate*, exploratory evaluation
+> of Magic-BLAST as a **splice-aware ONT-DRS** candidate, run directly (single-end,
+> `-query reads.fastq`) for the orthogonality survey — not via that COMPASS wrapper.
+
 ## Why it's interesting (algorithmic orthogonality)
 
 Magic-BLAST inverts the indexing direction of every other panel member:

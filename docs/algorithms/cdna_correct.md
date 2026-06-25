@@ -21,17 +21,20 @@ For SQK-PCB114.24 PCR-cDNA libraries, every starting RNA molecule produces:
   priming or template-switching position); basecalled-5' ends fall off
   stochastically due to nanopore translocation truncation
 
-`rectify correct-cdna` collapses this constellation of reads back into one
-high-quality, full-length consensus read per starting RNA molecule, by:
+`rectify correct-cdna` is **Stage 1** of the cDNA pipeline: it collapses reads
+sharing `(locus, orientation, UMI)` into one consensus per UMI cluster and
+emits a FASTQ (`stage1_consensus.fastq.gz`) for re-alignment, carrying the
+cluster metadata as FASTQ comment tags. The downstream stages — re-alignment
+(`rectify align`) and gene assignment, isoform clustering, and Type-1↔Type-2
+reconciliation (`rectify cdna-analyze`) — operate on post-align coordinates.
 
-1. Per-orientation clustering of reads sharing `(locus, orientation, UMI)`
-   → one consensus per starting strand
-2. Cross-orientation pair-overlap merge of matching sense+antisense
-   consensuses → one final consensus per starting RNA molecule
-
-The result is a BAM with one record per starting molecule, where each record
-is a high-quality merged read covering the full mRNA span (or as much of it
-as the input reads collectively spanned).
+> **Note:** earlier internal designs performed a cross-orientation
+> sense+antisense pair-overlap merge inside `correct-cdna`. In the shipped
+> command this is deferred: orientation pairing and isoform reconciliation now
+> live in `rectify cdna-analyze`, which has post-alignment positions precise
+> enough for the ±5 bp grouping. The cross-orientation merge sections below
+> describe that design and are retained for background; the live command stops
+> at the per-cluster Stage-1 FASTQ.
 
 ---
 
@@ -76,45 +79,56 @@ Established by analysis of `wt_rep1.bam` chrI, 40,788 primary reads:
 ## CLI
 
 ```
-rectify correct-cdna INPUT.bam --genome REF.fa -o OUTDIR \
-    [--umi-edit-distance 3]              # default 3 (Lev), validated empirically
-    [--anchor-window-bp 25]              # default ±25 bp on basecalled-3'
-    [--ssp-motif TTTCTGTTGGTGCTGATATTGCT]  # PCB114-specific, override for other kits
-    [--umi-length 27]                    # PCB114-specific
-    [--min-cluster-size 1]               # 1 = also emit singletons; 2 = require ≥2 reads
-    [--cross-orient-merge / --no-cross-orient-merge]  # Stage 2 toggle (default on)
-    [--threads 8]
-    [--per-cluster-cap 200]              # safety: drop polyA-pileup loci with >N reads
-                                          # (these are multi-molecule, not single-mol PCR sibs)
+rectify correct-cdna INPUT.bam -o OUTDIR \
+    [--umi-edit-distance 3]      # max Levenshtein distance within a UMI cluster (default 3)
+    [--anchor-window-bp 25]      # alignment-end anchor window for same-locus grouping (default 25)
+    [--per-cluster-cap 200]      # drop clusters above N reads (PCR-jackpot / polyA pileups)
+    [--gff genes.gff3]           # used for rDNA masking (rRNA_gene loci excluded by default)
+    [--reference REF.fa]         # enables walk-back anchor canonicalization + pA length
+    [--umi-clustering directional|components]   # default: directional (umi_tools 2× rule)
+    [--strand-aware-consensus]   # split reads by is_reverse, build per-strand sub-consensus, merge
+    [--no-poa]                   # force pileup-only consensus even if abPOA is available
+    [--no-mask-rdna]             # disable rDNA masking
+    [--region chrI]              # restrict to one BAM region (testing)
+    [--workers N]                # parallel worker processes over BAM regions (default 1)
+    [-v]
 ```
+
+Downstream: run `rectify align` on `stage1_consensus.fastq.gz`, then
+`rectify cdna-analyze` on the resulting BAM.
 
 ---
 
 ## Inputs
 
-- **Aligned BAM** (any short-read aligner; minimap2 / bwa / bbmap for cDNA)
-- **Reference genome** FASTA (used for re-aligning the merged consensus)
-- (no annotation file required — purely sequence + position based)
+- **Aligned BAM** (PCR-cDNA reads, sorted + indexed). Auto-indexes if `.bai` is absent.
+- `--reference` FASTA (optional) — enables walk-back anchor canonicalization and
+  poly(A) tail-length measurement during UMI extraction.
+- `--gff` (optional) — used only for rDNA masking (rRNA_gene loci excluded by
+  default to avoid the O(n²) UMI-clustering blow-up on the chrXII tandem repeats).
 
 ## Outputs
 
 ```
 OUTDIR/
-├── cdna_consensus.bam        # one record per starting molecule (after Stage 2 merge)
-├── cdna_consensus.bam.bai
-├── cdna_clusters.tsv         # cluster manifest:
-│   #   cluster_id  chrom  anchor  orient  umi_canonical  n_reads  consensus_read_id
-├── cdna_per_orient_consensus.bam  # intermediate: Stage 1 output (one per (locus,orient,UMI) cluster)
-├── cdna_stats.tsv            # per-sample QC (see below)
-└── cdna_correct.log
+└── stage1_consensus.fastq.gz   # one consensus record per UMI cluster
 ```
 
-`cdna_stats.tsv` fields:
-- input_reads_total, input_reads_with_umi
-- distinct_clusters, mean_cluster_size, median, p95
-- pct_reads_in_size1_cluster (= dedup ratio inverse)
-- pct_clusters_paired_cross_orient (Stage 2 success rate)
-- mean_consensus_length, mean_consensus_qual
+Each FASTQ record carries TAB-separated SAM-style comment tags so
+`rectify align -y` (`minimap2 -y`) propagates them into the post-align BAM:
+
+| Tag | Meaning | Tag | Meaning |
+|-----|---------|-----|---------|
+| `XU` | canonical UMI | `XO` | orientation (fwd/rev) |
+| `XC` | cluster size | `XR` | input read IDs |
+| `XM` | consensus method | `XF` | full-length tier |
+| `XA` | pre-align poly(A) length | `XT` | read type (1/2) |
+| `XY` | read subtype | `XQ` | 5' pre-trim length |
+| `XK` | 3' pre-trim length | `XB` | strand split (n_top/n_bot) |
+
+Gene assignment, isoform clustering, and Type-1↔Type-2 pairing run downstream
+in `rectify cdna-analyze` (which emits `clusters.tsv`, a per-molecule
+`corrected_reads.tsv`, `isoforms.tsv`, `t1t2_pairs.tsv`, and `consensus_tagged.bam`).
 
 ---
 
@@ -122,7 +136,7 @@ OUTDIR/
 
 <figure markdown>
   ![UMI consensus pipeline: reads sharing (locus, orientation, canonical UMI) form a cluster; within the cluster, abPOA computes a per-orientation consensus sequence; the consensus is re-aligned to the reference and emitted as a single high-quality read per starting strand.](../figures/cdna_poa_consensus.png){ width="720" }
-  <figcaption>Per-orientation UMI consensus pipeline. Reads sharing <code>(anchor, orientation, UMI)</code> within Levenshtein ≤ 3 are clustered; abPOA computes a partial-order-alignment consensus; the consensus is re-aligned with mappy/minimap2 and written to the per-orientation BAM.</figcaption>
+  <figcaption>Per-orientation UMI consensus pipeline. Reads sharing <code>(anchor, orientation, UMI)</code> within Levenshtein ≤ 3 are clustered; abPOA computes a partial-order-alignment consensus; the consensus is emitted to the Stage-1 FASTQ (<code>stage1_consensus.fastq.gz</code>). Re-alignment to the reference is a separate downstream <code>rectify align</code> step — Stage 1 itself writes no BAM.</figcaption>
 </figure>
 
 ### 1a. Per-read UMI extraction
@@ -177,9 +191,10 @@ assigned to it are the PCR siblings of one starting strand.
 
 Use a `umi_tools`-style **directional** algorithm to handle UMI-error chains
 correctly: a UMI A is considered the same molecule as UMI B if there's a path
-A→B through intermediate UMIs each at d≤threshold. Implementation via the
-networkx `connected_components` algorithm or rapidfuzz-based pairwise
-edit-distance.
+A→B through intermediate UMIs each at d≤threshold. Implemented with custom
+connected-components clustering (`umi_components` / `umi_components_directional`,
+the latter a umi_tools-style directional method) over rapidfuzz Levenshtein
+edit-distances — no networkx dependency.
 
 For each molecule cluster:
 - If 1 read: the read passes through unchanged (singleton).
@@ -195,14 +210,21 @@ cDNA insert). Strip SSP/UMI/GGG/barcode/adapter regions before consensus.
 Per-base quality for the consensus: use depth of agreement (e.g., 30 + 5×
 depth for fully-agreeing positions, capped; lower for tie-positions).
 
-### 1f. Re-align consensus
+### 1f. Emit consensus FASTQ
 
-Re-align each per-cluster consensus to the reference (minimap2 `-ax splice
--G 3000` for spliced cDNA) and emit as Stage 1 output BAM.
+Write each per-cluster consensus to `stage1_consensus.fastq.gz`, with the
+cluster metadata as FASTQ comment tags. Re-alignment is a separate step:
+`rectify align` runs the multi-aligner panel on this FASTQ and propagates the
+comment tags into the BAM via `minimap2 -y`.
 
 ---
 
-## Stage 2 — Cross-orientation pair-overlap merge
+## Cross-orientation pair-overlap merge (deferred to `cdna-analyze`)
+
+> The pairing and merge described in this section is **not performed by the
+> shipped `correct-cdna`**; orientation pairing and Type-1↔Type-2 reconciliation
+> now run in `rectify cdna-analyze` on post-align coordinates. The design is
+> retained here for background.
 
 <figure markdown>
   ![Isoform clustering and T1↔T2 reconciliation schematic: Stage 1 emits one consensus per (locus, orientation, UMI); Stage 2 pairs sense+antisense consensuses sharing a UMI within a span filter and computes a position-overlap merge that recovers the full molecule from its two complementary basecalls.](../figures/cdna_isoform_clustering.png){ width="720" }
@@ -248,27 +270,32 @@ pairing), the Stage 1 consensus passes through unchanged.
 
 ## Algorithm complexity
 
-For a yeast-scale BAM (~1.5 M reads) with ~50% UMI-extractable:
-- Stage 1a (UMI extraction): O(N) reads, ~1 μs each (motif find) → ~1 s
-- Stage 1c (anchor cluster): O(N), ~1 s
-- Stage 1d (UMI subcluster): per anchor cluster O(K²) Lev distance + connected
-  components, with K = avg cluster size (mostly 1–10, rare polyA hot-spots
-  capped). Total O(N) at K=O(1), ~10 s with rapidfuzz Levenshtein.
-- Stage 1e (POA consensus): per cluster ~5 ms × ~30 % of N clusters → ~30 s.
-- Stage 1f (re-alignment): minimap2 streaming, ~30 s.
-- Stage 2: O(M log M) where M = Stage 1 output count, ~10 s.
+Asymptotic cost of Stage 1 (`correct-cdna`):
+- Stage 1a (UMI extraction): O(N) reads (motif find per read).
+- Stage 1c (anchor cluster): O(N).
+- Stage 1d (UMI subcluster): per anchor cluster O(K²) Levenshtein +
+  connected/directional components, with K = cluster size (mostly 1–10; rare
+  poly(A) hot-spots are capped by `--per-cluster-cap`). O(N) overall at K = O(1)
+  with rapidfuzz Levenshtein.
+- Stage 1e (POA consensus): per-cluster abPOA, only for clusters with ≥ 2 reads.
 
-Total expected: **~90 s for a full sample of 1.5 M reads** on M1 with 8 cores.
+Re-alignment (`rectify align`) and orientation pairing (`cdna-analyze`) are
+separate downstream steps with their own cost. (Indicative wall-clock figures
+depend heavily on sample size, UMI-extractable fraction, and `--workers`; run a
+small `--region` first to gauge throughput rather than relying on a single
+quoted number.)
 
 ---
 
 ## Dependencies
 
-- `pysam` (already in rectify env)
-- `rapidfuzz` (Levenshtein) — `pip install rapidfuzz`
-- `pyabpoa` (POA consensus) — `pip install pyabpoa`
-- `mappy` (in-process minimap2) — `pip install mappy`
-- (no networkx — implement connected components in pure Python; simpler)
+- `pysam` (already in the rectify env)
+- `rapidfuzz` — Levenshtein distance for UMI clustering
+- `pyabpoa` — abPOA partial-order-alignment consensus (optional; `--no-poa`
+  falls back to a pileup-only consensus when it is unavailable)
+
+Re-alignment of the Stage-1 FASTQ is handled by `rectify align` (the standard
+multi-aligner panel), not by `correct-cdna` itself.
 
 ---
 
@@ -278,9 +305,10 @@ Total expected: **~90 s for a full sample of 1.5 M reads** on M1 with 8 cores.
   Sequence overlap would be more forgiving in mid-mRNA regions where the two
   consensuses don't align cleanly, but position overlap (using alignment
   coordinates) is simpler and was empirically sufficient on the validation set.
-- **Reads without an extractable UMI (~18 % of reads) are dropped, with a
-  counter logged in `cdna_stats.tsv`.** Position-only dedup would admit
-  inter-molecule collisions and is not the goal of this subcommand.
+- **Reads without an extractable UMI are dropped, with a counter logged.**
+  Position-only dedup would admit inter-molecule collisions and is not the goal
+  of this subcommand. (The ~18% drop rate cited above is from the 2026-05-10
+  chrI validation and will vary by sample/basecaller.)
 - **Orientation-ambiguous reads** (SSP motif not found cleanly) are dropped in
   Stage 1a and reported in stats.
 - **Exon-aware clustering is intentionally not performed.** Reads that start

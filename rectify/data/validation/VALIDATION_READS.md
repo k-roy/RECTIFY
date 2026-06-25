@@ -7,9 +7,14 @@ covering nine correction categories with 4 reads each (2 plus-strand,
 
 - **XV**: label (e.g. `cat1_plus_1`) — used as primary key in tests
 - **XG**: category name (e.g. `cat1_indel`)
-- **XK**: chimeric flag (`1` = chimeric, Cat5 only)
-- **XA**: comma-separated aligner list (Cat5 only)
-- **XS**: segment count (Cat5 only)
+- **Xz**: chimeric / N-op stitch flag (`0`/`1`) — rectify-internal namespace
+- **Xa**: comma-separated contributing aligners (e.g. `mapPacBio,minimap2`)
+- **Xg**: segment count — rectify-internal namespace
+- **Xm**: aligner-consensus count (≥ 1)
+
+(The legacy `XK`/`XA`/`XS`/`XU` tag names predate the current rebuild and are no
+longer present in the committed BAM — the live tags are the lowercase `Xz`/`Xa`/
+`Xg`/`Xm` namespace asserted by `tests/test_validation_reads.py`.)
 
 ---
 
@@ -98,9 +103,10 @@ chunked sequences are required because:
 > ⚠ **Build requirement (gapmm2):** rebuilding the aligner BAMs **requires
 > `gapmm2==25.4.5`** (pinned in `pyproject.toml` + `install_aligners_command.py`).
 > gapmm2 25.4.13+ silently drops every single-exon read (the `ts:`-tag regression,
-> BUGS_TO_FIX NEW-082): 25.8.12 emits only 10/35 reads, 25.4.5 emits 35/35. A rebuild
-> on the wrong version produces a gapmm2 BAM missing ~70% of reads with no error. The
-> current committed gapmm2 BAM (36/36 primaries) was built with the correct version.
+> BUGS_TO_FIX NEW-082): 25.8.12 emits only ~10/36 reads, 25.4.5 emits all 36/36. A
+> rebuild on the wrong version produces a gapmm2 BAM missing ~70% of reads with no
+> error. The current committed gapmm2 BAM (36/36 primaries) was built with the
+> correct version.
 
 ---
 
@@ -229,10 +235,12 @@ The read spans a two-intron gene; each aligner only finds one of the two GT-AG
 introns. Chimeric consensus combines the per-aligner corrected outputs to
 produce an alignment with both introns.
 
-All four carry `XK=1`. `XA` lists the two aligners that each contribute a
-unique intron. The source alignment (stored in the BAM) comes from one of
-those aligners and contains exactly one N op; the other aligner's intron is
-visible only after chimeric merging.
+Three of the four carry `Xz=1` (chimeric stitch) with `Xa` listing the two
+aligners that each contribute a unique intron; `cat5_plus_2` is now confidently
+picked as a single-intron alignment (`Xz=0`, `Xm=1`, `Xa=minimap2`). The source
+alignment (stored in the BAM) comes from one of those aligners and contains
+exactly one N op; the other aligner's intron is visible only after chimeric
+merging.
 
 | Label | Coords (0-based half-open) | Strand | Source aligner | Source intron (bp) | Complementary aligner | Complementary intron (bp) | Read name prefix |
 |---|---|---|---|---|---|---|---|
@@ -270,7 +278,8 @@ the expected N op in their CIGAR.
 
 Reads where **one aligner** (mapPacBio) correctly spans the 5' intron while
 minimap2 and gapmm2 soft-clip the same region. The reads are stored in
-`validation_reads.bam` using the mapPacBio alignment (`XU=1`), making the
+`validation_reads.bam` using the intron-spanning alignment (`Xz=1`,
+`Xa=mapPacBio,minimap2`, `Xm=2`), making the
 junction directly visible. These contrast with Cat3 (all aligners miss the
 intron) and Cat5 (two or more aligners each contribute different information).
 
@@ -286,7 +295,7 @@ corresponding to the RNA 5' end).
 | `cat6_minus_2` | chrIV:306811–307796  | − | 307333–307765 (432 bp) | 31S |
 
 **Source:** mapPacBio BAM from `dev_runs/wt_by4742_rep1_chunked_20260412/`.
-Each read carries `XG=cat6_chimeric`, `XU=1`.
+Each read carries `XG=cat6_chimeric` (with `Xz=1`, `Xm=2`).
 
 ---
 
@@ -299,7 +308,11 @@ These test that RECTIFY preserves genuine alternative splice junctions during
 3' end correction without attempting 5' rescue.
 
 Motif notation: `{5'SS dinucleotide}-{3'SS dinucleotide}` on the RNA strand.
-All reads carry `XG=cat7_alt_splice`, `XU=1` (single aligner: mapPacBio).
+All reads carry `XG=cat7_alt_splice`; the `Xa`/`Xm` (contributing-aligner)
+tags vary per read (three carry `Xm=1`/`Xa=minimap2`; `cat7_minus_2` carries
+`Xm=2`/`Xa=minimap2,mapPacBio`). Note `Xa` records the consensus-rebuild's
+contributing aligner, which is distinct from the extraction source BAM
+(mapPacBio) documented under **Source BAM** below.
 
 | Label | Coords (0-based half-open) | Strand | Gene region | Junction (intron) | Motif | Read ID prefix |
 |---|---|---|---|---|---|---|
@@ -341,11 +354,18 @@ rows with fractions in (0, 1) summing to 1.0.
 **opt-in** — it requires an explicit `--netseq-dir` argument (auto-loading
 the bundled signal was disabled because yeast NET-seq is noisy at many loci
 and caused widespread CPA mis-assignment). The bundled `corrected_3ends.tsv`
-is generated **without** NET-seq, so both multi reads show 1 row with
+(in `rectified/`) is generated **without** NET-seq, so both multi reads show 1
+row with
 `correction_applied=atract_ambiguity,polya_walkback` and `fraction=1.0`.
 The `TestCategory8::test_multi_peak_polya_anchor` tests are marked `skip`
 for this reason. To see multi-peak fractional output, pass
 `--netseq-dir bundled:saccharomyces_cerevisiae` (or a custom BigWig dir).
+
+> **File naming:** the bundled fixture's per-read file is named
+> `rectified/corrected_3ends.tsv` for historical reasons. It is the same
+> per-read record the pipeline now writes as `corrected_reads.tsv`
+> (`run/stages.py` default output); other docs may refer to it by the newer
+> name.
 
 | Label | Coords | Strand | Expected output (with NET-seq) | Bundled output (no NET-seq) |
 |---|---|---|---|---|
@@ -420,7 +440,7 @@ To rebuild `validation_reads.bam` from scratch:
    (`dev_runs/wt_by4742_rep1_drs_trim_20260417/merged/wt_by4742_rep1.mapPacBio.bam`)
 3. For Cat1–5/Cat8: replace seq+CIGAR from chunked merged BAMs
    (`dev_runs/wt_by4742_rep1_chunked_20260412/merged/wt_by4742_rep1.*.bam`)
-4. Re-apply XV/XG/XK/XA/XS tags
+4. Re-apply XV/XG tags (plus the rebuild-emitted Xz/Xa/Xg/Xm tags)
 
 Reference scripts:
 - `dev_runs/wt_by4742_rep1_drs_trim_20260417/fix_validation_seqs_v3.2.3.py`

@@ -66,9 +66,10 @@ These use a genome-wide GT/AG background frequency (~1/8) as a placeholder for C
 ### 1. The model ignores rectify's existing defenses
 
 Rectify's HP-anchored DP scoring with empirical penalties is specifically designed to
-prefer the site with the best sequence match. The canonical HP prior (`_CANONICAL_HP_PRIOR
-= 0.5` in v3.1.7) requires alternative sites to score >0.5 better than canonical
-junctions to displace them. The analytical model above assumes P_rectify_selects ≈ 1
+prefer the site with the best sequence match. The canonical HP prior
+(`_CANONICAL_HP_PRIOR = 0.5`, defined in `junction_scoring.py`) requires alternative
+sites to score >0.5 better than canonical junctions to displace them. The analytical
+model above assumes P_rectify_selects ≈ 1
 (i.e., rectify selects any nearby canonical site blindly), which is a gross overestimate.
 
 **The table values above may be overestimates by 3–10× for this reason.**
@@ -132,7 +133,7 @@ rectify's scoring), revise the flagging thresholds accordingly before any output
 
 ### Step 2: Per-junction annotation (Option A)
 
-Add `junction_shift_risk` column to `corrected_3ends.tsv`:
+Add a `junction_shift_risk` column to the per-read output (`corrected_reads.tsv`):
 
 ```python
 def compute_junction_shift_risk(
@@ -170,15 +171,16 @@ selection, not a hard filter.
 
 | File | Change |
 |------|--------|
-| `core/junction_refiner.py` | Add `_junction_shift_risk()` helper; call from `refine_bam_junctions` |
-| `core/bam_processor.py` | Pass `junction_shift_risk` into unified record |
-| `core/unified_record.py` | Add `junction_shift_risk` field |
+| `rectify/core/splice/junction_refiner.py` | Add `_junction_shift_risk()` helper; call from `refine_bam_junctions` |
+| `rectify/core/bam/bam_processor.py` | Pass `junction_shift_risk` into the unified record |
+| `rectify/core/unified_record.py` | Add `junction_shift_risk` field to `UnifiedReadRecord` |
 | New: `tests/test_junction_shift_fdr.py` | Unit tests; simulation fixture |
 
 ---
 
 ## Related Code
 
-- `common/scripts/nanopore/empirical_cigar_error_profiler.py` — generates `penalty_scores.tsv` and `str_penalty_scores.tsv`
-- `rectify/core/splice/junction_refiner.py` — `HpPenaltyTable`, `_hp_run_length`, `_str_repeat_info`, `_score_hp_anchored`
-- `rectify/core/splice/junction_refiner.py:_CANONICAL_HP_PRIOR` — existing defense mechanism that this model must account for
+- `scripts/calibration/empirical_cigar_error_profiler.py` — generates `penalty_scores.tsv` and `str_penalty_scores.tsv` (the `--str-repeat` flag emits the STR table)
+- `rectify/core/splice/hp_penalty.py` — `HpPenaltyTable`, `str_del_cost`, `_hp_run_length`, `_str_repeat_info`
+- `rectify/core/splice/junction_scoring.py` — `_score_hp_anchored`; `_CANONICAL_HP_PRIOR` (the existing defense mechanism this model must account for)
+- `rectify/core/splice/junction_refiner.py` — `refine_bam_junctions` (imports `_CANONICAL_HP_PRIOR` from `junction_scoring.py`)

@@ -77,6 +77,7 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 |----------|---------|-------------|
 | `--polya-model` | built-in | Pre-trained poly(A) tail model (JSON from `rectify train-polya`) |
 | `--min-polya-score` | — | Minimum poly(A) model confidence score (0–1) to mark `polya_pass=1`; reads below are flagged but still written. Requires `--polya-model` or `--dT-primed-cDNA`. |
+| `--use-dorado-polya` | off | Treat Dorado's `pt:i` tail-length estimate as the authoritative `polya_length` (otherwise measured from alignment/soft-clip; the `pt:i` value is always recorded in the `pt_tag` column). |
 
 ### Module selection
 
@@ -86,6 +87,7 @@ rectify correct reads.bam --Scer --filter-spikein ENO2 -o corrected.tsv
 | `--skip-ag-check` | Skip AG-mispriming screening |
 | `--skip-polya-trim` | Skip poly(A) tail trimming |
 | `--skip-indel-correction` | Skip indel artifact correction |
+| `--skip-3ss-rescue` | Skip Cat3 5' splice-site truncation rescue |
 | `--skip-variant-aware` | Skip variant-aware homopolymer rescue (two-pass) |
 | `--min-mapq` | Minimum MAPQ to include a read (default 0; use 1 to drop multi-mappers) |
 | `--min-aligned-length` | Minimum reference bases consumed by the alignment (default 0; 30 recommended for dT-primed short-read) |
@@ -162,9 +164,9 @@ See [Multi-Aligner Consensus](../../algorithms/multi_aligner_consensus.md) and
 | File | Description |
 |------|-------------|
 | `<output>.tsv` | Per-read corrected positions (see [Output Formats](../output_formats.md)) |
-| `<output>_index.bed.gz` | Pre-aggregated position counts (~300× smaller) |
-| `<output>_alignment_features.tsv` | Per-read alignment metadata |
+| `<output>.manifest.tsv` | Region manifest pointing at the per-region TSV(s); written by default in the streaming/parallel path. Pass `--emit-merged-tsv` to also write the concatenated `<output>.tsv`, or run `rectify export-merged-tsv <manifest>` later |
 | `<output>_stats.tsv` | Processing QC summary |
+| `<output>_potential_variants.tsv` | Candidate genomic variants flagged during variant-aware homopolymer rescue (when enabled) |
 
 ---
 
@@ -174,4 +176,4 @@ See [Multi-Aligner Consensus](../../algorithms/multi_aligner_consensus.md) and
 - To run alignment + correction in one step, use `rectify run-all`
 - `rectify correct` runs post-consensus on the winning aligner's BAM; use `--aligner-bams` to supply per-aligner BAMs as a junction candidate pool for Module 2H (post-consensus N-op refinement)
 - `--streaming` is recommended for BAMs larger than 2 GB; it is the default in the bundled SLURM profiles
-- The output index file (`_index.bed.gz`) is used by manifest-mode analysis; generate it for all samples before running `rectify analyze --manifest`
+- In the streaming/parallel path, `correct` writes a `corrected_reads.manifest.tsv` by default and defers the concatenated TSV; pass `--emit-merged-tsv` or call `rectify export-merged-tsv` when a single flat TSV is needed

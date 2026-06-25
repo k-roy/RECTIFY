@@ -24,10 +24,10 @@ rectify batch \
     --profile my_cluster.yaml
 ```
 
-This generates two scheduler scripts:
+This generates two scheduler scripts in the output directory:
 
-1. `results/slurm/rectify_batch_correct.sh` — array job (one task per sample)
-2. `results/slurm/rectify_batch_analyze.sh` — combined analysis (runs after array)
+1. `results/rectify_batch_correct.sh` — array job (one task per sample)
+2. `results/rectify_batch_analyze.sh` — combined analysis (runs after array)
 
 To submit immediately, add `submit: true` to your profile, or pass `--submit` on the CLI.
 
@@ -143,9 +143,9 @@ with 40M reads this requires ~30–40 GB.
 
 ## BAM output options
 
-By default, per-aligner BAMs (minimap2, mapPacBio, gapmm2) are discarded after
-consensus selection; only the rectified BAM is kept. Use these flags if you want
-to inspect the per-aligner outputs:
+By default, the per-aligner BAMs (one per aligner in the active panel) are
+discarded after consensus selection; only the rectified BAM is kept. Use these
+flags if you want to inspect the per-aligner outputs:
 
 ```bash
 rectify run-all sample.fastq.gz --Scer -o results/ \
@@ -203,11 +203,12 @@ For large DRS datasets (> 5 GB FASTQ, multi-hour alignment per aligner), use
 
 ### Overview
 
-```
-rectify split    →  N chunk FASTQs
-SLURM array      →  N × M alignment jobs (one per chunk/aligner pair)
-samtools merge   →  one BAM per aligner (across all chunks)
-rectify consensus →  best-aligner-per-read rectified BAM
+```text
+rectify split     →  N chunk FASTQs + generated stage scripts
+alignment arrays  →  per-chunk BAMs (mapPacBio array + "others" array)
+merge + prescan   →  one BAM per aligner + variant/junction prescan
+correction arrays →  per-aligner, per-chunk correction
+chunk-merge + consensus →  best-aligner-per-read consensus BAM
 ```
 
 ### Step 1 — Split and generate scripts
@@ -217,54 +218,42 @@ rectify split reads.fastq.gz \
     -n 16 \
     -o /scratch/chunks/ \
     --generate-slurm \
-    --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --other-aligners minimap2 gapmm2 uLTRA deSALT \
     --genome /ref/genome.fa.gz \
     --annotation /ref/genes.gff.gz \
     --slurm-partition my-partition \
-    --slurm-cpus 16 \
-    --slurm-mem 64G \
-    --slurm-time 12:00:00
+    --slurm-account my-account
 ```
 
-This writes to `/scratch/chunks/`:
+`--other-aligners` lists the aligners that share the "others" array; mapPacBio
+always runs in its own array (omit it with `--skip-map-pacbio`). This writes to
+`/scratch/chunks/`:
 
 | File | Purpose |
 |------|---------|
 | `wt_rep1_chunk_000_of_016.fastq.gz` … `_015_of_016.fastq.gz` | 16 equal chunk FASTQs |
 | `chunks_manifest.json` | chunk paths in JSON |
-| `run_array_align.sh` | SLURM `--array=0-79` script |
-| `run_merge_and_consensus.sh` | post-array merge + consensus script |
-| `slurm_logs/` | log directory |
+| `run_array_mapPacBio.sh` | mapPacBio alignment array (omitted with `--skip-map-pacbio`) |
+| `run_array_others.sh` | minimap2/gapmm2/uLTRA/deSALT alignment array |
+| `run_merge_aligners.sh`, `run_prescan.sh` | merge per-aligner BAMs; variant/junction prescan |
+| `run_array_correct_<aligner>.sh` | per-aligner correction arrays |
+| `run_array_chunk_merge.sh`, `run_final_merge.sh` | per-chunk merge → consensus; final merge |
+| `submit_pipeline.sh` | submits the whole DAG with dependencies |
+| `logs/` | log directory |
 
-### Step 2 — Submit the array
-
-```bash
-sbatch /scratch/chunks/run_array_align.sh
-```
-
-Each task decodes its `SLURM_ARRAY_TASK_ID` (0–79) as:
+### Step 2 — Submit the pipeline
 
 ```bash
-CHUNK_IDX=$(( SLURM_ARRAY_TASK_ID % 16 ))
-ALIGNER_IDX=$(( SLURM_ARRAY_TASK_ID / 16 ))
+bash /scratch/chunks/submit_pipeline.sh
 ```
 
-Tasks run `rectify align --no-consensus` — each produces a single-aligner BAM
-for that chunk. Thread limits (`OMP_NUM_THREADS`, `LOKY_MAX_CPU_COUNT`, etc.)
-are set automatically by the generated script.
-
-### Step 3 — Merge and run consensus
-
-After the array completes:
-
-```bash
-bash /scratch/chunks/run_merge_and_consensus.sh
-```
-
-This script:
-
-1. `samtools merge` — merges all chunk BAMs per aligner into one sorted BAM
-2. `rectify consensus` — runs per-read aligner selection across all merged BAMs
+`submit_pipeline.sh` submits each generated stage with the correct inter-job
+dependencies, following the correct-first ordering (align → merge → prescan →
+correct → chunk-merge → consensus). The alignment array tasks run
+`rectify align --no-consensus`; thread limits (`OMP_NUM_THREADS`,
+`LOKY_MAX_CPU_COUNT`, etc.) are set automatically in each generated script. You
+can also submit the individual array scripts by hand (e.g.
+`sbatch run_array_others.sh`) for finer control.
 
 ### Scheduler environment variables
 

@@ -2,7 +2,10 @@
 
 The core RECTIFY algorithm corrects systematic alignment artifacts that arise when poly(A) tails land on genomic A-tracts (adenosine-rich sequences downstream of CPA sites).
 
-**Implementation:** `rectify/core/correct/indel_corrector.py` — `find_polya_boundary()`
+**Implementation:** `rectify/core/correct/walkback.py` — `walkback_drs_full()` /
+`walkback_3prime_guarded()` (the canonical DRS path). The legacy
+`indel_corrector.find_polya_boundary()` wrapper is retained as a thin delegate
+for older callers and test code.
 
 <figure markdown>
   ![Three-row schematic showing genome, aligned read, and corrected 3' end. The aligned read extends past the true CPA into a downstream A-tract with deletions; the walk-back arrow steps back from the soft-clip boundary, skipping A's and a sequencing-error T, and lands on the CPA position one base 5' of the A-tract.](../figures/indel_correction.png){ width="680" }
@@ -61,27 +64,28 @@ At each step, it skips:
 - **T errors** — common sequencing errors in poly(A) runs (T→ miscall)
 
 ```python
-def find_polya_boundary(read, strand, genome, min_polya_len=5):
+def find_polya_boundary(read, strand, genome):
     """
-    Walk upstream from 3' end to find true CPA site.
+    Walk upstream from the 3' end to find the true CPA site.
+    (Thin wrapper over walkback.walkback_3prime_guarded().)
 
     Returns dict with:
-      corrected_pos: int     — new 3' end position (0-based)
-      original_pos:  int     — raw aligned 3' end
-      polya_aligned: int     — A's within alignment
-      correction_bp: int     — shift applied (negative = upstream)
+      corrected_pos:     int — new 3' end position (0-based)
+      original_pos:      int — raw aligned 3' end
+      polya_aligned_bp:  int — A's within the alignment
+      correction_bp:     int — shift applied (negative = upstream)
     """
 ```
 
-### Guard: large-deletion pre-scan (v2.9.3)
+### Guard: large-deletion pre-scan
 
 Before the main walk-back, `find_polya_boundary` scans for large deletions (≥ 5 bp) within 50 bp of the RNA 3' end when the alignment starts in a poly-T/poly-A context. Minimap2 sometimes bridges a mismatching region with a large deletion when extending a poly-A tail alignment, causing false-positive non-A/non-T matches before the deletion that stop the walk-back too early (under-correction by tens of bp). The pre-scan detects and skips these artifactual large-deletion spans.
 
-### Guard: N-op boundary for spliced minus-strand reads (v2.9.4)
+### Guard: N-op boundary for spliced minus-strand reads
 
 For minus-strand reads, `find_polya_boundary` records the first N-op (intron skip) boundary encountered while parsing the CIGAR and limits the forward scan to positions before that boundary. Without this guard, the scan could silently cross a spliced intron and find a spurious non-T match in a downstream exon, producing an erroneous correction spanning the entire intron. If no non-T match is found before the N boundary, `first_n_start` is returned as the CPA (the exon-intron boundary is the natural terminal-exon end).
 
-### Guard: trailing-base false-stop (v3.0.3)
+### Guard: trailing-base false-stop
 
 Before accepting a candidate stop position (read base matches reference base at a non-A/non-T position), `find_polya_boundary` inspects the K = 4 positions immediately toward the poly-A tail. If all K positions have `rb = 'A'` (plus strand) or `rb = 'T'` (minus strand) AND at least one has a mismatching genomic base, the candidate is rejected and scanning continues. This prevents the trailing base of a poly-A tail (e.g., a T that coincidentally matches a genomic T at the alignment boundary) from causing premature termination inside the poly-A zone.
 
@@ -126,14 +130,25 @@ Module 2G runs for **all protocols** (DRS and dT-primed cDNA). It runs after the
 
 ## A-tract ambiguity detection
 
-After walk-back, RECTIFY classifies each read:
+Independently of the walk-back, `calculate_atract_ambiguity()` quantifies how
+much positional uncertainty a genomic A-tract introduces at a called 3' end. It
+counts the downstream A's (plus strand) or T's (minus strand), looks up the
+expected alignment shift for that count from the calibration table in
+`config.py`, and emits an ambiguity window:
 
-| A-count downstream | Classification | Action |
-|--------------------|---------------|--------|
-| 0 | **Clear** — no A-tract | No correction needed |
-| 1–5 | **Minor ambiguity** | Correction applied, `MEDIUM` confidence |
-| 6–15 | **Moderate ambiguity** | Correction applied, `LOW` confidence |
-| >15 | **Severe ambiguity** | NET-seq refinement attempted; `ATRACT_AMBIGUOUS` flag |
+- `downstream_a_count` — A's in the downstream window
+- `expected_shift` — calibrated shift for that A-count
+- `ambiguity_min` / `ambiguity_max` / `ambiguity_range` — the uncertainty
+  window (0 bp when the called end is not inside an A/T-tract — there is no
+  poly(A) alignment ambiguity to resolve there)
+
+These columns are written to `corrected_reads.tsv`. A read whose 3' end sits
+inside a deep A-tract therefore carries a wide `ambiguity_range`, which is what
+NET-seq refinement (when enabled) consumes to pin down the true CPA.
+
+The per-read `confidence` column starts at `high` and is downgraded to `low`
+when a read is flagged as AG-mispriming-prone; NET-seq refinement can further
+set it to `low`/`medium`. (See `bam_processor.py` and `utils/stats.py:calculate_confidence`.)
 
 **Implementation:** `rectify/core/polya/atract_detector.py`
 
@@ -141,13 +156,12 @@ After walk-back, RECTIFY classifies each read:
 
 ## Statistics
 
-In typical *S. cerevisiae* direct RNA experiments:
-
-- ~52% of reads require no correction (position already correct)
-- ~32% shift 1–5 bp upstream
-- ~13% shift 6–15 bp upstream
-- ~3% shift > 15 bp (high A-tract depth)
-- Mean shift: −3 to −7 bp
+The per-sample QC report (`*_stats.tsv`) breaks corrections down by shift
+magnitude and confidence. As a rough guide, in typical *S. cerevisiae* direct
+RNA experiments most reads need no correction, the bulk of corrected reads
+shift a few bp upstream, and a small tail shifts >15 bp where the downstream
+A-tract is deep. (Indicative figures only — read the per-run stats report for
+the exact distribution; the numbers vary by sample and basecaller.)
 
 ---
 

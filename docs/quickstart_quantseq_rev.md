@@ -49,17 +49,27 @@ gotchas section below.
 
 | Input | Notes |
 |-------|-------|
-| Aligned BAM | Pre-aligned with BWA-MEM, BBMap, or another short-read aligner that handles spliced reads. RECTIFY does not currently align QuantSeq REV reads itself (see [target state](#target-state-multi-aligner-consensus) below). |
+| Aligned BAM | Pre-aligned with `rectify align --short-read` (bbmap + bwa), or with BWA-MEM / BBMap directly. `rectify correct --dT-primed-cDNA` works on the resulting BAM; it does **not** align FASTQ itself for this protocol (the built-in FASTQ path uses minimap2 only, which mis-aligns short antisense reads). |
 | Reference genome | FASTA (gzip OK). Required for read-vs-reference walkback. |
 | Annotation | GFF or GTF (gzip OK). Required for gene assignment in `rectify analyze`. |
 
 ## Step-by-step
 
-### 1. Pre-align with BWA-MEM or BBMap
+### 1. Align with `rectify align --short-read`
 
-QuantSeq REV reads are short (typically 75–150 bp) and 3'-end focused.
-RECTIFY does not bundle a short-read aligner — pre-align with your tool of
-choice and write the result to a sorted, indexed BAM.
+QuantSeq REV reads are short (typically 75–150 bp) and 3'-end focused. The
+simplest path is RECTIFY's own short-read panel, which runs bbmap + bwa and
+writes a sorted, indexed BAM:
+
+```bash
+rectify align reads.fastq.gz --short-read --genome genome.fa --prefix sample -o aligned/
+```
+
+`-o` is an output **directory**; the sorted, indexed BAM is written as
+`aligned/sample.rectified.bam` (the basename comes from `--prefix`, defaulting
+to the reads filename stem if omitted). Feed that BAM to `rectify correct` below.
+
+If you prefer to align with an external tool, any sorted+indexed BAM works:
 
 ```bash
 # Example: BWA-MEM
@@ -78,10 +88,14 @@ samtools sort -@ 8 -o aligned.bam aligned.sam
 samtools index aligned.bam
 ```
 
+> **One-command alternative.** `rectify run-all reads.fastq.gz --short-read
+> --dT-primed-cDNA --genome genome.fa --annotation genes.gff -o results/`
+> chains the short-read alignment, correction, and analysis in a single call.
+
 ### 2. Run `rectify correct` with the QuantSeq REV protocol wrapper
 
 ```bash
-rectify correct aligned.bam \
+rectify correct aligned/sample.rectified.bam \
     --genome genome.fa \
     --annotation genes.gff \
     --dT-primed-cDNA \
@@ -96,18 +110,17 @@ What each flag does:
   correction at internal genomic A-tracts where the aligner over-walked
   into the priming site.
 - `--short-read` disables long-read-only modules (poly-A tail trimming,
-  full-read indel correction) and uses short-read tolerances. Pairs with
-  `rectify align --short-read` (bbmap + bwa) once that path is wired
-  into the CLI.
+  full-read indel correction) and uses short-read tolerances. It pairs with
+  the `rectify align --short-read` panel (bbmap + bwa) used in step 1.
 
 Internally this dispatches to the `walkback_quantseq_rev()` protocol
 wrapper (`rectify/core/correct/protocols/quantseq_rev.py`):
 
 | Parameter | Value |
 |-----------|-------|
-| `three_prime_side` | `"left"` (not `"right"` as in DRS) |
-| `stop_base` | `"A"` (walk inward from the left until a non-A match) |
-| Strand handling | BAM `is_reverse` mapped to opposite gene strand |
+| 3'-end side | Strand-dependent: the poly-A artifact sits on the **left** of the alignment for `is_reverse=False` reads (gene `−`) and on the **right** for `is_reverse=True` reads (gene `+`) — the inverse of the DRS convention |
+| `stop_base` | Strand-dependent: `"A"` for `is_reverse=True` (gene `+`, poly-A artifact on the right); `"T"` for `is_reverse=False` (gene `−`, where the BAM SEQ is the reverse-complement of the cDNA, so the artifact reads as T's that must be walked past). Walk inward across that base until a non-matching base. |
+| Strand handling | BAM `is_reverse` mapped to the **opposite** gene strand |
 
 The output `corrected.tsv` `strand` column is the **gene / RNA strand**,
 not the BAM `is_reverse` strand.
@@ -117,7 +130,7 @@ not the BAM `is_reverse` strand.
 ```bash
 rectify analyze corrected.tsv \
     --annotation genes.gff \
-    --output-dir results/
+    -o results/
 ```
 
 `rectify analyze` is protocol-agnostic on the corrected TSV — it consumes
@@ -158,18 +171,15 @@ strand-confused because both signals overlay.
 
 ---
 
-## Target state — multi-aligner consensus
+## Multi-aligner consensus
 
-The QuantSeq REV path is currently single-aligner: the user pre-aligns
-with one short-read aligner (BWA-MEM or BBMap) and feeds the BAM in.
-**Target state** is a BWA + BBMap consensus through the existing
-`chimeric_consensus.select_best()` infrastructure already used for the
-DRS / ONT cDNA tracks — both aligners produce SAM/BAM that the existing
-selector can consume, and short-read splice calls are notably more
-robust when two aligners agree. Until the multi-aligner shim lands in
-`rectify/core/commands/correct_command.py` (the `--short-read --dT-primed-cDNA`
-branch), pick whichever aligner gives the best splice sensitivity for
-your organism.
+`rectify align --short-read` already runs a bbmap + bwa panel and selects a
+best alignment per read, so the recommended workflow above is multi-aligner.
+What is **not** yet wired is feeding a multi-aligner consensus directly through
+the `rectify correct --short-read --dT-primed-cDNA` step — that step currently
+operates on whichever single BAM you hand it. If you align with one external
+tool instead of `rectify align --short-read`, pick whichever aligner gives the
+best splice sensitivity for your organism.
 
 ---
 

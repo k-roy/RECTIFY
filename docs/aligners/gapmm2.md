@@ -228,7 +228,7 @@ panel — marginal real-junction yield does not justify ~200 chunked array tasks
 
 gapmm2 emits PAF, which rectify converts to BAM in `_paf_to_bam()`. Secondary
 alignments are handled at conversion: any PAF record with `tp:A` ≠ `P` is marked
-`FLAG |= 0x100` (`multi_aligner.py:1269-1271`), so `rectify correct`'s `is_secondary`
+`FLAG |= 0x100` (in `_paf_to_bam()`, `multi_aligner.py`), so `rectify correct`'s `is_secondary`
 filter drops them. Separately, `run_gapmm2()` **deduplicates the input FASTQ by UUID
 before alignment** (Issue 2 above) — it skips empty-sequence placeholders and
 subsequent occurrences of the same read name. So a doubled input FASTQ that would

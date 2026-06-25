@@ -28,7 +28,9 @@ pytest tests/test_indel_corrector.py -v
 pytest -k "atract" -v
 ```
 
-The test suite has 934 tests (28 skipped, 4 deselected by default). All non-skipped tests should pass before submitting a PR.
+The full suite collects ~1,640 tests. Under the default fast selection
+(`pytest -m "not slow"`) the `slow` integration tests are deselected and a
+small number are skipped; all selected tests should pass before submitting a PR.
 
 ---
 
@@ -50,9 +52,18 @@ flake8 rectify/ tests/
 
 ## Architecture notes
 
-### Two `run-all` implementations
+### The `run-all` dispatcher
 
-The active `run-all` dispatcher is `rectify/core/commands/run_command.py`. Always edit that file for pipeline changes.
+`rectify run-all` is wired through `rectify/core/commands/run_command.py`, which
+is a thin orchestrator: its `run()` dispatches to one of the runners in the
+`run/` sub-subpackage. For most pipeline changes, edit the relevant runner
+rather than the dispatcher:
+
+- `run/helpers.py` — reference resolution, BAM checks, canonical paths
+- `run/stages.py` — per-stage runners (align / correct / combine / analyse / junctions)
+- `run/single_sample.py` — single-sample pipeline + per-sample worker
+- `run/multi_sample.py` — manifest-driven multi-sample pipeline
+- `run/chunked_batch.py` — `--chunked-alignment` shell-script generator
 
 ### Coordinate convention
 
@@ -106,7 +117,7 @@ See [Multi-Sample Analysis](user_guide/multi_sample.md) for details.
 ## Building the documentation locally
 
 ```bash
-pip install "rectify-rna[docs]"
+pip install -e ".[docs]"
 mkdocs serve    # Live reload at http://127.0.0.1:8000
 mkdocs build    # Build static site in site/
 ```
@@ -120,7 +131,7 @@ mkdocs build    # Build static site in site/
 3. Make your changes and add tests
 4. Ensure all tests pass: `pytest`
 5. Format code: `black rectify/ tests/`
-6. Open a pull request against `main`
+6. Open a pull request against `master`
 
 ---
 

@@ -22,19 +22,24 @@ The boundary is non-trivial because:
 - Basecalling errors can make the adapter stub unrecognisable to a simple regex
 
 The three passes handle these cases in order of increasing difficulty. Passes 0 and 1
-cover >95% of reads cheaply; Pass 2 activates only for the hard cases.
+cover >95% of reads cheaply; Pass 2 activates only for the hard cases. Between the
+regex step and the poly(A) scan, the algorithm also peels a terminal triplet-repeat
+basecaller artifact when present (see "Terminal repeat strip" below).
 
 ---
 
 ## The Adapter Regex
 
 ```python
-_ADAPTER_RE = re.compile(r'T[CT]{0,10}$')
+_ADAPTER_RE = re.compile(r'[TU][CTU]{0,10}$')
 ```
 
-The ONT cDNA adapter sequence ends in a T-rich, C-containing stub. This regex
-matches runs of 1–11 T/C characters anchored at the very end of the window.
-Gene-body sequence (which contains G and A) will not match.
+The ONT SQK-RNA004 DNA adapter (`GGCTTCTTCTT`) leaves a T/C-rich residual stub
+after Dorado pre-trimming. This regex matches a run of 1–11 T/C characters
+anchored at the very end of the window, accepting `U` as well as `T` so it works
+on RNA-alphabet reads. Gene-body sequence (which contains G and A) will not
+match. See `docs/DRS_POLYA_ADAPTER_ANALYSIS.md` for the empirical characterisation
+of this stub.
 
 ---
 
@@ -62,7 +67,7 @@ consecutive A's until it exits the tail into the transcript body.
 
 ## Pass 1 — Adapter stub cleanly detectable by regex
 
-**Trigger:** The regex matches a `T[CT]+` run at the end of the window.
+**Trigger:** The regex matches a `[TU][CTU]+` run at the end of the window.
 
 **Situation:** Dorado left a residual adapter stub after the poly(A). The stub
 consists only of T and C characters, so the regex identifies and removes it cleanly.
@@ -73,17 +78,35 @@ After stripping the stub, `_scan_polya()` finds the tail boundary in what remain
             ^^^^^^^^^^^^^^~~~~~~
             poly(A), 14 bp  stub
 
-  Regex T[CT]{0,10}$:  matches "TCTTCT" (6 chars) at end
-  Strip stub:          window → ...GCUAAGCAAAAAAAAAAAAAA
-  Scan:                14 consecutive A's
-  Result:              polya_len=14, adapter_seq='TCTTCT', pass=1
+  Regex [TU][CTU]{0,10}$:  matches "TCTTCT" (6 chars) at end
+  Strip stub:             window → ...GCUAAGCAAAAAAAAAAAAAA
+  Scan:                   14 consecutive A's
+  Result:                 polya_len=14, adapter_seq='TCTTCT', pass=1
 ```
 
-### Why `T[CT]+` and not just `T+`?
+### Why `[TU][CTU]+` and not just `T+`?
 
 ONT adapter sequences contain both T and C. Allowing C captures real stubs that
 a pure `T+` regex would miss. G and A are excluded because they signal gene-body
 sequence, not adapter.
+
+---
+
+## Terminal repeat strip — `(AAG/GAA)n` basecaller artifact
+
+After the regex step and **before** the poly(A) scan, `find_polya_and_adapter()`
+peels a terminal triplet-repeat block (`_find_terminal_repeat_block`) when one is
+present. Some reads carry a periodic `(AAG)n` / `(GAA)n` artifact 3' of the genuine
+poly(A) tail. Because this block has no terminal A-run, `_scan_polya()` cannot see
+past it; if left in place, the artifact would be force-aligned and the true tail
+boundary lost. Peeling it first exposes any genuine poly(A) run that lies 5' of the
+artifact for the scan.
+
+The block is peeled only when it is at least `_REPEAT_MIN_LEN` = 15 bp (≥ 5 tandem
+copies of a triplet) with canonical-motif purity ≥ `_REPEAT_MIN_FRAC` = 0.8. The
+peeled length and motif are returned as `repeat_len` and `repeat_motif`; callers
+fold the length into the total trim: `total_trim = repeat_len + polya_len + len(adapter_seq)`.
+Stripping is controlled by the `strip_repeat` argument (on by default).
 
 ---
 
@@ -102,7 +125,7 @@ breaking the regex pattern entirely. For example, a T→G miscall in the stub:
                                     T→G miscall in adapter stub
 ```
 
-The G makes `T[CT]{0,10}$` fail — `TCGTCT` contains G so the regex cannot match.
+The G makes `[TU][CTU]{0,10}$` fail — `TCGTCT` contains G so the regex cannot match.
 The raw window then ends in `T`, so `_scan_polya()` finds 0 A's. With
 `polya_len=0` and `last_base='T'` (not A), Pass 2 activates.
 
@@ -173,23 +196,28 @@ Typical cases: pre-mRNA intermediates, degraded RNA, non-polyadenylated transcri
 | Pass | Trigger condition | Adapter state | Per-read cost |
 |------|-------------------|---------------|---------------|
 | 0 | Regex: no match; scan finds ≥1 A | None — Dorado already stripped | 1 regex + 1 scan |
-| 1 | Regex: matches `T[CT]+$`; scan finds ≥1 A after stripping | Present, cleanly recognisable | 1 regex + 1 scan |
+| 1 | Regex: matches `[TU][CTU]+$`; scan finds ≥1 A after stripping | Present, cleanly recognisable | 1 regex + 1 scan |
 | 2 | polya_len=0 after Pass 1; last base ≠ A | Present but scrambled by basecalling errors | 1 regex + up to 15 scans |
+
+(A terminal `(AAG/GAA)n` repeat block, when present, is peeled between the regex
+and the scan in every pass — see "Terminal repeat strip" above.)
 
 ---
 
 ## Return value
 
 ```python
-(polya_len, adapter_seq, last_base, adapter_pass)
+(polya_len, adapter_seq, last_base, adapter_pass, repeat_len, repeat_motif)
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `polya_len` | Bases belonging to the poly(A) tail (0 = no tail detected) |
+| `polya_len` | Bases belonging to the poly(A) tail (0 = no tail detected), measured on the window *after* the repeat block is peeled |
 | `adapter_seq` | Stripped adapter stub sequence (empty string for Pass 0) |
 | `last_base` | Last base of the trimmed body sequence (sanity: should be non-A) |
 | `adapter_pass` | 0, 1, or 2 — which pass found the boundary |
+| `repeat_len` | Length of the peeled terminal `(AAG/GAA)n` artifact block (0 if none / strip disabled); sits 3' of `polya_len` |
+| `repeat_motif` | Canonical motif of the peeled block (`''` if none) |
 
 ---
 

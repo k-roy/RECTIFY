@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rectify cdna-analyze` now emits a per-molecule `corrected_reads.tsv`**
+  (`cdna_analyze_command.py`) — one row per UMI-consensus molecule, using the
+  same per-read column schema as the DRS `rectify correct` output, so a single
+  loader works across modalities.
+- **`--use-dorado-polya` flag** (`rectify correct`, default off): when set, the
+  Dorado `pt:i` tag is used as the authoritative poly(A) length. The Dorado
+  estimate is always recorded as `dorado_polya_length` regardless of this flag
+  (`polya_trimmer.py`, `correct_command.py`).
+- **Consensus aligner-selection stats surface `by_aligner_combo` and
+  `tied_score`** in `*.consensus_aligner_stats.tsv` and the HTML consensus
+  report (`consensus/`, `analyze/summary.py`).
+- **`rectify analyze` reports a read-weighted center-of-mass (`cluster_com`)
+  per CPA cluster** in `cpa_clusters.tsv` (`analyze/clustering.py`).
 - **DRS pre-trim now strips the terminal `(AAG/GAA)ₙ` triplet-repeat basecaller
   artifact** (`rectify trim-polya`). Dorado v5.2.0 / RNA004 mis-basecalls the poly-A
   homopolymer tail as a low-period multi-base repeat with no terminal A-run, so the

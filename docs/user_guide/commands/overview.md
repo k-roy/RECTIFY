@@ -56,7 +56,7 @@ See the [ONT PCR-cDNA pipeline overview](correct_cdna_overview.md) for the three
 | Command | Description |
 |:--------|:------------|
 | [`rectify batch`](batch.md) | Generate SLURM array job scripts for multi-sample processing |
-| [`rectify install-aligners`](install_aligners.md) | Download/install external aligners (deSALT, minimap2, gapmm2, uLTRA) |
+| [`rectify install-aligners`](install_aligners.md) | Download/install external aligners (minimap2, gapmm2, mapPacBio, deSALT, uLTRA, GMAP) |
 
 ---
 
@@ -83,23 +83,27 @@ rectify run-all --manifest manifest.tsv --Scer --reference wt -o results/
 ### Align only (for custom downstream use)
 
 ```bash
-rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned.bam
+rectify align reads.fastq.gz --genome genome.fa --annotation genes.gff -o aligned/
 ```
 
 ### Parallel alignment via SLURM array (large datasets)
 
 ```bash
-# 1. Split into 16 chunks and generate array scripts
+# 1. Split into 16 chunks and generate the SLURM array scripts.
+#    The long-read panel (minimap2, gapmm2, uLTRA, deSALT) is the default
+#    --other-aligners set; mapPacBio gets its own array script (omit with
+#    --skip-map-pacbio).
 rectify split reads.fastq.gz -n 16 -o chunks/ \
-    --generate-slurm --aligners minimap2 mapPacBio gapmm2 uLTRA deSALT \
+    --generate-slurm \
     --genome genome.fa --annotation genes.gff
 
-# 2. Submit array job (16 chunks × 5 aligners = 80 tasks)
-sbatch chunks/run_array_align.sh
-
-# 3. After array completes: merge BAMs + run consensus
-bash chunks/run_merge_and_consensus.sh
+# 2. Submit the full DAG (alignment → merge → prescan → correct →
+#    chunk-merge → consensus) with inter-job dependencies wired up:
+bash chunks/submit_pipeline.sh
 ```
+
+See the [HPC / SLURM guide](../hpc_slurm.md) for the individual generated
+scripts and the correct-first execution order.
 
 ### Export bigWig tracks
 
@@ -117,10 +121,14 @@ rectify validate corrected.tsv --netseq-dir netseq/ --Scer -o validation/
 
 ## Global options
 
-All subcommands accept:
+The top-level `rectify` command accepts:
 
 ```
 --help, -h       Show help message and exit
 --version        Show RECTIFY version
---verbose, -v    Enable verbose (DEBUG) logging
 ```
+
+Every subcommand accepts `--help`/`-h`. Many subcommands (e.g. `correct`,
+`align`, `consensus`, `aggregate`, `extract`) also accept `--verbose` to
+enable DEBUG logging; check `rectify <command> --help` for the exact flags a
+given subcommand supports.

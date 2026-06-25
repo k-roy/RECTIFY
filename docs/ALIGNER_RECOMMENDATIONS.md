@@ -23,7 +23,7 @@ mapPacBio · GMAP→cDNA · Magic-BLAST — is a separate, Phase-0-gated panel.)
 | **deSALT** | de-Bruijn graph (2-pass) | ✅ core | ✅ core | orthogonal to minimizer chaining |
 | **mapPacBio** (BBMap) | k-mer + affine DP | ✅ re-admitted **under the anchor gate** | ✅ core | dropped earlier for HP-ED gaming; `--min-junction-anchor-bp` (human=10) makes it safe — see [mapPacBio re-admission](#mappacbio-re-admission-via-the-hp-ed-anchor-gate) |
 | **gapmm2** | minimizer-chain + terminal refinement | ❌ dropped (timing ~28–50 h) | ✅ core | yeast 5th member |
-| **GMAP** | oligomer-hash + own splice DP | ❌ **rejected** — A549 chr5 full-panel test 2026-06-14 | — | Fails all three pre-registered bars: annotated_rate 70.2% (bar ≥95%), anchor median 4 bp (bar ~13 bp), STOLE-correct 3271 > ADDED-correct 745 (4.4× net harm). Net junction effect: annotated −4011 (−0.4%), novel +6002 (+20.9%). GMAP wins displace better alignments from minimap2/deSALT and introduce spurious novel junctions at the same rate as K=0 mapPacBio. |
+| **GMAP** | oligomer-hash + own splice DP | ❌ **rejected (final)** — A549 chr5 full-panel test 2026-06-14, **confirmed 2026-06-15** | — | Fails all three pre-registered bars: annotated_rate 70.2% (bar ≥95%), anchor median 4 bp (bar ~13 bp), STOLE-correct 3271 > ADDED-correct 745 (4.4× net harm). Net junction effect: annotated −4011 (−0.4%), novel +6002 (+20.9%). GMAP wins displace better alignments from minimap2/deSALT and introduce spurious novel junctions at the same rate as K=0 mapPacBio. **Re-test 2026-06-15 (job 29696736, K-filtered self-rescue + shared junction pool + junction-guided scoring OFF — GMAP's most charitable condition) reproduces the same fail: annotated_rate 71.0%, anchor median 5 bp, STOLE 2655 ≫ ADDED 692 (3.8×), novel +18.7%. The K-filter cannot lift the intrinsic anchor placement (4→5 bp); rejection is robust.** |
 
 **Human panel = 4 aligners** (minimap2 + uLTRA + deSALT + mapPacBio under anchor gate).
 No viable 5th family identified: gapmm2 dropped on timing (~28–50 h); GMAP rejected
@@ -126,7 +126,7 @@ gapmm2 was not re-benchmarked here (it is already in the yeast production panel)
 
 | Aligner | Status | Notes |
 |---------|--------|-------|
-| **GMAP** | **Re-evaluating (2026-06-14)** | Oligomer-hash + its OWN splice-scoring DP → orthogonal in *splice model*, the scarcest diversity axis. Prior "disqualified" was a **`--nofails` config artifact, not a real failure** — re-evaluating with `-n 1` (no `--nofails`). Apache, bioconda, maintained 2025. Smoke-test job 29546795. See [gmap.md](aligners/gmap.md). |
+| **GMAP** | ❌ **Rejected (final, 2026-06-15)** | Oligomer-hash + its OWN splice-scoring DP → orthogonal in *splice model*, the scarcest diversity axis. The prior "disqualified" was a `--nofails` config artifact, so it was re-evaluated correctly (`-n 1`); the correct run then **failed all three pre-registered bars** on A549 chr5 (2026-06-14) and a most-charitable re-test (2026-06-15, job 29696736: K-filter self-rescue + shared pool + junction-guided scoring OFF) **confirmed the fail** (annotated_rate 71.0%, anchor 5 bp, STOLE 2655 ≫ ADDED 692). See main table above + [gmap.md](aligners/gmap.md). |
 | **Graphmap2** | **Evaluating, smoke-gated** | Orthogonal in *seeding* (spaced-seed graph voting + L1/Hough anchor fit); splice DP is **vendored from minimap2** (same `noncan=9` kernel → same mild GT-AG soft bonus as minimap2, NOT disqualifying). De-novo (no GTF). **RISK: last release Feb 2020** → compile + RNA004 smoke-test required. See [graphmap2.md](aligners/graphmap2.md). |
 | **Magic-BLAST** | **Exploratory, smoke-gated** | Read-indexed (not genome-indexed) BLAST lineage — orthogonal seeding; own splice score. **No published ONT-DRS track record** → test whether it produces usable ONT spliced alignments at all. bioconda 1.7.2. See [magicblast.md](aligners/magicblast.md). |
 | **Winnowmap2** | **Integrate (marginal)** | Highest GT-AG in the 2026-05-25 benchmark; same speed as minimap2. But the orthogonality panel flags it as a **minimizer-chain DERIVATIVE** (only minimizer *weights* differ; chain+DP = minimap2; also shares minimap2's `noncan=9` splice kernel) and **stale (last release May 2021)** — low *algorithmic* diversity despite good GT-AG. Opt-in `--aligners winnowmap2`. See [winnowmap2.md](aligners/winnowmap2.md). |
@@ -211,8 +211,8 @@ or `--skip-map-pacbio`. Detail: memory `project-hped-anchor-gate`;
 
 ## Adding Aligners to the Production Panel
 
-1. Add a wrapper function in `rectify/core/align/multi_aligner.py` following the existing `run_minimap2`, `run_mappacbio`, `run_gapmm2`, `run_ultra`, `run_desalt` patterns.
-2. Register the aligner name in `SUPPORTED_ALIGNERS` and the consensus scoring logic in `rectify/core/commands/consensus_command.py`.
+1. Add a wrapper function in `rectify/core/align/multi_aligner.py` following the existing `run_minimap2`, `run_map_pacbio`, `run_gapmm2`, `run_ultra`, `run_desalt` patterns.
+2. Register the aligner name in the `--aligners` (or `--junction-aligners`) `choices` list in `rectify/core/commands/align_command.py` and add a dispatch branch there (and in `run_multi_aligner` for the chain-based panel). The `correct`/`merge_corrected_tsvs` path is aligner-name-agnostic and the consensus tiebreak is mode-based (`--tiebreak rectify|compass`), so most aligners need no scoring change; only add aligner-specific handling in `rectify/core/consensus/scoring.py` if the new aligner requires it.
 3. Run `rectify install-aligners --check` to verify the new binary is on PATH.
 4. Validate against the bundled test dataset: `pytest tests/test_consensus_selection.py`
 

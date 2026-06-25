@@ -1,13 +1,20 @@
 # GMAP — candidate aligner (oligomer-hash + splice-scoring DP)
 
-**Status (2026-06-14): UNDER RE-EVALUATION.** Previously "disqualified" in
-ALIGNER_RECOMMENDATIONS.md — but that disqualification was a **configuration
-artifact (`--nofails`), not a real failure** (see "The `--nofails` dead end"
-below). The 2026-06-14 algorithmic-orthogonality panel re-opened GMAP as a
-**top orthogonal candidate** with the correct invocation. Empirical smoke-test
-on SG-NEx A549 chr5 in progress (Sherlock job 29546795).
+**Status (2026-06-15): REJECTED (final).** GMAP's first "disqualification" was a
+**configuration artifact (`--nofails`), not a real failure** (see "The `--nofails`
+dead end" below), so the 2026-06-14 algorithmic-orthogonality panel re-opened it as
+a **top orthogonal candidate** and re-evaluated it correctly (`-n 1`). The correct
+run then **failed all three pre-registered bars** on the SG-NEx A549 chr5 full-panel
+test (2026-06-14), and a most-charitable re-test (2026-06-15, Sherlock job 29696736:
+K-filtered self-rescue + shared junction pool + junction-guided scoring OFF)
+**confirmed the fail** — annotated_rate 71.0% (bar ≥95%), anchor median 5 bp
+(bar ~13 bp), STOLE-correct 2655 ≫ ADDED-correct 692. GMAP wins displace better
+minimap2/deSALT alignments and introduce spurious novel junctions; the K-filter
+cannot lift the intrinsic anchor placement. The wrapper remains shipped and opt-in
+(`--junction-aligners gmap`) for further study, but GMAP is **not** a default panel
+member. See ALIGNER_RECOMMENDATIONS.md → "Candidate Aligners" for the full decision.
 
-## Why it's interesting (algorithmic orthogonality)
+## Why it was interesting (algorithmic orthogonality)
 
 GMAP is one of the few long-read RNA aligners whose core algorithm is
 **genuinely orthogonal to minimap2's minimizer seed-chain-align** — and, unlike
@@ -73,11 +80,16 @@ gmap -d GRCh38_chr5 -D <index_dir> -f samse -n 1 -t <threads> reads.fastq > out.
 
 ## Integration into RECTIFY
 
-For the orthogonality *measurement*, GMAP is run directly (above), then its BAM
-is fed to `rectify correct --aligner-bams gmap:<bam>` and `merge_corrected_tsvs`
-(both are aligner-name-agnostic — no wrapper needed yet). For production adoption,
-add a `run_gmap` wrapper to `rectify/core/align/multi_aligner.py` per
-ALIGNER_RECOMMENDATIONS.md → "Adding Aligners".
+A `run_gmap()` wrapper now ships in `rectify/core/align/multi_aligner.py` and is
+exposed as an opt-in junction aligner via `rectify align --junction-aligners gmap`.
+It requires a pre-built db: pass `--gmap-db <dir>/<name>` or place a
+`gmap_db/<genome_stem>` directory adjacent to the genome (the wrapper does **not**
+auto-build it). On any GMAP/samtools failure it emits an empty name-sorted BAM (like
+deSALT) so the consensus proceeds. For a direct orthogonality *measurement* you can
+still run GMAP by hand (above) and feed its BAM to
+`rectify correct --aligner-bams gmap:<bam>` + `merge_corrected_tsvs` (both are
+aligner-name-agnostic). Per the rejection above, GMAP is not enabled in the default
+panel.
 
 ## Sources
 

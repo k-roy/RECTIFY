@@ -5,6 +5,18 @@
 **Status:** Production implementation complete  
 **Implementation:** `projects/roadblocks/scripts/nanopore_analysis/analyze_drs_adapter.py`
 
+> **Scope note.** This document records the empirical adapter/poly(A)
+> characterisation carried out in the upstream `roadblocks` analysis project; the
+> `projects/roadblocks/...` and `scripts/nanopore_analysis/...` paths below live in
+> that project, not in this repository. The `find_polya_and_adapter()` listed here
+> is the **precursor** of the function that now ships in RECTIFY as
+> `rectify/core/commands/drs_trim_command.py`. The two share a name and the same
+> three-pass design, but the RECTIFY version has since diverged (RNA-aware regex
+> `[TU][CTU]{0,10}$`, a terminal `(AAG/GAA)n` repeat strip, and a six-element
+> return tuple). For the shipping algorithm and its current return value, see
+> [`THREE_PASS_ADAPTER_TRIMMING.md`](THREE_PASS_ADAPTER_TRIMMING.md). The findings
+> below remain accurate for the datasets and precursor code they describe.
+
 ---
 
 ## 1. DRS Orientation and Dorado Output Convention

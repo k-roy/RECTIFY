@@ -42,14 +42,16 @@ For each read with a 5' soft-clip near a splice junction:
 1. Look up the nearest annotated splice junction upstream of the alignment start
 2. Fetch the upstream exon sequence (the last N bp, where N = soft-clip length)
 3. Align the soft-clipped sequence against the exon sequence using semi-global NW (affine gap, Gotoh 1982) via `local_aligner.py`
-4. If the alignment is within edit-distance threshold: extend the alignment to the exon boundary and record the `five_prime_exon_cigar` (v2.8.0)
+4. If the alignment is within the edit-distance threshold (`max_edit_frac`, default 0.2): extend the alignment to the exon boundary and record the `five_prime_exon_cigar`
 
 ```python
-def rescue_3ss_truncation(read, genome, annotated_junctions):
+def rescue_3ss_truncation(read, genome, candidate_junctions, strand=None,
+                          max_edit_frac=0.2, junction_proximity_bp=...):
     """
     Post-consensus 5' soft-clip rescue at 3' splice sites.
 
-    Returns rescue dict including five_prime_exon_cigar if rescued, else rescued=False.
+    Returns a rescue dict including five_prime_exon_cigar when rescued,
+    otherwise rescued=False.
     """
 ```
 
@@ -81,9 +83,12 @@ Read:    ...TTTTTT   [GCATGG]      (6 T's — under-called; GCA soft-clipped)
 3. If yes: extend the 3' end past the remaining reference homopolymer bases to include the soft-clipped match
 
 ```python
-def rescue_softclip_at_homopolymer(read, strand, genome, max_rescue_len=10):
+def rescue_softclip_at_homopolymer(read, strand, genome,
+                                   min_homopolymer_len=3, end='3prime',
+                                   current_pos=None):
     """
-    Extend 3' end past reference homopolymer to include matching soft-clipped bases.
+    Extend the 3' (or 5') end past a reference homopolymer to include matching
+    soft-clipped bases.
     """
 ```
 

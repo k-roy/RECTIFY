@@ -101,7 +101,7 @@ rectify align <reads.fastq.gz> --genome <genome.fa> \
 
 ## Primary-alignment & duplicate handling
 
-`rectify align` passes **`--secondary=no`** to winnowmap (`multi_aligner.py:1531`;
+`rectify align` passes **`--secondary=no`** to winnowmap (`run_winnowmap2`, `multi_aligner.py:2001`;
 see the `-W ... --secondary=no --MD -y` line under "How RECTIFY runs it"), so
 rectify-produced winnowmap2 BAMs carry no secondary records. Supplementary records
 from chimeric/split reads can still occur (winnowmap, like minimap2, has no flag to

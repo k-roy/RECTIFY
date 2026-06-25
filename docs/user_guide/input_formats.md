@@ -61,7 +61,7 @@ Supported formats:
 ```
 
 !!! note
-    RECTIFY auto-detects format from the file extension. For uLTRA (optional 5th aligner), `.gff` files are auto-converted to `.gtf` via `gffread`.
+    RECTIFY auto-detects format from the file extension. For uLTRA (a splice-aware aligner; a default in `rectify run-all`, opt-in for `rectify align`), `.gff` files are auto-converted to `.gtf` via `gffread`.
 
 ---
 
@@ -88,13 +88,16 @@ For *S. cerevisiae* with `--Scer`, WT NET-seq is bundled and auto-detected.
 
 ## Manifest TSV (multi-sample)
 
-A tab-separated file with three required columns:
+A tab-separated file. For `rectify run-all` / `rectify analyze`, `sample_id`
+and `path` are required and `condition` is required for differential analysis
+(DESeq2 / APA / GO). (`rectify batch` uses `bam_path` instead of `path` — see
+its [reference](commands/batch.md).)
 
 | Column | Description |
 |--------|-------------|
 | `sample_id` | Unique sample identifier (used for output directory names) |
 | `path` | Absolute path to input BAM or FASTQ.GZ file |
-| `condition` | Condition label (e.g. `wt`, `ko`, `heat_shock`) |
+| `condition` | Condition label (e.g. `wt`, `ko`, `heat_shock`); required for differential analysis |
 
 Example:
 

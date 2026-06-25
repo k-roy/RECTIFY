@@ -37,22 +37,26 @@ rectify aggregate reads.bam --Scer --mode all -o aggregated/
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `input` | — | Input BAM file |
+| `bam` | — | Input BAM file (sorted and indexed) |
 | `-o, --output-dir` | — | Output directory |
-| `--annotation` | — | Gene annotation GFF/GTF |
-| `--Scer` | — | Bundled *S. cerevisiae* data |
-| `--mode` | `3prime` | What to aggregate: `3prime`, `5prime`, `junctions`, or `all` |
-| `-j, --threads` | auto | Number of threads |
+| `--genome` / `--annotation` | — | Reference genome FASTA / gene annotation GFF/GTF |
+| `--Scer` / `--organism` | — | Use bundled *S. cerevisiae* data |
+| `--mode` | `all` | What to aggregate: `3prime`, `5prime`, `junctions`, or `all` |
+| `--format` | `tsv` | Output format: `tsv` or `parquet` |
+| `--include-read-ids` | off | Include contributing read IDs (larger files) |
+| `--prefix` | input stem | Output file-name prefix |
 
 ---
 
 ## Output files
 
+Files are named `<prefix>.<format>` (the `<prefix>` defaults to the input BAM stem):
+
 | File | Description |
 |------|-------------|
-| `3prime_ends.tsv` | Per-position 3' end counts (chrom, pos, strand, count) |
-| `5prime_ends.tsv` | Per-position 5' end counts |
-| `junctions.tsv` | Per-junction read counts (donor_pos, acceptor_pos, strand, count) |
+| `<prefix>_3prime_clusters.{tsv,parquet}` | Per-position 3' end counts |
+| `<prefix>_5prime_clusters.{tsv,parquet}` | Per-position 5' end counts |
+| `<prefix>_junctions.{tsv,parquet}` | Per-junction read counts |
 
 ---
 

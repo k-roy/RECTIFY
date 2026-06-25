@@ -4,9 +4,10 @@ UMI-aware Stage 1 of the ONT PCR-cDNA pipeline (PCB114.24 chemistry).
 
 `rectify correct-cdna` consumes a pre-aligned PCR-cDNA BAM and collapses PCR
 siblings of the same starting RNA molecule into a single consensus record.
-Per-cluster tags are written on TAB-separated FASTQ comments so that
-`rectify align -y` propagates them to the post-alignment BAM for downstream
-analysis by [`rectify cdna-analyze`](cdna_analyze.md).
+Per-cluster tags are written on TAB-separated FASTQ comments so that the
+`minimap2 -y` pass inside `rectify align` propagates them to the
+post-alignment BAM for downstream analysis by
+[`rectify cdna-analyze`](cdna_analyze.md).
 
 For pipeline context, see the [ONT PCR-cDNA pipeline overview](correct_cdna_overview.md).
 
@@ -102,10 +103,15 @@ rectify correct-cdna pcb114.bam \
 | `--region CHROM` | Restrict to one BAM region (e.g. `chrI`) — useful for testing |
 | `--no-mask-rdna` | Disable rDNA masking. By default, reads overlapping `rRNA_gene` loci in `--gff` are excluded to prevent the O(n^2) UMI bottleneck on chrXII tandem repeats. |
 
-### Logging
+### Performance, resume, and logging
 
 | Argument | Description |
 |----------|-------------|
+| `--workers` | Number of parallel worker processes |
+| `--force-all` | Ignore sidecars and rerun every stage unconditionally |
+| `--force-stage NAME[,NAME...]` | Force-rerun specific stages (downstream stages are also forced) |
+| `--accept-prior-provenance` | Treat a git SHA mismatch with a prior run as non-blocking |
+| `--dry-run-resume` | Print each stage's SKIP/RUN decision and exit |
 | `-v, --verbose` | Enable DEBUG-level logging |
 
 ---

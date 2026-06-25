@@ -41,7 +41,8 @@ tail length.
 
 - For poly(A) tail length only — no 3'-end-position concern — `dorado
   polya` is built into the basecaller and is the lowest-friction option;
-  its `pt:i` tag is consumed by RECTIFY transparently when present.
+  RECTIFY records its `pt:i` tag (as `dorado_polya_length`) when present, and
+  will treat it as the authoritative tail length under `--use-dorado-polya`.
 - For raw-signal tail length on non-Dorado basecallers, `tailfindr` or
   `nanopolish polya` are appropriate.
 - For full Nano3P-seq protocol-specific analyses (including 3'-end

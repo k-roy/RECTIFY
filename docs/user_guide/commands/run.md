@@ -158,7 +158,7 @@ These flags are forwarded verbatim to `rectify correct`. See the
 | `--write-softclip-bam` | off | Write a soft-clipped corrected BAM alongside the primary hard-clipped BAM. Cat2 soft-clip rescue bases are visible in IGV with "Show soft-clipped bases" enabled. Useful for QC/debugging. |
 | `--write-polya-bam` | off | Write a BAM with the original poly(A) tail restored from the DRS trim parquet metadata as a 3' soft clip. Useful for visually validating poly(A) tail handling in IGV. Has no effect without `--drs`. |
 | `--bam-dir DIR` | (sample output dir) | Directory to write alignment BAMs (per-aligner and rectified). Useful for inspecting per-aligner BAMs separately from corrected outputs. |
-| `--keep-aligner-bams` | off | Retain per-aligner BAMs (minimap2, mapPacBio, gapmm2) after consensus selection. By default these are excluded from the Oak sync to save disk space. |
+| `--keep-aligner-bams` | off | Retain the per-aligner BAMs (one per aligner in the active panel) after consensus selection. By default these are excluded from the Oak sync to save disk space. |
 | `--trust-existing-bams` | off | Reuse pre-existing per-aligner / rectified BAMs without checking provenance sidecars. Use only when BAMs have been manually verified as compatible. |
 | `--scratch-dir DIR` | auto | Base directory for intermediate BAM I/O (alignment output, unsorted corrected BAM, sort temp files). Auto-detected from `$SCRATCH`, `$SLURM_TMPDIR`, or `$TMPDIR` inside HPC batch jobs. |
 
@@ -185,11 +185,13 @@ These flags are forwarded verbatim to `rectify correct`. See the
 
 ### Single sample (standard)
 
-```
-1. Alignment (skipped if BAM provided)
+```text
+1. Alignment (skipped if BAM provided; default long-read panel)
    ├─ minimap2 (splice-aware, junction-annotated)
-   ├─ mapPacBio (PacBio RNA mode)
-   ├─ gapmm2 (gap-aware variant)
+   ├─ mapPacBio (BBMap long-read RNA mode)
+   ├─ gapmm2 (gap-aware minimap2 wrapper)
+   ├─ uLTRA  (junction-aware; --no-junction-aligners to drop)
+   ├─ deSALT (junction-aware; --no-junction-aligners to drop)
    └─ Consensus selection by junction scoring
 
 2. Correction (rectify correct — post-consensus, on winning aligner's BAM)
@@ -201,9 +203,9 @@ These flags are forwarded verbatim to `rectify correct`. See the
    └─ Spike-in filtering
 
 3. Analysis (rectify analyze)
-   ├─ corrected_3ends.tsv
-   ├─ corrected_3ends_index.bed.gz
-   └─ processing_stats.tsv
+   ├─ corrected_reads.tsv      (per-read corrected 3' ends + features)
+   ├─ cpa_clusters.tsv         (CPA clusters)
+   └─ report.html              (HTML summary)
 ```
 
 ### Single sample (DRS — with `--drs`)
@@ -239,16 +241,16 @@ Combined analysis:
 
 ## Output structure
 
-```
+```text
 output_dir/
 ├── <sample>/                   # One directory per sample
-│   ├── corrected_3ends.tsv
-│   ├── corrected_3ends_index.bed.gz
-│   ├── alignment_features.tsv
-│   └── processing_stats.tsv
+│   ├── corrected_reads.tsv     # Per-read corrected 3' ends + features
+│   ├── corrected_consensus.bam # Corrected consensus BAM (+ .bai)
+│   ├── cpa_clusters.tsv         # CPA clusters (single-sample analysis)
+│   └── report.html             # Per-sample HTML summary
 └── combined/                   # Multi-sample only
     ├── cpa_clusters.tsv
     ├── tables/
     ├── plots/
-    └── analysis_report.html
+    └── report.html
 ```

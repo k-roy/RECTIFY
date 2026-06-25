@@ -98,7 +98,7 @@ RECTIFY auto-converts between UCSC and NCBI formats:
 | NCBI RefSeq | `ref\|NC_001133\|` |
 | Short | `I` |
 
-If your BAM uses a different naming scheme, RECTIFY normalizes chromosome names internally. Check `processing_stats.tsv` for any chromosome name warnings.
+If your BAM uses a different naming scheme, RECTIFY normalizes chromosome names internally. Watch the run log for any chromosome-name warnings.
 
 ---
 

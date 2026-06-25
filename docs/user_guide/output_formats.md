@@ -2,9 +2,11 @@
 
 ## Correction outputs
 
-### `corrected_3ends.tsv`
+### `corrected_reads.tsv`
 
-The primary per-read output. One row per read.
+The primary per-read output of `rectify correct` (and the per-sample output of
+`rectify run-all`). One row per read; columns follow the canonical
+`CORRECTION_TSV_HEADER`. The most commonly used columns:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -13,78 +15,77 @@ The primary per-read output. One row per read.
 | `strand` | str | `+` or `-` |
 | `original_3prime` | int | Raw 3' end before correction (0-based) |
 | `corrected_3prime` | int | Corrected 3' end after walk-back (0-based) |
-| `correction_modules` | str | Comma-separated list of modules that modified this read |
+| `five_prime_position` | int | 5' end position (0-based) |
+| `five_prime_rescued` | int | `1` if the 5' end was rescued by Cat3 splice-site truncation rescue |
+| `five_prime_exon_cigar` | str | SAM CIGAR for the rescued exon segment (e.g. `8M1D3M`); empty if no rescue |
+| `alignment_start` / `alignment_end` | int | Reference alignment span (0-based half-open) |
+| `ambiguity_min` / `ambiguity_max` / `ambiguity_range` | int | A-tract ambiguity window bounds and width |
+| `polya_length` | int | Poly(A) tail length (aligned + soft-clipped A's) |
+| `aligned_a_length` / `soft_clip_a_length` | int | Poly(A) split into aligned vs soft-clipped components |
+| `junctions` / `n_junctions` | str / int | Splice junctions in the read and their count |
+| `five_prime_soft_clip_length` / `three_prime_soft_clip_length` | int | Terminal soft-clip lengths |
+| `mapq` | int | Mapping quality |
+| `correction_applied` | int/bool | Whether a position correction was applied |
 | `confidence` | str | `HIGH`, `MEDIUM`, or `LOW` |
-| `polya_length` | int | Total poly(A) tail length (aligned + soft-clipped A's) |
-| `polya_source` | str | Source of poly(A) length estimate (`aligned`, `softclip`, `pt_tag`, etc.) |
-| `five_prime_rescued` | int | `1` if 5' end was rescued by Cat3 splice-site truncation rescue |
-| `five_prime_exon_cigar` | str | SAM CIGAR string for the rescued exon segment (e.g. `8M1D3M`); empty if no rescue |
-| `sc_homopolymer_extension` | int | Number of bases extended into genomic homopolymer (Module 2G) |
+| `qc_flags` | str | e.g. `PASS`, `AG_RICH`, `ATRACT_AMBIGUOUS`, `LOW_MAPQ` |
+| `gene_id` | str | Assigned gene (annotation overlap) |
+| `pt_tag` | int | Dorado `pt:i` poly(A) estimate, if present |
+| `polya_score` | float | Poly(A) model score |
+| `polya_source` | str | Source of the poly(A) estimate (`aligned`, `softclip`, `pt_tag`, etc.) |
+| `sc_homopolymer_extension` | int | Bases extended into a genomic homopolymer (Module 2G) |
 | `sc_rescued_seq` | str | Soft-clipped sequence rescued by Module 2G |
 | `sc_original_softclip_len` | int | Original soft-clip length before Module 2G rescue |
-| `best_aligner` | str | Winning aligner from consensus selection |
-| `qc_flags` | str | `PASS`, `AG_RICH`, `ATRACT_AMBIGUOUS`, `LOW_MAPQ`, etc. |
+| `oc_homopolymer_extension` / `oc_overcall_count` / `oc_terminal_base` | int/str | Over-call (over-extension) diagnostics |
+| `five_prime_intron_clip_pos` / `five_prime_upstream_trim` / `reanchor_clip_len` | int | 5' rescue / re-anchoring diagnostics |
+
+The full 38-column header is defined by `CORRECTION_TSV_HEADER`
+(`rectify/core/bam/output.py`). After consensus merge (`rectify run-all`,
+`rectify consensus`), a `winning_aligner` column is appended recording the
+aligner selected per read.
 
 !!! note "Coordinate convention"
     All positions are **0-based, half-open** (BED/pysam convention). See the [Coordinate System](../coordinate_system.md) page for strand-specific definitions.
 
----
-
-### `corrected_3ends_index.bed.gz`
-
-A pre-aggregated position count file — approximately 300× smaller than the full TSV. Used by manifest-mode analysis to speed up multi-sample clustering.
-
-| Column | Description |
-|--------|-------------|
-| `chrom` | Chromosome |
-| `corrected_3prime` | Corrected 3' end position (0-based) |
-| `strand` | `+` or `-` |
-| `count` | Number of reads at this position |
+!!! note "`--use-dorado-polya`"
+    By default, RECTIFY measures poly(A) length from the alignment/soft-clip
+    and records Dorado's `pt:i` estimate in `pt_tag` for reference. Passing
+    `--use-dorado-polya` to `rectify correct` makes Dorado's `pt:i` value the
+    authoritative `polya_length` instead.
 
 ---
 
 ### BAM outputs from `rectify correct`
 
-| File | Description |
+These BAMs are optional and written to the paths you pass on the command line:
+
+| Flag | Description |
 |------|-------------|
-| `rectified_corrected_3end.bam` | Corrected BAM with reads hard-clipped to the corrected 3' end |
-| `rectified_pA_tail_trimmed.bam` | Soft-clipped BAM showing the poly(A) tail as soft-clips at the 3' end |
-| `rectified_pA_tail_soft_clipped.bam` | DRS Step 4 output: poly(A) tail restored as soft-clips after `rectify restore-softclip` |
+| `--write-corrected-bam BAM` | Corrected BAM with each read hard-clipped at its corrected 3' end |
+| `--write-softclipped-bam BAM` | Corrected BAM with poly(A) tail bases soft-clipped (rather than hard-clipped) at the corrected 3' end |
+| `--output-bam BAM` | The corrected alignments written back as a BAM (see `rectify correct --help`) |
 
-!!! note "DRS Step 4"
-    `rectified_pA_tail_soft_clipped.bam` is produced only when `--drs` is passed to `rectify run-all`. It is written by Step 4 (`rectify restore-softclip`) and is sorted and indexed.
-
----
-
-### `alignment_features.tsv`
-
-Per-read alignment metadata.
-
-| Column | Description |
-|--------|-------------|
-| `read_id` | Read name |
-| `mapq` | Mapping quality |
-| `cigar_summary` | Compact CIGAR description |
-| `alignment_identity` | Fraction of aligned bases matching reference |
-| `five_prime_soft_clip` | Soft-clipped bases at 5' end |
-| `three_prime_soft_clip` | Soft-clipped bases at 3' end |
+In `rectify run-all`, the per-sample corrected consensus alignments are written
+as `corrected_consensus.bam` (sorted + indexed). DRS Step 4
+(`rectify restore-softclip`) re-attaches the trimmed poly(A) tail as a 3'
+soft-clip for IGV inspection — produced only when `--drs` is passed to
+`rectify run-all`, or by invoking `rectify restore-softclip` directly.
 
 ---
 
-### `processing_stats.tsv`
+### `<output>_stats.tsv`
 
-Per-sample QC summary.
+Per-sample QC summary, written alongside the corrected TSV (the `.tsv`
+extension of `-o`/`--output` is replaced with `_stats.tsv`). Each row is a
+`metric  count  percent  description` record; common metrics include:
 
-| Column | Description |
+| Metric | Description |
 |--------|-------------|
-| `total_reads` | Total reads processed |
-| `corrected` | Reads with position correction applied |
-| `ag_rich_flagged` | Reads flagged for AG-rich context |
-| `atract_ambiguous` | Reads in A-tract ambiguous region |
-| `low_mapq_filtered` | Reads filtered for low mapping quality |
-| `spikein_filtered` | Spike-in reads removed |
-| `mean_shift_bp` | Mean shift (usually −3 to −7 bp) |
-| `median_polya_length` | Median poly(A) tail length |
+| `total_reads_in_bam` | Total reads in the input BAM |
+| `reads_processed` | Reads with 3' ends corrected |
+| `spikein_reads_filtered` | Spike-in reads filtered |
+| `ends_corrected_indel` | 3' ends corrected for indel artifacts |
+| `ends_walkback_readgenome` | 3' ends corrected by read-vs-reference walkback (`--dT-primed-cDNA`) |
+| `total_position_shifts` | Total reads whose 3' position changed |
 
 ---
 
@@ -96,13 +97,16 @@ CPA site clusters from adaptive clustering.
 
 | Column | Description |
 |--------|-------------|
-| `cluster_id` | Unique cluster identifier |
+| `cluster_id` | Unique cluster identifier (e.g. `cluster_000123`) |
 | `chrom` | Chromosome |
 | `strand` | `+` or `-` |
 | `start` | Cluster start (0-based) |
 | `end` | Cluster end (exclusive) |
-| `peak_pos` | Most-used CPA position within cluster |
-| `total_count` | Total reads across all samples |
+| `modal_position` | Most-used CPA position within the cluster |
+| `cluster_com` | Read-weighted center-of-mass (signal centroid) of the cluster |
+| `n_positions` | Number of distinct CPA positions in the cluster |
+| `n_reads` | Total reads in the cluster (across all samples) |
+| `cluster_width` | Cluster width in bp (`end - start + 1`) |
 
 ---
 
@@ -128,24 +132,17 @@ Cluster-level (isoform-resolution) differential expression. Same columns as gene
 
 ---
 
-### `tables/shift_results.tsv`
+### `tables/shift_analysis_{condition}.tsv`
 
-Genes with significant APA site usage shifts.
-
-| Column | Description |
-|--------|-------------|
-| `gene_id` | Gene identifier |
-| `js_divergence` | Jensen-Shannon divergence between conditions |
-| `direction` | `proximal_shift` or `distal_shift` |
-| `proximal_delta` | Change in proximal site usage fraction |
-| `distal_delta` | Change in distal site usage fraction |
-| `padj` | Adjusted p-value |
+Genes with APA site-usage shifts between conditions. Columns include a
+per-gene Jensen-Shannon divergence and proximal/distal usage deltas with an
+adjusted p-value.
 
 ---
 
-### `tables/go_enrichment_{condition}.tsv`
+### `tables/go_enrichment_up_{condition}.tsv` / `tables/go_enrichment_down_{condition}.tsv`
 
-GO term enrichment.
+GO term enrichment, split into up- and down-regulated gene sets.
 
 | Column | Description |
 |--------|-------------|
@@ -178,13 +175,16 @@ Full motif files (logo images, MEME format) are in `motifs/{condition}/`.
 
 ## Export outputs
 
-### `{prefix}.bw`
+`rectify export` writes strand-separated tracks, named per replicate and per
+summed condition (e.g. `wt_by4742_rep1.plus.bw`, `wt_by4742.minus.bw`).
 
-BigWig format — per-base 3' end coverage, strand-separated. Load directly in IGV, UCSC Genome Browser, or pyGenomeTracks.
+### `{name}.plus.bw` / `{name}.minus.bw`
 
-### `{prefix}.bedgraph`
+BigWig format — per-base 3' end coverage, one file per strand. Load directly in IGV, the UCSC Genome Browser, or pyGenomeTracks.
 
-BedGraph format — same data as bigWig, plain text.
+### `{name}.plus.bedgraph` / `{name}.minus.bedgraph`
+
+BedGraph format — same data as bigWig, plain text (written with `--format bedgraph`).
 
 ---
 
@@ -194,10 +194,32 @@ BedGraph format — same data as bigWig, plain text.
 
 PCA of samples by CPA cluster usage (first 2 PCs).
 
-### `plots/heatmap_top_clusters.png`
+### `plots/sample_heatmap.png`
 
-Heatmap of top differentially used CPA clusters across samples.
+Sample-clustering heatmap of CPA cluster usage across samples (≥ 2 samples required).
 
-### `analysis_report.html`
+### `report.html`
 
-Comprehensive HTML report including QC stats, PCA, heatmaps, top DE genes, and motif logos.
+Comprehensive HTML report including QC stats, the per-aligner consensus
+breakdown, PCA, heatmaps, top DE genes, and motif logos.
+
+---
+
+## Consensus selection stats
+
+### `<prefix>.consensus_aligner_stats.tsv`
+
+Written by `rectify align` and `rectify consensus`. Each row is a
+`metric  count  percent  description` record summarizing aligner selection:
+
+| Metric (row) | Description |
+|--------------|-------------|
+| `total_reads` | Total reads written to the consensus BAM |
+| `aligner_wins_<aligner>` | Reads where `<aligner>` was selected |
+| `confidence_high` / `confidence_medium` / `confidence_low` | Selection-confidence breakdown |
+| `5prime_rescued` | Reads rescued via 5' soft-clip splice detection |
+| `tied_score` | Reads requiring a tiebreaker (equal top junction score) |
+| `aligner_combo_<panel>` | Reads whose available/compared aligner panel was `<panel>` (e.g. `gapmm2+minimap2`) |
+
+The per-aligner-combination and tied-score breakdowns also surface in the
+consensus section of the HTML report.

@@ -23,6 +23,13 @@ rectify install-aligners --desalt
 
 On Sherlock it is exposed via a `~/bin/deSALT` symlink into the conda env.
 
+> **Current vendored build (2026-06).** The binary shipped in the repo is now the
+> bioconda build `desalt-1.5.6-h577a1d6_7` (md5 `e923d86650fb6b677bb48f3fb53b0d5f`),
+> reported md5-identical across the repo, Hoffman2, and Sherlock. It superseded the
+> earlier `he4a0461_5` build referenced in the forensic crash investigation below;
+> the SIGSEGV/OOM empty-BAM fallback (next section) still applies, so the crash logs
+> recorded under the older build remain representative of current behaviour.
+
 ---
 
 ## Pre-built RdBG index required
@@ -152,7 +159,7 @@ a pipeline failure.
 
 When deSALT crashes with one of the recognized exits (`139 / 137 / -11 / -9`),
 `run_desalt()` correctly catches it and calls `_create_empty_name_sorted_bam`
-(multi_aligner.py:551) to emit a placeholder so the consensus step can proceed
+(`multi_aligner.py`) to emit a placeholder so the consensus step can proceed
 with the remaining aligners. The placeholder, however, contains **only one
 header line:**
 

@@ -1,6 +1,6 @@
 # rectify netseq
 
-Optional refinement step. Process NET-seq BAM files: extract 3' end positions, apply oligo(A)-spreading deconvolution, and write strand-specific BigWig files for use with `--netseq-table` in `rectify correct`.
+Optional refinement step. Process NET-seq BAM files: extract 3' end positions, apply oligo(A)-spreading deconvolution, and write strand-specific BigWig files for use with `--netseq-dir` in `rectify correct`.
 
 ---
 
@@ -98,7 +98,6 @@ Defaults: per-read records as parquet plus per-position signal as bedgraph (one 
 | `{sample}.deconv.plus.bedgraph` | NNLS-deconvolved plus strand signal (default) |
 | `{sample}.deconv.minus.bedgraph` | NNLS-deconvolved minus strand signal (default) |
 | `{sample}.{raw,deconv}.{plus,minus}.bw` | BigWig variants of the above (only with `--output-format bigwig`) |
-| `netseq_stats.tsv` | Processing statistics |
 
 ---
 

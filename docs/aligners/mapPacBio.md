@@ -54,7 +54,7 @@ reads — the signature of this misconfiguration.
 > based on a misreading of the docs and made labeling worse. For yeast (introns
 > <1 kb, default `maxindel` adequate) the symptom is masked. See AGENT_FIXES.md.
 
-**Correct RECTIFY invocation** (`run_map_pacbio`, multi_aligner.py ~L723):
+**Correct RECTIFY invocation** (`run_map_pacbio`, multi_aligner.py ~L786):
 
 ```
 intronlen=10            # relabel any deletion >=10 bp as an intron (N)
@@ -228,7 +228,7 @@ If the `N`-op count is near zero on a mammalian RNA sample, suspect the
 
 `rectify align` passes **no secondary-suppression flag** to mapPacBio — its command
 is `ref/in/out/threads/path/fastareadlen/intronlen/maxindel/minratio/-Xmx`
-(`multi_aligner.py:739-757`), with no `secondary=` argument and no post-hoc dedup.
+(`run_map_pacbio`, `multi_aligner.py:786-805`), with no `secondary=` argument and no post-hoc dedup.
 BBMap's default secondary-output behavior is not determinable from rectify source.
 This is safe for 3′-end counting because `rectify correct` skips
 `is_secondary`/`is_supplementary` records regardless of producing aligner.

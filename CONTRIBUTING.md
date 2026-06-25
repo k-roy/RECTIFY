@@ -11,8 +11,8 @@ for contributors; the detailed engineering walkthrough lives at
 2. **Fork → branch → PR.** Branch from `master` and use a descriptive
    slash-separated name, e.g. `fix/walkback-genomic-A-skip` or
    `feat/multisample-strand-export`.
-3. **Run the test suite** (`pytest -m "not slow"`) and confirm 934+ pass
-   before pushing. Add tests for any new behavior.
+3. **Run the test suite** (`pytest -m "not slow"`, ~1,640 tests, ~1 minute) and
+   confirm it is green before pushing. Add tests for any new behavior.
 4. **Match the coding style** — `black` (line length 100) and `flake8`. The
    `dev` extras (`pip install -e ".[dev]"`) install both.
 5. **Update [CHANGELOG.md](CHANGELOG.md)** under `## [Unreleased]` describing
@@ -29,9 +29,9 @@ pip install -e ".[dev,visualize]"
 pytest -m "not slow"
 ```
 
-The full suite (~934 tests, ~1 minute) runs without optional binary aligners.
-Slow integration tests (~10 minutes, marked `@pytest.mark.slow`) require
-`minimap2` and `mapPacBio` on `PATH`; install via conda:
+The fast suite (~1,640 tests, ~1 minute) runs without optional binary aligners.
+Slow integration tests (marked `@pytest.mark.slow`) require `minimap2` and
+`mapPacBio` on `PATH`; install via conda:
 
 ```bash
 conda install -c bioconda minimap2 bbmap

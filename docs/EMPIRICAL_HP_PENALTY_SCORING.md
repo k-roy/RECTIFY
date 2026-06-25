@@ -90,7 +90,7 @@ is the only modality whose poly-T/poly-U tract 3′ ends *saturate inside the tr
 | Deletion  | HP=4    | **0.17**               | 0.50          | 2.9× too expensive |
 | Deletion  | HP=8    | **0.033**              | 0.25          | 7.6× too expensive |
 | Substitution | HP=1 | **1.00** (ref)         | 1.00          | Identical by design |
-| Insertion | any     | **10.0** (cap)         | 1.25          | Heuristic far too cheap |
+| Insertion | HP=1    | **1.25**               | 1.25          | Matches old heuristic at HP=1 |
 
 The old `del_normal=1.0` treated a deletion at HP=1 as equally costly as a substitution.
 Empirically, even a single isolated-base deletion is **2.3× more likely** than a substitution
@@ -98,8 +98,11 @@ in Nanopore R10.4.1 reads. At HP=8 the disparity reaches 7.6×. Using over-price
 costs causes the scorer to incorrectly prefer junction candidates that avoid deletions even
 when those deletions are the expected Nanopore error mode.
 
-Insertions are ~100× rarer than deletions in Nanopore reads. All insertion penalties are
-effectively at the 10.0 cap — the old heuristic of 1.25 was dramatically too cheap.
+Insertions are much rarer than deletions in Nanopore reads, but the insertion rows are
+populated and loaded (`low_count=False`) across the well-sampled HP range. The empirical
+penalty starts at 1.25 (I AT HP=1) — coincidentally matching the old 1.25 heuristic — and
+falls to ~0.15 by HP=6 (insertions become more expected mid-tract). Only the sparse
+long-HP tail (HP≳15) is `low_count=True` and approaches the 10.0 cap.
 
 ---
 
@@ -230,8 +233,10 @@ table is not strand-biased.
 
 The curves show:
 - AT penalties fall from 0.44 at HP=1 to ~0.03 at HP=8 (deletions become nearly free)
-- CG penalties fall from 0.85 at HP=1 to ~0.18 at HP=8 (slower decay due to higher sub rate)
-- X marks indicate extrapolated (low-count) points for CG at HP≥7
+- CG penalties fall from 0.85 at HP=1 to ~0.03 at HP=8 (the higher HP=1 sub rate
+  makes the short-HP penalties higher, but both classes converge near 0.03 by HP=8)
+- X marks indicate extrapolated (low-count) points for CG at HP≥9 (HP=7–8 deletion
+  rows remain `low_count=False`)
 - Both curves are isotonic-smoothed (monotone non-decreasing HP→penalty-score is
   inverted: monotone non-increasing from HP=1 to longer runs)
 
@@ -285,9 +290,9 @@ D        AT          1          0.0054     9101210      0.4442         False
 D        CG          1          0.0052     10000942     0.8478         False
 X        AT          1          0.0024     4043850      1.0000         False
 X        CG          1          0.0044     7527911      1.0000         False
-D        AT          8          0.0641     ...          0.0374         False
-D        CG          8          ~est       ...          ~0.18          True
-I        AT          1          ...        ...          10.0           True
+D        AT          8          0.0730     483698       0.0323         False
+D        CG          8          0.1336     6675         0.0328         False
+I        AT          1          0.0012     1738667      1.2500         False
 ```
 
 ---
@@ -328,8 +333,10 @@ the empirical table and works correctly with the default heuristics as well.
 - **Chemistry and species specificity**: These tables are derived from *S. cerevisiae*
   R10.4.1 data. HP error rates are chemistry- and species-dependent. Do not use for
   non-yeast or non-R10.4.1 data without regenerating from your own dataset.
-- **Insertion scarcity**: All insertion penalties (`I` rows) have `low_count=True`.
-  Treat as 10.0 in all cases.
+- **Insertion scarcity**: Insertion (`I`) rows are populated and loaded
+  (`low_count=False`) across the well-sampled HP range, with penalties starting at
+  1.25 (I AT HP=1) and falling to ~0.15 mid-tract. Only the sparse long-HP tail
+  (HP≳15) is `low_count=True` and should be treated as near the 10.0 cap.
 - **CG at HP≥7**: Extrapolated via isotonic smoothing from HP=5–6 empirical trend.
   The actual penalty for CG deletions at HP≥7 is uncertain due to data sparsity in
   the *S. cerevisiae* genome.
@@ -340,13 +347,16 @@ the empirical table and works correctly with the default heuristics as well.
 
 - [Junction-Shift FDR](JUNCTION_SHIFT_FDR.md) — theoretical risk model for
   HP-context junction-shift false positives; uses these rates as inputs.
-- The penalty profiler and the production tables are maintained outside this
-  repository. To regenerate the tables, run
-  `rectify/calibration/calibrate_shift_corrections.py` on a CIGAR-error
-  profile produced from a high-coverage WT BAM and a reference of the same
-  organism; the resulting JSON is consumed by
-  `--junction-penalty-table` / `--str-penalty-table` on `rectify correct`
-  and `rectify run-all`.
+- The penalty profiler ships in the repo at
+  `scripts/calibration/empirical_cigar_error_profiler.py`. To regenerate the
+  tables, run it on the multi-aligner BAMs of a high-coverage WT sample against
+  a reference of the same organism (e.g. `--isolation-flank 10 --union
+  --str-repeat`); it writes the `penalty_scores.tsv` / `str_penalty_scores.tsv`
+  consumed by `--junction-penalty-table` / `--str-penalty-table` on
+  `rectify correct` and `rectify run-all`. (A separate tool,
+  `rectify/calibration/calibrate_shift_corrections.py`, derives the
+  poly(A)-count shift corrections — `shift_correction_by_acount.tsv` — and is
+  *not* the penalty-table generator.)
 
 ---
 

@@ -22,7 +22,7 @@ flowchart LR
     ALIGN["rectify align<br/>Stage 2"]
     REBAM[("&lt;prefix&gt;.rectified.bam<br/>(tags intact via minimap2 -y)")]
     ANALYZE["rectify cdna-analyze<br/>Stage 3"]
-    OUT[("clusters.tsv<br/>isoforms.tsv<br/>t1t2_pairs.tsv<br/>consensus_tagged.bam")]
+    OUT[("clusters.tsv<br/>corrected_reads.tsv<br/>isoforms.tsv<br/>t1t2_pairs.tsv<br/>consensus_tagged.bam")]
 
     BAM --> CDNA --> FQ --> ALIGN --> REBAM --> ANALYZE --> OUT
 ```
@@ -62,6 +62,7 @@ Outputs after Stage 3:
 | File | Source |
 |------|--------|
 | `out/clusters.tsv` | Per-cluster manifest (one row per UMI cluster) |
+| `out/corrected_reads.tsv` | Per-molecule corrected 3' ends, with DRS-identical columns |
 | `out/isoforms.tsv` | Isoform-level aggregation (`tol-5` / `tol-3` grouping) |
 | `out/t1t2_pairs.tsv` | Type-1 / Type-2 same-molecule pairings |
 | `out/consensus_tagged.bam` | Stage 2 BAM rewritten with `XA` / `XG` / `XS` / `XI` / `XL` tags added |

@@ -67,35 +67,30 @@ while pos > start:
 
 ## False junction filter module
 
-For cases where false junctions appear further from the poly(A) tail and are not caught by the walk-back, `false_junction_filter.py` provides an explicit filter:
-
-```python
-def filter_false_polya_junctions(read, genome, threshold_a_fraction=0.8):
-    """
-    Remove N operations flanked by high-A-fraction sequence on both sides.
-
-    An N is a false junction if:
-    - The 20 bp upstream are > threshold_a_fraction A's
-    - The 20 bp downstream are > threshold_a_fraction A's
-    """
-```
+For cases where false junctions appear further from the poly(A) tail and are not caught by the walk-back, `false_junction_filter.py` provides an explicit filter. `analyze_junction_for_artifact()` flags an N-op as a poly(A) artifact when the flanking sequence is A-rich (plus strand) / T-rich (minus strand), and `filter_polya_artifact_junctions()` removes the flagged junctions; `correct_3prime_for_artifact_junctions()` then re-derives the 3' end. A-richness is measured by `calculate_a_richness()` / `calculate_t_richness()` over the windows immediately up- and downstream of the junction.
 
 ---
 
 ## AG mispriming
 
-A related artifact is **AG mispriming**: oligo(dT) primers can prime internally at AG-rich sequences, producing reads that appear to end at non-CPA sites. RECTIFY flags these reads:
+A related artifact is **AG mispriming**: oligo(dT) primers can prime internally at A/G-rich sequences, producing reads that appear to end at non-CPA sites. RECTIFY screens for this with the weighted A/G score of Roy & Chanfreau 2019 (PMID 31128237):
 
 ```python
-def screen_ag_mispriming(read, genome, threshold=0.65):
+def screen_ag_mispriming(genome, chrom, position, strand,
+                         window=19, threshold=15):
     """
-    Flag reads where the 3' soft-clip region is AG-rich.
-
-    threshold: fraction of A+G bases in the 20 bp upstream of 3' end
+    Score the genomic window immediately downstream (in mRNA orientation) of
+    the called 3' end for A/G enrichment, matching the oligo-dT19 primer.
+    A weighted A/G score above `threshold` (Youden-optimal cutoff) flags
+    likely internal priming.
     """
 ```
 
-Flagged reads receive the `AG_RICH` QC flag. They are still reported but should be interpreted with caution for CPA site mapping.
+`get_ag_qc_flag()` then labels the read `AG_RICH` (score above threshold),
+`PASS` (below), or `INSUFFICIENT_DATA` (window shorter than `min_window`, e.g.
+near a chromosome end). `AG_RICH` reads are still reported but should be
+interpreted with caution for CPA-site mapping; the read's `confidence` is
+downgraded to `low`.
 
 **Implementation:** `rectify/core/polya/ag_mispriming.py`
 
@@ -140,4 +135,4 @@ Module 2F (`rescue_3ss_truncation` in `splice_aware_5prime.py`) performs full ex
 ## See also
 
 - [3' End Indel Correction](3prime_indel_correction.md) — the walk-back algorithm
-- [Output Formats](../user_guide/output_formats.md) — `qc_flags` column descriptions (`AG_RICH`, `ATRACT_AMBIGUOUS`)
+- [Output Formats](../user_guide/output_formats.md) — `qc_flags` column descriptions (`AG_RICH`, `PASS`, `INSUFFICIENT_DATA`)

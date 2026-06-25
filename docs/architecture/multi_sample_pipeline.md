@@ -57,11 +57,14 @@ sample count. Validated on 21 samples / 150M reads: runs on a 16 GB node.
 `corrected_reads.tsv`. Pre-aggregated position count file:
 
 ```
-chrom   corrected_3prime  strand  count
-chrI    12836             +       1.0
-chrI    41981             +       3.0
+chrom   corrected_3prime  strand  count   count_ag_rich
+chrI    12836             +       1.0     0.0
+chrI    41981             +       3.0     1.0
 ...
 ```
+
+(`count_ag_rich` is the AG-rich subset of `count`; older indices without the
+column load with `count_ag_rich = 0`.)
 
 ~300× smaller than the full per-read TSV. When an index is present,
 both passes of manifest mode use it instead of the full TSV — Pass 1 and

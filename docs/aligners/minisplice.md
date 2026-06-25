@@ -112,7 +112,7 @@ Pre-computing splice scores once per genome and sharing them across samples
 ## Primary-alignment & duplicate handling
 
 minisplice_mm2 is minimap2 + `--spsc` splice scores; `rectify align` passes
-**`--secondary=no`** in the same command (`multi_aligner.py:1673`), so output BAMs
+**`--secondary=no`** in the same command (`run_minisplice_mm2`, `multi_aligner.py:2143`), so output BAMs
 carry no secondary records. Supplementary records are dropped by `rectify correct`'s
 `is_supplementary` filter, as with minimap2.
 

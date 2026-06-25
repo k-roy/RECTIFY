@@ -14,18 +14,17 @@ pip install rectify-rna
 # From FASTQ (RECTIFY aligns + corrects)
 rectify run-all reads.fastq.gz --Scer -o results/
 
-# From pre-aligned BAM (correction only)
-rectify correct reads.bam --Scer -o results/corrected.tsv
+# From pre-aligned BAM (correction only; -o is a TSV file path)
+rectify correct reads.bam --Scer -o results/corrected_3ends.tsv
 ```
 
-The output directory contains:
+`rectify correct` writes the per-read corrected TSV plus a companion stats
+file alongside it:
 
 ```
 results/
 ├── corrected_3ends.tsv          # Per-read corrected 5'/3' positions
-├── corrected_3ends_index.bed.gz # Aggregated position counts (300× smaller)
-├── alignment_features.tsv       # Per-read alignment metadata
-└── processing_stats.tsv         # QC summary
+└── corrected_3ends_stats.tsv    # QC / correction-rate summary
 ```
 
 ---
@@ -112,14 +111,19 @@ results/
 └── combined/
     ├── cpa_clusters.tsv
     ├── tables/
-    │   ├── deseq2_genes_ko_vs_wt.tsv
-    │   ├── deseq2_clusters_ko_vs_wt.tsv
+    │   ├── deseq2_genes_ko.tsv
+    │   ├── deseq2_clusters_ko.tsv
+    │   ├── shift_analysis_ko.tsv
     │   ├── motif_summary_ko.tsv
-    │   └── go_enrichment_ko.tsv
+    │   ├── go_enrichment_up_ko.tsv
+    │   └── go_enrichment_down_ko.tsv
     └── plots/
         ├── pca_samples.png
-        └── heatmap_top_clusters.png
+        └── sample_heatmap.png
 ```
+
+(Output filenames are suffixed with the non-reference condition, e.g. `ko`
+when `--reference wt`.)
 
 ---
 
@@ -128,14 +132,23 @@ results/
 If you have already corrected each sample, run analysis on the corrected TSVs:
 
 ```bash
-# Step 1: correct each sample
+# Step 1: correct each sample (-o is the per-read corrected TSV file)
 for sample in wt_rep1 wt_rep2 ko_rep1 ko_rep2; do
-    rectify correct raw/${sample}.bam --Scer -o results/${sample}/
+    rectify correct raw/${sample}.bam --Scer -o results/${sample}/corrected_3ends.tsv
 done
 
-# Step 2: run combined analysis using manifest
+# Step 2: build an analyze manifest whose `path` column points at each
+# sample's CORRECTED TSV (not the raw FASTQ) — `rectify analyze --manifest`
+# reads `path` as a per-read corrected position TSV.
+printf 'sample_id\tpath\tcondition\n' > analyze_manifest.tsv
+printf 'wt_rep1\tresults/wt_rep1/corrected_3ends.tsv\twt\n' >> analyze_manifest.tsv
+printf 'wt_rep2\tresults/wt_rep2/corrected_3ends.tsv\twt\n' >> analyze_manifest.tsv
+printf 'ko_rep1\tresults/ko_rep1/corrected_3ends.tsv\tko\n' >> analyze_manifest.tsv
+printf 'ko_rep2\tresults/ko_rep2/corrected_3ends.tsv\tko\n' >> analyze_manifest.tsv
+
+# Step 3: run combined analysis using the corrected-TSV manifest
 rectify analyze /dev/null \
-    --manifest manifest.tsv \
+    --manifest analyze_manifest.tsv \
     --Scer \
     --reference wt \
     --run-deseq2 \
@@ -153,7 +166,9 @@ rectify export results/wt_rep1/corrected_3ends.tsv \
     -o tracks/wt_rep1/
 ```
 
-Produces `wt_rep1.bw` (bigWig) and `wt_rep1.bedgraph` for loading in IGV or UCSC.
+Produces strand-specific tracks `wt_rep1.plus.bw` / `wt_rep1.minus.bw` (bigWig)
+and matching `wt_rep1.plus.bedgraph` / `wt_rep1.minus.bedgraph` files for loading
+in IGV or UCSC.
 
 ---
 

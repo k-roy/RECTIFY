@@ -10,7 +10,7 @@ authors = [
     {name = "Kevin R. Roy", email = "kevinrjroy@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 keywords = [
     "RNA", "3-prime-end", "polyadenylation", "RNA-seq", "genomics",

@@ -8,7 +8,7 @@ The junction BED is cached as `annotation.junc.bed` in the sample output
 directory. Exact minimap2 command:
 
 ```
-minimap2 -ax splice -uf -k14 -G 5000 --splice-flank=no --secondary=no --MD
+minimap2 -ax splice -uf -k14 -G 5000 --splice-flank=no --secondary=no --MD -y
     -t <threads>
     --junc-bed <sample_dir>/annotation.junc.bed
     --junc-bonus 9
@@ -20,9 +20,11 @@ Key flags:
 - `-k14`: smaller k-mer for sensitivity on noisy nanopore reads.
 - `-G 5000`: max intron (chainable gap) size. **This is the yeast default and
   the #1 misconfiguration on mammalian data — see below.**
-- `--splice-flank=no`: disables GT-AG bonus (important for 3' end
-  accuracy).
+- `--splice-flank=no`: disabled for compatibility (per the `run_minimap2`
+  source comment).
 - `--MD`: required for indel artifact correction downstream.
+- `-y`: copies FASTQ comment fields (SAM-format aux tags, e.g. the DRS
+  `pt:i` poly(A) tag) through into the BAM aux records.
 
 ---
 
@@ -123,8 +125,8 @@ distinct reads — exactly the doubling.
 
 `rectify correct` already restricts to primary alignments. Every BAM-iteration loop
 skips unmapped/secondary/supplementary and nothing else
-(`rectify/core/bam/parallel.py:946-954`; non-parallel fallback
-`rectify/core/bam/bam_processor.py:1112-1117`):
+(`rectify/core/bam/parallel.py:952-958`; non-parallel fallback
+`rectify/core/bam/bam_processor.py:1184-1188`):
 
 ```python
 if read.is_unmapped:      continue   # 0x4
@@ -140,13 +142,13 @@ through (verified by code audit, 2026-05-29):
 - It does **not** inspect the duplicate flag (`0x400` / `read.is_duplicate`) — a read
   marked by `samtools markdup` is still processed as a normal primary.
 - It does **not** deduplicate by `query_name`. The `seen_read_ids`/`is_primary_result`
-  mechanism (`parallel.py:367-369`) gates *summary-stat counters only* (NET-seq
+  mechanism (`_parse_tsv_result`, `parallel.py:368-386`) gates *summary-stat counters only* (NET-seq
   proportional row-splitting); it does not suppress TSV rows or position counts.
 
 The two existing one-primary-per-read protections both live in `rectify align` and
 **never touch an external BAM handed to `rectify correct`**:
 `_dedup_desalt_bam()` (deSALT-only) and the consensus winner-promotion
-(`rectify/core/consensus/consensus.py:646`, `flag &= ~0x900`) — and per-aligner
+(`rectify/core/consensus/consensus.py:617`, `flag &= ~0x900`) — and per-aligner
 `rectify correct` runs *before* the consensus merge ([[per_aligner_rescue_runs_first]]).
 `tests/test_no_duplicate_primaries.py` exercises only the consensus path; the
 per-aligner `correct` → TSV path has no such test or guard.
@@ -160,15 +162,15 @@ duplicate **primaries**, which only an upstream/data fault produces.
 
 | Aligner | rectify-align secondary control | Source | Clean primaries? |
 |---|---|---|---|
-| **minimap2** | `--secondary=no` | `multi_aligner.py:367` | ✓ |
-| **winnowmap2** | `--secondary=no` | `multi_aligner.py:1531` | ✓ |
-| **minisplice_mm2** | `--secondary=no` | `multi_aligner.py:1673` | ✓ |
-| **gapmm2** | PAF output; PAF→BAM marks `tp:A`≠`P` as `0x100`; also dedups duplicate UUIDs in the input FASTQ pre-align | `multi_aligner.py:1269-1271`; [gapmm2.md](gapmm2.md) Issue 2 | ✓ |
-| **bwa mem** | `-M` (marks split hits secondary → filtered) | `multi_aligner.py:1068-1072` | ✓ |
-| **deSALT** | no flag; post-filtered by `_dedup_desalt_bam()` on `(name,flag,chrom,pos,cigar)` (deSALT emits each aln `-N`× by default) | `multi_aligner.py:2131-2166`; [deSALT.md](deSALT.md) | ✓ (after dedup) |
-| **mapPacBio** | **no secondary-control flag passed**; BBMap default behavior not determinable from rectify source | `multi_aligner.py:739-757` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
-| **bbmap** (short-read) | `ambiguous=best` (picks one best site; not a secondary-record control) | `multi_aligner.py:940-958` | as above |
-| **uLTRA** | **no secondary-control flag passed** | `multi_aligner.py:2066-2076` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
+| **minimap2** | `--secondary=no` | `run_minimap2`, `multi_aligner.py:391` | ✓ |
+| **winnowmap2** | `--secondary=no` | `run_winnowmap2`, `multi_aligner.py:2001` | ✓ |
+| **minisplice_mm2** | `--secondary=no` | `run_minisplice_mm2`, `multi_aligner.py:2143` | ✓ |
+| **gapmm2** | PAF output; PAF→BAM marks `tp:A`≠`P` as `0x100`; also dedups duplicate UUIDs in the input FASTQ pre-align | `_paf_to_bam`, `multi_aligner.py:1735-1741`; [gapmm2.md](gapmm2.md) Issue 2 | ✓ |
+| **bwa mem** | `-M` (marks split hits secondary → filtered) | `run_bwa_mem`, `multi_aligner.py:1136` | ✓ |
+| **deSALT** | no flag; post-filtered by `_dedup_desalt_bam()` on `(name,flag,chrom,pos,cigar)` (deSALT emits each aln `-N`× by default) | `_dedup_desalt_bam`, `multi_aligner.py:2601`; [deSALT.md](deSALT.md) | ✓ (after dedup) |
+| **mapPacBio** | **no secondary-control flag passed**; BBMap default behavior not determinable from rectify source | `run_map_pacbio`, `multi_aligner.py:693` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
+| **bbmap** (short-read) | `ambiguous=best` (picks one best site; not a secondary-record control) | `run_bbmap`, `multi_aligner.py:1015` | as above |
+| **uLTRA** | **no secondary-control flag passed** | `run_ultra`, `multi_aligner.py:2387` | secondaries (if any) dropped by `correct`'s `is_secondary` filter |
 
 `rectify align` does **no** `samtools markdup`/`rmdup` and **no** `view -F 0x900`
 post-filter (audit: zero hits in `rectify/`); deSALT's `_dedup_desalt_bam` is the
