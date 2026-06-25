@@ -419,6 +419,7 @@ def _run_calibration_probe(args, fastq_path, total_reads: int):
     panel + organism. MUST run on a compute node (it runs the aligners).
     """
     import time as _time
+    import tempfile
     probe_sizes = []
     for tok in str(getattr(args, 'probe_reads', '1000,4000')).split(','):
         tok = tok.strip()
