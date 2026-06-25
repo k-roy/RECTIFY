@@ -254,11 +254,11 @@ def test_cdna_pipeline_chri_smoke(tmp_path):
         capture_output=True, text=True, timeout=1800,
     )
     assert rc.returncode == 0, f"align failed: {rc.stderr[-1500:]}"
-    # `align` produces <prefix>.rectified.bam (and .rectified.md.bam after calmd)
-    aligned_bam = align_out / "stage1.rectified.md.bam"
+    # `align` produces <prefix>.multialigned.bam (and .multialigned.md.bam after calmd)
+    aligned_bam = align_out / "stage1.multialigned.md.bam"
     if not aligned_bam.exists():
-        aligned_bam = align_out / "stage1.rectified.bam"
-    assert aligned_bam.exists(), f"no rectified BAM in {align_out}: {list(align_out.iterdir())}"
+        aligned_bam = align_out / "stage1.multialigned.bam"
+    assert aligned_bam.exists(), f"no multialigned BAM in {align_out}: {list(align_out.iterdir())}"
 
     # Spot-check tag passthrough: the first mapped record must carry the
     # alignment-independent tags from the FASTQ comment.

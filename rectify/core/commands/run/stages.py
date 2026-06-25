@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 from .helpers import (
     _bam_has_md_tags,
     _collect_per_aligner_bams,
-    _rectified_bam_path,
+    _multialigned_bam_path,
     _validate_bam_integrity,
 )
 
@@ -51,28 +51,33 @@ def _run_alignment(
     trust_existing_bams: bool = False,
 ) -> Tuple[Dict[str, Path], Path]:
     """
-    Run multi-aligner alignment and selection, or return existing rectified.bam.
+    Run multi-aligner alignment and selection, or return existing multialigned.bam.
 
     Default aligners: minimap2 + mapPacBio + gapmm2 (long-read Tier 1).
     Pass base_aligners to restrict or change the set (e.g. ['mapPacBio']).
     Pass short_read=True to use bbmap + bwa instead of the long-read panel.
     Pass junction_aligners=[] to disable uLTRA + deSALT.
 
-    Skips automatically if the rectified.bam already exists — safe to re-run.
+    Skips automatically if the multialigned.bam already exists — safe to re-run.
 
     Returns
     -------
-    Tuple of (per_aligner_bams, rectified_bam) where per_aligner_bams maps
+    Tuple of (per_aligner_bams, multialigned_bam) where per_aligner_bams maps
     aligner name → BAM path for each per-aligner BAM found on disk.
     """
-    rectified_bam = _rectified_bam_path(sample_id, sample_output_dir)
+    multialigned_bam = _multialigned_bam_path(sample_id, sample_output_dir)
 
-    # Backward compatibility: accept old consensus.bam filename from prior runs
+    # Backward compatibility: accept the older ``.consensus.bam`` name from prior
+    # runs.  We deliberately do NOT accept the pre-2026-06-25 ``.rectified.bam``
+    # name as the alignment artifact here: after the rename ``.rectified.bam`` is
+    # the FINAL corrected output, so reusing it as the pre-correction artifact
+    # would feed the corrected file back into correction.  A pre-rename run simply
+    # re-aligns (correct, just slower) — the swap hazard is avoided.
     _legacy_bam = sample_output_dir / f"{sample_id}.consensus.bam"
-    if not rectified_bam.exists() and _legacy_bam.exists():
-        rectified_bam = _legacy_bam
+    if not multialigned_bam.exists() and _legacy_bam.exists():
+        multialigned_bam = _legacy_bam
 
-    # Compute run provenance once — used by both the rectified.bam reuse gate
+    # Compute run provenance once — used by both the multialigned.bam reuse gate
     # and the per-aligner BAM provenance filter.
     import sys as _sys
     from rectify.utils.bam_provenance import (
@@ -83,26 +88,26 @@ def _run_alignment(
     )
     _run_provenance = compute_run_provenance(command=_sys.argv)
 
-    if _validate_bam_integrity(rectified_bam):
+    if _validate_bam_integrity(multialigned_bam):
         if trust_existing_bams:
-            print(f"    Skipping alignment — rectified.bam exists (--trust-existing-bams): {rectified_bam}")
+            print(f"    Skipping alignment — multialigned.bam exists (--trust-existing-bams): {multialigned_bam}")
             per_aligner_bams = _collect_per_aligner_bams(
                 sample_id, sample_output_dir,
                 run_provenance=None, trust_existing_bams=True,
             )
-            return per_aligner_bams, rectified_bam
+            return per_aligner_bams, multialigned_bam
         _expected = expected_provenance_for_aligner(_run_provenance, "consensus")
-        _stored = read_sidecar(rectified_bam)
+        _stored = read_sidecar(multialigned_bam)
         _ok, _reason = matches_strict(_stored, _expected)
         if _ok:
-            print(f"    Skipping alignment — rectified.bam exists (provenance match): {rectified_bam}")
+            print(f"    Skipping alignment — multialigned.bam exists (provenance match): {multialigned_bam}")
             per_aligner_bams = _collect_per_aligner_bams(
                 sample_id, sample_output_dir,
                 run_provenance=_run_provenance, trust_existing_bams=False,
             )
-            return per_aligner_bams, rectified_bam
+            return per_aligner_bams, multialigned_bam
         print(
-            f"    rectified.bam provenance mismatch ({_reason}); re-running alignment. "
+            f"    multialigned.bam provenance mismatch ({_reason}); re-running alignment. "
             "Pass --trust-existing-bams to override."
         )
 
@@ -148,11 +153,11 @@ def _run_alignment(
         gmap_db=gmap_db,
         mapPacBio_chunks=mapPacBio_chunks,
         mapPacBio_chunk_idx=None,  # merge mode: look for existing chunk BAMs
-        # Use the canonical sample_id as prefix so the rectified BAM lands at
-        # <sample_id>.rectified.bam (matching _rectified_bam_path). With an
+        # Use the canonical sample_id as prefix so the merged BAM lands at
+        # <sample_id>.multialigned.bam (matching _multialigned_bam_path). With an
         # empty prefix, align_command falls back to args.reads.stem — which
         # for DRS inputs is "<sample>_trimmed" after Step 0, breaking the
-        # post-align rectified.bam lookup at stages.py:178.
+        # post-align multialigned.bam lookup below.
         prefix=sample_id,
         keep_sam=False,
         sort=True,
@@ -188,9 +193,9 @@ def _run_alignment(
     if rc != 0:
         raise RuntimeError(f"Triple-aligner failed for {input_path}")
 
-    if not rectified_bam.exists():
+    if not multialigned_bam.exists():
         raise RuntimeError(
-            f"Alignment completed but rectified.bam not found: {rectified_bam}"
+            f"Alignment completed but multialigned.bam not found: {multialigned_bam}"
         )
 
     per_aligner_bams = _collect_per_aligner_bams(
@@ -203,7 +208,7 @@ def _run_alignment(
         _align_inputs: dict = {'reads': input_path, 'genome': genome_path}
         if annotation_path is not None:
             _align_inputs['annotation'] = annotation_path
-        _align_outputs: dict = {'rectified_bam': rectified_bam}
+        _align_outputs: dict = {'multialigned_bam': multialigned_bam}
         _align_outputs.update({
             f'per_aligner_bam_{name}': bam
             for name, bam in per_aligner_bams.items()
@@ -230,7 +235,9 @@ def _run_alignment(
         import logging as _logging
         _logging.getLogger(__name__).warning("Failed to write align sidecar: %s", _sc_exc)
 
-    return per_aligner_bams, rectified_bam
+    return per_aligner_bams, multialigned_bam
+
+
 def _run_correction(
     bam_path: Path,
     output_dir: Path,

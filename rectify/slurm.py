@@ -198,7 +198,7 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
 
         scratch = make_job_scratch_dir('rectify_correct')
         if scratch:
-            work_bam = scratch / 'sample.rectified.bam'
+            work_bam = scratch / 'sample.multialigned.bam'
             shutil.copy(oak_bam, work_bam)
             # ... run correction on scratch ...
             sync_to_oak(scratch, oak_output_dir)
@@ -308,11 +308,21 @@ def sync_to_oak(
     if exclude_bam:
         cmd += ['--exclude=*.bam', '--exclude=*.bai']
     elif exclude_aligner_bams:
-        # Keep *.rectified.bam and *.corrected_polya.bam (Step-4 output);
-        # discard per-aligner BAMs.  rsync filter rules: first match wins.
+        # Keep the durable BAMs and discard per-aligner BAMs.  rsync filter
+        # rules: first match wins, so list every durable include before the
+        # broad *.bam exclude.  Durable set:
+        #   *.rectified.bam        — FINAL corrected output (was corrected_consensus.bam)
+        #   *.multialigned.bam     — pre-correction merged alignment artifact the
+        #                            run reuse-gate keys on (was *.rectified.bam)
+        #   corrected_consensus.bam — back-compat symlink to *.rectified.bam
+        #   *.corrected_polya.bam  — DRS Step-4 output
         cmd += [
             '--include=*.rectified.bam',
             '--include=*.rectified.bam.bai',
+            '--include=*.multialigned.bam',
+            '--include=*.multialigned.bam.bai',
+            '--include=corrected_consensus.bam',
+            '--include=corrected_consensus.bam.bai',
             '--include=*.corrected_polya.bam',
             '--include=*.corrected_polya.bam.bai',
             '--exclude=*.bam',
@@ -344,6 +354,10 @@ def sync_to_oak(
                 is_durable_bam = (
                     n.endswith('.rectified.bam')
                     or n.endswith('.rectified.bam.bai')
+                    or n.endswith('.multialigned.bam')
+                    or n.endswith('.multialigned.bam.bai')
+                    or n == 'corrected_consensus.bam'
+                    or n == 'corrected_consensus.bam.bai'
                     or n.endswith('.corrected_polya.bam')
                     or n.endswith('.corrected_polya.bam.bai')
                 )

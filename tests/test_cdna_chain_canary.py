@@ -118,11 +118,11 @@ def test_chain_correct_cdna_to_analyze_preserves_tags(tmp_path):
         f"align failed (rc={rc.returncode}):\n"
         f"STDERR: {rc.stderr[-1500:]}"
     )
-    aligned_bam = align_out / "stage1.rectified.md.bam"
+    aligned_bam = align_out / "stage1.multialigned.md.bam"
     if not aligned_bam.exists():
-        aligned_bam = align_out / "stage1.rectified.bam"
+        aligned_bam = align_out / "stage1.multialigned.bam"
     assert aligned_bam.exists(), (
-        f"no rectified BAM in {align_out}: {sorted(p.name for p in align_out.iterdir())}"
+        f"no multialigned BAM in {align_out}: {sorted(p.name for p in align_out.iterdir())}"
     )
 
     # ── Tag passthrough check ────────────────────────────────────────────

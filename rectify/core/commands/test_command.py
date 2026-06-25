@@ -385,7 +385,7 @@ def _check_gene_id(res: _Results, label_map: Dict, corrected: Dict) -> None:
 
 def _run_align(fastq: Path, genome: Path, annotation: Optional[Path],
                out_dir: Path, threads: int) -> Optional[Path]:
-    """Run rectify align and return path to the output rectified BAM."""
+    """Run rectify align and return path to the output multi-aligned BAM."""
     align_dir = out_dir / 'aligners'
     align_dir.mkdir(parents=True, exist_ok=True)
 
@@ -407,10 +407,10 @@ def _run_align(fastq: Path, genome: Path, annotation: Optional[Path],
         return None
     print(f'  Alignment finished in {elapsed:.0f}s')
 
-    # rectify align writes <output>/rectified.bam
-    out_bam = out_dir / 'rectified.bam'
+    # rectify align writes <output>/<prefix>.multialigned.bam (prefix = fastq stem)
+    out_bam = out_dir / f'{fastq.stem}.multialigned.bam'
     if not out_bam.exists():
-        print(f'  [{FAIL}] Expected rectified.bam at {out_bam}')
+        print(f'  [{FAIL}] Expected multialigned.bam at {out_bam}')
         return None
     return out_bam
 

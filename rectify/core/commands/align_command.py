@@ -812,17 +812,17 @@ def run_align(args: argparse.Namespace) -> int:
         # Copy single BAM to consensus output path, sort and index
         if len(successful_aligners) == 1:
             single_bam = list(successful_aligners.values())[0]
-            rectified_bam = args.output_dir / f"{prefix}.rectified.bam"
+            multialigned_bam = args.output_dir / f"{prefix}.multialigned.bam"
             import shutil
             import subprocess as _sp
             threads = getattr(args, 'threads', 1)
-            sorted_tmp = str(rectified_bam) + '.sorting_tmp'
+            sorted_tmp = str(multialigned_bam) + '.sorting_tmp'
             _sp.run(
-                ['samtools', 'sort', '-@', str(threads), '-o', str(rectified_bam), str(single_bam)],
+                ['samtools', 'sort', '-@', str(threads), '-o', str(multialigned_bam), str(single_bam)],
                 check=True,
             )
-            _sp.run(['samtools', 'index', str(rectified_bam)], check=True)
-            logger.info(f"Single-aligner output (sorted+indexed): {rectified_bam}")
+            _sp.run(['samtools', 'index', str(multialigned_bam)], check=True)
+            logger.info(f"Single-aligner output (sorted+indexed): {multialigned_bam}")
         return 0
 
     # Run consensus selection
@@ -875,8 +875,8 @@ def run_align(args: argparse.Namespace) -> int:
         annotated_junctions = load_annotated_junctions(str(args.annotation))
         logger.info(f"[TIMING] Junction load: {_time.perf_counter() - _t_junc:.1f}s")
 
-    # Run aligner selection → rectified BAM
-    rectified_bam = args.output_dir / f"{prefix}.rectified.bam"
+    # Run aligner selection → merged multi-aligner BAM (pre-correction)
+    multialigned_bam = args.output_dir / f"{prefix}.multialigned.bam"
 
     try:
         _t_sel = _time.perf_counter()
@@ -892,7 +892,7 @@ def run_align(args: argparse.Namespace) -> int:
         stats = run_consensus_selection(
             bam_paths=successful_aligners,
             genome=genome,
-            output_bam=str(rectified_bam),
+            output_bam=str(multialigned_bam),
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
             checkpoint_dir=getattr(args, 'checkpoint_dir', None),
@@ -900,12 +900,12 @@ def run_align(args: argparse.Namespace) -> int:
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")
 
-        logger.info(f"\nRectified BAM: {rectified_bam}")
+        logger.info(f"\nMulti-aligned (pre-correction) BAM: {multialigned_bam}")
         logger.info(f"  High confidence: {stats['consensus_high']} reads")
         logger.info(f"  5' rescued: {stats['5prime_rescued']} reads")
         logger.info(f"[TIMING] Aligner selection total (incl. genome/junctions): {_time.perf_counter() - _t_consensus_start:.1f}s")
 
-        # Write aligner stats TSV and HTML report alongside the rectified BAM
+        # Write aligner stats TSV and HTML report alongside the multi-aligned BAM
         try:
             from ..bam.processing_stats import write_consensus_stats_tsv
             _stats_tsv = args.output_dir / f"{prefix}.consensus_aligner_stats.tsv"
@@ -932,16 +932,16 @@ def run_align(args: argparse.Namespace) -> int:
     logger.info("Adding MD tags with samtools calmd...")
     try:
         import subprocess as _sp
-        calmd_bam = args.output_dir / f"{prefix}.rectified.md.bam"
+        calmd_bam = args.output_dir / f"{prefix}.multialigned.md.bam"
         calmd_cmd = [
             'samtools', 'calmd', '-b',
-            str(rectified_bam),
+            str(multialigned_bam),
             str(args.genome),
         ]
         with open(str(calmd_bam), 'wb') as fh_out:
             result = _sp.run(calmd_cmd, stdout=fh_out, stderr=_sp.PIPE)
         if result.returncode == 0 and calmd_bam.stat().st_size > 0:
-            _commit_indexed_bam(calmd_bam, rectified_bam, _sp.run)
+            _commit_indexed_bam(calmd_bam, multialigned_bam, _sp.run)
             logger.info("  MD tags added successfully")
         else:
             logger.warning(

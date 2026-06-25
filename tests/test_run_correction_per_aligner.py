@@ -56,8 +56,8 @@ def _make_per_aligner_bams(tmp_path: Path, names) -> Dict[str, Path]:
     """Create dummy .bam + .bai files so the indexed-bam guard doesn't sort."""
     out: Dict[str, Path] = {}
     for name in names:
-        bam = tmp_path / f"{name}.rectified.bam"
-        bai = tmp_path / f"{name}.rectified.bam.bai"
+        bam = tmp_path / f"{name}.multialigned.bam"
+        bai = tmp_path / f"{name}.multialigned.bam.bai"
         bam.touch()
         bai.touch()
         out[name] = bam

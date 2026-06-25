@@ -70,7 +70,7 @@ def test_round_trip_per_aligner(tmp_path):
 def test_round_trip_consensus(tmp_path):
     """consensus aligner_version should round-trip via the special-case probe."""
     _clear_caches()
-    bam = tmp_path / "sample.rectified.bam"
+    bam = tmp_path / "sample.multialigned.bam"
     bam.write_bytes(b"")
     run_prov = compute_run_provenance(command=["rectify", "run-all"])
     # No explicit aligner_version — let auto-probe handle it.
@@ -86,7 +86,7 @@ def test_round_trip_consensus(tmp_path):
 def test_round_trip_consensus_matches_strict(tmp_path):
     """matches_strict must return True when comparing stored vs expected consensus."""
     _clear_caches()
-    bam = tmp_path / "sample.rectified.bam"
+    bam = tmp_path / "sample.multialigned.bam"
     bam.write_bytes(b"")
     run_prov = compute_run_provenance(command=sys.argv)
     write_sidecar(bam, run_prov, aligner_name="consensus")

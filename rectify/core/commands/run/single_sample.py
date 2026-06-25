@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from .helpers import (
-    _rectified_bam_path,
+    _emit_legacy_consensus_symlink,
+    _final_rectified_bam_path,
+    _multialigned_bam_path,
     _validate_bam_integrity,
     _resolve_reference_paths,
 )
@@ -185,17 +187,18 @@ def _process_one_sample(
                     log.write(f"Alignment failed: {e}\n")
                     return sample_id, 1
             elif input_type in ('fastq', 'fastq.gz'):
-                # FASTQ but alignment skipped — look for existing rectified.bam
-                rectified_bam = _rectified_bam_path(sample_id, sample_output)
+                # FASTQ but alignment skipped — look for existing multialigned.bam
+                # (the pre-correction merged alignment artifact).
+                multialigned_bam = _multialigned_bam_path(sample_id, sample_output)
                 _legacy_bam = sample_output / f"{sample_id}.consensus.bam"
-                if not rectified_bam.exists() and _legacy_bam.exists():
-                    rectified_bam = _legacy_bam
-                if _validate_bam_integrity(rectified_bam):
-                    bam_to_correct = rectified_bam
-                    log.write(f"Using existing rectified.bam: {rectified_bam}\n")
+                if not multialigned_bam.exists() and _legacy_bam.exists():
+                    multialigned_bam = _legacy_bam
+                if _validate_bam_integrity(multialigned_bam):
+                    bam_to_correct = multialigned_bam
+                    log.write(f"Using existing multialigned.bam: {multialigned_bam}\n")
                 else:
                     log.write(
-                        f"ERROR: --skip-alignment set but no valid rectified.bam found: {rectified_bam}\n"
+                        f"ERROR: --skip-alignment set but no valid multialigned.bam found: {multialigned_bam}\n"
                     )
                     return sample_id, 1
 
@@ -252,10 +255,13 @@ def _process_one_sample(
                             )
                             _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
                             identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
-                            # Emit corrected_consensus.bam — symmetric with the chunked path.
-                            # Non-fatal: merged TSV is the primary output; missing BAM is
-                            # recoverable via post-hoc write_corrected_consensus_bam.
-                            _consensus_bam_out = _work / 'corrected_consensus.bam'
+                            # Emit the final corrected (rectified) BAM — symmetric with
+                            # the chunked path.  Named <sample>.rectified.bam (the actually-
+                            # rectified product); a legacy corrected_consensus.bam symlink is
+                            # dropped for back-compat.  Non-fatal: merged TSV is the primary
+                            # output; missing BAM is recoverable via post-hoc
+                            # write_corrected_consensus_bam.
+                            _consensus_bam_out = _final_rectified_bam_path(sample_id, _work)
                             try:
                                 _consensus_stats = write_corrected_consensus_bam(
                                     per_aligner_raw_bams=_staged_s1,
@@ -266,14 +272,15 @@ def _process_one_sample(
                                     threads=max(1, int(getattr(args, 'threads', 1) or 1)),
                                     strict=True,
                                 )
+                                _emit_legacy_consensus_symlink(_consensus_bam_out)
                                 print(
-                                    f"  [{sample_id}] corrected_consensus.bam written"
+                                    f"  [{sample_id}] {_consensus_bam_out.name} written"
                                     f" ({_consensus_stats.get('written', '?')} reads)",
                                     flush=True,
                                 )
                             except Exception as _cbam_exc:
                                 print(
-                                    f"  [{sample_id}] WARNING: corrected_consensus.bam write failed"
+                                    f"  [{sample_id}] WARNING: {_consensus_bam_out.name} write failed"
                                     f" (non-fatal): {_cbam_exc}",
                                     file=sys.stderr,
                                 )
@@ -306,12 +313,14 @@ def _process_one_sample(
                         _sidecar = _work / '.corrected_reads.tsv.provenance.json'
                         if _sidecar.exists():
                             _shutil.copy2(_sidecar, sample_output / _sidecar.name)
-                    _cbam_src = _work / 'corrected_consensus.bam'
+                    _cbam_src = _final_rectified_bam_path(sample_id, _work)
                     if _cbam_src.exists():
-                        _shutil.copy2(_cbam_src, sample_output / 'corrected_consensus.bam')
-                        _cbam_bai = _work / 'corrected_consensus.bam.bai'
+                        _cbam_dst = _final_rectified_bam_path(sample_id, sample_output)
+                        _shutil.copy2(_cbam_src, _cbam_dst)
+                        _cbam_bai = Path(str(_cbam_src) + '.bai')
                         if _cbam_bai.exists():
-                            _shutil.copy2(_cbam_bai, sample_output / 'corrected_consensus.bam.bai')
+                            _shutil.copy2(_cbam_bai, Path(str(_cbam_dst) + '.bai'))
+                        _emit_legacy_consensus_symlink(_cbam_dst)
                 log.write("Correction complete\n")
             except Exception as e:
                 log.write(f"Correction failed: {e}\n")
@@ -547,25 +556,25 @@ def _run_single_sample(args) -> int:
         step_correction = 2
     elif input_type in ('fastq', 'fastq.gz'):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
-        rectified_bam = _rectified_bam_path(sample_id, output_dir)
+        multialigned_bam = _multialigned_bam_path(sample_id, output_dir)
         _legacy_bam = output_dir / f"{sample_id}.consensus.bam"
-        if not rectified_bam.exists() and _legacy_bam.exists():
-            rectified_bam = _legacy_bam
-        if _validate_bam_integrity(rectified_bam):
-            print(f"\n[Step 1/3] Alignment — using existing rectified.bam")
+        if not multialigned_bam.exists() and _legacy_bam.exists():
+            multialigned_bam = _legacy_bam
+        if _validate_bam_integrity(multialigned_bam):
+            print(f"\n[Step 1/3] Alignment — using existing multialigned.bam")
             if scratch_dir:
                 # Stage existing BAM to scratch
                 print(f"  Staging to scratch: {scratch_dir}")
-                _shutil.copy2(rectified_bam, scratch_dir / rectified_bam.name)
-                bai = Path(str(rectified_bam) + '.bai')
+                _shutil.copy2(multialigned_bam, scratch_dir / multialigned_bam.name)
+                bai = Path(str(multialigned_bam) + '.bai')
                 if bai.exists():
                     _shutil.copy2(bai, scratch_dir / bai.name)
-                bam_to_correct = scratch_dir / rectified_bam.name
+                bam_to_correct = scratch_dir / multialigned_bam.name
             else:
-                bam_to_correct = rectified_bam
+                bam_to_correct = multialigned_bam
         else:
             print(
-                f"ERROR: --skip-alignment set but no rectified.bam found: {rectified_bam}",
+                f"ERROR: --skip-alignment set but no multialigned.bam found: {multialigned_bam}",
                 file=sys.stderr,
             )
             if scratch_dir:
@@ -644,10 +653,12 @@ def _run_single_sample(args) -> int:
                     # Identify Cat5 candidates (reads where aligners contribute unique introns)
                     _cat5_tsv = _per_aligner_dir / 'cat5_candidates.tsv'
                     identify_cat5_candidates(per_aligner_tsvs, output_tsv=_cat5_tsv)
-                    # Emit corrected_consensus.bam — symmetric with the chunked path.
+                    # Emit the final corrected (rectified) BAM — symmetric with the
+                    # chunked path.  Named <sample>.rectified.bam; a legacy
+                    # corrected_consensus.bam symlink is dropped for back-compat.
                     # Non-fatal: merged TSV is the primary output; missing BAM is
                     # recoverable via post-hoc write_corrected_consensus_bam.
-                    _consensus_bam_out = work_dir / 'corrected_consensus.bam'
+                    _consensus_bam_out = _final_rectified_bam_path(sample_id, work_dir)
                     try:
                         _consensus_stats = write_corrected_consensus_bam(
                             per_aligner_raw_bams=_staged_s2,
@@ -658,14 +669,15 @@ def _run_single_sample(args) -> int:
                             threads=max(1, int(getattr(args, 'threads', 1) or 1)),
                             strict=True,
                         )
+                        _emit_legacy_consensus_symlink(_consensus_bam_out)
                         print(
-                            f"    corrected_consensus.bam written"
+                            f"    {_consensus_bam_out.name} written"
                             f" ({_consensus_stats.get('written', '?')} reads)",
                             flush=True,
                         )
                     except Exception as _cbam_exc:
                         print(
-                            f"    WARNING: corrected_consensus.bam write failed"
+                            f"    {_consensus_bam_out.name} write failed"
                             f" (non-fatal): {_cbam_exc}",
                             file=sys.stderr,
                         )
@@ -712,12 +724,14 @@ def _run_single_sample(args) -> int:
         _sidecar = corrected_tsv.parent / f".{corrected_tsv.name}.provenance.json"
         if _sidecar.exists():
             _shutil.copy2(_sidecar, output_dir / _sidecar.name)
-        _cbam_scratch = corrected_tsv.parent / 'corrected_consensus.bam'
+        _cbam_scratch = _final_rectified_bam_path(sample_id, corrected_tsv.parent)
         if _cbam_scratch.exists():
-            _shutil.copy2(_cbam_scratch, output_dir / 'corrected_consensus.bam')
-            _cbam_bai = corrected_tsv.parent / 'corrected_consensus.bam.bai'
+            _cbam_dst = _final_rectified_bam_path(sample_id, output_dir)
+            _shutil.copy2(_cbam_scratch, _cbam_dst)
+            _cbam_bai = Path(str(_cbam_scratch) + '.bai')
             if _cbam_bai.exists():
-                _shutil.copy2(_cbam_bai, output_dir / 'corrected_consensus.bam.bai')
+                _shutil.copy2(_cbam_bai, Path(str(_cbam_dst) + '.bai'))
+            _emit_legacy_consensus_symlink(_cbam_dst)
         corrected_tsv = _oak_corrected_tsv
         work_dir = output_dir  # analysis outputs go directly to Oak
 

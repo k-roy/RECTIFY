@@ -101,7 +101,11 @@ Dorado-aligned BAM (with pt:i: tags)
     │  Tiebreakers (rectify order): majority 3' vote →
     │               annotated junctions → canonical GT-AG
     ▼
-    <sample>.<aligner>.bam  (one per aligner, name-sorted)
+    <sample>.<aligner>.bam     (one per aligner, name-sorted)
+    <sample>.multialigned.bam  (merged multi-aligner alignments, pre-correction;
+                                one record per distinct placement, Xa:Z aligner-vote
+                                tags; QC/inspection artifact — was *.rectified.bam
+                                before 2026-06-25.  NOT on the correction path.)
     │
     ▼
 [Step 2: Correction per aligner]   rectify correct × N aligners
@@ -146,7 +150,12 @@ Dorado-aligned BAM (with pt:i: tags)
                                   (chrom, corrected_3prime, strand) with read count.
                                   ~300× smaller than the per-read TSV; used by
                                   manifest-mode analysis to skip re-reading every read.
-    corrected.bam                 consensus BAM: winning aligner's corrected read per read_id
+    <sample>.rectified.bam        the rectified output: winning aligner's corrected
+                                  read per read_id (winner-take-all on the corrected
+                                  CIGAR).  Was `corrected_consensus.bam` before
+                                  2026-06-25; a back-compat `corrected_consensus.bam`
+                                  symlink is dropped alongside it for one release.
+                                  Exactly one file matches `*.rectified.bam` per run.
     <sample>.stats.tsv            per-sample QC report
     │
     ▼
@@ -157,11 +166,11 @@ Dorado-aligned BAM (with pt:i: tags)
     │     + strand: append trimmed_3prime_seq to right of query; extend trailing S op
     │     − strand: prepend RC(trimmed_3prime_seq) to left of query; extend leading S op
     │   The result shows the full read exactly as Dorado sequenced it, enabling
-    │   direct IGV comparison against corrected.bam to validate what Rectify changed.
+    │   direct IGV comparison against <sample>.rectified.bam to validate what Rectify changed.
     │   Off by default — use --write-polya-bam for QC/validation only.
     ▼
     corrected_polya.bam  — winning aligner's raw read + poly(A) tail restored from parquet
-                           compare against corrected.bam to see exactly what Rectify changed
+                           compare against <sample>.rectified.bam to see exactly what Rectify changed
     │
     ▼
 [Step 5: Analysis]         multi-sample downstream analysis
@@ -241,7 +250,8 @@ Pre-aligned BAM (minimap2)
     │   `minimap2 -y` propagates FASTQ comment tags to the BAM aux fields.
     │
     ▼
-    <prefix>.rectified.bam   (one BAM record per UMI cluster, tags intact)
+    <prefix>.multialigned.bam   (one BAM record per UMI cluster, tags intact;
+                                 `rectify align` output — was *.rectified.bam pre-2026-06-25)
     │
     ▼
 [Stage 3: Isoform Clustering + T1↔T2 Pairing]   rectify cdna-analyze

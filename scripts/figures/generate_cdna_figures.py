@@ -814,7 +814,7 @@ def fig_cdna_pipeline_overview():
             sub=("minimap2 + mapPacBio + gapmm2",
                  "chimeric consensus selection"),
             input="per-cluster FASTQ",
-            output="{prefix}.rectified.bam",
+            output="{prefix}.multialigned.bam",
             tags="X[upper] tags pass through via minimap2 -y",
         ),
         dict(

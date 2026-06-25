@@ -3,7 +3,7 @@
 Per-BAM provenance sidecar — strict reuse gate for ``rectify run-all``.
 
 When ``rectify run-all`` (or ``rectify align``) writes a BAM it expects callers
-to be able to reuse later (per-aligner BAMs, ``{sample}.rectified.bam``), it
+to be able to reuse later (per-aligner BAMs, ``{sample}.multialigned.bam``), it
 also drops a sidecar JSON: ``{bam}.prov.json``. The sidecar records the
 rectify version, the git SHA, the aligner name + version, and the timestamp.
 

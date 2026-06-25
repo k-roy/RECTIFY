@@ -3,7 +3,13 @@ Helpers shared across the ``rectify run-all`` runners.
 
 - ``_resolve_reference_paths``: organism/bundled-data lookup that fills
   ``args.genome`` / ``args.annotation`` / ``args.go_annotations`` in place.
-- ``_rectified_bam_path``: canonical rectified-BAM path for a sample.
+- ``_multialigned_bam_path``: canonical pre-correction merged multi-aligner BAM
+  path for a sample (formerly ``<sample>.rectified.bam``; renamed 2026-06-25 so
+  ``.rectified.bam`` can name the actually-rectified final output).
+- ``_final_rectified_bam_path``: canonical final corrected BAM path
+  (``<sample>.rectified.bam``; formerly ``corrected_consensus.bam``).
+- ``_emit_legacy_consensus_symlink``: drop the back-compat
+  ``corrected_consensus.bam`` symlink next to the final output.
 - ``_collect_per_aligner_bams``: enumerate per-aligner BAMs that exist on disk.
 - ``_bam_has_md_tags``: sample the first mapped reads for an MD tag.
 - ``_validate_bam_integrity``: existence + ``.bai`` + ``samtools quickcheck``.
@@ -38,9 +44,78 @@ def _resolve_reference_paths(args) -> None:
 # Alignment helpers
 # ---------------------------------------------------------------------------
 
-def _rectified_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
-    """Canonical path for the rectified BAM for a sample."""
+def _multialigned_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
+    """Canonical path for the pre-correction merged multi-aligner BAM for a sample.
+
+    This is the alignment-stage artifact (per-placement aligner votes in the
+    ``Xa`` tag) that the ``run`` reuse-gate keys on — NOT the final corrected
+    output.  It was named ``<sample>.rectified.bam`` before 2026-06-25; the
+    ``.rectified.bam`` token now names the actually-rectified final output
+    (see ``_final_rectified_bam_path``).
+    """
+    return sample_output_dir / f"{sample_id}.multialigned.bam"
+
+
+# Back-compat alias: legacy callers/imports referenced ``_rectified_bam_path``
+# for the *pre-correction* artifact.  Keep the old name pointing at the
+# multialigned path so any external importer keeps resolving the alignment
+# artifact (its historical meaning), not the new final output.
+_rectified_bam_path = _multialigned_bam_path
+
+
+def _final_rectified_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
+    """Canonical path for the FINAL corrected (rectified) BAM for a sample.
+
+    This is the winner-take-all corrected output, formerly written as the bare
+    ``corrected_consensus.bam`` (no sample prefix).  As of 2026-06-25 it carries
+    the sample prefix like the per-aligner BAMs and is named
+    ``<sample>.rectified.bam``.
+    """
     return sample_output_dir / f"{sample_id}.rectified.bam"
+
+
+def _emit_legacy_consensus_symlink(final_bam: Path) -> None:
+    """Create back-compat ``corrected_consensus.bam`` symlink -> ``final_bam``.
+
+    Downstream consumers (the workshop ``stage_igv.sh``, ``deseq_from_corrected``,
+    ``splice_efficiency``, IGV, the shared ``processed/alignments/`` store) and
+    existing on-disk runs reference the old bare name ``corrected_consensus.bam``.
+    To keep old globs working for one release we drop a *relative* symlink
+    (``corrected_consensus.bam`` and its ``.bai``) pointing at the new
+    ``<sample>.rectified.bam`` in the same directory.
+
+    The symlink target is a bare basename so the link stays valid when the
+    per-sample directory is moved/synced (e.g. into ``processed/alignments/``).
+    Idempotent: an existing link/file at the legacy path is replaced.
+
+    NOTE: we deliberately do NOT emit a ``*.rectified.bam`` alias for the
+    pre-correction merged file — that would put two files under the
+    ``*.rectified.bam`` glob and reintroduce the swap-in-place hazard the rename
+    was meant to remove.  Exactly one file matches ``*.rectified.bam`` per run.
+    """
+    final_bam = Path(final_bam)
+    if not final_bam.exists():
+        return
+    legacy = final_bam.with_name("corrected_consensus.bam")
+    for link_path, target_name in (
+        (legacy, final_bam.name),
+        (Path(str(legacy) + ".bai"), final_bam.name + ".bai"),
+    ):
+        # Only create the .bai link if the real index exists.
+        if target_name.endswith(".bai") and not (final_bam.parent / target_name).exists():
+            continue
+        try:
+            if link_path.is_symlink() or link_path.exists():
+                link_path.unlink()
+            link_path.symlink_to(target_name)  # relative target (same dir)
+        except OSError:
+            # Symlinks unsupported (rare FS); fall back to a copy so old globs
+            # still resolve.  Non-fatal — the new name is the source of truth.
+            try:
+                import shutil as _shutil
+                _shutil.copy2(final_bam.parent / target_name, link_path)
+            except OSError:
+                pass
 
 
 _ALIGNER_NAMES = ['minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa']

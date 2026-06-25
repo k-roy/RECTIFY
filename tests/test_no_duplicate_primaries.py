@@ -165,7 +165,7 @@ def test_rectified_bam_no_duplicate_primaries():
     stats['by_aligner_combo'] = defaultdict(int)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, 'rectified.bam')
+        out_path = os.path.join(tmpdir, 'multialigned.bam')
         with pysam.AlignmentFile(out_path, 'wb', header=header) as out_bam:
             _process_and_write_batch(
                 read_batch, raw_read_batch,
@@ -218,7 +218,7 @@ def test_consensus_winner_promoted_from_secondary():
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, 'rectified.bam')
+        out_path = os.path.join(tmpdir, 'multialigned.bam')
         with pysam.AlignmentFile(out_path, 'wb', header=header) as out_bam:
             _process_and_write_batch(
                 read_batch, raw_read_batch,

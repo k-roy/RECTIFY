@@ -1599,8 +1599,11 @@ for (( k=0; k<N_CHUNKS; k++ )); do
 done
 wc -l "$CONSENSUS_DIR/corrected_reads.tsv"
 
-# ── Merge corrected_consensus.bam ────────────────────────────────────────
-echo "=== Merging corrected_consensus.bam ==="
+# ── Merge final corrected (rectified) BAM ────────────────────────────────
+# Final output is <sample>.rectified.bam (the actually-rectified product); a
+# back-compat corrected_consensus.bam symlink is dropped alongside it.
+FINAL_RECTIFIED_BAM="$CONSENSUS_DIR/${{SAMPLE}}.rectified.bam"
+echo "=== Merging ${{SAMPLE}}.rectified.bam ==="
 CONSENSUS_BAMS=()
 for (( k=0; k<N_CHUNKS; k++ )); do
     CHUNK_PAD=$(printf "%03d" $k)
@@ -1608,11 +1611,14 @@ for (( k=0; k<N_CHUNKS; k++ )); do
     [ -f "$BAM" ] && CONSENSUS_BAMS+=("$BAM")
 done
 if [ ${{#CONSENSUS_BAMS[@]}} -gt 0 ]; then
-    samtools merge -f -@ "$FINAL_MERGE_CPUS" "$CONSENSUS_DIR/corrected_consensus.unsorted.bam" "${{CONSENSUS_BAMS[@]}}"
-    samtools sort -@ "$FINAL_MERGE_CPUS" -o "$CONSENSUS_DIR/corrected_consensus.bam" "$CONSENSUS_DIR/corrected_consensus.unsorted.bam"
-    samtools index -@ "$FINAL_MERGE_CPUS" "$CONSENSUS_DIR/corrected_consensus.bam"
-    rm -f "$CONSENSUS_DIR/corrected_consensus.unsorted.bam"
-    echo "  ✓ $(du -h $CONSENSUS_DIR/corrected_consensus.bam | cut -f1)"
+    samtools merge -f -@ "$FINAL_MERGE_CPUS" "$CONSENSUS_DIR/${{SAMPLE}}.rectified.unsorted.bam" "${{CONSENSUS_BAMS[@]}}"
+    samtools sort -@ "$FINAL_MERGE_CPUS" -o "$FINAL_RECTIFIED_BAM" "$CONSENSUS_DIR/${{SAMPLE}}.rectified.unsorted.bam"
+    samtools index -@ "$FINAL_MERGE_CPUS" "$FINAL_RECTIFIED_BAM"
+    rm -f "$CONSENSUS_DIR/${{SAMPLE}}.rectified.unsorted.bam"
+    # Back-compat: legacy corrected_consensus.bam symlink (relative target).
+    ( cd "$CONSENSUS_DIR" && ln -sf "${{SAMPLE}}.rectified.bam" corrected_consensus.bam \
+        && ln -sf "${{SAMPLE}}.rectified.bam.bai" corrected_consensus.bam.bai )
+    echo "  ✓ $(du -h $FINAL_RECTIFIED_BAM | cut -f1)"
 fi
 
 # ── Merge corrected_polya.bam (if present) ───────────────────────────────
@@ -2791,7 +2797,7 @@ fi
 # ── Per-task scratch working directory ──────────────────────────────────────
 SCRATCH_WORK="${{SCRATCH:-/tmp}}/rectify_sr_${{SLURM_JOB_ID:-$$}}_${{RECTIFY_TASK_ID}}"
 mkdir -p "$SCRATCH_WORK"
-RECTIFIED_BAM="$SCRATCH_WORK/${{PREFIX}}.rectified.bam"
+MULTIALIGNED_BAM="$SCRATCH_WORK/${{PREFIX}}.multialigned.bam"
 
 echo "Python:  $($PYTHON --version 2>&1)"
 echo "Host:    $(hostname)"
@@ -2823,13 +2829,13 @@ time $PYTHON -m rectify align \\
     --verbose
 echo "  Align + consensus done: $(date)"
 
-[ -f "$RECTIFIED_BAM" ] || {{ echo "ERROR: rectified BAM not found: $RECTIFIED_BAM" >&2; exit 1; }}
+[ -f "$MULTIALIGNED_BAM" ] || {{ echo "ERROR: multialigned BAM not found: $MULTIALIGNED_BAM" >&2; exit 1; }}
 
 # Copy as .consensus.bam so the shared final-merge collects it.
 # Atomic: write to .tmp then mv (same FS) so a preemption mid-copy never leaves a
 # truncated BAM that the idempotent skip above would mistake for a finished chunk.
-cp "$RECTIFIED_BAM" "$CONSENSUS_OUT.tmp"
-[ -f "$RECTIFIED_BAM.bai" ] && cp "$RECTIFIED_BAM.bai" "$CONSENSUS_OUT.bai.tmp" || true
+cp "$MULTIALIGNED_BAM" "$CONSENSUS_OUT.tmp"
+[ -f "$MULTIALIGNED_BAM.bai" ] && cp "$MULTIALIGNED_BAM.bai" "$CONSENSUS_OUT.bai.tmp" || true
 mv "$CONSENSUS_OUT.tmp" "$CONSENSUS_OUT"
 [ -f "$CONSENSUS_OUT.bai.tmp" ] && mv "$CONSENSUS_OUT.bai.tmp" "$CONSENSUS_OUT.bai" || true
 echo "  Consensus BAM: $(du -sh "$CONSENSUS_OUT" | cut -f1)"

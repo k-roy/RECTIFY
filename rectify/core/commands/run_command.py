@@ -58,7 +58,10 @@ from pathlib import Path
 from .run.helpers import (  # noqa: F401
     _bam_has_md_tags,
     _collect_per_aligner_bams,
-    _rectified_bam_path,
+    _emit_legacy_consensus_symlink,
+    _final_rectified_bam_path,
+    _multialigned_bam_path,
+    _rectified_bam_path,  # back-compat alias for _multialigned_bam_path
     _resolve_reference_paths,
     _validate_bam_integrity,
 )
@@ -90,6 +93,9 @@ __all__ = [
     '_combine_corrected_tsvs',
     '_generate_chunked_pipeline',
     '_process_one_sample',
+    '_emit_legacy_consensus_symlink',
+    '_final_rectified_bam_path',
+    '_multialigned_bam_path',
     '_rectified_bam_path',
     '_resolve_reference_paths',
     '_run_alignment',
@@ -284,7 +290,7 @@ def create_run_parser(subparsers):
         '--skip-alignment',
         action='store_true',
         help='Skip triple-aligner alignment even for FASTQ input '
-             '(use if you already have a rectified.bam or consensus.bam)'
+             '(use if you already have a multialigned.bam or consensus.bam)'
     )
     run_parser.add_argument(
         '--trust-existing-bams',
