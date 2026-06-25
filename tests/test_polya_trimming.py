@@ -353,3 +353,76 @@ class TestStrandLogic:
         # it should be recognized as poly(A) in RNA orientation
         # This is handled by reverse_complement in the trim function
         pass
+
+
+class TestDoradoPolyaIntegration:
+    """Tests for the Dorado pt:i tail-length integration (default-off feature)."""
+
+    def _make_read(self, pt=None):
+        read = Mock()
+        read.reference_start = 1000
+        read.reference_end = 1100
+        read.cigartuples = [(0, 100)]  # 100M, no soft-clip → measured polya = 0
+        read.query_sequence = 'C' * 100
+        read.is_reverse = False
+        read.query_qualities = [30] * 100
+        if pt is None:
+            read.get_tag = Mock(side_effect=KeyError('pt'))
+        else:
+            read.get_tag = Mock(return_value=pt)
+        return read
+
+    def test_get_dorado_polya_length_present(self):
+        assert polya_trimmer.get_dorado_polya_length(self._make_read(pt=29)) == 29
+
+    def test_get_dorado_polya_length_absent(self):
+        assert polya_trimmer.get_dorado_polya_length(self._make_read(pt=None)) is None
+
+    def test_get_dorado_polya_length_malformed(self):
+        r = Mock(); r.get_tag = Mock(return_value='not-an-int')
+        assert polya_trimmer.get_dorado_polya_length(r) is None
+        r2 = Mock(); r2.get_tag = Mock(return_value=-5)
+        assert polya_trimmer.get_dorado_polya_length(r2) is None
+
+    def test_field_recorded_even_when_disabled(self):
+        # dorado_polya_length is always reported; pt is NOT authoritative when off.
+        res = polya_trimmer.trim_polya_from_read(
+            self._make_read(pt=42), '+', use_dorado_polya=False
+        )
+        assert res['dorado_polya_length'] == 42
+        assert res['polya_length'] == 0  # measured (no soft-clip), pt ignored
+
+    def test_pt_authoritative_when_enabled(self):
+        res = polya_trimmer.trim_polya_from_read(
+            self._make_read(pt=42), '+', use_dorado_polya=True
+        )
+        assert res['dorado_polya_length'] == 42
+        assert res['polya_length'] == 42  # pt authoritative
+        assert res['has_polya'] is True
+
+    def test_enabled_but_no_tag_falls_back_to_measured(self):
+        res = polya_trimmer.trim_polya_from_read(
+            self._make_read(pt=None), '+', use_dorado_polya=True
+        )
+        assert res['dorado_polya_length'] is None
+        assert res['polya_length'] == 0  # falls back to measured
+
+    def test_bundled_pt_tagged_bam(self):
+        # Real pt:i-tagged Dorado source reads from the validation bundle.
+        import pysam
+        from pathlib import Path
+        import rectify
+        bam = Path(rectify.__file__).parent / 'data' / 'validation' / \
+            'validation_reads_dorado_source.bam'
+        if not bam.exists():
+            pytest.skip('bundled dorado source BAM not present')
+        bf = pysam.AlignmentFile(str(bam), 'rb')
+        read = next((r for r in bf if not r.is_unmapped and r.has_tag('pt')), None)
+        bf.close()
+        if read is None:
+            pytest.skip('no pt-tagged mapped read in bundle')
+        pt = int(read.get_tag('pt'))
+        strand = '-' if read.is_reverse else '+'
+        on = polya_trimmer.trim_polya_from_read(read, strand, use_dorado_polya=True)
+        assert on['dorado_polya_length'] == pt
+        assert on['polya_length'] == pt

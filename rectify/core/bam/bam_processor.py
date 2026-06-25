@@ -278,6 +278,7 @@ def correct_read_3prime(
     polya_model: Optional[PolyAModel] = None,
     dt_primed_cDNA: bool = False,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
+    use_dorado_polya: bool = False,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -653,13 +654,17 @@ def correct_read_3prime(
             'tract_length': result.get('ambiguity_range', 0),  # Approximate aligned A's
         }
         polya_result = polya_trimmer.trim_polya_from_read(
-            read, strand, atract_result=atract_for_polya
+            read, strand, atract_result=atract_for_polya,
+            use_dorado_polya=use_dorado_polya
         )
 
         # Always record poly(A) length (even if 0) for completeness
         result['polya_length'] = polya_result['polya_length']
         result['aligned_a_length'] = polya_result['aligned_a_length']
         result['soft_clip_a_length'] = polya_result['soft_clip_a_length']
+        # Dorado pt:i estimate (None when absent) — recorded for comparison and,
+        # under --use-dorado-polya, already folded into polya_length above.
+        result['dorado_polya_length'] = polya_result['dorado_polya_length']
 
         # NOTE: We no longer add 'polya_trim' to correction_applied because
         # soft-clips don't affect genomic position. The only position correction
@@ -1136,6 +1141,7 @@ def process_bam_file(
     max_reads: Optional[int] = None,
     apply_3ss_rescue: bool = True,
     dt_primed_cDNA: bool = False,
+    use_dorado_polya: bool = False,
 ) -> List[Dict]:
     """
     Process BAM file and apply all corrections.
@@ -1193,6 +1199,7 @@ def process_bam_file(
                 netseq_loader=netseq_loader,
                 apply_3ss_rescue=apply_3ss_rescue,
                 dt_primed_cDNA=dt_primed_cDNA,
+                use_dorado_polya=use_dorado_polya,
             )
 
             results.extend(read_results)

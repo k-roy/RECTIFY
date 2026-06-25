@@ -366,6 +366,9 @@ def validate_inputs(args) -> dict:
         # Antisense protocol flag: when True, gene strand = opposite of read strand.
         # Passed through to correct_read_3prime to flip 3' end assignment.
         'dt_primed_cDNA': is_dt_primed,
+        # Dorado poly(A) integration: when set, the pt:i tail-length estimate is
+        # authoritative for polya_length (and always recorded as dorado_polya_length).
+        'use_dorado_polya': getattr(args, 'use_dorado_polya', False),
         # NET-seq CPA-intermediate arm: routes the antisense walkback (via
         # dt_primed_cDNA) but labels the protocol 'netseq' for stats/provenance.
         'is_netseq': is_netseq,
@@ -892,6 +895,7 @@ def run(args):
                     checkpoint_dir=getattr(args, 'checkpoint_dir', None),
                     variant_scan_cache=config.get('variant_scan_cache'),
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    use_dorado_polya=config.get('use_dorado_polya', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
                 )
@@ -915,6 +919,7 @@ def run(args):
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    use_dorado_polya=config.get('use_dorado_polya', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
                 )
@@ -956,6 +961,7 @@ def run(args):
                 polya_model_path=_polya_model_path,
                 variant_scan_cache=config.get('variant_scan_cache'),
                 dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                use_dorado_polya=config.get('use_dorado_polya', False),
                 min_mapq=config.get('min_mapq', 0),
                 min_aligned_length=config.get('min_aligned_length', 0),
                 reuse_pool_container=_pool_container,
@@ -1425,6 +1431,10 @@ if __name__ == '__main__':
     parser.add_argument('--skip-atract-check', action='store_true')
     parser.add_argument('--skip-ag-check', action='store_true')
     parser.add_argument('--skip-polya-trim', action='store_true')
+    parser.add_argument('--use-dorado-polya', action='store_true',
+                        help="Use Dorado's pt:i tail-length estimate as the "
+                             "authoritative poly(A) length (default: off; "
+                             "always recorded as dorado_polya_length)")
     parser.add_argument('--skip-indel-correction', action='store_true')
     parser.add_argument('--skip-3ss-rescue', dest='skip_3ss_rescue', action='store_true')
     parser.add_argument('--include-rdna', action='store_true',
@@ -1570,6 +1580,13 @@ def create_correct_parser(subparsers):
         '--skip-polya-trim',
         action='store_true',
         help='Skip poly(A) tail trimming (even if --dT-primed-cDNA)'
+    )
+
+    module_group.add_argument(
+        '--use-dorado-polya',
+        action='store_true',
+        help="Use Dorado's pt:i tail-length estimate as the authoritative "
+             "poly(A) length (default: off; always recorded as dorado_polya_length)"
     )
 
     module_group.add_argument(

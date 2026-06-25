@@ -239,11 +239,32 @@ def find_polya_boundary(
         return seq_len
 
 
+def get_dorado_polya_length(read: pysam.AlignedSegment) -> Optional[int]:
+    """Return Dorado's estimated poly(A) tail length from the ``pt:i:`` BAM tag.
+
+    Dorado (>=0.9) writes a per-read poly(A) tail-length estimate as ``pt:i:<n>``
+    in the unaligned BAM. When that tag is propagated through alignment it is an
+    independent measurement of the tail length — potentially longer than the
+    observable soft-clip because part of the tail can align over a genomic
+    A-tract. Returns the integer length, or None if the tag is absent / malformed.
+    """
+    try:
+        val = read.get_tag('pt')
+    except (KeyError, ValueError):
+        return None
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
 def calculate_full_polya_length(
     read: pysam.AlignedSegment,
     strand: str,
     atract_result: Optional[Dict] = None,
-    threshold: float = POLYA_RICHNESS_THRESHOLD
+    threshold: float = POLYA_RICHNESS_THRESHOLD,
+    use_dorado_polya: bool = False
 ) -> Dict:
     """
     Calculate the full observed poly(A) tail length from a read.
@@ -283,13 +304,16 @@ def calculate_full_polya_length(
     else:
         three_prime_clip = next((c for c in soft_clips if c['side'] == 'left'), None)
 
-    # Initialize result
+    # Initialize result. `dorado_polya_length` is always reported for comparison
+    # (None when the pt:i tag is absent); it is only treated as authoritative when
+    # use_dorado_polya is enabled (see below).
     result = {
         'polya_length': 0,
         'aligned_a_length': 0,
         'soft_clip_a_length': 0,
         'soft_clip_length': 0,
         'has_polya': False,
+        'dorado_polya_length': get_dorado_polya_length(read),
     }
 
     # Get aligned A's from A-tract result (these are genomic A's that poly(A) aligned to)
@@ -315,8 +339,16 @@ def calculate_full_polya_length(
             # Count actual A's in soft-clip (may be slightly less than length due to errors)
             result['soft_clip_a_length'] = clip_seq.upper().count('A')
 
-    # Total poly(A) length = aligned A's + soft-clipped A's
+    # Total poly(A) length = aligned A's + soft-clipped A's (measured)
     result['polya_length'] = result['aligned_a_length'] + result['soft_clip_a_length']
+
+    # When Dorado integration is enabled and a pt:i estimate is present, accept it
+    # as the authoritative tail length (it captures tail bases that aligned over a
+    # genomic A-tract and so may exceed the measured aligned+soft-clip count). The
+    # measured components are retained for comparison/QC.
+    if use_dorado_polya and result['dorado_polya_length'] is not None:
+        result['polya_length'] = result['dorado_polya_length']
+
     result['has_polya'] = result['polya_length'] > 0
 
     return result
@@ -327,7 +359,8 @@ def trim_polya_from_read(
     strand: str,
     genome: Optional[Dict[str, str]] = None,
     threshold: float = POLYA_RICHNESS_THRESHOLD,
-    atract_result: Optional[Dict] = None
+    atract_result: Optional[Dict] = None,
+    use_dorado_polya: bool = False
 ) -> Dict:
     """
     Detect poly(A) tail and calculate full poly(A) length from read.
@@ -367,7 +400,9 @@ def trim_polya_from_read(
         original_3prime = read.reference_start  # 0-based
 
     # Calculate full poly(A) length
-    polya_result = calculate_full_polya_length(read, strand, atract_result, threshold)
+    polya_result = calculate_full_polya_length(
+        read, strand, atract_result, threshold, use_dorado_polya=use_dorado_polya
+    )
 
     # Build result dict
     result = {
@@ -379,6 +414,7 @@ def trim_polya_from_read(
         'soft_clip_a_length': polya_result['soft_clip_a_length'],
         'soft_clip_length': polya_result['soft_clip_length'],
         'has_polya': polya_result['has_polya'],
+        'dorado_polya_length': polya_result['dorado_polya_length'],
     }
 
     return result
@@ -493,28 +529,15 @@ def trim_polya_from_bam_read(
         (read, n_trimmed) — the modified read and the number of bases removed.
         Returns (read, 0) unchanged if no trimming was applied.
 
-    # TODO — Dorado poly(A) tail length integration:
-    # Dorado (≥0.9) estimates the poly(A) tail length for each read and stores
-    # it as the BAM tag  pt:i:<length>  in the unaligned BAM.  Once this tag
-    # is propagated through alignment and into the consensus BAM, we can use it
-    # to replace the A-richness heuristic here:
-    #
-    #   try:
-    #       dorado_polya_len = read.get_tag('pt')
-    #   except KeyError:
-    #       dorado_polya_len = None
-    #
-    # When dorado_polya_len is present we should:
-    #   1. Accept it as the authoritative tail length instead of measuring the
-    #      soft-clip directly (it may be longer than the observable soft-clip
-    #      because part of the tail aligned to the genomic A-tract).
-    #   2. Pad the soft-clip with artificial A's up to dorado_polya_len before
-    #      removing them, so the stored sequence reflects the full tail.
-    #   3. Record the Dorado-derived length in the output TSV alongside the
-    #      observed soft_clip_a_length for comparison.
-    #
-    # This feature is gated behind --use-dorado-polya (default: off) and
-    # should be developed and tested once Dorado pt-tag support stabilises.
+    Dorado pt:i integration: the Dorado poly(A) tail-length estimate (the
+    ``pt:i:`` BAM tag) is consumed in the MEASUREMENT path
+    (:func:`get_dorado_polya_length` → :func:`calculate_full_polya_length` /
+    :func:`trim_polya_from_read`), where — under ``--use-dorado-polya`` — it
+    becomes the authoritative ``polya_length`` and is recorded as
+    ``dorado_polya_length`` in the output TSV for comparison. This physical-strip
+    function is intentionally unaffected: it removes the observed 3' soft-clip
+    regardless of the tag (tail bases that aligned over a genomic A-tract are in
+    the aligned region, not the soft-clip, so there is nothing to "pad" here).
     """
     cigar = read.cigartuples
     seq   = read.query_sequence

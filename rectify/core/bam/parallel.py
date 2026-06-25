@@ -491,6 +491,7 @@ def _process_region_worker(
     tmp_dir: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
     dt_primed_cDNA: bool = False,
+    use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
@@ -586,6 +587,7 @@ def _process_region_worker(
                 gene_interval_trees=gene_interval_trees,
                 polya_model=polya_model,
                 dt_primed_cDNA=dt_primed_cDNA,
+                use_dorado_polya=use_dorado_polya,
                 exclusion_detector=exclusion_detector,
             )
             results.extend(read_results)
@@ -631,6 +633,7 @@ def process_bam_file_parallel(
     variant_scan_cache: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
     dt_primed_cDNA: bool = False,
+    use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     reuse_pool_container: Optional[list] = None,
@@ -723,6 +726,7 @@ def process_bam_file_parallel(
                 polya_model,
                 max_reads_for_variant_rescue=max_reads_for_variant_rescue,
                 dt_primed_cDNA=dt_primed_cDNA,
+                use_dorado_polya=use_dorado_polya,
                 min_mapq=min_mapq,
                 min_aligned_length=min_aligned_length,
             )
@@ -768,6 +772,7 @@ def process_bam_file_parallel(
         gene_interval_trees=gene_interval_trees,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
         dt_primed_cDNA=dt_primed_cDNA,
+        use_dorado_polya=use_dorado_polya,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
         exclusion_detector=exclusion_detector,
@@ -875,6 +880,7 @@ def process_bam_streaming(
     gene_interval_trees: Optional[Dict] = None,
     polya_model_path: Optional[str] = None,
     dt_primed_cDNA: bool = False,
+    use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
 ) -> ProcessingStats:
@@ -971,6 +977,7 @@ def process_bam_streaming(
                     gene_interval_trees=gene_interval_trees,
                     polya_model=polya_model,
                     dt_primed_cDNA=dt_primed_cDNA,
+                    use_dorado_polya=use_dorado_polya,
                 )
                 chunk.extend(read_results)
 
@@ -1062,6 +1069,7 @@ def process_bam_streaming_parallel(
     variant_scan_cache: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
     dt_primed_cDNA: bool = False,
+    use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
 ) -> ProcessingStats:
@@ -1199,6 +1207,7 @@ def process_bam_streaming_parallel(
         tmp_dir=_tmp_dir,
         max_reads_for_variant_rescue=max_reads_for_variant_rescue,
         dt_primed_cDNA=dt_primed_cDNA,
+        use_dorado_polya=use_dorado_polya,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
     )
