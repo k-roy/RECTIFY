@@ -214,7 +214,27 @@ currently running.** The pipeline is validated end-to-end at 7/7 on a real chunk
 run has NOT been launched yet (awaiting go-ahead). The deployed code (`…/compass_a549/rectify_src`) carries
 all fixes; `~/.rectify/bin` has all aligner symlinks incl. gsnap workers.
 
-## FULL RUN LAUNCHED 2026-06-20 — split+chain job `30432422`
+## DATA-LOSS ROOT CAUSE + FIX (2026-06-25) — self-inflicted merge bug, NOT an agent
+The first full run (30443246) finished all 500 chunks + merge (30443247 COMPLETED 06-21T17:48), but the
+adjudication failed rc=2 (no BAM) and the whole `rectify_sr_full/` (incl. 500 chunk consensus BAMs + merged
+BAM) was GONE.
+- **Root cause**: the generated SR final-merge ends with `rm -rf "$OUTDIR"` to "clean up scratch" AFTER
+  copying the merged BAM to `$OAK_OUT`. With **no `--oak-output-dir` given, `OAK_OUT` defaulted to
+  `$OUTDIR/final`** (a SUBDIR of the working dir), so the cleanup deleted the only copy of the deliverable.
+  Self-inflicted by the pipeline + my omission of a real Oak path.
+- **Forensics (definitive)**: NO `rm`/`-delete` of `compass_a549`/`rectify_sr_full` in ANY of 1036 M1 session
+  transcripts; the hard-drive-rescue/offload agents touch only the local 5TB drive / Drive, never Sherlock —
+  **exonerated**. `compass_a549` mtime = 06-21T17:48:50 (13s after merge end) = the merge's own cleanup. The
+  smoke dir survived only because its arrays were cancelled before merge ran. Not the scratch 90-day purge
+  (the overdue 8TB old COMPASS_alignments_archive is still present).
+- **FIX (committed)**: `split_command.py` merge cleanup now guards — only `rm -rf "$OUTDIR"` when `$OAK_OUT`
+  is OUTSIDE it; else keep the merged BAM, reclaim only intermediates. Verified the generated merge script.
+- **RE-LAUNCHED to durable Oak (job 31165983, 2026-06-25)**: re-split → array → merge → adjudicate, with
+  `--oak-output-dir /oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out`. Merged BAM lands at
+  `$OAK/A549_rep1.consensus.bam` (durable); adjudication writes `$OAK/adjudication_111.json` + sentinel
+  `$OAK/.adjudication_111_rc`. **RESUME**: `cat $OAK/.adjudication_111_rc`; if 0, read `$OAK/adjudication_111.json`.
+
+## (FIRST ATTEMPT, data lost — see above) FULL RUN LAUNCHED 2026-06-20 — split+chain job `30432422`
 (First attempt 30431657 fast-failed on the `set -u` + conda-activate trap — conda's java_home.sh
 references unbound JAVA_HOME; fixed sbatch to `set -o pipefail` only. Resubmitted as 30432422.)
 Submitted `/scratch/users/kevinroy/compass_a549/cmp_sr_full_split.sbatch`. It:
