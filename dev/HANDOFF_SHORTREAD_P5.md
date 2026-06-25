@@ -214,6 +214,30 @@ currently running.** The pipeline is validated end-to-end at 7/7 on a real chunk
 run has NOT been launched yet (awaiting go-ahead). The deployed code (`…/compass_a549/rectify_src`) carries
 all fixes; `~/.rectify/bin` has all aligner symlinks incl. gsnap workers.
 
+## NIGHT 2026-06-25 (autonomous) — conservative plan; shared branch has a CONCURRENT agent
+The human-DRS/cDNA-arm agent is actively committing `drs-validation-rebuild` (last commit b08f1ac @01:13,
+~minutes ago). So tonight I am NOT committing dev work to the shared branch (no Round-2/cDNA-TSV/BLOCKER-1) —
+that would clobber their in-flight tree. My activity is confined to: (1) the COMPASS deliverable in
+`/scratch/users/kevinroy/compass_a549` (isolated), (2) read-only test runs in `rectify_src_dev`, (3) this
+handoff + the inbox note `.claude/inbox/20260625T0822*__from-compass-shortread__*`.
+- **De-duped backlog (Explore survey was STALE — these are ALREADY DONE at HEAD by the other agent):**
+  anchor-gate CLI (`--min-junction-anchor-bp`/`resolve_min_junction_anchor_bp`), gapmm2 pin (5c59f99),
+  cluster_com (507c4ee), splice relabel (116bb28), Dorado pt:i polyA (879aa96), GMAP opt-in aligner (7b32fa0).
+- **Still open (per docs, for Kevin/DRS-agent — DO NOT auto-build on shared branch):** Round-2 cDNA realign
+  (zero-code; Phase-0 kill-gate FIRST; BLOCKER-1 = Cat3 exemption vs anchor gate — verify it still exists,
+  `_effective_chimera_ok` not found at HEAD so may be stale/renamed), cDNA `corrected_reads.tsv` export,
+  native-RNA004 validation of IVT penalty tables, `--max-intron 500000` human default, human 9-cat validation
+  vetting. Recommend building Round-2 only when Kevin is awake to point it (advisor concurs — a run-and-trust
+  GO/NO-GO harness is worse than none).
+- **Re-run DELIVERABLE (to durable Oak): split+chain job `31165983`** (re-split → array → merge → adjudicate).
+  Split RUNNING (~2h in of ~4h). Merge writes BAM to `/oak/.../compass_a549_out/A549_rep1.consensus.bam`
+  (durable) then safe cleanup; adjudicate (afterok) → `$OAK/adjudication_111.json` + `$OAK/.adjudication_111_rc`.
+  Source FASTQs copied to `$OAK/inputs/` as scratch-purge insurance.
+  **RESUME**: `ssh sherlock 'cat /oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out/.adjudication_111_rc'`
+  — if `0`, read `$OAK/adjudication_111.json` (positive control / decoys / 111∩COMPASS together).
+- **Test goal — MET**: full suite at HEAD b08f1ac (in isolated `rectify_src_dev`, my fixes + the concurrent
+  agent's work) = **1608 passed, 0 failed, 40 skipped, 1 xfailed** (348s). No regressions from anyone; green.
+
 ## DATA-LOSS ROOT CAUSE + FIX (2026-06-25) — self-inflicted merge bug, NOT an agent
 The first full run (30443246) finished all 500 chunks + merge (30443247 COMPLETED 06-21T17:48), but the
 adjudication failed rc=2 (no BAM) and the whole `rectify_sr_full/` (incl. 500 chunk consensus BAMs + merged
