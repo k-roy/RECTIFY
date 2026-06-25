@@ -1901,6 +1901,50 @@ def _make_submit_script(
             'echo ""',
             'echo "Full correct-first pipeline submitted. Monitor with: squeue -u $USER"',
         ]
+    elif scheduler == 'uge':
+        # UGE/SGE: qsub -terse prints the job id (jobid.task-range for arrays, so
+        # cut -d. -f1 to the numeric id); -hold_jid waits for that job to COMPLETE
+        # (any exit state — SGE has no afterok). Each stage verifies its inputs, so
+        # a failed upstream stops the chain cleanly rather than running on garbage.
+        lines = ['#!/bin/bash', '# Submit the full chunked correct-first pipeline (UGE/SGE)',
+                 '# -hold_jid waits for completion (not only success); each stage', '']
+        if mpb_script:
+            lines += [
+                f'MPB_JOB=$(qsub -terse {mpb_script} | cut -d. -f1)',
+                'echo "mapPacBio array: $MPB_JOB"',
+            ]
+        lines += [
+            f'OTHERS_JOB=$(qsub -terse {others_script} | cut -d. -f1)',
+            'echo "Others array:    $OTHERS_JOB"',
+        ]
+        align_dep = '${MPB_JOB},${OTHERS_JOB}' if mpb_script else '${OTHERS_JOB}'
+        lines += [
+            f'MERGE_ALIGNERS_JOB=$(qsub -terse -hold_jid {align_dep} {merge_aligners_script} | cut -d. -f1)',
+            'echo "Merge aligners:  $MERGE_ALIGNERS_JOB"',
+            f'PRESCAN_JOB=$(qsub -terse -hold_jid ${{MERGE_ALIGNERS_JOB}} {prescan_script} | cut -d. -f1)',
+            'echo "Prescan:         $PRESCAN_JOB"',
+        ]
+        correct_job_vars = []
+        for aligner, script in correct_scripts.items():
+            var = f'CORRECT_{aligner.upper()}_JOB'
+            lines += [
+                f'{var}=$(qsub -terse -hold_jid ${{PRESCAN_JOB}} {script} | cut -d. -f1)',
+                f'echo "Correct {aligner}:   ${{{var}}}"',
+            ]
+            correct_job_vars.append(f'${{{var}}}')
+        correct_dep = ','.join(correct_job_vars)
+        lines += [
+            f'CHUNK_MERGE_JOB=$(qsub -terse -hold_jid {correct_dep} {chunk_merge_script} | cut -d. -f1)',
+            'echo "Chunk merge:     $CHUNK_MERGE_JOB"',
+            f'FINAL_MERGE_JOB=$(qsub -terse -hold_jid ${{CHUNK_MERGE_JOB}} {final_merge_script} | cut -d. -f1)',
+            'echo "Final merge:     $FINAL_MERGE_JOB"',
+            f'CONSENSUS_PER_CHUNK_JOB=$(qsub -terse -hold_jid ${{FINAL_MERGE_JOB}} {consensus_per_chunk_script} | cut -d. -f1)',
+            'echo "Consensus array: $CONSENSUS_PER_CHUNK_JOB"',
+            f'MERGE_CONSENSUS_JOB=$(qsub -terse -hold_jid ${{CONSENSUS_PER_CHUNK_JOB}} {merge_consensus_script} | cut -d. -f1)',
+            'echo "Merge consensus: $MERGE_CONSENSUS_JOB"',
+            'echo ""',
+            'echo "Full correct-first pipeline submitted. Monitor with: qstat -u $USER"',
+        ]
     else:
         lines = [
             '#!/bin/bash',

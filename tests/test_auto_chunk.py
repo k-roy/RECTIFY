@@ -3,11 +3,48 @@ import math
 
 import pytest
 
+from pathlib import Path
+
 from rectify.core.commands.split_command import (
     recommend_chunk_size,
     _uge_headers,
     _run_all_flags_from_split_args,
+    _make_submit_script,
 )
+
+
+def _submit(scheduler):
+    P = Path
+    return _make_submit_script(
+        scheduler,
+        mpb_script=P('run_array_mapPacBio.sh'),
+        others_script=P('run_array_others.sh'),
+        merge_aligners_script=P('run_merge_aligners.sh'),
+        prescan_script=P('run_prescan.sh'),
+        correct_scripts={'minimap2': P('run_array_correct_minimap2.sh'),
+                         'deSALT': P('run_array_correct_deSALT.sh')},
+        chunk_merge_script=P('run_array_chunk_merge.sh'),
+        final_merge_script=P('run_final_merge.sh'),
+        consensus_per_chunk_script=P('run_array_consensus_per_chunk.sh'),
+        merge_consensus_script=P('run_merge_consensus_chunks.sh'),
+        output_dir=P('/tmp/o'),
+    )
+
+
+def test_uge_submit_chain_uses_holdjid_not_sbatch():
+    s = _submit('uge')
+    assert 'qsub -terse' in s
+    assert '-hold_jid' in s
+    assert 'sbatch' not in s           # not the SLURM path
+    assert 'not yet implemented' not in s
+    # merge_aligners holds on BOTH alignment arrays; chunk_merge holds on both correct jobs
+    assert '-hold_jid ${MPB_JOB},${OTHERS_JOB}' in s
+    assert '${CORRECT_MINIMAP2_JOB},${CORRECT_DESALT_JOB}' in s
+
+
+def test_slurm_submit_chain_still_uses_sbatch():
+    s = _submit('slurm')
+    assert 'sbatch' in s and '--dependency=afterok' in s
 
 
 def _probe(rate_reads_per_min, overhead_s, sizes=(1000, 4000)):
