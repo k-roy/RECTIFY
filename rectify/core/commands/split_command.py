@@ -200,6 +200,22 @@ Examples:
         help=f'Auto-size chunks to approximately this many reads each '
              f'(min {MIN_CHUNKS}, max {MAX_CHUNKS})'
     )
+    size_group.add_argument(
+        '--auto-chunk', action='store_true',
+        help='Calibrate reads-per-chunk by timing a small two-point probe through '
+             'the configured panel, so each chunk runs ~--target-minutes (adapts to '
+             'protocol/organism index-load overhead). MUST run on a compute node.'
+    )
+    parser.add_argument(
+        '--target-minutes', type=float, default=40.0, metavar='MIN',
+        help='Target wall-clock per chunk for --auto-chunk (default 40; lower it '
+             'on preemptible queues so a kill loses less work)'
+    )
+    parser.add_argument(
+        '--probe-reads', default='1000,4000', metavar='N,N',
+        help='Comma-separated probe sizes for --auto-chunk (>=2 distinct values; '
+             'two points separate fixed startup overhead from marginal per-read rate)'
+    )
 
     parser.add_argument(
         '-o', '--output-dir', type=Path, required=True,
@@ -244,8 +260,10 @@ Examples:
     )
     script_group.add_argument(
         '--python-path',
-        default='python',
-        help='Explicit path to Python interpreter (default: python on PATH)'
+        default=None,
+        help='Explicit path to Python interpreter for generated scripts '
+             '(default: the interpreter running rectify, so the env that '
+             'generated the scripts is the one they use)'
     )
     script_group.add_argument(
         '--rectify-src',
@@ -265,10 +283,11 @@ Examples:
     sched_group.add_argument('--slurm-account', default=None,
                              help='SLURM account')
     # UGE/SGE
-    sched_group.add_argument('--uge-queue', default='long.q',
-                             help='UGE/SGE queue name (-q)')
-    sched_group.add_argument('--uge-pe', default='smp',
-                             help='UGE/SGE parallel environment (-pe)')
+    sched_group.add_argument('--uge-queue', default=None,
+                             help='UGE/SGE queue name (-q). Omit on Hoffman2 '
+                                  'campus jobs (no -q emitted when unset).')
+    sched_group.add_argument('--uge-pe', default='shared',
+                             help='UGE/SGE parallel environment (-pe); Hoffman2 = shared')
     # PBS/Torque
     sched_group.add_argument('--pbs-queue', default='workq',
                              help='PBS queue name (-q)')
@@ -354,6 +373,107 @@ def count_reads(path: Path) -> int:
     return n // 4
 
 
+def _run_all_flags_from_split_args(args) -> list:
+    """Reconstruct the `rectify run-all` flags implied by a split args namespace,
+    so the calibration probe measures the SAME per-chunk work the pipeline runs."""
+    flags = []
+    if getattr(args, 'short_read', False):
+        flags.append('--short-read')
+    elif getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'dt_primed_cdna', False):
+        flags.append('--dT-primed-cDNA')
+    elif getattr(args, 'drs', False):
+        flags.append('--drs')
+    if getattr(args, 'Scer', False):
+        flags.append('--Scer')
+    elif getattr(args, 'organism', None):
+        flags += ['--organism', str(args.organism)]
+    else:
+        if getattr(args, 'genome', None):
+            flags += ['--genome', str(args.genome)]
+        if getattr(args, 'annotation', None):
+            flags += ['--annotation', str(args.annotation)]
+    # Panel = mapPacBio (unless skipped) + the configured "other" aligners,
+    # routed to run-all's base/junction groups.
+    panel = list(getattr(args, 'other_aligners', OTHER_ALIGNERS_DEFAULT))
+    if not getattr(args, 'skip_map_pacbio', False) and not getattr(args, 'short_read', False):
+        panel = ['mapPacBio'] + panel
+    base_set = {'minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa'}
+    junction_set = {'uLTRA', 'deSALT', 'gmap'}
+    base = [a for a in panel if a in base_set]
+    junction = [a for a in panel if a in junction_set]
+    if base:
+        flags += ['--base-aligners'] + base
+    if junction:
+        flags += ['--junction-aligners'] + junction
+        gmap_db = getattr(args, 'gmap_db', None)
+        if 'gmap' in junction and gmap_db:
+            flags += ['--gmap-db', str(gmap_db)]
+    return flags
+
+
+def _run_calibration_probe(args, fastq_path, total_reads: int):
+    """Two-point timing probe → recommended reads-per-chunk (or None on failure).
+
+    Runs `rectify run-all` on small subsamples and times each, so the fixed
+    startup overhead and the marginal per-read rate are measured on THIS data +
+    panel + organism. MUST run on a compute node (it runs the aligners).
+    """
+    import time as _time
+    probe_sizes = []
+    for tok in str(getattr(args, 'probe_reads', '1000,4000')).split(','):
+        tok = tok.strip()
+        if tok.isdigit() and int(tok) > 0:
+            probe_sizes.append(min(int(tok), total_reads))
+    probe_sizes = sorted(set(probe_sizes))
+    if len(probe_sizes) < 2:
+        logger.warning("auto-chunk: need >= 2 distinct --probe-reads; got %s", probe_sizes)
+        return None
+    threads = max(1, getattr(args, 'threads', 8))
+    base_flags = _run_all_flags_from_split_args(args)
+    logger.info("auto-chunk: calibrating with probes %s (panel flags: %s)",
+                probe_sizes, ' '.join(base_flags))
+    points = []
+    with tempfile.TemporaryDirectory(prefix='rectify_autochunk_') as tmp:
+        tmp = Path(tmp)
+        for nreads in probe_sizes:
+            probe_fq = tmp / f"probe_{nreads}.fastq.gz"
+            # head the first nreads records (4 lines each) — fast + deterministic
+            rc = subprocess.run(
+                f"zcat -f {fastq_path} | head -n {nreads * 4} | gzip > {probe_fq}",
+                shell=True,
+            ).returncode
+            if rc != 0 or not probe_fq.exists():
+                logger.warning("auto-chunk: failed to build probe of %d reads", nreads)
+                return None
+            out = tmp / f"out_{nreads}"
+            cmd = [sys.executable, '-m', 'rectify', 'run-all', str(probe_fq),
+                   '--threads', str(threads), '-o', str(out)] + base_flags
+            t0 = _time.perf_counter()
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            wall = _time.perf_counter() - t0
+            if r.returncode != 0:
+                logger.warning("auto-chunk: probe run-all failed (exit %d):\n%s",
+                               r.returncode, (r.stderr or '')[-800:])
+                return None
+            logger.info("  probe %6d reads -> %6.1f s", nreads, wall)
+            points.append((nreads, wall))
+    try:
+        rec = recommend_chunk_size(
+            points, total_reads,
+            target_minutes=float(getattr(args, 'target_minutes', 40.0)),
+        )
+    except ValueError as e:
+        logger.warning("auto-chunk: sizing failed (%s)", e)
+        return None
+    logger.info("auto-chunk RESULT: %d reads/chunk -> %d chunks "
+                "(~%.1f min/chunk; overhead ~%.1f s = %.0f%%; marginal %.0f reads/min)%s",
+                rec['reads_per_chunk'], rec['n_chunks'], rec['est_chunk_minutes'],
+                rec['overhead_seconds'], 100 * rec['overhead_fraction'],
+                rec['marginal_reads_per_min'] or 0,
+                ('; ' + '; '.join(rec['notes'])) if rec['notes'] else '')
+    return rec['reads_per_chunk']
+
+
 def compute_n_chunks(n_reads: int, target_per_chunk: int = DEFAULT_TARGET_READS) -> int:
     """
     Compute chunk count from target reads-per-chunk.
@@ -362,6 +482,90 @@ def compute_n_chunks(n_reads: int, target_per_chunk: int = DEFAULT_TARGET_READS)
     """
     n = math.ceil(n_reads / target_per_chunk)
     return max(MIN_CHUNKS, min(MAX_CHUNKS, n))
+
+
+def recommend_chunk_size(
+    probe_points,
+    total_reads: int,
+    target_minutes: float = 40.0,
+    min_chunks: int = MIN_CHUNKS,
+    max_chunks: int = MAX_CHUNKS,
+    max_chunk_minutes: float = 20 * 60,
+    max_overhead_frac: float = 0.20,
+) -> dict:
+    """Recommend reads-per-chunk + n_chunks from a calibration probe.
+
+    Fits ``wall_seconds = overhead + reads / rate`` from >= 2 probe runs, so the
+    FIXED per-task startup (genome-index load, JVM/uLTRA spin-up, env activation —
+    much larger for mammalian indexes than yeast) is separated from the MARGINAL
+    per-read cost. Then sizes chunks to spend ~``target_minutes`` of marginal work
+    while: (a) keeping the fixed-overhead fraction <= ``max_overhead_frac`` so tiny
+    chunks don't waste the run re-loading indexes (this is what makes the optimum
+    differ for human vs yeast — bigger overhead -> bigger chunks), and (b) keeping
+    the estimated chunk wall under ``max_chunk_minutes`` (wall-limit / preemption
+    resilience — smaller chunks lose less work on a kill, so lower ``target_minutes``
+    on preemptible queues).
+
+    Args:
+        probe_points: list of (n_reads, wall_seconds), >= 2 distinct read counts.
+        total_reads: total reads in the dataset to chunk.
+    Returns a dict with reads_per_chunk, n_chunks, overhead_seconds,
+    marginal_reads_per_min, est_chunk_minutes, overhead_fraction, notes.
+    """
+    pts = sorted({(int(r), float(s)) for r, s in probe_points if int(r) > 0})
+    if len(pts) < 2:
+        raise ValueError("recommend_chunk_size needs >= 2 probe points")
+    # Ordinary least squares fit s = a + b*r.
+    n = len(pts)
+    sr = sum(r for r, _ in pts); ss = sum(s for _, s in pts)
+    srr = sum(r * r for r, _ in pts); srs = sum(r * s for r, s in pts)
+    denom = n * srr - sr * sr
+    if denom <= 0:
+        raise ValueError("degenerate probe points (identical read counts)")
+    b = (n * srs - sr * ss) / denom          # seconds per read (marginal)
+    a = max(0.0, (ss - b * sr) / n)          # seconds fixed overhead (clamp >=0)
+    notes = []
+    if b <= 0:
+        b = 1e-9
+        notes.append("probe gave a non-positive marginal slope; rate unreliable")
+    # reads to spend target_minutes of MARGINAL work
+    reads_marginal = (target_minutes * 60.0) / b
+    # overhead-fraction floor: a/(a + b*reads) <= f  =>  reads >= a(1-f)/(f*b)
+    reads_overhead_floor = (
+        a * (1 - max_overhead_frac) / (max_overhead_frac * b) if a > 0 else 0.0
+    )
+    reads_per_chunk = max(reads_marginal, reads_overhead_floor)
+    if reads_overhead_floor > reads_marginal:
+        notes.append(
+            f"raised to keep startup overhead < {max_overhead_frac:.0%} "
+            f"(fixed overhead ~{a / 60:.1f} min/chunk)"
+        )
+    # wall ceiling: (a + b*reads)/60 <= max_chunk_minutes
+    reads_ceiling = (max_chunk_minutes * 60.0 - a) / b
+    if 0 < reads_ceiling < reads_per_chunk:
+        reads_per_chunk = reads_ceiling
+        notes.append(f"capped to keep chunk wall < {max_chunk_minutes / 60:.0f} h")
+    reads_per_chunk = max(1, int(reads_per_chunk))
+    n_chunks = max(min_chunks, min(max_chunks, math.ceil(total_reads / reads_per_chunk)))
+    reads_per_chunk = math.ceil(total_reads / n_chunks)        # even chunks
+    denom2 = a + b * reads_per_chunk
+    # The max_chunks clamp can force chunks back above the wall ceiling for very
+    # large datasets — surface that the wall target is physically unmet.
+    if denom2 / 60.0 > max_chunk_minutes * 1.01 and n_chunks >= max_chunks:
+        notes.append(
+            f"WARNING: cannot keep chunk wall < {max_chunk_minutes / 60:.0f} h within "
+            f"{max_chunks} chunks (est {denom2 / 60:.0f} min/chunk) — raise max_chunks "
+            f"or split the dataset first"
+        )
+    return {
+        'reads_per_chunk': reads_per_chunk,
+        'n_chunks': n_chunks,
+        'overhead_seconds': round(a, 1),
+        'marginal_reads_per_min': round(60.0 / b, 1) if b > 0 else None,
+        'est_chunk_minutes': round(denom2 / 60.0, 1),
+        'overhead_fraction': round(a / denom2, 3) if denom2 > 0 else 0.0,
+        'notes': notes,
+    }
 
 
 def split_fastq(
@@ -644,16 +848,19 @@ def _uge_headers(
     mem_gb: int,
     time: str,
     log_dir: str,
-    queue: str = 'long.q',
-    pe: str = 'smp',
+    queue: Optional[str] = None,
+    pe: str = 'shared',
     is_array: bool = True,
 ) -> str:
     mem_per_slot = math.ceil(mem_gb / cores)
     array_line = f'#$ -t 1-{n_tasks}' if is_array else ''   # UGE is 1-based
+    # Emit -q only when a queue is given. Hoffman2 campus jobs take NO -q (the
+    # scheduler routes by resource request); a bogus default like `long.q` makes
+    # qsub reject the whole array ("unknown queue").
+    queue_line = f'#$ -q {queue}\n' if queue else ''
     return f"""\
 #$ -N {job_name}
-#$ -q {queue}
-#$ -pe {pe} {cores}
+{queue_line}#$ -pe {pe} {cores}
 #$ -l h_data={mem_per_slot}G
 #$ -l h_rt={time}
 {array_line}
@@ -688,7 +895,7 @@ def _scheduler_headers(
     scheduler: str, job_name: str, n_tasks: int, cores: int, mem_gb: int,
     time: str, log_dir: str, log_pattern: str,
     slurm_partition: Optional[str] = None, slurm_account: Optional[str] = None,
-    uge_queue: str = 'long.q', uge_pe: str = 'smp',
+    uge_queue: Optional[str] = None, uge_pe: str = 'shared',
     pbs_queue: str = 'workq', is_array: bool = True,
 ) -> str:
     if scheduler == 'slurm':
@@ -1745,13 +1952,13 @@ def _generate_scripts(
 
     genome_str = str(args.genome.resolve()) if args.genome else '# REQUIRED: set --genome'
     annot_str  = str(args.annotation.resolve()) if args.annotation else '# REQUIRED: set --annotation'
-    python_path = getattr(args, 'python_path', 'python')
+    python_path = getattr(args, 'python_path', None) or sys.executable
     rectify_src = getattr(args, 'rectify_src', '.')
 
     scheduler = getattr(args, 'scheduler', 'slurm')
     slurm_partition = getattr(args, 'slurm_partition', None)
     slurm_account   = getattr(args, 'slurm_account', None)
-    uge_queue       = getattr(args, 'uge_queue', 'long.q')
+    uge_queue       = getattr(args, 'uge_queue', None)
     uge_pe          = getattr(args, 'uge_pe', 'smp')
     pbs_queue       = getattr(args, 'pbs_queue', 'workq')
 
@@ -2403,7 +2610,7 @@ def _generate_short_read_scripts(
 
     genome_str = str(args.genome.resolve()) if args.genome else '# REQUIRED: set --genome'
     annot_str  = str(args.annotation.resolve()) if args.annotation else '# REQUIRED: set --annotation'
-    python_path = getattr(args, 'python_path', 'python')
+    python_path = getattr(args, 'python_path', None) or sys.executable
     rectify_src = getattr(args, 'rectify_src', '.')
     dt_primed_cdna = getattr(args, 'dt_primed_cdna', True)  # default True for --short-read
 
@@ -2413,7 +2620,7 @@ def _generate_short_read_scripts(
     scheduler = getattr(args, 'scheduler', 'slurm')
     slurm_partition = getattr(args, 'slurm_partition', None)
     slurm_account   = getattr(args, 'slurm_account', None)
-    uge_queue       = getattr(args, 'uge_queue', 'long.q')
+    uge_queue       = getattr(args, 'uge_queue', None)
     uge_pe          = getattr(args, 'uge_pe', 'smp')
     pbs_queue       = getattr(args, 'pbs_queue', 'workq')
 
@@ -2607,7 +2814,7 @@ def _generate_paired_short_read_scripts(
 
     genome_str = str(args.genome.resolve()) if getattr(args, 'genome', None) else '# REQUIRED: set --genome'
     annot_str = str(args.annotation.resolve()) if getattr(args, 'annotation', None) else '# REQUIRED: set --annotation'
-    python_path = getattr(args, 'python_path', 'python')
+    python_path = getattr(args, 'python_path', None) or sys.executable
     rectify_src = getattr(args, 'rectify_src', '.')
     read_length = getattr(args, 'read_length', 150) or 150
 
@@ -2618,7 +2825,7 @@ def _generate_paired_short_read_scripts(
     sched_kwargs = dict(
         slurm_partition=getattr(args, 'slurm_partition', None),
         slurm_account=getattr(args, 'slurm_account', None),
-        uge_queue=getattr(args, 'uge_queue', 'long.q'),
+        uge_queue=getattr(args, 'uge_queue', None),
         uge_pe=getattr(args, 'uge_pe', 'smp'),
         pbs_queue=getattr(args, 'pbs_queue', 'workq'),
     )
@@ -2839,6 +3046,21 @@ def run_split(args: argparse.Namespace) -> int:
                         derived_fq.unlink()
                     return 1
         args.reads = derived_fq
+
+    # ── auto-chunk calibration (overrides target/-n via a timed probe) ────
+    if getattr(args, 'auto_chunk', False):
+        logger.info("Counting reads in %s ...", args.reads)
+        _total = count_reads(args.reads)
+        _rec = _run_calibration_probe(args, args.reads, _total)
+        if _rec:
+            args.target_reads_per_chunk = _rec
+            args.n_chunks = None      # force the target-reads-per-chunk path below
+        else:
+            logger.warning(
+                "auto-chunk calibration failed; falling back to "
+                "--target-reads-per-chunk=%d",
+                getattr(args, 'target_reads_per_chunk', DEFAULT_TARGET_READS),
+            )
 
     # ── Determine chunk count ─────────────────────────────────────────────
     if args.n_chunks is not None:
