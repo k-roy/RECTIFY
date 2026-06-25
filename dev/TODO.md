@@ -20,6 +20,12 @@ NOT merged onto the active branch; pending Kevin's call on whether to revive the
 restores them if so: `git clone <archive>/repos_rectify_allrefs_20260617.bundle`.
 _(original task below, for reference)_
 
+### ✅ DECIDED 2026-06-25 — RN-metadata sidecar: leave archived (do not revive)
+**Decision (Kevin):** leave the RN-metadata sidecar feature archived (off-branch bundle on H2 +
+the `wip/sidecar-rn-before-shim-repair` local branch). It was deliberately excluded from
+`drs-validation-rebuild` as superseded/reworked; no revival planned. Restorable from the bundle
+if ever wanted. _Original task below._
+
 ### TODO — decide whether the RN-metadata sidecar feature is worth reviving
 **Priority:** Low · **Added:** 2026-06-17 (CLEANUP_UCLA, during dup retirement) · **Owner:** next RECTIFY agent
 The `feat(sidecar): add read-number RN metadata path` work (commit `56b00b5`; plus `190e82f docs(agent): Codex
@@ -54,6 +60,12 @@ active working copy (`~/work/rectify`). It holds local-only work NOT on `k-roy/R
 ---
 
 ## Documentation
+
+### ✅ DONE 2026-06-24/25 — Splice-classification terminology aligned with the literature
+**Resolved:** README class table + prose, `docs/ARCHITECTURE.md`, and both light+dark
+`splice_classification` figures now use **one-side novel / both-side novel** (output labels
+`alternative`/`novel` kept, mapping + "novel = not in the annotation" caveat documented).
+Internal labels intentionally unchanged (non-breaking). _Original task below._
 
 ### Splice-classification terminology — align README/docs/code with the literature
 **Priority:** Medium
@@ -119,13 +131,10 @@ if desired but is not required to close this.
 | **Winnowmap2** | ✅ wrapped — `run_winnowmap2()` in `multi_aligner.py` (meryl k15 repetitive-kmer build + cache). Smoke script `dev/_smoke_winnowmap2.py`. |
 | **Minisplice** | ✅ wrapped — `run_minisplice_mm2()` in `multi_aligner.py` (minimap2 + DL splice signals). |
 | **GMAP** | ✅ added this branch (commit `7b32fa0`, opt-in splice-aware junction aligner) — `run_gmap()`. |
-| **GLASS** (graph-learning, Apr 2025) | ⬜ NOT evaluated. Needs the tool installed on a cluster + a smoke run before a wrapper is worth adding. The only remaining candidate. |
+| **GLASS** (bioRxiv 2025.04) | ✅ EVALUATED → **DISQUALIFIED**. GLASS is a *post-alignment BAM filter* (graph-ML "Read-AS Map" that removes falsely-spliced reads from minimap2 output), **NOT a standalone aligner** — and its **code is not publicly released**, so it cannot be installed or wrapped. See `docs/aligners/EVALUATED_AND_DISQUALIFIED.md`. (Conceptually adjacent to RECTIFY's own anchor gate; revisit as a *post-consensus* false-splice filter only IF the code is ever released.) |
 
-**Remaining:** evaluate **GLASS** only (install on Sherlock/H2, smoke on the validation
-reads, compare orthogonality vs the existing panel; add `run_glass()` +
-`SUPPORTED_ALIGNERS` registration only if it earns its place). Integration path unchanged:
-wrapper in `multi_aligner.py`, register in `SUPPORTED_ALIGNERS`, validate with
-`pytest tests/test_consensus_selection.py`.
+**Status: COMPLETE for v1.0.0.** All three candidates resolved — Winnowmap2 + Minisplice
+wrapped, GMAP added, GLASS disqualified (no code / not an aligner). No open aligner-eval work.
 
 ---
 
@@ -315,6 +324,12 @@ fresh records, re-run `rectify correct`, re-render via `generate_review_report.p
 **update the `tests/test_validation_reads.py` assertions** for this read (3′ 23711→~23758). Confirm
 minimap2/gapmm2/uLTRA join deSALT/mapPacBio's through-cluster (EER 56.6 → ~15).
 
+### ✅ RESOLVED 2026-06-25 — `corrected_3ends.tsv` is not a required artifact
+**Verified:** `rectify/data/validation/corrected_3ends.tsv` is NOT git-tracked and NOT a test
+or runtime input (referenced only in comments — `walkback.py`, a test docstring). The tracked
+validation TSVs are `corrected_reads.tsv`, `corrected_reads_stats.tsv`, `corrected_3ends_stats.tsv`,
+all current. No regeneration needed. _Original task below._
+
 ### Regenerate `rectify/data/validation/corrected_3ends.tsv`
 **File:** `rectify/data/validation/corrected_3ends.tsv` (currently deleted in working tree)
 **Priority:** Medium
@@ -347,7 +362,12 @@ were corrected to document the verified contract. Both tests pass; full suite gr
 ## Validation-set selector — latent cat7 bug (for future yeast agents)
 
 ### cat7 (alt-splice) selection ranks by intron length, not aligner support
-**Priority:** Medium — latent; masked on yeast, surfaced on human 2026-06-12.
+**Priority:** Low — LATENT, NOT actionable now. The flaw lives in the validation-set
+**down-selection script** (used only when *regenerating* the committed yeast validation set),
+not in the shipped rectify package. Yeast introns max ~800 bp so "longest" never pulled
+artifacts → the committed yeast set is unaffected. Already fixed in the human scratch scripts.
+**Action only IF a future agent regenerates the yeast validation set** — port the
+length→cross-aligner-support ranking then. No package code change required. _(detail below)_
 
 The validation-set down-selection ranks cat7 (non-canonical unannotated junction)
 candidates by **longest intron**. On human (A549 chr5) this enshrined single-aligner
