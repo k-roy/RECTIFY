@@ -95,6 +95,13 @@ chunked sequences are required because:
 - `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_from_committed.py` — rebuilds `validation_reads.bam` (Cat1/Cat2 from DRS run, Cat3–9 from committed git)
 - `dev_runs/wt_by4742_rep1_drs_trim_20260417/rebuild_aligner_bams.py` — rebuilds all 5 aligner BAMs consistently
 
+> ⚠ **Build requirement (gapmm2):** rebuilding the aligner BAMs **requires
+> `gapmm2==25.4.5`** (pinned in `pyproject.toml` + `install_aligners_command.py`).
+> gapmm2 25.4.13+ silently drops every single-exon read (the `ts:`-tag regression,
+> BUGS_TO_FIX NEW-082): 25.8.12 emits only 10/35 reads, 25.4.5 emits 35/35. A rebuild
+> on the wrong version produces a gapmm2 BAM missing ~70% of reads with no error. The
+> current committed gapmm2 BAM (36/36 primaries) was built with the correct version.
+
 ---
 
 ## Category 1 — polya_walkback (`cat1_indel`)

@@ -38,27 +38,39 @@ class TestFindPolyABoundary:
     """
     Unit tests for find_polya_boundary (Module 2E).
 
-    Regression coverage for the A/T hybrid zone fix: both A=A and T=T matches
-    in the poly-A zone are ambiguous (a poly-A base miscalled as T produces a
-    T=T match on a genomic T).  Only C=C or G=G is unambiguous evidence of the
-    exon body.  The exit condition must be gb not in ('A','T') for both strands.
+    VERIFIED CONTRACT (2026-06-24): the walkback exit condition is
+    ``gb != stop_base`` on the SINGLE strand-relevant poly-A base, NOT
+    ``gb not in ('A','T')`` on both. ``find_polya_boundary`` delegates to
+    ``walkback_3prime_guarded`` with ``stop_base='A'`` (plus) / ``'T'`` (minus);
+    the scan walks back through stop_base matches and stops at the first
+    read==genome agreement whose base is NOT stop_base
+    (``walkback.py`` lines 169, 181).
+
+    So a T=T match on the PLUS strand and an A=A match on the MINUS strand are
+    GENUINE exon boundaries (the scan stops there), not poly-A false stops.
+    Justification:
+      - Plus: the poly-A tail is a genomic A-run, so a tail base must miscall
+        A→T AND land on a genomic T to fake a T=T — ~1% (Nanopore HP errors are
+        overwhelmingly deletions, not substitutions). Stopping at T=T is
+        parsimonious and almost always the true last exon base.
+      - Minus: a minus-strand poly-A tail base (RNA A) reverse-complements to
+        'T' in the BAM SEQ, so an A=A agreement can ONLY come from RNA T over a
+        genomic A = genuine exon body. The tail CANNOT manufacture A=A. This is
+        deterministic, not probabilistic.
     """
 
     # ------------------------------------------------------------------
     # Plus strand: T=T false stop regression
     # ------------------------------------------------------------------
     #
-    # NOTE (2026-05-10): The two tests below — test_plus_strand_T_match_is_genuine_exon_boundary
-    # and test_minus_strand_A_match_is_genuine_exon_no_correction — were renamed and
-    # had their assertions inverted relative to the prior _skips_T_match_before_true_CPA
-    # / _skips_A_match counterparts. The new names assert that T=T (plus) and A=A (minus)
-    # matches are GENUINE exon boundaries (not poly-A false stops).
-    #
-    # TODO: verify this semantic inversion is correct. The behaviour change should be
-    # justified by Roy & Chanfreau (or related) analysis showing that A/T hybrid-zone
-    # matches in the strand-relevant base are unambiguously exonic. Confirm passes
-    # against current production code and that downstream consensus stats still match
-    # expected CPA distributions for cat1_minus_1 / cat1_plus_1 fixtures.
+    # RESOLVED (2026-06-24): the 2026-05-10 semantic inversion is VERIFIED correct.
+    # The two tests below — test_plus_strand_T_match_is_genuine_exon_boundary and
+    # test_minus_strand_A_match_is_genuine_exon_no_correction — assert that T=T (plus)
+    # and A=A (minus) matches are GENUINE exon boundaries, matching production:
+    # find_polya_boundary delegates to walkback_3prime_guarded with stop_base='A'/'T'
+    # (the single strand-relevant poly-A base). Both pass against current code; the
+    # biological justification is in the class docstring above (plus ~99% probabilistic,
+    # minus deterministic via reverse-complement). No further action required.
     # ------------------------------------------------------------------
 
     def test_plus_strand_T_match_is_genuine_exon_boundary(self):

@@ -6,21 +6,33 @@
 
 ## Open
 
-### NEW-082 (MEDIUM) — gapmm2 v25.8.12 drops most reads (6/36 on M1) during `rectify align`
-**File:** `rectify/core/align/multi_aligner.py` (gapmm2 invocation) + the gapmm2 binary
-**Found:** 2026-06-01 (M1), during the cat2_plus_1 validation-bundle re-align.
+**None.** (NEW-082 resolved 2026-06-24 — see below.)
 
-`rectify align --aligners minimap2 gapmm2 --junction-aligners uLTRA` on the 36 DRS validation
-reads emitted **6/36** primary records from gapmm2 while minimap2 and uLTRA emitted all 36
-(read `61b0c014` was among those gapmm2 silently dropped). gapmm2 reports `SUCCESS` and writes a
-BAM — but it's missing ~83% of input reads. M1 gapmm2 is **v25.8.12**. This blocks regenerating
-the DRS validation bundle (see TODO "Regenerate the DRS validation bundle").
+---
 
-**Likely area:** a gapmm2-version behavior/filter change (cf. the earlier `--min-mapq type=int`
-gapmm2 argparse bug in memory `feedback_gapmm2_argparse_bug`). **To verify:** run gapmm2 directly
-on the trimmed FASTQ and diff its read set vs minimap2; check whether dropped reads share a
-trait (mapq, terminal-HP, length); confirm the gapmm2 version pinned in the H2/Sherlock prod
-rectify envs and whether they also drop reads. Pin/patch gapmm2 to emit one primary per input read.
+### ~~NEW-082 (MEDIUM) — gapmm2 v25.8.12 drops most reads — ROOT-CAUSED + FIXED, verified 2026-06-24~~
+**File:** `rectify/core/commands/install_aligners_command.py` (the unpinned installer).
+**Found:** 2026-06-01 (M1); **root-caused + fixed:** 2026-06-24.
+
+**Root cause (proven):** gapmm2 **25.4.13+** added a `splice_aligner_minimap2()` code path
+(used whenever the `minimap2` binary is on PATH) whose tag-validation loop does
+`if ts is None: continue` (align.py ~855). minimap2 emits the `ts:A:` transcript-strand tag
+**only for spliced alignments** (those with an N/intron op), so gapmm2 **silently drops every
+single-exon (unspliced) read**. The drop is invisible in `--debug` (only `low-mapq` is printed;
+the `missing-ts` count is tracked but never surfaced). v25.4.5 (H2/Sherlock prod) predates this
+path entirely (no `splice_aligner_minimap2`, no `ts` filter).
+
+**Empirical proof (M1, 36 DRS validation reads → 35 after the empty-seq placeholder is cleaned):**
+- gapmm2 **25.8.12**: minimap2 aligns all 35; gapmm2 emits **10/35** — and the 10 survivors are
+  exactly minimap2's `ts:`-tagged (spliced) reads (`comm` diff empty). The 25 dropped are all
+  single-exon.
+- gapmm2 **25.4.5**: emits **35/35**. Verified end-to-end through rectify's own `run_gapmm2`
+  (clean FASTQ 35 → PAF 35 → BAM 35 mapped primaries, one per input read).
+
+**Fix:** pin gapmm2 to `==25.4.5` in `install_aligners_command.py` (line ~234) to match the
+existing `pyproject.toml [aligners]` pin. The stale `gapmm2>=0.2` in the installer is what let
+25.8.12 onto the M1 in the first place (the pyproject dep was already correct). M1 base env
+downgraded to 25.4.5 to clear the drift. **Unblocks** the DRS validation-bundle regen (TODO).
 
 ---
 

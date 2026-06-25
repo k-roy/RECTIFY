@@ -106,10 +106,11 @@ writing Cat3 reads.
 uses `D` (deletion, op=2) instead of `N` (intron skip, op=3) for
 reference gaps ≤ 10 bp at segment boundaries. Larger gaps stay `N`.
 
-**Open**: a downstream pass (likely `indel_corrector` or
-`realign_exon_blocks`) is currently mangling refiner-clean upstream
-exon CIGARs (`14=1D9=` → `22D1M21I1M`) — see `HANDOFF.md` Open §3 + §4
-for full state of Cat3 fixes in flight.
+**Resolved (2026-06): ** the downstream exon-CIGAR mangling
+(`14=1D9=` → `22D1M21I1M`) and the materializer `intron_end`/acceptor-short
+issue were fixed by the Cat3-rescue commits (`a11ef8e`, `00297d7`,
+`91d8336`). The cat3 fixtures in `test_validation_reads.py` pass; the
+suite is green. See "Open work (live)" below.
 
 ---
 
@@ -185,20 +186,25 @@ JUNC_BED   = DATA / 'saccharomyces_cerevisiae_R64-5-1_20240529.junc.bed'
 
 ## Open work (live)
 
-See `HANDOFF.md` for the current session's open bugs and design
-discussions. Currently in flight on `drs-validation-rebuild`:
+See `HANDOFF.md` for the current session's state. The DRS validation
+build on `drs-validation-rebuild` is **green** (`pytest -m "not slow"` =
+1603 passed; 69 Cat3/Cat6/refiner tests + the cat1–cat9
+`test_validation_reads.py` set all pass). The Cat3/Cat6 items that were
+formerly in flight are **RESOLVED**:
 
-- Materializer truncates rescue's `intron_end` to `ref_start` → Cat3
-  acceptor 1 bp short of annotated AG.
-- `reroute_intronic_tail_5prime_via_junction` not firing for
-  cat3_plus_1 despite preconditions met.
-- Refiner emits clean simple-slide CIGAR but a downstream pass mangles
-  upstream exon ops.
-- `merge_corrected_tsvs` HP-edit-distance mode vs legacy 5-level sort
-  — production uses legacy, the fixture uses HP. Architectural
-  decision pending.
-- Cat6 cascade (1→9 failures) opened by the fixture refactor —
-  expected to be class 1(c) test updates per the Phase 1 plan.
+- ✅ Materializer `intron_end`/acceptor-short, `reroute_intronic_tail_5prime_via_junction`,
+  and the downstream exon-CIGAR mangling were fixed by the Cat3-rescue
+  commits (`a11ef8e`, `00297d7`, `91d8336` on `splice_aware_5prime.py`).
+- ✅ Cat6 cascade (1→9) closed; the cat1–cat9 fixtures pass.
+- ✅ `merge_corrected_tsvs` settled on **hp_edit_distance** as the primary
+  sort key (`corrected_consensus.py`), with the chrom-aware `_n_agree`
+  tie-breaker as fallback. No HP-vs-legacy decision remains pending.
+
+**Remaining (genuine, non-blocking):**
+
 - **Future enhancement**: pre-compute up_amb / down_amb fields on
   annotated junctions so soft-clip rescue can flex the match length
-  within the ambiguity window. See HANDOFF for design.
+  within the ambiguity window.
+- **GLASS aligner eval** (the one open `dev/TODO.md` item): not installed
+  on the cluster; evaluate before adding a wrapper. Winnowmap2 / Minisplice
+  / GMAP are already wrapped.
