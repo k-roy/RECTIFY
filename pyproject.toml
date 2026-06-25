@@ -111,8 +111,13 @@ visualize = [
 [project.scripts]
 rectify = "rectify.cli:main"
 
-[tool.setuptools]
-packages = ["rectify", "rectify.calibration", "rectify.core", "rectify.core.chunking", "rectify.core.aggregate", "rectify.core.analyze", "rectify.core.classify", "rectify.utils", "rectify.data", "rectify.visualize"]
+# Auto-discover every rectify subpackage. A hand-maintained list silently went
+# stale (dropped rectify.core.commands + 13 others), so a non-editable
+# `pip install .` / wheel built an import-broken package. find keeps it correct.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rectify*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 rectify = [
