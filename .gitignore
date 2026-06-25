@@ -180,3 +180,8 @@ rectify/data/output/aligners/uLTRA_ultra_tmp/
 !rectify/data/output/aligners/validation_reads.*.bam
 !rectify/data/output/aligners/validation_reads.*.bam.bai
 !rectify/data/output/aligners/annotation.junc.bed
+
+# Dev throwaway experiment / repro scripts (underscore-prefixed) + rendered doc previews
+dev/_*.py
+dev/_*.qsub
+*_preview.html
