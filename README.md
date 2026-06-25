@@ -81,12 +81,18 @@ Long reads spanning splice junctions often carry soft-clipped 5' bases that matc
 #### Introns — splice junction refinement and classification
 Each N-cigar op is refined against the **junction pool** (annotated + observed-across-aligners) with homopolymer-aware scoring, then classified per read:
 
-| Class            | Condition                                                                  |
-|---               |---                                                                         |
-| `unspliced`      | Read spans an intron but has no N-cigar op                                 |
-| `annotated`      | Every N-op matches an annotated donor + acceptor exactly                   |
-| `alternative`    | One end of an N-op matches an annotated site, the other does not          |
-| `novel`          | Neither end of any N-op matches any annotated site                         |
+| Class (output label)                | Condition                                                       |
+|---                                  |---                                                              |
+| `unspliced`                         | Read spans an intron but has no N-cigar op                      |
+| `annotated`                         | Every N-op matches an annotated donor + acceptor exactly        |
+| one-side novel (output `alternative`) | One end of an N-op matches an annotated site, the other does not (a novel donor *or* acceptor) |
+| both-side novel (output `novel`)    | Neither end of any N-op matches any annotated site              |
+
+Here **"novel" means "not in the annotation"** — *not* "never observed before." A
+junction absent from a given GENCODE *basic* build is often catalogued elsewhere
+(recount3/intropolis) or present in the *comprehensive* set. The output TSV keeps the
+short labels `alternative`/`novel`; the figure and prose use the more standard
+*one-side novel* / *both-side novel* (see `docs/ARCHITECTURE.md` for the mapping).
 
 <p align="center">
   <img src="docs/figures/splice_classification.png#gh-light-mode-only" alt="Splice classification" width="620">
@@ -140,7 +146,7 @@ A valley-based adaptive clustering algorithm groups nearby corrected 5' ends (TS
 </p>
 
 ### Splice junction analysis
-Per-read splice classifications from step (c) are aggregated into per-junction tables: annotated/alternative/novel counts and junction-shift frequencies. The `alternative`/`novel` fraction is the readout for the NMD-AS isoform audit (surveillance-mutant studies where unproductive transcripts accumulate).
+Per-read splice classifications from step (c) are aggregated into per-junction tables: annotated / one-side-novel / both-side-novel counts (output labels `annotated`/`alternative`/`novel`) and junction-shift frequencies. The novel (one-side + both-side) fraction is the readout for the NMD-AS isoform audit (surveillance-mutant studies where unproductive transcripts accumulate).
 
 ### Isoform characterization (ONT cDNA only)
 `rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. 5' and 3' end variation within each cluster is bounded by a configurable window (default ±5 bp). Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.

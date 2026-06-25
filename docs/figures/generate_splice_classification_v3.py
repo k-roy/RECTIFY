@@ -92,8 +92,8 @@ def build():
     out.append(text(FIG_W/2, 26, "Splice classification",
                     size=14, color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W/2, 44,
-                    "classify each N-cigar op against annotated splice sites",
-                    size=11, color=PAL["muted"], anchor="middle"))
+                    "classify each N-cigar op vs the reference annotation · \"novel\" = not in the annotation",
+                    size=10, color=PAL["muted"], anchor="middle"))
 
     # Annotated reference layout — two annotated splice sites at fixed x
     # Exon 1 ends at donor_x; Exon 2 starts at acceptor_x
@@ -150,7 +150,7 @@ def build():
     # donor matches annotation, acceptor is 30 px to the right
     y3 = 220
     alt_acceptor = acceptor_x + 40
-    out.append(read_row(y3, "alternative", PAL["orange"],
+    out.append(read_row(y3, "one-side novel", PAL["orange"],
                         n_ops=[(donor_x, alt_acceptor)],
                         aligned_spans=[(160, donor_x), (alt_acceptor, 660)]))
 
@@ -158,7 +158,7 @@ def build():
     y4 = 260
     nov_donor = donor_x + 35
     nov_acceptor = acceptor_x + 35
-    out.append(read_row(y4, "novel", PAL["red"],
+    out.append(read_row(y4, "both-side novel", PAL["red"],
                         n_ops=[(nov_donor, nov_acceptor)],
                         aligned_spans=[(160, nov_donor), (nov_acceptor, 660)]))
 

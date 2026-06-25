@@ -1120,6 +1120,16 @@ through a sequential decision tree:
 | `alternative` | At least one N-op shares a donor OR acceptor with an annotated intron (alt-5'SS, alt-3'SS, exon skipping) |
 | `novel` | At least one N-op has neither end matching any annotated splice site |
 
+**Terminology mapping (output label → literature term).** The output TSV keeps the
+short labels above; the README, figures, and the Sumner chr5 summary use the more
+standard names: `alternative` → **one-side novel** (a novel donor *or* acceptor),
+`novel` → **both-side novel**. In all cases **"novel" means "not in the loaded
+annotation"** — *not* "never observed anywhere." A junction missing from a GENCODE
+*basic* build may be present in the *comprehensive* set or catalogued in
+recount3/intropolis. The short labels are retained as the canonical output values to
+avoid breaking downstream consumers; renaming them is tracked as a deferred decision
+in `dev/TODO.md`.
+
 Other analysis modules: `junction_analysis.py` (splice stats),
 `junction_validation.py` (annotation-based validation), `heatmap.py`
 (cluster usage heatmaps), `pca.py` (PCA of count matrix), `summary.py`
