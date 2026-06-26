@@ -91,7 +91,10 @@ def net_indel_in_span(ref_start: int, cigartuples,
             out_span += (ln - overlap)
             pos += ln
         elif op == 1:                  # I consumes query, ref pos fixed
-            if span_start <= pos <= span_end:
+            # consistent with has_unexplained's half-open [s, e) test; an
+            # insertion strata that wants boundary-equivalence should widen
+            # eq_end by 1 rather than rely on an inclusive bound here.
+            if span_start <= pos < span_end:
                 in_span -= ln
             else:
                 out_span += ln
@@ -210,6 +213,42 @@ class AlignerScore:
 def load_genome(fasta_path: Union[str, Path]) -> Dict[str, str]:
     fa = pysam.FastaFile(str(fasta_path))
     return {c: fa.fetch(c) for c in fa.references}
+
+
+# ---------------------------------------------------------------------------
+# BAM-ization of an INTERNAL DP arm (so the gate can score the arms it exists to
+# adjudicate — flat-affine vs C1 length-law — not just BAM-producing aligners)
+# ---------------------------------------------------------------------------
+def cigar_records_to_bam(records: Iterable[Tuple[str, str, int, list, str]],
+                         ref_fa: Union[str, Path],
+                         out_bam: Union[str, Path]) -> str:
+    """Write a sorted+indexed BAM from ``(read_id, chrom, ref_start, cigartuples,
+    seq)`` records. This is how an internal DP arm (e.g. ``align_exon_block_global``
+    or the future C1 length-law DP) is fed to ``score_bam`` — the gate's exit
+    criterion is that the arm-flat vs arm-law ABLATION is runnable, which requires
+    scoring DP output that never produced a BAM."""
+    import subprocess
+    out_bam = str(out_bam)
+    fa = pysam.FastaFile(str(ref_fa))
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"},
+              "SQ": [{"LN": fa.get_reference_length(c), "SN": c} for c in fa.references]}
+    unsorted = out_bam + ".unsorted.bam"
+    with pysam.AlignmentFile(unsorted, "wb", header=header) as bam:
+        for (rid, chrom, ref_start, cig, seq) in records:
+            a = pysam.AlignedSegment(bam.header)
+            a.query_name = rid
+            a.query_sequence = seq
+            a.flag = 0
+            a.reference_id = bam.header.get_tid(chrom)
+            a.reference_start = ref_start
+            a.mapping_quality = 60
+            a.cigartuples = cig
+            bam.write(a)
+    subprocess.run(["samtools", "sort", "-o", out_bam, unsorted],
+                   check=True, capture_output=True)
+    Path(unsorted).unlink(missing_ok=True)
+    subprocess.run(["samtools", "index", out_bam], check=True, capture_output=True)
+    return out_bam
 
 
 # ---------------------------------------------------------------------------

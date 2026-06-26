@@ -119,8 +119,12 @@ def gen_hp_stratum(reps: int, rng: random.Random, locus0: int = 0
 # where the flat-affine indel-vs-substitution tradeoff DIVERGES from a calibrated
 # length-law. These generators construct those, so the incumbent is BELOW ceiling
 # (a candidate ablation only counts if minimap2 is below ceiling on the stratum).
-def _mutate(seq: str, pos: int, rng: random.Random) -> str:
-    alt = rng.choice([b for b in BASES if b != seq[pos].upper()])
+def _mutate(seq: str, pos: int, rng: random.Random, avoid: str = "") -> str:
+    """Substitute the base at ``pos`` for a DIFFERENT base, never ``avoid`` (so a
+    boundary substitution can never be turned INTO the run base, which would
+    silently change the effective run length and corrupt the truth)."""
+    forbidden = {seq[pos].upper()} | ({avoid.upper()} if avoid else set())
+    alt = rng.choice([b for b in BASES if b not in forbidden])
     return seq[:pos] + alt + seq[pos + 1:]
 
 
@@ -161,19 +165,20 @@ def gen_hp_hard_stratum(reps: int, rng: random.Random, locus0: int = 50,
                 core = lf + b * (L - k) + rf
                 mode = "boundary_sub" if (i % 2 == 0) else "noisy"
                 if mode == "boundary_sub":
-                    # mutate the base immediately 3' of the (shortened) run
+                    # mutate the base immediately 3' of the (shortened) run; never
+                    # to the run base (would change the effective run length).
                     bpos = FLANK + (L - k)
                     if bpos < len(core):
-                        core = _mutate(core, bpos, rng)
+                        core = _mutate(core, bpos, rng, avoid=b)
                 else:
                     n_sub = max(1, int(round(sub_rate * len(core))))
                     for _ in range(n_sub):
                         p = rng.randrange(len(core))
-                        # don't turn a flank base INTO the run base adjacent to the
-                        # run (that would change the true run length / ambiguity)
+                        # don't perturb the run or its immediate boundary (that
+                        # would change the true run length / ambiguity)
                         if run_start - 1 <= p <= run_start + (L - k):
                             continue
-                        core = _mutate(core, p, rng)
+                        core = _mutate(core, p, rng, avoid=b)
                 rid = f"{chrom}_{mode}_r{i:03d}_k{k}"
                 reads.append((rid, core))
                 indels = [IndelTruth(

@@ -53,25 +53,34 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
 
 4. **End-to-end smoke** — `scripts/benchmark/smoke_roundtrip.py`.
 
-## VERIFIED
-- **GATE smoke is GREEN and the gate is VALID for C1**
-  (`scripts/benchmark/smoke_roundtrip.py`, minimap2 -ax splice on the Tier-1 corpus):
+## VERIFIED — the gate is BUILT for the external-aligner path + the internal-DP
+## ablation path is RUNNABLE. (C1-arm SEPARATION is the named remaining proof — see OPEN.)
+- **GATE smoke is GREEN** (`scripts/benchmark/smoke_roundtrip.py`, minimap2 -ax
+  splice on the Tier-1 corpus):
   - (A) known junction round-trips truth->reads->minimap2->scorer as **NNC TP=30**;
   - (A2) **NIC TP=30 and ANNOTATED TP=30** — the discovery-class classifier is
     verified end-to-end (not just present); separate FDR tracks exercised;
   - (B) a deliberately 1bp-shifted junction call (into the repeat) scores
     **TP=1 FP=0** (ambiguity-aware match, the GMAP-0.09 trap defended);
   - (B2) NEGATIVE control: a junction shifted 40bp (beyond the window) is correctly **FP**;
-  - (C) indel **position-exact concordance = 0.923**, false-indel-rate=0.0;
-  - (D) **HP_HARD stratum is DISCRIMINATING — minimap2 = 0.821 (BELOW ceiling)**,
-    while the isolated-HP control = **1.000** (exactly the SPEC VERTICAL-SLICE
-    FINDING). This is the validity check that makes the gate real for C1: an
-    incumbent at 1.000 cannot separate the concepts. The hard cases are
-    boundary-substitution (indel-vs-sub tradeoff) + combined-noise.
+  - (C) indel **position-exact concordance = 0.987**, false-indel-rate=0.0;
+  - (D) **internal-DP ablation path RUNS** — the live flat-affine DP
+    (`align_exon_block_global`, the arm C1 upgrades) is BAM-ized
+    (`scorer.cigar_records_to_bam`) and scored on 2400 HP_HARD reads
+    (concordance 0.990). This is the 'ablations runnable' exit criterion AND the
+    exact harness the future arm-LAW vs arm-flat comparison plugs into.
+- **HONEST validity finding (advisor-driven):** minimap2 and the flat-affine DP are
+  the SAME error family, so they AGREE by construction (boundary_sub = 1.000 ==
+  1.000 after a truth-corruption fix where the boundary substitution was never
+  allowed to become the run base). A flat-vs-flat smoke therefore CANNOT
+  demonstrate C1 discrimination — a genuine C1 win is **arm-LAW vs arm-flat**, and
+  the length-law arm is the NEXT cycle. The smoke reports this rather than falsely
+  asserting flat-affine 'headroom' (which would be a false gate). isolated-HP =
+  1.000 (the SPEC VERTICAL-SLICE FINDING), STR = 0.907.
 - **Scorer correctness fix:** a per-indel TP now requires net-in-span == truth net
   AND no unexplained indel OUTSIDE every truth span (the vertical-slice
-  ``out_run == 0`` rule), so a spurious extra indel on an indel-bearing read is not
-  scored free.
+  ``out_run == 0`` rule); insertion-boundary off-by-one made consistent with the
+  half-open span test.
 - Schema lossless TSV round-trip verified (junction normalization, canonicity,
   HP-cell accounting, variant/split round-trip).
 - pbsim3 MAF→genome **projection** verified locally on a synthetic MAF (2bp deletion
@@ -86,11 +95,21 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   (clean reads are ~50% by the del-dominant K_DIST; HP_HARD alternates two modes).
   The Sherlock scale-up must set `--reps` so every `(base_class, run_copies)` cell
   clears `min_count=100` (recommend `--reps ~400`).
-- **STR stratum is currently non-discriminating** (minimap2 = 1.000 at the present
-  seed) — an earlier seed showed 0.57, so STR CAN discriminate the ED-tied
-  placement with the right construction. HP_HARD carries the discriminating load
-  for the smoke; harden STR (force the ED-tied whole-unit-deletion placement to
-  differ from left-alignment) before relying on STR for a C1 ablation.
+- **NAMED REMAINING PROOF — C1-arm separation (the gate is not yet C1-VALID):**
+  HP_HARD's boundary-substitution + combined-noise cases do NOT create a
+  flat-affine error that a length-law could fix (flat-affine scores ~0.99-1.00 on
+  them) — so they cannot, by a flat-vs-flat comparison, prove C1 discrimination.
+  To make the gate C1-VALID, EITHER (a) build the C1 length-law arm (next cycle)
+  and show arm-LAW > arm-flat on HP_HARD, OR (b) construct a stratum where
+  flat-affine demonstrably MIS-PLACES the indel out of the run (e.g. a competing
+  alignment that ties flat-affine but the length-law breaks toward truth — the
+  run-bleeds-into-flank / adjacent-different-base-run cases). Until one exists,
+  treat HP_HARD as exercising the scorer + the ablation harness, NOT as a proven
+  C1 discriminator. The BAM-ization + two-arm harness (`run_flat_affine_arm` in
+  the smoke, `cigar_records_to_bam` in the scorer) is the plug-in point.
+- **STR stratum** is ~0.907 (mildly discriminating at this seed; an earlier seed
+  showed 0.57). Harden STR (force the ED-tied whole-unit-deletion placement to
+  differ from left-alignment) before relying on it for a C1 ablation.
 - Tier-2 realistic transcriptome run (yeast saturation control + human SMN1/SMN2 +
   NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
 - Other strata from the SPEC not yet generated (paralog, panel-failure/C5,
