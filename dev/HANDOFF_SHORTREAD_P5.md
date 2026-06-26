@@ -1,5 +1,5 @@
 ════════════════════════════════════════════════════════════════════════════════
-# ★ CURRENT HANDOFF (2026-06-25) — COMPASS short-read 111-adjudication deliverable
+# ★ CURRENT HANDOFF (2026-06-26) — COMPASS short-read 111-adjudication: DELIVERED ✅
 (Authoritative current state. Detailed chronological history is below this block.)
 
 ## DONE
@@ -36,27 +36,31 @@
 FOLLOW-UP for Kevin: IGV the 2 corroborated (annotation/canonical/coverage) to accept-or-reject as real.
 Merged BAM `$OAK/A549_rep1.consensus.bam` (6.9G) + json + sentinel LOCKED read-only (lock job 31412492).
 
-## OPEN / BLOCKED
-- **SSH ControlMaster to Sherlock is DOWN** (overnight Kerberos expiry; the fresh ticket is Azure
-  `MICROSOFTONLINE` realm which Sherlock rejects — it wants SUNetID+Duo). No master socket exists at
-  `~/.ssh/MacBook-Air-M1-KR.localkevinroy@sherlock.stanford.edu:22`. **Cannot reach the cluster until re-auth.**
-- **111 VERDICT PENDING** — the corrected re-run is cluster-side + durable to Oak; not yet checked (SSH down).
-- Human DRS/cDNA dev backlog — owned by the **concurrently-active** DRS-arm agent (last commit 01:13). DO NOT
-  commit dev to `drs-validation-rebuild` from here / don't clobber their tree.
+## STATUS: COMPASS 111-deliverable COMPLETE & DELIVERED. SSH restored (168h ControlPersist; Kerberos tickets
+expire ~daily → if `ssh sherlock` fails auth again, USER runs `! ssh sherlock` + Duo to re-create the master).
 
-## RESUME (concrete)
-1. **Restore SSH (USER, interactive):** `! ssh sherlock` → complete Duo + SUNetID → creates the persistent
-   master (ControlPersist 168h). Confirm: `ssh sherlock 'echo OK'` returns OK (no prompt).
-2. **Get the verdict:** `ssh sherlock 'OAK=/oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out;
-   cat $OAK/.adjudication_111_rc; echo ---; cat $OAK/adjudication_111.json'`. If rc==0 → report
-   **POSITIVE_control_annotated_supported / NEGATIVE_control_decoys_in_compass / INTERSECTION_111_in_compass
-   together** (near-zero 111 ⇒ artifact ONLY if positive control HIGH).
-3. **If still running:** `squeue -u kevinroy` + `sacct -j 31165983 -X -o State` and the downstream jobs
-   (`A549_rep1_sr` array → merge → `adjudicate_111`). Chunks at `$W/rectify_sr_full/chunk_outputs/`.
-4. **If verdict job FAILED:** read `$OAK/adjudicate_111_*.{out,err}`; re-run `$W/adjudicate_oak.sbatch` once
-   the merged BAM exists at `$OAK/A549_rep1*.consensus.bam`.
-5. **Tests / dev:** run tests only in `rectify_src_dev` (`PYTHONPATH=$PWD`, `rectify` env). Don't touch the
-   running deliverable's `rectify_src`.
+## NEXT (forward — pick up here)
+1. **IGV the 2 corroborated junctions** (the live science follow-up): `chr5:140564954-140565547` (depth 12,
+   strong) and `chr5:179823051-179823857` (depth 3, modest). Check annotation status, canonical GT-AG motif,
+   and read coverage in the locked Oak BAM `$OAK/A549_rep1.consensus.bam` → accept/reject as real novel
+   junctions. These are the 2/111 the multi-aligner panel rescued that single-pass STAR (Deliverable B) missed.
+2. **(Optional) extend to A549 rep2/rep3** — this run was rep1 only. To run another rep/sample: reuse the
+   pattern in `$W/cmp_sr_full_split_v2.sbatch` (re-split → array → merge → adjudicate → lock), but **ALWAYS
+   pass `--oak-output-dir` on a REAL `/oak/...` path** (a fresh per-sample dir) and confirm the generated merge
+   prints `Oak out: /oak/...` before launching. Pull the rep's FASTQ to `$W/COMPASS/fastq/` first.
+3. **Rule-compliance hardening (small):** the rectify-generated SR final-merge still contains `rm -rf "$OUTDIR"`
+   + a `rm -f …*_R1.fastq.gz` wildcard (`split_command.py` SR merge template, ~L2333). Safe today (scratch-only,
+   Oak-verified) but violates the new global no-`rm -rf`/no-wildcard rule — rewrite to an explicit named-path
+   removal. **Coordinate first** (shared `drs-validation-rebuild`, active DRS-arm agent) — don't clobber.
+4. **Human DRS/cDNA dev backlog** (Round-2 cDNA realign incl. Phase-0 kill-gate + BLOCKER-1; cDNA
+   `corrected_reads.tsv`; native-RNA004 validation of the IVT penalty tables; `--max-intron 500000` human
+   default) — **owned by the concurrently-active DRS-arm agent.** Do NOT auto-build on the shared branch from
+   here; coordinate via `.claude/inbox/`. Use `rectify_src_dev` for any isolated test runs.
+
+## RE-READ THE DELIVERED RESULT (anytime)
+`ssh sherlock 'OAK=/oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out; cat $OAK/adjudication_111.json'`
+(output is chmod-444 / dir non-writable — read-only, protected from accidental rm). All chain jobs COMPLETED
+(`31165983` split, `31202917` array 500/500, `31202976` merge, `31202977` adjudicate, `31412492` lock).
 
 ## FILES / IDs
 - Re-run chain (live): split `31165983` ✅ → array `31202917` (A549_rep1_sr, ~373/500) → merge `31202976`
