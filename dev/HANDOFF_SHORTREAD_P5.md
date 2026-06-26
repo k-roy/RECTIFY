@@ -49,7 +49,12 @@
    running deliverable's `rectify_src`.
 
 ## FILES / IDs
-- Re-run chain: **split+chain job `31165983`** → array `A549_rep1_sr` → merge → adjudicate (afterok).
+- Re-run chain (live): split `31165983` ✅ → array `31202917` (A549_rep1_sr, ~373/500) → merge `31202976`
+  → adjudicate `31202977` → **lock `31412492`** (afterok; `chmod a-w` the Oak BAM/json/sentinel/inputs +
+  dir, so the output is read-only & non-deletable). Merge verified Oak-safe (guard → rm -rf hits scratch only).
+  FOLLOW-UP (rule compliance): the generated merge still uses `rm -rf "$OUTDIR"` + a `rm -f …*_R1.fastq.gz`
+  wildcard — safe (scratch-only) but should be hardened to explicit-path removal per the new no-rm-rf rule.
+- (orig) split+chain job `31165983` → array `A549_rep1_sr` → merge → adjudicate (afterok).
   W=`/scratch/users/kevinroy/compass_a549`; OAK=`/oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out`
   (durable: `A549_rep1.consensus.bam`, `adjudication_111.json`, `.adjudication_111_rc`, `inputs/` FASTQ copies).
 - Sbatch: `$W/cmp_sr_full_split_v2.sbatch` (re-split+chain, passes `--oak-output-dir`), `$W/adjudicate_oak.sbatch`.
