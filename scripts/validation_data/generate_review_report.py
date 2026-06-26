@@ -664,34 +664,43 @@ def main() -> int:
     parser.add_argument("--format", choices=["html", "md", "both"], default="html",
                         help="Output format. md is VS-Code-friendly (markdown preview + "
                              "sibling PNG folder). both writes html and md side-by-side.")
-    parser.add_argument("--no-fresh", dest="fresh", action="store_false",
-                        help="Render from the committed rectified/ fixtures AS-IS, without "
-                             "re-correcting. Faster, but the figure may be STALE if the code "
-                             "changed since those fixtures were generated.")
-    parser.set_defaults(fresh=True)
+    parser.add_argument("--fresh", action="store_true",
+                        help="Re-correct the validation reads with the CURRENT code "
+                             "(regen_pa_rest_bundle.py) before rendering, so the figure "
+                             "reflects HEAD. NOTE: this currently regenerates the committed "
+                             "rectified/ fixtures IN PLACE (mutates tracked files + takes a "
+                             "few minutes). A scratch-dir version is a TODO. Without --fresh, "
+                             "the renderer uses the committed fixtures and prints a loud "
+                             "staleness banner so you are never silently fooled by old data.")
     args = parser.parse_args()
 
     if args.arm != "drs":
         print(f"--arm {args.arm} not yet supported", file=sys.stderr)
         return 1
 
-    # FRESH-CORRECT (default): re-run rectify correct + merge on every aligner BAM
-    # with the CURRENT code, regenerating corrected_reads.tsv + per_aligner_summary.tsv
-    # + the rectified BAMs, so the figure reflects HEAD — not a stale committed snapshot.
-    # (The committed fixtures are only an optimization; rendering from them silently
-    # drifts whenever the code changes. --no-fresh opts out.)
     if args.fresh and not args.html_only:
         print("[--fresh] re-correcting validation reads with current code "
-              "(regen_pa_rest_bundle.py) so the figure reflects HEAD...",
-              file=sys.stderr, flush=True)
+              "(regen_pa_rest_bundle.py) — this mutates the committed rectified/ "
+              "fixtures in place...", file=sys.stderr, flush=True)
         _rc = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "regen_pa_rest_bundle.py")]
         )
         if _rc.returncode != 0:
             print("[--fresh] re-correction FAILED — refusing to render a possibly-stale "
-                  "figure. Fix the regen, or pass --no-fresh to render the committed "
-                  "fixtures as-is.", file=sys.stderr)
+                  "figure. Fix the regen, or omit --fresh to render committed fixtures.",
+                  file=sys.stderr)
             return 1
+    elif not args.html_only:
+        # Loud staleness banner: the committed fixtures can drift from the code.
+        import subprocess as _sp
+        _date = _sp.run(["git", "log", "-1", "--format=%ci",
+                         "--", str(VAL_DIR / "rectified" / "per_aligner_summary.tsv")],
+                        capture_output=True, text=True).stdout.strip() or "unknown"
+        print("=" * 78, file=sys.stderr)
+        print(f"[STALENESS WARNING] Rendering from COMMITTED fixtures last regenerated "
+              f"{_date}.\n  These can drift from current code (winner/ED/3'-end may be "
+              f"obsolete).\n  Pass --fresh to re-correct with HEAD first.", file=sys.stderr)
+        print("=" * 78, file=sys.stderr)
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     DRIVE_OUT.mkdir(parents=True, exist_ok=True)
