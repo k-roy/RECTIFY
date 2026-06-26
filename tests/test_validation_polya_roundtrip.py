@@ -61,15 +61,13 @@ def _load_parquet_tsv() -> dict:
 class TestPolyARoundTrip:
     """Each invariant is a separate assertion so failures are granular.
 
-    XFAIL until the coherent bundle rebuild lands: the committed bundle's
-    parquet is from a different build than the aligned reads (documented
-    2026-06-25). Remove the xfail markers once the rebuild makes these pass —
-    they then become live guards against re-introducing build skew.
+    These were XFAIL while the bundle carried build skew; the 2026-06-26
+    coherent-source fix (dorado_source ← build-X combined source; uLTRA
+    no-trim fix restoring cat9_minus_2 to its full 640 bp) makes them pass,
+    so the markers were removed — they are now LIVE guards against
+    re-introducing build skew or aligner read-trimming.
     """
 
-    @pytest.mark.xfail(reason="parquet from a different build than the bundle reads "
-                              "(orig != dorado_len); fixed by coherent rebuild",
-                       strict=False)
     def test_parquet_original_matches_dorado_source(self):
         pq = _load_parquet_tsv()
         src = _bam_lengths(DORADO_SRC)
@@ -77,9 +75,6 @@ class TestPolyARoundTrip:
                if k in src and pq[k][0] != src[k]}
         assert not bad, f"parquet original_seq_len != dorado_source length: {bad}"
 
-    @pytest.mark.xfail(reason="aligned reads are untrimmed (== dorado length), not "
-                              "trimmed_seq_len; fixed by coherent rebuild",
-                       strict=False)
     def test_aligned_reads_are_the_trimmed_reads(self):
         pq = _load_parquet_tsv()
         val = _bam_lengths(VAL_BAM)

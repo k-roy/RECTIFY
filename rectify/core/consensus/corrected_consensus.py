@@ -1364,6 +1364,15 @@ def merge_corrected_tsvs(
                     })
         if ed_rows:
             ed_df = pd.DataFrame(ed_rows)
+            # Idempotency: if the input per-aligner TSVs already carry these
+            # internally-computed columns (e.g. a previously-merged
+            # corrected_reads.tsv re-fed as input), drop them first so the
+            # ed_df join doesn't create _x/_y suffix collisions (which then
+            # KeyError on all_df['min_junction_anchor'] below).
+            all_df = all_df.drop(
+                columns=['hp_edit_distance', 'aligned_bases', 'min_junction_anchor'],
+                errors='ignore',
+            )
             all_df = all_df.merge(ed_df, on=['read_id', '_aligner'], how='left')
             all_df['hp_edit_distance'] = all_df['hp_edit_distance'].fillna(float('inf'))
             all_df['aligned_bases']    = all_df['aligned_bases'].fillna(0).astype(int)
@@ -1631,7 +1640,7 @@ def merge_corrected_tsvs(
     drop_cols = [
         '_aligner', '_conf_rank', '_five_rescued',
         '_span', '_n_junc', '_n_agree', 'hp_edit_distance', '_chimera_ok',
-        '_effective_chimera_ok', 'aligned_bases',
+        '_effective_chimera_ok', 'aligned_bases', 'min_junction_anchor',
     ]
     result_df.drop(
         columns=[c for c in drop_cols if c in result_df.columns],

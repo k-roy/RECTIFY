@@ -231,6 +231,11 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int]) -> int:
 # Set to 6 h as a safe upper bound before treating a run as hung.
 ALIGNER_TIMEOUT = 21600
 
+# uLTRA --reduce_read_ployA threshold high enough that poly-A reduction never
+# fires (longest plausible long read « this), so uLTRA never truncates the
+# emitted SEQ. See run_ultra for the no-trim rationale.
+_ULTRA_DISABLE_POLYA_REDUCE = 10_000_000
+
 from ...utils.junction_bed import get_minimap2_junc_args, generate_junction_bed
 
 from rectify.core.align.mpb_split_reads import split_long_reads, stitch_split_bam, MAX_MPB_READ_LENGTH
@@ -2539,6 +2544,22 @@ def run_ultra(
         '--disable_infer',
         '--t', str(threads),
         '--prefix', prefix,
+    ]
+
+    # No-trim policy: aligners must not DROP query bases — unaligned bases belong
+    # in soft-clips (counted against the aligner, then rectify rescues), never
+    # deleted from SEQ. uLTRA's --reduce_read_ployA (default 8) reduces poly-A
+    # runs >X bp to 5 bp "before MEM finding"; despite its help claiming this
+    # "does not affect final read alignments", it actually TRUNCATES the emitted
+    # SEQ (a 640 bp read came back 632 bp — 8 bases gone, not soft-clipped).
+    # Disable it (value > any read length) so the full query is preserved; the
+    # previously-dropped bases reappear as soft-clip. Verified: this only extends
+    # the terminal soft-clip — the aligned core, reference_start, and all other
+    # reads' alignments are byte-identical. Skip if the caller set it explicitly.
+    if not (extra_args and any('--reduce_read_ployA' in str(a) for a in extra_args)):
+        cmd += ['--reduce_read_ployA', str(_ULTRA_DISABLE_POLYA_REDUCE)]
+
+    cmd += [
         ref_path,
         ann_path,
         reads_path,

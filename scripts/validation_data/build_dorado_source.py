@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Rebuild validation_reads_dorado_source.bam from the source Dorado BAM.
+"""Rebuild validation_reads_dorado_source.bam from the authoritative build-X source.
 
 For each read in validation_reads.bam (identified by XV tag), the script
-extracts the primary alignment from the Dorado-called DRS BAM
-(wt_by4742_rep1.bam), applies XV/XG tags, and writes a sorted+indexed
-output BAM.
+extracts the primary alignment from the source BAM, applies XV/XG tags, and
+writes a sorted+indexed output BAM.
 
-For reads that are unmapped in the Dorado BAM (Cat1 reads 0cb5a111 and
-77b392d9 have no mapping there), the script falls back to the DRS-trim
-minimap2 merged BAM, which is also "minimap2 of the full untrimmed read"
-from the same sequencing run.
+AUTHORITATIVE SOURCE = ``combined_dorado_source.bam`` (the build-X untrimmed
+source from which the bundle's parquet + trimmed ``validation_reads.bam`` were
+derived). Its per-read lengths == parquet ``original_seq_len`` for all 36 reads,
+so the poly-A trim/restore round-trip is exact (tests/test_validation_polya_roundtrip.py).
+
+DO NOT revert to ``wt_by4742_rep1.bam`` (the old DORADO_SRC_BAM): it is a
+DIFFERENT basecall and diverges in length from the parquet for 6 reads
+(cat2_plus_1, cat1_plus_2, cat1_minus_1, cat2_minus_1, cat1_minus_2,
+cat1_plus_1), which re-introduces the build skew the round-trip guard catches.
+The old cluster/dev paths are kept only as last-resort fallbacks for reads
+absent from the combined source (there are none today). [2026-06-26]
 
 This script is called by regen_pa_rest_bundle.py (Step 5) to keep the
 dorado_source BAM in sync with validation_reads.bam after every bundle
@@ -26,14 +32,14 @@ import pysam
 
 REPO = Path(__file__).resolve().parents[2]
 VAL = REPO / "rectify" / "data" / "validation"
-DORADO_SRC_BAM = (
+# Authoritative build-X source (tracked alongside this script).
+DORADO_SRC_BAM = REPO / "scripts" / "validation_data" / "combined_dorado_source.bam"
+# Last-resort fallbacks (different basecall — see module docstring; only used
+# for reads absent from the combined source, which is currently none).
+MINIMAP2_FALLBACK_BAM = (
     Path("/oak/stanford/groups/larsms/Users/kevinroy")
     / "projects/TRT/raw_data/nanopore/inhouse_by4742_dst1_4nqo_ski7"
     / "wt_by4742_rep1.bam"
-)
-MINIMAP2_FALLBACK_BAM = (
-    REPO / "dev_runs/wt_by4742_rep1_drs_trim_20260417/merged"
-    / "wt_by4742_rep1.minimap2.bam"
 )
 OUT_BAM = VAL / "validation_reads_dorado_source.bam"
 
@@ -80,12 +86,11 @@ def main() -> int:
     print(f"  {len(wanted)} reads to include in dorado_source")
 
     if not DORADO_SRC_BAM.exists():
-        print(f"ERROR: Dorado source BAM not found: {DORADO_SRC_BAM}", file=sys.stderr)
+        print(f"ERROR: build-X source BAM not found: {DORADO_SRC_BAM}", file=sys.stderr)
         return 1
-    if not MINIMAP2_FALLBACK_BAM.exists():
-        print(f"ERROR: minimap2 fallback BAM not found: {MINIMAP2_FALLBACK_BAM}",
-              file=sys.stderr)
-        return 1
+    # The fallback (different basecall, often cluster-only) is checked lazily —
+    # only if Phase 1 leaves reads unresolved. The combined source covers all 36
+    # reads today, so the fallback is normally never touched.
 
     # ---- Phase 1: extract from primary Dorado source BAM ----
     print(f"\nSearching {DORADO_SRC_BAM.name} ...")
@@ -100,6 +105,10 @@ def main() -> int:
     need_fallback = set(unmapped_in_dorado) | missing_from_dorado
     fallback_reads: dict[str, pysam.AlignedSegment] = {}
     if need_fallback:
+        if not MINIMAP2_FALLBACK_BAM.exists():
+            print(f"ERROR: {len(need_fallback)} read(s) unresolved in {DORADO_SRC_BAM.name} "
+                  f"and fallback BAM not found: {MINIMAP2_FALLBACK_BAM}", file=sys.stderr)
+            return 1
         print(f"\nFetching {len(need_fallback)} read(s) from minimap2 fallback: "
               f"{MINIMAP2_FALLBACK_BAM.name}")
         fallback_reads = {
