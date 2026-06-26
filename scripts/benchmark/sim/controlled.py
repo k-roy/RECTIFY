@@ -36,7 +36,7 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from rectify.core.benchmark.truth_schema import (  # noqa: E402
     ReadTruth, IndelTruth, JunctionTruth, JunctionClass, IndelKind, SplitTag,
-    write_truth_table, homopolymer_run, make_hp_indel,
+    write_truth_table, homopolymer_run, make_hp_indel, deletion_ambiguity_span,
 )
 from scripts.benchmark.sim.transcript_model import TranscriptModel, Exon  # noqa: E402
 
@@ -97,9 +97,10 @@ def gen_hp_stratum(reps: int, rng: random.Random, locus0: int = 0
                 reads.append((rid, lf + b * (L - k) + rf))
                 indels = []
                 if k > 0:
+                    es, ee = deletion_ambiguity_span(ref, run_start, k)
                     indels.append(IndelTruth(
-                        pos=run_start, length=k, kind=IndelKind.DEL,
-                        eq_start=run_start, eq_end=run_end,
+                        pos=es, length=k, kind=IndelKind.DEL,
+                        eq_start=es, eq_end=ee,
                         context="HP", run_unit=b, run_copies=L))
                 truth.append(ReadTruth(
                     read_id=rid, true_locus=chrom, true_transcript=chrom,
@@ -181,9 +182,10 @@ def gen_hp_hard_stratum(reps: int, rng: random.Random, locus0: int = 50,
                         core = _mutate(core, p, rng, avoid=b)
                 rid = f"{chrom}_{mode}_r{i:03d}_k{k}"
                 reads.append((rid, core))
+                es, ee = deletion_ambiguity_span(ref, run_start, k)
                 indels = [IndelTruth(
-                    pos=run_start, length=k, kind=IndelKind.DEL,
-                    eq_start=run_start, eq_end=run_end,
+                    pos=es, length=k, kind=IndelKind.DEL,
+                    eq_start=es, eq_end=ee,
                     context="HP", run_unit=b, run_copies=L)]
                 truth.append(ReadTruth(
                     read_id=rid, true_locus=chrom, true_transcript=chrom,
@@ -220,9 +222,10 @@ def gen_str_stratum(reps: int, rng: random.Random, locus0: int = 100
                 drop = rng.random() < 0.4
                 if drop and ncopy > 1:
                     read = lf + unit * (ncopy - 1) + rf
+                    es, ee = deletion_ambiguity_span(ref, run_start, len(unit))
                     indels = [IndelTruth(
-                        pos=run_start, length=len(unit), kind=IndelKind.DEL,
-                        eq_start=run_start, eq_end=run_end,
+                        pos=es, length=len(unit), kind=IndelKind.DEL,
+                        eq_start=es, eq_end=ee,
                         context="STR", run_unit=unit, run_copies=ncopy)]
                     cig = f"{run_start}M{len(unit)}D{len(read) - run_start}M"
                 else:

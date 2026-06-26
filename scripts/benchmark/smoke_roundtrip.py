@@ -36,7 +36,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from rectify.core.benchmark.truth_schema import read_truth_table  # noqa: E402
 from rectify.core.benchmark.scorer import (  # noqa: E402
     score_bam, load_genome, extract_junctions, cigar_records_to_bam,
+    net_indel_in_span, all_indel_positions,
 )
+from rectify.core.benchmark.truth_schema import IndelKind  # noqa: E402
 from rectify.core.consensus.chimeric_consensus import normalize_junction  # noqa: E402
 from rectify.core.align.local_aligner import align_exon_block_global  # noqa: E402
 from scripts.benchmark.sim import controlled  # noqa: E402
@@ -225,34 +227,50 @@ def main():
         print(f"[smoke] (D)   by mode  boundary_sub: mm2={bs_mm:.4f} flat={bs_fl:.4f} (n={bs_n}); "
               f"noisy: mm2={no_mm:.4f} flat={no_fl:.4f} (n={no_n})", file=sys.stderr)
 
-        # The HONEST validity criterion for THIS cycle. minimap2 and the
-        # flat-affine DP are the SAME error family (both flat-affine, quality-
-        # blind) — they AGREE by construction (boundary_sub = 1.0 == 1.0 once the
-        # truth-corruption bug is fixed). We therefore CANNOT manufacture a
-        # flat-vs-flat separation: a genuine C1 win is arm-LAW vs arm-flat, and the
-        # length-law arm is the NEXT cycle. So this cycle proves the two things it
-        # CAN, and names the rest as the remaining proof:
-        #   PROVE-NOW: the internal-DP ablation path RUNS — the flat-affine DP is
-        #     BAM-ized and SCORED to a finite per-stratum concordance (this is the
-        #     'ablations runnable' exit criterion, and the exact harness the future
-        #     arm-LAW vs arm-flat comparison plugs into).
-        #   NAMED-REMAINING-PROOF: HP_HARD's C1-discrimination is UNPROVEN until the
-        #     length-law arm is scored against it (a flat-vs-flat smoke cannot show
-        #     it). Reported, not asserted — asserting flat-affine 'headroom' here
-        #     would be a false gate (boundary_sub shows flat-affine is already
-        #     correct on the constructed cases; only the length-law contrast can
-        #     reveal a fixable error).
+        # The validity criterion the SPEC actually states: the incumbent is below
+        # ceiling AGAINST TRUTH, and that headroom is C1-ADDRESSABLE (systematic
+        # indel-misplacement a length/run-aware cost would fix), NOT generic noise.
+        # We can decide this NOW from truth alone (we do not need the length-law
+        # arm to know whether a C1-addressable stratum EXISTS — only to prove the
+        # law CLOSES it, which is the next cycle).
+        #
+        # Classify each flat-affine HP_HARD-noisy failure: is the deletion placed
+        # OUTSIDE the run span, or a substitution "repaired" with a spurious indel?
+        # Both are exactly the indel-vs-substitution tradeoff C1 targets.
+        noisy_truth = {rid: t for rid, t in hard_truth.items() if "_noisy_" in rid}
+        fails = c1_addressable = 0
+        for rid, t in noisy_truth.items():
+            if not t.indels:
+                continue
+            ind = t.indels[0]
+            tn = ind.length if ind.kind == IndelKind.DEL else -ind.length
+            cig = align_exon_block_global(read_seqs[rid], genome[t.chrom])
+            ins, outs = net_indel_in_span(0, cig, ind.eq_start, ind.eq_end)
+            if ins != tn or outs != 0:
+                fails += 1
+                ipos = all_indel_positions(0, cig)
+                if any(not (ind.eq_start <= p < ind.eq_end) for p, l, op in ipos):
+                    c1_addressable += 1
+        frac = (c1_addressable / fails) if fails else 0.0
         dp_ran = (flat_arm.reads_scored > 0 and
                   (flat_arm.indel.correct + flat_arm.indel.incorrect) > 0)
         if not dp_ran:
             failures.append("(D) internal flat-affine DP arm did not score any HP_HARD "
                             "read — the ablation path is NOT runnable")
+        elif no_fl >= 0.999:
+            failures.append(f"(D) HP_HARD-noisy gives the incumbent NO headroom vs truth "
+                            f"(flat={no_fl:.4f}>=0.999) — no C1-addressable stratum")
+        elif frac < 0.8:
+            failures.append(f"(D) HP_HARD-noisy headroom is GENERIC not C1-addressable "
+                            f"(only {frac:.0%} of flat-affine failures are out-of-run "
+                            f"misplacement/spurious-indel)")
         else:
-            print(f"[smoke] (D) PASS internal-DP ablation path RUNS — flat-affine DP "
-                  f"BAM-ized+scored on {flat_arm.reads_scored} HP_HARD reads "
-                  f"(concordance={flat_hard:.4f}). Same-family arms agree by construction "
-                  f"(boundary_sub mm2={bs_mm:.3f}==flat={bs_fl:.3f}); arm-LAW vs arm-flat "
-                  f"separation is the NAMED C1-cycle exit criterion (needs the length-law arm).",
+            print(f"[smoke] (D) PASS gate CONTAINS a C1-addressable stratum: flat-affine "
+                  f"HP_HARD-noisy={no_fl:.4f} (< ceiling vs TRUTH), and {c1_addressable}/{fails} "
+                  f"({frac:.0%}) failures are systematic out-of-run misplacement / "
+                  f"spurious mismatch-repair — the indel-vs-sub tradeoff C1 targets. "
+                  f"Internal-DP ablation path RUNS (BAM-ized+scored). Whether the length-law "
+                  f"CLOSES this gap (arm-LAW > arm-flat) is the NEXT-cycle ablation.",
                   file=sys.stderr)
 
     # (C) indel position-exact concordance present and meaningful

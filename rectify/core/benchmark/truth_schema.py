@@ -387,13 +387,38 @@ def str_run(genome_seq: str, pos: int, unit_len: int) -> Tuple[int, int, str, in
     return s, e, unit, copies
 
 
+def deletion_ambiguity_span(genome_seq: str, pos: int, length: int) -> Tuple[int, int]:
+    """Genomic span ``[eq_start, eq_end)`` covering every ambiguity-EQUIVALENT
+    placement of a ``length``-bp deletion that starts at ``pos`` — the SAME
+    base-equality slide used for junctions (``chimeric_consensus``): the deletion
+    slides left while ``seq[s-1] == seq[s-1+length]`` and right while
+    ``seq[p] == seq[p+length]``, preserving the read.
+
+    This generalizes homopolymer/STR run detection: it also captures HALF-period
+    bleeds (e.g. a 'T' immediately before an (AT)n run extends an 'AT' deletion's
+    equivalence one base left), which full-period run tiling misses and which
+    otherwise charge an equivalent placement as a false error.
+    """
+    s = pos
+    while (s - 1 >= 0 and s - 1 + length < len(genome_seq)
+           and genome_seq[s - 1].upper() == genome_seq[s - 1 + length].upper()):
+        s -= 1
+    p = pos
+    while (p + length < len(genome_seq)
+           and genome_seq[p].upper() == genome_seq[p + length].upper()):
+        p += 1
+    return s, p + length
+
+
 def make_hp_indel(genome_seq: str, run_start: int, length: int,
                   kind: IndelKind = IndelKind.DEL) -> IndelTruth:
     """Construct an ``IndelTruth`` for a homopolymer-run indel, computing the
-    ambiguity-equivalence span from the run."""
+    ambiguity-equivalence span from the base-equality slide (== the run for a pure
+    HP, but also captures flank bleeds)."""
     rs, re, base = homopolymer_run(genome_seq, run_start)
+    es, ee = deletion_ambiguity_span(genome_seq, rs, length) if kind == IndelKind.DEL else (rs, re)
     return IndelTruth(
-        pos=rs, length=length, kind=kind, eq_start=rs, eq_end=re,
+        pos=es, length=length, kind=kind, eq_start=min(es, rs), eq_end=max(ee, re),
         context="HP", run_unit=base, run_copies=re - rs,
     )
 

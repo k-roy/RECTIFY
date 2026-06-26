@@ -53,8 +53,9 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
 
 4. **End-to-end smoke** — `scripts/benchmark/smoke_roundtrip.py`.
 
-## VERIFIED — the gate is BUILT for the external-aligner path + the internal-DP
-## ablation path is RUNNABLE. (C1-arm SEPARATION is the named remaining proof — see OPEN.)
+## VERIFIED — the gate is BUILT, CONTAINS a C1-addressable stratum (validated vs
+## TRUTH), and the internal-DP ablation harness is RUNNABLE. (Proving the length-law
+## CLOSES the gap — arm-LAW > arm-flat — is the next-cycle ablation; see OPEN.)
 - **GATE smoke is GREEN** (`scripts/benchmark/smoke_roundtrip.py`, minimap2 -ax
   splice on the Tier-1 corpus):
   - (A) known junction round-trips truth->reads->minimap2->scorer as **NNC TP=30**;
@@ -63,24 +64,35 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   - (B) a deliberately 1bp-shifted junction call (into the repeat) scores
     **TP=1 FP=0** (ambiguity-aware match, the GMAP-0.09 trap defended);
   - (B2) NEGATIVE control: a junction shifted 40bp (beyond the window) is correctly **FP**;
-  - (C) indel **position-exact concordance = 0.987**, false-indel-rate=0.0;
-  - (D) **internal-DP ablation path RUNS** — the live flat-affine DP
-    (`align_exon_block_global`, the arm C1 upgrades) is BAM-ized
-    (`scorer.cigar_records_to_bam`) and scored on 2400 HP_HARD reads
-    (concordance 0.990). This is the 'ablations runnable' exit criterion AND the
-    exact harness the future arm-LAW vs arm-flat comparison plugs into.
-- **HONEST validity finding (advisor-driven):** minimap2 and the flat-affine DP are
-  the SAME error family, so they AGREE by construction (boundary_sub = 1.000 ==
-  1.000 after a truth-corruption fix where the boundary substitution was never
-  allowed to become the run base). A flat-vs-flat smoke therefore CANNOT
-  demonstrate C1 discrimination — a genuine C1 win is **arm-LAW vs arm-flat**, and
-  the length-law arm is the NEXT cycle. The smoke reports this rather than falsely
-  asserting flat-affine 'headroom' (which would be a false gate). isolated-HP =
-  1.000 (the SPEC VERTICAL-SLICE FINDING), STR = 0.907.
-- **Scorer correctness fix:** a per-indel TP now requires net-in-span == truth net
-  AND no unexplained indel OUTSIDE every truth span (the vertical-slice
-  ``out_run == 0`` rule); insertion-boundary off-by-one made consistent with the
-  half-open span test.
+  - (C) indel **position-exact concordance = 0.997**, false-indel-rate=0.0;
+  - (D) **the gate CONTAINS a C1-addressable stratum, validated against TRUTH:**
+    the live flat-affine DP (`align_exon_block_global`, the arm C1 upgrades) scores
+    **0.980 on HP_HARD-noisy (BELOW ceiling vs truth)**, and **24/24 (100%) of its
+    failures are systematic out-of-run deletion misplacement OR a substitution
+    "repaired" with a spurious indel** — exactly the indel-vs-substitution tradeoff
+    C1 targets (a run/length-aware cost keeps the deletion in-run and stops the
+    mismatch-repair). The internal-DP ablation path RUNS — the DP is BAM-ized
+    (`scorer.cigar_records_to_bam`) and scored on 2400 reads — so the arm-LAW vs
+    arm-flat comparison is runnable; isolated-HP control = 1.000 (the SPEC
+    VERTICAL-SLICE FINDING), STR = 1.000.
+- **KEY method note (advisor-driven):** minimap2 and the flat-affine DP are the
+  SAME error family, so they AGREE by construction (boundary_sub = 1.000 == 1.000
+  after the truth-corruption fix below). C1-discrimination is therefore decided vs
+  **TRUTH** (incumbent below ceiling + failures C1-addressable, both shown above),
+  NOT by a flat-vs-flat separation. Whether the length-law CLOSES the measured gap
+  is the next cycle's ablation, not claimable here.
+- **Two scorer correctness fixes:**
+  1. a per-indel TP now requires net-in-span == truth net AND no unexplained indel
+     OUTSIDE every truth span (the vertical-slice ``out_run == 0`` rule); insertion
+     off-by-one made consistent with the half-open span test;
+  2. **indel ambiguity span now uses the base-equality SLIDE** (`truth_schema.
+     deletion_ambiguity_span`, the same primitive style as the junction slide), not
+     just full-period run detection — this captures HALF-PERIOD bleeds (a 'T' before
+     an (AT)n run) that were charging ambiguity-EQUIVALENT STR placements as false
+     errors (STR 0.91 -> 1.000). This separated the real C1 signal (HP_HARD out-of-
+     run misplacement) from the scorer artifact (STR bleed).
+- **Truth-corruption fix:** the boundary substitution in HP_HARD is never allowed to
+  become the run base (it would silently change the effective run length).
 - Schema lossless TSV round-trip verified (junction normalization, canonicity,
   HP-cell accounting, variant/split round-trip).
 - pbsim3 MAF→genome **projection** verified locally on a synthetic MAF (2bp deletion
@@ -95,21 +107,20 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   (clean reads are ~50% by the del-dominant K_DIST; HP_HARD alternates two modes).
   The Sherlock scale-up must set `--reps` so every `(base_class, run_copies)` cell
   clears `min_count=100` (recommend `--reps ~400`).
-- **NAMED REMAINING PROOF — C1-arm separation (the gate is not yet C1-VALID):**
-  HP_HARD's boundary-substitution + combined-noise cases do NOT create a
-  flat-affine error that a length-law could fix (flat-affine scores ~0.99-1.00 on
-  them) — so they cannot, by a flat-vs-flat comparison, prove C1 discrimination.
-  To make the gate C1-VALID, EITHER (a) build the C1 length-law arm (next cycle)
-  and show arm-LAW > arm-flat on HP_HARD, OR (b) construct a stratum where
-  flat-affine demonstrably MIS-PLACES the indel out of the run (e.g. a competing
-  alignment that ties flat-affine but the length-law breaks toward truth — the
-  run-bleeds-into-flank / adjacent-different-base-run cases). Until one exists,
-  treat HP_HARD as exercising the scorer + the ablation harness, NOT as a proven
-  C1 discriminator. The BAM-ization + two-arm harness (`run_flat_affine_arm` in
-  the smoke, `cigar_records_to_bam` in the scorer) is the plug-in point.
-- **STR stratum** is ~0.907 (mildly discriminating at this seed; an earlier seed
-  showed 0.57). Harden STR (force the ED-tied whole-unit-deletion placement to
-  differ from left-alignment) before relying on it for a C1 ablation.
+- **NEXT-CYCLE ABLATION (gated on this gate) — does the length-law CLOSE the gap?**
+  The gate now CONTAINS a validated C1-addressable stratum (HP_HARD-noisy: flat-
+  affine 0.980 vs truth, 24/24 failures C1-addressable). The remaining proof is the
+  C1 cycle's job: build the length-law arm and show **arm-LAW > arm-flat** on
+  HP_HARD-noisy (recovering those 24/24 out-of-run misplacements). The harness is
+  ready: `run_flat_affine_arm` (smoke) + `scorer.cigar_records_to_bam` are the
+  plug-in point — add a `run_lengthlaw_arm` that calls
+  `align_exon_block_global(..., penalty_table=...)` once C1 Phase-1 exists.
+- **STR is non-discriminating after the scorer fix** (1.000 — the earlier 0.57/0.91
+  was the half-period-bleed scorer artifact, now corrected). If an
+  edit-distance-TIED STR discriminator is wanted, construct a case where the true
+  unit-deletion placement is NOT the leftmost slide (so left-alignment genuinely
+  diverges from truth) — the current whole-unit deletion is slide-equivalent and
+  correctly scores 1.0.
 - Tier-2 realistic transcriptome run (yeast saturation control + human SMN1/SMN2 +
   NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
 - Other strata from the SPEC not yet generated (paralog, panel-failure/C5,
