@@ -127,8 +127,27 @@ The design doc's per-concept ablations impose extra requirements my draft missed
   0.09→1.07 re-weighting replay metadata at fixed placements.
 - **Precomputed ambiguity-equivalence SETS per truth position** so the position-exact metric is ambiguity-aware.
 
+## SIMULATOR DECISION (2026-06-26 — RESOLVED, advisor-checked) → pbsim3 for Tier-2
+The Tier-2 simulator is **pbsim3** (bioconda 3.0.5, installed into Sherlock env
+`aligner_bench`). **Decisive reason: of pbsim3 / badread / nanosim, only pbsim3
+emits a per-read MAF (read↔template ground-truth alignment).** The framing metric
+is EXACT INDEL-POSITION CONCORDANCE, which needs a per-read ground-truth edit
+script; badread and nanosim report transcript-of-origin + identity but NO per-read
+edit, so they can validate junction truth (construction-derived) but NOT exact-indel
+truth on realistic reads. pbsim3's MAF composed with the known transcript↔genome
+exon structure (`TranscriptModel.transcript_pos_to_genome`) yields the exact
+read↔genome alignment — indels AND junctions. DRS = `--method errhmm --errhmm
+ERRHMM-ONT.model`; PCR-cDNA = `ERRHMM-ONT-HQ.model`.
+- **Tier-1 stays self-injected controlled errors** (`scripts/benchmark/sim/controlled.py`,
+  generalizing `dev/bench/hp_vertical_slice.py`) — truth by construction, no
+  simulator, exact per-position edit. This is the DISCRIMINATING tier; pbsim3 is
+  for realism / global recall+FDR / tail-sizing.
+- Implementation: `scripts/benchmark/sim/pbsim3_wrapper.py` (MAF parse + projection,
+  validated locally on a synthetic MAF); scorer + schema in `rectify/core/benchmark/`.
+- badread is also installed (cross-check / error-model realism), not the primary.
+
 ## Open decisions (carry to user / fold crafter `benchmark_coupling`)
-- NanoSim vs badread for Tier-2 (recommend: NanoSim primary for transcriptome-truth, badread for controlled
-  error cross-check).
+- ~~NanoSim vs badread for Tier-2~~ → **RESOLVED: pbsim3** (per-read MAF; see above).
 - Whether Tier-1's error model is badread's ONT model or RECTIFY's own empirical table (held-out either way).
+  (Current Tier-1 uses a parametric del-dominant K_DIST; badread cross-check is an option.)
 - Human locus-panel composition (SMN1/SMN2 + how many NIC/NNC-rich loci; mirror A549 chr5).
