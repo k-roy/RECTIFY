@@ -102,6 +102,9 @@ def main() -> int:
                 "-o", str(tsv),
                 "--write-corrected-bam", str(hc_bam),
                 "--write-softclipped-bam", str(sc_bam),
+                # Commit B changed `rectify correct`'s default to manifest-only;
+                # we need the flat per-aligner TSV at -o for merge_corrected_tsvs.
+                "--emit-merged-tsv",
             ]
             for ab in ALIGNERS:
                 cmd += ["--aligner-bams",

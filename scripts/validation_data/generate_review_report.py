@@ -664,11 +664,34 @@ def main() -> int:
     parser.add_argument("--format", choices=["html", "md", "both"], default="html",
                         help="Output format. md is VS-Code-friendly (markdown preview + "
                              "sibling PNG folder). both writes html and md side-by-side.")
+    parser.add_argument("--no-fresh", dest="fresh", action="store_false",
+                        help="Render from the committed rectified/ fixtures AS-IS, without "
+                             "re-correcting. Faster, but the figure may be STALE if the code "
+                             "changed since those fixtures were generated.")
+    parser.set_defaults(fresh=True)
     args = parser.parse_args()
 
     if args.arm != "drs":
         print(f"--arm {args.arm} not yet supported", file=sys.stderr)
         return 1
+
+    # FRESH-CORRECT (default): re-run rectify correct + merge on every aligner BAM
+    # with the CURRENT code, regenerating corrected_reads.tsv + per_aligner_summary.tsv
+    # + the rectified BAMs, so the figure reflects HEAD — not a stale committed snapshot.
+    # (The committed fixtures are only an optimization; rendering from them silently
+    # drifts whenever the code changes. --no-fresh opts out.)
+    if args.fresh and not args.html_only:
+        print("[--fresh] re-correcting validation reads with current code "
+              "(regen_pa_rest_bundle.py) so the figure reflects HEAD...",
+              file=sys.stderr, flush=True)
+        _rc = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "regen_pa_rest_bundle.py")]
+        )
+        if _rc.returncode != 0:
+            print("[--fresh] re-correction FAILED — refusing to render a possibly-stale "
+                  "figure. Fix the regen, or pass --no-fresh to render the committed "
+                  "fixtures as-is.", file=sys.stderr)
+            return 1
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     DRIVE_OUT.mkdir(parents=True, exist_ok=True)
