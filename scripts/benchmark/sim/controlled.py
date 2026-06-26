@@ -111,6 +111,84 @@ def gen_hp_stratum(reps: int, rng: random.Random, locus0: int = 0
 
 
 # ---------------------------------------------------------------------------
+# HP_HARD stratum — the DISCRIMINATING HP cases (per SPEC VERTICAL-SLICE FINDING)
+# ---------------------------------------------------------------------------
+# An isolated, cleanly-flanked HP run is NON-DISCRIMINATING: minimap2 AND the live
+# flat-affine DP both score 1.000 (any in-run gap placement is ambiguity-
+# equivalent). The action — and C1's claimed value — is at the HARD boundary cases
+# where the flat-affine indel-vs-substitution tradeoff DIVERGES from a calibrated
+# length-law. These generators construct those, so the incumbent is BELOW ceiling
+# (a candidate ablation only counts if minimap2 is below ceiling on the stratum).
+def _mutate(seq: str, pos: int, rng: random.Random) -> str:
+    alt = rng.choice([b for b in BASES if b != seq[pos].upper()])
+    return seq[:pos] + alt + seq[pos + 1:]
+
+
+def gen_hp_hard_stratum(reps: int, rng: random.Random, locus0: int = 50,
+                        sub_rate: float = 0.04
+                        ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """Two hard sub-cases, both with truth = the run deletion ONLY (substitutions
+    are NOT indels):
+
+    * ``boundary_sub`` — a forced mismatch at the base IMMEDIATELY flanking the run
+      + a length error. Flat-affine may absorb the boundary mismatch into the gap
+      (an indel OUTSIDE the true run span) instead of calling a mismatch + an
+      in-run deletion — the indel-vs-substitution tradeoff.
+    * ``noisy`` — a length error + ``sub_rate`` random substitutions over the whole
+      read (combined background noise), so the aligner sometimes misplaces the
+      indel relative to the true run span or absorbs a nearby mismatch.
+
+    The scorer credits a placement only if net (D-I) in the run span == k AND no
+    indel falls outside the truth span, so a mis-absorbed mismatch scores incorrect.
+    """
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+    li = locus0
+    hard_lens = [4, 6, 8, 10, 12]
+    for b in BASES:
+        for L in hard_lens:
+            chrom = f"hph_{b}_{L:02d}"
+            lf = _rand_unique(FLANK, rng, avoid=b)
+            rf = _rand_unique(FLANK, rng, avoid=b)
+            ref = lf + b * L + rf
+            refs[chrom] = ref
+            run_start, run_end = FLANK, FLANK + L
+            split = _split_for(li)
+            li += 1
+            for i in range(reps):
+                k = max(1, _draw_k(L, rng))   # hard cases always carry an error
+                core = lf + b * (L - k) + rf
+                mode = "boundary_sub" if (i % 2 == 0) else "noisy"
+                if mode == "boundary_sub":
+                    # mutate the base immediately 3' of the (shortened) run
+                    bpos = FLANK + (L - k)
+                    if bpos < len(core):
+                        core = _mutate(core, bpos, rng)
+                else:
+                    n_sub = max(1, int(round(sub_rate * len(core))))
+                    for _ in range(n_sub):
+                        p = rng.randrange(len(core))
+                        # don't turn a flank base INTO the run base adjacent to the
+                        # run (that would change the true run length / ambiguity)
+                        if run_start - 1 <= p <= run_start + (L - k):
+                            continue
+                        core = _mutate(core, p, rng)
+                rid = f"{chrom}_{mode}_r{i:03d}_k{k}"
+                reads.append((rid, core))
+                indels = [IndelTruth(
+                    pos=run_start, length=k, kind=IndelKind.DEL,
+                    eq_start=run_start, eq_end=run_end,
+                    context="HP", run_unit=b, run_copies=L)]
+                truth.append(ReadTruth(
+                    read_id=rid, true_locus=chrom, true_transcript=chrom,
+                    chrom=chrom, strand="+", genome_start=0, genome_end=len(ref),
+                    true_cigar=f"{run_start}M{k}D{len(ref) - run_start - k}M",
+                    indels=indels, stratum="HP_HARD", split=split, coverage=reps))
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # STR stratum (edit-distance-tied placements)
 # ---------------------------------------------------------------------------
 def gen_str_stratum(reps: int, rng: random.Random, locus0: int = 100
@@ -210,6 +288,85 @@ def gen_junction_ambiguity_locus(rng: random.Random, n_reads: int = 30,
 
 
 # ---------------------------------------------------------------------------
+# NIC / ANNOTATED junction loci — verify the discovery-class classifier
+# ---------------------------------------------------------------------------
+def gen_junction_class_loci(rng: random.Random, n_reads: int = 30, locus0: int = 300
+                            ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """One ANNOTATED locus (read intron is in the annotation) and one NIC locus
+    (exon-skipping: a novel pairing of two KNOWN sites), so the NIC/ANNOTATED
+    branches of ``TranscriptModel.junction_truths`` are exercised end-to-end (the
+    JUNCTION_AMB locus only covers NNC)."""
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+
+    def gt_intron(core_len: int) -> str:
+        return "GT" + _rand_unique(core_len, rng) + "AG"
+
+    # ---- ANNOTATED: 2-exon transcript, intron is catalogued ----
+    chrom = "chrAnno"
+    e1 = _rand_unique(200, rng)
+    intron = gt_intron(200)
+    e2 = _rand_unique(200, rng)
+    contig = e1 + intron + e2
+    refs[chrom] = contig
+    m = TranscriptModel("anno", chrom, "+",
+                        [Exon(0, 200), Exon(200 + len(intron), len(contig))], contig)
+    introns = m.introns()
+    annotated_pairs = {(chrom, introns[0][0], introns[0][1])}
+    jt = m.junction_truths(annotated_pairs=annotated_pairs)
+    assert jt[0].klass == JunctionClass.ANNOTATED, jt[0].klass
+    spliced = m.spliced_transcript()
+    split = _split_for(locus0)
+    for i in range(n_reads):
+        rid = f"{chrom}_r{i:03d}"
+        reads.append((rid, spliced))
+        truth.append(ReadTruth(
+            read_id=rid, true_locus="anno", true_transcript="anno", chrom=chrom,
+            strand="+", genome_start=m.genome_start, genome_end=m.genome_end,
+            true_cigar=m.fulllength_cigar(), junctions=jt,
+            true_cpa=m.genome_end - 1, stratum="ANNOTATED", split=split,
+            coverage=n_reads))
+
+    # ---- NIC: 3-exon gene, read SKIPS exon2 (novel pairing of known sites) ----
+    chrom = "chrNic"
+    E1 = _rand_unique(200, rng)
+    I1 = gt_intron(200)
+    E2 = _rand_unique(200, rng)
+    I2 = gt_intron(200)
+    E3 = _rand_unique(200, rng)
+    contig = E1 + I1 + E2 + I2 + E3
+    refs[chrom] = contig
+    e1s, e1e = 0, 200
+    e2s = e1e + len(I1)
+    e2e = e2s + 200
+    e3s = e2e + len(I2)
+    e3e = e3s + 200
+    # annotation: the two ADJACENT introns (known donors + acceptors)
+    annotated_donors = {(chrom, e1e), (chrom, e2e)}
+    annotated_acceptors = {(chrom, e2s), (chrom, e3s)}
+    annotated_pairs = {(chrom, e1e, e2s), (chrom, e2e, e3s)}
+    # the READ skips exon2: exon1 + exon3 (novel donor e1e <-> acceptor e3s pairing)
+    skip = TranscriptModel("nic", chrom, "+", [Exon(e1s, e1e), Exon(e3s, e3e)], contig)
+    jt = skip.junction_truths(annotated_pairs=annotated_pairs,
+                              annotated_donors=annotated_donors,
+                              annotated_acceptors=annotated_acceptors)
+    assert jt[0].klass == JunctionClass.NIC, jt[0].klass
+    spliced = skip.spliced_transcript()
+    split = _split_for(locus0 + 1)
+    for i in range(n_reads):
+        rid = f"{chrom}_skip_r{i:03d}"
+        reads.append((rid, spliced))
+        truth.append(ReadTruth(
+            read_id=rid, true_locus="nic", true_transcript="nic_skip", chrom=chrom,
+            strand="+", genome_start=skip.genome_start, genome_end=skip.genome_end,
+            true_cigar=skip.fulllength_cigar(), junctions=jt,
+            true_cpa=skip.genome_end - 1, stratum="NIC", split=split,
+            coverage=n_reads))
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # Top-level corpus generator
 # ---------------------------------------------------------------------------
 def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
@@ -221,16 +378,21 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
     truth: List[ReadTruth] = []
 
     r1, rd1, t1 = gen_hp_stratum(reps, rng)
+    rh, rdh, th = gen_hp_hard_stratum(reps, rng)
     r2, rd2, t2 = gen_str_stratum(reps, rng)
-    refs.update(r1); refs.update(r2)
-    reads += rd1 + rd2
-    truth += t1 + t2
+    refs.update(r1); refs.update(rh); refs.update(r2)
+    reads += rd1 + rdh + rd2
+    truth += t1 + th + t2
 
     if include_junction:
         jc, jseq, _model, jrd, jt = gen_junction_ambiguity_locus(rng)
         refs[jc] = jseq
         reads += jrd
         truth += jt
+        rj, rdj, tj = gen_junction_class_loci(rng)
+        refs.update(rj)
+        reads += rdj
+        truth += tj
 
     ref_fa = os.path.join(out_dir, "ref.fa")
     reads_fq = os.path.join(out_dir, "reads.fastq")

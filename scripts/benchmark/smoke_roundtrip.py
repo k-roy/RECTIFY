@@ -131,12 +131,53 @@ def main():
 
     failures = []
 
-    # (A) known junction round-trips as TP
+    # ---- per-stratum breakout (the discriminating criterion) ------------
+    # A candidate ablation only counts if minimap2 is BELOW ceiling on the
+    # stratum (SPEC VERTICAL-SLICE FINDING). Score each stratum separately.
+    strata = sorted({t.stratum for t in truth})
+    per_stratum = {}
+    print("\n[smoke] === per-stratum breakout (minimap2) ===", file=sys.stderr)
+    for st in strata:
+        sub = {rid: t for rid, t in truth_map.items() if t.stratum == st}
+        ss = score_bam(bam, sub, genome, aligner_name=f"mm2:{st}")
+        per_stratum[st] = ss
+        ji = ss.indel
+        jc = {k: dict(v) for k, v in ss.junction.by_class.items()}
+        print(f"  {st:14s} indel_concordance={ji.position_exact_concordance:.4f} "
+              f"(corr={ji.correct},inc={ji.incorrect})  junc_by_class={jc or '-'}",
+              file=sys.stderr)
+
+    # (A) known junction round-trips as TP (NNC ambiguity locus)
     jt_tp = score.junction.by_class.get("NNC", {}).get("tp", 0)
     if jt_tp < 1:
         failures.append(f"(A) junction round-trip: expected >=1 NNC TP, got {jt_tp}")
     else:
-        print(f"[smoke] (A) PASS junction round-trip TP={jt_tp}", file=sys.stderr)
+        print(f"[smoke] (A) PASS junction round-trip NNC TP={jt_tp}", file=sys.stderr)
+
+    # (A2) NIC + ANNOTATED discovery-class labels verified end-to-end
+    nic_tp = per_stratum.get("NIC") and per_stratum["NIC"].junction.by_class.get("NIC", {}).get("tp", 0)
+    ann_tp = per_stratum.get("ANNOTATED") and per_stratum["ANNOTATED"].junction.by_class.get("ANNOTATED", {}).get("tp", 0)
+    if not nic_tp:
+        failures.append(f"(A2) NIC class not recovered as TP (got {nic_tp})")
+    if not ann_tp:
+        failures.append(f"(A2) ANNOTATED class not recovered as TP (got {ann_tp})")
+    if nic_tp and ann_tp:
+        print(f"[smoke] (A2) PASS discovery classes: NIC TP={nic_tp}, ANNOTATED TP={ann_tp}",
+              file=sys.stderr)
+
+    # (D) HP_HARD must be DISCRIMINATING: minimap2 below ceiling (else the C1
+    # gate is invalid — an incumbent at 1.000 cannot separate the concepts).
+    if "HP_HARD" in per_stratum:
+        hard = per_stratum["HP_HARD"].indel.position_exact_concordance
+        iso = per_stratum.get("HP")
+        iso_c = iso.indel.position_exact_concordance if iso else float("nan")
+        if hard >= 0.999:
+            failures.append(f"(D) HP_HARD non-discriminating: minimap2 at ceiling "
+                            f"({hard:.4f}); the C1 gate would be invalid")
+        else:
+            print(f"[smoke] (D) PASS HP_HARD discriminating: minimap2={hard:.4f} "
+                  f"(< ceiling); isolated-HP control={iso_c:.4f} (~1.0 as SPEC predicts)",
+                  file=sys.stderr)
 
     # (C) indel position-exact concordance present and meaningful
     pec = score.indel.position_exact_concordance

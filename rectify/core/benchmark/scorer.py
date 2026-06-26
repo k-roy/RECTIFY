@@ -314,16 +314,27 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
         score.junction.by_canon["canonical" if j.canonical else "noncanonical"]["fn"] += 1
 
     # ---- Indels (the framing metric) ------------------------------------
-    truth_spans: List[Tuple[int, int]] = []
+    # An aligner placement is position-exact ONLY if (a) the net (D-I) inside each
+    # truth ambiguity-span equals the truth net AND (b) it introduces NO indel
+    # OUTSIDE every truth span (the vertical-slice ``out_run == 0`` requirement) —
+    # otherwise a spurious extra indel on an indel-bearing read would score free,
+    # letting an aligner hide errors on exactly the contested reads. So compute
+    # the unexplained-indel flag ONCE per read against ALL truth spans, and gate
+    # every per-indel TP on it.
+    truth_spans: List[Tuple[int, int]] = [(ind.eq_start, ind.eq_end) for ind in rt.indels]
+    has_unexplained = False
+    for (ipos, ilen, ikind) in all_indel_positions(rstart, cig):
+        if not any(s <= ipos < e for (s, e) in truth_spans):
+            has_unexplained = True
+            break
     is_clean_read = True
     for ind in rt.indels:
         truth_net = ind.length if ind.kind == IndelKind.DEL else -ind.length
         if truth_net != 0:
             is_clean_read = False
-        truth_spans.append((ind.eq_start, ind.eq_end))
         in_span, _out = net_indel_in_span(rstart, cig, ind.eq_start, ind.eq_end)
         cell = (ind.base_class, ind.run_copies, ind.context)
-        if in_span == truth_net:
+        if in_span == truth_net and not has_unexplained:
             score.indel.correct += 1
             score.indel.by_cell[cell]["correct"] += 1
         else:
@@ -332,17 +343,9 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
 
     # false-indel control: indel bases the aligner introduced OUTSIDE every truth
     # span. A read with NO truth indel (clean / k=0) is the FP control.
-    if is_clean_read and not any(net != 0 for net in
-                                 [(ind.length if ind.kind == IndelKind.DEL else -ind.length)
-                                  for ind in rt.indels]):
+    if is_clean_read:
         score.indel.clean_reads += 1
-        false_found = False
-        for (ipos, ilen, ikind) in all_indel_positions(rstart, cig):
-            inside = any(s <= ipos < e for (s, e) in truth_spans)
-            if not inside:
-                false_found = True
-                break
-        if false_found:
+        if has_unexplained:
             score.indel.clean_reads_with_false_indel += 1
             score.indel.false_indels += 1
 

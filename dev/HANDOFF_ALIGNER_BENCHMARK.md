@@ -54,14 +54,24 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
 4. **End-to-end smoke** — `scripts/benchmark/smoke_roundtrip.py`.
 
 ## VERIFIED
-- **GATE smoke is GREEN** (`scripts/benchmark/smoke_roundtrip.py`, minimap2 -ax
-  splice on the Tier-1 corpus, 7230 reads):
-  - (A) known junction round-trips truth->reads->minimap2->scorer as **TP=30**;
+- **GATE smoke is GREEN and the gate is VALID for C1**
+  (`scripts/benchmark/smoke_roundtrip.py`, minimap2 -ax splice on the Tier-1 corpus):
+  - (A) known junction round-trips truth->reads->minimap2->scorer as **NNC TP=30**;
+  - (A2) **NIC TP=30 and ANNOTATED TP=30** — the discovery-class classifier is
+    verified end-to-end (not just present); separate FDR tracks exercised;
   - (B) a deliberately 1bp-shifted junction call (into the repeat) scores
     **TP=1 FP=0** (ambiguity-aware match, the GMAP-0.09 trap defended);
   - (B2) NEGATIVE control: a junction shifted 40bp (beyond the window) is correctly **FP**;
-  - (C) indel **position-exact concordance = 0.920** (correct=2975, incorrect=258),
-    false-indel-rate=0.0 over 3997 clean reads.
+  - (C) indel **position-exact concordance = 0.923**, false-indel-rate=0.0;
+  - (D) **HP_HARD stratum is DISCRIMINATING — minimap2 = 0.821 (BELOW ceiling)**,
+    while the isolated-HP control = **1.000** (exactly the SPEC VERTICAL-SLICE
+    FINDING). This is the validity check that makes the gate real for C1: an
+    incumbent at 1.000 cannot separate the concepts. The hard cases are
+    boundary-substitution (indel-vs-sub tradeoff) + combined-noise.
+- **Scorer correctness fix:** a per-indel TP now requires net-in-span == truth net
+  AND no unexplained indel OUTSIDE every truth span (the vertical-slice
+  ``out_run == 0`` rule), so a spurious extra indel on an indel-bearing read is not
+  scored free.
 - Schema lossless TSV round-trip verified (junction normalization, canonicity,
   HP-cell accounting, variant/split round-trip).
 - pbsim3 MAF→genome **projection** verified locally on a synthetic MAF (2bp deletion
@@ -72,12 +82,20 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   was still solving (slow conda solve on the large base env) at handoff time —
   the wrapper is code-complete + projection-validated but a real pbsim3 round-trip
   is unverified. (badread also requested in the same install for cross-check.)
-- **Tier-1 cell sizing:** at `--reps 120` the min indel-bearing cell is ~50 reads
-  (clean reads are ~50% by the del-dominant K_DIST). The Sherlock scale-up must set
-  `--reps` so every `(base_class, run_copies)` cell clears `min_count=100`
-  (recommend `--reps ~400`).
+- **Tier-1 cell sizing:** at `--reps 120` the min indel-bearing cell is ~43 reads
+  (clean reads are ~50% by the del-dominant K_DIST; HP_HARD alternates two modes).
+  The Sherlock scale-up must set `--reps` so every `(base_class, run_copies)` cell
+  clears `min_count=100` (recommend `--reps ~400`).
+- **STR stratum is currently non-discriminating** (minimap2 = 1.000 at the present
+  seed) — an earlier seed showed 0.57, so STR CAN discriminate the ED-tied
+  placement with the right construction. HP_HARD carries the discriminating load
+  for the smoke; harden STR (force the ED-tied whole-unit-deletion placement to
+  differ from left-alignment) before relying on STR for a C1 ablation.
 - Tier-2 realistic transcriptome run (yeast saturation control + human SMN1/SMN2 +
   NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
+- Other strata from the SPEC not yet generated (paralog, panel-failure/C5,
+  coverage×Q, standing-variant/C6) — schema supports all; generators are the next
+  build increment once the pbsim3 live run is confirmed.
 - No C1/member code built (correctly — that is the next, gated cycle).
 
 ## RESUME
