@@ -1,3 +1,66 @@
+════════════════════════════════════════════════════════════════════════════════
+# ★ CURRENT HANDOFF (2026-06-25) — COMPASS short-read 111-adjudication deliverable
+(Authoritative current state. Detailed chronological history is below this block.)
+
+## DONE
+- **COMPASS short-read pipeline (A549, paired Illumina) built, debugged, validated end-to-end at 7/7
+  aligners.** 4 real bugs found+fixed (all in HEAD): env mismatch (run rectify in `rectify` py3.9 env, not
+  py3.7 `compass`); `check_aligner_available(None)` TypeError; **consensus >2h hang** → memoized locus-index
+  (`daea0fa`); gsnap worker symlinks + magicblast bare-QNAME header strip. Adjudication tool built+validated:
+  `dev/compass_shortread_adjudicate_111.py`.
+- **/goal all tests pass — MET:** full suite at HEAD `b08f1ac` = **1608 passed, 0 failed, 40 skipped, 1 xfailed**.
+- **Aligner-version experiment — DONE:** version plays a NEGLIGIBLE role (6v6 STAR/HISAT2/magicblast/bbmap:
+  jaccard 0.998, novel-Jaccard 1.0 @≥2 reads, 111∩=0 both). gsnap-2024 is not a drop-in (CLI change + index
+  rebuild + SIGSEGV). `dev/compass_version_compare.py`.
+- **chr5 single-aligner prefilter — REFUTED:** permissive STAR misses 43–55% of well-supported novel chr5
+  junctions (consensus is magicblast-dominated). All-reads whole-genome alignment is REQUIRED, not optional.
+- **DATA-LOSS RCA + FIX:** first full run finished but the generated merge did `rm -rf "$OUTDIR"` after copying
+  the BAM to `$OAK_OUT` which DEFAULTED to `$OUTDIR/final` (a subdir) — self-deleting the deliverable. NOT a
+  purge/agent/offload-bot (confirmed: 0 deletions in 1036 transcripts; imac-hub RCA agrees). Fixed two ways
+  (`4ff87a2` guard + always pass real `--oak-output-dir`) and re-launched to durable Oak.
+- **Human DRS/cDNA backlog surveyed + de-duped** (Explore survey was stale; concurrent agent already did
+  anchor-gate CLI / gapmm2 pin / cluster_com / Dorado polyA / GMAP). Coordination inbox note dropped.
+
+## VERIFIED
+- 7/7 chunk run: all aligners SUCCESS, both mates survive per RN, consensus 187s, N-op junctions present.
+- 1608/0 full suite at HEAD in isolated `rectify_src_dev` (no regressions from anyone).
+- Fixed merge script generates `Oak out: /oak/...` + the subpath guard (tested before relaunch).
+
+## OPEN / BLOCKED
+- **SSH ControlMaster to Sherlock is DOWN** (overnight Kerberos expiry; the fresh ticket is Azure
+  `MICROSOFTONLINE` realm which Sherlock rejects — it wants SUNetID+Duo). No master socket exists at
+  `~/.ssh/MacBook-Air-M1-KR.localkevinroy@sherlock.stanford.edu:22`. **Cannot reach the cluster until re-auth.**
+- **111 VERDICT PENDING** — the corrected re-run is cluster-side + durable to Oak; not yet checked (SSH down).
+- Human DRS/cDNA dev backlog — owned by the **concurrently-active** DRS-arm agent (last commit 01:13). DO NOT
+  commit dev to `drs-validation-rebuild` from here / don't clobber their tree.
+
+## RESUME (concrete)
+1. **Restore SSH (USER, interactive):** `! ssh sherlock` → complete Duo + SUNetID → creates the persistent
+   master (ControlPersist 168h). Confirm: `ssh sherlock 'echo OK'` returns OK (no prompt).
+2. **Get the verdict:** `ssh sherlock 'OAK=/oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out;
+   cat $OAK/.adjudication_111_rc; echo ---; cat $OAK/adjudication_111.json'`. If rc==0 → report
+   **POSITIVE_control_annotated_supported / NEGATIVE_control_decoys_in_compass / INTERSECTION_111_in_compass
+   together** (near-zero 111 ⇒ artifact ONLY if positive control HIGH).
+3. **If still running:** `squeue -u kevinroy` + `sacct -j 31165983 -X -o State` and the downstream jobs
+   (`A549_rep1_sr` array → merge → `adjudicate_111`). Chunks at `$W/rectify_sr_full/chunk_outputs/`.
+4. **If verdict job FAILED:** read `$OAK/adjudicate_111_*.{out,err}`; re-run `$W/adjudicate_oak.sbatch` once
+   the merged BAM exists at `$OAK/A549_rep1*.consensus.bam`.
+5. **Tests / dev:** run tests only in `rectify_src_dev` (`PYTHONPATH=$PWD`, `rectify` env). Don't touch the
+   running deliverable's `rectify_src`.
+
+## FILES / IDs
+- Re-run chain: **split+chain job `31165983`** → array `A549_rep1_sr` → merge → adjudicate (afterok).
+  W=`/scratch/users/kevinroy/compass_a549`; OAK=`/oak/stanford/groups/larsms/Users/kevinroy/compass_a549_out`
+  (durable: `A549_rep1.consensus.bam`, `adjudication_111.json`, `.adjudication_111_rc`, `inputs/` FASTQ copies).
+- Sbatch: `$W/cmp_sr_full_split_v2.sbatch` (re-split+chain, passes `--oak-output-dir`), `$W/adjudicate_oak.sbatch`.
+- Tools: `dev/compass_shortread_adjudicate_111.py`, `dev/compass_version_compare.py`. 111 list:
+  `/scratch/users/kevinroy/deliverable_b/rectify_src/dev/gmap_only_recurrent_novels_chr5.tsv`.
+- Env: `rectify` (py3.9, pysam 0.23); aligner symlinks `~/.rectify/bin`; latest-aligner env `compass_latest`
+  (micromamba) for the version experiment; genome `…/COMPASS/genome_references/GRCh38_gencode_v44.fasta`.
+- Key commits (in HEAD `b08f1ac`+): `daea0fa` locus-index, `700709f` gsnap flag, `4ff87a2` merge-cleanup guard,
+  `3d761d0`/`7a36c77` docs. Coordination: `.claude/inbox/20260625T0822*__from-compass-shortread__*`.
+════════════════════════════════════════════════════════════════════════════════
+
 # HANDOFF — RECTIFY short-read P5 RUN on Sherlock (2026-06-19)
 
 Picks up `dev/HANDOFF_SHORTREAD.md` (P1–P4 code done, committed, locally tested; pre-flight green).
