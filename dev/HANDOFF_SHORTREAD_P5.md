@@ -26,6 +26,16 @@
 - 1608/0 full suite at HEAD in isolated `rectify_src_dev` (no regressions from anyone).
 - Fixed merge script generates `Oak out: /oak/...` + the subpath guard (tested before relaunch).
 
+## ★ VERDICT — DELIVERED (2026-06-26, full-depth A549_rep1, durable read-only on Oak)
+`$OAK/adjudication_111.json` (chmod 444): **compass chr5 junctions 21,532**; **POSITIVE control PASSED** —
+7,941/18,450 annotated chr5 junctions recovered (43.0%); **NEGATIVE control clean** — 0/101 decoys;
+**111 ∩ COMPASS = 2/111.** → **109/111 (98.2%) confirmed ARTIFACTS** (no independent short-read support);
+**2/111 CORROBORATED** = likely real novel junctions the long-read panel missed:
+  • `chr5:140564954-140565547` depth 12 (gmap 8) — solid; • `chr5:179823051-179823857` depth 3 (gmap 14) — modest.
+(Refines Deliverable-B's single-pass STAR 0/111: the multi-aligner COMPASS panel at full depth rescues 2.)
+FOLLOW-UP for Kevin: IGV the 2 corroborated (annotation/canonical/coverage) to accept-or-reject as real.
+Merged BAM `$OAK/A549_rep1.consensus.bam` (6.9G) + json + sentinel LOCKED read-only (lock job 31412492).
+
 ## OPEN / BLOCKED
 - **SSH ControlMaster to Sherlock is DOWN** (overnight Kerberos expiry; the fresh ticket is Azure
   `MICROSOFTONLINE` realm which Sherlock rejects — it wants SUNetID+Duo). No master socket exists at
