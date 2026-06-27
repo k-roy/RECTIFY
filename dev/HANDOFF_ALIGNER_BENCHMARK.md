@@ -3,7 +3,39 @@
 **Agent:** dedicated benchmark-builder (isolated worktree, branch
 `worktree-agent-a25a2c1e784ad37dc`, based on `drs-validation-rebuild` so the reuse
 primitives + design docs are present). **NEVER commit to `drs-validation-rebuild`.**
-**Updated:** 2026-06-26.
+**Updated:** 2026-06-26 (session 2).
+
+---
+
+## SESSION-2 ADDENDUM (2026-06-26) — gate was NOT green on a clean checkout; now is
+
+The prior VERIFIED claim "GATE smoke is GREEN" **overclaimed**: it was green only
+because that session's `.fai` happened to be fresh. On a clean re-run the smoke
+**crashed** (`KeyError 'hph_A_04'` in `run_flat_affine_arm`). Two fixes landed +
+the cell-size MUST-HAVE was audited:
+
+- **`021ef97` stale-.fai guard** — `pysam.FastaFile` reuses a `.fai` older than its
+  FASTA (no mtime check). The benchmark regenerates `ref.fa` in place; when the
+  HP_HARD (`hph_*`) contigs were added, a leftover 61-contig index from a prior run
+  exposed only the OLD contig set. `score_bam` tolerated it (`genome.get(chrom,'')`
+  masked the miss) but `run_flat_affine_arm` did `genome[t.chrom]` → crash, so the
+  gate's two-arm DP path **never actually ran clean**. New `scorer.open_fasta()`
+  drops a stale `.fai` so pysam rebuilds; routed `load_genome` + `cigar_records_to_bam`
+  (header `get_tid` would also silently truncate) + the smoke's shifted-junction
+  opener through it. Verified by a targeted guard test (rewrite FASTA + new contig
+  with a backdated `.fai` → guard rebuilds, plain pysam does not).
+- **`c680906` missing-contig now LOUD** — `genome.get(chrom,'')` silently disabled
+  `normalize_junction` (junctions compared RAW = the GMAP-0.09 FP the gate prevents).
+  Now counted (`reads_missing_contig`), warned once, surfaced in `summary()`.
+- **Cell-size MUST-HAVE AUDITED at `--reps 400`** (the documented gate-validity bar):
+  HP indel cells span **lengths 2–12 × {A,C,G,T}** (min n=183), HP_HARD {4,6,8,10,12}
+  (n=400), STR ≥155 — **all clear `min_count=100`**. **Length 1 has no deletion cell
+  by construction** (`_draw_k(L=1)`→0; a length-1 run can't undercall its length) but
+  is fully present as **clean reads** (400/base — the FP/false-indel control). So
+  `reps=400` produces a VALID C1 corpus. (Default `--reps 120` is fine for the smoke
+  but the C1 ablation corpus MUST use ≥400.)
+- **Smoke re-verified GREEN** after both fixes (`--reps 20`, all GATE assertions incl.
+  the (D) two-arm HP_HARD-noisy DP path that was crashing).
 
 ---
 
@@ -99,14 +131,17 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   + 1 intron correctly propagated to genome coords) — no live pbsim needed for this.
 
 ## OPEN
-- **pbsim3 live run NOT yet executed.** Install on Sherlock env `aligner_bench`
-  was still solving (slow conda solve on the large base env) at handoff time —
-  the wrapper is code-complete + projection-validated but a real pbsim3 round-trip
-  is unverified. (badread also requested in the same install for cross-check.)
-- **Tier-1 cell sizing:** at `--reps 120` the min indel-bearing cell is ~43 reads
-  (clean reads are ~50% by the del-dominant K_DIST; HP_HARD alternates two modes).
-  The Sherlock scale-up must set `--reps` so every `(base_class, run_copies)` cell
-  clears `min_count=100` (recommend `--reps ~400`).
+- **pbsim3 live run NOT yet executed.** The old `aligner_bench` env only ever got
+  `samtools` (the solve failed). Session 2 relaunched a FRESH minimal env via
+  `conda create -n pbsim3 -c bioconda -c conda-forge pbsim3 badread minimap2 samtools
+  pysam`, backgrounded on Sherlock (login-node `nohup`) with a self-written rc
+  sentinel — **still solving at handoff.** Durable signal:
+  `/home/groups/larsms/users/kevinroy/aligner_bench_sentinels/pbsim3_install_rc`
+  (the rc, written atomically) + `pbsim3_install.log`. The wrapper is code-complete +
+  MAF→genome projection-validated; only the live mechanical round-trip is unverified.
+- **Tier-1 cell sizing: RESOLVED (audited session 2).** `--reps 400` clears
+  `min_count=100` for every indel cell (HP lengths 2–12, HP_HARD {4,6,8,10,12}, STR)
+  and every clean cell incl. L=1 (the FP control). Use `--reps 400` for the C1 corpus.
 - **NEXT-CYCLE ABLATION (gated on this gate) — does the length-law CLOSE the gap?**
   The gate now CONTAINS a validated C1-addressable stratum (HP_HARD-noisy: flat-
   affine 0.980 vs truth, 24/24 failures C1-addressable). The remaining proof is the
@@ -129,11 +164,19 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
 - No C1/member code built (correctly — that is the next, gated cycle).
 
 ## RESUME
-1. **Check the pbsim3 install:**
-   `ssh sherlock 'ls /home/groups/larsms/users/kevinroy/anaconda3/envs/aligner_bench/bin/ | grep -iE "pbsim|badread"; tail -3 /tmp/pbsim3_install.log'`
-   - If `pbsim` present → run a live mini round-trip (below).
-   - If still solving / failed → install into a FRESH minimal env (faster solve):
-     `ssh sherlock '/home/groups/larsms/users/kevinroy/anaconda3/bin/conda create -y -n pbsim3 -c bioconda -c conda-forge pbsim3 badread minimap2 samtools pysam'`
+0. **Local smoke = regression gate first (≈30s at low reps):**
+   `cd <this worktree> && PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH" \
+    /Users/kevinroy/miniconda3/envs/pysam/bin/python scripts/benchmark/smoke_roundtrip.py \
+    --out /tmp/bench_smoke_chk --reps 20` (exit 0 = green). Full-scale is `--reps 120`
+   (slow: ~2+ min — the two-arm DP runs the Python aligner on ~2400 reads).
+1. **Check the backgrounded pbsim3 install (sentinel branch logic):**
+   `ssh sherlock 'D=/home/groups/larsms/users/kevinroy/aligner_bench_sentinels; \
+    if [ -f $D/pbsim3_install_rc ]; then echo RC=$(cat $D/pbsim3_install_rc); \
+    else echo still-solving; fi; tail -3 $D/pbsim3_install.log'`
+   - `RC=0` → env ready: `conda run -n pbsim3 pbsim --version`, then the live round-trip (below).
+   - `RC` non-zero → read the log; re-solve may need `mamba` or dropping `badread` (pin pbsim3 first).
+   - `still-solving` → wait; the login-node nohup can die on disconnect — if the rc never
+     appears and the log is stale, just re-launch the same `conda create` (idempotent).
 2. **Live pbsim3 round-trip** (find the packaged model first):
    `MODEL=$(ssh sherlock 'find /home/groups/larsms/users/kevinroy/anaconda3/envs/*/ -name "ERRHMM-ONT.model" | head -1')`
    then drive `scripts/benchmark/sim/pbsim3_wrapper.py:simulate_and_propagate`
