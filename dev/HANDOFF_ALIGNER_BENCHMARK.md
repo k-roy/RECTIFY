@@ -26,34 +26,49 @@ measure real error correlation structure), not the primary truth set. Two user p
   matches both sides → by construction EXCLUDES clusters/bursts. So an injector driven by it
   under-produces the bursty/hot-read regime where the convergent-error problem lives.
 
-**IN FLIGHT (background subagent a6695...):** measuring error CORRELATION structure —
-per-read over-dispersion (Fano factor) + spatial clustering (inter-error-gap CV / %gaps<5bp)
-in pbsim3 reads vs a real ONT BAM on Sherlock. This is the DECISION-DRIVER: does the injector
-need a burst+dispersion layer, or does pbsim3's ERRHMM already reproduce real structure?
+**ERROR-STRUCTURE MEASUREMENT: DONE** (was in-flight; result in SPEC §ERROR-REALISM).
+VERDICT: pbsim3 is MORE iid/uniform than real ONT on every axis (rate-matched to the real
+1.9%). Injector needs THREE layers: (1) per-read over-dispersion (real disp-index 9.95 vs
+pbsim 3.55), (2) within-read burst/clustering (real 2.83x excess sub-5bp gaps vs pbsim ~1.2x),
+(3) longer multi-base indel runs (pbsim 19% vs real 39% ≥2bp). Magnitude must be calibrated
+vs SIRV ABSOLUTE truth (real-yeast 2.83x is an upper bound — read-vs-ref conflates RNA-mod +
+alignment artifacts a pre-alignment injector must not reproduce). Injector BUILD = next cycle.
+
+**POINT 4 (JUNCTION_DISCOVERY) — DONE** (commits 6c40f60 + 478ad88). gen_junction_discovery_stratum
+(canonical/non-canonical × annotated/unannotated) + scorer `fp_canonical_snap` + smoke (G).
+VERIFIED: minimap2 recovers canonical at ceiling (1.000), SNAPS non-canonical (recall 0.000,
+25 snaps), and addressability is PROVEN not asserted (all 40/40 snaps cost NM>=1, so the true
+non-canonical site strictly wins on a motif-blind score → evidence-weighing member recovers it;
+the smoke fails if >10% snaps are NM==0 = the zero-evidence trap). Annotation axis flat for
+minimap2 (annotation-agnostic); moves uLTRA/gmap in the panel run.
 
 **DONE this session-4b:** junction-snapping probe (above); empirical-table clean-flank bias
 confirmed in code; LRGASP URL-verified acquisition plan (committed to SPEC §EXTERNAL-VALIDITY,
 the pbsim3-vs-NanoSim-vs-real-SIRV three-way; RNA002 so it answers sim-realism, LongBench=RNA004
 for transfer); the 4-bug red-team fixes + error-realism framework.
 
-**RESUME (session-4b):**
-1. Get the measurement verdict: the a6695 subagent reports per-read Fano + inter-error-gap
-   stats for pbsim vs real. If pbsim Fano≈1 & gap-CV≈1 (iid-like) and real is over-dispersed/
-   clustered → the injector NEEDS a burst + per-read-dispersion layer (design it). If pbsim
-   already matches real → no new layer; proceed.
-2. Build **(4) the junction-discovery stratum** (point 4): in `controlled.py`
-   `gen_junction_discovery_stratum` (canonical/non-canonical × annotated/unannotated, each
-   non-canon truth junction verified non-canonical WITHIN its ambiguity window); scorer add
-   `fp_canonical_snap` (FP canonical junction within W bp of an unmatched non-canonical truth);
-   smoke (G): canonical recall≈ceiling, non-canonical recall≪ceiling + snaps>0. Probe-verify
-   first; advisor-gate.
-3. **Shared build dep for ALL real-data integration:** an EXON-feature GTF loader variant of
-   `gff_panel` (SIRV + LRGASP-GENCODE are exon-GTF, not the yeast mRNA+intron form).
-4. THEN HANDOFF the session (phase boundary): injector-build (calibrated burst+dispersion),
-   real-data acquisition (LRGASP three-way + LongBench RNA004), and C1 member code are the
-   fresh-session/next-cycle work. Do NOT start C1 here.
-- LongBench transfer check (the prior session-4 plan below) is DEFERRED behind the error-realism
-  work, not cancelled.
+**RESUME (session-4b — at the HANDOFF BOUNDARY; steps 1-2 DONE this session):**
+The gate phase is complete + documented. Remaining work is fresh-session/next-cycle:
+1. **Error injector build** (highest priority — the error-realism verdict above). Add to the
+   in-silico path: (a) per-read rate multiplier (over-dispersed mixture), (b) self-exciting /
+   Markov BURST process, (c) longer multi-base indel-run model — on top of the marginal table;
+   HP-only marginal stays the backward-compat default. CALIBRATE the 3 params against SIRV
+   ABSOLUTE-truth error structure (read-vs-known-sequence; NOT read-vs-reference). Measure-first
+   (the err_corr.py approach on Sherlock) before/after to confirm pbsim+injector matches real.
+2. **EXON-feature GTF loader** (`gff_panel` variant: group exon rows by transcript_id) — the
+   shared dep unlocking ALL real-data integration (SIRV + LRGASP-GENCODE are exon-GTF). Small.
+3. **Real-data acquisition** (cluster, never M1): LRGASP three-way (SPEC §EXTERNAL-VALIDITY has
+   curl-verified URLs, pilot ~38GB; pbsim3-vs-NanoSim-vs-real-SIRV, DISTRIBUTIONAL comparison,
+   use the with_mm_M27 GTF) for sim-realism; LongBench RNA004 (s3://longbench-data/) for the
+   current-chemistry transfer check. Both gated on Sherlock auth being up.
+4. **C1 member code** = the NEXT GATED CYCLE (do NOT start in a benchmark session): arm-LAW vs
+   arm-flat ablation via `align_exon_block_global(..., penalty_table=...)`; plug-in point is
+   `run_flat_affine_arm`/`cigar_records_to_bam` in the smoke.
+5. **Open red-team hardening** (from the RED-TEAM section): non-canonical/minus-strand smoke
+   coverage, (E) addressability, discriminating-scale smoke, Tier-2 indel-projection coords,
+   verify the reverse-strand MAF risk on Sherlock.
+Smoke regression gate (any session): `PATH=... pysam-python scripts/benchmark/smoke_roundtrip.py
+--out /tmp/x --reps 20` → exit 0 = (A)(A2)(B)(B2)(C)(C')(D)(E)(F)(G) green.
 
 ---
 
