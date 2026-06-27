@@ -385,6 +385,7 @@ def walkback_3prime_guarded(
     large_del_min_bp: int = 5,
     poly_noise_window: int = 50,
     tail_context_k: int = 4,
+    tail_context_far: int = 16,
     max_scan_depth: int = 1000,
     early_exit_homopolymer_check: bool = True,
     early_exit_min_homopolymer_len: int = 4,
@@ -669,6 +670,44 @@ def walkback_3prime_guarded(
                             break
                     if ctx_n >= tail_context_k and ctx_all_stop and ctx_has_mismatch:
                         continue  # false stop — keep scanning
+                    # Extended poly-A-tail false-stop (2026-06-26): a
+                    # FORCE-ALIGNED poly-A tail can show a CLEAN stop-base run
+                    # within tail_context_k (no mismatch yet) and only begin
+                    # mismatching a few bp further inward — so the strict
+                    # k-window guard above misses it. (mapPacBio cat1_minus_1:
+                    # a coincidental read-A / genomic-A match at the minus-strand
+                    # 3' terminal, then 4 clean tail T's, THEN the poly-A/genome
+                    # mismatch run starting ~8 bp inward.) When the near window
+                    # was stop-base-only and mismatch-free, look up to
+                    # tail_context_far aligned positions inward; if that wider
+                    # run stays stop-base-dominated (>=2/3) AND contains a
+                    # mismatch, the candidate is still inside the force-aligned
+                    # tail, not the CPA → keep scanning.
+                    if (tail_context_far > tail_context_k
+                            and ctx_all_stop and ctx_n >= tail_context_k
+                            and not ctx_has_mismatch):
+                        far_n = far_stop = far_mm = 0
+                        for _j in range(i - 1, scan_lo - 1, -1):
+                            if _g_rp[_j] == -1:
+                                continue
+                            far_n += 1
+                            if _g_rb[_j] == stop_ord:
+                                far_stop += 1
+                            if _g_rb[_j] != _g_gb[_j]:
+                                far_mm += 1
+                            if far_n >= tail_context_far:
+                                break
+                        # Require a HIGH mismatch fraction (>=1/3), not merely
+                        # >0: a genuine A/T-rich 3'UTR CPA region with a lone
+                        # basecall error would also be stop-base-dominated with
+                        # far_mm>0 and get over-walked. A FORCE-ALIGNED poly-A
+                        # tail mismatches the genome heavily (the demonstrated
+                        # mapPacBio cat1_minus_1 case is ~9/16 ≈ 56%), which this
+                        # fraction gate separates from real AT-rich sequence.
+                        if (far_n >= tail_context_k
+                                and far_stop * 3 >= far_n * 2
+                                and far_mm * 3 >= far_n):
+                            continue  # force-aligned poly-A tail — keep scanning
                 true_cpa = refp
                 break
 
@@ -793,6 +832,37 @@ def walkback_3prime_guarded(
                         break
                 if ctx_n >= tail_context_k and ctx_all_stop and ctx_has_mismatch:
                     continue
+                # Extended poly-A-tail false-stop (2026-06-26) — mirrors the
+                # right-side guard. A FORCE-ALIGNED poly-A tail can show a CLEAN
+                # stop-base run within tail_context_k (no mismatch yet) and only
+                # begin mismatching a few bp further inward, so the strict
+                # k-window guard above misses it. This is the cat1_minus_1
+                # mapPacBio pattern the leading-stop-match relaxation above was
+                # added for: a coincidental read-A / genomic-A match at the
+                # minus-strand 3' terminal, then 4 clean tail T's, THEN the
+                # poly-A/genome mismatch run ~8 bp inward. When the near window
+                # was stop-base-only and mismatch-free, look up to
+                # tail_context_far aligned positions inward; if that wider run
+                # stays stop-base-dominated (>=2/3) AND contains a mismatch, the
+                # candidate is still inside the force-aligned tail → keep scanning.
+                if (tail_context_far > tail_context_k
+                        and ctx_all_stop and ctx_n >= tail_context_k
+                        and not ctx_has_mismatch):
+                    far_n = far_stop = far_mm = 0
+                    for _j in range(i + 1, scan_hi):
+                        if _g_rp[_j] == -1:
+                            continue
+                        far_n += 1
+                        if _g_rb[_j] == stop_ord:
+                            far_stop += 1
+                        if _g_rb[_j] != _g_gb[_j]:
+                            far_mm += 1
+                        if far_n >= tail_context_far:
+                            break
+                    if (far_n >= tail_context_k
+                            and far_stop * 3 >= far_n * 2
+                            and far_mm > 0):
+                        continue  # force-aligned poly-A tail — keep scanning
             true_cpa = refp
             break
 
@@ -926,6 +996,7 @@ def walkback_drs_full(
     large_del_min_bp: int = 5,
     poly_noise_window: int = 50,
     tail_context_k: int = 4,
+    tail_context_far: int = 16,
     max_scan_depth: int = 1000,
     early_exit_min_homopolymer_len: int = 4,
 ) -> Optional[dict]:
@@ -967,6 +1038,7 @@ def walkback_drs_full(
         large_del_min_bp=large_del_min_bp,
         poly_noise_window=poly_noise_window,
         tail_context_k=tail_context_k,
+        tail_context_far=tail_context_far,
         max_scan_depth=max_scan_depth,
         early_exit_min_homopolymer_len=early_exit_min_homopolymer_len,
     )

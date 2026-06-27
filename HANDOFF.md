@@ -5,6 +5,29 @@ commits here; user confirmed you own the validation work). **You are a fresh ses
 bottom, then continue.** Read `~/.claude/CLAUDE.md` + `~/work/CLAUDE.md` + `CLAUDE.md` first (rm-safety,
 M1 8GB discipline, ControlMaster, surgical `git add` — never `-A`).
 
+## ⚑ UPDATE 2026-06-26 (#3) — WALKBACK extended-tail guard (force-aligned poly-A)
+
+Figure review (cat1_minus_1) surfaced a real walkback gap. mapPacBio force-aligns the 3' poly-A tail
+(no soft-clip, reference_start 9809 vs consensus 9831), and its corrected 3' came out **9811 vs the
+consensus 9834** — it anchored on a coincidental read-A/genomic-A match at the minus-strand terminal.
+Root cause: the tail-context false-stop guard's near window (`tail_context_k=4`) was CLEAN poly-T
+(no mismatch) because the force-aligned-tail mismatch run only starts ~8 bp inward — so the guard
+never fired, and the terminal non-stop match anchored the walk immediately. (The authors had already
+added the leading-stop-match relaxation FOR this cat1_minus_1 pattern; the in-loop guard just couldn't
+see far enough.)
+
+**Fix** (`rectify/core/correct/walkback.py`, BOTH right- and left-side scans): added an extended
+lookahead `tail_context_far=16`. When the near k-window is stop-base-only and mismatch-free, scan up to
+16 aligned positions inward; if that wider run stays **stop-base-dominated (≥2/3)** AND is
+**mismatch-rich (≥1/3)**, treat the candidate as still inside the force-aligned poly-A tail and keep
+scanning. The ≥1/3 mismatch gate (the demonstrated case is ~56%) separates force-aligned tails from
+genuine A/T-rich 3'UTRs with a lone basecall error (which would be ~6% and must NOT be over-walked).
+
+**Verified (full pipeline, not the walkback-only proxy):** regen diff vs HEAD = exactly **1** change —
+cat1_minus_1 mapPacBio 9811→**9834**, CONVERGING to the winner; **0 winner changes** in
+corrected_reads.tsv. Tests: walkback units 54 passed; test_validation_reads 108 passed; full non-slow
+suite (running). Figure: mapPacBio 3' now soft-clips the poly-A and lines up with the consensus.
+
 ## ⚑ UPDATE 2026-06-26 (#2) — POLY-A ROUND-TRIP: CORRECTED DIAGNOSIS (handoff #1's was WRONG)
 
 The handoff's poly-A diagnosis ("parquet from a different build; aligned reads UNTRIMMED ==dorado len")
