@@ -3,7 +3,40 @@
 **Agent:** dedicated benchmark-builder (isolated worktree, branch
 `worktree-agent-a25a2c1e784ad37dc`, based on `drs-validation-rebuild` so the reuse
 primitives + design docs are present). **NEVER commit to `drs-validation-rebuild`.**
-**Updated:** 2026-06-26 (session 2).
+**Updated:** 2026-06-26 (session 3).
+
+---
+
+## SESSION-3 ADDENDUM (2026-06-26) — VARIANT/C6 stratum BUILT + verified discriminating
+
+Continued the next-increment strata. Per advisor triage, led with **VARIANT/C6**
+(the only remaining stratum that is fully wired to a scorer metric the incumbent is
+below ceiling on); the other three are deferred/scaffold with reasons recorded.
+
+- **`gen_variant_stratum` in `scripts/benchmark/sim/controlled.py`** (wired into
+  `generate_corpus`, `include_variant=True`) + smoke assertion **(E)**.
+- **Discriminating construct, verified EMPIRICALLY vs minimap2 -ax splice -uf:** a
+  GT..AG-flanked **deletion variant ≥ ~40bp** is re-expressed by minimap2 as a
+  spurious **intron (N-op)** → a FABRICATED **variant-adjacent** junction FP
+  (`fp_variant_adjacent`) + the deletion mis-scored. Probed thresholds: 20/30bp
+  stay `D` (correct), 40/60/100bp all become `N`. Smoke reps=20: driver
+  `fp_variant_adjacent=60`, driver junction FDR=1.0.
+- **SPECIFICITY proven (not just sensitivity):** SNP 3bp from donor, SNP ~100bp
+  away, and a 25bp deletion are ALL handled correctly by minimap2 (0 FP). Smoke (E)
+  asserts controls = 0 variant-adjacent FP, so the stratum shows the FDR is
+  SPECIFIC to the splice-mimic-deletion context — guarding the future C6 member
+  from a blunt abstain-near-every-variant rule. het/hom + non-Mendelian VAF (0.33)
+  recorded per `VariantTruth`.
+- Whole-corpus (C) indel concordance moves 0.999→0.940 — EXPECTED + correct: the 60
+  splice-mimic deletions minimap2 turned into introns are now counted as genuine
+  incumbent indel failures the benchmark measures (not a regression; (C) only
+  requires ≥1 correct). Schema variant round-trip is exercised end-to-end (the
+  `fp_variant_adjacent` count depends on variants surviving the TSV reload).
+- **Smoke GREEN** with assertions (A)(A2)(E)(D)(C)(C')(B)(B2) (`--reps 20`).
+- **Remaining strata deferred with reasons** (PARALOG needs a scorer locus-
+  concordance metric first; COVERAGE×Q can't discriminate until C3 consumes phred;
+  PANEL_FAILURE's real validity is the Tier-2 5-aligner panel) — see
+  `SIMULATION_BENCHMARK_SPEC.md` §"VARIANT/C6 stratum … Triage".
 
 ---
 
@@ -179,9 +212,14 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   correctly scores 1.0.
 - Tier-2 realistic transcriptome run (yeast saturation control + human SMN1/SMN2 +
   NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
-- Other strata from the SPEC not yet generated (paralog, panel-failure/C5,
-  coverage×Q, standing-variant/C6) — schema supports all; generators are the next
-  build increment once the pbsim3 live run is confirmed.
+- **standing-variant/C6: DONE (session 3)** — `gen_variant_stratum`, smoke (E),
+  verified discriminating + specific (see session-3 addendum).
+- Remaining strata (paralog/C4, panel-failure/C5, coverage×Q) DEFERRED with
+  recorded reasons (scorer-gap / next-cycle-consumer / Tier-2-only) — see
+  `SIMULATION_BENCHMARK_SPEC.md` §"Triage of the remaining SPEC strata".
+  PARALOG/C4 is the best next one BUT requires a scorer locus-concordance readout
+  FIRST (`true_locus` vs mapped contig) — build that small metric, then the
+  generator.
 - No C1/member code built (correctly — that is the next, gated cycle).
 
 ## RESUME

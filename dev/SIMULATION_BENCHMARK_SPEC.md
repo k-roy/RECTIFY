@@ -146,6 +146,54 @@ ERRHMM-ONT.model`; PCR-cDNA = `ERRHMM-ONT-HQ.model`.
   validated locally on a synthetic MAF); scorer + schema in `rectify/core/benchmark/`.
 - badread is also installed (cross-check / error-model realism), not the primary.
 
+## VARIANT/C6 stratum — BUILT + VERIFIED DISCRIMINATING (2026-06-26)
+The standing-variant (C6) Tier-1 generator is now in
+`scripts/benchmark/sim/controlled.py` (`gen_variant_stratum`), wired into
+`generate_corpus` and gated by smoke assertion **(E)**. It measures the
+variant-induced discovery FDR the flat **haploid** reference panel suffers — the
+first-class C6 discovery-FDR guard the design names (Addendum (b) / §8).
+
+**Discriminating construct, verified vs minimap2 -ax splice -uf (empirically, not
+assumed):** a **GT..AG-flanked DELETION variant ≥ ~40bp** is re-expressed by
+minimap2 as a spurious **intron (N-op)** instead of a deletion (D) → a FABRICATED,
+**variant-adjacent** junction FP (scorer `fp_variant_adjacent`) AND the deletion is
+not scored position-exact. Empirical thresholds (5 reads/len): 20/30bp stay a
+correct `D`; 40/60/100bp all become `N`. Smoke (reps=20): driver
+`fp_variant_adjacent=60`, junction FDR=1.0 on the driver sub-case.
+
+**Specificity controls (kept BECAUSE minimap2 is robust to them):** a SNP 3bp from
+the donor, and a SNP ~100bp from any junction, are both correctly called as a
+mismatch (`…1X…`) with the real junction preserved (0 FP); a 25bp splice-mimic
+deletion stays a correct `D`. The smoke asserts controls produce **0**
+variant-adjacent FP — so the stratum proves the FDR is SPECIFIC to the
+splice-mimic-deletion context, NOT "any variant near a junction." This guards the
+future C6 member against degenerating into a blunt abstain-near-every-variant rule.
+Zygosity (HET/HOM) + non-Mendelian VAF (0.33, aneuploid-A549-style) are recorded
+per `VariantTruth` for downstream stratification. **Whether C6 REDUCES this FDR is
+the next-cycle ablation; the gate only has to MEASURE it, which it now does.**
+
+**Triage of the remaining SPEC strata (advisor-reviewed 2026-06-26) — why VARIANT
+went first and the others are deferred/scaffold:** a stratum only counts when the
+incumbent is shown BELOW ceiling via a metric the scorer *already emits*.
+- **VARIANT/C6 — DONE** (above): fully wired (`fp_variant_adjacent`), incumbent
+  below ceiling, specificity proven.
+- **PARALOG/C4 — needs a scorer add first.** Its headline metric is locus/window-
+  selection accuracy (`true_locus` vs mapped contig); the scorer scores
+  junctions/indels wherever the read landed and has NO locus-concordance readout.
+  Build that small metric before generating truth, or there is no dial.
+- **COVERAGE×Q — cannot be validated this cycle.** Nothing consumes phred (the
+  corpus hardcodes `'I'*len(seq)`; the scorer ignores Q). The consumer is C3 (next
+  cycle). A Q stratum now is pure scaffold that cannot show discrimination — the
+  vertical-slice trap again. Defer or label unvalidated.
+- **PANEL_FAILURE/C5 — real validity is Tier-2.** The SPEC ties tail-SIZE to the
+  real 5-aligner panel on Sherlock; a Tier-1 "defeat minimap2" read is artificial
+  (one aligner ≠ the panel). Build as truth scaffold only; do not let a smoke
+  assertion read as "the tail is sized."
+- **GENOMIC_A_CPA/C2 — partially wired** (scorer emits `|est−true CPA|`) but its
+  comparator (the walkback heuristic) is not wired as an arm, so same partial-
+  wiring caveat as Q; a generator is worthwhile but it can't fully discriminate
+  until the walkback arm exists.
+
 ## Open decisions (carry to user / fold crafter `benchmark_coupling`)
 - ~~NanoSim vs badread for Tier-2~~ → **RESOLVED: pbsim3** (per-read MAF; see above).
 - Whether Tier-1's error model is badread's ONT model or RECTIFY's own empirical table (held-out either way).

@@ -36,7 +36,8 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from rectify.core.benchmark.truth_schema import (  # noqa: E402
     ReadTruth, IndelTruth, JunctionTruth, JunctionClass, IndelKind, SplitTag,
-    write_truth_table, homopolymer_run, make_hp_indel, deletion_ambiguity_span,
+    VariantTruth, write_truth_table, homopolymer_run, make_hp_indel,
+    make_unique_indel, deletion_ambiguity_span,
 )
 from scripts.benchmark.sim.transcript_model import TranscriptModel, Exon  # noqa: E402
 
@@ -375,10 +376,140 @@ def gen_junction_class_loci(rng: random.Random, n_reads: int = 30, locus0: int =
 
 
 # ---------------------------------------------------------------------------
+# VARIANT stratum (C6) — standing-variant-induced discovery FDR
+# ---------------------------------------------------------------------------
+# Per the design (ALIGNER_MEMBER_DESIGN.md Addendum (b) / §8): a standing
+# germline/somatic variant near a splice site can FABRICATE a "novel" junction
+# or be mis-charged as a mismatch the DP "repairs" with a spurious micro-indel —
+# both directly INFLATE the de-novo (esp. non-canonical) discovery FDR. C6 is a
+# first-class discovery-FDR GUARD, so the benchmark must MEASURE the variant-
+# induced FDR the flat-haploid-reference panel suffers.
+#
+# DISCRIMINATING (the incumbent is BELOW ceiling, verified empirically against
+# minimap2 -ax splice -uf, 2026-06-26):
+#   * a GT..AG-flanked DELETION variant >= ~40bp is called as a spurious INTRON
+#     (N-op) instead of a deletion (D) -> a FABRICATED, variant-adjacent junction
+#     FP (and the deletion is NOT scored position-exact). Shorter deletions
+#     (<=30bp) stay a correct D (the control).
+# NON-discriminating but kept as the SPECIFICITY control (minimap2 is robust):
+#   * a SNP near or far from a real junction is correctly called as a mismatch
+#     and does NOT shift/fabricate a junction. These rows let the scorer show the
+#     variant-induced FP is SPECIFIC to the splice-mimicking-deletion context,
+#     not "any variant near a junction" (so the C6 guard is targeted, not a blunt
+#     abstain-near-every-variant rule).
+#
+# The metric the scorer already emits for this stratum: junction FP +
+# ``fp_variant_adjacent`` (the false junction lands within variant_adjacency_bp
+# of a truth variant), plus indel position-exact concordance on the deletion.
+SPLICE_MIMIC_DEL_LENS = [25, 40, 60, 100]   # <=30 = control (stays D); >=40 = FDR driver
+
+
+def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
+                        ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """Build the C6 standing-variant stratum (see module note above).
+
+    Three sub-cases, all with truth recorded BY CONSTRUCTION:
+
+    * ``SPLICE_MIMIC_DEL`` — single-exon contig with a GT..AG-flanked block; the
+      read DELETES the block (a deletion variant). Truth = the deletion (no
+      junction). minimap2 fabricates a variant-adjacent junction FP for blocks
+      >= ~40bp. zygosity/VAF varied across loci for the het/hom + non-Mendelian
+      (aneuploid-A549) stratification the SPEC asks for.
+    * ``SNP_NEAR_JUNC`` — spliced gene + a SNP 3bp into exon1 from the real donor.
+      Truth = the real junction + a variant-adjacent SNP. Control: minimap2 keeps
+      the junction and calls the SNP a mismatch.
+    * ``SNP_DISTANT`` — spliced gene + a SNP mid-exon (~100bp from any junction).
+      Truth = the real junction + a variant-DISTANT SNP. Control.
+    """
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+    li = locus0
+
+    # ---- SPLICE_MIMIC_DEL: the variant-induced-FDR driver ----------------
+    L = 200
+    zyg_cycle = [("HET", 0.5), ("HOM", 1.0), ("HET", 0.33)]  # incl. non-Mendelian VAF
+    for di, dlen in enumerate(SPLICE_MIMIC_DEL_LENS):
+        chrom = f"var_del_{dlen:03d}"
+        left = _rand_unique(L, rng)
+        # the deleted block looks splice-like (GT..AG) so minimap2 is tempted to
+        # call it an intron; the flanks are random so the deletion has no in-run
+        # ambiguity slide (eq span == the edit).
+        block = "GT" + _rand_unique(dlen - 4, rng) + "AG"
+        right = _rand_unique(L, rng)
+        ref = left + block + right
+        refs[chrom] = ref
+        var_pos = L                       # 0-based start of the deleted block
+        read_seq = left + right           # the read lacks the block
+        zyg, vaf = zyg_cycle[di % len(zyg_cycle)]
+        split = _split_for(li)
+        li += 1
+        for i in range(reps):
+            rid = f"{chrom}_r{i:03d}"
+            reads.append((rid, read_seq))
+            # truth: a unique-context deletion variant; NO junction.
+            indel = make_unique_indel(var_pos, dlen, IndelKind.DEL)
+            indel.context = "VARIANT"
+            var = VariantTruth(
+                pos=var_pos, ref_allele=block, alt_allele="",
+                zygosity=zyg, vaf=vaf, dist_to_junction=None)
+            truth.append(ReadTruth(
+                read_id=rid, true_locus=chrom, true_transcript=chrom,
+                chrom=chrom, strand="+", genome_start=0, genome_end=len(ref),
+                true_cigar=f"{var_pos}M{dlen}D{len(ref) - var_pos - dlen}M",
+                indels=[indel], variants=[var], stratum="VARIANT",
+                split=split, coverage=reps))
+
+    # ---- SNP controls (minimap2 robust) on a spliced gene ----------------
+    def _spliced_snp(tag: str, snp_offset_from_donor: int, dist_label):
+        nonlocal li
+        chrom = f"var_snp_{tag}"
+        e1 = _rand_unique(200, rng)
+        intron = "GT" + _rand_unique(196, rng) + "AG"
+        e2 = _rand_unique(200, rng)
+        contig = e1 + intron + e2
+        refs[chrom] = contig
+        i_start, i_end = 200, 200 + len(intron)
+        model = TranscriptModel(
+            name=tag, chrom=chrom, strand="+",
+            exons=[Exon(0, 200), Exon(i_end, len(contig))], genome_seq=contig)
+        jt = model.junction_truths()      # NNC (no annotation supplied)
+        spliced = model.spliced_transcript()
+        # transcript coord of the SNP: in exon1, snp_offset_from_donor bp 5' of
+        # the donor (so genome pos = 200 - off; transcript pos identical in exon1)
+        tpos = 200 - snp_offset_from_donor
+        gpos = tpos
+        ref_base = spliced[tpos]
+        alt_base = rng.choice([b for b in BASES if b != ref_base])
+        read_seq = spliced[:tpos] + alt_base + spliced[tpos + 1:]
+        dist = abs(gpos - i_start) if dist_label == "near" else None
+        split = _split_for(li)
+        li += 1
+        for i in range(reps):
+            rid = f"{chrom}_r{i:03d}"
+            reads.append((rid, read_seq))
+            var = VariantTruth(
+                pos=gpos, ref_allele=ref_base, alt_allele=alt_base,
+                zygosity="HET", vaf=0.5,
+                dist_to_junction=dist)
+            truth.append(ReadTruth(
+                read_id=rid, true_locus=tag, true_transcript=tag, chrom=chrom,
+                strand="+", genome_start=model.genome_start,
+                genome_end=model.genome_end, true_cigar=model.fulllength_cigar(),
+                junctions=jt, variants=[var], true_cpa=model.genome_end - 1,
+                stratum="VARIANT", split=split, coverage=reps))
+
+    _spliced_snp("near", snp_offset_from_donor=3, dist_label="near")
+    _spliced_snp("distant", snp_offset_from_donor=100, dist_label="far")
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # Top-level corpus generator
 # ---------------------------------------------------------------------------
 def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
-                    include_junction: bool = True) -> Dict[str, str]:
+                    include_junction: bool = True,
+                    include_variant: bool = True) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     rng = random.Random(seed)
     refs: Dict[str, str] = {}
@@ -401,6 +532,12 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
         refs.update(rj)
         reads += rdj
         truth += tj
+
+    if include_variant:
+        rv, rdv, tv = gen_variant_stratum(reps, rng)
+        refs.update(rv)
+        reads += rdv
+        truth += tv
 
     ref_fa = os.path.join(out_dir, "ref.fa")
     reads_fq = os.path.join(out_dir, "reads.fastq")

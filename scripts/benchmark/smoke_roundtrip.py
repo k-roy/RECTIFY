@@ -192,6 +192,44 @@ def main():
         print(f"[smoke] (A2) PASS discovery classes: NIC TP={nic_tp}, ANNOTATED TP={ann_tp}",
               file=sys.stderr)
 
+    # (E) VARIANT/C6 — variant-induced discovery FDR is MEASURED and SPECIFIC.
+    # A standing variant near a splice site can FABRICATE a 'novel' junction
+    # (ALIGNER_MEMBER_DESIGN.md Addendum (b) / §8). The benchmark must show
+    # (1) the incumbent IS below ceiling — the flat HAPLOID reference fabricates
+    # a variant-adjacent junction from a >=40bp splice-mimicking deletion variant
+    # — AND (2) the effect is SPECIFIC to that context (a plain SNP, or a short
+    # deletion, does NOT), so the future C6 guard is targeted, not a blunt
+    # 'abstain near every variant' rule. Verified vs minimap2 -ax splice -uf.
+    if "VARIANT" in per_stratum:
+        var_truth = {rid: t for rid, t in truth_map.items() if t.stratum == "VARIANT"}
+
+        def _is_driver(t):
+            return (t.true_locus.startswith("var_del_")
+                    and int(t.true_locus.split("_")[-1]) >= 40)
+
+        drivers = {rid: t for rid, t in var_truth.items() if _is_driver(t)}
+        controls = {rid: t for rid, t in var_truth.items() if not _is_driver(t)}
+        sd = score_bam(bam, drivers, genome, aligner_name="mm2:VAR_driver")
+        sc = score_bam(bam, controls, genome, aligner_name="mm2:VAR_control")
+        drv_adj = sd.junction.fp_variant_adjacent
+        ctl_adj = sc.junction.fp_variant_adjacent
+        print(f"[smoke] (E) VARIANT/C6: driver fp_variant_adjacent={drv_adj} "
+              f"(junc_fdr={sd.junction.fdr:.3f}, "
+              f"indel_conc={sd.indel.position_exact_concordance:.3f}); "
+              f"control fp_variant_adjacent={ctl_adj}", file=sys.stderr)
+        if drv_adj < 1:
+            failures.append("(E) VARIANT: incumbent fabricated NO variant-adjacent junction "
+                            "on the splice-mimic-deletion driver — stratum is non-discriminating")
+        elif ctl_adj != 0:
+            failures.append(f"(E) VARIANT: control sub-cases produced {ctl_adj} variant-adjacent "
+                            f"FP — the effect is NOT specific to the splice-mimic context")
+        else:
+            print(f"[smoke] (E) PASS VARIANT/C6 stratum is DISCRIMINATING + SPECIFIC: the flat "
+                  f"haploid reference fabricated {drv_adj} variant-adjacent junction FPs on the "
+                  f">=40bp splice-mimic-deletion variant (a C6-addressable discovery-FDR "
+                  f"inflation) while plain-SNP + short-deletion controls produced 0. Whether C6 "
+                  f"REDUCES this FDR is the NEXT-cycle ablation.", file=sys.stderr)
+
     # (D) HP_HARD must SEPARATE TWO ARMS (the real validity bar): score the
     # internal flat-affine DP (align_exon_block_global, the arm C1 upgrades)
     # ALONGSIDE minimap2 on HP_HARD, broken out by mode. Below-ceiling on ONE arm
