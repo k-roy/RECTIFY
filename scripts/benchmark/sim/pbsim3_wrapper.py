@@ -30,6 +30,7 @@ Author: Kevin R. Roy
 from __future__ import annotations
 
 import argparse
+import gzip
 import os
 import subprocess
 import sys
@@ -57,13 +58,20 @@ class MafRecord:
     read_strand: str    # '+' or '-'
 
 
+def _maybe_gzip_open(path: str):
+    """Open a possibly-gzipped text file (pbsim3 emits ``.maf.gz`` / ``.fq.gz``)."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt")
+    return open(path)
+
+
 def parse_maf(path: str) -> List[MafRecord]:
     """Parse a pbsim3 MAF. Each alignment block has two 's' lines: template then
     read. Coordinates are 0-based; a '-' strand 's' line means start is measured
     from the other end (pbsim reports srcSize to allow conversion)."""
     records: List[MafRecord] = []
     block: List[Tuple[str, int, int, str, int, str]] = []
-    with open(path) as fh:
+    with _maybe_gzip_open(path) as fh:
         for line in fh:
             if line.startswith("a"):
                 block = []
@@ -186,8 +194,16 @@ def run_pbsim3(transcript_fa: str, out_prefix: str, errhmm_model: str,
         raise RuntimeError(f"pbsim3 failed: {res.stderr[:800]}")
     out_dir = os.path.dirname(out_prefix) or "."
     base = os.path.basename(out_prefix)
-    return sorted(os.path.join(out_dir, f) for f in os.listdir(out_dir)
-                  if f.startswith(base) and f.endswith(".maf"))
+    # pbsim3 builds vary: some emit ``<prefix>.maf`` / ``<prefix>_NNNN.maf``,
+    # others gzip to ``<prefix>.maf.gz``. Match both (and never the FASTQ).
+    mafs = sorted(os.path.join(out_dir, f) for f in os.listdir(out_dir)
+                  if f.startswith(base) and (f.endswith(".maf") or f.endswith(".maf.gz")))
+    if not mafs:
+        raise RuntimeError(
+            f"pbsim3 produced no MAF for prefix '{base}' in {out_dir}; "
+            f"found: {sorted(os.listdir(out_dir))[:20]}. (pbsim ran rc=0 — check "
+            f"the output naming/compression for this pbsim3 build.)")
+    return mafs
 
 
 def simulate_and_propagate(models: List[TranscriptModel], out_dir: str,
@@ -214,15 +230,20 @@ def simulate_and_propagate(models: List[TranscriptModel], out_dir: str,
                 truth.append(rt)
     truth_tsv = os.path.join(out_dir, "truth.tsv")
     write_truth_table(truth, truth_tsv)
-    # concat the per-transcript fastqs pbsim emits
+    # concat the fastqs pbsim emits (naming/compression varies by build:
+    # ``sim.fastq`` / ``sim_NNNN.fastq`` / ``sim.fq`` / ``sim.fq.gz`` ...)
+    base = os.path.basename(prefix)
+    fq_exts = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
     reads_fq = os.path.join(out_dir, "reads.fastq")
+    n_fq = 0
     with open(reads_fq, "w") as out:
         for f in sorted(os.listdir(out_dir)):
-            if f.startswith("sim") and f.endswith(".fastq"):
-                with open(os.path.join(out_dir, f)) as g:
+            if f.startswith(base) and f.endswith(fq_exts):
+                n_fq += 1
+                with _maybe_gzip_open(os.path.join(out_dir, f)) as g:
                     out.write(g.read())
     return {"transcripts_fa": tfa, "reads_fastq": reads_fq, "truth_tsv": truth_tsv,
-            "n_truth": str(len(truth)), "n_maf": str(len(mafs))}
+            "n_truth": str(len(truth)), "n_maf": str(len(mafs)), "n_fastq": str(n_fq)}
 
 
 def main():
