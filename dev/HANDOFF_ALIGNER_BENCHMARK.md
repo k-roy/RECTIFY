@@ -7,6 +7,65 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## SESSION-5 (2026-06-27) — ERROR INJECTOR BUILT (M1-local DONE; fitting/validation SHERLOCK-gated)
+
+The FIRST TASK (the error injector the measurement proved is needed) is BUILT and
+composition-verified on the M1; the Sherlock fitting/validation is turnkey. **No member
+code started** (correctly — that is the next gated cycle). Regression gate GREEN.
+
+**DONE this session (all benchmark-only paths; gate stays green):**
+- `scripts/benchmark/sim/error_injector.py` — the 3-layer generative injector: (1) per-read
+  multiplier (Gamma/mixture) → over-dispersion, (2) 2-state cold/hot burst HMM (marginal-preserving)
+  → within-read clustering, (3) fat-tailed geometric indel-run pmf. `InjectorParams.null()` =
+  backward-compat marginal Poisson. Source-DECOUPLED `inject(seq,...)` works on clean OR pbsim reads.
+  `measure_error_structure` + a pysam BAM adapter (`events_from_bam_read` / pure
+  `events_from_alignment`) compute the SAME 3 stats on real/pbsim/pbsim+injector.
+- **TRUTH RULE enforced:** injected errors = a SEPARATE `List[ErrorEvent]` track, NEVER `IndelTruth`
+  (the SESSION-2 `has_unexplained`-zeroing lesson). The track IS PI-#2's hotness label.
+- **Calibration = coordinate descent on the COMBINED output** (NOT independent MoM — layers
+  cross-contaminate; burst inflates dispersion so Gamma shape converges ~1.26). Robust across seeds:
+  disp 9.45–10.24 / gap5x 2.71–2.95 / run≥2 0.40 (targets 9.95/2.83/0.39).
+- `tests/test_error_injector.py` (8 fast tests, all PASS run directly — no local pytest env) +
+  `error_injector.self_check` (9s; the local composition gate, NOT realism — labeled as such).
+- **PI-#2 MECHANISM probe** `scripts/benchmark/read_reliability_probe.py`: over-dispersion drives
+  exonic→junction predictability (r 0.955 vs null −0.02), burst-only stays local (r 0.011) → the
+  reliability covariate has signal but is imperfect → SOFT down-weight not hard filter (PI refinement
+  (a) CONFIRMED). FDR-lift NUMBER deliberately NOT computed (SIRV-gated/magnitude-sensitive).
+- `scripts/benchmark/error_realism_validate.py` — turnkey Sherlock `measure-bam`/`inject-fastq`
+  (full protocol in its docstring). `inject-fastq` verified on a synthetic FASTQ; **`measure-bam`
+  NOT VERIFIED on a real BAM** (Sherlock down) — only the pure `events_from_alignment` is unit-tested.
+
+**KEY DISCIPLINE (advisor-reinforced, don't regress):** the M1 self-check proves COMPOSITION, not
+realism. Realism = SIRV absolute-truth magnitude + DISTRIBUTIONAL comparison, both Sherlock-gated.
+Magnitude is UNKNOWN (2.83× is an upper bound — read-vs-ref conflates RNA-mod + minimap2 pile-up).
+
+**RESUME (session-5 boundary) — Sherlock auth was DOWN (Permission denied gssapi); ask Kevin to
+re-auth (`ssh sherlock true`), do NOT re-open the master. Nothing in flight. Then, in order:**
+1. **Re-sync code to Sherlock** (worktree changed): `rsync -az scripts/benchmark/ sherlock:$D/scripts/benchmark/`
+   where `D=/home/groups/larsms/users/kevinroy/aligner_bench_live`.
+2. **Re-profile real BAM with the burst gate OFF:** `empirical_cigar_error_profiler.py --isolation-flank 0`
+   (default is already 0) on `/scratch/users/kevinroy/rectify_wt_by4742_rep1_*/...minimap2.namesorted.bam`.
+3. **Validate pbsim+injector vs real** (the FIRST-TASK validation): `error_realism_validate.py measure-bam`
+   on {real, pbsim round-trip, pbsim+injector (via `inject-fastq` then re-align)} all with `--thin 0.019`;
+   success = +injector closes the pbsim→real gap on disp/gap5x/run≥2.
+   **4 GUARDS (advisor, the self-checks are circular — these make validation MEANINGFUL; full text in
+   SPEC §INJECTOR BUILD "GUARDS"):** (i) RE-DERIVE targets with THIS module's `measure_error_structure`
+   (the hardcoded 9.95/2.83/0.39 are from the LOST err_corr.py — don't trust); (ii) LENGTH-CONTROL the
+   comparison (dispersion ≈ linear in read len → calibrate to real reads' length dist, not flat 600bp);
+   (iii) verify the two measurement paths AGREE (inject→align→`measure-bam` reproduces injected-truth
+   stats — `events_from_alignment` can emit ins+sub at the same ref pos → gap=0, which `inject` never
+   does); (iv) derive `frac_sub/ins/del`+`base_rate` from the real profiler (DRS is deletion-dominant,
+   not the PLACEHOLDER 0.55/0.15/0.30).
+4. **Re-fit `calibrate_params` to SIRV ABSOLUTE-truth targets** (the real magnitude; not the read-vs-ref
+   upper bound) — needs the SIRV/LRGASP reference + the exon-GTF `gff_panel` loader variant (still unbuilt).
+5. **THEN PI-#2 FDR-lift on stratum (G):** inject hot reads into JUNCTION_DISCOVERY, measure novel-junction
+   FDR with vs without hot-read down-weighting. Prove the lift BEFORE shipping the member feature.
+6. C1 member code remains the NEXT GATED CYCLE — not a benchmark session.
+Regression gate (any session): `PATH=... pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x
+--reps 20` → exit 0; plus `pysam-python scripts/benchmark/sim/error_injector.py` → exit 0 (composition).
+
+---
+
 ## SESSION-4b (2026-06-27) — REDIRECT: in-silico error-REALISM first (real-data = calibrator, deferred)
 
 User redirected: prioritize **in-silico** synthetic reads (errors injected into perfect

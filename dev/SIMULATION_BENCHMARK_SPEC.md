@@ -309,6 +309,65 @@ HP-only marginal as the backward-compat default. Caveats: shape-only (chemistry 
 makes matched-pbsim clustering a conservative (low) estimate; full analysis `/tmp/err_corr.py` +
 `/scratch/users/kevinroy/err_corr_work/` on Sherlock.
 
+### INJECTOR BUILD (2026-06-27, session-5) — M1-local code DONE; fitting/validation SHERLOCK-gated
+The 3-layer error-realism injector is BUILT, composition-verified on the M1, and the Sherlock
+validation is turnkey. **Files** (all benchmark-only): `scripts/benchmark/sim/error_injector.py`
+(model + measurement + calibration + `self_check`), `tests/test_error_injector.py` (8 fast tests),
+`scripts/benchmark/read_reliability_probe.py` (PI-#2 mechanism), `scripts/benchmark/error_realism_validate.py`
+(Sherlock `measure-bam` / `inject-fastq`).
+
+- **Model** — a generative process applied to ANY base read (clean controlled read OR a pbsim read;
+  source-decoupled per the validation protocol): (1) per-read multiplier (Gamma E[m]=1 / 2-comp mixture)
+  → over-dispersion; (2) 2-state cold/hot burst HMM modulating the LOCAL hazard (marginal-preserving:
+  cold factor derived so the stationary-weighted mean factor = 1) → within-read clustering; (3) a
+  fat-tailed geometric indel-run-length pmf. `InjectorParams.null()` reproduces the marginal/Poisson
+  single-base baseline (backward-compat).
+- **TRUTH RULE (the SESSION-2 lesson, advisor-reinforced):** injected background errors are a SEPARATE
+  per-read ERROR TRACK (`List[ErrorEvent]`), **NEVER `IndelTruth`** — writing them as IndelTruth
+  re-triggers the scorer's `has_unexplained` zeroing that broke (C)/(D) for pbsim. The track IS PI-#2's
+  per-read hotness label.
+- **Calibration** — coordinate descent against the COMBINED simulated output (NOT three independent MoM
+  solves — the layers cross-contaminate: the burst HMM inflates the dispersion index, so layer-1's Gamma
+  shape converges to ~1.26 not ~tiny, the loop accounting for the burst's dispersion contribution).
+  Converges robustly across seeds to the PLACEHOLDER targets: **disp 9.45–10.24 / gap5x 2.71–2.95 /
+  run≥2 0.40** (targets 9.95 / 2.83 / 0.39). Gap statistic defined on error EVENTS (a k-bp run = one
+  event), so layer-3 runs do NOT contaminate layer-2's sub-5bp-gap count.
+- **The M1 `self_check` is a COMPOSITION/INTERACTION check, NOT realism validation** (avoiding the
+  SESSION-2 overclaim): NULL→Poisson baseline; each layer moves its own statistic; layers compose
+  without one zeroing another; calibration reaches the (just-identified) moments. **Realism is
+  established ONLY by SIRV magnitude calibration + a DISTRIBUTIONAL comparison — both Sherlock-gated.**
+- **Magnitude is UNKNOWN, not "to refine"** — 2.83× is an UPPER BOUND (read-vs-ref conflates RNA-mod +
+  minimap2 pile-up). M1 params are PLACEHOLDER; the SIRV absolute-truth re-fit sets the real magnitude.
+- **PI-#2 MECHANISM probe (M1-safe qualitative half; advisor-gated):** exonic error density vs
+  junction-window error across reads — null r≈−0.02, **over-dispersion-only r=0.955** (global hotness →
+  exonic predicts junction), **burst-only r=0.011** (local; distant regions independent), combined
+  r=0.841. So the reliability covariate has signal BUT is imperfect → **SOFT down-weight / posterior
+  input, NOT a hard filter** (confirms PI refinement (a)). The FDR-LIFT NUMBER is magnitude-sensitive /
+  SIRV-gated and was deliberately NOT computed.
+- **SHERLOCK-gated next steps (auth down this session — do NOT re-open the master):** (a) RE-PROFILE the
+  real BAM with `empirical_cigar_error_profiler --isolation-flank 0` (gate OFF, captures bursts; default
+  is already 0); (b) `error_realism_validate.py measure-bam` on {real, pbsim, pbsim+injector} with
+  `--thin 0.019` → confirm +injector closes the pbsim→real gap; (c) re-fit `calibrate_params` to SIRV
+  absolute-truth targets (the real magnitude); (d) THEN the PI-#2 FDR-lift on stratum (G). Protocol in
+  `error_realism_validate.py` docstring.
+- **GUARDS to bake into the Sherlock validation (advisor, session-5) — the self-checks are internally
+  circular (calibrate to `REAL_TARGETS`, confirm you hit them), so these are the only things that make
+  the validation MEANINGFUL:**
+  1. **RE-DERIVE the targets with THIS module's `measure_error_structure`** — the hardcoded 9.95/3.55/2.83
+     came from the LOST `err_corr.py` (possibly a different statistic definition); first Sherlock action is
+     to re-measure real AND pbsim, and `calibrate_params` to the FRESHLY-measured real target, not the stale
+     constant.
+  2. **LENGTH-CONTROL the comparison** — the dispersion index is ~linear in read length (≈ 1 + rate·L·v), so
+     compare real vs pbsim+injector binned-by-length / at a common window, and calibrate to the real reads'
+     actual length distribution (not the flat 600bp M1 default), else over-dispersion is confounded with
+     length differences between the two sources.
+  3. **Verify the two measurement paths AGREE** before trusting the cross-source comparison: inject into
+     clean reads → align → `measure-bam` should reproduce the injected-truth `measure_error_structure`. (Known
+     discrepancy to check: `events_from_alignment` can place an insertion and a substitution at the SAME ref
+     pos → gap=0, which `inject` never emits (min gap 1) → can inflate the BAM's sub-5 fraction.)
+  4. **Derive the error TYPE split from the empirical table** — `frac_sub/ins/del` (0.55/0.15/0.30) and
+     `base_rate` are PLACEHOLDER; DRS is deletion-dominant, so re-fit them from the real profiler output.
+
 ## EXTERNAL-VALIDITY DATA PLAN — real ONT with ground truth (2026-06-26, researched)
 Simulation validates placement MECHANICS but cannot validate that pbsim's error
 model matches real ONT (the §"Two validity claims" gap). The transfer check needs
