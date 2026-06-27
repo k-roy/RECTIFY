@@ -513,11 +513,121 @@ def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
 
 
 # ---------------------------------------------------------------------------
+# PARALOG stratum (C4) — window/locus-selection accuracy on near-duplicate loci
+# ---------------------------------------------------------------------------
+# Per the design (ALIGNER_MEMBER_DESIGN.md §5/§9 C4, ideation #4): paralog loci
+# (SMN1/SMN2-style near-identical copies) test WINDOW-SELECTION — does a read get
+# placed on its TRUE copy? The headline metric is locus-selection accuracy
+# (`scorer.locus_accuracy`: mapped contig == truth origin contig), with per-read
+# READ-OF-ORIGIN labels so mis-clustering is MEASURED, not assumed.
+#
+# DISCRIMINATING (the incumbent is BELOW ceiling, verified empirically vs
+# minimap2 -ax splice -uf, 2026-06-26): with SPARSE divergence (a few
+# distinguishing SNPs clustered in one "informative window", as real paralogs
+# differ), a read FRAGMENT that EXCLUDES that window is informationally identical
+# to BOTH copies -> minimap2 can only guess (mapping_quality==0) and is right ~by
+# chance. A read that SPANS the window carries origin evidence and maps correctly
+# even at 5-10% noise (the at-ceiling control proving the metric is not trivially
+# failing everything). This is exactly the C4 window-selection slice: a per-read
+# seed-and-chain panel shares the blind spot; pooling/linkage (C4) is the orthogonal
+# member that could recover it (the next-cycle ablation).
+PARALOG_LEN = 600
+PARALOG_NDIFF = 3            # SMN-like: few distinguishing positions
+PARALOG_WIN = (260, 340)    # the informative window (distinguishing SNPs cluster here)
+PARALOG_FRAG = 200          # length of the window-EXCLUDING fragment reads
+
+
+def _mutate_positions(seq: str, positions: List[int], rng: random.Random) -> str:
+    s = list(seq)
+    for p in positions:
+        s[p] = rng.choice([b for b in BASES if b != s[p]])
+    return "".join(s)
+
+
+def _add_noise(seq: str, rate: float, rng: random.Random,
+               protect: Tuple[int, int] = None) -> str:
+    """Add ``rate`` random substitutions; never touch the ``protect`` [s,e) span
+    (used to keep a paralog's distinguishing window intact in the noised read)."""
+    if rate <= 0:
+        return seq
+    s = list(seq)
+    for _ in range(int(round(rate * len(seq)))):
+        p = rng.randrange(len(seq))
+        if protect and protect[0] <= p < protect[1]:
+            continue
+        s[p] = rng.choice([b for b in BASES if b != s[p]])
+    return "".join(s)
+
+
+def gen_paralog_stratum(reps: int, rng: random.Random, locus0: int = 500,
+                        n_families: int = 3, noise: float = 0.05
+                        ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """Build the C4 paralog stratum (see module note above).
+
+    Each family is TWO near-identical contigs (``paraF_A`` / ``paraF_B``) differing
+    only at ``PARALOG_NDIFF`` distinguishing SNPs clustered in ``PARALOG_WIN``. Per
+    family + copy we emit two read kinds with READ-OF-ORIGIN truth:
+
+    * ``span`` — full-length read covering the informative window (origin evidence
+      present; the distinguishing window is protected from noise so it stays
+      informative): minimap2 assigns correctly = the at-ceiling control.
+    * ``frag`` — a ``PARALOG_FRAG``-bp fragment 3' of the window (origin evidence
+      ABSENT; identical to both copies): minimap2 guesses (mapq0) = below ceiling.
+
+    Read kind is encoded in the read_id (``_span_`` / ``_frag_``) so the scorer/
+    smoke can split without a schema change; ``chrom`` is the TRUE origin contig
+    (what ``scorer.locus_accuracy`` checks against).
+    """
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+    li = locus0
+    L, ws, we = PARALOG_LEN, PARALOG_WIN[0], PARALOG_WIN[1]
+    for fam in range(n_families):
+        base = _rand_unique(L, rng)
+        diffpos = sorted(rng.sample(range(ws, we), PARALOG_NDIFF))
+        A = base
+        B = _mutate_positions(base, diffpos, rng)
+        cA, cB = f"para{fam}_A", f"para{fam}_B"
+        refs[cA] = A
+        refs[cB] = B
+        # ONE split per family (region-disjoint: both copies + all their reads sit
+        # in the same partition, so no paralog leaks train<->test).
+        split = _split_for(li)
+        li += 1
+        for origin, oseq in ((cA, A), (cB, B)):
+            for i in range(reps):
+                # SPANNING read — covers the informative window (protect it from
+                # noise so the distinguishing bases remain origin evidence).
+                rid = f"{origin}_span_r{i:03d}"
+                rd = _add_noise(oseq, noise, rng, protect=(ws, we))
+                reads.append((rid, rd))
+                truth.append(ReadTruth(
+                    read_id=rid, true_locus=f"para{fam}", true_transcript=origin,
+                    chrom=origin, strand="+", genome_start=0, genome_end=L,
+                    true_cigar=f"{L}M", stratum="PARALOG", split=split,
+                    coverage=reps))
+                # NON-SPANNING fragment — 3' of the window => excludes ALL
+                # distinguishing SNPs => identical to both copies => ambiguous.
+                rid2 = f"{origin}_frag_r{i:03d}"
+                fstart = rng.randrange(we, L - PARALOG_FRAG)
+                frag = _add_noise(oseq[fstart:fstart + PARALOG_FRAG], noise, rng)
+                reads.append((rid2, frag))
+                truth.append(ReadTruth(
+                    read_id=rid2, true_locus=f"para{fam}", true_transcript=origin,
+                    chrom=origin, strand="+", genome_start=fstart,
+                    genome_end=fstart + PARALOG_FRAG, true_cigar=f"{PARALOG_FRAG}M",
+                    stratum="PARALOG", split=split, coverage=reps))
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # Top-level corpus generator
 # ---------------------------------------------------------------------------
 def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
                     include_junction: bool = True,
-                    include_variant: bool = True) -> Dict[str, str]:
+                    include_variant: bool = True,
+                    include_paralog: bool = True) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     rng = random.Random(seed)
     refs: Dict[str, str] = {}
@@ -546,6 +656,12 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
         refs.update(rv)
         reads += rdv
         truth += tv
+
+    if include_paralog:
+        rp, rdp, tp = gen_paralog_stratum(reps, rng)
+        refs.update(rp)
+        reads += rdp
+        truth += tp
 
     ref_fa = os.path.join(out_dir, "ref.fa")
     reads_fq = os.path.join(out_dir, "reads.fastq")

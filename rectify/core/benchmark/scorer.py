@@ -179,9 +179,21 @@ class AlignerScore:
     reads_scored: int = 0
     reads_placed: int = 0          # present + mapped in this BAM
     reads_missing_contig: int = 0  # mapped to a contig absent from `genome`
+    # C4 window/locus selection: did the read map to its TRUE origin contig?
+    # Only INTERESTING for paralog strata (the genome carries >=2 near-identical
+    # contigs); trivially correct for unique-contig strata. mapq0 = the aligner
+    # flagged the placement ambiguous (the window-excluding-fragment regime).
+    locus_correct: int = 0
+    locus_incorrect: int = 0
+    locus_mapq0: int = 0
     junction: JunctionScore = field(default_factory=JunctionScore)
     indel: IndelScore = field(default_factory=IndelScore)
     cpa_abs_errors: List[int] = field(default_factory=list)
+
+    @property
+    def locus_accuracy(self) -> float:
+        d = self.locus_correct + self.locus_incorrect
+        return self.locus_correct / d if d else 0.0
 
     def summary(self) -> Dict:
         cpa = sorted(self.cpa_abs_errors)
@@ -191,6 +203,10 @@ class AlignerScore:
             "reads_scored": self.reads_scored,
             "reads_placed": self.reads_placed,
             "reads_missing_contig": self.reads_missing_contig,
+            "locus_accuracy": round(self.locus_accuracy, 4),
+            "locus_correct": self.locus_correct,
+            "locus_incorrect": self.locus_incorrect,
+            "locus_mapq0": self.locus_mapq0,
             "junction_recall": round(self.junction.recall, 4),
             "junction_precision": round(self.junction.precision, 4),
             "junction_fdr": round(self.junction.fdr, 4),
@@ -359,6 +375,20 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
                 variant_adjacency_bp: int) -> None:
     cig = read.cigartuples
     rstart = read.reference_start
+
+    # ---- Locus / window selection (C4 paralog metric) --------------------
+    # Did the read map to its TRUE origin contig? For paralog strata the genome
+    # carries >=2 near-identical contigs; a read mapping to the WRONG copy is a
+    # window-selection error (mis-clustering) — the C4-addressable failure. A
+    # window-excluding fragment is informationally identical to both copies, so a
+    # per-read seed-and-chain aligner can only guess (mapping_quality==0); the
+    # benchmark MEASURES that, the C4 ablation tests whether pooling recovers it.
+    if read.reference_name == rt.chrom:
+        score.locus_correct += 1
+    else:
+        score.locus_incorrect += 1
+    if read.mapping_quality == 0:
+        score.locus_mapq0 += 1
 
     # ---- Junctions -------------------------------------------------------
     truth_set = {(j.intron_start, j.intron_end) for j in rt.junctions}

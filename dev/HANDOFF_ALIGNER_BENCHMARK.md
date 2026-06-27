@@ -39,7 +39,8 @@ below ceiling on); the other three are deferred/scaffold with reasons recorded.
   preserved (per-contig). Verified: 60 distinct drivers all fabricate, 60 distinct
   controls give 0 variant-adjacent FP. Caveat recorded: 25bp→D / 40bp→N threshold
   is pinned to minimap2 2.28 `-k 14` — re-probe on a version/flag change.
-- **Smoke GREEN** with assertions (A)(A2)(E)(D)(C)(C')(B)(B2) (`--reps 20`).
+- **PARALOG/C4 also landed this session** — see DONE/OPEN below + SPEC §Triage.
+- **Smoke GREEN** with assertions (A)(A2)(E)(F)(D)(C)(C')(B)(B2) (`--reps 20`).
 - **Remaining strata deferred with reasons** (PARALOG needs a scorer locus-
   concordance metric first; COVERAGE×Q can't discriminate until C3 consumes phred;
   PANEL_FAILURE's real validity is the Tier-2 5-aligner panel) — see
@@ -221,12 +222,16 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
 - **standing-variant/C6: DONE (session 3)** — `gen_variant_stratum`, smoke (E),
   verified discriminating + specific (see session-3 addendum).
-- Remaining strata (paralog/C4, panel-failure/C5, coverage×Q) DEFERRED with
-  recorded reasons (scorer-gap / next-cycle-consumer / Tier-2-only) — see
-  `SIMULATION_BENCHMARK_SPEC.md` §"Triage of the remaining SPEC strata".
-  PARALOG/C4 is the best next one BUT requires a scorer locus-concordance readout
-  FIRST (`true_locus` vs mapped contig) — build that small metric, then the
-  generator.
+- **paralog/C4: DONE (session 3)** — added the scorer locus-concordance readout
+  (`AlignerScore.locus_accuracy`/`locus_correct`/`locus_incorrect`/`locus_mapq0`)
+  FIRST, then `gen_paralog_stratum` + smoke (F). Verified discriminating: spanning
+  reads locus_acc=1.000 (at ceiling), window-excluding fragments 0.500 + 100% mapq0
+  (C4-addressable window-selection gap). See SPEC §Triage PARALOG bullet.
+- Remaining strata (panel-failure/C5, coverage×Q) DEFERRED with recorded reasons
+  (Tier-2-only / next-cycle-consumer) — see `SIMULATION_BENCHMARK_SPEC.md`
+  §"Triage of the remaining SPEC strata". Best next: GENOMIC_A_CPA/C2 (scorer
+  already emits `|est−true CPA|`; needs a walkback comparator arm to fully
+  discriminate) OR the real Tier-2 transcriptome run on Sherlock.
 - No C1/member code built (correctly — that is the next, gated cycle).
 
 ## RESUME

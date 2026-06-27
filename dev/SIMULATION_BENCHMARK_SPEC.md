@@ -198,10 +198,17 @@ went first and the others are deferred/scaffold:** a stratum only counts when th
 incumbent is shown BELOW ceiling via a metric the scorer *already emits*.
 - **VARIANT/C6 — DONE** (above): fully wired (`fp_variant_adjacent`), incumbent
   below ceiling, specificity proven.
-- **PARALOG/C4 — needs a scorer add first.** Its headline metric is locus/window-
-  selection accuracy (`true_locus` vs mapped contig); the scorer scores
-  junctions/indels wherever the read landed and has NO locus-concordance readout.
-  Build that small metric before generating truth, or there is no dial.
+- **PARALOG/C4 — DONE (2026-06-26).** Added the missing scorer readout
+  (`AlignerScore.locus_accuracy` / `locus_correct` / `locus_incorrect` /
+  `locus_mapq0`: mapped contig vs truth-origin `chrom`) FIRST, then
+  `gen_paralog_stratum` + smoke **(F)**. Discriminating construct verified vs
+  minimap2: SMN-like sparse divergence (3 distinguishing SNPs clustered in one
+  informative window); a window-SPANNING read assigns at ceiling (locus_acc=1.000,
+  mapq0=0 — proves the metric isn't trivially failing), a window-EXCLUDING fragment
+  is identical to both copies → minimap2 guesses (locus_acc=0.500, 100% mapq0). The
+  panel correctly ABSTAINS but cannot place fragments — the window-selection slice a
+  pooling/linkage member (C4) could recover (next-cycle ablation). Each contig pair
+  + all its reads sit in ONE split partition (no paralog leaks train↔test).
 - **COVERAGE×Q — cannot be validated this cycle.** Nothing consumes phred (the
   corpus hardcodes `'I'*len(seq)`; the scorer ignores Q). The consumer is C3 (next
   cycle). A Q stratum now is pure scaffold that cannot show discrimination — the
