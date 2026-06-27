@@ -36,6 +36,27 @@ the cell-size MUST-HAVE was audited:
   but the C1 ablation corpus MUST use ≥400.)
 - **Smoke re-verified GREEN** after both fixes (`--reps 20`, all GATE assertions incl.
   the (D) two-arm HP_HARD-noisy DP path that was crashing).
+- **`9f71770` pbsim3 LIVE round-trip — now VERIFIED on Sherlock** (was the top OPEN
+  item). The fresh `pbsim3` conda env built clean (rc=0; `ERRHMM-ONT.model` DRS +
+  `ERRHMM-ONT-HQ.model` cDNA present). The live run exposed **3 real mechanical bugs
+  in `pbsim3_wrapper.py`** that the synthetic-MAF unit test could not — all fixed:
+  - this pbsim3 build emits **gzipped single-file** outputs (`sim.maf.gz`/`sim.fq.gz`),
+    not `<prefix>*.maf`/`*.fastq` → MAF discovery + FASTQ concat found nothing → 0
+    truth. `parse_maf` now gz-aware; `run_pbsim3` matches `.maf(.gz)` and **RAISES**
+    (not silent 0) if none; concat handles `.fq/.fastq(.gz)`.
+  - templ mode emits **ONE read per template RECORD** (`--depth` does NOT multiply
+    count; `--pass-num` does). The new live driver replicates each gene into N
+    records → N reads/gene.
+  - New `scripts/benchmark/sim/live_roundtrip.py` (self-contained ±strand spliced
+    genes → pbsim → minimap2 → scorer). **VERIFIED end-to-end:** pbsim ran, gzipped
+    MAF parsed, **166/180 reads placed, junction recall=0.667 FDR=0.277 on real
+    pbsim reads, 0 missing contigs.**
+  - **Indel exact-concordance is REPORTED but NOT gated** — it is a TIER-1 metric.
+    pbsim's MAF encodes every stochastic error as an indel, so the projected per-read
+    "indel truth" is thousands of scattered edits; minimap2 redistributes them and the
+    scorer's per-read `has_unexplained` gate (built for Tier-1's single known indel)
+    zeroes the read. This is the SPEC's two-tier split working as designed (Tier-2 =
+    junction recall/FDR; Tier-1 = exact-indel), NOT a defect.
 
 ---
 
@@ -127,18 +148,18 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   become the run base (it would silently change the effective run length).
 - Schema lossless TSV round-trip verified (junction normalization, canonicity,
   HP-cell accounting, variant/split round-trip).
-- pbsim3 MAF→genome **projection** verified locally on a synthetic MAF (2bp deletion
-  + 1 intron correctly propagated to genome coords) — no live pbsim needed for this.
+- pbsim3 MAF→genome **projection** verified locally on a synthetic MAF AND now on a
+  **LIVE pbsim3 run on Sherlock** (session 2, `9f71770`) — see the addendum above.
 
 ## OPEN
-- **pbsim3 live run NOT yet executed.** The old `aligner_bench` env only ever got
-  `samtools` (the solve failed). Session 2 relaunched a FRESH minimal env via
-  `conda create -n pbsim3 -c bioconda -c conda-forge pbsim3 badread minimap2 samtools
-  pysam`, backgrounded on Sherlock (login-node `nohup`) with a self-written rc
-  sentinel — **still solving at handoff.** Durable signal:
-  `/home/groups/larsms/users/kevinroy/aligner_bench_sentinels/pbsim3_install_rc`
-  (the rc, written atomically) + `pbsim3_install.log`. The wrapper is code-complete +
-  MAF→genome projection-validated; only the live mechanical round-trip is unverified.
+- **pbsim3 live run: DONE (session 2, `9f71770`).** Fresh `pbsim3` conda env on
+  Sherlock (rc=0). Live round-trip VERIFIED via
+  `scripts/benchmark/sim/live_roundtrip.py` (166/180 reads placed, junction
+  recall=0.667 FDR=0.277, 0 missing contigs); 3 wrapper I/O bugs found + fixed. See
+  the addendum for the full result + the Tier-1-vs-Tier-2 indel-metric caveat.
+  Code is synced to Sherlock at
+  `/home/groups/larsms/users/kevinroy/aligner_bench_live/` (run with the `rectify`
+  env python + `PYTHONPATH` there + pbsim3-env binaries; see RESUME).
 - **Tier-1 cell sizing: RESOLVED (audited session 2).** `--reps 400` clears
   `min_count=100` for every indel cell (HP lengths 2–12, HP_HARD {4,6,8,10,12}, STR)
   and every clean cell incl. L=1 (the FP control). Use `--reps 400` for the C1 corpus.
@@ -164,40 +185,51 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
 - No C1/member code built (correctly — that is the next, gated cycle).
 
 ## RESUME
+Both gating items (pbsim3 live run + Tier-1 cell sizing) are DONE. The gate is
+green, valid, cell-audited, and Tier-2-mechanically verified — a clean stopping
+point. The next increment is the remaining strata + the real Tier-2 run.
+
 0. **Local smoke = regression gate first (≈30s at low reps):**
    `cd <this worktree> && PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH" \
     /Users/kevinroy/miniconda3/envs/pysam/bin/python scripts/benchmark/smoke_roundtrip.py \
     --out /tmp/bench_smoke_chk --reps 20` (exit 0 = green). Full-scale is `--reps 120`
    (slow: ~2+ min — the two-arm DP runs the Python aligner on ~2400 reads).
-1. **Check the backgrounded pbsim3 install (sentinel branch logic):**
-   `ssh sherlock 'D=/home/groups/larsms/users/kevinroy/aligner_bench_sentinels; \
-    if [ -f $D/pbsim3_install_rc ]; then echo RC=$(cat $D/pbsim3_install_rc); \
-    else echo still-solving; fi; tail -3 $D/pbsim3_install.log'`
-   - `RC=0` → env ready: `conda run -n pbsim3 pbsim --version`, then the live round-trip (below).
-   - `RC` non-zero → read the log; re-solve may need `mamba` or dropping `badread` (pin pbsim3 first).
-   - `still-solving` → wait; the login-node nohup can die on disconnect — if the rc never
-     appears and the log is stale, just re-launch the same `conda create` (idempotent).
-2. **Live pbsim3 round-trip** (find the packaged model first):
-   `MODEL=$(ssh sherlock 'find /home/groups/larsms/users/kevinroy/anaconda3/envs/*/ -name "ERRHMM-ONT.model" | head -1')`
-   then drive `scripts/benchmark/sim/pbsim3_wrapper.py:simulate_and_propagate`
-   over a few `TranscriptModel`s, align the reads with minimap2 -ax splice, and
-   run `scorer.score_bam` — confirm junction TP + indel concordance on REAL pbsim
-   reads (the projection-truth path end-to-end). Use the `sherlock-sbatch` skill
-   (owners partition, AVX-512 exclude); do NOT relay BAMs through the M1.
-3. **Scale Tier-1** to `--reps 400` and audit every C1 cell ≥100 before any C1
-   ablation (else the length-law nullifies to flat → FALSE REFUTE).
-4. **Local smoke (regression gate), any time:**
-   `PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH" \
-    /Users/kevinroy/miniconda3/envs/pysam/bin/python \
-    scripts/benchmark/smoke_roundtrip.py --out /tmp/bench_smoke` (exit 0 = green).
-   (Local `pysam` env = pysam+numpy+minimap2+samtools; the rectify env is on Sherlock.)
+1. **Re-confirm the live pbsim3 round-trip (regression, any time):**
+   `ssh sherlock 'D=/home/groups/larsms/users/kevinroy/aligner_bench_live; \
+    CB=/home/groups/larsms/users/kevinroy/anaconda3; P3=$CB/envs/pbsim3; cd $D; \
+    PYTHONPATH=$D $CB/envs/rectify/bin/python scripts/benchmark/sim/live_roundtrip.py \
+    --errhmm-model $P3/data/ERRHMM-ONT.model --pbsim-bin $P3/bin/pbsim \
+    --minimap2 $P3/bin/minimap2 --samtools $P3/bin/samtools --out /tmp/pbsim_live_chk \
+    --seed 7 --copies 60'` → exit 0 = green (junction recall reported; indel concordance
+   is Tier-1-only, see addendum). NOTE: run with the **`rectify`** env python (full deps
+   incl. numpy/pandas for `import rectify`), pbsim/minimap2/samtools from the **`pbsim3`**
+   env. If the worktree code changed, re-`rsync` it first:
+   `rsync -az --exclude data/ --exclude __pycache__/ --exclude '*.pyc' --exclude bin/ \
+    rectify/ sherlock:$D/rectify/` and `rsync -az scripts/benchmark/ sherlock:$D/scripts/benchmark/`
+   (mkdir the remote `$D/scripts` parent first — rsync won't create missing parents).
+2. **NEXT INCREMENT — remaining SPEC strata** (M1-light Tier-1 controlled generators;
+   schema already supports all): paralog/SMN, panel-failure/C5, coverage×Q, and the
+   standing-variant **C6** generator (the one with first-class variant-adjacent junction
+   FDR). Build in `scripts/benchmark/sim/controlled.py` (mirror the HP/STR/JUNCTION
+   generators), add a smoke assertion per stratum, size cells ≥100 at `--reps 400`.
+3. **NEXT INCREMENT — real Tier-2 transcriptome run** (Sherlock, `sherlock-sbatch`
+   skill, owners partition, AVX-512 exclude; do NOT relay BAMs through the M1): drive
+   `live_roundtrip.py`-style propagation over a real transcript panel (yeast saturation
+   control + human SMN1/SMN2 + a NIC/NNC-rich set mirroring A549 chr5) for global
+   junction recall/FDR + panel-failure tail sizing. Build the genome+transcript panel
+   from `TranscriptModel`s off the real GFF; the projection path is verified.
+4. **C1/member code is the NEXT GATED CYCLE — not here.** The arm-LAW vs arm-flat
+   plug-in point is `run_flat_affine_arm` + `scorer.cigar_records_to_bam` (smoke);
+   add `run_lengthlaw_arm` calling `align_exon_block_global(..., penalty_table=...)`
+   once C1 Phase-1 exists.
 
 ## FILES (all NEW, benchmark-only paths — none touch shared hot files)
 - `rectify/core/benchmark/__init__.py`
 - `rectify/core/benchmark/truth_schema.py`   (component 2 — schema)
 - `rectify/core/benchmark/scorer.py`          (component 3 — ambiguity-aware scorer)
 - `scripts/benchmark/sim/transcript_model.py` (component 1 — truth backbone)
-- `scripts/benchmark/sim/pbsim3_wrapper.py`   (component 1 — Tier-2 pbsim3 wrapper)
+- `scripts/benchmark/sim/pbsim3_wrapper.py`   (component 1 — Tier-2 pbsim3 wrapper; gz/fq-robust)
+- `scripts/benchmark/sim/live_roundtrip.py`   (Tier-2 LIVE mechanical-integration check — session 2)
 - `scripts/benchmark/sim/controlled.py`       (component 1 — Tier-1 generators)
 - `scripts/benchmark/smoke_roundtrip.py`      (end-to-end GATE smoke)
 - `dev/SIMULATION_BENCHMARK_SPEC.md`          (UPDATED: simulator decision recorded)
