@@ -316,6 +316,40 @@ any BAM vs a truth table), so spike-in reads drop in via the vendor GTF + the
 4. R2C2 (Vollmers; PRJNA971991 etc.) / UMI cDNA (Sicelore GSE130708): biased-but-real,
    junction/indel only, NEVER for HP or native-CPA. Supplementary.
 
+### LRGASP acquisition plan (URL-verified 2026-06-27) — the turnkey THREE-WAY
+LRGASP uniquely enables a same-sample, same-scorer triangulation: **our pbsim3 vs
+LRGASP's NanoSim sim vs real SIRV reads** → two simulators bracketing reality (if
+BOTH under-cluster vs real SIRV = a shared simulator blind spot to inject around).
+**Role split:** LRGASP is **RNA002-era** (date-inferred 2021) → it answers the
+error-MODEL / sim-realism question; **LongBench is the RNA004** source for the
+current-chemistry transfer question. Use both for their distinct roles.
+
+All open/no-auth (Synapse syn IDs are gated; UCSC CGL mirrors are not). Human WTC11:
+- **Sim ONT (one COMBINED file — DRS+cDNA NOT split on the public mirror):**
+  `https://cgl.gi.ucsc.edu/data/LRGASP/data/simulation/human_simulation/human.ONT.simulated.fq.gz`
+  (~30.3 GiB). Truth join: `.../ground_truth/ONT.simulated.read_to_isoform.tsv.gz`
+  (211 MB; **no header, 2 cols `read_id<TAB>transcript_id`**; read_id=`ONT_simulated_read_N`;
+  transcript_id = versioned Ensembl, human ENST + **mouse ENSMUST decoys interleaved**
+  = their built-in novel-discovery test). Annotation: `.../ground_truth/hs_GENCODE38.basic_annotation.gtf.gz`
+  (28 MB, **exon-feature GTF**) + `...counts.tsv.gz` + `...novel_isoforms.tsv.gz`.
+  CPA truth = annotated 3' terminus (polyA appended pre-sim).
+- **Real ONT + SIRV (WTC11), ENCODE @@download, no auth:** DRS = **ENCSR392BGY**
+  (3 reps ~3.8 GiB: ENCFF155CFF/ENCFF600LIU/ENCFF771DIX); cDNA = **ENCSR539ZXJ**
+  (3 reps ~46 GiB; 1 rep ~9.5 GiB pilot). URL form
+  `https://www.encodeproject.org/files/<ACC>/@@download/<ACC>.fastq.gz`.
+- **SIRV-Set 4 reference (ABSOLUTE truth), open CGL mirror:**
+  `.../references/lrgasp_sirv4.fasta.gz` (132 KB) + `.../references/lrgasp_sirvs4.gtf.gz`
+  (4.6 KB; **176 transcripts, exon features**; multi-exon SIRV1–7 + monoexonic
+  long-SIRVs + ~92 ERCCs). Combined genome+SIRV for aligning real reads:
+  `.../references/lrgasp_grch38_sirvs.fasta.gz` (886 MB) + `lrgasp_gencode_v38_sirvs.gtf.gz` (50 MB).
+- **Staging:** minimal pilot ~42 GiB, full ~81 GiB. Cluster only, never the M1.
+- **Shared build dep:** both LRGASP-sim (GENCODE) and SIRV truth are **exon-feature
+  GTF** → need the exon-GTF loader variant of `gff_panel` (same one SIRV needs). The
+  `read_to_isoform` join + GTF → per-read junctions/CPA is the sim-truth path.
+- Caveats: RNA002 (not RNA004; date-inferred, "RNA002" not in metadata); sim is one
+  combined FASTQ (per-chemistry split would need re-running lrgasp-simulation); DRS
+  reads carry uracils + nonstandard ONT names (benign ENCODE flags).
+
 **Recommended first transfer experiment:** align LongBench RNA004 DRS (+cDNA) spike-in
 reads to the SIRV/Sequin reference → score junction recall/FDR with our scorer →
 compare to the pbsim3 Tier-2 numbers (DRS 0.816 / cDNA 0.843). A large gap = the
