@@ -280,6 +280,49 @@ novel-junction NIC/NNC recall (needs isoform injection: exon-skip→NIC, novel-s
 NNC). Aligner inventory for Branch B (rectify env): minimap2+uLTRA+deSALT+gapmm2
 present, gmap in other envs, mapPacBio absent.
 
+## EXTERNAL-VALIDITY DATA PLAN — real ONT with ground truth (2026-06-26, researched)
+Simulation validates placement MECHANICS but cannot validate that pbsim's error
+model matches real ONT (the §"Two validity claims" gap). The transfer check needs
+REAL ONT reads with independent truth. Our scorer is read-source-agnostic (scores
+any BAM vs a truth table), so spike-in reads drop in via the vendor GTF + the
+`gff_panel` loader. The decisive distinction:
+- **ABSOLUTE truth** = synthetic spike-ins (Lexogen SIRV-Set, Garvan Sequins, ERCC):
+  exact junctions/3′/indels by construction, IMMUNE to ONT systematic error — the
+  ONLY truth that can validate the homopolymer/CPA-sensitive parts (where C1/C2 live).
+- **BIASED-but-real truth** = per-molecule consensus (UMI / R2C2): removes RANDOM but
+  NOT SYSTEMATIC error — the methods' own authors confirm consensus still undercalls
+  long homopolymers (>10nt) and KIV-2 HP errors survive in >50% of UMI consensuses.
+  So NEVER use consensus truth to validate HP-indel correction; it is wrong in the
+  SAME direction as the reads. Use only for non-HP junction/indel tolerance.
+- Only **native DRS** gives real poly-A 3′ ends; all cDNA/R2C2/UMI 3′ ends are
+  oligo-dT/template-switch confounded (not native-CPA truth). DRS-UMI: none public.
+
+**Ranked datasets (bring in this order):**
+1. **LongBench** (WEHI/Ritchie 2025) — START HERE. ONT DRS on **RNA004** (current
+   chemistry) + cDNA + matched Illumina, 8 cell lines, **SIRV-Set 4 + Sequins**
+   spike-ins = absolute truth on the chemistry the simulator must match. AWS Open
+   Data `s3://longbench-data/` (ap-southeast-2, --no-sign-request); bioRxiv
+   2025.09.11.675724; GitHub mritchielab/LongBench.io. NOTE: spike-in reference
+   FASTA/GTF NOT in bucket (get Lexogen SIRVsuite + Garvan sequinstandards.com);
+   S3-only (no GEO/ENA); mind Dorado RNA v5.2.0 3′-coverage deficit (fixed v5.3.0).
+2. **SG-NEx** — broadest spike-in corpus, RNA002 DRS + cDNA, ships a ready-made
+   combined GRCh38+Sequin+SIRV+ERCC GTF (easiest to encode at scale). `s3://sg-nex-data/`;
+   ENA PRJEB44348. Caveat: DRS is RNA002 (tests mechanics on real reads, not RNA004
+   transfer); the one RNA004 sample has no spike-in.
+3. **LRGASP** — uniquely ships BOTH a simulated ONT track (read-origin truth) AND real
+   SIRV reads on the SAME samples → turnkey simulation-vs-real comparison (their sim
+   is NanoSim, informative vs our pbsim3). ENCODE internal_tags=LRGASP; SIRV-Set 4 on
+   Synapse syn25683367/syn25683630. Caveat: DRS kit version not confirmed RNA002.
+4. R2C2 (Vollmers; PRJNA971991 etc.) / UMI cDNA (Sicelore GSE130708): biased-but-real,
+   junction/indel only, NEVER for HP or native-CPA. Supplementary.
+
+**Recommended first transfer experiment:** align LongBench RNA004 DRS (+cDNA) spike-in
+reads to the SIRV/Sequin reference → score junction recall/FDR with our scorer →
+compare to the pbsim3 Tier-2 numbers (DRS 0.816 / cDNA 0.843). A large gap = the
+simulator's error model doesn't transfer (re-tune or caveat); a small gap = the
+simulation gate's junction conclusions hold on real data. Heavy → run on the cluster,
+never relay reads through the M1.
+
 ## Open decisions (carry to user / fold crafter `benchmark_coupling`)
 - ~~NanoSim vs badread for Tier-2~~ → **RESOLVED: pbsim3** (per-read MAF; see above).
 - Whether Tier-1's error model is badread's ONT model or RECTIFY's own empirical table (held-out either way).
