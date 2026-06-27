@@ -280,6 +280,35 @@ novel-junction NIC/NNC recall (needs isoform injection: exon-skip→NIC, novel-s
 NNC). Aligner inventory for Branch B (rectify env): minimap2+uLTRA+deSALT+gapmm2
 present, gmap in other envs, mapPacBio absent.
 
+## ERROR-REALISM — in-silico injector VERDICT (measured 2026-06-27)
+The empirical table gives MARGINAL error rates only, and its `--isolation-flank 10` recipe
+EXCLUDES clustered/bursty errors by construction (counts only errors with ≥10 exact matches
+both sides — confirmed in `empirical_cigar_error_profiler.py`). Measured the error CORRELATION
+structure of pbsim3 vs a real haploid-yeast (BY4742) DRS BAM (29,796 reads;
+`/scratch/users/kevinroy/rectify_wt_by4742_rep1_*/...minimap2.namesorted.bam`), pbsim
+Bernoulli-thinned to the real 1.9% marginal rate (raw ERRHMM-ONT is ~7× too hot — old-R9 vs
+modern dorado — so only SHAPE is comparable). **Verdict: pbsim3 is MORE iid/uniform than real
+on every axis → an injector at the marginal rate alone is unrealistic where it matters.** Three
+data-grounded layers the in-silico injector needs (direction unambiguous):
+1. **Per-read OVER-DISPERSION** (hot-read mixture) — real length-adj dispersion index 9.95 vs
+   rate-matched pbsim 3.55 (~2.8× under); real per-read-rate tail heavier (p90/median 1.98 vs 1.59).
+2. **Within-read BURST/clustering** — real 2.83× excess sub-5bp gaps over its own geometric null
+   vs pbsim ~1.2× (cleanest gap; not a rate-ceiling artifact).
+3. **Longer multi-base INDEL runs** — pbsim-DRS 19% indels ≥2bp vs real 39% (pbsim-cDNA/ONT-HQ
+   happens to match at 39%).
+**Magnitude must be calibrated against ABSOLUTE truth, not read-vs-reference:** real-yeast 2.83×
+is an UPPER BOUND — read-vs-reference conflates true error with RNA-modification basecall errors
+(genuine DRS, motif-clustered) AND minimap2 pile-up near indels/junctions (an ALIGNMENT artifact
+a PRE-alignment injector must NOT reproduce). Clean target = SIRV/LRGASP absolute truth
+(read-vs-known-sequence removes the alignment-artifact confound). So: measurement = direction;
+SIRV = magnitude; the LRGASP three-way also tests whether NanoSim shares the same blind spot.
+**Design (deferred to the injector-build cycle):** add a per-read rate multiplier (over-dispersed
+mixture) + a self-exciting/Markov burst process + a longer indel-run length model, on top of the
+marginal table; calibrate the three parameters against SIRV absolute-truth error structure; keep
+HP-only marginal as the backward-compat default. Caveats: shape-only (chemistry mismatch); thinning
+makes matched-pbsim clustering a conservative (low) estimate; full analysis `/tmp/err_corr.py` +
+`/scratch/users/kevinroy/err_corr_work/` on Sherlock.
+
 ## EXTERNAL-VALIDITY DATA PLAN — real ONT with ground truth (2026-06-26, researched)
 Simulation validates placement MECHANICS but cannot validate that pbsim's error
 model matches real ONT (the §"Two validity claims" gap). The transfer check needs
