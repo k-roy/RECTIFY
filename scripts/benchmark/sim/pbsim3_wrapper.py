@@ -43,6 +43,12 @@ from rectify.core.benchmark.truth_schema import (  # noqa: E402
 )
 from scripts.benchmark.sim.transcript_model import TranscriptModel, revcomp  # noqa: E402
 
+# Minimum flanking-exon anchor (bp) for a read to count as able to place a
+# junction — matches the 10bp anchored-junction gate used in junction_scoring.
+# A junction with less flank at the read edge is not recall-able and must not be
+# scored as a truth FN (else the saturation-control recall is understated).
+MIN_JUNCTION_ANCHOR = 10
+
 
 # ---------------------------------------------------------------------------
 # MAF parsing
@@ -121,8 +127,13 @@ def project_maf_record(rec: MafRecord, model: TranscriptModel,
     # genome coords; junctions come from the model (the read spans whole introns).
     del_run = 0
     del_tstart: Optional[int] = None
+    first_t: Optional[int] = None   # first/last MATCHED template offset the read covers
+    last_t: Optional[int] = None
     for rc, qc in zip(ref_aln, read_aln):
         if rc != "-" and qc != "-":
+            if first_t is None:
+                first_t = tpos
+            last_t = tpos
             if del_run:
                 gpos = model.transcript_pos_to_genome(del_tstart)
                 rs, re, base = homopolymer_run(model.genome_seq, gpos)
@@ -158,14 +169,43 @@ def project_maf_record(rec: MafRecord, model: TranscriptModel,
             context=ctx, run_unit=base if ctx == "HP" else "",
             run_copies=(re - rs) if ctx == "HP" else 0))
 
-    junctions = model.junction_truths(annotated_pairs, annotated_donors,
-                                      annotated_acceptors)
+    if first_t is None:
+        return None  # read had no matched bases (degenerate alignment)
+
+    # The read covers transcript offsets [first_t, last_t] (contiguous exon bases;
+    # introns are spliced out of the template). Map the extremes to genome coords:
+    # for '-' strand transcript_pos_to_genome reverses order, so take min/max.
+    g_a = model.transcript_pos_to_genome(first_t)
+    g_b = model.transcript_pos_to_genome(last_t)
+    cov_lo, cov_hi = (g_a, g_b) if g_a <= g_b else (g_b, g_a)
+
+    # CRITICAL (Tier-2 truth correctness): emit ONLY the junctions the READ
+    # actually spans WITH ENOUGH FLANKING EXON to be anchorable, NOT every intron
+    # of the transcript. A pbsim read is often a fragment; assigning it an intron
+    # it never crosses (or barely clips at a read edge) manufactures a FALSE FN and
+    # silently deflates recall (verified: ~2/3 of yeast FN were introns outside the
+    # read's aligned span). A read can anchor intron [s, e) iff it covers
+    # >= MIN_JUNCTION_ANCHOR exon bp on BOTH flanks: cov_lo <= s - anchor (exon
+    # before) AND cov_hi >= e + anchor - 1 (exon at/after). This matches the 10bp
+    # anchored-junction gate used elsewhere (junction_scoring), so the recall
+    # number reflects junctions a splice aligner can actually be expected to place.
+    a = MIN_JUNCTION_ANCHOR
+    all_j = model.junction_truths(annotated_pairs, annotated_donors,
+                                  annotated_acceptors)
+    junctions = [j for j in all_j
+                 if cov_lo <= j.intron_start - a and cov_hi >= j.intron_end + a - 1]
+
+    # CPA is truth only if the read actually reaches the transcript 3' end.
+    if model.strand == "+":
+        true_cpa = (model.genome_end - 1) if cov_hi >= model.genome_end - 1 else None
+    else:
+        true_cpa = model.genome_start if cov_lo <= model.genome_start else None
+
     return ReadTruth(
         read_id=rec.read_name, true_locus=model.name, true_transcript=model.name,
         chrom=model.chrom, strand=model.strand,
-        genome_start=model.genome_start, genome_end=model.genome_end,
-        junctions=junctions, indels=indels,
-        true_cpa=(model.genome_end - 1) if model.strand == "+" else model.genome_start,
+        genome_start=cov_lo, genome_end=cov_hi + 1,
+        junctions=junctions, indels=indels, true_cpa=true_cpa,
         stratum=stratum, split=SplitTag.TEST, coverage=None)
 
 
