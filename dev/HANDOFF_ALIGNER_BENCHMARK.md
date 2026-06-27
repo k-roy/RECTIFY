@@ -3,7 +3,45 @@
 **Agent:** dedicated benchmark-builder (isolated worktree, branch
 `worktree-agent-a25a2c1e784ad37dc`, based on `drs-validation-rebuild` so the reuse
 primitives + design docs are present). **NEVER commit to `drs-validation-rebuild`.**
-**Updated:** 2026-06-26 (session 3).
+**Updated:** 2026-06-27 (session 4).
+
+---
+
+## SESSION-4 (2026-06-27) — chosen next: real-data transfer check (LongBench); BLOCKED on Sherlock re-auth
+
+User chose to run the real-ONT external-validity transfer check (does the pbsim3
+Tier-2 junction recall/FDR transfer to real reads?). Started recon; then Sherlock's
+ControlMaster died (daily Kerberos/2FA lapse at the date boundary) — **needs Kevin
+to re-auth** (`ssh sherlock true`); do NOT re-open the master yourself.
+
+**Recon DONE (from M1 via public-S3 HTTP listing — no aws cli on M1):**
+- LongBench bucket `s3://longbench-data/` (ap-southeast-2, --no-sign-request).
+  Reads in `raw/fastq/`: per cell line (H146,H1975,H211,H2228,H526,H69,HCC827,SHP77)
+  `{S}_dRNA_ONT.fastq.gz` = **RNA004 DRS** (~12–28 GB ea), `{S}_bulk_ONT.fastq.gz` =
+  cDNA (~25 GB), plus PacBio/Illumina. A `fastqs_topup/` dir has more dRNA.
+- ⚠ **OPEN/UNVERIFIED:** the bucket README does NOT mention SIRV/Sequin spike-ins and
+  no reference/annotation/SIRV/sequin keys exist in the bucket. MUST verify spike-ins
+  are actually present in these reads BEFORE downloading 16+GB (align a small sample
+  to a SIRV/Sequin reference and check for mapped reads). The SIRV-Set 4 + Sequin
+  reference (FASTA+GTF) must come from Lexogen (SIRVsuite / lexogen.com) + Garvan
+  (sequinstandards.com), or LRGASP Synapse syn25683367/syn25683630.
+
+**RESUME (real-data transfer check):**
+1. Confirm Sherlock is back: `ssh sherlock true` (Kevin re-auths if it 2FA-prompts).
+2. Build the SIRV/Sequin loader FIRST (M1-local, no cluster): extend `gff_panel.py`
+   with an exon-feature GTF loader (`build_panel_from_gtf`: group exon features by
+   transcript_id, sort, derive introns) — SIRV/Sequin are standard exon-GTF, unlike
+   the yeast mRNA+intron GFF. Test on a synthetic exon-GTF.
+3. On Sherlock (NOT M1 for the reads): fetch the SIRV-Set 4 + Sequin reference;
+   `aws s3 cp --no-sign-request s3://longbench-data/raw/fastq/H146_dRNA_ONT.fastq.gz`
+   (+ a cDNA `H146_bulk_ONT.fastq.gz`) to scratch; align to the SIRV/Sequin reference
+   with minimap2 -ax splice (endogenous human reads won't map → mapped = spike-in
+   subset); build truth via the GTF loader; `score_bam` → junction recall/FDR.
+4. COMPARE to pbsim3 Tier-2 (DRS 0.816 / cDNA 0.843). Small gap = sim transfers;
+   large gap = error model needs re-tuning/caveat. Use `sherlock-sbatch`; heavy →
+   cluster only, never relay reads through M1.
+Full dataset plan + ranked alternatives (SG-NEx, LRGASP): `SIMULATION_BENCHMARK_SPEC.md`
+§"EXTERNAL-VALIDITY DATA PLAN". Nothing is mid-flight (no running job); marker cleared.
 
 ---
 
