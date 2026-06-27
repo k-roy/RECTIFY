@@ -2208,10 +2208,25 @@ def render(
         # cover. Probe for the read and fall through to the restored BAM
         # on a per-read basis so we never drop the unrectified row when
         # any source has the read.
-        if dorado.exists() and fetch_read(dorado, qname) is not None:
+        # The dorado-source archive stores SOME reads (the build-X re-sourced
+        # cat1/cat2/cat9 set) with a placeholder single all-M CIGAR rather than
+        # a real per-base alignment. Painting that per-base frameshifts on the
+        # read's true indels into a spurious ~all-mismatch (pink) row — the read
+        # is actually well-mapped. So prefer the dorado source ONLY when it
+        # carries a real (gapped/eqx) CIGAR; otherwise fall through to the
+        # minimap2_unrectified BAM, which has a genuine =/X alignment.
+        def _is_real_alignment(rd) -> bool:
+            ct = rd.cigartuples or []
+            return bool(ct) and not (len(ct) == 1 and ct[0][0] == 0)
+
+        _dorado_read = fetch_read(dorado, qname) if dorado.exists() else None
+        _restored_ok = restored.exists() and fetch_read(restored, qname) is not None
+        if _dorado_read is not None and _is_real_alignment(_dorado_read):
             unrect_bam = dorado
-        elif restored.exists() and fetch_read(restored, qname) is not None:
+        elif _restored_ok:
             unrect_bam = restored
+        elif _dorado_read is not None:
+            unrect_bam = dorado  # last resort — no real-CIGAR source available
         if unrect_bam is not None:
             track_sources.append(("minimap2 (unrectified)", unrect_bam))
             unrect_read = fetch_read(unrect_bam, qname)
