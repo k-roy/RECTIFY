@@ -97,7 +97,9 @@ def parse_maf(path: str) -> List[MafRecord]:
 # Projection: read<->transcript MAF  o  transcript<->genome  ->  ReadTruth
 # ---------------------------------------------------------------------------
 def project_maf_record(rec: MafRecord, model: TranscriptModel,
-                       stratum: str = "TRANSCRIPTOME") -> Optional[ReadTruth]:
+                       stratum: str = "TRANSCRIPTOME",
+                       annotated_pairs=None, annotated_donors=None,
+                       annotated_acceptors=None) -> Optional[ReadTruth]:
     """Compose a MAF read<->transcript alignment with the transcript<->genome map
     to an exact read<->genome ``ReadTruth``. Indels in the MAF (gaps) become
     ``IndelTruth`` at their genome positions; introns spanned by the read become
@@ -156,7 +158,8 @@ def project_maf_record(rec: MafRecord, model: TranscriptModel,
             context=ctx, run_unit=base if ctx == "HP" else "",
             run_copies=(re - rs) if ctx == "HP" else 0))
 
-    junctions = model.junction_truths()
+    junctions = model.junction_truths(annotated_pairs, annotated_donors,
+                                      annotated_acceptors)
     return ReadTruth(
         read_id=rec.read_name, true_locus=model.name, true_transcript=model.name,
         chrom=model.chrom, strand=model.strand,
@@ -208,10 +211,16 @@ def run_pbsim3(transcript_fa: str, out_prefix: str, errhmm_model: str,
 
 def simulate_and_propagate(models: List[TranscriptModel], out_dir: str,
                            errhmm_model: str, depth: int = 20,
-                           pbsim_bin: str = "pbsim", seed: Optional[int] = None
+                           pbsim_bin: str = "pbsim", seed: Optional[int] = None,
+                           annotated_pairs=None, annotated_donors=None,
+                           annotated_acceptors=None, stratum: str = "TRANSCRIPTOME"
                            ) -> Dict[str, str]:
     """End-to-end: write transcript FASTA -> pbsim3 -> parse MAFs -> propagate
-    truth -> write ``truth.tsv`` and concatenated reads FASTQ. Returns paths."""
+    truth -> write ``truth.tsv`` and concatenated reads FASTQ. Returns paths.
+
+    Pass ``annotated_*`` sets (from ``gff_panel.annotated_sets``) to classify each
+    read's junctions ANNOTATED/NIC/NNC; omit them and every junction is NNC (the
+    synthetic-gene default used by ``live_roundtrip``)."""
     os.makedirs(out_dir, exist_ok=True)
     tfa = os.path.join(out_dir, "transcripts.fa")
     write_transcript_fasta(models, tfa)
@@ -225,7 +234,10 @@ def simulate_and_propagate(models: List[TranscriptModel], out_dir: str,
             model = by_name.get(rec.ref_name)
             if model is None:
                 continue
-            rt = project_maf_record(rec, model)
+            rt = project_maf_record(rec, model, stratum=stratum,
+                                    annotated_pairs=annotated_pairs,
+                                    annotated_donors=annotated_donors,
+                                    annotated_acceptors=annotated_acceptors)
             if rt is not None:
                 truth.append(rt)
     truth_tsv = os.path.join(out_dir, "truth.tsv")
