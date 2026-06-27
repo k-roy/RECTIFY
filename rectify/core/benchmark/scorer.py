@@ -91,10 +91,11 @@ def net_indel_in_span(ref_start: int, cigartuples,
             out_span += (ln - overlap)
             pos += ln
         elif op == 1:                  # I consumes query, ref pos fixed
-            # consistent with has_unexplained's half-open [s, e) test; an
-            # insertion strata that wants boundary-equivalence should widen
-            # eq_end by 1 rather than rely on an inclusive bound here.
-            if span_start <= pos < span_end:
+            # An insertion into a run of length L has L+1 equivalent insertion
+            # points (before each base AND after the last), so the RIGHT bound is
+            # INCLUSIVE for insertions (unlike a deletion, whose ref positions span
+            # the half-open [s,e)). Must match has_unexplained's kind-aware test.
+            if span_start <= pos <= span_end:
                 in_span -= ln
             else:
                 out_span += ln
@@ -414,7 +415,10 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
                 canon = False
             score.junction.by_canon["canonical" if canon else "noncanonical"]["fp"] += 1
             score.junction.by_class["FP_NOVEL"]["fp"] += 1
-            if var_pos and min(abs(ns - vp) for vp in var_pos) <= variant_adjacency_bp:
+            # variant-adjacent if NEAR EITHER boundary (donor ns OR acceptor ne) —
+            # a variant at the acceptor end fabricates junctions too.
+            if var_pos and min(min(abs(ns - vp), abs(ne - vp))
+                               for vp in var_pos) <= variant_adjacency_bp:
                 score.junction.fp_variant_adjacent += 1
     for (ts, te) in truth_set - matched_truth:
         j = truth_by_coord[(ts, te)]
@@ -433,7 +437,13 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
     truth_spans: List[Tuple[int, int]] = [(ind.eq_start, ind.eq_end) for ind in rt.indels]
     has_unexplained = False
     for (ipos, ilen, ikind) in all_indel_positions(rstart, cig):
-        if not any(s <= ipos < e for (s, e) in truth_spans):
+        # insertion (kind 1): right bound INCLUSIVE (L+1 equivalent points);
+        # deletion (kind 2): half-open [s,e). Mirrors net_indel_in_span.
+        if ikind == 1:
+            covered = any(s <= ipos <= e for (s, e) in truth_spans)
+        else:
+            covered = any(s <= ipos < e for (s, e) in truth_spans)
+        if not covered:
             has_unexplained = True
             break
     is_clean_read = True

@@ -106,7 +106,7 @@ def gen_hp_stratum(reps: int, rng: random.Random, locus0: int = 0
                 truth.append(ReadTruth(
                     read_id=rid, true_locus=chrom, true_transcript=chrom,
                     chrom=chrom, strand="+", genome_start=0, genome_end=len(ref),
-                    true_cigar=f"{len(ref) - k}M" if k == 0 else f"{run_start}M{k}D{len(ref) - run_start}M",
+                    true_cigar=f"{len(ref) - k}M" if k == 0 else f"{run_start}M{k}D{len(ref) - run_start - k}M",
                     indels=indels, stratum="HP", split=split, coverage=reps,
                 ))
     return refs, reads, truth
@@ -457,9 +457,14 @@ def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
             split = _split_for(li)
             li += 1
             reads.append((chrom, read_seq))
-            # truth: a unique-context deletion variant; NO junction.
-            indel = make_unique_indel(var_pos, dlen, IndelKind.DEL)
-            indel.context = "VARIANT"
+            # truth: a deletion variant; NO junction. The block is GT..AG-flanked,
+            # so its edges CAN coincide with the random flanks -> the deletion may
+            # slide +-1bp. Use the base-equality slide (NOT a hard [pos,pos+len))
+            # so a correct left-aligned placement is credited (same ambiguity-aware
+            # rule as HP/STR; a hard span charged ~40% of these as false errors).
+            es, ee = deletion_ambiguity_span(ref, var_pos, dlen)
+            indel = IndelTruth(pos=es, length=dlen, kind=IndelKind.DEL,
+                               eq_start=es, eq_end=ee, context="VARIANT")
             var = VariantTruth(
                 pos=var_pos, ref_allele=block, alt_allele="",
                 zygosity=zyg, vaf=vaf, dist_to_junction=None)
