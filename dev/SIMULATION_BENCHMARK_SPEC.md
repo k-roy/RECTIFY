@@ -245,14 +245,28 @@ Scope: ANNOTATED-recall + spurious-FDR of ONE aligner (the labels travel in each
 | DRS (ERRHMM-ONT)     | 9810/10000 (98.1%) | 0.816 | 0.051 | 8418/451/1902 |
 | cDNA (ERRHMM-ONT-HQ) | 9976/10000 (99.8%) | 0.843 | 0.077 | 8698/724/1622 |
 
-Reading: this is the SATURATION CONTROL (harness validated end-to-end on real
-annotation + real coords), NOT discrimination. Recall ~0.82–0.84 is REAL minimap2
-behavior on yeast — short yeast introns are genuinely hard (minimap2 calls some as
-deletions, not splices); not a harness artifact (verified: 0 truth junctions lie
-outside their read's covered+anchored span after the projection fix). cDNA (lower
-error) places more reads + higher recall but ALSO higher spurious-FDR. A projection
-bug (every transcript intron assigned to every fragment read) was found+fixed during
-real-coord verification BEFORE this run — see the pbsim3_wrapper commit.
+**ERROR-FREE saturation baseline (the actual saturation control — run locally on
+M1, 250 spliced transcripts, no pbsim, perfect reads): recall=0.985, FDR=0.008**
+(TP=255 FP=2 FN=4; the 4 FN are edge soft-clips/1 in-span, NOT coordinate errors).
+This is the load-bearing validation: it ISOLATES harness correctness from
+minimap2-under-noise. Two things it proves:
+1. **The harness/loader is correct** — perfect reads of annotation-derived
+   transcripts round-trip to ~ceiling recall with near-zero FDR, so the GFF
+   1-based→0-based conversion, projection, and ANNOTATED classification are sound
+   (a coordinate off-by-one would crater error-free recall with FN+FP pairs; it did
+   not). Combined with the projection fix (0 truth junctions outside a read's
+   covered+anchored span), the saturation control PASSES.
+2. **The drop to ~0.82–0.84 under simulated error is NOISE-DRIVEN, not artifact and
+   not an intrinsic short-intron effect** — if minimap2 intrinsically called these
+   short yeast introns as deletions, the ERROR-FREE reads would show it too; they
+   do not (0.985). So DRS/cDNA error degrades junction placement, which is the real,
+   reportable Tier-2 finding. (Earlier wording claimed a specific "short-intron→
+   deletion" mechanism — REFUTED by the error-free baseline; corrected here.)
+
+cDNA (lower error) places more reads + higher recall but ALSO higher spurious-FDR.
+A projection bug (every transcript intron assigned to every fragment read) was
+found+fixed during real-coord verification BEFORE this run — see the pbsim3_wrapper
+commit. The error-free check is `dev/bench/`-style and rerunnable on the M1.
 
 Infra note: the run landed on `sh03-07n10` (an AVX-512-trap node) DESPITE
 `--exclude`; the rectify conda env did NOT SIGILL there (the AVX-512 trap is
