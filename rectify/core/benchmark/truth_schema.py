@@ -53,6 +53,28 @@ from ..consensus.chimeric_consensus import (
 
 SCHEMA_VERSION = "1.0"
 
+_RC = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+
+def _revcomp(s: str) -> str:
+    return s.translate(_RC)[::-1]
+
+
+def _canonical_strand_aware(start: int, end: int, genome_seq: str,
+                            l_amb: int, r_amb: int, strand: str) -> bool:
+    """Strand-aware canonicity. ``_canonical_within_window`` checks the GENOME
+    strand only (GT/GC..AG), so a '-' strand intron — whose genome motif is the
+    reverse complement (CT..AC) — is WRONGLY labelled non-canonical, corrupting
+    the separate canonical/non-canonical FDR tracks (§8) for every minus-strand
+    junction. For '-' strand, evaluate the motif on the reverse complement: an
+    intron [start,end) on the genome maps to [n-end, n-start) on revcomp(seq), and
+    the slide window flips (l_amb<->r_amb)."""
+    if strand != "-":
+        return _canonical_within_window(start, end, genome_seq, l_amb, r_amb)
+    n = len(genome_seq)
+    rc = _revcomp(genome_seq)
+    return _canonical_within_window(n - end, n - start, rc, r_amb, l_amb)
+
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -122,7 +144,7 @@ class JunctionTruth:
         ambiguity-aware primitives."""
         ns, ne = normalize_junction(intron_start, intron_end, genome_seq)
         l_amb, r_amb = junction_ambiguity_window(ns, ne, genome_seq)
-        canonical = _canonical_within_window(ns, ne, genome_seq, l_amb, r_amb)
+        canonical = _canonical_strand_aware(ns, ne, genome_seq, l_amb, r_amb, strand)
         if not motif:
             donor = genome_seq[ns:ns + 2].upper() if ns + 2 <= len(genome_seq) else ""
             acceptor = genome_seq[ne - 2:ne].upper() if ne - 2 >= 0 else ""

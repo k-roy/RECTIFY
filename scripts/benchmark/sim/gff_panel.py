@@ -158,6 +158,75 @@ def build_panel(gff_path: str, genome: Dict[str, str],
     return models, pairs, donors, acceptors
 
 
+def inject_novel_isoforms(mrnas, introns_by_mrna, genome,
+                          pairs, donors, acceptors,
+                          max_nic: Optional[int] = None,
+                          max_nnc: Optional[int] = None,
+                          nnc_scan: int = 80, seed: int = 7
+                          ) -> List[Tuple[TranscriptModel, str]]:
+    """Build NOVEL-isoform models to measure novel-junction RECALL/FDR (BRANCH B).
+
+    Branch A reads annotated transcripts -> ANNOTATED junctions only. To measure
+    novel-junction recall we must SIMULATE reads whose junctions are deliberately
+    novel, then check whether the aligner recovers them. Two constructs, classified
+    by the SAME ``junction_truths`` against the real catalogue:
+
+    * **NIC** (exon-skip): from a >=2-intron gene, drop one internal exon -> a novel
+      PAIRING of two KNOWN canonical sites (donor of intron i, acceptor of intron
+      i+1). Both sites catalogued, pairing not -> NIC. Canonical, so recoverable.
+    * **NNC** (novel site): on a 1-intron gene, extend the intron's genome-``end``
+      to the nearest downstream cryptic ``AG`` that is NOT a catalogued acceptor ->
+      an uncatalogued splice site -> NNC. (Motif/canonicity is whatever the genome
+      gives and is reported by the scorer; non-canonical NNC recall is the hard,
+      FDR-sensitive case the design cares about.)
+
+    Returns ``[(model, expected_class), ...]``. Names are suffixed ``__NICskip`` /
+    ``__NNCacc`` so a run can split them; the expected_class is for cross-checking
+    against what ``junction_truths`` actually assigns.
+    """
+    out: List[Tuple[TranscriptModel, str]] = []
+    multi = sorted(m for m in mrnas if len(introns_by_mrna.get(m, [])) >= 2)
+    for mid in multi:
+        if max_nic is not None and sum(1 for _, c in out if c == "NIC") >= max_nic:
+            break
+        chrom, strand, s0, e0 = mrnas[mid]
+        if chrom not in genome:
+            continue
+        exons = _exons_from_span(s0, e0, introns_by_mrna[mid])
+        if len(exons) < 3:
+            continue
+        skip = exons[:1] + exons[2:]          # drop the first internal exon
+        out.append((TranscriptModel(name=f"{mid}__NICskip", chrom=chrom,
+                                    strand=strand, exons=skip,
+                                    genome_seq=genome[chrom]), "NIC"))
+    single = sorted(m for m in mrnas if len(introns_by_mrna.get(m, [])) == 1)
+    random.Random(seed).shuffle(single)
+    for mid in single:
+        if max_nnc is not None and sum(1 for _, c in out if c == "NNC") >= max_nnc:
+            break
+        chrom, strand, s0, e0 = mrnas[mid]
+        if chrom not in genome:
+            continue
+        i_s, i_e = introns_by_mrna[mid][0]
+        seq = genome[chrom]
+        new_e = None
+        for d in range(8, nnc_scan):           # extend the intron to a cryptic AG
+            cand = i_e + d
+            if cand <= len(seq) and seq[cand - 2:cand].upper() == "AG" \
+                    and (chrom, cand) not in acceptors and cand < e0:
+                new_e = cand
+                break
+        if new_e is None:
+            continue
+        exons = _exons_from_span(s0, e0, [(i_s, new_e)])
+        if len(exons) < 2:
+            continue
+        out.append((TranscriptModel(name=f"{mid}__NNCacc", chrom=chrom,
+                                    strand=strand, exons=exons,
+                                    genome_seq=seq), "NNC"))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="GFF->TranscriptModel panel loader (audit/dry-run)")
     ap.add_argument("--gff", required=True)
