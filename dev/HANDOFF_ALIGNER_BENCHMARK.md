@@ -72,6 +72,48 @@ Smoke regression gate (any session): `PATH=... pysam-python scripts/benchmark/sm
 
 ---
 
+## PI DESIGN NOTES (2026-06-27) — assessed + AGREED; fold into the error-injector + C3/§8 cycles
+
+Two PI ideas off the error-distribution measurement. Both agreed (with refinements); both are
+benchmark-TESTABLE (keep the prove-don't-assert discipline).
+
+**(1) Model the error CORRELATION structure, not just marginals (the injector model).**
+AGREE — but it is NOT more columns on the marginal table (clustering + per-read hotness are
+sequential/joint, not per-position). Build a lightweight generative ERROR-PROCESS model:
+  - per-read rate MIXTURE → over-dispersion (the hot-read tail; real max/median ~13x vs pbsim ~4x);
+  - a 2-3-state BURST HMM / self-exciting process → within-read clustering (real 2.83x excess
+    sub-5bp gaps vs pbsim ~1.2x);
+  - a fat-tailed INDEL-RUN-LENGTH distribution (real 39% vs pbsim 19% indels ≥2bp).
+  Fit by EM/HMM/method-of-moments — **dependency-light, NOT a neural net** (project no-heavy-deps
+  rule; escalate only if the simple model fails). **CRITICAL DATA CAVEAT:** the current empirical
+  table CANNOT see bursts — it was built with `--isolation-flank 10`, which excludes clustered
+  errors by construction. Re-profile with the gate OFF, ideally on **SIRV absolute-truth** reads
+  (so real variants / alignment artifacts don't masquerade as bursts). This model feeds the
+  injector (benchmark realism) AND enables (2).
+
+**(2) Per-read "hotness" as a NOVEL-JUNCTION-DISCOVERY FDR signal (a member/§8 facet).**
+STRONGLY AGREE — likely the higher-payoff idea. Mechanism: a globally-hot (error-riddled) read's
+junction region is also likely error-riddled → it can map "best" to a spurious UNANNOTATED junction
+by chance → counting it as support for a novel junction INFLATES discovery FDR. The enabler: a
+read's hotness is ESTIMABLE FROM ITS EXONIC PORTION (error density vs reference in well-anchored
+exon blocks) WITHOUT junction truth → a self-calibrating per-read RELIABILITY covariate. Works
+because of the measured per-read over-dispersion. Refinements: (a) SOFT down-weight / posterior
+input, NOT a hard filter — the localized-burst component means a read can be clean in the exon yet
+bursty at the junction, so exonic density predicts junction reliability only probabilistically
+(fits §8.2 "soft prior, never hard gate"); (b) slots into §8 discovery-FDR + the C3 calibrated
+posterior as a NEW ORTHOGONAL read-reliability signal, complementary to the abstain band + anchor
+gate + canonical/non-canonical tracks. **BENCHMARK TEST (build it):** once the injector makes hot
+reads, measure (i) does exonic error density predict junction-region error (within-read error
+autocorrelation), and (ii) does down-weighting hot reads improve novel-junction FDR on the
+JUNCTION_DISCOVERY stratum (G)? The over-dispersion injector layer + stratum (G) are exactly the
+pieces to test it — do NOT ship the signal as a member feature until the benchmark shows the lift.
+
+**Thread connection:** (1) makes hot reads exist in the benchmark → which lets us validate (2).
+So sequence: injector over-dispersion layer first, then the read-reliability FDR test, then (if it
+shows lift) the member facet.
+
+---
+
 ## SESSION-4 (2026-06-27) — chosen next: real-data transfer check (LongBench); BLOCKED on Sherlock re-auth
 
 User chose to run the real-ONT external-validity transfer check (does the pbsim3
