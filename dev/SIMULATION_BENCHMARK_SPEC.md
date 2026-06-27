@@ -172,6 +172,27 @@ Zygosity (HET/HOM) + non-Mendelian VAF (0.33, aneuploid-A549-style) are recorded
 per `VariantTruth` for downstream stratification. **Whether C6 REDUCES this FDR is
 the next-cycle ablation; the gate only has to MEASURE it, which it now does.**
 
+**Anti-overcount (the artifact-class this benchmark exists to prevent — advisor-
+caught 2026-06-26):** each VARIANT read gets its OWN freshly-randomized contig
+carrying the same variant KIND (HP varies `k`, STR varies `drop`; VARIANT must NOT
+replicate one construct `reps` times or a reported FDR has effective n = #sub-cases,
+false confidence at scale). So at `reps=R` the driver carries `3×R` INDEPENDENT
+constructs (not 3). `true_locus` is the GROUP label for stratification; the per-read
+`chrom` is unique; the region-disjoint split is decided per-contig (each contig = one
+read = one partition, never split train↔test). Empirical check (reps=20, 60 distinct
+driver constructs): all 60 fabricate; 60 distinct control constructs: 0
+variant-adjacent FP. (One control read showed a generic NON-variant-adjacent junction
+misplacement — counted in junction FP but NOT in `fp_variant_adjacent`, which
+confirms the adjacency tag isolates variant-INDUCED FPs from generic placement
+misses.)
+
+**Version-pin caveat:** the discrimination (40bp→N) AND specificity (25bp→D, SNP→X)
+both rest on minimap2's intron-vs-deletion length threshold, pinned to **minimap2
+2.28 + `-k 14` -ax splice -uf**. 25bp was not probed directly (monotonicity from
+30bp→D makes it safe); a minimap2/version or `-k`/seed change could shift the
+threshold and silently flip the control. Re-probe the threshold if the aligner
+version or splice flags change.
+
 **Triage of the remaining SPEC strata (advisor-reviewed 2026-06-26) — why VARIANT
 went first and the others are deferred/scaffold:** a stratum only counts when the
 incumbent is shown BELOW ceiling via a metric the scorer *already emits*.

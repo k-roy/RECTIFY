@@ -32,6 +32,13 @@ below ceiling on); the other three are deferred/scaffold with reasons recorded.
   incumbent indel failures the benchmark measures (not a regression; (C) only
   requires ≥1 correct). Schema variant round-trip is exercised end-to-end (the
   `fp_variant_adjacent` count depends on variants surviving the TSV reload).
+- **Anti-overcount (advisor-caught):** each VARIANT read now gets its OWN
+  freshly-randomized contig carrying the same variant KIND (HP/STR already vary
+  per-read; VARIANT had been replicating ONE construct `reps` times → effective
+  n=#sub-cases). Now `3×reps` INDEPENDENT driver constructs; region-disjoint split
+  preserved (per-contig). Verified: 60 distinct drivers all fabricate, 60 distinct
+  controls give 0 variant-adjacent FP. Caveat recorded: 25bp→D / 40bp→N threshold
+  is pinned to minimap2 2.28 `-k 14` — re-probe on a version/flag change.
 - **Smoke GREEN** with assertions (A)(A2)(E)(D)(C)(C')(B)(B2) (`--reps 20`).
 - **Remaining strata deferred with reasons** (PARALOG needs a scorer locus-
   concordance metric first; COVERAGE×Q can't discriminate until C3 consumes phred;

@@ -426,27 +426,37 @@ def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
     truth: List[ReadTruth] = []
     li = locus0
 
-    # ---- SPLICE_MIMIC_DEL: the variant-induced-FDR driver ----------------
+    # IMPORTANT (anti-overcount, the artifact-class this benchmark prevents): EACH
+    # read gets its OWN freshly-randomized contig carrying the SAME variant KIND,
+    # so the corpus has ``reps`` INDEPENDENT constructs per sub-case, not 1
+    # construct copied ``reps`` times (HP varies k, STR varies drop; VARIANT must
+    # not replicate or a reported FDR has effective n=n_subcases, false confidence
+    # at scale). ``true_locus`` stays the GROUP label (for stratification); the
+    # per-read ``chrom`` is unique. The region-disjoint TRAIN/TEST split is still
+    # decided per-contig (each contig = one read = one partition, never split
+    # across), so no construct leaks train→test.
     L = 200
     zyg_cycle = [("HET", 0.5), ("HOM", 1.0), ("HET", 0.33)]  # incl. non-Mendelian VAF
+
+    # ---- SPLICE_MIMIC_DEL: the variant-induced-FDR driver ----------------
     for di, dlen in enumerate(SPLICE_MIMIC_DEL_LENS):
-        chrom = f"var_del_{dlen:03d}"
-        left = _rand_unique(L, rng)
-        # the deleted block looks splice-like (GT..AG) so minimap2 is tempted to
-        # call it an intron; the flanks are random so the deletion has no in-run
-        # ambiguity slide (eq span == the edit).
-        block = "GT" + _rand_unique(dlen - 4, rng) + "AG"
-        right = _rand_unique(L, rng)
-        ref = left + block + right
-        refs[chrom] = ref
-        var_pos = L                       # 0-based start of the deleted block
-        read_seq = left + right           # the read lacks the block
+        group = f"var_del_{dlen:03d}"
         zyg, vaf = zyg_cycle[di % len(zyg_cycle)]
-        split = _split_for(li)
-        li += 1
         for i in range(reps):
-            rid = f"{chrom}_r{i:03d}"
-            reads.append((rid, read_seq))
+            chrom = f"{group}_r{i:03d}"
+            left = _rand_unique(L, rng)
+            # the deleted block looks splice-like (GT..AG) so minimap2 is tempted
+            # to call it an intron; random flanks => the deletion has no in-run
+            # ambiguity slide (eq span == the edit). DISTINCT per read.
+            block = "GT" + _rand_unique(dlen - 4, rng) + "AG"
+            right = _rand_unique(L, rng)
+            ref = left + block + right
+            refs[chrom] = ref
+            var_pos = L                       # 0-based start of the deleted block
+            read_seq = left + right           # the read lacks the block
+            split = _split_for(li)
+            li += 1
+            reads.append((chrom, read_seq))
             # truth: a unique-context deletion variant; NO junction.
             indel = make_unique_indel(var_pos, dlen, IndelKind.DEL)
             indel.context = "VARIANT"
@@ -454,50 +464,48 @@ def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
                 pos=var_pos, ref_allele=block, alt_allele="",
                 zygosity=zyg, vaf=vaf, dist_to_junction=None)
             truth.append(ReadTruth(
-                read_id=rid, true_locus=chrom, true_transcript=chrom,
+                read_id=chrom, true_locus=group, true_transcript=group,
                 chrom=chrom, strand="+", genome_start=0, genome_end=len(ref),
                 true_cigar=f"{var_pos}M{dlen}D{len(ref) - var_pos - dlen}M",
                 indels=[indel], variants=[var], stratum="VARIANT",
-                split=split, coverage=reps))
+                split=split, coverage=1))
 
     # ---- SNP controls (minimap2 robust) on a spliced gene ----------------
     def _spliced_snp(tag: str, snp_offset_from_donor: int, dist_label):
         nonlocal li
-        chrom = f"var_snp_{tag}"
-        e1 = _rand_unique(200, rng)
-        intron = "GT" + _rand_unique(196, rng) + "AG"
-        e2 = _rand_unique(200, rng)
-        contig = e1 + intron + e2
-        refs[chrom] = contig
-        i_start, i_end = 200, 200 + len(intron)
-        model = TranscriptModel(
-            name=tag, chrom=chrom, strand="+",
-            exons=[Exon(0, 200), Exon(i_end, len(contig))], genome_seq=contig)
-        jt = model.junction_truths()      # NNC (no annotation supplied)
-        spliced = model.spliced_transcript()
-        # transcript coord of the SNP: in exon1, snp_offset_from_donor bp 5' of
-        # the donor (so genome pos = 200 - off; transcript pos identical in exon1)
-        tpos = 200 - snp_offset_from_donor
-        gpos = tpos
-        ref_base = spliced[tpos]
-        alt_base = rng.choice([b for b in BASES if b != ref_base])
-        read_seq = spliced[:tpos] + alt_base + spliced[tpos + 1:]
-        dist = abs(gpos - i_start) if dist_label == "near" else None
-        split = _split_for(li)
-        li += 1
         for i in range(reps):
-            rid = f"{chrom}_r{i:03d}"
-            reads.append((rid, read_seq))
+            chrom = f"var_snp_{tag}_r{i:03d}"
+            e1 = _rand_unique(200, rng)
+            intron = "GT" + _rand_unique(196, rng) + "AG"
+            e2 = _rand_unique(200, rng)
+            contig = e1 + intron + e2
+            refs[chrom] = contig
+            i_start, i_end = 200, 200 + len(intron)
+            model = TranscriptModel(
+                name=tag, chrom=chrom, strand="+",
+                exons=[Exon(0, 200), Exon(i_end, len(contig))], genome_seq=contig)
+            jt = model.junction_truths()      # NNC (no annotation supplied)
+            spliced = model.spliced_transcript()
+            # transcript coord of the SNP: in exon1, snp_offset_from_donor bp 5' of
+            # the donor (genome pos = 200 - off; transcript pos identical in exon1)
+            tpos = 200 - snp_offset_from_donor
+            gpos = tpos
+            ref_base = spliced[tpos]
+            alt_base = rng.choice([b for b in BASES if b != ref_base])
+            read_seq = spliced[:tpos] + alt_base + spliced[tpos + 1:]
+            dist = abs(gpos - i_start) if dist_label == "near" else None
+            split = _split_for(li)
+            li += 1
+            reads.append((chrom, read_seq))
             var = VariantTruth(
                 pos=gpos, ref_allele=ref_base, alt_allele=alt_base,
-                zygosity="HET", vaf=0.5,
-                dist_to_junction=dist)
+                zygosity="HET", vaf=0.5, dist_to_junction=dist)
             truth.append(ReadTruth(
-                read_id=rid, true_locus=tag, true_transcript=tag, chrom=chrom,
+                read_id=chrom, true_locus=tag, true_transcript=tag, chrom=chrom,
                 strand="+", genome_start=model.genome_start,
                 genome_end=model.genome_end, true_cigar=model.fulllength_cigar(),
                 junctions=jt, variants=[var], true_cpa=model.genome_end - 1,
-                stratum="VARIANT", split=split, coverage=reps))
+                stratum="VARIANT", split=split, coverage=1))
 
     _spliced_snp("near", snp_offset_from_donor=3, dist_label="near")
     _spliced_snp("distant", snp_offset_from_donor=100, dist_label="far")
