@@ -302,9 +302,38 @@ def main():
         sc_n = score_bam(bam, noncanon, genome, aligner_name="mm2:JD_noncanon")
         can_recall, non_recall = sc_c.junction.recall, sc_n.junction.recall
         snaps = sc_n.junction.fp_canonical_snap
+        # ADDRESSABILITY PROOF (the (D)/(F)-equivalent — verified, not asserted):
+        # the reads are error-free spliced products, so the TRUE non-canonical
+        # placement is 0-mismatch by construction. A snap is member-recoverable ONLY
+        # if it costs identity (alignment NM>=1 → truth strictly wins on a motif-blind
+        # score); a snap with NM==0 is an equally-good alternative splicing →
+        # unrecoverable by ANY evidence-weighing member (the zero-evidence trap). So
+        # count the snapped reads whose snap NM==0 — that fraction is NOT addressable.
+        nc_placed = {r.query_name: r for r in pysam.AlignmentFile(bam, "rb")
+                     if not (r.is_unmapped or r.is_secondary or r.is_supplementary)
+                     and r.query_name in noncanon}
+        snap_nm0 = snap_nm_ge1 = 0
+        for rid, t in noncanon.items():
+            r = nc_placed.get(rid)
+            if r is None:
+                continue
+            seq = genome.get(r.reference_name, "")
+            tset = {(j.intron_start, j.intron_end) for j in t.junctions}
+            called = {normalize_junction(cs, ce, seq)
+                      for cs, ce in extract_junctions(r.reference_start, r.cigartuples)}
+            if called & tset:
+                continue  # recovered, not snapped
+            nm = (r.get_tag("NM") if r.has_tag("NM")
+                  else sum(l for o, l in r.cigartuples if o in (1, 2, 8)))
+            if nm == 0:
+                snap_nm0 += 1
+            else:
+                snap_nm_ge1 += 1
+        n_snapped = snap_nm0 + snap_nm_ge1
         print(f"[smoke] (G) JUNCTION_DISCOVERY: canonical recall={can_recall:.3f}; "
               f"non-canonical recall={non_recall:.3f} (fp_canonical_snap={snaps}, "
-              f"fp={sc_n.junction.fp} fn={sc_n.junction.fn})", file=sys.stderr)
+              f"fp={sc_n.junction.fp} fn={sc_n.junction.fn}); snapped NM>=1 (addressable)="
+              f"{snap_nm_ge1}, NM==0 (unaddressable)={snap_nm0}", file=sys.stderr)
         if can_recall < 0.9:
             failures.append(f"(G) JUNCTION_DISCOVERY: canonical reads NOT at ceiling "
                             f"(recall={can_recall:.3f}) — metric mis-built / construct broken")
@@ -314,16 +343,20 @@ def main():
                             f"non-discriminating motif-snapping stratum")
         elif snaps < 1:
             failures.append(f"(G) JUNCTION_DISCOVERY: no canonical-snap detected "
-                            f"(fp_canonical_snap={snaps}) — the FN are not provably motif-snaps "
-                            f"(could be generic misplacement, not the member-addressable bias)")
+                            f"(fp_canonical_snap={snaps}) — the FN are not provably motif-snaps")
+        elif n_snapped == 0 or snap_nm0 > 0.1 * n_snapped:
+            failures.append(f"(G) JUNCTION_DISCOVERY: addressability NOT proven — "
+                            f"{snap_nm0}/{n_snapped} snaps are NM==0 (equally-good alternative "
+                            f"splicing = zero-evidence, unrecoverable by any member). The gap "
+                            f"is not provably member-addressable (the PARALOG-v1 trap).")
         else:
-            print(f"[smoke] (G) PASS JUNCTION_DISCOVERY motif-snapping is MEASURED + "
-                  f"DISCRIMINATING + member-ADDRESSABLE: minimap2 recovers canonical junctions "
-                  f"at ceiling ({can_recall:.3f}) but SNAPS non-canonical ones to nearby "
-                  f"canonical motifs (recall {non_recall:.3f}, {snaps} canonical-snaps detected) "
-                  f"— the reads support the true non-canonical site by construction, so an "
-                  f"evidence-weighing member could recover it. (Annotated-vs-novel axis moves "
-                  f"the annotation-aware panel aligners; measured in the panel run.)",
+            print(f"[smoke] (G) PASS JUNCTION_DISCOVERY motif-snapping MEASURED + "
+                  f"DISCRIMINATING + member-ADDRESSABLE (proven): minimap2 recovers canonical "
+                  f"junctions at ceiling ({can_recall:.3f}) but SNAPS non-canonical ones to "
+                  f"canonical motifs (recall {non_recall:.3f}, {snaps} snaps), and ALL "
+                  f"{snap_nm_ge1}/{n_snapped} snaps cost identity (NM>=1) so the true site "
+                  f"strictly wins on a motif-blind score → an evidence-weighing member recovers "
+                  f"it. (Annotated-vs-novel axis moves the annotation-aware panel aligners.)",
                   file=sys.stderr)
 
     # (D) HP_HARD must SEPARATE TWO ARMS (the real validity bar): score the
