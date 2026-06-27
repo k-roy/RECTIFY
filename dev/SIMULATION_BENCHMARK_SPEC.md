@@ -346,9 +346,24 @@ All open/no-auth (Synapse syn IDs are gated; UCSC CGL mirrors are not). Human WT
 - **Shared build dep:** both LRGASP-sim (GENCODE) and SIRV truth are **exon-feature
   GTF** → need the exon-GTF loader variant of `gff_panel` (same one SIRV needs). The
   `read_to_isoform` join + GTF → per-read junctions/CPA is the sim-truth path.
+- **CORRECTION (verified):** use the **`hs_GENCODE38.basic_annotation.with_mm_M27.gtf.gz`**
+  (29.8 MB), NOT the human-only `basic` GTF — **~20% of the "human" sim reads are MOUSE
+  transcripts** (`ENSMUST`, the artificial-novel decoys: 79,489 ENST vs 20,511 ENSMUST in
+  the first 100k rows). Scoring against the human-only GTF falsely fails ~20% of reads as
+  "no truth." (Or filter read_to_isoform to `ENST` only, dropping those reads.)
+- **The three-way is DISTRIBUTIONAL, not locus-matched:** NanoSim reads are GENCODE-origin;
+  the real ABSOLUTE truth is SIRV-only (endogenous real reads have annotation-level, not
+  per-read, truth). So compare the SHAPES of error distributions (junction-placement error,
+  indel-by-HP-length, CPA-offset) across pbsim3/NanoSim/real-SIRV — which is exactly what
+  "do both simulators share an error-realism blind spot vs real" needs. A strictly
+  locus-matched SIRV three-way would require re-running NanoSim on SIRV (not turnkey) —
+  optional rigorous follow-up.
+- **CPA caveat:** only real DRS + SIRV give native poly-A 3' ends; real cDNA and the NanoSim
+  track 3' ends reflect priming → weight CPA conclusions to the DRS-real + SIRV subset.
 - Caveats: RNA002 (not RNA004; date-inferred, "RNA002" not in metadata); sim is one
   combined FASTQ (per-chemistry split would need re-running lrgasp-simulation); DRS
-  reads carry uracils + nonstandard ONT names (benign ENCODE flags).
+  reads carry uracils + nonstandard ONT names (benign ENCODE flags). All URLs curl-verified
+  (CGL mirror fully open; Synapse not needed). Pilot ~37.7 GB / full ~87.5 GB.
 
 **Recommended first transfer experiment:** align LongBench RNA004 DRS (+cDNA) spike-in
 reads to the SIRV/Sequin reference → score junction recall/FDR with our scorer →

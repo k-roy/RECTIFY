@@ -7,6 +7,56 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## SESSION-4b (2026-06-27) — REDIRECT: in-silico error-REALISM first (real-data = calibrator, deferred)
+
+User redirected: prioritize **in-silico** synthetic reads (errors injected into perfect
+reads = absolute truth) and get the ERROR MODEL right, BEFORE real-data. Real/spike-in
+data is reframed as the **error-process CALIBRATOR** (the only contamination-free way to
+measure real error correlation structure), not the primary truth set. Two user priorities:
+- **(4, most important) junction-discovery bias stratum** — canonical/non-canonical ×
+  annotated/unannotated, to measure which aligners over-SNAP to GT-AG/annotated vs
+  reliably discover de-novo introns. PROBED + CONFIRMED: minimap2 -ax splice -uf snaps
+  non-canonical junctions to nearby canonical motifs (canonical GT-AG=EXACT; CA-TC→shift
+  (197,397); AT-AC→(205,400); even with -C0), and snaps even ERROR-FREE → member-addressable
+  motif-bias. NOT yet built (design in this session's transcript: gen_junction_discovery_stratum
+  + scorer `fp_canonical_snap` + smoke (G)).
+- **error-distribution realism** — we have MARGINAL rates only; missing (2) spatial
+  clustering/burst + (3) per-read over-dispersion. CONFIRMED IN CODE: the empirical profiler's
+  `--isolation-flank 10` recipe (its documented usage) counts only errors with ≥10 exact
+  matches both sides → by construction EXCLUDES clusters/bursts. So an injector driven by it
+  under-produces the bursty/hot-read regime where the convergent-error problem lives.
+
+**IN FLIGHT (background subagent a6695...):** measuring error CORRELATION structure —
+per-read over-dispersion (Fano factor) + spatial clustering (inter-error-gap CV / %gaps<5bp)
+in pbsim3 reads vs a real ONT BAM on Sherlock. This is the DECISION-DRIVER: does the injector
+need a burst+dispersion layer, or does pbsim3's ERRHMM already reproduce real structure?
+
+**DONE this session-4b:** junction-snapping probe (above); empirical-table clean-flank bias
+confirmed in code; LRGASP URL-verified acquisition plan (committed to SPEC §EXTERNAL-VALIDITY,
+the pbsim3-vs-NanoSim-vs-real-SIRV three-way; RNA002 so it answers sim-realism, LongBench=RNA004
+for transfer); the 4-bug red-team fixes + error-realism framework.
+
+**RESUME (session-4b):**
+1. Get the measurement verdict: the a6695 subagent reports per-read Fano + inter-error-gap
+   stats for pbsim vs real. If pbsim Fano≈1 & gap-CV≈1 (iid-like) and real is over-dispersed/
+   clustered → the injector NEEDS a burst + per-read-dispersion layer (design it). If pbsim
+   already matches real → no new layer; proceed.
+2. Build **(4) the junction-discovery stratum** (point 4): in `controlled.py`
+   `gen_junction_discovery_stratum` (canonical/non-canonical × annotated/unannotated, each
+   non-canon truth junction verified non-canonical WITHIN its ambiguity window); scorer add
+   `fp_canonical_snap` (FP canonical junction within W bp of an unmatched non-canonical truth);
+   smoke (G): canonical recall≈ceiling, non-canonical recall≪ceiling + snaps>0. Probe-verify
+   first; advisor-gate.
+3. **Shared build dep for ALL real-data integration:** an EXON-feature GTF loader variant of
+   `gff_panel` (SIRV + LRGASP-GENCODE are exon-GTF, not the yeast mRNA+intron form).
+4. THEN HANDOFF the session (phase boundary): injector-build (calibrated burst+dispersion),
+   real-data acquisition (LRGASP three-way + LongBench RNA004), and C1 member code are the
+   fresh-session/next-cycle work. Do NOT start C1 here.
+- LongBench transfer check (the prior session-4 plan below) is DEFERRED behind the error-realism
+  work, not cancelled.
+
+---
+
 ## SESSION-4 (2026-06-27) — chosen next: real-data transfer check (LongBench); BLOCKED on Sherlock re-auth
 
 User chose to run the real-ONT external-validity transfer check (does the pbsim3
