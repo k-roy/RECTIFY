@@ -41,6 +41,30 @@ below ceiling on); the other three are deferred/scaffold with reasons recorded.
   is pinned to minimap2 2.28 `-k 14` — re-probe on a version/flag change.
 - **PARALOG/C4 also landed this session** — see DONE/OPEN below + SPEC §Triage.
 - **Smoke GREEN** with assertions (A)(A2)(E)(F)(D)(C)(C')(B)(B2) (`--reps 20`).
+
+### SESSION-3 TIER-2 ADDENDUM (2026-06-26) — transcriptome run drafted, verified, SUBMITTED
+The Tier-2 external-validity tier (Branch A) is built, verified on REAL yeast
+coords, and submitted to Sherlock.
+- **Aligner inventory decided the branch** (rectify env, verified): minimap2 +
+  uLTRA + deSALT (binaries) + gapmm2 + mappy present; **gmap absent** (lives in
+  `aligner_bench`/`apanel`/`compass` envs), **mapPacBio absent**, spoa/abpoa absent.
+  None wired into the benchmark driver. So a true 5-aligner panel TAIL is NOT
+  runnable today → **Branch A = minimap2 baseline** (honest labels in the JSON);
+  **Branch B (panel + hard-read injection) enumerated, gated.**
+- **NEW code:** `scripts/benchmark/sim/gff_panel.py` (GFF→TranscriptModel loader;
+  yeast has no `exon` feature → exons = mRNA span minus `intron` features),
+  `scripts/benchmark/tier2_run.py` (driver), `pbsim3_wrapper` annotation-aware
+  classification + the projection fix below. `run_tier2.sbatch` (DRS+cDNA).
+- **Projection bug FOUND+FIXED during real-coord verification** (the reason to
+  verify before cluster spend): `project_maf_record` assigned EVERY transcript
+  intron to EVERY read; pbsim reads are fragments → false FN, recall deflated
+  0.79. Fixed to per-read spanned+anchored (≥10bp flank) junctions only → 0
+  out-of-span junctions; real minimap2 DRS ANNOTATED recall ≈0.80–0.85 (short
+  yeast introns are genuinely hard — minimap2 calls some as deletions), FDR
+  ≈0.03–0.07. **This is the saturation control (harness validation), NOT
+  discrimination.**
+- **Job 31628436 submitted** (larsms, AVX-512 exclude, DRS+cDNA, copies=20 over
+  ~500 spliced yeast transcripts). Sentinel: `$D/tier2_results/.tier2_rc`.
 - **Remaining strata deferred with reasons** (PARALOG needs a scorer locus-
   concordance metric first; COVERAGE×Q can't discriminate until C3 consumes phred;
   PANEL_FAILURE's real validity is the Tier-2 5-aligner panel) — see
@@ -218,8 +242,27 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   unit-deletion placement is NOT the leftmost slide (so left-alignment genuinely
   diverges from truth) — the current whole-unit deletion is slide-equivalent and
   correctly scores 1.0.
-- Tier-2 realistic transcriptome run (yeast saturation control + human SMN1/SMN2 +
-  NIC/NNC panel) NOT yet run — that is the recall/FDR + tail-sizing tier (Sherlock).
+- **Tier-2 (Branch A, yeast minimap2 baseline): SUBMITTED — job 31628436.**
+  RESUME (concrete): `ssh sherlock 'D=/home/groups/larsms/users/kevinroy/aligner_bench_live;
+  sacct -j 31628436 -X -o State,Elapsed,ExitCode; cat $D/tier2_results/.tier2_rc 2>/dev/null;
+  ls $D/tier2_results/'`.
+    - sentinel `.tier2_rc` ABSENT + sacct RUNNING/PENDING → still going, wait.
+    - `.tier2_rc` == 0 → read `$D/tier2_results/{drs,cdna}_summary.json` (the
+      `_scope` block states the labels); record ANNOTATED recall + spurious-FDR
+      (DRS vs cDNA) into the SPEC; expected DRS recall ≈0.80–0.85 (saturation
+      control). Done.
+    - `.tier2_rc` != 0 OR sacct FAILED/SIGILL → read `$D/tier2_bench_<id>.err`.
+      If "Illegal instruction" → AVX-512 trap (it landed on an AMD Milan node
+      despite the exclude); resubmit with `--partition=owners` or a tighter
+      exclude. If pbsim/parse error → check the .err and the wrapper.
+  Branch B (the real tail + cross-aligner FDR) is the gated follow-on: NOT this
+  job. It needs (1) the multi-aligner panel WIRED + index-prepped (minimap2 +
+  gapmm2 + uLTRA + deSALT are in the env; gmap is in `aligner_bench`, mapPacBio
+  absent) so `score_panel`'s `_panel_unplaced_fraction` is "placed by NO aligner",
+  and (2) an INJECTED hard sub-population (elevated error / repeat) — a clean run
+  reports tail≈0, which is a false negative, not "no C5 needed". Novel-junction
+  (NIC/NNC) recall also needs isoform injection (exon-skip→NIC, novel-site→NNC);
+  Branch A measures ANNOTATED-recall + spurious-FDR only.
 - **standing-variant/C6: DONE (session 3)** — `gen_variant_stratum`, smoke (E),
   verified discriminating + specific (see session-3 addendum).
 - **paralog/C4: DONE (session 3)** — added the scorer locus-concordance readout
