@@ -178,6 +178,7 @@ class AlignerScore:
     aligner: str
     reads_scored: int = 0
     reads_placed: int = 0          # present + mapped in this BAM
+    reads_missing_contig: int = 0  # mapped to a contig absent from `genome`
     junction: JunctionScore = field(default_factory=JunctionScore)
     indel: IndelScore = field(default_factory=IndelScore)
     cpa_abs_errors: List[int] = field(default_factory=list)
@@ -189,6 +190,7 @@ class AlignerScore:
             "aligner": self.aligner,
             "reads_scored": self.reads_scored,
             "reads_placed": self.reads_placed,
+            "reads_missing_contig": self.reads_missing_contig,
             "junction_recall": round(self.junction.recall, 4),
             "junction_precision": round(self.junction.precision, 4),
             "junction_fdr": round(self.junction.fdr, 4),
@@ -319,8 +321,24 @@ def score_bam(bam_path: Union[str, Path],
                 continue
             placed_ids.add(read.query_name)
             chrom = read.reference_name
-            seq = genome.get(chrom, "")
+            seq = genome.get(chrom)
+            if seq is None:
+                # LOUD, never silent: an empty genome_seq disables
+                # normalize_junction in _score_read, so junctions get compared
+                # RAW — silently manufacturing the GMAP-0.09 FP artifact the gate
+                # exists to prevent. This is exactly the stale-.fai failure mode
+                # (genome dropped a contig). Count it; warn once below.
+                score.reads_missing_contig += 1
+                seq = ""
             _score_read(score, read, rt, seq, variant_adjacency_bp)
+
+    if score.reads_missing_contig:
+        logger.warning(
+            "%s: %d read(s) mapped to a contig ABSENT from the genome dict — "
+            "junctions for these were scored WITHOUT the ambiguity-aware match "
+            "(normalize_junction disabled). Check the genome FASTA covers all BAM "
+            "contigs (a stale .fai is the usual cause; load_genome guards against "
+            "it).", score.aligner, score.reads_missing_contig)
 
     # FN bookkeeping: truth reads NOT placed in this BAM contribute all their
     # truth junctions as FN (the aligner failed to place => missed every junction)
