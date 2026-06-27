@@ -434,7 +434,8 @@ def _color_for_base(b: str, state: str, in_mismatch: bool) -> tuple[str, str]:
 
 def render_alignment_row(ax, aligned: dict, ref_seq: str,
                          win_start: int, win_end: int, label: str,
-                         is_reverse: bool = False):
+                         is_reverse: bool = False,
+                         corr_3p_aligner: Optional[int] = None):
     """Render a read row with prominent INLINE insertion bases.
 
     Each row shows:
@@ -451,12 +452,24 @@ def render_alignment_row(ax, aligned: dict, ref_seq: str,
     """
     n = win_end - win_start
     ax.set_xlim(0, n)
-    ax.set_ylim(-0.05, 2.60)  # headroom for staggered insertion pills + arrows
+    ax.set_ylim(-0.28, 2.60)  # headroom for insertion pills above + corr-3' mark below
     ax.set_yticks([])
     ax.set_xticks([])
     ax.set_ylabel(label, rotation=0, ha="right", va="center", fontsize=SIZE_TEXT)
     for spine in ax.spines.values():
         spine.set_visible(False)
+
+    # RECTIFY-inferred corrected 3' end for THIS row's aligner (from the
+    # per-aligner summary walkback result). A green ▲ just below the row + a
+    # thin green guide marks where walkback placed this aligner's 3' end, so
+    # the non-winner rows show their own walkback outcome (e.g. an over-
+    # extending aligner converging — or not — to the consensus boundary).
+    if corr_3p_aligner is not None and win_start <= corr_3p_aligner < win_end:
+        _cx = (corr_3p_aligner - win_start) + 0.5
+        ax.plot([_cx, _cx], [0.0, 0.98], color="#2e7d32", linewidth=0.8,
+                alpha=0.65, zorder=6, clip_on=False)
+        ax.plot(_cx, -0.16, marker="^", markersize=7, color="#2e7d32",
+                clip_on=False, zorder=7)
 
     mismatches = aligned["mismatches"]
     for i, (b, st) in enumerate(zip(aligned["bases"], aligned["state"])):
@@ -2192,6 +2205,9 @@ def render(
     # samtools-style 3' end here can sit slightly past the corrected
     # one, exactly the contrast that motivates RECTIFY.
     samtools_3p: Optional[int] = None
+    # aligner -> RECTIFY corrected 3' end (walkback result), populated from the
+    # per-aligner summary below; drives the per-row corrected-end markers.
+    _corr3p_by_aligner: dict[str, int] = {}
     if aligner_bam_dir is not None:
         unrect_bam: Optional[Path] = None
         bundle = Path(aligner_bam_dir).parent
@@ -2248,9 +2264,18 @@ def render(
                     for _row in csv.DictReader(_f, delimiter='\t'):
                         if _row.get('read_id') != qname:
                             continue
+                        _al = _row.get('_aligner')
                         if _row.get('_is_winner') in ('1', 'True', 'true'):
-                            winner_name = _row.get('_aligner') or winner_name
-                            break
+                            winner_name = _al or winner_name
+                        # Per-aligner RECTIFY corrected 3' end (walkback result),
+                        # used to draw a corrected-end marker in every per-aligner
+                        # row (not just the winner). Collect all aligners.
+                        _c3 = (_row.get('corrected_3prime') or '').strip()
+                        if _al and _c3:
+                            try:
+                                _corr3p_by_aligner[_al] = int(_c3)
+                            except ValueError:
+                                pass
             except Exception:
                 pass
         # Group aligners by identical post-M-expansion CIGAR. Aligners in the
@@ -2865,8 +2890,16 @@ def render(
                    orig_5p=orig_5p, corr_5p=corr_5p)
     for label, a in aligned_set:
         ax = next(ax_iter)
+        # Resolve this row's aligner(s) → its RECTIFY corrected 3' end so the
+        # row can mark where walkback landed for it (skip the unrectified row).
+        _rc3 = None
+        if "unrect" not in label.lower():
+            for _al in label.replace("winner:", " ").replace(",", " ").split():
+                if _al in _corr3p_by_aligner:
+                    _rc3 = _corr3p_by_aligner[_al]
+                    break
         render_alignment_row(ax, a, ref_seq, win_start, win_end, label,
-                             is_reverse=is_reverse)
+                             is_reverse=is_reverse, corr_3p_aligner=_rc3)
     ax_ticks = next(ax_iter)
     render_axis_ticks(ax_ticks, win_start, win_end)
 
