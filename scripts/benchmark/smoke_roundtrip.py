@@ -230,43 +230,61 @@ def main():
                   f"inflation) while plain-SNP + short-deletion controls produced 0. Whether C6 "
                   f"REDUCES this FDR is the NEXT-cycle ablation.", file=sys.stderr)
 
-    # (F) PARALOG/C4 — window/locus-selection accuracy is MEASURED and the
-    # incumbent is below ceiling on the C4-addressable slice. With sparse,
-    # clustered divergence (SMN1/SMN2-style), a read SPANNING the informative
-    # window carries origin evidence and minimap2 assigns it correctly (the
-    # at-ceiling control that proves the metric is not trivially failing); a
-    # window-EXCLUDING fragment is identical to both copies, so minimap2 can only
-    # guess (mapping_quality==0, accuracy ~chance) — the window-selection gap a
-    # pooling/linkage member (C4) could close. Verified vs minimap2 -ax splice -uf.
+    # (F) PARALOG/C4 — window/locus-selection accuracy is MEASURED, the incumbent
+    # is below ceiling on the C4-addressable slice, AND the gap is provably
+    # closeable by pooling (the (D)-equivalent, decidable from truth NOW). The
+    # discriminating slice is NOT a fragment with NO distinguishing base (that is
+    # information-theoretically unrecoverable by ANY method incl. C4 — a structural
+    # 0.5, not a closeable gap, the vertical-slice trap). It is a WEAK-evidence
+    # fragment covering exactly ONE distinguishing SNP: per-read the lone SNP is
+    # sometimes noise-flipped so minimap2 mis-assigns (below ceiling), yet the
+    # MAJORITY SNP base across the read pool recovers the true copy. A read SPANNING
+    # all spread SNPs is the at-ceiling control. Verified vs minimap2 -ax splice -uf.
     if "PARALOG" in per_stratum:
+        import collections
         para = {rid: t for rid, t in truth_map.items() if t.stratum == "PARALOG"}
         span = {rid: t for rid, t in para.items() if "_span_" in rid}
-        frag = {rid: t for rid, t in para.items() if "_frag_" in rid}
+        weak = {rid: t for rid, t in para.items() if "_weak_" in rid}
         ssp = score_bam(bam, span, genome, aligner_name="mm2:PARA_span")
-        sfr = score_bam(bam, frag, genome, aligner_name="mm2:PARA_frag")
-        span_acc, frag_acc = ssp.locus_accuracy, sfr.locus_accuracy
-        frag_mapq0 = (sfr.locus_mapq0 / sfr.reads_placed) if sfr.reads_placed else 0.0
-        print(f"[smoke] (F) PARALOG/C4: spanning locus_acc={span_acc:.3f} "
-              f"(mapq0={ssp.locus_mapq0}); window-excluding-fragment locus_acc={frag_acc:.3f} "
-              f"(mapq0_frac={frag_mapq0:.2f})", file=sys.stderr)
-        if span_acc < 0.9 or ssp.locus_mapq0 > 0.1 * max(1, ssp.reads_placed):
-            failures.append(f"(F) PARALOG: spanning reads are NOT at ceiling "
-                            f"(locus_acc={span_acc:.3f}, mapq0={ssp.locus_mapq0}) — the "
-                            f"locus-selection metric is mis-built or the window is non-informative")
-        elif frag_acc > span_acc - 0.2:
-            failures.append(f"(F) PARALOG: window-excluding fragments give the incumbent NO "
-                            f"headroom (frag_acc={frag_acc:.3f} vs span={span_acc:.3f}) — "
-                            f"non-discriminating window-selection stratum")
-        elif frag_mapq0 < 0.5:
-            failures.append(f"(F) PARALOG: fragments NOT flagged ambiguous "
-                            f"(mapq0_frac={frag_mapq0:.2f}<0.5) — the construct is not the "
-                            f"informationally-ambiguous window-selection case it claims to be")
+        swk = score_bam(bam, weak, genome, aligner_name="mm2:PARA_weak")
+        span_acc, weak_acc = ssp.locus_accuracy, swk.locus_accuracy
+        # pooling-recovery proof (truth-side, NO C4): per (family, copy) pool, does
+        # the MAJORITY base at the lone distinguishing SNP recover the true copy?
+        para_reads = load_fastq(reads_fq)
+        pools = {}
+        for rid, t in weak.items():
+            v = t.variants[0]
+            idx = v.pos - t.genome_start
+            seq = para_reads.get(rid, "")
+            base = seq[idx] if 0 <= idx < len(seq) else "N"
+            key = (t.true_locus, t.true_transcript)
+            d = pools.setdefault(key, {"alt": v.alt_allele, "bases": []})
+            d["bases"].append(base)
+        recovered = sum(
+            1 for d in pools.values()
+            if collections.Counter(d["bases"]).most_common(1)[0][0] == d["alt"])
+        n_pools = len(pools)
+        print(f"[smoke] (F) PARALOG/C4: spanning locus_acc={span_acc:.3f}; "
+              f"weak-evidence (1-SNP) fragment locus_acc={weak_acc:.3f}; "
+              f"pooling-majority recovery={recovered}/{n_pools} pools", file=sys.stderr)
+        if span_acc < 0.98:
+            failures.append(f"(F) PARALOG: spanning reads NOT at ceiling "
+                            f"(locus_acc={span_acc:.3f}) — metric mis-built / span evidence weak")
+        elif weak_acc >= 0.98:
+            failures.append(f"(F) PARALOG: weak fragments give the incumbent NO headroom "
+                            f"(weak_acc={weak_acc:.3f}>=0.98 vs span={span_acc:.3f}) — "
+                            f"non-discriminating")
+        elif recovered < n_pools:
+            failures.append(f"(F) PARALOG: pooling did NOT recover all pools "
+                            f"({recovered}/{n_pools}) — the below-ceiling gap is NOT provably "
+                            f"C4-addressable (could be the unrecoverable zero-evidence trap)")
         else:
-            print(f"[smoke] (F) PASS PARALOG/C4 window-selection is MEASURED + DISCRIMINATING: "
-                  f"window-spanning reads assign at ceiling ({span_acc:.3f}), while "
-                  f"window-excluding fragments drop to {frag_acc:.3f} with {frag_mapq0:.0%} "
-                  f"mapq0 (the panel correctly abstains but cannot place them). Whether C4 "
-                  f"pooling RECOVERS these is the NEXT-cycle ablation.", file=sys.stderr)
+            print(f"[smoke] (F) PASS PARALOG/C4 window-selection is MEASURED + DISCRIMINATING + "
+                  f"provably C4-ADDRESSABLE: per-read minimap2 drops to {weak_acc:.3f} on weak "
+                  f"(1-SNP) fragments (vs spanning ceiling {span_acc:.3f}), YET pooling-majority "
+                  f"recovers the true copy in {recovered}/{n_pools} pools — the gap a C4 pooling "
+                  f"member could close. Whether C4 ACTUALLY closes it is the NEXT-cycle ablation.",
+                  file=sys.stderr)
 
     # (D) HP_HARD must SEPARATE TWO ARMS (the real validity bar): score the
     # internal flat-affine DP (align_exon_block_global, the arm C1 upgrades)

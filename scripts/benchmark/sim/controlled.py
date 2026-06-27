@@ -521,20 +521,25 @@ def gen_variant_stratum(reps: int, rng: random.Random, locus0: int = 400
 # (`scorer.locus_accuracy`: mapped contig == truth origin contig), with per-read
 # READ-OF-ORIGIN labels so mis-clustering is MEASURED, not assumed.
 #
-# DISCRIMINATING (the incumbent is BELOW ceiling, verified empirically vs
-# minimap2 -ax splice -uf, 2026-06-26): with SPARSE divergence (a few
-# distinguishing SNPs clustered in one "informative window", as real paralogs
-# differ), a read FRAGMENT that EXCLUDES that window is informationally identical
-# to BOTH copies -> minimap2 can only guess (mapping_quality==0) and is right ~by
-# chance. A read that SPANS the window carries origin evidence and maps correctly
-# even at 5-10% noise (the at-ceiling control proving the metric is not trivially
-# failing everything). This is exactly the C4 window-selection slice: a per-read
-# seed-and-chain panel shares the blind spot; pooling/linkage (C4) is the orthogonal
-# member that could recover it (the next-cycle ablation).
+# DISCRIMINATING + ADDRESSABLE (verified empirically vs minimap2 -ax splice -uf,
+# 2026-06-26). The C4 slice is NOT "a fragment with NO distinguishing base" — that
+# is information-theoretically unrecoverable by ANY method (incl. C4), so a
+# below-ceiling number there is structural noise, not a closeable gap (the
+# vertical-slice trap). The real C4-addressable case is a fragment carrying WEAK
+# evidence — exactly ONE distinguishing SNP at realistic ONT noise:
+#   * per-read, the lone SNP is sometimes noise-flipped -> minimap2 mis-assigns
+#     (locus_acc < 1.0, some CONFIDENTLY wrong with mapq>0) -> BELOW ceiling;
+#   * but POOLING denoises: the majority SNP base across the read pool recovers the
+#     true copy (provable from truth NOW, without building C4 — the (D)-equivalent).
+# A read that SPANS several spread distinguishing SNPs carries redundant evidence
+# and maps correctly even at 5-10% noise = the at-ceiling control (proves the
+# metric is not trivially failing). minimap2/gapmm2/uLTRA share the per-read blind
+# spot; pooling/linkage (C4) is the orthogonal member that could close it (the
+# next-cycle ablation; the gate only has to MEASURE the gap + prove it's closeable).
 PARALOG_LEN = 600
-PARALOG_NDIFF = 3            # SMN-like: few distinguishing positions
-PARALOG_WIN = (260, 340)    # the informative window (distinguishing SNPs cluster here)
-PARALOG_FRAG = 200          # length of the window-EXCLUDING fragment reads
+PARALOG_DIFFPOS = [120, 300, 480]   # distinguishing SNPs SPREAD (not clustered)
+PARALOG_WEAK_SNP = 300              # the lone SNP the weak fragment covers
+PARALOG_FRAG = 200                  # frag = [WEAK_SNP-100, WEAK_SNP+100): ONLY that SNP
 
 
 def _mutate_positions(seq: str, positions: List[int], rng: random.Random) -> str:
@@ -565,29 +570,38 @@ def gen_paralog_stratum(reps: int, rng: random.Random, locus0: int = 500,
     """Build the C4 paralog stratum (see module note above).
 
     Each family is TWO near-identical contigs (``paraF_A`` / ``paraF_B``) differing
-    only at ``PARALOG_NDIFF`` distinguishing SNPs clustered in ``PARALOG_WIN``. Per
-    family + copy we emit two read kinds with READ-OF-ORIGIN truth:
+    only at the ``PARALOG_DIFFPOS`` distinguishing SNPs (SPREAD across the contig).
+    Per family + copy we emit two read kinds with READ-OF-ORIGIN truth:
 
-    * ``span`` — full-length read covering the informative window (origin evidence
-      present; the distinguishing window is protected from noise so it stays
-      informative): minimap2 assigns correctly = the at-ceiling control.
-    * ``frag`` — a ``PARALOG_FRAG``-bp fragment 3' of the window (origin evidence
-      ABSENT; identical to both copies): minimap2 guesses (mapq0) = below ceiling.
+    * ``span`` — full-length read covering ALL distinguishing SNPs (redundant origin
+      evidence): minimap2 assigns correctly even at 5-10% noise = the at-ceiling
+      control (proves the locus metric is not trivially failing).
+    * ``weak`` — a ``PARALOG_FRAG``-bp fragment centered on the LONE
+      ``PARALOG_WEAK_SNP`` (covers exactly ONE distinguishing SNP): the SNP is
+      sometimes noise-flipped, so minimap2 is below ceiling per-read — yet the
+      distinguishing SNP is recorded as a ``VariantTruth`` so the smoke can prove
+      POOLING (majority SNP base across the pool) RECOVERS the origin — the
+      C4-addressable gap.
 
-    Read kind is encoded in the read_id (``_span_`` / ``_frag_``) so the scorer/
-    smoke can split without a schema change; ``chrom`` is the TRUE origin contig
-    (what ``scorer.locus_accuracy`` checks against).
+    Read kind is encoded in the read_id (``_span_`` / ``_weak_``); ``chrom`` is the
+    TRUE origin contig (what ``scorer.locus_accuracy`` checks against); the weak
+    fragment's ``variants[0]`` carries the distinguishing SNP (``pos`` = genome
+    coord, ``alt_allele`` = THIS copy's base, ``ref_allele`` = the other copy's).
     """
     refs: Dict[str, str] = {}
     reads: List[Tuple[str, str]] = []
     truth: List[ReadTruth] = []
     li = locus0
-    L, ws, we = PARALOG_LEN, PARALOG_WIN[0], PARALOG_WIN[1]
+    L = PARALOG_LEN
+    dp = PARALOG_WEAK_SNP
+    fstart = dp - PARALOG_FRAG // 2          # frag window [fstart, fstart+FRAG) covers ONLY dp
+    fend = fstart + PARALOG_FRAG
+    assert all((p < fstart or p >= fend) for p in PARALOG_DIFFPOS if p != dp), \
+        "weak fragment must cover EXACTLY the one distinguishing SNP"
     for fam in range(n_families):
         base = _rand_unique(L, rng)
-        diffpos = sorted(rng.sample(range(ws, we), PARALOG_NDIFF))
         A = base
-        B = _mutate_positions(base, diffpos, rng)
+        B = _mutate_positions(base, PARALOG_DIFFPOS, rng)
         cA, cB = f"para{fam}_A", f"para{fam}_B"
         refs[cA] = A
         refs[cB] = B
@@ -596,28 +610,32 @@ def gen_paralog_stratum(reps: int, rng: random.Random, locus0: int = 500,
         split = _split_for(li)
         li += 1
         for origin, oseq in ((cA, A), (cB, B)):
+            other = B if origin == cA else A
             for i in range(reps):
-                # SPANNING read — covers the informative window (protect it from
-                # noise so the distinguishing bases remain origin evidence).
+                # SPANNING read — full length, covers ALL spread SNPs (redundant
+                # evidence) => at ceiling even with noise.
                 rid = f"{origin}_span_r{i:03d}"
-                rd = _add_noise(oseq, noise, rng, protect=(ws, we))
+                rd = _add_noise(oseq, noise, rng)
                 reads.append((rid, rd))
                 truth.append(ReadTruth(
                     read_id=rid, true_locus=f"para{fam}", true_transcript=origin,
                     chrom=origin, strand="+", genome_start=0, genome_end=L,
                     true_cigar=f"{L}M", stratum="PARALOG", split=split,
                     coverage=reps))
-                # NON-SPANNING fragment — 3' of the window => excludes ALL
-                # distinguishing SNPs => identical to both copies => ambiguous.
-                rid2 = f"{origin}_frag_r{i:03d}"
-                fstart = rng.randrange(we, L - PARALOG_FRAG)
-                frag = _add_noise(oseq[fstart:fstart + PARALOG_FRAG], noise, rng)
+                # WEAK fragment — covers ONLY the lone dp SNP. Noise sometimes flips
+                # it => per-read below ceiling; pooling recovers (smoke proves it).
+                rid2 = f"{origin}_weak_r{i:03d}"
+                frag = _add_noise(oseq[fstart:fend], noise, rng)
                 reads.append((rid2, frag))
+                snp_var = VariantTruth(
+                    pos=dp, ref_allele=other[dp], alt_allele=oseq[dp],
+                    zygosity="HOM", vaf=1.0, dist_to_junction=None)
                 truth.append(ReadTruth(
                     read_id=rid2, true_locus=f"para{fam}", true_transcript=origin,
                     chrom=origin, strand="+", genome_start=fstart,
-                    genome_end=fstart + PARALOG_FRAG, true_cigar=f"{PARALOG_FRAG}M",
-                    stratum="PARALOG", split=split, coverage=reps))
+                    genome_end=fend, true_cigar=f"{PARALOG_FRAG}M",
+                    variants=[snp_var], stratum="PARALOG", split=split,
+                    coverage=reps))
     return refs, reads, truth
 
 

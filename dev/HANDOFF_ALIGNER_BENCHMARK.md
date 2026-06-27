@@ -224,9 +224,15 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   verified discriminating + specific (see session-3 addendum).
 - **paralog/C4: DONE (session 3)** — added the scorer locus-concordance readout
   (`AlignerScore.locus_accuracy`/`locus_correct`/`locus_incorrect`/`locus_mapq0`)
-  FIRST, then `gen_paralog_stratum` + smoke (F). Verified discriminating: spanning
-  reads locus_acc=1.000 (at ceiling), window-excluding fragments 0.500 + 100% mapq0
-  (C4-addressable window-selection gap). See SPEC §Triage PARALOG bullet.
+  FIRST, then `gen_paralog_stratum` + smoke (F). **Advisor-corrected:** the first
+  cut used a window-EXCLUDING (zero-evidence) fragment — below ceiling at 0.5 but
+  UNRECOVERABLE by any method incl. C4 (the vertical-slice trap; "C4 could recover"
+  was false). Fixed to a WEAK-evidence fragment (covers exactly ONE distinguishing
+  SNP): per-read minimap2 below ceiling (locus_acc≈0.94) AND pooling-majority at the
+  lone SNP recovers the true copy 6/6 pools — the gap is provably C4-addressable
+  from truth (the (D)-equivalent). Spanning reads at ceiling 1.000 (control).
+  Effective diversity = n_families (3); reps = per-locus depth (a C4-pooling
+  feature). See SPEC §Triage PARALOG bullet.
 - Remaining strata (panel-failure/C5, coverage×Q) DEFERRED with recorded reasons
   (Tier-2-only / next-cycle-consumer) — see `SIMULATION_BENCHMARK_SPEC.md`
   §"Triage of the remaining SPEC strata". Best next: GENOMIC_A_CPA/C2 (scorer
