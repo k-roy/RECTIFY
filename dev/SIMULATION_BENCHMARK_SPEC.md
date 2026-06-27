@@ -234,6 +234,38 @@ incumbent is shown BELOW ceiling via a metric the scorer *already emits*.
   wiring caveat as Q; a generator is worthwhile but it can't fully discriminate
   until the walkback arm exists.
 
+## TIER-2 BRANCH-A RESULT (2026-06-26) — yeast saturation control, RUN on Sherlock
+First scaled Tier-2 run (job 31628436, COMPLETED 2m17s): ~500 spliced yeast
+transcripts × 20 copies = 10k reads, both error models, minimap2 -ax splice.
+Scope: ANNOTATED-recall + spurious-FDR of ONE aligner (the labels travel in each
+`tier2_results/*_summary.json` `_scope` block).
+
+| model | reads placed | ANNOTATED recall | spurious-FDR | TP/FP/FN |
+| --- | --- | --- | --- | --- |
+| DRS (ERRHMM-ONT)     | 9810/10000 (98.1%) | 0.816 | 0.051 | 8418/451/1902 |
+| cDNA (ERRHMM-ONT-HQ) | 9976/10000 (99.8%) | 0.843 | 0.077 | 8698/724/1622 |
+
+Reading: this is the SATURATION CONTROL (harness validated end-to-end on real
+annotation + real coords), NOT discrimination. Recall ~0.82–0.84 is REAL minimap2
+behavior on yeast — short yeast introns are genuinely hard (minimap2 calls some as
+deletions, not splices); not a harness artifact (verified: 0 truth junctions lie
+outside their read's covered+anchored span after the projection fix). cDNA (lower
+error) places more reads + higher recall but ALSO higher spurious-FDR. A projection
+bug (every transcript intron assigned to every fragment read) was found+fixed during
+real-coord verification BEFORE this run — see the pbsim3_wrapper commit.
+
+Infra note: the run landed on `sh03-07n10` (an AVX-512-trap node) DESPITE
+`--exclude`; the rectify conda env did NOT SIGILL there (the AVX-512 trap is
+build-specific — this env is safe), so the exclude not being honored was harmless
+here. For Branch B, prefer `--partition=owners` or re-verify the exclude.
+
+**NOT measured here (BRANCH B, gated):** the panel-failure TAIL (needs the wired
+multi-aligner panel so `_panel_unplaced_fraction` = placed-by-NO-aligner, + an
+injected hard sub-population — a clean run reports tail≈0, a false negative) and
+novel-junction NIC/NNC recall (needs isoform injection: exon-skip→NIC, novel-site→
+NNC). Aligner inventory for Branch B (rectify env): minimap2+uLTRA+deSALT+gapmm2
+present, gmap in other envs, mapPacBio absent.
+
 ## Open decisions (carry to user / fold crafter `benchmark_coupling`)
 - ~~NanoSim vs badread for Tier-2~~ → **RESOLVED: pbsim3** (per-read MAF; see above).
 - Whether Tier-1's error model is badread's ONT model or RECTIFY's own empirical table (held-out either way).

@@ -63,8 +63,14 @@ coords, and submitted to Sherlock.
   yeast introns are genuinely hard — minimap2 calls some as deletions), FDR
   ≈0.03–0.07. **This is the saturation control (harness validation), NOT
   discrimination.**
-- **Job 31628436 submitted** (larsms, AVX-512 exclude, DRS+cDNA, copies=20 over
-  ~500 spliced yeast transcripts). Sentinel: `$D/tier2_results/.tier2_rc`.
+- **Job 31628436 COMPLETED (2m17s, rc=0).** DRS: 9810/10000 placed, ANNOTATED
+  recall=0.816 FDR=0.051. cDNA: 9976/10000 placed, recall=0.843 FDR=0.077.
+  Summaries in `$D/tier2_results/{drs,cdna}_summary.json` (with `_scope` labels);
+  numbers + reading recorded in `SIMULATION_BENCHMARK_SPEC.md` §"TIER-2 BRANCH-A
+  RESULT". Saturation control PASSED (harness validated on real coords at scale);
+  ~0.82–0.84 recall is real minimap2/short-yeast-intron behavior, not artifact.
+  (Infra: landed on AVX-512 node sh03-07n10 despite --exclude but the rectify env
+  did NOT SIGILL — exclude was harmless-but-not-honored; use owners for Branch B.)
 - **Remaining strata deferred with reasons** (PARALOG needs a scorer locus-
   concordance metric first; COVERAGE×Q can't discriminate until C3 consumes phred;
   PANEL_FAILURE's real validity is the Tier-2 5-aligner panel) — see
@@ -242,19 +248,9 @@ benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/bench
   unit-deletion placement is NOT the leftmost slide (so left-alignment genuinely
   diverges from truth) — the current whole-unit deletion is slide-equivalent and
   correctly scores 1.0.
-- **Tier-2 (Branch A, yeast minimap2 baseline): SUBMITTED — job 31628436.**
-  RESUME (concrete): `ssh sherlock 'D=/home/groups/larsms/users/kevinroy/aligner_bench_live;
-  sacct -j 31628436 -X -o State,Elapsed,ExitCode; cat $D/tier2_results/.tier2_rc 2>/dev/null;
-  ls $D/tier2_results/'`.
-    - sentinel `.tier2_rc` ABSENT + sacct RUNNING/PENDING → still going, wait.
-    - `.tier2_rc` == 0 → read `$D/tier2_results/{drs,cdna}_summary.json` (the
-      `_scope` block states the labels); record ANNOTATED recall + spurious-FDR
-      (DRS vs cDNA) into the SPEC; expected DRS recall ≈0.80–0.85 (saturation
-      control). Done.
-    - `.tier2_rc` != 0 OR sacct FAILED/SIGILL → read `$D/tier2_bench_<id>.err`.
-      If "Illegal instruction" → AVX-512 trap (it landed on an AMD Milan node
-      despite the exclude); resubmit with `--partition=owners` or a tighter
-      exclude. If pbsim/parse error → check the .err and the wrapper.
+- **Tier-2 (Branch A, yeast minimap2 baseline): DONE — job 31628436 COMPLETED rc=0.**
+  Results recorded in SPEC §"TIER-2 BRANCH-A RESULT" (DRS recall 0.816/FDR 0.051;
+  cDNA 0.843/0.077). Re-run any time: `ssh sherlock 'cd <D> && sbatch run_tier2.sbatch'`.
   Branch B (the real tail + cross-aligner FDR) is the gated follow-on: NOT this
   job. It needs (1) the multi-aligner panel WIRED + index-prepped (minimap2 +
   gapmm2 + uLTRA + deSALT are in the env; gmap is in `aligner_bench`, mapPacBio
