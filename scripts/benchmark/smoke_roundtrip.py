@@ -286,6 +286,46 @@ def main():
                   f"member could close. Whether C4 ACTUALLY closes it is the NEXT-cycle ablation.",
                   file=sys.stderr)
 
+    # (G) JUNCTION_DISCOVERY — the motif-snapping bias (user priority #4). The
+    # member exists to discover de-novo non-canonical introns the canonical-biased
+    # panel misses. This stratum measures it: canonical junctions are the at-ceiling
+    # control (recovered exactly, annotated or not); non-canonical junctions are
+    # SNAPPED to a nearby canonical motif (recall collapses + fp_canonical_snap
+    # fires). The reads are spliced at the true site by construction, so the snap is
+    # a member-ADDRESSABLE motif-bias, not an evidence gap. (Annotation axis is flat
+    # for minimap2 — annotation-agnostic; it moves uLTRA/gmap in the panel run.)
+    if "JUNCTION_DISCOVERY" in per_stratum:
+        jd = {rid: t for rid, t in truth_map.items() if t.stratum == "JUNCTION_DISCOVERY"}
+        canon = {rid: t for rid, t in jd.items() if t.true_locus.startswith("jd_can_")}
+        noncanon = {rid: t for rid, t in jd.items() if t.true_locus.startswith("jd_non_")}
+        sc_c = score_bam(bam, canon, genome, aligner_name="mm2:JD_canon")
+        sc_n = score_bam(bam, noncanon, genome, aligner_name="mm2:JD_noncanon")
+        can_recall, non_recall = sc_c.junction.recall, sc_n.junction.recall
+        snaps = sc_n.junction.fp_canonical_snap
+        print(f"[smoke] (G) JUNCTION_DISCOVERY: canonical recall={can_recall:.3f}; "
+              f"non-canonical recall={non_recall:.3f} (fp_canonical_snap={snaps}, "
+              f"fp={sc_n.junction.fp} fn={sc_n.junction.fn})", file=sys.stderr)
+        if can_recall < 0.9:
+            failures.append(f"(G) JUNCTION_DISCOVERY: canonical reads NOT at ceiling "
+                            f"(recall={can_recall:.3f}) — metric mis-built / construct broken")
+        elif non_recall > can_recall - 0.3:
+            failures.append(f"(G) JUNCTION_DISCOVERY: non-canonical gives the incumbent NO "
+                            f"headroom (non={non_recall:.3f} vs canon={can_recall:.3f}) — "
+                            f"non-discriminating motif-snapping stratum")
+        elif snaps < 1:
+            failures.append(f"(G) JUNCTION_DISCOVERY: no canonical-snap detected "
+                            f"(fp_canonical_snap={snaps}) — the FN are not provably motif-snaps "
+                            f"(could be generic misplacement, not the member-addressable bias)")
+        else:
+            print(f"[smoke] (G) PASS JUNCTION_DISCOVERY motif-snapping is MEASURED + "
+                  f"DISCRIMINATING + member-ADDRESSABLE: minimap2 recovers canonical junctions "
+                  f"at ceiling ({can_recall:.3f}) but SNAPS non-canonical ones to nearby "
+                  f"canonical motifs (recall {non_recall:.3f}, {snaps} canonical-snaps detected) "
+                  f"— the reads support the true non-canonical site by construction, so an "
+                  f"evidence-weighing member could recover it. (Annotated-vs-novel axis moves "
+                  f"the annotation-aware panel aligners; measured in the panel run.)",
+                  file=sys.stderr)
+
     # (D) HP_HARD must SEPARATE TWO ARMS (the real validity bar): score the
     # internal flat-affine DP (align_exon_block_global, the arm C1 upgrades)
     # ALONGSIDE minimap2 on HP_HARD, broken out by mode. Below-ceiling on ONE arm

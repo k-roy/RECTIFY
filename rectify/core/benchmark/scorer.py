@@ -134,6 +134,7 @@ class JunctionScore:
     by_class: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
     by_canon: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
     fp_variant_adjacent: int = 0   # C6: false junctions near a truth variant
+    fp_canonical_snap: int = 0     # point-4: canonical FP snapped from a non-canonical truth
 
     @property
     def recall(self) -> float:
@@ -215,6 +216,7 @@ class AlignerScore:
             "junction_fp": self.junction.fp,
             "junction_fn": self.junction.fn,
             "junction_fp_variant_adjacent": self.junction.fp_variant_adjacent,
+            "junction_fp_canonical_snap": self.junction.fp_canonical_snap,
             "junction_by_class": {k: dict(v) for k, v in self.junction.by_class.items()},
             "junction_by_canonicity": {k: dict(v) for k, v in self.junction.by_canon.items()},
             "indel_position_exact_concordance": round(self.indel.position_exact_concordance, 4),
@@ -373,7 +375,7 @@ def score_bam(bam_path: Union[str, Path],
 
 
 def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
-                variant_adjacency_bp: int) -> None:
+                variant_adjacency_bp: int, snap_window_bp: int = 10) -> None:
     cig = read.cigartuples
     rstart = read.reference_start
 
@@ -396,6 +398,7 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
     truth_by_coord = {(j.intron_start, j.intron_end): j for j in rt.junctions}
     called = extract_junctions(rstart, cig)
     matched_truth = set()
+    fp_canonical_calls = []  # canonical FP coords, for the snap metric (below)
     var_pos = _variant_positions(rt)
     for (cs, ce) in called:
         ns, ne = normalize_junction(cs, ce, genome_seq) if genome_seq else (cs, ce)
@@ -415,6 +418,8 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
                 canon = False
             score.junction.by_canon["canonical" if canon else "noncanonical"]["fp"] += 1
             score.junction.by_class["FP_NOVEL"]["fp"] += 1
+            if canon:
+                fp_canonical_calls.append((ns, ne))
             # variant-adjacent if NEAR EITHER boundary (donor ns OR acceptor ne) —
             # a variant at the acceptor end fabricates junctions too.
             if var_pos and min(min(abs(ns - vp), abs(ne - vp))
@@ -425,6 +430,22 @@ def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
         score.junction.fn += 1
         score.junction.by_class[j.klass.value]["fn"] += 1
         score.junction.by_canon["canonical" if j.canonical else "noncanonical"]["fn"] += 1
+
+    # ---- Canonical-snap (junction-discovery bias, point 4) ----------------
+    # A CANONICAL false-positive junction lying within snap_window_bp of an
+    # UNMATCHED NON-CANONICAL truth junction = the aligner SNAPPED a non-canonical
+    # junction onto a nearby canonical motif instead of reporting it de-novo (the
+    # motif-bias that defeats non-canonical intron discovery). Counted per snapped
+    # FP. (The reads are spliced at the true site by construction, so this is a
+    # member-addressable bias, not an evidence gap.)
+    if fp_canonical_calls:
+        noncanon_unmatched = [(j.intron_start, j.intron_end) for j in rt.junctions
+                              if (j.intron_start, j.intron_end) not in matched_truth
+                              and not j.canonical]
+        for (fs, fe) in fp_canonical_calls:
+            if any(abs(fs - ts) <= snap_window_bp or abs(fe - te) <= snap_window_bp
+                   for (ts, te) in noncanon_unmatched):
+                score.junction.fp_canonical_snap += 1
 
     # ---- Indels (the framing metric) ------------------------------------
     # An aligner placement is position-exact ONLY if (a) the net (D-I) inside each

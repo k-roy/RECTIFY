@@ -645,12 +645,88 @@ def gen_paralog_stratum(reps: int, rng: random.Random, locus0: int = 500,
 
 
 # ---------------------------------------------------------------------------
+# JUNCTION_DISCOVERY stratum — canonical/non-canonical x annotated/unannotated
+# ---------------------------------------------------------------------------
+# The scientific crux of the aligner program (user priority #4): which aligners
+# OVER-SNAP a junction to a nearby canonical (GT-AG) / annotated motif vs which
+# faithfully report a de-novo non-canonical intron. PROBED + CONFIRMED (2026-06-27):
+# minimap2 -ax splice -uf places a canonical GT-AG intron EXACTLY but SNAPS a
+# non-canonical intron to a nearby canonical motif (random sequence always supplies
+# one) — even error-free and even with -C0. So the snap is a pure motif-bias the
+# read evidence (spliced at the true site by construction) contradicts → it is
+# member-ADDRESSABLE (an evidence-weighing / motif-soft-prior member recovers it).
+#
+# The 2x2: klass {ANNOTATED, NNC} x canonical {True, False}:
+#   canonical+annotated, canonical+unannotated (novel canonical),
+#   non-canonical+annotated, non-canonical+unannotated (hardest: de-novo non-canon).
+# minimap2 is annotation-AGNOSTIC so the annotation axis won't move it; uLTRA/gmap
+# (annotation-aware) will — measurable in the panel run; the truth supports both.
+# Each read gets its OWN randomized contig (anti-overcount, same as VARIANT/PARALOG).
+NONCANON_MOTIFS = [("CA", "TC"), ("CC", "GG"), ("CT", "TG"), ("CA", "GG")]  # donor!~GT/GC/AT, acc!~AG/AC
+
+
+def gen_junction_discovery_stratum(reps: int, rng: random.Random, locus0: int = 600
+                                   ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """Build the junction-discovery bias stratum (see module note). Returns refs,
+    reads, truth. Each non-canonical truth junction is verified non-canonical WITHIN
+    its ambiguity window (so the label is right and a snap is a genuine shift, not an
+    ambiguity-equivalent TP); the rare accidental in-window-canonical draw is retried."""
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+    li = locus0
+    EXON = 200
+    for canonical in (True, False):
+        for annotated in (True, False):
+            mtag = "can" if canonical else "non"
+            atag = "anno" if annotated else "novel"
+            for i in range(reps):
+                chrom = f"jd_{mtag}_{atag}_r{i:03d}"
+                # retry until the constructed junction has the intended canonicity
+                for _attempt in range(20):
+                    e1 = _rand_unique(EXON, rng)
+                    e2 = _rand_unique(EXON, rng)
+                    if canonical:
+                        donor, acceptor = "GT", "AG"
+                    else:
+                        donor, acceptor = rng.choice(NONCANON_MOTIFS)
+                    core = _rand_unique(196, rng)
+                    intron = donor + core + acceptor
+                    contig = e1 + intron + e2
+                    i_start, i_end = EXON, EXON + len(intron)
+                    model = TranscriptModel(
+                        name=chrom, chrom=chrom, strand="+",
+                        exons=[Exon(0, EXON), Exon(i_end, len(contig))],
+                        genome_seq=contig)
+                    anno_pairs = {(chrom, i_start, i_end)} if annotated else None
+                    jt = model.junction_truths(annotated_pairs=anno_pairs)
+                    # verify intended canonicity (ambiguity-aware) before accepting
+                    if jt and jt[0].canonical == canonical:
+                        break
+                else:
+                    continue  # could not construct the intended cell; skip this read
+                refs[chrom] = contig
+                reads.append((chrom, model.spliced_transcript()))
+                split = _split_for(li)
+                li += 1
+                truth.append(ReadTruth(
+                    read_id=chrom, true_locus=f"jd_{mtag}_{atag}",
+                    true_transcript=chrom, chrom=chrom, strand="+",
+                    genome_start=model.genome_start, genome_end=model.genome_end,
+                    true_cigar=model.fulllength_cigar(), junctions=jt,
+                    true_cpa=model.genome_end - 1, stratum="JUNCTION_DISCOVERY",
+                    split=split, coverage=1))
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # Top-level corpus generator
 # ---------------------------------------------------------------------------
 def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
                     include_junction: bool = True,
                     include_variant: bool = True,
-                    include_paralog: bool = True) -> Dict[str, str]:
+                    include_paralog: bool = True,
+                    include_jdisc: bool = True) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     rng = random.Random(seed)
     refs: Dict[str, str] = {}
@@ -685,6 +761,12 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
         refs.update(rp)
         reads += rdp
         truth += tp
+
+    if include_jdisc:
+        rjd, rdjd, tjd = gen_junction_discovery_stratum(reps, rng)
+        refs.update(rjd)
+        reads += rdjd
+        truth += tjd
 
     ref_fa = os.path.join(out_dir, "ref.fa")
     reads_fq = os.path.join(out_dir, "reads.fastq")
