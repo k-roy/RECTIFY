@@ -32,6 +32,7 @@ Multi-scale design:
 from __future__ import annotations
 
 import argparse
+import datetime
 import gzip
 from pathlib import Path
 from typing import Optional
@@ -540,14 +541,20 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
     n = win_end - win_start
     ax.set_xlim(0, n)
     # Reserve space ABOVE the bases for the orig/corr/samtools markers +
-    # labels. Bumped to 1.75 so a 3-tier stack (orig/corr at tier 1,
-    # corr-when-close at tier 2, samtools-when-close at tier 3) fits
-    # without bleeding into the bedgraph panel above.
-    ax.set_ylim(0, 1.75)
+    # labels. Bumped to 2.30 so a 3-tier stack (orig/corr at tier 1,
+    # corr-when-close at tier 2, samtools ALWAYS on its own tier 3) clears
+    # the ~0.40-data-unit text height at this row's height_ratio without
+    # adjacent tiers overprinting (figure-qa: orig=corr vs samtools, 2026-06).
+    ax.set_ylim(0, 2.30)
     ax.set_yticks([])
     ax.set_xticks([])
     ax.set_ylabel(label, rotation=0, ha="right", va="center",
                   fontsize=SIZE_TEXT, fontweight="bold")
+    # Anchor the ylabel at the ref-bases level (~y=0.30 of ylim 2.30 → axes
+    # frac ~0.13), not the ylim centre. With the tall ylim the default centred
+    # label rises into the marker tier / the row above, colliding with a
+    # left-edge delta label there (figure-qa '−2' vs 'ref', 2026-06).
+    ax.yaxis.set_label_coords(-0.018, 0.13)
     for spine in ax.spines.values():
         spine.set_visible(False)
     # Ref bases sit at y=0.05-0.55 so there's room for ↓ markers above.
@@ -567,8 +574,8 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
     # When orig and corr differ but are within ~3 columns, stack the labels
     # vertically (corr above orig) so they remain readable.
     tri_y = 0.95
-    txt_y_lo = 1.20
-    txt_y_hi = 1.34
+    txt_y_lo = 1.15
+    txt_y_hi = 1.60
     orig_in = orig_3p is not None and win_start <= orig_3p < win_end
     corr_in = corr_3p is not None and win_start <= corr_3p < win_end
     same_pos = orig_in and corr_in and orig_3p == corr_3p
@@ -600,20 +607,15 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
     # strand of the UNRECTIFIED minimap2 BAM, with pA tail still attached
     # as soft-clip). Renders as a brown ↓ marker so the contrast vs.
     # corr (green) and orig (red) is obvious.
-    txt_y_st = 1.50    # tier 3 — used only when samtools is close to orig/corr
+    txt_y_st = 2.05    # tier 3 — samtools ALWAYS lives here (its own row)
     if samtools_3p is not None and win_start <= samtools_3p < win_end:
         x = (samtools_3p - win_start) + 0.5
         ax.plot(x, tri_y, marker="v", markersize=11, color="#795548")
-        # If samtools is far from BOTH orig and corr, share the bottom row
-        # (txt_y_lo). If close to either (within ~5 cols), push to tier 3
-        # (txt_y_st) so the texts don't collide horizontally.
-        close_to_orig = orig_in and abs(samtools_3p - orig_3p) <= 5
-        close_to_corr = corr_in and abs(samtools_3p - corr_3p) <= 5
-        if close_to_orig or close_to_corr:
-            s_y = txt_y_st
-        else:
-            s_y = txt_y_lo
-        ax.text(x, s_y, "samtools", ha="center", va="bottom",
+        # samtools always uses its own tier so the wide word label can never
+        # overprint orig/corr regardless of horizontal proximity (the previous
+        # "share tier 1 when >5 cols away" heuristic ignored that the WORDS are
+        # wider than 5 columns — figure-qa orig=corr/samtools collision, 2026-06).
+        ax.text(x, txt_y_st, "samtools", ha="center", va="bottom",
                 fontsize=SIZE_TEXT, color="#795548", fontweight="bold")
 
     # 5' end markers — orig_5p (faded blue) and corr_5p (deep blue). These
@@ -2539,7 +2541,9 @@ def render(
     # Read rows much taller (2.0) for the insertion-pill stagger ABOVE the row.
     # Tick row bumped from 0.35 → 0.55 so coord numbers don't crowd the
     # alignment-track baseline above them.
-    height_ratios = [1.0, 1.2] + [2.0] * len(track_sources) + [0.55]
+    # ref row bumped 1.2 → 1.65 to give the 3-tier orig/corr/samtools marker
+    # stack (ylim 2.30) enough pixels that adjacent tiers don't overprint.
+    height_ratios = [1.0, 1.65] + [2.0] * len(track_sources) + [0.55]
 
     # Cross-chrom mini-panels prepended at the TOP (right above the main
     # bedgraph). Each contributes a painted-CIGAR row + tick row with its
@@ -2649,6 +2653,16 @@ def render(
                  "cross-chrom (excluded from per-base view): " + "; ".join(chunks),
                  ha="center", fontsize=SIZE_TEXT, color="#b71c1c", style="italic",
                  fontweight="bold")
+    # Provenance footer (project figure rule): small grey, self-documenting —
+    # data source + key processing + script filename + render date.
+    fig.text(
+        0.5, 0.002,
+        "source: wt_by4742_rep1 ONT-DRS · S. cerevisiae S288C (R64-5-1) · "
+        "RECTIFY HP-ED winner-selection + poly(A) restore · "
+        "render_read_alignment.py · " + datetime.date.today().isoformat(),
+        ha="center", va="bottom", fontsize=5.5, color="0.45",
+    )
+
     ax_iter = iter(axes)
     if panel_data is not None:
         ax_panel = next(ax_iter)
