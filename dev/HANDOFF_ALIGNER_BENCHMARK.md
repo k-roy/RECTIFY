@@ -131,6 +131,37 @@ the cell-size MUST-HAVE was audited:
 
 ---
 
+## RED-TEAM (2026-06-26, 4 independent auditor agents) — gate is TRUSTWORTHY, no blocker
+4 read-only auditors swept truth-construction (Tier-1 + Tier-2), the scorer, and
+gate-validity/claims. Verdict: fitness genuinely scores vs truth (never the internal
+score), ambiguity-aware match works, the flat-affine ablation path runs. **4 verified
+bugs FIXED** (commit `2f80ee5`): VARIANT eq-span too narrow (193/480, ambiguity-span
+class); scorer insertion right-boundary FN; `fp_variant_adjacent` donor-only (missed
+acceptor); HP `true_cigar` missing `-k` (latent).
+
+**OPEN red-team findings (NOT yet fixed) — for the next hardening pass:**
+- **Coverage: non-canonical + minus-strand FDR tracks UNEXERCISED.** Whole corpus is
+  `+`-strand/canonical, so the §8 non-canonical track and the minus-strand canonicity
+  fix are never hit by the smoke (classifier verified correct, but a regression would
+  pass green). Add a non-canonical-NNC + a minus-strand spliced locus to the smoke.
+- **(E) VARIANT proves discriminating+specific but NOT addressable** (the bar (D)/(F)
+  meet). A ≥40bp-deletion-as-intron may leave no pileup signal a C6-MVP emission could
+  consume — add an addressability proof or downgrade the claim.
+- **reps=20 smoke is not discriminating-scale:** (D)'s C1-addressability verdict is
+  decided on ~3 reads (fragile); `min_cell_reads`=9 vs the 100 floor; "cell-audited"
+  has no CI guard. Make (C') a hard assert at C1 scale; run (D) at a reps with a
+  non-trivial failure denominator.
+- **Tier-2 indel-projection coords (REPORT-ONLY, not gated):** insertion off-by-one +
+  not coalesced; minus-strand multi-base UNIQUE deletion `eq` anchored at the wrong
+  end (`pbsim3_wrapper.py:142-170`). Fix for truth.tsv honesty.
+- **UNVERIFIED risk (verify on Sherlock):** Tier-2 reverse-strand MAF projection
+  assumes pbsim keeps the template 's' line forward; if pbsim revcomps it, `-`-read
+  JUNCTIONS (gated) would be wrong. Check a real `.maf` block: template strand for a
+  `-` read line.
+- MINOR: `reads_missing_contig` still folds raw-coord TP/FP/FN into totals (warns but
+  doesn't exclude); `locus_accuracy` diluted by unique-contig strata; STR AT-only
+  cells <100 at reps=120; SPEC strata table still calls STR discriminating.
+
 ## DONE
 Three ABSENT components built (everything else is reuse), all under the
 benchmark-only paths the brief allows (`rectify/core/benchmark/`, `scripts/benchmark/`):
