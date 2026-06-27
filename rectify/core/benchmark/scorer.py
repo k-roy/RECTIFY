@@ -210,8 +210,30 @@ class AlignerScore:
 # ---------------------------------------------------------------------------
 # Genome loading (light FASTA reader — pysam.FastaFile preferred)
 # ---------------------------------------------------------------------------
+def open_fasta(fasta_path: Union[str, Path]) -> pysam.FastaFile:
+    """Open a FASTA, guaranteeing the ``.fai`` is not STALE.
+
+    ``pysam.FastaFile`` silently reuses an existing ``.fai`` even when the FASTA
+    has since been rewritten (the index has no mtime check). The benchmark
+    regenerates ``ref.fa`` in place (e.g. when a new stratum adds contigs), so a
+    leftover index from a prior run would expose only the OLD contig set —
+    ``load_genome`` would drop the new contigs and ``cigar_records_to_bam`` would
+    emit a header with ``get_tid`` == -1 for them (silent truncation, the exact
+    bug that broke the gate smoke). Drop a ``.fai`` older than its FASTA so pysam
+    rebuilds it.
+    """
+    fasta = Path(fasta_path)
+    fai = Path(str(fasta) + ".fai")
+    try:
+        if fai.exists() and fai.stat().st_mtime < fasta.stat().st_mtime:
+            fai.unlink()
+    except OSError:
+        pass
+    return pysam.FastaFile(str(fasta))
+
+
 def load_genome(fasta_path: Union[str, Path]) -> Dict[str, str]:
-    fa = pysam.FastaFile(str(fasta_path))
+    fa = open_fasta(fasta_path)
     return {c: fa.fetch(c) for c in fa.references}
 
 
@@ -229,7 +251,7 @@ def cigar_records_to_bam(records: Iterable[Tuple[str, str, int, list, str]],
     scoring DP output that never produced a BAM."""
     import subprocess
     out_bam = str(out_bam)
-    fa = pysam.FastaFile(str(ref_fa))
+    fa = open_fasta(ref_fa)
     header = {"HD": {"VN": "1.6", "SO": "coordinate"},
               "SQ": [{"LN": fa.get_reference_length(c), "SN": c} for c in fa.references]}
     unsorted = out_bam + ".unsorted.bam"

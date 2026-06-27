@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from rectify.core.benchmark.truth_schema import read_truth_table  # noqa: E402
 from rectify.core.benchmark.scorer import (  # noqa: E402
     score_bam, load_genome, extract_junctions, cigar_records_to_bam,
-    net_indel_in_span, all_indel_positions,
+    net_indel_in_span, all_indel_positions, open_fasta,
 )
 from rectify.core.benchmark.truth_schema import IndelKind  # noqa: E402
 from rectify.core.consensus.chimeric_consensus import normalize_junction  # noqa: E402
@@ -96,7 +96,7 @@ def build_shifted_junction_bam(ref_fa: str, truth, out_bam: str) -> tuple:
     # normalize BACK onto truth -> TP not FP. (Shifting LEFT of the leftmost
     # normalized truth would leave the window and IS a genuine FP — see B2.)
     shifted_start, shifted_end = j.intron_start + 1, j.intron_end + 1
-    fa = pysam.FastaFile(ref_fa)
+    fa = open_fasta(ref_fa)
     header = {"HD": {"VN": "1.6", "SO": "coordinate"},
               "SQ": [{"LN": fa.get_reference_length(c), "SN": c}
                      for c in fa.references]}
