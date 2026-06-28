@@ -5,6 +5,32 @@ commits here; user confirmed you own the validation work). **You are a fresh ses
 bottom, then continue.** Read `~/.claude/CLAUDE.md` + `~/work/CLAUDE.md` + `CLAUDE.md` first (rm-safety,
 M1 8GB discipline, ControlMaster, surgical `git add` — never `-A`).
 
+## ⚑ UPDATE 2026-06-27 (#4) — figure-review session (per-read renderer overhaul)
+
+Interactive figure-by-figure review of the DRS validation bundle with the user. All changes are to
+`scripts/validation_data/render_read_alignment.py` (+ `generate_review_report.py`), **render-only — no
+test imports the renderer; full validation/poly-A/walkback suites remain green**. Committed in order:
+
+- `a389793` unrectified-row fix: the "minimap2 (unrectified)" overview/per-base row prefers the dorado
+  source, but the 7 build-X re-sourced reads (cat1/cat2/cat9) have a placeholder all-M CIGAR → painting it
+  per-base frameshifts into an all-pink row. Fall through to `minimap2_unrectified.bam` when the dorado read
+  is single-all-M.
+- `eb54a81` (+ several `feat(validation-render)` commits squashed/amended along the way) — the per-read
+  figure now shows, per aligner row:
+  • **green ▲** = that aligner's RECTIFY-corrected 3' end (on EVERY row incl. the unrectified baseline);
+    the unrectified row's ▲ marks the NAIVE (samtools, no-RECTIFY) 3' end for contrast.
+  • **tail cells** decomposed non-overlapping: **crimson** = force-aligned-then-walkback-removed,
+    **grey** = native aligner soft-clip, **green** = parquet pA tail.
+  • ref row CLEANED — old `orig=corr`/`samtools` markers removed (redundant with per-row ▲).
+  • top track repurposed from the vacuous bundle-bedgraph "3' pileup" → **"aligner 3' agreement"**: each
+    aligner's corrected 3' stacked as one labeled cell at its position (winner green). One tall stack =
+    consensus; multiple stacks = disagreement (e.g. cat1_plus_1 shows 4 cells — deSALT cross-maps chrVI).
+  • `--dpi` option added (default 150).
+
+**Walkthrough position: read 3/36 reviewed** (cat1_minus_1, _minus_2, _plus_1). NEXT = cat1_plus_2, then
+cat2…cat9. Latest full render: `scratchpad/figs_v9/` (all 36). The renderer feature-set is settled per the
+user's iterative feedback; resume the read-by-read review at cat1_plus_2.
+
 ## ⚑ UPDATE 2026-06-26 (#3) — WALKBACK extended-tail guard (force-aligned poly-A)
 
 Figure review (cat1_minus_1) surfaced a real walkback gap. mapPacBio force-aligns the 3' poly-A tail
