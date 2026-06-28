@@ -3113,16 +3113,21 @@ def render(
         # the ov-ticks panel, va="bottom" anchored at y=0). Negative y drops the
         # bracket into the gap beneath the numbers so it no longer overlaps them.
         _yb = -0.18
-        # faint region tint over the zoomed sub-region in the overview strips
+        # faint region tint over the zoomed sub-region in the overview strips —
+        # this is the zoom INDICATOR BOX (matplotlib indicate_inset_zoom idiom).
+        # A light edge makes its span legible on its own so no separate
+        # horizontal span bar is needed below (dropped as redundant — the box
+        # already states the span; the dotted connectors below carry the
+        # "expands into the detail panel" relationship).
         _lo, _hi = ax_ov.get_ylim()
+        from matplotlib.colors import to_rgba as _to_rgba
         ax_ov.add_patch(Rectangle(
             (_ov_xL, _lo), _ov_xR - _ov_xL, _hi - _lo,
-            facecolor=_grey, edgecolor="none", alpha=0.12, zorder=0,
+            facecolor=_to_rgba(_grey, 0.12), edgecolor=_to_rgba(_grey, 0.55),
+            linewidth=0.6, zorder=0,
         ))
-        # horizontal span bracket joining the two edges — the zoomed locus span
-        ax_ov_ticks.plot([_ov_xL, _ov_xR], [_yb, _yb], color=_grey,
-                         linewidth=1.2, clip_on=False, zorder=3)
-        # two dotted edges fanning from the bracket down to the ref-seq top
+        # two dotted edges fanning from just below the overview coords down to
+        # the ref-seq top — the zoom connectors
         for _ovx, _refx in ((_ov_xL, 0), (_ov_xR, _n_det)):
             con = ConnectionPatch(
                 xyA=(_ovx, _yb), coordsA="data", axesA=ax_ov_ticks,
