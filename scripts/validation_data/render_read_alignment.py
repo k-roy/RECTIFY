@@ -2784,50 +2784,36 @@ def render(
     # If a stale aligner BAM slips through, any residual M segments are
     # rendered with the = color (CIGAR_OV_COLOR[0] below) so they merge
     # visually with match runs.
-    _legend_specs = [
-        ("=",  "match",        "#cfd8dc"),
-        ("X",  "mismatch",     "#e91e63"),
-        ("D",  "deletion",     "#ff9800"),
-        ("I",  "insertion",    "#9c27b0"),
-        ("S",  "soft-clip",    "#bbbbbb"),
-        ("N",  "intron",       "#aaaaaa"),
-    ]
+    # SINGLE merged key (was two stacked rows — too crowded). Drops the
+    # duplicates: the old "S soft-clip" op is folded into "native soft-clip",
+    # and the detail "mismatch" swatch into "X mismatch". The first cluster is
+    # the overview's painted-CIGAR colors; the rest are the per-base tail-cell
+    # shadings (exact cell facecolor+edgecolor) + the corrected-3' marker.
+    # M is omitted: =-SEQ decoded BAMs expand M into =/X via _split_m_into_eqx;
+    # any residual M renders with the = color so it merges with match runs.
     from matplotlib.patches import Patch as _Patch
-    handles = [_Patch(facecolor=c, edgecolor="none",
-                      label=f" {op}  {nm}")
-               for (op, nm, c) in _legend_specs]
-    leg = fig.legend(
-        handles=handles, loc="upper center", ncol=len(handles),
-        bbox_to_anchor=(0.5, 0.978),
-        frameon=False, fontsize=SIZE_SMALL + 0.5,
-        handlelength=1.0, handleheight=0.9, handletextpad=0.3,
-        columnspacing=1.0, borderpad=0.1,
-    )
-    # --- Second legend: per-base tail-cell shading key ---
-    # The detail view recolors each soft-clip cell by its biological/algorithmic
-    # meaning. These swatches use the EXACT cell facecolor + edgecolor so the
-    # key matches what's drawn in the rows. A green ▲ entry documents the
-    # corrected-3' marker. This replaces the prior text-only banner with a
-    # visual key (the colors are otherwise hard to name unambiguously).
     from matplotlib.lines import Line2D as _Line2D
-    _cell_handles = [
-        _Patch(facecolor=MISMATCH_BG, edgecolor="none", label="mismatch"),
+    handles = [
+        _Patch(facecolor="#cfd8dc", edgecolor="none", label="= match"),
+        _Patch(facecolor="#e91e63", edgecolor="none", label="X mismatch"),
+        _Patch(facecolor="#ff9800", edgecolor="none", label="D deletion"),
+        _Patch(facecolor="#9c27b0", edgecolor="none", label="I insertion"),
+        _Patch(facecolor="#aaaaaa", edgecolor="none", label="N intron"),
         _Patch(facecolor=SOFTCLIP_BG, edgecolor=SOFTCLIP_FG, linewidth=0.6,
                label="native soft-clip"),
         _Patch(facecolor=SOFTCLIP_WB_BG, edgecolor=SOFTCLIP_WB_FG, linewidth=0.6,
-               label="walkback-removed (RECTIFY)"),
+               label="walkback-removed"),
         _Patch(facecolor=SOFTCLIP_PA_BG, edgecolor=SOFTCLIP_PA_FG, linewidth=0.6,
-               label="poly(A) tail (restored)"),
+               label="poly(A) restored"),
         _Line2D([0], [0], marker="^", color="none", markerfacecolor="#2e7d32",
-                markeredgecolor="#2e7d32", markersize=7,
-                label="RECTIFY corrected 3'"),
+                markeredgecolor="#2e7d32", markersize=7, label="corrected 3'"),
     ]
-    leg2 = fig.legend(
-        handles=_cell_handles, loc="upper center", ncol=len(_cell_handles),
-        bbox_to_anchor=(0.5, 0.958),
+    leg = fig.legend(
+        handles=handles, loc="upper center", ncol=len(handles),
+        bbox_to_anchor=(0.5, 0.972),
         frameon=False, fontsize=SIZE_SMALL + 0.5,
         handlelength=1.0, handleheight=0.9, handletextpad=0.3,
-        columnspacing=1.4, borderpad=0.1,
+        columnspacing=1.2, borderpad=0.1,
     )
     # Note: when the per-aligner layout is active, every alignment row shows
     # that aligner's corrected output with the parquet-trimmed poly(A) tail
