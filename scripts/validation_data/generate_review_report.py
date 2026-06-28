@@ -54,6 +54,10 @@ SNAPSHOT_DIR = Path("/tmp/igv_snapshots")
 # Render DPI for the per-read PNGs (overridable via --dpi). Higher = more pixels
 # / sharper when opened at native size; layout proportions are unchanged.
 RENDER_DPI = 150
+# The per-aligner 3'-agreement track is opt-in (--agreement-track); off by
+# default because it's redundant with the per-aligner-row corrected-3' markers
+# on the 1-read-per-locus validation bundle.
+SHOW_AGREEMENT = False
 
 GENOME = REPO / "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
 GFF    = REPO / "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz"
@@ -242,6 +246,7 @@ def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
         aligner_bam_dir=ALIGNER_DIR if ALIGNER_DIR.exists() else None,
         gene_id=gene_id,
         dpi=RENDER_DPI,
+        show_agreement_track=SHOW_AGREEMENT,
     )
     return out
 
@@ -655,6 +660,10 @@ def main() -> int:
     parser.add_argument("--dpi", type=int, default=150,
                         help="Render DPI for the per-read PNGs (default 150). "
                              "Higher = sharper at native size; layout unchanged.")
+    parser.add_argument("--agreement-track", action="store_true",
+                        help="Add the per-aligner 3'-agreement track at the top "
+                             "(off by default; redundant with the per-row 3' ▲s "
+                             "on the validation bundle).")
     parser.add_argument("--out", type=Path, default=None,
                         help="Output HTML path (single-file mode only). Ignored with --per-category.")
     parser.add_argument("--html-only", action="store_true",
@@ -681,8 +690,9 @@ def main() -> int:
                              "staleness banner so you are never silently fooled by old data.")
     args = parser.parse_args()
 
-    global RENDER_DPI
+    global RENDER_DPI, SHOW_AGREEMENT
     RENDER_DPI = args.dpi
+    SHOW_AGREEMENT = args.agreement_track
 
     if args.arm != "drs":
         print(f"--arm {args.arm} not yet supported", file=sys.stderr)

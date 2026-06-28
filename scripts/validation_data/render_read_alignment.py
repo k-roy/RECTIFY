@@ -2187,6 +2187,7 @@ def render(
     minimap2_bam: Path | None = None,
     winner_label: str = "",
     show_junction_zoom: bool = True,
+    show_agreement_track: bool = False,
     summary_tsv: Path | None = None,
     aligner_bam_dir: Path | None = None,
     gene_id: str = "",
@@ -2646,16 +2647,18 @@ def render(
     # 3 panels (minimap2-only + corrected + pA-rest) or 4 panels (minimap2 +
     # winner + corrected + pA-rest) when winner != minimap2.
     track_labels = [lbl for lbl, _ in track_sources]
-    panels = ["bedgraph", "ref"] + track_labels + ["ticks"]
-    # Ref row a hair taller (1.0 → 1.2) for the orig/corr label stack.
+    # The per-aligner 3'-agreement track (panel "bedgraph") is opt-in
+    # (show_agreement_track) — on the validation bundle it's redundant with the
+    # per-aligner-row corrected-3' ▲s; keep it available for other plotting
+    # scenarios (e.g. real multi-read pileups).
+    _agree = ["bedgraph"] if show_agreement_track else []
+    _agree_h = [1.7] if show_agreement_track else []
+    panels = _agree + ["ref"] + track_labels + ["ticks"]
     # Read rows much taller (2.0) for the insertion-pill stagger ABOVE the row.
     # Tick row bumped from 0.35 → 0.55 so coord numbers don't crowd the
-    # alignment-track baseline above them.
-    # ref row bumped 1.2 → 1.65 to give the 3-tier orig/corr/samtools marker
-    # stack (ylim 2.30) enough pixels that adjacent tiers don't overprint.
-    # row 0 = per-aligner 3'-agreement track (stacks up to 5 aligner cells, so
-    # it needs more height than the old 1-bar bedgraph); row 1 = ref.
-    height_ratios = [1.7, 1.65] + [2.0] * len(track_sources) + [0.55]
+    # alignment-track baseline above them. ref row 1.65. The agreement track
+    # (when shown) needs ~1.7 to stack up to 5 aligner cells.
+    height_ratios = _agree_h + [1.65] + [2.0] * len(track_sources) + [0.55]
 
     # Cross-chrom mini-panels prepended at the TOP (right above the main
     # bedgraph). Each contributes a painted-CIGAR row + tick row with its
@@ -2955,9 +2958,10 @@ def render(
                           right_pad_frac=(0.14 if aligner_ed_map else 0.0),
                           suppress_last_tick=bool(aligner_ed_map))
 
-    ax_bg = next(ax_iter)
-    render_aligner_3p_agreement(ax_bg, _corr3p_by_aligner, winner_name,
-                                win_start, win_end)
+    if show_agreement_track:
+        ax_bg = next(ax_iter)
+        render_aligner_3p_agreement(ax_bg, _corr3p_by_aligner, winner_name,
+                                    win_start, win_end)
     ax_ref = next(ax_iter)
     render_ref_row(ax_ref, ref_seq, win_start, win_end, orig_3p, corr_3p,
                    is_reverse=is_reverse, samtools_3p=samtools_3p,
