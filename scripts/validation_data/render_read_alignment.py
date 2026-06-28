@@ -2713,13 +2713,21 @@ def render(
     # scenarios (e.g. real multi-read pileups).
     _agree = ["bedgraph"] if show_agreement_track else []
     _agree_h = [1.7] if show_agreement_track else []
-    panels = _agree + ["ref"] + track_labels + ["ticks"]
+    # Thin invisible spacer directly ABOVE the ref-seq row, only when the
+    # overview (and thus its zoom connectors) is shown. It widens just this one
+    # gap so the dotted connectors fan STEEPLY from the overview box down to the
+    # detail row — visually binding the ref seq to the bottom panel rather than
+    # to the coordinate numbers above. Placed right before "ref" so the gap sits
+    # above the detail regardless of junction / cross-chrom / agreement panels.
+    _refgap = ["ref_spacer"] if show_overview else []
+    _refgap_h = [0.55] if show_overview else []
+    panels = _agree + _refgap + ["ref"] + track_labels + ["ticks"]
     # Read rows much taller (2.0) for the insertion-pill stagger ABOVE the row.
     # Tick row bumped from 0.35 → 0.55 so coord numbers don't crowd the
     # alignment-track baseline above them. ref row trimmed 1.65 → 0.9 now that
     # its ylim is tight (markers removed) — keeps the ref bases ≈ the per-aligner
     # base size. The agreement track (when shown) needs ~1.7 for the 5-cell stack.
-    height_ratios = _agree_h + [0.9] + [2.0] * len(track_sources) + [0.55]
+    height_ratios = _agree_h + _refgap_h + [0.9] + [2.0] * len(track_sources) + [0.55]
 
     # Cross-chrom mini-panels prepended at the TOP (right above the main
     # bedgraph). Each contributes a painted-CIGAR row + tick row with its
@@ -3032,6 +3040,9 @@ def render(
         ax_bg = next(ax_iter)
         render_aligner_3p_agreement(ax_bg, _corr3p_by_aligner, winner_name,
                                     win_start, win_end)
+    if show_overview:
+        # Consume + hide the ref-gap spacer panel (see panels build above).
+        next(ax_iter).set_axis_off()
     ax_ref = next(ax_iter)
     render_ref_row(ax_ref, ref_seq, win_start, win_end, orig_3p, corr_3p,
                    is_reverse=is_reverse, samtools_3p=samtools_3p,
