@@ -531,9 +531,14 @@ All open/no-auth (Synapse syn IDs are gated; UCSC CGL mirrors are not). Human WT
   long-SIRVs + ~92 ERCCs). Combined genome+SIRV for aligning real reads:
   `.../references/lrgasp_grch38_sirvs.fasta.gz` (886 MB) + `lrgasp_gencode_v38_sirvs.gtf.gz` (50 MB).
 - **Staging:** minimal pilot ~42 GiB, full ~81 GiB. Cluster only, never the M1.
-- **Shared build dep:** both LRGASP-sim (GENCODE) and SIRV truth are **exon-feature
-  GTF** → need the exon-GTF loader variant of `gff_panel` (same one SIRV needs). The
-  `read_to_isoform` join + GTF → per-read junctions/CPA is the sim-truth path.
+- **Shared build dep — BUILT (2026-06-28, session-7):** both LRGASP-sim (GENCODE) and
+  SIRV truth are **exon-feature GTF** → `gff_panel.build_panel_from_gtf` (exon rows grouped
+  by `transcript_id`, introns derived from adjacent-exon gaps) is the drop-in loader, returning
+  the same `(models, pairs, donors, acceptors)` as the GFF path. **Validated on real SIRV-Set 4**
+  (176 transcripts, 288 junctions all ANNOTATED, 99.3% canonical at derived boundaries; tests in
+  `tests/test_gff_panel_gtf.py`). Transcript key = verbatim `transcript_id` (version included) so
+  the `read_to_isoform` join matches. The `read_to_isoform` join + GTF → per-read junctions/CPA is
+  the (still-Sherlock-gated) sim-truth path.
 - **CORRECTION (verified):** use the **`hs_GENCODE38.basic_annotation.with_mm_M27.gtf.gz`**
   (29.8 MB), NOT the human-only `basic` GTF — **~20% of the "human" sim reads are MOUSE
   transcripts** (`ENSMUST`, the artificial-novel decoys: 79,489 ENST vs 20,511 ENSMUST in

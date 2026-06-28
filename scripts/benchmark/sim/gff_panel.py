@@ -42,12 +42,31 @@ def _open(path: str):
 
 
 def _attrs(field9: str) -> Dict[str, str]:
+    """GFF3 attribute parser (``key=value;key=value``)."""
     out = {}
     for kv in field9.rstrip(";").split(";"):
         kv = kv.strip()
         if "=" in kv:
             k, v = kv.split("=", 1)
             out[k] = v
+    return out
+
+
+def _gtf_attrs(field9: str) -> Dict[str, str]:
+    """GTF attribute parser (``key "value"; key "value";``).
+
+    GTF (GENCODE / Ensembl / Lexogen SIRV) uses space-separated, quoted values —
+    NOT the GFF3 ``key=value``. So a SIRV/LRGASP ``exon`` row's
+    ``transcript_id "SIRV101";`` parses here, where ``_attrs`` would not.
+    """
+    out = {}
+    for kv in field9.rstrip(";").split(";"):
+        kv = kv.strip()
+        if not kv:
+            continue
+        parts = kv.split(None, 1)
+        if len(parts) == 2:
+            out[parts[0]] = parts[1].strip().strip('"')
     return out
 
 
@@ -85,6 +104,62 @@ def parse_gff(gff_path: str) -> Tuple[Dict[str, Tuple[str, str, int, int]],
             if p in mrnas and mrnas[p][0] == chrom:
                 introns_by_mrna.setdefault(p, []).append((s0, e0))
     return mrnas, introns_by_mrna
+
+
+def parse_gtf_exons(gtf_path: str) -> Tuple[Dict[str, Tuple[str, str, int, int]],
+                                            Dict[str, List[Tuple[int, int]]]]:
+    """Parse an EXON-feature GTF into the same shape ``parse_gff`` returns.
+
+    SIRV-Set 4, Sequins, ERCC, and the LRGASP GENCODE annotation are all
+    **exon-feature GTFs**: one transcript is a set of ``exon`` rows sharing a
+    ``transcript_id`` (there is NO ``intron`` feature, unlike the yeast SGD GFF).
+    So here exon blocks come straight from the ``exon`` rows, and **introns are
+    DERIVED from the gaps between adjacent exons** — using the same gap test as
+    ``TranscriptModel.introns()`` (``b.start > a.end``) so the catalogue and the
+    models agree (every model junction then classifies ANNOTATED against its own
+    GTF — the loader's self-consistency invariant).
+
+    Returns ``(mrnas, introns_by_transcript)`` with
+    ``mrnas[tid] = (chrom, strand, start0, end0)`` (0-based half-open span =
+    min exon start .. max exon end) and ``introns_by_transcript[tid] =
+    [(istart0, iend0), ...]``. GTF coords are 1-based inclusive -> converted to
+    0-based half-open (same convention as ``parse_gff``). Transcripts are keyed
+    by the VERBATIM ``transcript_id`` (version included) so the downstream
+    ``read_to_isoform`` truth join matches exactly.
+    """
+    exons_by_tid: Dict[str, List[Tuple[int, int]]] = {}
+    meta: Dict[str, Tuple[str, str]] = {}  # tid -> (chrom, strand)
+    with _open(gtf_path) as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 9 or f[2] != "exon":
+                continue
+            chrom, _src, _ftype, start, end, _sc, strand, _frame, attr = f[:9]
+            tid = _gtf_attrs(attr).get("transcript_id")
+            if not tid:
+                continue
+            exons_by_tid.setdefault(tid, []).append((int(start) - 1, int(end)))
+            # Record the chrom/strand of the FIRST exon row for this tid. SIRV /
+            # GENCODE transcript_ids are unique per contig so this is exact; a
+            # genuinely split-contig transcript (not expected) would still pool
+            # exons across contigs into a garbage span — not handled, since the
+            # annotations we target never produce one.
+            meta.setdefault(tid, (chrom, strand))
+    mrnas: Dict[str, Tuple[str, str, int, int]] = {}
+    introns_by_tid: Dict[str, List[Tuple[int, int]]] = {}
+    for tid, exs in exons_by_tid.items():
+        exs = sorted(exs)
+        chrom, strand = meta[tid]
+        mrnas[tid] = (chrom, strand, exs[0][0], exs[-1][1])
+        introns = []
+        for (s0, e0), (s1, _e1) in zip(exs, exs[1:]):
+            if s1 > e0:  # match TranscriptModel.introns() gap test
+                introns.append((e0, s1))
+        if introns:
+            introns_by_tid[tid] = introns
+    return mrnas, introns_by_tid
 
 
 def _exons_from_span(start0: int, end0: int,
@@ -133,11 +208,46 @@ def build_panel(gff_path: str, genome: Dict[str, str],
     annotation sets for junction classification.
     """
     mrnas, introns_by_mrna = parse_gff(gff_path)
-    pairs, donors, acceptors = annotated_sets(mrnas, introns_by_mrna)
+    return _build_models(mrnas, introns_by_mrna, genome,
+                         spliced_only=spliced_only,
+                         max_transcripts=max_transcripts, seed=seed)
+
+
+def build_panel_from_gtf(gtf_path: str, genome: Dict[str, str],
+                         spliced_only: bool = True,
+                         max_transcripts: Optional[int] = None,
+                         seed: int = 7) -> Tuple[List[TranscriptModel],
+                                                 Set[Tuple[str, int, int]],
+                                                 Set[Tuple[str, int]],
+                                                 Set[Tuple[str, int]]]:
+    """Same as :func:`build_panel` but for an EXON-feature GTF.
+
+    SIRV-Set 4 / Sequins / ERCC / LRGASP-GENCODE are exon-feature GTFs (no
+    ``intron`` feature). Drop-in for the GFF path: returns the identical
+    ``(models, pairs, donors, acceptors)`` tuple the scorer + tier-2 driver
+    consume. ``spliced_only`` drops monoexonic transcripts (the long-SIRVs +
+    ~92 ERCCs); set False to keep them as a placement baseline.
+    """
+    mrnas, introns_by_tid = parse_gtf_exons(gtf_path)
+    return _build_models(mrnas, introns_by_tid, genome,
+                         spliced_only=spliced_only,
+                         max_transcripts=max_transcripts, seed=seed)
+
+
+def _build_models(mrnas: Dict[str, Tuple[str, str, int, int]],
+                  introns_by: Dict[str, List[Tuple[int, int]]],
+                  genome: Dict[str, str], spliced_only: bool,
+                  max_transcripts: Optional[int], seed: int
+                  ) -> Tuple[List[TranscriptModel],
+                             Set[Tuple[str, int, int]],
+                             Set[Tuple[str, int]],
+                             Set[Tuple[str, int]]]:
+    """Shared model construction for both the GFF and GTF panel loaders."""
+    pairs, donors, acceptors = annotated_sets(mrnas, introns_by)
     models: List[TranscriptModel] = []
     skipped_no_contig = 0
     for mid, (chrom, strand, s0, e0) in mrnas.items():
-        introns0 = introns_by_mrna.get(mid, [])
+        introns0 = introns_by.get(mid, [])
         if spliced_only and not introns0:
             continue
         if chrom not in genome:
@@ -149,8 +259,8 @@ def build_panel(gff_path: str, genome: Dict[str, str],
         models.append(TranscriptModel(name=mid, chrom=chrom, strand=strand,
                                       exons=exons, genome_seq=genome[chrom]))
     if skipped_no_contig:
-        print(f"[gff_panel] WARNING: skipped {skipped_no_contig} mRNAs whose contig "
-              f"is absent from the genome FASTA", file=sys.stderr)
+        print(f"[gff_panel] WARNING: skipped {skipped_no_contig} transcripts whose "
+              f"contig is absent from the genome FASTA", file=sys.stderr)
     models.sort(key=lambda m: m.name)
     if max_transcripts is not None and len(models) > max_transcripts:
         random.Random(seed).shuffle(models)
@@ -228,8 +338,10 @@ def inject_novel_isoforms(mrnas, introns_by_mrna, genome,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="GFF->TranscriptModel panel loader (audit/dry-run)")
-    ap.add_argument("--gff", required=True)
+    ap = argparse.ArgumentParser(description="GFF/GTF->TranscriptModel panel loader (audit/dry-run)")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--gff", help="GFF3 with mRNA + intron features (e.g. yeast SGD)")
+    g.add_argument("--gtf", help="exon-feature GTF (e.g. SIRV-Set 4 / LRGASP GENCODE)")
     ap.add_argument("--genome", required=True)
     ap.add_argument("--max-transcripts", type=int, default=None)
     ap.add_argument("--include-intronless", action="store_true")
@@ -237,9 +349,14 @@ def main():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     from rectify.core.benchmark.scorer import load_genome
     genome = load_genome(args.genome)
-    models, pairs, donors, acceptors = build_panel(
-        args.gff, genome, spliced_only=not args.include_intronless,
-        max_transcripts=args.max_transcripts)
+    if args.gtf:
+        models, pairs, donors, acceptors = build_panel_from_gtf(
+            args.gtf, genome, spliced_only=not args.include_intronless,
+            max_transcripts=args.max_transcripts)
+    else:
+        models, pairs, donors, acceptors = build_panel(
+            args.gff, genome, spliced_only=not args.include_intronless,
+            max_transcripts=args.max_transcripts)
     n_introns = sum(len(m.introns()) for m in models)
     print(f"models={len(models)} total_introns_in_models={n_introns} "
           f"annotated_pairs={len(pairs)} donors={len(donors)} acceptors={len(acceptors)}")

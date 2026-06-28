@@ -7,6 +7,51 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## SESSION-7 (2026-06-28) — EXON-GTF loader BUILT + validated on real SIRV-Set 4 (the SIRV-fit gate dep)
+
+The one M1-local dependency the SIRV/LRGASP absolute-truth fit was blocked on (the
+exon-feature GTF loader variant of `gff_panel`, "still unbuilt" across sessions 4→6)
+is **BUILT, tested, and validated on the real SIRV-Set 4 reference**. Everything else in
+RESUME #1 is Sherlock-gated/heavy. Nothing in flight; smoke gate GREEN.
+
+**DONE (benchmark-only paths; gate stays green):**
+- `scripts/benchmark/sim/gff_panel.py` — added `parse_gtf_exons` (GTF: exon rows grouped by
+  `transcript_id`, introns DERIVED from adjacent-exon gaps using the SAME gap test as
+  `TranscriptModel.introns()`), `build_panel_from_gtf` (drop-in for `build_panel`, returns the
+  identical `(models, pairs, donors, acceptors)`), a GTF attribute parser `_gtf_attrs`
+  (`key "value";` — NOT GFF3 `key=value`), and `_build_models` (shared model construction the GFF
+  and GTF paths both call — `build_panel` refactored onto it, behavior-preserving). `main()` gained
+  `--gtf`. Transcript key = VERBATIM `transcript_id` (version included) so the LRGASP
+  `read_to_isoform` join matches exactly.
+- `tests/test_gff_panel_gtf.py` (6 tests, hermetic — synthetic inline exon-GTF, no network). The
+  load-bearing invariant (advisor): every model junction classifies ANNOTATED against the catalogue
+  from its OWN GTF (non-ANNOTATED == 0) — validates coords + intron-from-gaps simultaneously. Plus
+  attr-parse, span/intron derivation, ±strand canonicity, monoexonic drop, missing-contig skip.
+- **Real-SIRV validation (one-time, manual; tiny 4.6 KB GTF + 132 KB FASTA fetched to scratch — refs,
+  not reads):** 176 transcripts (matches SPEC), 61 multi-exon, **288 junctions all ANNOTATED**
+  (invariant holds on real data), **99.3% canonical** (GT-AG 276 / GC-AG 7 / AT-AC 3) at the derived
+  boundaries → coordinates exact. (Note: `JunctionTruth.motif` STRING is a left-normalized
+  genome-strand display field that reads oddly for minus-strand/slid junctions — a pre-existing
+  representation quirk, NOT the loader; `.canonical` is the strand-aware truth.) **Count
+  reconciliation:** `.canonical` flags 5/288 non-canonical = 2 genuinely non-canonical (CT-AC,
+  CT-AG) + 3 `AT-AC` (U12 minor-spliceosome) that `_canonical_within_window` excludes by design
+  (it tests GT/GC..AG only). So biological-canonical = 286/288 (99.3%); the 3 AT-AC SIRV introns
+  will land in the **non-canonical FDR track** in the SIRV cycle — expected existing-scorer
+  behavior (same for the GFF path), NOT a loader artifact. Don't misread it later.
+- Regression: standalone tests pass (`python tests/test_gff_panel_gtf.py`); the unchanged GFF path
+  re-verified through the refactored `_build_models`; smoke `--reps 20` GREEN.
+
+**RESUME (session-7 boundary) — the SIRV fit is now UNBLOCKED on the loader; remaining is Sherlock-heavy:**
+The SESSION-6 RESUME stands, with item #1's loader prerequisite DONE. Next concrete step is the
+Sherlock SIRV cycle: stage the SIRV-Set 4 reference + a small real SIRV-read sample on scratch
+(`live_roundtrip.py`-style), align with `minimap2 -ax splice`, `build_panel_from_gtf` → truth →
+`measure-bam` + `autocorr-bam` for the CLEAN (junction-spanning) magnitude targets, then re-fit the
+injector. The loader to use is `build_panel_from_gtf` (NOT `build_panel`). Do NOT pre-bias the SIRV
+fit toward gap5x≈3 vs ≈5 (guard #3 junction case is what SIRV decides). Smoke regression gate as
+before: `pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x --reps 20` → exit 0.
+
+---
+
 ## SESSION-6 (2026-06-27) — SHERLOCK VALIDATION RAN; verdict empirically nailed; placeholder LOCKED
 
 Sherlock auth restored. Ran the injector validation with the NEW `measure_error_structure`
