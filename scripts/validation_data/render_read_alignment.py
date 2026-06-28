@@ -3109,10 +3109,6 @@ def render(
         _ref_hi = ax_ref.get_ylim()[1]
         _ov_xL, _ov_xR = win_start - ov_start, win_end - ov_start
         _n_det = win_end - win_start
-        # Just BELOW the overview coordinate numbers (which sit at y=0..~0.4 of
-        # the ov-ticks panel, va="bottom" anchored at y=0). Negative y drops the
-        # bracket into the gap beneath the numbers so it no longer overlaps them.
-        _yb = -0.18
         # faint region tint over the zoomed sub-region in the overview strips —
         # this is the zoom INDICATOR BOX (matplotlib indicate_inset_zoom idiom).
         # A light edge makes its span legible on its own so no separate
@@ -3126,14 +3122,20 @@ def render(
             facecolor=_to_rgba(_grey, 0.12), edgecolor=_to_rgba(_grey, 0.55),
             linewidth=0.6, zorder=0,
         ))
-        # two dotted edges fanning from just below the overview coords down to
-        # the ref-seq top — the zoom connectors
+        # Two dotted edges fanning from the grey box's BOTTOM CORNERS (in the
+        # overview panel) outward to the full-width detail (ref-seq) row — the
+        # zoom connectors (matplotlib indicate_inset_zoom idiom). Anchoring to
+        # the box corners (not the ov-ticks row just below) is what gives the
+        # lines real vertical travel: the overview block sits ~2px above the ref
+        # top, so a connector starting there resolved to a near-horizontal,
+        # invisible line. The box bottom is ~30px higher → a visible fan that
+        # crosses the coordinate-number row (intended; subordinate dotted grey).
         for _ovx, _refx in ((_ov_xL, 0), (_ov_xR, _n_det)):
             con = ConnectionPatch(
-                xyA=(_ovx, _yb), coordsA="data", axesA=ax_ov_ticks,
+                xyA=(_ovx, _lo), coordsA="data", axesA=ax_ov,
                 xyB=(_refx, _ref_hi), coordsB="data", axesB=ax_ref,
-                color=_grey, linestyle=(0, (2, 2)), linewidth=0.9,
-                alpha=0.85, zorder=1,
+                color=_grey, linestyle=(0, (2, 2)), linewidth=0.8,
+                alpha=0.6, zorder=1,
             )
             con.set_clip_on(False)
             fig.add_artist(con)
