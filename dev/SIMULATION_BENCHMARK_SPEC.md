@@ -419,6 +419,55 @@ and the `err_corr_work` pbsim reads.**
   shrinks the alignment-artifact worry); the error TYPE split (DRS deletion-dominant); and the 3-state/self-exciting
   burst upgrade to decouple clustering from autocorr. Then the PI-#2 FDR-LIFT on stratum (G).
 
+### ORGANISM-SPECIFIC ERROR MODEL — design note (2026-06-28, advisor-checked; decisions DEFERRED, not pre-answered)
+Question raised (PI): yeast vs human differ in (a) RNA modifications, (b) pA-tail length, (c) exon length /
+multi-intron fraction — do we need DISTINCT yeast vs human error models? Decomposition + the measurement-design
+confounds, recorded as OPEN questions (we do NOT pre-answer "one model vs two"). The three named differences
+split across THREE different layers, not all of them the error model:
+
+- **(1) Basecaller-INTRINSIC error (HP / k-mer-dependent miscalls) — the per-context error FUNCTION is
+  organism-agnostic** (the pore+dorado don't know the species; the same k-mers miscall the same way). BUT the
+  AGGREGATE statistics it produces are NOT organism-agnostic — they depend on sequence composition (human HP-length
+  distribution, GC, low-complexity content differ from yeast). **PRECONDITION on any yeast→human transfer claim:**
+  the injector must be driven by a CONTEXT-CONDITIONED error map (the empirical k-mer/HP table — currently
+  PLACEHOLDER `base_rate`+`frac_*`) and APPLIED to human clean reads (run the same context function over human
+  sequence); you must NOT port yeast AGGREGATE params. With a flat base_rate the transfer claim is false.
+- **(2) Modification-driven error — the ONE genuinely organism-specific error mechanism.** Vegetative
+  *S. cerevisiae* mRNA is m6A-POOR (Ime4/m6A is meiosis-induced); human mRNA carries pervasive DRACH m6A + Ψ.
+  DRS basecallers are trained on canonical bases → a modified base gives a SYSTEMATIC, motif-localized miscall
+  (the same signal m6A/Ψ detectors exploit). Mechanism if/when needed: a MOTIF-CONDITIONED hazard multiplier
+  (elevated sub/del at DRACH / known-Ψ motifs) — deterministic-on-SEQUENCE (fixed positions), NOT a random burst;
+  cheap to layer on. **Do NOT build speculatively — characterize first.**
+- **(3) Transcript ARCHITECTURE (shorter exons, more multi-intron genes) — NOT an error-model property at all.**
+  It changes TASK difficulty (junction-discovery FDR, NIC/NNC opportunity), handled by the transcript PANEL +
+  strata (yeast=saturation control; human SMN1/SMN2 + A549-chr5 NIC/NNC-rich loci), not the injector.
+- **pA tail is DOUBLE-COUNTED on purpose:** architecture (CPA truth / C2, a panel property) AND an out-of-
+  calibration ERROR regime — we calibrated on ~50–70 nt yeast pA; 150–250 nt human pA is a known DRS
+  stall/length-undercall regime, and HP error is already length-dependent (possibly super-linear), so the HP
+  mechanism is EXTRAPOLATED OUT OF RANGE for human pA, not "more of the same." Flag both.
+
+**MEASUREMENT-DESIGN CONFOUNDS (advisor — do NOT design the SIRV cycle around the naive subtractions):**
+- **SIRV is the basecaller floor for SIRV's OWN composition — NOT a mod-free proxy for human sequence.** SIRV/ERCC
+  are IVT constructs with their own designed k-mer/GC. So **`real-human − SIRV` does NOT isolate the mod term** —
+  it conflates modification with the SIRV-vs-human composition difference (same guard-#3 / per-transcript shape:
+  the control differs on a second axis). The CLEAN mod isolation is a **WITHIN-MOTIF modified-vs-unmodified
+  contrast**: error at high-stoichiometry m6A sites vs low/zero-stoichiometry instances of the SAME DRACH motif,
+  using an ORTHOGONAL map (miCLIP / GLORI). (DRACH-vs-genome-average is still composition-confounded — not all
+  DRACH are methylated.)
+- **Yeast-real is NOT the mod-free anchor — only SIRV is.** The real-yeast 5.28 already contains yeast's own mod +
+  tRNA/rRNA-contamination error. Call yeast "LOWER-mod than human," never "mod-free reference."
+- **Per-molecule vs per-transcript (ties to the PI-#2 attribution caveat above):** mod-driven error is
+  per-TRANSCRIPT/per-POSITION (sequence-deterministic), NOT per-molecule hotness → a high-mod human benchmark
+  inflates the per-TRANSCRIPT autocorrelation component, making the per-molecule reliability covariate HARDER to
+  isolate. Same control (stratify by transcript) handles both.
+
+**RECORDED PLAN (prove-don't-assert; nothing pre-decided):** one injector ENGINE, organism-specific PARAMETER
+SETS (not two models). SIRV = basecaller floor (for SIRV composition); the pbsim3-vs-NanoSim-vs-real-SIRV three-way
+answers the SIMULATOR-realism question (the original SPEC purpose); the yeast-vs-human MOD question needs the
+within-motif contrast (orthogonal map). **"One model vs two" stays UNDECIDED pending those measurements** — do not
+build a human error model, and do not assume one suffices, until the within-motif mod magnitude + the
+context-conditioned-transfer check are in.
+
 ## EXTERNAL-VALIDITY DATA PLAN — real ONT with ground truth (2026-06-26, researched)
 Simulation validates placement MECHANICS but cannot validate that pbsim's error
 model matches real ONT (the §"Two validity claims" gap). The transfer check needs

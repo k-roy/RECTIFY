@@ -54,7 +54,14 @@ monotonicity bug (lower p_cold_to_hot → more clustering). New stat `overdisp_v
    down-weighting hot reads could suppress novel-junction support from hard-to-align transcripts (a DISCOVERY
    BIAS). Stratify by transcript / compare within- vs across-transcript autocorr to isolate per-molecule hotness
    before claiming the lift. (SPEC §SHERLOCK VALIDATION "ATTRIBUTION CAVEAT".)
-4. C1 member code remains the NEXT GATED CYCLE.
+4. **ORGANISM-SPECIFIC error model (design note recorded, decisions DEFERRED)** — before any human panel:
+   yeast/human differ in RNA mods (the one organism-specific ERROR mechanism: yeast m6A-poor, human DRACH-pervasive),
+   pA length (out-of-calibration HP regime), exon/intron architecture (panel property, not error model). Plan: ONE
+   engine + per-organism PARAM SETS; "one model vs two" stays UNDECIDED. CONFOUNDS to honor: `human−SIRV` does NOT
+   isolate the mod term (SIRV is IVT, own composition) — use a WITHIN-MOTIF modified-vs-unmodified contrast
+   (miCLIP/GLORI); yeast-real is lower-mod, NOT mod-free; transfer requires a CONTEXT-CONDITIONED error map applied
+   to human sequence (not ported yeast aggregates). Full note: SPEC §"ORGANISM-SPECIFIC ERROR MODEL".
+5. C1 member code remains the NEXT GATED CYCLE.
 Sherlock paths: real BAM `/scratch/users/kevinroy/rectify_wt_by4742_rep1_26167419_0/...minimap2.namesorted.bam`;
 pbsim reads + templates `/scratch/users/kevinroy/err_corr_work/`; bench code
 `/home/groups/larsms/users/kevinroy/aligner_bench_live/` (rsync the worktree `scripts/benchmark/` first).
