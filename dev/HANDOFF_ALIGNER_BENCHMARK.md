@@ -7,6 +7,62 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## SESSION-6 (2026-06-27) — SHERLOCK VALIDATION RAN; verdict empirically nailed; placeholder LOCKED
+
+Sherlock auth restored. Ran the injector validation with the NEW `measure_error_structure`
+(self-consistent code across real/pbsim/injector). Full numbers in SPEC §"SHERLOCK VALIDATION
+RESULT". This is a CLEAN CYCLE BOUNDARY (advisor): the deliverable is validated; the remaining
+magnitude fit is the SIRV gate working as designed, not incompleteness.
+
+**RESULTS (all gates green: smoke, injector self_check, 8 injector tests):**
+- **Guard #1 PASSED** — new code reproduces the lost-err_corr verdict (disp 9.64 vs 9.95, run≥2 0.39
+  vs 0.39, p90/med 2.03 vs 1.98). `sub5_gap_excess` = 5.28 (vs prior 2.83 — definitional). Real rate
+  0.0153, length-invariant `overdisp_v` 0.70.
+- **pbsim DECISIVELY shape-deficient** (thinned to real rate, self-consistent code): overdisp_v 0.054
+  vs 0.70 (~13×), gap5x 1.16 vs 5.28, run≥2 0.25 vs 0.39. SPEC verdict empirically confirmed.
+- **Real within-read autocorrelation r ≈ 0.30** (PI-#2(i) on REAL data) — moderate global hotness →
+  covariate has REAL but PARTIAL signal → SOFT down-weight not hard filter (confirms PI refinement (a)
+  on real reads). This r is the third constraint pinning the global/local split.
+- **Model-expressiveness finding:** the 2-state HMM CANNOT jointly match real (overdisp_v 0.70, gap5x ~5,
+  autocorr 0.30) — clustering↔autocorr are coupled in-model, real decouples (mostly LOCAL over-dispersion).
+  Locked a HAND-PICKED `placeholder_params` matching the autocorr split (0.30); achieved overdisp_v ~0.24
+  is the documented gap. SIRV fit likely needs a 3-state/self-exciting burst. Auto-fit NOT used (advisor).
+- **Guard #3 (alignment-only inflation) — GAP-FREE case ~0; junction case UNRESOLVED.** Inject clean
+  errors (truth gap5x 4.44) → realign → 3.99 (LOWER). Establishes only: minimap2 doesn't fabricate
+  clustering from scattered clean errors in gap-free alignment. Does NOT speak to real's 5.28 (that is
+  `-ax splice` read-vs-genome crossing introns; this test was `-ax map-ont` to gap-free templates — the
+  junction pile-up the SPEC worried about is untested). → SIRV (junction-spanning) decides whether the
+  true target is near 3 or 5; do NOT pre-bias the SIRV fit toward 5.
+
+**CODE CHANGES this session** (committed): calibration metric → length-invariant `overdisp_v` (not
+length-dependent `dispersion_index`); `REAL_TARGETS` re-measured + `head_tail_autocorr` 0.30 added;
+hand-picked `placeholder_params` (PLACEHOLDER-PENDING-SIRV); `self_check` (3) decoupled from the
+contaminated magnitude (asserts reachable composition bands + autocorr split); `error_realism_validate.py`
+gained `autocorr-bam`, length-window filter, truth-track report on `inject-fastq`; fixed the burst
+monotonicity bug (lower p_cold_to_hot → more clustering). New stat `overdisp_v`/`head_tail_autocorr`.
+
+**RESUME (session-6 boundary) — SIRV-gated work only; nothing in flight. When resuming:**
+1. **SIRV/LRGASP absolute-truth fit** (SPEC §EXTERNAL-VALIDITY has URL-verified accessions): build the
+   exon-GTF `gff_panel` loader variant (still unbuilt), align SIRV reads to the SIRV reference,
+   `measure-bam` + `autocorr-bam` → the CLEAN magnitude targets (junction-spanning, so it also re-checks
+   guard #3's alignment-inflation on junctions). Re-fit; derive the error TYPE split (DRS deletion-dominant).
+2. **3-state / self-exciting burst upgrade** — to decouple clustering (gap5x) from autocorr, which the
+   2-state HMM cannot (this session's finding). Only if the SIRV targets confirm the real decoupling.
+3. **PI-#2 FDR-LIFT on stratum (G)** — inject hot reads (calibrated, post-SIRV) into JUNCTION_DISCOVERY,
+   measure novel-junction FDR with vs without hot-read down-weighting. Prove the lift before shipping.
+   **CONTROL (advisor):** the real r≈0.30 conflates per-MOLECULE hotness with per-TRANSCRIPT alignability;
+   down-weighting hot reads could suppress novel-junction support from hard-to-align transcripts (a DISCOVERY
+   BIAS). Stratify by transcript / compare within- vs across-transcript autocorr to isolate per-molecule hotness
+   before claiming the lift. (SPEC §SHERLOCK VALIDATION "ATTRIBUTION CAVEAT".)
+4. C1 member code remains the NEXT GATED CYCLE.
+Sherlock paths: real BAM `/scratch/users/kevinroy/rectify_wt_by4742_rep1_26167419_0/...minimap2.namesorted.bam`;
+pbsim reads + templates `/scratch/users/kevinroy/err_corr_work/`; bench code
+`/home/groups/larsms/users/kevinroy/aligner_bench_live/` (rsync the worktree `scripts/benchmark/` first).
+Gates: `pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x --reps 20` + `pysam-python
+scripts/benchmark/sim/error_injector.py` → both exit 0.
+
+---
+
 ## SESSION-5 (2026-06-27) — ERROR INJECTOR BUILT (M1-local DONE; fitting/validation SHERLOCK-gated)
 
 The FIRST TASK (the error injector the measurement proved is needed) is BUILT and

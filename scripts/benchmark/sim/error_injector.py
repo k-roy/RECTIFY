@@ -327,10 +327,20 @@ def measure_error_structure(per_read_events: Sequence[Sequence[ErrorEvent]],
     indel_lens = [e.length for ev in per_read_events for e in ev if e.kind in ("ins", "del")]
     frac_ge2 = (sum(1 for L in indel_lens if L >= 2) / len(indel_lens)) if indel_lens else 0.0
 
+    # length-INVARIANT over-dispersion summary (guard #2): dispersion_index is
+    # ~ 1 + rate*L*v with v = Var(per-read multiplier), so v ~ (disp-1)/mean_events
+    # is comparable across read sources with different length distributions. (For
+    # real data it conflates the multiplier + burst contributions, but is the
+    # length-normalized number to compare real vs pbsim+injector on.)
+    mean_events = (total_events / len(counts)) if counts else 0.0
+    overdisp_v = ((dispersion_index - 1.0) / mean_events) if mean_events > 0 else 0.0
     return {
         "n_reads": float(len(counts)),
+        "mean_ref_len": (total_len / len(counts)) if counts else 0.0,
         "marginal_event_rate": mean_rate,
+        "mean_events_per_read": mean_events,
         "dispersion_index": dispersion_index,
+        "overdisp_v": overdisp_v,
         "p90_over_median": p90_over_median,
         "sub5_gap_excess": gap_excess,
         "obs_gap_frac_lt": obs_frac,
@@ -397,6 +407,31 @@ def events_from_bam_read(read) -> Tuple[List[ErrorEvent], int]:
                                  ref_start=read.reference_start)
 
 
+def head_tail_autocorr(params: InjectorParams, rng: random.Random,
+                       n_reads: int = 3000, read_len: int = 800,
+                       frac: float = 0.3) -> float:
+    """Synthetic analogue of `error_realism_validate autocorr-bam`: head-vs-tail
+    error-density Pearson r across reads (truth track, no alignment). This is the
+    GLOBAL-vs-LOCAL discriminator the marginals (overdisp_v, gap5x) cannot give —
+    the global multiplier (layer 1) scales both windows together (high r); local
+    bursts (layer 2) do not (r~0). Pick PLACEHOLDER params so this matches the
+    real-BAM r (~0.3, measured 2026-06-27), which pins the global fraction."""
+    w = int(read_len * frac)
+    h0, h1 = 0, w
+    t0, t1 = read_len - w, read_len
+    hd, td = [], []
+    for _ in range(n_reads):
+        _, ev = _walk_events(read_len, params, rng, clean_seq=None)
+        hd.append(sum(1 for e in ev if h0 <= e.pos < h1) / w)
+        td.append(sum(1 for e in ev if t0 <= e.pos < t1) / w)
+    n = len(hd)
+    mh, mt = sum(hd) / n, sum(td) / n
+    shh = sum((x - mh) ** 2 for x in hd)
+    stt = sum((x - mt) ** 2 for x in td)
+    sht = sum((x - mh) * (y - mt) for x, y in zip(hd, td))
+    return sht / math.sqrt(shh * stt) if shh > 0 and stt > 0 else 0.0
+
+
 def simulate_and_measure(params: InjectorParams, rng: random.Random,
                          n_reads: int = 2000, read_len: int = 1000,
                          ) -> Dict[str, float]:
@@ -419,24 +454,51 @@ def simulate_and_measure(params: InjectorParams, rng: random.Random,
 # cross-layer contamination the advisor flagged: we never solve a layer in
 # isolation, we measure the joint result each round).
 # ---------------------------------------------------------------------------
-# PROVISIONAL targets from the LOST err_corr.py (SPEC §ERROR-REALISM) — RE-DERIVE
-# on Sherlock with THIS module's measure_error_structure before trusting them:
-#   * the numbers came from different code whose exact statistic definition was
-#     reconstructed from prose, not verified;
-#   * they are an UPPER BOUND (read-vs-ref conflates RNA-mod + minimap2 pile-up);
-#     true magnitude is SIRV-gated.
-# CRITICAL LENGTH CAVEAT: the dispersion index is LENGTH-DEPENDENT — for the Gamma
-# multiplier (Var=v=1/shape) it is ~ 1 + rate*L*v, i.e. LINEAR in read length L.
-# So a single scalar target only pins `shape` at a FIXED L; these PLACEHOLDER
-# params are conditioned on the calibration read_len (default 600). On Sherlock,
-# calibrate to the REAL reads' actual length distribution (not a flat L), and
-# compare real vs pbsim+injector LENGTH-CONTROLLED (bin by length / common window)
-# so over-dispersion is not confounded with read-length differences.
+# Targets RE-MEASURED 2026-06-27 with THIS module's measure_error_structure on the
+# real BY4742 DRS BAM (minimap2 read-vs-genome, window [600,1000], 50k reads) — the
+# guard-#1 re-derivation. The new code REPRODUCED the lost err_corr.py verdict on
+# dispersion (9.64 vs 9.95) and indel-run (0.39 vs 0.39); sub5_gap_excess came out
+# 5.28 (vs the prior 2.83 — a definitional difference: this stat is gaps between
+# error EVENTS in ref coords, grouped per the profiler). We use OUR numbers since
+# real/pbsim/injector are all measured by this same code.
+# CALIBRATION METRIC = overdisp_v (LENGTH-INVARIANT). The dispersion index is
+# ~ 1 + rate*L*v (LINEAR in read length L), so it is NOT comparable across sources
+# with different length distributions; v = Var(per-read multiplier) ~
+# (disp-1)/mean_events IS comparable, and is the parameter (gamma_shape ~ 1/v).
+# CAVEATS still in force: these are read-vs-reference (UPPER BOUND — RNA-mod +
+# minimap2 pile-up inflate sub5_gap_excess especially); the SIRV absolute-truth
+# re-fit sets the true magnitude. Error TYPE split below is still PLACEHOLDER.
 REAL_TARGETS = {
-    "dispersion_index": 9.95,
-    "sub5_gap_excess": 2.83,
+    "overdisp_v": 0.70,            # length-invariant; gamma_shape ~ 1/v
+    "dispersion_index": 9.64,      # at mean_ref_len ~807; length-DEPENDENT, informational
+    "sub5_gap_excess": 5.28,       # incl. alignment-artifact inflation (read-vs-ref); SIRV-gated
     "indel_run_frac_ge2": 0.39,
+    "marginal_event_rate": 0.0153,
+    "head_tail_autocorr": 0.30,    # measured on the real BAM (frac 0.3, window [600,1000]);
+                                   # the GLOBAL-fraction constraint PI #2 depends on (overdisp_v
+                                   # + gap5x cannot identify it). PI-#2-critical + magnitude-robust.
 }
+
+# ===================== HAND-PICKED PLACEHOLDER PARAMS =====================
+# Locked, NOT auto-fit (advisor: don't auto-fit a SIRV-gated magnitude). Chosen
+# from the M1 probe to match the real-data SPLIT — head_tail_autocorr ~= 0.30 (the
+# PI-#2-critical global fraction) — with gap5x ELEVATED and run>=2 ~= 0.39, at the
+# real marginal rate. KNOWN MODEL LIMITATION (key input to the SIRV-fit cycle): the
+# 2-state burst HMM CANNOT jointly reproduce real's (overdisp_v 0.70, gap5x ~5,
+# autocorr 0.30) — longer bursts (needed for gap5x) raise per-read hot-fraction
+# variance => raise autocorr, so strong clustering and moderate global correlation
+# are COUPLED here, whereas real DECOUPLES them (real over-dispersion is mostly
+# LOCAL). Matching real likely needs a 3-state / self-exciting (Hawkes) burst — do
+# that in the SIRV cycle, NOT now. This placeholder prioritizes the autocorr split
+# (so it does NOT overstate the PI-#2 covariate); achieved overdisp_v ~0.27 < real
+# 0.70 is the documented model gap. PLACEHOLDER-PENDING-SIRV.
+def placeholder_params(base_rate: float = 0.0153) -> "InjectorParams":
+    return InjectorParams(
+        base_rate=base_rate,
+        read_rate_dist="gamma", gamma_shape=5.0,
+        burst_on=True, hot_factor=8.0, p_hot_to_cold=0.2, p_cold_to_hot=0.025,
+        indel_run_pmf=_indel_pmf_for_frac_ge2(REAL_TARGETS["indel_run_frac_ge2"]),
+    )
 
 
 def _indel_pmf_for_frac_ge2(target: float) -> Tuple[Tuple[int, float], ...]:
@@ -457,17 +519,27 @@ def _indel_pmf_for_frac_ge2(target: float) -> Tuple[Tuple[int, float], ...]:
 def calibrate_params(rng: random.Random,
                      targets: Optional[Dict[str, float]] = None,
                      n_reads: int = 800, read_len: int = 600,
-                     rounds: int = 3, base_rate: float = 0.019,
+                     rounds: int = 3, base_rate: float = 0.0153,
                      verbose: bool = False) -> Tuple[InjectorParams, Dict[str, float]]:
     """Fit PLACEHOLDER realistic params by coordinate descent on the joint output.
 
     Knobs (one per target, to stay just-identified — the HMM burst GEOMETRY
     ``p_hot_to_cold`` is FIXED on the M1; the full fit of the burst to the
     gap-SIZE distribution is the Sherlock step, advisor note #2):
-      * layer 1 -> gamma_shape         (smaller => higher dispersion)
+      * layer 1 -> gamma_shape         (smaller => higher overdisp_v)
       * layer 2 -> p_cold_to_hot       (higher  => higher sub5 gap excess)
       * layer 3 -> indel_run_pmf       (closed-form for P(>=2))
-    Returns (params, measured-structure). PLACEHOLDER — see module docstring.
+    The layer-1 target is the LENGTH-INVARIANT overdisp_v (NOT dispersion_index,
+    which is ~linear in read length); calibrate at the source's real base_rate so
+    mean_events matches. Returns (params, measured-structure). PLACEHOLDER.
+
+    SCAFFOLD STATUS: this auto-fit is NOT used to lock the M1 placeholder (we
+    hand-pick `placeholder_params` instead — advisor: don't auto-fit a SIRV-gated,
+    alignment-contaminated magnitude). It is kept as the scaffold for the eventual
+    SIRV absolute-truth fit, where the gap5x target is clean. NOTE the 2-state HMM
+    cannot jointly hit (overdisp_v, gap5x, head_tail_autocorr) — see
+    `placeholder_params`; the SIRV fit will likely need a 3-state/self-exciting burst
+    and should fit the gap-SIZE distribution + the autocorr, not these 2 marginals.
     """
     t = dict(REAL_TARGETS)
     if targets:
@@ -491,26 +563,29 @@ def calibrate_params(rng: random.Random,
     lo_pch, hi_pch = 0.005, 0.5
     m = measure(p)
     for _ in range(rounds):
-        # --- layer 1: bisect gamma_shape on dispersion (monotone decreasing) ---
+        # --- layer 1: bisect gamma_shape on overdisp_v (monotone decreasing) ---
         a, b = lo_shape, hi_shape
         for _ in range(9):
             mid = math.sqrt(a * b)
             mm = measure(replace(p, gamma_shape=mid))
-            if mm["dispersion_index"] > t["dispersion_index"]:
+            if mm["overdisp_v"] > t["overdisp_v"]:
                 a = mid          # too dispersed => raise shape
             else:
                 b = mid
         p = replace(p, gamma_shape=math.sqrt(a * b))
 
-        # --- layer 2: bisect p_cold_to_hot on sub5 gap excess (monotone up) ---
+        # --- layer 2: bisect p_cold_to_hot on sub5 gap excess ---
+        # MONOTONICITY (empirically, M1 probe 2026-06-27): LOWER p_cold_to_hot =>
+        # MORE clustering (rare high-contrast bursts), the OPPOSITE of the naive
+        # reading. So if measured < target (too little clustering), LOWER it.
         a, b = lo_pch, hi_pch
         for _ in range(9):
             mid = math.sqrt(a * b)
             mm = measure(replace(p, p_cold_to_hot=mid))
             if mm["sub5_gap_excess"] < t["sub5_gap_excess"]:
-                a = mid          # too little clustering => raise burst frequency
+                b = mid          # too little clustering => LOWER p_cold_to_hot
             else:
-                b = mid
+                a = mid
         p = replace(p, p_cold_to_hot=math.sqrt(a * b))
 
         m = measure(p)
@@ -567,21 +642,26 @@ def self_check(seed: int = 7, verbose: bool = True) -> bool:
          f"-> {m3['indel_run_frac_ge2']:.3f} -> {'PASS' if l3_ok else 'FAIL'}")
     ok &= l3_ok
 
-    # (3) The layers COMPOSE — calibrated params hit all three targets jointly
-    #     AND no layer zeroes another (composition check, NOT realism).
-    p, m = calibrate_params(random.Random(15), n_reads=800, read_len=600, rounds=3)
-    disp_ok = abs(m["dispersion_index"] - REAL_TARGETS["dispersion_index"]) <= 2.0
-    gap_ok = abs(m["sub5_gap_excess"] - REAL_TARGETS["sub5_gap_excess"]) <= 0.5
+    # (3) The hand-picked PLACEHOLDER composes — all layers ON produce REACHABLE
+    #     composition targets AND no layer zeroes another. NOT a realism check and
+    #     NOT pinned to the contaminated/SIRV-gated magnitude (advisor): we assert
+    #     elevated/reachable bands + the autocorr SPLIT matches real (~0.30).
+    pp = placeholder_params()
+    m = simulate_and_measure(pp, random.Random(15), n_reads=2500, read_len=800)
+    ac = head_tail_autocorr(pp, random.Random(16), n_reads=2500, read_len=800)
+    v_ok = m["overdisp_v"] > 0.1                       # over-dispersion present
+    gap_ok = m["sub5_gap_excess"] > 2.5                # clustering elevated
     run_ok = abs(m["indel_run_frac_ge2"] - REAL_TARGETS["indel_run_frac_ge2"]) <= 0.06
-    nonzero = m["dispersion_index"] > 1.0 and m["sub5_gap_excess"] > 1.0 and m["n_indel_events"] > 0
-    comp_ok = disp_ok and gap_ok and run_ok and nonzero
-    emit(f"[self-check] (3) joint calibration (PLACEHOLDER targets): "
-         f"disp={m['dispersion_index']:.2f}/{REAL_TARGETS['dispersion_index']} "
-         f"gap5x={m['sub5_gap_excess']:.2f}/{REAL_TARGETS['sub5_gap_excess']} "
-         f"run>=2={m['indel_run_frac_ge2']:.3f}/{REAL_TARGETS['indel_run_frac_ge2']} "
+    ac_ok = abs(ac - REAL_TARGETS["head_tail_autocorr"]) <= 0.15   # global SPLIT ~ real
+    nonzero = m["overdisp_v"] > 0.0 and m["n_indel_events"] > 0
+    comp_ok = v_ok and gap_ok and run_ok and ac_ok and nonzero
+    emit(f"[self-check] (3) hand-picked PLACEHOLDER composes: "
+         f"overdisp_v={m['overdisp_v']:.3f}(>0.1) gap5x={m['sub5_gap_excess']:.2f}(>2.5) "
+         f"run>=2={m['indel_run_frac_ge2']:.3f}(~0.39) autocorr={ac:.3f}(~0.30 real) "
          f"-> {'PASS' if comp_ok else 'FAIL'}")
-    emit("[self-check] NOTE: (3) proves the layers compose & moments are reachable "
-         "(just-identified) — it is NOT a realism check. Realism is SIRV-gated + distributional.")
+    emit("[self-check] NOTE: (3) is COMPOSITION + the global SPLIT matching real — NOT a "
+         "magnitude/realism check (gap5x magnitude is SIRV-gated; the 2-state HMM can't "
+         "jointly match real overdisp_v+gap5x+autocorr, see placeholder_params).")
     ok &= comp_ok
 
     emit("\n" + ("SELF-CHECK PASSED — composition/interaction green (NOT realism)"

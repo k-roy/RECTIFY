@@ -368,6 +368,57 @@ validation is turnkey. **Files** (all benchmark-only): `scripts/benchmark/sim/er
   4. **Derive the error TYPE split from the empirical table** — `frac_sub/ins/del` (0.55/0.15/0.30) and
      `base_rate` are PLACEHOLDER; DRS is deletion-dominant, so re-fit them from the real profiler output.
 
+### SHERLOCK VALIDATION RESULT (2026-06-27, session-6) — RAN; verdict empirically nailed
+Sherlock auth restored; ran the validation with the NEW `measure_error_structure` (self-consistent code
+across real/pbsim/injector). **All measurements on real BY4742 DRS (`...rep1_26167419_0/...minimap2.namesorted.bam`)
+and the `err_corr_work` pbsim reads.**
+- **Guard #1 (re-derive targets) — PASSED.** New code REPRODUCES the lost err_corr.py verdict: dispersion_index
+  9.64 (prior 9.95), indel_run≥2 0.39 (prior 0.39), p90/median 2.03 (prior 1.98). Only `sub5_gap_excess` differs
+  — **5.28 vs prior 2.83** — a definitional difference (this stat = gaps between error EVENTS in ref coords). Real
+  marginal event rate 0.0153; length-invariant `overdisp_v` 0.70 (stable across the [600,1000] window).
+- **pbsim is DECISIVELY shape-deficient (the SPEC verdict, empirically confirmed with self-consistent code).**
+  pbsim DRS aligned to its templates, THINNED to the real 0.0153 rate: `overdisp_v` **0.054 vs real 0.70**,
+  `sub5_gap_excess` **1.16 vs 5.28** (≈no clustering — matches the SPEC's pbsim ~1.2×), `indel_run≥2` **0.25 vs
+  0.39**. (The "~13×" overdisp ratio is DIRECTIONAL, not precise: Bernoulli-thinning a clustered process breaks
+  up runs, so thinned-pbsim UNDERSTATES pbsim's own clustering/over-dispersion — the deficiency verdict is robust
+  but the multiplier is soft. The relative comparison uses the SAME code both sides, so it is robust regardless of
+  the absolute-definition question on 5.28.) (Raw pbsim rate 0.119 = ~7× too hot, R9-era — only SHAPE is comparable; the literal
+  "pbsim+injector" STACKING is rate-incoherent and dropped — pbsim's role was the shape-deficient baseline,
+  injector-on-clean-reads is the real vehicle.)
+- **Real within-read AUTOCORRELATION (PI-#2(i) on REAL data) = 0.34 (frac 0.3) / 0.28 (frac 0.2)** — a MODERATE
+  positive head-vs-tail error-density correlation. So a GLOBAL hotness component exists (the PI-#2 reliability
+  covariate has REAL signal) but is PARTIAL (r~0.3, not ~0.95) → **SOFT down-weight, not hard filter** — PI
+  refinement (a) confirmed on real reads (stronger evidence than the synthetic r=0.955 over-dispersion-only probe).
+  This real r is the THIRD constraint that identifies the global-vs-local split (overdisp_v + gap5x cannot).
+  **ATTRIBUTION CAVEAT (control for it in the FDR-lift test):** head-vs-tail autocorrelation conflates per-MOLECULE
+  hotness (the over-dispersion we want) with a per-TRANSCRIPT alignability effect — both read ends share transcript
+  identity, and some transcripts are intrinsically harder to align (low-complexity / paralogy / GC), elevating both
+  ends independent of any per-molecule over-dispersion. r≈0.30 is correct as a measurement; the attribution to
+  per-molecule hotness is one inferential step beyond it. Harmless here ("partial signal → soft not hard" holds
+  regardless of WHY a read is error-prone), but for the gated PI-#2 FDR-lift it is load-bearing: if r is partly
+  per-transcript, down-weighting hot reads could suppress novel-junction support from hard-to-align transcripts (a
+  DISCOVERY BIAS, not just lost power). So stratify by transcript / compare within- vs across-transcript autocorr to
+  isolate per-molecule hotness before claiming the lift.
+- **MODEL-EXPRESSIVENESS FINDING (key input to the SIRV-fit cycle):** the 2-state burst HMM CANNOT jointly match
+  real's (overdisp_v 0.70, gap5x ~5, autocorr 0.30) — longer bursts (needed for gap5x) raise per-read hot-fraction
+  variance → raise autocorr, so strong clustering and moderate global correlation are COUPLED in the model, whereas
+  REAL DECOUPLES them (real over-dispersion is mostly LOCAL). Matching real likely needs a 3-state / self-exciting
+  (Hawkes) burst. Locked a HAND-PICKED `placeholder_params` (gamma_shape 5, hot_factor 8, p_hot_to_cold 0.2,
+  p_cold_to_hot 0.025) matching the autocorr SPLIT (0.30) so it does NOT overstate the PI-#2 covariate; achieved
+  overdisp_v ~0.24 < real 0.70 is the documented model gap. PLACEHOLDER-PENDING-SIRV; auto-fit NOT used (advisor).
+- **Guard #3 (alignment-only inflation) — GAP-FREE case only: inflation ~0; junction case UNRESOLVED.**
+  Inject clean errors (truth gap5x 4.44) → re-align → aligned gap5x **3.99** (slightly LOWER, not higher). This
+  establishes the WEAKER claim: minimap2 does NOT fabricate clustering out of scattered clean errors in GAP-FREE
+  alignment. It does NOT speak to real's 5.28, because the test differs on BOTH axes that matter: it used
+  `-ax map-ont` to the gap-free SAME templates (no introns), whereas real's 5.28 is `-ax splice` read-vs-GENOME
+  crossing introns — and the SPEC's artifact concern is specifically minimap2 pile-up NEAR junctions/true indels,
+  the one condition this test cannot exercise. So: **alignment inflation of gap5x is ~0 in the gap-free case; the
+  junction-spanning case is unresolved → SIRV (junction-spanning, splice-aligned) DECIDES whether the true target
+  is near 3 or near 5. Do NOT pre-bias the SIRV fit.**
+- **STILL SIRV-gated (the genuine open work):** absolute magnitude (read-vs-ref is an upper bound, though guard #3
+  shrinks the alignment-artifact worry); the error TYPE split (DRS deletion-dominant); and the 3-state/self-exciting
+  burst upgrade to decouple clustering from autocorr. Then the PI-#2 FDR-LIFT on stratum (G).
+
 ## EXTERNAL-VALIDITY DATA PLAN — real ONT with ground truth (2026-06-26, researched)
 Simulation validates placement MECHANICS but cannot validate that pbsim's error
 model matches real ONT (the §"Two validity claims" gap). The transfer check needs
