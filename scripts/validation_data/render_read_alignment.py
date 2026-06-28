@@ -3013,6 +3013,33 @@ def render(
                 continue
             ax.invert_xaxis()
 
+    # Zoom indicator: connect the detailed (ref) window to its location in the
+    # whole-read overview, so the reader instantly sees WHERE in the read the
+    # per-base view sits (e.g. the 3' end for these cats). A faint box marks the
+    # detailed sub-region in the overview, and two dotted lines fan from its
+    # edges down to the ref row's left/right edges. Added AFTER the minus-strand
+    # invert so ConnectionPatch resolves the (possibly flipped) transData at draw.
+    if show_overview:
+        from matplotlib.patches import ConnectionPatch
+        _ov_lo, _ov_hi = ax_ov.get_ylim()
+        _ref_hi = ax_ref.get_ylim()[1]
+        _ov_xL, _ov_xR = win_start - ov_start, win_end - ov_start
+        _n_det = win_end - win_start
+        ax_ov.add_patch(Rectangle(
+            (_ov_xL, _ov_lo), _ov_xR - _ov_xL, _ov_hi - _ov_lo,
+            facecolor="#FFF59D", edgecolor="#fbc02d", alpha=0.22,
+            linewidth=0.6, zorder=0,
+        ))
+        for _ovx, _refx in ((_ov_xL, 0), (_ov_xR, _n_det)):
+            con = ConnectionPatch(
+                xyA=(_ovx, _ov_lo), coordsA="data", axesA=ax_ov,
+                xyB=(_refx, _ref_hi), coordsB="data", axesB=ax_ref,
+                color="#9e9e9e", linestyle=(0, (2, 2)), linewidth=0.8,
+                alpha=0.75, zorder=1,
+            )
+            con.set_clip_on(False)
+            fig.add_artist(con)
+
     # Left margin sized for the aligner-name column + the beige bg
     # behind it. Bottom expanded to 0.07 to give room for the two
     # bottom italic banners (per-aligner note + cross-chrom).
