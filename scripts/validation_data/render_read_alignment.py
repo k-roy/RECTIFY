@@ -595,21 +595,21 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
                    corr_5p: Optional[int] = None):
     n = win_end - win_start
     ax.set_xlim(0, n)
-    # Reserve space ABOVE the bases for the orig/corr/samtools markers +
-    # labels. Bumped to 2.30 so a 3-tier stack (orig/corr at tier 1,
-    # corr-when-close at tier 2, samtools ALWAYS on its own tier 3) clears
-    # the ~0.40-data-unit text height at this row's height_ratio without
-    # adjacent tiers overprinting (figure-qa: orig=corr vs samtools, 2026-06).
-    ax.set_ylim(0, 2.30)
+    # The ref bases sit at y=0.05-0.55. The old orig/corr/samtools markers
+    # (which needed a tall ylim) are gone, so keep the panel TIGHT (top just
+    # above the bases) — this lets the overview→ref zoom lines connect right at
+    # the ref-seq top. Only the rare 5' markers (zoom-out windows that include
+    # the 5' end) need the taller headroom; reserve it only then.
+    _has5 = ((orig_5p is not None and win_start <= orig_5p < win_end)
+             or (corr_5p is not None and win_start <= corr_5p < win_end))
+    _ref_top = 1.75 if _has5 else 0.72
+    ax.set_ylim(0, _ref_top)
     ax.set_yticks([])
     ax.set_xticks([])
     ax.set_ylabel(label, rotation=0, ha="right", va="center",
                   fontsize=SIZE_TEXT, fontweight="bold")
-    # Anchor the ylabel at the ref-bases level (~y=0.30 of ylim 2.30 → axes
-    # frac ~0.13), not the ylim centre. With the tall ylim the default centred
-    # label rises into the marker tier / the row above, colliding with a
-    # left-edge delta label there (figure-qa '−2' vs 'ref', 2026-06).
-    ax.yaxis.set_label_coords(-0.018, 0.13)
+    # Anchor the ylabel at the ref-bases level (bases centre ~y=0.30).
+    ax.yaxis.set_label_coords(-0.018, 0.30 / _ref_top)
     for spine in ax.spines.values():
         spine.set_visible(False)
     # Ref bases sit at y=0.05-0.55 so there's room for ↓ markers above.
@@ -2656,9 +2656,10 @@ def render(
     panels = _agree + ["ref"] + track_labels + ["ticks"]
     # Read rows much taller (2.0) for the insertion-pill stagger ABOVE the row.
     # Tick row bumped from 0.35 → 0.55 so coord numbers don't crowd the
-    # alignment-track baseline above them. ref row 1.65. The agreement track
-    # (when shown) needs ~1.7 to stack up to 5 aligner cells.
-    height_ratios = _agree_h + [1.65] + [2.0] * len(track_sources) + [0.55]
+    # alignment-track baseline above them. ref row trimmed 1.65 → 0.9 now that
+    # its ylim is tight (markers removed) — keeps the ref bases ≈ the per-aligner
+    # base size. The agreement track (when shown) needs ~1.7 for the 5-cell stack.
+    height_ratios = _agree_h + [0.9] + [2.0] * len(track_sources) + [0.55]
 
     # Cross-chrom mini-panels prepended at the TOP (right above the main
     # bedgraph). Each contributes a painted-CIGAR row + tick row with its
@@ -3016,26 +3017,33 @@ def render(
     # Zoom indicator: connect the detailed (ref) window to its location in the
     # whole-read overview, so the reader instantly sees WHERE in the read the
     # per-base view sits (e.g. the 3' end for these cats). A faint box marks the
-    # detailed sub-region in the overview, and two dotted lines fan from its
-    # edges down to the ref row's left/right edges. Added AFTER the minus-strand
-    # invert so ConnectionPatch resolves the (possibly flipped) transData at draw.
+    # detailed sub-region across the overview strips AND its coordinate (tick)
+    # row, then two dotted lines fan from JUST BELOW the overview coordinates
+    # (ov-ticks bottom) down to JUST ABOVE the ref seq (ref panel top). Added
+    # AFTER the minus-strand invert so ConnectionPatch + the boxes resolve the
+    # (possibly flipped) transData at draw.
+    #
+    # NOTE: when the optional pileup/agreement track is re-enabled it sits
+    # between the ov-ticks and the ref row — the fan would then cross it, so the
+    # ref-side endpoint (axesB) should be retargeted to that track's top.
     if show_overview:
         from matplotlib.patches import ConnectionPatch
-        _ov_lo, _ov_hi = ax_ov.get_ylim()
         _ref_hi = ax_ref.get_ylim()[1]
         _ov_xL, _ov_xR = win_start - ov_start, win_end - ov_start
         _n_det = win_end - win_start
-        ax_ov.add_patch(Rectangle(
-            (_ov_xL, _ov_lo), _ov_xR - _ov_xL, _ov_hi - _ov_lo,
-            facecolor="#FFF59D", edgecolor="#fbc02d", alpha=0.22,
-            linewidth=0.6, zorder=0,
-        ))
+        # continuous highlight: overview strips + the coordinate row beneath them
+        for _bax in (ax_ov, ax_ov_ticks):
+            _lo, _hi = _bax.get_ylim()
+            _bax.add_patch(Rectangle(
+                (_ov_xL, _lo), _ov_xR - _ov_xL, _hi - _lo,
+                facecolor="#FFF59D", edgecolor="none", alpha=0.20, zorder=0,
+            ))
         for _ovx, _refx in ((_ov_xL, 0), (_ov_xR, _n_det)):
             con = ConnectionPatch(
-                xyA=(_ovx, _ov_lo), coordsA="data", axesA=ax_ov,
+                xyA=(_ovx, 0.0), coordsA="data", axesA=ax_ov_ticks,
                 xyB=(_refx, _ref_hi), coordsB="data", axesB=ax_ref,
                 color="#9e9e9e", linestyle=(0, (2, 2)), linewidth=0.8,
-                alpha=0.75, zorder=1,
+                alpha=0.8, zorder=1,
             )
             con.set_clip_on(False)
             fig.add_artist(con)
