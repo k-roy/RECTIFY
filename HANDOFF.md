@@ -22,9 +22,10 @@ test imports the renderer; full validation/poly-A/walkback suites remain green**
   • **tail cells** decomposed non-overlapping: **crimson** = force-aligned-then-walkback-removed,
     **grey** = native aligner soft-clip, **green** = parquet pA tail.
   • ref row CLEANED — old `orig=corr`/`samtools` markers removed (redundant with per-row ▲).
-  • top track repurposed from the vacuous bundle-bedgraph "3' pileup" → **"aligner 3' agreement"**: each
-    aligner's corrected 3' stacked as one labeled cell at its position (winner green). One tall stack =
-    consensus; multiple stacks = disagreement (e.g. cat1_plus_1 shows 4 cells — deSALT cross-maps chrVI).
+  • the old vacuous bundle-bedgraph "3' pileup" top track was repurposed into an **"aligner 3' agreement"**
+    track (each aligner's corrected 3' stacked as one labeled cell; consensus = one tall stack) but is now
+    **opt-in, OFF by default** (`--agreement-track` / `render(show_agreement_track=True)`) — redundant with
+    the per-row ▲s on the validation bundle; kept for real multi-read pileup scenarios.
   • `--dpi` option added (default 150).
 
 **Walkthrough position: read 3/36 reviewed** (cat1_minus_1, _minus_2, _plus_1). NEXT = cat1_plus_2, then
