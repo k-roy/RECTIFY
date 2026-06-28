@@ -92,6 +92,12 @@ SOFTCLIP_FG = "#999999"
 # the biological tail from the aligner's technical soft-clip of the body.
 SOFTCLIP_PA_BG = "#C8E6C9"
 SOFTCLIP_PA_FG = "#2E7D32"
+# Force-aligned-then-walkback-removed portion of the tail: bases the ALIGNER
+# aligned (force-aligned past the true 3' end) that RECTIFY's walkback clipped.
+# Distinct from a NATIVE aligner soft-clip (grey, SOFTCLIP_BG) — the aligner
+# CHOSE to clip those; the crimson ones it force-aligned and RECTIFY removed.
+SOFTCLIP_WB_BG = "#FFCDD2"
+SOFTCLIP_WB_FG = "#b71c1c"
 DELETION_BG = "#FFE0B2"
 INTRON_BG = "#E0E0E0"
 
@@ -220,6 +226,35 @@ def _mark_polya_softclip(aligned: dict, polya_len: int, is_reverse: bool) -> Non
     for idx in pa_indices:
         state[idx] = "softclip_pa"
     aligned["polya_len_effective"] = pa_n
+
+
+def _mark_walkback_removed(aligned: dict, wb_n: int, is_reverse: bool) -> None:
+    """Relabel the INNERMOST ``wb_n`` cells of the 3' soft-clip (those nearest
+    the corrected body) as ``softclip_wb`` — the bases the aligner FORCE-ALIGNED
+    past the true 3' end that RECTIFY's walkback clipped.
+
+    Call AFTER :func:`_mark_polya_softclip`: it only relabels cells still tagged
+    as the plain (grey) aligner soft-clip, so the parquet pA cells (green, the
+    OUTER end) and these force-aligned cells (crimson, the INNER end) never
+    overlap. Any cells left grey between them are the aligner's genuine native
+    soft-clip. ``wb_n`` is clamped to the available grey cells, so when the
+    force-aligned extent exceeds the reconstructed tail the row simply reads as
+    all-crimson + pA (mapPacBio) vs mostly-grey + a crimson sliver (deSALT)."""
+    if wb_n <= 0:
+        return
+    state = aligned.get("state") or []
+    target = "softclip5" if is_reverse else "softclip3"
+    # Only cells still grey (parquet pA already relabeled softclip_pa, excluded).
+    indices = [i for i, st in enumerate(state) if st == target]
+    if not indices:
+        return
+    wb_n = min(wb_n, len(indices))
+    # Innermost = nearest the corrected body. Minus: 3' tail is at LOW genomic,
+    # so the inner cells are the HIGH columns (end of the list). Plus: inner
+    # cells are the LOW columns (start of the list).
+    wb_indices = indices[-wb_n:] if is_reverse else indices[:wb_n]
+    for idx in wb_indices:
+        state[idx] = "softclip_wb"
 
 
 def walk_cigar(read: pysam.AlignedSegment, win_start: int, win_end: int) -> dict:
@@ -421,6 +456,8 @@ def _color_for_base(b: str, state: str, in_mismatch: bool) -> tuple[str, str]:
     """Return (bg_color, fg_color) for one base."""
     if state == "softclip_pa":
         return SOFTCLIP_PA_BG, SOFTCLIP_PA_FG
+    if state == "softclip_wb":
+        return SOFTCLIP_WB_BG, SOFTCLIP_WB_FG
     if state in ("softclip5", "softclip3"):
         return SOFTCLIP_BG, SOFTCLIP_FG
     if state == "deletion":
@@ -466,10 +503,15 @@ def render_alignment_row(ax, aligned: dict, ref_seq: str,
     # extending aligner converging — or not — to the consensus boundary).
     if corr_3p_aligner is not None and win_start <= corr_3p_aligner < win_end:
         _cx = (corr_3p_aligner - win_start) + 0.5
-        ax.plot([_cx, _cx], [0.0, 0.98], color="#2e7d32", linewidth=0.8,
-                alpha=0.65, zorder=6, clip_on=False)
+        # ▲ below the row only — no vertical line through the bases (it obscured
+        # the base letter at the corrected-3' column).
         ax.plot(_cx, -0.16, marker="^", markersize=7, color="#2e7d32",
                 clip_on=False, zorder=7)
+
+    # (Walkback-removed bases are shown by recoloring the innermost soft-clip
+    # cells crimson via _mark_walkback_removed — see SOFTCLIP_WB_BG — so the
+    # tail reads as non-overlapping crimson/grey/green segments without an
+    # overlay obscuring the bases.)
 
     mismatches = aligned["mismatches"]
     for i, (b, st) in enumerate(zip(aligned["bases"], aligned["state"])):
@@ -580,41 +622,12 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
         ax.add_patch(Rectangle((i, 0.05), 1, 0.50, facecolor=bg, edgecolor="none"))
         ax.text(i + 0.5, 0.30, b_disp.upper(), ha="center", va="center",
                 fontsize=8, family="monospace", color=fg, fontweight="bold")
-    # ↓ markers ABOVE the ref bases. When orig and corr coincide (the common
-    # zero-shift case), draw a single marker labeled "orig=corr" so the two
-    # word labels don't overprint each other (regression noticed when
-    # rendering Cat3/Cat4 reads where the rectifier didn't shift the 3' end).
-    # When orig and corr differ but are within ~3 columns, stack the labels
-    # vertically (corr above orig) so they remain readable.
+    # ↓ markers ABOVE the ref bases. The old ref-row "orig=corr" markers were
+    # removed (2026-06-27): each per-aligner row now carries its own green ▲ at
+    # that aligner's RECTIFY-corrected 3' end, and the walkback extent is shown
+    # by the crimson tail cells — so a separate winner-only orig/corr marker on
+    # the ref row was redundant. samtools (the naive 3' end) is still shown.
     tri_y = 0.95
-    txt_y_lo = 1.15
-    txt_y_hi = 1.60
-    orig_in = orig_3p is not None and win_start <= orig_3p < win_end
-    corr_in = corr_3p is not None and win_start <= corr_3p < win_end
-    same_pos = orig_in and corr_in and orig_3p == corr_3p
-    close_pos = (
-        orig_in and corr_in and orig_3p != corr_3p
-        and abs(orig_3p - corr_3p) <= 3
-    )
-    if same_pos:
-        # Single merged marker — split-color triangle (orange) + combined label.
-        x = (orig_3p - win_start) + 0.5
-        ax.plot(x, tri_y, marker="v", markersize=11, color="#8e6c1f")
-        ax.text(x, txt_y_lo, "orig=corr", ha="center", va="bottom",
-                fontsize=SIZE_TEXT, color="#8e6c1f", fontweight="bold")
-    else:
-        if orig_in:
-            x = (orig_3p - win_start) + 0.5
-            ax.plot(x, tri_y, marker="v", markersize=11, color="#d32f2f")
-            ax.text(x, txt_y_lo, "orig", ha="center", va="bottom",
-                    fontsize=SIZE_TEXT, color="#d32f2f", fontweight="bold")
-        if corr_in:
-            x = (corr_3p - win_start) + 0.5
-            ax.plot(x, tri_y, marker="v", markersize=11, color="#2e7d32")
-            # Stagger corr above orig when the two are close enough to collide
-            y_corr = txt_y_hi if close_pos else txt_y_lo
-            ax.text(x, y_corr, "corr", ha="center", va="bottom",
-                    fontsize=SIZE_TEXT, color="#2e7d32", fontweight="bold")
     # "samtools 3p" — where a naive `samtools view | awk` would place the
     # read's 3' end (= reference_end-1 on + strand, reference_start on −
     # strand of the UNRECTIFIED minimap2 BAM, with pA tail still attached
@@ -2208,6 +2221,18 @@ def render(
     # aligner -> RECTIFY corrected 3' end (walkback result), populated from the
     # per-aligner summary below; drives the per-row corrected-end markers.
     _corr3p_by_aligner: dict[str, int] = {}
+    # aligner -> (raw reference_start, raw reference_end) from the RAW aligner
+    # BAM (pre-RECTIFY). Used to mark the force-aligned-then-walkback-removed
+    # span (raw extent beyond the corrected body) distinctly from native clips.
+    _raw_span_by_aligner: dict[str, tuple] = {}
+    if aligner_bam_dir is not None:
+        for _al in ('minimap2', 'gapmm2', 'mapPacBio', 'deSALT', 'uLTRA'):
+            _rawp = Path(aligner_bam_dir) / f"validation_reads.{_al}.bam"
+            if not _rawp.exists():
+                continue
+            _rr = fetch_read(_rawp, qname)
+            if _rr is not None and not _rr.is_unmapped:
+                _raw_span_by_aligner[_al] = (_rr.reference_start, _rr.reference_end)
     if aligner_bam_dir is not None:
         unrect_bam: Optional[Path] = None
         bundle = Path(aligner_bam_dir).parent
@@ -2680,7 +2705,9 @@ def render(
         fig.text(0.5, 0.038,
                  "per-aligner rows: corrected CIGAR + poly(A) tail "
                  "restored as soft-clip from the trim parquet "
-                 "(grey = aligner soft-clip; green = pA tail)",
+                 "(tail cells: crimson = force-aligned then walkback-removed by RECTIFY; "
+                 "grey = native aligner soft-clip; green = parquet pA tail; "
+                 "green ▲ = RECTIFY corrected 3')",
                  ha="center", fontsize=SIZE_TEXT, color="#666", style="italic")
     if cross_chrom_rows:
         chunks = []
@@ -2893,11 +2920,22 @@ def render(
         # Resolve this row's aligner(s) → its RECTIFY corrected 3' end so the
         # row can mark where walkback landed for it (skip the unrectified row).
         _rc3 = None
-        if "unrect" not in label.lower():
-            for _al in label.replace("winner:", " ").replace(",", " ").split():
-                if _al in _corr3p_by_aligner:
-                    _rc3 = _corr3p_by_aligner[_al]
-                    break
+        _al0 = None
+        for _al in label.replace("winner:", " ").replace(",", " ").split():
+            if _al in _corr3p_by_aligner and _rc3 is None:
+                _rc3 = _corr3p_by_aligner[_al]
+            if _al in _raw_span_by_aligner and _al0 is None:
+                _al0 = _al
+        # Green ▲ (RECTIFY corrected 3') goes on EVERY per-aligner row, the
+        # unrectified baseline included, so the corrected end is comparable
+        # across rows; the winner is read from the row label.
+        # The crimson walkback-removed tail cells, however, are a CORRECTED-row
+        # concept (force-aligned bases RECTIFY clipped) — skip them on the
+        # unrectified baseline row, which by definition shows no correction.
+        if "unrect" not in label.lower() and _al0 is not None and a.get("aln_start") is not None:
+            _rs, _re = _raw_span_by_aligner[_al0]
+            _wb_n = (a["aln_start"] - _rs) if is_reverse else (_re - a["aln_end"])
+            _mark_walkback_removed(a, max(0, _wb_n), is_reverse)
         render_alignment_row(ax, a, ref_seq, win_start, win_end, label,
                              is_reverse=is_reverse, corr_3p_aligner=_rc3)
     ax_ticks = next(ax_iter)
