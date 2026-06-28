@@ -27,6 +27,8 @@ test imports the renderer; full validation/poly-A/walkback suites remain green**
     **opt-in, OFF by default** (`--agreement-track` / `render(show_agreement_track=True)`) — redundant with
     the per-row ▲s on the validation bundle; kept for real multi-read pileup scenarios.
   • `--dpi` option added (default 150).
+  • **zoom indicator** (`6115776`): faint yellow box marks the detailed sub-region in the whole-read
+    overview + two dotted fan lines down to the ref row, so the reader sees the per-base view is the 3' end.
 
 **Walkthrough position: read 3/36 reviewed** (cat1_minus_1, _minus_2, _plus_1). NEXT = cat1_plus_2, then
 cat2…cat9. Latest full render: `scratchpad/figs_v9/` (all 36). The renderer feature-set is settled per the
