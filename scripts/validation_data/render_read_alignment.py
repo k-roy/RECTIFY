@@ -692,6 +692,61 @@ def render_bedgraph(ax, plus_pts, minus_pts, win_start: int, win_end: int,
     # green ▲ on the minimap2 (unrectified) per-aligner row instead.
 
 
+_ALIGNER_ABBREV = {
+    "minimap2": "mm2", "gapmm2": "gap", "mapPacBio": "mPB",
+    "deSALT": "deS", "uLTRA": "uLT",
+}
+
+
+def render_aligner_3p_agreement(ax, corr3p_by_aligner: dict, winner_name: str,
+                                win_start: int, win_end: int) -> None:
+    """Per-aligner corrected-3'-end agreement track.
+
+    Replaces the old bundle-bedgraph "pileup" (which, on the 1-read-per-locus
+    validation set, was always a single count=1 bar). Instead, collapse every
+    aligner's RECTIFY-corrected 3' end onto the genomic axis and stack them:
+    each aligner is one cell at its corrected position, so a single tall column
+    = full agreement (consensus), and multiple columns = the aligners disagree
+    (which read/aligner landed where is then obvious). Winner cell in green,
+    the rest steel-blue; abbreviation inside each cell.
+    """
+    from collections import defaultdict
+    n = win_end - win_start
+    ax.set_xlim(0, n)
+    ax.set_ylabel("aligner 3′\nagreement", rotation=0, ha="right",
+                  va="center", fontsize=SIZE_SMALL)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    by_pos: dict = defaultdict(list)
+    for al, p in corr3p_by_aligner.items():
+        if p is not None and win_start <= p < win_end:
+            by_pos[p].append(al)
+    if not by_pos:
+        ax.set_ylim(0, 1)
+        return
+    max_count = max(len(v) for v in by_pos.values())
+    ax.set_ylim(0, max(2, max_count) + 0.4)
+    # Cell wide enough to hold the 3-char abbreviation at this window scale
+    # (1 ref column is too narrow on a ~100 bp window).
+    cell_w = max(2.0, n * 0.022)
+    for p, als in by_pos.items():
+        x = p - win_start + 0.5
+        # winner first (bottom of the stack), then the rest alphabetically
+        ordered = sorted(als, key=lambda a: (a != winner_name, a))
+        ax.plot([x, x], [0, len(ordered)], color="#cfd8dc", linewidth=0.8, zorder=1)
+        for i, al in enumerate(ordered):
+            is_win = (al == winner_name)
+            col = "#2e7d32" if is_win else "#607d8b"
+            ax.add_patch(Rectangle((x - cell_w / 2, i + 0.08), cell_w, 0.84,
+                                   facecolor=col, edgecolor="white",
+                                   linewidth=0.5, zorder=2, clip_on=False))
+            ax.text(x, i + 0.5, _ALIGNER_ABBREV.get(al, al[:3]),
+                    ha="center", va="center", fontsize=SIZE_SMALL,
+                    color="white", fontweight="bold", zorder=3, clip_on=False)
+
+
 def render_axis_ticks(ax, win_start: int, win_end: int,
                       right_pad_frac: float = 0.0,
                       suppress_last_tick: bool = False,
@@ -2206,8 +2261,10 @@ def render(
     # samtools-style 3' end here can sit slightly past the corrected
     # one, exactly the contrast that motivates RECTIFY.
     samtools_3p: Optional[int] = None
+    winner_name = winner_label or "minimap2"
     # aligner -> RECTIFY corrected 3' end (walkback result), populated from the
-    # per-aligner summary below; drives the per-row corrected-end markers.
+    # per-aligner summary below; drives the per-row corrected-end markers AND
+    # the per-aligner 3'-agreement track.
     _corr3p_by_aligner: dict[str, int] = {}
     # aligner -> (raw reference_start, raw reference_end) from the RAW aligner
     # BAM (pre-RECTIFY). Used to mark the force-aligned-then-walkback-removed
@@ -2596,7 +2653,9 @@ def render(
     # alignment-track baseline above them.
     # ref row bumped 1.2 → 1.65 to give the 3-tier orig/corr/samtools marker
     # stack (ylim 2.30) enough pixels that adjacent tiers don't overprint.
-    height_ratios = [1.0, 1.65] + [2.0] * len(track_sources) + [0.55]
+    # row 0 = per-aligner 3'-agreement track (stacks up to 5 aligner cells, so
+    # it needs more height than the old 1-bar bedgraph); row 1 = ref.
+    height_ratios = [1.7, 1.65] + [2.0] * len(track_sources) + [0.55]
 
     # Cross-chrom mini-panels prepended at the TOP (right above the main
     # bedgraph). Each contributes a painted-CIGAR row + tick row with its
@@ -2897,8 +2956,8 @@ def render(
                           suppress_last_tick=bool(aligner_ed_map))
 
     ax_bg = next(ax_iter)
-    render_bedgraph(ax_bg, plus_pts, minus_pts, win_start, win_end,
-                    orig_3p, corr_3p, samtools_3p=samtools_3p)
+    render_aligner_3p_agreement(ax_bg, _corr3p_by_aligner, winner_name,
+                                win_start, win_end)
     ax_ref = next(ax_iter)
     render_ref_row(ax_ref, ref_seq, win_start, win_end, orig_3p, corr_3p,
                    is_reverse=is_reverse, samtools_3p=samtools_3p,
