@@ -622,27 +622,15 @@ def render_ref_row(ax, ref_seq: str, win_start: int, win_end: int,
         ax.add_patch(Rectangle((i, 0.05), 1, 0.50, facecolor=bg, edgecolor="none"))
         ax.text(i + 0.5, 0.30, b_disp.upper(), ha="center", va="center",
                 fontsize=8, family="monospace", color=fg, fontweight="bold")
-    # ↓ markers ABOVE the ref bases. The old ref-row "orig=corr" markers were
-    # removed (2026-06-27): each per-aligner row now carries its own green ▲ at
-    # that aligner's RECTIFY-corrected 3' end, and the walkback extent is shown
-    # by the crimson tail cells — so a separate winner-only orig/corr marker on
-    # the ref row was redundant. samtools (the naive 3' end) is still shown.
+    # The ref row is kept CLEAN (2026-06-27): the old orig=corr AND samtools
+    # markers were removed. The naive "without-RECTIFY" 3' end (= samtools view
+    # of the unrectified read) is now shown directly as the green ▲ on the
+    # minimap2 (unrectified) per-aligner row, and each rectified row carries its
+    # own corrected-3' ▲ — so all 3'-end attention lives on the per-aligner
+    # tracks. tri_y / txt_y_* below are retained only for the rare 5' markers.
     tri_y = 0.95
-    # "samtools 3p" — where a naive `samtools view | awk` would place the
-    # read's 3' end (= reference_end-1 on + strand, reference_start on −
-    # strand of the UNRECTIFIED minimap2 BAM, with pA tail still attached
-    # as soft-clip). Renders as a brown ↓ marker so the contrast vs.
-    # corr (green) and orig (red) is obvious.
-    txt_y_st = 2.05    # tier 3 — samtools ALWAYS lives here (its own row)
-    if samtools_3p is not None and win_start <= samtools_3p < win_end:
-        x = (samtools_3p - win_start) + 0.5
-        ax.plot(x, tri_y, marker="v", markersize=11, color="#795548")
-        # samtools always uses its own tier so the wide word label can never
-        # overprint orig/corr regardless of horizontal proximity (the previous
-        # "share tier 1 when >5 cols away" heuristic ignored that the WORDS are
-        # wider than 5 columns — figure-qa orig=corr/samtools collision, 2026-06).
-        ax.text(x, txt_y_st, "samtools", ha="center", va="bottom",
-                fontsize=SIZE_TEXT, color="#795548", fontweight="bold")
+    txt_y_lo = 1.15
+    txt_y_hi = 1.60
 
     # 5' end markers — orig_5p (faded blue) and corr_5p (deep blue). These
     # only appear when the rendered window happens to include the 5' end
@@ -700,9 +688,8 @@ def render_bedgraph(ax, plus_pts, minus_pts, win_start: int, win_end: int,
     if corr_3p is not None and win_start <= corr_3p < win_end:
         x = corr_3p - win_start + 0.5
         ax.axvline(x, color="#2e7d32", linestyle="--", linewidth=1.0, alpha=0.8)
-    if samtools_3p is not None and win_start <= samtools_3p < win_end:
-        x = samtools_3p - win_start + 0.5
-        ax.axvline(x, color="#795548", linestyle="-.", linewidth=1.0, alpha=0.8)
+    # samtools (naive 3') line removed — the naive 3' end is now shown by the
+    # green ▲ on the minimap2 (unrectified) per-aligner row instead.
 
 
 def render_axis_ticks(ax, win_start: int, win_end: int,
@@ -2148,6 +2135,7 @@ def render(
     summary_tsv: Path | None = None,
     aligner_bam_dir: Path | None = None,
     gene_id: str = "",
+    dpi: int = 150,
 ) -> Path:
     """Render per-base alignment plot with up to 4 alignment rows.
 
@@ -2919,23 +2907,28 @@ def render(
         ax = next(ax_iter)
         # Resolve this row's aligner(s) → its RECTIFY corrected 3' end so the
         # row can mark where walkback landed for it (skip the unrectified row).
+        _is_unrect = "unrect" in label.lower()
         _rc3 = None
-        _al0 = None
-        for _al in label.replace("winner:", " ").replace(",", " ").split():
-            if _al in _corr3p_by_aligner and _rc3 is None:
-                _rc3 = _corr3p_by_aligner[_al]
-            if _al in _raw_span_by_aligner and _al0 is None:
-                _al0 = _al
-        # Green ▲ (RECTIFY corrected 3') goes on EVERY per-aligner row, the
-        # unrectified baseline included, so the corrected end is comparable
-        # across rows; the winner is read from the row label.
-        # The crimson walkback-removed tail cells, however, are a CORRECTED-row
-        # concept (force-aligned bases RECTIFY clipped) — skip them on the
-        # unrectified baseline row, which by definition shows no correction.
-        if "unrect" not in label.lower() and _al0 is not None and a.get("aln_start") is not None:
-            _rs, _re = _raw_span_by_aligner[_al0]
-            _wb_n = (a["aln_start"] - _rs) if is_reverse else (_re - a["aln_end"])
-            _mark_walkback_removed(a, max(0, _wb_n), is_reverse)
+        if _is_unrect:
+            # The unrectified baseline's green ▲ marks the NAIVE 3' end — where
+            # the pA site would be called WITHOUT RECTIFY (the samtools view of
+            # the raw read, pA still soft-clipped). The contrast against the
+            # rectified rows' ▲ is the whole point of the baseline row.
+            _rc3 = samtools_3p
+        else:
+            _al0 = None
+            for _al in label.replace("winner:", " ").replace(",", " ").split():
+                if _al in _corr3p_by_aligner and _rc3 is None:
+                    _rc3 = _corr3p_by_aligner[_al]
+                if _al in _raw_span_by_aligner and _al0 is None:
+                    _al0 = _al
+            # Crimson walkback-removed tail cells = force-aligned bases RECTIFY
+            # clipped — a corrected-row concept; the unrectified baseline (above)
+            # shows no correction, so it gets none.
+            if _al0 is not None and a.get("aln_start") is not None:
+                _rs, _re = _raw_span_by_aligner[_al0]
+                _wb_n = (a["aln_start"] - _rs) if is_reverse else (_re - a["aln_end"])
+                _mark_walkback_removed(a, max(0, _wb_n), is_reverse)
         render_alignment_row(ax, a, ref_seq, win_start, win_end, label,
                              is_reverse=is_reverse, corr_3p_aligner=_rc3)
     ax_ticks = next(ax_iter)
@@ -2961,7 +2954,7 @@ def render(
     # behind it. Bottom expanded to 0.07 to give room for the two
     # bottom italic banners (per-aligner note + cross-chrom).
     plt.subplots_adjust(left=0.16, right=0.99, top=0.95, bottom=0.07, hspace=0.10)
-    fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return out_path
 

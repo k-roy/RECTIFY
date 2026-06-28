@@ -51,6 +51,9 @@ DRIVE_OUT = Path(
     "My Drive/Work/Chanfreau Lab/validation_read_review"
 )
 SNAPSHOT_DIR = Path("/tmp/igv_snapshots")
+# Render DPI for the per-read PNGs (overridable via --dpi). Higher = more pixels
+# / sharper when opened at native size; layout proportions are unchanged.
+RENDER_DPI = 150
 
 GENOME = REPO / "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
 GFF    = REPO / "rectify/data/genomes/saccharomyces_cerevisiae/saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz"
@@ -238,6 +241,7 @@ def render_plot(xv: str, qname: str, chrom: str, left: int, right: int,
         summary_tsv=SUMMARY_TSV if SUMMARY_TSV.exists() else None,
         aligner_bam_dir=ALIGNER_DIR if ALIGNER_DIR.exists() else None,
         gene_id=gene_id,
+        dpi=RENDER_DPI,
     )
     return out
 
@@ -648,6 +652,9 @@ def main() -> int:
     parser.add_argument("--arm", choices=["drs"], default="drs")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--pad", type=int, default=50)
+    parser.add_argument("--dpi", type=int, default=150,
+                        help="Render DPI for the per-read PNGs (default 150). "
+                             "Higher = sharper at native size; layout unchanged.")
     parser.add_argument("--out", type=Path, default=None,
                         help="Output HTML path (single-file mode only). Ignored with --per-category.")
     parser.add_argument("--html-only", action="store_true",
@@ -673,6 +680,9 @@ def main() -> int:
                              "the renderer uses the committed fixtures and prints a loud "
                              "staleness banner so you are never silently fooled by old data.")
     args = parser.parse_args()
+
+    global RENDER_DPI
+    RENDER_DPI = args.dpi
 
     if args.arm != "drs":
         print(f"--arm {args.arm} not yet supported", file=sys.stderr)
