@@ -95,9 +95,11 @@ SOFTCLIP_PA_FG = "#2E7D32"
 # Force-aligned-then-walkback-removed portion of the tail: bases the ALIGNER
 # aligned (force-aligned past the true 3' end) that RECTIFY's walkback clipped.
 # Distinct from a NATIVE aligner soft-clip (grey, SOFTCLIP_BG) — the aligner
-# CHOSE to clip those; the crimson ones it force-aligned and RECTIFY removed.
-SOFTCLIP_WB_BG = "#FFCDD2"
-SOFTCLIP_WB_FG = "#b71c1c"
+# CHOSE to clip those; the slate-blue ones it force-aligned and RECTIFY removed.
+# Deliberately a SLATE-BLUE hue (not red): the old light-red was too close to the
+# pink mismatch fill (MISMATCH_BG) and the two were confusable.
+SOFTCLIP_WB_BG = "#B0C4DE"
+SOFTCLIP_WB_FG = "#2c3e50"
 DELETION_BG = "#FFE0B2"
 INTRON_BG = "#E0E0E0"
 
@@ -2044,12 +2046,25 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
                                            facecolor=SOFTCLIP_PA_BG,
                                            edgecolor=SOFTCLIP_PA_FG,
                                            linewidth=0.5))
-                if x1 > x0 + pa_w:
-                    ax.add_patch(Rectangle((x0 + pa_w, y_center - 0.18),
-                                           x1 - (x0 + pa_w), 0.36,
-                                           facecolor=SOFTCLIP_BG,
-                                           edgecolor=SOFTCLIP_FG,
-                                           linewidth=0.5))
+                # Non-pA clip [x0+pa_w, x1]: grey (native) + slate-blue
+                # (walkback-removed, INNERMOST = nearest the body at x1).
+                _rest_x0 = x0 + pa_w
+                _rest_w = x1 - _rest_x0
+                if _rest_w > 0:
+                    _wb = min(aligned.get("ov_wb_n", 0), _rest_w)
+                    _grey_w = _rest_w - _wb
+                    if _grey_w > 0:
+                        ax.add_patch(Rectangle((_rest_x0, y_center - 0.18),
+                                               _grey_w, 0.36,
+                                               facecolor=SOFTCLIP_BG,
+                                               edgecolor=SOFTCLIP_FG,
+                                               linewidth=0.5))
+                    if _wb > 0:
+                        ax.add_patch(Rectangle((_rest_x0 + _grey_w, y_center - 0.18),
+                                               _wb, 0.36,
+                                               facecolor=SOFTCLIP_WB_BG,
+                                               edgecolor=SOFTCLIP_WB_FG,
+                                               linewidth=0.5))
 
         # CIGAR-painted body: per-op colored segments. Labels collected.
         cigar = aligned.get("cigartuples") or []
@@ -2120,8 +2135,18 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
                 # [aln_end+sc3-_pa, aln_end+sc3), i.e. the OUTER end (right).
                 aligner_w = (x1 - x0) - _pa if _pa > 0 else (x1 - x0)
                 aligner_w = max(0, aligner_w)
-                if aligner_w > 0:
-                    ax.add_patch(Rectangle((x0, y_center - 0.18), aligner_w, 0.36,
+                # Split the non-pA clip into slate-blue (walkback-removed,
+                # INNERMOST = nearest the body) + grey (native soft-clip) so the
+                # overview matches the detail's red/grey/green decomposition.
+                _wb = min(aligned.get("ov_wb_n", 0), aligner_w)
+                if _wb > 0:
+                    ax.add_patch(Rectangle((x0, y_center - 0.18), _wb, 0.36,
+                                           facecolor=SOFTCLIP_WB_BG,
+                                           edgecolor=SOFTCLIP_WB_FG,
+                                           linewidth=0.5))
+                _grey_w = aligner_w - _wb
+                if _grey_w > 0:
+                    ax.add_patch(Rectangle((x0 + _wb, y_center - 0.18), _grey_w, 0.36,
                                            facecolor=SOFTCLIP_BG,
                                            edgecolor=SOFTCLIP_FG,
                                            linewidth=0.5))
@@ -2135,13 +2160,17 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
                                                linewidth=0.5))
 
         _place_labels(row_labels, y_center)
-    # markers
-    if orig_3p is not None and win_start <= orig_3p < win_end:
-        x = orig_3p - win_start + 0.5
-        ax.axvline(x, color="#d32f2f", linestyle=":", linewidth=0.8, alpha=0.7)
-    if corr_3p is not None and win_start <= corr_3p < win_end:
-        x = corr_3p - win_start + 0.5
-        ax.axvline(x, color="#2e7d32", linestyle="--", linewidth=1.0, alpha=0.8)
+
+        # Per-row RECTIFY-corrected 3' marker — a SMALL green ▲ just below
+        # each row's bar, mirroring the detail view's per-aligner ▲ (only
+        # smaller for the compressed overview). Replaces the old single
+        # figure-level vertical green line, which spanned all rows and could
+        # not show per-aligner divergence in the corrected 3' end.
+        _ov_c3 = aligned.get("ov_corr3p")
+        if _ov_c3 is not None and win_start <= _ov_c3 < win_end:
+            _cx = (_ov_c3 - win_start) + 0.5
+            ax.plot(_cx, y_center - 0.30, marker="^", markersize=4.5,
+                    color="#2e7d32", clip_on=False, zorder=7)
 
 
 # ---------------------------------------------------------------------------
@@ -2606,6 +2635,24 @@ def render(
             _mark_polya_softclip(a, ov_polya, is_rev_ov)
             a["polya_len"] = ov_polya
             a["is_reverse"] = is_rev_ov
+            # Per-row corrected-3' (for the green ▲) + walkback extent (for the
+            # slate-blue tail segment) so the overview strips carry the SAME
+            # red/grey/green styling + corrected-end marker as the detail rows.
+            a["ov_corr3p"] = None
+            a["ov_wb_n"] = 0
+            if is_unrect_ov:
+                a["ov_corr3p"] = samtools_3p   # baseline → naive 3'
+            else:
+                _al0 = None
+                for _al in label.replace("winner:", " ").replace(",", " ").split():
+                    if _al in _corr3p_by_aligner and a["ov_corr3p"] is None:
+                        a["ov_corr3p"] = _corr3p_by_aligner[_al]
+                    if _al in _raw_span_by_aligner and _al0 is None:
+                        _al0 = _al
+                if _al0 is not None and a.get("aln_start") is not None:
+                    _rs, _re = _raw_span_by_aligner[_al0]
+                    a["ov_wb_n"] = max(
+                        0, (a["aln_start"] - _rs) if is_rev_ov else (_re - a["aln_end"]))
             overview_aligned_set.append((label, a))
 
     # ---- Collect junctions for the zoom panels ----
@@ -2743,6 +2790,32 @@ def render(
         handlelength=1.0, handleheight=0.9, handletextpad=0.3,
         columnspacing=1.0, borderpad=0.1,
     )
+    # --- Second legend: per-base tail-cell shading key ---
+    # The detail view recolors each soft-clip cell by its biological/algorithmic
+    # meaning. These swatches use the EXACT cell facecolor + edgecolor so the
+    # key matches what's drawn in the rows. A green ▲ entry documents the
+    # corrected-3' marker. This replaces the prior text-only banner with a
+    # visual key (the colors are otherwise hard to name unambiguously).
+    from matplotlib.lines import Line2D as _Line2D
+    _cell_handles = [
+        _Patch(facecolor=MISMATCH_BG, edgecolor="none", label="mismatch"),
+        _Patch(facecolor=SOFTCLIP_BG, edgecolor=SOFTCLIP_FG, linewidth=0.6,
+               label="native soft-clip"),
+        _Patch(facecolor=SOFTCLIP_WB_BG, edgecolor=SOFTCLIP_WB_FG, linewidth=0.6,
+               label="walkback-removed (RECTIFY)"),
+        _Patch(facecolor=SOFTCLIP_PA_BG, edgecolor=SOFTCLIP_PA_FG, linewidth=0.6,
+               label="poly(A) tail (restored)"),
+        _Line2D([0], [0], marker="^", color="none", markerfacecolor="#2e7d32",
+                markeredgecolor="#2e7d32", markersize=7,
+                label="RECTIFY corrected 3'"),
+    ]
+    leg2 = fig.legend(
+        handles=_cell_handles, loc="upper center", ncol=len(_cell_handles),
+        bbox_to_anchor=(0.5, 0.958),
+        frameon=False, fontsize=SIZE_SMALL + 0.5,
+        handlelength=1.0, handleheight=0.9, handletextpad=0.3,
+        columnspacing=1.4, borderpad=0.1,
+    )
     # Note: when the per-aligner layout is active, every alignment row shows
     # that aligner's corrected output with the parquet-trimmed poly(A) tail
     # restored as 3' soft-clip. So mismatches/indels visible in the body
@@ -2754,11 +2827,8 @@ def render(
     if track_sources and any(lbl.startswith("winner:") or lbl == "minimap2"
                              for lbl, _ in track_sources):
         fig.text(0.5, 0.038,
-                 "per-aligner rows: corrected CIGAR + poly(A) tail "
-                 "restored as soft-clip from the trim parquet "
-                 "(tail cells: crimson = force-aligned then walkback-removed by RECTIFY; "
-                 "grey = native aligner soft-clip; green = parquet pA tail; "
-                 "green ▲ = RECTIFY corrected 3')",
+                 "per-aligner rows: corrected CIGAR + poly(A) tail restored as "
+                 "soft-clip from the trim parquet (tail-cell colors keyed above)",
                  ha="center", fontsize=SIZE_TEXT, color="#666", style="italic")
     if cross_chrom_rows:
         chunks = []
@@ -3040,7 +3110,10 @@ def render(
         _ref_hi = ax_ref.get_ylim()[1]
         _ov_xL, _ov_xR = win_start - ov_start, win_end - ov_start
         _n_det = win_end - win_start
-        _yb = 0.06  # just below the overview coordinate labels (ov-ticks bottom)
+        # Just BELOW the overview coordinate numbers (which sit at y=0..~0.4 of
+        # the ov-ticks panel, va="bottom" anchored at y=0). Negative y drops the
+        # bracket into the gap beneath the numbers so it no longer overlaps them.
+        _yb = -0.18
         # faint region tint over the zoomed sub-region in the overview strips
         _lo, _hi = ax_ov.get_ylim()
         ax_ov.add_patch(Rectangle(
