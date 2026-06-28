@@ -3028,22 +3028,35 @@ def render(
     # ref-side endpoint (axesB) should be retargeted to that track's top.
     if show_overview:
         from matplotlib.patches import ConnectionPatch
+        # Grey, MONOCHROME zoom "wedge" (span bracket + two slanted dotted edges
+        # + a faint region tint). Deliberately grey, NOT amber: the overview
+        # already uses amber/orange for divergence shading + deletions, so a
+        # yellow cue would blend in and read as data. Drawn as an OUTLINE rather
+        # than a filled trapezoid because a cross-axes fill (BboxConnectorPatch)
+        # twists under the minus-strand axis inversion (TransformedBbox of an
+        # inverted axis has reversed x-bounds). ConnectionPatch + single-axis
+        # primitives resolve the flip correctly via data coords at draw time.
+        _grey = "#9e9e9e"
         _ref_hi = ax_ref.get_ylim()[1]
         _ov_xL, _ov_xR = win_start - ov_start, win_end - ov_start
         _n_det = win_end - win_start
-        # continuous highlight: overview strips + the coordinate row beneath them
-        for _bax in (ax_ov, ax_ov_ticks):
-            _lo, _hi = _bax.get_ylim()
-            _bax.add_patch(Rectangle(
-                (_ov_xL, _lo), _ov_xR - _ov_xL, _hi - _lo,
-                facecolor="#FFF59D", edgecolor="none", alpha=0.20, zorder=0,
-            ))
+        _yb = 0.06  # just below the overview coordinate labels (ov-ticks bottom)
+        # faint region tint over the zoomed sub-region in the overview strips
+        _lo, _hi = ax_ov.get_ylim()
+        ax_ov.add_patch(Rectangle(
+            (_ov_xL, _lo), _ov_xR - _ov_xL, _hi - _lo,
+            facecolor=_grey, edgecolor="none", alpha=0.12, zorder=0,
+        ))
+        # horizontal span bracket joining the two edges — the zoomed locus span
+        ax_ov_ticks.plot([_ov_xL, _ov_xR], [_yb, _yb], color=_grey,
+                         linewidth=1.2, clip_on=False, zorder=3)
+        # two dotted edges fanning from the bracket down to the ref-seq top
         for _ovx, _refx in ((_ov_xL, 0), (_ov_xR, _n_det)):
             con = ConnectionPatch(
-                xyA=(_ovx, 0.0), coordsA="data", axesA=ax_ov_ticks,
+                xyA=(_ovx, _yb), coordsA="data", axesA=ax_ov_ticks,
                 xyB=(_refx, _ref_hi), coordsB="data", axesB=ax_ref,
-                color="#9e9e9e", linestyle=(0, (2, 2)), linewidth=0.8,
-                alpha=0.8, zorder=1,
+                color=_grey, linestyle=(0, (2, 2)), linewidth=0.9,
+                alpha=0.85, zorder=1,
             )
             con.set_clip_on(False)
             fig.add_artist(con)
