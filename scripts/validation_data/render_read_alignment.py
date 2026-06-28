@@ -504,7 +504,16 @@ def render_alignment_row(ax, aligned: dict, ref_seq: str,
     # the non-winner rows show their own walkback outcome (e.g. an over-
     # extending aligner converging — or not — to the consensus boundary).
     if corr_3p_aligner is not None and win_start <= corr_3p_aligner < win_end:
-        _cx = (corr_3p_aligner - win_start) + 0.5
+        # Place the ▲ at the BOUNDARY between the called 3'-end base and the
+        # first downstream (removed-tail) nt, not centered under the 3'-end
+        # base. The 3'-end base occupies data-cell [c, c+1] with c =
+        # corr_3p-win_start. Downstream is ref+1 on plus strand (right edge,
+        # offset +1.0) and ref-1 on minus strand (left edge, offset +0.0 —
+        # the later invert_xaxis() flips it to the visual right, matching the
+        # removed tail). See the 0-based half-open 3'-end convention in
+        # CLAUDE.md.
+        _off = 1.0 if not is_reverse else 0.0
+        _cx = (corr_3p_aligner - win_start) + _off
         # ▲ below the row only — no vertical line through the bases (it obscured
         # the base letter at the corrected-3' column).
         ax.plot(_cx, -0.16, marker="^", markersize=7, color="#2e7d32",
@@ -2168,7 +2177,11 @@ def render_overview(ax, aligned_set, win_start: int, win_end: int,
         # not show per-aligner divergence in the corrected 3' end.
         _ov_c3 = aligned.get("ov_corr3p")
         if _ov_c3 is not None and win_start <= _ov_c3 < win_end:
-            _cx = (_ov_c3 - win_start) + 0.5
+            # Boundary between the called 3'-end base and the downstream nt
+            # (see render_alignment_row): +1.0 plus / +0.0 minus (inversion
+            # flips minus to the visual right).
+            _off = 1.0 if not is_reverse else 0.0
+            _cx = (_ov_c3 - win_start) + _off
             ax.plot(_cx, y_center - 0.30, marker="^", markersize=4.5,
                     color="#2e7d32", clip_on=False, zorder=7)
 
