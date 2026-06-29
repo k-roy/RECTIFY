@@ -36,8 +36,12 @@ FACET — C1 is consolidated so C2 is back on).
   is a bimodal HOT-READ TAIL, NOT chemistry. **DECISION: do NOT recalibrate the injector toward high
   clustering**; the decent bulk is low-clustering (matches RNA002). The ~1-2% tail is disregarded for facet
   building (per the read-quality principle) — it's QC/flow-cell characterization + WS-3 guardrail input.
-  Cosmetic-recoverable: endogenous contrast (re-run on contig `1`) + qscore split (SIGPIPE → use `head`).
-  **WS-1 effectively COMPLETE; this is the clean fan-out boundary → reset director for C3.**
+  Cosmetic-recoverable: (a) endogenous biological-excess contrast — contig `1` extraction CONFIRMED
+  (h69_endo_1.bam, 517,487 primary reads; the `chr1`→`1` fix is done), but `measure-bam` on it produced
+  NO output → debug WITHOUT `2>/dev/null` (likely a per-read error on a big spliced BAM, or the [600,1000]
+  exonic window excludes most; the BAM persists at /scratch/users/kevinroy/combined_ref/h69_endo_1.bam).
+  (b) qscore split (SIGPIPE → use `head`). **WS-1 effectively COMPLETE; clean fan-out boundary → reset
+  director for C3.**
 - **WS-3 — novel-feature support guardrail prototype: DONE + COMMITTED** (`scripts/benchmark/novel_support_probe.py`).
   TE = −log10 P(Binom(n,p0)≥k) per novel call (support-count-aware; truth-blind metric). AUC 0.998 (gt) /
   0.93-0.96 (reference-free exonic-density proxy); FDR 0.50→0.20 (gt) / 0.50→0.33 (proxy); recall ~0.99;
