@@ -1,8 +1,11 @@
-# RECTIFY de-novo aligner + its gating benchmark — plain-language overview
+# RECTIFY native aligner + its gating benchmark — overview
 
-*A living document. Revisit and polish as the work evolves. Pairs with the
-working state in `dev/HANDOFF_ALIGNER_BENCHMARK.md` and the technical spec in
-`dev/SIMULATION_BENCHMARK_SPEC.md`.*
+*A living document, plain-language first, headed for the README in some form.
+Revisit and polish as the work evolves. Working state:
+`dev/HANDOFF_ALIGNER_BENCHMARK.md`; technical spec:
+`dev/SIMULATION_BENCHMARK_SPEC.md`; design seed:
+`dev/ALIGNER_IDEATION_SYNTHESIS.md`; design refinements:
+`dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`.*
 
 **Last updated:** 2026-06-28
 
@@ -10,176 +13,261 @@ working state in `dev/HANDOFF_ALIGNER_BENCHMARK.md` and the technical spec in
 
 ## The one-sentence version
 
-We are building a **new, from-scratch alignment algorithm** that joins RECTIFY's
-existing panel of aligners with a deliberately *different* (orthogonal) approach —
-one that recovers **novel transcript isoforms** the current aligners miss and that
-is robust to the **specific error modes of Nanopore direct-RNA sequencing** — and,
-*before* we build it, we are building a **ground-truth benchmark** that can prove
-the new aligner actually earns its place.
+We are building a **new, native RECTIFY alignment algorithm** that complements
+the existing panel of aligners with a deliberately *orthogonal* approach — one
+that recovers **novel transcript isoforms** the current aligners flatten away and
+that is robust to the **specific error modes of Nanopore direct-RNA sequencing
+(DRS)** — and, *before* we build it, we are building a **ground-truth benchmark**
+that can prove the new approach actually earns its place.
 
 ---
 
-## Background: what RECTIFY does, and why aligners matter here
+## Background: what RECTIFY does, and why aligners matter
 
-Nanopore (ONT) sequencing reads RNA molecules directly (direct-RNA sequencing,
-"DRS") or as cDNA copies. The first thing any analysis must do is **align** each
-read to the genome: figure out where it came from, and — crucially for RNA —
-where its **splice junctions** are (the boundaries where introns were removed).
-Getting the junctions right is what lets you discover transcript **isoforms**
-(alternative ways a gene is spliced).
+Nanopore (ONT) sequencing reads RNA directly (direct-RNA, "DRS") or as cDNA. The
+first thing any analysis must do is **align** each read to the genome — and for
+RNA, find its **splice junctions** (where introns were removed). Getting the
+junctions right is what lets you discover transcript **isoforms** (alternative
+splice forms of a gene); getting the **3′ end / cleavage-and-polyadenylation
+(CPA)** site right is core to RECTIFY's mission.
 
-RECTIFY doesn't trust a single aligner. It runs a **panel** of them (minimap2,
-gapmm2, uLTRA, deSALT, gmap, …), then **corrects** characteristic ONT errors and
-forms a **consensus** — picking, per read, the best-supported alignment. The
-panel is RECTIFY's strength: different aligners fail in different ways, so
-combining them beats any one alone.
+RECTIFY doesn't trust one aligner. It runs a **panel** (minimap2, gapmm2, uLTRA,
+deSALT, gmap, …), corrects characteristic ONT errors, and forms a **consensus**,
+picking the best-supported alignment per read. Different aligners fail in
+different ways, so combining beats any one alone. (This per-read multi-aligner
+arbitration idea is the PI's published **COMPASS** method, Roy et al. 2023 NAR,
+now living inside RECTIFY.)
 
-But the panel has **shared blind spots**. The incumbents were largely designed
-for DNA or for short, well-behaved introns, and they lean on built-in assumptions
-that hurt exactly the cases we care about most.
+But the panel has **shared blind spots** — and that is the opening for a new
+algorithm.
 
 ---
 
-## The gap we are filling — the *main point* of this line of work
+## The gap we are filling — the main point
 
-Two blind spots motivate a **new aligner member** with an orthogonal algorithm:
+Three facts define the opportunity:
 
-1. **Novel-isoform / novel-junction recovery.** Existing aligners are biased
-   toward the *expected*. The clearest measured example: minimap2 **snaps** a
-   real but non-canonical splice junction onto the nearest canonical `GT-AG`
-   motif (or onto an annotated junction), rather than reporting the true, novel
-   site. It does this *even on error-free reads*. So genuinely new isoforms — the
-   discoveries that matter biologically — get silently flattened into known ones.
-   A new member that **weighs evidence** (the read's own bases) instead of
-   **snapping to motifs/annotation** can recover these. (In benchmark terms this
-   is the JUNCTION_DISCOVERY stratum; we proved the bias is *member-addressable* —
-   the true site always carries strictly more support, so an evidence-weighing
-   algorithm can win it back.)
+1. **The panel "herds."** Several panel members share the same underlying
+   engine family — a **flat, affine-gap, quality-blind** cost model. So they tend
+   to make the *same* mistakes and agree with each other for the *wrong* reason.
+   Counting their agreement therefore overcounts confidence (the "herd trap"). A
+   new member only adds real information if its errors are **independent** of that
+   shared family.
 
-2. **ONT DRS-specific error modes.** Direct-RNA reads have characteristic
-   mistakes the incumbents handle poorly: long **homopolymer** runs (`AAAA…`) get
-   mis-lengthened; errors come in **bursts** and on globally **"hot"** (error-rich)
-   reads rather than uniformly; and the **3′ poly-A / cleavage site (CPA)** is
-   hard to place. A member built around **run-/length-aware penalties** and
-   **calibrated, error-aware scoring** can correct these where a generic affine-gap
-   aligner cannot.
+2. **Novel isoforms get flattened.** Existing aligners are biased toward the
+   *expected*: minimap2 **snaps** a real but non-canonical splice junction onto
+   the nearest canonical `GT-AG` motif (or onto an annotated junction) instead of
+   reporting the true, novel site — and it does this *even on error-free reads*.
+   So genuine discoveries get silently turned into known isoforms.
 
-The new aligner is **not** meant to replace the panel — it is meant to
-**complement** it: contribute the alignments the others systematically get wrong,
-so the consensus improves on novel isoforms and DRS error modes.
+3. **DRS has its own error modes.** Direct-RNA reads mis-length **homopolymers**
+   (`AAAA…`), carry errors in **bursts** on globally **"hot"** reads (not
+   uniformly), and have hard-to-place **poly-A / CPA** ends. Generic affine-gap
+   aligners handle these poorly.
+
+### How the new algorithm is *orthogonal* (the design's central lever)
+
+The unifying move (four of six independent ideation lenses converged on it):
+**replace hard / flat / quality-blind costs with calibrated likelihoods, and emit
+posteriors.** Instead of an integer "best score," the native aligner scores
+placements on an **empirical −log P penalty scale** (RECTIFY already ships such
+HP/error tables) and produces **probabilities**. This is simultaneously:
+
+- **the orthogonality source** — its error axis differs from the panel's shared
+  flat-affine family, so its mistakes are independent and it genuinely *de-herds*
+  the consensus; and
+- **a structural defense against scoring artifacts** — see the 0.09→1.07 story
+  below.
+
+### What the new algorithm *is*, mechanically
+
+Not a 6th correlated placer. It is primarily a **native realignment / arbitration
+layer that runs *downstream* of the panel**: reuse the 5 aligners' placement
+cluster as a **localization window**, then do **local realignment** inside that
+window on a calibrated scale. A key insight bounds the ambition honestly: **the
+discovery ceiling is at the *window* level, not the junction level** — a read in
+the right window but with a mis-called junction *inside* it is still recoverable
+by realignment; only reads with **no acceptable window at all** (all aligners
+misplace; ~12% are unmapped) are out of reach, and those are the *only* place an
+independent localizer earns its keep.
 
 ---
 
 ## Why a benchmark has to come first — "the GATE"
 
-To claim the new aligner *improves* anything, you must measure it against a
-**known-correct answer**. But with real biological data you don't know the right
-answer — that's the whole problem you're trying to solve. So we build a benchmark
-with **ground truth** first, and we enforce a hard rule:
+To claim the new aligner *improves* anything you must measure it against a
+**known-correct answer**. With real biological data you don't know the right
+answer — that's the whole problem you're solving. So we build a benchmark with
+**ground truth** first, and enforce a hard rule:
 
-> **No new-aligner ("member") code is written until the benchmark can prove,
-> against truth, that the new approach beats the incumbent on the cases it
-> targets.** Optimize against a broken ruler and you ship fake improvements.
+> **No native-aligner ("member") code is written until a validated ground-truth
+> benchmark proves, against truth, that the new approach beats the incumbent on
+> the case it targets.**
 
-That benchmark is "Deliverable A, the GATE." Its job is to be *trustworthy* and
-*discriminating*: able to tell a real improvement from noise, on each targeted
-capability, in an **ambiguity-aware** way (e.g. an indel placed anywhere inside a
-homopolymer run, or a junction shifted one base into a repeat, is *not* charged as
-an error — only genuine mistakes count).
+Two disciplines make the gate trustworthy:
 
-### Two kinds of ground truth (we use both, for different reasons)
+- **Fitness is the truth set, NEVER the internal score.** The cautionary tale:
+  re-weighting the *internal* consensus score once flipped an aligner's apparent
+  quality from **0.09 to 1.07 with no change to any alignment**. An internal
+  score can be gamed; truth cannot. (Tuning the error model against *simulated*
+  errors and trusting a green number is the same trap one level up —
+  "hill-climbing into the simulator's error model.")
+- **A stratum only counts if the incumbent is BELOW CEILING on it *and* the gap
+  is ADDRESSABLE by the proposed member.** A benchmark where the incumbent already
+  scores 100% cannot separate the concepts (the "vertical-slice finding": an
+  isolated, cleanly-flanked homopolymer is non-discriminating — *both* minimap2
+  and the candidate DP score 1.000, because any in-run indel placement is
+  ambiguity-equivalent). The real signal lives at the **hard boundary cases**
+  (indel-vs-substitution at run edges, run-bleeds-into-flank, adjacent runs,
+  background noise) — and we guard against the opposite error too (the "paralog
+  zero-evidence trap": a case the incumbent fails but *no* method could recover
+  doesn't count either).
 
-- **Simulation** — generate reads where we *know* the truth because we built the
-  transcript, then add errors. Gives absolute, per-base truth — but only as
-  realistic as the error model we inject.
+### The framing metric
+
+**Exact indel-position concordance with truth — not edit distance.** At every
+contested position edit distance is *tied by construction*, so it can't separate
+the concepts; only *which tied placement matches truth* can. Scoring is
+**ambiguity-aware**: a call one base into a donor/acceptor repeat, or an indel
+anywhere inside a homopolymer run, is *not* charged as an error — only genuine
+mistakes count.
+
+### Two kinds of ground truth (we use both, deliberately)
+
+- **Simulation** — reads where we *know* the truth because we built the
+  transcript, then injected errors. Absolute per-base truth — but only as
+  realistic as the injected error model. Validates **placement mechanics**.
 - **Real spike-ins (SIRV / Sequins / ERCC)** — synthetic RNA of *known sequence*
-  physically spiked into a real sequencing run. Gives **real ONT errors on known
-  sequences** — the gold standard for checking whether our *simulated* errors are
-  realistic.
+  spiked into a real run → **real ONT errors on known sequences**. The gold
+  standard for whether our *simulated* errors are realistic, and the only truth
+  valid at homopolymers and native CPA.
 
-The current frontier is making simulated errors **realistic**, then **anchoring
-their magnitude to the real spike-ins** so simulation conclusions transfer to real
-data.
+A simulation win is **necessary, not sufficient** — it must *transfer* to real
+data. This is the separate, complementary **Deliverable B**: real-data
+corroboration, whose orthogonal junction truth set is the **COMPASS short-read
+detector** (an independent, non-ONT view of which junctions are real).
+
+### Two-tier benchmark
+
+- **Tier 1 — controlled micro-benchmark:** hand-built mini-loci with known truth
+  per failure mode → *discriminates the concepts* (where position-exact
+  concordance is scored). Light enough to run on a laptop.
+- **Tier 2 — realistic transcriptome simulation:** whole-transcriptome reads with
+  per-read origin → global novel-junction recall/FDR and **sizing the
+  panel-failure tail**. Heavy → runs on the cluster.
 
 ---
 
 ## The targeted capabilities (the "C-facets") — the new aligner's to-do list
 
-Each is a benchmark stratum + a future member capability. The benchmark proves
-the incumbent is below ceiling *and* that the failure is addressable, before we
-build the fix:
+Each is a benchmark stratum **and** a candidate member capability; each had to
+clear three bars to qualify — **orthogonal**, **dependency-light**, and **has a
+position-exact ablation**:
 
-| Facet | The capability | Incumbent weakness the benchmark shows |
-|---|---|---|
-| **C1** | Homopolymer / short-tandem-repeat indel correction (run-/length-aware cost) | flat affine gap misplaces indels out of the run, "repairs" a mismatch with a spurious indel |
-| **C2** | 3′ cleavage-site (CPA) placement on native poly-A | 3′ ends mis-set; genomic-A runs confound |
-| **C3** | Calibrated, error-aware posterior (a "soft" abstain band, not a hard gate) | aligners commit hard even on unreliable reads |
-| **C4** | Paralog / multi-copy locus resolution (e.g. SMN1 vs SMN2) by pooling weak evidence | per-read placement ambiguous at the lone distinguishing base |
-| **C5** | The "panel-failure tail" — reads *no* incumbent places | invisible to a single-aligner run |
-| **C6** | Variant-aware junction calling (don't fabricate junctions near real variants) | a deletion near a splice site gets re-expressed as a spurious intron |
-| **Discovery** | Novel-junction recovery without motif/annotation snapping | the headline bias above |
+| Facet | Capability | Mechanism | Incumbent weakness it targets |
+|---|---|---|---|
+| **C1** | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
+| **C2** | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
+| **C3** | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
+| **C4** | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
+| **C5** | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
+| **C6** | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
+| **Discovery** | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping | the headline isoform-flattening bias |
 
 A spin-off research idea threads through these: a read's **"hotness"** (how
-error-prone it is, *estimable from its own well-aligned regions*) could be a new
-signal to **down-weight unreliable reads when discovering novel junctions**,
-cutting false discoveries — but only if the benchmark proves the lift, and only as
-a *soft* down-weight (a hot read can be clean in its exons yet bursty at the
-junction).
+error-prone it is, *estimable from its own well-aligned exon regions*) as a new
+signal to **down-weight unreliable reads when discovering novel junctions** — but
+only as a **soft** down-weight (a read can be clean in its exons yet bursty at the
+junction), and only if the benchmark proves the FDR lift.
+
+### Design discipline: what was *rejected*, and why (so it isn't re-proposed)
+
+The orthogonality bar is a real gatekeeper. A WFA-banded engine as a standalone
+member was rejected — it "shares minimap2's affine optimum," so it is enabling
+*infrastructure*, not an orthogonal concept. Pangenome/variation-graph,
+strobemer reseeding, and r-index localization were rejected as
+dependency-violating or paradigm-renames. Several figures motivating the work
+(e.g. uncorrected-3′-drift %, the count of recurrent GMAP-only novels) are
+explicitly **unverified** — they are exactly what the benchmark and Deliverable B
+must *measure*, not assert.
 
 ---
 
 ## Where we are now (2026-06-28)
 
-The benchmark machinery is **built and green**: it generates controlled cases
+The benchmark machinery is **built and green**: it generates controlled strata
 (homopolymers, junctions, paralogs, variants), simulates realistic reads, runs the
 incumbent aligner, and scores against truth — ambiguity-aware, with separate
-tracks for annotated vs novel and canonical vs non-canonical junctions.
+tracks for annotated vs novel and canonical vs non-canonical junctions. A red-team
+pass found and fixed truth/scorer bugs; an error-free saturation control validated
+the harness.
 
-The active work is **error realism**. We measured that real ONT errors are *not*
-uniform — they **cluster in bursts** and concentrate on **hot reads** — and built
-a 3-layer error injector to reproduce this. Its magnitude knobs are still
+The active frontier is **error realism**. We measured that real ONT errors are
+*not* uniform — they **cluster in bursts** and concentrate on **hot reads** — and
+built a 3-layer error injector to reproduce this. Its magnitude knobs are still
 **placeholders**, calibrated to a contaminated upper-bound estimate
 (read-vs-genome conflates RNA modifications and alignment artifacts). **SIRV
-spike-ins** are how we replace placeholders with the real, clean number — and
-settle an open question (does error clustering really sit near 3× or 5× a uniform
-baseline?).
+spike-ins** replace the placeholders with the real, clean number — and settle an
+open question (does error clustering sit near 3× or 5× a uniform baseline?).
 
 **This session's contributions:**
-- Built and validated the **exon-GTF loader** — the format SIRV/Sequins/LRGASP
-  use — which was the one piece blocking all real-spike-in integration.
-- **Submitted the SIRV measurement job** on the cluster: align real ONT DRS reads
-  to the SIRV reference, keep the spike-in reads (known sequence = absolute
-  truth), and measure their clean error structure → the real calibration target.
-- Built the **LRGASP/NanoSim truth join** — lets us bring in a *second*,
-  independent simulator. With our pbsim3 + LRGASP's NanoSim + real SIRV we get a
-  three-way triangulation: if both simulators miss the same real behavior, that's
-  a shared blind spot to engineer around.
+- Built and validated the **exon-GTF loader** (the format SIRV/Sequins/LRGASP use)
+  — the one piece blocking all real-spike-in integration.
+- **Submitted the SIRV measurement job**: align real ONT DRS reads to the SIRV
+  reference, keep the spike-in reads (known sequence = absolute truth), measure
+  their clean error structure → the real calibration target.
+- Built the **LRGASP/NanoSim truth join** — brings in a *second*, independent
+  simulator. pbsim3 + NanoSim + real SIRV gives a three-way triangulation: if both
+  simulators miss the same real behavior, that is a shared blind spot to engineer
+  around.
 
 ---
 
 ## The end game
 
-1. A **trustworthy, ground-truth benchmark** that can decide whether *any*
-   aligner change is a real improvement on the targeted capabilities.
+1. A **trustworthy, ground-truth benchmark** that can decide whether any aligner
+   change is a real improvement on the targeted capabilities.
 2. A **realistic, calibrated read simulator** (anchored to SIRV absolute truth,
    cross-checked against a second simulator and real reads) so simulation results
-   transfer to real data.
-3. A **new de-novo aligner member** with an orthogonal algorithm — evidence-
-   weighing junction discovery + run-/length-aware, error-calibrated scoring —
-   that **complements the panel's blind spots**, measurably improving recovery of
-   **novel isoforms** and handling of **DRS error modes**, shipped only where the
-   benchmark proves the gain.
+   transfer to real data — with real-data corroboration (Deliverable B / COMPASS)
+   as the independent check.
+3. A **native RECTIFY aligner** — an orthogonal, calibrated-likelihood
+   realignment/arbitration layer (plus a gated FracMinHash fallback for the tail)
+   — that **complements the panel's blind spots**, measurably improving recovery
+   of **novel isoforms** and handling of **DRS error modes**, shipped only where
+   the benchmark proves the gain.
 4. Generalization from the **yeast** proving ground to **human** loci (SMN1/SMN2
-   and other paralog/novel-isoform-rich regions), with organism differences (RNA
-   modifications, longer poly-A tails) properly accounted for — one engine,
-   per-organism parameter sets.
+   and other paralog / novel-isoform-rich regions), with organism differences (RNA
+   modifications, longer poly-A) accounted for — one engine, per-organism parameter
+   sets.
 
 The throughline: **every claimed improvement is backed by measurement against
 truth, not by intuition.**
 
 ---
 
+## Mini-glossary
+
+- **Panel / consensus** — the set of existing aligners RECTIFY runs, and the
+  per-read arbitration (COMPASS-style) that picks the best.
+- **Member / native aligner** — the new orthogonal algorithm being added.
+- **Orthogonal** — making *independent* errors vs the panel's shared flat-affine,
+  quality-blind family (so it adds real information / de-herds the consensus).
+- **Junction classes** — ANNOTATED (in the reference), NIC (novel combination of
+  known sites), NNC (novel site). Recall and FDR are tracked separately for
+  canonical vs non-canonical.
+- **CPA** — cleavage-and-polyadenylation site (the transcript 3′ end).
+- **Tier 1 / Tier 2** — controlled discrimination vs realistic external validity.
+- **SIRV / Sequins / ERCC** — synthetic spike-in RNAs of known sequence
+  (absolute truth).
+- **Deliverable A / B** — the simulation benchmark (this GATE) / real-data
+  corroboration (COMPASS orthogonal junction truth).
+
+---
+
 *Provenance: written by the benchmark-builder agent on branch
-`worktree-agent-a25a2c1e784ad37dc`; render date 2026-06-28. Sources: this
-codebase's `dev/SIMULATION_BENCHMARK_SPEC.md`, `dev/HANDOFF_ALIGNER_BENCHMARK.md`,
-and the RECTIFY architecture docs.*
+`worktree-agent-a25a2c1e784ad37dc`; render date 2026-06-28. Sources in this repo:
+`dev/SIMULATION_BENCHMARK_SPEC.md`, `dev/ALIGNER_IDEATION_SYNTHESIS.md`,
+`dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`, `dev/HANDOFF_ALIGNER_BENCHMARK.md`, and
+the RECTIFY architecture docs. Figures flagged "unverified" above are pending
+measurement by the benchmark / Deliverable B.*
