@@ -41,14 +41,44 @@ RESUME #1 is Sherlock-gated/heavy. Nothing in flight; smoke gate GREEN.
 - Regression: standalone tests pass (`python tests/test_gff_panel_gtf.py`); the unchanged GFF path
   re-verified through the refactored `_build_models`; smoke `--reps 20` GREEN.
 
-**RESUME (session-7 boundary) — the SIRV fit is now UNBLOCKED on the loader; remaining is Sherlock-heavy:**
-The SESSION-6 RESUME stands, with item #1's loader prerequisite DONE. Next concrete step is the
-Sherlock SIRV cycle: stage the SIRV-Set 4 reference + a small real SIRV-read sample on scratch
-(`live_roundtrip.py`-style), align with `minimap2 -ax splice`, `build_panel_from_gtf` → truth →
-`measure-bam` + `autocorr-bam` for the CLEAN (junction-spanning) magnitude targets, then re-fit the
-injector. The loader to use is `build_panel_from_gtf` (NOT `build_panel`). Do NOT pre-bias the SIRV
-fit toward gap5x≈3 vs ≈5 (guard #3 junction case is what SIRV decides). Smoke regression gate as
-before: `pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x --reps 20` → exit 0.
+**ALSO DONE this session (parallel tracks):**
+- **SIRV measurement job SUBMITTED** — `scripts/benchmark/run_sirv_errstruct.sbatch` (larsms
+  partition/account). Aligns real WTC11 DRS reads (ENCODE ENCSR392BGY rep `ENCFF155CFF`, ~910 MiB)
+  to SIRV-Set 4 → keeps mapped spike-ins (absolute truth) → `measure-bam` + `autocorr-bam` (length
+  window [600,1000]). Bakes in minimap2 `--MD` (events_from_bam_read needs MD or raises) + DRS U→T
+  fixup. **Job 31822729 FAILED in 13s** (Sherlock curl 7.29.0 → error 43 on the CGL/ENCODE URLs);
+  **fixed to `wget` (`.part`→`mv` idempotent)**; **re-submitted as job 31823230** (PENDING — larsms
+  node busy with a549_wgs_deep). Outputs land in `/scratch/users/kevinroy/sirv_work/` (BAM,
+  `sirv_errstruct.report.txt`, `.sirv_rc` sentinel rc-inside).
+- **LRGASP/NanoSim sim-truth join BUILT (parallel track A)** — `scripts/benchmark/sim/lrgasp_truth.py`
+  + `tests/test_lrgasp_truth.py` (6 tests, hermetic). Parses `read_to_isoform.tsv` (mouse-ENSMUST
+  decoy visibility + ENST filter), builds the per-transcript truth catalogue via
+  `build_panel_from_gtf` (spliced_only=False — sim reads come from all transcripts), and restricts
+  each read's truth to its **spanned+anchored** junctions using the read's ALIGNED span (the
+  session-3 fragment-FN bug: the scorer counts every unmatched truth junction as FN with no span
+  intersection). Mirrors `pbsim3_wrapper.MIN_JUNCTION_ANCHOR=10` so the NanoSim and pbsim3 arms score
+  identically. Unblocks the NanoSim arm of the pbsim3-vs-NanoSim-vs-real-SIRV three-way.
+- **Plain-language overview doc** `dev/ALIGNER_BENCHMARK_OVERVIEW.md` (the de-novo-aligner-member
+  framing: orthogonal algorithm complementing the panel for novel-isoform recovery + DRS error modes;
+  C1-C6 facet table; end game). Living doc — revisit/polish.
+
+**RESUME (session-7 boundary) — SIRV job 31823230 in flight; branch on it:**
+Check it: `ssh sherlock "sacct -j 31823230 -X -n -o State,Elapsed; cat /scratch/users/kevinroy/sirv_work/.sirv_rc 2>/dev/null"`.
+- **If `.sirv_rc`==0 / State COMPLETED:** read `/scratch/users/kevinroy/sirv_work/sirv_errstruct.report.txt`
+  — that gives the CLEAN magnitude targets (overdisp_v, sub5_gap_excess [decides ~3 vs ~5 — do NOT
+  pre-bias], indel_run, autocorr r). Then: (a) re-fit `error_injector.calibrate_params` to those
+  targets; (b) derive the error TYPE split (run `empirical_cigar_error_profiler.py --isolation-flank 0`
+  on `/scratch/users/kevinroy/sirv_work/sirv.sorted.bam`); (c) if SIRV confirms clustering/autocorr
+  decoupling, the 3-state/self-exciting burst upgrade (session-6 model-expressiveness finding).
+- **If FAILED / `.sirv_rc`!=0:** read `sirv_errstruct.<jobid>.err`. Most-likely next snags after the
+  curl fix: too few SIRV reads map (try the other reps ENCFF600LIU/ENCFF771DIX, or align to the
+  combined grch38+sirv ref to avoid spurious human→SIRV maps), or a measure-bam MD/length-window
+  issue. Re-`rsync scripts/benchmark/` then `sbatch` again.
+- **Independent of the SIRV result:** the LRGASP NanoSim arm — fetch the LRGASP sim reads +
+  `read_to_isoform.tsv` + the **`with_mm_M27`** GENCODE GTF (mouse decoys!) on scratch, align, run
+  `lrgasp_truth.py --bam ... --out-truth ...`, then `score_bam` for the NanoSim junction recall/FDR
+  to compare against pbsim3 Tier-2 (DRS 0.816 / cDNA 0.843) and the SIRV arm.
+Smoke regression gate as before: `pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x --reps 20` → exit 0.
 
 ---
 

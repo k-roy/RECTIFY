@@ -23,14 +23,15 @@
 #       is the reviewed part.
 # =============================================================================
 #SBATCH --job-name=sirv_errstruct
-#SBATCH --partition=normal              # owners (larsms) is faster if available
+#SBATCH --account=larsms
+#SBATCH --partition=larsms              # group-owned node: 7-day, 256G, no preempt
 #SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --output=/scratch/users/kevinroy/sirv_work/sirv_errstruct.%j.out
 #SBATCH --error=/scratch/users/kevinroy/sirv_work/sirv_errstruct.%j.err
-# AVX-512 SIGILL guard (documented trap; harmless if not honored):
-#SBATCH --constraint="NO_GPU"
+# (AVX-512 SIGILL trap: the rectify+pbsim3 conda binaries did NOT SIGILL on the
+#  larsms node sh03-07n10 in session-3, so no node exclude is needed here.)
 
 set -eo pipefail
 
@@ -53,25 +54,32 @@ set -u
 
 THREADS=${SLURM_CPUS_PER_TASK:-8}
 
+# Idempotent fetch: download to .part, mv to final only on success, so a killed
+# job never leaves a truncated final file the `-s` guard would wrongly accept.
+# NOTE: Sherlock's curl (7.29.0) returns error 43 on these URLs (ancient binary
+# vs newer libcurl) -> use wget.
+fetch() {  # fetch <final> <url>
+  local final="$1" url="$2"
+  [[ -s "$final" ]] && return 0
+  wget -q -O "$final.part" "$url"
+  mv "$final.part" "$final"
+}
+
 # ---- 1. SIRV-Set 4 reference (tiny; CGL open mirror) ------------------------
 REF_BASE=https://cgl.gi.ucsc.edu/data/LRGASP/data/references
 if [[ ! -s sirv4.fasta ]]; then
-  curl -fsSL -o sirv4.fasta.gz "$REF_BASE/lrgasp_sirv4.fasta.gz"
-  gunzip -kf sirv4.fasta.gz
+  fetch sirv4.fasta.gz "$REF_BASE/lrgasp_sirv4.fasta.gz"; gunzip -kf sirv4.fasta.gz
 fi
 if [[ ! -s sirv4.gtf ]]; then
-  curl -fsSL -o sirv4.gtf.gz "$REF_BASE/lrgasp_sirvs4.gtf.gz"
-  gunzip -kf sirv4.gtf.gz
+  fetch sirv4.gtf.gz "$REF_BASE/lrgasp_sirvs4.gtf.gz"; gunzip -kf sirv4.gtf.gz
 fi
 
 # ---- 2. real ONT DRS reads (WTC11, ENCODE; no auth) ------------------------
-# One rep (~1.3 GiB) is plenty for error structure (yeast used ~30k reads;
+# One rep (~910 MiB) is plenty for error structure (yeast used ~30k reads;
 # a DRS rep carries tens of thousands of SIRV spike-in reads). Add reps later.
 REP=ENCFF155CFF                              # ENCSR392BGY rep 1 (DRS)
-if [[ ! -s ${REP}.fastq.gz ]]; then
-  curl -fsSL -o ${REP}.fastq.gz \
-    "https://www.encodeproject.org/files/${REP}/@@download/${REP}.fastq.gz"
-fi
+fetch ${REP}.fastq.gz \
+  "https://www.encodeproject.org/files/${REP}/@@download/${REP}.fastq.gz"
 
 # ---- 3. align DRS reads to the SIRV reference ------------------------------
 # DRS native-RNA minimap2 flags (docs/aligners/minimap2.md): -ax splice -uf -k14.
