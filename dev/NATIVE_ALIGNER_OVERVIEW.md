@@ -336,6 +336,48 @@ truth, not by intuition.**
 
 ---
 
+## Label schemes — the four naming axes (don't conflate them)
+
+The project uses four *separate* labeling systems. They look similar (letters and
+numbers) but mean very different things:
+
+1. **C-facets — `C1`…`C6` (+ "Discovery").** The de-novo aligner's candidate
+   *capabilities* — **what we're building** ("C" = concept/capability, from the
+   ideation panel). Each is gated (incumbent must be below ceiling *and* the gap
+   addressable). See the **"targeted capabilities"** table above for the full
+   list + live status. The numbering is roughly readiness order, **not** strict
+   priority. Quick map: **C1** homopolymer/STR indel correction (✅ built+proven);
+   **C2** 3′/poly-A CPA placement (❌ refuted as placement — incumbent at ceiling);
+   **C3** calibrated posterior + LLR arbitration (⬜ the active next facet, the
+   keystone); **C4** paralog/POA pooling; **C5** panel-failure tail / FracMinHash
+   fallback; **C6** variant-aware junctions; **Discovery** novel-junction recovery
+   + the read-quality-tail FDR guardrail.
+
+2. **Deliverables — `A` / `B`.** The two *validation pillars* — **how we prove a
+   facet is real.** **Deliverable A** = the simulation ground-truth **benchmark
+   (the GATE)** — everything in this repo's `scripts/benchmark/`. **Deliverable B**
+   = **real-data corroboration** — the PI's **COMPASS** short-read junction
+   detector as an independent, non-ONT truth set for which junctions are real. A
+   sim win (A) is necessary but not sufficient; it must transfer (B).
+
+3. **Workstreams — `WS-1` / `WS-2` / `WS-3`.** *Transient* labels for a single
+   session's parallel investigation fan-out — **this week's tasks**, not permanent
+   capabilities. (e.g. WS-1 = competitive re-alignment + the four-way error-structure
+   grounding; WS-3 = the Discovery guardrail prototype; WS-2 was folded into WS-1.)
+   These are scratch labels; they expire — don't treat them like C-facets.
+
+4. **Smoke assertions — `(A)`…`(G)`.** Regression-test IDs *inside*
+   `scripts/benchmark/smoke_roundtrip.py` — **the checks that keep the GATE
+   honest.** e.g. (A) junction round-trip, (C) indel concordance, (D) the HP_HARD
+   two-arm ablation, (E) VARIANT specificity, (G) JUNCTION_DISCOVERY motif-snapping.
+   Unrelated to the C-facets and the Deliverable letters despite sharing glyphs.
+
+**One-line mental model:** **C-facets** = what we build · **Deliverable A/B** = how
+we prove it (sim gate + real transfer) · **WS-n** = this session's investigation
+tasks · **smoke (A)–(G)** = the regression tests guarding the gate.
+
+---
+
 ## Mini-glossary
 
 - **Panel / consensus** — the set of existing aligners RECTIFY runs, and the
