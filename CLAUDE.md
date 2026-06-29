@@ -21,6 +21,7 @@ Per-topic deep-dives live in `docs/` — fetch on demand, don't preload.
 | Current session handoff (open bugs, in-flight design) | `HANDOFF.md` |
 | Algorithm walk-throughs (per-module) | `docs/algorithms/*.md` |
 | Validation read bundle layout + per-read expectations | `rectify/data/validation/VALIDATION_READS.md` |
+| Per-read mechanistic case studies (why each aligner won; ONT failure modes; de-novo aligner acceptance criteria) | `rectify/data/validation/CASE_STUDIES.md` |
 
 ---
 
