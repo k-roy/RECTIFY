@@ -55,9 +55,15 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   unknowable) → a shape "win" would be CONFOUNDED, so it is a PRE-COMMITTED NULL; do NOT build it.
   **Genuine Claim B = a held-out INJECTION simulator** (natural long-HP templates; inject length-correlated
   del + boundary-sub at a SIRV-MEASURED, table-independent rate; injected=known truth) — DEFERRED, multi-night.
-- **Partner now BUILDING the one winnable real-SIRV deliverable** (over-call/false-indel-rate on CLEAN
-  HP runs, stratified by length, flat/B0/law) → `scripts/benchmark/c1_real_sirv_ablation.py`; will report
-  numbers back for the directing agent to review + commit (C1 code synced to Sherlock, so the law arm runs).
+- **Over-call deliverable BUILT + RUN → caught a real bug (`scripts/benchmark/c1_real_sirv_ablation.py`).**
+  On the honest sub-only stratum (length-preserving windows w/ mismatches → any indel = true hallucination),
+  replicated on BOTH real SIRV BAMs: flat 0% / B0 0% / **FULL law 3-7%** (grows with run length); `--zero-ins`
+  isolated the cause ENTIRELY to `ins_open_delta`. Reproduced locally (`flat [28M]` → full-law `[10M1D4M1I13M]`
+  on a 1-sub A8 window). **FIX: `ins_open_delta` GATED OFF by default** (`align_exon_block_global(...,
+  ins_lengthlaw=False)`); the deletion-only law is SAFE (0% over-call = flat) AND Claim-A-proven → that ships.
+  Re-run with the gated default CONFIRMS PASS (SG-NEx sub-only 0.0000; LRGASP + sim-ablation re-run finalizing).
+  Regression test `test_ins_discount_gated_off_by_default_no_hallucination`. Real data caught what the sim
+  could not — the grounding working as intended. (C1_DESIGN.md §"OVER-CALL RESULT".)
 
 ### RESUME (night-push boundary) — concrete next steps
 - **C1 ablation CONFIRMED at reps=400** (cell-size floor): HP_HARD-noisy flat 0.965→B0 0.994/law 0.985;

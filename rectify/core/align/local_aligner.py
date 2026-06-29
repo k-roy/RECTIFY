@@ -550,6 +550,7 @@ def align_exon_block_global(
     min_run: int = 3,
     penalty_table=None,
     lam: float = 1.0,
+    ins_lengthlaw: bool = False,
 ) -> List[Tuple[int, int]]:
     """
     Global (Needleman-Wunsch) affine-gap alignment with homopolymer-aware scoring.
@@ -624,6 +625,14 @@ def align_exon_block_global(
     # legacy DP, the Cat3 / junction-rescue regression guard). The delta is
     # POSITIVE in longer runs (rate rises with hp) => the gap-open is less
     # negative => the DP prefers the in-run deletion over out-of-run misplacement.
+    #
+    # INSERTION discount is GATED OFF by default (ins_lengthlaw=False): the real-SIRV
+    # over-call ablation (c1_real_sirv_ablation.py) showed it HALLUCINATES indels —
+    # a cheap insertion lets the DP rewrite a length-preserving substitution as a
+    # spurious D+I (3-7% over-call on sub-only windows, vs 0% for the deletion-only
+    # law, replicated on LRGASP + SG-NEx real SIRV). The deletion law is safe (0%).
+    # Re-enable ins only once it is independently validated (the injection-simulator
+    # Claim B; see dev/C1_DESIGN.md). The generator injects deletions only anyway.
     del_open_d = [0.0] * R
     ins_open_d = [0.0] * R
     if penalty_table is not None and chrom_ref:
@@ -635,7 +644,8 @@ def align_exon_block_global(
             if run_len <= 0:
                 continue
             del_open_d[j] = penalty_table.del_open_delta(run_len, base, lam)
-            ins_open_d[j] = penalty_table.ins_open_delta(run_len, base, lam)
+            if ins_lengthlaw:
+                ins_open_d[j] = penalty_table.ins_open_delta(run_len, base, lam)
 
     # Main DP
     for i in range(1, Q + 1):

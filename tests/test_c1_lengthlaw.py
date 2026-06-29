@@ -107,6 +107,33 @@ def test_strong_discount_pulls_deletion_into_run():
     assert qcons == len(query) and rcons == len(ref), law
 
 
+def test_ins_discount_gated_off_by_default_no_hallucination():
+    """Real-SIRV over-call regression: the insertion discount, when ON, rewrites a
+    length-preserving substitution as a spurious D+I (hallucination, 3-7% on real
+    SIRV). It is GATED OFF by default (ins_lengthlaw=False) -> the deletion-only
+    law matches flat (no indel) on a sub-only window. ins_lengthlaw=True reproduces
+    the hallucination (kept behind the flag for future validation)."""
+    drate = {"AT": {1: 0.005, 4: 0.02, 8: 0.08}, "CG": {1: 0.004}}
+    irate = {"AT": {1: 0.003, 4: 0.015, 8: 0.06}, "CG": {1: 0.003}}
+    pen = {"AT": {1: 0.4}, "CG": {1: 0.4}}
+    pt = HpPenaltyTable(pen, pen, default_ins=1.25,
+                        del_rate_tables=drate, ins_rate_tables=irate)
+    left, right = "CGCGCGCGCG", "GCGCGCGCGC"
+    ref = left + "A" * 8 + right
+    query = left + "A" * 4 + "T" + "A" * 3 + right        # one A->T; SAME length
+    flat = align_exon_block_global(query, ref, chrom_ref=ref)
+    law_default = align_exon_block_global(query, ref, chrom_ref=ref, penalty_table=pt, lam=2.0)
+    law_ins_on = align_exon_block_global(query, ref, chrom_ref=ref, penalty_table=pt,
+                                         lam=2.0, ins_lengthlaw=True)
+
+    def indels(cig):
+        return [(op, l) for op, l in cig if op in (1, 2)]
+    assert indels(flat) == [], flat                       # correct: pure mismatch, no indel
+    assert indels(law_default) == [], law_default         # default safe: matches flat
+    assert law_default == flat, (law_default, flat)
+    assert indels(law_ins_on) != [], law_ins_on           # flag ON reproduces hallucination
+
+
 if __name__ == "__main__":
     import inspect
     g = dict(globals())

@@ -153,3 +153,27 @@ the SIRV-measured rate (never the Scer table) or it reproduces the original trap
 
 **Build prerequisite:** the C1 code (`penalty_table`/`lam`/`_homopolymer_run_len`/`del_open_delta`)
 must be synced to Sherlock — `aligner_bench_live` was PRE-C1.
+
+### OVER-CALL RESULT (2026-06-29) — real SIRV caught a bug: the INSERTION discount is harmful → GATED OFF
+The surviving winnable deliverable (`scripts/benchmark/c1_real_sirv_ablation.py`) RAN on both real SIRV
+BAMs (LRGASP RNA002 + SG-NEx) and produced a decisive, replicated finding. Honest control = the **sub-only
+stratum** (same-length windows with 1-2 mismatches → correct alignment is provably indel-free, so any
+indel is a TRUE hallucination; the `truth_net==0` ALL-clean table is contaminated by balanced real
+indel pairs and is context-only). Sub-only over-call:
+| BAM | bin | flat | B0 | full law | law (del-only) |
+| --- | --- | --- | --- | --- | --- |
+| LRGASP RNA002 | SHORT | 0.00 | 0.00 | **0.034** | 0.00 |
+| | MID | 0.00 | 0.00 | **0.070** | 0.00 |
+| SG-NEx | SHORT | 0.00 | 0.00 | **0.032** | 0.00 |
+| | MID | 0.00 | 0.00 | **0.041** | 0.00 |
+**flat and B0 hallucinate 0%; the FULL law hallucinates 3-7%, GROWING with run length; the `--zero-ins`
+diagnostic isolates the cause ENTIRELY to `ins_open_delta`** (a cheap insertion lets the DP rewrite a
+length-preserving substitution as a spurious D+I). Reproduced locally:
+`flat [28M]` → `full-law [10M,1D,4M,1I,13M]` on a one-substitution A8 window.
+**FIX:** `ins_open_delta` is now **GATED OFF by default** (`align_exon_block_global(..., ins_lengthlaw=False)`)
+— the insertion discount was already flagged UNVALIDATED (the generator injects deletions only) and real
+SIRV proved it actively harmful. The **deletion-only law is SAFE (0% over-call = flat) AND Claim-A-proven**;
+that is what ships. Re-enable `ins_lengthlaw=True` only after the injection-simulator validates it.
+Regression test: `test_ins_discount_gated_off_by_default_no_hallucination`. This is the spike-in grounding
+working exactly as intended — real data caught an implementation bug the sim could not (the sim has no
+length-preserving substitution-vs-indel ambiguity at scale).
