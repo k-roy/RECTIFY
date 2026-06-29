@@ -489,9 +489,27 @@ reads → `calmd` against the staged spike-in ref → exonic `measure-bam`). All
 | indel_run≥2 | 0.39 | 0.37 | 0.38 |
 | autocorr r | 0.47 | 0.50 | 0.62 |
 | reads | 114k | 1037 | 5329 |
-**Reading:** the two independent SIRV sources (different labs, RNA002 vs RNA00x) AGREE tightly on LOW
-clustering/over-dispersion (gap5x 1.7, overdisp_v 0.1-0.2) — robust evidence the mod-free clean error
-structure is genuinely far below the yeast read-vs-genome upper bound (4.28). `indel_run≥2 ≈ 0.37-0.39`
+**FOUR-WAY UPDATE (2026-06-29) — RNA004 DIVERGES; chemistry matters a lot.** Added the modern-chemistry
+arm (LongBench H69 RNA004 SIRV, job 31838452, 17,461 spike-in reads):
+| metric (exonic, thin 0.0153, [600,1000]) | yeast read-vs-GENOME | LRGASP SIRV RNA002 | SG-NEx RNA00x | LongBench SIRV RNA004 |
+| --- | --- | --- | --- | --- |
+| overdisp_v | 0.54 | 0.10 | 0.17 | **2.03** |
+| sub5_gap_excess | 4.28 | 1.71 | 1.76 | **9.34** |
+| indel_run≥2 | 0.39 | 0.37 | 0.38 | **0.46** |
+| autocorr r | 0.47 | 0.50 | 0.62 | 0.57 |
+| native rate | 0.019 | (thinned) | (thinned) | **0.0106** |
+RNA004 has a LOWER overall error rate (0.0106 native, more accurate basecaller) but MUCH HIGHER clustering
++ over-dispersion than the two RNA002 SIRV sources. **DO NOT harden this** — confounds: (1) RNA004 native
+rate 0.0106 is BELOW the 0.0153 thin target so it was NOT rate-matched up to the others (clustering metrics
+are rate-sensitive); (2) only 8.1 events/read → overdisp_v=(disp−1)/mean_events is noisier/inflated at low
+counts; (3) single dataset/cell line. But the DIRECTION (modern chemistry = lower-rate-but-burstier) is the
+opposite of the RNA002 "low clustering" story and is the current-chemistry signal the injector must
+ultimately target. NEXT: rate-match all four at a common rate ≤0.0106 + stratify autocorr by transcript
+before setting the injector magnitude. Reframes the placeholder question (RNA002-low vs RNA004-high).
+
+**Reading (RNA002 sources):** the two independent RNA002-era SIRV sources (different labs) AGREE tightly on
+LOW clustering/over-dispersion (gap5x 1.7, overdisp_v 0.1-0.2) — but see the RNA004 divergence above; this
+"low" is RNA002-specific, NOT the modern-chemistry target. `indel_run≥2 ≈ 0.37-0.39`
 is rock-solid across ALL THREE (the most transferable target). **Implication for the injector:** the
 placeholder overdisp_v ~0.24 is, if anything, slightly HIGH vs SIRV; the "real magnitude is ~5×"
 worry from the yeast bound is firmly NOT supported. **Caveats (don't over-harden):** (1) both SIRV

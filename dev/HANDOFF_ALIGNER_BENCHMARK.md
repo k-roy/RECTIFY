@@ -39,15 +39,14 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   both SIRV share IVT composition; autocorr likely per-transcript-confounded (few SIRV transcripts); RNA004
   (LongBench, GB download, needs approval) still the modern-chemistry check.
 
-### IN FLIGHT (2026-06-29, session-9 cont.)
-- **LongBench RNA004 arm SUBMITTED — job 31838452** (`scripts/benchmark/run_longbench_errstruct.sbatch`,
-  larsms; PENDING at submit). Downloads H69 (~11.3 GB) → aligns to staged `sirv4.fasta` → exonic
-  measure-bam (thin 0.0153, [600,1000]). Branch on the sentinel:
-  `ssh sherlock "sacct -j 31838452 -X -n -o State; cat /scratch/users/kevinroy/longbench_work/.lb_rc 2>/dev/null"`
-  → if `.lb_rc`==0 read `/scratch/users/kevinroy/longbench_work/longbench_h69_errstruct.report.txt` and add
-  the RNA004 row to the three-way table (→ four-way); if FAILED read `lb_h69.<jid>.err` (likely wget URL or
-  too-few-mapped → try another cell line H1975/HCC827). This is the modern-chemistry confirmation of the
-  "clean clustering is LOW" finding.
+### FOUR-WAY DONE (2026-06-29, session-9 cont.) — RNA004 DIVERGES (key result)
+- **LongBench RNA004 arm DONE — job 31838452 COMPLETED rc=0** (17,461 spike-in reads). It did NOT confirm
+  the "clean clustering is LOW" story — **RNA004 (current chemistry) is lower-rate (0.0106) but MUCH
+  burstier: overdisp_v 2.03, gap5x 9.34** (vs the two RNA002 SIRV sources' ~0.1 / ~1.7). Full four-way
+  table + the rate-matching/low-count/single-dataset CAVEATS in SPEC §"FOUR-WAY UPDATE". **This reframes
+  the injector-calibration target** (RNA002-low vs RNA004-high) and is the key open question. NEXT:
+  rate-match all four at a common rate ≤0.0106 + stratify autocorr by transcript before setting magnitude.
+  Re-run: `ssh sherlock "cd $D && sbatch scripts/benchmark/run_longbench_errstruct.sbatch"` (idempotent).
 - **Claim B coordination DONE → DECISION recorded (dev/C1_DESIGN.md §"Claim B — VETTED CONCLUSION").**
   Partner agent + 3-way adversarial fan-out + 2 advisor passes converged: the real-SIRV PLACEMENT/shape
   ablation is **underpowered** (only ~9 distinct HP runs ≥9 in SIRV; law delta saturates at L8) AND
