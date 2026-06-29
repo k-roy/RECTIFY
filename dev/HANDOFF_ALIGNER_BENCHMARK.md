@@ -7,6 +7,30 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## SESSION-10 (2026-06-29) — PARALLEL FAN-OUT (advisor-shaped: aim, not breadth)
+
+Three workstreams launched as background agents (directing agent integrates; all "report back, don't
+commit"). Advisor reshaped the plan: WS-1 GATES WS-2 (pre-competitive BAMs' error tail is partly
+contamination); bimodality must use reference-FREE QSCORE not error-rate (a 2-Gaussian on skewed count
+data fakes bimodality); and the real aim is WS-1 (settle RNA004) + WS-3 (guardrail) + C2 (the actual next
+FACET — C1 is consolidated so C2 is back on).
+- **WS-1 (agent ad7cf26d06de18d55) — competitive alignment + qscore + yeast/human endogenous contrast.**
+  Re-align RNA004(H69) + LRGASP-ENCODE to the COMBINED hg38+SIRV ref (SG-NEx's, on S3), take SIRVomeERCCome
+  reads → FAIR four-way (removes the contamination confound that likely drove the RNA004 divergence).
+  Quantify RNA004 contamination fraction; qscore bimodality per dataset (reference-free); + same-sample
+  human SIRV-vs-ENDOGENOUS error contrast (= the biological-excess / systematic-error-vs-biology axis).
+- **WS-3 (agent adc479ac473b877d3) — novel-feature support guardrail + RUNNABLE prototype.** Operationalize
+  "novel-call support stratified by read quality must not be tail-enriched" on the JUNCTION_DISCOVERY
+  stratum (inject NIC/NNC into a qscore mix; show genuine vs spurious separate). One advisor pass.
+- **C2 (agent a0a8a3565dd398787) — the NEXT FACET: 3'/poly-A CPA change-point decoder.** Gate-first
+  (GENOMIC_A_CPA below-ceiling + addressable on |est−true CPA|) → vetted decoder design + build plan.
+RESUME: each agent reports back; check its output, review, then I commit. If an agent died, its task is
+re-runnable from its prompt (the specs are durable: WS-3→OVERVIEW §novel-feature; C2→C1_DESIGN playbook +
+SPEC GENOMIC_A_CPA; WS-1→SPEC §FOUR-WAY UPDATE diagnostics). Combined ref:
+`https://sg-nex-data.s3.ap-southeast-1.amazonaws.com/data/annotations/genome_fasta/hg38_sequins_SIRV_ERCCs_longSIRVs.fa`.
+
+---
+
 ## NIGHT PUSH (2026-06-29, session-9) — N-in-span FIXED; C1 de-novo-aligner facet BUILT+TESTED+PROVEN; SG-NEx grounding
 
 Autonomous overnight push (user: "build + test the de novo aligner by morning; spare no expense;
