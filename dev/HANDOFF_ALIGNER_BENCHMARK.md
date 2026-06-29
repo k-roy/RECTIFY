@@ -30,8 +30,14 @@ FACET — C1 is consolidated so C2 is back on).
   seed-stable; advisor-vetted; reproduced locally. Honest caveats baked in (soft prior; magnitude
   SIRV-gated; separation partly by construction = mechanism demo; real-data risk = per-molecule-vs-
   per-transcript hotness confound). Feeds C3 / discovery-FDR. NOT a shipped feature — a vetted prototype.
-- **C2 (agent a0a8a3565dd398787) — the NEXT FACET: 3'/poly-A CPA change-point decoder.** Gate-first
-  (GENOMIC_A_CPA below-ceiling + addressable on |est−true CPA|) → vetted decoder design + build plan.
+- **C2 — DONE: REFUTED as a placement facet + COMMITTED** (`scripts/benchmark/c2_gate.py`,
+  `dev/C2_DESIGN.md`, GENOMIC_A_CPA stratum in `controlled.py`). Shipped guarded walkback already at ceiling
+  (0.00 |est−true_cpa|) on the identifiable genomic-A drift; read-through NULL holds; the apparent win is a
+  truth-definition artifact (gate COMPUTES the truth-flip → arms swap); decoder over-calls A-ending bodies
+  (2.72). NO product facet. **Regression caught+fixed:** agent wired `include_cpa=True` BEFORE variant →
+  consumed shared RNG → broke smoke (E); I made it default-OFF + append-only LAST (smoke GREEN; c2_gate
+  reproduces). **C2 promotes C3:** the CPA uncertainty (`ambiguity_range`, bam_processor.py:851-859) ships
+  with NO consumer → **C3 (LLR arbitration) is now THE active next facet**; soft CPA posterior deferred behind it.
 RESUME: each agent reports back; check its output, review, then I commit. If an agent died, its task is
 re-runnable from its prompt (the specs are durable: WS-3→OVERVIEW §novel-feature; C2→C1_DESIGN playbook +
 SPEC GENOMIC_A_CPA; WS-1→SPEC §FOUR-WAY UPDATE diagnostics). Combined ref:

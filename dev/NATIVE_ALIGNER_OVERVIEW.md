@@ -167,8 +167,8 @@ position-exact ablation**:
 | Facet | Status | Capability | Mechanism | Incumbent weakness it targets |
 |---|---|---|---|---|
 | **C1** | ✅ built + Claim-A-proven (del-only; ins gated off after real SIRV caught it) | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
-| **C2** | 🔨 in design (gate-first) | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
-| **C3** | ⬜ next-priority facet | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
+| **C2** | ❌ refuted *as placement* (gate, 2026-06-29): shipped guarded walkback already at ceiling on the identifiable genomic-A drift; a soft CPA posterior is deferred behind C3 | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
+| **C3** | ⬜ **the active next facet** (the keystone) | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
 | **C4** | ⬜ future | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
 | **C5** | ⬜ future (gated on a measured tail) | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
 | **C6** | ⬜ future (stratum built + discriminating) | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
@@ -279,18 +279,27 @@ out, and the RNA004 puzzle needs one competitive re-alignment, not a swarm.
 
 **Track A — aligner facets (the product):**
 1. **C1** ✅ done (homopolymer indel placement).
-2. **C2 — the active facet** (3′/poly-A CPA placement): gate-first (is the
-   genomic-A-tract CPA stratum discriminating + addressable?), then build with the
-   C1 playbook (matched-arm ablation + an over-call safety check). *In design.*
-3. **C3 — the next facet, and arguably the keystone** (calibrated LLR arbitration):
-   C1/C2 only improve the *pipeline* if the consensus can *use* their calibrated,
-   probabilistic output instead of integer-max. C3 is what converts per-read facet
-   wins into consensus wins — and it's the structural fix for the 0.09→1.07
-   artifact. Prioritize right after C2.
+2. **C2** ❌ **refuted as a placement facet** (gate, 2026-06-29): the shipped guarded
+   walkback is already at ceiling on the identifiable genomic-A drift, so there's no
+   placement headroom to build into — the gate killed a redundant facet. Tellingly,
+   the CPA *uncertainty* (`ambiguity_range`) already ships **with no consumer**, so a
+   soft CPA posterior only earns its keep once C3 exists → this independently
+   promotes C3.
+3. **C3 — now THE active next facet, the keystone** (calibrated LLR arbitration):
+   C1 (and any future soft CPA/discovery signal) only improves the *pipeline* if the
+   consensus can *use* calibrated, probabilistic output instead of integer-max. C3
+   converts per-read facet wins into consensus wins, consumes the already-shipped
+   `ambiguity_range`, and is the structural fix for the 0.09→1.07 artifact.
 4. **C4 / C5 / C6** — gated, later (each needs its enabling measurement: C5 a
    measured panel-failure tail; C4/C6 strata already exist and discriminate).
 - **Discovery guardrail** (novel-feature support, the read-quality-tail FDR prior):
-  prototype in flight (WS-3); folds into C3 and the discovery-FDR machinery.
+  prototype done (WS-3); folds into C3 and the discovery-FDR machinery.
+
+*Pattern worth noting:* the gate has now **refuted or deferred three plausible
+directions** (C1's insertion-discount, the SIRV length-shape "Claim B," and
+C2-as-placement) and **confirmed one** (C1 deletion placement). That hit rate is the
+prove-don't-assert discipline working as intended — most plausible ideas don't
+survive contact with truth, and catching that *before* shipping code is the point.
 
 **Track B — error realism / gate calibration (in service of the gate):**
 1. **Settle RNA004** (WS-1, in flight): competitive alignment to strip
