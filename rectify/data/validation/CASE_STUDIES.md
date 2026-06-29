@@ -238,6 +238,44 @@ Per-aligner raw placement:
 | `polya_walkback` | walk back through poly-A stop-base matches to the first non-stop read=ref agreement (= leftmost-possible-CPA) |
 | `atract_ambiguity` | resolve which of several equivalent A-tract endpoints is the CPA when the homopolymer makes the boundary ambiguous |
 
+## Case studies — `cat2_softclip` (3′ soft-clip rescue scenario)
+
+### cat2_plus_1 — genomic homopolymer undercall the walkback used to eat (FIXED 2026-06-29)
+
+`61b0c014` · chrI · **+** · winner **deSALT** @ corr 3′ **23754** (`correction_applied=none`).
+
+Reference (plus strand, 1-based): a **24-bp genomic poly-A homopolymer** `chrI:23713-23736`, then an
+AT-rich 3′UTR `TTAAATAAATAAATAAAATAAAT` (23737-23759), then ordinary sequence `ACAATGAT…` (23760+).
+
+Three aligners' RAW alignments independently model the DRS undercall of the 24-A run as a **`9D` + `39=/39M`**
+(matching through the AT-rich UTR): `…2I49(M|=)9D39(M|=)8S`. deSALT/mapPacBio instead use an insertion-heavy
+model with no `9D`. The `9D` is real: uLTRA emits `39=` (exact matches) over a region containing **T's** — a
+pure poly-A tail cannot match genomic T's, so those are genuine templated residues.
+
+**The bug (now fixed):** the walkback's large-deletion pre-scan
+(`walkback.py`, `_MIN_GENOMIC_ANCHOR_3P` guard) skipped past the `9D` (treating it as inside a force-aligned
+poly-A tail) and over-walked through the `39=`, clipping the genomic match and landing ~23711. So the `9D`
+appeared **only** in the unrectified row; every rectified per-aligner row had it clipped. The fix: do NOT skip
+a ≥`large_del_min_bp` deletion when ≥`_MIN_GENOMIC_ANCHOR_3P` (=5) non-stop-base read=ref matches sit 3′ of
+it (a genomic-homopolymer undercall flanked by real sequence, not a poly-A tail). Post-fix, minimap2/gapmm2/
+uLTRA keep `…49(M|=)9D38(=|M)9S`, anchored at 23758. **Same bug class found in the upf1d cat1_minus_1 read**
+(37 bp perfect C/G-rich match over-walked past a `6D`; test expectation corrected 1162861→1162817). Net
+RECTIFY-output blast radius across all 36 reads: **0 winner/3′ changes** — the fix corrects per-aligner
+diagnostic alignments only.
+
+**Open EER-ED hypothesis (deferred Option B — NOT yet implemented):** even with the `9D` preserved, deSALT
+still WINS this read because the HP-aware edit distance charges uLTRA a flat **9.0** clip penalty for honestly
+soft-clipping the 9-base poly-A tail (`del_cost(hp=24)=0.0087`/base makes the `9D` itself ~free at 0.078; the
+clip is the whole gap: uLTRA ED 12.99 vs deSALT 9.90). So the scorer **rewards force-aligning the poly-A tail
+over honestly clipping it** — a likely systematic flaw (see `_cigar_hp_edit_distance`, corrected_consensus.py).
+Proposed fix: make the 3′-clip penalty **graded by the probability the clipped tail is poly-A-derived**
+(strand-aware A/T-richness; e.g. `9S=AAATAAAAT`=7A/9 → discount toward 0; a low-A genomic clip keeps full
+penalty, auto-preserving the `cat1_minus_2`-class protection). Must be validated on reads with **unambiguous
+CPA** (this read's AT-rich tail makes its CPA a genuine toss-up: 23754 vs 23758) + a full before/after winner
+audit + a regression gate that clip-to-win still loses. Two independent advisors + reviewer agreed: ship the
+walkback fix now, pursue the graded penalty as a separate truth-anchored effort. cat2_plus_1→uLTRA should be
+a *consequence* of that effort, not its calibration target.
+
 ## Extending this doc
 
 Add a `## Case studies — cat<N>_<name>` section as each category is reviewed.
@@ -247,9 +285,42 @@ interpretation explicitly flagged. Promote any new generalizable lesson into the
 **Cross-cutting principles** list so the de-novo aligner agents get it without
 reading every case.
 
+## Case studies — human non-canonical junction discovery (A549, on-cluster)
+
+A *junction-discovery* counterpart to the yeast CPA cases above — the de-novo
+aligner acceptance criteria for **5′/3′ splice-site placement**, not 3′-CPA.
+These are NOT in the bundled validation panel (human A549, data on Sherlock);
+the full multi-platform + WGS derivation lives in
+[`dev/COMPASS_2corroborated_CROSSPLATFORM.md`](../../../dev/COMPASS_2corroborated_CROSSPLATFORM.md)
+(verdict locked in `adjudication_111_v3.json`). Summarized here as acceptance targets.
+
+**Context.** Of GMAP's 111 chr5 "gmap-only recurrent novel GT-AG" candidates, rigorous
+adjudication (ambiguity-tolerant short-read COMPASS panel + cross-aligner long-read
+placement + A549 WGS) found ~107 artifacts and **3 real intragenic novel RNA splice
+junctions** (DNA-confirmed genomic — A549 is near-triploid but these loci are flat-copy,
+not deletions/rearrangements/circRNA/fusions). The diagnostic wrinkle:
+
+| junction (host gene, +) | dominant SUPPORTED motif | canonical motif nearby | support |
+|---|---|---|---|
+| chr5:179824400-179832205 (SQSTM1) | `GT..GA` (non-canon) | GT-AG **4 bp** away | 2959 short + deSALT/uLTRA/GMAP |
+| chr5:177592500-177593474 (TMED9)  | `CG..CA` (non-canon) | GC-AG **1 bp** away | 323 short + 4 LR aligners |
+| chr5:140564954-140565547 (SLC35A4)| `AG..CA` (non-canon) | GT-AG **3 bp** away | 168 short + 3 LR aligners |
+
+Every aligner (incl. accurate short reads) places these at the NON-canonical coordinate,
+1–4 bp off a canonical GT-AG/GC-AG, and the ambiguity window is 0 (so the reads support the
+non-canonical placement as a *distinct* junction, not the canonical neighbor).
+
+**Acceptance criteria for the de-novo aligner (the open test):** given the supporting
+reads at each locus, does motif-aware empirical-penalty realignment (a) **snap** the
+junction to the nearby canonical motif (→ the truth was canonical, aligners mis-placed by
+breakpoint read-errors), or (b) **hold** the non-canonical placement (→ genuinely
+non-canonical splicing)? Either answer is a pass *if defensible from the reads*; the
+failure mode is silently inheriting whichever the seed-and-chain panel preferred. RT-PCR /
+Sanger across each junction is the wet-lab arbiter.
+
 ---
 
-_Provenance: reads from `wt_by4742_rep1` ONT-DRS, S. cerevisiae S288C
+_Provenance: yeast cat1 reads from `wt_by4742_rep1` ONT-DRS, S. cerevisiae S288C
 (R64-5-1); per-aligner BAMs under `aligners/`, corrected per-aligner outputs
 under `rectified/per_aligner/`, final calls in `corrected_reads.tsv`. Authored
 during the cat1 read-by-read figure review (branch `drs-validation-rebuild`)._

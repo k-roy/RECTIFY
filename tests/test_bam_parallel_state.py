@@ -37,8 +37,13 @@ import pytest
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "4f32683302c33bdf1aeaec6f7252d223816dc700d0c09959280bffe819512cb3"
+    "a41ec734e189dcd0a2e2b96ceb092e490cbac5a6d148bba43261c69bc2ba03c6"
 )
+# Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
+# guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a
+# run of genuine read=ref matches — cat2_plus_1's 9D+39= over a 24-A genomic run) changed
+# per-read minimap2 correction output. This is an intentional correction-semantics change;
+# prior golden 4f326833… (2026-06-19).
 # Re-recorded 2026-06-19 (drs-validation-rebuild). The prior golden
 # (b267b1da…, recorded 2026-05-22 at 55089f7) went stale when later 3'SS-rescue
 # commits legitimately changed process_bam_file_parallel output —

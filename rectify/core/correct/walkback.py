@@ -39,6 +39,17 @@ THREE_PRIME_SIDE_LEFT = "left"
 APPLIED_WALKBACK = "polya_walkback_readgenome"
 APPLIED_NONE = "none"
 
+# Homopolymer-undercall guard: the large-deletion pre-scan normally skips past a
+# ≥``large_del_min_bp`` deletion near the 3' end (a force-aligned poly-A tail can
+# contain one). But when a deletion is a genuine DRS homopolymer UNDERCALL, it is
+# flanked on its 3' side by a long run of real read=ref match (true genomic
+# sequence the read templates through). We detect that by counting non-stop-base
+# read=ref matches 3' of the deletion; ≥ this many means "real genomic anchor,
+# don't skip." A single coincidental match in a real poly-A tail must NOT defeat
+# the skip, so the threshold is a RUN, not one base. Both demonstrated genuine
+# cases have long runs (cat2_plus_1: 39; upf1d cat1_minus_1: 37).
+_MIN_GENOMIC_ANCHOR_3P = 5
+
 
 def walkback_3prime(
     read: pysam.AlignedSegment,
@@ -601,7 +612,27 @@ def walkback_3prime_guarded(
                     while _j > 0 and _g_rp[_j - 1] == -1:
                         _j -= 1
                     if _i - _j + 1 >= large_del_min_bp:
-                        scan_hi = _j
+                        # Homopolymer-undercall guard: do NOT skip past the
+                        # deletion if a confident non-stop-base read=ref MATCH
+                        # sits 3' of it (indices > _i, toward the 3' end). Such
+                        # a match is a genuine templated residue — the deletion
+                        # is a DRS homopolymer UNDERCALL flanked by real
+                        # downstream genomic sequence, not a force-aligned
+                        # poly-A tail. Skipping it would discard both the
+                        # diagnostic deletion and the true 3' end. Let the main
+                        # scan anchor at that match instead. (cat2_plus_1: a
+                        # 24-bp genomic A-run undercalled as 9D, then 39= over
+                        # AT-rich genomic sequence whose T's the read matches.)
+                        _anchor_3p = 0
+                        for _m in range(_i + 1, n):
+                            if (_g_rp[_m] != -1
+                                    and _g_rb[_m] == _g_gb[_m]
+                                    and _g_gb[_m] != stop_ord):
+                                _anchor_3p += 1
+                                if _anchor_3p >= _MIN_GENOMIC_ANCHOR_3P:
+                                    break
+                        if _anchor_3p < _MIN_GENOMIC_ANCHOR_3P:
+                            scan_hi = _j
                     _i = _j - 1
                 else:
                     _i -= 1
@@ -799,7 +830,22 @@ def walkback_3prime_guarded(
                 while _j < scan_hi - 1 and _g_rp[_j + 1] == -1:
                     _j += 1
                 if _j - _i + 1 >= large_del_min_bp:
-                    scan_lo = _j + 1
+                    # Homopolymer-undercall guard (mirror of the right-side
+                    # logic): for the left/minus 3' end, "3' of the deletion"
+                    # is the LOWER-index side [scan_lo, _i). Don't skip past the
+                    # deletion if a confident non-stop-base read=ref MATCH lives
+                    # there — it's a genuine residue (homopolymer undercall +
+                    # real downstream genomic seq), not force-aligned poly-A.
+                    _anchor_3p = 0
+                    for _m in range(scan_lo, _i):
+                        if (_g_rp[_m] != -1
+                                and _g_rb[_m] == _g_gb[_m]
+                                and _g_gb[_m] != stop_ord):
+                            _anchor_3p += 1
+                            if _anchor_3p >= _MIN_GENOMIC_ANCHOR_3P:
+                                break
+                    if _anchor_3p < _MIN_GENOMIC_ANCHOR_3P:
+                        scan_lo = _j + 1
                 _i = _j + 1
             else:
                 _i += 1

@@ -90,10 +90,10 @@ read_id	_aligner	_is_winner	_chimera_ok	hp_edit_distance	aligned_bases	corrected
 4e43165e-e344-4e31-af28-85917c3f4dd7	minimap2	False	0	39.21739999999999	1320	139153	137716	138859-138952	0	A	True	none	high
 4e43165e-e344-4e31-af28-85917c3f4dd7	uLTRA	False	0	39.21739999999999	1320	139153	137716	138859-138952	0	A	True	none	high
 61b0c014-cd11-49a3-8518-c949d91a4e70	deSALT	True	0	9.903	390	23754	23362		0	B	True	none	high
-61b0c014-cd11-49a3-8518-c949d91a4e70	gapmm2	False	0	50.9138	347	23711	23362		0	A	False	atract_ambiguity,polya_walkback	high
+61b0c014-cd11-49a3-8518-c949d91a4e70	gapmm2	False	0	12.9921	385	23758	23362		0	A	False	atract_ambiguity,polya_walkback	high
 61b0c014-cd11-49a3-8518-c949d91a4e70	mapPacBio	False	0	12.05	391	23754	23362		0	B	True	none	high
-61b0c014-cd11-49a3-8518-c949d91a4e70	minimap2	False	0	50.9138	347	23711	23362		0	A	False	atract_ambiguity,polya_walkback	high
-61b0c014-cd11-49a3-8518-c949d91a4e70	uLTRA	False	0	50.9138	347	23711	23362		0	A	False	atract_ambiguity,polya_walkback	high
+61b0c014-cd11-49a3-8518-c949d91a4e70	minimap2	False	0	12.9921	385	23758	23362		0	A	False	atract_ambiguity,polya_walkback	high
+61b0c014-cd11-49a3-8518-c949d91a4e70	uLTRA	False	0	12.9921	385	23758	23362		0	A	False	atract_ambiguity,polya_walkback	high
 72557a9a-4446-4e1e-826d-3351dbbc62b4	deSALT	False	0	94.4691	1046	104495	105551		0	A	False	none	high
 72557a9a-4446-4e1e-826d-3351dbbc62b4	gapmm2	False	0	94.4691	1046	104495	105551		0	A	False	none	high
 72557a9a-4446-4e1e-826d-3351dbbc62b4	mapPacBio	True	0	50.52369999999999	1112	104356	105560	104435-104495	0	B	True	indel_correction	high

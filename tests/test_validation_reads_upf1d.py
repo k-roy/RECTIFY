@@ -246,7 +246,13 @@ class TestCategory1IndelCorrection:
     CASES = {
         'cat1_plus_1':  ('+', 708336),
         'cat1_plus_2':  ('+', 1239967),
-        'cat1_minus_1': ('-', 1162861),
+        # 1162861 → 1162817 (2026-06): homopolymer-undercall guard. The read
+        # templates 37 bp of perfect read=ref match (C/G-rich, non-poly-T) 3' of
+        # a 6 bp deletion; the old large-deletion pre-scan skipped past the
+        # deletion and over-walked through that genuine genomic sequence. A read
+        # cannot align 3' of its own CPA, so 1162817 (the 3'-most templated base)
+        # is correct. Same bug class as the main-set cat2_plus_1 (9D + 39=).
+        'cat1_minus_1': ('-', 1162817),
         'cat1_minus_2': ('-', 381917),
     }
 
