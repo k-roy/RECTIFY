@@ -67,11 +67,12 @@ fetch() {  # fetch <final> <url>
 
 # ---- 1. SIRV-Set 4 reference (tiny; CGL open mirror) ------------------------
 REF_BASE=https://cgl.gi.ucsc.edu/data/LRGASP/data/references
+# (Sherlock's gzip is old and lacks `-k`; decompress via `-c >` to keep the .gz.)
 if [[ ! -s sirv4.fasta ]]; then
-  fetch sirv4.fasta.gz "$REF_BASE/lrgasp_sirv4.fasta.gz"; gunzip -kf sirv4.fasta.gz
+  fetch sirv4.fasta.gz "$REF_BASE/lrgasp_sirv4.fasta.gz"; gunzip -c sirv4.fasta.gz > sirv4.fasta
 fi
 if [[ ! -s sirv4.gtf ]]; then
-  fetch sirv4.gtf.gz "$REF_BASE/lrgasp_sirvs4.gtf.gz"; gunzip -kf sirv4.gtf.gz
+  fetch sirv4.gtf.gz "$REF_BASE/lrgasp_sirvs4.gtf.gz"; gunzip -c sirv4.gtf.gz > sirv4.gtf
 fi
 
 # ---- 2. real ONT DRS reads (WTC11, ENCODE; no auth) ------------------------
