@@ -7,7 +7,7 @@ Revisit and polish as the work evolves. Working state:
 `dev/ALIGNER_IDEATION_SYNTHESIS.md`; design refinements:
 `dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`.*
 
-**Last updated:** 2026-06-28
+**Last updated:** 2026-06-29
 
 ---
 
@@ -164,15 +164,15 @@ Each is a benchmark stratum **and** a candidate member capability; each had to
 clear three bars to qualify — **orthogonal**, **dependency-light**, and **has a
 position-exact ablation**:
 
-| Facet | Capability | Mechanism | Incumbent weakness it targets |
-|---|---|---|---|
-| **C1** | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
-| **C2** | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
-| **C3** | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
-| **C4** | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
-| **C5** | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
-| **C6** | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
-| **Discovery** | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping | the headline isoform-flattening bias |
+| Facet | Status | Capability | Mechanism | Incumbent weakness it targets |
+|---|---|---|---|---|
+| **C1** | ✅ built + Claim-A-proven (del-only; ins gated off after real SIRV caught it) | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
+| **C2** | 🔨 in design (gate-first) | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
+| **C3** | ⬜ next-priority facet | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
+| **C4** | ⬜ future | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
+| **C5** | ⬜ future (gated on a measured tail) | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
+| **C6** | ⬜ future (stratum built + discriminating) | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
+| **Discovery** | 🔨 guardrail prototype in progress (WS-3) | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping; novel-call support must not be read-quality-tail-enriched | the headline isoform-flattening bias |
 
 A spin-off research idea threads through these: a read's **"hotness"** (how
 error-prone it is, *estimable from its own well-aligned exon regions*) as a new
@@ -233,33 +233,74 @@ must *measure*, not assert.
 
 ---
 
-## Where we are now (2026-06-28)
+## Where we are now (2026-06-29)
 
-The benchmark machinery is **built and green**: it generates controlled strata
-(homopolymers, junctions, paralogs, variants), simulates realistic reads, runs the
-incumbent aligner, and scores against truth — ambiguity-aware, with separate
-tracks for annotated vs novel and canonical vs non-canonical junctions. A red-team
-pass found and fixed truth/scorer bugs; an error-free saturation control validated
-the harness.
+**The gate (benchmark) is built, green, and red-teamed** — it generates controlled
+strata (homopolymers, junctions, paralogs, variants), simulates reads, runs the
+incumbent aligner, and scores against truth (ambiguity-aware; separate annotated/
+novel and canonical/non-canonical tracks).
 
-The active frontier is **error realism**. We measured that real ONT errors are
-*not* uniform — they **cluster in bursts** and concentrate on **hot reads** — and
-built a 3-layer error injector to reproduce this. Its magnitude knobs are still
-**placeholders**, calibrated to a contaminated upper-bound estimate
-(read-vs-genome conflates RNA modifications and alignment artifacts). **SIRV
-spike-ins** replace the placeholders with the real, clean number — and settle an
-open question (does error clustering sit near 3× or 5× a uniform baseline?).
+**The first aligner facet, C1, is built and proven** — an empirical in-run gap
+discount that measurably improves homopolymer indel *placement* against truth
+(hand-verified at the CIGAR level), without hallucinating on clean reads. Notably,
+**real SIRV data caught a bug in C1** (an insertion-discount that hallucinated
+indels, 3–7% on two independent real datasets); we gated it off, and the
+deletion-only law is what ships — the spike-in grounding working exactly as
+intended. A measurement bug (introns inflating the per-read error span) was also
+fixed so error rates are now per-exonic-base.
 
-**This session's contributions:**
-- Built and validated the **exon-GTF loader** (the format SIRV/Sequins/LRGASP use)
-  — the one piece blocking all real-spike-in integration.
-- **Submitted the SIRV measurement job**: align real ONT DRS reads to the SIRV
-  reference, keep the spike-in reads (known sequence = absolute truth), measure
-  their clean error structure → the real calibration target.
-- Built the **LRGASP/NanoSim truth join** — brings in a *second*, independent
-  simulator. pbsim3 + NanoSim + real SIRV gives a three-way triangulation: if both
-  simulators miss the same real behavior, that is a shared blind spot to engineer
-  around.
+**Real-data grounding is live, with one open puzzle.** Four independent real
+spike-in sources are measured. Two RNA002-era SIRV sources agree the clean,
+mod-free error clustering is *low*; the current-chemistry **RNA004** source looked
+divergently *burstier* — but the signature points to a **hot-read subpopulation /
+contamination artifact**, not a chemistry effect, and a competitive-re-alignment
+job (WS-1) is settling it now. The injector's magnitude knobs remain
+**placeholders** pending that clean number.
+
+**Claim B was correctly ruled out on real SIRV.** The per-length error-*shape*
+cannot be honestly validated on SIRV (too few long homopolymers; and a
+"truth-confounded" trap where the only discriminating reads have unknowable
+per-read truth). The genuine validation path — a held-out injection simulator — is
+specified and deferred (multi-night). This is the adversarial process catching a
+would-be fake win, not a setback.
+
+**Three workstreams are in flight** (see Priorities): WS-1 (settle RNA004 + a fair
+four-way + the biological-excess contrast), C2 (the next facet), and WS-3 (the
+novel-feature discovery guardrail).
+
+---
+
+## Priorities (2026-06-29) — the scoping rule for directing this work
+
+Two tracks run in parallel. **The facet track is the deliverable; the realism
+track exists only to keep the gate trustworthy.** The one-line rule (advisor):
+***aim, not breadth*** — facet-building is the goal; realism work must not crowd it
+out, and the RNA004 puzzle needs one competitive re-alignment, not a swarm.
+
+**Track A — aligner facets (the product):**
+1. **C1** ✅ done (homopolymer indel placement).
+2. **C2 — the active facet** (3′/poly-A CPA placement): gate-first (is the
+   genomic-A-tract CPA stratum discriminating + addressable?), then build with the
+   C1 playbook (matched-arm ablation + an over-call safety check). *In design.*
+3. **C3 — the next facet, and arguably the keystone** (calibrated LLR arbitration):
+   C1/C2 only improve the *pipeline* if the consensus can *use* their calibrated,
+   probabilistic output instead of integer-max. C3 is what converts per-read facet
+   wins into consensus wins — and it's the structural fix for the 0.09→1.07
+   artifact. Prioritize right after C2.
+4. **C4 / C5 / C6** — gated, later (each needs its enabling measurement: C5 a
+   measured panel-failure tail; C4/C6 strata already exist and discriminate).
+- **Discovery guardrail** (novel-feature support, the read-quality-tail FDR prior):
+  prototype in flight (WS-3); folds into C3 and the discovery-FDR machinery.
+
+**Track B — error realism / gate calibration (in service of the gate):**
+1. **Settle RNA004** (WS-1, in flight): competitive alignment to strip
+   contamination → real-vs-artifact; plus the fair four-way and the same-sample
+   SIRV-vs-endogenous *biological-excess* contrast (the systematic-error-vs-biology
+   axis).
+2. **Calibrate the injector** to the cleaned real targets once WS-1 lands (the
+   magnitude is still a placeholder).
+3. **Genuine length-shape validation (Claim B):** the held-out injection simulator
+   on natural long-homopolymer templates at SIRV-measured rates. Multi-night.
 
 ---
 
@@ -306,7 +347,7 @@ truth, not by intuition.**
 ---
 
 *Provenance: written by the benchmark-builder agent on branch
-`worktree-agent-a25a2c1e784ad37dc`; render date 2026-06-28. Sources in this repo:
+`worktree-agent-a25a2c1e784ad37dc`; render date 2026-06-29. Sources in this repo:
 `dev/SIMULATION_BENCHMARK_SPEC.md`, `dev/ALIGNER_IDEATION_SYNTHESIS.md`,
 `dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`, `dev/HANDOFF_ALIGNER_BENCHMARK.md`, and
 the RECTIFY architecture docs. Figures flagged "unverified" above are pending
