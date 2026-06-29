@@ -517,6 +517,21 @@ OPEN. Rate-matching will NOT resolve this (it doesn't touch the mixture). The di
 Honest one-liner: "RNA004 shows a dispersion signature consistent with a hot-read subpopulation;
 real-vs-artifact unresolved pending population decomposition + a unified competitive-alignment pipeline."
 
+**RESOLVED (2026-06-29, WS-1 job 31922545 + per-read decomposition):** both diagnostics ran.
+(1) **Mis-mapping contamination RULED OUT** — competitive re-alignment to the full hg38+SIRV ref left the
+RNA004 spike-in count unchanged (17,449 vs old 17,461) and the burstiness identical (overdisp 2.03 /
+gap5x 9.34); RNA002 (encff) stayed low (0.094 / 1.66). (2) **Per-read decomposition CONFIRMS the hot-read
+subpopulation:** RNA004 (15,296 reads) is a clean BULK at ~0.9-1% error + a **~1-2% tail at ~12% error
+(13× the bulk), at MAPQ 60** (high-confidence, genuinely error-rich reads — not mis-mapped). Removing the
+tail returns the bulk to ~1% (modern-chemistry-accurate). So RNA004's apparent burstiness is a
+**bimodal hot-read tail, NOT a chemistry effect**; the decent bulk is low-error/low-clustering, CONSISTENT
+with the RNA002 "clean clustering is low" story. **DECISION: do NOT recalibrate the injector toward high
+clustering** — the divergence was the tail. Per the aligner's read-quality principle (NATIVE_ALIGNER_OVERVIEW
+§"Read-quality structure"), the ~1-2% low-Q tail is DISREGARDED for facet building; it is benchmark/QC
+characterization (flow-cell/pore behavior) + feeds the WS-3 discovery guardrail, not the injector magnitude.
+Remaining (cosmetic, recoverable): the same-sample human-endogenous biological-excess contrast (re-run on
+contig `1`, not `chr1`) and the qscore split (SIGPIPE; re-run with `head`).
+
 **Reading (RNA002 sources):** the two independent RNA002-era SIRV sources (different labs) AGREE tightly on
 LOW clustering/over-dispersion (gap5x 1.7, overdisp_v 0.1-0.2) — but see the RNA004 divergence above; this
 "low" is RNA002-specific, NOT the modern-chemistry target. `indel_run≥2 ≈ 0.37-0.39`

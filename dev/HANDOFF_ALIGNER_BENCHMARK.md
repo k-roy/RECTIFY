@@ -20,10 +20,24 @@ FACET — C1 is consolidated so C2 is back on).
   re-aligns RNA004(H69)+LRGASP-ENCODE, measures the SIRVomeERCCome spike-in subset (FAIR four-way) AND a
   chr1 endogenous-human subset (biological-excess contrast), + qscore distributions. Branch on the sentinel:
   `ssh sherlock "sacct -j 31922545 -X -n -o State; cat /scratch/users/kevinroy/combined_ref/.comp_rc 2>/dev/null"`
-  → if 0, read `/scratch/users/kevinroy/combined_ref/{competitive_fourway,qscore_dist}.report.txt`; compare
-  spike-in n vs old (RNA004 17461→? = contamination removed); does the RNA004 divergence shrink (artifact)
-  or persist (real)? If FAILED, read `comp.<jid>.err`. The BAMs persist for re-measurement if only the
-  measure step errored.
+  → if 0, read `/scratch/users/kevinroy/combined_ref/{competitive_fourway,qscore_dist}.report.txt`.
+  **RESULT (2026-06-29): job ended rc=141 = SIGPIPE on the cosmetic qscore step ONLY; the alignment +
+  four-way measure COMPLETED.** Headline: **RNA004 divergence is NOT mis-mapping contamination** — the
+  competitive SIRVomeERCCome count is 17,449 vs the old SIRV-only 17,461 (−0.07%) and the burstiness
+  PERSISTS identically (overdisp_v 2.03 / gap5x 9.34); RNA002 (encff) stays low (0.094 / 1.66). So the
+  advisor's contamination-asymmetry hypothesis is REFUTED → the live explanation is a genuine HOT-READ
+  SUBPOPULATION (dispersion 17.5 + p90/median 2.58). **Two recoverable gaps (BAMs persist on scratch):**
+  (a) the endogenous contrast got 0 reads — the combined ref names human contigs `1`..`22`/`MT` (Ensembl),
+  NOT `chr1`; re-run on contig `1`. (b) qscore step SIGPIPE'd; re-run with `head`/pipefail-off. **The
+  settling diagnostic = the per-read hot-tail decomposition on `h69_spk.bam`** (pull top 1-2% by error
+  rate; if removing them collapses dispersion toward RNA002 AND they are low-mapq → hot/low-Q subpop, not
+  broad chemistry). **DECOMPOSITION DONE → RESOLVED:** RNA004 = clean bulk ~1% error + a ~1-2% tail at ~12%
+  (13× bulk) at MAPQ 60 (genuine hot reads, not mis-mapped); removing the tail → ~1% bulk. So the divergence
+  is a bimodal HOT-READ TAIL, NOT chemistry. **DECISION: do NOT recalibrate the injector toward high
+  clustering**; the decent bulk is low-clustering (matches RNA002). The ~1-2% tail is disregarded for facet
+  building (per the read-quality principle) — it's QC/flow-cell characterization + WS-3 guardrail input.
+  Cosmetic-recoverable: endogenous contrast (re-run on contig `1`) + qscore split (SIGPIPE → use `head`).
+  **WS-1 effectively COMPLETE; this is the clean fan-out boundary → reset director for C3.**
 - **WS-3 — novel-feature support guardrail prototype: DONE + COMMITTED** (`scripts/benchmark/novel_support_probe.py`).
   TE = −log10 P(Binom(n,p0)≥k) per novel call (support-count-aware; truth-blind metric). AUC 0.998 (gt) /
   0.93-0.96 (reference-free exonic-density proxy); FDR 0.50→0.20 (gt) / 0.50→0.33 (proxy); recall ~0.99;
