@@ -39,7 +39,20 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   both SIRV share IVT composition; autocorr likely per-transcript-confounded (few SIRV transcripts); RNA004
   (LongBench, GB download, needs approval) still the modern-chemistry check.
 
-### RESUME (night-push boundary) — nothing in flight; concrete next steps
+### IN FLIGHT (2026-06-29, session-9 cont.)
+- **LongBench RNA004 arm SUBMITTED — job 31838452** (`scripts/benchmark/run_longbench_errstruct.sbatch`,
+  larsms; PENDING at submit). Downloads H69 (~11.3 GB) → aligns to staged `sirv4.fasta` → exonic
+  measure-bam (thin 0.0153, [600,1000]). Branch on the sentinel:
+  `ssh sherlock "sacct -j 31838452 -X -n -o State; cat /scratch/users/kevinroy/longbench_work/.lb_rc 2>/dev/null"`
+  → if `.lb_rc`==0 read `/scratch/users/kevinroy/longbench_work/longbench_h69_errstruct.report.txt` and add
+  the RNA004 row to the three-way table (→ four-way); if FAILED read `lb_h69.<jid>.err` (likely wget URL or
+  too-few-mapped → try another cell line H1975/HCC827). This is the modern-chemistry confirmation of the
+  "clean clustering is LOW" finding.
+- **Claim B coordinator partner agent RUNNING** (designing + adversarially vetting the real-SIRV PLACEMENT
+  ablation metric; will report a vetted plan + the fan-out objections + advisor verdict for the directing
+  agent to review before any build). Deliverable target: `scripts/benchmark/c1_real_sirv_ablation.py`.
+
+### RESUME (night-push boundary) — concrete next steps
 - **C1 ablation CONFIRMED at reps=400** (cell-size floor): HP_HARD-noisy flat 0.965→B0 0.994/law 0.985;
   boundary_sub flat 0.000→B0 0.812/law 0.572; clean false_indel 0.000 (6207 reads). PASS Claim A — same
   pattern as reps=120, hand-verified. Re-run any time: `PATH="/Users/kevinroy/miniconda3/bin:$PATH"
