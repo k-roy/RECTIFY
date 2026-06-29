@@ -172,7 +172,7 @@ position-exact ablation**:
 | **C4** | ⬜ future | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
 | **C5** | ⬜ future (gated on a measured tail) | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
 | **C6** | ⬜ future (stratum built + discriminating) | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
-| **Discovery** | 🔨 guardrail prototype in progress (WS-3) | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping; novel-call support must not be read-quality-tail-enriched | the headline isoform-flattening bias |
+| **Discovery** | ✅ guardrail prototype done (WS-3; soft prior) | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping; novel-call support must not be read-quality-tail-enriched | the headline isoform-flattening bias |
 
 A spin-off research idea threads through these: a read's **"hotness"** (how
 error-prone it is, *estimable from its own well-aligned exon regions*) as a new

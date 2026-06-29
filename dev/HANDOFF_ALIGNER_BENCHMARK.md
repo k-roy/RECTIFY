@@ -24,9 +24,12 @@ FACET — C1 is consolidated so C2 is back on).
   spike-in n vs old (RNA004 17461→? = contamination removed); does the RNA004 divergence shrink (artifact)
   or persist (real)? If FAILED, read `comp.<jid>.err`. The BAMs persist for re-measurement if only the
   measure step errored.
-- **WS-3 (agent adc479ac473b877d3) — novel-feature support guardrail + RUNNABLE prototype.** Operationalize
-  "novel-call support stratified by read quality must not be tail-enriched" on the JUNCTION_DISCOVERY
-  stratum (inject NIC/NNC into a qscore mix; show genuine vs spurious separate). One advisor pass.
+- **WS-3 — novel-feature support guardrail prototype: DONE + COMMITTED** (`scripts/benchmark/novel_support_probe.py`).
+  TE = −log10 P(Binom(n,p0)≥k) per novel call (support-count-aware; truth-blind metric). AUC 0.998 (gt) /
+  0.93-0.96 (reference-free exonic-density proxy); FDR 0.50→0.20 (gt) / 0.50→0.33 (proxy); recall ~0.99;
+  seed-stable; advisor-vetted; reproduced locally. Honest caveats baked in (soft prior; magnitude
+  SIRV-gated; separation partly by construction = mechanism demo; real-data risk = per-molecule-vs-
+  per-transcript hotness confound). Feeds C3 / discovery-FDR. NOT a shipped feature — a vetted prototype.
 - **C2 (agent a0a8a3565dd398787) — the NEXT FACET: 3'/poly-A CPA change-point decoder.** Gate-first
   (GENOMIC_A_CPA below-ceiling + addressable on |est−true CPA|) → vetted decoder design + build plan.
 RESUME: each agent reports back; check its output, review, then I commit. If an agent died, its task is
