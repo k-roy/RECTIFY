@@ -39,6 +39,23 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   both SIRV share IVT composition; autocorr likely per-transcript-confounded (few SIRV transcripts); RNA004
   (LongBench, GB download, needs approval) still the modern-chemistry check.
 
+### RESUME (night-push boundary) — nothing in flight; concrete next steps
+- **C1 ablation CONFIRMED at reps=400** (cell-size floor): HP_HARD-noisy flat 0.965→B0 0.994/law 0.985;
+  boundary_sub flat 0.000→B0 0.812/law 0.572; clean false_indel 0.000 (6207 reads). PASS Claim A — same
+  pattern as reps=120, hand-verified. Re-run any time: `PATH="/Users/kevinroy/miniconda3/bin:$PATH"
+  PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python scripts/benchmark/c1_ablation.py --out
+  /tmp/c1_abl_400 --reps 400 --penalty-table rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores.tsv`.
+- **NEXT increment (deepen C1, do NOT widen to C2 — advisor): the real-SIRV PLACEMENT ablation (Claim B).**
+  Spec in `dev/C1_DESIGN.md` §"Claim B". Inputs staged on Sherlock scratch
+  `/scratch/users/kevinroy/sirv_work/{sirv.sorted.bam, sgnex_heya8_spikein.bam, sirv4.fasta}`. Enumerate
+  HP-run spans from `sirv4.fasta`, re-align each real SIRV read's ref segment with flat/B0/law, score
+  in-run vs out-of-run placement per HP run (`net_indel_in_span`). Multi-night; scope deliberately (no
+  boundary_sub analog in real reads; co-occurring errors). This is where the length-SHAPE is earned/refuted.
+- **LongBench RNA004 arm** (modern-chemistry confirmation): NEEDS USER APPROVAL for the ~11.3 GB H69
+  download (SESSION-8 PLAN B). SG-NEx PLAN A already done (the HEYA8 measurement above).
+- **Regression gate (any session):** `pysam-python scripts/benchmark/smoke_roundtrip.py --out /tmp/x
+  --reps 20` → exit 0; unit runners `python tests/test_{c1_lengthlaw,error_injector,gff_panel_gtf,lrgasp_truth}.py`.
+
 ---
 
 ## SESSION-8 (2026-06-29) — REAL DRS SPIKE-IN RECON (SG-NEx RNA00x + LongBench RNA004); refs STAGED, two plans READY
