@@ -244,6 +244,186 @@ def gen_str_stratum(reps: int, rng: random.Random, locus0: int = 100
 
 
 # ---------------------------------------------------------------------------
+# GENOMIC_A_CPA stratum (C2) — 3'/poly-A cleavage placement vs a genomic A-tract
+# ---------------------------------------------------------------------------
+# The poly-A tail (read) blends into a downstream genomic A-run (reference), so a
+# pure-alignment 3' end drifts DOWNSTREAM into the tract. The SHIPPED incumbent is
+# NOT raw minimap2 (which drifts the full tract length) but the guarded heuristic
+# walkback (``correct/walkback.py::walkback_drs_full``), which walks inward through
+# the A-run to the first non-stop read==ref match. This generator constructs the
+# cells that decide whether a change-point decoder beats THAT walkback:
+#
+#   tract_start  true CPA at the A-tract START (whole tract non-transcribed). The
+#                walkback NAILS this (anchors on the body end) -> NON-DISCRIMINATING
+#                control (the HP-vertical-slice saturation analog).
+#   readthrough  true CPA k bases INSIDE a pure A-run (transcript read k genomic
+#                A's then cleaved). Walkback always snaps to the run start -> error
+#                k. But the body/tail boundary inside a contiguous A-run carries
+#                ZERO sequence information -> UNIDENTIFIABLE; a decoder cannot beat
+#                the walkback here either (the C1 Claim-B iron triangle). Recorded
+#                so the gate can confirm cp ~ wb (the pre-committed NULL).
+#   interrupted  genomic A-region broken by a stray non-A (``A*a1 X A*a2``) that the
+#                read tail happens to match. The walkback anchors on X; a gap-tolerant
+#                decoder pulls back to the body end. ORIGINALLY proposed as the one
+#                addressable cell — REFUTED by the adversarial panel (2026-06-29) as an
+#                ARTIFACT and now labelled UNIDENTIFIABLE: (1) the identical read is
+#                ~26-113x MORE likely under read-through (X templated, CPA>=X) than under
+#                truth-at-Z (a non-A tail base landing exactly on genomic X); the
+#                walkback's anchor-at-X IS the maximum-likelihood estimate. (2) Truth-flip:
+#                relabel truth Z->X and the two arms exactly swap -> the gate measured a
+#                DEFINITION, not a capability. (3) The "win" is construction-tuned (decoder
+#                max_gap=1 == the 1-base X injected; a 2-base interruption erases it) and
+#                (4) a single basecall error activates the walkback's tail-context guard,
+#                closing the gap on the realistic (g=10,15) cells. See dev/C2_DESIGN.md.
+#   clean_g0     true CPA on a non-A base, NO downstream genomic A, body trailing 3 bases
+#                non-A. WEAK over-call control (the trailing-non-A is what hides over-call).
+#   overcall_Aend body ends ``...A Z`` (genomic A immediately 5' of a non-A CPA Z), no
+#                downstream A-tract. The STRONG over-call control (red-team Attack 5): a
+#                gap-tolerant decoder over-pulls across Z into the body A (the honest C1
+#                false_indel_rate analog the clean_g0 cell rigs away).
+#   terminal_A   body genuinely ENDS in real templated A's (3'UTR), no downstream
+#                genomic A. BOTH walkback and decoder over-trim these real A's
+#                (same unidentifiability as readthrough) -> documents the SHARED
+#                limitation, neither arm wins. NOTE: terminal_A and tract_start are
+#                STRUCTURALLY IDENTICAL inputs with opposite truths -> proof the
+#                body/tail boundary is sequence-unidentifiable.
+#
+# Each cell records the DRIFTED incumbent CIGAR (M through the genomic A-region,
+# S the rest of the tail) so the gate scores 3'-end ESTIMATORS on a deterministic
+# alignment without invoking an aligner on toy contigs (advisor-mandated).
+_C2_LB = 60          # left flank (gene body) length; body[-1] is the non-A CPA base
+_C2_RB = 40          # right flank (forces the tail to soft-clip after the A-region)
+_C2_TAIL = 30        # extra (soft-clipped) tail A's beyond the genomic A-region
+_C2_GS = [3, 6, 10, 15]
+
+
+def _nonA_flank(n: int, rng: random.Random, end_nonA: int = 3) -> str:
+    """Random flank with the trailing ``end_nonA`` bases guaranteed non-A (so the
+    body/tail boundary of the main cells is clean — over-call near A-rich body ends
+    is probed by a dedicated cell, not smuggled into the win measurement)."""
+    s = list(_rand_unique(n, rng))
+    for j in range(max(0, n - end_nonA), n):
+        if s[j] == "A":
+            s[j] = rng.choice([b for b in "CGT" if b != (s[j - 1] if j else "")])
+    return "".join(s)
+
+
+def genomic_a_cpa_cells(reps: int, rng: random.Random, locus0: int = 800):
+    """Yield C2 cells as dicts the corpus generator AND the gate harness both
+    consume. Each dict: ``chrom, contig, read_id, read_seq, drifted_cigar`` (list
+    of ``(op,len)``), ``true_cpa, downstream_a_count, cell, g, k, identifiable,
+    split``."""
+    cells = []
+    li = locus0
+    for g in _C2_GS:
+        for cell in ("tract_start", "readthrough", "interrupted"):
+            for i in range(reps):
+                body = _nonA_flank(_C2_LB, rng)
+                rflank = _nonA_flank(_C2_RB, rng, end_nonA=_C2_RB)  # all non-A
+                z = _C2_LB - 1                                      # body-end CPA base
+                split = _split_for(li)
+                if cell == "tract_start":
+                    contig = body + "A" * g + rflank
+                    read = body + "A" * (g + _C2_TAIL)
+                    m = _C2_LB + g
+                    cig = [(0, m), (4, len(read) - m)]
+                    true_cpa, da, k = z, g, 0
+                    ident = True
+                elif cell == "readthrough":
+                    k = max(1, g // 2)
+                    contig = body + "A" * g + rflank
+                    read = body + "A" * (k + _C2_TAIL)             # k templated + tail
+                    m = _C2_LB + g                                 # aligner matches all g
+                    cig = [(0, m), (4, len(read) - m)]
+                    true_cpa, da = z + k, g
+                    ident = False                                  # unidentifiable
+                else:  # interrupted
+                    a1 = 2 if g <= 6 else 4
+                    a2 = max(1, g - a1)
+                    x = rng.choice("CGT")
+                    contig = body + "A" * a1 + x + "A" * a2 + rflank
+                    read = body + "A" * a1 + x + "A" * a2 + "A" * _C2_TAIL
+                    m = _C2_LB + a1 + 1 + a2
+                    cig = [(0, m), (4, len(read) - m)]
+                    true_cpa, da, k = z, a1, 0                     # CPA before the A-region
+                    ident = False                                  # ARTIFACT: see header note
+                rid = f"c2_{cell}_g{g:02d}_r{i:03d}"
+                cells.append(dict(
+                    chrom=rid, contig=contig, read_id=rid, read_seq=read,
+                    drifted_cigar=cig, true_cpa=true_cpa, downstream_a_count=da,
+                    cell=cell, g=g, k=k, identifiable=ident, split=split))
+                li += 1
+    # over-call control: NO genomic A-tract; tail soft-clips at a non-A CPA.
+    for i in range(reps):
+        body = _nonA_flank(_C2_LB, rng)
+        rflank = _nonA_flank(_C2_RB, rng, end_nonA=_C2_RB)
+        contig = body + rflank
+        read = body + "A" * _C2_TAIL
+        cig = [(0, _C2_LB), (4, _C2_TAIL)]
+        rid = f"c2_clean_g0_r{i:03d}"
+        cells.append(dict(
+            chrom=rid, contig=contig, read_id=rid, read_seq=read,
+            drifted_cigar=cig, true_cpa=_C2_LB - 1, downstream_a_count=0,
+            cell="clean_g0", g=0, k=0, identifiable=True, split=_split_for(li)))
+        li += 1
+    # STRONG over-call control (red-team Attack 5): body ends "...A Z" with Z a
+    # non-A CPA and a genomic A immediately 5' of it, no downstream A-tract. A
+    # gap-tolerant decoder over-pulls across Z into the body A. Truth is clean
+    # (CPA=Z, the A before is templated body) -> a real over-call, not a fiat.
+    for i in range(reps):
+        body = list(_nonA_flank(_C2_LB, rng))
+        body[-1] = rng.choice("CGT")           # Z = non-A CPA
+        body[-2] = "A"                          # genomic A immediately 5' of Z
+        body = "".join(body)
+        rflank = _nonA_flank(_C2_RB, rng, end_nonA=_C2_RB)
+        contig = body + rflank
+        read = body + "A" * _C2_TAIL
+        cig = [(0, _C2_LB), (4, _C2_TAIL)]
+        rid = f"c2_overcall_Aend_r{i:03d}"
+        cells.append(dict(
+            chrom=rid, contig=contig, read_id=rid, read_seq=read,
+            drifted_cigar=cig, true_cpa=_C2_LB - 1, downstream_a_count=0,
+            cell="overcall_Aend", g=0, k=0, identifiable=True, split=_split_for(li)))
+        li += 1
+    # terminal-A control: body ends in real templated A's; both arms over-trim.
+    for t in (3, 6):
+        for i in range(reps):
+            body = _nonA_flank(_C2_LB, rng)
+            rflank = _nonA_flank(_C2_RB, rng, end_nonA=_C2_RB)
+            contig = body + "A" * t + rflank
+            read = body + "A" * (t + _C2_TAIL)
+            m = _C2_LB + t
+            cig = [(0, m), (4, len(read) - m)]
+            rid = f"c2_terminalA_t{t}_r{i:03d}"
+            cells.append(dict(
+                chrom=rid, contig=contig, read_id=rid, read_seq=read,
+                drifted_cigar=cig, true_cpa=_C2_LB + t - 1, downstream_a_count=0,
+                cell="terminal_A", g=0, k=t, identifiable=False, split=_split_for(li)))
+            li += 1
+    return cells
+
+
+def gen_genomic_a_cpa_stratum(reps: int, rng: random.Random, locus0: int = 800
+                              ) -> Tuple[Dict[str, str], List[Tuple[str, str]], List[ReadTruth]]:
+    """Corpus wrapper for the C2 cells: one single-contig locus per read, truth
+    carries ``true_cpa`` + ``downstream_a_count`` (the fields the scorer's CPA
+    metric and the gate consume). The DRIFTED CIGAR is NOT the truth CIGAR — it is
+    the incumbent alignment the gate replays; truth is the cleavage coord."""
+    refs: Dict[str, str] = {}
+    reads: List[Tuple[str, str]] = []
+    truth: List[ReadTruth] = []
+    for c in genomic_a_cpa_cells(reps, rng, locus0):
+        refs[c["chrom"]] = c["contig"]
+        reads.append((c["read_id"], c["read_seq"]))
+        truth.append(ReadTruth(
+            read_id=c["read_id"], true_locus=c["chrom"], true_transcript=c["chrom"],
+            chrom=c["chrom"], strand="+", genome_start=0, genome_end=c["true_cpa"] + 1,
+            true_cpa=c["true_cpa"], downstream_a_count=c["downstream_a_count"],
+            stratum="GENOMIC_A_CPA", split=c["split"], coverage=reps))
+    return refs, reads, truth
+
+
+# ---------------------------------------------------------------------------
 # JUNCTION_AMB stratum — a spliced gene whose donor sits in a 1bp repeat
 # ---------------------------------------------------------------------------
 def gen_junction_ambiguity_locus(rng: random.Random, n_reads: int = 30,
@@ -726,7 +906,8 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
                     include_junction: bool = True,
                     include_variant: bool = True,
                     include_paralog: bool = True,
-                    include_jdisc: bool = True) -> Dict[str, str]:
+                    include_jdisc: bool = True,
+                    include_cpa: bool = False) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     rng = random.Random(seed)
     refs: Dict[str, str] = {}
@@ -767,6 +948,16 @@ def generate_corpus(out_dir: str, reps: int = 120, seed: int = 7,
         refs.update(rjd)
         reads += rdjd
         truth += tjd
+
+    # CPA stratum LAST + opt-in (default off): it consumes RNG, so generating it
+    # earlier shifts every downstream stratum's random constructs (it regressed the
+    # VARIANT control FP when run before variant). Append-only here means even
+    # include_cpa=True leaves the established strata / the smoke gate byte-identical.
+    if include_cpa:
+        rc, rdc, tc = gen_genomic_a_cpa_stratum(reps, rng)
+        refs.update(rc)
+        reads += rdc
+        truth += tc
 
     ref_fa = os.path.join(out_dir, "ref.fa")
     reads_fq = os.path.join(out_dir, "reads.fastq")
