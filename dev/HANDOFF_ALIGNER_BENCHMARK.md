@@ -41,12 +41,15 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
 
 ### FOUR-WAY DONE (2026-06-29, session-9 cont.) — RNA004 DIVERGES (key result)
 - **LongBench RNA004 arm DONE — job 31838452 COMPLETED rc=0** (17,461 spike-in reads). It did NOT confirm
-  the "clean clustering is LOW" story — **RNA004 (current chemistry) is lower-rate (0.0106) but MUCH
-  burstier: overdisp_v 2.03, gap5x 9.34** (vs the two RNA002 SIRV sources' ~0.1 / ~1.7). Full four-way
-  table + the rate-matching/low-count/single-dataset CAVEATS in SPEC §"FOUR-WAY UPDATE". **This reframes
-  the injector-calibration target** (RNA002-low vs RNA004-high) and is the key open question. NEXT:
-  rate-match all four at a common rate ≤0.0106 + stratify autocorr by transcript before setting magnitude.
-  Re-run: `ssh sherlock "cd $D && sbatch scripts/benchmark/run_longbench_errstruct.sbatch"` (idempotent).
+  the "clean clustering is LOW" story — RNA004 is lower-rate (0.0106) but shows a much higher dispersion
+  number (overdisp_v 2.03, gap5x 9.34). **Likely NOT chemistry — a HOT-READ-SUBPOPULATION signature**
+  (advisor): dispersion_index 17.5 with p90/median only 2.58 ⇒ a small ~1-2% extreme tail, not homogeneous
+  burstiness. **Do NOT pivot the injector calibration** (RNA002-low vs RNA004-high stays OPEN; rate-matching
+  won't resolve a mixture). **#1 OPEN QUESTION — next-session diagnostics (fresh agent):** (a) per-read rate
+  histogram on the RNA004 [600,1000] set, pull top 1-2%, check MAPQ/identity/transcript (low → artifact);
+  (b) UNIFY the alignment pipeline — SG-NEx used competitive hg38+spike-in; the SIRV-only sources can
+  mis-map human reads → re-align ALL to a combined human+SIRV ref, take SIRV-contig reads, before any fair
+  four-way magnitude comparison. Full detail: SPEC §"FOUR-WAY UPDATE".
 - **Claim B coordination DONE → DECISION recorded (dev/C1_DESIGN.md §"Claim B — VETTED CONCLUSION").**
   Partner agent + 3-way adversarial fan-out + 2 advisor passes converged: the real-SIRV PLACEMENT/shape
   ablation is **underpowered** (only ~9 distinct HP runs ≥9 in SIRV; law delta saturates at L8) AND

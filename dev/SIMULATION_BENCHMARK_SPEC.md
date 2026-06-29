@@ -498,14 +498,24 @@ arm (LongBench H69 RNA004 SIRV, job 31838452, 17,461 spike-in reads):
 | indel_run≥2 | 0.39 | 0.37 | 0.38 | **0.46** |
 | autocorr r | 0.47 | 0.50 | 0.62 | 0.57 |
 | native rate | 0.019 | (thinned) | (thinned) | **0.0106** |
-RNA004 has a LOWER overall error rate (0.0106 native, more accurate basecaller) but MUCH HIGHER clustering
-+ over-dispersion than the two RNA002 SIRV sources. **DO NOT harden this** — confounds: (1) RNA004 native
-rate 0.0106 is BELOW the 0.0153 thin target so it was NOT rate-matched up to the others (clustering metrics
-are rate-sensitive); (2) only 8.1 events/read → overdisp_v=(disp−1)/mean_events is noisier/inflated at low
-counts; (3) single dataset/cell line. But the DIRECTION (modern chemistry = lower-rate-but-burstier) is the
-opposite of the RNA002 "low clustering" story and is the current-chemistry signal the injector must
-ultimately target. NEXT: rate-match all four at a common rate ≤0.0106 + stratify autocorr by transcript
-before setting the injector magnitude. Reframes the placeholder question (RNA002-low vs RNA004-high).
+RNA004 has a LOWER overall error rate (0.0106 native) but a MUCH higher dispersion/clustering number.
+**Likely NOT a chemistry effect — a HOT-READ-SUBPOPULATION signature (advisor).** The tell: `dispersion_index
+17.5` next to `p90/median 2.58` is contradictory for a HOMOGENEOUS process (uniform burstiness would push
+p90/median far above 2.58 to support var/mean=17.5). High dispersion + modest p90 ⇒ a small (~1-2%) extreme
+tail at 10-50× the median rate = the canonical contaminant/degraded-read signature, which inflates BOTH
+overdisp_v and gap5x. **DO NOT pivot the injector calibration from "RNA002-low" to "RNA004-high"** — leave it
+OPEN. Rate-matching will NOT resolve this (it doesn't touch the mixture). The discriminating diagnostics
+(NEXT SESSION; fresh agent):
+1. **Per-read rate histogram on the RNA004 [600,1000] set; pull the top ~1-2%** and check their MAPQ,
+   alignment identity, and SIRV transcript. Low-identity / low-MAPQ / single-transcript tail ⇒ ARTIFACT;
+   broad across high-confidence reads + multiple transcripts ⇒ real. Symmetric test.
+2. **Unify the alignment pipeline (the cross-source confound):** SG-NEx reads came from SG-NEx's
+   COMPETITIVE hg38+spike-in alignment (human maps to human → only true SIRV lands on SIRV); LongBench AND
+   LRGASP-ENCODE aligned to SIRV-ONLY `sirv4.fasta` (human reads can spuriously map to a 430 KB ref →
+   contamination asymmetry). Re-align EVERY source to a COMBINED human+SIRV reference and take the
+   SIRV-contig reads (the SG-NEx way) before any four-way magnitude comparison is fair.
+Honest one-liner: "RNA004 shows a dispersion signature consistent with a hot-read subpopulation;
+real-vs-artifact unresolved pending population decomposition + a unified competitive-alignment pipeline."
 
 **Reading (RNA002 sources):** the two independent RNA002-era SIRV sources (different labs) AGREE tightly on
 LOW clustering/over-dispersion (gap5x 1.7, overdisp_v 0.1-0.2) — but see the RNA004 divergence above; this
