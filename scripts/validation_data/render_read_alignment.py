@@ -2729,18 +2729,14 @@ def render(
     # base size. The agreement track (when shown) needs ~1.7 for the 5-cell stack.
     height_ratios = _agree_h + _refgap_h + [0.9] + [2.0] * len(track_sources) + [0.55]
 
-    # Cross-chrom mini-panels prepended at the TOP (right above the main
-    # bedgraph). Each contributes a painted-CIGAR row + tick row with its
-    # own ref-coord x-axis so the reader can judge the aligner's actual
-    # placement on its own chromosome. Ordering: ED table → cross-chrom
-    # → bedgraph / ref / per-aligner / ticks.
+    # Cross-chrom mini-panels: a painted-CIGAR row + tick row each, with their
+    # own ref-coord x-axis so the reader can judge an aligner's actual placement
+    # on its own chromosome. Built here, prepended ABOVE the overview below.
     cc_panels: list[str] = []
     cc_heights: list[float] = []
     for cc_idx in range(len(cross_chrom_rows)):
         cc_panels.extend([f"cc_aln_{cc_idx}", f"cc_ticks_{cc_idx}"])
         cc_heights.extend([1.4, 0.55])
-    panels = cc_panels + panels
-    height_ratios = cc_heights + height_ratios
 
     # (ED values are now rendered inline in the overview's left margin —
     # see render_overview's aligner_ed_map handling — so no separate
@@ -2751,6 +2747,13 @@ def render(
         # Overview body bumped to fit per-segment CIGAR labels above
         # (intron-len) and below (segment-length-and-op like "55=" / "3D").
         height_ratios = [1.2 + 0.32 * len(aligned_set), 0.50] + height_ratios
+    # Cross-chrom panels go ABOVE the overview: off-target placements are a
+    # digression, and keeping them out of the overview→detail vertical band lets
+    # the zoom connectors run straight to the ref row without striking through a
+    # cross-chrom CIGAR schematic. Prepended AFTER the overview so they sit on
+    # top of it (and below the correction panel, prepended next).
+    panels = cc_panels + panels
+    height_ratios = cc_heights + height_ratios
     if panel_data is not None:
         # Panel: top of figure. Height scales with row count.
         n_aligner_rows = len(panel_data['rows'])
@@ -2763,7 +2766,12 @@ def render(
     # tick row. They share the existing figure-wide x-axis width (158 cols),
     # narrower than the typical 3'-end window so they appear inset visually
     # without their own axes — the unequal widths are absorbed by matplotlib.
-    insert_at = (2 if show_overview else 0)  # right after overview block
+    # Insert right after "ov_ticks" (robust to the cross-chrom / correction
+    # panels now prepended above the overview); fall back to before "ref".
+    if show_overview:
+        insert_at = panels.index("ov_ticks") + 1
+    else:
+        insert_at = panels.index("ref")
     for j_idx, (donor, acceptor) in enumerate(zoom_junctions):
         block = [f"zref_{j_idx}"] + [f"zaln_{j_idx}_{k}" for k in range(len(track_sources))] + [f"zticks_{j_idx}"]
         # zoom alignment rows now use ylim (0, 2.60) to give insertion
@@ -2862,6 +2870,11 @@ def render(
     if panel_data is not None:
         ax_panel = next(ax_iter)
         render_correction_panel(ax_panel, panel_data, qname, gene_id=gene_id)
+    # Pre-consume the cross-chrom axes here (they now sit ABOVE the overview in
+    # the panels list). The cc rendering code stays in place further below and
+    # draws into these pre-allocated axes via _cc_axes — only the CONSUMPTION
+    # order needs to match the reordered panels, not the rendering order.
+    _cc_axes = [next(ax_iter) for _ in range(len(cc_panels))]
     if show_overview:
         ax_ov = next(ax_iter)
         _is_rev_main = bool(mapped_read_obj is not None and mapped_read_obj.is_reverse)
@@ -3020,8 +3033,8 @@ def render(
             _mark_polya_softclip(a_cc, _polya_len, bool(cc_read.is_reverse))
             cc_label_full = f"{cc_label}  [{cc_chrom}]"
             cc_aligned.append((cc_label_full, a_cc))
-        ax_cc_aln = next(ax_iter)
-        ax_cc_ticks = next(ax_iter)
+        ax_cc_aln = _cc_axes[2 * cc_idx]
+        ax_cc_ticks = _cc_axes[2 * cc_idx + 1]
         cc_axis_indices.extend([axes.tolist().index(ax_cc_aln),
                                 axes.tolist().index(ax_cc_ticks)])
         if cc_aligned:
