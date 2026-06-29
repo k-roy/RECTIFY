@@ -115,3 +115,41 @@ run span (from the SIRV FASTA, even though the per-read injected edit is unknown
 Caveats: no boundary_sub analog in real reads; reads carry co-occurring errors; must
 enumerate HP-run spans from the FASTA. This is where the length-SHAPE (Claim B) is
 earned or refuted on an INDEPENDENT source. Multi-night; do not rush it.
+
+### Claim B — VETTED CONCLUSION (2026-06-29, coordinator agent + 3-way fan-out + 2 advisor passes)
+**The real-SIRV PLACEMENT ablation CANNOT honestly validate the per-length SHAPE.** Two
+independent, empirically-checked reasons:
+1. **Underpowered substrate.** Enumerated HP runs in the actual refs (SIRVomeERCCome ==
+   sirv4.fasta sequences): len4=4304, 5=1447, 6=367, 7=93, 8=35, 9=7, 10=2 → only ~137
+   distinct runs ≥7, **9 distinct runs ≥9**. The shape signal lives at long runs; SIRV is
+   engineered to avoid them. The in-flight LRGASP `sirv.sorted.bam` won't help (same
+   sequences, same ceiling — it adds reads-per-run, never distinct runs). Bonus cap: the
+   law's delta SATURATES at L8 in the table (CG L8=L9=L10=+3.25), so long-run shape isn't
+   even encoded.
+2. **Truth-confounded ("iron triangle").** On real single reads:
+   `discriminating (flat CIGAR≠law CIGAR) ⟺ a co-occurring boundary mismatch ⟺ per-read
+   truth unknowable` (the data is equally consistent with in-run-del+boundary-sub vs
+   last-run-base-sub+flank-del; truth_net identical). Crediting "in-run = correct" on
+   ambiguous reads is a UNIDIRECTIONAL law-favoring artifact through the SAME length-scaled
+   mechanism as the genuine effect → the LONG-bin `law>B0` headline is CONFOUNDED, not just
+   noisy. A tie-detector that excludes ambiguous trials → expected NULL. Changing to a
+   natural transcriptome fixes POWER but NOT truth (triangle persists on any real reads).
+
+**What SURVIVES as a real-SIRV deliverable (winnable, non-circular, well-powered):** the
+**over-call / false-indel-rate on CLEAN (truth_net==0) HP runs, stratified by run length**
+— KNOWN truth (no indel), not subject to the in-run-credit circularity, ~6141 clean SHORT
+trials in 4000 reads. A standalone real-data SAFETY result complementing the sim's clean
+`false_indel_rate`. (The vetted metric backbone — per-(read,run) local window, base-count
+`truth_net`, paired arms, run-clustered bootstrap, tie-detector, wrong-monotone competitor
+arm — is sound and reusable.)
+
+**The GENUINE non-circular Claim B path (deferred, multi-night):** a held-out INJECTION
+simulator on natural-sequence templates with abundant long HPs, injecting length-correlated
+deletions **+ boundary substitutions** at a rate **MEASURED FROM REAL SIRV** (the observed
+forced-net curve — table-INDEPENDENT of the Scer `rate_mean` cost). Injected = known per-read
+truth; SIRV-measured rate = independent shape. `law>B0` on the KNOWN edits ⇒ the Scer-learned
+shape TRANSFERS to the SIRV-measured shape = genuine Claim B. MUST inject boundary-subs at
+the SIRV-measured rate (never the Scer table) or it reproduces the original trap.
+
+**Build prerequisite:** the C1 code (`penalty_table`/`lam`/`_homopolymer_run_len`/`del_open_delta`)
+must be synced to Sherlock — `aligner_bench_live` was PRE-C1.

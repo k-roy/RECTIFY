@@ -48,9 +48,16 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   the RNA004 row to the three-way table (→ four-way); if FAILED read `lb_h69.<jid>.err` (likely wget URL or
   too-few-mapped → try another cell line H1975/HCC827). This is the modern-chemistry confirmation of the
   "clean clustering is LOW" finding.
-- **Claim B coordinator partner agent RUNNING** (designing + adversarially vetting the real-SIRV PLACEMENT
-  ablation metric; will report a vetted plan + the fan-out objections + advisor verdict for the directing
-  agent to review before any build). Deliverable target: `scripts/benchmark/c1_real_sirv_ablation.py`.
+- **Claim B coordination DONE → DECISION recorded (dev/C1_DESIGN.md §"Claim B — VETTED CONCLUSION").**
+  Partner agent + 3-way adversarial fan-out + 2 advisor passes converged: the real-SIRV PLACEMENT/shape
+  ablation is **underpowered** (only ~9 distinct HP runs ≥9 in SIRV; law delta saturates at L8) AND
+  **truth-confounded** (the "iron triangle": discriminating ⟺ boundary mismatch ⟺ per-read truth
+  unknowable) → a shape "win" would be CONFOUNDED, so it is a PRE-COMMITTED NULL; do NOT build it.
+  **Genuine Claim B = a held-out INJECTION simulator** (natural long-HP templates; inject length-correlated
+  del + boundary-sub at a SIRV-MEASURED, table-independent rate; injected=known truth) — DEFERRED, multi-night.
+- **Partner now BUILDING the one winnable real-SIRV deliverable** (over-call/false-indel-rate on CLEAN
+  HP runs, stratified by length, flat/B0/law) → `scripts/benchmark/c1_real_sirv_ablation.py`; will report
+  numbers back for the directing agent to review + commit (C1 code synced to Sherlock, so the law arm runs).
 
 ### RESUME (night-push boundary) — concrete next steps
 - **C1 ablation CONFIRMED at reps=400** (cell-size floor): HP_HARD-noisy flat 0.965→B0 0.994/law 0.985;
