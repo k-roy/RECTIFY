@@ -62,18 +62,29 @@ RESUME #1 is Sherlock-gated/heavy. Nothing in flight; smoke gate GREEN.
   framing: orthogonal algorithm complementing the panel for novel-isoform recovery + DRS error modes;
   C1-C6 facet table; end game). Living doc — revisit/polish.
 
-**RESUME (session-7 boundary) — SIRV job 31823230 in flight; branch on it:**
-Check it: `ssh sherlock "sacct -j 31823230 -X -n -o State,Elapsed; cat /scratch/users/kevinroy/sirv_work/.sirv_rc 2>/dev/null"`.
-- **If `.sirv_rc`==0 / State COMPLETED:** read `/scratch/users/kevinroy/sirv_work/sirv_errstruct.report.txt`
-  — that gives the CLEAN magnitude targets (overdisp_v, sub5_gap_excess [decides ~3 vs ~5 — do NOT
-  pre-bias], indel_run, autocorr r). Then: (a) re-fit `error_injector.calibrate_params` to those
-  targets; (b) derive the error TYPE split (run `empirical_cigar_error_profiler.py --isolation-flank 0`
-  on `/scratch/users/kevinroy/sirv_work/sirv.sorted.bam`); (c) if SIRV confirms clustering/autocorr
-  decoupling, the 3-state/self-exciting burst upgrade (session-6 model-expressiveness finding).
-- **If FAILED / `.sirv_rc`!=0:** read `sirv_errstruct.<jobid>.err`. Most-likely next snags after the
-  curl fix: too few SIRV reads map (try the other reps ENCFF600LIU/ENCFF771DIX, or align to the
-  combined grch38+sirv ref to avoid spurious human→SIRV maps), or a measure-bam MD/length-window
-  issue. Re-`rsync scripts/benchmark/` then `sbatch` again.
+**SIRV job — DONE (job 31823846 COMPLETED rc=0, 2m13s; 31822729 & 31823230 died on curl/gzip env traps,
+both fixed → wget + `gunzip -c`).** 4424 spike-in reads mapped; report at
+`/scratch/users/kevinroy/sirv_work/sirv_errstruct.report.txt`; numbers + reading in SPEC §"SIRV
+ABSOLUTE-TRUTH RESULT". **Headline: the MAGNITUDE is NOT yet usable** — advisor + a check found an
+**N-in-span bug** in `measure_error_structure` (`events_from_alignment` adds the intron N length to
+`ref_span` and jumps `rpos` across it → spliced reads get a deflated rate + intron-crossing error gaps,
+corrupting gap5x/overdisp). Defensible results: pipeline works; the window IS junction-spanning-dominated
+(369 N-op vs 139 ERCC); `indel_run≥2` 0.36≈yeast 0.39 (transferable); autocorr r 0.20 positive (soft
+down-weight confirmed on abs-truth). Refit deferred.
+
+**RESUME (session-7 boundary) — SIRV measured; the magnitude needs a measurement fix first:**
+1. **FIX `measure_error_structure` for spliced reads (the blocker)** — add a per-exonic-base mode: exclude
+   N from `ref_span` and compute error gaps WITHIN exons (never straddling an intron). Re-measure the SIRV
+   spliced reads (`/scratch/users/kevinroy/sirv_work/sirv.sorted.bam`) AND re-measure the real-yeast BAM the
+   SAME way (the yeast 5.28 has the same bug, smaller because yeast introns are short) → only then are
+   SIRV↔yeast comparable. (Unit-test the per-exon mode on a synthetic spliced read first.)
+2. **Confirm on RNA004 SIRV** (LongBench `s3://longbench-data/`) — the ENCODE WTC11 DRS used here is
+   RNA002-era (~4× the modern rate), shape-comparable only; RNA004 is the real target chemistry.
+3. **THEN** re-fit `error_injector.calibrate_params` (or confirm the placeholder) + the error TYPE split
+   (`empirical_cigar_error_profiler.py --isolation-flank 0` on the SIRV BAM). Do NOT drop the
+   3-state/Hawkes upgrade on current evidence — the magnitude question is still open.
+- **Re-run the SIRV job any time:** `ssh sherlock "cd $D && sbatch scripts/benchmark/run_sirv_errstruct.sbatch"`
+  (idempotent: skips existing downloads/BAM). More reads: add reps ENCFF600LIU/ENCFF771DIX.
 - **Independent of the SIRV result:** the LRGASP NanoSim arm — fetch the LRGASP sim reads +
   `read_to_isoform.tsv` + the **`with_mm_M27`** GENCODE GTF (mouse decoys!) on scratch, align, run
   `lrgasp_truth.py --bam ... --out-truth ...`, then `score_bam` for the NanoSim junction recall/FDR

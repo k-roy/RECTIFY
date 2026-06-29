@@ -419,6 +419,44 @@ and the `err_corr_work` pbsim reads.**
   shrinks the alignment-artifact worry); the error TYPE split (DRS deletion-dominant); and the 3-state/self-exciting
   burst upgrade to decouple clustering from autocorr. Then the PI-#2 FDR-LIFT on stratum (G).
 
+### SIRV ABSOLUTE-TRUTH RESULT (2026-06-28, session-7) — RAN; clean magnitude leans LOW; confounds noted
+First absolute-truth (read-vs-known-sequence, mod-free, junction-spanning) error-structure measurement.
+Job 31823846 COMPLETED rc=0 (2m13s). Real WTC11 DRS (ENCODE `ENCFF155CFF`) aligned to SIRV-Set 4
+(`minimap2 -ax splice -uf -k14 --MD`); 4424 primary-mapped spike-in reads; measured with the SAME
+`measure_error_structure` as yeast/pbsim/injector. Outputs `/scratch/users/kevinroy/sirv_work/`.
+
+**Numbers (rate+length-controlled — the valid comparison):** SIRV thinned to the yeast rate 0.0153 in
+the [600,1000] window: **overdisp_v 0.17, sub5_gap_excess 2.27, indel_run≥2 0.36, p90/med 1.87, autocorr
+r 0.20** (508 reads). vs real-yeast read-vs-genome **0.70 / 5.28 / 0.39 / 2.03 / 0.30**.
+
+**READING (HUMBLE — the magnitude is NOT yet trustworthy; a measurement bug + confounds block it):**
+The defensible facts: (a) the pipeline works end-to-end and absolute-truth SIRV reads are obtained;
+(b) the [600,1000] window is **junction-spanning-dominated** (369 reads with an N-op / SIRV1–7 vs 139
+monoexonic ERCCs — so NOT an ERCC artifact); (c) **`indel_run≥2` = 0.36 vs yeast 0.39** is the single most
+transferable number (rate/architecture-robust); (d) **autocorr r ≈ 0.20 (positive)** corroborates
+"partial global hotness → SOFT down-weight, not hard filter" on absolute-truth data (this stat uses
+head/tail density correlation and survives the confounds below). The clustering/over-dispersion MAGNITUDE
+(gap5x 2.27, overdisp_v 0.17) is **NOT yet usable** — do not conclude "leans LOW (~3 not ~5)" from it.
+
+**WHY the magnitude is blocked — a measurement bug (advisor-caught) + confounds:**
+1. **N-in-span bug in `measure_error_structure` (the blocker).** `events_from_alignment` does
+   `ref_span += length` AND `rpos += length` for the N (intron) op. So for SPLICED reads the span is
+   INFLATED by total intron length → rate DEFLATED (this is exactly the full-set 0.0076 vs windowed 0.059
+   anomaly), AND `rpos` jumps the intron so error GAPS cross introns → the sub5_gap_excess / dispersion
+   metrics are corrupted for any junction-spanning read. **FIX (next): measure error rate PER EXONIC BASE
+   (exclude N from span) and compute gaps WITHIN exons (don't let a gap straddle an intron)** — a per-exon
+   mode in `measure_error_structure`. The yeast 5.28 has the SAME bug but yeast introns are short → smaller
+   effect, so even the yeast↔SIRV comparison is muddied until both are re-measured per-exonic-base.
+2. **Chemistry — RNA002-era.** ENCODE WTC11 DRS native in-window rate **0.059 (~4× yeast)** = OLDER
+   chemistry, not the RNA004 target nor the modern-dorado yeast. Shape-comparable at best (pbsim status).
+   **Confirm on RNA004 SIRV (LongBench) before locking.**
+3. **Thinning distortion.** Comparing SIRV (0.059) to yeast (0.0153) needs thinning, which BREAKS UP runs
+   → understates clustering. No clean apples-to-apples across two chemistries.
+**NEXT (in order):** (i) add the per-exonic-base mode to `measure_error_structure` + re-measure SIRV
+spliced reads AND re-measure real yeast the same way (makes them comparable); (ii) confirm on RNA004 SIRV
+(LongBench); (iii) THEN re-fit or confirm the placeholder. Auto-refit NOT done (advisor discipline). Do
+NOT drop the 3-state/Hawkes upgrade on this evidence — the magnitude question is still open.
+
 ### ORGANISM-SPECIFIC ERROR MODEL — design note (2026-06-28, advisor-checked; decisions DEFERRED, not pre-answered)
 Question raised (PI): yeast vs human differ in (a) RNA modifications, (b) pA-tail length, (c) exon length /
 multi-intron fraction — do we need DISTINCT yeast vs human error models? Decomposition + the measurement-design
