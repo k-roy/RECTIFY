@@ -14,11 +14,16 @@ commit"). Advisor reshaped the plan: WS-1 GATES WS-2 (pre-competitive BAMs' erro
 contamination); bimodality must use reference-FREE QSCORE not error-rate (a 2-Gaussian on skewed count
 data fakes bimodality); and the real aim is WS-1 (settle RNA004) + WS-3 (guardrail) + C2 (the actual next
 FACET — C1 is consolidated so C2 is back on).
-- **WS-1 (agent ad7cf26d06de18d55) — competitive alignment + qscore + yeast/human endogenous contrast.**
-  Re-align RNA004(H69) + LRGASP-ENCODE to the COMBINED hg38+SIRV ref (SG-NEx's, on S3), take SIRVomeERCCome
-  reads → FAIR four-way (removes the contamination confound that likely drove the RNA004 divergence).
-  Quantify RNA004 contamination fraction; qscore bimodality per dataset (reference-free); + same-sample
-  human SIRV-vs-ENDOGENOUS error contrast (= the biological-excess / systematic-error-vs-biology axis).
+- **WS-1 — competitive alignment + qscore + endogenous contrast. (Agent ad7cf26d06de18d55 DIED on an API
+  stall before doing cluster work → re-encoded as a SELF-CONTAINED SBATCH: job 31922545,
+  `scripts/benchmark/run_competitive_fourway.sbatch`.)** Downloads the COMBINED hg38+SIRV ref, competitively
+  re-aligns RNA004(H69)+LRGASP-ENCODE, measures the SIRVomeERCCome spike-in subset (FAIR four-way) AND a
+  chr1 endogenous-human subset (biological-excess contrast), + qscore distributions. Branch on the sentinel:
+  `ssh sherlock "sacct -j 31922545 -X -n -o State; cat /scratch/users/kevinroy/combined_ref/.comp_rc 2>/dev/null"`
+  → if 0, read `/scratch/users/kevinroy/combined_ref/{competitive_fourway,qscore_dist}.report.txt`; compare
+  spike-in n vs old (RNA004 17461→? = contamination removed); does the RNA004 divergence shrink (artifact)
+  or persist (real)? If FAILED, read `comp.<jid>.err`. The BAMs persist for re-measurement if only the
+  measure step errored.
 - **WS-3 (agent adc479ac473b877d3) — novel-feature support guardrail + RUNNABLE prototype.** Operationalize
   "novel-call support stratified by read quality must not be tail-enriched" on the JUNCTION_DISCOVERY
   stratum (inject NIC/NNC into a qscore mix; show genuine vs spurious separate). One advisor pass.
