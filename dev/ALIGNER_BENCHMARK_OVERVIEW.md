@@ -180,6 +180,46 @@ signal to **down-weight unreliable reads when discovering novel junctions** — 
 only as a **soft** down-weight (a read can be clean in its exons yet bursty at the
 junction), and only if the benchmark proves the FDR lift.
 
+### Read-quality structure & the "novel-feature support" principle (pan-dataset view)
+
+A guiding, dataset-agnostic principle for both the aligner *and* whole-pipeline QC,
+distilled from looking at real ONT error structure:
+
+- **Reads are not one population.** Plotting each read's error rate often shows
+  *structure* — frequently a **bimodal** distribution: a large peak of decent-to-good
+  reads plus a smaller, well-separated **error-rich tail**. (A clean way to see it:
+  fit a two-component Gaussian mixture to per-read error rate and ask whether the
+  minor peak separates.) That minor peak is itself worth labeling — is it
+  **contamination** (reads that aren't really from the target — they map better to
+  another reference) or **genuinely error-rich reads** (degraded molecules / poor
+  pores)? Tracking that split **across runs and chemistries** is a window into
+  flow-cell/pore behavior (e.g. RNA002 vs RNA004), and is exactly the lens needed to
+  read the RNA004 "hot tail" finding (is it a separable minor peak, and which kind?).
+
+- **For building the aligner, we can largely *disregard* the low-Q tail.** The job
+  is robust non-canonical splice sites and 5′/3′ ends recovered from the **bulk of
+  decent-to-good reads.** The error-rich tail neither defines nor should drive those
+  calls.
+
+- **The principle that makes this actionable — novel features must be supported by
+  decent reads in proportion to the overall quality spectrum.** If a dataset is, say,
+  90% decent / 10% low-Q and that error is spread roughly uniformly across reads,
+  then a *real* novel isoform (novel junction or novel 3′ end) should **sample from
+  that same spectrum** — i.e. be supported by ~90% decent reads. If instead a putative
+  novel 3′ end or splice site is **90% low-Q and only 10% decent** — and especially
+  if the errors are **enriched in exactly the read segments that dictate that novel
+  call** — be **immediately suspicious**: it is far more likely a low-quality artifact
+  than real biology. This is a per-read-reliability-weighted FDR control on discovery,
+  and it operationalizes the "hotness" idea above into a concrete, testable check:
+  *novel-feature support, stratified by read quality, must not be tail-enriched.*
+
+This is the high-level, pan-dataset assessment lens for both the de-novo aligner and
+the whole pipeline — a benchmarkable metric (novel-call support vs the read-quality
+spectrum) and a guardrail against discovering isoforms that exist only in the noise.
+(Caveat to honor: distinguishing a *genuine* low-prevalence isoform that happens to
+sit in hard-to-sequence sequence from a noise artifact is itself subtle — the test
+is a *prior*, not a hard gate, consistent with the soft-down-weight discipline.)
+
 ### Design discipline: what was *rejected*, and why (so it isn't re-proposed)
 
 The orthogonality bar is a real gatekeeper. A WFA-banded engine as a standalone
