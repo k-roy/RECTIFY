@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Novel-feature-support discovery-FDR guardrail — RUNNABLE PROTOTYPE.
 
-Operationalizes the "novel-feature support" principle (ALIGNER_BENCHMARK_OVERVIEW.md
+Operationalizes the "novel-feature support" principle (NATIVE_ALIGNER_OVERVIEW.md
 §"Read-quality structure & the 'novel-feature support' principle"; PI design note
 #2 in dev/HANDOFF_ALIGNER_BENCHMARK.md):
 

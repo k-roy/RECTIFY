@@ -327,7 +327,7 @@ RESUME #1 is Sherlock-gated/heavy. Nothing in flight; smoke gate GREEN.
   session-3 fragment-FN bug: the scorer counts every unmatched truth junction as FN with no span
   intersection). Mirrors `pbsim3_wrapper.MIN_JUNCTION_ANCHOR=10` so the NanoSim and pbsim3 arms score
   identically. Unblocks the NanoSim arm of the pbsim3-vs-NanoSim-vs-real-SIRV three-way.
-- **Plain-language overview doc** `dev/ALIGNER_BENCHMARK_OVERVIEW.md` (the de-novo-aligner-member
+- **Plain-language overview doc** `dev/NATIVE_ALIGNER_OVERVIEW.md` (the de-novo-aligner-member
   framing: orthogonal algorithm complementing the panel for novel-isoform recovery + DRS error modes;
   C1-C6 facet table; end game). Living doc — revisit/polish.
 
