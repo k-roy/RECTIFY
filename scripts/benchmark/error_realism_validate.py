@@ -71,7 +71,7 @@ def cmd_measure_bam(args) -> int:
     for read in bam.fetch(until_eof=True):
         if read.is_unmapped or read.is_secondary or read.is_supplementary:
             continue
-        ev, span = events_from_bam_read(read)
+        ev, span = events_from_bam_read(read, exonic_coords=True)
         if span <= 0:
             continue
         if args.len_min and span < args.len_min:
@@ -124,13 +124,15 @@ def cmd_autocorr_bam(args) -> int:
     for read in bam.fetch(until_eof=True):
         if read.is_unmapped or read.is_secondary or read.is_supplementary:
             continue
-        ev, span = events_from_bam_read(read)
+        ev, span = events_from_bam_read(read, exonic_coords=True)
         if span <= 0:
             continue
         if args.len_min and span < args.len_min:
             continue
         if args.len_max and span > args.len_max:
             continue
+        # exon-local positions run [reference_start, reference_start+span) with
+        # introns collapsed out, so head/tail windows are along the READ axis.
         rs = read.reference_start
         w = int(span * args.frac)               # window length each side
         if w < args.min_win:

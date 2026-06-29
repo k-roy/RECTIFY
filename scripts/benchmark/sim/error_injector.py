@@ -360,7 +360,8 @@ def measure_error_structure(per_read_events: Sequence[Sequence[ErrorEvent]],
 # ---------------------------------------------------------------------------
 def events_from_alignment(cigartuples: Sequence[Tuple[int, int]],
                           mismatch_ref_positions: Sequence[int],
-                          ref_start: int = 0) -> Tuple[List[ErrorEvent], int]:
+                          ref_start: int = 0,
+                          exonic_coords: bool = False) -> Tuple[List[ErrorEvent], int]:
     """Build the ERROR TRACK + reference-aligned span from a parsed alignment.
 
     ``cigartuples`` are pysam-style (op, length) with op codes
@@ -368,10 +369,22 @@ def events_from_alignment(cigartuples: Sequence[Tuple[int, int]],
     reference positions of substitutions (from MD / get_aligned_pairs(with_seq)).
     Returns (events sorted by ref pos, ref_span). Insertions are placed at the
     current reference position; N (intron) and clips are skipped (not errors).
+
+    ``exonic_coords`` (the SPLICED-READ fix): when True, the intron (N) length is
+    EXCLUDED from ``ref_span`` and every event position is mapped to EXON-LOCAL
+    (intron-collapsed) coordinates. This matters because the rate (events/span)
+    and the within-read gap/clustering statistics must be measured along the read
+    MOLECULE, not along the genome — otherwise a spliced read's span is inflated
+    by its introns (deflating the rate) and an error gap straddling an intron is
+    counted as a huge spurious gap (corrupting sub5_gap_excess / dispersion). With
+    no N op the result is identical to the default, so callers measuring rate /
+    clustering can always pass ``exonic_coords=True`` safely. Default stays False
+    for backward compatibility with callers that need absolute genome positions.
     """
     events: List[ErrorEvent] = []
     rpos = ref_start
     ref_span = 0
+    introns: List[Tuple[int, int]] = []   # (abs_start, length)
     mm = set(mismatch_ref_positions)
     for op, length in cigartuples:
         if op in (0, 7, 8):          # M / = / X consume both
@@ -384,27 +397,40 @@ def events_from_alignment(cigartuples: Sequence[Tuple[int, int]],
         elif op == 1:                # I — at current ref position
             events.append(ErrorEvent(pos=rpos, kind="ins", length=length, bases=""))
         elif op == 3:                # N intron — skip (not an error), consumes ref
+            introns.append((rpos, length))
             ref_span += length
             rpos += length
         # 4=S, 5=H, 6=P consume neither ref nor count
     for p in mm:                     # substitutions as individual len-1 events
         events.append(ErrorEvent(pos=p, kind="sub", length=1, bases=""))
+    if exonic_coords and introns:
+        total_intron = sum(L for _, L in introns)
+        def _to_exon(p: int) -> int:   # subtract intron length lying before p
+            return p - sum(L for s, L in introns if s < p)
+        events = [ErrorEvent(pos=_to_exon(e.pos), kind=e.kind,
+                             length=e.length, bases=e.bases) for e in events]
+        ref_span -= total_intron
     events.sort(key=lambda e: e.pos)
     return events, ref_span
 
 
-def events_from_bam_read(read) -> Tuple[List[ErrorEvent], int]:
+def events_from_bam_read(read, exonic_coords: bool = False) -> Tuple[List[ErrorEvent], int]:
     """pysam wrapper: derive the ERROR TRACK from an aligned read.
 
     Substitutions need the MD tag (``get_aligned_pairs(with_seq=True)`` returns a
     lowercase ref base at mismatches). Requires the BAM to carry MD (minimap2
-    ``--MD`` or ``calmd``); raises if absent so a silent zero is impossible."""
+    ``--MD`` or ``calmd``); raises if absent so a silent zero is impossible.
+
+    ``exonic_coords`` (see ``events_from_alignment``): exclude introns from the
+    span and map positions to exon-local coords — REQUIRED for correct rate /
+    clustering on spliced (junction-spanning) reads."""
     mm = []
     for qpos, rpos, refbase in read.get_aligned_pairs(with_seq=True):
         if qpos is not None and rpos is not None and refbase is not None and refbase.islower():
             mm.append(rpos)
     return events_from_alignment(read.cigartuples or [], mm,
-                                 ref_start=read.reference_start)
+                                 ref_start=read.reference_start,
+                                 exonic_coords=exonic_coords)
 
 
 def head_tail_autocorr(params: InjectorParams, rng: random.Random,

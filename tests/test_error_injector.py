@@ -103,3 +103,43 @@ def test_measure_from_explicit_events():
     m = measure_error_structure([uniform, clustered], [400, 400])
     assert m["obs_gap_frac_lt"] > 0  # the clustered read contributes sub-5 gaps
     assert m["n_reads"] == 2
+
+
+def test_exonic_coords_collapses_introns():
+    """The N-in-span fix: on a SPLICED read, exonic_coords excludes the intron
+    from the span and maps positions to exon-local coords, so an error gap does
+    NOT straddle the intron and the rate is per-exonic-base.
+    CIGAR 10M 1D 5M 100N 5M 1D 9M, a substitution at abs ref 120 (2nd exon)."""
+    cig = [(0, 10), (2, 1), (0, 5), (3, 100), (0, 5), (2, 1), (0, 9)]
+    # --- default (absolute): intron inflates span + the gap straddles it ---
+    ev_abs, span_abs = events_from_alignment(cig, [120], ref_start=0)
+    assert span_abs == 131, span_abs                 # 10+1+5+100+5+1+9
+    pos_abs = sorted(e.pos for e in ev_abs)
+    assert pos_abs == [10, 120, 121], pos_abs        # del@10, sub@120, del@121
+    assert (120 - 10) == 110                          # gap straddles the 100bp intron
+    # --- exonic_coords: intron collapsed out ---
+    ev_ex, span_ex = events_from_alignment(cig, [120], ref_start=0, exonic_coords=True)
+    assert span_ex == 31, span_ex                     # 10+1+5+5+1+9 (no intron)
+    pos_ex = sorted(e.pos for e in ev_ex)
+    assert pos_ex == [10, 20, 21], pos_ex             # sub/del shifted left by 100
+    # the two adjacent-exon errors are now 1bp apart, not 110 -> no spurious gap
+    assert (pos_ex[1] - pos_ex[0]) == 10 and (pos_ex[2] - pos_ex[1]) == 1
+    # gap-free read: exonic_coords is a no-op (safe default for callers)
+    cig2 = [(0, 10), (2, 1), (0, 9)]
+    a0, s0 = events_from_alignment(cig2, [5], ref_start=0)
+    a1, s1 = events_from_alignment(cig2, [5], ref_start=0, exonic_coords=True)
+    assert s0 == s1 == 20
+    assert sorted(e.pos for e in a0) == sorted(e.pos for e in a1)
+
+
+if __name__ == "__main__":
+    import inspect as _inspect
+    _g = dict(globals())
+    _tests = [(n, f) for n, f in _g.items()
+              if n.startswith("test_") and callable(f)
+              and not _inspect.signature(f).parameters]
+    _tests.sort(key=lambda nf: nf[0])
+    for _n, _f in _tests:
+        _f()
+        print(f"  PASS {_n}")
+    print(f"all {len(_tests)} error_injector tests passed")

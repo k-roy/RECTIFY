@@ -457,6 +457,26 @@ spliced reads AND re-measure real yeast the same way (makes them comparable); (i
 (LongBench); (iii) THEN re-fit or confirm the placeholder. Auto-refit NOT done (advisor discipline). Do
 NOT drop the 3-state/Hawkes upgrade on this evidence — the magnitude question is still open.
 
+**CORRECTED (2026-06-28, session-7b) — the N-in-span fix landed; numbers re-measured EXONIC both sides.**
+The fix (exclude intron N from span + exon-local positions, `error_injector.events_from_alignment(...,
+exonic_coords=True)`) materially changed things — and confirmed the bug was inflating yeast clustering:
+| metric (EXONIC) | SIRV abs-truth (thin 0.0153, spliced SIRV1-7) | yeast real (native 0.0187) |
+| --- | --- | --- |
+| overdisp_v | 0.10 | 0.54 |
+| sub5_gap_excess | 1.71 | **4.28** (was 5.28 with the bug) |
+| indel_run≥2 | 0.37 | 0.39 |
+| autocorr r | 0.50 | 0.47 |
+Reads-in-window jumped (SIRV 508→1109, yeast →114k) because exonic spans are shorter. **READING (still
+needs the adversarial panel + RNA004):** (1) the bug inflated yeast gap5x 5.28→4.28 and overdisp 0.70→0.54
+— real clustering is LOWER than previously stated. (2) `indel_run≥2` (0.37 vs 0.39) remains the rock-solid
+transferable number. (3) **NEW AMBIGUITY:** SIRV shows LOW clustering/over-dispersion (gap5x 1.7,
+overdisp_v 0.10) but HIGH autocorr (0.50) — internally suspicious (strong global correlation with weak
+over-dispersion). Most likely the **per-TRANSCRIPT alignability confound** (SPEC attribution caveat),
+sharpened because SIRV has only ~7 multi-exon transcripts → reads from a hard transcript are error-rich at
+both ends → autocorr inflated without per-molecule hotness. This is load-bearing for PI-#2 (per-molecule
+vs per-transcript) → stratify autocorr by transcript before trusting r. Still RNA002-confounded; confirm
+on RNA004 (LongBench) + SG-NEx. Adversarial panel pending on (3).
+
 ### ORGANISM-SPECIFIC ERROR MODEL — design note (2026-06-28, advisor-checked; decisions DEFERRED, not pre-answered)
 Question raised (PI): yeast vs human differ in (a) RNA modifications, (b) pA-tail length, (c) exon length /
 multi-intron fraction — do we need DISTINCT yeast vs human error models? Decomposition + the measurement-design
