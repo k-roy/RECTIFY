@@ -68,14 +68,50 @@ Metrics vs TRUTH (never the internal DP score), on the TEST partition:
 - boundary_sub concordance must NOT regress while noisy improves (guards the
   double-count with homo_mismatch flipping true substitutions into indels).
 
-**Pre-committed null:** on flat-in-L sim, **full-law ≈ B=0 is the CORRECT result**,
-reported as "length-shape inconclusive on flat-in-L sim → deferred to SIRV/RNA004,"
-NOT a win and NOT a failure. Reaching for a rate_mean-scaled generator to make
-full-law beat B=0 is the tell that the win is being manufactured.
+**Pre-committed null:** on flat-in-L sim, **B=0 ≥ law is the CORRECT result** — the
+length-SHAPE is mildly ANTI-helpful here (a uniform discount fixes short AND long
+runs equally; the law deliberately under-discounts short runs, which the flat-in-L
+generator fails just as often). Report it as "length-shape unvalidated on flat-in-L
+sim → deferred to real data," NOT a win and NOT a failure. **Do NOT raise λ to make
+law beat B=0** — that gap is the sim lacking length-correlation, not a mis-set scale;
+cranking λ is the hill-climb-into-the-simulator trap. λ≈1 is principled; leave it.
 
-## Honest deliverable
+## RESULT (2026-06-29, reps=120 TEST, mechanism hand-VERIFIED)
+| metric | flat | B=0 | law |
+| --- | --- | --- | --- |
+| HP_HARD-noisy concordance | 0.962 | 0.990 | 0.985 |
+| boundary_sub concordance | **0.000** | 0.78 | 0.55 |
+| clean false_indel_rate | 0.000 | 0.000 | 0.000 (1854 clean) |
 
-"C1 implemented; an in-run calibrated gap discount improves indel placement vs a
-matched HP-aware baseline, with false-indel ≈0 on clean runs, boundary_sub not
-regressing, and Cat3 byte-identical; the per-length SHAPE validation is gated to
-real SIRV/RNA004 data." That is Claim A — real and shippable. Claim B is multi-night.
+**Claim A PASS, and the headline is REAL (hand-traced, not a scorer artifact):** flat
+places the boundary_sub deletion OUT of the run (run [80,90) → D at ref 90), scoring
+0/600; law places it IN-run (D at ref 80) on 328/600. Example `hph_A_10_boundary_sub`:
+flat `[90M,1D,79M]` (out) → law `[80M,1D,89M]` (in). The discount makes the in-run
+deletion cheaper so the DP calls the boundary as a mismatch instead of absorbing it
+into a misplaced gap — exactly the C1 target. **B=0 > law as pre-committed** (shape
+unvalidated on flat-in-L). Note B=0's constant IS the mean of law's own deltas
+(table-derived), so it is a SHAPE-ablation control, not an independent alternative.
+
+## Honest deliverable + ship decision
+
+"C1 implemented; an in-run calibrated gap discount improves indel PLACEMENT vs a
+matched HP-aware baseline (boundary_sub 0.00→0.55/0.78; noisy 0.96→0.99), with
+false-indel ≈0 on clean runs, boundary_sub not regressing, and Cat3 byte-identical."
+That is **Claim A — real, mechanism-verified, shippable.**
+
+**Ship the law (not the constant B=0)** — on COHERENCE + real-data-deferred grounds,
+NOT sim performance (where it slightly loses). The law is the principled rate_mean
+log-odds form; it DEGRADES to ≈constant on uncorrelated errors (why it ties/loses to
+B=0 here) while being able to EXPLOIT length-correlation when it is real. Whether real
+errors are length-correlated = **Claim B**, the next test.
+
+## Claim B — the RIGHT test (advisor-corrected; next session)
+NOT "does deletion rate rise with HP length on real SIRV" (a property of the READS,
+already established, says nothing about our aligner). The honest C1 real-data test is
+the **placement ablation on real SIRV**: align real SIRV reads to the SIRV reference;
+for each read covering a known reference HP run, score in-run vs out-of-run placement
+(net-indel-in-span / out-of-span) for flat vs B=0 vs law. Truth = the known reference
+run span (from the SIRV FASTA, even though the per-read injected edit is unknown).
+Caveats: no boundary_sub analog in real reads; reads carry co-occurring errors; must
+enumerate HP-run spans from the FASTA. This is where the length-SHAPE (Claim B) is
+earned or refuted on an INDEPENDENT source. Multi-night; do not rush it.

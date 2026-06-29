@@ -21,8 +21,14 @@ adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
   reviewer-1 proved it is reciprocal-rate, not −logP, incoherent to sum in a DP); `penalty_table=None` is
   byte-identical (Cat3 guard); gated on `homo_mask`. **Ablation (reps=120, TEST split, 3 matched arms):
   HP_HARD-noisy concordance flat 0.962 → B0 0.990 / law 0.985; boundary_sub flat 0.000 → B0 0.78 / law
-  0.55; clean false-indel-rate 0.000 all arms (1854 clean reads). PASS Claim A.** As pre-committed,
-  law≈B0 (length-SHAPE inconclusive on flat-in-L sim → deferred to real data; NOT faked). Files:
+  0.55; clean false-indel-rate 0.000 all arms (1854 clean reads). PASS Claim A.** HEADLINE HAND-VERIFIED
+  (advisor-flagged the flat=0.000 could be a scorer artifact): flat places the deletion OUT-of-run (run
+  [80,90)→D@90), law IN-run (D@80), e.g. `hph_A_10`: flat `[90M1D79M]`→law `[80M1D89M]` — real placement
+  fix, not a metric quirk. **B0 ≥ law as pre-committed** (length-SHAPE mildly anti-helpful on flat-in-L —
+  expected, NOT a failure; do NOT raise λ to "fix" it = the sim-overfit trap). SHIP the law on
+  principle+real-data-deferred grounds, NOT sim perf (B0's constant is itself the mean of law's deltas =
+  a shape-ablation control, not an independent alternative). Claim B (length-SHAPE) next test = the
+  real-SIRV PLACEMENT ablation (NOT per-HP-rate-on-reads; see dev/C1_DESIGN.md). Files:
   `hp_penalty.py`, `local_aligner.py`, `tests/test_c1_lengthlaw.py` (4 pass), `scripts/benchmark/c1_ablation.py`.
   (reps=400 confirmatory run in flight.)
 - **THREE-WAY real spike-in grounding (exonic, thin 0.0153, [600,1000]):** two INDEPENDENT SIRV sources
