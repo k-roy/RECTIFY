@@ -162,6 +162,8 @@ class HpPenaltyTable:
         str_del_table: Optional[Dict[Tuple[str, int], float]] = None,
         str_ins_table: Optional[Dict[Tuple[str, int], float]] = None,
         default_ins: float = 1.25,
+        del_rate_tables: Optional[Dict[str, Dict[int, float]]] = None,
+        ins_rate_tables: Optional[Dict[str, Dict[int, float]]] = None,
     ) -> None:
         self._del = del_tables                      # keyed by base_class
         self._ins = ins_tables
@@ -174,6 +176,14 @@ class HpPenaltyTable:
         self._ins_max_hp = {
             bc: max(t.keys()) for bc, t in ins_tables.items() if t
         }
+        # rate_mean per (base_class, hp) — the CALIBRATED per-reference-column
+        # error probability (rate_mean over {M,X,D,I} sums to ~1.0 per context).
+        # The C1 length-law gap-OPEN delta is derived from THIS, NOT from the
+        # penalty_score column returned by del_cost/ins_cost (which is a
+        # reciprocal-rate heuristic, c/rate_mean, NOT -logP, and is incoherent to
+        # sum in an additive DP). See dev/C1_DESIGN.md.
+        self._del_rate = del_rate_tables or {}
+        self._ins_rate = ins_rate_tables or {}
 
     @classmethod
     def from_tsv(
@@ -198,6 +208,8 @@ class HpPenaltyTable:
         """
         del_tables: Dict[str, Dict[int, float]] = {'AT': {}, 'CG': {}}
         ins_tables: Dict[str, Dict[int, float]] = {'AT': {}, 'CG': {}}
+        del_rate: Dict[str, Dict[int, float]] = {'AT': {}, 'CG': {}}
+        ins_rate: Dict[str, Dict[int, float]] = {'AT': {}, 'CG': {}}
 
         with open(path, newline='') as fh:
             reader = csv.DictReader(fh, delimiter='\t')
@@ -212,14 +224,24 @@ class HpPenaltyTable:
                     continue
                 if count < min_count or low_count:
                     continue
+                # rate_mean = the calibrated per-column error rate (for the C1
+                # length-law log-odds delta); may be absent in legacy files.
+                try:
+                    rate = float(row.get('rate_mean') or 0) or None
+                except ValueError:
+                    rate = None
                 # Determine which base classes this row applies to
                 bc_raw = row.get('base_class', '').strip()
                 classes = [bc_raw] if bc_raw in ('AT', 'CG') else ['AT', 'CG']
                 for bc in classes:
                     if op in ('D', 'del'):
                         del_tables[bc][hp] = penalty
+                        if rate is not None:
+                            del_rate[bc][hp] = rate
                     elif op in ('I', 'ins'):
                         ins_tables[bc][hp] = penalty
+                        if rate is not None:
+                            ins_rate[bc][hp] = rate
 
         if not del_tables['AT'] and not del_tables['CG']:
             raise ValueError(
@@ -253,7 +275,8 @@ class HpPenaltyTable:
                 import warnings
                 warnings.warn(f'STR penalty table not found: {str_path}', stacklevel=2)
 
-        return cls(del_tables, ins_tables, str_del, str_ins, default_ins=default_ins)
+        return cls(del_tables, ins_tables, str_del, str_ins, default_ins=default_ins,
+                   del_rate_tables=del_rate, ins_rate_tables=ins_rate)
 
     def _base_class(self, ref_base: str) -> str:
         return 'AT' if ref_base.upper() in ('A', 'T') else 'CG'
@@ -275,6 +298,41 @@ class HpPenaltyTable:
             return table[hp]
         max_hp = self._ins_max_hp.get(bc, 1)
         return table.get(max_hp, self._default_ins)
+
+    # ------------------------------------------------------------------
+    # C1 length-law gap-OPEN deltas (the de-novo aligner facet).
+    # Derived from rate_mean as a BASELINE-ANCHORED log-odds, NOT from the
+    # penalty_score column (which is a reciprocal-rate heuristic, not -logP, and
+    # incoherent to sum in an additive DP). Δ(hp) = λ·ln(rate(hp)/rate(1)); zero
+    # at hp=1 so ONLY the run-length DEPENDENCE is added on top of the legacy gap
+    # cost (the partial that is provably coherent in a global full-consumption DP
+    # — see dev/C1_DESIGN.md). rate rises with hp → Δ>0 → cheaper in-run gap.
+    # ------------------------------------------------------------------
+    def _open_delta(self, rate_tbl: Dict[str, Dict[int, float]],
+                    hp: int, ref_base: str, lam: float) -> float:
+        bc = self._base_class(ref_base)
+        tbl = rate_tbl.get(bc) or rate_tbl.get('AT') or {}
+        r1 = tbl.get(1)
+        if not r1:                       # no rate_mean (legacy file) -> no delta
+            return 0.0
+        rh = tbl.get(hp)
+        if rh is None:                   # clamp to the largest tabulated hp
+            if not tbl:
+                return 0.0
+            rh = tbl[max(tbl.keys())] if hp > max(tbl.keys()) else r1
+        if rh <= 0:
+            return 0.0
+        import math
+        return lam * math.log(rh / r1)
+
+    def del_open_delta(self, hp: int, ref_base: str = 'A', lam: float = 1.0) -> float:
+        """Length-law deletion gap-OPEN delta (added to the legacy gap_open)."""
+        return self._open_delta(self._del_rate, hp, ref_base, lam)
+
+    def ins_open_delta(self, hp: int, ref_base: str = 'A', lam: float = 1.0) -> float:
+        """Length-law insertion gap-OPEN delta. UNVALIDATED — the controlled
+        generator injects deletions only (no insertion stratum yet)."""
+        return self._open_delta(self._ins_rate, hp, ref_base, lam)
 
     def str_del_cost(self, unit: str, n_copies: int) -> float:
         """Deletion cost in an STR context (unit, n_copies).
