@@ -7,6 +7,192 @@ primitives + design docs are present). **NEVER commit to `drs-validation-rebuild
 
 ---
 
+## NIGHT PUSH (2026-06-29, session-9) — N-in-span FIXED; C1 de-novo-aligner facet BUILT+TESTED+PROVEN; SG-NEx grounding
+
+Autonomous overnight push (user: "build + test the de novo aligner by morning; spare no expense;
+adversarial panels on ambiguity"). All committed; smoke GREEN throughout.
+
+- **N-in-span measurement bug FIXED** (RESUME #1 blocker). `events_from_alignment(..., exonic_coords=True)`
+  excludes introns from span + exon-local positions; re-measured EXONIC both sides (the bug inflated
+  yeast clustering 5.28→4.28). SPEC §"CORRECTED (session-7b)".
+- **C1 facet (HP-length-law gap cost) IMPLEMENTED + unit-tested + ABLATION-PROVEN (Claim A).** Design
+  LOCKED by a triple adversarial panel + multiple advisor passes (`dev/C1_DESIGN.md`). Cost = `rate_mean`
+  baseline-anchored LOG-ODDS delta `λ·ln(rate(hp)/rate(1))` on gap-OPEN (NOT the `penalty_score` column —
+  reviewer-1 proved it is reciprocal-rate, not −logP, incoherent to sum in a DP); `penalty_table=None` is
+  byte-identical (Cat3 guard); gated on `homo_mask`. **Ablation (reps=120, TEST split, 3 matched arms):
+  HP_HARD-noisy concordance flat 0.962 → B0 0.990 / law 0.985; boundary_sub flat 0.000 → B0 0.78 / law
+  0.55; clean false-indel-rate 0.000 all arms (1854 clean reads). PASS Claim A.** As pre-committed,
+  law≈B0 (length-SHAPE inconclusive on flat-in-L sim → deferred to real data; NOT faked). Files:
+  `hp_penalty.py`, `local_aligner.py`, `tests/test_c1_lengthlaw.py` (4 pass), `scripts/benchmark/c1_ablation.py`.
+  (reps=400 confirmatory run in flight.)
+- **THREE-WAY real spike-in grounding (exonic, thin 0.0153, [600,1000]):** two INDEPENDENT SIRV sources
+  AGREE — LRGASP-SIRV (RNA002) overdisp_v 0.10 / gap5x 1.71 / indel≥2 0.37; **SG-NEx HEYA8 (RNA00x,
+  measured via the remote-BAM trick, 5,329 reads) overdisp_v 0.17 / gap5x 1.76 / indel≥2 0.38 /
+  autocorr 0.62** — vs yeast read-vs-genome 0.54 / 4.28 / 0.39 / 0.47. The mod-free SIRV clean clustering
+  is genuinely LOW and reproduces across labs/chemistries; `indel≥2 ≈ 0.37-0.39` is rock-solid. Caveats:
+  both SIRV share IVT composition; autocorr likely per-transcript-confounded (few SIRV transcripts); RNA004
+  (LongBench, GB download, needs approval) still the modern-chemistry check.
+
+---
+
+## SESSION-8 (2026-06-29) — REAL DRS SPIKE-IN RECON (SG-NEx RNA00x + LongBench RNA004); refs STAGED, two plans READY
+
+Reconnoitered the two external-validity DRS spike-in corpora (RESUME #2 of session-7:
+"confirm on RNA004 SIRV"; session-4b §EXTERNAL-VALIDITY two-chemistry plan). **No code
+touched, no job submitted, no multi-GB read pulled.** SG-NEx spike-in reference + GTF are
+STAGED on scratch (tiny); LongBench spike-in presence CONFIRMED for free (no read download).
+Both plans are ready to submit; the LongBench one needs explicit GB approval (flagged below).
+
+### Access facts (both buckets)
+- **No `aws`/`aws2` CLI on Sherlock; no module.** `rclone v1.55.1` present but unneeded.
+  Both buckets are **public and list/GET-able anonymously over the S3 REST https endpoint
+  with `wget`** (Sherlock curl 7.29 still errors on https — use wget, as the CLAUDE.md says):
+  - SG-NEx: `https://sg-nex-data.s3.ap-southeast-1.amazonaws.com/` (ListObjectsV2:
+    `?list-type=2&prefix=…&delimiter=/&max-keys=…`; paginate via `NextContinuationToken`).
+  - LongBench: `https://longbench-data.s3.ap-southeast-2.amazonaws.com/`.
+- **`samtools 1.23.1` in the `pbsim3` env has `libcurl=yes S3=yes`** → it reads **remote
+  indexed BAMs directly** (`samtools idxstats/view/faidx <https-url>` does range-GETs against
+  the object + its `.bai`/`.fai`). This is the key lever for SG-NEx (below).
+- Parse gotcha: `tr '<' '\n'` splits `<Size>123</Size>` into `Size>123` AND `/Size>` — grep
+  `'^(Key|Size)>'` (anchored) to drop the closing tags, then `paste - -` (Key precedes Size
+  in each `<Contents>`). wget `--header=Range:` gave a 0-byte file here — use `samtools faidx`
+  for ref subsetting instead.
+
+### SG-NEx (RNA00x DRS) — spike-in ref STAGED; recommended first sample chosen
+- **Combined genome+spike-in FASTA** (the "ready-made" ref): key
+  `data/annotations/genome_fasta/hg38_sequins_SIRV_ERCCs_longSIRVs.fa` = **3,110,869,710 B
+  (2.9 GB)** + `.fa.fai` (7,728 B). It bundles full hg38; **only 2 contigs are spike-in**,
+  both at the TOP of the file: **`chrIS`** (10,567,884 bp = Sequins decoy chr) and
+  **`SIRVomeERCCome`** (538,365 bp = SIRV + ERCC). GTF options:
+  `…/gtf_file/hg38_sequins_SIRV_ERCCs_longSIRVs_corrected.gtf` (159 MB) and
+  `…_v5_reformatted.gtf` (264 MB).
+- **STAGED (durable, on scratch) — no full 2.9 GB download needed:**
+  - `/scratch/users/kevinroy/sirv_work/sgnex_spikein.fa` (**11.1 MB**, chrIS+SIRVomeERCCome)
+    + `.fai` — pulled via `samtools faidx <https-url> chrIS SIRVomeERCCome` in **3.8 s**.
+  - `/scratch/users/kevinroy/sirv_work/sgnex_spikein.gtf` (**198 KB**; 165 Sequin + 176
+    SIRV/ERCC transcripts) — `wget -qO- <corrected.gtf> | awk '$1=="chrIS"||$1=="SIRVomeERCCome"'`
+    (streamed the 159 MB, stored only the 198 KB subset).
+- **SG-NEx's OWN alignment = `minimap2 -ax splice -k14 -uf`** (from the BAM `@PG`) — IDENTICAL
+  to our sirv/yeast pipeline flags → re-alignment is apples-to-apples (their BAMs are even
+  directly reusable). minimap2 VN 2.17.
+- **Which samples are spiked** (swept all 44 directRNA genome BAMs via remote `idxstats`,
+  ~2 s each — reads only the `.bai`+header): the spiked cell lines are **HEYA8 and H9**
+  (plus trace 1–583-read contamination in some Hct116/K562/MCF7/Hek293T). Top by SIRV+ERCC
+  read count: **HEYA8 rep3_run1 = 15,855 `SIRVomeERCCome` + 197 `chrIS`**; rep2_run1 (14,407
+  total spike-in); rep1_run1 (12,205 extracted). H9 rep2–4: 810–2,947 each.
+- **CHOSEN FIRST SAMPLE: `SGNex_HEYA8_directRNA_replicate3_run1`** — most SIRV+ERCC reads
+  (15,855; comparable to the yeast `sirv.sorted.bam`'s 4,424). Genome BAM key:
+  `data/sequencing_data_ont/bam/genome/SGNex_HEYA8_directRNA_replicate3_run1/SGNex_HEYA8_directRNA_replicate3_run1.bam`
+  (the matching fastq `…/fastq/…/…fastq.gz` is only ~few-hundred-MB, but is NOT needed — see plan).
+- ⚠ **CHEMISTRY UNRESOLVED (one open item):** `samples.tsv` is collapsed/incomplete (44 dRNA
+  rows, 26×SQK-RNA001 / 18×SQK-RNA002; **HEYA8 not listed, H9 only rep1_run1=RNA001**), and the
+  BAM header carries no kit. So HEYA8's RNA001-vs-RNA002 is not pinned from the bucket — confirm
+  from GoekeLab/sg-nex-data docs before labelling. Either way it is an **older chemistry** than
+  LongBench RNA004, satisfying the two-chemistry contrast.
+
+### LongBench (RNA004 DRS) — spike-ins CONFIRMED; ref must be local; reads are GBs
+- **No reference / GTF / BAM anywhere in the bucket** (only `raw/{fastq,pod5}` + `processed/
+  {cell_line_annotation,count_matrices,rds}`) → the cheap remote-BAM trick is UNAVAILABLE here;
+  spike-in reads can only come from processing the full DRS fastq.
+- **RNA004 DRS fastq keys + sizes** (`raw/fastq/{Sample}_dRNA_ONT.fastq.gz`, 8 cell lines;
+  extra `raw/fastq/fastqs_topup/{Sample}_dRNA_ONT_topup.fastq.gz`): **H69 = 11.3 GB (SMALLEST)**,
+  H1975 = 12.0 GB, HCC827 = 14.8 GB, **H146 = 15.3 GB**, H211 = 18.3 GB, SHP77 = 21.5 GB,
+  H2228 = 22.8 GB, H526 = 26.8 GB (topups +15–28 GB each).
+- **Spike-ins CONFIRMED present WITHOUT any read download** — grepped the DRS bulk count matrix
+  `processed/count_matrices/dRNA_bulk_H69_matrix.tsv.gz` (6.3 MB, staged at
+  `/scratch/users/kevinroy/sirv_work/dRNA_bulk_H69_matrix.tsv.gz`): **84 `SIRV*` transcript rows
+  + Sequin `R1_*/R2_*` rows**; spike-in reads = **81,373 / 27,150,336 = 0.30 %** of H69 DRS.
+  (Caveat: 0 `ERCC-00xxx` rows in the matrix — its quant annotation likely omits ERCC names; the
+  reads still align to ERCC contigs in `sirv4.fasta`. Don't read "0 ERCC" as "no ERCC reads".)
+- **Spike-in reference = REUSE LOCAL** `/scratch/users/kevinroy/sirv_work/sirv4.fasta` (430 KB,
+  **114 contigs: ERCC-000xx + SIRV** = Lexogen SIRV-Set4) + `sirv4.gtf` (54 KB). This IS the same
+  SIRV-Set4 LongBench used; it is also the SAME ref the yeast `sirv.sorted.bam` was built against
+  → directly comparable. (Sequins are NOT in `sirv4.fasta`; for the SIRV↔SIRV cross-check that is
+  fine — keep Sequins out, per comparability note below. Add the Garvan sequin ref from
+  sequinstandards.com later only if a Sequin arm is wanted.)
+
+### ★ COMPARABILITY (the whole point — do NOT skip)
+The yeast SIRV reference (`/scratch/users/kevinroy/sirv_work/sirv.sorted.bam`, 4,424 reads,
+SIRV+ERCC, length-window **[600,1000]**) and the two new measurements are only cross-checkable
+if measured IDENTICALLY:
+1. **Same minimap2 invocation** (`-ax splice -uf -k14 --MD`, DRS U→T fixup) and **same
+   `measure-bam`/`autocorr-bam` length window [600,1000]** as `run_sirv_errstruct.sbatch`.
+2. **Restrict the cross-check to SIRV+ERCC.** SG-NEx pools Sequins (`chrIS`) which the yeast/
+   LongBench refs lack → **align/measure only `SIRVomeERCCome` (SG-NEx) and `sirv4.fasta`
+   (LongBench); report Sequins separately, never pooled.**
+3. ⚠ **The session-7 N-in-span `measure_error_structure` bug (RESUME #1) is STILL OPEN.** Fix it
+   FIRST and re-measure the yeast SIRV BAM the same way, or none of these three numbers are
+   magnitude-comparable. These plans produce the BAMs; the magnitude read awaits that fix.
+
+### PLAN A — SG-NEx RNA00x (CHEAP; no GB download; ready to run tonight)
+Because the genome BAM is remotely indexed, extract ONLY the spike-in reads as fastq via a remote
+region query (downloads just the spike-in BGZF blocks — **verified: 12,205 reads in 3.8 s** for
+rep1_run1), then realign with OUR params to the staged 11 MB ref. No fastq download.
+```
+ssh sherlock 'source <conda>/etc/profile.d/conda.sh; conda activate pbsim3
+ W=/scratch/users/kevinroy/sirv_work; cd $W
+ U=https://sg-nex-data.s3.ap-southeast-1.amazonaws.com/data/sequencing_data_ont/bam/genome/SGNex_HEYA8_directRNA_replicate3_run1/SGNex_HEYA8_directRNA_replicate3_run1.bam
+ # STEP 1 ALREADY DONE THIS SESSION — spike-in (SIRVomeERCCome, primary-only) fastqs are STAGED:
+ #   sgnex_HEYA8_directRNA_replicate3_run1.sirvE.fq  (15,604 reads, 30M)   <- primary
+ #   sgnex_H9_directRNA_replicate2_run1.sirvE.fq     ( 2,767 reads, 5.8M)
+ #   sgnex_H9_directRNA_replicate4_run1.sirvE.fq     ( 3,739 reads, 8.1M)
+ # (BAM SEQ is 4-bit ACGT so these are already T — no U->T fixup needed. samtools fastq restored
+ #  original orientation. To re-extract / add a Sequin arm: samtools view -b -F 0x900 "$U" chrIS | samtools fastq -.)
+ # STEP 2 — realign with the SAME alignment path as run_sirv_errstruct.sbatch (do NOT hand-roll;
+ #  invoke that script parameterized for ref=sgnex_spikein.fa + fq, so flags -ax splice -uf -k14 --MD
+ #  + processing are byte-identical = the comparability that is the whole point). Direct form:
+ minimap2 -ax splice -uf -k14 --MD -t 6 sgnex_spikein.fa sgnex_HEYA8_directRNA_replicate3_run1.sirvE.fq | samtools sort -o sgnex_heya8.sorted.bam
+ samtools index sgnex_heya8.sorted.bam'
+ # STEP 3 — measure-bam + autocorr-bam on SIRVomeERCCome, length window [600,1000] (AFTER the N-in-span fix).
+```
+Download cost: a few MB of BGZF blocks (already paid — fastqs staged). **Only STEP 2+3 remain;
+trivially runnable now, no approval needed.** Chemistry de-risk: H9 rep2/rep4 fastqs are staged
+too, so RESUME #2 chemistry-pinning just picks among already-extracted samples (no re-run).
+
+### PLAN B — LongBench RNA004 (⚠ NEEDS GB APPROVAL: ~11.3 GB download for H69)
+No in-bucket BAM → must fetch the whole DRS fastq. **First sample = H69 (smallest, 11.3 GB),
+spike-ins confirmed (0.30 % ≈ tens of thousands of SIRV+Sequin reads).** Prefer download-to-scratch
+over `wget|minimap2` streaming (a transcontinental ap-southeast-2→Stanford stream that drops
+mid-align wastes the compute and isn't resumable; 11 GB on scratch is fine and re-usable).
+```
+ssh sherlock 'source <conda>/etc/profile.d/conda.sh; conda activate pbsim3
+ W=/scratch/users/kevinroy/sirv_work; cd $W
+ # 1) download (FLAG: 11.3 GB) — idempotent .part->mv like run_sirv_errstruct.sbatch:
+ wget -O H69_dRNA_ONT.fastq.gz.part "https://longbench-data.s3.ap-southeast-2.amazonaws.com/raw/fastq/H69_dRNA_ONT.fastq.gz" && mv H69_dRNA_ONT.fastq.gz.part H69_dRNA_ONT.fastq.gz
+ # 2) align via the SAME alignment path as run_sirv_errstruct.sbatch (parameterize ref=sirv4.fasta
+ #    + fq) so the U->T-fixup/--MD/flag handling is identical. NOTE (verified this session by peeking
+ #    the first reads): the LongBench RNA004 fastq SEQ is ALREADY T (no U) -> the fixup is a no-op
+ #    here, but route through the script anyway for byte-identical comparability. Direct form:
+ minimap2 -ax splice -uf -k14 --MD -t 8 sirv4.fasta H69_dRNA_ONT.fastq.gz | samtools view -b -F4 | samtools sort -o longbench_h69_sirv.sorted.bam
+ samtools index longbench_h69_sirv.sorted.bam'
+ # 3) measure-bam + autocorr-bam, SIRV+ERCC, window [600,1000] (AFTER the N-in-span fix).
+```
+Estimated wall: download (network-bound, transcontinental — possibly 20–60+ min) + minimap2 over
+27 M reads (the bulk cost; multi-thread, owners/larsms node). Submit via `sherlock-sbatch`.
+**Cheaper de-risk option if 11 GB is unwanted now:** spike-in presence is ALREADY proven from the
+count matrix, so a head-sample is optional; if desired, `wget` only the first ~150 MB (Range or
+`--max-filesize`-style truncated gz) and align that to estimate the per-run SIRV read yield before
+committing the full 11 GB. (A null head result is inconclusive at 0.30 % — don't infer absence.)
+
+### STAGED THIS SESSION (durable on scratch `/scratch/users/kevinroy/sirv_work/`)
+- `sgnex_spikein.fa` (11.1 MB) + `.fai` — SG-NEx chrIS + SIRVomeERCCome ref
+- `sgnex_spikein.gtf` (198 KB) — 165 Sequin + 176 SIRV/ERCC transcripts
+- `sgnex_HEYA8_directRNA_replicate3_run1.sirvE.fq` (30M, 15,604 SIRV+ERCC reads) — PLAN A first sample
+- `sgnex_H9_directRNA_replicate2_run1.sirvE.fq` (5.8M, 2,767 reads) + `sgnex_H9_directRNA_replicate4_run1.sirvE.fq` (8.1M, 3,739) — chemistry-pinning alternates
+- `dRNA_bulk_H69_matrix.tsv.gz` (6.3 MB) — LongBench spike-in presence proof
+- `sgnex_samples.tsv` (88 lines) — SG-NEx metadata (incomplete; chemistry caveat above)
+- (pre-existing, reuse) `sirv4.fasta`/`sirv4.gtf` (SIRV-Set4) and `sirv.sorted.bam` (yeast SIRV ref)
+
+### RESUME (session-8 boundary) — nothing in flight; no marker set
+1. **Decide tonight:** PLAN A is free → run it now (no approval). **PLAN B needs the go-ahead for
+   the ~11.3 GB H69 download** — if approved, submit the PLAN B block via `sherlock-sbatch` (owners/
+   larsms, scratch staging). 2. Pin SG-NEx HEYA8 chemistry from GoekeLab/sg-nex-data docs. 3. Both
+   measurements MUST wait on / use the session-7 N-in-span `measure_error_structure` fix and the
+   [600,1000] window + SIRV+ERCC-only restriction (★ COMPARABILITY above), then feed
+   `error_injector.calibrate_params` per RESUME #3 of session-7.
+
+---
+
 ## SESSION-7 (2026-06-28) — EXON-GTF loader BUILT + validated on real SIRV-Set 4 (the SIRV-fit gate dep)
 
 The one M1-local dependency the SIRV/LRGASP absolute-truth fit was blocked on (the

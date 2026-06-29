@@ -477,6 +477,29 @@ both ends → autocorr inflated without per-molecule hotness. This is load-beari
 vs per-transcript) → stratify autocorr by transcript before trusting r. Still RNA002-confounded; confirm
 on RNA004 (LongBench) + SG-NEx. Adversarial panel pending on (3).
 
+**THREE-WAY real spike-in grounding (2026-06-29, session-9) — two INDEPENDENT SIRV sources agree.**
+Measured a SECOND, independent real spike-in source: SG-NEx HEYA8 directRNA (RNA00x), via the
+remote-BAM trick (samtools libcurl/S3 reads the remote indexed BAM; extract `SIRVomeERCCome`+`chrIS`
+reads → `calmd` against the staged spike-in ref → exonic `measure-bam`). All three measured IDENTICALLY
+(exonic, thin 0.0153, window [600,1000]):
+| metric | yeast real (read-vs-GENOME) | LRGASP SIRV (RNA002, abs-truth) | SG-NEx HEYA8 (RNA00x, abs-truth) |
+| --- | --- | --- | --- |
+| overdisp_v | 0.54 | 0.10 | 0.17 |
+| sub5_gap_excess | 4.28 | 1.71 | 1.76 |
+| indel_run≥2 | 0.39 | 0.37 | 0.38 |
+| autocorr r | 0.47 | 0.50 | 0.62 |
+| reads | 114k | 1037 | 5329 |
+**Reading:** the two independent SIRV sources (different labs, RNA002 vs RNA00x) AGREE tightly on LOW
+clustering/over-dispersion (gap5x 1.7, overdisp_v 0.1-0.2) — robust evidence the mod-free clean error
+structure is genuinely far below the yeast read-vs-genome upper bound (4.28). `indel_run≥2 ≈ 0.37-0.39`
+is rock-solid across ALL THREE (the most transferable target). **Implication for the injector:** the
+placeholder overdisp_v ~0.24 is, if anything, slightly HIGH vs SIRV; the "real magnitude is ~5×"
+worry from the yeast bound is firmly NOT supported. **Caveats (don't over-harden):** (1) both SIRV
+sources share IVT composition — agreement partly reflects shared composition, not "all real reads";
+(2) the high autocorr (0.5-0.62) is likely the per-TRANSCRIPT alignability confound (few SIRV
+transcripts) NOT per-molecule hotness — stratify before using for PI-#2; (3) neither is RNA004 — the
+LongBench RNA004 arm (GB download, approval-gated) is the modern-chemistry confirmation.
+
 ### ORGANISM-SPECIFIC ERROR MODEL — design note (2026-06-28, advisor-checked; decisions DEFERRED, not pre-answered)
 Question raised (PI): yeast vs human differ in (a) RNA modifications, (b) pA-tail length, (c) exon length /
 multi-intron fraction — do we need DISTINCT yeast vs human error models? Decomposition + the measurement-design
