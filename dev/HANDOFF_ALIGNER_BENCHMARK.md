@@ -3,7 +3,59 @@
 **Agent:** dedicated benchmark-builder (isolated worktree, branch
 `worktree-agent-a25a2c1e784ad37dc`, based on `drs-validation-rebuild` so the reuse
 primitives + design docs are present). **NEVER commit to `drs-validation-rebuild`.**
-**Updated:** 2026-06-27 (session 4).
+**Updated:** 2026-06-29 (session 11 — C3 gate).
+
+---
+
+## SESSION-11 (2026-06-29) — C3 (calibrated LLR arbitration, the KEYSTONE) → GATE-REFUTED
+
+C3's premise: replace the integer-max consensus ARBITER with a calibrated −logP LLR
+arbiter (refiner emits posterior + runner-up; consensus compares paths by likelihood
+ratio, not integer-max). The named justification is the **0.09→1.07 artifact**. Ran
+the C1/C2 gate-first discipline (advisor-shaped, two advisor passes). **VERDICT:
+C3-as-accuracy REFUTED** — no member code written (the C1-idiom refute). Now **4
+directions refuted/deferred (C1-ins, SIRV Claim-B, C2, C3), 1 confirmed (C1-del)**.
+
+**What was pinned (both incumbent arbiters, firsthand):**
+- `select.py::select_best_alignment` = `max(junction_score)` (flat −2/−1 penalties,
+  quality-BLIND, blind to in-exon indel placement) + annotated/canonical tiebreakers
+  → **the literal 0.09→1.07 home** (a penalty/tiebreak re-weight flips the winner).
+- `corrected_consensus.py::merge_corrected_tsvs` (`use_hp_ed`) = `argmin
+  hp_edit_distance` + span tiebreak → **the GOVERNING arbiter** in the canonical
+  correct-first pipeline (`write_corrected_consensus_bam` emits its winner's full
+  record, junctions included). `hp_ed` is HP-aware on indels (via the penalty table)
+  but flat on mismatch (X=1.0), clips, introns FREE.
+
+**The gate (3 M1-light, LLR-free probes; fitness=truth; ALL show NO addressable gap):**
+- **Indel arbitration** (`scripts/benchmark/c3_headroom.py`, panel=[flat,law,mm2],
+  1600 reads): ceiling==arbiter==0.999, HEADROOM=0.000. STRONG null — on
+  `HP_HARD-bsub` members disagree on **100%** of reads (`disagr`=1.0) yet `hp_ed`
+  picks truth every time (`hr|dis`=0). **C1's panel-level win already flows through
+  the shipped arbiter with no LLR** → C3's keystone premise ("C1 needs C3 to land") is
+  empirically WEAKENED.
+- **Junction arbitration** (`c3_junction_headroom.py`, members=[mm2 real snap, truth
+  site], the governing `hp_ed`, 210 reads): on JUNCTION_DISCOVERY minimap2 **snaps 47%**
+  yet given a truth member `hp_ed` picks the snap over truth **0.000** (introns free +
+  snap induces flanking mismatches). HEADROOM=0.000.
+- **Multi-event coherence** (`c3_multievent_check.py`): `penalty_score`-sum DOES rank
+  multi-event paths oppositely to −logP-sum (89/55-choose-2 inversions — confirms C1's
+  "incoherent to sum"), BUT they're UNREACHABLE as a truth-favoring tie (cross-run-length
+  reassignable ties don't arise from same-base HP ambiguity or different-base adjacent
+  runs). The **named locus** for any future revisit = a dedicated adjacent/interleaved-runs
+  multi-event stratum; until built, do not build the LLR.
+
+**Structural closures (not assertions):** the `junction_score` path is closed —
+`_count_junction_proximity_errors` penalizes a snap on the PRIMARY score (fires on
+84/360 corpus junction reads), so the canonical tiebreaker only bites on ties a snap
+won't produce → a one-line tiebreaker reweight (Discovery/WS-3), not an LLR. The
+artifact-replay (re-weight → integer flips, LLR invariant) is near-tautological → a CI
+fence only, earns its place ONLY if the LLR ships for an accuracy reason (it won't).
+
+**Files:** `dev/C3_DESIGN.md` (full gate + verdict + residue), `scripts/benchmark/c3_{headroom,junction_headroom,multievent_check}.py` (+ `*_result.txt`). Smoke gate GREEN.
+RESUME: C3 is CLOSED (refuted). Next facet candidates per OVERVIEW: C4 (POA paralog —
+stratum exists + discriminates) or C5 (panel-failure-tail FracMinHash — gated on a
+MEASURED tail; the JUNCTION_DISCOVERY all-herd/snap case is C5 territory, not C3). The
+flat-Q quality-arbitration axis (SPEC:225) remains the one untested orthogonality lever.
 
 ---
 

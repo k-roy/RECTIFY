@@ -1,0 +1,14 @@
+C3 JUNCTION-ARBITRATION HEADROOM (hp_ed governing arbiter, LLR-free)
+members=[mm2(real snap), truth(orthogonal placer)], split=ALL, reps=30, 210 junction reads
+stratum              n    ceiling  arbiter  HEADROOM  mm2snap  snap&tru  pickSnap
+ANNOTATED            30   1.000    1.000    0.000     0.000    0.000     0.000
+JUNCTION_AMB         30   1.000    1.000    0.000     0.000    0.000     0.000
+JUNCTION_DISCOVERY   120  1.000    1.000    0.000     0.467    0.467     0.000   <- mm2 snaps 47%, arbiter STILL picks truth
+NIC                  30   1.000    1.000    0.000     0.000    0.000     0.000
+TOTAL                210  1.000    1.000    0.000     0.267    0.267     0.000
+
+DECISIVE NULL: on JUNCTION_DISCOVERY minimap2 snaps non-canonical->canonical on 46.7% of reads,
+but GIVEN a truth-site member the hp_ed arbiter (introns free; snap induces flanking mismatches)
+picks truth over the snap 100% of the time. The canonical-snap bias is NOT an LLR-arbitration gap;
+where it bites (all members herd/snap, no truth member) it is C5/discovery + the canonical_count
+TIEBREAKER in select_best_alignment (Discovery facet), not calibrated-LLR. C3-as-accuracy REFUTED.

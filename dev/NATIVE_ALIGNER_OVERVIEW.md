@@ -168,7 +168,7 @@ position-exact ablation**:
 |---|---|---|---|---|
 | **C1** | ✅ built + Claim-A-proven (del-only; ins gated off after real SIRV caught it) | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
 | **C2** | ❌ refuted *as placement* (gate, 2026-06-29): shipped guarded walkback already at ceiling on the identifiable genomic-A drift; a soft CPA posterior is deferred behind C3 | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
-| **C3** | ⬜ **the active next facet** (the keystone) | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
+| **C3** | ❌ **refuted as accuracy** (gate, 2026-06-29): the shipped `hp_edit_distance` arbiter is AT CEILING on recoverable reads (indel AND junction strata) — it already picks the truth-correct member, so an LLR adds no accuracy. C1's win flows through it with no LLR. See `dev/C3_DESIGN.md` | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
 | **C4** | ⬜ future | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
 | **C5** | ⬜ future (gated on a measured tail) | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
 | **C6** | ⬜ future (stratum built + discriminating) | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
@@ -285,19 +285,25 @@ out, and the RNA004 puzzle needs one competitive re-alignment, not a swarm.
    the CPA *uncertainty* (`ambiguity_range`) already ships **with no consumer**, so a
    soft CPA posterior only earns its keep once C3 exists → this independently
    promotes C3.
-3. **C3 — now THE active next facet, the keystone** (calibrated LLR arbitration):
-   C1 (and any future soft CPA/discovery signal) only improves the *pipeline* if the
-   consensus can *use* calibrated, probabilistic output instead of integer-max. C3
-   converts per-read facet wins into consensus wins, consumes the already-shipped
-   `ambiguity_range`, and is the structural fix for the 0.09→1.07 artifact.
+3. **C3 — ❌ REFUTED as accuracy** (gate, 2026-06-29; calibrated LLR arbitration):
+   the shipped `hp_edit_distance` arbiter is already AT CEILING on recoverable reads
+   (indel AND junction strata — it picks the truth-correct member even at 100% member
+   disagreement and with minimap2 snapping 47%), so an LLR adds no accuracy. C1's win
+   flows through the existing arbiter with no LLR — the keystone premise ("C1 needs C3
+   to land") is empirically weakened. The 0.09→1.07 home (`junction_score`'s
+   canonical tiebreaker) is closed structurally (the snap loses on the PRIMARY score
+   via junction-proximity errors → a tiebreaker reweight, not an LLR). The one
+   unexercised locus = a multi-event/adjacent-runs stratum (the `penalty_score`
+   incoherence is real but unreachable on current strata). See `dev/C3_DESIGN.md`.
 4. **C4 / C5 / C6** — gated, later (each needs its enabling measurement: C5 a
-   measured panel-failure tail; C4/C6 strata already exist and discriminate).
+   measured panel-failure tail — the JUNCTION_DISCOVERY all-herd/snap case is C5, not
+   C3; C4/C6 strata already exist and discriminate).
 - **Discovery guardrail** (novel-feature support, the read-quality-tail FDR prior):
-  prototype done (WS-3); folds into C3 and the discovery-FDR machinery.
+  prototype done (WS-3); the canonical-snap tiebreaker bias is now ITS domain (C3 refuted).
 
-*Pattern worth noting:* the gate has now **refuted or deferred three plausible
-directions** (C1's insertion-discount, the SIRV length-shape "Claim B," and
-C2-as-placement) and **confirmed one** (C1 deletion placement). That hit rate is the
+*Pattern worth noting:* the gate has now **refuted or deferred four plausible
+directions** (C1's insertion-discount, the SIRV length-shape "Claim B,"
+C2-as-placement, and C3-as-accuracy) and **confirmed one** (C1 deletion placement). That hit rate is the
 prove-don't-assert discipline working as intended — most plausible ideas don't
 survive contact with truth, and catching that *before* shipping code is the point.
 
