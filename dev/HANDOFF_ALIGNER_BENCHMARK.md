@@ -57,15 +57,19 @@ stratum exists + discriminates) or C5 (panel-failure-tail FracMinHash — gated 
 MEASURED tail; the JUNCTION_DISCOVERY all-herd/snap case is C5 territory, not C3). The
 flat-Q quality-arbitration axis (SPEC:225) remains the one untested orthogonality lever.
 
-**IN FLIGHT (launched end of SESSION-11): C4 + C5 gate investigations** — two
+**IN FLIGHT (launched end of SESSION-11): an 8-agent parallel fan-out** — all
 worktree-ISOLATED background agents, each running the C3 gate-first playbook,
-"report back, don't commit." C4 (agent a317eb683ef499cb1): paralog/POA headroom on
-the existing PARALOG stratum — is there an IDENTIFIABLE-but-misplaced population
-pooling recovers (excluding zero-evidence fragments + the minority-collapse trap)?
-C5 (agent ab1fc5de61e2c39e3): MEASURE the panel-failure tail first (empty-union +
-all-misplaced, recoverable-vs-zero-evidence) at baseline & elevated error via
-`score_panel`; the tail size is the dep-commit trigger; FracMinHash containment vs a
-random-window null is the Stage-2 kill-gate.
+"report back, don't commit." Each was also sent a director directive (via
+SendMessage) to use the `advisor` LIBERALLY/FREQUENTLY and run a TRIPLE adversarial
+subagent panel before finalizing any verdict. Roster:
+- **C4 paralog/POA** (a317eb683ef499cb1): identifiable-but-misplaced population pooling recovers? (excl. zero-evidence fragments + minority-collapse trap).
+- **C5 panel-failure tail** (ab1fc5de61e2c39e3): MEASURE the tail first (empty-union + all-misplaced, recoverable-vs-zero-evidence) at baseline & elevated error via `score_panel`; tail size = dep-commit trigger; FracMinHash-vs-random-window-null is the Stage-2 kill-gate.
+- **C6 variant-aware junctions** (a2c9de0d12c209649): does variant-adjacent FP fabrication (smoke E) survive as an addressable, specific gap?
+- **Discovery canonical-snap tiebreaker** (ab95f6701cc1b7d7e): does `select.py`'s `canonical_count` tiebreaker EVER decide a snap-vs-truth tie (C3 predicts ~never; snaps lose on the primary score)? reweight only if it harms — touches shipped code, propose diff.
+- **Deliverable B real-data** (a9e9b7a45009c3a3f, CLUSTER): C1 realign on the 3 COMPASS human junctions (SQSTM1/TMED9/SLC35A4) — snap-to-canonical vs hold-non-canonical. Own scratch `/scratch/users/kevinroy/c1_realdata_dB/`, read-only on `compass_a549`.
+- **Flat-Q quality axis** (adfc06a1d85fc50b5): does correlated per-base Q open any arbitration/discovery gap the error-type table doesn't? (the one untested orthogonality lever).
+- **C1 Claim-B injection simulator** (a481726d77ac06d9a, MULTI-NIGHT): held-out injection at SIRV-measured (table-INDEPENDENT) rates → does the Scer length-SHAPE transfer?
+- **WS-1 cleanup** (a18b9947050c10219, CLUSTER): debug the empty `measure-bam` on `h69_endo_1.bam` (contig 1) + the qscore SIGPIPE; endogenous-vs-SIRV contrast. Low value/cosmetic.
 
 RESUME (concrete, branch logic):
 - **Same session** (the agents report into this session via task-notifications):
