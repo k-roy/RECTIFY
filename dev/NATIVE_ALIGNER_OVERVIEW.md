@@ -22,6 +22,60 @@ that can prove the new approach actually earns its place.
 
 ---
 
+## In plain English — what we're doing, and where we are
+
+*(A jargon-free companion to the rest of this document — read this first if the
+acronyms are new.)*
+
+**The goal.** RECTIFY reads noisy Nanopore RNA-sequencing data and works out, for
+each read, exactly where it came from in the genome — including the hard parts
+(splice junctions; the 3′ poly-A tail). It never trusts one alignment tool: it runs
+**a panel** of several, then **picks the best answer per read** (the "consensus" or
+"arbiter"). We're building a brand-new, home-grown aligner to add to that panel —
+one that's good at the things the existing tools are bad at.
+
+**The rule that governs everything.** We do **not** write a line of the new aligner
+until we've *proven*, against a known-correct answer ("truth"), that it actually
+helps. Every candidate capability ("facet," labelled C1, C2, C3, …) goes on **trial
+first**. The trial — "the gate" — asks two questions: *is the current system
+actually getting this wrong?* and *would the proposed idea genuinely fix it?* If the
+current system is already as good as the data allows, the idea is rejected before
+any code is written. This sounds harsh, but it's the point: most plausible ideas
+don't survive contact with truth, and it's far cheaper to learn that *before*
+building. The honest scoreboard so far: **4 ideas rejected, 1 confirmed.**
+
+**The scoreboard, in plain terms:**
+- **C1 — fixing length mistakes in repetitive stretches** (e.g. `AAAAA…`): the part
+  that *helps* was **confirmed and kept**; a related part that *hallucinated*
+  errors was caught by real data and **switched off**.
+- **C2 — placing the 3′ tail end**: **rejected** — the tool RECTIFY already ships
+  does this as well as the information allows.
+- **C3 — letting the arbiter use probabilities instead of a crude score** (this
+  session): **rejected.** We proved the current arbiter already picks the right
+  answer whenever a right answer is on the menu — even in cases where the panel
+  members disagreed on *100%* of reads, and even where a popular aligner mis-placed
+  a junction on *47%* of reads. There was simply no room for the fancier version to
+  do better, and the win from C1 already flows through the existing arbiter without
+  it. (Full story: `dev/C3_DESIGN.md`.)
+
+**What C3's rejection pointed us toward (next).** The trials kept revealing that the
+*real* remaining problems aren't about how the arbiter *chooses* — they're about
+the answer not being on the menu at all:
+- **C4 — look-alike genes.** Some genes have near-identical duplicate copies
+  elsewhere (the medically important SMN1/SMN2 pair is the classic case). Telling
+  the copies apart is genuinely hard.
+- **C5 — the "lost reads."** Sometimes *every* tool in the panel makes the *same*
+  mistake, so the correct answer is never produced by anyone. No amount of clever
+  arbitration helps there; you need a fundamentally different way to find those
+  reads. C5's first job is just to *measure how big this pile actually is* — that
+  measurement decides whether the idea is worth pursuing at all.
+
+Both C4 and C5 are now under the same gate-first trial (running in parallel), and
+each will come back either "real opportunity, here's the plan" or "rejected, here's
+the proof." Either answer is progress.
+
+---
+
 ## Background: what RECTIFY does, and why aligners matter
 
 Nanopore (ONT) sequencing reads RNA directly (direct-RNA, "DRS") or as cDNA. The

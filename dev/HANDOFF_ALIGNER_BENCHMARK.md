@@ -57,6 +57,20 @@ stratum exists + discriminates) or C5 (panel-failure-tail FracMinHash — gated 
 MEASURED tail; the JUNCTION_DISCOVERY all-herd/snap case is C5 territory, not C3). The
 flat-Q quality-arbitration axis (SPEC:225) remains the one untested orthogonality lever.
 
+**IN FLIGHT (launched end of SESSION-11): C4 + C5 gate investigations** — two
+worktree-ISOLATED background agents, each running the C3 gate-first playbook,
+"report back, don't commit." C4 (agent a317eb683ef499cb1): paralog/POA headroom on
+the existing PARALOG stratum — is there an IDENTIFIABLE-but-misplaced population
+pooling recovers (excluding zero-evidence fragments + the minority-collapse trap)?
+C5 (agent ab1fc5de61e2c39e3): MEASURE the panel-failure tail first (empty-union +
+all-misplaced, recoverable-vs-zero-evidence) at baseline & elevated error via
+`score_panel`; the tail size is the dep-commit trigger; FracMinHash containment vs a
+random-window null is the Stage-2 kill-gate. RESUME: when each agent reports, REVIEW
+its verdict + scripts, then the director integrates (surgical stage of `dev/C{4,5}_DESIGN.md`
++ `scripts/benchmark/c{4,5}_*.py`) and re-runs the smoke gate before committing. Each
+worked in its own worktree — pull its files from the agent report (it returns full
+text) or `git worktree list`. Neither has authority to commit to this branch.
+
 ---
 
 ## SESSION-10 (2026-06-29) — PARALLEL FAN-OUT (advisor-shaped: aim, not breadth)
