@@ -1155,3 +1155,13 @@ Infra lesson applied: ≤3 concurrent leads, each with advisor + triple adversar
 - C6 variant-aware (agent ae9b0abea706d856e) — clean re-run, VARIANT stratum.
 - Discovery tiebreaker (agent ac5b9ae2566a87f08) — drive real select_best_alignment on JUNCTION_DISCOVERY.
 BATCH 2 (next): Flat-Q (M1, injector Q) + C1 Claim-B (M1 sim + SIRV rate read) + WS-1 (cluster, debug empty measure-bam on encff_endo_1.bam — its endo_full_measure.out is 0 bytes; encff_extract.err nonzero). On each agent report: recover from its worktree (`git worktree list`), cross-check inline, integrate (surgical add of dev/C{n}_DESIGN.md + scripts), re-run smoke, commit.
+
+### SESSION-12 status update (live)
+DONE+COMMITTED: C3 refuted (2bbe559); C4 deferred (c4e8207); C5 deferred (658b72c); **C6 deferred — read-evidence member REFUTED, VCF-residue deferred (28f6aac)**. Each recovered-from-worktree + reproduced inline (independent cross-check) + agent triple-panel converged; smoke GREEN throughout.
+IN FLIGHT (3 leads, full advisor+triple-panel rigor, write-to-files reliability):
+- Deliverable B real-data (agent adf2053e3caf83776, CLUSTER → /scratch/users/kevinroy/c1_realdata_dB/).
+- Discovery tiebreaker (agent ac5b9ae2566a87f08, M1).
+- Flat-Q quality axis (agent a789a05ca8a2aa51c, M1).
+BATCH-2 QUEUE (launch as slots free, keep ≤3 leads): C1 Claim-B (M1 sim + SIRV-rate read from Sherlock) + WS-1 cleanup (CLUSTER — debug empty measure-bam: /scratch/users/kevinroy/combined_ref/ws1_cleanup/encff_endo_1.bam has endo_full_measure.out=0 bytes; check encff_extract.err).
+INTEGRATION RECIPE (per agent report): `git worktree list` → its worktree; diff its controlled.py/smoke vs this worktree (expect IDENTICAL); `cp` dev/C{n}_DESIGN.md + scripts/benchmark/{probe}.py + result.txt here; re-run the probe inline as cross-check; `smoke_roundtrip.py --reps 20` (exit 0); surgical `git add` + commit `feat(aligner-bench): C{n} ...`. Worktrees may sit on stale base 255a06d (lacks scripts/benchmark/) — the agents `git reset --soft` to the branch tip; their FILES are valid regardless.
+EMERGING PATTERN: every facet gate hits zero-evidence (C4,C6) or incumbent-at-ceiling (C3,C5); the genuine opportunities are REAL-DATA triggers (SMN1/SMN2 for C4, matched VCF for C6, measured panel-failure tail for C5).
