@@ -3,7 +3,64 @@
 **Agent:** dedicated benchmark-builder (isolated worktree, branch
 `worktree-agent-a25a2c1e784ad37dc`, based on `drs-validation-rebuild` so the reuse
 primitives + design docs are present). **NEVER commit to `drs-validation-rebuild`.**
-**Updated:** 2026-06-29 (session 11 — C3 gate).
+**Updated:** 2026-06-30 (session 12 — fan-out recovery).
+
+---
+
+## SESSION-12 (2026-06-30) — 8-AGENT FAN-OUT hit API instability; RECOVERED to reliable inline
+
+The end-of-SESSION-11 8-agent parallel fan-out (C4/C5/C6/Discovery + Deliverable-B/
+Flat-Q/Claim-B/WS-1) ran into a **systemic API/streaming instability**: 8 heavy
+concurrent agents, each directed to spawn its own triple adversarial panel,
+over-subscribed concurrency → most agents did real work (17–38 tool-rounds) but lost
+their FINAL report to "connection closed mid-response"; two (C5, Flat-Q) failed early
+at the 600s stall-watchdog. **LESSON: do not run >2–3 heavy agents concurrently, and
+do not have them spawn nested panels. Prefer director-run INLINE gates** (the
+c3/c4/c5 method never failed) + at most 1–2 controlled agents.
+
+**DONE + COMMITTED this session (recovered from worktrees + re-run inline):**
+- **C4 paralog/POA = DEFERRED** (commit c4e8207). HEADROOM=0.0000; minimap2 at
+  ceiling on identifiable paralog reads; below-ceiling gap is all zero-evidence; smoke
+  (F) pooling proof is truth-circular + redundant. Cross-checked by inline re-run.
+  `dev/C4_DESIGN.md` + `scripts/benchmark/c4_headroom.py` (+result).
+- **C5 panel-failure tail = DEFERRED** (commit 658b72c). Recovered the agent's
+  `c5_tail_measure.py` (fixed 1-line bug candidates→cand_meta), ran Stage-1: C5 tail
+  ~0–0.4% at realistic error (rate≤0.20), only 17–24% at EXTREME injected rates
+  (0.35–0.50). Below-ceiling reads are overwhelmingly C3-refiner (rwwi) + C4 (paralog
+  wrong-window), NOT C5. `dev/C5_DESIGN.md` (+result). Stage-2 containment-vs-null
+  positive control NOT yet captured (the --stage2 run is heavy/slow).
+
+**LOST (agents stalled, worktrees auto-cleaned / empty) → RE-RUN INLINE:**
+- **C6 variant-aware** (worktree had nothing). **Discovery tiebreaker** (worktree gone).
+  **Flat-Q** (failed early, gone). All three are M1 gates — re-run inline.
+
+**BLOCKED on Sherlock auth (DOWN: `ssh sherlock` = Permission denied gssapi):**
+- **Deliverable B real-data** (3 COMPASS junctions) — agent ran on cluster; M1
+  worktree auto-cleaned; outputs (if any) at `/scratch/users/kevinroy/c1_realdata_dB/`.
+- **WS-1 cleanup** — outputs at `/scratch/users/kevinroy/combined_ref/ws1_cleanup/`.
+- **Claim-B** — needs the SIRV-measured rate from Sherlock; nothing recovered on M1.
+- ACTION NEEDED FROM KEVIN: re-auth via `! ssh sherlock true` (do NOT re-open the
+  master yourself). THEN check those two scratch dirs.
+
+### RESUME (concrete, branch logic) — from worktree `worktree-agent-a25a2c1e784ad37dc`
+Env prefix for all: `PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH" PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python`
+- **C6 / Discovery / Flat-Q (do inline now):** write probes mirroring
+  `scripts/benchmark/c3_headroom.py` (the exemplar) + `c4_headroom.py`. C6 → VARIANT
+  stratum + scorer `junction.fp_variant_adjacent` (smoke E); strong prior it's
+  variant-adjacent-FP-addressable OR zero-evidence. Discovery → drive the real
+  `select.py::select_best_alignment` on JUNCTION_DISCOVERY {mm2-snap, truth-site};
+  strong C3 prior = tiebreaker never decides (snap loses on primary score). Flat-Q →
+  extend `error_injector.py` to emit correlated Q, headroom of Q-aware vs error-type.
+  Commit each as `feat(aligner-bench): C{n} ... ` + re-run smoke (must stay exit 0).
+- **C5 Stage-2 (optional control):** `… scripts/benchmark/c5_tail_measure.py --out
+  /tmp/c5 --reps 60 --stage2` (BACKGROUND — heavy 42930-window sketch; ~>2min). Append
+  result to `c5_tail_measure_result.txt` + the C5_DESIGN residue. Does not change DEFER.
+- **After `ssh sherlock true` re-auth:** `ssh sherlock 'ls -la /scratch/users/kevinroy/c1_realdata_dB/ /scratch/users/kevinroy/combined_ref/ws1_cleanup/'`
+  → if Deliverable-B outputs exist, recover the per-junction snap-vs-hold verdicts;
+  else re-run the realign (single controlled agent or inline). WS-1 similar.
+- **Gate scoreboard so far:** C1 del-law CONFIRMED; C1-ins / SIRV-ClaimB / C2 / C3 /
+  C4 / C5 refuted-or-deferred. Remaining live: C6, Discovery, Flat-Q (inline);
+  Deliverable-B, WS-1, Claim-B (cluster, blocked).
 
 ---
 
