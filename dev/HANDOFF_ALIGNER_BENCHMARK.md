@@ -65,11 +65,27 @@ pooling recovers (excluding zero-evidence fragments + the minority-collapse trap
 C5 (agent ab1fc5de61e2c39e3): MEASURE the panel-failure tail first (empty-union +
 all-misplaced, recoverable-vs-zero-evidence) at baseline & elevated error via
 `score_panel`; the tail size is the dep-commit trigger; FracMinHash containment vs a
-random-window null is the Stage-2 kill-gate. RESUME: when each agent reports, REVIEW
-its verdict + scripts, then the director integrates (surgical stage of `dev/C{4,5}_DESIGN.md`
-+ `scripts/benchmark/c{4,5}_*.py`) and re-runs the smoke gate before committing. Each
-worked in its own worktree — pull its files from the agent report (it returns full
-text) or `git worktree list`. Neither has authority to commit to this branch.
+random-window null is the Stage-2 kill-gate.
+
+RESUME (concrete, branch logic):
+- **Same session** (the agents report into this session via task-notifications):
+  read each agent's final message → REVIEW its VERDICT + the full-text scripts it
+  returned → in THIS worktree (`worktree-agent-a25a2c1e784ad37dc`) write
+  `dev/C{4,5}_DESIGN.md` + `scripts/benchmark/c{4,5}_*.py` from that text → run the
+  regression gate `PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH"
+  PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python
+  scripts/benchmark/smoke_roundtrip.py --out /tmp/x --reps 20` (exit 0) → surgical
+  `git add` those explicit paths → commit. If a verdict is PROCEED, the next step is
+  to SKETCH (not build) the member design; if REFUTE/DEFER, document and stop.
+- **Fresh session** (agent IDs a317eb683ef499cb1 / ab1fc5de61e2c39e3 are NOT
+  resumable outside this session): run `git worktree list` to find the two agents'
+  isolated worktrees and inspect their `dev/C{4,5}_DESIGN.md` + `scripts/benchmark/`
+  in-progress files; integrate the durable ones as above. If their worktrees were
+  auto-cleaned (unchanged), the gates are fully re-runnable from the durable specs —
+  the C3 exemplar (`dev/C3_DESIGN.md` + `scripts/benchmark/c3_headroom.py`), the
+  SPEC §benchmark-coupling C4/C5 blocks, and the OVERVIEW facet table — re-launch the
+  two gate investigations from those. Neither agent has authority to commit to this
+  branch; the director integrates + re-runs smoke before any commit.
 
 ---
 
