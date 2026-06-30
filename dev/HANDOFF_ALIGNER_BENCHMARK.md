@@ -1148,3 +1148,10 @@ point. The next increment is the remaining strata + the real Tier-2 run.
 - `scripts/benchmark/sim/controlled.py`       (component 1 — Tier-1 generators)
 - `scripts/benchmark/smoke_roundtrip.py`      (end-to-end GATE smoke)
 - `dev/SIMULATION_BENCHMARK_SPEC.md`          (UPDATED: simulator decision recorded)
+
+### SESSION-12 cont. — controlled re-run after Sherlock re-auth (batches of ≤3 leads, full rigor)
+Infra lesson applied: ≤3 concurrent leads, each with advisor + triple adversarial panel + WRITE-TO-FILES reliability (recover from worktree if final report stalls). BATCH 1 (in flight):
+- Deliverable B real-data RE-RUN (agent adf2053e3caf83776) — prior run left c1_realdata_dB/ EMPTY; cluster outputs to /scratch/users/kevinroy/c1_realdata_dB/.
+- C6 variant-aware (agent ae9b0abea706d856e) — clean re-run, VARIANT stratum.
+- Discovery tiebreaker (agent ac5b9ae2566a87f08) — drive real select_best_alignment on JUNCTION_DISCOVERY.
+BATCH 2 (next): Flat-Q (M1, injector Q) + C1 Claim-B (M1 sim + SIRV rate read) + WS-1 (cluster, debug empty measure-bam on encff_endo_1.bam — its endo_full_measure.out is 0 bytes; encff_extract.err nonzero). On each agent report: recover from its worktree (`git worktree list`), cross-check inline, integrate (surgical add of dev/C{n}_DESIGN.md + scripts), re-run smoke, commit.
