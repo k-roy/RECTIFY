@@ -1209,3 +1209,5 @@ candidate coords (exact cmd in dev/DELIVERABLE_B_REALDATA.md) → SNAP/HOLD per 
 short reads support non-canonical at all 3). If FAILED/CANCELLED: check the job .err, resubmit
 c1_realign_align_chr5.sbatch. If still PENDING/RUNNING: keep waiting.
 STILL IN FLIGHT: a49b24df (Claim-B), a001f9fb (WS-1) + this cluster job.
+
+### IN-FLIGHT UPDATE (latest): Claim-B a49b24df DIED (stalled, zero durable output) → re-launched as a00cde628f2d37a20 (attempt #3, anti-stall: scaffold-to-files-first, minimal panels; SCAFFOLD-ONLY is an acceptable result — Claim-B is multi-night by design & C1 ships regardless on coherence). WS-1 a001f9fb still running. Deliverable-B job 32180508 still PENDING (Sherlock normal queue). If Claim-B attempt #3 also yields nothing, DEFER it (spec durable in dev/C1_DESIGN.md §"GENUINE non-circular Claim B path"); do not keep re-spawning the heaviest/lowest-value item.
