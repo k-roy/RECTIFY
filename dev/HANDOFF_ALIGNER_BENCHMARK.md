@@ -1189,3 +1189,11 @@ IN FLIGHT (3 agents, reliability=write-to-files): Deliverable-B re-align→genco
 RESUMED, cluster /scratch/users/kevinroy/c1_realdata_dB/align/); C1 Claim-B injection sim
 (a49b24df86163d868, M1); WS-1 cleanup (a001f9fb2d9efd216, cluster combined_ref/ws1_cleanup/).
 On each report: recover from worktree (`git worktree list`), cross-check, integrate, smoke, commit.
+
+### UPDATE: Discovery fix COMMITTED (5e18960) — supersedes the "uncommitted" flag above.
+Validated: smoke + 49 fence/consensus + 182 consensus/scoring/splice/junction tests (base env
+/Users/kevinroy/miniconda3/bin/python). The full `-m "not slow"` suite HANGS on M1 on a heavy
+validation-correction integration test (rectify.cli correct on upf1d, ~unrelated to this change) —
+use the targeted module set instead, or run the full suite on the cluster. Real-DRS recall spot-check
+still advisable before production human reliance. STILL IN FLIGHT: adf2053e (Deliverable-B re-align),
+a49b24df (Claim-B), a001f9fb (WS-1).
