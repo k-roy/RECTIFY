@@ -9,6 +9,8 @@ positions frame in memory. Downstream steps (PCA, DESeq2, GO, motifs,
 shift, HTML report) run identically to the standard pipeline.
 """
 
+from __future__ import annotations  # PEP 563: 3.9+ builtin-generic annotations run on 3.8
+
 import argparse
 from collections import defaultdict
 from pathlib import Path

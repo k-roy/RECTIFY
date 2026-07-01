@@ -13,6 +13,8 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
+from __future__ import annotations  # PEP 563: 3.9+ builtin-generic annotations run on 3.8
+
 from typing import Dict
 
 # =============================================================================
