@@ -1290,3 +1290,13 @@ RESUME (concrete, the DECISIVE path — after re-auth):
      (COMPASS accurate SHORT reads support non-canonical at all 3; those are untouched here).
   NB SLC35A4 candidate span 593bp vs reads 1014bp = possibly a DIFFERENT intron — verify the candidate
   identity in-frame before scoring. Result so far: /scratch/users/kevinroy/c1_realdata_dB/c1_realign_mm2only.json (n=0, documented).
+
+### CORRECTION (ssh): Sherlock auth did NOT drop — no re-auth needed. `ssh -O check` = Master running (pid alive);
+ControlPersist 168h working; both Kerberos tickets valid to Jul 1 03:23; a serial `ssh sherlock` returns
+HEALED_OK with no kinit. The earlier "Permission denied (gssapi-with-mic)" was sshd MaxSessions channel
+THROTTLING from too many rapid/concurrent ssh channels (watcher polling + probes + rsync retries) — the
+documented self-healing transient; it cleared once the burst settled. rsync "unexpected end of file" is a
+SEPARATE issue: the login banner corrupts rsync's protocol → use `ssh 'cat > dest' < file` instead.
+LEVER = SERIALIZE ssh (one at a time, no fan-out), do NOT re-open the master. The Deliverable-B in-frame
+realign RESUME above can proceed NOW (no re-auth required); genuine re-auth only needed if the ticket ages
+out (~03:23) or the laptop sleeps/VPN drops.
