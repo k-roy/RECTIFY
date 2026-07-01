@@ -1265,3 +1265,28 @@ over-dispersion excess over its SIRV baseline → systematic-error/chemistry, NO
 low-mean(~17)-tight. Cluster CLEAR (no jobs/procs left). Results on Sherlock ws1_cleanup/ (WS1_CLEANUP_FINDINGS.txt).
 Optional code hardening (flagged, not applied): cmd_measure_bam should apply the len window BEFORE
 events_from_bam_read (~6× less work on windowed runs). WS-1 fully DONE.
+
+### Deliverable-B — re-align job DONE-but-FAILED-arm; realign NOT yet valid; advisor caught a snapping-confound error
+Job 32180508 FAILED at deSALT (`FAIL desalt_aln`); minimap2 arm OK (mm2.bam). Ran the scorer → n_pooled=0 at
+all 3 candidate coords: the reads splice at coords +175 (TMED9) / different-intron (SLC35A4) / >400bp
+(SQSTM1) off the rederive_111 candidates. ADVISOR CAUGHT MY ERROR: the "reads splice at canonical GT..AG"
+motif read was measured on minimap2's SNAPPED placements — the exact confound Deliverable B exists to see
+past — so it CANNOT conclude the junctions are canonical (H1 unsupported); the C1 realign on RAW SEQUENCE
+(the real test) never ran (n=0). Correction committed to dev/DELIVERABLE_B_REALDATA.md. NO valid Deliverable-B
+verdict yet.
+⚠️ BLOCKER: Sherlock auth DROPPED after the account switch (`ssh sherlock` = Permission denied gssapi).
+ACTION NEEDED FROM KEVIN: `! ssh sherlock true` to re-auth (do NOT re-open the master yourself).
+RESUME (concrete, the DECISIVE path — after re-auth):
+  1) Find the exact COMPASS reference: `ssh sherlock "ls /scratch/users/kevinroy/compass_a549/genome_references_latest/GRCh38*gencode*v44*.fa*"`
+  2) Cheap frame check: compare its chr5 length to align/chr5.fa (181,538,259) + `samtools faidx` the TMED9
+     locus from BOTH — identical seq ⇒ same build ⇒ +175 is a candidate-derivation problem (rederive coords
+     off), NOT a reference shift; differing ⇒ genuine build mismatch.
+  3) Re-align the reads to THAT gencode_v44 reference (minimap2 -ax splice -uf + a splice-aware aligner for
+     SQSTM1's 7805bp intron; the deSALT arm FAILED — debug align.32180508.out or use GMAP) into
+     /scratch/users/kevinroy/c1_realdata_dB/align_v44/ → frame matches COMPASS by construction.
+  4) Run `scripts/benchmark/c1_realign_3junctions.py` (staged at /home/groups/larsms/users/kevinroy/c1_realdata_dB_code/,
+     rectify importable via oak checkout — NB pre-C1 but the scorer uses _hp_edit_distance+HpPenaltyTable only,
+     which works) on the v44 BAMs → per-read canon-vs-nonc likelihood = THE deliverable. Honest prior=HOLD
+     (COMPASS accurate SHORT reads support non-canonical at all 3; those are untouched here).
+  NB SLC35A4 candidate span 593bp vs reads 1014bp = possibly a DIFFERENT intron — verify the candidate
+  identity in-frame before scoring. Result so far: /scratch/users/kevinroy/c1_realdata_dB/c1_realign_mm2only.json (n=0, documented).
