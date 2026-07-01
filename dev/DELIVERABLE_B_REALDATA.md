@@ -183,3 +183,26 @@ caused by my reads splicing +176 off the (correct) candidate.
 STATUS: still NO valid C1-realign verdict; but the reference-artifact / snapping hypotheses are BOTH ruled out
 — the blocker is READ-SET PROVENANCE (get COMPASS's actual TMED9/SLC35A4/SQSTM1 supporting reads, e.g. from the
 lr_probe source BAMs / the read IDs in lr_probe_4loci_out.txt, and realign-score THOSE). Advisor consult next.
+
+## STOP + HONEST STATUS (2026-06-30, advisor-scoped) — "wrong read set" REFUTED; +176 is a same-reads aligner artifact
+Decisive same-read test: QNAME 945df2f3-3e2e-4824-8709-89ea41bd98e3 exists in BOTH my re-align (mm2.bam) AND
+COMPASS's source BAM (a549_chr5_trimmed.minimap2.bam, EXISTS at rectify_human_validation/sgnex_a549/alignments/)
+→ SAME READS. So my prior "wrong read set" commit is REFUTED (same sample+reference ⇒ same splice coord
+regardless of read set, as the advisor noted). The +176 is a SAME-READS ALIGNER/PIPELINE placement difference
+(my single minimap2 run vs COMPASS's multi-aligner pipeline / a possible sumner-vs-gencode chr5 local indel —
+the COMPASS-source read even shows a "176N" op near TMED9). It is NOT canonicity, NOT read set, NOT reference
+build. Three of my earlier durable claims (canonical-frame-artifact, reference-drift, wrong-read-set) were each
+overturned by the next datum — logged here so the record is honest.
+RULED OUT: reference build (identical), read set (same QNAMEs), minimap2 canonical-snap (176bp ≫ few-bp snap).
+REMAINING (an aligner/pipeline placement discrepancy) is a DISTRACTION from the deliverable per advisor.
+NO valid C1-realign verdict was produced. IMPORTANT: this does NOT touch the COMPASS finding — COMPASS already
+CROSS-PLATFORM-corroborated non-canonical (accurate SHORT reads + 4 long-read aligners agree); the C1 realign is
+only CONFIRMATORY and its marginal value is low.
+EXACT DECISIVE RESUME (single valid path; run ONCE, else leave open):
+  Use COMPASS's OWN long-read BAM `a549_chr5_trimmed.minimap2.bam` (+ .deSALT/.uLTRA/.GMAP, same dir) which
+  place TMED9 at COMPASS's coord. (1) confirm which reference it used (prov.json → sumner GRCh38_chr5.fa) and the
+  TMED9/SLC35A4/SQSTM1 junction coords IN THAT frame (from lr_probe_4loci_out.txt: TMED9 dominant 177592499-177593473).
+  (2) Region-select reads overlapping each locus; (3) score each read's RAW SEQUENCE canon (the GC-AG 1-4bp away)
+  vs nonc (COMPASS dominant) via _hp_edit_distance + the C1 LAW table, report WITH and WITHOUT sequence-ambiguous
+  (tie) reads. Honest prior = HOLD (short reads support non-canonical); a "canonical" realign result = a flag to
+  re-examine the pipeline, NOT a refutation of COMPASS. Do NOT re-drill the +176.
