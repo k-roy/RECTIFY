@@ -315,6 +315,24 @@ expensive. By default, `rectify correct-cdna` masks reads overlapping
 `rRNA_gene` loci in the GFF annotation. **Do not disable this (`--no-mask-rdna`)
 unless you have manually filtered chrXII reads beforehand.**
 
+### Cross-orientation span filter
+
+The Stage 2 cross-orient merge pairs `fwd` and `rev` consensuses by shared UMI
+**within a genomic span filter** (`--max-cross-orient-span`, default 3000 bp for
+yeast). This filter is mandatory: empirically, ~95% of cross-orient UMI matches
+are random collisions; only pairs within the expected mRNA span are true
+same-molecule pairs. Without the filter, thousands of unrelated molecules would
+be incorrectly merged.
+
+For organisms with larger average mRNA span (e.g., *H. sapiens*), increase this
+value:
+
+```bash
+rectify correct-cdna pcb114.bam --reference genome.fa --gff genes.gff \
+    --max-cross-orient-span 200000 \
+    -o out/
+```
+
 ### `--per-cluster-cap` protects against O(N²) hot-spots
 
 Genomic loci with very high read pileup (rDNA after masking fails to catch a
