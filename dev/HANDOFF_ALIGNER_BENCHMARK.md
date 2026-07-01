@@ -1246,3 +1246,22 @@ A background watcher (/tmp/db_watch_32180508.sh, sentinel /tmp/db_32180508.senti
 ONLY — this RESUME block is the durable signal (survives laptop sleep / session death).
 FYI also-running (WS-1 confirmatory, low-pri, results land in files on scratch, NO integration needed):
 h69 RNA004-endo cells jobs 32185601+32187048 → cat error_realism_h69endo_{measure,autocorr}.report.txt when done.
+
+### WS-1 FINAL — confirmatory h69 RNA004-endo cell COMPLETED (jobs 32185601+32187048); full 2×2 measured
+The 2×2 error-structure contrast is now complete (thin=0.0153, window [600,1000]):
+| cell | disp | overdisp_v | gap5x | autocorr_r |
+| --- | --- | --- | --- | --- |
+| RNA002 endo | 1.79 | 0.065 | 1.52 | 0.43 |
+| RNA002 SIRV | 2.10 | 0.094 | 1.66 | 0.48 |
+| RNA004 SIRV (h69) | 17.5 | 2.03 | 9.34 | 0.57 |
+| RNA004 endo (h69) | 33.9 | 2.75 | 7.43 | 0.62 |
+CONCLUSION: the extreme over-dispersion / sub-5-gap-excess / high global-hotness is an RNA004 CHEMISTRY
+property — present in BOTH RNA004 arms (~10-20× RNA002), driven by the hot-read tail; RNA002 endo shows NO
+over-dispersion excess over its SIRV baseline → systematic-error/chemistry, NOT biology. BENCHMARK IMPLICATION
+(actionable): the error injector must reproduce a per-read GLOBAL-HOTNESS tail (layer-1 multiplier, autocorr_r
+~0.4-0.6), not a uniform per-base rate bump — this validates the existing error_injector.py 3-layer design
+(over-dispersion + burst HMM) and says the magnitude knob targets the RNA004 hot-tail, NOT the decent bulk
+(which stays RNA002-low, per the read-quality principle). qscore: RNA004 high-mean(~31)-bimodal, RNA002
+low-mean(~17)-tight. Cluster CLEAR (no jobs/procs left). Results on Sherlock ws1_cleanup/ (WS1_CLEANUP_FINDINGS.txt).
+Optional code hardening (flagged, not applied): cmd_measure_bam should apply the len window BEFORE
+events_from_bam_read (~6× less work on windowed runs). WS-1 fully DONE.
