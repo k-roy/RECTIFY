@@ -143,3 +143,23 @@ DECISIVE next step (frame reconciliation, deferred): obtain the EXACT reference 
 build, OR re-derive canon/nonc candidates IN align/chr5.fa's frame from the read-supported junction + its
 ±4bp motif neighbourhood, THEN realign canon-vs-nonc there. Also fix + rerun the deSALT arm for SQSTM1.
 Result file: /scratch/users/kevinroy/c1_realdata_dB/c1_realign_mm2only.json (all n_pooled=0, documented).
+
+## ⚠️ CORRECTION (advisor, 2026-06-30) — the above motif read is SNAPPING-CONFOUNDED; NO valid verdict yet
+The "reads splice at canonical GT..AG" observation was measured on minimap2's N-op PLACEMENTS — but
+minimap2 SNAPPING a non-canonical junction onto the nearest canonical GT-AG is the EXACT confound
+Deliverable B exists to see past (OVERVIEW; smoke (G) non-canonical recall 0.000; THIS session's
+c3_junction_headroom: mm2 snaps 46.7%). So "GT..AG in the mm2 BAM" is exactly what a GENUINELY
+non-canonical junction looks like AFTER minimap2 snaps it (call it H3, MORE likely than H1). The
+motif-at-mm2-placement evidence therefore CANNOT address whether the junction is truly non-canonical,
+and H1 (frame artifact → junctions are canonical) is UNSUPPORTED. Retract any implication that the
+COMPASS 3-junction non-canonical claim might be a frame artifact.
+THE ACTUAL TEST NEVER RAN: n_pooled=0 → the C1 realign (which re-scores each read's RAW SEQUENCE
+canon-vs-nonc, seeing past where minimap2 placed the N-op) scored ZERO reads. This is a NOT-YET-MEASURED
+result, not a nuanced deferral. There is NO verdict to adjudicate until the realign runs in-frame.
+Two facts that break the unified "frame-shift" narrative: SLC35A4 candidate span=593bp vs reads' span=1014bp
+= a DIFFERENT intron (not a shifted one); SQSTM1 = deSALT FAILED + mm2 under-splices the 7805bp intron =
+cannot be concluded at all. COMPASS's core evidence was accurate SHORT reads (untouched here).
+DECISIVE PATH (the only thing that answers it): align the reads to the EXACT reference COMPASS used
+($W/genome_references_latest/GRCh38_gencode_v44.fasta), NOT align/chr5.fa → the frame matches by
+construction → run c1_realign_3junctions.py → read the per-read canon-vs-nonc LIKELIHOOD. Plus fix the
+deSALT/splice-aware arm for SQSTM1.
