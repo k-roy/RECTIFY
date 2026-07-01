@@ -163,3 +163,23 @@ DECISIVE PATH (the only thing that answers it): align the reads to the EXACT ref
 ($W/genome_references_latest/GRCh38_gencode_v44.fasta), NOT align/chr5.fa → the frame matches by
 construction → run c1_realign_3junctions.py → read the per-read canon-vs-nonc LIKELIHOOD. Plus fix the
 deSALT/splice-aware arm for SQSTM1.
+
+## FRAME CHECK RESOLVED (2026-06-30) — reference IDENTICAL; MY re-alignment is the +176 OUTLIER, not COMPASS
+Proved align/chr5.fa == the exact COMPASS reference (genome_references_latest/GRCh38_gencode_v44.fasta):
+chr5 length identical (181,538,259) AND byte-identical sequence at both the candidate (177592498) and the
+reads-actual (177592673) loci. So the +176 is NOT a reference/build shift.
+DECISIVE ground truth from COMPASS's OWN in-frame data (lr_probe_4loci_out.txt, same reference):
+  TMED9 974bp intron dominant = **177592499-177593473** (604 reads; minor neighbours 177592497-177593471:17,
+  177592498-177593473:4 — the 1-4bp non-canonical/canonical cluster the COMPASS note describes), corroborated
+  by accurate short reads (323). rederive_111.json gmap_coord = chr5:177592500-177593474 (≈ COMPASS dominant,
+  the agent's candidate was RIGHT).
+BUT my minimap2 re-align of sumner a549_chr5_trimmed.fastq put 1200 reads at 177592675-177593649 (+176, same
+974bp length) → the OUTLIER. On an IDENTICAL reference the same reads cannot place 176bp apart, so my
+re-aligned read set is NOT the reads COMPASS used (the sumner chr5-trimmed fastq ≠ COMPASS's read set / or a
+pipeline shift), and 176bp is FAR too large to be minimap2 canonical-snapping (a few-bp effect). ⇒ MY minimap2
+placement is unreliable; COMPASS's in-frame 177592499 placement is the ground truth, and the C1 realign must be
+run on the reads that ACTUALLY splice there (COMPASS's long-read set), NOT my re-alignment. The n_pooled=0 was
+caused by my reads splicing +176 off the (correct) candidate.
+STATUS: still NO valid C1-realign verdict; but the reference-artifact / snapping hypotheses are BOTH ruled out
+— the blocker is READ-SET PROVENANCE (get COMPASS's actual TMED9/SLC35A4/SQSTM1 supporting reads, e.g. from the
+lr_probe source BAMs / the read IDs in lr_probe_4loci_out.txt, and realign-score THOSE). Advisor consult next.
