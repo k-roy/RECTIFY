@@ -1197,3 +1197,15 @@ validation-correction integration test (rectify.cli correct on upf1d, ~unrelated
 use the targeted module set instead, or run the full suite on the cluster. Real-DRS recall spot-check
 still advisable before production human reliance. STILL IN FLIGHT: adf2053e (Deliverable-B re-align),
 a49b24df (Claim-B), a001f9fb (WS-1).
+
+### Deliverable-B: WAITING on Sherlock re-align job 32180508 (PENDING, normal partition)
+The agent diagnosed the chr5 reference-frame drift, submitted job 32180508 (minimap2+deSALT de-novo
+re-align of A549 chr5 reads → gencode_v44 chr5) → /scratch/users/kevinroy/c1_realdata_dB/align/, and
+staged the scorer. RECOVERED to THIS worktree: scripts/benchmark/c1_realign_3junctions.py +
+c1_realign_align_chr5.sbatch + dev/DELIVERABLE_B_REALDATA.md.
+RESUME (concrete): `ssh sherlock "sacct -j 32180508 -X -n -o State; ls /scratch/users/kevinroy/c1_realdata_dB/align/"`
+→ if COMPLETED + BAMs present: run the agent's c1_realign_3junctions.py on those BAMs at the gencode_v44
+candidate coords (exact cmd in dev/DELIVERABLE_B_REALDATA.md) → SNAP/HOLD per junction (honest prior=HOLD:
+short reads support non-canonical at all 3). If FAILED/CANCELLED: check the job .err, resubmit
+c1_realign_align_chr5.sbatch. If still PENDING/RUNNING: keep waiting.
+STILL IN FLIGHT: a49b24df (Claim-B), a001f9fb (WS-1) + this cluster job.
