@@ -49,11 +49,19 @@ echo "host: $(hostname)  start: $(date)  work: $WORK"
 python -c "from rectify.core.correct import walkback; print('rectify walkback has fc44ee2 guard:', hasattr(walkback,'_MIN_GENOMIC_ANCHOR_3P'))"
 
 # --- Step 1: corrected per-aligner softclipped BAMs (tail bases retained) ----
+# The raw scratch BAMs are not coordinate-sorted/indexed; rectify correct's
+# parallel region-fetch needs an index ("fetch called on bamfile without index").
+# Sort+index each into $WORK/raw first (1000 reads → instant).
+mkdir -p "$WORK/raw"
 for al in $ALIGNERS; do
     raw=$SRC/wt_by4742_rep1.$al.bam
     if [ ! -f "$raw" ]; then echo "  ! missing $raw; skipping $al" >&2; continue; fi
+    echo "--> sort+index: $al"
+    samtools sort -@ 4 -o "$WORK/raw/$al.bam" "$raw" \
+        || { echo "  SORT FAILED $al" >&2; printf '%s\n' 3 > "$RC_FILE"; exit 3; }
+    samtools index "$WORK/raw/$al.bam"
     echo "--> rectify correct: $al"
-    python -m rectify.cli correct "$raw" \
+    python -m rectify.cli correct "$WORK/raw/$al.bam" \
         --genome "$GEN" --annotation "$GFF" \
         -o "$WORK/per_aligner/$al.tsv" \
         --write-softclipped-bam "$WORK/per_aligner/$al.softclipped.bam" \
