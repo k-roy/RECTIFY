@@ -1211,3 +1211,18 @@ c1_realign_align_chr5.sbatch. If still PENDING/RUNNING: keep waiting.
 STILL IN FLIGHT: a49b24df (Claim-B), a001f9fb (WS-1) + this cluster job.
 
 ### IN-FLIGHT UPDATE (latest): Claim-B a49b24df DIED (stalled, zero durable output) → re-launched as a00cde628f2d37a20 (attempt #3, anti-stall: scaffold-to-files-first, minimal panels; SCAFFOLD-ONLY is an acceptable result — Claim-B is multi-night by design & C1 ships regardless on coherence). WS-1 a001f9fb still running. Deliverable-B job 32180508 still PENDING (Sherlock normal queue). If Claim-B attempt #3 also yields nothing, DEFER it (spec durable in dev/C1_DESIGN.md §"GENUINE non-circular Claim B path"); do not keep re-spawning the heaviest/lowest-value item.
+
+### WS-1 cleanup — DONE (results on Sherlock; "bug" was OPERATIONAL not code)
+The empty `endo_full_measure.out` was NOT a code bug: `measure-bam` runs clean on the completed full
+BAM. Demonstrated empty-output cause = window [600,1000] on the chr1-subset endo BAM (reads=0); the
+0-byte full-BAM artifact = process terminated before flush (stderr /dev/null'd, mechanism unrecoverable).
+Recovered RNA002-endo error structure (disp 1.79, gap5x 1.52 at thin=0.0153/[600,1000]) shows NO
+over-dispersion excess over its SIRV baseline (2.10/1.66) → the massive over-dispersion is RNA004
+CHEMISTRY (hot-read tail: h69 SIRV disp 17.5/gap5x 9.34), NOT biology — confirms the RNA004 finding.
+qscore fixed via qscore_from_bam.py (prior rc=141 = zcat|head SIGPIPE): RNA004 high-mean(~31)-but-bimodal
+(low-q hot tail + q40 pileup), RNA002 low-mean(~17)-but-tight. Outputs: /scratch/users/kevinroy/combined_ref/ws1_cleanup/
+(WS1_CLEANUP_FINDINGS.txt + report files). STILL RUNNING (confirmatory, low-pri): h69 RNA004-endo cell
+jobs 32185601+32187048 → `sacct -j 32185601,32187048 -X -o State`; when COMPLETED cat
+error_realism_h69endo_{measure,autocorr}.report.txt. OPTIONAL code hardening flagged (not applied): in
+cmd_measure_bam move the len_min/len_max window check BEFORE events_from_bam_read (~6x less work/mem for
+windowed runs); RNA004-scale measure-bam must run on a compute node ≥32G (login OOMs).
