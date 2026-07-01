@@ -111,3 +111,35 @@ junction) before trusting the realign n.
 
 ## Status / resume
 (pending — see HANDOFF)
+
+## RESULTS (2026-06-30, re-align job 32180508; minimap2 arm only — deSALT arm FAILED)
+Job 32180508 FAILED at the deSALT step (`FAIL desalt_aln`), but minimap2 completed (mm2.bam, 440MB,
+all 3 loci covered: SQSTM1 6798 / TMED9 1254 / SLC35A4 269 reads; ~6797/1248/266 SPLICED).
+Ran the recovered scorer (c1_realign_3junctions.py, TOL=8) → **n_pooled=0 at ALL 3 candidate coords.**
+
+ROOT CAUSE (decisive, NOT an under-splicing artifact): the reads splice at STRONG, CONSISTENT coords
+that are OFFSET from the rederive_111 candidate coords — the frame mismatch PERSISTS even after re-aligning
+to align/chr5.fa:
+| junction | rederive candidate (canon/nonc) | reads' ACTUAL dominant junction (n) | offset | motif AT read coord |
+| --- | --- | --- | --- | --- |
+| TMED9 | 177592500 / 177593474 | **177592675-177593649 (1200 reads)** | +175/+175 | **GT..AG (CANONICAL, offset 0)** |
+| SLC35A4 | 140564954 / 140565547 | **140564858-140565872 (159 reads)** | −96/+325 | **GT..AG (CANONICAL, offset 0)** |
+| SQSTM1 | 179824400 / 179832205 | (none within 400bp; needs the failed deSALT arm) | large | — |
+
+The TMED9 +175 offset is essentially IDENTICAL to the +176 the first attempt measured on the SUMNER build —
+i.e. TWO independent references (sumner GRCh38_chr5.fa AND align/chr5.fa) AGREE with each other and both sit
++175 from the rederive_111 candidate. So the rederive_111 coordinate frame is the OUTLIER; align/chr5.fa is
+NOT the gencode_v44 frame the candidates are in (the sbatch's ref fetch did not produce the rederive frame).
+
+⚠️ CONSEQUENTIAL, UNRESOLVED INTERPRETATION (do NOT commit a verdict yet — it would contradict the COMPASS
+"3 genuinely non-canonical junctions" claim on possibly-mis-framed evidence):
+  (H1) The COMPASS non-canonical call was a COORDINATE-FRAME ARTIFACT — the reads actually splice at a clean
+       canonical GT..AG, and the "non-canonical dominant" arose from scoring at mis-framed coords. → would
+       REFUTE the 3 junctions as novel-non-canonical.
+  (H2) align/chr5.fa is a DIFFERENT frame/locus, so 177592675-177593649 is a DIFFERENT (canonical) intron than
+       the one COMPASS flagged — I am comparing the wrong junction and cannot conclude.
+DECISIVE next step (frame reconciliation, deferred): obtain the EXACT reference rederive_111/lr_probe used
+(the gencode_v44 build path in $W/genome_references_latest/), lift the candidate coords through the SAME
+build, OR re-derive canon/nonc candidates IN align/chr5.fa's frame from the read-supported junction + its
+±4bp motif neighbourhood, THEN realign canon-vs-nonc there. Also fix + rerun the deSALT arm for SQSTM1.
+Result file: /scratch/users/kevinroy/c1_realdata_dB/c1_realign_mm2only.json (all n_pooled=0, documented).
