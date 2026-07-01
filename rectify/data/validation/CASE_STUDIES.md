@@ -276,6 +276,16 @@ audit + a regression gate that clip-to-win still loses. Two independent advisors
 walkback fix now, pursue the graded penalty as a separate truth-anchored effort. cat2_plus_1→uLTRA should be
 a *consequence* of that effort, not its calibration target.
 
+**AUDIT DONE (2026-06-30, Sherlock jobs 32183378 stale-tree + 32193027 fix-deployed;
+`scripts/benchmark/graded_clip_audit.py`):** on 1929 real DRS reads (wt_by4742_rep1), the graded
+terminal-window clip penalty flips only **3 winners (0.16%), all legitimate poly-A tail-flips
+(tail_share=1.0, minimap2↔uLTRA), 0 SUSPICIOUS, 0 regressions** — a tiny, clean blast radius. The tail is
+estimated from the 3′ terminus inward (NOT whole-clip average, which over-discounts long moderately-A-rich
+non-tail clips — the validation read 00a1e01e false positive: 76-bp clip, 25% terminal-A). Calibration sweep
+(tail_frac × term_window): **tail_frac=0.6, term_window=12** is the knee — tf=0.5 admits a false positive
+(1 SUSPICIOUS), tf≥0.7 misses legit flips. This de-risks wiring the graded penalty into core
+`_cigar_hp_edit_distance`; still gated on a clip-to-win regression test (cat1_minus_2-class must still lose).
+
 ## Extending this doc
 
 Add a `## Case studies — cat<N>_<name>` section as each category is reviewed.
