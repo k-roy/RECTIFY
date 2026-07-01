@@ -1174,3 +1174,18 @@ DEFERRED TO POST-RESET (3:59 PM; do NOT spawn agents/panels — INLINE only, bud
 3. **C1 Claim-B** (M1 sim + SIRV-rate read): held-out injection simulator on natural long-HP templates at SIRV-measured (table-INDEPENDENT) rates; law>B0 on known edits = shape transfers. Multi-night.
 4. **WS-1 cleanup** (CLUSTER, LOW value): debug empty `endo_full_measure.out` on `/scratch/users/kevinroy/combined_ref/ws1_cleanup/encff_endo_1.bam` (check encff_extract.err; likely the [600,1000] window excludes most endo reads or a per-read error).
 RESUME: `git -C <worktree> log --oneline -12` shows all verdicts. For each deferred item, the named files + commands above are self-contained. Smoke GREEN at every commit.
+
+### SESSION-12 RESUMED (budget OK: 14% USED not remaining) — Discovery fix + deferred queue in flight
+⚠️ UNCOMMITTED CHANGE: the Discovery fix IS APPLIED to `rectify/core/consensus/scoring.py`
+(the N-branch: `prev_rp = ref_pos + length` instead of `+ length - 1`, attributing a post-N
+insertion to the first exon base). Validation so far GREEN: smoke + 49 consensus/fence/tiebreaker
+tests (test_gmap_fence_regression, test_consensus_selection, test_corrected_consensus_tiebreaker).
+FULL fast pytest RUNNING (base env — /Users/kevinroy/miniconda3/bin/python, has pandas+Bio+pysam;
+pysam env does NOT). RESUME: check `pytest -q -m "not slow"` result; if all pass →
+`git add rectify/core/consensus/scoring.py && git commit` (feat: close the Discovery snap-FDR
+blind spot); if ANY fail → investigate before commit (do NOT commit a red suite). Real-DRS recall
+spot-check still advisable per dev/DISCOVERY_TIEBREAK.md.
+IN FLIGHT (3 agents, reliability=write-to-files): Deliverable-B re-align→gencode_v44 (adf2053e3caf83776,
+RESUMED, cluster /scratch/users/kevinroy/c1_realdata_dB/align/); C1 Claim-B injection sim
+(a49b24df86163d868, M1); WS-1 cleanup (a001f9fb2d9efd216, cluster combined_ref/ws1_cleanup/).
+On each report: recover from worktree (`git worktree list`), cross-check, integrate, smoke, commit.
