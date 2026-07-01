@@ -86,7 +86,28 @@ under-splices) of a549_chr5_trimmed.fastq.gz -> gencode_v44, into MY scratch
 /scratch/users/kevinroy/c1_realdata_dB/align/, then run c1_realign_3junctions.py on those BAMs.
 
 ## RESULTS
-(pending — awaiting re-alignment to gencode_v44)
+(pending — awaiting re-alignment job 32180508)
+
+### Resume (if this session drops)
+IN FLIGHT: sbatch **32180508** (`c1_realign_align_chr5.sbatch`) re-aligns
+a549_chr5_trimmed.fastq.gz -> gencode_v44 chr5 (minimap2 + deSALT, de-novo), outputs in
+`/scratch/users/kevinroy/c1_realdata_dB/align/`. Sentinel `.align_rc` = `0` on success.
+```
+ssh sherlock 'sacct -j 32180508 -X -o State%12; cat /scratch/users/kevinroy/c1_realdata_dB/align/.align_rc 2>/dev/null'
+```
+If rc==0, run the realign on the NEW BAMs then it writes c1_realign_W15.json:
+```
+ssh sherlock 'source /home/groups/larsms/users/kevinroy/anaconda3/etc/profile.d/conda.sh; conda activate rectify
+ A=/scratch/users/kevinroy/c1_realdata_dB/align
+ cd /home/groups/larsms/users/kevinroy/c1_realdata_dB_code
+ python3 c1_realign_3junctions.py \
+   --genome /scratch/users/kevinroy/compass_a549/genome_references_latest/GRCh38_gencode_v44.fasta \
+   --bams $A/mm2.bam,$A/desalt.bam \
+   --penalty-tsv /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/penalty_scores.tsv \
+   --window 15 --out /scratch/users/kevinroy/c1_realdata_dB/c1_realign_W15.json'
+```
+FIRST sanity-check the new BAMs actually splice at the candidate coords (scan N-ops near each
+junction) before trusting the realign n.
 
 ## Status / resume
 (pending — see HANDOFF)

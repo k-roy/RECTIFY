@@ -1226,3 +1226,23 @@ jobs 32185601+32187048 → `sacct -j 32185601,32187048 -X -o State`; when COMPLE
 error_realism_h69endo_{measure,autocorr}.report.txt. OPTIONAL code hardening flagged (not applied): in
 cmd_measure_bam move the len_min/len_max window check BEFORE events_from_bam_read (~6x less work/mem for
 windowed runs); RNA004-scale measure-bam must run on a compute node ≥32G (login OOMs).
+
+### SESSION-13 (2026-06-30 eve, after weekly-limit account switch) — Deliverable-B cluster job the ONLY open item
+NOTHING LOST to the account switch (all conclusions committed). 7 of 8 gate investigations DONE+COMMITTED
+(C3 refuted 2bbe559; C4 c4e8207; C5 658b72c; C6 28f6aac; Discovery FIX SHIPPED 5e18960; Flat-Q d412750;
+Claim-B aff9660; WS-1 recorded 60ef525). ONLY OPEN: Deliverable-B real-data snap/hold verdict, gated on
+Sherlock re-align job 32180508 (RUNNING ~1h; minimap2 done=mm2.bam, deSALT in sort/merge — the slow SQSTM1 arm).
+DURABLE RESUME (no watcher needed):
+  1) `ssh sherlock "sacct -j 32180508 -X -n -o State; ls -la /scratch/users/kevinroy/c1_realdata_dB/align/*.bam"`
+  2) if COMPLETED + mm2.bam & deSALT bam present: run the recovered scorer
+     `PATH="/Users/kevinroy/miniconda3/bin:$PATH" PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python \
+      scripts/benchmark/c1_realign_3junctions.py` on those BAMs at the gencode_v44 candidate coords
+     (exact cmd + coords in dev/DELIVERABLE_B_REALDATA.md) → SNAP/HOLD per junction (SQSTM1/TMED9/SLC35A4),
+     WITH and WITHOUT the _CANONICAL_HP_PRIOR=0.5 discount. Honest prior=HOLD (short reads support non-canonical
+     at all 3). Commit `feat(deliverable-B): real-data snap/hold verdict`.
+  3) if FAILED/CANCELLED: check align.32180508.out + the job .err; resubmit c1_realign_align_chr5.sbatch.
+  4) if still RUNNING: keep waiting (deSALT on human chr5 is slow, allow 1-2h).
+A background watcher (/tmp/db_watch_32180508.sh, sentinel /tmp/db_32180508.sentinel) is armed but is CONVENIENCE
+ONLY — this RESUME block is the durable signal (survives laptop sleep / session death).
+FYI also-running (WS-1 confirmatory, low-pri, results land in files on scratch, NO integration needed):
+h69 RNA004-endo cells jobs 32185601+32187048 → cat error_realism_h69endo_{measure,autocorr}.report.txt when done.
