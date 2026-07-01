@@ -5,6 +5,220 @@ commits here; user confirmed you own the validation work). **You are a fresh ses
 bottom, then continue.** Read `~/.claude/CLAUDE.md` + `~/work/CLAUDE.md` + `CLAUDE.md` first (rm-safety,
 M1 8GB discipline, ControlMaster, surgical `git add` — never `-A`).
 
+## ⚑ UPDATE 2026-06-29 (#5) — walkback homopolymer-undercall fix (CORE change, IN FLIGHT)
+
+Triggered by cat2_plus_1 review: a real DRS long-homopolymer undercall was being eaten by the walkback.
+
+**Done (uncommitted):**
+- `rectify/core/correct/walkback.py`: large-deletion pre-scan (BOTH right-side ~line 600 and left-side
+  ~line 815) now gated by a **homopolymer-undercall guard** — it will NOT skip past a ≥`large_del_min_bp`
+  deletion if ≥`_MIN_GENOMIC_ANCHOR_3P` (=5) non-stop-base read=ref MATCHES sit 3' of it (those are genuine
+  templated residues = a homopolymer undercall flanked by real genomic seq, not a force-aligned poly-A tail).
+  New module constant `_MIN_GENOMIC_ANCHOR_3P = 5` near top (after `APPLIED_NONE`).
+- `tests/test_validation_reads_upf1d.py`: cat1_minus_1 expected corrected_3prime `1162861 → 1162817`
+  (same bug class; comment added). `test_indel_correction_applied` still passes (label still present).
+
+**Verified:**
+- ROOT CAUSE proven via `/private/tmp/.../scratchpad/wb_probe5.py` + `wb_probe7.py`: must call
+  `_decode_eq_seq_inplace(read, genome)` BEFORE the walkback (uLTRA/minimap2 emit `=`-SEQ; undecoded → walkback
+  sees all-mismatch → returns None, masking the bug). After decode: cat2_plus_1 minimap2/uLTRA walked 23759→23711
+  (correction_bp=48 = 9D+39M, eating genuine `39=` over AT-rich genomic incl. matched T's). deSALT (no 9D)→None.
+- POST-FIX: cat2_plus_1 minimap2/uLTRA → corrected 23758 (bp=1, KEEPS the 9D+match); deSALT unchanged.
+  upf1d cat1_minus_1 → 1162817 (37 bp perfect C/G-rich match 3' of a 6D; old 1162861 over-walked it).
+- Targeted suite (walkback/atract/indel/correct/polya): was 1 fail (the upf1d test, now updated).
+- Advisor consulted twice (approach + reconcile); 1162861 confirmed a regression snapshot (git blame
+  de916fcf, no orthogonal-truth comment), not external ground truth.
+
+**Open / NOT YET DONE:**
+- FULL `pytest -m "not slow"` running in background (task `bovc9ov6z`; result tail in
+  `scratchpad/pytest_full.txt`) — CHECK RESULT. (Earlier runs `b3upqsr0d` were killed by M1 pressure.)
+- FULL suite result: **1605 passed, upf1d now green**; 1 EXPECTED fail =
+  `test_bam_parallel_state.py::test_process_bam_file_parallel_deterministic` (a GOLDEN-HASH test that pins
+  correction output — my fix changes it intentionally; re-record via `RECTIFY_RECORD_GOLDEN=1` and paste into
+  `GOLDEN_HASH_VALIDATION_MINIMAP2_NT2`). This is the expected signal, not a bug.
+- 36-read blast-radius diff: **DONE** (regen task `bwyhclvz0` exit 0). **RESULT: 0 changes** to any merged
+  winner/corr3 across all 36 reads (diff of regenerated `corrected_reads.tsv` vs
+  `scratchpad/BEFORE_corrected_reads.tsv`). The fix changes ONLY per-aligner diagnostic BAMs: cat2_plus_1
+  minimap2/gapmm2/uLTRA rectified rows now keep `9D38(=|M)9S` (the 9D), instead of clipping to `47S`.
+  cat2_plus_1 winner UNCHANGED = deSALT @ 23754 (uLTRA now @ 23758 with clean 49=9D38= but does NOT win —
+  a SEPARATE EER-ED/winner-selection question the user was asked about).
+- Fixtures regenerated in the working tree (UNCOMMITTED, `git status` shows `rectified/` BAMs + CASE_STUDIES.md
+  modified). Golden hash NOT yet re-recorded.
+
+**EER-ED follow-up (user chose to pursue it FIRST, before committing the walkback fix):**
+- Diagnosed why deSALT still wins cat2_plus_1 over uLTRA's clean 9D. Per-op ED breakdown (probe
+  `scratchpad/ed2.py`, uses bundled `penalty_tables/penalty_scores.tsv`+`str_penalty_scores.tsv`):
+  uLTRA/minimap2/gapmm2 ED=12.99 vs deSALT ED=9.90. **The 9D is correctly CHEAP = 0.078**
+  (`del_cost(hp=24,'A')=0.0087`/base) — the user's intuition was right. **The blocker is the poly-A-tail
+  CLIP penalty**: uLTRA honestly clips the 9-base tail (`9H`→9.0 flat in `_cigar_hp_edit_distance`,
+  corrected_consensus.py line ~139-143), deSALT force-aligns the tail (insertions=6.8, no clip) and wins.
+  Merge scores the `.trimmed` (HARD-clipped) per-aligner BAMs (regen passes `per_aligner_corrected_bams=
+  per_aligner_trimmed`). uLTRA also has the MORE-correct 3' (23758 vs deSALT 23754; genomic match ends 23759).
+- Clip penalty exists on purpose (stop walkback+clip from beating an inline deletion — cat1_minus_2), so
+  the fix must NOT just remove it. Recommended: **tail-aware clip penalty** — subtract the known poly-A tail
+  length (TSV `three_prime_soft_clip_length`/`polya_length`) from the clip cost; keep penalizing genuine
+  genomic clips. Wrinkle: `_cigar_hp_edit_distance` sees the BAM read only (tail H-clipped → bases gone),
+  so the tail length must be threaded in from the TSV.
+
+**Tail reconcile (probe `scratchpad/tail_reconcile.py`):** uLTRA clips final 9 read bases `AAATAAAAT`;
+genome past its endpoint (23759+) is `ACAATGAT` → the clip is genuine non-templated tail, NOT discarded
+genomic. uLTRA cleaner alignment (3' 23758 at genomic-match boundary) but CPA genuinely ambiguous (tail is
+AT-rich/degenerate). User calls it a toss-up.
+
+**Two independent advisor agents** (neutral identical briefing, A=leave winner / B=tail-aware clip penalty):
+- Advisor 2 (DONE): **Option A now, Option B as a separate validated project.** It IS a systematic flaw
+  (flat clip vs near-free HP-del rewards force-aligning the tail), but the clip penalty is load-bearing
+  across all reads; a tail-aware spec needs a robust poly-A/AT-tail detector (this tail is degenerate AT-rich
+  = where naive detectors misfire) + full before/after winner audit + regression gates. Don't retune a core
+  term on one ambiguous read where the "wrong" winner still lands on a defensible CPA.
+- Advisor 1 (DONE): **Option A.** "A tidier alignment is not evidence of a more correct CPA when the CPA is
+  ambiguous" — preferring uLTRA = confirmation bias; calibrating a load-bearing cross-cutting cost on one
+  read with no known-correct answer = overfitting. B = flagged hypothesis for a truth-anchored study.
+- BOTH advisors + assistant agree: **ship A now, defer B to a validated effort.**
+
+**Option B refined (user's idea, 2026-06-29) — this is the deferred-B spec:** instead of binary tail-length
+subtraction, make the 3' clip penalty GRADED by a probability the clipped tail is poly-A-derived (assess
+A-richness; e.g. 9S=AAATAAAAT = 7A/9 → high P → discount the 9.0 toward ~0; low-A clip keeps full penalty).
+Elegant: A/T-richness may AUTO-preserve the clip penalty's load-bearing role (genomic discards = low-A = full
+penalty (cat1_minus_2); real tails = high-A = forgiven). Constraints to handle in the B effort:
+  - STRAND-AWARE: A-rich on plus, T-rich on minus (key off per-strand stop_base, not literal A).
+  - PLUMBING: merge scores `.trimmed` (HARD-clipped) BAMs → clipped bases absent; must score `.softclipped`
+    variant OR carry clipped-tail composition via TSV. (`_cigar_hp_edit_distance` in corrected_consensus.py.)
+  - CALIBRATION: the P→penalty curve can't be fit on cat2_plus_1 (unknowable CPA). Validate on reads with
+    UNAMBIGUOUS CPA (clean poly-A, ideally orthogonal 3'-truth) + before/after 36-read winner reshuffle +
+    regression gate (cat1_minus_2-class must still lose). cat2_plus_1→uLTRA should be a CONSEQUENCE, not target.
+
+**DONE: walkback fix committed `fc44ee2`** (Option A shipped). Surgical add: walkback.py + 2 tests
+(upf1d expectation + golden hash a41ec734…) + CASE_STUDIES.md cat2_plus_1 entry + regenerated `rectified/`.
+Reverted dorado_source.bam (re-serialization churn, identical CIGARs). `pytest -m "not slow"` = 1606 passed.
+
+**NOW STARTING — Option B effort (user approved 2026-06-29): graded A/T-richness clip penalty.**
+User guidance: "test the graded penalty on a subset of our DRS datasets to see the blast radius" (i.e. go
+beyond the 36 validation reads — use real DRS data for the winner-reshuffle audit). Spec lives in
+CASE_STUDIES cat2_plus_1 "Open EER-ED hypothesis". Resume:
+1. Implement graded clip cost in `_cigar_hp_edit_distance` (corrected_consensus.py ~line 139-143):
+   3'-clip penalty scaled by P(tail is poly-A-derived) = strand-aware stop-base-richness of the clipped run
+   (plus→A, minus→T). PLUMBING: merge scores `.trimmed` (hard-clipped) BAMs → clipped bases absent; score
+   the `.softclipped` variant instead, or carry clipped-tail composition via the per-aligner TSV.
+2. Find a DRS subset to test on (local validation bundle is only 36 reads; real DRS lives on cluster H2 —
+   ask user for path or use an h2-qsub chunk). Run before/after winner reshuffle; REGRESSION GATE: the
+   cat1_minus_2-class clip-to-win must still LOSE; cat2_plus_1→uLTRA must emerge as a consequence.
+3. Calibrate the P→discount curve on UNAMBIGUOUS-CPA reads (clean poly-A), not cat2_plus_1.
+
+**B prototype DONE (local sanity gate, non-invasive)** — `scratchpad/graded_proto.py` recomputes per-aligner
+ED over the 36-read `.softclipped` BAMs with a graded trailing-clip cost = `len × (1 − stop_base_richness)`
+(plus→A, minus→T). Results: **2/36 winners flip** (min-ED approx, NO merge tiebreakers — approximate!):
+  - cat2_plus_1: deSALT(9.90) → minimap2/gapmm2/uLTRA (tie 12.99, clean 9D38M) ✓ target flips.
+  - cat1_minus_2: uLTRA → uLTRA ✓ regression case holds.
+  - 00a1e01e (chrVII, huge-ED messy read): mapPacBio→uLTRA — UNVETTED second flip, investigate.
+Caveats: min-ED only (real merge differs), linear (1−r) curve uncalibrated, 36 reads = curated edge cases
+not representative DRS.
+
+**00a1e01e INVESTIGATED (false positive of naive metric):** its 76-bp clip `TACAAAATGAAAT…` is NOT poly-A
+(whole-clip A=0.36, terminal-12 A=0.25) — a discarded complex/2nd-exon segment. mapPacBio force-aligns it as
+insertion garbage (no clip). The naive whole-clip-average linear `(1−r)` over-discounts it → false flip.
+**REFINED METRIC (key result):** assess stop-base richness in the **terminal window** (3'-most ~12 bp where
+the tail sits), NOT whole-clip average. cat2_plus_1 terminal-12 A=0.78 vs 00a1e01e 0.25 → cleanly separates.
+A hard ≥0.8 threshold FAILS (cat2's degenerate tail is 0.78) → must be a GRADED score on the terminal window.
+
+**DRS audit data LOCATED (user approved wt_by4742_rep1):** per-aligner RAW BAMs on Sherlock scratch
+`/scratch/users/kevinroy/rectify_single_22321416_0/wt_by4742_rep1.{minimap2,gapmm2,mapPacBio,deSALT,uLTRA}.bam`
+(+ `.rectified.bam` merged). ⚠️ Sherlock scratch is EPHEMERAL (purge policy) — re-confirm/re-stage if gone
+(raw source: `/oak/…/larsms/Users/kevinroy/projects/TRT/raw_data/nanopore/inhouse_by4742_dst1_4nqo_ski7/`,
+but that dir has dst1d/ski2d/4nqo — wt_by4742_rep1 itself via the build_dorado fallback path / the scratch run).
+Oak rectify install: `/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/` (may be STALE — needs the
+`fc44ee2` walkback fix deployed before the audit, else baseline is pre-fix).
+
+**AUDIT: Sherlock job `32183378`** (larsms; RESUBMIT of 32181800 which FAILED rc=3 "fetch on bamfile without
+index" — fixed by sort+indexing raw BAMs first, commit `<sbatch fix>`). Sentinel + report paths use the CURRENT
+job id: `/scratch/users/kevinroy/graded_clip_audit/.audit_rc` and `graded_clip_reshuffle_32183378.tsv`. M1
+background watchers keep getting killed — rely on the sentinel + this check logic, not a live watcher.
+CHECK: `ssh sherlock 'cat /scratch/users/kevinroy/graded_clip_audit/.audit_rc; sacct -j 32183378 -X -o State'`.
+If rc=0 → fetch+read `graded_clip_reshuffle_32183378.tsv`. If rc≠0 → `tail slurm_32183378.err`.
+
+**FIRST-PASS AUDIT RESULT (job 32183378, rc=0, 2026-06-30):** 1929 real DRS reads → **3 winners flip (0.16%),
+ALL tail-flips (tail_share=1.0, minimap2↔uLTRA), 0 SUSPICIOUS, 0 regressions.** The graded terminal-window
+clip penalty has a tiny, clean blast radius on real data — de-risks the Option-B core change. CAVEAT: stale
+Oak rectify (no fc44ee2 guard, confirmed in log) → cat2_plus_1-class 9D-preservation synergy UNDERCOUNTED;
+expect a few more legit tail-flips on a fix-deployed pass. Reshuffle TSV saved:
+`/scratch/users/kevinroy/graded_clip_audit/graded_clip_reshuffle_32183378.tsv` (3 rows).
+
+**NEXT STEPS for Option B:**
+1. ✅ DONE — fix-deployed FRESH tree: `fc44ee2` code rsync'd to `/scratch/users/kevinroy/rectify_fc44ee2/`
+   (176 py files, imports as `rectify`, guard=True; uses Oak data via absolute paths). fc44ee2 is NOT on
+   origin (origin head 5b44b31 = shared/COMPASS) so do NOT push/clone — rsync code from M1 is the deploy path.
+2. **IN FLIGHT — 2nd pass + calibration: Sherlock job `32193027`** (`run_graded_clip_audit_p2_sherlock.sh`,
+   PYTHONPATH=fresh tree). Corrects once, then sweeps graded_clip_audit.py over tail_frac{0.5,0.6,0.7,0.8}
+   × term_window{8,12,16}. Sentinel `/scratch/users/kevinroy/graded_clip_audit/.audit_p2_rc`.
+   CHECK: `ssh sherlock 'cat /scratch/users/kevinroy/graded_clip_audit/.audit_p2_rc; sacct -j 32193027 -X -o State'`.
+   If rc=0 → read `calibration_summary_32193027.tsv` (flip/tailflip/SUSPICIOUS per param) +
+   `graded_clip_reshuffle_p2_32193027.tsv` (default tf0.6/tw12); compare to 1st-pass (3 flips). If rc≠0 →
+   `tail slurm_p2_32193027.err`. (M1 watchers keep dying — sentinel is source of truth.)
+3. ✅ DONE — 2nd pass + calibration (job 32193027, rc=0, guard active). Sweep result
+   (`calibration_summary_32193027.tsv`, 1929 reads): tf=0.5 → 11-13 flips but **1 SUSPICIOUS** (false-pos
+   creeps in); tf=0.6 → 3-4 flips, **0 SUSPICIOUS**; tf=0.7/0.8 → 1-2 flips, 0 SUS (over-conservative).
+   term_window 8≈12, 16 = +1 legit flip. **CALIBRATION DECISION: tail_frac=0.6, term_window=12** (knee: max
+   legit tail-flips at 0 SUSPICIOUS; 0.5 is unsafe, ≥0.7 misses flips). tw=16 = higher-recall alt (4 vs 3).
+   Fix-deployed reshuffle = SAME 3 flips as 1st pass (902999d7/b164de40/de067271, all minimap2↔uLTRA
+   tail_share=1.0) → walkback fix doesn't destabilize winner selection; cat2_plus_1's 24-A pattern is rare
+   & absent from this 1000-read chunk. Blast radius stable: 3/1929, 0 suspicious.
+4. ❌ CORE WIRING ABANDONED (2026-07-01) — **Option B is unsafe, do NOT wire.** The clean first audit was a
+   STRAND-BUG artifact (grader only did the trailing clip; minus-strand tail is the LEADING clip → no-op on
+   minus + spurious T-rich-5'-fragment flips = 2 of 3 first-pass flips). Strand-fixed the audit tool
+   (commit: graded_clip_audit.py from_start on minus) → it then flips **cat1_minus_2 (the regression case):
+   uLTRA @ CPA 15345 correct → minimap2 @ 15351 WRONG (6 bp)**. minimap2's leading clip CCTTT = AAAGG on the
+   RNA = the GG genomic landmark uLTRA threads, but T-rich on the forward strand → a pure A/T-richness
+   estimator can't tell mis-clipped genomic evidence from a real tail → re-breaks clip-to-win. Verdict +
+   full arc in CASE_STUDIES cat2_plus_1. A future Option-B needs a stronger tail-vs-genomic discriminator
+   (cross-aligner 3' consensus, or forbid forgiving a clip abutting a genomic non-stop landmark), validated
+   on BOTH strands with cat1_minus_2 as a hard gate. cat2_plus_1 stays deSALT-winner. **Walkback fix fc44ee2
+   stands independently — the ONLY shipped production change from this whole thread.** Scripts deployed to
+`/scratch/users/kevinroy/graded_clip_audit/`. Sentinel `= /scratch/users/kevinroy/graded_clip_audit/.audit_rc`
+(rc inside; 0=ok). Report `= /scratch/users/kevinroy/graded_clip_audit/graded_clip_reshuffle_32181800.tsv`.
+RESUME/CHECK: `ssh sherlock 'cat /scratch/users/kevinroy/graded_clip_audit/.audit_rc 2>/dev/null; sacct -j
+32181800 -X -o State'` — if rc=0 → fetch+read the reshuffle TSV (flip count, tail-flip vs SUSPICIOUS,
+regression gate); if rc≠0 or FAILED → read `slurm_32181800.err` in that dir. First-pass caveat: deployed Oak
+rectify is STALE (job log prints whether walkback has the fc44ee2 guard — expect False).
+
+**AUDIT TOOLING BUILT + COMMITTED `2d0acfa`:** `scripts/benchmark/graded_clip_audit.py` (graded vs flat
+winner reshuffle; terminal-window tail estimator; tail-flip/SUSPICIOUS classifier; local 36-read: 1 flip =
+cat2_plus_1 tail-flip, 0 SUSPICIOUS, 00a1e01e no longer flips) + `scripts/benchmark/run_graded_clip_audit_
+sherlock.sh` (larsms sbatch). **BLOCKED: SSH ControlMaster to `sherlock` expired → needs Kevin's interactive
+2FA re-open** (do NOT force; BatchMode can't re-auth). Remaining deploy+submit (run AFTER Kevin re-opens ssh,
+e.g. he types `! ssh sherlock true`):
+```
+scp scripts/benchmark/graded_clip_audit.py scripts/benchmark/run_graded_clip_audit_sherlock.sh \
+    sherlock:/scratch/users/kevinroy/graded_clip_audit/
+ssh sherlock 'cd /scratch/users/kevinroy/graded_clip_audit && sbatch run_graded_clip_audit_sherlock.sh'
+# watch sentinel: /scratch/users/kevinroy/graded_clip_audit/.audit_rc (rc inside); report
+#   /scratch/users/kevinroy/graded_clip_audit/graded_clip_reshuffle_<jobid>.tsv
+# verify raw BAMs still on scratch first (Apr-22, ephemeral): ls $SRC/wt_by4742_rep1.*.bam
+```
+
+**Audit plan (sherlock-sbatch, `larsms` acct; chunk it):** (1) deploy `fc44ee2` to Oak rectify; (2) `rectify
+correct` per aligner on a wt_by4742 read subset → per-aligner corrected BAMs+TSVs; (3) `merge_corrected_tsvs`
+with current ED = baseline winners; (4) recompute ED with the GRADED terminal-window clip penalty → graded
+winners; (5) report winner reshuffle: legit tail-clip flips vs 00a1e01e-class false positives; REGRESSION
+GATE: clip-to-win (cat1_minus_2-class) must still lose. Then calibrate the terminal-window P→discount curve.
+**Do NOT touch core `_cigar_hp_edit_distance` until this audit + gate pass.** Walkback fix `fc44ee2` is
+shipped & independent. Prototype: `scratchpad/graded_proto.py`, `terminus.py`, `probe_00a1.py`.
+
+**Resume (after user answers):**
+1. If user says commit: re-record golden hash —
+   `RECTIFY_RECORD_GOLDEN=1 conda run -n base python -m pytest tests/test_bam_parallel_state.py::test_process_bam_file_parallel_deterministic -s 2>&1 | grep "hash ="`
+   then paste into the `GOLDEN_HASH_VALIDATION_MINIMAP2_NT2` constant in `tests/test_bam_parallel_state.py`.
+2. Re-run that one test to confirm green, then `pytest -m "not slow"` sanity (expect all pass).
+3. Add the `cat2_plus_1` case study to `rectify/data/validation/CASE_STUDIES.md` (homopolymer-undercall +
+   the walkback-guard fix; note winner still deSALT pending EER-ED follow-up).
+4. Surgical commit: `git add rectify/core/correct/walkback.py tests/test_validation_reads_upf1d.py
+   tests/test_bam_parallel_state.py rectify/data/validation/CASE_STUDIES.md` + the regenerated
+   `rectify/data/validation/rectified/**` + `rectify/data/validation/corrected_reads.tsv`
+   (NEVER `git add -A`; do NOT touch COMPASS peer files: regen_2026_06_25/, compass_*, upf1d_2026_05/stage/).
+   If user says DON'T commit fixtures: `git checkout -- rectify/data/validation/rectified rectify/data/validation/corrected_reads.tsv` to revert the regen.
+
+**Files:** `rectify/core/correct/walkback.py` (fix), `tests/test_validation_reads_upf1d.py` (expectation),
+`rectify/data/validation/CASE_STUDIES.md` (add cat2_plus_1), scratchpad `wb_probe5/6/7.py` + `BEFORE_corrected_reads.tsv`.
+
 ## ⚑ UPDATE 2026-06-27 (#4) — figure-review session (per-read renderer overhaul)
 
 Interactive figure-by-figure review of the DRS validation bundle with the user. All changes are to
