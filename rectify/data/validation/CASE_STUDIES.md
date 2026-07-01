@@ -276,15 +276,26 @@ audit + a regression gate that clip-to-win still loses. Two independent advisors
 walkback fix now, pursue the graded penalty as a separate truth-anchored effort. cat2_plus_1→uLTRA should be
 a *consequence* of that effort, not its calibration target.
 
-**AUDIT DONE (2026-06-30, Sherlock jobs 32183378 stale-tree + 32193027 fix-deployed;
-`scripts/benchmark/graded_clip_audit.py`):** on 1929 real DRS reads (wt_by4742_rep1), the graded
-terminal-window clip penalty flips only **3 winners (0.16%), all legitimate poly-A tail-flips
-(tail_share=1.0, minimap2↔uLTRA), 0 SUSPICIOUS, 0 regressions** — a tiny, clean blast radius. The tail is
-estimated from the 3′ terminus inward (NOT whole-clip average, which over-discounts long moderately-A-rich
-non-tail clips — the validation read 00a1e01e false positive: 76-bp clip, 25% terminal-A). Calibration sweep
-(tail_frac × term_window): **tail_frac=0.6, term_window=12** is the knee — tf=0.5 admits a false positive
-(1 SUSPICIOUS), tf≥0.7 misses legit flips. This de-risks wiring the graded penalty into core
-`_cigar_hp_edit_distance`; still gated on a clip-to-win regression test (cat1_minus_2-class must still lose).
+**OPTION B SHELVED — the graded clip penalty re-breaks clip-to-win (2026-07-01).** Investigation arc:
+- First audit (jobs 32183378/32193027, `graded_clip_audit.py`) looked clean: 3/1929 flips, 0 SUSPICIOUS.
+- **But that audit had a STRAND BUG** (advisor-caught, then verified): it only graded the *trailing* soft-clip.
+  On minus-strand reads the 3′ poly-A tail is the *leading* clip (BAM SEQ is reference-forward; a minus gene's
+  CPA sits at reference_start; the tail — poly-T on the forward strand — extends to lower coord = leading).
+  So the grader was a **no-op on minus strand** (and could spuriously discount a T-rich genomic 5′ fragment —
+  2 of the 3 "clean" flips, 902999d7/b164de40, were exactly this artifact).
+- Strand-fixed the estimator (grade the tail-side clip: leading for minus / trailing for plus, scanning from
+  the RNA 3′ terminus). Re-ran on the 36-read bundle → it now flips **cat1_minus_2 (the load-bearing
+  regression case): uLTRA @ CPA 15345 (CORRECT) → minimap2 @ 15351 (6 bp WRONG).**
+- Root cause: minimap2's leading clip `CCTTT` = `AAAGG` on the RNA — it contains the **GG genomic landmark
+  uLTRA correctly threads**, but reads T-rich on the forward strand. A pure A/T-richness estimator CANNOT
+  distinguish a mis-clipped genomic homopolymer-adjacent landmark from a real poly-A tail, so it forgives the
+  clip and lets the wrong aligner win at the wrong CPA — exactly the clip-to-win failure the flat penalty
+  exists to prevent.
+- **Verdict: the simple tail-richness graded penalty is NOT safe to wire.** The flat clip penalty stays. A
+  future Option-B would need a fundamentally stronger tail-vs-genomic discriminator (e.g. cross-aligner 3′
+  consensus, or requiring the forgiven clip to NOT abut a genomic non-stop landmark), validated on BOTH
+  strands with cat1_minus_2 as a hard regression gate. cat2_plus_1 keeps deSALT as winner for now.
+- The **walkback fix (fc44ee2)** — restoring the 9D to diagnostic rows — is independent and unaffected.
 
 ## Extending this doc
 

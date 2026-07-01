@@ -49,22 +49,30 @@ except ImportError:  # pragma: no cover - older trees re-export via junction_ref
     from rectify.core.splice.junction_refiner import HpPenaltyTable, _hp_run_length
 
 
-def estimate_tail_len(clip: str, stop: str, tail_frac: float, term_window: int) -> int:
-    """Estimate the poly-A-tail length within a 3' soft-clip.
+def estimate_tail_len(clip: str, stop: str, tail_frac: float, term_window: int,
+                      from_start: bool = False) -> int:
+    """Estimate the poly-A-tail length within a 3'-tail-side soft-clip.
 
-    Expand a window from the 3' terminus (end of ``clip``) inward while the
-    cumulative stop-base fraction stays >= ``tail_frac``. Returns the length of
-    the longest such terminal run (capped at ``term_window``). A degenerate
-    AT-rich tail (e.g. cat2_plus_1 ``AAATAAAAT``, 78% A) clears tail_frac=0.6;
-    a non-tail clip whose terminus is genomic (00a1e01e ``...TCCATACATCCT``,
-    25% A) does not, so almost nothing is forgiven.
+    Expand a window from the RNA 3' TERMINUS inward while the cumulative
+    stop-base fraction stays >= ``tail_frac``. Returns the longest such terminal
+    run (capped at ``term_window``). A degenerate AT-rich tail (e.g. cat2_plus_1
+    ``AAATAAAAT``, 78% A) clears tail_frac=0.6; a non-tail clip whose terminus is
+    genomic (00a1e01e ``...TCCATACATCCT``, 25% A) does not.
+
+    ``from_start`` selects which end of ``clip`` is the RNA 3' terminus:
+      * plus strand → tail is the TRAILING clip; terminus = END of clip
+        (``from_start=False``, scan reversed).
+      * minus strand → tail is the LEADING clip; the BAM SEQ is reference-forward
+        so the RNA 3' terminus is the OUTERMOST (lowest-coord) base = the START
+        of the clip (``from_start=True``, scan forward). The pA tail reads as
+        poly-T on the forward strand, hence ``stop='T'`` for minus.
     """
     if not clip:
         return 0
+    seq = clip if from_start else clip[::-1]  # orient so index 0 = 3' terminus
     best = 0
     stop_n = 0
-    rev = clip[::-1]  # iterate from the 3' terminus inward
-    for i, base in enumerate(rev[:term_window], start=1):
+    for i, base in enumerate(seq[:term_window], start=1):
         if base.upper() == stop:
             stop_n += 1
         if stop_n / i >= tail_frac:
@@ -75,10 +83,17 @@ def estimate_tail_len(clip: str, stop: str, tail_frac: float, term_window: int) 
 def cigar_ed(read, genome_seq, pt, *, graded, tail_frac, term_window):
     """HP-aware edit distance for one corrected read. ``graded=False`` is the
     current production model (flat 1.0/clip-base); ``graded=True`` forgives the
-    estimated poly-A-tail portion of the trailing 3' soft-clip.
+    estimated poly-A-tail portion of the 3'-TAIL-SIDE soft-clip.
 
-    Returns (ed, tail_len, clip_len) — tail_len/clip_len describe the trailing
-    3' soft-clip so the caller can classify flips.
+    The 3'-tail-side clip is strand-dependent: TRAILING on plus strand, LEADING
+    on minus strand (BAM SEQ is reference-forward, a minus gene's CPA sits at
+    reference_start, and the poly-A tail — poly-T on the forward strand —
+    extends to lower coordinate = the leading clip). Grading the trailing clip on
+    minus strand was a bug: it missed every real minus tail and could spuriously
+    discount a T-rich genomic 5' fragment.
+
+    Returns (ed, tail_len, clip_len) — tail_len/clip_len describe the tail-side
+    clip so the caller can classify flips.
     """
     ct = read.cigartuples
     if ct is None:
@@ -93,6 +108,7 @@ def cigar_ed(read, genome_seq, pt, *, graded, tail_frac, term_window):
     n = len(ct)
     tail_len = 0
     clip_len = 0
+    tail_ci = 0 if read.is_reverse else n - 1   # index of the 3'-tail-side clip op
     for ci, (op, length) in enumerate(ct):
         if op == 7:                       # =
             rp += length; qp += length
@@ -111,17 +127,19 @@ def cigar_ed(read, genome_seq, pt, *, graded, tail_frac, term_window):
                                           genome_seq[rp])
             qp += length
         elif op == 4:                     # S (soft-clip)
-            is_trailing_3p = (ci == n - 1)
-            if is_trailing_3p:
+            if ci == tail_ci:             # the 3'-tail-side clip (strand-aware)
                 clip_len = length
                 clip = seq[qp:qp + length]
                 if graded:
-                    tail_len = estimate_tail_len(clip, stop, tail_frac, term_window)
+                    # minus: tail terminus = START of leading clip (from_start);
+                    # plus: tail terminus = END of trailing clip.
+                    tail_len = estimate_tail_len(clip, stop, tail_frac, term_window,
+                                                 from_start=read.is_reverse)
                     total += (length - tail_len) * 1.0   # forgive the tail portion
                 else:
                     total += length * 1.0
             else:
-                total += length * 1.0     # 5' clip: always full penalty
+                total += length * 1.0     # non-tail (5') clip: always full penalty
             qp += length
         elif op == 5:                     # H (hard-clip)
             total += length * 1.0
