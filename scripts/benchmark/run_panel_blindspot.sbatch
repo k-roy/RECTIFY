@@ -6,20 +6,20 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --output=/scratch/users/kevinroy/nj_panel/nj_panel.%j.out
-# Full 5-aligner PANEL native novel-junction recovery on the deviation ladder.
-# Self-contained + idempotent + sentinel-rc (per the cluster discipline). Runs the
-# CURRENT code from the synced dir (NOT the pre-C1 oak checkout).
-set -uo pipefail
+# Full panel native novel-junction recovery on a ladder corpus (parameterized by
+# NJ_CORPUS so stressor variants — error overlay, short exons — reuse one script).
+# No `set -u` (conda java_home.sh unbound JAVA_HOME dies under it). Sentinel-rc.
+set -o pipefail
 CODE=/home/groups/larsms/users/kevinroy/nj_panel_code
-CORPUS=/scratch/users/kevinroy/nj_panel/corpus
-SENT=/scratch/users/kevinroy/nj_panel/.nj_panel_rc
+CORPUS=${NJ_CORPUS:-/scratch/users/kevinroy/nj_panel/corpus}
+SENT="$(dirname "$CORPUS")/.$(basename "$CORPUS")_rc"
 source /home/groups/larsms/users/kevinroy/anaconda3/etc/profile.d/conda.sh
 conda activate rectify
 export PYTHONPATH="$CODE"
 cd "$CODE"
 python scripts/benchmark/run_panel_on_corpus.py --corpus "$CORPUS" \
-    --aligners minimap2 gapmm2 deSALT uLTRA --threads 8
+    --aligners minimap2 mapPacBio deSALT uLTRA --threads 8
 RC=$?
 printf '%s\n' "$RC" > "${SENT}.tmp" && mv "${SENT}.tmp" "$SENT"
-echo "[sbatch] panel run rc=$RC; report at $CORPUS/panel_blindspot.report.txt"
+echo "[sbatch] panel run rc=$RC corpus=$CORPUS report=$CORPUS/panel_blindspot.report.txt"
 exit $RC

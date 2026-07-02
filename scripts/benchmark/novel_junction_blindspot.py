@@ -70,8 +70,20 @@ def _rand_unique(n: int, rng: random.Random) -> str:
     return "".join(rng.choice(_BASES) for _ in range(n))
 
 
-def build_ladder(reps: int, rng: random.Random, exon: int = 200, core: int = 196):
-    """Return (refs, reads[(id,seq)], truth[ReadTruth], rung_of[id])."""
+def build_ladder(reps: int, rng: random.Random, exon: int = 200, core: int = 196,
+                 error_rate: float = 0.0):
+    """Return (refs, reads[(id,seq)], truth[ReadTruth], rung_of[id]).
+
+    `exon` sets the flanking-exon length (drop it — e.g. 20-40 — to stress the
+    SHORT-ANCHOR troublepoint, which hurts seed-length-limited aligners like
+    BBMap/mapPacBio). `error_rate` > 0 injects per-read DRS error (error_injector,
+    RNA004-bulk regime) into the READ only — the genome-coordinate truth junction
+    is INVARIANT (injected errors are read errors, never a truth change; the TRUTH
+    RULE). This is the ERROR-OVERLAY stressor: does mapPacBio's clean-read
+    non-canonical recovery survive realistic read error?
+    """
+    from scripts.benchmark.sim.error_injector import inject, placeholder_params
+    ep = placeholder_params(base_rate=error_rate) if error_rate > 0 else None
     refs, reads, truth, rung_of = {}, [], [], {}
     li = 0
     for (label, (donor, acceptor), dev, real) in LADDER:
@@ -98,7 +110,10 @@ def build_ladder(reps: int, rng: random.Random, exon: int = 200, core: int = 196
             else:
                 continue
             refs[chrom] = contig
-            reads.append((chrom, model.spliced_transcript()))
+            read_seq = model.spliced_transcript()
+            if ep is not None:
+                read_seq, _events = inject(read_seq, ep, rng)  # truth unchanged
+            reads.append((chrom, read_seq))
             truth.append(ReadTruth(
                 read_id=chrom, true_locus=f"nj_{label}", true_transcript=chrom,
                 chrom=chrom, strand="+", genome_start=model.genome_start,
@@ -143,12 +158,19 @@ def main():
     ap.add_argument("--emit-corpus", default=None,
                     help="write ref.fa + reads.fastq + truth.tsv to this dir (for a "
                          "cluster 5-aligner PANEL run) and exit — no minimap2/scoring here")
+    ap.add_argument("--error-rate", type=float, default=0.0,
+                    help="RNA004-bulk per-position error hazard injected into reads "
+                         "(truth junction invariant). 0=error-free; ~0.01 bulk; try a gradient.")
+    ap.add_argument("--exon", type=int, default=200,
+                    help="flanking-exon length; drop to ~20-40 for the SHORT-ANCHOR stressor")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     rng = random.Random(args.seed)
 
-    print(f"[nj] building deviation ladder reps={args.reps} ...", file=sys.stderr)
-    refs, reads, truth, rung_of = build_ladder(args.reps, rng)
+    print(f"[nj] building deviation ladder reps={args.reps} exon={args.exon} "
+          f"error_rate={args.error_rate} ...", file=sys.stderr)
+    refs, reads, truth, rung_of = build_ladder(args.reps, rng, exon=args.exon,
+                                               error_rate=args.error_rate)
 
     if args.emit_corpus:
         d = args.emit_corpus
