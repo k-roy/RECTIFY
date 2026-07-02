@@ -1300,3 +1300,29 @@ SEPARATE issue: the login banner corrupts rsync's protocol → use `ssh 'cat > d
 LEVER = SERIALIZE ssh (one at a time, no fan-out), do NOT re-open the master. The Deliverable-B in-frame
 realign RESUME above can proceed NOW (no re-auth required); genuine re-auth only needed if the ticket ages
 out (~03:23) or the laptop sleeps/VPN drops.
+
+### SESSION-13 STRATEGIC REDIRECT (2026-07-01) — PI reopened the program; Fable Director assessing
+PI (Kevin) pushed back on "gate complete/exhausted" — correctly. Two under-tests acknowledged:
+(a) NOVEL-JUNCTION DISCOVERY was tested too narrow — the C3 junction probe INJECTED a truth member and
+measured arbitration, NOT the real 5-aligner panel's NATIVE recovery across a graded novelty ladder (the
+"isoform flattening" headline was never sized); C5's crude uniform-error injection doesn't cover it.
+(b) C2/CPA was refuted only on CLEAN genomic-A drift, never on DIRTY tails (empirical Dorado: adapter stub +
+intra-tail errors, e.g. true A20 → AAAAATAAAAAGAAAAAAAAATC) — a CORRECT-step question, re-opened.
+(c) C6/variant deferred too fast — injecting catalogue variants into constructed reads IS a legitimate
+non-circular mechanism test.
+FRAME COMMITTED: dev/RECTIFY_STRATEGIC_FRAME.md (2420a80) — whole RECTIFY package, PI's TWO ANGLES
+[(1) improve trim/correct/consensus; (2) de-novo-aligner features for novel-isoform discovery: alt TSS,
+unannotated+noncanonical introns, cryptic extending/truncating pA, mutant-specific], simulation-central
+rationale, the plan (novel-junction ladder rungs 1-4 + error overlay; dirty-pA injector; variant injection;
+cryptic-pA/alt-TSS), empirical anchors (WS-1 hot-tail, dirty-pA, variant spectrum).
+IN FLIGHT: fresh FABLE Director agent ad1da5a89e4470b03 (model=fable, run_in_background) — neutral/adversarial
+strategic assessment across both angles + cross-cutting "should any banked verdict re-open"; deliverable
+dev/DIRECTOR_ASSESSMENT_FABLE.md; report-back-don't-commit; write-to-files reliability; ≤3 subagents no swarm.
+RESUME: when ad1da5a89e4470b03 reports → recover dev/DIRECTOR_ASSESSMENT_FABLE.md from its worktree
+(`git worktree list`), review its verdict + recommended first increment per angle, integrate (commit the
+assessment doc), THEN — pending its go/no-go — build the FIRST increment INLINE or via ≤1 controlled agent:
+likely either (Angle 1) the dirty-pA walkback stratum+injector in scripts/benchmark/sim/ + a walkback-recovery
+probe, or (Angle 2) the novel-junction ladder generator (rung 1: multi-intron gene, move one SS to a nearby
+unannotated canonical GT-AG) + a real-5-aligner-panel native-recovery probe (cluster run). Lock the design with
+one advisor pass before building (the standing gate discipline). Env: PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH"
+PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python; smoke gate scripts/benchmark/smoke_roundtrip.py --reps 20 (exit 0).
