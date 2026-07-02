@@ -33,8 +33,9 @@ import pysam  # noqa: E402
 
 
 def rung_of_read(rid: str) -> str:
-    # read_id = nj_<label>_r### ; label may contain '_' (e.g. GA-AG_1off)
-    body = rid[3:] if rid.startswith("nj_") else rid
+    # read_id = nj_<label>_r### (synthetic) or njr_<label>_r### (real-genome);
+    # label may contain '_' (e.g. GA-AG_1off). Strip the prefix + the _r### suffix.
+    body = rid.split("_", 1)[1] if rid.startswith(("nj_", "njr_")) else rid
     return body.rsplit("_r", 1)[0]
 
 
