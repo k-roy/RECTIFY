@@ -26,7 +26,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--aligners", nargs="+",
-                    default=["minimap2", "gapmm2", "deSALT", "uLTRA"])
+                    default=["minimap2", "mapPacBio", "deSALT", "uLTRA"])
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
 
@@ -34,11 +34,14 @@ def main():
 
     ref = os.path.join(args.corpus, "ref.fa")
     reads = os.path.join(args.corpus, "reads.fastq")
+    outdir = os.path.join(args.corpus, "panel_bams")
+    os.makedirs(outdir, exist_ok=True)
     bam_args = []
     for a in args.aligners:
         try:
             print(f"[panel-run] {a} ...", file=sys.stderr, flush=True)
-            out = run_multi_aligner(reads, ref, threads=args.threads, aligners=[a])
+            out = run_multi_aligner(reads, ref, outdir, "nj",
+                                    threads=args.threads, aligners=[a])
             bam = out.get(a)
             if bam and os.path.exists(bam):
                 bam_args += ["--bam", f"{a}={bam}"]
