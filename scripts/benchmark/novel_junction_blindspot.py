@@ -48,7 +48,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from rectify.core.benchmark.scorer import score_bam, load_genome  # noqa: E402
-from rectify.core.benchmark.truth_schema import ReadTruth, SplitTag  # noqa: E402
+from rectify.core.benchmark.truth_schema import ReadTruth, SplitTag, write_truth_table  # noqa: E402
 from scripts.benchmark.sim.transcript_model import TranscriptModel, Exon  # noqa: E402
 import random  # noqa: E402
 import pysam  # noqa: E402
@@ -140,12 +140,34 @@ def main():
     ap.add_argument("--out", default="/tmp/nj_blindspot")
     ap.add_argument("--reps", type=int, default=60)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--emit-corpus", default=None,
+                    help="write ref.fa + reads.fastq + truth.tsv to this dir (for a "
+                         "cluster 5-aligner PANEL run) and exit — no minimap2/scoring here")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     rng = random.Random(args.seed)
 
     print(f"[nj] building deviation ladder reps={args.reps} ...", file=sys.stderr)
     refs, reads, truth, rung_of = build_ladder(args.reps, rng)
+
+    if args.emit_corpus:
+        d = args.emit_corpus
+        os.makedirs(d, exist_ok=True)
+        write_fa(refs, os.path.join(d, "ref.fa"))
+        with open(os.path.join(d, "reads.fastq"), "w") as fh:
+            for rid, seq in reads:
+                fh.write(f"@{rid}\n{seq}\n+\n{'I' * len(seq)}\n")
+        nt = write_truth_table(truth, os.path.join(d, "truth.tsv"))
+        # rung is encoded in each read_id (nj_<label>_r###) so the cluster scorer
+        # needs no extra sidecar; write one anyway for convenience.
+        with open(os.path.join(d, "rung_map.tsv"), "w") as fh:
+            fh.write("read_id\trung\n")
+            for rid, lab in rung_of.items():
+                fh.write(f"{rid}\t{lab}\n")
+        print(f"[nj] corpus emitted to {d}: {len(refs)} contigs, {len(reads)} reads, "
+              f"{nt} truth rows. Run the 5-aligner PANEL on ref.fa+reads.fastq, then "
+              f"panel_blindspot_score.py.", file=sys.stderr)
+        return
     ref_fa = os.path.join(args.out, "ref.fa")
     reads_fq = os.path.join(args.out, "reads.fq")
     bam = os.path.join(args.out, "mm2.bam")
