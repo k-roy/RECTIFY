@@ -1379,3 +1379,34 @@ PRACTICAL: Sonnet 4.6 is VERIFIED to resolve genuinely (no fallback) and carries
 for real model-diversity cross-checks now. Fable safeguards are being refined by Anthropic; a benign-framing
 prompt MAY help but is not reliable (broad classifier, evaluates context). Do NOT repeat the "provisioning"
 claim.
+
+### CROSS-MODEL synthesis (2026-07-01) — 2xOpus + 2xSonnet Directors; panel job the pivot
+Verified-Sonnet Directors (genuine, unanchored from the Opus/fake-Fable ones) BOTH landed with the Opus pair:
+- CONVERGENT (model-independent): native aligner CONDITIONALLY justified — blind-spot proves the MECHANISM
+  (mm2 flattens 47-90% non-canonical novels, error-free, strictly recoverable) but mm2 is an UPPER BOUND;
+  FULL-PANEL native recovery is THE deciding number; #1 next step = the panel blind-spot run (in flight);
+  leading member = calibrated-likelihood DP on the empirical -logP scale with NO GT-AG motif prior; C1/C3/
+  Discovery verdicts hold; C2 re-opens for dirty-tail (MEASURE, walkback guard indeterminate under static).
+- Decision rule (both models): panel-native AT-AC recovery <~60% => member JUSTIFIED; >~80% => gain is
+  arbitration/union not a new placer => pivot to correct-step + C4/C6.
+- NEW integrated: (Sonnet-out) the 47% AT-AC blindspot is a FLOOR (most U12 are GT-AG/invisible); no published
+  tool removes the motif prior/uses HP-law del costs (member concept is novel); mm2 has 2 snap mechanisms
+  (--splice-flank motif vs --junc-bonus annotation). (Sonnet-in) add a UNION-of-aligners floor control (==
+  the PANEL column in panel_blindspot_score.py); the blind-spot ("herd to WRONG junction") is a DISTINCT
+  failure mode from C5 ("no placement", 0-0.4%). Docs: dev/DIRECTOR_ASSESSMENT_SONNET.md, dev/DIRECTOR_ALGO_EVAL_SONNET.md,
+  updated dev/NOVEL_JUNCTION_BLINDSPOT.md.
+FABLE: unavailable via a Fable-SPECIFIC content SAFEGUARD (per CLI banner) flagging biology; Sonnet 4.6 is the
+verified model-diversity option (no fallback, no such safeguard). Do NOT re-run "Fable" agents expecting Fable.
+
+### PANEL BLIND-SPOT job — RESUBMITTED as 32422876 (two prior fails fixed)
+Fails fixed: 32419195 = set -u vs conda java_home.sh unbound JAVA_HOME (→ removed set -u); 32420606 =
+run_multi_aligner missing output_dir+sample_name positionals (→ fixed run_panel_on_corpus.py). Panel =
+minimap2+mapPacBio+deSALT+uLTRA (gapmm2 DROPPED per PI == minimap2; gmap not installed on cluster).
+RESUME: `ssh sherlock "sacct -j 32422876 -X -n -o State,Elapsed; cat /scratch/users/kevinroy/nj_panel/.nj_panel_rc 2>/dev/null; cat /scratch/users/kevinroy/nj_panel/corpus/panel_blindspot.report.txt 2>/dev/null"`
+→ COMPLETED rc=0: read the PANEL column per rung. AT-AC PANEL recovery <~60% => member JUSTIFIED (proceed:
+addressability formalization on hp_penalty -logP + member design + exon-size/multi-intron/5'-terminal rungs +
+isoform-level truth + dirty-pA correct-step gate). >~80% => pivot to correct-step + C4/C6. FAILED again: read
+/scratch/users/kevinroy/nj_panel/nj_panel.<job>.out; the driver try/excepts per aligner so partial BAMs still
+score — re-read the report for whichever aligners succeeded (uLTRA may need annotation/index on tiny contigs).
+Code synced at /home/groups/larsms/users/kevinroy/nj_panel_code (CURRENT, C1 present); corpus at
+/scratch/users/kevinroy/nj_panel/corpus. Resubmit: `sbatch scripts/benchmark/run_panel_blindspot.sbatch`.
