@@ -30,3 +30,22 @@ real-novel from artifact; (c) this confirms the TARGET is real; it does NOT prov
 recovers these AT PRECISION — the addressability ablation, still unproven, remains the make-or-break before/while building).
 NEXT: recover the corrected run + the 3 COMPASS-anchor per-aligner placements (SLC35A4/TMED9/SQSTM1); cross-
 validate the recall-gap candidates vs COMPASS short reads; THEN the addressability ablation defines the member spec.
+
+## CORRECTED RUN (2026-07-02) — TEMPERS the gap claim (discipline: walk back "the gap is real")
+The corrected run split categories properly (summary_counts, total_clusters=439,547):
+- recall_gap (non-canon, unannot, >=2 aln, supp>=3, NO WORKHORSE) = 1070 — BUT of the top 50, **48 are
+  GMAP+mapPacBio ONLY**. Two permissive FABRICATORS corroborating each other is NOT evidence of a real junction
+  => the "workhorse-missed" gap is MOSTLY LIKELY SHARED ARTIFACT, not real novel biology.
+- strong_noncanon_novel (non-canon, unannot, >=2 WORKHORSE, supp>=3) = **686** — these ARE real-ish novel
+  non-canonical junctions that the PRECISE workhorses DO recover. So the workhorses are NOT as blind as the raw
+  1.6% suggested; they discover ~686 novel non-canonical sites.
+- strong_noncanon_annotated (>=2 workhorse) = 20 (known non-canonical). COMPASS anchors resolved (no frame warning).
+CORRECTED VERDICT: the DISEASE stands (workhorses canonical-biased; mapPacBio/GMAP fabricate massively). But the
+ADDRESSABLE gap is SMALLER + MURKIER than the prior message claimed: the workhorse-MISSED non-canonical is
+dominated by fabricator ARTIFACTS (likely not real), AND the workhorses ALREADY recover 686 real novel
+non-canonical. So the native member's MARGINAL target — real novel non-canonical BEYOND what the precise panel
+gets — is currently UNKNOWN in size and cannot be estimated without COMPASS short-read cross-validation of the
+recall-gap candidates. => do NOT overstate the target. NEXT: cross-validate the 1070 recall-gap vs COMPASS short
+reads (how many are real vs GMAP+mapPacBio shared artifact) => the honest addressable-gap size; the 686
+workhorse-recovered novels are the "already-covered" baseline the member must EXCEED. Addressability ablation
+still the make-or-break.
