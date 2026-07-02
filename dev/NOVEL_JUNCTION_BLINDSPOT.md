@@ -120,3 +120,11 @@ LOGICAL ERROR (conflates spliceosome-TYPE identification with COORDINATE placeme
 coordinates — captured by the 0.983 control rung); only the AT-AC minority is a coordinate problem, and 47% IS
 its scope, not an understatement. The majority-U12-are-GT-AG argument makes the real coordinate-flattening rate
 LOWER than 47%, not higher. => Treat 47% as the AT-AC-coordinate blindspot scope, NOT a floor on U12 flattening.
+
+## PI CAVEAT (2026-07-01, load-bearing) — mapPacBio has MAJOR weaknesses on real human data
+mapPacBio's ~100% non-canonical recovery is on ERROR-FREE, single-contig SYNTHETIC reads. Kevin (PI): mapPacBio
+has major weaknesses on REAL HUMAN data — so its synthetic success does NOT transfer, and the native-aligner
+case stands even where mapPacBio recovers the synthetic non-canonical sites we hand it. => the ERROR OVERLAY
+(and, later, real-genome/real-read) test is DECISIVE, not confirmatory: if mapPacBio's advantage collapses under
+RNA004-bulk error / real complexity, the calibrated-−logP native member is justified. Do NOT conclude "panel
+already covers it" from the clean synthetic panel result; weight the error-overlay + real-data result far more.
