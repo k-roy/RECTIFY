@@ -1342,3 +1342,26 @@ increments are (a) full 5-aligner panel confirmation of the blind-spot on the CL
 recovery = ≥1 aligner), (b) exon-size/multi-intron/5'-terminal ladder rungs + isoform-level truth, (c)
 addressability formalization on the hp_penalty −logP scale (the native-member design spec), (d) dirty-pA
 clustered-stub gate (walkback.py:632 _max_non_stop_in_tail=1) as the parallel cheap correct-step.
+
+### FULL-PANEL blind-spot confirmation SUBMITTED (2026-07-01) — the deciding measurement
+Fable-availability VERIFIED: model="fable" FALLS BACK to claude-opus-4-8 in this env (explicit fallback
+event in every transcript; the probe agent even self-reported "I am Fable 5" while actually being Opus —
+self-report is unreliable, the JSONL model field is authoritative). So both Director assessments +
+outward eval were fresh-context OPUS, not model-diverse. Fable needs enabling on the account.
+Outward Director eval COMMITTED (dev/DIRECTOR_ALGO_EVAL_FABLE.md): panel shares a GT-AG/annotation motif
+prior at SCORING (gapmm2==minimap2; uLTRA/deSALT add seeding not scoring orthogonality; gmap deep-noncanon
+but ~0/111 real) → co-fails on non-canonical; most ORTHOGONAL approach = UMI/duplicate-molecule POA consensus
+BEFORE placement (Sumner cDNA-UMI/SMN on-target); most PROMISING = calibrated-LLR realignment; panel-native
+recovery = THE deciding number.
+BUILT+SUBMITTED: full 5-aligner panel native-recovery harness (commit 9114a1c) — novel_junction_blindspot.py
+--emit-corpus, panel_blindspot_score.py (per-rung panel-UNION recovery, ambiguity-aware), run_panel_on_corpus.py
+(robust per-aligner via run_multi_aligner), run_panel_blindspot.sbatch. Corpus (300 reads, 5 rungs) + CURRENT
+code synced to Sherlock (nj_panel_code, C1 present); job 32419195 running minimap2+gapmm2+deSALT+uLTRA (gmap
+not installed on cluster). Sentinel /scratch/users/kevinroy/nj_panel/.nj_panel_rc; report
+/scratch/users/kevinroy/nj_panel/corpus/panel_blindspot.report.txt; watcher armed (/tmp/nj_panel.sentinel).
+RESUME: `ssh sherlock "sacct -j 32419195 -X -n -o State; cat /scratch/users/kevinroy/nj_panel/.nj_panel_rc 2>/dev/null; cat /scratch/users/kevinroy/nj_panel/corpus/panel_blindspot.report.txt 2>/dev/null"`
+→ if COMPLETED rc=0: read the per-rung PANEL column. If BLINDSP stays HIGH on non-canonical across ALL 4
+aligners => panel HERDS => native member JUSTIFIED (proceed to addressability formalization + member design).
+If deSALT/uLTRA RECOVER what minimap2 flattens => gain is arbitration not a new placer => re-scope. If FAILED:
+check nj_panel.<job>.out (likely uLTRA needs annotation/index on tiny contigs — the driver try/excepts per
+aligner so others still score; re-read the report for whichever succeeded).
