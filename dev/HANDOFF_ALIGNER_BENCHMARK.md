@@ -1519,3 +1519,20 @@ READ: mapPacBio .rec high + .fpnc HIGH (esp INTRONFREE) => fabricates, not disco
 mm2/uLTRA/deSALT .rec LOW on non-canonical + .fpnc ~0 => precise but flatten. Neither = precise discoverer => the
 member's target. If some member has HIGH .rec + LOW .fpnc on non-canonical => panel covers it precisely (pivot).
 REMAINING: human-genome port; Test A (consensus picks?) + Test B (corrector re-snap); deSALT/uLTRA run_multi_aligner fix.
+
+### DISCIPLINE CHECK (Kevin, 2026-07-02) — NOT settled on building; addressability is UNPROVEN
+Kevin flagged (correctly) that the framing had drifted to "build the native aligner" ahead of the data. Re-anchor:
+PROVEN: the panel FLATTENS non-canonical novels (mm2 40-100%, real-genome + multi-intron confirmed); mapPacBio
+imprecise on real human (97.7% spurious, documented); workhorses annotation/GT-AG-biased. NOT PROVEN (do NOT
+treat as settled): (1) the decisive FDR run rgfdr(32435780) hasn't returned — mapPacBio fabrication is a
+PREDICTION; (2) ADDRESSABILITY — that a calibrated-empirical -logP member RECOVERS the flattened non-canonical
+junctions AT PRECISION (high recall, LOW .fpnc, no mapPacBio-style fabrication) — is COMPLETELY UNPROVEN. This
+is the make-or-break, the analog of C1's Claim-A ablation; we have shown the DISEASE (flattening), zero evidence
+of the CURE.
+STILL-OPEN FALSIFICATION CONDITIONS (any kills the native aligner, => it joins C2-C6): flattened junctions are
+zero-evidence (unrecoverable by any method); a CORRECT-STEP fix (_CANONICAL_HP_PRIOR ablation / tiebreaker
+reweight — Tests A/B, not run) closes the gap without a new placer; a calibrated member can't beat panel precision.
+GATE ORDER (do NOT skip to coding the aligner): (i) rgfdr FDR result; (ii) Tests A+B (does the shipped
+consensus+corrector already surface a precise recoverer?); (iii) ADDRESSABILITY PROOF — construct the flattened
+non-canonical cases, show a motif-blind -logP realignment recovers them at high recall + low fabrication vs a
+matched baseline (the C1-idiom ablation). ONLY if (iii) passes do we build the member. If it fails, document + stop.
