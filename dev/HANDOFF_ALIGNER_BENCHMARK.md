@@ -1501,3 +1501,21 @@ native member JUSTIFIED (mapPacBio's synthetic win was an artifact, matching PI'
 the Explore findings). If it HOLDS across all => the pivot strengthens (but human port still owed). Integrate
 the Explore agent's per-aligner real-data report when it lands. REMAINING: human-genome port; Test A (consensus
 picks mapPacBio?) + Test B (corrector _CANONICAL_HP_PRIOR re-snap); deSALT/uLTRA run_multi_aligner fix.
+
+### FDR/PRECISION axis BUILT + decisive run (2026-07-02) — reconciles synthetic vs real, scores mapPacBio properly
+Sumner-human eval showed mapPacBio's synthetic recall "win" IS its real-data pathology (no splice gate → emits
+any gap as an intron → 97.7% spurious-novel on real human). So RECALL-ALONE is gamed. BUILT the FDR axis
+(committed): panel_blindspot_score.py now reports per-aligner `.rec` (recall) + `.fpnc` (spurious NON-canonical
+junctions/read); novel_junction_realgenome.py `--intronfree` control (single-exon reads, NO true junction => any
+N-op is FABRICATED — reproduces the mapPacBio pathology, most discriminating under error). Local minimap2 (real
+yeast + 2% err + intronfree): recall collapses on non-canonical (AT-AC 0.27, deep 0.03) BUT fabricates 0.000 on
+INTRONFREE (GT-AG gate) = the precise-but-flattening workhorse profile. mapPacBio (no gate) should be the
+opposite (recovers by fabricating; high .fpnc on INTRONFREE). If so => NO precise novel-non-canonical discoverer
+exists in the panel => native member JUSTIFIED (on real-grounded evidence).
+DECISIVE RUN: rgfdr (job 32435780) — real yeast, 2-intron, 2% error, +INTRONFREE, recall+FDR scored.
+(Superseded prior recall-only runs rgen/rgerr/err01/err05/short30 for the mapPacBio question — rgfdr is the one.)
+RESUME: `ssh sherlock 'cat /scratch/users/kevinroy/nj_panel/rgfdr/.corpus_rc; cat /scratch/users/kevinroy/nj_panel/rgfdr/corpus/panel_blindspot.report.txt'`
+READ: mapPacBio .rec high + .fpnc HIGH (esp INTRONFREE) => fabricates, not discovers => native member justified.
+mm2/uLTRA/deSALT .rec LOW on non-canonical + .fpnc ~0 => precise but flatten. Neither = precise discoverer => the
+member's target. If some member has HIGH .rec + LOW .fpnc on non-canonical => panel covers it precisely (pivot).
+REMAINING: human-genome port; Test A (consensus picks?) + Test B (corrector re-snap); deSALT/uLTRA run_multi_aligner fix.
