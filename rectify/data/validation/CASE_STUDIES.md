@@ -333,6 +333,52 @@ the alignment condition (aligner+params) that produces the soft-clip. Add a posi
 `softclip_rescue` appears in `correction_applied` for cat2 reads (mirroring cat3's
 `test_correction_applied_includes_five_prime_rescued`). Until then, only cat2_minus_2 is a valid cat2 example.
 
+### cat2_minus_2 — CPA should land on the soft-clipped motif's outermost non-A (IMPLEMENTATION SPEC)
+
+`9dbd37bf` · chrI · **−**. Current corrected 3′ = **128102** (RNA T). **Correct CPA = 128098** (RNA C).
+This resolves the "128102 vs 128117 — final CPA boundary pending Kevin confirmation" flag in AGENT_FIXES
+(2026-06-13) with a THIRD answer (Kevin, 2026-07-01): the C at 128098.
+
+**The read carries a genomically-matched non-A motif in its soft-clip that the CPA should reach.** Figure
+orientation (RNA 5′→3′, minus rev-comp'd, coord decreasing left→right), outward from the current CPA:
+
+```
+ 0-based:       128102  128101  128100  128099  128098 │ 128097 128096 128095
+ genome (fig):    T       A       T       G       C    │   A      A      A
+ read   (fig):  [body]   (del)    T       G       C    │   A      A      T(err)
+                  ↑        ↑     └───── T G C ─────┘    │   └──── poly-A tail ────┘
+              current    single                  land  │
+               CPA       A(del)                  CPA → C @ 128098
+```
+
+Read basecalls match genome `T G C` at 128100/128099/128098 (leading soft-clip `ATTGCA` fwd = `TGCAAT` fig,
+5/6 match; only the outermost 128095 base is an error). Right of the C (128097↓ = fig `AAA`) is the genuine
+poly-A tail, so **128098 is the last templated non-A before the tail** — the textbook CPA.
+
+**Why current code stops at 128102:** the walkback anchors on aligned positions and reaches the first non-A at
+128102; the `TGC` sits in the SOFT-CLIP, separated by a single-base homopolymer-undercall deletion at 128101,
+which neither the walkback nor the current `rescue_softclip_at_homopolymer` bridges. That rescue only handles a
+**single non-A terminal base** (`sc_seq[:-1]` all stop-base, `sc_seq[-1]` one non-A) — not a multi-base motif.
+The removed 2026-06-13 "TTGC-motif 2-bp extension" tried to, but hard-coded a **+strand** directive, mis-fired
+on this −strand read, and over-extended to 128096 (RNA A) → 100%-non-A violation → removed.
+
+**Fix — generalize `rescue_softclip_at_homopolymer`** (`rectify/core/correct/indel_corrector.py`, ~L673–836):
+from "single terminal non-A" to the **leftmost-possible-CPA over a multi-base recovered match**:
+> After the poly-A over-call homopolymer, scan the soft-clip outward for its OUTERMOST base that (a)
+> genomically matches across the homopolymer-undercall deletion AND (b) is a non-A (gene-strand stop-base
+> complement), and set `corrected_pos` there — **stopping before any trailing stop-base run**. Strand-symmetric
+> (mirror the + and − paths; the old bug was +strand logic on a −strand read).
+
+Lands 128102→128098. The existing universal **100%-non-A chokepoint** (`bam_processor.py`, before
+`result['corrected_3prime']=…`) guarantees it can never re-land on an A (kills the 128096-class regression).
+
+**Ship-safety gate (fix-more-than-we-introduce — this is the exact generalization that was removed for
+over-extension):** (1) enforce the leftmost-non-A stop (never cross into the trailing stop-base run); (2)
+full-bundle before/after CPA diff — does any OTHER read move?; (3) `TestCorrectedEndsAreNonA` §5 gate stays
+green + add a positive cat2 assertion; (4) re-run the cross-modality on-A audit (Sumner human-DRS; prior
+0.0749%, strand-balanced) to confirm no reintroduced strand skew. Do NOT hot-patch; prototype + run the
+blast-radius diff first.
+
 ## Extending this doc
 
 Add a `## Case studies — cat<N>_<name>` section as each category is reviewed.
