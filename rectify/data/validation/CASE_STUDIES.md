@@ -297,6 +297,42 @@ a *consequence* of that effort, not its calibration target.
   strands with cat1_minus_2 as a hard regression gate. cat2_plus_1 keeps deSALT as winner for now.
 - The **walkback fix (fc44ee2)** — restoring the 9D to diagnostic rows — is independent and unaffected.
 
+### cat2 CATEGORY DRIFT — 3 of 4 reads no longer exercise `softclip_rescue` (found 2026-07-01)
+
+**Validation-bundle-integrity finding.** cat2 reads were deliberately curated to demonstrate `softclip_rescue`
+(VALIDATION_READS.md: `replace_cat2_reads.py` "replaces 3 Cat2 reads with DRS minimap2 reads showing
+softclip_rescue"; category def: "aligner ended inside a genomic homopolymer... left matching downstream bases
+as a 3' soft-clip... corrected position shifts outward"). But current `corrected_reads.tsv` shows the module
+firing on **only 1 of 4**:
+
+| read | correction_applied | winner |
+|---|---|---|
+| cat2_plus_1 (61b0c014)  | `none` | deSALT |
+| cat2_plus_2 (88953e9c)  | `none` | uLTRA |
+| cat2_minus_1 (b313b50d) | `none` | deSALT |
+| cat2_minus_2 (9dbd37bf) | `atract_ambiguity, indel_correction, **softclip_rescue**` | deSALT |
+
+**Root cause (NOT winner-selection picking a lucky aligner — an earlier mis-diagnosis).** For cat2_minus_1,
+ALL FIVE aligners thread the homopolymer undercall as an inline **`3D`** and reach the correct CPA natively —
+e.g. minimap2/deSALT/uLTRA `1S 6M 3D 24M…`, mapPacBio `1X 6= 3D 24=…` (minus strand, 3' end = reference_start
+~186). The only clip is a trivial `1S` (1 base), NOT the matching-downstream-bases soft-clip the rescue module
+recovers. So there is nothing to rescue → `correction_applied=none` is *correct*, but the read does not test
+the module it's filed under. The reads were presumably selected when the aligner (older minimap2 params/
+version) *soft-clipped* the post-homopolymer bases; the 2026-05-16 re-trim + re-align (and aligner-version
+drift) now emit the `3D` inline instead. The `3D`-vs-soft-clip choice is aligner/param/version-dependent, so
+the curated examples decayed from "demonstrates soft-clip rescue" into "aligner already threaded it."
+
+**Why the tests didn't catch it:** `TestCategory2SoftClipRescue` asserts only the final 3' *position*
+(`test_3prime_exact_position`), not that `softclip_rescue` fired — and the docstrings were updated to expect
+`correction_applied=none`. So it's a *known-but-unguarded* state, not a silent regression, but the category no
+longer guards the module it's named for.
+
+**Action (bundle refresh / cDNA-agent + validation re-curation):** re-curate cat2 so it genuinely exercises
+`softclip_rescue` — pick reads where CURRENT aligners leave a rescue-requiring soft-clip (not a `3D`), or pin
+the alignment condition (aligner+params) that produces the soft-clip. Add a positive assertion that
+`softclip_rescue` appears in `correction_applied` for cat2 reads (mirroring cat3's
+`test_correction_applied_includes_five_prime_rescued`). Until then, only cat2_minus_2 is a valid cat2 example.
+
 ## Extending this doc
 
 Add a `## Case studies — cat<N>_<name>` section as each category is reviewed.
