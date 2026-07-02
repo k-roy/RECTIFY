@@ -1478,3 +1478,26 @@ in real sequence so aligners face real composition + DECOY GT-AG sites (the per-
 competition where snapping/mis-mapping actually happens); (3) 5'-terminal-exon-near-TSS rung (ties Cat3). Plus the
 bounded set from the advisor: TEST A (consensus hp_ed picks mapPacBio over minimap2?) + TEST B (corrector
 _CANONICAL_HP_PRIOR ±50bp re-snap on mapPacBio-recovered reads). deSALT/uLTRA run_multi_aligner fix (index/annotation on tiny contigs).
+
+### REAL-GENOME multi-intron ladder BUILT + panel runs submitted (2026-07-02)
+The honest substrate (Kevin: "clearly necessary"): novel_junction_realgenome.py builds novel introns at REAL
+yeast S288C loci (scanned for the target motif rung), reads spliced from real sequence + aligned to the FULL
+12MB genome (real composition + DECOY GT-AG sites), MULTI-INTRON (--n-introns 2). COMMITTED. KEY CONFIRMATION
+(local minimap2 on real yeast + 2-intron): minimap2 STILL flattens 40-100% of non-canonical novels (GT-AG
+control 1.000; AT-AC 0.60; 1off 0.25; 2off 0.05; deep 0.00) — the snapping bias is ROBUST to real genome +
+multi-intron + decoys, even slightly WORSE at deep deviation. So the blindspot is real-genome-confirmed.
+IN-FLIGHT PANEL JOBS (all minimap2+mapPacBio[+deSALT/uLTRA attempt]; sentinels .corpus_rc, reports
+corpus/panel_blindspot.report.txt under /scratch/users/kevinroy/nj_panel/<tag>/):
+- rgen (32434900): REAL-GENOME 2-intron, error-free — THE decisive test: does mapPacBio's synthetic non-canonical
+  recovery TRANSFER to real genome + multi-intron + decoys?
+- rgerr (32434904): REAL-GENOME 2-intron + 2% error.
+- err01/err05/short30 (32430052/54/61): synthetic error-overlay + short-anchor stressors.
+ALSO IN FLIGHT: Explore agent ae22bd7c69acd3902 evaluating the Sumner-lab HUMAN rectify work for documented
+per-aligner real-data strengths/weaknesses (mapPacBio + gmap documented; mm2/uLTRA/deSALT annotation-biased per
+Kevin) — grounds whether mapPacBio's synthetic win transfers to human.
+RESUME: `ssh sherlock 'for t in rgen rgerr err01 err05 short30; do echo == $t ==; cat /scratch/users/kevinroy/nj_panel/$t/.corpus_rc 2>/dev/null; cat /scratch/users/kevinroy/nj_panel/$t/corpus/panel_blindspot.report.txt 2>/dev/null; done'`
+READ (rgen is the pivotal one): if mapPacBio recovery COLLAPSES on real genome / multi-intron / error =>
+native member JUSTIFIED (mapPacBio's synthetic win was an artifact, matching PI's real-human-weakness point +
+the Explore findings). If it HOLDS across all => the pivot strengthens (but human port still owed). Integrate
+the Explore agent's per-aligner real-data report when it lands. REMAINING: human-genome port; Test A (consensus
+picks mapPacBio?) + Test B (corrector _CANONICAL_HP_PRIOR re-snap); deSALT/uLTRA run_multi_aligner fix.
