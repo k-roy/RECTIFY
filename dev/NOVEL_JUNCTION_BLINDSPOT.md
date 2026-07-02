@@ -71,3 +71,17 @@ does flatten novel isoforms, at a large and graded rate, and the gap is addressa
 5. **isoform-level truth gap** (Director): the scorer scores per-junction; a read with
    the junction right but a wrong TSS/TES still scores clean, so isoform-discovery FDR
    is invisible. Needed before the cryptic-pA / alt-TSS discovery rungs.
+
+## Cross-model correction (Sonnet outward Director, 2026-07-01) — the 47% is a FLOOR
+Independent (verified-Sonnet) review adds a biology point that STRENGTHENS the case: AT-AC is only ~25%
+of U12-type minor-spliceosome introns; the MAJORITY of U12 introns are GT-AG in sequence and are therefore
+INVISIBLE to this ladder (they read as canonical). So the measured 47% AT-AC blind-spot UNDER-states the real
+minor-spliceosome flattening, not overstates it. Also: minimap2 has TWO mechanistically distinct snapping
+biases — `--splice-flank` (motif snapping) and `--junc-bonus`/`--junc-bed` (annotation snapping) — which earlier
+descriptions conflated; the ladder (no annotation) isolates the motif-snapping mechanism. And a literature
+check (ESPRESSO/Science Adv 2023 retains a canonical-motif gate; 2passtools/Genome Biol 2021 re-aligns with an
+annotation guide; IsoQuant) found NO published long-read tool that removes the motif prior at the scoring level
+or uses HP-law empirical deletion costs for junction scoring → the calibrated-DP-no-motif-prior member concept
+is genuinely novel, not a reinvention. Decision threshold (both Sonnet + Opus reviewers converge): native
+member JUSTIFIED if panel-native AT-AC recovery < ~60%; if deSALT/mapPacBio independently recover most AT-AC
+(> ~80%), the gain is arbitration/union not a new placer → shift to correct-step + C4/C6.
