@@ -1365,3 +1365,17 @@ aligners => panel HERDS => native member JUSTIFIED (proceed to addressability fo
 If deSALT/uLTRA RECOVER what minimap2 flattens => gain is arbitration not a new placer => re-scope. If FAILED:
 check nj_panel.<job>.out (likely uLTRA needs annotation/index on tiny contigs — the driver try/excepts per
 aligner so others still score; re-read the report for whichever succeeded).
+
+### CORRECTION (Fable cause) — it IS a content SAFEGUARD, not a provisioning/entitlement issue
+Earlier this session I wrongly concluded (from transcript forensics) that model="fable" falls back due to
+account provisioning. That is WRONG. The CLI displayed an explicit banner the director did not see/incorporate:
+"Fable 5's safeguards flagged this message. The safeguards are intentionally broad right now and may flag safe
+and routine coding, cybersecurity, or biology work ... Switched to Opus 4.8." So the Fable→Opus fallback is a
+Fable-SPECIFIC content SAFEGUARD over-triggering on our benign yeast/human RNA-seq work (the PI's original
+hypothesis was correct). My "content-free probe also fell back" and "Sonnet works so not content" arguments were
+both FLAWED: the safeguard evaluates broader session context (not the literal sub-prompt), and Sonnet lacks
+Fable's safeguards (so Sonnet-resolving / Fable-flagging is exactly what a Fable content safeguard looks like).
+PRACTICAL: Sonnet 4.6 is VERIFIED to resolve genuinely (no fallback) and carries no such safeguard → use Sonnet
+for real model-diversity cross-checks now. Fable safeguards are being refined by Anthropic; a benign-framing
+prompt MAY help but is not reliable (broad classifier, evaluates context). Do NOT repeat the "provisioning"
+claim.
