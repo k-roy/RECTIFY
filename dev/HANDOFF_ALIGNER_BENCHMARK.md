@@ -1432,3 +1432,31 @@ adversarial + integration reviewers address this. RESUME: when the 3 report, rec
 dev/REVIEW_SYNTHESIS_*_SONNET.md, reconcile (esp. whether the double-prior ablation is co-first or a distinct
 corrector-step gate), update the plan/top-3, commit. Panel job 32422876 still the pivot (check
 `ssh sherlock "sacct -j 32422876 -X -n -o State; cat /scratch/users/kevinroy/nj_panel/.nj_panel_rc 2>/dev/null; cat /scratch/users/kevinroy/nj_panel/corpus/panel_blindspot.report.txt 2>/dev/null"`).
+
+### PANEL RESULT + advisor verdict (2026-07-01) — mapPacBio breaks the herd; DIRECTIONAL DECISION pending Kevin
+Job 32422876 COMPLETED: panel-native recovery of non-canonical novels = ~1.000 because mapPacBio recovers what
+minimap2 flattens (AT-AC/1off/2off/deep all ~1.0; VERIFIED genuine N-op at true coords). deSALT+uLTRA FAILED
+(setup on synthetic per-contig corpus). Recorded + committed to dev/NOVEL_JUNCTION_BLINDSPOT.md (PANEL RESULT
+section). Also RETRACTED the "47%-is-a-floor" claim (adversarial Sonnet reviewer: logical error conflating
+spliceosome-type-ID with coordinate placement).
+ADVISOR VERDICT: not build/pivot yet — the result RELOCATES the question from PLACEMENT to ARBITRATION+CORRECTION.
+Bounded deciding set (all cheap, artifacts exist at /scratch/users/kevinroy/nj_panel/corpus/panel_bams/):
+- TEST A (M1): does the shipped consensus hp_edit_distance PICK mapPacBio(true) over minimap2(snap)? (expect yes
+  — snap carries flanking mismatches). Compute _cigar_hp_edit_distance per read for both BAMs; arbiter=argmin.
+- TEST B: does the corrector _CANONICAL_HP_PRIOR RE-SNAP mapPacBio's recovered non-canonical junction back to
+  canonical? (the double-prior ablation's natural home — on mapPacBio-recovered reads, NOT standalone; adversarial
+  demoted it from co-first). ~50-line probe reusing the ladder corpus.
+- ERROR OVERLAY (load-bearing, gates the pivot): re-run the ladder with RNA004-bulk error; mapPacBio's advantage
+  may hold (pivot) or become fragile (calibrated-logP member revives).
+Both A+B branches => "correct-step, not a new placer." Coverage rests on ONE heavy Java member (mapPacBio) => Test A matters more.
+THROUGH-LINE surfaced to Kevin (his decision, not drift): C2/C3/C4/C5/C6 + (pending A+B) non-canonical-intron
+placement all refuted-or-covered => evidence leans toward "panel+consensus already cover most placement; value =
+(i) harden arbitration/correction to surface what mapPacBio produces, (ii) unmeasured targets: alt-TSS, cryptic
+pA, SMN paralog, variant-aware." Asked Kevin: run the bounded A+B+error set now (recommended) vs discuss direction first.
+STILL IN FLIGHT: code-verify Sonnet reviewer afcaa2b58ba4f3b3f (dev/REVIEW_SYNTHESIS_CODE_SONNET.md) — orthogonal to
+the panel interpretation (advisor: don't block on it); resolves the disputed "8-aligner-wrap / winnowmap2+minisplice
+already present" claim.
+RESUME: await Kevin's direction; if "go", run TEST A (extend panel_blindspot_score.py or a small probe: per-read
+_cigar_hp_edit_distance mm2 vs mapPacBio on non-canonical rungs → arbiter-picks-recoverer rate), TEST B (corrector
+ablation on mapPacBio BAM), then the error-overlay ladder. Fix deSALT/uLTRA (run_multi_aligner index/annotation on
+tiny contigs) + re-run panel for the full 4. Recover the code-verify review when it lands.
