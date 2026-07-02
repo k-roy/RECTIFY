@@ -143,3 +143,21 @@ GAMED by indiscriminate emitters (mapPacBio "recovers" by emitting everything). 
 add an FDR/PRECISION axis — per-aligner spurious-non-canonical N-op rate + FP-junction rate on reads with NO
 true novel junction (the over-call control, the fp_canonical_snap track applied to panel recovery). Only the
 recovery+FDR pair reconciles synthetic vs real and correctly scores mapPacBio.
+
+## rgfdr FDR RESULT (job 32435780) — PREDICTION REFUTED; the synthetic gate is INCONCLUSIVE on mapPacBio
+Real yeast + 2-intron + 2% error + INTRONFREE, recall+FDR (result: scripts/benchmark/rgfdr_result.txt):
+minimap2 flattens non-canonical (AT-AC 0.27, deep 0.00) as before, and under 2% error ALSO emits spurious
+non-canonical (fpnc up to 1.03/read). BUT mapPacBio did NOT fabricate as predicted — it RECOVERS non-canonical
+cleanly (recall 0.63-0.80) with LOW fpnc (0.15-0.25) and 0.000 fabrication on INTRONFREE. That is a PRECISE
+novel-discoverer profile => on this test the panel (via mapPacBio) COVERS non-canonical precisely => points to
+PIVOT, not build. My "mapPacBio fabricates" prediction is REFUTED.
+HONEST VERDICT: the synthetic gate CANNOT adjudicate the mapPacBio question — it is still too benign. mapPacBio's
+documented real-human pathology (97.7% spurious, no splice gate) arises from conditions this harness lacks: real
+ONT error STRUCTURE (RNA004 hot-read tail ~12%, homopolymer, adapter stubs — NOT 2% uniform substitution), LONG
+reads (mapPacBio crashes >6019bp), and HUMAN-scale introns (10kb-1Mb) where it jitters/chimeras. On short yeast
+introns + 2% uniform error, mapPacBio looks GOOD. So SYNTHETIC (mapPacBio precise) vs REAL-documented (mapPacBio
+catastrophic) DISAGREE, and the native-aligner justification currently rests ENTIRELY on the real-data evidence,
+NOT on this gate. Do NOT claim justification from the gate. FORK: (a) make the sim actually reproduce mapPacBio's
+real failure (RNA004-structured error incl. hot tail + adapter stubs, long reads, human genome + human-scale
+introns) so the gate can adjudicate; OR (b) treat it as a real-data-only question (measure mapPacBio's spurious
+rate + the workhorse flattening on real SG-NEx/SMA data directly). Prediction-refuted is the discipline working.
