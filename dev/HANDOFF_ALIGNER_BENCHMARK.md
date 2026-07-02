@@ -1410,3 +1410,25 @@ isoform-level truth + dirty-pA correct-step gate). >~80% => pivot to correct-ste
 score — re-read the report for whichever aligners succeeded (uLTRA may need annotation/index on tiny contigs).
 Code synced at /home/groups/larsms/users/kevinroy/nj_panel_code (CURRENT, C1 present); corpus at
 /scratch/users/kevinroy/nj_panel/corpus. Resubmit: `sbatch scripts/benchmark/run_panel_blindspot.sbatch`.
+
+### Independent multi-agent review of DIRECTOR_ALGO_EVAL_SYNTHESIS.md (2026-07-01)
+User-supplied dev/DIRECTOR_ALGO_EVAL_SYNTHESIS.md (Opus-authored synthesis of 3 Opus algo-evals; NOT
+cross-model) surfaces a NEW verified finding: a SECOND canonical preference in the CORRECTOR —
+`_CANONICAL_HP_PRIOR=0.5` (junction_scoring.py:293) consumed at junction_refiner.py:647 (tier-gated OFF at
+tier>=4) + an `is_novel` tiebreaker (junction_refiner.py:638,660/663) — whose discovery cost is UNMEASURED.
+Also verified firsthand: cDNA-UMI penalty tables exist (penalty_scores_cdna_umi{1,2,3plus}.tsv). DISPUTED
+(my quick grep found only minimap2/mapPacBio/gapmm2 via name=): the synthesis's "8 aligners wrapped incl.
+winnowmap2/minisplice already present" claim.
+LAUNCHED 3 SONNET reviewers (genuine cross-model; write-to-files):
+- afcaa2b58ba4f3b3f = CODE-VERIFY every code claim (double-prior tier-gating + WHEN it fires; is_novel; UMI
+  tables; the disputed 8-aligner-wrap; gapmm2 "85% forced-canonical"; minisplice GT/AG-only). → dev/REVIEW_SYNTHESIS_CODE_SONNET.md
+- a6dc21d9456f7b705 = ADVERSARIAL steelman (is the double-prior ablation LOW-leverage since tier-gated off at
+  deep deviation + lives in corrector not aligner => distinct population from the blindspot ladder?; is
+  measurement->member deferring forever; reject-list too hasty; same-model non-independence discount). → dev/REVIEW_SYNTHESIS_ADVERSARIAL_SONNET.md
+- a23805945182aa994 = INTEGRATION (what's already-in-plan vs genuinely NEW; updated top-3). → dev/REVIEW_SYNTHESIS_INTEGRATION_SONNET.md
+KEY OPEN QUESTION for integration: is the `_CANONICAL_HP_PRIOR` ablation the SAME experiment as the panel
+blindspot (aligner generation) or a DISTINCT one (corrector flattening of correctly-placed reads)? The
+adversarial + integration reviewers address this. RESUME: when the 3 report, recover their
+dev/REVIEW_SYNTHESIS_*_SONNET.md, reconcile (esp. whether the double-prior ablation is co-first or a distinct
+corrector-step gate), update the plan/top-3, commit. Panel job 32422876 still the pivot (check
+`ssh sherlock "sacct -j 32422876 -X -n -o State; cat /scratch/users/kevinroy/nj_panel/.nj_panel_rc 2>/dev/null; cat /scratch/users/kevinroy/nj_panel/corpus/panel_blindspot.report.txt 2>/dev/null"`).
