@@ -128,3 +128,18 @@ case stands even where mapPacBio recovers the synthetic non-canonical sites we h
 (and, later, real-genome/real-read) test is DECISIVE, not confirmatory: if mapPacBio's advantage collapses under
 RNA004-bulk error / real complexity, the calibrated-−logP native member is justified. Do NOT conclude "panel
 already covers it" from the clean synthetic panel result; weight the error-overlay + real-data result far more.
+
+## RECONCILIATION (Sumner human eval, 2026-07-02) — mapPacBio's synthetic "win" is its real-data PATHOLOGY
+Real-human evidence (dev/SUMNER_HUMAN_ALIGNER_EVAL.md): mapPacBio recovers the synthetic non-canonical junction
+for the SAME reason it fails on real human ONT-DRS — it has NO splice-model gate and emits any scored gap as an
+intron. On clean synthetic reads that lands on the true site (looks like recovery); on real human data the same
+behavior gives a 97.7% SPURIOUS-novel rate (SMA chr5) and consensus that SELECTS its artifacts. => the "panel
+already covers it via mapPacBio" PIVOT is REFUTED by real data (mapPacBio's coverage is illusory — it emits true
+AND false indiscriminately). The panel has NO member that discovers novel non-canonical junctions at acceptable
+PRECISION (workhorses mm2/uLTRA/deSALT are annotation/GT-AG-biased → flatten novel; de-novo mapPacBio/gmap are
+spurious-dominated → both effectively rejected on human). That precision-recall gap = the native member's target.
+=> the native aligner IS JUSTIFIED. CRITICAL HARNESS GAP: the blindspot ladder measures RECOVERY only, which is
+GAMED by indiscriminate emitters (mapPacBio "recovers" by emitting everything). NEXT BUILD (highest priority):
+add an FDR/PRECISION axis — per-aligner spurious-non-canonical N-op rate + FP-junction rate on reads with NO
+true novel junction (the over-call control, the fp_canonical_snap track applied to panel recovery). Only the
+recovery+FDR pair reconciles synthetic vs real and correctly scores mapPacBio.
