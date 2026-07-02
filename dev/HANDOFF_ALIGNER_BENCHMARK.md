@@ -1460,3 +1460,21 @@ RESUME: await Kevin's direction; if "go", run TEST A (extend panel_blindspot_sco
 _cigar_hp_edit_distance mm2 vs mapPacBio on non-canonical rungs → arbiter-picks-recoverer rate), TEST B (corrector
 ablation on mapPacBio BAM), then the error-overlay ladder. Fix deSALT/uLTRA (run_multi_aligner index/annotation on
 tiny contigs) + re-run panel for the full 4. Recover the code-verify review when it lands.
+
+### Substrate critique (Kevin) + stressor runs (2026-07-01) — the prior panel result was the EASY slice
+Kevin flagged: the blindspot ladder is SYNTHETIC RANDOM sequence (NOT yeast/human), SINGLE-intron, 200bp exons,
+ERROR-FREE, one-contig-per-read (no decoy genome). So "mapPacBio breaks the herd" is on the easiest substrate
+and hits NONE of the troublepoints. Honest state: only rungs 1-2 (motif deviation) were tested.
+LAUNCHED 3 stressor panel jobs (minimap2+mapPacBio; deSALT/uLTRA still failing on tiny contigs, separate fix):
+- err01 (job 32430052): RNA004-bulk 1% error overlay.  - err05 (32430054): 5% error.  - short30 (32430061): 30bp exons (short-anchor).
+Corpora at /scratch/users/kevinroy/nj_panel/{err01,err05,short30}/corpus; sentinels .corpus_rc in each parent;
+reports corpus/panel_blindspot.report.txt. RESUME: `ssh sherlock "for t in err01 err05 short30; do echo $t; sacct ... ; cat /scratch/users/kevinroy/nj_panel/$t/.corpus_rc; cat /scratch/users/kevinroy/nj_panel/$t/corpus/panel_blindspot.report.txt; done"`.
+READ: does mapPacBio's non-canonical recovery SURVIVE error/short-anchors? If it COLLAPSES => native member
+justified (matches PI's mapPacBio-real-weakness point). If it HOLDS => the pivot strengthens (but real-genome
+still untested). Local minimap2-only sanity at 5% error: minimap2 still snaps (AT-AC 0.475, deep 0.05).
+REMAINING BUILDS (the real troublepoints, not yet done): (1) MULTI-INTRON transcripts (compounding); (2) REAL
+GENOME context — port the ladder onto bundled yeast S288C (rectify/data/S288C_*.fsa) then human, embedding loci
+in real sequence so aligners face real composition + DECOY GT-AG sites (the per-contig setup removes decoy
+competition where snapping/mis-mapping actually happens); (3) 5'-terminal-exon-near-TSS rung (ties Cat3). Plus the
+bounded set from the advisor: TEST A (consensus hp_ed picks mapPacBio over minimap2?) + TEST B (corrector
+_CANONICAL_HP_PRIOR ±50bp re-snap on mapPacBio-recovered reads). deSALT/uLTRA run_multi_aligner fix (index/annotation on tiny contigs).
