@@ -1536,3 +1536,22 @@ GATE ORDER (do NOT skip to coding the aligner): (i) rgfdr FDR result; (ii) Tests
 consensus+corrector already surface a precise recoverer?); (iii) ADDRESSABILITY PROOF — construct the flattened
 non-canonical cases, show a motif-blind -logP realignment recovers them at high recall + low fabrication vs a
 matched baseline (the C1-idiom ablation). ONLY if (iii) passes do we build the member. If it fails, document + stop.
+
+### PI DECISION (2026-07-02) — build the native aligner regardless (Feynman); #2 real-data measurement FIRST
+Kevin: lean toward building the aligner regardless — mapPacBio is frozen in PacBio-land (never updated for ONT),
+so building + testing a from-scratch ONT-calibrated placer teaches a lot ("What I cannot create, I do not
+understand"). This is a legitimate PI research call. DISCIPLINE FRAMING (keep it productive, avoid the 0.09->1.07
+trap): build IS understanding (forces specifying the emission model / scoring / window localization), but the
+FITNESS TARGET stays the truth set — #2 gives the aligner its TARGET (the real precise-novel-discovery gap) +
+validation. So the addressability ablation is a test we run ON the built member, not a gate that blocks starting.
+#2 LAUNCHED (agent a7427e3abf13d798b): real-data per-aligner novel-junction PRECISION on SG-NEx A549 chr5
+(the full real panel BAMs at rectify_human_validation/sgnex_a549/alignments/, READ-ONLY, DRS-arm's data;
+outputs to /scratch/users/kevinroy/nativealigner_realeval/). Annotation-FREE method (motif + cross-aligner
+agreement + support depth; frame-robust — avoids the +176bp gencode-vs-sumner drift): do the workhorses
+(mm2/deSALT/minisplice) FLATTEN (mostly canonical/shared) while mapPacBio/gmap FABRICATE (many aligner-unique
+non-canonical low-support)? Are there real multi-corroborated non-canonical junctions no PRECISE member recovers?
+Anchors = the 3 COMPASS junctions (SLC35A4/TMED9/SQSTM1). RESUME: recover the agent's report +
+/scratch/.../nativealigner_realeval/; integrate the real-data verdict; THEN (regardless, per PI) scope the native
+member build — the calibrated-empirical -logP motif-blind realignment layer over the panel window — instrumented
+so every increment is testable (constructed strata + the real-data target + the addressability ablation).
+NOTE: synthetic gate (rgfdr) was INCONCLUSIVE on mapPacBio (too benign); #2 is the real-data adjudication.
