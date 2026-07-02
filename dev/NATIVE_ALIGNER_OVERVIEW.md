@@ -42,37 +42,75 @@ actually getting this wrong?* and *would the proposed idea genuinely fix it?* If
 current system is already as good as the data allows, the idea is rejected before
 any code is written. This sounds harsh, but it's the point: most plausible ideas
 don't survive contact with truth, and it's far cheaper to learn that *before*
-building. The honest scoreboard so far: **4 ideas rejected, 1 confirmed.**
+building.
 
-**The scoreboard, in plain terms:**
-- **C1 — fixing length mistakes in repetitive stretches** (e.g. `AAAAA…`): the part
-  that *helps* was **confirmed and kept**; a related part that *hallucinated*
-  errors was caught by real data and **switched off**.
-- **C2 — placing the 3′ tail end**: **rejected** — the tool RECTIFY already ships
-  does this as well as the information allows.
-- **C3 — letting the arbiter use probabilities instead of a crude score** (this
-  session): **rejected.** We proved the current arbiter already picks the right
-  answer whenever a right answer is on the menu — even in cases where the panel
-  members disagreed on *100%* of reads, and even where a popular aligner mis-placed
-  a junction on *47%* of reads. There was simply no room for the fancier version to
-  do better, and the win from C1 already flows through the existing arbiter without
-  it. (Full story: `dev/C3_DESIGN.md`.)
+### Phase 1 — we put every idea on trial, and almost all failed
+We tested a whole slate of candidate improvements (fixing length mistakes in
+`AAAAA…` runs, placing the 3′ tail end, letting the "picker" use probabilities,
+telling look-alike genes apart, finding "lost" reads, handling genetic variants).
+**Almost every one was rejected** — the tools RECTIFY already ships turned out to be
+about as good as the data allows on those tasks. The one clear keeper was the
+length-mistake fix (and, as a bonus, the trials *exposed a real bug in the existing
+consensus*, which we fixed and shipped). That's the process working: it's far
+cheaper to kill a weak idea in a trial than after months of building. For a while
+this looked like "maybe we don't need a new aligner at all."
 
-**What C3's rejection pointed us toward (next).** The trials kept revealing that the
-*real* remaining problems aren't about how the arbiter *chooses* — they're about
-the answer not being on the menu at all:
-- **C4 — look-alike genes.** Some genes have near-identical duplicate copies
-  elsewhere (the medically important SMN1/SMN2 pair is the classic case). Telling
-  the copies apart is genuinely hard.
-- **C5 — the "lost reads."** Sometimes *every* tool in the panel makes the *same*
-  mistake, so the correct answer is never produced by anyone. No amount of clever
-  arbitration helps there; you need a fundamentally different way to find those
-  reads. C5's first job is just to *measure how big this pile actually is* — that
-  measurement decides whether the idea is worth pursuing at all.
+### Phase 2 — the one thing we'd never actually tested
+Then the PI pushed back, correctly: we'd never tested the single thing the new
+aligner exists *for* — **discovering novel splice sites** (unusual, unannotated,
+"non-canonical" junctions) that the standard tools quietly *flatten* into the
+nearest textbook site. And there's a chicken-and-egg reason we'd missed it: you
+*can't* measure this on real data, because the tools are biased against reporting
+novel sites in the first place — so real data has no "right answer" for the very
+junctions they hide. **Only a simulation, where we build the truth ourselves, can
+see it.** That's what the simulator is for.
 
-Both C4 and C5 are now under the same gate-first trial (running in parallel), and
-each will come back either "real opportunity, here's the plan" or "rejected, here's
-the proof." Either answer is progress.
+So we built a graded test — junctions ranging from textbook to increasingly unusual
+— and measured how often the popular tool (minimap2) reports the *true* novel site
+vs. snapping it to a nearby textbook one. The result was stark: **minimap2 flattens
+40–100% of novel non-canonical junctions, even on perfect error-free reads**, and it
+held up on a real yeast genome. So the "flattening" problem is real and large.
+
+### Phase 3 — a plot-twist, and reconciling it with real data
+One catch: a different panel member, **mapPacBio**, *did* recover those novel
+junctions in the simulation — which briefly looked like "the panel already covers
+this, no new aligner needed." But the PI flagged that mapPacBio behaves badly on
+real human data, so we measured it directly on real Nanopore data. The reconciliation
+is decisive: **mapPacBio "recovers" novel junctions by fabricating junctions almost
+everywhere** — on real human data ~97% of its unique novel calls are spurious. Its
+simulation "win" is exactly its real-world disease (it has no splice-site
+sanity-check and emits any gap as a junction). So on real data:
+- the **precise** tools (minimap2, uLTRA, deSALT) are ~97–98% textbook — they
+  *flatten* novel sites;
+- the **sensitive** tools (mapPacBio, GMAP) *fabricate* — mostly junk;
+- **no tool is both precise and sensitive to novel junctions.** That gap is exactly
+  what a new, Nanopore-calibrated aligner would target.
+
+### Where we are right now (and the honest caveat)
+The *disease* — flattening — is real and confirmed on real data. But we're being
+careful not to overstate the *fixable* size of the gap: when we looked closely, the
+novel junctions the good tools "miss" are mostly the two sloppy tools agreeing with
+*each other* (likely artifacts, not real biology), and the good tools already do
+recover a real chunk of novel sites on their own. **So we don't yet know how much a
+new aligner would actually add** — that needs cross-checking the disputed junctions
+against an independent (short-read) method, and, crucially, *proving a new aligner can
+recover them precisely* (the real make-or-break, still untested).
+
+### The decision, and what's next
+The PI has chosen to **build the aligner anyway** — for two good reasons: mapPacBio
+was never updated for Nanopore (so an Nanopore-native tool should genuinely help),
+and *"what I cannot create, I do not understand"* — building forces us to pin down
+exactly how junction-scoring should work, which is itself the understanding we're
+after. The one guardrail: **the new aligner is always scored against known truth**,
+so "build to learn" never drifts into fooling ourselves.
+
+Next steps: (1) cross-check the disputed novel junctions against short reads to size
+the real gap; (2) the make-or-break test — can a Nanopore-calibrated, probability-based
+re-aligner recover the flattened junctions *precisely* (high hit-rate, low fabrication)?;
+(3) build it, one testable increment at a time. The design in a phrase: a
+**Nanopore-calibrated, motif-blind, probability-scored re-aligner** that re-examines
+each read in the window the panel already found, judging junctions by *evidence*
+rather than by "does it look textbook."
 
 ---
 
