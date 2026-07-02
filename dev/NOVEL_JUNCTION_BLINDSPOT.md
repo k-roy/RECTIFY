@@ -85,3 +85,38 @@ or uses HP-law empirical deletion costs for junction scoring → the calibrated-
 is genuinely novel, not a reinvention. Decision threshold (both Sonnet + Opus reviewers converge): native
 member JUSTIFIED if panel-native AT-AC recovery < ~60%; if deSALT/mapPacBio independently recover most AT-AC
 (> ~80%), the gain is arbitration/union not a new placer → shift to correct-step + C4/C6.
+
+## PANEL RESULT (job 32422876, COMPLETED 2026-07-01) — mapPacBio BREAKS the herd (plot-twist, verified)
+Full-panel native recovery per rung (only minimap2 + mapPacBio produced BAMs — deSALT + uLTRA FAILED on the
+synthetic per-contig corpus: "All requested aligners failed"; likely index-build/annotation setup on tiny
+contigs, to be fixed + re-run):
+| rung | minimap2 | mapPacBio | PANEL(union) | panel blind-spot |
+| --- | --- | --- | --- | --- |
+| GT-AG canon | 0.983 | 1.000 | 1.000 | 0.000 |
+| AT-AC (U12) | 0.533 | 1.000 | 1.000 | 0.000 |
+| GA-AG 1off | 0.300 | 0.983 | 0.983 | 0.017 |
+| CT-AC 2off | 0.217 | 1.000 | 1.000 | 0.000 |
+| CA-TC deep | 0.100 | 1.000 | 1.000 | 0.000 |
+VERIFIED (not a scorer artifact): mapPacBio CIGAR on a CA-TC_deep read = `199=200N201=` — a genuine N-op
+intron at the true coordinates (all 60 deep-rung reads carry the N-op). mapPacBio (BBMap, splice-aware) does
+NOT snap non-canonical junctions to GT-AG; it places the intron on read evidence regardless of motif. The
+per-contig construction is "easy," but minimap2 fails on the SAME easy setup (0.10-0.53), so mapPacBio's win
+is attributable to its SCORING model (no GT-AG prior), not the construction.
+IMPLICATION (pre-committed rule: panel-native recovery >~80% => gain is arbitration/union, not a new placer):
+the panel ALREADY contains a non-snapping member (mapPacBio) that recovers the non-canonical novels minimap2
+flattens. This WEAKENS the "native placer justified for non-canonical intron discovery" case on THIS
+measurement, and shifts the question to: (a) does the CONSENSUS/arbiter actually PICK mapPacBio's true
+placement over minimap2's snap end-to-end (the corrected-consensus + Discovery-fix should — TEST it); (b) does
+the `_CANONICAL_HP_PRIOR` CORRECTOR then RE-SNAP mapPacBio's recovered non-canonical junction back to canonical
+(the double-prior ablation is now the RELEVANT next test, run on mapPacBio-recovered reads); (c) does this hold
+under READ ERROR + a realistic multi-decoy GENOME + the OTHER discovery targets (alt-TSS, cryptic pA,
+variant-adjacent, SMN). CAVEATS: error-free, per-contig, 2-of-4 aligners, non-canonical-INTRON axis only.
+Interpretation (build vs pivot) is advisor-gated; do not declare the native aligner unjustified on this alone.
+
+## CORRECTION (adversarial Sonnet reviewer) — retract "47% is a FLOOR"
+The earlier "Cross-model correction" claim that the 47% AT-AC blind-spot UNDER-states real U12 flattening is a
+LOGICAL ERROR (conflates spliceosome-TYPE identification with COORDINATE placement). For RECTIFY's mission
+(recovering junction COORDINATES), GT-AG-motif U12 introns are placed CORRECTLY (they sit at canonical
+coordinates — captured by the 0.983 control rung); only the AT-AC minority is a coordinate problem, and 47% IS
+its scope, not an understatement. The majority-U12-are-GT-AG argument makes the real coordinate-flattening rate
+LOWER than 47%, not higher. => Treat 47% as the AT-AC-coordinate blindspot scope, NOT a floor on U12 flattening.
