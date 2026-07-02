@@ -5,6 +5,53 @@ commits here; user confirmed you own the validation work). **You are a fresh ses
 bottom, then continue.** Read `~/.claude/CLAUDE.md` + `~/work/CLAUDE.md` + `CLAUDE.md` first (rm-safety,
 M1 8GB discipline, ControlMaster, surgical `git add` — never `-A`).
 
+## ⚑ UPDATE 2026-07-01 (#6) — PR #3 sync/merge (AWAITING USER OK TO PUSH)
+
+PR k-roy/RECTIFY#3 (drs-validation-rebuild → master). Webhook-subscribed; hourly cron self-check (job
+462e1865) re-checks CI/reviews until merged/closed.
+- **Pushed** all session work: `5b44b31..479ac81` (39 commits, clean FF — walkback fix, graded-clip audit
+  tooling, CASE_STUDIES, renderer). origin/drs-validation-rebuild now = my work.
+- **Merged origin/master** into the branch to clear a 20-file doc conflict → local merge commit **`29334c0`
+  (UNPUSHED)**. Resolution: 19 files took OURS (verified lossless — ours = 2026-06-25 publication polish,
+  superset of master's older doc-syncs; figures newer). `docs/quickstart_cdna.md` = real union: grafted
+  master's "### Cross-orientation span filter"; did NOT graft master's "## One command" (contradicts ours'
+  "no run-all shortcut for cDNA" — FLAGGED for user); QC section kept ours (FLAGGED).
+- master is now an ancestor of HEAD → PR will be conflict-free once `29334c0` is pushed.
+- **RESOLVED + PUSHED (2026-07-01).** Explore-agent + my grep confirmed **run-all has NO `--protocol` flag**
+  and cDNA requires the 3 separate commands (`correct-cdna`→`align`→`cdna-analyze`, cli.py:262/265); master's
+  "## One command" was stale/never-implemented. So ours' doc was RIGHT and `29334c0` was already correct — no
+  further edit. Pushed `479ac81..29334c0` (clean FF, origin was still 479ac81). **PR #3 now MERGEABLE**
+  (mergeStateStatus UNSTABLE only because CI is running).
+- **CI:** first run (28495969844) FAILED all 5 matrix jobs — 3 PRE-EXISTING infra gaps (NOT the validation
+  work): (1) no samtools binary in CI → validation tests' `rectify correct --aligner-bams` can't sort/index →
+  "fetch on bamfile without index"; (2) `requires-python>=3.9` (accidental docs-commit edit) vs 3.8 matrix;
+  (3) `validation_reads_polya_trim_metadata.tsv` git-ignored → absent in CI. **FIXED + pushed `99cc38f`**
+  (commit `ci: install samtools, restore requires-python >=3.8, track ... trim-metadata fixture`). CI
+  re-running. CHECK: `gh pr checks 3` → all green expected; if 3.8 now fails at RUNTIME (not install), some
+  branch code uses 3.9+ syntax → then drop 3.8 from matrix instead. Success does NOT webhook — verify via
+  cron (462e1865) or `gh pr checks 3`.
+- **CI STATUS (run 28497523365 on 99cc38f — ALL 5 fail): THREE pre-existing issues, none from the
+  validation work or the merge (all surfaced by CI running on this branch for the FIRST time):**
+  1. ✅ samtools missing → FIXED + pushed (99cc38f: apt install step). That part worked.
+  2. ✅ py38 collection: `config.py` + `manifest.py` use PEP 585 builtin-generic annotations w/o
+     future-import → 29 collection ERRORs on 3.8 (config.py imported everywhere). FIXED locally in
+     **`959eff8` (UNPUSHED)** — added `from __future__ import annotations` to both. Verified no other 3.9+
+     runtime features. (The other 4 branch files with that syntax already had the future-import.)
+  3. ❌ **`test_validation_reads_cdna.py::test_anchor_and_tail` (3 reads) — env-sensitive baseline.**
+     Anchor matches; tail_len differs (CI 41/35/56 vs baseline 23/18/36). PASSES locally (numpy 1.23.4/
+     pysam 0.23.3), FAILS in CI (numpy 2.0.2/pysam 0.24.0). Pre-existing test (baselines set 2026-05-16
+     c411c80); cDNA arm (`rectify/core/cdna/walkback.py::walk_back_anchor_and_tail`) — NOT touched by my
+     session. Not edlib (test passes regardless). Cause = pysam 0.24 or numpy 2 behavior vs the
+     baseline-capture env. **NEEDS USER DECISION** (his cDNA test infra): (a) pin pysam<0.24 / numpy<2 in
+     CI; (b) update the 3 baselines to the new-lib values; (c) mark the test `slow`/skip in fast CI;
+     (d) make it tolerant. Pushing 959eff8 alone will NOT green CI (this still fails on all versions).
+  - **DESCOPED to the cDNA agent (user decision 2026-07-01):** #3 (cDNA-arm env-sensitive baseline) + the
+    unpushed py38 fix `959eff8` + the planned cDNA validation read set are all scoped in
+    **`dev/CDNA_AGENT_HANDOFF.md`**. No rush to green PR #3 (pre-release 0.9.0). Hourly PR self-check cron
+    (462e1865) STOPPED (was pure noise — nothing changed across ~15 ticks). Principle going forward:
+    fix more bugs than we introduce.
+- **NEXT (user):** resume the read-by-read validation review at **cat2_minus_1** (independent of CI).
+
 ## ⚑ UPDATE 2026-06-29 (#5) — walkback homopolymer-undercall fix (CORE change, IN FLIGHT)
 
 Triggered by cat2_plus_1 review: a real DRS long-homopolymer undercall was being eaten by the walkback.
