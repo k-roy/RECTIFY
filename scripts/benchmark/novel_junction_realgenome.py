@@ -72,7 +72,8 @@ def find_intron(seq, start, donor, acceptor, min_intron=60, max_intron=400,
     return None
 
 
-def build(genome_fa, reps, rng, exon=200, n_introns=1, error_rate=0.0):
+def build(genome_fa, reps, rng, exon=200, n_introns=1, error_rate=0.0,
+          intronfree=False):
     ep = None
     if error_rate > 0:
         from scripts.benchmark.sim.error_injector import inject, placeholder_params
@@ -81,6 +82,30 @@ def build(genome_fa, reps, rng, exon=200, n_introns=1, error_rate=0.0):
     chroms = [c for c in fa.references if fa.get_reference_length(c) > 60000]
     seqs = {c: fa.fetch(c).upper() for c in chroms}
     reads, truth, rung_of = [], [], {}
+
+    # INTRONFREE control (the FDR axis): single-exon reads = a contiguous real
+    # genomic segment, NO intron. Truth carries NO junction, so ANY N-op an aligner
+    # emits is FABRICATED — reproduces mapPacBio's real-human 97.7%-spurious-novel
+    # pathology (converting noisy soft-clips/gaps into spurious introns). Most
+    # discriminating UNDER error; pair with --error-rate.
+    if intronfree:
+        span = 2 * exon + 260  # match the junction rungs' aligned span
+        for i in range(reps):
+            chrom = rng.choice(chroms)
+            cs = seqs[chrom]
+            g0 = rng.randint(1000, len(cs) - span - 1000)
+            rid = f"njr_INTRONFREE_r{i:03d}"
+            read = cs[g0:g0 + span]
+            if ep is not None:
+                read, _ = inject(read, ep, rng)
+            reads.append((rid, read))
+            truth.append(ReadTruth(
+                read_id=rid, true_locus="njr_INTRONFREE", true_transcript=rid,
+                chrom=chrom, strand="+", genome_start=g0, genome_end=g0 + span,
+                true_cigar=f"{span}M", junctions=[], true_cpa=g0 + span - 1,
+                stratum="NJ_REALGENOME", split=SplitTag.TEST, coverage=1))
+            rung_of[rid] = "INTRONFREE"
+        print(f"[njr] rung INTRONFREE: made {reps}/{reps} (single-exon control)", file=sys.stderr)
     for (label, (donor, acceptor), dev, real) in LADDER:
         want_canon = (label == "GT-AG_canon")
         made = tries = 0
@@ -141,6 +166,9 @@ def main():
                     help="flank exon length; ~30 for the short-anchor stressor")
     ap.add_argument("--n-introns", type=int, default=1)
     ap.add_argument("--error-rate", type=float, default=0.0)
+    ap.add_argument("--intronfree", action="store_true",
+                    help="add the INTRONFREE FDR control (single-exon reads, no intron; "
+                         "any called junction = fabrication). Pair with --error-rate.")
     ap.add_argument("--genome", default=os.path.abspath(YEAST_GZ),
                     help="alignment reference (default bundled yeast S288C)")
     ap.add_argument("--emit-corpus", required=True,
@@ -153,7 +181,8 @@ def main():
           file=sys.stderr)
     genome_fa, reads, truth, rung_of = build(
         args.genome, args.reps, rng, exon=args.exon,
-        n_introns=args.n_introns, error_rate=args.error_rate)
+        n_introns=args.n_introns, error_rate=args.error_rate,
+        intronfree=args.intronfree)
 
     d = args.emit_corpus
     os.makedirs(d, exist_ok=True)
