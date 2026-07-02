@@ -1326,3 +1326,19 @@ probe, or (Angle 2) the novel-junction ladder generator (rung 1: multi-intron ge
 unannotated canonical GT-AG) + a real-5-aligner-panel native-recovery probe (cluster run). Lock the design with
 one advisor pass before building (the standing gate discipline). Env: PATH="/Users/kevinroy/miniconda3/bin:/opt/homebrew/bin:$PATH"
 PYTHONPATH=. /Users/kevinroy/miniconda3/envs/pysam/bin/python; smoke gate scripts/benchmark/smoke_roundtrip.py --reps 20 (exit 0).
+
+### Blind-spot gate DONE (6162419) + outward Fable Director launched (2026-07-01)
+NOVEL-JUNCTION BLIND-SPOT gate (the Fable Director's #1, injector-free) BUILT+RUN+COMMITTED (6162419):
+minimap2 flattens 47-90% of non-canonical novel junctions on ERROR-FREE reads (AT-AC/U12 0.467 blindspot,
+1off 0.70, 2off 0.78, deep 0.90; canonical control 0.017) → BUILD SIGNAL, reverses "exhausted", injector-
+independent + real-data-transferable. Files: scripts/benchmark/novel_junction_blindspot.py(+result), dev/NOVEL_JUNCTION_BLINDSPOT.md.
+IN FLIGHT: OUTWARD Fable Director agent a40e1b0f0b3e30561 (model=fable, run_in_background) — independent
+critical eval of the 5-aligner panel + survey/propose SUPERIOR orthogonal algorithms for novel-isoform
+discovery (incl. cis-variant / SMN1-SMN2 paralog / trans-splicing), grounded in the measured blind-spot +
+our empirical error model; deliverable dev/DIRECTOR_ALGO_EVAL_FABLE.md; reports to director; ≤3 subagents,
+write-to-files, WebSearch grounded. (The INWARD Director ad1da5a89e4470b03 already reported: dev/DIRECTOR_ASSESSMENT_FABLE.md.)
+RESUME on its report: recover dev/DIRECTOR_ALGO_EVAL_FABLE.md, review, commit; then the confirmed NEXT
+increments are (a) full 5-aligner panel confirmation of the blind-spot on the CLUSTER (honest panel-native
+recovery = ≥1 aligner), (b) exon-size/multi-intron/5'-terminal ladder rungs + isoform-level truth, (c)
+addressability formalization on the hp_penalty −logP scale (the native-member design spec), (d) dirty-pA
+clustered-stub gate (walkback.py:632 _max_non_stop_in_tail=1) as the parallel cheap correct-step.
