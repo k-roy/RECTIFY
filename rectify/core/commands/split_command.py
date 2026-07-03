@@ -1238,6 +1238,46 @@ ls -lh "$OUTDIR/rescue_scan.pkl" "$OUTDIR/junction_pool.pkl" 2>/dev/null
 """
 
 
+def _strip_blank_continuation_lines(script: str) -> str:
+    """Drop blank lines that would truncate a backslash-continued shell command.
+
+    In shell, a ``\\`` at end-of-line escapes the newline to continue the logical
+    command onto the next line. If that next line is *blank* (empty or
+    whitespace-only), its own unescaped newline TERMINATES the command — every
+    argument below it is silently orphaned into separate (failing) commands.
+    A generator template that interpolates an *absent* optional argument as its
+    own line collapses to exactly this blank-after-continuation, which dropped
+    the trailing ``-o``/``--output`` from ``rectify correct`` and failed every
+    per-chunk correction task (see docs/troubleshooting.md).
+
+    The generated scripts never legitimately contain a blank line right after a
+    ``\\``-continued line (there are no heredocs whose body would need one), so
+    removing them is safe. This is a belt-and-suspenders scrub applied to every
+    fully-rendered script (all input types, all schedulers) on top of the
+    list-assembly fix at each command site. Consecutive blanks are all dropped:
+    a dropped line does not advance the "previous line continued" state, so a
+    run of blank optional-arg slots collapses cleanly.
+    """
+    out: list = []
+    prev_continues = False
+    dropped = 0
+    for line in script.split('\n'):
+        if prev_continues and line.strip() == '':
+            dropped += 1
+            continue  # keep prev_continues True so consecutive blanks also drop
+        out.append(line)
+        prev_continues = line.rstrip().endswith('\\')
+    if dropped:
+        logger.warning(
+            "Stripped %d blank line(s) that followed a backslash-continued "
+            "command in a generated script (would have truncated the command). "
+            "A generator template likely emitted an empty optional-arg slot on "
+            "its own line.",
+            dropped,
+        )
+    return '\n'.join(out)
+
+
 def _correct_array_body(
     aligner: str, n_chunks: int, all_aligners: List[str], sample_prefix: str,
     output_dir: Path, genome: str, annot: str,
@@ -1248,16 +1288,40 @@ def _correct_array_body(
 ) -> str:
     """Per-aligner correction array: one task per chunk. Uses --junction-pool-cache."""
     limits = _thread_limits_block('$CORRECT_CPUS')
-    aligner_bam_args = '\n'.join(
-        f'    --aligner-bams "{a}:$MERGED_DIR/{sample_prefix}.{a}.bam" \\'
+    # Assemble the `rectify correct` invocation from a list of only-present
+    # argument fragments, then join with backslash-newline. Building the command
+    # this way (rather than interpolating optional args as their own template
+    # lines) makes it structurally impossible to emit a bare blank line inside
+    # the `\`-continued command when an optional arg is absent — an empty line
+    # after a `\`-continued line silently TRUNCATES the command in bash, which
+    # dropped the trailing `-o`/`--output` and every arg after the (usually
+    # absent) penalty tables, failing every correct task with
+    # "error: -o/--output required". See docs/troubleshooting.md.
+    correct_arg_lines = [
+        '$PYTHON -m rectify correct',
+        '"$LOCAL_BAM"',
+        f'--genome "{genome}"',
+        f'--annotation "{annot}"',
+    ]
+    if junction_penalty_table:
+        correct_arg_lines.append(f'--junction-penalty-table "{junction_penalty_table}"')
+    if str_penalty_table:
+        correct_arg_lines.append(f'--str-penalty-table "{str_penalty_table}"')
+    correct_arg_lines.append('$SCAN_CACHE_ARG')
+    correct_arg_lines.append('--junction-pool-cache "$POOL_PKL"')
+    correct_arg_lines.extend(
+        f'--aligner-bams "{a}:$MERGED_DIR/{sample_prefix}.{a}.bam"'
         for a in all_aligners
     )
-    jpt_line = f'    --junction-penalty-table "{junction_penalty_table}" \\' if junction_penalty_table else ''
-    spt_line = f'    --str-penalty-table "{str_penalty_table}" \\' if str_penalty_table else ''
-    write_cb_line = (
-        '    --write-corrected-bam "$SCRATCH_WORK/corrected.bam" \\\n'
-        if write_per_aligner_corrected_bams else ''
-    )
+    if write_per_aligner_corrected_bams:
+        correct_arg_lines.append('--write-corrected-bam "$SCRATCH_WORK/corrected.bam"')
+    correct_arg_lines.extend([
+        '--threads "$CORRECT_CPUS"',
+        '--streaming',
+        '--checkpoint-dir "$CHECKPOINT_DIR"',
+        '-o "$CHUNK_OUTDIR/corrected_reads.tsv"',
+    ])
+    correct_cmd = ' \\\n    '.join(correct_arg_lines)
     mv_corrected_bam_block = (
         """\
 # Move per-aligner corrected BAM out of scratch to persistent storage for IGV.
@@ -1335,19 +1399,7 @@ SCAN_CACHE_ARG=""
 [ -f "$SCAN_PKL" ] && SCAN_CACHE_ARG="--variant-scan-cache $SCAN_PKL"
 
 cd "$RECTIFY_SRC"
-$PYTHON -m rectify correct \\
-    "$LOCAL_BAM" \\
-    --genome "{genome}" \\
-    --annotation "{annot}" \\
-{jpt_line}
-{spt_line}
-    $SCAN_CACHE_ARG \\
-    --junction-pool-cache "$POOL_PKL" \\
-{aligner_bam_args}
-{write_cb_line}    --threads "$CORRECT_CPUS" \\
-    --streaming \\
-    --checkpoint-dir "$CHECKPOINT_DIR" \\
-    -o "$CHUNK_OUTDIR/corrected_reads.tsv"
+{correct_cmd}
 
 {mv_corrected_bam_block}echo "Done: $(date)"
 ls -lh "$CHUNK_OUTDIR/corrected_reads.tsv" 2>/dev/null
@@ -2043,7 +2095,7 @@ def _generate_scripts(
     )
 
     def _write(path: Path, body: str) -> Path:
-        path.write_text(body)
+        path.write_text(_strip_blank_continuation_lines(body))
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         return path
 
@@ -2684,7 +2736,7 @@ def _generate_short_read_scripts(
     )
 
     def _write(path: Path, body: str) -> Path:
-        path.write_text(body)
+        path.write_text(_strip_blank_continuation_lines(body))
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         return path
 
@@ -2884,7 +2936,7 @@ def _generate_paired_short_read_scripts(
     log_pat_job = str(log_dir / '%j')
 
     def _write(path: Path, body: str) -> Path:
-        path.write_text(body)
+        path.write_text(_strip_blank_continuation_lines(body))
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         return path
 

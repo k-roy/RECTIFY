@@ -138,6 +138,39 @@ Fix: stage the input FASTQ to local scratch first (`/tmp/$USER/` on most
 HPC nodes), and write outputs to local scratch too. Then move final outputs
 back at the end.
 
+### `minimap2` dies with SIGPIPE (exit 141) / `[E::aux_parse] unrecognized type`
+
+**Symptom**: `rectify align` (or the generated per-chunk align stage) aborts
+with minimap2 exit 141 (SIGPIPE) and a samtools error like
+`[E::aux_parse] unrecognized type ...`. Reproduces on every htslib version —
+it is **not** a version regression.
+
+**Cause**: minimap2 runs with `-y`, which copies the FASTQ **comment** (the
+text after the first whitespace in the header) verbatim into the SAM aux
+column. Public FASTQs often carry a comment that is *not* a valid SAM aux
+field — an ENA/uuid read description (`@<uuid> <uuid>/1`) or ONT Dorado run
+metadata (`@<uuid> runid=... ch=... start_time=...`). htslib's `aux_parse`
+rejects the malformed field, `samtools sort` aborts, and the closed pipe
+SIGPIPE-kills minimap2.
+
+**Fix**: `rectify split` sanitizes the comment to well-formed SAM aux tokens
+at chunk-write time (`sanitize_fastq_comment_for_aux`); the full original
+comment is preserved in the read-number sidecar. So the **chunked** pipeline
+(`rectify split --generate-slurm`, all input types) is immune. If you hit
+this, run through `rectify split` rather than aligning the raw FASTQ, or
+pre-strip the comment:
+
+```bash
+# keep only the read id (drop everything after the first whitespace)
+zcat reads.fastq.gz | awk 'NR%4==1{print $1; next} {print}' | gzip > reads.clean.fastq.gz
+```
+
+**Known residual**: aligning a raw, uuid/Dorado-commented FASTQ directly with
+the simple (non-chunked) `rectify align` path does **not** yet run the split
+sanitizer, so it can still hit this. Use the chunked path or the pre-strip
+above until the simple path is guarded. (The cDNA pipeline is unaffected: its
+Stage-1 consensus FASTQ carries only well-formed `XX:T:value` tags.)
+
 ---
 
 ## Correction (`rectify correct`)
@@ -209,6 +242,45 @@ Two well-known sbatch traps that bite in this order:
 
 See [`docs/user_guide/hpc_slurm.md`](user_guide/hpc_slurm.md) for the
 full SLURM profile YAML and recommended sbatch flags.
+
+### Every `run_array_correct_*.sh` task fails with `error: the following arguments are required: -o/--output`
+
+**Symptom**: the align/merge/prescan stages of a `rectify split --generate-slurm`
+pipeline succeed, but **every** per-chunk correction task exits immediately with
+`error: ... -o/--output required`, even though the generated script clearly
+contains an `-o` line. `bash -n` on the script reports no syntax error.
+
+**Cause**: a generator template interpolated an *optional* argument
+(`--junction-penalty-table` / `--str-penalty-table`) as its own line. When the
+penalty tables are absent (the default), that slot renders as a **blank line**
+immediately after a `\`-continued line:
+
+```bash
+$PYTHON -m rectify correct \
+    --annotation "..." \
+                          # <- blank line: its newline TERMINATES the command
+    --junction-pool-cache "..." \
+    -o "..."              # <- orphaned into a separate (failing) command
+```
+
+In shell a `\` escapes the following newline, but if that next line is blank its
+own unescaped newline ends the logical command. Everything below — including
+`-o` — is silently dropped, so argparse reports the output flag missing.
+
+**Fix**: RECTIFY builds the `rectify correct` invocation from a list of
+*only-present* argument fragments (absent optional args are simply not added),
+and a belt-and-suspenders pass (`_strip_blank_continuation_lines`) scrubs every
+generated script of any blank line that follows a `\`-continued line, for all
+input types and both schedulers (SLURM + UGE/SGE). Regenerate the scripts with a
+current RECTIFY.
+
+If you are stuck on an older generated script, strip the offending blanks in
+place:
+
+```bash
+awk '{if($0~/^[[:space:]]*$/ && prev~/\\[[:space:]]*$/)next; print; prev=$0}' \
+    run_array_correct_gapmm2.sh > tmp && mv tmp run_array_correct_gapmm2.sh
+```
 
 ### Login-node throttling kills my interactive iteration
 
