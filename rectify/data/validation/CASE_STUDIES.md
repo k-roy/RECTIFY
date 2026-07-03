@@ -379,6 +379,45 @@ green + add a positive cat2 assertion; (4) re-run the cross-modality on-A audit 
 0.0749%, strand-balanced) to confirm no reintroduced strand skew. Do NOT hot-patch; prototype + run the
 blast-radius diff first.
 
+## Bundle-integrity audit (2026-07-01) — module-firing by category + drift
+
+Bundle-wide scan of `correction_applied` (script: `scratchpad/scan_fired.py`-style join of the
+VALIDATION_READS.md cat→uuid table with `corrected_reads.tsv`). **20/32 reads fire a correction; 12/32 = none.**
+
+| cat | intended module | fired/4 | notes |
+|---|---|---|---|
+| cat1 indel | polya_walkback / indel | 3/4 | ok (1 clean control) |
+| cat2 softclip | softclip_rescue | **1/4** | DRIFT (see cat2 section) |
+| cat3 5′ junc | five_prime_rescued | 4/4 | ✓ only 100% category |
+| **cat4 false-junc** | FJF N-op absorb | **0/4** | HARD DRIFT (below) |
+| cat5 chimeric | multi-aligner reconstruct | 3/4 | shows five_prime_rescued only |
+| cat6 chimeric | intron rescue | 3/4 | shows five_prime_rescued only |
+| cat7 alt-splice | novel junction | 3/4 | shows 3′-corrections, NOT junction |
+| cat9 N-op refine | Module 2H | 3/4 | shows five_prime_rescued |
+
+**`correction_applied` is an INCOMPLETE proxy for "does the category exercise its module."** It captures only
+3′-end corrections + `five_prime_rescued`. Several category-defining ops happen in other stages and never write
+that column: cat4 false-junction FILTERING (→ `n_junctions`/`junctions` fields), cat5/6 chimeric RECONSTRUCTION
+(`multi_aligner`, pre-correction), cat7 novel-junction DETECTION (analysis output), cat9 N-op REFINEMENT
+(Module 2H). So a `none`/`five_prime_rescued`-only read can still be exercising its module elsewhere — assess
+each category with its OWN appropriate signal, not this column.
+
+**cat4 — HARD DRIFT (worse than cat2).** cat4 = "false N op near 3′ end": aligner inserts a spurious N in the
+poly-T/A region; RECTIFY should absorb it and walk back past it (VALIDATION_READS.md documents specific shifts:
+plus_2 −115 bp, minus_1 +4 bp→128098, minus_2 +11 bp snap). CURRENT output shows **none of it**: 3/4 have
+`n_junctions=0` (the spurious N is gone), all `correction_applied=none`, 0 shift, and even the ORIGINAL
+positions differ from the doc (plus_1 doc-orig 22072 vs actual 20503). Root cause = same as cat2: bundle
+re-trim/re-align + aligner-version drift changed the alignments so the curated scenario evaporated. cat4
+currently guards nothing, and VALIDATION_READS.md's cat4 table is stale. (cat4_minus_1 b956f764 is the same
+chrI~128k locus as cat2_minus_2, doc-landed at 128098 — the same C — now at 128117.)
+
+**Per-category-signal gap (action for the bundle refresh):** the review/tests should validate each category by
+its intended signal, not just `correction_applied`: cat4 → assert the spurious N is present AND absorbed
+(`n_junctions` transition); cat5/6 → assert chimeric reconstruction occurred; cat7 → assert a novel/alt
+junction is detected; cat2 → positive `softclip_rescue` assertion (already noted). Re-curate cat2 and **cat4**
+so their reads actually exhibit the scenario under CURRENT aligners, and refresh the stale VALIDATION_READS.md
+tables. Until then: cat3 is the only category verified 4/4; cat2 (1/4) and cat4 (0/4) are the confirmed gaps.
+
 ## Extending this doc
 
 Add a `## Case studies — cat<N>_<name>` section as each category is reviewed.
