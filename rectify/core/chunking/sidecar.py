@@ -78,11 +78,46 @@ def split_fastq_header(header: str) -> tuple:
     return qname, comment
 
 
+# A FASTQ comment token is only safe to carry into a SAM record via
+# ``minimap2 -y`` if it is a well-formed SAM aux field: a two-character tag
+# (letter then alnum), a single recognized text-SAM type code (A/i/f/Z/H/B),
+# then the value. Non-aux tokens -- e.g. an ENA ``<uuid>/1`` read description
+# left in the original FASTQ comment -- would be emitted by ``-y`` as a
+# malformed aux field, which htslib's aux_parse rejects
+# ("[E::aux_parse] unrecognized type ..."), aborting the downstream
+# ``samtools sort`` and SIGPIPE-killing minimap2 (exit 141). This fails on
+# every htslib version, so the comment must be sanitized at chunk-write time.
+_SAM_AUX_TOKEN_RE = re.compile(r'^[A-Za-z][A-Za-z0-9]:[AifZHB]:')
+
+
+def sanitize_fastq_comment_for_aux(fastq_comment: str) -> str:
+    """Keep only well-formed SAM aux tokens from a FASTQ comment.
+
+    ``minimap2 -y`` copies the FASTQ comment verbatim into the SAM aux column,
+    so any non-aux token would produce an invalid aux field that htslib
+    rejects (killing alignment). This filters the comment down to the tokens
+    that are safe to propagate. The unfiltered comment is still preserved in
+    the read-number sidecar (``SidecarRow.fastq_comment``) for round-trip
+    restoration, so no provenance is lost.
+    """
+    if not fastq_comment:
+        return ''
+    kept = [tok for tok in fastq_comment.split() if _SAM_AUX_TOKEN_RE.match(tok)]
+    return '\t'.join(kept)
+
+
 def format_fastq_header_with_rn(original_qname: str, fastq_comment: str, read_num: int) -> str:
-    """Build a FASTQ header carrying the RN aux tag in the comment field."""
+    """Build a FASTQ header carrying the RN aux tag in the comment field.
+
+    The comment is filtered to valid SAM aux tokens (see
+    ``sanitize_fastq_comment_for_aux``) so that ``minimap2 -y`` in the aligners
+    cannot emit a malformed aux field that htslib rejects. The full unfiltered
+    comment remains in the sidecar.
+    """
     rn = f"RN:i:{int(read_num)}"
-    if fastq_comment:
-        return f"@{original_qname}\t{rn}\t{fastq_comment}\n"
+    safe_comment = sanitize_fastq_comment_for_aux(fastq_comment)
+    if safe_comment:
+        return f"@{original_qname}\t{rn}\t{safe_comment}\n"
     return f"@{original_qname}\t{rn}\n"
 
 
