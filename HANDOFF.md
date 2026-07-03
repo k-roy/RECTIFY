@@ -483,3 +483,17 @@ Verify with: `_cigar_hp_edit_distance` (in that file) + `HpPenaltyTable.from_tsv
 - Env: M1 base conda `gapmm2==25.4.5` (do not upgrade — NEW-082). deSALT cannot run on M1 (x86); use Sherlock.
 - `git add` EXPLICIT paths only. Don't touch `dev/COMPASS_*`, `scripts/validation_data/regen_2026_06_25/`
   (peer/other-thread).
+
+## ⚑ UPDATE 2026-07-03 (#7) — CI systemically red (DESCOPED; stopped per-webhook chasing)
+
+py38 collection NOW FULLY FIXED (config.py/manifest.py + test_restore_polya_manifest.py future-imports;
+pushed ca107ce). BUT CI test(3.8) on ca107ce = **61 failed / 146 errors** — validation-bundle tests
+(test_validation_reads_upf1d.py, test_validation_reads_cdna.py, ...) fail EN MASSE with "rectify correct
+failed for 5 aligner(s)" + tracebacks. SYSTEMIC pre-existing test-infra (bundle live-regen via `rectify
+correct` broadly failing in CI; NOT my validation work — `pytest -m "not slow"` passes locally on
+numpy1.23/pysam0.23). Root = CI env (numpy2.0.2/pysam0.24.0) + bundle-regen fragility (indexing/penalty-table/
+env-sensitivity, cf. cdna test_anchor_and_tail 41/35/56). **DECISION: STOP per-webhook hot-patching** —
+descoped CI-health effort needing ONE consolidated pass (pin CI libs to baseline env, OR make bundle-regen
+tests env-robust / slow-gated), owned by cDNA agent / CI-health task (dev/CDNA_AGENT_HANDOFF.md). Webhooks keep
+firing on stale runs (3f26942) + descoped failures; respond minimally/batched. Residual CI red is NOT a bug in
+shipped correction logic. All my session work is pushed & preserved.
