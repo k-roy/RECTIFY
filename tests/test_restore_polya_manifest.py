@@ -1,5 +1,6 @@
 """Tests for restore-softclip corrected TSV input loading."""
 
+from __future__ import annotations  # PEP 563: builtin-generic annotations run on py3.8
 from pathlib import Path
 
 import pytest
