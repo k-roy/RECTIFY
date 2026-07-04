@@ -67,12 +67,14 @@ from typing import Dict, List, Optional, Tuple
 
 BASES = "ACGT"
 
-# panel_truth.tsv columns — EXACT SPEC item-3 order. Downstream (gen_reads,
-# score_trade) join by header NAME, but keep this order for human readability.
+# panel_truth.tsv columns — SPEC item-3 order, plus the OPTIONAL ``n_reads``
+# coordination column (the A<->B contract gen_reads._template_read_count honors:
+# WT rows abundant, cryptic rows fixed-N, controls a base). Downstream (gen_reads,
+# score_trade) join by header NAME, so appending n_reads is backward-safe.
 PANEL_COLS = [
     "tid", "chrom", "true_donor", "true_acceptor", "strand", "intron_len",
     "motif_rung", "acceptor_motif", "decoy_offset", "decoy_acceptor",
-    "exon5_len", "exon3_len", "context", "has_true_junction",
+    "exon5_len", "exon3_len", "context", "has_true_junction", "n_reads",
 ]
 
 # Acceptor trinucleotides (last 3 nt of intron, RNA==genomic on the + strand).
@@ -285,6 +287,34 @@ def full_cells() -> List[Tuple[str, str, str, bool]]:
     return cells
 
 
+def _stamp_n_reads(contigs: List[Contig], reads_per_locus: int,
+                   cryptic_reads: int, cryptic_frac: float) -> None:
+    """Write the OPTIONAL ``n_reads`` coordination column onto every truth row
+    (A<->B contract). Semantics (advisor-shaped: concentrate reads where the
+    make-or-break arm-C-vs-B question lives, keep WT abundant per task #12):
+
+      * R3 cryptic main rows (the scored non-canonical cells, incl. R3-HP) get
+        ``cryptic_reads`` — the paired-comparison power knob. N per cryptic cell
+        stays EXACTLY cryptic_reads regardless of the mixture fraction.
+      * every other scored main row (R0, R1, INTRONFREE) gets ``reads_per_locus``.
+      * co-located WT canonical isoform rows get ``round(cryptic*(1-f)/f)`` so the
+        cryptic:WT split at a mixture locus is ``cryptic_frac`` (WT abundant ->
+        the decoy YAG is a confident pool member -> arm-A flattens cleanly).
+
+    Every PANEL_COLS row MUST carry n_reads or write_outputs would KeyError, so
+    this stamps ALL rows (main + WT + INTRONFREE)."""
+    if not (0.0 < cryptic_frac < 1.0):
+        raise ValueError(f"--cryptic-frac must be in (0,1); got {cryptic_frac}")
+    for c in contigs:
+        cryptic_n = cryptic_reads if c.row.get("motif_rung") == "R3" else reads_per_locus
+        c.row["n_reads"] = str(cryptic_n)
+        for wt_row, _tmpl in c.extra:
+            # WT sits opposite an R3 cryptic row on this contig; tie its abundance
+            # to that cryptic count so cryptic/(cryptic+WT) == cryptic_frac.
+            wt_n = int(round(cryptic_reads * (1.0 - cryptic_frac) / cryptic_frac))
+            wt_row["n_reads"] = str(max(wt_n, 1))
+
+
 def build_panel(
     cells: List[Tuple[str, str, str, bool]],
     e5: int,
@@ -292,6 +322,9 @@ def build_panel(
     intron_len: int,
     decoy_k: int,
     seed: int,
+    reads_per_locus: int = 200,
+    cryptic_reads: Optional[int] = None,
+    cryptic_frac: float = 0.5,
 ) -> List[Contig]:
     rng = random.Random(seed)
     contigs: List[Contig] = []
@@ -301,6 +334,9 @@ def build_panel(
         else:
             contigs.append(build_junction_contig(
                 i, rung, ctx, has_decoy, e5, e3, intron_len, decoy_k, rng))
+    _stamp_n_reads(contigs, reads_per_locus,
+                   cryptic_reads if cryptic_reads is not None else reads_per_locus,
+                   cryptic_frac)
     return contigs
 
 
@@ -438,6 +474,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--decoy-offset", type=int, default=3,
                     help="k bp downstream of the true acceptor for the canonical "
                          "YAG decoy (SPEC decoy offset; default 3)")
+    ap.add_argument("--reads-per-locus", type=int, default=200,
+                    help="n_reads for each non-cryptic scored cell (R0/R1/INTRONFREE); "
+                         "default 200 (>=100 satisfies SPEC N>=100)")
+    ap.add_argument("--cryptic-reads", type=int, default=None,
+                    help="n_reads for each R3 cryptic cell (the make-or-break "
+                         "arm-C-vs-B non-canonical cells, incl. R3-HP). Default = "
+                         "--reads-per-locus; set higher to buy paired-comparison power.")
+    ap.add_argument("--cryptic-frac", type=float, default=0.5,
+                    help="cryptic fraction at a mixture (R3+decoy) locus: WT reads = "
+                         "round(cryptic*(1-f)/f). Default 0.5 (equal, == v2); lower "
+                         "for an abundant-WT / minor-cryptic prp18d-like mixture.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--self-check", action="store_true",
                     help="run the frame/schema invariant self-check and exit")
@@ -448,16 +495,22 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     cells = smoke_cells() if args.panel == "smoke" else full_cells()
     contigs = build_panel(cells, args.exon5_len, args.exon3_len,
-                          args.intron_len, args.decoy_offset, args.seed)
+                          args.intron_len, args.decoy_offset, args.seed,
+                          reads_per_locus=args.reads_per_locus,
+                          cryptic_reads=args.cryptic_reads,
+                          cryptic_frac=args.cryptic_frac)
     paths = write_outputs(contigs, args.out_dir)
 
     n_j = sum(1 for c in contigs if c.row["has_true_junction"] == "1")
     n_if = len(contigs) - n_j
+    cr = args.cryptic_reads if args.cryptic_reads is not None else args.reads_per_locus
     sys.stderr.write(
         f"[build_panel] panel={args.panel} contigs={len(contigs)} "
         f"(junction={n_j}, intronfree={n_if}); "
         f"e5={args.exon5_len} e3={args.exon3_len} intron={args.intron_len} "
-        f"decoy_k={args.decoy_offset} seed={args.seed}\n"
+        f"decoy_k={args.decoy_offset} seed={args.seed}; "
+        f"reads/locus={args.reads_per_locus} cryptic_reads={cr} "
+        f"cryptic_frac={args.cryptic_frac}\n"
         f"[build_panel] wrote {paths['templates']}, {paths['sim_ref']}, "
         f"{paths['panel_truth']}\n")
     for c in contigs:
@@ -466,7 +519,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"    {r['tid']:12s} {r['chrom']:10s} {r['motif_rung']:10s} "
                 f"ctx={r['context']:10s} donor={r['true_donor'] or '-':>4} "
                 f"acc={r['true_acceptor'] or '-':>4} accmotif={r['acceptor_motif'] or '-':>3} "
-                f"decoy_off={r['decoy_offset'] or '-':>2} decoy_acc={r['decoy_acceptor'] or '-'}\n")
+                f"decoy_off={r['decoy_offset'] or '-':>2} decoy_acc={r['decoy_acceptor'] or '-':>4} "
+                f"n_reads={r.get('n_reads', '-')}\n")
     n_wt = sum(len(c.extra) for c in contigs)
     if n_wt:
         sys.stderr.write(f"[build_panel] + {n_wt} co-located WT canonical isoform(s) "

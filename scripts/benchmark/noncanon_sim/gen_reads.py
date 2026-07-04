@@ -17,8 +17,27 @@ LOAD-BEARING (SPEC APIS / error model): the read error source is COMPLETELY
 INDEPENDENT of the scorer's ``penalty_scores.tsv`` (the -logP junction law).
 It is NEVER read here. Two paths:
 
-  * pbsim3 (PREFERRED, ERRHMM-ONT): used iff ``pbsim`` is on PATH (or
-    --pbsim-bin resolves). See ``scripts/benchmark/sim/pbsim3_wrapper.py``.
+  * pbsim3 (PREFERRED, ERRHMM-ONT): used iff a pbsim binary resolves — on PATH,
+    via --pbsim-bin, OR the source build shipped under ``tools/pbsim3/src/pbsim``
+    next to this script (auto-detected, so the pbsim path is the DEFAULT active
+    path on a machine where the tools build exists; --force-fallback overrides).
+    We drive pbsim in ``--strategy templ --method errhmm`` (full-length template
+    sequencing): each panel_truth row is REPLICATED n_i times in the pbsim input
+    FASTA with tid-recoverable headers ``<tid>#r<NNN>``, so templ mode's one-read-
+    per-record rule yields EXACTLY n_i FULL-LENGTH reads/template (n_i honors the
+    optional ``n_reads`` column, else --reads-per-template). pbsim names its reads
+    ``S_<k>`` (opaque), so the READ->TEMPLATE join goes through the MAF (block line
+    1 = template ref_name ``<tid>#r<NNN>``, line 2 = read name ``S_<k>``) — NOT the
+    output filename or order. pbsim's errors come from the packaged ONT ERRHMM HMM
+    (a pretrained, external model), fully independent of penalty_scores.tsv. The
+    error RATE is set by ``--accuracy-mean`` (default 0.95 = modern ONT R10-DRS-
+    like), which scales the HMM's del-dominant/HP-collapsing STRUCTURE without
+    touching the scorer. At the pbsim-native 0.85 (R9) the realized rates are
+    ~sub 7.5% / ins 5.7% / del 8.3% (~21% total) and 120bp smoke reads under-map
+    (~31% under minimap2 -k14); at 0.95 smoke maps ~89% (its short-read seeding
+    ceiling) and realistic 300bp reads map ~99%. NOTE: pbsim numbers legitimately
+    differ from the fallback-generated v2 baseline (a realism upgrade, not a
+    regression); reproduce v2 exactly with --force-fallback.
   * FALLBACK (this file, when pbsim3 absent): clean reads from the templates
     corrupted by a HARD-CODED per-base ONT profile:
       - DELETION-DOMINANT marginal: del > ins ~ sub (task spec);
@@ -88,6 +107,27 @@ HP_DEL_CAP = 0.35
 # Junction-safe truncation: keep >= ANCHOR exon bp on each junction flank.
 ANCHOR = 15
 MIN_READ_LEN = 30  # never emit a shorter read (guards degenerate windows)
+
+
+# ---------------------------------------------------------------------------
+# n_reads coordination column (A<->B contract, shared with build_panel.py)
+# ---------------------------------------------------------------------------
+def _template_read_count(row: Dict[str, str], default: int) -> int:
+    """Per-template read count. Honors the OPTIONAL ``n_reads`` column in
+    panel_truth (the A<->B coordination contract: build_panel writes WT rows high
+    / cryptic rows low; controls = a default). CONTRACT (both builders agree):
+    an empty, missing, non-integer, or non-positive ``n_reads`` cell falls back to
+    ``default`` (--reads-per-template). This keeps v2 panels (no ``n_reads``
+    column at all) BYTE-compatible — every row just uses the default."""
+    raw = str(row.get("n_reads", "")).strip()
+    if raw:
+        try:
+            v = int(raw)
+        except ValueError:
+            return default
+        if v > 0:
+            return v
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +357,8 @@ def generate_fallback(rows: List[Dict[str, str]], templates: Dict[str, str],
                 row.get("motif_rung", ""), row.get("context", ""),
                 row.get("has_true_junction", ""),
             ]
-            for n in range(reads_per_template):
+            n_this = _template_read_count(row, reads_per_template)
+            for n in range(n_this):
                 truncate = rng.random() < trunc_frac
                 w0, w1 = choose_window(tlen, row, truncate, rng)
                 rseq, rqual = corrupt_window(
@@ -351,7 +392,24 @@ def generate_fallback(rows: List[Dict[str, str]], templates: Dict[str, str],
 # pbsim3 path (preferred when available)
 # ---------------------------------------------------------------------------
 def _find_pbsim(pbsim_bin: str) -> Optional[str]:
-    return shutil.which(pbsim_bin)
+    """Resolve a runnable pbsim binary, in priority order:
+      1. ``pbsim_bin`` on PATH (shutil.which),
+      2. ``pbsim_bin`` as an explicit executable path,
+      3. the source build shipped under ``tools/pbsim3/src/pbsim`` next to this
+         script (so a machine that has run the local build gets the pbsim path as
+         its DEFAULT — no flag needed; --force-fallback still overrides).
+    Returns the resolved path or None. NOTE: this is a per-machine source build,
+    so auto-default is machine-local (pbsim where built, fallback elsewhere)."""
+    p = shutil.which(pbsim_bin)
+    if p:
+        return p
+    if os.path.isabs(pbsim_bin) and os.path.exists(pbsim_bin) and os.access(pbsim_bin, os.X_OK):
+        return pbsim_bin
+    here = os.path.dirname(os.path.abspath(__file__))
+    cand = os.path.join(here, "tools", "pbsim3", "src", "pbsim")
+    if os.path.exists(cand) and os.access(cand, os.X_OK):
+        return cand
+    return None
 
 
 def _find_errhmm_model(pbsim_path: str) -> Optional[str]:
@@ -369,25 +427,62 @@ def _find_errhmm_model(pbsim_path: str) -> Optional[str]:
     return None
 
 
+def _parse_maf_read_to_ref(path: str) -> Dict[str, str]:
+    """Map pbsim read name -> template ref name from a MAF (``.maf``/``.maf.gz``).
+
+    Each alignment block opens with an ``a`` line then two ``s`` lines: the FIRST
+    is the TEMPLATE (ref), the SECOND is the READ. So ``s`` line order gives the
+    read->template join WITHOUT any reliance on output-file naming or read order
+    (pbsim relabels reads ``S_<k>`` opaquely). Returns {read_name: ref_name}."""
+    mapping: Dict[str, str] = {}
+    s_names: List[str] = []
+    with _open_maybe_gzip(path, "rt") as fh:
+        for line in fh:
+            if line.startswith("a"):
+                s_names = []
+            elif line.startswith("s"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    s_names.append(parts[1])
+                if len(s_names) == 2:
+                    ref_name, read_name = s_names[0], s_names[1]
+                    mapping[read_name] = ref_name
+                    s_names = []
+    return mapping
+
+
 def generate_pbsim(rows: List[Dict[str, str]], templates: Dict[str, str],
                    out_dir: str, reads_per_template: int, pbsim_path: str,
-                   errhmm_model: str, seed: int,
-                   allow_extra_templates: bool) -> Dict[str, str]:
-    """Drive pbsim3 (ERRHMM-ONT) per-template, then relabel reads to the SPEC
-    ``<tid>_r<NNN>`` id scheme and emit reads.fastq + read_truth.tsv.
+                   errhmm_model: str, seed: int, allow_extra_templates: bool,
+                   rc_frac: float = 0.0, accuracy: Optional[float] = None,
+                   trunc_frac: float = 0.0) -> Dict[str, str]:
+    """Drive pbsim3 (``--strategy templ --method errhmm``, full-length template
+    sequencing), then relabel reads to the SPEC ``<tid>_r<NNN>`` id scheme and
+    emit reads.fastq + read_truth.tsv (SAME schema as the fallback).
 
-    We invoke pbsim in ``templ`` (transcript) mode once over ALL templates with
-    the requested depth (== reads_per_template), then map each pbsim read back to
-    its template of origin. pbsim's read errors come from the packaged ONT HMM —
-    fully independent of penalty_scores.tsv."""
+    Each panel_truth row is REPLICATED n_i times in the pbsim input FASTA with a
+    tid-recoverable header ``<tid>#r<NNN>`` (n_i = honored ``n_reads`` else
+    reads_per_template). templ mode emits exactly one FULL-LENGTH read per record,
+    so replication == exact per-template count. Reads are joined back to their
+    template via the MAF ref_name (NOT filename/order). pbsim's read errors come
+    from the packaged ONT ERRHMM HMM — a pretrained external model, fully
+    independent of penalty_scores.tsv (never read here)."""
     os.makedirs(out_dir, exist_ok=True)
-    # verify the join up front (fail loud) and build the truth lookup
+    if trunc_frac:
+        sys.stderr.write("[gen_reads] NOTE: --trunc-frac is a FALLBACK-only knob; "
+                         "the pbsim path is full-length by construction (templ "
+                         "mode) and ignores it.\n")
+    # verify the join up front (fail loud), build the truth lookup + replicated FASTA
     truth_by_tid: Dict[str, List[str]] = {}
+    want_by_tid: Dict[str, int] = {}
     matched_templates = set()
     tfa = os.path.join(out_dir, "_pbsim_templates.fa")
     with open(tfa, "w") as fh:
         for row in rows:
             tid = row["tid"]
+            if "#" in tid:
+                raise ValueError(f"tid {tid!r} contains '#', which collides with the "
+                                 f"pbsim replicate-header separator '<tid>#r<NNN>'.")
             seq = lookup_template(tid, templates)
             if seq is None:
                 raise KeyError(f"panel_truth tid {tid!r} has no template in templates.fa")
@@ -395,7 +490,10 @@ def generate_pbsim(rows: List[Dict[str, str]], templates: Dict[str, str],
                 if cand in templates:
                     matched_templates.add(cand)
                     break
-            fh.write(f">{tid}\n{seq}\n")
+            n_i = _template_read_count(row, reads_per_template)
+            want_by_tid[tid] = n_i
+            for r in range(n_i):
+                fh.write(f">{tid}#r{r:03d}\n{seq}\n")
             truth_by_tid[tid] = [
                 row.get("chrom", ""), row.get("true_donor", ""),
                 row.get("true_acceptor", ""), row.get("strand", ""),
@@ -410,19 +508,31 @@ def generate_pbsim(rows: List[Dict[str, str]], templates: Dict[str, str],
     prefix = os.path.join(out_dir, "_pbsim")
     cmd = [pbsim_path, "--strategy", "templ", "--method", "errhmm",
            "--errhmm", errhmm_model, "--template", tfa,
-           "--depth", str(reads_per_template), "--prefix", prefix,
-           "--seed", str(seed)]
+           "--prefix", prefix, "--seed", str(seed)]
+    if accuracy is not None:
+        cmd += ["--accuracy-mean", str(accuracy)]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"pbsim3 failed rc={res.returncode}: {res.stderr[:800]}")
 
-    # Collect pbsim FASTQs, relabel per template with a per-tid counter.
+    base = os.path.basename(prefix)
+    # 1) read_name -> tid via the MAF (strip the '#r<NNN>' replicate suffix)
+    read_to_tid: Dict[str, str] = {}
+    for f in sorted(os.listdir(out_dir)):
+        if f.startswith(base) and (f.endswith(".maf") or f.endswith(".maf.gz")):
+            for rn, ref in _parse_maf_read_to_ref(os.path.join(out_dir, f)).items():
+                read_to_tid[rn] = ref.split("#", 1)[0]
+    if not read_to_tid:
+        raise RuntimeError(f"pbsim3 emitted no MAF under {out_dir}/{base}*.maf* — "
+                           f"cannot map reads to templates (gzip/samtools missing?)")
+
+    # 2) stream the pbsim FASTQ(s), relabel per template via a per-tid counter
+    rng = random.Random(seed)
     fastq_path = os.path.join(out_dir, "reads.fastq")
     truth_path = os.path.join(out_dir, "read_truth.tsv")
     counters: Dict[str, int] = {t: 0 for t in truth_by_tid}
     n_reads = 0
     fq_exts = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
-    base = os.path.basename(prefix)
     with open(fastq_path, "w") as fq, open(truth_path, "w") as tt:
         tt.write("\t".join(READ_TRUTH_COLS) + "\n")
         for f in sorted(os.listdir(out_dir)):
@@ -436,42 +546,42 @@ def generate_pbsim(rows: List[Dict[str, str]], templates: Dict[str, str],
                     seqln = g.readline().rstrip("\n")
                     g.readline()  # '+'
                     qln = g.readline().rstrip("\n")
-                    # pbsim names reads like ">S1_1" ; the template-of-origin is
-                    # encoded in its per-template FASTQ or the ref field. pbsim3
-                    # 'templ' mode emits one FASTQ per template named
-                    # <prefix>_<idx>.fastq with the template order == input order.
-                    # We recover tid from the accompanying MAF ref name when
-                    # present; otherwise fall back to filename index.
-                    tid = _pbsim_read_tid(f, base, list(truth_by_tid))
+                    rn = h[1:].split()[0].strip()   # pbsim read name, e.g. 'S_1'
+                    tid = read_to_tid.get(rn)
                     if tid is None:
-                        continue
+                        raise KeyError(
+                            f"pbsim read {rn!r} has no MAF template mapping; the "
+                            f"read<->template join is broken — refusing to emit a "
+                            f"read with unknown truth.")
+                    if tid not in truth_by_tid:
+                        raise KeyError(f"pbsim MAF ref for read {rn!r} maps to tid "
+                                       f"{tid!r}, absent from panel_truth (bad '#' split?)")
+                    if rc_frac > 0 and rng.random() < rc_frac:
+                        seqln = revcomp(seqln)
+                        qln = qln[::-1]
                     n = counters[tid]
                     counters[tid] = n + 1
                     read_id = f"{tid}_r{n:03d}"
                     fq.write(f"@{read_id}\n{seqln}\n+\n{qln}\n")
                     tt.write("\t".join([read_id, tid] + truth_by_tid[tid]) + "\n")
                     n_reads += 1
+
+    # 3) COUNT EXACTNESS (fail loud): every tid must have emitted exactly what we
+    #    asked pbsim for. An under-count silently starves a panel cell below N>=100
+    #    (the same failure the fallback's missing-template KeyError guards against).
+    mism = {t: (counters[t], want_by_tid[t]) for t in want_by_tid
+            if counters[t] != want_by_tid[t]}
+    if mism:
+        raise RuntimeError(
+            f"pbsim per-template read count mismatch (got, want): "
+            f"{dict(list(mism.items())[:8])}{' ...' if len(mism) > 8 else ''}. "
+            f"pbsim dropped/duplicated records — refusing to emit a corrupt panel.")
     return {
         "reads_fastq": fastq_path, "read_truth": truth_path,
         "n_reads": str(n_reads), "n_templates": str(len(rows)),
         "n_extra_templates": str(len(extra)),
         "error_source": "pbsim3-ERRHMM-ONT",
     }
-
-
-def _pbsim_read_tid(fname: str, base: str, tids: List[str]) -> Optional[str]:
-    """Map a pbsim per-template FASTQ filename to its tid via the 1-based index
-    pbsim assigns in template input order (<base>_0001.fastq -> tids[0])."""
-    stem = fname[len(base):].lstrip("_")
-    for ext in (".fastq", ".fq", ".fastq.gz", ".fq.gz"):
-        if stem.endswith(ext):
-            stem = stem[: -len(ext)]
-            break
-    if stem.isdigit():
-        idx = int(stem) - 1
-        if 0 <= idx < len(tids):
-            return tids[idx]
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +600,8 @@ def self_check(verbose: bool = True) -> bool:
         def randseq(n):
             return "".join(rng.choice(BASES) for _ in range(n))
         templ = {
-            "tid_0": randseq(e5) + randseq(e3),                       # junction
+            "tid_0": randseq(e5) + randseq(e3),                       # junction (cryptic)
+            "tid_0_wt": randseq(e5) + randseq(e3),                    # co-located WT isoform
             "tid_1": randseq(e5) + "AAAAAAA" + randseq(e3 - 7),       # exonic HP
             "tid_2": randseq(120),                                    # INTRONFREE
         }
@@ -501,9 +612,13 @@ def self_check(verbose: bool = True) -> bool:
                       "intron_len", "motif_rung", "acceptor_motif", "decoy_offset",
                       "decoy_acceptor", "exon5_len", "exon3_len", "context",
                       "has_true_junction"]
+        # A '_wt' row is included so the tid string ops (the pbsim '#'-split and the
+        # '<tid>_r<NNN>' rsplit) are proven on the co-located-isoform tid shape.
         panel_rows = [
             ["tid_0", "chrSIM_0", "100", "190", "+", "90", "R3", "AC", "3",
              "193", str(e5), str(e3), "plain", "1"],
+            ["tid_0_wt", "chrSIM_0", "100", "193", "+", "93", "WT", "AG", "",
+             "190", str(e5), str(e3), "plain", "1"],
             ["tid_1", "chrSIM_0", "300", "550", "+", "250", "R1", "AAG", "2",
              "552", str(e5), str(e3), "HP", "1"],
             ["tid_2", "chrSIM_0", "", "", "+", "0", "NA", "NA", "0", "", "60",
@@ -559,7 +674,7 @@ def self_check(verbose: bool = True) -> bool:
         # (d) tid written verbatim; has_true_junction preserved per template
         tj = {r[panel_cols_idx(header, 'tid')]: r[panel_cols_idx(header, 'has_true_junction')]
               for r in body}
-        want = {"tid_0": "1", "tid_1": "1", "tid_2": "0"}
+        want = {"tid_0": "1", "tid_0_wt": "1", "tid_1": "1", "tid_2": "0"}
         tj_ok = tj == want
         emit(f"[self-check] tid verbatim + has_true_junction preserved: "
              f"{'PASS' if tj_ok else 'FAIL'}  ({tj})")
@@ -580,8 +695,197 @@ def self_check(verbose: bool = True) -> bool:
         emit(f"[self-check] missing template raises: {'PASS' if raised else 'FAIL'}")
         ok &= raised
 
+        # (g) n_reads coordination column honored + backward-compatible (fallback)
+        ok &= _check_n_reads_fallback(emit)
+
+        # (h) pbsim3 path end-to-end (only if a pbsim binary + model resolve)
+        ok &= _check_pbsim_path(emit)
+
         emit("\n" + ("SELF-CHECK PASSED" if ok else "SELF-CHECK FAILED"))
         return ok
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _write_panel(tmp: str, cols: List[str], rows: List[List[str]]) -> str:
+    p = os.path.join(tmp, "panel_truth.tsv")
+    with open(p, "w") as fh:
+        fh.write("\t".join(cols) + "\n")
+        for r in rows:
+            fh.write("\t".join(r) + "\n")
+    return p
+
+
+def _tid_counts(read_truth_path: str) -> Dict[str, int]:
+    """Per-tid emitted read count from a read_truth.tsv (join by 'tid' column)."""
+    with open(read_truth_path) as fh:
+        rd = csv.DictReader(fh, delimiter="\t")
+        counts: Dict[str, int] = {}
+        for r in rd:
+            counts[r["tid"]] = counts.get(r["tid"], 0) + 1
+    return counts
+
+
+def _check_n_reads_fallback(emit) -> bool:
+    """The n_reads A<->B contract on the fallback path: (i) a panel WITH n_reads
+    yields exactly n_i reads per tid (WT high, cryptic low, control default);
+    (ii) a panel WITHOUT the column is byte-compatible (every tid == default).
+    Includes a '_wt' tid so the tid string ops are exercised end-to-end."""
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="genreads_nreads_")
+    try:
+        rng = random.Random(2)
+        e5 = e3 = 40
+        def rs(n): return "".join(rng.choice(BASES) for _ in range(n))
+        templ = {"tid_0": rs(e5) + rs(e3), "tid_0_wt": rs(e5) + rs(e3),
+                 "tid_1": rs(120), "tid_2": rs(120), "tid_3": rs(120)}
+        with open(os.path.join(tmp, "templates.fa"), "w") as fh:
+            for k, v in templ.items():
+                fh.write(f">{k}\n{v}\n")
+        templates = read_fasta(os.path.join(tmp, "templates.fa"))
+
+        # (i) WITH n_reads: cryptic=30, WT=200, and all three "->default" branches
+        #     of _template_read_count: empty, "0" (non-positive), "x" (non-int).
+        cols = ["tid", "chrom", "true_donor", "true_acceptor", "strand",
+                "intron_len", "motif_rung", "acceptor_motif", "decoy_offset",
+                "decoy_acceptor", "exon5_len", "exon3_len", "context",
+                "has_true_junction", "n_reads"]
+        rows = [
+            ["tid_0", "c", "100", "190", "+", "90", "R3", "AC", "3", "193",
+             str(e5), str(e3), "plain", "1", "30"],
+            ["tid_0_wt", "c", "100", "193", "+", "93", "WT", "AG", "", "190",
+             str(e5), str(e3), "plain", "1", "200"],
+            ["tid_1", "c", "", "", "+", "0", "NA", "NA", "0", "", "120", "0",
+             "INTRONFREE", "0", ""],          # empty -> default
+            ["tid_2", "c", "", "", "+", "0", "NA", "NA", "0", "", "120", "0",
+             "INTRONFREE", "0", "0"],          # non-positive -> default
+            ["tid_3", "c", "", "", "+", "0", "NA", "NA", "0", "", "120", "0",
+             "INTRONFREE", "0", "notanint"],   # non-integer -> default
+        ]
+        p = _write_panel(tmp, cols, rows)
+        default = 77
+        generate_fallback(read_panel_truth(p), templates, tmp,
+                          reads_per_template=default, total_rate=ERROR_REGIMES["mid"],
+                          hp_del_mult=3.0, trunc_frac=0.0, rc_frac=0.0, seed=5,
+                          allow_extra_templates=False)
+        counts = _tid_counts(os.path.join(tmp, "read_truth.tsv"))
+        want = {"tid_0": 30, "tid_0_wt": 200, "tid_1": default,
+                "tid_2": default, "tid_3": default}
+        with_ok = counts == want
+        emit(f"[self-check] n_reads honored (WT>cryptic; empty/0/non-int -> default): "
+             f"{'PASS' if with_ok else 'FAIL'}  ({counts} vs {want})")
+        ok &= with_ok
+
+        # (ii) WITHOUT the n_reads column (v2 panel): every tid == default
+        cols2 = cols[:-1]
+        rows2 = [r[:-1] for r in rows]
+        p2 = _write_panel(tmp, cols2, rows2)
+        generate_fallback(read_panel_truth(p2), templates, tmp,
+                          reads_per_template=default, total_rate=ERROR_REGIMES["mid"],
+                          hp_del_mult=3.0, trunc_frac=0.0, rc_frac=0.0, seed=5,
+                          allow_extra_templates=False)
+        counts2 = _tid_counts(os.path.join(tmp, "read_truth.tsv"))
+        bc_ok = counts2 == {t: default for t in templ}
+        emit(f"[self-check] n_reads backward-compat (no column -> all default): "
+             f"{'PASS' if bc_ok else 'FAIL'}  ({counts2})")
+        ok &= bc_ok
+        return ok
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _check_pbsim_path(emit) -> bool:
+    """End-to-end pbsim3 check (SKIPPED if no pbsim binary+model resolves): a tiny
+    panel with a '_wt' tid + varying n_reads. Asserts read_truth schema, exact
+    per-tid counts (== honored n_reads), read_id 1:1 with FASTQ in <tid>_r<NNN>
+    form, the tid round-trip (the '#'-split must keep '_wt'), and full-length
+    reads (templ mode). This is the only place the pbsim MAF mapping is proven."""
+    pbsim = _find_pbsim("pbsim")
+    if not pbsim:
+        emit("[self-check] pbsim path: SKIP (no pbsim binary/tools build found)")
+        return True
+    model = _find_errhmm_model(pbsim)
+    if not model:
+        emit("[self-check] pbsim path: SKIP (no ERRHMM-ONT model found)")
+        return True
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="genreads_pbsim_")
+    try:
+        rng = random.Random(4)
+        e5 = e3 = 60
+        def rs(n): return "".join(rng.choice(BASES) for _ in range(n))
+        seqs = {"tid_0": rs(e5) + rs(e3), "tid_0_wt": rs(e5) + rs(e3),
+                "tid_1": rs(120)}
+        with open(os.path.join(tmp, "templates.fa"), "w") as fh:
+            for k, v in seqs.items():
+                fh.write(f">{k}\n{v}\n")
+        templates = read_fasta(os.path.join(tmp, "templates.fa"))
+        cols = ["tid", "chrom", "true_donor", "true_acceptor", "strand",
+                "intron_len", "motif_rung", "acceptor_motif", "decoy_offset",
+                "decoy_acceptor", "exon5_len", "exon3_len", "context",
+                "has_true_junction", "n_reads"]
+        rows = [
+            ["tid_0", "c", "100", "190", "+", "90", "R3", "AC", "3", "193",
+             str(e5), str(e3), "plain", "1", "8"],
+            ["tid_0_wt", "c", "100", "193", "+", "93", "WT", "AG", "", "190",
+             str(e5), str(e3), "plain", "1", "20"],
+            ["tid_1", "c", "", "", "+", "0", "NA", "NA", "0", "", "120", "0",
+             "INTRONFREE", "0", ""],          # empty -> default
+        ]
+        p = _write_panel(tmp, cols, rows)
+        default = 12
+        info = generate_pbsim(read_panel_truth(p), templates, tmp,
+                              reads_per_template=default, pbsim_path=pbsim,
+                              errhmm_model=model, seed=9,
+                              allow_extra_templates=False)
+        emit(f"[self-check] pbsim path: ACTIVE ({info['error_source']})")
+        with open(info["read_truth"]) as fh:
+            header = fh.readline().rstrip("\n")
+            body = [ln.rstrip("\n").split("\t") for ln in fh if ln.strip()]
+        hdr_ok = header == "\t".join(READ_TRUTH_COLS)
+        emit(f"[self-check] pbsim read_truth header exact: {'PASS' if hdr_ok else 'FAIL'}")
+        ok &= hdr_ok
+
+        counts = _tid_counts(info["read_truth"])
+        want = {"tid_0": 8, "tid_0_wt": 20, "tid_1": default}
+        cnt_ok = counts == want
+        emit(f"[self-check] pbsim exact per-tid counts (n_reads honored): "
+             f"{'PASS' if cnt_ok else 'FAIL'}  ({counts} vs {want})")
+        ok &= cnt_ok
+
+        # read_id 1:1 with FASTQ, all <tid>_r<NNN>, and the '_wt' tid round-trips
+        fq_ids: List[str] = []
+        fq_lens: List[int] = []
+        with open(info["reads_fastq"]) as fh:
+            while True:
+                h = fh.readline()
+                if not h:
+                    break
+                s = fh.readline().rstrip("\n"); fh.readline(); fh.readline()
+                fq_ids.append(h[1:].rstrip("\n")); fq_lens.append(len(s))
+        truth_ids = [r[0] for r in body]
+        one2one = (set(fq_ids) == set(truth_ids)
+                   and len(fq_ids) == len(truth_ids) == len(set(fq_ids)))
+        emit(f"[self-check] pbsim FASTQ<->truth 1:1 (n={len(fq_ids)}): "
+             f"{'PASS' if one2one else 'FAIL'}")
+        ok &= one2one
+        fmt_ok = all(rid.rsplit("_r", 1)[0] in seqs and rid.rsplit("_r", 1)[1].isdigit()
+                     for rid in truth_ids)
+        wt_ok = any(rid.startswith("tid_0_wt_r") for rid in truth_ids)
+        emit(f"[self-check] pbsim read_id <tid>_r<NNN> + '_wt' tid round-trip: "
+             f"{'PASS' if (fmt_ok and wt_ok) else 'FAIL'}")
+        ok &= fmt_ok and wt_ok
+
+        # full-length: templ mode reads should be ~template length (indels only),
+        # never truncated far below it. All templates here are 120 bp.
+        full_ok = min(fq_lens) >= int(120 * 0.7)
+        emit(f"[self-check] pbsim reads full-length (min len {min(fq_lens)} >= 84): "
+             f"{'PASS' if full_ok else 'FAIL'}")
+        ok &= full_ok
+        return ok
+    except Exception as exc:   # surface, don't mask, a pbsim-path failure
+        emit(f"[self-check] pbsim path: FAIL ({type(exc).__name__}: {exc})")
+        return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -641,7 +945,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "strand.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--pbsim-bin", default="pbsim",
-                    help="pbsim3 binary name/path (preferred if on PATH)")
+                    help="pbsim3 binary name/path (preferred if on PATH; also "
+                         "auto-detects the tools/pbsim3/src/pbsim source build)")
+    ap.add_argument("--pbsim-accuracy", type=float, default=0.95,
+                    help="pbsim --accuracy-mean (pbsim path). Default 0.95 = modern "
+                         "ONT R10-DRS-like; keeps the ERRHMM-ONT del-dominant/HP "
+                         "error STRUCTURE, just scales the rate. Lower to 0.85 for "
+                         "noisy R9 (~21%% error, but 120bp smoke reads then under-"
+                         "map ~31%% under minimap2 -k14). Pass a value or 'nan' via "
+                         "code (accuracy=None) to use pbsim's own 0.85 default.")
     ap.add_argument("--force-fallback", action="store_true",
                     help="ignore pbsim3 even if present; use the fallback model")
     ap.add_argument("--allow-extra-templates", action="store_true",
@@ -671,7 +983,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"error source = ERRHMM-ONT, independent of penalty_scores.tsv\n")
         info = generate_pbsim(rows, templates, args.out_dir,
                               args.reads_per_template, pbsim_path, errhmm,
-                              args.seed, args.allow_extra_templates)
+                              args.seed, args.allow_extra_templates,
+                              rc_frac=args.rc_frac, accuracy=args.pbsim_accuracy,
+                              trunc_frac=args.trunc_frac)
     else:
         why = "pbsim3 not on PATH" if not pbsim_path else "no ERRHMM-ONT model found"
         if args.force_fallback:
