@@ -134,14 +134,28 @@ def build_junction_contig(
     intron_len: int,
     decoy_k: int,
     rng: random.Random,
+    hp_run: int = 0,
 ) -> Contig:
-    """Construct one junction-bearing contig (plus strand) + its truth row."""
+    """Construct one junction-bearing contig (plus strand) + its truth row.
+
+    ``hp_run`` (R3-HP dose-response knob, arm-C power test): when > 0 the acceptor
+    sits inside a GENOMIC A-run of length ``3 + hp_run`` that STRADDLES it — the
+    intron's ``AAA`` acc_tri (3 A's, left of the acceptor) + ``hp_run`` A's at the
+    start of exon2 (right), terminated by a G. Because the intron's trailing A's
+    and exon2's leading A's are indistinguishable to an aligner, the N-op end
+    (acceptor) can SLIDE within the run — and ONT length-miscalls in the run make
+    the exact placement ambiguous. That is precisely the length-error the -logP
+    HP-del law is meant to resolve, and the ambiguity (hence any arm-C edge) should
+    grow with hp_run. The canonical decoy AG = (last run-A, the G) just past the
+    run. hp_run==0 keeps the legacy single-base-A HP construction / generic decoy.
+    """
     name = f"chrSIM_{idx}"
     hp = context == "HP"
     acc_tri = ACC_TRI_HP if (hp and rung == "R3") else ACC_TRI[rung]
     assert len(acc_tri) == 3
     if intron_len < 5 + 0:
         raise ValueError("intron_len must be >= 5 (GT + body + acc_tri)")
+    hp_run_active = hp and rung == "R3" and hp_run > 0
 
     lpad = rand_seq(LPAD, rng)
     exon1 = rand_seq(e5, rng)
@@ -150,39 +164,51 @@ def build_junction_contig(
     if body_len < 0:
         raise ValueError(f"intron_len {intron_len} too short for GT+body+acc_tri")
     body = rand_seq(body_len, rng)
+    # For a deterministic swept run, force the base BEFORE acc_tri to be non-A so
+    # the run's left half is EXACTLY the 3 acc_tri A's (no random extension).
+    if hp_run_active and body_len > 0 and body[-1] == "A":
+        body[-1] = "C"
     intron = ["G", "T"] + body + list(acc_tri)
     assert len(intron) == intron_len
 
-    # exon2: random, then (a) embed the decoy AG at offset k when requested, and
-    # (b) for the HP case, extend the exonic A-run a couple bases into exon2 so a
-    # real homopolymer straddles the junction.
+    # exon2 + decoy.
     exon2 = rand_seq(e3, rng)
-    if hp and rung == "R3":
-        # acc_tri ends "AA"; carry the A-run one more base into exon2 so the run
-        # length across the junction is >= 4 (ONT length-call ambiguity regime).
-        exon2[0] = "A"
-    if has_decoy:
-        # place canonical AG so genome[A+k-2:A+k] == "AG"  (decoy acceptor = A+k)
-        if not (2 <= decoy_k <= e3):
-            raise ValueError(f"decoy_k {decoy_k} out of range for e3 {e3}")
-        exon2[decoy_k - 2] = "A"
-        exon2[decoy_k - 1] = "G"
+    if hp_run_active:
+        if hp_run + 2 > e3:
+            raise ValueError(f"hp_run {hp_run}+2 exceeds exon3_len {e3}")
+        for j in range(hp_run):
+            exon2[j] = "A"          # exon2 leading A-run (right half of the run)
+        exon2[hp_run] = "G"         # terminate the run; forms the decoy AG with exon2[hp_run-1]
+        eff_decoy_k = hp_run + 1    # decoy acceptor = A + hp_run + 1 (just past the run)
+        has_decoy = True
+    else:
+        if hp and rung == "R3":
+            exon2[0] = "A"          # legacy: one exonic A across the junction
+        eff_decoy_k = decoy_k
+        if has_decoy:
+            if not (2 <= decoy_k <= e3):
+                raise ValueError(f"decoy_k {decoy_k} out of range for e3 {e3}")
+            exon2[decoy_k - 2] = "A"
+            exon2[decoy_k - 1] = "G"
 
     rpad = rand_seq(RPAD, rng)
 
     seq = "".join(lpad + exon1 + intron + exon2 + rpad)
     D = LPAD + e5                      # donor / intron start (0-based)
     A = D + intron_len                 # acceptor / intron end (0-based, half-open)
-    # sanity on the built frame (asserted again in self_check across all contigs)
     assert seq[D:D + 2] == "GT", (seq[D:D + 2], name)
     assert seq[A - 3:A] == acc_tri, (seq[A - 3:A], acc_tri, name)
+    if hp_run_active:
+        # genomic A-run [A-3, A+hp_run) == A^(3+hp_run), then G
+        assert seq[A - 3:A + hp_run] == "A" * (3 + hp_run), (seq[A - 3:A + hp_run + 1], name)
+        assert seq[A + hp_run] == "G", (seq[A + hp_run], name)
 
     template = seq[D - e5:D] + seq[A:A + e3]
     acc_dinuc = seq[A - 2:A]
-    decoy_acc = str(A + decoy_k) if has_decoy else ""
+    decoy_acc = str(A + eff_decoy_k) if has_decoy else ""
     if has_decoy:
-        assert seq[A + decoy_k - 2:A + decoy_k] == DECOY_DINUC, (
-            seq[A + decoy_k - 2:A + decoy_k], name)
+        assert seq[A + eff_decoy_k - 2:A + eff_decoy_k] == DECOY_DINUC, (
+            seq[A + eff_decoy_k - 2:A + eff_decoy_k], name)
 
     row = {
         "tid": f"tid_{idx}",
@@ -193,24 +219,21 @@ def build_junction_contig(
         "intron_len": str(intron_len),
         "motif_rung": rung,
         "acceptor_motif": acc_dinuc,
-        "decoy_offset": str(decoy_k) if has_decoy else "",
+        "decoy_offset": str(eff_decoy_k) if has_decoy else "",
         "decoy_acceptor": decoy_acc,
         "exon5_len": str(e5),
         "exon3_len": str(e3),
-        "context": context,
+        "context": (f"HP{hp_run}" if hp_run_active else context),
         "has_true_junction": "1",
     }
 
-    # SPEC v2 MIXTURE: at a non-canonical (R3) decoy locus, co-locate the abundant
-    # WT canonical isoform spliced at the decoy acceptor A+k. This makes the
-    # canonical junction a clean-anchored, pooled candidate, so arm-A can flatten
-    # the minor cryptic reads onto it while arm-B holds (the whole point of v2).
+    # SPEC v2 MIXTURE: co-locate the abundant WT canonical isoform at the decoy.
     extra: List[Tuple[Dict[str, str], str]] = []
     if has_decoy and rung == "R3":
-        A_wt = A + decoy_k
+        A_wt = A + eff_decoy_k
         if A_wt + e3 > len(seq):
             raise ValueError(f"WT isoform overruns contig ({A_wt}+{e3} > {len(seq)}); "
-                             f"increase RPAD or decrease decoy_k")
+                             f"increase RPAD or decrease decoy_k/hp_run")
         wt_template = seq[D - e5:D] + seq[A_wt:A_wt + e3]
         assert seq[A_wt - 2:A_wt] == DECOY_DINUC, (seq[A_wt - 2:A_wt], name)
         wt_row = {
@@ -220,17 +243,135 @@ def build_junction_contig(
             "true_acceptor": str(A_wt),
             "strand": "+",
             "intron_len": str(A_wt - D),
-            "motif_rung": "WT",                  # abundant canonical WT isoform
-            "acceptor_motif": seq[A_wt - 2:A_wt],  # == "AG"
+            "motif_rung": "WT",
+            "acceptor_motif": seq[A_wt - 2:A_wt],
             "decoy_offset": "",
-            "decoy_acceptor": str(A),            # the cryptic site, from WT's view
+            "decoy_acceptor": str(A),
             "exon5_len": str(e5),
             "exon3_len": str(e3),
-            "context": context,
+            "context": (f"HP{hp_run}" if hp_run_active else context),
             "has_true_junction": "1",
         }
         extra.append((wt_row, wt_template))
     return Contig(name, seq, row, template, extra)
+
+
+def build_flanking_hp_contig(
+    idx: int,
+    dist: int,
+    run_len: int,
+    e5: int,
+    e3: int,
+    intron_len: int,
+    rng: random.Random,
+    side: str = "acceptor",
+    base: str = "A",
+) -> Contig:
+    """A CANONICAL GT-AG junction with A-runs FLANKING it at distance ``dist``
+    (PI model: A-stretches occur up- AND down-stream of junctions; HP deletions
+    RIGHT AT the junction are ~impossible to handle, so test at varying DISTANCE).
+
+        exon1 = [fill][A^run_len][dist non-A spacer] | GT..intron..AG | [dist non-A spacer][A^run_len][fill] = exon2
+
+    e.g. dist=0 -> ...CGAAAAAA-GT..AG-AAAAAAAA...  (runs adjacent, extreme case);
+         dist=2 -> ...CGAAAAAACG-GT..AG-CGAAAAAA... (CG spacer decouples the run).
+    An ONT HP deletion in a flanking run shifts the read length there; at dist=0 it
+    is ambiguous with the junction boundary (moves an A into the intron), at dist>0
+    it is unambiguously exonic. Truth = the exact canonical junction (D, A); the
+    metric is whether each arm places it EXACTLY right despite the flanking HP
+    deletions. This isolates the -logP HP-del law (arm-C) from the motif snap."""
+    name = f"chrSIM_{idx}"
+    assert base in "ACGT" and side in ("acceptor", "donor", "both")
+    up = side in ("donor", "both")          # run upstream of the donor (exon1 tail)
+    dn = side in ("acceptor", "both")       # run downstream of the acceptor (exon2 head)
+    nonbase = [b for b in "ACGT" if b != base]
+    if up and e5 < run_len + dist + 2:
+        raise ValueError(f"exon5_len {e5} too short for run {run_len}+dist {dist}")
+    if dn and e3 < run_len + dist + 2:
+        raise ValueError(f"exon3_len {e3} too short for run {run_len}+dist {dist}")
+
+    def spacer(d):
+        return [rng.choice(nonbase) for _ in range(d)]
+
+    lpad = rand_seq(LPAD, rng)
+    # exon1: when `up`, [fill][run][non-base spacer(dist)] | GT (dist=0 => run adjacent
+    # to the donor, the "moves an A into the intron" extreme). Force the base before the
+    # run non-base so the run length is exactly run_len.
+    if up:
+        fill1 = rand_seq(e5 - run_len - dist, rng)
+        if fill1 and fill1[-1] == base:
+            fill1[-1] = nonbase[0]
+        exon1 = fill1 + [base] * run_len + spacer(dist)
+    else:
+        exon1 = rand_seq(e5, rng)
+        if exon1 and exon1[-1] == base:
+            exon1[-1] = nonbase[0]           # keep the donor flank clean
+
+    acc_tri = "CAG"                          # canonical YAG acceptor (tier 0)
+    body = rand_seq(intron_len - 2 - 3, rng)
+    if body and body[-1] == "A":
+        body[-1] = "C"
+    intron = ["G", "T"] + body + list(acc_tri)
+    assert len(intron) == intron_len
+
+    # exon2: when `dn`, AG | [non-base spacer(dist)][run][fill].
+    if dn:
+        fill2 = rand_seq(e3 - run_len - dist, rng)
+        if fill2 and fill2[0] == base:
+            fill2[0] = nonbase[0]
+        exon2 = spacer(dist) + [base] * run_len + fill2
+    else:
+        exon2 = rand_seq(e3, rng)
+        if exon2 and exon2[0] == base:
+            exon2[0] = nonbase[0]            # keep the acceptor flank clean
+
+    rpad = rand_seq(RPAD, rng)
+    seq = "".join(lpad + exon1 + intron + exon2 + rpad)
+    D = LPAD + e5
+    A = D + intron_len
+    assert seq[D:D + 2] == "GT", (seq[D:D + 2], name)
+    assert seq[A - 3:A] == acc_tri, (seq[A - 3:A], name)
+    # verify each requested flanking run sits at the intended distance from the boundary
+    if up:
+        assert seq[D - dist - run_len:D - dist] == base * run_len, (name, "up-run")
+    if dn:
+        assert seq[A + dist:A + dist + run_len] == base * run_len, (name, "dn-run")
+
+    template = seq[D - e5:D] + seq[A:A + e3]
+    row = {
+        "tid": f"tid_{idx}", "chrom": name, "true_donor": str(D), "true_acceptor": str(A),
+        "strand": "+", "intron_len": str(intron_len), "motif_rung": "R0flank",
+        "acceptor_motif": seq[A - 2:A], "decoy_offset": "", "decoy_acceptor": "",
+        "exon5_len": str(e5), "exon3_len": str(e3),
+        "context": f"{side[:3].upper()}_{base}_D{dist}",   # e.g. ACC_A_D3, DON_A_D1, BOT_A_D0
+        "has_true_junction": "1",
+    }
+    return Contig(name, seq, row, template)
+
+
+def hp_dist_cells(distances: List[int], run_len: int) -> List[Tuple]:
+    """Advisor-designed flanking-DISTANCE panel (the arm-C niche map). Cells encoded
+    as ('flank', dist, run_len, side, base):
+
+      * PRIMARY: acceptor-side (exon2/downstream) poly-A, fine distance sweep — the
+        dose-response. Pre-registered prediction: HUMP in arm-C−arm-B (≈0 at d=0
+        [degenerate], peak at intermediate d, →0 at large d).
+      * DONOR MIRROR: donor-side (exon1/upstream) poly-A at a few distances (symmetry).
+      * BASE-CLASS BREADTH at a mid distance: poly-T (AT class, other base) + poly-G/C
+        (CG class) — tests whether the AT/CG-split penalty table transfers.
+      * DEGENERATE CONTROLS (pre-registered NULL): both-sided runs, adjacent/near.
+      * INTRONFREE FDR control."""
+    cells: List[Tuple] = []
+    for d in distances:                                  # PRIMARY acceptor sweep
+        cells.append(("flank", d, run_len, "acceptor", "A"))
+    for d in (1, 3, 6):                                  # donor-side mirror
+        cells.append(("flank", d, run_len, "donor", "A"))
+    for b in ("T", "G", "C"):                            # base-class breadth @ d=3
+        cells.append(("flank", 3, run_len, "acceptor", b))
+    cells.append(("flank", 0, run_len, "both", "A"))     # degenerate control (null)
+    cells.append(("flank", 1, run_len, "both", "A"))
+    cells.append(("intronfree", "INTRONFREE", "INTRONFREE", False, 0))
+    return cells
 
 
 def build_intronfree_contig(idx: int, span: int, rng: random.Random) -> Contig:
@@ -287,6 +428,25 @@ def full_cells() -> List[Tuple[str, str, str, bool]]:
     return cells
 
 
+def hp_power_cells(hp_lengths: List[int]) -> List[Tuple]:
+    """arm-C dose-response POWER panel (the make-or-break −logP test): R3
+    non-canonical acceptors with an acceptor-straddling exonic A-run swept over
+    *hp_lengths* (0 = plain non-HP anchor), each with the WT+decoy mixture, plus
+    the FDR controls. Run at high N per cell (``--cryptic-reads``) + the paired
+    arm-B-vs-arm-C test in score_trade. Prediction: any arm-C recovery/FDR edge
+    over arm-B is ~0 at L=0 and GROWS with L (the -logP HP-del law's signature)."""
+    cells: List[Tuple] = []
+    for L in hp_lengths:
+        if L <= 0:
+            cells.append(("junction", "R3", "plain", True, 0))    # non-HP anchor
+        else:
+            cells.append(("junction", "R3", "HP", True, int(L)))  # HP run length L
+    cells.append(("junction", "R0", "plain", True, 0))            # canonical+decoy control
+    cells.append(("junction", "R0", "plain", False, 0))           # canonical no-decoy control
+    cells.append(("intronfree", "INTRONFREE", "INTRONFREE", False, 0))
+    return cells
+
+
 def _stamp_n_reads(contigs: List[Contig], reads_per_locus: int,
                    cryptic_reads: int, cryptic_frac: float) -> None:
     """Write the OPTIONAL ``n_reads`` coordination column onto every truth row
@@ -306,7 +466,10 @@ def _stamp_n_reads(contigs: List[Contig], reads_per_locus: int,
     if not (0.0 < cryptic_frac < 1.0):
         raise ValueError(f"--cryptic-frac must be in (0,1); got {cryptic_frac}")
     for c in contigs:
-        cryptic_n = cryptic_reads if c.row.get("motif_rung") == "R3" else reads_per_locus
+        # R3 cryptic cells AND R0flank flanking-HP cells are the scored make-or-break
+        # cells -> give them the (high) cryptic_reads count for paired-test power.
+        cryptic_n = (cryptic_reads if c.row.get("motif_rung") in ("R3", "R0flank")
+                     else reads_per_locus)
         c.row["n_reads"] = str(cryptic_n)
         for wt_row, _tmpl in c.extra:
             # WT sits opposite an R3 cryptic row on this contig; tie its abundance
@@ -328,12 +491,19 @@ def build_panel(
 ) -> List[Contig]:
     rng = random.Random(seed)
     contigs: List[Contig] = []
-    for i, (kind, rung, ctx, has_decoy) in enumerate(cells):
+    for i, cell in enumerate(cells):
+        kind = cell[0]
         if kind == "intronfree":
             contigs.append(build_intronfree_contig(i, e5 + e3, rng))
+        elif kind == "flank":
+            _, dist, run_len, side, base = cell
+            contigs.append(build_flanking_hp_contig(
+                i, dist, run_len, e5, e3, intron_len, rng, side=side, base=base))
         else:
+            rung, ctx, has_decoy = cell[1], cell[2], cell[3]
+            hp_run = cell[4] if len(cell) > 4 else 0
             contigs.append(build_junction_contig(
-                i, rung, ctx, has_decoy, e5, e3, intron_len, decoy_k, rng))
+                i, rung, ctx, has_decoy, e5, e3, intron_len, decoy_k, rng, hp_run=hp_run))
     _stamp_n_reads(contigs, reads_per_locus,
                    cryptic_reads if cryptic_reads is not None else reads_per_locus,
                    cryptic_frac)
@@ -465,9 +635,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Component A — build templates.fa + sim_ref.fa + panel_truth.tsv "
                     "for the yeast non-canonical long-read splice sim.")
     ap.add_argument("--out-dir", default=".", help="output directory")
-    ap.add_argument("--panel", choices=["smoke", "full"], default="smoke",
+    ap.add_argument("--panel", choices=["smoke", "full", "hp_power", "hp_dist"], default="smoke",
                     help="smoke = R0+R3+INTRONFREE+YAG-no-decoy (default); "
-                         "full = R0/R1/R3 x context x decoy ladder")
+                         "full = R0/R1/R3 x context x decoy ladder; "
+                         "hp_power = R3 non-canonical x HP-run-length sweep (arm-C "
+                         "dose-response, run STRADDLING the acceptor); "
+                         "hp_dist = canonical junction x flanking-A-run DISTANCE sweep "
+                         "(PI model: HP dels at varying distance from the junction)")
+    ap.add_argument("--hp-run-lengths", default="0,3,6,9,12",
+                    help="comma-separated exonic A-run lengths for --panel hp_power "
+                         "(0 = plain non-HP anchor); default 0,3,6,9,12")
+    ap.add_argument("--hp-distances", default="0,1,2,3,5,8",
+                    help="comma-separated flanking-A-run distances from the junction "
+                         "for --panel hp_dist (0 = adjacent/extreme); default 0,1,2,3,5,8")
+    ap.add_argument("--hp-run-len", type=int, default=8,
+                    help="flanking A-run length for --panel hp_dist (default 8)")
     ap.add_argument("--exon5-len", type=int, default=60)
     ap.add_argument("--exon3-len", type=int, default=60)
     ap.add_argument("--intron-len", type=int, default=90)
@@ -493,7 +675,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.self_check:
         return 0 if self_check() else 1
 
-    cells = smoke_cells() if args.panel == "smoke" else full_cells()
+    if args.panel == "hp_power":
+        hp_lengths = [int(x) for x in args.hp_run_lengths.split(",") if x.strip() != ""]
+        cells = hp_power_cells(hp_lengths)
+    elif args.panel == "hp_dist":
+        dists = [int(x) for x in args.hp_distances.split(",") if x.strip() != ""]
+        cells = hp_dist_cells(dists, args.hp_run_len)
+    elif args.panel == "full":
+        cells = full_cells()
+    else:
+        cells = smoke_cells()
     contigs = build_panel(cells, args.exon5_len, args.exon3_len,
                           args.intron_len, args.decoy_offset, args.seed,
                           reads_per_locus=args.reads_per_locus,

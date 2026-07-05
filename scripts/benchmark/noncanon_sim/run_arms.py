@@ -42,11 +42,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as _mp
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# junction_refiner._run_parallel relies on fork() to hand _WORKER_POOL_STATE to the
+# workers. macOS (darwin) defaults to 'spawn' since Py3.8 -> the workers get an empty
+# state and die with KeyError:'header'. Force fork so --refine-workers>1 works here.
+try:
+    _mp.set_start_method("fork")
+except RuntimeError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Resolve the rectify package (repo root is three levels up from this file:
@@ -218,6 +227,7 @@ def run_arms(
     *,
     penalty_table_path: Path,
     threads: int = 1,
+    refine_workers: int = 1,
 ) -> Dict[str, dict]:
     """Build the junction pool once, then run the three refiner arms.
 
@@ -250,7 +260,7 @@ def run_arms(
             prebuilt_annotated_set=annot_set,
             sort_and_index=True,
             sort_threads=threads,
-            n_workers=1,
+            n_workers=refine_workers,
             motif_blind=motif_blind,
         )
         results[name] = {
@@ -293,7 +303,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--kmer", type=int, default=14,
                    help="minimap2 -k (default 14 for noisy ONT)")
     p.add_argument("--threads", type=int, default=1,
-                   help="threads for minimap2/samtools (refiner is n_workers=1)")
+                   help="threads for minimap2/samtools")
+    p.add_argument("--refine-workers", type=int, default=1,
+                   help="n_workers for refine_bam_junctions (fork-parallel refine; "
+                        "safe/fast on the tiny synthetic genomes, e.g. 4)")
     p.add_argument("--mm2-extra", default=None,
                    help="extra minimap2 flags (space-separated string), appended verbatim")
     return p
@@ -332,6 +345,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = run_arms(
         aligned_bam, genome, annotated_junctions, outdir,
         penalty_table_path=args.penalty_table, threads=args.threads,
+        refine_workers=args.refine_workers,
     )
 
     manifest = {

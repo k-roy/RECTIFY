@@ -123,3 +123,48 @@ HP-aware injector (task 11); then commit the milestone.
 On resume: mix_out/trade_curve.json holds the result; re-run = build_panel --out-dir mix_out; gen_reads
 --out-dir mix_out; run_arms --reads mix_out/reads.fastq --sim-ref mix_out/sim_ref.fa --outdir mix_out;
 score_trade --work-dir mix_out --arm A=... B=... C=...
+
+## COMMITTED + v3 IN FLIGHT (2026-07-03)
+Milestone committed: 69a230f "feat(benchmark): motif-blind arm-B re-aligner toggle + yeast non-canonical
+long-read vetting sim" (junction_refiner motif_blind toggle + scripts/benchmark/noncanon_sim/ + handoff).
+v3 Workflow `noncanon-sim-v3-pbsim3-fullpanel` (Opus/xhigh: 2 builders + integrator): install pbsim3 (realistic
+ONT errors) + fuller panel (R0/R1/R3 × plain/HP × decoy 2-4 × exon/intron sizes) + realistic WT/cryptic mixture
+(n_reads column, --cryptic-frac) + fix R2 tier + control TSV; then run full pipeline → mix_full_out/trade_curve.json
++ deliver the RIGOROUS arm-C-vs-arm-B verdict under realistic errors (does −logP beat motif-blind, esp. in HP cells).
+On resume: check mix_full_out/trade_curve.json + the workflow verdict.
+
+## ★★ v3 RIGOROUS RESULT (2026-07-03) — pbsim3 realistic errors, fuller panel; committed 07a712c
+pbsim3 (ERRHMM-ONT, source-built, independent of penalty_scores) is the default read model. Fuller panel
+R0/R1/R3 × plain/HP × decoy, WT+cryptic mixture (cryptic-frac 0.2), 4650 reads, N>=200/cell → mix_full_out/.
+HEADLINE (robust): motif-blind arm-B recovers 0.788 of non-canonical junctions vs incumbent arm-A 0.568
+(+22pp) at EQUAL false-junction FDR (~0.006) and 0.000 on INTRONFREE. arm-A flattens ONLY when a canonical
+decoy is present (R3-plain-no-decoy: arm-A holds 0.835) — decoy-specific, correct.
+arm-C vs arm-B VERDICT (make-or-break): TIE overall (C 0.781 vs B 0.788). arm-C's −logP shows a directional
+edge ONLY in the HP-context non-canonical cell (R3-HP-decoy: rec 0.745 vs 0.710, FDR 0.015 vs 0.045) — where
+its HP-length law applies — but WITHIN NOISE at n=200; slightly WORSE in R1 semi-canonical cells. So the
+−logP increment is NOT demonstrated significant at this scale; motif-blindness (arm-B) is the robust win.
+NEXT (to resolve arm-C): larger HP-focused panel / more reps to test if the HP-cell edge is real; realistic
+cryptic-fraction sweep; decoy-offset/exon-size sweeps; then decide whether arm-C ships or arm-B alone.
+On resume: mix_full_out/trade_curve.json holds it; re-run per the v3 pipeline (pbsim3 default).
+
+## ★★★ arm-C VERDICT (2026-07-05) — the −logP table HURTS junction placement near HP runs
+Advisor-designed hp_dist panel (canonical junction × flanking-A-run DISTANCE sweep, one-sided acceptor
+primary + donor mirror + base-class + degenerate controls), pbsim3 reads, 700 reads/cell, paired McNemar +
+bootstrap (paired_arm_test.py → mix_hpd_out/). Metric verified sound (normalize-equality, GT/AG-anchored;
+mis-placements incl. 8bp NOT counted recovered). Fork-parallel refine (run_arms --refine-workers; forced
+mp fork for macOS).
+RESULT — OPPOSITE of the pre-registered hump: arm-C is ≤ arm-B EVERYWHERE (no niche where −logP wins).
+ - ACC_A distance sweep: dC-B = -0.067(D0), -0.104(D1), -0.020(D2), then ≈-0.01/0 at D3-D10. Worst at
+   SHORT distance (HP near the junction). BOT_A_D1 -0.050. poly-T ACC_T_D3 -0.081 (9× worse than poly-A
+   at same distance — base-class calibration doesn't transfer A→T).
+ - arm-C refined 442 reads vs arm-A/arm-B 164 — arm-C OVER-MOVES.
+ - MECHANISM (BAM-verified, ACC_A_D1): arm-C shifts 73 reads 2bp INTO the A-run (180→182), absorbing A's
+   into the intron; arm-B holds 606/612 at the true acceptor. The HP-cheap-del table makes the wrong
+   HP-absorbing shift cheap. Exactly the PI's "moves an A into the intron", and arm-C is MORE prone to it.
+VERDICT: arm-B (motif-blind, flat cost) is the win. arm-C's −logP penalty table does NOT earn its keep for
+junction RE-PLACEMENT — it ties arm-B on non-canonical recovery (v3) and LOSES on canonical placement
+precision near HP runs (this test). The −logP law's validated value is its ORIGINAL exon-block indel
+attribution (the C1 false-indel test), NOT junction re-placement. SHIP arm-B; do NOT ship arm-C's table in
+the junction scorer. Sub-finding: the AT/CG base-class table mis-transfers poly-A→poly-T (follow-up).
+NEXT (per PI's approved sequence): human-transcript transfer check (human geometry + human penalty table;
+then real gencode contexts).
