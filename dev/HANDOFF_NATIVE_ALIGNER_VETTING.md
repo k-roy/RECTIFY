@@ -239,3 +239,13 @@ VERDICT: SHIP arm-B + the HP-drift guard (hp_drift_margin) as the native re-plac
 homopolymer-specific specificity, no discovery cost. The −logP penalty table stays in consensus/exon-indel
 scoring (ranking), NOT the re-placer search. Params: hp_drift_margin (~2.0), hp_drift_min_run (4). Next: tune
 hp_drift_margin, add a regression test for the guard, and the real-DRS transfer test (plan 4).
+
+## hp_drift_margin TUNED (2026-07-06) — decoupled: drift-fix scales with margin, discovery flat at all margins
+Sweep (_sweep_refine.py reuses aligned bam + pool; refine arm-E per margin, no re-align):
+- CANONICAL drift-fix (D0 recovery): 0.307(m0.5) → 0.515(1.0) → 0.910(2.0) → 0.993(3.0) → 1.000(4.0). Plateaus ~3-4.
+- R3-HP DISCOVERY (arm-E vs arm-B): 0.284 == 0.284 at EVERY margin (0.5/1.0/2.0), Δ+0.000 — guard never fires
+  on the transition-site non-canonical acceptor, so discovery cost is ZERO regardless of margin.
+=> RECOMMENDED hp_drift_margin ≈ 3.0 (D0 0.993, near-complete drift-fix, refines 171; conservative). Can go to
+4.0 for a complete fix at no discovery cost. Units = edit-distance; an into-HP move must beat the incumbent by
+>= this to be accepted (HP undercalls give only ~1-2-edit spurious advantages, so 3 cleanly vetoes them).
+Loose ends: add a unit/regression test for _hp_run_across + the guard; real-DRS-with-truth transfer test.
