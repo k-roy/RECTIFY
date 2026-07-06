@@ -249,3 +249,28 @@ Sweep (_sweep_refine.py reuses aligned bam + pool; refine arm-E per margin, no r
 4.0 for a complete fix at no discovery cost. Units = edit-distance; an into-HP move must beat the incumbent by
 >= this to be accepted (HP undercalls give only ~1-2-edit spurious advantages, so 3 cleanly vetoes them).
 Loose ends: add a unit/regression test for _hp_run_across + the guard; real-DRS-with-truth transfer test.
+
+## REAL-DRS TRANSFER TEST — SCOPED + READY (2026-07-06); execution = next milestone
+PI decisions: dataset = BY4742 R10.4 DRS (penalty-table calibration data); discovery half = sim-proven + real
+do-no-harm (no real non-canonical DRS truth exists; prp18Δ is short-read). Guard regression test DONE (11 tests,
+committed 92937d5). Comparison tool written: scripts/benchmark/noncanon_sim/real_drs_hp_drift.py.
+DATA (Sherlock, verified reachable): real minimap2 DRS BAM
+  /scratch/users/kevinroy/rectify_wt_by4742_rep1_26167419_0/wt_by4742_rep1.minimap2.namesorted.bam
+  yeast genome+GFF on Oak /oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/
+TEST (truth=annotations): flag annotated junctions that ABUT a homopolymer (a boundary can drift <=3bp into a
+run>=4); refine the real BAM twice (arm-B motif_blind hp_drift_margin=0, arm-Bguard hp_drift_margin=3, same
+pool); measure annotated-match rate at HP-abutting junctions per arm. EXPECT: Bguard match@HP > B (drift fixed
+on real undercalls); overall match not lower (do-no-harm); arms differ ~only at HP-abutting junctions (guard
+HP-specific). real_drs_hp_drift.py computes all of this -> real_drs_hp_drift.json.
+RESUME (deploy guard code to Sherlock + run — Sherlock rectify install at /oak/.../software/rectify may lack the
+guard; do NOT overwrite the production install or push without asking):
+  1. Make a scratch rectify copy: cp -r /oak/.../software/rectify /scratch/users/kevinroy/rectify_guard/ (or reuse).
+  2. rsync (M1->Sherlock, tiny) the guard file + tool:
+       rectify/core/splice/junction_refiner.py -> /scratch/users/kevinroy/rectify_guard/rectify/core/splice/
+       scripts/benchmark/noncanon_sim/real_drs_hp_drift.py -> /scratch/users/kevinroy/rectify_guard/
+  3. Run (sbatch or interactive; PYTHONPATH=/scratch/users/kevinroy/rectify_guard):
+       python real_drs_hp_drift.py --bam <the BAM> --genome <yeast.fsa(.gz)> --gff <yeast.gff.gz>
+         --hp-drift-margin 3.0 --workers 8 --outdir /scratch/users/kevinroy/real_drs_out
+  4. Read real_drs_out/real_drs_hp_drift.json; interpret vs the EXPECT above.
+NOTE: real_drs_hp_drift.py syntax-checked on M1; not yet run on real data. Refine on a full DRS BAM is many
+reads -> cluster only (n_workers>1; fork ok on Linux). If the BAM is huge, subset to a few chroms first.
