@@ -220,3 +220,22 @@ role (consensus ranking + exon-interior indel scoring), NOT junction re-placemen
 penalty_table_path in the re-placer. Genuinely-open next steps: (2) coherent del_open_delta law (untested,
 different quantity), (4) real DRS truth. Low-risk audit worth doing: does consensus ever pick a shift-into-HP
 over a motif-anchored alt (mapPacBio the suspect)?
+
+## ★★★★★★ HP-DRIFT GUARD (arm-E) WORKS (2026-07-06) — motif-blind discovery + HP-specific specificity, no trade-off
+The PI-designed TARGETED guard succeeds where the penalty table (arm-C, hurt) and blunt hold-margin (arm-D,
+killed discovery) failed. junction_refiner: `_hp_run_across` flags a move that lands a boundary INSIDE a
+homopolymer run (≥ hp_drift_min_run); `hp_drift_margin` applies extra evidence margin ONLY to such into-HP
+moves, sparing moves to genuine sequence transitions (real non-canonical acceptors). Byte-identical at 0
+(59 tests green). arm-E = motif_blind + hp_drift_margin, NO penalty table.
+RESULT (realistic majority-undercall reads, hp_drift_margin=2.0):
+- Canonical HP-drift (mix_fair_hpg, arm-B vs arm-E): arm-E >= arm-B EVERYWHERE — D0 +0.603 (0.307->0.910),
+  D2 +0.068, tied D1/D3/D5/D8. Fixes the false-non-canonical fabrication; refines 215 vs arm-C's 1085.
+- Non-canonical discovery PRESERVED: R3-plain (non-canon AC at transition) +0.000; REALISTIC R3-HP (non-canon
+  AC at transition + 8-A run DOWNSTREAM) arm-B 0.284 == arm-E 0.284 (+0.000, b=0 c=0) — guard touches 0 reads.
+- Mechanism verified: _hp_run_across(true non-canon acceptor)=0 (transition, spared); =8 into the downstream
+  run (drift vetoed). Earlier R3-HP -0.336 was a DEGENERATE test (acceptor placed inside an A-run, which no
+  defined non-canonical dinucleotide is) — fixed build_panel R3-HP to a transition acceptor + downstream run.
+VERDICT: SHIP arm-B + the HP-drift guard (hp_drift_margin) as the native re-placer: motif-blind sensitivity +
+homopolymer-specific specificity, no discovery cost. The −logP penalty table stays in consensus/exon-indel
+scoring (ranking), NOT the re-placer search. Params: hp_drift_margin (~2.0), hp_drift_min_run (4). Next: tune
+hp_drift_margin, add a regression test for the guard, and the real-DRS transfer test (plan 4).

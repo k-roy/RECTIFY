@@ -151,7 +151,10 @@ def build_junction_contig(
     """
     name = f"chrSIM_{idx}"
     hp = context == "HP"
-    acc_tri = ACC_TRI_HP if (hp and rung == "R3") else ACC_TRI[rung]
+    # hp_power (hp_run>0) straddles the acceptor with an A-run (acc_tri="AAA"); the
+    # full-panel R3-HP instead keeps the non-canonical acceptor at a TRANSITION and
+    # puts the homopolymer DOWNSTREAM (realistic; see the exon2 block below).
+    acc_tri = ACC_TRI_HP if (hp and rung == "R3" and hp_run > 0) else ACC_TRI[rung]
     assert len(acc_tri) == 3
     if intron_len < 5 + 0:
         raise ValueError("intron_len must be >= 5 (GT + body + acc_tri)")
@@ -182,14 +185,29 @@ def build_junction_contig(
         eff_decoy_k = hp_run + 1    # decoy acceptor = A + hp_run + 1 (just past the run)
         has_decoy = True
     else:
-        if hp and rung == "R3":
-            exon2[0] = "A"          # legacy: one exonic A across the junction
         eff_decoy_k = decoy_k
         if has_decoy:
             if not (2 <= decoy_k <= e3):
                 raise ValueError(f"decoy_k {decoy_k} out of range for e3 {e3}")
             exon2[decoy_k - 2] = "A"
             exon2[decoy_k - 1] = "G"
+        if hp and rung == "R3":
+            # REALISTIC R3-HP: an exonic A-run placed DOWNSTREAM of the decoy — the
+            # undercall source near a real non-canonical junction — while the
+            # non-canonical acceptor (acc_tri "TAC", a transition) stays OUT of the
+            # run. This is what a real non-YAG 3'SS presents; the HP-drift guard must
+            # spare the rescue (acceptor is a transition) yet still veto drift INTO the
+            # downstream run. (The old construction put the acceptor inside the run —
+            # degenerate, which no defined non-canonical dinucleotide can be.)
+            hp_start = decoy_k + 2
+            hp_len = 8
+            end = min(hp_start + hp_len, e3)
+            for j in range(hp_start, end):
+                exon2[j] = "A"
+            if hp_start - 1 >= 0 and exon2[hp_start - 1] == "A":
+                exon2[hp_start - 1] = "C"   # clean run start (deterministic length)
+            if end < e3 and exon2[end] == "A":
+                exon2[end] = "C"            # clean run end
 
     rpad = rand_seq(RPAD, rng)
 

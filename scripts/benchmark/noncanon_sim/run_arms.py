@@ -229,6 +229,7 @@ def run_arms(
     threads: int = 1,
     refine_workers: int = 1,
     hold_margin: float = 0.0,
+    hp_drift_margin: float = 0.0,
 ) -> Dict[str, dict]:
     """Build the junction pool once, then run the three refiner arms.
 
@@ -242,17 +243,21 @@ def run_arms(
     all_junctions, annot_set = build_junction_pool(aligner_bams, annotated_junctions)
 
     arm_specs = [
-        # (name, motif_blind, penalty_table_path, hold_margin)
-        ("A", False, None, 0.0),
-        ("B", True, None, 0.0),
-        ("C", True, str(penalty_table_path), 0.0),
-        # arm-D = arm-C + the hold-margin guard (the candidate fix for over-shift into
-        # homopolymers). Only emitted when hold_margin > 0.
-        ("D", True, str(penalty_table_path), hold_margin),
+        # (name, motif_blind, penalty_table_path, hold_margin, hp_drift_margin)
+        ("A", False, None, 0.0, 0.0),
+        ("B", True, None, 0.0, 0.0),
+        ("C", True, str(penalty_table_path), 0.0, 0.0),
+        # arm-D = arm-C + BLUNT hold-margin (only if hold_margin>0).
+        ("D", True, str(penalty_table_path), hold_margin, 0.0),
+        # arm-E = motif-blind + TARGETED HP-drift guard, NO penalty table — the clean
+        # design: motif-blind discovery + specificity only where undercalls fabricate.
+        ("E", True, None, 0.0, hp_drift_margin),
     ]
     results: Dict[str, dict] = {}
-    for name, motif_blind, pen_path, hm in arm_specs:
+    for name, motif_blind, pen_path, hm, hpd in arm_specs:
         if name == "D" and hm <= 0.0:
+            continue
+        if name == "E" and hpd <= 0.0:
             continue
         out_bam = outdir / f"arm_{name}.bam"
         stats = refine_bam_junctions(
@@ -269,12 +274,14 @@ def run_arms(
             n_workers=refine_workers,
             motif_blind=motif_blind,
             hold_margin=hm,
+            hp_drift_margin=hpd,
         )
         results[name] = {
             "output_bam": str(out_bam),
             "motif_blind": motif_blind,
             "penalty_table_path": pen_path,
             "hold_margin": hm,
+            "hp_drift_margin": hpd,
             "stats": stats,
         }
     return {
@@ -316,9 +323,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="n_workers for refine_bam_junctions (fork-parallel refine; "
                         "safe/fast on the tiny synthetic genomes, e.g. 4)")
     p.add_argument("--hold-margin", type=float, default=0.0,
-                   help="hold-margin for arm-D (arm-C + guard): an alternative must "
+                   help="hold-margin for arm-D (arm-C + BLUNT guard): an alternative must "
                         "beat the current placement by > this to displace it. >0 emits "
-                        "arm_D.bam (the over-shift fix). e.g. 0.5")
+                        "arm_D.bam. e.g. 0.5")
+    p.add_argument("--hp-drift-margin", type=float, default=0.0,
+                   help="targeted HP-drift margin for arm-E (motif-blind + guard, no "
+                        "penalty table): extra margin applied ONLY to a move that slides "
+                        "a boundary INTO a homopolymer run. >0 emits arm_E.bam. e.g. 2.0")
     p.add_argument("--mm2-extra", default=None,
                    help="extra minimap2 flags (space-separated string), appended verbatim")
     return p
@@ -358,6 +369,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         aligned_bam, genome, annotated_junctions, outdir,
         penalty_table_path=args.penalty_table, threads=args.threads,
         refine_workers=args.refine_workers, hold_margin=args.hold_margin,
+        hp_drift_margin=args.hp_drift_margin,
     )
 
     manifest = {
