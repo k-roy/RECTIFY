@@ -476,6 +476,7 @@ def refine_read_junctions(
     profile: Optional[JunctionRefineProfile] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
     motif_blind: bool = False,
+    hold_margin: float = 0.0,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
@@ -604,6 +605,7 @@ def refine_read_junctions(
         # canonical annotated junctions are preferred.
 
         best_tuple = None   # best (score_bin, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
         # When the current junction is non-canonical (tier ≥ 4), a canonical
@@ -654,6 +656,8 @@ def refine_read_junctions(
                 score_cmp = score - canonical_discount
             else:
                 score_cmp = score
+            if is_alt == 0:              # this candidate IS the read's current placement
+                incumbent_score = score_cmp
 
             # Scoring priority (lower = better):
             #   1. score_cmp — binned when tier_beats_alt, raw otherwise
@@ -678,10 +682,24 @@ def refine_read_junctions(
             continue
 
         # best_tuple = (score, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        best_score_cmp = best_tuple[0]
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
+        moves = (new_js != ns or new_je != ne)
+        # Hold-margin: an alternative may displace the read's current placement only
+        # if it beats it by MORE than hold_margin.  Frequent homopolymer undercalls
+        # let a run-absorbing shift score marginally (even perfectly) better than the
+        # true junction; nothing in the cost can veto a 0-error shift, so a prior
+        # against moving is required.  hold_margin=0.0 is byte-identical (a strict
+        # improvement, already guaranteed by the is_alt tie-break, still passes).
+        if moves and hold_margin > 0.0 and incumbent_score is not None:
+            if best_score_cmp > incumbent_score - hold_margin:
+                moves = False
+                if profile is not None:
+                    profile.inc('hold_margin_vetoes')
+
         # Only emit a replacement if the junction actually changes.
-        if new_js != ns or new_je != ne:
+        if moves:
             replacements.append((cigar_idx, ns, ne, new_js, new_je))
             if profile is not None:
                 profile.inc('replacements_emitted')
@@ -1108,6 +1126,7 @@ def _run_sequential(
     penalty_table: Optional[HpPenaltyTable],
     penalty_table_set: Optional[PenaltyTableSet] = None,
     motif_blind: bool = False,
+    hold_margin: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
@@ -1155,6 +1174,7 @@ def _run_sequential(
                     profile=read_profile,
                     penalty_table=eff_table,
                     motif_blind=motif_blind,
+                    hold_margin=hold_margin,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1197,6 +1217,7 @@ def _run_parallel(
     batch_size: int,
     penalty_table_set: Optional[PenaltyTableSet] = None,
     motif_blind: bool = False,
+    hold_margin: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
@@ -1246,6 +1267,7 @@ def _run_parallel(
         'max_candidates_per_nop': max_candidates_per_nop,
         'penalty_table': penalty_table,
         'motif_blind': motif_blind,
+        'hold_margin': hold_margin,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
     _WORKER_POOL_STATE['profile_enabled'] = profile is not None
@@ -1415,6 +1437,7 @@ def refine_bam_junctions(
     profile_path: Optional[str] = None,
     profile_sample_rate: int = 1,
     motif_blind: bool = False,
+    hold_margin: float = 0.0,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1513,7 +1536,8 @@ def refine_bam_junctions(
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, max_junction_size, max_candidates_per_nop,
             penalty_table, n_workers, batch_size,
-            penalty_table_set=penalty_table_set, motif_blind=motif_blind, profile=profile,
+            penalty_table_set=penalty_table_set, motif_blind=motif_blind,
+            hold_margin=hold_margin, profile=profile,
         )
     else:
         _run_sequential(
@@ -1521,7 +1545,8 @@ def refine_bam_junctions(
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, max_junction_size, max_candidates_per_nop,
             penalty_table,
-            penalty_table_set=penalty_table_set, motif_blind=motif_blind, profile=profile,
+            penalty_table_set=penalty_table_set, motif_blind=motif_blind,
+            hold_margin=hold_margin, profile=profile,
         )
 
     if sort_and_index:

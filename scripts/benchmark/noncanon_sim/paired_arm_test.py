@@ -90,9 +90,14 @@ def boot_ci(pairs, rng, reps=2000):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work-dir", required=True)
+    ap.add_argument("--ref", default="B", help="reference arm letter (default B)")
+    ap.add_argument("--test", default="C",
+                    help="test arm letter (default C; D = arm-C + hold-margin)")
     ap.add_argument("--seed", type=int, default=13)
     args = ap.parse_args()
     wd = args.work_dir
+    print(f"# paired test: ref=arm-{args.ref}  test=arm-{args.test}  "
+          f"(delta = rec[test] - rec[ref]; c = test-only rescues, b = ref-only)")
     rng = random.Random(args.seed)
 
     genome = load_genome(os.path.join(wd, "sim_ref.fa"))
@@ -107,8 +112,8 @@ def main():
         f = line.rstrip("\n").split("\t")
         truth[f[idx["read_id"]]] = f
 
-    jn_B = read_junctions(os.path.join(wd, "arm_B.bam"))
-    jn_C = read_junctions(os.path.join(wd, "arm_C.bam"))
+    jn_B = read_junctions(os.path.join(wd, f"arm_{args.ref}.bam"))
+    jn_C = read_junctions(os.path.join(wd, f"arm_{args.test}.bam"))
 
     # group cryptic reads (R3, has_true_junction=1) by context (HP length label)
     cells = defaultdict(list)   # ctx -> list of (b_rec, c_rec)

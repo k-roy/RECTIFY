@@ -168,3 +168,55 @@ attribution (the C1 false-indel test), NOT junction re-placement. SHIP arm-B; do
 the junction scorer. Sub-finding: the AT/CG base-class table mis-transfers poly-A→poly-T (follow-up).
 NEXT (per PI's approved sequence): human-transcript transfer check (human geometry + human penalty table;
 then real gencode contexts).
+
+## ★★★★ CORRECTED arm-C VERDICT (2026-07-05) — red team + PI overturned "arm-C hurts / don't ship"
+The prior "arm-C hurts, never wins, don't ship" is WRONG on the "never wins" leg and OVERSTATED on harm.
+Independent 3-lens Opus red team (design/impl/stats) + PI's logical-error catch:
+1. STATS lens REFUTES "never wins": disaggregating mix_full non-canonical by rung — on R3 (deepest non-YAG,
+   the prp18Δ biology) arm-C UNIQUELY rescues c=13 reads arm-B misses vs b=4 lost, ALL in the HP context
+   (R3×HP c=12 b=4 +2pp; R3×plain null). arm-C is DOUBLE-EDGED, not purely harmful.
+2. IMPL lens — real mechanism (corrects earlier framing): on the harmed canonical reads, arm-B scores
+   truth==shifted EXACTLY 2.5000 (a TIE) and is_alt holds truth (right); arm-C's empirical fractional costs
+   BREAK the tie toward the biologically-wrong intron-growth (truth 1.879 vs shifted 1.237). So harm =
+   turning an ambiguous tie into a confident wrong answer. SAME machinery that helps R3. Metric verified
+   correct (length-changing shift, not a normalize-slide). PI's "undecidable HP-abutting" intuition VALIDATED
+   in spirit (arm-B scores exact ties there) — but arm-B handles the ambiguity right, arm-C doesn't.
+3. DESIGN lens qualifications: (a) we tested the `penalty_score` reciprocal-rate COLUMN, NOT the coherent
+   -logP law (`del_open_delta`=λ·ln(rate(hp)/rate(1)), no re-placer hook, UNTESTED); (b) arm-C's UPSIDE is
+   under-tested — pbsim@0.95 reads have NO HP-length-dependent deletion structure (flat ~1.8%), so arm-C's
+   raison d'être (absorbing a genuinely HP-collapsed junction) was never presented. Real DRS has ~4x more HP
+   miscalls → harm scales UP, but upside also untested.
+4. CHEAP FIX (impl lens): motif_blind has NO hold-margin/canonical guard — arm-C displaces a correct junction
+   on a MARGINAL score win. A hold-margin (alt must beat incumbent by a threshold) would veto the harmful
+   shifts while keeping the R3 rescues → potentially arm-C >= arm-B.
+CORRECTED VERDICT: arm-C is DOUBLE-EDGED. Harm (canonical over-shift near HP) is real but a fixable
+tie-breaking issue; benefit (rescue deep non-YAG near HP) is real but under-tested. NOT "don't ship" — it's
+"needs the coherent del_open_delta law + a hold-margin + reads with real HP-length-collapse + ultimately real
+DRS truth." arm-B remains the robust core (+22pp over incumbent); arm-C is a refinement to earn or reject on a
+FAIR test. Redesign per PI: drop D0 abutting (degenerate), HP at distance + noisy flank, + arm-C's upside case.
+
+## ★★★★★ PLAN 1+3 FINAL VERDICT (2026-07-05) — hold-margin can't salvage arm-C; ranking≠search reconciliation
+Plan 1 (hold_margin, threaded through junction_refiner, byte-identical@0, 59 tests green; arm-D = arm-C+margin
+in run_arms) + Plan 3 (realistic majority-undercall reads: fallback hp_del_mult=8 → 93% of reads undercall).
+TRADE-OFF (paired McNemar, realistic reads):
+- arm-C (no margin) under realistic reads = NET-NEGATIVE: large canonical harm (over-shift into undercalled
+  runs, refines 1085 vs B 580), tiny R3 benefit (+0.012 ns; earlier clean-read +2pp evaporated).
+- hold_margin=1.0: FIXES canonical harm (arm-D≈/>arm-B, D2 -0.023) but KILLS R3 benefit (R3-HP recD 0.329 vs
+  0.665, -0.336).
+- hold_margin=0.5: PRESERVES R3 (R3-HP -0.015) but does NOT fix canonical harm (D2 -0.115).
+- NO SWEET SPOT: canonical harm needs margin≥~1.0, R3 needs margin≤~0.5 — requirements don't overlap. A global
+  "don't move" prior can't separate harmful (canonical over-shift) from beneficial (R3 rescue) moves — same
+  score magnitude.
+SIDE-FINDING (positive, separate from discovery goal): a hold-margin DRAMATICALLY improves CANONICAL placement
+near HP (D0: arm-D 0.92 vs arm-B 0.31, +0.6) — because it holds minimap2's motif-anchored placement instead of
+drifting. Motif-blindness is a liability for canonical-near-HP; a prior fixes it.
+RECONCILIATION (PI's Q — why is the SAME table fine for consensus?): consensus RANKS fixed, motif-anchored
+per-aligner alignments (the degenerate shift-into-run isn't a candidate) — max-likelihood ranking, correct +
+validated (C1 false-indel test). Re-placement SEARCHES over junction boundaries → the intron-absorption
+degeneracy (HP-del-at-truth vs shift-into-run, equal likelihood) → pure likelihood picks wrong without a prior.
+The table is a good LIKELIHOOD model; ranking it is right, searching boundaries with it (no prior) is not.
+FINAL: arm-B (plain motif-blind) is the non-canonical-discovery tool. The penalty table stays in its validated
+role (consensus ranking + exon-interior indel scoring), NOT junction re-placement search. Do NOT ship
+penalty_table_path in the re-placer. Genuinely-open next steps: (2) coherent del_open_delta law (untested,
+different quantity), (4) real DRS truth. Low-risk audit worth doing: does consensus ever pick a shift-into-HP
+over a motif-anchored alt (mapPacBio the suspect)?

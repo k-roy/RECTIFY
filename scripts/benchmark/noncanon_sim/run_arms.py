@@ -228,6 +228,7 @@ def run_arms(
     penalty_table_path: Path,
     threads: int = 1,
     refine_workers: int = 1,
+    hold_margin: float = 0.0,
 ) -> Dict[str, dict]:
     """Build the junction pool once, then run the three refiner arms.
 
@@ -241,13 +242,18 @@ def run_arms(
     all_junctions, annot_set = build_junction_pool(aligner_bams, annotated_junctions)
 
     arm_specs = [
-        # (name, motif_blind, penalty_table_path)
-        ("A", False, None),
-        ("B", True, None),
-        ("C", True, str(penalty_table_path)),
+        # (name, motif_blind, penalty_table_path, hold_margin)
+        ("A", False, None, 0.0),
+        ("B", True, None, 0.0),
+        ("C", True, str(penalty_table_path), 0.0),
+        # arm-D = arm-C + the hold-margin guard (the candidate fix for over-shift into
+        # homopolymers). Only emitted when hold_margin > 0.
+        ("D", True, str(penalty_table_path), hold_margin),
     ]
     results: Dict[str, dict] = {}
-    for name, motif_blind, pen_path in arm_specs:
+    for name, motif_blind, pen_path, hm in arm_specs:
+        if name == "D" and hm <= 0.0:
+            continue
         out_bam = outdir / f"arm_{name}.bam"
         stats = refine_bam_junctions(
             input_bam=str(aligned_bam),
@@ -262,11 +268,13 @@ def run_arms(
             sort_threads=threads,
             n_workers=refine_workers,
             motif_blind=motif_blind,
+            hold_margin=hm,
         )
         results[name] = {
             "output_bam": str(out_bam),
             "motif_blind": motif_blind,
             "penalty_table_path": pen_path,
+            "hold_margin": hm,
             "stats": stats,
         }
     return {
@@ -307,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--refine-workers", type=int, default=1,
                    help="n_workers for refine_bam_junctions (fork-parallel refine; "
                         "safe/fast on the tiny synthetic genomes, e.g. 4)")
+    p.add_argument("--hold-margin", type=float, default=0.0,
+                   help="hold-margin for arm-D (arm-C + guard): an alternative must "
+                        "beat the current placement by > this to displace it. >0 emits "
+                        "arm_D.bam (the over-shift fix). e.g. 0.5")
     p.add_argument("--mm2-extra", default=None,
                    help="extra minimap2 flags (space-separated string), appended verbatim")
     return p
@@ -345,7 +357,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = run_arms(
         aligned_bam, genome, annotated_junctions, outdir,
         penalty_table_path=args.penalty_table, threads=args.threads,
-        refine_workers=args.refine_workers,
+        refine_workers=args.refine_workers, hold_margin=args.hold_margin,
     )
 
     manifest = {
