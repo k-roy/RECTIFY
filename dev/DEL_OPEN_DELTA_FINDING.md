@@ -49,3 +49,25 @@ prior (the guard) can. This closes the "is any cost term worth it in the search"
   from a gap_open=−4 DP into a ~0.5-scale DP — mitigated by the graded λ=0.2 giving the same verdict,
   but a fully scale-matched re-derivation of λ in the re-placer's own units was not done. Neither
   affects the verdict (arm-E dominance + the D2 over-shift stand on the verified mechanism).
+
+## FAITHFUL RE-RUN — proof gap CLOSED, REJECT confirmed definitively (2026-07-07)
+The triple adversarial pass (Workflow whf5mx4qj) held the verdict but flagged a real fault: the arm-F affine-DP
+had a STAIRCASE (del→match(cost0)→del re-collects the one-time gap-OPEN discount per in-run base), so arm-F was
+never a faithful one-time law in HP runs, and the RECOVERY axis was never faithfully tested. A follow-up agent
+FIXED it and re-ran:
+- STAIRCASE FIX (hp_penalty.py::_score_hp_affine_del, Option-B run-latch 3-state DP H=avail/Hs=spent/D): discount
+  is ONE-TIME PER RUN; a genuine run boundary re-arms it. PROVEN (scratchpad/staircase_proof.py): k=2..5 absorb →
+  BUGGY=k·open, FIXED=open+(k-1)·extend (brake); random 4000/4000 == once-per-run oracle; byte-identity off.
+- SCALE-MATCHED λ=0.1 (del units, del_hp=0.5): open-cost graded 0.41→0.18 across hp4..12, monotone, NEVER floored.
+- RESULT (faithful, λ=0.1), INDEPENDENTLY RE-SCORED here on the agent's bams:
+  * arm_Ffg (faithful + guard) vs arm_E: R3 mix_r3b_out b=0 c=0 p=1.0 (IDENTICAL); fair mix_fair_out all cells
+    non-sig (p>=0.25), mixed sign, overall 0.911==0.911 — a WASH. del_open adds NOTHING on top of the guard.
+  * arm_Ff (faithful, STANDALONE no guard) vs arm_B: over-shifts — ACC_A_D2 -0.562 p=0 (225 lost, del_open's OWN
+    C1 designed domain!), BOT_A_D1 -0.405, ACC_A_D1 -0.110. A faithful one-time law standalone is WORSE than arm-B.
+  STRUCTURAL WHY: del_open lowers a gap-open by <=0.32 cost units; the guard margin is 3.0 in the SAME units, so
+  del_open is 3-10% of the margin and cannot flip a guard veto. Raise λ→floors; lower margin→over-shift returns.
+=> REJECT CONFIRMED DEFINITIVELY across all 3 axes (over-shift closed analytically by arbiter 2's del-cost-
+   invariance theorem; recovery + discovery closed empirically here). The guard ALONE is the answer; the empirical
+   table stays OUT of the re-placer search in every form (penalty_score column AND coherent del_open_delta).
+Faithful wiring preserved: dev/arm_f_del_open_delta_faithful.patch (staircase-fixed; supersedes the buggy
+arm_f_del_open_delta.patch). Detailed agent handoff: dev/HANDOFF_DEL_OPEN_STAIRCASE.md.
