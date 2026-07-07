@@ -454,3 +454,18 @@ IN FLIGHT:
  #3 SPIKE-IN TRACK (task #20, scoped not built) — spike noncanon_sim's non-canonical reads (as SYNTHETIC
     CONTIGS added to GRCh38, SIRV-model) into real A549 DRS -> ground truth by construction, sidesteps the Q2
     circularity. Measure recall/precision on the spiked junctions. Design after survey + Q1 PC land.
+
+## Q1 POSITIVE CONTROL = GO; ADJUDICATION IN FLIGHT (2026-07-07)
+Q1 PC (sbatch 33013531, DONE): base-exact Illumina split-read concordance HP-abutting=0.517 ≈ canonical=0.512
+→ Illumina IS competent at HP base-exact placement (vet's sharpest risk REFUTED); ~52% decidable floor. Q1
+answerable. (My proper split-counter beats the old 14.5% STAR-1pass figure.)
+IN FLIGHT:
+ #1 Q1 ADJUDICATION (sbatch 33013750). RESUME: ssh sherlock 'cat /scratch/users/kevinroy/human_drs_out/.q1adj_rc;
+    tail -40 /scratch/users/kevinroy/human_drs_out/q1_adj-33013750.log'. Reports (per distinct guard MOVE at
+    non-annotated junctions): annotated_in_comprehensive (adjudicated-free), truly_novel_residual, resolvable
+    (crosses ambiguity window), FIX_guard_supported vs HARM_armB_supported (base-exact Illumina support-ratio,
+    K=2 ratio=3, over decidable), inconclusive. EXPECT FIX>>HARM (do-no-harm into novels); HARM = investigation
+    set (one-directional). Script rectify_guard/q1_adjudicate.py. If OOM/slow on the 1.5GB comprehensive GTF,
+    subset it to chr5 first.
+ #2 WEB SURVEY (Agent abafcd2c8d191150e) — non-canonical junction benchmarks + spike-in prior art; await notif.
+ #3 SPIKE-IN track (#20) — scoped; design after survey.
