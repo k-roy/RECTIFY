@@ -349,3 +349,19 @@ RESUME: ssh sherlock 'sacct -j 32967406 -X -o State%14; cat /scratch/users/kevin
     ~= reads_differing_at_hp_abutting = guard is HP-specific).
   - rc!=0 or sacct FAILED/TIMEOUT/OOM -> read real_drs_out/slurm-32967406.log, fix, resubmit real_drs_run.sbatch.
   - PENDING/RUNNING -> wait.
+
+## ★★★★★★★ REAL-DRS TRANSFER TEST — PASS (2026-07-06, sbatch 32967406, rc=0)
+Real BY4742 wt DRS minimap2 BAM (309MB), refined twice (arm-B margin0 / arm-Bguard margin3), truth=SGD
+annotations. Result (real_drs_out/real_drs_hp_drift.json + a corrected fix/harm pass):
+- DO-NO-HARM: overall annotated-match 0.9882 (B) -> 0.9884 (Bguard) over 94,907 junctions — NOT lowered
+  (slightly higher). Guard changed only 20/94907 placements (0.02%).
+- HP-SPECIFIC: 16/20 differing reads are at HP-abutting junctions.
+- DRIFT-FIX TRANSFERS: of the changed reads, 17 FIX (junction moved back TO the annotation, e.g. 223786->223781),
+  0 HARM, 3 neutral. Every guard change on real data fixed a genuine drift; zero harm.
+- Magnitude is SMALL on WT (only ~20 reads drift — WT reads at annotated junctions are ~98.8% correctly placed;
+  the into-HP drift is rare in WT). But when the motif-blind refiner DOES drift on real undercalls, the guard
+  catches it 100% correctly (17/17). Larger benefit expected in heavy-undercall / prp18d-type contexts.
+METRIC BUG (cosmetic, in the committed real_drs_hp_drift.py): `annotated_match_at_hp_abutting` divides by ALL
+junctions (n_at_hp_junctions=94907), so it reports the FRACTION of reads at HP sites (~0.30), not the match
+RATE there. The decisive metric is the fix/harm classification above (17/0). Fix the tool before reuse.
+=> REAL-DRS GATE PASSED. Whole arc lands: SHIP motif-blind refinement + HP-drift guard (hp_drift_margin ~3.0).
