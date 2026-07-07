@@ -391,3 +391,21 @@ IN FLIGHT #2 — HUMAN chr5 TRANSFER TEST (sbatch 32972322 on Sherlock larsms).
   GOTCHA (roadmap): standardize_chrom_name is YEAST-CENTRIC (chr5->chrV; chr10->chrX collision). register_
    genome_contigs_from_fasta fixes it for a chr5-ONLY run (all reconcile to chr5); a FULL-GENOME human run
    needs standardize_chrom_name generalized first.
+
+## UPDATE (2026-07-06 cont.2) — del_open_delta triple pass = HOLD; faithful re-run + human both in flight
+del_open_delta TRIPLE ADVERSARIAL PASS done (Workflow whf5mx4qj): NOT all-clear.
+ - Arbiter2 (mechanism): NO fault; CLOSED the over-shift axis analytically (P_shift into-run = emission-identical
+   to truth except free-intron-N vs penalized-deletion-D label → P_shift=0 global min, del-cost-INVARIANT; λ=0≡arm-B
+   caps axis [580 over-shifts,654] strictly above guard's 171). Over-shift axis SETTLED.
+ - Arbiter1 (wiring): REAL staircase bug in _score_hp_affine_del — del→match(0)→del re-collects the one-time OPEN
+   discount per in-run base, so arm-F degenerated to per-base (arm-C-like) IN RUNS. RECOVERY axis (D0/D2) never
+   faithfully tested. Verdict survives (580 core is cost-free) but NOT droppable-as-definitive yet.
+ - Arbiter3 (results): STALLED (API), no return.
+
+IN FLIGHT #A — FAITHFUL arm-F RE-RUN (background Agent ada70ae3ca5401b1e). Fix staircase→true one-time-per-run
+ discount, re-derive λ≈0.05-0.1 (graded, no floor), test arm-Ff+guard vs arm-E on mix_fair_out (D0/D2 recovery +
+ over-shift) & mix_r3b_out (R3). DECISION: arm-Ff+guard fails to Pareto-beat arm-E → DROP del_open_delta
+ DEFINITIVELY (close #9); beats it → coherent law belongs. RESUME: await agent completion notification; read its
+ report (staircase-fix proof k=2,3, λ curve, arm-B/E/Ff/Ff+guard numbers, Pareto verdict). Both arbiters expect DROP.
+IN FLIGHT #B — HUMAN chr5 (sbatch 32972322, RUNNING; bounded poll bu0u3tfob). RESUME as in the prior block
+ (.human_rc sentinel → human_rep1_chr5.json; interpret guard_changes fix>>harm + do-no-harm).
