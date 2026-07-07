@@ -378,12 +378,12 @@ IN FLIGHT #1 — del_open_delta TRIPLE ADVERSARIAL PASS (Workflow whf5mx4qj, 3 O
   combo) -> apply dev/arm_f_del_open_delta.patch, run scripts/benchmark/noncanon_sim/_make_arm_f.py WITH
   hp_drift_margin=3.0, compare to arm-E, then revert the patch.
 
-IN FLIGHT #2 — HUMAN chr5 TRANSFER TEST (sbatch 32972322 on Sherlock larsms).
-  RESUME: ssh sherlock 'sacct -j 32972322 -X -o State%14; cat /scratch/users/kevinroy/human_drs_out/.human_rc 2>/dev/null'
+IN FLIGHT #2 — HUMAN chr5 TRANSFER TEST (sbatch 32972957 on Sherlock larsms).
+  RESUME: ssh sherlock 'sacct -j 32972957 -X -o State%14; cat /scratch/users/kevinroy/human_drs_out/.human_rc 2>/dev/null'
    - .human_rc==0 -> ssh sherlock 'cat /scratch/users/kevinroy/human_drs_out/human_rep1_chr5.json'; interpret:
      guard_changes fix >> harm (drift-fix transfers to human); overall annotated_match_rate not lower
      (do-no-harm); match_rate_at_hp_abutting Bguard >= B; reads_differing ~= at_hp_abutting (HP-specific).
-   - rc!=0 or FAILED/TIMEOUT -> ssh sherlock 'tail -40 /scratch/users/kevinroy/human_drs_out/slurm-32972322.log'; fix; sbatch /scratch/users/kevinroy/human_drs_run.sbatch
+   - rc!=0 or FAILED/TIMEOUT -> ssh sherlock 'tail -40 /scratch/users/kevinroy/human_drs_out/slurm-32972957.log'; fix; sbatch /scratch/users/kevinroy/human_drs_run.sbatch
    - PENDING/RUNNING -> poll again (larsms queue).
   SETUP (done): BAM reheadered 5->chr5 at /scratch/users/kevinroy/human_drs_out/rep1.chr5.rehdr.bam; genome
    /scratch/users/kevinroy/compass_a549/COMPASS/genome_references/GRCh38_gencode_v44_chr5.fasta; GTF
@@ -407,5 +407,5 @@ IN FLIGHT #A — FAITHFUL arm-F RE-RUN (background Agent ada70ae3ca5401b1e). Fix
  over-shift) & mix_r3b_out (R3). DECISION: arm-Ff+guard fails to Pareto-beat arm-E → DROP del_open_delta
  DEFINITIVELY (close #9); beats it → coherent law belongs. RESUME: await agent completion notification; read its
  report (staircase-fix proof k=2,3, λ curve, arm-B/E/Ff/Ff+guard numbers, Pareto verdict). Both arbiters expect DROP.
-IN FLIGHT #B — HUMAN chr5 (sbatch 32972322, RUNNING; bounded poll bu0u3tfob). RESUME as in the prior block
+IN FLIGHT #B — HUMAN chr5 (sbatch 32972957, RUNNING; bounded poll bu0u3tfob). RESUME as in the prior block
  (.human_rc sentinel → human_rep1_chr5.json; interpret guard_changes fix>>harm + do-no-harm).
