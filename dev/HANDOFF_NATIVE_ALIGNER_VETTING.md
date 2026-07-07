@@ -409,3 +409,19 @@ IN FLIGHT #A — FAITHFUL arm-F RE-RUN (background Agent ada70ae3ca5401b1e). Fix
  report (staircase-fix proof k=2,3, λ curve, arm-B/E/Ff/Ff+guard numbers, Pareto verdict). Both arbiters expect DROP.
 IN FLIGHT #B — HUMAN chr5 (sbatch 32972957, RUNNING; bounded poll bu0u3tfob). RESUME as in the prior block
  (.human_rc sentinel → human_rep1_chr5.json; interpret guard_changes fix>>harm + do-no-harm).
+
+## ★ HUMAN chr5 TRANSFER TEST — PASS (2026-07-07, sbatch 32972957, rc=0)
+A549 chr5 direct-RNA, GENCODE-basic truth (13547 introns, 3007 HP-abutting), 69610 junctions scored/arm.
+- DO-NO-HARM: overall annotated match 0.7777 (B) -> 0.7914 (Bguard) — NOT lowered (RAISED +0.0137 ≈ +956
+  junctions moved back onto annotations). At HP-abutting: 0.810 -> 0.818. 0 harm.
+- DRIFT-FIX TRANSFERS TO HUMAN: the guard held ~956 junctions that arm-B drifted OFF annotations into runs ->
+  net +956 annotation matches, 0 harm. 950 reads changed (25x the yeast substrate); 777/950 (82%) at HP-abutting.
+- WRINKLE (honest): the per-READ fix/harm classifier shows only 6 fix / 0 harm / 944 NEUTRAL — because (a) human
+  reads are MULTI-JUNCTION (a read matches via any of its many junctions, so a single fixed junction reads as
+  "neutral"), and (b) ~944 of the guard's changes are at NON-ANNOTATED (novel / cancer-specific) junctions that
+  GENCODE-basic can't judge. The junction-level match rate (+956, all positive, 0 harm) is the reliable metric
+  on human; the per-read classifier should be made per-JUNCTION for multi-junction organisms (follow-up).
+  The guard's activity on NOVEL junctions (the discovery territory) needs the short-read (COMPASS) cross-check.
+=> HUMAN do-no-harm + drift-fix CONFIRMED. Full novel-junction picture -> COMPASS short-read validation (next).
+PERF (human-readiness): refiner ~0.24s/read on human (build_junction_pool 1.7s is fine); chr5 ~10min/arm at
+8 workers. Full-genome human needs refiner perf work + standardize_chrom_name generalized (chr5->chrV; chr10->chrX collision).
