@@ -119,10 +119,15 @@ stats = defaultdict(int)
 fixes, harms = [], []
 for (bi, gi), nreads in moves.items():
     # re-partition: if guard target is annotated in comprehensive -> adjudicated free (annotated)
-    if is_annot(gi, comp) or is_annot(bi, comp):
+    ga, ba = is_annot(gi, comp), is_annot(bi, comp)
+    if ga or ba:
         stats["annotated_in_comprehensive"] += 1
-        if is_annot(gi, comp) and not is_annot(bi, comp):
-            stats["annot_fix_guard_to_annotated"] += 1
+        if ga and not ba:
+            stats["comp_FIX_guard_to_annotated"] += 1
+        elif ba and not ga:
+            stats["comp_HARM_guard_off_annotated"] += 1; harms.append((bi, gi, total_sr(gi), total_sr(bi), nreads))
+        else:
+            stats["comp_NEUTRAL_both_annotated"] += 1
         continue
     stats["truly_novel_residual"] += 1
     # ambiguity gate: must cross OUT of the ambiguity window (normalized bi != gi)
