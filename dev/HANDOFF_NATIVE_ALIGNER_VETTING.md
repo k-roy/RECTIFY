@@ -365,3 +365,29 @@ METRIC BUG (cosmetic, in the committed real_drs_hp_drift.py): `annotated_match_a
 junctions (n_at_hp_junctions=94907), so it reports the FRACTION of reads at HP sites (~0.30), not the match
 RATE there. The decisive metric is the fix/harm classification above (17/0). Fix the tool before reuse.
 => REAL-DRS GATE PASSED. Whole arc lands: SHIP motif-blind refinement + HP-drift guard (hp_drift_margin ~3.0).
+
+## IN-FLIGHT (2026-07-06 session cont.) — human transfer + del_open_delta triple-check
+STATE: del_open_delta REJECTED (committed b4cab89; finding dev/DEL_OPEN_DELTA_FINDING.md + wiring preserved
+dev/arm_f_del_open_delta.patch, reverted from production). Scope of the guard distilled into the layman doc
+(cfa08b1 + the "narrow footprint" note). Metric bug in real_drs_hp_drift.py FIXED (fix/harm classifier now
+the headline).
+
+IN FLIGHT #1 — del_open_delta TRIPLE ADVERSARIAL PASS (Workflow whf5mx4qj, 3 Opus xHigh arbiters + synth).
+  RESUME: watch /workflows or await the completion notification. If synth.all_clear -> del_open_delta is
+  DROPPED DEFINITIVELY (close task #9). If a needs_rerun is flagged (most likely the untested arm-F+guard
+  combo) -> apply dev/arm_f_del_open_delta.patch, run scripts/benchmark/noncanon_sim/_make_arm_f.py WITH
+  hp_drift_margin=3.0, compare to arm-E, then revert the patch.
+
+IN FLIGHT #2 — HUMAN chr5 TRANSFER TEST (sbatch 32972322 on Sherlock larsms).
+  RESUME: ssh sherlock 'sacct -j 32972322 -X -o State%14; cat /scratch/users/kevinroy/human_drs_out/.human_rc 2>/dev/null'
+   - .human_rc==0 -> ssh sherlock 'cat /scratch/users/kevinroy/human_drs_out/human_rep1_chr5.json'; interpret:
+     guard_changes fix >> harm (drift-fix transfers to human); overall annotated_match_rate not lower
+     (do-no-harm); match_rate_at_hp_abutting Bguard >= B; reads_differing ~= at_hp_abutting (HP-specific).
+   - rc!=0 or FAILED/TIMEOUT -> ssh sherlock 'tail -40 /scratch/users/kevinroy/human_drs_out/slurm-32972322.log'; fix; sbatch /scratch/users/kevinroy/human_drs_run.sbatch
+   - PENDING/RUNNING -> poll again (larsms queue).
+  SETUP (done): BAM reheadered 5->chr5 at /scratch/users/kevinroy/human_drs_out/rep1.chr5.rehdr.bam; genome
+   /scratch/users/kevinroy/compass_a549/COMPASS/genome_references/GRCh38_gencode_v44_chr5.fasta; GTF
+   /scratch/users/kevinroy/sumner_lab/references/gencode.v44.basic.chr5.gtf; 13548 chr5 introns, 3007 HP-abutting.
+  GOTCHA (roadmap): standardize_chrom_name is YEAST-CENTRIC (chr5->chrV; chr10->chrX collision). register_
+   genome_contigs_from_fasta fixes it for a chr5-ONLY run (all reconcile to chr5); a FULL-GENOME human run
+   needs standardize_chrom_name generalized first.
