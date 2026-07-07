@@ -435,3 +435,22 @@ every form. Finding: dev/DEL_OPEN_DELTA_FINDING.md. Faithful wiring: dev/arm_f_d
 Task #9 CLOSED. Human chr5 transfer (#18) PASSED. Next milestone: COMPASS short-read cross-check for the
 novel-junction activity annotation-truth can't score; then per-junction fix/harm metric; refiner perf +
 standardize_chrom_name generalization for full-genome human.
+
+## SHORT-READ VALIDATION SCOPED + Q1 STARTED (2026-07-07 cont.)
+Scope VETTED (dev/SHORTREAD_DISCOVERY_VALIDATION_SCOPE.md, 3-critic pass): Q1 (guard/HP-drift on novels) VALID
+after 5 must-fixes; Q2 (non-canonical discovery) RIGGED as drafted (short-read aligners share minimap2 motif-
+snapping) — GATED on reviving COMPASS-A549 (NOT STAR-2pass). Q1-first.
+IN FLIGHT:
+ #1 Q1 POSITIVE CONTROL (sbatch 33013531, larsms) — base-exact Illumina split-read concordance at the 3007
+    annotated HP-abutting chr5 junctions (+ all-annotated canonical floor). Script rectify_guard/
+    q1_illumina_hp_concordance.py. RESUME: ssh sherlock 'sacct -j 33013531 -X -o State; cat /scratch/users/
+    kevinroy/human_drs_out/.q1pc_rc 2>/dev/null; tail -30 /scratch/users/kevinroy/human_drs_out/q1_pc-33013531.log'.
+    GO/NO-GO: HP-abutting base-exact concordance >0.3 (K>=1, >=2/3 reps) -> Q1 answerable, report vs this floor;
+    ~0 while canonical floor high -> Illumina can't resolve HP -> Q1 needs COMPASS. Illumina BAMs verified:
+    SN:5 (Ensembl), coord-sorted, indexed, ample split reads. rep1/3/5.
+ #2 WEB SURVEY (background Agent abafcd2c8d191150e) — exhaustive prior non-canonical junction benchmarks +
+    methods papers + spike-in prior art. RESUME: await completion notification; fold findings into the
+    spike-in design + the benchmark plan.
+ #3 SPIKE-IN TRACK (task #20, scoped not built) — spike noncanon_sim's non-canonical reads (as SYNTHETIC
+    CONTIGS added to GRCh38, SIRV-model) into real A549 DRS -> ground truth by construction, sidesteps the Q2
+    circularity. Measure recall/precision on the spiked junctions. Design after survey + Q1 PC land.
