@@ -138,3 +138,16 @@ reads are orthogonal" hid it). Q1 is the VALID one; Q2 as drafted is RIGGED.
 1. **Q1 now** — positive control → re-partition → per-junction base-exact adjudication on the decidable subset.
    Unblocked by COMPASS; needs none of Q2's machinery.
 2. **Q2 later** — after the motif-blind counter + COMPASS-A549 revival + non-canonical floor + arm-A control.
+
+---
+# ★ Q1 RESULT (2026-07-07) — 153 FIX : 0 HARM (junction-level, comprehensive-annotation truth)
+Positive control PASSED (Illumina resolves HP-abutting base-exact at 0.517 ≈ canonical 0.512 → competent).
+Adjudication (sbatch 33014024): 944 per-read changes = 173 distinct junction MOVES; re-partitioned vs
+COMPREHENSIVE gencode v44:
+  annotated_in_comprehensive 168/173 (97%):  comp_FIX 153 (guard->annotated arm-B wasn't) : comp_HARM 0 : comp_NEUTRAL 15
+  truly_novel_residual 5 (all zero Illumina coverage → unadjudicable, negligible).
+=> The guard's "novel-junction" changes on human are a BASIC-annotation artifact: 97% are fixes/neutral onto
+COMPREHENSIVELY-annotated junctions, ZERO harms. Do-no-harm + drift-fix confirmed in the novel-junction domain.
+The Illumina truth was competent (PC) but moot here (almost nothing truly-novel to adjudicate). Q1 DONE.
+Q2 (motif-blind DISCOVERY recall/precision) remains — best pursued via the SPIKE-IN track (clean ground truth,
+no motif-circularity) rather than reviving COMPASS. See dev/NONCANON_BENCHMARK_SURVEY.md.

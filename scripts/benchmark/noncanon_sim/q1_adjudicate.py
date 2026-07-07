@@ -147,7 +147,8 @@ for (bi, gi), nreads in moves.items():
         stats["inconclusive_ambiguous_support"] += 1
 
 print("\n=== Q1 ADJUDICATION (guard changes at non-annotated chr5 junctions) ===")
-for k in ("annotated_in_comprehensive", "annot_fix_guard_to_annotated", "truly_novel_residual",
+for k in ("annotated_in_comprehensive", "comp_FIX_guard_to_annotated", "comp_HARM_guard_off_annotated",
+          "comp_NEUTRAL_both_annotated", "truly_novel_residual",
           "ambiguity_equivalent_unresolvable", "resolvable", "inconclusive_no_sr_coverage",
           "inconclusive_ambiguous_support", "FIX_guard_supported", "HARM_armB_supported"):
     print(f"  {k}: {stats[k]}")
