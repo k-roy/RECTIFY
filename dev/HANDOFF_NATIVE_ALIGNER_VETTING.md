@@ -1,3 +1,65 @@
+═══════════════════════════════════════════════════════════════════════════════
+# ★ DURABLE HANDOFF (current state) — refreshed 2026-07-06
+**Branch:** `worktree-agent-a25a2c1e784ad37dc` (agent worktree). Commit surgically (`git add <paths>`,
+never `-A`); NEVER commit to `drs-validation-rebuild`; don't push without asking. The detailed
+blow-by-blow log is BELOW this section; this is the clean summary.
+
+## THE OUTCOME (what to ship)
+The native junction re-aligner = **motif-blind refinement (`motif_blind=True`) + the targeted HP-drift
+guard (`hp_drift_margin ≈ 3.0`)**. Motif-blind gives non-canonical discovery sensitivity; the guard adds
+homopolymer-specific specificity with **zero discovery cost**. The empirical −logP `penalty_table` does NOT
+belong in the re-placer (net-harmful in the boundary search); it keeps its validated home in **consensus
+ranking + exon-interior indel scoring**. Reconciliation: consensus RANKS fixed motif-anchored alignments
+(safe); re-placement SEARCHES boundaries (the intron-absorption degeneracy needs a prior, not the likelihood).
+
+## DONE (committed, this arc)
+- `motif_blind` toggle in junction_refiner (byte-identical off).
+- Ground-truth yeast prp18Δ long-read sim + vetting harness (`scripts/benchmark/noncanon_sim/`), pbsim3 +
+  independent-fallback error models.
+- arm-A/B/C vetting → the −logP penalty table HURTS junction re-placement (over-shifts into HP; on realistic
+  majority-undercall reads it's net-negative). Blunt hold-margin can't salvage it (no sweet spot).
+- **HP-drift guard** (`_hp_run_across` + `hp_drift_margin`/`hp_drift_min_run`), threaded through all 4 refine
+  fns, byte-identical at 0. `run_arms` arm-E = motif_blind + guard, no table.
+- Tuned `hp_drift_margin ≈ 3.0` (drift-fix plateaus 3–4; discovery flat at all margins — decoupled).
+- 11-test regression suite `tests/test_hp_drift_guard.py` (full refiner suite: 70 passed).
+- Commits: 69a230f 07a712c 7ceed77 0984693 40b865a 796226b 92937d5 d70b036 (see `git log`).
+
+## VERIFIED (numbers)
+- Guard FIXES canonical HP-drift: D0 recovery 0.31→0.91 (margin 2) / 0.99 (margin 3); refines 215 vs arm-C 1085.
+- Guard PRESERVES non-canonical discovery: realistic R3-HP arm-B 0.284 == arm-E 0.284 (touches 0 reads;
+  acceptor is a transition, spared). R3-plain preserved.
+- Byte-identical when guard off (59 refiner tests + 11 new guard tests green).
+
+## OPEN / IN-FLIGHT
+- **Real-DRS transfer test — sbatch `32966406` on Sherlock (PENDING in queue as of 2026-07-06).** Refines the
+  real wt_by4742_rep1 DRS minimap2 BAM (309MB) twice (arm-B margin0 / arm-Bguard margin3, same pool) + compares
+  at 119 HP-abutting annotated junctions (truth = SGD annotations). PI decisions: dataset = BY4742 DRS;
+  discovery half = sim-proven + real do-no-harm.
+- HELD (task 9): outer junction-enumeration loop + arm-C (−logP) — NOT pursued; the table doesn't earn its keep
+  in the re-placer, so this is effectively closed unless the coherent `del_open_delta` law (untested) is tried.
+
+## RESUME (concrete)
+1. **Real-DRS job:** `ssh sherlock 'sacct -j 32966406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'`
+   - sentinel `.real_drs_rc == 0` → `ssh sherlock 'python -c "import json;print(open(\"/scratch/users/kevinroy/real_drs_out/real_drs_hp_drift.json\").read())"'`; interpret vs EXPECT:
+     Bguard `annotated_match_at_hp_abutting` > B (drift fixed on REAL undercalls); B/Bguard overall match not
+     lower (do-no-harm); `reads_differing_between_arms ≈ reads_differing_at_hp_abutting` (guard is HP-specific).
+   - rc != 0 OR sacct FAILED/TIMEOUT/OOM → `ssh sherlock 'tail -40 /scratch/users/kevinroy/real_drs_out/slurm-32966406.log'`, fix, `sbatch /scratch/users/kevinroy/real_drs_run.sbatch`.
+   - still PENDING/RUNNING → poll again later (Sherlock queue wait).
+   - Deployed guard code lives at `/scratch/users/kevinroy/rectify_guard` (my package overlaid; production
+     `/oak/.../software/rectify` UNTOUCHED). To redeploy after a code change: rsync the changed .py there.
+2. **Re-run any sim panel locally (M1):** `cd scripts/benchmark/noncanon_sim`; build_panel → gen_reads
+   (`--force-fallback --hp-del-mult 8` for realistic undercall, or pbsim3 default) → run_arms
+   (`--refine-workers 4 --hp-drift-margin 3.0`) → paired_arm_test (`--ref B --test E`). PY=/Users/kevinroy/miniconda3/bin/python.
+   NOTE: M1 kills long/heavy refine jobs — keep reads ≤ ~5k or use `_make_arm_e.py` (single-arm on an existing bam).
+
+## FILES
+- Core: `rectify/core/splice/junction_refiner.py` (motif_blind, hold_margin, hp_drift_margin, `_hp_run_across`).
+- Harness: `scripts/benchmark/noncanon_sim/{SPEC.md,build_panel.py,gen_reads.py,run_arms.py,paired_arm_test.py,
+  real_drs_hp_drift.py,_make_arm_e.py,_sweep_refine.py}` (output dirs gitignored).
+- Tests: `tests/test_hp_drift_guard.py`.
+- This handoff (detailed log below).
+═══════════════════════════════════════════════════════════════════════════════
+
 # HANDOFF — native aligner vetting via a ground-truth prp18Δ sim (PI-directed pivot)
 
 **Branch:** `worktree-agent-a25a2c1e784ad37dc` (the agent worktree). **Written:** 2026-07-03.
@@ -274,3 +336,16 @@ guard; do NOT overwrite the production install or push without asking):
   4. Read real_drs_out/real_drs_hp_drift.json; interpret vs the EXPECT above.
 NOTE: real_drs_hp_drift.py syntax-checked on M1; not yet run on real data. Refine on a full DRS BAM is many
 reads -> cluster only (n_workers>1; fork ok on Linux). If the BAM is huge, subset to a few chroms first.
+
+## ★ REAL-DRS RUN SUBMITTED (2026-07-06) — sbatch 32966406 on Sherlock (job in flight)
+Deployed my rectify package (with the guard) to /scratch/users/kevinroy/rectify_guard (production install
+/oak/.../software/rectify UNTOUCHED; nothing pushed). Setup verified on real inputs: 17 chroms, 385 annotated
+introns, 119 HP-abutting. Job refines wt_by4742_rep1 DRS minimap2 BAM (309MB) twice (arm-B margin0 / arm-Bguard
+margin3, same pool) + compares -> /scratch/users/kevinroy/real_drs_out/real_drs_hp_drift.json (+ sentinel
+.real_drs_rc). A local watcher polls it.
+RESUME: ssh sherlock 'sacct -j 32966406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'
+  - .real_drs_rc==0 -> read real_drs_out/real_drs_hp_drift.json; interpret vs EXPECT (Bguard match@HP-abutting > B
+    = drift fixed on REAL undercalls; overall annotated match NOT lower = do-no-harm; reads_differing_between_arms
+    ~= reads_differing_at_hp_abutting = guard is HP-specific).
+  - rc!=0 or sacct FAILED/TIMEOUT/OOM -> read real_drs_out/slurm-32966406.log, fix, resubmit real_drs_run.sbatch.
+  - PENDING/RUNNING -> wait.
