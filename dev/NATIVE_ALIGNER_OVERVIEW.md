@@ -151,6 +151,19 @@ because under-counts are everywhere, it would fabricate false novel sites at sca
   under-count, the guard catches it **100% correctly** — and the payoff scales up in
   the mutant / heavy-under-count settings this is ultimately for.
 
+**How narrow the guard's footprint actually is (worth being precise about).** The drift — and therefore
+the guard — engages *only* at a junction where an **exonic homopolymer runs directly up against the splice
+site**: a run in the exon immediately **upstream of the 5′ splice site** (`…AAAAAAA|GT…`) or immediately
+**downstream of the 3′ splice site** (`…AG|AAAAAAA…`). If even one or two non-run bases sit between the run
+and the cut (`…AAAAA·CG|GT…`), the drift *cannot* happen — sliding the boundary into the run would have to
+swallow those real bases too, which misaligns them, so the junction never moves. In that separated case the
+under-count is simply **interior to the exon**, and a *different* module handles it (the ordinary
+exon-interior indel correction, C1 — it just places the deletion somewhere inside the run); the junction
+re-aligner is not involved. (Reads contain only *exonic* sequence — introns are spliced out — so a run on
+the intronic side of the cut is invisible to this entirely.) This is why the guard is safe *by
+construction*: the vast majority of junctions — anything without an exonic run pressed right against the
+donor or acceptor — are never touched at all.
+
 **Bottom line after Phase 4:** the re-aligner's junction engine has a **validated,
 shippable design — motif-blind re-placement + the homopolymer-drift guard** — proven
 three independent ways (built-in-truth simulation, unit tests, and a real-Nanopore
