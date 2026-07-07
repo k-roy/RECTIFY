@@ -31,7 +31,7 @@ ranking + exon-interior indel scoring**. Reconciliation: consensus RANKS fixed m
 - Byte-identical when guard off (59 refiner tests + 11 new guard tests green).
 
 ## OPEN / IN-FLIGHT
-- **Real-DRS transfer test — sbatch `32966406` on Sherlock (PENDING in queue as of 2026-07-06).** Refines the
+- **Real-DRS transfer test — sbatch `32967406` on Sherlock (PENDING in queue as of 2026-07-06).** Refines the
   real wt_by4742_rep1 DRS minimap2 BAM (309MB) twice (arm-B margin0 / arm-Bguard margin3, same pool) + compares
   at 119 HP-abutting annotated junctions (truth = SGD annotations). PI decisions: dataset = BY4742 DRS;
   discovery half = sim-proven + real do-no-harm.
@@ -39,11 +39,11 @@ ranking + exon-interior indel scoring**. Reconciliation: consensus RANKS fixed m
   in the re-placer, so this is effectively closed unless the coherent `del_open_delta` law (untested) is tried.
 
 ## RESUME (concrete)
-1. **Real-DRS job:** `ssh sherlock 'sacct -j 32966406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'`
+1. **Real-DRS job:** `ssh sherlock 'sacct -j 32967406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'`
    - sentinel `.real_drs_rc == 0` → `ssh sherlock 'python -c "import json;print(open(\"/scratch/users/kevinroy/real_drs_out/real_drs_hp_drift.json\").read())"'`; interpret vs EXPECT:
      Bguard `annotated_match_at_hp_abutting` > B (drift fixed on REAL undercalls); B/Bguard overall match not
      lower (do-no-harm); `reads_differing_between_arms ≈ reads_differing_at_hp_abutting` (guard is HP-specific).
-   - rc != 0 OR sacct FAILED/TIMEOUT/OOM → `ssh sherlock 'tail -40 /scratch/users/kevinroy/real_drs_out/slurm-32966406.log'`, fix, `sbatch /scratch/users/kevinroy/real_drs_run.sbatch`.
+   - rc != 0 OR sacct FAILED/TIMEOUT/OOM → `ssh sherlock 'tail -40 /scratch/users/kevinroy/real_drs_out/slurm-32967406.log'`, fix, `sbatch /scratch/users/kevinroy/real_drs_run.sbatch`.
    - still PENDING/RUNNING → poll again later (Sherlock queue wait).
    - Deployed guard code lives at `/scratch/users/kevinroy/rectify_guard` (my package overlaid; production
      `/oak/.../software/rectify` UNTOUCHED). To redeploy after a code change: rsync the changed .py there.
@@ -337,15 +337,15 @@ guard; do NOT overwrite the production install or push without asking):
 NOTE: real_drs_hp_drift.py syntax-checked on M1; not yet run on real data. Refine on a full DRS BAM is many
 reads -> cluster only (n_workers>1; fork ok on Linux). If the BAM is huge, subset to a few chroms first.
 
-## ★ REAL-DRS RUN SUBMITTED (2026-07-06) — sbatch 32966406 on Sherlock (job in flight)
+## ★ REAL-DRS RUN SUBMITTED (2026-07-06) — sbatch 32967406 on Sherlock (job in flight)
 Deployed my rectify package (with the guard) to /scratch/users/kevinroy/rectify_guard (production install
 /oak/.../software/rectify UNTOUCHED; nothing pushed). Setup verified on real inputs: 17 chroms, 385 annotated
 introns, 119 HP-abutting. Job refines wt_by4742_rep1 DRS minimap2 BAM (309MB) twice (arm-B margin0 / arm-Bguard
 margin3, same pool) + compares -> /scratch/users/kevinroy/real_drs_out/real_drs_hp_drift.json (+ sentinel
 .real_drs_rc). A local watcher polls it.
-RESUME: ssh sherlock 'sacct -j 32966406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'
+RESUME: ssh sherlock 'sacct -j 32967406 -X -o State%14; cat /scratch/users/kevinroy/real_drs_out/.real_drs_rc 2>/dev/null'
   - .real_drs_rc==0 -> read real_drs_out/real_drs_hp_drift.json; interpret vs EXPECT (Bguard match@HP-abutting > B
     = drift fixed on REAL undercalls; overall annotated match NOT lower = do-no-harm; reads_differing_between_arms
     ~= reads_differing_at_hp_abutting = guard is HP-specific).
-  - rc!=0 or sacct FAILED/TIMEOUT/OOM -> read real_drs_out/slurm-32966406.log, fix, resubmit real_drs_run.sbatch.
+  - rc!=0 or sacct FAILED/TIMEOUT/OOM -> read real_drs_out/slurm-32967406.log, fix, resubmit real_drs_run.sbatch.
   - PENDING/RUNNING -> wait.
