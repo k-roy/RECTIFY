@@ -130,47 +130,83 @@ def main():
             motif_blind=True, hp_drift_margin=hpd, hp_drift_min_run=args.hp_drift_min_run)
         arms[name] = read_junctions(out_bam)
 
-    def match_stats(junc_by_read, target_norm):
-        """fraction of (chrom,read) junctions that normalize to a junction in target_norm."""
-        tot = hit = 0
-        for (c, _rid), introns in junc_by_read.items():
-            for (s, e) in introns:
-                n = (c,) + normalize_junction(s, e, genome.get(c, ""))
-                if n in target_norm:
-                    hit += 1
-                tot += 1
-        return hit, tot
+    # --- proximity index: is a junction boundary AT an HP-abutting annotated site? ---
+    # (a read that DRIFTED sits a few bp off the annotation, so membership is by proximity,
+    #  not exact match — this is what the old `match_stats` got wrong by dividing over ALL reads.)
+    from bisect import bisect_left
+    hp_don = defaultdict(list); hp_acc = defaultdict(list)
+    for (c, s, e) in hp_junc:
+        hp_don[c].append(s); hp_acc[c].append(e)
+    for d in (hp_don, hp_acc):
+        for c in d:
+            d[c].sort()
 
-    # differences between arms (should be concentrated at HP-abutting junctions)
-    diffs = 0; diffs_hp = 0
-    keys = set(arms["B"]) | set(arms["Bguard"])
-    for k in keys:
-        if arms["B"].get(k) != arms["Bguard"].get(k):
-            diffs += 1
-            for (s, e) in set(arms["B"].get(k, [])) ^ set(arms["Bguard"].get(k, [])):
-                if (k[0],) + normalize_junction(s, e, genome.get(k[0], "")) in hp_junc_norm:
-                    diffs_hp += 1; break
+    def _near(sorted_pos, x, W):
+        if not sorted_pos:
+            return False
+        i = bisect_left(sorted_pos, x)
+        return any(0 <= j < len(sorted_pos) and abs(sorted_pos[j] - x) <= W
+                   for j in (i - 1, i))
+
+    W_MEMBER = 15  # generous: catches drifted placements as "at" the HP-abutting junction
+
+    def at_hp(c, introns):
+        return any(_near(hp_don.get(c, []), s, W_MEMBER) or _near(hp_acc.get(c, []), e, W_MEMBER)
+                   for (s, e) in introns)
+
+    def matches(c, introns):
+        return any((c,) + normalize_junction(s, e, genome.get(c, "")) in annot_norm
+                   for (s, e) in introns)
+
+    # per-arm: overall annotated-match rate (per junction) + the match rate RESTRICTED to
+    # junctions at HP-abutting sites (the corrected metric).
+    arm_stats = {}
+    for name in ("B", "Bguard"):
+        tot = hit = hp_tot = hp_hit = 0
+        for (c, _rid), introns in arms[name].items():
+            for (s, e) in introns:
+                m = (c,) + normalize_junction(s, e, genome.get(c, "")) in annot_norm
+                tot += 1; hit += 1 if m else 0
+                if _near(hp_don.get(c, []), s, W_MEMBER) or _near(hp_acc.get(c, []), e, W_MEMBER):
+                    hp_tot += 1; hp_hit += 1 if m else 0
+        arm_stats[name] = {
+            "annotated_match_rate_overall": round(hit / tot, 4) if tot else None,
+            "annotated_match_rate_at_hp_abutting": round(hp_hit / hp_tot, 4) if hp_tot else None,
+            "n_junctions_scored": tot, "n_junctions_at_hp_abutting": hp_tot,
+        }
+
+    # DECISIVE metric: of the reads whose placement the guard CHANGED, did it move the
+    # junction TOWARD the annotation (fix) or away (harm)?
+    fix = harm = neutral = diffs = diffs_hp = 0
+    for k in set(arms["B"]) | set(arms["Bguard"]):
+        b = arms["B"].get(k, []); g = arms["Bguard"].get(k, [])
+        if b == g:
+            continue
+        diffs += 1; c = k[0]
+        if at_hp(c, b) or at_hp(c, g):
+            diffs_hp += 1
+        bm, gm = matches(c, b), matches(c, g)
+        if gm and not bm:
+            fix += 1
+        elif bm and not gm:
+            harm += 1
+        else:
+            neutral += 1
 
     res = {
         "n_annotated": len(annot_norm), "n_hp_abutting": len(hp_junc),
         "hp_drift_margin": args.hp_drift_margin, "hp_drift_min_run": args.hp_drift_min_run,
-        "arms": {}, "reads_differing_between_arms": diffs,
+        "arms": arm_stats,
+        "reads_differing_between_arms": diffs,
         "reads_differing_at_hp_abutting": diffs_hp,
+        "guard_changes": {"fix_to_annotation": fix, "harm_off_annotation": harm, "neutral": neutral},
     }
-    for name in ("B", "Bguard"):
-        hit_all, tot_all = match_stats(arms[name], annot_norm)
-        hit_hp, tot_hp = match_stats(arms[name], hp_junc_norm)
-        res["arms"][name] = {
-            "annotated_match_rate_overall": round(hit_all / tot_all, 4) if tot_all else None,
-            "annotated_match_at_hp_abutting": round(hit_hp / tot_hp, 4) if tot_hp else None,
-            "n_junctions_scored": tot_all, "n_at_hp_junctions": tot_hp,
-        }
     with open(os.path.join(args.outdir, args.out), "w") as fh:
         json.dump(res, fh, indent=1)
     print(json.dumps(res, indent=1))
-    print("\nEXPECT: Bguard.annotated_match_at_hp_abutting > B (drift fixed); "
-          "overall match rate not lower (do-no-harm); "
-          "reads_differing_between_arms ~= reads_differing_at_hp_abutting (guard is HP-specific).")
+    print("\nEXPECT: guard_changes fix >> harm (~all fixes, 0 harm); overall match rate not lower "
+          "(do-no-harm); match_rate_at_hp_abutting Bguard >= B; reads_differing ~= at_hp_abutting "
+          "(guard is HP-specific).")
 
 
 if __name__ == "__main__":
