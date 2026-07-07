@@ -169,9 +169,21 @@ shippable design — motif-blind re-placement + the homopolymer-drift guard** �
 three independent ways (built-in-truth simulation, unit tests, and a real-Nanopore
 do-no-harm transfer test). It is still a *re-aligner* (it refines within the panel's
 window; it is not yet a standalone genome-wide aligner — see "What it is, mechanically"
-below). Remaining open thread: whether *any* coherent error-cost term (a proper
-log-odds law, distinct from the heuristic table we rejected) could help the search —
-under test now — and then carrying the whole thing to human data.
+below).
+
+**Closed since:** two threads that were open are now settled. (1) We asked whether *any*
+coherent error-cost term (a proper log-odds law, not the heuristic table we'd rejected)
+could help the boundary search — and, after an adversarial triple-check caught a subtle
+bug and a faithful re-run corrected it, the answer is a **definitive no**: an analytical
+impossibility result shows the run-absorption ambiguity is invariant to *any* deletion
+cost, so the guard (a positional prior) is the only thing that fixes it — the empirical
+table stays out of the search entirely. (2) We carried the whole thing to **real human
+data** (A549 chr5 direct-RNA vs GENCODE): the guard's drift-fix **transfers with zero
+harm** (it held ~956 chr5 junctions the motif-blind pass drifted into homopolymer runs,
+raising annotation concordance and lowering it nowhere). The one caveat human exposes:
+most of the guard's activity there is at *novel/unannotated* junctions that annotation
+alone can't score — which is exactly what the short-read (COMPASS) cross-check is for
+(the next milestone).
 
 ---
 

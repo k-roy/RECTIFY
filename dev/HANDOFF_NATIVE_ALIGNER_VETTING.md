@@ -425,3 +425,13 @@ A549 chr5 direct-RNA, GENCODE-basic truth (13547 introns, 3007 HP-abutting), 696
 => HUMAN do-no-harm + drift-fix CONFIRMED. Full novel-junction picture -> COMPASS short-read validation (next).
 PERF (human-readiness): refiner ~0.24s/read on human (build_junction_pool 1.7s is fine); chr5 ~10min/arm at
 8 workers. Full-genome human needs refiner perf work + standardize_chrom_name generalized (chr5->chrV; chr10->chrX collision).
+
+## RESOLVED (2026-07-07) — del_open_delta DROPPED DEFINITIVELY (PI accepted)
+Triple-pass caught a real staircase bug; faithful re-run fixed+re-tested; REJECT confirmed 3 ways (faithful
+re-run + independent re-scoring arm_Ffg≡arm_E + Arbiter2 del-cost-invariance theorem). PI accepted the drop
+without a further triple pass (corroboration = impossibility theorem + faithful empirical + independent verify).
+The guard ALONE is the native re-aligner's answer; the empirical table stays OUT of the boundary search in
+every form. Finding: dev/DEL_OPEN_DELTA_FINDING.md. Faithful wiring: dev/arm_f_del_open_delta_faithful.patch.
+Task #9 CLOSED. Human chr5 transfer (#18) PASSED. Next milestone: COMPASS short-read cross-check for the
+novel-junction activity annotation-truth can't score; then per-junction fix/harm metric; refiner perf +
+standardize_chrom_name generalization for full-genome human.
