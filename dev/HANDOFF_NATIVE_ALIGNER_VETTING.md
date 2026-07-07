@@ -483,3 +483,18 @@ non-canonical in real ONT-dRNA background) is GENUINELY NOVEL design space = the
 SIRV-in-real-dRNA (SG-NEx RNA002, LongBench RNA004=target chem). Adopt SQANTI3 NIC/NNC motif-stratified metrics.
 NEXT: finalize Q1 harm count; then lock spike-in design (LongBench RNA004 bg + SQANTI-SIM-style injection).
 Q2 still gated on COMPASS revival.
+
+## SPIKE-IN DESIGN + SUMNER TEST (2026-07-07)
+Q2 path = "both, spike-in first" (PI). SPIKE-IN design LOCKED (dev/SPIKEIN_DESIGN.md): SQANTI-SIM-style
+unannotated non-canonical synthetic contigs (noncanon_sim) spiked into a real ONT-dRNA background; panel align
+-> refine arm-A/B/Bguard; SQANTI3 NIC/NNC motif-stratified recall(flattening)+precision(fabrication). PENDING
+DECISION: background dataset (LongBench RNA004 target-chem download [my lean] vs reuse SG-NEx/BY4742).
+SUMNER SMN test (#21, SEPARATE JHU collab, dual-purpose per PI): data /scratch/users/kevinroy/sumner_lab/
+chr5_bams/ (4 CNTL + 7 SMA, chr5-named, no reheader). BIOLOGY FIRST LOOK (raw junctions, chr5:69.9-71Mb): SMN1
+(~70.94Mb) junctions strongly DOWN in SMA, SMN2 (~70.05-70.08Mb) UP — the SMN1-loss/SMN2-compensation mechanism,
+recovered. IN FLIGHT: RECTIFY refine (sbatch 33015742) on SMA_GSB2945 + CNTL_HB53 (arm-B/Bguard do-no-harm +
+arm bams for non-canonical). RESUME: ssh sherlock 'cat /scratch/users/kevinroy/sumner_out/.sumner_rc; for S in
+SMA_GSB2945 CNTL_HB53; do cat /scratch/users/kevinroy/sumner_out/$S/${S}_drift.json; done'. NEXT: SMN2 exon 7
+skip ratio SMA-vs-CNTL + non-canonical junctions the refine reveals. CAVEATS: SMN1/SMN2 paralog confound
+(within-locus assignment provisional; locus-level robust); real data = discovery not recall/precision.
+Q1 DONE (153 FIX/0 HARM). Q2 substrates: spike-in (ground truth) + Sumner (real biology) + COMPASS-A549 (later).
