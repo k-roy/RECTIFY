@@ -469,3 +469,17 @@ IN FLIGHT:
     subset it to chr5 first.
  #2 WEB SURVEY (Agent abafcd2c8d191150e) — non-canonical junction benchmarks + spike-in prior art; await notif.
  #3 SPIKE-IN track (#20) — scoped; design after survey.
+
+## Q1 RESULT (re-partition) + SURVEY DONE (2026-07-07)
+Q1 ADJUDICATION (sbatch 33013750): the vet's comprehensive re-partition transformed it — 944 per-read changes
+= 173 DISTINCT junction moves; 168/173 (97%) annotated in COMPREHENSIVE gencode v44 (only "novel" vs basic);
+153 clean FIXES (guard->comp-annotated arm-B wasn't at); 5 truly-novel (all zero Illumina coverage). Guard's
+changes are overwhelmingly fixes onto REAL junctions. Harm-breakdown re-run (sbatch 33013898) IN FLIGHT to
+count comp_HARM (guard-off-annotated) — expect ~0. RESUME: ssh sherlock 'tail -22 /scratch/users/kevinroy/
+human_drs_out/q1_adj-33013898.log'. Scripts committed (q1_illumina_hp_concordance.py, q1_adjudicate.py).
+SURVEY DONE (dev/NONCANON_BENCHMARK_SURVEY.md): PI's recalled study = LRGASP. Spike-in (#20) has a published
+precedent (SQANTI-SIM: novel junctions by transcript-removal + NanoSim/pbsim3); the SPECIFIC combo (unannotated
+non-canonical in real ONT-dRNA background) is GENUINELY NOVEL design space = the defensible contribution. Borrow
+SIRV-in-real-dRNA (SG-NEx RNA002, LongBench RNA004=target chem). Adopt SQANTI3 NIC/NNC motif-stratified metrics.
+NEXT: finalize Q1 harm count; then lock spike-in design (LongBench RNA004 bg + SQANTI-SIM-style injection).
+Q2 still gated on COMPASS revival.
