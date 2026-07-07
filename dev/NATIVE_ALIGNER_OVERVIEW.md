@@ -7,7 +7,7 @@ Revisit and polish as the work evolves. Working state:
 `dev/ALIGNER_IDEATION_SYNTHESIS.md`; design refinements:
 `dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`.*
 
-**Last updated:** 2026-06-29
+**Last updated:** 2026-07-06
 
 ---
 
@@ -111,6 +111,54 @@ re-aligner recover the flattened junctions *precisely* (high hit-rate, low fabri
 **Nanopore-calibrated, motif-blind, probability-scored re-aligner** that re-examines
 each read in the window the panel already found, judging junctions by *evidence*
 rather than by "does it look textbook."
+
+### Phase 4 (2026-07) — we built the re-aligner's junction logic, and vetted its one real risk
+
+We built the core move: **motif-blind re-placement.** Inside the window the panel
+already found, the re-aligner re-examines each splice junction and judges it *by the
+read's evidence* — not by "does it snap to a textbook `GT-AG` site." That is exactly
+the anti-flattening lever: a genuine novel junction is kept where the read says it is,
+instead of being pulled onto the nearest canonical motif.
+
+But motif-blindness has a **specific, predictable failure mode**, and vetting it was
+the real work. Nanopore's single biggest error is **homopolymer under-counting** — a
+read run of `AAAAAAAA` routinely comes back one `A` short. When a real junction sits
+right next to such a run, an evidence-only re-aligner can be *fooled into inventing a
+fake novel junction*: sliding the boundary **one base into the run** makes the read
+align "perfectly" (the missing `A` gets hidden inside the intron), which scores better
+than the truth ("a base was miscalled here"). We call this **homopolymer drift**, and
+because under-counts are everywhere, it would fabricate false novel sites at scale.
+
+- **The obvious fix backfired.** We first tried feeding the re-aligner RECTIFY's
+  empirical error-cost table (which *knows* `AAAA` runs mis-count). It made the drift
+  **worse**, not better — because the boundary slide is a *tie the data makes exact*
+  (both placements explain the read equally once you allow the miscount), and a cost
+  table can't break a tie; it just greases the slide. An independent Opus red-team
+  confirmed this is **fundamental to any boundary search**, not a bug we could patch.
+  (This is why the error-cost table stays where it was always valid — *ranking* the
+  panel's fixed alignments and scoring indels *inside* exons — and is kept **out** of
+  the junction *search*.)
+- **The targeted fix worked.** We built a **homopolymer-drift guard** that fires
+  *only* when a move would land a boundary **inside** a homopolymer run, demanding
+  extra evidence there — and **never** touches a move to a genuine novel site at a
+  real sequence transition. So it fixes the fake-junction problem with **zero cost to
+  real discovery** (the two are cleanly decoupled — we swept the setting and confirmed
+  discovery is untouched at every level). It's unit-tested (11 tests) and, the honest
+  final check, run on **real Nanopore yeast data**: of the placements it changed,
+  **every single one fixed a real drift** (moved a junction back to the correct site),
+  **zero harm**, and overall accuracy did not drop. On wild-type yeast the effect is
+  small (real drift is rare there), but when the re-aligner *does* drift on a real
+  under-count, the guard catches it **100% correctly** — and the payoff scales up in
+  the mutant / heavy-under-count settings this is ultimately for.
+
+**Bottom line after Phase 4:** the re-aligner's junction engine has a **validated,
+shippable design — motif-blind re-placement + the homopolymer-drift guard** — proven
+three independent ways (built-in-truth simulation, unit tests, and a real-Nanopore
+do-no-harm transfer test). It is still a *re-aligner* (it refines within the panel's
+window; it is not yet a standalone genome-wide aligner — see "What it is, mechanically"
+below). Remaining open thread: whether *any* coherent error-cost term (a proper
+log-odds law, distinct from the heuristic table we rejected) could help the search —
+under test now — and then carrying the whole thing to human data.
 
 ---
 
