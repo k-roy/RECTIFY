@@ -85,3 +85,56 @@ counter. Q2's recall estimate IS sensitivity-limited → needs STAR-2pass or COM
    changes. Days, existing data, directly extends the validated do-no-harm result into novels.
 2. **Q2 truth decision (PI):** STAR-2pass (fast first pass) vs revive COMPASS-A549 (gold standard) — see the
    AskUserQuestion. Then run Q2 recall/precision with calibrated controls.
+
+---
+# ★ VETTED (v2, 2026-07-07) — 3-critic adversarial pass; must-fixes folded in
+Verdict: **direction sound, but the validity assessment REVERSES by question** (the draft's blanket "short
+reads are orthogonal" hid it). Q1 is the VALID one; Q2 as drafted is RIGGED.
+
+## The reversal (why)
+- **Q1 (guard / HP-drift) = VALID.** The drift is caused by homopolymer *undercount* — a DRS-specific error
+  Illumina does NOT share — so Illumina breaks the tie on the correct axis. (After the 5 must-fixes.)
+- **Q2 (non-canonical discovery) = RIGGED as drafted.** STAR/HISAT2/regtools share minimap2's short-anchor-
+  over-GT-AG *motif-snapping* (COMPASS handoff Step E admits it); STAR `SJ.out.tab` is post-filtered on
+  canonical motif. So an unstratified Q2 scores the tool's TRUE non-canonical recoveries as *fabrications*,
+  against a canonical floor that can't bound the non-canonical target — re-importing the exact real-data bias
+  the simulation was built to escape. Q2's fixes are MANDATORY, and it's gated on a motif-blind truth.
+
+## Q1 — refined, tractable NOW (chr5 rep1 DRS + all 3 Illumina reps' chr5)
+0. **FIRST, the load-bearing positive control (the decisive omission all 3 critics named):** measure base-exact
+   Illumina split-read concordance at the ~3,007 already-enumerated ANNOTATED HP-abutting chr5 junctions
+   (>=2/3 reps). If Illumina lands base-exact there → Q1 is answerable and every Q1 rate is reported RELATIVE
+   to this HP-abutting floor. If not → Q1 is unanswerable for the HP subset, learned cheaply before any effort.
+   (This closes the sharpest risk: a null "no harm" is otherwise confounded with "Illumina can't see the move.")
+1. **Re-partition the 944 against comprehensive GENCODE v44 + RefSeq FIRST** — some are annotated in the fuller
+   reference → adjudicated for free; carry only the truly-novel residual into Illumina Q1.
+2. **Per-JUNCTION, not per-read:** collapse the changed reads to distinct (chrom, donor, acceptor); tally DRS
+   reads per junction; classify each junction once. Report #distinct-junctions (honest denominator) + #reads.
+3. **BASE-EXACT (±0) Illumina support — do NOT ambiguity-normalize** (the Nanopore window is the artifact under
+   test; normalizing collapses arm-B==arm-Bguard and destroys the contrast — must-fix #1). Restrict Q1 to guard
+   moves that cross OUT of the ambiguity window; pre-report the resolvable fraction of the residual.
+4. **Decidable denominator as a primary output:** junctions with >=K split reads (K set by calibration + a
+   matched-null false-support rate) in >=2/3 reps. Report FIX/HARM as a fraction of the DECIDABLE subset; if it
+   is trivially small → declare Q1 underpowered (exhaust free levers: all 3 Illumina reps, fuller annotation —
+   NOT more DRS, which is gated on generalizing standardize_chrom_name + the 0.24s/read cost).
+5. **FIX = support-RATIO margin** (guard-position reads >> arm-B-position reads), not mere presence (guards vs
+   the Illumina HP-artifact false-HARM). **HARM is one-directional / non-clean** (a real in-run acceptor the
+   guard rightly holds presents identically) → treat HARM as an INVESTIGATION SET, not an error rate.
+
+## Q2 — mandatory fixes; GATED on a motif-blind truth (defer)
+- Truth = **motif-BLIND split counter** (raw N-CIGAR from a permissive alignment, long unique anchors that
+  force gap placement by identity) cross-checked against **COMPASS-A549** — NEVER STAR `SJ.out.tab`.
+- Stratify every non-canonical novel by **canonical-decoy-within-snap-window** (no-decoy = clean; decoy-present
+  = confounded/non-probative).
+- Floor = **annotated NON-CANONICAL** junctions (GC-AG, AT-AC minor), not canonical — measures Illumina's OWN
+  non-canonical sensitivity.
+- Control = **arm-A** (motif-biased refinement, SAME engine): motif-blind contribution = arm-B − arm-A, NEVER
+  arm-B − raw-minimap2 (which confounds motif-blindness with the re-placement engine).
+- Confirm the SG-NEx Illumina reps are the SAME cell-line/sample as DRS rep1 (else biology masquerades as fab).
+- **Q2 truth-set = revive COMPASS-A549** (the PI's motif-agnostic detector), NOT STAR-2pass. So Q2 is gated on
+  COMPASS being finished (smoke rc=1 currently). STAR-2pass allowed ONLY as a canonical sanity cross-check.
+
+## Sequencing (final)
+1. **Q1 now** — positive control → re-partition → per-junction base-exact adjudication on the decidable subset.
+   Unblocked by COMPASS; needs none of Q2's machinery.
+2. **Q2 later** — after the motif-blind counter + COMPASS-A549 revival + non-canonical floor + arm-A control.
