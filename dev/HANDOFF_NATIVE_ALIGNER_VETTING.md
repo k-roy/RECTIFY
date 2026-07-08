@@ -498,3 +498,16 @@ SMA_GSB2945 CNTL_HB53; do cat /scratch/users/kevinroy/sumner_out/$S/${S}_drift.j
 skip ratio SMA-vs-CNTL + non-canonical junctions the refine reveals. CAVEATS: SMN1/SMN2 paralog confound
 (within-locus assignment provisional; locus-level robust); real data = discovery not recall/precision.
 Q1 DONE (153 FIX/0 HARM). Q2 substrates: spike-in (ground truth) + Sumner (real biology) + COMPASS-A549 (later).
+
+## GENOME-WIDE SUMNER — blocker resolved; awaiting ssh (2026-07-07)
+PI: fan out Sumner to whole genome (chr5 had few novel events). Genome-wide BAMs ARE on cluster:
+/scratch/users/kevinroy/sumner_lab/full_genome_bams/ (full SMA + WT panel, some reps; WT=control naming).
+★ standardize_chrom_name "blocker" is a NON-ISSUE (verified locally): unregistered it collides chr10->chrX==chrX,
+but register_genome_contigs_from_fasta(FULL GRCh38) returns ALL human chroms VERBATIM (chr10->chr10, no
+collision). NO CODE FIX — just pass the FULL genome (GRCh38.primary_assembly.genome.fa, staged at
+error_model_gm12878/refs/) + comprehensive GTF (gencode.v44.annotation.gtf). Corrects the earlier roadmap note.
+BLOCKED ON: ssh ControlMaster DIED (falling to password/2FA) — asked Kevin to `! ssh sherlock` to reopen (never
+reopen it myself). RESUME once ssh back: (1) verify full_genome_bams @SQ naming (chr-named? no reheader);
+(2) fan out refine (arm-B/Bguard) per sample with FULL GRCh38 + comprehensive GTF -> genome-wide junctions +
+do-no-harm; (3) novel/non-canonical junctions genome-wide, SMA vs WT. Chunk across ~12 samples (perf ~0.24s/read).
+chr5 refine (33015742) do-no-harm result not yet retrieved (ssh blip) — grab when back.
