@@ -552,3 +552,19 @@ is the production numba kernel hit at human scale, or a pure-Python fallback (th
 affine path)? THEN: implement fix, verify BYTE-IDENTICAL (pytest tests/test_junction_refiner.py
 tests/test_hp_drift_guard.py = 46), measure speedup. TWO in-flight: discovery array 33047654 (RESUME: wc -l
 /scratch/users/kevinroy/sumner_gw/.panel_done ==15 -> run sumner_gw_aggregate.py) + this profile 33048402.
+
+## PERF INVESTIGATION (2026-07-08) — concat-DP REFUTED; full-run ins_cost under investigation
+concat/2-pass DP speedup = PROVEN IMPOSSIBLE byte-identically (triple audit, committed): OLD _score_junction
+computes ins_cost on the PER-K TRUNCATED substring -> splits homopolymers to exploit the NON-MONOTONIC DRS ins
+table (witness A*12: old=1.7604 vs concat=8.2584). Durable audit records dev/CONCAT_DP_*.md.
+PI-approved: investigate FULL-RUN ins_cost (compute on the read's full HP run, cut-independent) = sounder model
++ removes fabrication + UNLOCKS the single-pass DP. IN FLIGHT: Workflow wc2hfx0dx (durable-output baked in) —
+investigate (flag _USE_FULL_RUN_INS, measure) -> 3 audits (model-correctness/impact-validity/revalidation-
+completeness) -> synthesize. RESUME: await completion notif; read dev/INSCOST_INVESTIGATION.md + INSCOST_AUDIT_*.md
++ INSCOST_SYNTHESIS.md (durable). PRELIM (durable record): full-run is ANTI-FABRICATION + net-positive (fair panel
+0.75% change, 35 noncanon->canon vs 6; R3 discovery preserved; guard-compatible). Auditors must check: does it drop
+REAL non-canonical recoveries? does the guard tuning (m=3.0) still hold? could it flip the del_open REJECT verdict?
+I review synthesis before any switch. Durable-output policy VERIFIED working (plan-first + 10 checkpoints).
+IN FLIGHT #2: SUMNER genome-wide discovery array 33047654 (15/15 done). RESUME: when 15/15 ->
+ssh sherlock 'conda activate rectify; export PYTHONPATH=/scratch/users/kevinroy/rectify_guard; python
+/scratch/users/kevinroy/rectify_guard/sumner_gw_aggregate.py /scratch/users/kevinroy/sumner_gw/panel'.
