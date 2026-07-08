@@ -511,3 +511,20 @@ reopen it myself). RESUME once ssh back: (1) verify full_genome_bams @SQ naming 
 (2) fan out refine (arm-B/Bguard) per sample with FULL GRCh38 + comprehensive GTF -> genome-wide junctions +
 do-no-harm; (3) novel/non-canonical junctions genome-wide, SMA vs WT. Chunk across ~12 samples (perf ~0.24s/read).
 chr5 refine (33015742) do-no-harm result not yet retrieved (ssh blip) — grab when back.
+
+## GENOME-WIDE SUMNER FAN-OUT — downsampled first pass (2026-07-07)
+Cluster = SHERLOCK (data+tools there; SCG sees only Oak). 15 WGS BAMs (8 SMA + 7 WT), chr-named, indexed,
+~13.7M reads each, ~51% junction reads -> ~6.9M junction reads/sample. PERF WALL: refiner ~0.34s/junction-read
+=> full-depth = ~83hr/arm/sample (~10k CPU-hr) INFEASIBLE. PI chose: DOWNSAMPLED (~5%) genome-wide first pass,
+motif-blind arm, 15 parallel. Tool: rectify_guard/sumner_gw_discover.py (downsample -> refine motif-blind+guard
+w/ FULL GRCh38 [chrom names register verbatim] + comprehensive gencode.v44.annotation.gtf -> classify raw vs
+refined junctions annot/novel x canon/noncanon -> per-sample REVEALED novel-non-canonical). Genome
+/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/refs/GRCh38.primary_assembly.genome.fa (+GTF).
+IN FLIGHT: SMOKE test (sbatch 33047424, SMA_7.12 @0.5%). RESUME: ssh sherlock 'cat /scratch/users/kevinroy/
+sumner_gw/.smoke_rc; tail -20 /scratch/users/kevinroy/sumner_gw/smoke-33047424.log; cat /scratch/users/kevinroy/
+sumner_gw/smoke/SMA_7.12_smoke.summary.tsv'. IF SMOKE_RC=0 + sensible summary -> launch 15-sample array at
+frac=0.05 (one task/sample, --array=1-15%15, 8c/20G/8h each, sample list from full_genome_bams/*.bam). Then
+aggregate SMA vs WT revealed-novel-noncanon genome-wide (positive control = the SMN1-down/SMN2-up already seen
+raw). IF smoke fails -> read the log, fix sumner_gw_discover.py, redeploy, re-smoke.
+NOTE: standardize_chrom_name collision is a NON-ISSUE with the full genome (verified). Q1 done (153 FIX/0 HARM).
+Spike-in design locked (bg decision pending). Survey done.
