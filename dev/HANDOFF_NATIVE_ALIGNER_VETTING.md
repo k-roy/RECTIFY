@@ -584,3 +584,20 @@ del_open re-run, human transfer). I review synthesis before any default flip. NO
 worktree (has motif_blind); master has neither — merge-target gap in the checklist.
 Also DONE this session: Sumner genome-wide discovery (219k revealed, dev/SUMNER_GW_DISCOVERY_RESULT.txt); the
 ins_cost fix will clean that fabrication-dominated yield.
+
+## FULL-RUN RE-VALIDATION IN PROGRESS (2026-07-08) — PI: run the 8-item checklist
+Reference-column REFUTED; full-run is the winner (baseline committed 56addde: flags _USE_FULL_RUN_INS/
+_USE_REFCOL_INS default OFF = byte-identical per-cut, 70 passed both ways). TOPOLOGY RESOLVED: whole arc
+(motif_blind+guard+ins flags) is on THIS branch ONLY; master lacks it -> re-validation is apples-to-apples
+HERE (all prior results computed here); master-merge = separate future step. env: RECTIFY_FULL_RUN_INS=1.
+CHECKLIST STATUS:
+ [x] 1 merge-target/baseline — DONE (topology resolved, flag committed 56addde).
+ [x] 2a/2b narrow suite flag off+on — 70 passed both.
+ [~] 2c FULL suite (not slow) flag-ON — RUNNING (bg b7zchzgow; log scratchpad/suite_flagon.log). RESUME: read that log; expect green, any fail = a test pinning old-scale scores/CIGARs -> triage.
+ [ ] 4 _CANONICAL_HP_PRIOR re-confirm on full-run scale (0.5 anchor = 1 HP-DEL; DEL unchanged so anchor holds; confirm noise floor + no discovery regression fair+r3b no-guard).
+ [ ] 5 hp_drift_margin re-sweep (task #16 redo under full-run; smallest zero-discovery-cost margin may DROP below 3.0). _make_arm_e.py / _sweep_refine.py pattern on mix_fair_out+mix_r3b_out.
+ [ ] 6 del_open/arm-F verdict RE-RUN under full-run scale (could flip; scale x4.69). dev/arm_f_del_open_delta_faithful.patch + _make_arm_ff.py.
+ [ ] 3 numba-ON DP path flag-ON on CLUSTER build (reversed-slice list->float64 -> _score_hp_dp_numba).
+ [ ] 7 yeast DRS transfer (Sherlock, task #17 redo flag-on).
+ [ ] 8 human ONT DRS transfer (task #18 redo flag-on) — DECISIVE / most-likely-to-move.
+Flip default-ON ONLY after 2c/3/4 green + 7/8 no-regression. Each sub-agent brief MUST carry the durable-output policy.
