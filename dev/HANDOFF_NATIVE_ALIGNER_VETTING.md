@@ -568,3 +568,19 @@ I review synthesis before any switch. Durable-output policy VERIFIED working (pl
 IN FLIGHT #2: SUMNER genome-wide discovery array 33047654 (15/15 done). RESUME: when 15/15 ->
 ssh sherlock 'conda activate rectify; export PYTHONPATH=/scratch/users/kevinroy/rectify_guard; python
 /scratch/users/kevinroy/rectify_guard/sumner_gw_aggregate.py /scratch/users/kevinroy/sumner_gw/panel'.
+
+## ins_cost A/B: REFERENCE-COLUMN vs full-run (2026-07-08) — PI chose the audit's path
+Prior verdict: per-cut run-splitting = real fabrication artifact; full-run fixes it + unlocks the single-pass DP,
+but full-run has a 4-6/panel canonical-DEMOTION counter-signal, and the model-correctness auditor recommended
+REFERENCE-COLUMN ins indexing (charge over-call against the GENOME HP context, mirror _precompute_del_costs) as
+likely-better (keeps the ~35 anti-fab wins, drops the demotions). PI: A/B ref-column vs full-run first.
+IN FLIGHT: Workflow wb7dhcdhn (durable-output baked in) — build ref-column (flag _USE_REFCOL_INS) + 3-way A/B
+(per-cut vs full-run vs ref-column on mix_fair_out + mix_r3b_out) -> 3 audits (refcol-model-correctness / ab-
+measurement-validity / revalidation-and-coupling) -> synthesize (winner + re-validation checklist). RESUME: await
+notif; read dev/INSCOST_REFCOL_BUILD.md + INSCOST_REFCOL_AUDIT_*.md + INSCOST_REFCOL_SYNTHESIS.md (durable). Key
+question: does ref-column keep full-run's anti-fab wins AND eliminate the canonical-demotion losses? Then re-validate
+the winner (8-item checklist in dev/INSCOST_SYNTHESIS.md: coupled-constant re-tune _CANONICAL_HP_PRIOR + hp_drift_margin,
+del_open re-run, human transfer). I review synthesis before any default flip. NOTE flags uncommitted on THIS benchmark
+worktree (has motif_blind); master has neither — merge-target gap in the checklist.
+Also DONE this session: Sumner genome-wide discovery (219k revealed, dev/SUMNER_GW_DISCOVERY_RESULT.txt); the
+ins_cost fix will clean that fabrication-dominated yield.
