@@ -1,0 +1,46 @@
+=== per-sample revealed novel-non-canonical (genome-wide, 5% downsample) ===
+sample               grp   sub_reads  revealed  raw_nn  ref_nn
+SMA_191              SMA      383347     38116   56062  210227
+SMA_2394             SMA      136951      5742   11921   26777
+SMA_2713             SMA      405833     39946   57133  219712
+SMA_2945             SMA      487302     52784   78386  313341
+SMA_3.6              SMA      732490     14028   42618  106455
+SMA_7.12             SMA      187276      4677    8141   22710
+SMA_7.12_rep2        SMA      956053     10881   35100   77509
+SMA_8.2              SMA     1102401     15966   44967  105751
+WT_21.8              WT       189584     12400   21546   57734
+WT_21.8_rep2         WT       175793      7639    9665   35307
+WT_21.8_rep3         WT       527231      3222   14395   23527
+WT_3939              WT       454354     30308   53584  184054
+WT_4.2               WT       313234     19354   32808  101088
+WT_4.2_rep2          WT       512208     18179   43269  119293
+WT_HB53              WT       653887     15537   44042  119265
+
+=== recurrence (8 SMA, 7 WT samples); distinct revealed junctions: 219510 ===
+  in >=2 samples:  35287  (SMA-only 9118, WT-only 3198, shared 22971)
+  in >=3 samples:  13732  (SMA-only 1274, WT-only 339, shared 12119)
+  in >=5 samples:   4357  (SMA-only 33, WT-only 10, shared 4314)
+
+=== top SMA-specific recurrent revealed non-canonical junctions (biology leads) ===
+  chr15:78893625-78894055  in 7 SMA samples
+  chr17:82036747-82036842  in 6 SMA samples
+  chr17:75148669-75154339  in 6 SMA samples
+  chr14:94096934-94100707  in 6 SMA samples
+  chr11:3002045-3002532  in 6 SMA samples
+  chrX:154478388-154478704  in 5 SMA samples
+  chrX:52187991-52188184  in 5 SMA samples
+  chr8:56073794-56074015  in 5 SMA samples
+  chr6:73519225-73519333  in 5 SMA samples
+  chr6:7301565-7303542  in 5 SMA samples
+  chr6:7297994-7298739  in 5 SMA samples
+  chr6:7295478-7297915  in 5 SMA samples
+  chr4:2932759-2933116  in 5 SMA samples
+  chr3:184366809-184368185  in 5 SMA samples
+  chr21:25905068-25911731  in 5 SMA samples
+  chr21:25897664-25905014  in 5 SMA samples
+  chr2:240744087-240745453  in 5 SMA samples
+  chr2:108008680-108010229  in 5 SMA samples
+  chr2:27439874-27440378  in 5 SMA samples
+  chr19:49835130-49835575  in 5 SMA samples
+
+NOTE: precision (real vs fabricated) is the SPIKE-IN track's job; here recurrence+group-specificity are the confidence signals. SMN region (chr5:~70.0-70.95Mb) = built-in positive control.
