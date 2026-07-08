@@ -528,3 +528,17 @@ aggregate SMA vs WT revealed-novel-noncanon genome-wide (positive control = the 
 raw). IF smoke fails -> read the log, fix sumner_gw_discover.py, redeploy, re-smoke.
 NOTE: standardize_chrom_name collision is a NON-ISSUE with the full genome (verified). Q1 done (153 FIX/0 HARM).
 Spike-in design locked (bg decision pending). Survey done.
+
+## GENOME-WIDE SUMNER ARRAY LAUNCHED (2026-07-07) — smoke PASSED, rich yield
+Smoke (33047424, SMA_7.12 @0.5%) PASSED: pipeline works end-to-end (full GRCh38 194 contigs, 402k comprehensive
+annotated junctions, chrom names verbatim). At 0.5% of ONE sample the refine REVEALED 345 novel non-canonical
+junctions minimap2 flattened -> genome-wide >> chr5's handful. 15-sample ARRAY LAUNCHED: sbatch 33047654
+(--array=1-15%15, frac 0.05, 8c/20G/8h). RESUME: ssh sherlock 'wc -l /scratch/users/kevinroy/sumner_gw/.panel_done'
+(15 lines = done). WHEN DONE: ssh sherlock 'source ...conda; conda activate rectify; export PYTHONPATH=
+/scratch/users/kevinroy/rectify_guard; python /scratch/users/kevinroy/rectify_guard/sumner_gw_aggregate.py
+/scratch/users/kevinroy/sumner_gw/panel' -> per-sample yield + recurrence (>=N samples) + SMA-vs-WT specificity.
+IF a task fails: read gw-33047654_<task>.log, fix sumner_gw_discover.py, redeploy, resubmit that task.
+★ HONEST CAVEAT: 'revealed novel non-canonical' = DISCOVERY YIELD (real flattening-recovery + FABRICATION mixed);
+no ground truth on real data. Precision is the SPIKE-IN track's job; recurrence + SMA-vs-WT specificity are the
+real-data confidence signals; SMN region (chr5:70.0-70.95Mb) = built-in positive control (SMN1 down/SMN2 up seen raw).
+Tools: sumner_gw_discover.py, sumner_gw_aggregate.py (committed).
