@@ -542,3 +542,13 @@ IF a task fails: read gw-33047654_<task>.log, fix sumner_gw_discover.py, redeplo
 no ground truth on real data. Precision is the SPIKE-IN track's job; recurrence + SMA-vs-WT specificity are the
 real-data confidence signals; SMN region (chr5:70.0-70.95Mb) = built-in positive control (SMN1 down/SMN2 up seen raw).
 Tools: sumner_gw_discover.py, sumner_gw_aggregate.py (committed).
+
+## REFINER PERF INVESTIGATION (2026-07-07, task #22) — parallel with the discovery array
+PI circled back to option 3: attack ~0.34s/junction-read (enables full-depth genome-wide human). Candidate
+lookup RULED OUT (_candidates_near is bisect-indexed O(log pool), junction_scoring.py:630). py-spy blocked
+(ptrace). IN FLIGHT: cProfile (sbatch 33048402) on 300 human junction reads -> top-by-tottime hotspot. RESUME:
+ssh sherlock 'cat /scratch/users/kevinroy/sumner_gw/.prof_rc; grep -E "ms/read|tottime|_score|_apply|numba|refine_read" /scratch/users/kevinroy/sumner_gw/prof-33048402.log'. HYPOTHESIS: scoring DP (_score_hp_anchored) —
+is the production numba kernel hit at human scale, or a pure-Python fallback (the del_open work noted a pure-Py
+affine path)? THEN: implement fix, verify BYTE-IDENTICAL (pytest tests/test_junction_refiner.py
+tests/test_hp_drift_guard.py = 46), measure speedup. TWO in-flight: discovery array 33047654 (RESUME: wc -l
+/scratch/users/kevinroy/sumner_gw/.panel_done ==15 -> run sumner_gw_aggregate.py) + this profile 33048402.
