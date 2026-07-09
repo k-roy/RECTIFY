@@ -639,3 +639,16 @@ committed; defaults preserved). RESUME: read scratchpad task bb9je2wn0 / the pri
 PERF: concat-DP DONE (14.3x byte-identical, flag _USE_CONCAT_DP default OFF, committed e1ed90c); full-run transfers
 confirmed the table-free no-op end-to-end. ssh back. NEXT after sweep: PI decision on flipping _USE_CONCAT_DP default
 + cluster-deploy + re-run Sumner genome-wide at 14x.
+
+## CONCAT-DP PROMOTED (2026-07-09) — default ON + deployed; Sumner re-run plan
+PI approved: flip default + deploy + re-run Sumner genome-wide at 14x. DONE: _USE_CONCAT_DP default flipped ON
+(env RECTIFY_CONCAT_DP=0 forces legacy), committed; verified default-ON vs forced-legacy 5000/5000 exact + suites
+green; deployed to cluster rectify_guard (default True confirmed).
+IN FLIGHT: cluster timing + end-to-end byte-identity on REAL Sumner data (sbatch 33235941): refine SMA_7.12 @2%
+concat ON vs OFF, compare wall-clock + diff summary TSVs. RESUME: ssh sherlock 'cat /scratch/users/kevinroy/
+sumner_gw/.timing_rc; grep Elapsed /scratch/users/kevinroy/sumner_gw/timing/*.time; tail /scratch/users/kevinroy/
+sumner_gw/timing-33235941.log'. If IDENTICAL + faster -> launch deeper genome-wide Sumner (full/higher depth now
+feasible at 14x, for RECURRENCE POWER on the SMA-specific leads chr6:7.29-7.30Mb/chr21:25.9Mb/chr15:78.9Mb — NOT
+fabrication cleaning; precision is the spike-in track's job). NOTE: concat-DP is byte-identical -> deeper run gives
+MORE reads/junction (better recurrence confidence), same per-read fabrication rate.
+Q3 (table-vs-flat) RESOLVED: drop table justified (3 angles) + flat costs a broad plateau (dev/FLAT_COST_SWEEP_RESULT.md).
