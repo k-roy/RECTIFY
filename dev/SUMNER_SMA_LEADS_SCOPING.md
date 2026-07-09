@@ -98,3 +98,20 @@ NOTE: CNTL_GSB3939 is a low-coverage outlier (4 SMN2 / 17 SMN1 reads) — down-w
 - SWEEP D (cross-ref): overlay A/B/C hits with SMN-pathway / SMA-modifier (PLS3,NCALD) / NMD gene lists.
 - SYNTHESIS: short ranked table (gene·event·effect·direction·recurrence·validation-path·caveat), led by SMN anchor.
   Deliverable -> /scratch/users/kevinroy/sumner_lab/sma_leads/. Express in FLAIR terms for Stephen where possible.
+
+## SWEEP B DONE + C LAUNCHED (2026-07-09)
+- B (differential splicing = re-placer rigor test) DONE -> dev/SUMNER_SMA_LEADS_B_splicing.md. VERDICT: finds real
+  SMA biology (UBA1=X-linked SMA gene, SNRPN=snRNP/SMN's function) BUT fabricates at high-expression genes
+  (ribosomal cluster) -> the re-placer's real-data precision ceiling exposed; needs spike-in calibration.
+- C (APA-shift, RECTIFY specialty) LAUNCHED: sbatch 33302223 (good-RIN 4 SMA/2 WT, internal-priming filtered,
+  atlas-anchored). RESUME: ssh sherlock 'cat /scratch/users/kevinroy/sumner_lab/sma_leads/.sweepC_rc; tail -40
+  /scratch/users/kevinroy/sumner_lab/sma_leads/sweepC-33302223.log'. Reports top 3'UTR shortening/lengthening SMA vs WT.
+- D + synthesis: after C. Overlay A/B/C with SMN-pathway/modifier/NMD; short ranked table -> sma_leads/.
+
+## ★ RIGOR-TEST FEEDBACK TO THE NATIVE ALIGNER (the SMA panel's purpose)
+Sweep B is the native re-placer's real-data discovery output. It shows the HP-drift guard (which fixes homopolymer
+fabrication) does NOT cover EXPRESSION-CORRELATED fabrication (ribosomal/high-coverage genes over-call non-canonical
+junctions). => next native-aligner build step motivated: a DISCOVERY fabrication guardrail beyond HP-drift (the
+"novel-feature support must not be read-quality-tail-enriched" / expression-normalized-support principle from
+NATIVE_ALIGNER_OVERVIEW), AND the spike-in precision number to calibrate/measure it. UBA1/SNRPN surviving = the tool
+finds real biology; the ribosomal fabrication = the ceiling to fix.
