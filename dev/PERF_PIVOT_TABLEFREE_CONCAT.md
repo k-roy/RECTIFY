@@ -53,3 +53,15 @@ True for everything measured slow (Sumner genome-wide, human transfer) and for t
 deployment ever puts the empirical table back INTO the re-placer, full-run stops being moot there and the shelved
 investigation (dev/INSCOST_*.md) is the resumption point. Production mainline (correct_command/master) reportedly
 runs table-ON + motif-blind-OFF (incumbent arm-A) — a SEPARATE path, not the native re-aligner.
+
+## BUILD RESULT (2026-07-08) — table-free vectorized DP is BYTE-IDENTICAL + 14.3x
+Prototype dev/concat_dp_prototype.py (inline build, harness-gated). Design: _score_junction's min_k[t1(k)+t2(k)]
+computed via TWO vectorized DP passes instead of ~2L(<=60) per-k calls:
+- all_t1(rescue, ref, del_costs): all t1(k)=score(rescue[k:], ref) in ONE reversed-prefix DP (query-suffix family
+  via the reversal: t1(k) = D[L-k][R] over reverse(rescue) vs reverse(ref)). VERIFIED 0/3000 vs per-k reference.
+- t2(k) = score(reverse(rescue)[L-k:], ref_intron_end_rev) = the SAME query-suffix shape -> reuse all_t1 on
+  reverse(rescue). best = min_k(t1[k]+t2[k]), same early-exit, k in [0,L) (MECH1 boundary handled — no k=L col).
+VERIFIED: score_junction_fast vs the REAL _score_junction, table=None, 8000/8000 EXACT (mismatches=0).
+SPEEDUP: 400 candidate scorings 26.26ms/call -> 1.83ms/call = 14.3x; 2 DP passes/candidate vs ~60.
+REMAINING: port behind a flag (gate on penalty_table is None), byte-identity harness in-repo + tests, END-TO-END
+BAM diff on a sim panel, 1 adversarial audit. Then cluster deploy + re-run Sumner genome-wide/human at ~14x.
