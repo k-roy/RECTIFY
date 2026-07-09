@@ -102,7 +102,7 @@ _USE_REFCOL_INS: bool = os.environ.get("RECTIFY_REFCOL_INS", "") == "1"
 # exactly float-representable so MECH3 FP tolerance vanishes; MECH1 boundary is
 # handled by k in [0,L)). The shipped native re-aligner (motif-blind + guard) runs
 # table-free, so this covers it. Default False. See dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
-_USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "") == "1"
+_USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "1") != "0"  # DEFAULT ON (2026-07-09); RECTIFY_CONCAT_DP=0 forces legacy (A/B)
 
 # Flat (penalty_table=None) DP cost constants — the SINGLE source of truth shared by
 # _score_hp_anchored and the vectorized _all_suffix_scores fast path. Byte-identity of
