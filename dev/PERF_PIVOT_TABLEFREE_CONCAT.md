@@ -87,3 +87,9 @@ since both paths identical). FP: all costs dyadic -> every partial sum exactly r
 module constants (both fns reference them) so a future retune can't silently break identity. Re-verified post-
 refactor 5000/5000 exact + suites green. => 4 byte-identity proofs (8k/20k/5800-e2e/10k-adversarial) + audit HELD.
 READY to flip default + cluster-deploy (PI review).
+
+## PIVOT PREMISE CONFIRMED END-TO-END (2026-07-08, sbatch 33182801)
+Full-run flag-ON transfers reproduce flag-OFF EXACTLY on real data (table-free config): yeast Bguard 0.9884 ==
+0.9884, human Bguard 0.7914 == 0.7914. Confirms H2 (full-run is a genuine no-op without a penalty table) at the
+real-data pipeline level, not just scalar. Full-run correctly shelved; concat-DP is the right perf answer for the
+table-free re-placer.
