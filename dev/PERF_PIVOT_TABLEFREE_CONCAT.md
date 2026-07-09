@@ -93,3 +93,10 @@ Full-run flag-ON transfers reproduce flag-OFF EXACTLY on real data (table-free c
 0.9884, human Bguard 0.7914 == 0.7914. Confirms H2 (full-run is a genuine no-op without a penalty table) at the
 real-data pipeline level, not just scalar. Full-run correctly shelved; concat-DP is the right perf answer for the
 table-free re-placer.
+
+## CLUSTER CONFIRMATION (2026-07-09, sbatch 33235941) — byte-identical + faster on REAL data
+Real Sumner SMA_7.12 @2%, concat ON (default) vs OFF: every summary count IDENTICAL (raw_annot_canon 95482,
+ref_novel_noncanon 6990, revealed_novel_noncanon 1788, same reads md5) — the only "diff" was the cosmetic sample-
+name line. Byte-identity HOLDS end-to-end on real human data. Wall-clock 4:29 (off) -> 1:14 (on) = 3.6x on this
+tiny 2% job (fixed overhead: 3.2GB genome load + pool build dominates); refine-only carries the full 14x, so a
+full-depth run (refine-dominated) approaches 14x. Concat-DP PROMOTED + validated on cluster.
