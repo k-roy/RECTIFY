@@ -612,3 +612,16 @@ reads differ (same js/je+CIGAR). RESUME: read those logs. If both clean -> 1 adv
 cluster deploy + re-run Sumner genome-wide/human at 14x. If any mismatch -> the fast path has a bug, keep default off.
 ALSO: full-run transfers (33182801) confirm the table-free no-op premise (ssh was down; re-check flag-on==flag-off:
 yeast 0.9884 / human 0.7914). Full-run re-val items 4-8 MOOT for table-free (this DP is the correct perf answer).
+
+## TABLE-VS-FLAT ADVERSARIAL CHALLENGE (2026-07-08) — PI not convinced dropping the table is right
+Concat-DP perf DONE (committed e1ed90c, 4 byte-identity proofs + audit HELD, 14.3x, flag _USE_CONCAT_DP default OFF).
+PI CHALLENGE: is dropping the empirical DRS table from the re-placer (for FLAT hand-set costs sub=1.0/del_normal=1.0/
+del_hp=0.5/ins=1.25, NOT calibrated) justified? DISCONNECT FOUND: production (correct_command.py:746) uses the table
++ motif_blind=False (incumbent); table-free is the NATIVE re-aligner (motif-blind+guard) research config only. What
+was rejected is NARROW (arm-C penalty_score column; del_open log-odds delta — both over-shift by cheapening in-run
+indels). NOT tested: table for non-drift-axis costs (sub/mismatch); table+guard vs flat+guard; flat-cost placement
+ACCURACY vs calibrated; where the guard doesn't reach.
+IN FLIGHT: Workflow wny725kc1 (durable-output baked in) — 3 orthogonal adversarial angles (scope-of-rejection /
+flatcost-calibration / guard-blind-spots) + synthesis. RESUME: await notif; read dev/TABLE_VS_FLAT_*.md (durable).
+Key Q: does ANY table use / cost calibration beat flat+guard on ground-truth recovery/accuracy? If yes, "drop the
+table" is wrong. NOTE: ssh master DOWN (cluster confirmation of concat-DP transfers + deploy pending reopen).
