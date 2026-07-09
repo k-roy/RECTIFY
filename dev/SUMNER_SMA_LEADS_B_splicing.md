@@ -52,3 +52,20 @@ UBA1/PCBP2: no real junction within ~26bp -> pure fabrication). CRITICAL: this d
 trustworthy. The Snaptron short-read route is a POWERFUL, immediate, zero-download validation (per-lead definitive).
 NEXT native-aligner build: use Snaptron short-read support as the precision oracle to characterize + fix the
 non-HP drift (the sweep-B leads become the test set). COMPASS-mode (GSE108094 iPSC-MN FASTQ) = deeper confirmation.
+
+---
+## ⚠ CORRECTION (2026-07-09, PI): Snaptron is MOTIF-BIASED — retract the "fabrication" verdicts
+recount3/Snaptron are STAR-built (SJ.out.tab post-filters on canonical GT-AG). So "no short-read support" INHERITS
+the exact annotation/motif bias RECTIFY/COMPASS exists to overcome -> a REAL non-canonical junction STAR flattens
+shows as "no support" = FALSE NEGATIVE, not fabrication. This is the SAME circularity the Q2 vet flagged.
+RE-GRADE (confound hits verdicts unequally):
+ - Snaptron can CONFIRM real (positive match = trustworthy, not confounded): CACNA2D3 (1bp/side, 46386) STANDS.
+ - Snaptron CANNOT establish fabrication (negative = confounded): UBA1/PCBP2 "no support within 26bp" is
+   UNINFORMATIVE (could be a real STAR-flattened non-canonical junction). RETRACTED as fabrication evidence.
+ - SNRPN 6bp-from-205K-junction: drift is MORE robust (proximity argues shift) BUT could be a real 6bp alt-SS
+   STAR snaps to the dominant one = the exact flattening the tool targets. Not airtight.
+=> Snaptron = a ONE-WAY oracle (confirms real, can't prove fabricated). The unbiased test = COMPASS short-read
+   re-processing (motif-agnostic vs motif-agnostic) + the synthetic SPIKE-IN (true ground truth).
+NEXT: run RECTIFY/COMPASS short-read mode on real SMA FASTQ (GSE108094 iPSC-MN = Sumner sample-type match; SRP334251
+deep fibroblast), compare its motif-agnostic non-canonical junctions to the long-read re-placer's calls. COMPASS
+human infra partially built (compass_a549). See dev/COMPASS_SMA_SHORTREAD_PLAN.md.
