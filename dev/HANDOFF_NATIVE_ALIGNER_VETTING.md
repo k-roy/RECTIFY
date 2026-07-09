@@ -601,3 +601,14 @@ CHECKLIST STATUS:
  [ ] 7 yeast DRS transfer (Sherlock, task #17 redo flag-on).
  [ ] 8 human ONT DRS transfer (task #18 redo flag-on) — DECISIVE / most-likely-to-move.
 Flip default-ON ONLY after 2c/3/4 green + 7/8 no-regression. Each sub-agent brief MUST carry the durable-output policy.
+
+## TABLE-FREE CONCAT-DP PORTED (2026-07-08) — flag _USE_CONCAT_DP, verifying
+Ported the vectorized DP into _score_junction (junction_scoring.py), flag _USE_CONCAT_DP (env RECTIFY_CONCAT_DP,
+default OFF), gated on penalty_table is None. Helper _all_suffix_scores (query-suffix reversal DP). Replaces ~60
+per-k calls with 2 passes, 14.3x. Standalone proto 8000/8000 exact; suites 70 passed flag-ON / 46 flag-OFF.
+IN FLIGHT: (1) in-repo 20k byte-identity harness (bg b45skijqt, log scratchpad/port_verify.log) — expect 20000/20000.
+(2) end-to-end BAM diff (bg bn5ksjo6y, log scratchpad/e2e_diff.log) — refine mix_fair_out flag off vs on, expect 0
+reads differ (same js/je+CIGAR). RESUME: read those logs. If both clean -> 1 adversarial audit -> flip default +
+cluster deploy + re-run Sumner genome-wide/human at 14x. If any mismatch -> the fast path has a bug, keep default off.
+ALSO: full-run transfers (33182801) confirm the table-free no-op premise (ssh was down; re-check flag-on==flag-off:
+yeast 0.9884 / human 0.7914). Full-run re-val items 4-8 MOOT for table-free (this DP is the correct perf answer).
