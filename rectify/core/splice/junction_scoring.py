@@ -110,10 +110,10 @@ _USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "") == "1"
 # them here prevents a future retune of one path from silently breaking identity
 # (auditor recommendation, dev/CONCAT_DP_TABLEFREE_AUDIT.md). All dyadic (exactly
 # float-representable) — the basis of the 0-ULP guarantee.
-_FLAT_SUB: float = 1.0
-_FLAT_DEL_NORMAL: float = 1.0
-_FLAT_DEL_HP: float = 0.5
-_FLAT_INS: float = 1.25
+_FLAT_SUB: float = float(os.environ.get("RECTIFY_FLAT_SUB", "1.0"))
+_FLAT_DEL_NORMAL: float = float(os.environ.get("RECTIFY_FLAT_DEL_NORMAL", "1.0"))
+_FLAT_DEL_HP: float = float(os.environ.get("RECTIFY_FLAT_DEL_HP", "0.5"))
+_FLAT_INS: float = float(os.environ.get("RECTIFY_FLAT_INS", "1.25"))
 
 
 # ---------------------------------------------------------------------------
