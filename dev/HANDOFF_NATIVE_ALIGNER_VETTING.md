@@ -652,3 +652,12 @@ feasible at 14x, for RECURRENCE POWER on the SMA-specific leads chr6:7.29-7.30Mb
 fabrication cleaning; precision is the spike-in track's job). NOTE: concat-DP is byte-identical -> deeper run gives
 MORE reads/junction (better recurrence confidence), same per-read fabrication rate.
 Q3 (table-vs-flat) RESOLVED: drop table justified (3 angles) + flat costs a broad plateau (dev/FLAT_COST_SWEEP_RESULT.md).
+
+## DEEPER SUMNER RUN LAUNCHED (2026-07-09, sbatch 33236959) — 25% depth at 14x
+Concat-DP cluster-confirmed byte-identical on real Sumner (33235941). Deeper genome-wide Sumner: 25% = 5x prior
+depth, 15-sample array on larsms -> panel_deep/. RESUME: ssh sherlock 'wc -l /scratch/users/kevinroy/sumner_gw/
+.deep_done' (15 lines = done) -> ssh sherlock 'source ...conda; conda activate rectify; export PYTHONPATH=
+/scratch/users/kevinroy/rectify_guard; python /scratch/users/kevinroy/rectify_guard/sumner_gw_aggregate.py
+/scratch/users/kevinroy/sumner_gw/panel_deep'. Compare recurrence (>=3/>=5 samples, SMA-specific) to the 5% run —
+deeper should sharpen the SMA leads' recurrence confidence (fabrication is per-read random, doesn't recur).
+If a task fails: read deep-33236959_<task>.log, fix, resubmit that task.
