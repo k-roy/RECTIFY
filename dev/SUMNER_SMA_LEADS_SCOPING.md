@@ -85,3 +85,16 @@ alone barely separates SMA from control. The textbook "exon-7 skip up in SMA" ma
 of the SMN1 full-length (inclusion) contribution -> captured cleanly by SMN1 abundance down. So the pipeline SEES the
 defining biology; the naive per-SMN2 skip readout is correctly the weaker one. Anchor validates. Proceed to leads.
 NOTE: CNTL_GSB3939 is a low-coverage outlier (4 SMN2 / 17 SMN1 reads) — down-weight.
+
+## PROGRESS (2026-07-09)
+- GATES PASS. SWEEP A DONE -> dev/SUMNER_SMA_LEADS_A_geneDE.md + cluster sma_leads/sma_leads_A.md. Leads:
+  GTF2H2(5q13 SMA locus)/FST(follistatin)/TARS1-DT/protocadherins. CAVEAT: shallow (20 genes >=30 reads).
+- SWEEP B (differential splicing) READY: 25% junction run 33236959 = 13/15 done. NEXT: per-sample junction
+  counts (annotated + novel) -> paired SMA-vs-WT differential test, recurrence-filtered (keep novel/non-canonical
+  that recur; drop per-read fabrication). Anchor at SMN region.
+- SWEEP C (CPA/APA-shift) infra EXISTS: trim_polya/ per-sample 3'-ends + apa_concordance.py (atlas concordance) +
+  polyasite_atlas.GRCh38.96.bed.gz. NEXT (build): per-gene 3'UTR APA-shift (proximal<->distal poly-A usage) SMA vs
+  WT on the GOOD-RIN subset (4 SMA/2 CNTL) + internal-priming filter (genomic-A downstream). RECTIFY's specialty.
+- SWEEP D (cross-ref): overlay A/B/C hits with SMN-pathway / SMA-modifier (PLS3,NCALD) / NMD gene lists.
+- SYNTHESIS: short ranked table (gene·event·effect·direction·recurrence·validation-path·caveat), led by SMN anchor.
+  Deliverable -> /scratch/users/kevinroy/sumner_lab/sma_leads/. Express in FLAIR terms for Stephen where possible.
