@@ -89,6 +89,23 @@ _USE_REFCOL_INS: bool = os.environ.get("RECTIFY_REFCOL_INS", "") == "1"
 
 
 # ---------------------------------------------------------------------------
+# PERF FLAG — vectorized (concat) DP for the table-free re-placer
+# ---------------------------------------------------------------------------
+# _score_junction's bilateral k-sweep does up to 2L (~60) _score_hp_anchored DP
+# calls per candidate. When penalty_table is None the insertion cost is flat, so
+# the per-cut ins truncation that blocks the general concat DP does NOT exist —
+# ALL t1(k) and ALL t2(k) collapse into ONE vectorized DP pass each (the query-
+# suffix reversal trick in _all_suffix_scores), reproducing min_k[t1(k)+t2(k)]
+# EXACTLY. ~14x fewer cell-ops, verified byte-identical (8000/8000, table=None).
+# GATED strictly on penalty_table is None (the flat-ins path) — the ONLY config
+# where the fast path is provably identical (MECH2 per-cut ins vanishes; costs are
+# exactly float-representable so MECH3 FP tolerance vanishes; MECH1 boundary is
+# handled by k in [0,L)). The shipped native re-aligner (motif-blind + guard) runs
+# table-free, so this covers it. Default False. See dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
+_USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "") == "1"
+
+
+# ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
 Junction = Tuple[str, int, int]   # (chrom, intron_start, intron_end)
@@ -892,6 +909,63 @@ def _score_hp_anchored(
 
 
 # ---------------------------------------------------------------------------
+# Vectorized table-free DP: ALL query-suffix scores in one pass (perf fast path)
+# ---------------------------------------------------------------------------
+
+def _all_suffix_scores(
+    query: str,
+    ref: str,
+    del_costs: List[float],
+    ins: float = 1.25,
+    sub: float = 1.0,
+) -> List[float]:
+    """Return ``[score(query[k:], ref) for k in range(len(query)+1)]`` for the
+    flat-insertion (penalty_table=None) DP of :func:`_score_hp_anchored`, computed
+    in a SINGLE O(len(query)*len(ref)) pass instead of ``len(query)`` separate DPs.
+
+    ``score(query[k:], ref)`` = query-global (every base of ``query[k:]`` consumed)
+    + ref left end deletable at ``del_costs`` + ref right suffix free (``min`` over
+    the end column) — identical to ``_score_hp_anchored(query[k:], ref, ...)`` when
+    ``penalty_table`` is None so insertion cost is the flat ``ins``.
+
+    Reversal trick: ``score(query[k:], ref)`` over the reversed sequences becomes a
+    query-PREFIX-length-(L-k) alignment with the ref right end anchored (col R) and
+    the ref left prefix free, so ONE forward DP over ``reverse(query)`` vs
+    ``reverse(ref)`` exposes every ``k`` at row ``L-k``, column ``R``. Verified
+    byte-identical to the per-``k`` reference (dev/concat_dp_prototype.py, 0/3000).
+    """
+    L, R = len(query), len(ref)
+    out: List[float] = [None] * (L + 1)  # type: ignore[list-item]
+    if L == 0:
+        return [0.0]
+    if R == 0:
+        # all-insertion: score(query[k:], "") = (L-k)*ins
+        return [(L - k) * ins for k in range(L + 1)]
+    rq = query[::-1]
+    rr = ref[::-1]
+    dc = del_costs[::-1]  # del_costs[j] indexes ref[j]; reversed to align with rr
+    INF = float("inf")
+    # Row m=0: reverse(query)[:0] empty -> free ref left-prefix skip = 0 at every col.
+    prev = [0.0] * (R + 1)
+    out[L] = prev[R]  # k = L: empty query suffix -> score 0
+    for m in range(1, L + 1):
+        curr = [INF] * (R + 1)
+        curr[0] = m * ins  # m query bases inserted, no ref consumed
+        qm = rq[m - 1].upper()
+        for j in range(1, R + 1):
+            cost_sub = 0.0 if qm == rr[j - 1].upper() else sub
+            diag = prev[j - 1] + cost_sub
+            above = prev[j] + ins
+            left = curr[j - 1] + dc[j - 1]
+            curr[j] = diag if diag < above else above
+            if left < curr[j]:
+                curr[j] = left
+        prev = curr
+        out[L - m] = prev[R]  # score(query[(L-m):], ref)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Core scoring: bilateral anchor + rescue alignment
 # ---------------------------------------------------------------------------
 
@@ -986,6 +1060,27 @@ def _score_junction(
     )
     if profile is not None:
         profile.add_time('score_junction_del_costs', time.perf_counter() - _t_delcosts)
+
+    # PERF FAST PATH (table-free only): with penalty_table None the insertion cost is
+    # flat, so ALL t1(k) and ALL t2(k) collapse into two vectorized DP passes that
+    # reproduce min_k[t1(k)+t2(k)] EXACTLY (~14x fewer cell-ops). Strictly gated on
+    # penalty_table is None — the only config where flat ins makes the fast path
+    # provably byte-identical. See _USE_CONCAT_DP / dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
+    if _USE_CONCAT_DP and penalty_table is None:
+        t1_vec = _all_suffix_scores(rescue, ref_exon2_start, del_costs_fwd)
+        t2_vec = _all_suffix_scores(rescue[::-1], ref_intron_end_rev, del_costs_rev)
+        best = float("inf")
+        for k in range(L):
+            # t2(k) = score(reverse(rescue[:k]), ref_intron_end_rev)
+            #       = score(reverse(rescue)[L-k:], ...) = t2_vec[L-k]; t2(0)=0.
+            s = t1_vec[k] + (0.0 if k == 0 else t2_vec[L - k])
+            if s < best:
+                best = s
+                if best == 0.0:
+                    break
+        if profile is not None:
+            profile.add_time('score_junction_total', time.perf_counter() - _t_total)
+        return best, 0
 
     # Full-run (cut-independent) insertion costs — experimental. Precompute ONCE on
     # the FULL rescue window using each base's homopolymer run measured over the
