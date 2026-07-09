@@ -65,3 +65,13 @@ VERIFIED: score_junction_fast vs the REAL _score_junction, table=None, 8000/8000
 SPEEDUP: 400 candidate scorings 26.26ms/call -> 1.83ms/call = 14.3x; 2 DP passes/candidate vs ~60.
 REMAINING: port behind a flag (gate on penalty_table is None), byte-identity harness in-repo + tests, END-TO-END
 BAM diff on a sim panel, 1 adversarial audit. Then cluster deploy + re-run Sumner genome-wide/human at ~14x.
+
+## PORT VERIFIED — 3 independent byte-identity proofs (2026-07-08)
+Ported into _score_junction (flag _USE_CONCAT_DP, gated penalty_table is None):
+- Standalone prototype: 8000/8000 exact scalar.
+- In-repo 20k harness (default vs flag-on, table=None): 20000/20000 EXACT, 0 mismatches.
+- END-TO-END BAM diff (refine mix_fair_out flag off vs on): 0/5800 reads differ (same reference_start + CIGAR).
+- Suites: 70 passed flag-ON / 46 flag-OFF (refiner+guard+slide+false-junction+anchor-gate).
+- penalty-table path flag ON vs OFF: unchanged (fast path strictly gated on penalty_table is None).
+14.3x (26.26 -> 1.83 ms/call), 2 DP passes vs ~60. REMAINING: 1 adversarial audit (boundary/edge cases) -> flip
+default + cluster deploy + re-run Sumner genome-wide/human at 14x.
