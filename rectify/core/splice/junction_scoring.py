@@ -104,6 +104,17 @@ _USE_REFCOL_INS: bool = os.environ.get("RECTIFY_REFCOL_INS", "") == "1"
 # table-free, so this covers it. Default False. See dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
 _USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "") == "1"
 
+# Flat (penalty_table=None) DP cost constants — the SINGLE source of truth shared by
+# _score_hp_anchored and the vectorized _all_suffix_scores fast path. Byte-identity of
+# the _USE_CONCAT_DP fast path depends on both using IDENTICAL flat costs; factoring
+# them here prevents a future retune of one path from silently breaking identity
+# (auditor recommendation, dev/CONCAT_DP_TABLEFREE_AUDIT.md). All dyadic (exactly
+# float-representable) — the basis of the 0-ULP guarantee.
+_FLAT_SUB: float = 1.0
+_FLAT_DEL_NORMAL: float = 1.0
+_FLAT_DEL_HP: float = 0.5
+_FLAT_INS: float = 1.25
+
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -755,10 +766,10 @@ def _candidates_near(
 def _score_hp_anchored(
     query: str,
     ref: str,
-    sub: float = 1.0,
-    del_normal: float = 1.0,
-    del_hp: float = 0.5,
-    ins: float = 1.25,
+    sub: float = _FLAT_SUB,
+    del_normal: float = _FLAT_DEL_NORMAL,
+    del_hp: float = _FLAT_DEL_HP,
+    ins: float = _FLAT_INS,
     hp_min_run: int = 4,
     penalty_table: Optional[HpPenaltyTable] = None,
     genome_seq: Optional[str] = None,
@@ -916,8 +927,8 @@ def _all_suffix_scores(
     query: str,
     ref: str,
     del_costs: List[float],
-    ins: float = 1.25,
-    sub: float = 1.0,
+    ins: float = _FLAT_INS,
+    sub: float = _FLAT_SUB,
 ) -> List[float]:
     """Return ``[score(query[k:], ref) for k in range(len(query)+1)]`` for the
     flat-insertion (penalty_table=None) DP of :func:`_score_hp_anchored`, computed

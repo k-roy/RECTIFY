@@ -75,3 +75,15 @@ Ported into _score_junction (flag _USE_CONCAT_DP, gated penalty_table is None):
 - penalty-table path flag ON vs OFF: unchanged (fast path strictly gated on penalty_table is None).
 14.3x (26.26 -> 1.83 ms/call), 2 DP passes vs ~60. REMAINING: 1 adversarial audit (boundary/edge cases) -> flip
 default + cluster deploy + re-run Sumner genome-wide/human at 14x.
+
+## ADVERSARIAL AUDIT — HELD; exact-by-construction (2026-07-08)
+Single adversarial auditor (dev/CONCAT_DP_TABLEFREE_AUDIT.md): NO divergence. Attacked the del_costs-reversal
+weak spot the random harness misses (HP runs abutting intron_end, del_hp=0.5 entering the score; mid-k winners
+exercising t2_vec[L-k]) with 10k targeted cases + all edge classes (L=1, R=0 both flanks, truncated windows,
+N/lowercase, all-HP) — all EXACT. Gating CORRECT (flag ON + penalty_table present == legacy; only fires when
+RECTIFY_CONCAT_DP==1 AND table is None -> cannot corrupt production table path; per-worker flag mismatch is safe
+since both paths identical). FP: all costs dyadic -> every partial sum exactly representable -> 0 ULP GUARANTEED
+(exact, not merely observed). Fixed the one flagged hazard: factored _FLAT_INS/_FLAT_SUB/_FLAT_DEL_* into shared
+module constants (both fns reference them) so a future retune can't silently break identity. Re-verified post-
+refactor 5000/5000 exact + suites green. => 4 byte-identity proofs (8k/20k/5800-e2e/10k-adversarial) + audit HELD.
+READY to flip default + cluster-deploy (PI review).
