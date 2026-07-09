@@ -625,3 +625,17 @@ IN FLIGHT: Workflow wny725kc1 (durable-output baked in) — 3 orthogonal adversa
 flatcost-calibration / guard-blind-spots) + synthesis. RESUME: await notif; read dev/TABLE_VS_FLAT_*.md (durable).
 Key Q: does ANY table use / cost calibration beat flat+guard on ground-truth recovery/accuracy? If yes, "drop the
 table" is wrong. NOTE: ssh master DOWN (cluster confirmation of concat-DP transfers + deploy pending reopen).
+
+## TABLE-VS-FLAT RESOLVED + flat-cost sweep in flight (2026-07-08)
+Adversarial 3-angle attack (wzhvi1its, survived 2 API outages via durability): DROP the table = JUSTIFIED
+(measured). (1) no sub row -> table can't touch mismatch; (2) HP axis = arm-C drift-grease, guard owns it;
+(3) STR-del (only guard-blind table axis) RANK-EQUIVALENT to flat (compresses margins, never flips argmin winner),
+NET-NEGATIVE (=rejected arm-C heuristic, greases 2.3x>forbids), NEAR-EMPTY (0.29% real Scer junctions). Verdict +
+records: dev/TABLE_VS_FLAT_*.md. Flat+guard already validated real DRS (#17) + human (#18).
+IN FLIGHT: flat-cost optimality sweep (bg bb9je2wn0) — the PI's 'are 0.5/1.25 right'. 7 refines (del_hp x ins around
+0.5/1.25) on mix_fair_out guard-ON, D0/D2 recovery vs arm-B. Made flat costs env-tunable (RECTIFY_FLAT_DEL_HP/INS,
+committed; defaults preserved). RESUME: read scratchpad task bb9je2wn0 / the printed table. Plateau near (0.5,1.25)
+-> costs validated as MEASURED (not just ordinal); peak elsewhere -> flat under-tuned (still not a table argument).
+PERF: concat-DP DONE (14.3x byte-identical, flag _USE_CONCAT_DP default OFF, committed e1ed90c); full-run transfers
+confirmed the table-free no-op end-to-end. ssh back. NEXT after sweep: PI decision on flipping _USE_CONCAT_DP default
++ cluster-deploy + re-run Sumner genome-wide at 14x.
