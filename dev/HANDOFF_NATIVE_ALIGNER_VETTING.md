@@ -678,3 +678,17 @@ sma_recall/logs/bbmap-33531828_<task>.log, resubmit single task. Poll: bhla0obz0
 NEXT BUILD (PI to sequence): microhomology-drift guard — generalize the HP-guard; flag-gated, byte-identical off,
 adversarial-verify like the concat-DP. Design independent of the recall number; recall decides if discovery benefit
 worth preserving. Also open: 2 SMA samples missing from deep run (13/15); sweep-D synthesis; SMA lead table for Stephen.
+
+## MICROHOMOLOGY-DRIFT GUARD BUILT + VALIDATED (2026-07-11) — the general drift control
+The fix for the non-HP drift the spike-in/Sumner/Snaptron exposed. Committed:
+ - Detector _move_microhomology + _frac_match (junction_refiner.py); microhom_drift_margin/microhom_threshold
+   threaded through all 4 refine fns; byte-identical off. Geometry: acceptor=downstream tandem repeat, donor=upstream.
+ - GROUND-TRUTH: fab FDR 1.31%(arm-B)->0.05%(m=3)->0.00%(m=8); R3 discovery PRESERVED (0.284->0.284, b=0/c=0);
+   canonical IMPROVED (+0.010). Zero discovery cost (HP-guard bar). Operating point m=8/threshold=0.5.
+ - 14 regression tests (tests/test_microhom_drift_guard.py); all refiner+guard suites 64 passed.
+ - Design/results: dev/MICROHOMOLOGY_DRIFT_GUARD_DESIGN.md.
+REMAINING before ship: (1) COMPASS real-data threshold confirmation (IN FLIGHT, see below); (2) adversarial audit
+(byte-identity + no-discovery-loss, mirror concat-DP); (3) flip default / ship alongside HP-guard.
+COMPASS RECALL still in flight (BBMap 33531828 ~1hr/task, 2-at-a-time, 4 tasks -> hours out; LR side done 15/13).
+RESUME: when $SP=/scratch/users/kevinroy/sma_recall has 4 junc/*.bbmap.junc.tsv -> `python $SP/recall_analyze.py
+--min-split 3 --min-samples 2` (4 sections incl sweep-B lead support = the non-circular real-data check + recall).
