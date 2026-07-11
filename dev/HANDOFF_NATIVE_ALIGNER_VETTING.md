@@ -661,3 +661,20 @@ depth, 15-sample array on larsms -> panel_deep/. RESUME: ssh sherlock 'wc -l /sc
 /scratch/users/kevinroy/sumner_gw/panel_deep'. Compare recurrence (>=3/>=5 samples, SMA-specific) to the 5% run —
 deeper should sharpen the SMA leads' recurrence confidence (fabrication is per-read random, doesn't recur).
 If a task fails: read deep-33236959_<task>.log, fix, resubmit that task.
+
+## SMA RECALL + BUILD STATE (2026-07-11)
+SPIKE-IN DONE (#20, committed): motif-blind re-placer non-HP drift FDR ~1.2% (pool-dependent, microhomology-gated),
+HP-guard catches ZERO; recall-vs-minimap2 NOT testable in-sim (pbsim under-disperses). SWEEPS A/B/C done (leads),
+RNA-mods scoped (#23). Snaptron CORRECTED as circular (confirm-only).
+DRIFT MECHANISM (explained to PI): motif-blindness REMOVES the specificity prior; at microhomology-rich pool-dense
+loci (paralog/high-expr: UBA1/SNRPN/ribosomal) the true-vs-drifted boundary is a near-tie ONT error tips wrong.
+HP = maximal microhomology -> FIX = generalize _hp_run_across (HP-drift guard) to a MICROHOMOLOGY-drift guard.
+IN FLIGHT: COMPASS RECALL (real-data, motif-agnostic, resolves Snaptron circularity). Agent set up + caught an
+anchor-bias bug (fixed). RESUME (self-contained in dev/COMPASS_RECALL_RESULT.md): when BBMap 33531828 (4 tasks) +
+LR-redo 33532684 both COMPLETE (need 4 junc/*.bbmap.junc.tsv + 13 lines .lrjunc_done in /scratch/users/kevinroy/
+sma_recall/), run `python /scratch/users/kevinroy/sma_recall/recall_analyze.py --min-split 3 --min-samples 2` ->
+4 sections (truth set / recall raw-mm2-vs-arm-B / reverse sweep-B lead support). If a BBMap task failed: tail
+sma_recall/logs/bbmap-33531828_<task>.log, resubmit single task. Poll: bhla0obz0.
+NEXT BUILD (PI to sequence): microhomology-drift guard — generalize the HP-guard; flag-gated, byte-identical off,
+adversarial-verify like the concat-DP. Design independent of the recall number; recall decides if discovery benefit
+worth preserving. Also open: 2 SMA samples missing from deep run (13/15); sweep-D synthesis; SMA lead table for Stephen.
