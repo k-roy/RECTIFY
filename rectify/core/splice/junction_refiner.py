@@ -514,24 +514,21 @@ def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
     preserving motif-blind discovery.  Returns the max over the moved boundaries."""
     n = len(seq)
     best = 0.0
-    # Acceptor shift: intron|exon2 boundary ne -> je.
-    ka = je - ne
-    if ka > 0:
-        if je + ka <= n:
-            best = max(best, _frac_match(seq[ne:je], seq[je:je + ka]))
-    elif ka < 0:
-        k = -ka
-        if je - k >= 0:
-            best = max(best, _frac_match(seq[je:ne], seq[je - k:je]))
-    # Donor shift: exon1|intron boundary ns -> js (symmetric on the exon1 side).
-    kd = js - ns
-    if kd < 0:
-        k = -kd
-        if js - k >= 0:
-            best = max(best, _frac_match(seq[js:ns], seq[js - k:js]))
-    elif kd > 0:
-        if js + kd <= n:
-            best = max(best, _frac_match(seq[ns:js], seq[js:js + kd]))
+    # Acceptor shift (intron|exon2): a k-bp slide between the two candidate acceptors is
+    # enabled by a DOWNSTREAM tandem repeat seq[lo:hi] ~ seq[hi:hi+k] (the read's exon2
+    # start k-mer repeats at the drift distance).  Direction-independent in lo/hi.
+    if je != ne:
+        lo, hi = (ne, je) if ne < je else (je, ne)
+        k = hi - lo
+        if hi + k <= n:
+            best = max(best, _frac_match(seq[lo:hi], seq[hi:hi + k]))
+    # Donor shift (exon1|intron): enabled by an UPSTREAM tandem repeat
+    # seq[lo-k:lo] ~ seq[lo:hi] (the read's exon1 end k-mer repeats upstream).
+    if js != ns:
+        lo, hi = (ns, js) if ns < js else (js, ns)
+        k = hi - lo
+        if lo - k >= 0:
+            best = max(best, _frac_match(seq[lo - k:lo], seq[lo:hi]))
     return best
 
 
