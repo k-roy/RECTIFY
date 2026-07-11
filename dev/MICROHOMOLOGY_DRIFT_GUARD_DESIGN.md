@@ -44,3 +44,19 @@ CAVEAT: small n (FAB 5, R3 2); must re-validate the threshold on REAL SMA drift 
    discovery panel -> is recall preserved (like the HP-guard's zero-discovery-cost)? Tune mh_threshold + margin.
 4. REAL-DATA: test the detector's threshold on the COMPASS-labeled SMA drift (real fabrication vs real discovery).
 5. Adversarial audit (byte-identity + does it kill any real discovery) before flipping default.
+
+## ★★★ PHASE 2-3 VALIDATION (2026-07-11) — DECISIVE, CLEAN WIN
+Implemented (junction_refiner.py, committed): _move_microhomology detector + microhom_drift_margin/microhom_threshold
+threaded through all 4 refine fns, byte-identical when margin=0 (refiner+guard suites 50 passed).
+GROUND-TRUTH VALIDATION (spike-in fab panel + R3 discovery panel; per-read truth, seed excluded):
+| arm | fabrication FDR (canon->drift) | R3 discovery (HP cell) | canonical (plain) |
+| arm-B no-guard | 1.31% (24 reads; == spike-in ~1.2%) | 0.284 | 0.931 |
+| microhom m=3   | 0.05% (1 read; 96% cut) | 0.284 PRESERVED (b=0,c=0) | 0.941 (+0.010, improved) |
+| microhom m=8   | 0.00% (ELIMINATED) | 0.284 PRESERVED | 0.941 (improved) |
+=> the general non-HP drift the spike-in/Sumner/Snaptron exposed is ELIMINATED, discovery preserved EXACTLY,
+canonical slightly IMPROVED (guard also prevents spurious canonical drift). Zero discovery cost — the HP-guard bar.
+Operating point: microhom_drift_margin=8.0, microhom_threshold=0.5 (full elimination, zero discovery cost).
+Measurement note: the initial 5.7%->4.4% was a MEASUREMENT ARTIFACT (counted seed reads legitimately at drift as
+fabrication); per-read-truth (canonical-origin reads moved to drift) is the correct FDR -> 1.31%->0%.
+REMAINING: regression tests (mirror test_hp_drift_guard); adversarial audit (byte-identity + no-discovery-loss);
+COMPASS real-data threshold confirmation (in flight); then flip default / ship alongside the HP-guard.
