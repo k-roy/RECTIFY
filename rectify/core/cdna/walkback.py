@@ -80,11 +80,16 @@ def _find_adapter_anchor_pos(seq: str, orient: str) -> Optional[int]:
         win = seq[off:]
         r = edlib.align(ANCHOR_FWD, win, mode="HW", task="locations", k=ANCHOR_MAX_EDIT)
         if r["editDistance"] == -1 or not r["locations"]: return None
-        return off + r["locations"][-1][0]
+        # edlib HW/locations can return a location whose START is None (end found but
+        # start not localizable); treat as "adapter anchor not confidently placed" and
+        # fall back to unanchored poly-A detection in the caller (pretrim_consensus).
+        start = r["locations"][-1][0]
+        return None if start is None else off + start
     win = seq[:ANCHOR_SEARCH_WIN]
     r = edlib.align(ANCHOR_RC, win, mode="HW", task="locations", k=ANCHOR_MAX_EDIT)
     if r["editDistance"] == -1 or not r["locations"]: return None
-    return r["locations"][0][0]
+    start = r["locations"][0][0]
+    return None if start is None else start
 
 
 def walk_back_anchor_and_tail(read: pysam.AlignedSegment,
