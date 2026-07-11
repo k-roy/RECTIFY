@@ -68,6 +68,30 @@ class TestUmiComponentsDirectional:
         sizes = sorted(len(c) for c in comps)
         assert sizes == [10, 11]
 
+    def test_max_edit_1_fast_path_hamming(self):
+        """max_edit=1 uses the O(n·L) masked-key (Hamming-1) fast path, which is
+        provably identical to all-pairs Levenshtein for fixed-length UMIs (a single
+        indel changes the length). A count-10 parent absorbs its Hamming-1 variant;
+        a Hamming≥2 UMI stays a separate cluster."""
+        parent   = "TTACGATTAACGTTCACCTTAACGTTT"   # 27 nt
+        child_h1 = "TTACGATTAACGTTCACCTTAACGTTA"   # 1 substitution (pos 26)
+        far      = "AACGTTTAACGTTCACCTTAACGTGGG"   # many subs from parent
+        umis = [parent] * 10 + [child_h1] + [far] * 4
+        comps = umi_components_directional(umis, max_edit=1)
+        assert len(comps) == 2
+        assert sorted(len(c) for c in comps) == [4, 11]  # parent+child=11, far=4
+
+    def test_max_edit_1_all_singletons_no_spurious_merge(self):
+        """Large all-singleton bucket at max_edit=1: distinct (Hamming>1) UMIs must
+        stay separate — guards the scalable fast path against over-merging at depth
+        (the PGK1-CPA-pileup scenario that motivated the O(n²)->O(n·L) rewrite)."""
+        import random
+        rng = random.Random(7)
+        umis = list(dict.fromkeys(
+            "".join(rng.choice("ACGT") for _ in range(27)) for _ in range(3000)))
+        comps = umi_components_directional(umis, max_edit=1)
+        assert len(comps) == len(umis)  # random 27-mers ~never Hamming-1 → all singletons
+
 
 # ---------------------------------------------------------------------------
 # Position-directional clustering (v1.17)

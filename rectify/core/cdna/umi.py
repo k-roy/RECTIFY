@@ -87,23 +87,67 @@ def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]
 
     # Order unique UMIs by count desc (ties broken by UMI lex order for determinism).
     order_desc = sorted(range(n_uniq), key=lambda i: (-counts[i], unique[i]))
+    pos_in_order = [0] * n_uniq
+    for rank, idx in enumerate(order_desc):
+        pos_in_order[idx] = rank
 
-    # Build adjacency: for each parent a, find children b later in order_desc whose
-    # count satisfies the 2× rule, then Lev-check.
+    # --- Candidate-neighbour finding ---------------------------------------
+    # The directional edge predicate (below) is:  a→b iff dist(a,b) ≤ max_edit
+    # AND count(a) ≥ 2·count(b) − 1. The naive way to find the dist-≤-max_edit
+    # candidates is all-pairs Levenshtein — O(n_uniq²), which HANGS on ultra-deep
+    # single-position buckets (e.g. PGK1's ~21k-read CPA pileup, ~4.6e8 pairs).
+    #
+    # FAST PATH (max_edit == 1 AND all UNIQUE umis the same length): for equal-length
+    # strings Levenshtein-1 ⟺ Hamming-1 (a single insertion/deletion changes the
+    # length, so the only length-preserving edit is a substitution). Hamming-≤1
+    # pairs are found in O(n_uniq · L) via masked-key hashing: two umis that agree
+    # everywhere except (at most) one position share a "position-p-masked" key.
+    # This is PROVABLY IDENTICAL to the all-pairs Levenshtein(score_cutoff=1) result,
+    # just without the quadratic blow-up. cdna Type-1 umis are always exactly
+    # UMI_LEN chars (see extract_read_info), so this path is the norm.
+    uniq_lens = {len(u) for u in unique}
+    fast_hamming = (max_edit == 1 and len(uniq_lens) == 1 and next(iter(uniq_lens)) >= 1)
+
+    candidate_neighbours: Dict[int, set] = defaultdict(set)
+    if fast_hamming:
+        L = next(iter(uniq_lens))
+        for p in range(L):
+            key_buckets: Dict[str, List[int]] = defaultdict(list)
+            for idx, u in enumerate(unique):
+                key_buckets[u[:p] + u[p + 1:]].append(idx)
+            for group in key_buckets.values():
+                if len(group) > 1:
+                    for a in group:
+                        for b in group:
+                            if a != b:
+                                candidate_neighbours[a].add(b)
+
+    # Build adjacency: directed edge a→b for b later in order_desc (count(b) ≤
+    # count(a)) whose count satisfies the 2× rule (count(b) ≤ (count(a)+1)//2) and
+    # whose distance to a is ≤ max_edit.
     adj: Dict[int, List[int]] = defaultdict(list)
     for ai_pos, a in enumerate(order_desc):
         ca = counts[a]
         max_cb = (ca + 1) // 2  # need cb ≤ this for 2× rule
-        # counts in order_desc are non-increasing; skip until first b with cb ≤ max_cb.
-        bi_start = ai_pos + 1
-        while bi_start < n_uniq and counts[order_desc[bi_start]] > max_cb:
-            bi_start += 1
         ua = unique[a]
-        for bi_pos in range(bi_start, n_uniq):
-            b = order_desc[bi_pos]
-            d = Levenshtein.distance(ua, unique[b], score_cutoff=max_edit)
-            if d <= max_edit:
+        if fast_hamming:
+            # Only Hamming-1 candidates can be children; filter to later-in-order +
+            # 2× rule. Sort by order rank for deterministic adjacency.
+            cand = [b for b in candidate_neighbours[a]
+                    if pos_in_order[b] > ai_pos and counts[b] <= max_cb]
+            for b in sorted(cand, key=lambda b: pos_in_order[b]):
                 adj[a].append(b)
+        else:
+            # Fallback (max_edit > 1 or mixed-length umis): all-pairs Levenshtein.
+            # counts in order_desc are non-increasing; skip until first b with cb ≤ max_cb.
+            bi_start = ai_pos + 1
+            while bi_start < n_uniq and counts[order_desc[bi_start]] > max_cb:
+                bi_start += 1
+            for bi_pos in range(bi_start, n_uniq):
+                b = order_desc[bi_pos]
+                d = Levenshtein.distance(ua, unique[b], score_cutoff=max_edit)
+                if d <= max_edit:
+                    adj[a].append(b)
 
     # BFS from each unvisited highest-count root.
     visited: set = set()
