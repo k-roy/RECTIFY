@@ -488,6 +488,53 @@ def _hp_run_across(seq: str, pos: int, min_run: int) -> int:
     return run if run >= min_run else 0
 
 
+def _frac_match(a: str, b: str) -> float:
+    """Fraction of positions where equal-length strings *a* and *b* agree (0.0 if
+    empty or mismatched length)."""
+    if not a or len(a) != len(b):
+        return 0.0
+    return sum(1 for x, y in zip(a, b) if x == y) / len(a)
+
+
+def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
+    """Microhomology-drift-guard detector (the general, non-homopolymer analog of
+    ``_hp_run_across``).
+
+    For a candidate junction move ``(ns, ne) -> (js, je)`` that shifts the donor
+    and/or acceptor by ``k`` bp, return the FRACTION of the shifted ``k``-mer that
+    REPEATS at the drift distance — i.e. how much local microhomology (a near-tandem
+    direct repeat) makes the ``k``-bp boundary drift near-tied by evidence.
+
+    Mechanism (spike-in-confirmed): a canonical junction fabricates a false
+    NON-canonical junction only when the ``k`` bases that flip between exon and intron
+    near-match the ``k`` bases at the drift distance (so ONT error tips the near-tie).
+    A homopolymer is the MAXIMAL case (frac -> 1.0); this catches the PARTIAL-repeat
+    non-HP drift the HP-guard misses.  A move to a genuine sequence transition (a real
+    non-canonical splice site) has LOW microhomology (~0.25 random) and is untouched,
+    preserving motif-blind discovery.  Returns the max over the moved boundaries."""
+    n = len(seq)
+    best = 0.0
+    # Acceptor shift: intron|exon2 boundary ne -> je.
+    ka = je - ne
+    if ka > 0:
+        if je + ka <= n:
+            best = max(best, _frac_match(seq[ne:je], seq[je:je + ka]))
+    elif ka < 0:
+        k = -ka
+        if je - k >= 0:
+            best = max(best, _frac_match(seq[je:ne], seq[je - k:je]))
+    # Donor shift: exon1|intron boundary ns -> js (symmetric on the exon1 side).
+    kd = js - ns
+    if kd < 0:
+        k = -kd
+        if js - k >= 0:
+            best = max(best, _frac_match(seq[js:ns], seq[js - k:js]))
+    elif kd > 0:
+        if js + kd <= n:
+            best = max(best, _frac_match(seq[ns:js], seq[js:js + kd]))
+    return best
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -508,6 +555,8 @@ def refine_read_junctions(
     hold_margin: float = 0.0,
     hp_drift_margin: float = 0.0,
     hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
@@ -734,6 +783,17 @@ def refine_read_junctions(
                 eff_margin += hp_drift_margin
                 if profile is not None:
                     profile.inc('hp_drift_flagged')
+        #   * microhom_drift_margin — the GENERAL analog of hp_drift_margin: a move
+        #     whose boundary shift sits in a local MICROHOMOLOGY context (a near-tandem
+        #     repeat at the drift distance, microhomology fraction >= microhom_threshold)
+        #     is the non-homopolymer drift that fabricates false non-canonical junctions
+        #     (spike-in-confirmed, HP-guard-blind). A move to a genuine transition (low
+        #     microhomology, a real non-canonical site) is untouched. Default 0.0 → off.
+        if moves and microhom_drift_margin > 0.0:
+            if _move_microhomology(genome_seq, ns, ne, new_js, new_je) >= microhom_threshold:
+                eff_margin += microhom_drift_margin
+                if profile is not None:
+                    profile.inc('microhom_drift_flagged')
         if moves and eff_margin > 0.0 and incumbent_score is not None:
             if best_score_cmp > incumbent_score - eff_margin:
                 moves = False
@@ -1171,6 +1231,8 @@ def _run_sequential(
     hold_margin: float = 0.0,
     hp_drift_margin: float = 0.0,
     hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
@@ -1221,6 +1283,8 @@ def _run_sequential(
                     hold_margin=hold_margin,
                     hp_drift_margin=hp_drift_margin,
                     hp_drift_min_run=hp_drift_min_run,
+                    microhom_drift_margin=microhom_drift_margin,
+                    microhom_threshold=microhom_threshold,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1266,6 +1330,8 @@ def _run_parallel(
     hold_margin: float = 0.0,
     hp_drift_margin: float = 0.0,
     hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
@@ -1318,6 +1384,8 @@ def _run_parallel(
         'hold_margin': hold_margin,
         'hp_drift_margin': hp_drift_margin,
         'hp_drift_min_run': hp_drift_min_run,
+        'microhom_drift_margin': microhom_drift_margin,
+        'microhom_threshold': microhom_threshold,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
     _WORKER_POOL_STATE['profile_enabled'] = profile is not None
@@ -1490,6 +1558,8 @@ def refine_bam_junctions(
     hold_margin: float = 0.0,
     hp_drift_margin: float = 0.0,
     hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1591,6 +1661,8 @@ def refine_bam_junctions(
             penalty_table_set=penalty_table_set, motif_blind=motif_blind,
             hold_margin=hold_margin, hp_drift_margin=hp_drift_margin,
             hp_drift_min_run=hp_drift_min_run, profile=profile,
+            microhom_drift_margin=microhom_drift_margin,
+            microhom_threshold=microhom_threshold,
         )
     else:
         _run_sequential(
@@ -1601,6 +1673,8 @@ def refine_bam_junctions(
             penalty_table_set=penalty_table_set, motif_blind=motif_blind,
             hold_margin=hold_margin, hp_drift_margin=hp_drift_margin,
             hp_drift_min_run=hp_drift_min_run, profile=profile,
+            microhom_drift_margin=microhom_drift_margin,
+            microhom_threshold=microhom_threshold,
         )
 
     if sort_and_index:
