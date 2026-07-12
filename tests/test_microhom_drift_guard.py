@@ -26,7 +26,7 @@ RECTIFY_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice.junction_refiner import (
-    _frac_match, _move_microhomology, refine_read_junctions,
+    _frac_match, _move_microhomology, _effective_veto_margin, refine_read_junctions,
 )
 from rectify.core.splice.junction_scoring import _D, _EQ, _N
 
@@ -179,3 +179,54 @@ def test_guard_margin_is_microhomology_specific():
     assert _move_microhomology(GENOME, D, A, D, A + 6) >= 0.5       # drift: guarded
     trans = A + 12                                                   # past the repeat, in GATC tail
     assert _move_microhomology(GENOME, D, A, D, trans) < 0.5         # transition: spared
+
+
+# ---------------------------------------------------------------------------
+# 4. _effective_veto_margin — the read-evidence near-tie cap on the read-blind
+#    drift margins (bounds the discovery-loss the audit flagged; MICROHOM_AUDIT_SYNTHESIS)
+# ---------------------------------------------------------------------------
+class TestEffectiveVetoMargin:
+    def test_cap_disabled_is_identity(self):
+        # cap <= 0.0 → eff_margin returned unchanged (byte-identical to pre-cap veto)
+        assert _effective_veto_margin(hold_margin=0.0, eff_margin=8.0, drift_near_tie_cap=0.0) == 8.0
+        assert _effective_veto_margin(hold_margin=1.0, eff_margin=9.0, drift_near_tie_cap=-1.0) == 9.0
+
+    def test_no_drift_added_cap_is_noop(self):
+        # eff_margin == hold_margin (no hp/microhom drift flagged) → cap irrelevant,
+        # hold_margin (read-agnostic) is never capped even with a tiny cap
+        assert _effective_veto_margin(hold_margin=2.0, eff_margin=2.0, drift_near_tie_cap=1.0) == 2.0
+
+    def test_cap_bounds_the_drift_margin(self):
+        # hold < cap < eff → veto margin is capped at `cap`
+        assert _effective_veto_margin(hold_margin=0.0, eff_margin=8.0, drift_near_tie_cap=2.0) == 2.0
+        assert _effective_veto_margin(hold_margin=1.0, eff_margin=8.0, drift_near_tie_cap=3.0) == 3.0
+
+    def test_cap_above_eff_is_inactive(self):
+        # cap >= eff_margin → the cap never binds, eff_margin returned unchanged
+        assert _effective_veto_margin(hold_margin=0.0, eff_margin=3.0, drift_near_tie_cap=8.0) == 3.0
+
+    def test_hold_margin_is_never_capped(self):
+        # THE interaction the audit flags: a cap BELOW hold_margin must NOT drop the
+        # veto below hold_margin — hold (read-agnostic blunt prior) is a floor.
+        assert _effective_veto_margin(hold_margin=4.0, eff_margin=8.0, drift_near_tie_cap=2.0) == 4.0
+        # formula check across the regime: max(hold, min(eff, cap))
+        assert _effective_veto_margin(hold_margin=4.0, eff_margin=8.0, drift_near_tie_cap=6.0) == 6.0
+
+
+def test_near_tie_cap_byte_identical_when_disabled():
+    """drift_near_tie_cap=0.0 (default) must not change the refiner's output vs omitting
+    it — the cap is inert at default (independent of any drift margin setting)."""
+    cigar = [(_EQ, EXON1_LEN), (_N, len(INTRON)), (_EQ, 18)]
+    pool = {CHROM: [(D, A), (D, A + 6)]}
+
+    def acc(**kw):
+        read = _make_read(cigar, LPAD)
+        reps = refine_read_junctions(read, pool, set(), GENOME, "+", motif_blind=True, **kw)
+        a = A
+        for _i, ons, one, njs, nje in reps:
+            if ons == D and one == A:
+                a = nje
+        return a
+
+    # with the microhom guard on, cap=0.0 == omitting cap == same veto
+    assert acc(microhom_drift_margin=8.0) == acc(microhom_drift_margin=8.0, drift_near_tie_cap=0.0)

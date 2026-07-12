@@ -532,6 +532,32 @@ def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
     return best
 
 
+def _effective_veto_margin(hold_margin: float, eff_margin: float,
+                           drift_near_tie_cap: float) -> float:
+    """Effective move-veto margin after the read-evidence near-tie cap.
+
+    ``eff_margin`` = ``hold_margin`` + drift-flagged additions (hp_drift + microhom_drift).
+    The drift additions are decided from GENOMIC context ONLY (``_move_microhomology`` /
+    ``_hp_run_across`` are read-blind), so on their own they can veto a move the READ
+    strongly supports (a real cryptic the read distinguishes, delta_improve > 0).  When
+    ``drift_near_tie_cap`` > 0, cap the DRIFT portion so the veto fires only within a
+    near-tie band, while NEVER capping ``hold_margin`` (the read-agnostic blunt prior):
+
+        veto_margin = max(hold_margin, min(eff_margin, drift_near_tie_cap))
+
+    Consequence: a move with ``delta_improve >= drift_near_tie_cap`` is never drift-vetoed,
+    bounding the read-blind discovery-loss.  HONEST SCOPE (see MICROHOM_AUDIT_SYNTHESIS.md):
+    delta_improve, eff_margin and the cap share the SAME score axis, so the cap BOUNDS —
+    it does not add a discriminating signal inside the ``(0, cap)`` near-tie band, where
+    real cryptics and fabricated drift still overlap.  Cap disabled (<= 0.0) OR no drift
+    margin added (eff_margin == hold_margin) → returns ``eff_margin`` unchanged
+    (byte-identical to the pre-cap veto).
+    """
+    if drift_near_tie_cap > 0.0 and eff_margin > hold_margin:
+        return max(hold_margin, min(eff_margin, drift_near_tie_cap))
+    return eff_margin
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -554,6 +580,7 @@ def refine_read_junctions(
     hp_drift_min_run: int = 4,
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
@@ -791,8 +818,24 @@ def refine_read_junctions(
                 eff_margin += microhom_drift_margin
                 if profile is not None:
                     profile.inc('microhom_drift_flagged')
+        #   * drift_near_tie_cap — a READ-EVIDENCE ceiling on the read-BLIND drift
+        #     margins (hp_drift + microhom_drift are decided from GENOMIC context only,
+        #     so on their own they can veto a move the READ strongly supports). When
+        #     > 0.0, cap the drift-added portion of eff_margin so the drift veto fires
+        #     only within a near-tie band: veto_margin = max(hold_margin,
+        #     min(eff_margin, drift_near_tie_cap)). hold_margin (read-agnostic blunt
+        #     prior) is NEVER capped. NOTE (honest framing — see MICROHOM_AUDIT_SYNTHESIS):
+        #     delta_improve, eff_margin and the cap all live on the SAME scalar (score)
+        #     axis, so the cap BOUNDS the read-blind discovery-loss (a move with
+        #     delta_improve >= cap is never drift-vetoed) but does NOT add a new
+        #     discriminating signal inside the (0, cap) band. Its value is STRUCTURAL:
+        #     it decouples hold_margin from the drift margins and makes the discovery-loss
+        #     ceiling explicit + tunable. Default 0.0 → cap disabled → byte-identical.
         if moves and eff_margin > 0.0 and incumbent_score is not None:
-            if best_score_cmp > incumbent_score - eff_margin:
+            veto_margin = _effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)
+            if profile is not None and veto_margin < eff_margin:
+                profile.inc('near_tie_cap_applied')
+            if best_score_cmp > incumbent_score - veto_margin:
                 moves = False
                 if profile is not None:
                     profile.inc('move_margin_vetoes')
@@ -1230,6 +1273,7 @@ def _run_sequential(
     hp_drift_min_run: int = 4,
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
@@ -1282,6 +1326,7 @@ def _run_sequential(
                     hp_drift_min_run=hp_drift_min_run,
                     microhom_drift_margin=microhom_drift_margin,
                     microhom_threshold=microhom_threshold,
+                    drift_near_tie_cap=drift_near_tie_cap,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1329,6 +1374,7 @@ def _run_parallel(
     hp_drift_min_run: int = 4,
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
@@ -1383,6 +1429,7 @@ def _run_parallel(
         'hp_drift_min_run': hp_drift_min_run,
         'microhom_drift_margin': microhom_drift_margin,
         'microhom_threshold': microhom_threshold,
+        'drift_near_tie_cap': drift_near_tie_cap,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
     _WORKER_POOL_STATE['profile_enabled'] = profile is not None
@@ -1557,6 +1604,7 @@ def refine_bam_junctions(
     hp_drift_min_run: int = 4,
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1660,6 +1708,7 @@ def refine_bam_junctions(
             hp_drift_min_run=hp_drift_min_run, profile=profile,
             microhom_drift_margin=microhom_drift_margin,
             microhom_threshold=microhom_threshold,
+            drift_near_tie_cap=drift_near_tie_cap,
         )
     else:
         _run_sequential(
@@ -1672,6 +1721,7 @@ def refine_bam_junctions(
             hp_drift_min_run=hp_drift_min_run, profile=profile,
             microhom_drift_margin=microhom_drift_margin,
             microhom_threshold=microhom_threshold,
+            drift_near_tie_cap=drift_near_tie_cap,
         )
 
     if sort_and_index:

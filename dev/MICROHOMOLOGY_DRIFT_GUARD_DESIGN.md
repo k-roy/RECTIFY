@@ -60,3 +60,33 @@ Measurement note: the initial 5.7%->4.4% was a MEASUREMENT ARTIFACT (counted see
 fabrication); per-read-truth (canonical-origin reads moved to drift) is the correct FDR -> 1.31%->0%.
 REMAINING: regression tests (mirror test_hp_drift_guard); adversarial audit (byte-identity + no-discovery-loss);
 COMPASS real-data threshold confirmation (in flight); then flip default / ship alongside the HP-guard.
+
+## ⛔ PHASE 3 AUDIT → HOLD (2026-07-11, workflow wte43x5rc; dev/MICROHOM_AUDIT_SYNTHESIS.md)
+The triple adversarial audit returned **HOLD — do NOT flip the default.** byte-identity CLEARED (guard inert
+at default, 1653 passed) but the audit found a **genuine design fault the synthetic validation above MISSED:**
+`_move_microhomology` is **READ-BLIND** (genome-only). The mh≥0.5 veto trigger (genomic) and the score
+delta_improve that must clear the margin (read evidence) are INDEPENDENT → a real cryptic the read distinguishes
+(delta_improve>0, discovered with guard OFF) can still trip mh≥0.5 and be vetoed whenever delta_improve < margin.
+At m=8 that suppresses any real cryptic differing by <~8 in-window bases. The m=8 "zero discovery cost" above is
+an ARTIFACT of the under-powered panel (5 fab / 2 real): the panel doesn't populate the (0, margin) delta band
+where the fault lives. Two auditors (discovery-loss, detector-correctness) STALLED on API errors → gate unsatisfied.
+
+## ★ PHASE 4 FIX (2026-07-12) — near-tie read-evidence cap (`drift_near_tie_cap`)
+Added `_effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)` +
+`drift_near_tie_cap` param threaded through all 4 refine fns (default 0.0 = disabled = byte-identical).
+Rule: `veto_margin = max(hold_margin, min(eff_margin, drift_near_tie_cap))` when the cap is active —
+caps the read-BLIND drift margins (hp_drift + microhom_drift) so a move with `delta_improve >= cap` is
+NEVER drift-vetoed, while NEVER capping `hold_margin` (read-agnostic blunt prior; it stays a floor).
+**HONEST SCOPE (advisor, load-bearing):** delta_improve, eff_margin and the cap share the SAME score
+axis, so the cap **BOUNDS** the read-blind discovery-loss (protects moves with strong read evidence) but
+adds **NO discriminating signal inside the (0, cap) near-tie band** — real cryptics and fabricated drift
+still overlap there. Its value is STRUCTURAL: decouple hold_margin from the drift margins + make the
+discovery-loss ceiling explicit and tunable. If the (0, cap) overlap proves fatal to discovery, the only
+real remedy is a DIFFERENT signal (per-base positional distinctiveness the incumbent soft-clip cannot
+absorb) — NOT built speculatively; the independent audit panel decides whether it's needed.
+Provisional operating point (to be validated/tuned by the independent audit, NOT self-tuned): margin=3.0
+(m=8→m=3 per audit; m=3 already 96% fab-suppression), microhom_threshold=0.5, drift_near_tie_cap=TBD.
+Internal check ONLY (per advisor — not efficacy validation): byte-identical at default, suite green,
+_effective_veto_margin arithmetic + hold-uncapped interaction unit-tested (test_microhom_drift_guard.py).
+The load-bearing validation (real-cryptic-microhomology panel at varied delta_improve → discovery-loss vs
+(margin, cap)) is DELEGATED to the independent Opus-Max audit so it isn't a self-tuned rubber stamp.
