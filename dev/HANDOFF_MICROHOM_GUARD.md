@@ -56,6 +56,23 @@ identity auditor CLEARED inertness but explicitly declined to endorse the flip.
   positional-distinctiveness signal, not aggregate delta). Only if all_clear → flip default at the
   audit's recommended (margin, threshold, cap).
 
+### ★ PHASE 6 — DISCOVERY-LOSS PANEL + POSITIONAL CLOSE BUILT (2026-07-13)
+The 4×-stalled load-bearing measurement, done INLINE (`dev/discovery_loss_panel.py`,
+`dev/DISCOVERY_LOSS_PANEL_RESULT.md`): margin=3 alone loses ~24% discovery; cap=2 → ~10%; real cryptics &
+fab drifts OVERLAP on delta → cap can't cleanly close. **THE CLOSE (user-approved): indel-robust
+`_positional_signal`** (hard-anchored edit distance, removes the free-k soft-clip escape) separates the
+overlap at 98–99% balanced acc. Wired as `drift_positional_gate` (default 0.0 = OFF = byte-identical),
+threaded through all 4 refine fns. **WIRED m3/cap2/gate1 → 0.4% discovery loss / 4.3% fab-residual** (real
+refiner, seeds agree) = the fault CLOSED. 30 guard tests + 400/400 end-to-end + broad suite byte-identical
+off. NOT committed yet (pending broad suite `bjxl92o7a`).
+**COMMIT when green:** `git add rectify/core/splice/junction_refiner.py tests/test_microhom_drift_guard.py
+dev/discovery_loss_panel.py dev/DISCOVERY_LOSS_PANEL_RESULT.md dev/MICROHOMOLOGY_DRIFT_GUARD_DESIGN.md
+dev/HANDOFF_MICROHOM_GUARD.md` → `feat(refiner): positional-distinctiveness gate closes the read-blind
+microhomology fault (default OFF)`. Branch worktree-agent-... (NOT drs-validation-rebuild).
+**REMAINING before enable:** (i) donor/both-boundary exon1-side signal (currently conservative — falls
+through to margin/cap); (ii) RE-AUDIT the close (use the redundant 2-per-task Opus-Max design — it cracked
+the stalls); (iii) COMPASS real-data confirmation (independent). Guard STILL default OFF.
+
 ### ✅ AUDIT-V4 DONE → HOLD + DETECTOR FIXES LANDED (2026-07-13)
 `dev/MICROHOM_AUDIT_V4_SYNTHESIS.md`. 4 Opus-Max, 2/task; 7/9 agents stalled but the redundant design gave a
 robust CONSENSUS. Results: cap helper CONSENSUS CLEAR; **A5 CONSENSUS HOLDING FAULT** (`_frac_match` N==N

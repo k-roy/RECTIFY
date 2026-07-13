@@ -119,3 +119,26 @@ design produced a robust CONSENSUS. Findings:
    pure-ACGT reproducer). Deferred: min-k sensitivity floor (needs the discovery-loss panel to tune).
 STILL OPEN before ANY enable: (i) quantify discovery-loss rate (stalls); (ii) add the positional-
 distinctiveness signal to CLOSE (cap only bounds); (iii) COMPASS real-data confirmation (independent).
+
+## ★ PHASE 6 — DISCOVERY-LOSS PANEL + POSITIONAL-DISTINCTIVENESS CLOSE (2026-07-13)
+Built the discovery-loss panel INLINE (the 4×-stalled load-bearing measurement; `dev/discovery_loss_panel.py`,
+`dev/DISCOVERY_LOSS_PANEL_RESULT.md`). Findings (seeds 1&2):
+- **margin=3 alone loses ~24% of real discovery** (refutes "margin=3 suffices"); best cap point margin=3/
+  cap=2 → ~10% loss / ~0% fab. Real cryptics (delta median 4) and error-driven fab drifts (delta median 1)
+  OVERLAP in delta ∈ [0.5,2] → the cap (delta axis) cannot CLEANLY separate them (confirms the audit).
+- **THE CLOSE (user-approved deep fix):** an INDEL-ROBUST positional signal `_positional_signal` =
+  hard-anchored edit distance `ed(rescue, genome[ne:]) - ed(rescue, genome[new_je:])` (NO free-prefix split
+  ⇒ removes the scorer's free-k soft-clip escape that hid the discriminating exon2 bases). Separates the
+  overlap band at **98–99% balanced accuracy** (vs 81% naive). Wired as `drift_positional_gate` (default
+  0.0 = OFF = byte-identical): when a drift-flagged move would be vetoed, SPARE it if the read carries
+  positional evidence (signal ≥ gate). Threaded through all 4 refine fns; acceptor moves (donor/both-boundary
+  fall through to margin/cap — conservative).
+- **WIRED end-to-end operating point margin=3 / cap=2 / positional_gate=1: ~0.4% discovery loss / ~4.3%
+  fab-residual** (seeds agree) — down from 24% (margin alone) / 8.8% (cap alone). The fault is CLOSED: near-
+  zero discovery loss AND fabrication suppressed.
+- Validation: 30 microhom-guard tests (incl. `_semiglobal_ed`, `_positional_signal`, veto-band-spare,
+  byte-identical-off); 400/400 veto-band real cryptics spared end-to-end; broad refiner/validation suite
+  byte-identical at default (guard OFF).
+REMAINING before enable: (i) donor/both-boundary positional signal (exon1 side) — currently conservative;
+(ii) re-audit the close (redundant 2-per-task Opus-Max, which cracked the stalls); (iii) COMPASS real-data
+confirmation (independent prerequisite). Guard STILL default OFF.

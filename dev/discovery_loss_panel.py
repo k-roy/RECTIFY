@@ -104,6 +104,45 @@ def make_read(genome, exon1_bases, cryptic_exon2, read_start, ns, ne):
     return r, len(exon1_bases)   # q_split = len(exon1_bases)
 
 
+def _semiglobal_ed(query, ref):
+    """Edit distance aligning ALL of `query` to a PREFIX of `ref` (free ref suffix; no free
+    query prefix — hard-anchored at ref[0]).  Indel-tolerant.  Lower = query matches ref better."""
+    m, n = len(query), len(ref)
+    if m == 0:
+        return 0
+    prev = list(range(n + 1))          # aligning empty query: 0 cost to consume any ref prefix? No:
+    # row 0 = deleting query chars only; but we FORCE query fully consumed and ref free-suffix.
+    # Standard semi-global: dp[i][j] = min edits to align query[:i] to ref[:j].
+    # Answer = min over j of dp[m][j] (query consumed, ref up to any j = free suffix).
+    prev = [0] * (n + 1)               # dp[0][j] = 0 (free ref prefix? NO — hard anchor at ref[0])
+    # Hard anchor at ref[0]: query[0] must align at ref[0], so ref has NO free prefix.
+    # dp[0][j] = j? no. Let me do: dp[i][0] = i (query prefix vs empty ref = all insertions).
+    #            dp[0][j] = j (empty query vs ref prefix = all deletions) BUT we take free suffix
+    #            at the END only, so intermediate dp[0][j]=j is correct; free suffix = min last row.
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        cur = [i] + [0] * n
+        qi = query[i - 1]
+        for j in range(1, n + 1):
+            cost = 0 if qi == ref[j - 1] else 1
+            cur[j] = min(prev[j - 1] + cost, prev[j] + 1, cur[j - 1] + 1)
+        prev = cur
+    return min(prev)                   # free ref suffix: query fully consumed, ref up to any j
+
+
+def ed_signal(genome, ns, ne, je, q, q_split, W=28):
+    """Indel-robust positional-distinctiveness signal: hard-anchored edit distance of the read's
+    rescue to the incumbent exon2 vs the cryptic exon2.  signal = ed(rescue, genome[ne:]) -
+    ed(rescue, genome[je:]).  >0 ⇒ read matches the CRYPTIC better (real discovery); <0 ⇒ matches
+    the INCUMBENT better (error-driven fab drift).  No free-prefix split ⇒ removes the scorer's
+    soft-clip escape that hides the discriminating mismatches."""
+    rescue = q[q_split:q_split + W]
+    n = len(genome)
+    ref_inc = genome[ne:min(n, ne + W + 6)]
+    ref_cry = genome[je:min(n, je + W + 6)]
+    return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_cry)
+
+
 def disc_signal(genome, ns, ne, je, q, q_split, W=24):
     """Positional-distinctiveness signal (naive per-index; indel-sensitive by design — this
     is the orthogonality CHECK, not the production impl).  At read offsets r where the two
@@ -164,15 +203,21 @@ def run_panel(n_per_cell=40, with_errors=True, seed=1):
                 s_cry, _ = _score_junction(q, q_split, ns, je, g, 0.25, 15, 10, current_ns=ns)
                 delta = s_inc - s_cry
                 sig, ndisc = disc_signal(g, ns, ne, je, q, q_split)
+                esig = ed_signal(g, ns, ne, je, q, q_split)
                 # guard OFF: does the refiner move ne->je?  cry: discovery (good); fab: drift (bad)
                 moved_off = acceptor_after_refine(read, g, ns, ne, je) == je
                 row = dict(origin=origin, k=k, mm=mm, e2=e2_tail_take, mh=mh, delta=delta,
-                           sig=sig, ndisc=ndisc, moved_off=moved_off)
+                           sig=sig, esig=esig, ndisc=ndisc, moved_off=moved_off)
                 for m in MARGINS:
                     for c in CAPS:
                         acc = acceptor_after_refine(read, g, ns, ne, je,
                                                     microhom_drift_margin=m, drift_near_tie_cap=c)
                         row[f"moved_m{int(m)}_c{int(c)}"] = (acc == je)
+                # TRUE end-to-end SHIPPED operating point through the real refiner: margin=3,
+                # cap=2, positional_gate=1 (the full close)
+                row["moved_close"] = (acceptor_after_refine(
+                    read, g, ns, ne, je, microhom_drift_margin=3.0,
+                    drift_near_tie_cap=2.0, drift_positional_gate=1.0) == je)
                 rows.append(row)
     return rows, MARGINS, CAPS
 
@@ -225,21 +270,38 @@ def summarize(rows, MARGINS, CAPS):
             cry_pos = sum(r["sig"] > 0 for r in cry_band) / len(cry_band)
             fab_le0 = sum(r["sig"] <= 0 for r in fab_band) / len(fab_band)
             out.append(f"    sep @sig>0:  cry votes cryptic {cry_pos:.0%} | fab votes incumbent(<=0) {fab_le0:.0%}")
-    # DECISIVE: cap-alone vs cap+positional-gate at the best operating point (m=3, cap=2).
-    # Positional gate: SPARE a would-be-vetoed move iff sig > 0 (read has cryptic-side evidence).
+    # INDEL-ROBUST signal separation (align-first ed_signal) vs naive, in the overlap band
     out.append("")
-    out.append("CAP-ALONE vs CAP+POSITIONAL (m=3, cap=2; positional spares a veto when sig>0):")
+    out.append("INDEL-ROBUST signal (ed_signal, align-first) separation in delta band [0.5,1.5]:")
+    cryb = [r for r in disc_at_risk if 0.5 <= r["delta"] <= 1.5]
+    fabb = [r for r in fab_drift if 0.5 <= r["delta"] <= 1.5]
+    for name, fld in (("naive sig", "sig"), ("ed_signal", "esig")):
+        if cryb and fabb:
+            cp = sum(r[fld] > 0 for r in cryb) / len(cryb)
+            fl = sum(r[fld] <= 0 for r in fabb) / len(fabb)
+            out.append(f"    {name:10s}: cry votes cryptic {cp:.0%} | fab votes incumbent {fl:.0%} "
+                       f"| balanced-acc {(cp+fl)/2:.0%}")
+    # DECISIVE: cap-alone vs cap+positional (naive vs ed) at m=3, cap=2
+    out.append("")
+    out.append("CAP-ALONE vs CAP+POSITIONAL (m=3, cap=2; positional spares a veto when signal>thr):")
     key = "moved_m3_c2"
-    for label, thr in (("cap-alone", None), ("cap+pos(sig>0)", 0), ("cap+pos(sig>=1)", 1)):
+    for label, fld, thr in (("cap-alone", None, None),
+                            ("cap+naive(sig>0)", "sig", 0),
+                            ("cap+ed(esig>0)", "esig", 0),
+                            ("cap+ed(esig>=2)", "esig", 1)):
         def moved(r):
             if r[key]:
                 return True
-            if thr is not None and r["moved_off"] and r["sig"] > thr:
-                return True   # positional gate spares the move
+            if fld is not None and r["moved_off"] and r[fld] > thr:
+                return True
             return False
         loss = sum(not moved(r) for r in disc_at_risk) / max(1, len(disc_at_risk))
         fabr = sum(moved(r) for r in fab_drift) / max(1, len(fab_drift))
-        out.append(f"    {label:16s}  disc-loss {loss:6.1%}   fab-residual {fabr:6.1%}")
+        out.append(f"    {label:18s}  disc-loss {loss:6.1%}   fab-residual {fabr:6.1%}")
+    # TRUE end-to-end shipped operating point (margin=3, cap=2, positional_gate=1) via real refiner
+    cl_loss = sum(not r["moved_close"] for r in disc_at_risk) / max(1, len(disc_at_risk))
+    cl_fabr = sum(r["moved_close"] for r in fab_drift) / max(1, len(fab_drift))
+    out.append(f"    {'WIRED m3/c2/gate1':18s}  disc-loss {cl_loss:6.1%}   fab-residual {cl_fabr:6.1%}  <- shipped close")
     return "\n".join(out)
 
 

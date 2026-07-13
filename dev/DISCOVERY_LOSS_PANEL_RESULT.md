@@ -95,7 +95,42 @@ tradeoff; each just moves the operating point along the curve.
 **Seed 2 CONFIRMS (n=40, 5760 reads):** margin=3 alone 24.7% loss; m=3/cap=2 → 9.5% loss / 0% fab;
 orthogonality cry 83% / fab 67% in [0.5,1.5]; cap+pos(sig>0) → 1.9% loss / 33.3% fab-residual. Robust.
 
-## ⇒ VERDICT (empirical, decisive — the 4-round-stalled gap is now FILLED)
+## ★★★★ CHECKPOINT 4 — INDEL-ROBUST positional signal essentially CLOSES the fault (2026-07-13)
+The naive per-index signal (CP3) was a tradeoff-shift because it's indel-sensitive. The INDEL-ROBUST version
+— **hard-anchored edit distance** of the read's rescue to the two candidate exon2s, `ed_signal =
+ed(rescue, genome[ne:]) - ed(rescue, genome[je:])` (NO free-prefix split ⇒ removes the scorer's soft-clip
+escape that hid the discriminating mismatches) — separates the overlap band nearly perfectly:
+```
+  separation in delta band [0.5,1.5] (where the cap fails):
+    naive sig : cry 84% / fab 78%  balanced-acc 81%
+    ed_signal : cry 99% / fab 98%  balanced-acc 98%     ← near-clean
+  CAP-ALONE vs CAP+ED-POSITIONAL (m=3, cap=2):
+    cap-alone           disc-loss 8.8%   fab-residual 2.1%
+    cap+naive(sig>0)    disc-loss 1.8%   fab-residual 23.4%   (naive: bad)
+    cap+ed(esig>0)      disc-loss 0.4%   fab-residual 4.3%    ← near-CLOSE
+    cap+ed(esig>=2)     disc-loss 6.2%   fab-residual 2.1%    (balanced knob)
+```
+**⇒ THE CLOSE IS ACHIEVABLE.** cap+ed(esig>0) ≈ 0.4% discovery loss AND 4.3% fab-residual — the align-first
+signal (removing the free-k soft-clip escape) drives discovery loss to near-zero while keeping fab
+suppression. The earlier "tradeoff-shift, not a close" verdict was an artifact of the NAIVE signal; the
+indel-robust signal genuinely closes it. NEXT: wire ed_signal into the refiner as the positional veto-gate
+(the deep fix the user approved), re-validate, re-audit. (seed 2 confirming.)
+
+## ★★★★★ CHECKPOINT 5 — WIRED end-to-end, the CLOSE is shipped (default OFF) (2026-07-13)
+`_positional_signal` (hard-anchored `_semiglobal_ed`) wired into `refine_read_junctions` as
+`drift_positional_gate` (default 0.0 = OFF = byte-identical), threaded through all 4 refine fns. A
+drift-flagged would-be-veto is SPARED when the read's positional signal ≥ gate. TRUE end-to-end through the
+real refiner (not overlay), seed 1:
+```
+    WIRED m3 / cap2 / gate1   disc-loss 0.4%   fab-residual 4.3%   <- shipped close (== overlay prediction)
+```
+vs margin-alone ~24% and cap-alone ~8.8% discovery loss. Tests: 30 in test_microhom_drift_guard.py
+(_semiglobal_ed, _positional_signal, veto-band-spare, byte-identical-off); 400/400 veto-band real cryptics
+spared end-to-end; broad refiner/validation suite byte-identical at default. Operating point (opt-in):
+microhom_drift_margin=3, drift_near_tie_cap=2, drift_positional_gate=1, microhom_threshold=0.5. STILL default
+OFF. Remaining: donor/both-boundary exon1-side signal (conservative now); re-audit; COMPASS real-data.
+
+## ⇒ VERDICT (pre-CP4; superseded by CP4/CP5 — the indel-robust signal CLOSES it)
 1. **margin=3 alone is INSUFFICIENT** (~24% discovery loss). Refutes the optimistic hypothesis.
 2. **Best cap operating point = margin=3, drift_near_tie_cap=2, threshold=0.5** (~10% discovery loss,
    ~0% fab-residual). This IS a defensible opt-in operating point.

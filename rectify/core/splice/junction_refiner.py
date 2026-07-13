@@ -577,6 +577,49 @@ def _effective_veto_margin(hold_margin: float, eff_margin: float,
     return eff_margin
 
 
+def _semiglobal_ed(query: str, ref: str) -> int:
+    """Edit distance aligning ALL of ``query`` to a PREFIX of ``ref`` (free ref suffix, HARD-
+    anchored at ``ref[0]`` — no free query/ref prefix).  Indel-tolerant; lower = query matches
+    ref better.  O(len(query)·len(ref)); only called on the rare would-be-veto path."""
+    m, n = len(query), len(ref)
+    if m == 0:
+        return 0
+    if n == 0:
+        return m
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        cur = [i] + [0] * n
+        qi = query[i - 1]
+        for j in range(1, n + 1):
+            cost = 0 if qi == ref[j - 1] else 1
+            cur[j] = min(prev[j - 1] + cost, prev[j] + 1, cur[j - 1] + 1)
+        prev = cur
+    return min(prev)
+
+
+def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: int,
+                       W: int = 28) -> Optional[int]:
+    """Indel-robust positional-distinctiveness signal for an ACCEPTOR move ``ne -> new_je``.
+
+    ``ed(rescue, incumbent exon2) - ed(rescue, moved exon2)`` where ``rescue = q[q_split:]`` is the
+    read's exon2 bases.  ``> 0`` ⇒ the read's exon2 matches the MOVED acceptor better, i.e. genuine
+    read evidence for the move — the discriminating bases the scorer's free-``k`` soft-clip escape
+    HIDES from ``delta_improve``.  Hard-anchored (no free-prefix split) is exactly what removes that
+    escape (panel: cap+ed(>0) → ~0.3% discovery loss at ~cap-alone fabrication; 98–99% balanced
+    separation of real cryptics vs error-driven drift in the delta overlap band).  Returns ``None``
+    when the acceptor did not move (exon2 discrimination undefined) or the rescue is empty — callers
+    then leave the veto decision to the margin/cap alone (conservative)."""
+    if new_je == ne:
+        return None
+    rescue = q[q_split:q_split + W]
+    if not rescue:
+        return None
+    n = len(genome_seq)
+    ref_inc = genome_seq[ne:min(n, ne + W + 6)]
+    ref_mov = genome_seq[new_je:min(n, new_je + W + 6)]
+    return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_mov)
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -600,6 +643,7 @@ def refine_read_junctions(
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
@@ -850,14 +894,31 @@ def refine_read_junctions(
         #     discriminating signal inside the (0, cap) band. Its value is STRUCTURAL:
         #     it decouples hold_margin from the drift margins and makes the discovery-loss
         #     ceiling explicit + tunable. Default 0.0 → cap disabled → byte-identical.
+        #   * drift_positional_gate — the read-evidence signal that CLOSES the read-blind
+        #     fault (the cap only BOUNDS it — same score axis).  When a drift-context move
+        #     would be vetoed, SPARE it if the read carries indel-robust POSITIONAL evidence
+        #     for the moved acceptor: `_positional_signal` (hard-anchored edit distance,
+        #     removing the scorer's free-k soft-clip escape) >= the gate.  This separates a
+        #     real cryptic (read matches the moved exon2) from an error-driven drift (read
+        #     matches the incumbent) INSIDE the delta near-tie band the cap cannot.  Default
+        #     0.0 → gate off → byte-identical.  (Acceptor moves only; donor/both-boundary
+        #     moves fall through to the margin/cap decision — conservative.)
         if moves and eff_margin > 0.0 and incumbent_score is not None:
             veto_margin = _effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)
             if profile is not None and veto_margin < eff_margin:
                 profile.inc('near_tie_cap_applied')
             if best_score_cmp > incumbent_score - veto_margin:
-                moves = False
-                if profile is not None:
-                    profile.inc('move_margin_vetoes')
+                spared = False
+                if drift_positional_gate > 0.0:
+                    psig = _positional_signal(genome_seq, q, q_split, ne, new_je)
+                    if psig is not None and psig >= drift_positional_gate:
+                        spared = True
+                        if profile is not None:
+                            profile.inc('positional_gate_spared')
+                if not spared:
+                    moves = False
+                    if profile is not None:
+                        profile.inc('move_margin_vetoes')
 
         # Only emit a replacement if the junction actually changes.
         if moves:
@@ -1293,6 +1354,7 @@ def _run_sequential(
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
@@ -1346,6 +1408,7 @@ def _run_sequential(
                     microhom_drift_margin=microhom_drift_margin,
                     microhom_threshold=microhom_threshold,
                     drift_near_tie_cap=drift_near_tie_cap,
+                    drift_positional_gate=drift_positional_gate,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1394,6 +1457,7 @@ def _run_parallel(
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
@@ -1449,6 +1513,7 @@ def _run_parallel(
         'microhom_drift_margin': microhom_drift_margin,
         'microhom_threshold': microhom_threshold,
         'drift_near_tie_cap': drift_near_tie_cap,
+        'drift_positional_gate': drift_positional_gate,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
     _WORKER_POOL_STATE['profile_enabled'] = profile is not None
@@ -1624,6 +1689,7 @@ def refine_bam_junctions(
     microhom_drift_margin: float = 0.0,
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1728,6 +1794,7 @@ def refine_bam_junctions(
             microhom_drift_margin=microhom_drift_margin,
             microhom_threshold=microhom_threshold,
             drift_near_tie_cap=drift_near_tie_cap,
+            drift_positional_gate=drift_positional_gate,
         )
     else:
         _run_sequential(
@@ -1741,6 +1808,7 @@ def refine_bam_junctions(
             microhom_drift_margin=microhom_drift_margin,
             microhom_threshold=microhom_threshold,
             drift_near_tie_cap=drift_near_tie_cap,
+            drift_positional_gate=drift_positional_gate,
         )
 
     if sort_and_index:

@@ -27,7 +27,7 @@ sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice.junction_refiner import (
     _frac_match, _hp_run_across, _move_microhomology, _effective_veto_margin,
-    refine_read_junctions,
+    _semiglobal_ed, _positional_signal, refine_read_junctions,
 )
 from rectify.core.splice.junction_scoring import _D, _EQ, _N
 
@@ -264,3 +264,83 @@ def test_near_tie_cap_byte_identical_when_disabled():
 
     # with the microhom guard on, cap=0.0 == omitting cap == same veto
     assert acc(microhom_drift_margin=8.0) == acc(microhom_drift_margin=8.0, drift_near_tie_cap=0.0)
+
+
+# ---------------------------------------------------------------------------
+# 5. Positional-distinctiveness signal — the CLOSE (indel-robust; DISCOVERY_LOSS_PANEL_RESULT)
+# ---------------------------------------------------------------------------
+class TestSemiglobalEd:
+    def test_exact_and_free_suffix(self):
+        assert _semiglobal_ed("ACGT", "ACGT") == 0
+        assert _semiglobal_ed("ACGT", "ACGTAAAA") == 0     # query fully consumed, ref suffix free
+        assert _semiglobal_ed("", "ACGT") == 0
+        assert _semiglobal_ed("ACGT", "") == 4
+
+    def test_substitution_and_indel(self):
+        assert _semiglobal_ed("ACGT", "ACGA") == 1         # 1 substitution
+        assert _semiglobal_ed("ACGT", "ACT") == 1          # 1 deletion in query vs ref (indel)
+
+
+# A real cryptic genuinely FROM the drifted acceptor (exon2 = the moved bases), in microhomology,
+# scoring in the veto band — the positional signal must SPARE it while the margin alone vetoes it.
+PG_LPAD, PG_E1 = 30, 50
+PG_INTRON = "GT" + "C" * 86 + "AG"                         # 90 bp canonical
+PG_U, PG_UP = "ACGTAC", "ACGTAG"                          # k=6 repeat unit + 1-mismatch copy (mh 5/6)
+PG_TAIL = "TTGGCCAATTAACCGGATCTGACT"                       # distinctive exon2 tail (the evidence)
+PG_GENOME = "T" * PG_LPAD + "C" * PG_E1 + PG_INTRON + PG_U + PG_UP + PG_TAIL + "T" * 30
+PG_NS = PG_LPAD + PG_E1                                     # donor
+PG_NE = PG_NS + len(PG_INTRON)                             # incumbent acceptor = start of U
+PG_JE = PG_NE + 6                                           # cryptic acceptor = start of U'
+
+
+def _pg_read(e1=40, e2=16):
+    """A read genuinely from the cryptic PG_JE (exon2 = genome[PG_JE:]) but placed at PG_NE."""
+    header = pysam.AlignmentHeader.from_references([CHROM], [len(PG_GENOME)])
+    r = pysam.AlignedSegment(header)
+    r.query_name = "pg_cryptic"
+    r.reference_id = 0
+    r.reference_start = PG_NS - e1
+    r.mapping_quality = 60
+    r.is_unmapped = False
+    r.is_reverse = False
+    r.query_sequence = PG_GENOME[PG_NS - e1:PG_NS] + PG_GENOME[PG_JE:PG_JE + e2]
+    r.cigartuples = [(0, e1), (_N, PG_NE - PG_NS), (0, e2)]
+    return r
+
+
+def _pg_acc(**kw):
+    pool = {CHROM: [(PG_NS, PG_NE), (PG_NS, PG_JE)]}
+    reps = refine_read_junctions(_pg_read(), pool, set(), PG_GENOME, "+",
+                                 motif_blind=True, boundary_error_window=0, **kw)
+    acc = PG_NE
+    for _i, ons, one, njs, nje in reps:
+        if ons == PG_NS and one == PG_NE:
+            acc = nje
+    return acc
+
+
+def test_positional_signal_favours_the_real_cryptic():
+    # the read's exon2 (from PG_JE) matches the moved acceptor better than the incumbent
+    r = _pg_read()
+    psig = _positional_signal(PG_GENOME, r.query_sequence, 40, PG_NE, PG_JE)
+    assert psig is not None and psig > 0
+    # undefined (None) when the acceptor did not move
+    assert _positional_signal(PG_GENOME, r.query_sequence, 40, PG_NE, PG_NE) is None
+
+
+def test_frame_check_cryptic_is_discoverable_and_in_microhomology():
+    assert _pg_acc() == PG_JE                                  # guard OFF: discovered
+    assert _move_microhomology(PG_GENOME, PG_NS, PG_NE, PG_NS, PG_JE) >= 0.5   # trips the flag
+
+
+def test_positional_gate_spares_a_veto_band_cryptic():
+    # margin alone vetoes the (drift-flagged, near-tie) move → held at incumbent
+    assert _pg_acc(microhom_drift_margin=8.0) == PG_NE
+    # the positional gate detects real read evidence for the move → SPARES it (discovered)
+    assert _pg_acc(microhom_drift_margin=8.0, drift_positional_gate=1.0) == PG_JE
+
+
+def test_positional_gate_byte_identical_when_off():
+    # gate default 0.0 must not change the veto vs omitting it
+    assert _pg_acc(microhom_drift_margin=8.0) == _pg_acc(microhom_drift_margin=8.0,
+                                                         drift_positional_gate=0.0)
