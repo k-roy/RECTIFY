@@ -92,6 +92,9 @@ FUNDAMENTAL: a single ONT read from a real cryptic-in-microhomology and an error
 genuinely hard to separate. No scalar (delta / cap / naive positional) eliminates the precision/recall
 tradeoff; each just moves the operating point along the curve.
 
+**Seed 2 CONFIRMS (n=40, 5760 reads):** margin=3 alone 24.7% loss; m=3/cap=2 → 9.5% loss / 0% fab;
+orthogonality cry 83% / fab 67% in [0.5,1.5]; cap+pos(sig>0) → 1.9% loss / 33.3% fab-residual. Robust.
+
 ## ⇒ VERDICT (empirical, decisive — the 4-round-stalled gap is now FILLED)
 1. **margin=3 alone is INSUFFICIENT** (~24% discovery loss). Refutes the optimistic hypothesis.
 2. **Best cap operating point = margin=3, drift_near_tie_cap=2, threshold=0.5** (~10% discovery loss,
