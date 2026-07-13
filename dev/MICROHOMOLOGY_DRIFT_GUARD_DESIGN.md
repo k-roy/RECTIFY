@@ -90,3 +90,32 @@ Internal check ONLY (per advisor — not efficacy validation): byte-identical at
 _effective_veto_margin arithmetic + hold-uncapped interaction unit-tested (test_microhom_drift_guard.py).
 The load-bearing validation (real-cryptic-microhomology panel at varied delta_improve → discovery-loss vs
 (margin, cap)) is DELEGATED to the independent Opus-Max audit so it isn't a self-tuned rubber stamp.
+
+## ⚖ AUDIT-V4 (2026-07-13, 4 Opus-Max, 2/task, robust consensus) → HOLD + DETECTOR FIXES
+`dev/MICROHOM_AUDIT_V4_SYNTHESIS.md`. Despite 7/9 agents hitting API stalls, the redundant (2-per-task)
+design produced a robust CONSENSUS. Findings:
+- **`_effective_veto_margin` (the cap): CONSENSUS CLEAR** (A 12/12 probes; B 10-row truth table). The cap is
+  arithmetically correct; it just can't rescue a wrong detector `frac`.
+- **A5 (CONSENSUS HOLDING FAULT, both detector auditors):** `_frac_match` scored `N==N` (+ non-ACGT,
+  lowercase) as a MATCH → phantom microhomology ≥0.5 → falsely vetoed a read-supported move
+  (delta_improve=6.0). Shared by `_hp_run_across` (NNNNN→run 5). Pipeline realization narrow today (bundled
+  yeast N=0; human N at gaps) but intrinsic.
+- **A8 (A: distinct fault / B: collapses into read-blind point — agree on mechanics):** `_move_microhomology`
+  `max()` over both boundaries let a donor-side (CAG)n repeat MASK a genuine acceptor transition → over-veto,
+  fires on the default genome. Moot for the verdict (A5 blocks) but sharpens the fix.
+- **discovery-loss RATE: still UNMEASURED** (both auditors stalled) — but A confirmed the delta>0 ∧ mh≥0.5
+  case is REAL and constructible; the (0,cap) overlap is IRREDUCIBLE → a positional-distinctiveness signal is
+  REQUIRED to CLOSE (cap only BOUNDS).
+
+## ★ PHASE 5 DETECTOR FIXES (2026-07-13) — A5 + A8 (byte-identical off; guard still default OFF)
+1. **A5:** `_frac_match` now counts a match only when `x == y and x in _ACGT` (module const `frozenset("ACGT")`);
+   `_hp_run_across` returns 0 when the boundary base ∉ _ACGT. Kills phantom microhomology / phantom HP on N/gap
+   runs. Tests: `TestFracMatch.test_ambiguity_bases_do_not_match`, `TestHpRunAcrossAmbiguity`.
+2. **A8:** `_move_microhomology` combines the MOVED boundaries by **min** (was max): a move is drift-suspect
+   only if EVERY shifted boundary sits in microhomology; a genuine transition on any moved boundary spares the
+   whole move (an edge-truncated moved boundary contributes 0.0 → spares). Single-boundary moves unchanged
+   (min == that frac), so all prior detector tests + the validated single-boundary fab suppression are
+   preserved. Test: `TestMoveMicrohomology.test_both_boundary_transition_not_masked_by_other_repeat` (A's exact
+   pure-ACGT reproducer). Deferred: min-k sensitivity floor (needs the discovery-loss panel to tune).
+STILL OPEN before ANY enable: (i) quantify discovery-loss rate (stalls); (ii) add the positional-
+distinctiveness signal to CLOSE (cap only bounds); (iii) COMPASS real-data confirmation (independent).

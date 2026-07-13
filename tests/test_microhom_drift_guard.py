@@ -26,7 +26,8 @@ RECTIFY_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice.junction_refiner import (
-    _frac_match, _move_microhomology, _effective_veto_margin, refine_read_junctions,
+    _frac_match, _hp_run_across, _move_microhomology, _effective_veto_margin,
+    refine_read_junctions,
 )
 from rectify.core.splice.junction_scoring import _D, _EQ, _N
 
@@ -45,6 +46,28 @@ class TestFracMatch:
     def test_empty_or_mismatched_length(self):
         assert _frac_match("", "") == 0.0
         assert _frac_match("ACG", "ACGT") == 0.0
+
+    def test_ambiguity_bases_do_not_match(self):
+        # audit A5: N==N (and any non-ACGT, incl. lowercase) must NOT count as agreement,
+        # else a genome ambiguity run scores phantom microhomology 1.0 and falsely vetoes.
+        assert _frac_match("NNNN", "NNNN") == 0.0
+        assert _frac_match("nnnn", "nnnn") == 0.0
+        assert _frac_match("XXXX", "XXXX") == 0.0
+        assert _frac_match("acgt", "acgt") == 0.0          # lowercase are not real bases here
+        assert _frac_match("NANA", "NANA") == 0.5          # only the two real A's agree
+
+
+# ---------------------------------------------------------------------------
+# 1b. _hp_run_across — audit A5: an N-run is NOT a homopolymer
+# ---------------------------------------------------------------------------
+class TestHpRunAcrossAmbiguity:
+    def test_n_run_is_not_a_homopolymer(self):
+        assert _hp_run_across("NNNNN", 2, 4) == 0            # A5: was 5 (false HP run)
+        assert _hp_run_across("XXXXXX", 3, 4) == 0
+
+    def test_real_homopolymer_still_detected(self):
+        assert _hp_run_across("AAAAA", 2, 4) == 5            # real A-run unaffected
+        assert _hp_run_across("ACGTC", 2, 4) == 0            # transition, no run
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +106,17 @@ class TestMoveMicrohomology:
         # one mismatch in a 6-mer repeat -> 5/6 = 0.83 (still >= a 0.5 threshold)
         s = "T" * 20 + "ACGTAC" + "ACGTAG" + "T" * 20   # last base differs
         assert abs(_move_microhomology(s, 5, 20, 5, 26) - 5 / 6) < 1e-9
+
+    def test_both_boundary_transition_not_masked_by_other_repeat(self):
+        # audit A8: a both-boundary move whose DONOR abuts a (CAG)n repeat (frac 1.0) but
+        # whose ACCEPTOR is a genuine transition (frac 0.0) must be SPARED (min over moved
+        # boundaries = 0.0), not vetoed by max() masking the transition with the repeat.
+        seq = "CAG" + "CAG" + "GTAAGTACTAAC" + "GCC" + "TTA" + "CTGCTG"   # no N, pure ACGT
+        # donor shift ns=3->js=6 (CAG|CAG, frac 1.0); acceptor shift ne=18->je=21 (GCC|TTA, 0.0)
+        assert _move_microhomology(seq, 3, 18, 6, 21) == 0.0            # min → spared (A8 fixed)
+        # sanity: the donor leg alone IS a full repeat, the acceptor leg alone IS a transition
+        assert _move_microhomology(seq, 3, 18, 6, 18) == 1.0           # donor-only move: repeat
+        assert _move_microhomology(seq, 3, 18, 3, 21) == 0.0           # acceptor-only move: transition
 
 
 # ---------------------------------------------------------------------------

@@ -459,6 +459,11 @@ def _has_boundary_error(
     return False
 
 
+# Only the four real DNA bases can constitute a homopolymer run or a microhomology
+# match; a shared ambiguity code (N) or non-ACGT symbol must NOT (audit A5).
+_ACGT = frozenset("ACGT")
+
+
 def _hp_run_across(seq: str, pos: int, min_run: int) -> int:
     """If a junction boundary at *pos* (between ``seq[pos-1]`` and ``seq[pos]``) sits
     INSIDE a reference homopolymer run — same base on both sides — return that run's
@@ -476,6 +481,8 @@ def _hp_run_across(seq: str, pos: int, min_run: int) -> int:
     if pos <= 0 or pos >= n:
         return 0
     b = seq[pos]
+    if b not in _ACGT:
+        return 0                    # ambiguity/non-ACGT (N) run is NOT a homopolymer
     if b != seq[pos - 1]:
         return 0                    # boundary is a sequence transition, not in a run
     i = pos - 1
@@ -490,10 +497,15 @@ def _hp_run_across(seq: str, pos: int, min_run: int) -> int:
 
 def _frac_match(a: str, b: str) -> float:
     """Fraction of positions where equal-length strings *a* and *b* agree (0.0 if
-    empty or mismatched length)."""
+    empty or mismatched length).
+
+    Only ACGT bases can MATCH: a shared ambiguity code (N==N, or lowercase/non-ACGT)
+    is NOT counted as agreement.  Genome ambiguity runs (N…N, gaps) would otherwise
+    score frac 1.0 → a phantom microhomology that falsely vetoes a genuine move
+    (audit A5).  x==y with x in _ACGT ⇒ both are the same real base."""
     if not a or len(a) != len(b):
         return 0.0
-    return sum(1 for x, y in zip(a, b) if x == y) / len(a)
+    return sum(1 for x, y in zip(a, b) if x == y and x in _ACGT) / len(a)
 
 
 def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
@@ -511,25 +523,32 @@ def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
     A homopolymer is the MAXIMAL case (frac -> 1.0); this catches the PARTIAL-repeat
     non-HP drift the HP-guard misses.  A move to a genuine sequence transition (a real
     non-canonical splice site) has LOW microhomology (~0.25 random) and is untouched,
-    preserving motif-blind discovery.  Returns the max over the moved boundaries."""
+    preserving motif-blind discovery.
+
+    Combination rule = MIN over the boundaries that ACTUALLY MOVED (audit A8): a move is
+    drift-suspect only if EVERY shifted boundary sits in microhomology.  A genuine
+    sequence TRANSITION on any moved boundary (low frac) SPARES the whole move — an
+    unrelated tandem repeat on the OTHER boundary must not mask it (max() did, vetoing
+    e.g. a both-boundary move whose donor abuts a (CAG)n microsatellite but whose
+    acceptor is a real non-canonical transition).  A boundary that moved but runs off
+    the genome edge (unassessable) contributes 0.0 → does not flag (favours discovery).
+    Single-boundary moves are unchanged (min == that boundary's frac)."""
     n = len(seq)
-    best = 0.0
+    fracs: List[float] = []
     # Acceptor shift (intron|exon2): a k-bp slide between the two candidate acceptors is
     # enabled by a DOWNSTREAM tandem repeat seq[lo:hi] ~ seq[hi:hi+k] (the read's exon2
     # start k-mer repeats at the drift distance).  Direction-independent in lo/hi.
     if je != ne:
         lo, hi = (ne, je) if ne < je else (je, ne)
         k = hi - lo
-        if hi + k <= n:
-            best = max(best, _frac_match(seq[lo:hi], seq[hi:hi + k]))
+        fracs.append(_frac_match(seq[lo:hi], seq[hi:hi + k]) if hi + k <= n else 0.0)
     # Donor shift (exon1|intron): enabled by an UPSTREAM tandem repeat
     # seq[lo-k:lo] ~ seq[lo:hi] (the read's exon1 end k-mer repeats upstream).
     if js != ns:
         lo, hi = (ns, js) if ns < js else (js, ns)
         k = hi - lo
-        if lo - k >= 0:
-            best = max(best, _frac_match(seq[lo - k:lo], seq[lo:hi]))
-    return best
+        fracs.append(_frac_match(seq[lo - k:lo], seq[lo:hi]) if lo - k >= 0 else 0.0)
+    return min(fracs) if fracs else 0.0
 
 
 def _effective_veto_margin(hold_margin: float, eff_margin: float,
