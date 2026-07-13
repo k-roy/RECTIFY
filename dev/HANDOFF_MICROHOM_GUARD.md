@@ -65,13 +65,8 @@ delta>0∧mh≥0.5 case confirmed real + (0,cap) overlap IRREDUCIBLE → positio
 **FIXES IMPLEMENTED (Phase 5, this branch):** A5 — `_frac_match`/`_hp_run_across` count only ACGT (const
 `_ACGT`); A8 — `_move_microhomology` combines moved boundaries by **min** not max. Byte-identical off (guard
 still default OFF); 24 microhom tests + guard/refiner suites green (70 passed refiner-level).
-**COMMIT (pending broad suite `bk9jahilg`):** when `pytest -k "refin or junction or splice or microhom or
-hp_drift or validation_read" -m "not slow"` is green (detector not called at default → byte-identity
-structural), run:
-`git add rectify/core/splice/junction_refiner.py tests/test_microhom_drift_guard.py dev/MICROHOMOLOGY_DRIFT_GUARD_DESIGN.md dev/MICROHOM_AUDIT_V4_SYNTHESIS.md dev/MICROHOM_AUDIT_V4_detector-correctness_A.md dev/HANDOFF_MICROHOM_GUARD.md dev/microhom_audit_v4.workflow.js`
-then commit `fix(refiner): detector correctness A5 (ACGT-only frac/HP) + A8 (min-over-moved-boundaries)`
-(trailers: Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com> + Claude-Session URL). Branch MUST be
-worktree-agent-... (NOT drs-validation-rebuild). NOT-YET-fixed / open: (i) discovery-loss rate quantification (stalls); (ii)
+**COMMITTED `d1fd08d`** (broad suite green: 645 passed, 33 skipped, 1 xfailed; 24 microhom tests). Detector
+fixes + full audit trail durable on branch worktree-agent-... Cap = 05664bc. Guard STILL default OFF. NOT-YET-fixed / open: (i) discovery-loss rate quantification (stalls); (ii)
 positional-distinctiveness signal to CLOSE (cap only bounds); (iii) min-k sensitivity floor; (iv) COMPASS
 real-data (independent prereq).
 
