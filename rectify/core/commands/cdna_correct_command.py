@@ -329,7 +329,8 @@ def run(args) -> int:
         fastq_stats = write_stage1_fastq(args.bam, out_fastq, clusters, umi_canon,
                                           cluster_xf_tier, cluster_tail_len,
                                           use_poa=use_poa,
-                                          strand_aware_consensus=args.strand_aware_consensus)
+                                          strand_aware_consensus=args.strand_aware_consensus,
+                                          reference=args.reference)
         log.info("  wrote %d records (%d singletons, %d pileup, %d rep fallback) in %.1fs",
                  fastq_stats["written"], fastq_stats["from_singletons"],
                  fastq_stats["from_multi_pileup"], fastq_stats["from_multi_fallback"],

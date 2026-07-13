@@ -23,6 +23,7 @@ from .consensus import (
     poa_consensus,
     poa_consensus_strand_aware,
     pretrim_consensus,
+    restore_eq_seq,
 )
 from .read_info import ReadInfo, extract_read_info
 
@@ -67,7 +68,8 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                        cluster_tail_len: Dict[int, int],
                        use_poa: bool = False,
                        strand_aware_consensus: bool = False,
-                       cluster_name_prefix: str = "cluster") -> dict:
+                       cluster_name_prefix: str = "cluster",
+                       reference: Optional[Path] = None) -> dict:
     """Emit per-cluster consensus sequences as a FASTQ for downstream alignment.
 
     `rectify align` will run the multi-aligner on this FASTQ to produce the final
@@ -113,6 +115,10 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
 
     written = singleton = multi_pileup = multi_fallback = 0
 
+    # Reference is needed to resolve calmd '=' (match-to-ref) placeholders in SEQ
+    # back to real bases before re-emitting; without it the FASTQ is unmappable.
+    fasta = pysam.FastaFile(str(reference)) if reference is not None else None
+
     with opener(str(output_fastq), "wt") as fq:
         for cid, c in enumerate(clusters):
             segs = cluster_segments.get(cid, [])
@@ -124,7 +130,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
 
             if len(segs) == 1:
                 seg = segs[0]
-                seq = seg.query_sequence or ""
+                seq = restore_eq_seq(seg, fasta) or ""
                 # Restore basecalled orientation: BAM SEQ is RC'd for minus-strand
                 # alignments; we want the original read sequence for re-alignment.
                 if seg.is_reverse:
@@ -133,17 +139,17 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
             else:
                 if use_poa:
                     poa_fn = poa_consensus_strand_aware if strand_aware_consensus else poa_consensus
-                    seq = poa_fn(segs)
+                    seq = poa_fn(segs, fasta)
                     if seq:
                         method = "poa"
                 if not seq:
-                    pileup = pileup_consensus(segs)
+                    pileup = pileup_consensus(segs, fasta)
                     if pileup is not None:
                         seq = pileup[0]
                         method = "pileup"
                 if not seq:
                     rep = pick_representative(segs)
-                    seq = rep.query_sequence or ""
+                    seq = restore_eq_seq(rep, fasta) or ""
                     if rep.is_reverse:
                         seq = seq[::-1].translate(COMPLEMENT_TABLE)
                     method = "rep_fallback"
@@ -189,6 +195,9 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
             qual = "?" * len(trimmed_seq)
             fq.write(f"@{cluster_name_prefix}_{cid}\t{comment}\n{trimmed_seq}\n+\n{qual}\n")
             written += 1
+
+    if fasta is not None:
+        fasta.close()
 
     return dict(input_reads=n_in, written=written, from_singletons=singleton,
                 from_multi_pileup=multi_pileup, from_multi_fallback=multi_fallback)

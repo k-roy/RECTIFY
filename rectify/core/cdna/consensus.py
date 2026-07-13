@@ -45,7 +45,45 @@ except ImportError:
     HAS_POA = False
 
 
-def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[Tuple[str, List[Tuple[int, int]], int, str]]:
+def restore_eq_seq(seg: pysam.AlignedSegment,
+                   fasta: "Optional[pysam.FastaFile]") -> Optional[str]:
+    """Return ``seg``'s query sequence with calmd ``=`` placeholders resolved.
+
+    ``rectify align`` runs ``samtools calmd -e`` (see ``_apply_calmd_eq``), which
+    rewrites every M base matching the reference to ``=`` in SEQ. pysam's
+    ``query_sequence`` then returns ``=`` for those positions, so re-emitting it
+    to the Stage-1 consensus FASTQ yields an unmappable read — this silently
+    dropped ~99% of cDNA molecules at Stage-C align2. The original match base is
+    NOT recoverable from the BAM (MD stores match *run lengths*, not bases), so
+    it is restored from the *reference genome*: for each M/=/X position that
+    reads ``=``, substitute the reference base. Soft-clips / insertions /
+    mismatches keep their stored (real) base. Returns the BAM-oriented sequence
+    (same orientation as ``query_sequence``); if ``fasta`` is None, SEQ has no
+    ``=``, or the read is unmapped, the raw sequence is returned unchanged.
+    """
+    seq = seg.query_sequence
+    if not seq or '=' not in seq or fasta is None or seg.is_unmapped:
+        return seq
+    ref = fasta.fetch(seg.reference_name, seg.reference_start, seg.reference_end).upper()
+    chars = list(seq)
+    qi = 0  # index into query (chars)
+    ri = 0  # index into fetched reference span
+    for op, ln in (seg.cigartuples or []):
+        if op in (0, 7, 8):        # M / = / X : consume query + reference
+            for k in range(ln):
+                if chars[qi + k] == '=':
+                    chars[qi + k] = ref[ri + k]
+            qi += ln
+            ri += ln
+        elif op in (1, 4):         # I / S : consume query only
+            qi += ln
+        elif op in (2, 3):         # D / N : consume reference only
+            ri += ln
+        # H (5) / P (6): consume neither
+    return ''.join(chars)
+
+
+def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optional[pysam.FastaFile]" = None) -> Optional[Tuple[str, List[Tuple[int, int]], int, str]]:
     """Build pileup-based consensus across a multi-read cluster (v1.5).
 
     For each reference position covered by ≥ ceil(N/2) reads in the cluster, the
@@ -75,7 +113,7 @@ def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[T
         return None
 
     for read in reads_in_cluster:
-        seq = read.query_sequence
+        seq = restore_eq_seq(read, fasta)
         if seq is None:
             continue
         # Walk M-aligned pairs (excludes I, S, H, N, D)
@@ -141,7 +179,7 @@ def poa_consensus_from_strings(seqs: List[str]) -> Optional[str]:
     return res.cons_seq[0]
 
 
-def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[str]:
+def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optional[pysam.FastaFile]" = None) -> Optional[str]:
     """Build POA consensus sequence across cluster reads (v2 upgrade over pileup).
 
     Operates on the BAM SEQ (in reference orientation) of each read. POA handles
@@ -151,11 +189,12 @@ def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment]) -> Optional[str]
     The consensus needs to be re-aligned to the reference afterward (use mappy)
     to obtain a valid CIGAR — the POA itself doesn't produce reference alignment.
     """
-    seqs = [r.query_sequence for r in reads_in_cluster if r.query_sequence]
+    seqs = [s for r in reads_in_cluster if (s := restore_eq_seq(r, fasta))]
     return poa_consensus_from_strings(seqs)
 
 
-def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment]
+def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment],
+                                fasta: "Optional[pysam.FastaFile]" = None
                                 ) -> Optional[str]:
     """v1.18: strand-split-then-merge POA consensus.
 
@@ -174,10 +213,10 @@ def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment]
     """
     if not HAS_POA or len(reads_in_cluster) < 2:
         return None
-    top_seqs = [r.query_sequence for r in reads_in_cluster
-                if r.is_reverse and r.query_sequence]
-    bot_seqs = [r.query_sequence for r in reads_in_cluster
-                if (not r.is_reverse) and r.query_sequence]
+    top_seqs = [s for r in reads_in_cluster
+                if r.is_reverse and (s := restore_eq_seq(r, fasta))]
+    bot_seqs = [s for r in reads_in_cluster
+                if (not r.is_reverse) and (s := restore_eq_seq(r, fasta))]
 
     # If one strand has only 0-1 reads, can't usefully build a sub-consensus.
     # Fall back to the all-reads POA on the other strand (or both pooled).
