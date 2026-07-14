@@ -7,7 +7,8 @@ Revisit and polish as the work evolves. Working state:
 `dev/ALIGNER_IDEATION_SYNTHESIS.md`; design refinements:
 `dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`.*
 
-**Last updated:** 2026-07-06
+**Last updated:** 2026-07-14 (Phase 5: real-data 32× recall win + the microhomology-drift
+guard *close* + its 8-reviewer audit; see the "Phase 5" section)
 
 ---
 
@@ -184,6 +185,75 @@ raising annotation concordance and lowering it nowhere). The one caveat human ex
 most of the guard's activity there is at *novel/unannotated* junctions that annotation
 alone can't score — which is exactly what the short-read (COMPASS) cross-check is for
 (the next milestone).
+
+### Phase 5 (2026-07) — the real-data win, the general drift problem, and *closing* it
+
+Two big things happened after Phase 4: a **real-data payoff** for the core engine, and a
+**hard, honest fight** to make the safety guard trustworthy for the general case.
+
+**First, the payoff — the discovery engine works on real data.** We ran the motif-blind
+re-placer against an *independent* short-read method (COMPASS-mode, a different sequencing
+technology entirely) on real human data. The result is the headline we'd been chasing:
+the re-placer recovers **~32× more novel (non-canonical) junctions than raw minimap2**
+(0.5% → 17% of an independent truth set), while leaving the textbook-junction accuracy
+essentially untouched. Raw minimap2 flattens ~99.5% of the real novel junctions the
+independent method sees; the re-placer keeps them. This is real-data evidence — not
+simulation — that the *anti-flattening* idea does what it's for. (The honest caveat: the
+absolute recovery number is held down by a cohort mismatch and by short-read noise, so the
+robust claim is the **32× comparison**, not the absolute level.)
+
+**Second, the fight — generalizing the safety guard, and discovering it wasn't safe yet.**
+The Phase-4 guard fixes the *homopolymer* version of boundary-drift (`AAAA` runs). But the
+same trap exists for **any short repeated sequence** next to a junction — a `CAGCAG…`
+repeat, a two-base `ATAT`, etc. can let a real junction slide to a look-alike spot, or let
+a fabricated one appear. So we built the **general ("microhomology") drift guard** — same
+idea, broader trigger. Then we did the thing this project always does: **tried to break it.**
+
+- **A rigorous adversarial audit found the guard only *bounded* the problem, not *closed*
+  it.** Several independent AI reviewers (Opus-Max, run in redundant pairs so a crash can't
+  hide a fault) hammered it. The core finding was sharp and real: the guard as first built
+  was **read-blind** — it decided whether to distrust a boundary move from the *genome*
+  sequence alone, ignoring what the *read* actually said. So it could veto a genuinely real
+  novel junction just because the genome happened to have a repeat nearby. (The same audits
+  also caught **two real bugs** in the detector — treating ambiguous `N` bases as matching,
+  and a masking bug on two-sided moves — which we fixed.)
+- **We measured exactly how bad it was, instead of guessing.** Same discipline as always:
+  build reads that genuinely come from a *real* novel junction sitting next to a repeat, and
+  count how often the guard wrongly vetoes them. Answer: the simple version throws away
+  **~24% of real discovery** — far too much for a tool whose whole job is discovery.
+- **The real fix: look at the read, not just the genome.** The root cause turned out to be
+  that the scorer was quietly *ignoring* ("soft-clipping") the very bases that tell a real
+  junction apart from a fabricated one. We added a signal that looks **exactly at those
+  bases** (a hard-anchored comparison of the read against the two competing placements). It
+  cleanly separates real novel junctions from fabricated drift (**98–99%**), which drops the
+  wrongful-veto rate from **~24% to ~0.4%** while *still* suppressing the fabrication. That
+  is the **"close"** — the general drift problem now has a fix with near-zero cost to real
+  discovery, mirroring what the HP guard achieved for homopolymers.
+- **A bonus finding from being careful.** While extending the fix to the "donor" (5′) side
+  of junctions, we discovered the re-aligner only ever *scores* the "acceptor" (3′) side —
+  so there is **no donor-side problem to fix** (and forcing one in would actually *hurt*
+  real discovery). Investigating before building saved us from shipping a harmful change —
+  the process working again.
+
+**Where this leaves us — and the honest caveat that matters most.** The general guard is
+now built, correct, and validated three ways (unit tests, a ground-truth panel, and an
+8-reviewer adversarial audit). It ships **OFF by default** and is byte-for-byte invisible
+when off. **But every bit of that validation is on junctions we *simulated ourselves*.**
+The guard has *not* yet been proven on real Nanopore data. So the real-world verdict is
+still pending, and it rests on exactly the same gate as everything else: **does it hold on
+real data, cross-checked against the independent short-read (COMPASS) method?** Until that,
+the guard is best understood as **well-engineered insurance** — it only earns its keep *if*
+real data shows fabrication is a problem worth suppressing, and that is a real-data
+decision, not a simulation one.
+
+**The grand-scheme picture.** The native re-aligner's **discovery engine** (motif-blind
+re-placement) is the deliverable, and it now has *both* a simulation win *and* a real-data
+recall win (the 32×). The **guards** on top of it (homopolymer + microhomology drift) are
+**specificity insurance** — they trade a little machinery to avoid fabricating false novel
+junctions. We've now built that insurance to a genuinely high bar, including a real *close*
+of the hardest failure mode. What remains is not more building but **the real-data test**
+that decides whether the insurance is needed at all — the COMPASS short-read cross-check,
+which is the honest next gate for the whole guard track.
 
 ---
 
