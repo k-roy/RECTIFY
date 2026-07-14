@@ -226,9 +226,20 @@ idea, broader trigger. Then we did the thing this project always does: **tried t
   junction apart from a fabricated one. We added a signal that looks **exactly at those
   bases** (a hard-anchored comparison of the read against the two competing placements). It
   cleanly separates real novel junctions from fabricated drift (**98–99%**), which drops the
-  wrongful-veto rate from **~24% to ~0.4%** while *still* suppressing the fabrication. That
-  is the **"close"** — the general drift problem now has a fix with near-zero cost to real
-  discovery, mirroring what the HP guard achieved for homopolymers.
+  wrongful-veto rate from **~24% to ~0.4%** — *for junctions where the tell-tale base is close
+  to the cut.* That is the **in-window "close."**
+- **…but a rigorous 8-reviewer follow-up audit found the close is *not* complete.** The signal
+  can only "see" the distinguishing base if it sits within a fixed window (~28 letters) of the
+  junction. When the look-alike repeat is *longer* than that — long `CAGCAG…` microsatellites,
+  long homopolymers, the kind of near-identical **paralog** sequence around genes like
+  **SMN1/SMN2** — the tell-tale base falls *outside* the window, the signal goes blank, and the
+  guard reverts to wrongly vetoing real discoveries (14–100% loss in that regime). That regime is
+  *exactly* what the guard was built for, so the honest statement is: **the fix closes the
+  short-repeat case and still degrades on the long-repeat one.** The same audit also flagged that
+  we built a slightly *cruder* version of a comparison the aligner's scorer already contains — the
+  cleaner design puts the fix *inside* the scorer rather than bolting a new knob on top. So the
+  close is a real, correct step, but **"solved" is overclaiming it** — and, tellingly, none of it
+  is tested on real data yet.
 - **A bonus finding from being careful.** While extending the fix to the "donor" (5′) side
   of junctions, we discovered the re-aligner only ever *scores* the "acceptor" (3′) side —
   so there is **no donor-side problem to fix** (and forcing one in would actually *hurt*
@@ -250,10 +261,15 @@ decision, not a simulation one.
 re-placement) is the deliverable, and it now has *both* a simulation win *and* a real-data
 recall win (the 32×). The **guards** on top of it (homopolymer + microhomology drift) are
 **specificity insurance** — they trade a little machinery to avoid fabricating false novel
-junctions. We've now built that insurance to a genuinely high bar, including a real *close*
-of the hardest failure mode. What remains is not more building but **the real-data test**
-that decides whether the insurance is needed at all — the COMPASS short-read cross-check,
-which is the honest next gate for the whole guard track.
+junctions. We've built that insurance to a genuinely high bar and *partially* closed its
+hardest failure mode (the short-repeat case; the long-repeat / paralog case still degrades).
+But the audit's real lesson is a **process** one: we built the close before running the one
+test that says whether the fabrication it fixes is even a real problem on real data. So what
+remains is **not more building** — it's **the real-data test**: does fabrication actually
+happen, and at the long-repeat paralog loci (SMN1/SMN2), on real Nanopore data cross-checked
+against the independent short-read (COMPASS) method? That single measurement decides whether
+to finish the guard (with the scorer-level fix) or leave it as dormant, default-off insurance
+and move on to the science. It is the honest next gate for the whole guard track.
 
 ---
 

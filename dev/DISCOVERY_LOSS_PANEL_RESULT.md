@@ -116,7 +116,23 @@ suppression. The earlier "tradeoff-shift, not a close" verdict was an artifact o
 indel-robust signal genuinely closes it. NEXT: wire ed_signal into the refiner as the positional veto-gate
 (the deep fix the user approved), re-validate, re-audit. (seed 2 confirming.)
 
-## ★★★★★ CHECKPOINT 5 — WIRED end-to-end, the CLOSE is shipped (default OFF) (2026-07-13)
+## ⚠ CORRECTION (V5 8-agent audit, 2026-07-14) — "CLOSED" was OVERCLAIMED; it's IN-WINDOW only
+`dev/MICROHOM_AUDIT_V5_SYNTHESIS.md` (close_is_correct=YES, close_is_complete=**NO**). The ~0.4% number
+below is **construction-dependent**. The signal has a **W=28 horizon**: `_positional_signal` only sees the
+discriminating base if it lies within ~28 bp of the junction; on LONGER contiguous microhomology (tandem
+microsatellites (CAG)n, poly-pyrimidine tracts, long HP) both reference windows become identical → signal
+returns 0 → the veto fires → **14–100% discovery loss** — the exact long-microhomology / paralog regime
+(SMN1/SMN2, SNRPN ~6bp / UBA1 ~26bp / PCBP2 ~28bp) the guard TARGETS. So the honest scope is: **closes for
+contiguous microhomology whose discriminating divergence lies within ~28 bp; DEGRADES past that.** Also: my
+`_semiglobal_ed` is a flat-cost (HP-BLIND) reimplementation that disagrees with the scorer's existing HP-aware
+`_score_hp_anchored` in ~34% of HP-adjacent cases; the cleaner fix is SCORER-LEVEL (expose the k=0 anchored
+term), which would DELETE `drift_positional_gate` + the second alignment. **Do NOT expose gate=2** (looks like
+a mild 6.2%/2.1% trade but costs ~45% discovery at d=1 paralog loci). Code is SAFE default-OFF (byte-identical,
+unwired) — nothing to revert; but "CLOSED"→"closed IN-WINDOW". Enabling GATED on a close-ENABLED COMPASS run +
+§4b. Fix backlog: (1) W=28 blind spot (adapt W to repeat span OR sig=0 falls through to margin/cap not veto);
+(2) scorer-level HP-aware refactor; (3) B5/B6 genome-end clamp; (4) long-microsatellite panel arm.
+
+## ★★★★★ CHECKPOINT 5 — WIRED end-to-end (default OFF) — IN-WINDOW close only (see CORRECTION above) (2026-07-13)
 `_positional_signal` (hard-anchored `_semiglobal_ed`) wired into `refine_read_junctions` as
 `drift_positional_gate` (default 0.0 = OFF = byte-identical), threaded through all 4 refine fns. A
 drift-flagged would-be-veto is SPARED when the read's positional signal ≥ gate. TRUE end-to-end through the

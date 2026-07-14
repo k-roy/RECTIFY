@@ -56,6 +56,45 @@ identity auditor CLEARED inertness but explicitly declined to endorse the flip.
   positional-distinctiveness signal, not aggregate delta). Only if all_clear → flip default at the
   audit's recommended (margin, threshold, cap).
 
+### ✅ 8-AGENT AUDIT (V5) DONE → close_is_correct=YES, close_is_complete=NO, enable=GATED-ON-COMPASS (2026-07-14)
+`dev/MICROHOM_AUDIT_V5_SYNTHESIS.md`. 7/8 agents stalled but wrote durable records; both byte-identity-arch +
+both strategic + both independent-remeasure legs' records survived → rich consensus. Verdict:
+- **CORRECT** — signal implemented right (no reachable sign/edge fault; minus-strand OK; `_semiglobal_ed`
+  4000/4000 vs brute-force). Latent B5/B6 genome-end wrong-sign bugs UNREACHABLE on Scer (min 3929bp vs 84
+  needed).
+- **NOT COMPLETE (decisive)** — the ~0.4% is CONSTRUCTION-DEPENDENT. **W=28 horizon:** `_positional_signal`
+  only sees the discriminating base within ~28bp; on longer tandem microhomology / long HP (the SMN1/SMN2
+  paralog + SNRPN/UBA1/PCBP2 regime the guard TARGETS) signal→0→veto fires→**14–100% discovery loss**. Both
+  independent-remeasure auditors, two constructions, same knee at span≈28.
+- **ARCHITECTURE debt (both byte-id auditors + advisor):** `_semiglobal_ed` is a flat-cost HP-BLIND
+  reimplementation of the scorer's existing `_score_hp_anchored` (disagrees ~34% on HP-adjacent); the
+  discrimination BELONGS in `_score_junction` (expose k=0 anchored term) → would DELETE the gate + 2nd align.
+- **SAFE default-OFF** (byte-identical, unwired, inert, 1670 passed + 1 pre-existing missing-fixture error
+  that fails identically on parent). Nothing to revert; "CLOSED"→"closed IN-WINDOW" (docs corrected).
+- **FOOT-GUN:** never expose gate=2 (looks like 6.2%/2.1%; costs ~45% discovery at d=1 paralog loci).
+FIX BACKLOG (all gated on §4b saying the guard is needed — DO NOT do pre-§4b): (1) W=28 blind spot
+(adapt W to repeat span OR sig=0 falls through to margin/cap, not veto); (2) scorer-level HP-aware refactor
+(deletes gate + 2nd align); (3) B5/B6 genome-end clamp; (4) long-microsatellite panel arm; (5) fix the
+pre-existing missing-fixture test (orthogonal). **NEXT PER ADVISOR: §4b — the gate, not more building.**
+
+### ▶ 8-AGENT OPUS-MAX AUDIT (V5) LAUNCHED (2026-07-14, workflow w1celuc3s / run wf_c44c97d5-755)
+Script `dev/microhom_audit_v5.workflow.js`. Per user: **8 Opus-Max, 2 independent per task ×4** →
+consensus. Tasks: (1) signal-correctness (_semiglobal_ed/_positional_signal edge+sign faults, minus-strand,
+acceptor-centric soundness); (2) independent-remeasure (own panel, is 0.4%/4.3% robust or construction-
+dependent); (3) byte-identity + ARCHITECTURE critique (gate vs fixing the scorer soft-clip; 4-param
+complexity); (4) strategic/real-data validity (synthetic-only? net-positive on a default-off discovery tool?
+what must COMPASS show). Retry-on-stall (2). Durable → `dev/MICROHOM_AUDIT_V5_<task>_<A|B>.md` + `_SYNTHESIS`.
+**RESUME on notification:** read `dev/MICROHOM_AUDIT_V5_SYNTHESIS.md` — close_is_correct / close_is_complete /
+worth_enabling / real_data_gate + per-task consensus. If a leg stalled both attempts, relaunch
+(`Workflow({scriptPath:".../microhom_audit_v5.workflow.js", resumeFromRunId:"wf_c44c97d5-755"})`). Then decide:
+fix any signal faults; if correct+complete-on-synthetic but real-data unproven → COMPASS is the gate.
+
+### ✅ DONOR SIDE RESOLVED (2026-07-14, commit a97ff6d) — NOT NEEDED (acceptor-centric refiner)
+`_score_junction` is acceptor-centric (donor/intron_start unused) → refiner never discovers donor-only moves
+→ no donor-side discovery-loss to close; a donor ed-term would be net-HARMFUL (drags genuine acceptor
+cryptics negative on both-boundary moves). Prototyped + confirmed + REVERTED. `_positional_signal` acceptor-
+only by design. The Phase-6 acceptor close is COMPLETE. Test: test_refiner_is_acceptor_centric_donor_unscored.
+
 ### ★ PHASE 6 — DISCOVERY-LOSS PANEL + POSITIONAL CLOSE BUILT (2026-07-13)
 The 4×-stalled load-bearing measurement, done INLINE (`dev/discovery_loss_panel.py`,
 `dev/DISCOVERY_LOSS_PANEL_RESULT.md`): margin=3 alone loses ~24% discovery; cap=2 → ~10%; real cryptics &
