@@ -56,6 +56,36 @@ identity auditor CLEARED inertness but explicitly declined to endorse the flip.
   positional-distinctiveness signal, not aggregate delta). Only if all_clear → flip default at the
   audit's recommended (margin, threshold, cap).
 
+### ✅ §4b THE GATE — DONE: real-data fabrication is REAL (~27% drift among measurable) (2026-07-14)
+Job 33933333 COMPLETED (rc=0). Result in `dev/COMPASS_RECALL_RESULT.md` §4b. Arm-E (HP-guard on / microhom
+OFF) revealed non-canonical junctions vs motif-agnostic short-read: **drift(fabrication) 27.3% / 26.6% /
+23.6%** (≥2/3/5 samp); recovery(win) ~0.5%; inconclusive ~72–76%. Among the ~25% MEASURABLE (recovery+drift),
+**~98% are drift** (58:1). ⇒ **fabrication is REAL and substantial on real SMA data (≫ spike-in 1.2%) → the
+guard track is JUSTIFIED.** Caveats: 72–76% unmeasurable (cohort mismatch); drift≠proof; guard-ON not yet
+tested. LEADS: CACNA2D3=DRIFT(2bp, in-window); UBA1/SNRPN/PCBP2 inconclusive w/ nearest well-supp neighbors at
+53/16/48bp — real drift distances EXCEED the close's W=28 → current close won't catch much of it.
+**NEXT (the definitive test): guard-ON COMPASS** — re-run the refiner with microhom_drift_margin=3/cap=2/
+gate=1 across the panel → re-classify → does the guard CUT the 27% drift WITHOUT dropping the §3 17% recall?
+That + the scorer-level W-fix (for the >28bp drift) are the remaining guard work, now JUSTIFIED by §4b.
+
+### (superseded) ▶ §4b THE GATE — RUNNING (2026-07-14, Sherlock job 33933333, watcher bpci04tol)
+The advisor's #1: the non-circular real-data fabrication rate on the Sumner arm-B revealed non-canonical
+junctions — decides whether the guard track is worth ANYTHING. Fixed the O(142k×per-chrom) `classify_call`
+scan (that timed out) with an O(1) exact-lookup dict + a position-binned canonical-neighbor index →
+`recall_analyze_fast.py` (patch: `patch_4b.py`; same classification, only the data structure changed).
+Running under 48G (`run_4b_fast.sbatch`), sentinel `/scratch/users/kevinroy/sma_recall/.recall4bfast_rc`,
+output `recall_result_fast.txt`.
+**RESUME on watcher notification:** `ssh sherlock 'cat /scratch/users/kevinroy/sma_recall/.recall4bfast_rc;
+tail -40 /scratch/users/kevinroy/sma_recall/recall_result_fast.txt'`. §4b prints, for arm-B revealed
+non-canonical junctions recurrent in ≥2/3/5 LR samples, the split: **recovery** (exact SR support = the WIN),
+**drift** (well-supported canonical SR neighbor within ±30bp, no exact = the fabrication, non-circular),
+**inconclusive** (no SR support = unmeasurable, NOT fabrication). The **drift %** = the real-data fabrication
+estimate to compare vs the spike-in ~1.2%. If job FAILED/OOM: bump `--mem=64G`, resubmit. If ssh auth drops:
+ask Kevin to re-open (never tear down ControlMaster).
+BRANCH ON THE NUMBER: drift high + at long-microhom paralog loci → guard justified but current close degrades
+there (W=28) → do the scorer-level fix; drift ~0 → guard is dormant insurance, pivot to SMA biology. (This is
+the guard-OFF arm-B fabrication rate; the fuller close-ENABLED COMPASS run is the follow-up IF drift is real.)
+
 ### ✅ 8-AGENT AUDIT (V5) DONE → close_is_correct=YES, close_is_complete=NO, enable=GATED-ON-COMPASS (2026-07-14)
 `dev/MICROHOM_AUDIT_V5_SYNTHESIS.md`. 7/8 agents stalled but wrote durable records; both byte-identity-arch +
 both strategic + both independent-remeasure legs' records survived → rich consensus. Verdict:
