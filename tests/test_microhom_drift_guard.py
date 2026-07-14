@@ -324,7 +324,7 @@ def test_positional_signal_favours_the_real_cryptic():
     r = _pg_read()
     psig = _positional_signal(PG_GENOME, r.query_sequence, 40, PG_NE, PG_JE)
     assert psig is not None and psig > 0
-    # undefined (None) when the acceptor did not move
+    # undefined (None) when the acceptor did not move (acceptor-centric refiner; donor is not scored)
     assert _positional_signal(PG_GENOME, r.query_sequence, 40, PG_NE, PG_NE) is None
 
 
@@ -344,3 +344,15 @@ def test_positional_gate_byte_identical_when_off():
     # gate default 0.0 must not change the veto vs omitting it
     assert _pg_acc(microhom_drift_margin=8.0) == _pg_acc(microhom_drift_margin=8.0,
                                                          drift_positional_gate=0.0)
+
+
+def test_refiner_is_acceptor_centric_donor_unscored():
+    """The positional signal is acceptor-only BY DESIGN: _score_junction ignores the donor
+    (intron_start), so a donor-only move never scores better and is never discovered — there
+    is no donor-side discovery-loss to close (see _positional_signal docstring)."""
+    from rectify.core.splice.junction_scoring import _score_junction
+    g = ("T" * 20 + "ACGTACGTACGTACGTAC" + "GT" + "C" * 80 + "AG"
+         + "ACGTACGTACGTACGTACGT" + "T" * 20)
+    a = _score_junction("ACGTACGTACGTACGT", 5, 40, 120, g, 0.25, 15, 10, current_ns=40)[0]
+    b = _score_junction("ACGTACGTACGTACGT", 5, 60, 120, g, 0.25, 15, 10, current_ns=60)[0]
+    assert a == b            # same acceptor (intron_end=120), different donor → identical score

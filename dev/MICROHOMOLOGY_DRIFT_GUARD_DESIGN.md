@@ -142,3 +142,20 @@ Built the discovery-loss panel INLINE (the 4×-stalled load-bearing measurement;
 REMAINING before enable: (i) donor/both-boundary positional signal (exon1 side) — currently conservative;
 (ii) re-audit the close (redundant 2-per-task Opus-Max, which cracked the stalls); (iii) COMPASS real-data
 confirmation (independent prerequisite). Guard STILL default OFF.
+
+## ★ PHASE 6b — DONOR SIDE: investigated → NOT NEEDED (refiner is acceptor-centric) (2026-07-14)
+Handling the donor side (user request) revealed a load-bearing architectural fact: **`_score_junction` is
+ACCEPTOR-CENTRIC** — `intron_start` (the donor) is unused; a candidate's score depends only on the exon2
+rescue at `intron_end` (the acceptor). Verified: same acceptor + different donor → identical score
+(`test_refiner_is_acceptor_centric_donor_unscored`). Consequences:
+- The refiner **never discovers a donor-only move** (both candidates tie → `is_alt` keeps the incumbent).
+  So there is **NO donor-side discovery-loss to close** — the guard cannot wrongly veto a donor-cryptic
+  discovery because no such discovery happens. The re-placer refines the ACCEPTOR (3'SS); the donor (5'SS)
+  is trusted from the aligner.
+- A donor branch would be **net-HARMFUL**: for a both-boundary candidate the read's exon1 matches the
+  aligner-placed (incumbent) donor, so a donor edit-distance term goes NEGATIVE and could drag a genuine
+  acceptor cryptic's positive signal DOWN → wrongly veto a real discovery. (I prototyped the summed donor
+  branch, confirmed the negative-drag, and REVERTED it.)
+⇒ **`_positional_signal` is acceptor-only BY DESIGN** (docstring records why). The acceptor close (Phase 6)
+is the COMPLETE close for the discovery-loss fault. Donor item RESOLVED (removed from the remaining list).
+Remaining before enable: (ii) re-audit [next: 8 Opus-Max]; (iii) COMPASS real-data. Guard STILL default OFF.

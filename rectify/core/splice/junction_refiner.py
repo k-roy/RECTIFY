@@ -606,9 +606,18 @@ def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: i
     read evidence for the move — the discriminating bases the scorer's free-``k`` soft-clip escape
     HIDES from ``delta_improve``.  Hard-anchored (no free-prefix split) is exactly what removes that
     escape (panel: cap+ed(>0) → ~0.3% discovery loss at ~cap-alone fabrication; 98–99% balanced
-    separation of real cryptics vs error-driven drift in the delta overlap band).  Returns ``None``
-    when the acceptor did not move (exon2 discrimination undefined) or the rescue is empty — callers
-    then leave the veto decision to the margin/cap alone (conservative)."""
+    separation of real cryptics vs error-driven drift in the delta overlap band).
+
+    ACCEPTOR-ONLY by design.  ``_score_junction`` is acceptor-centric (``intron_start`` is unused →
+    the donor does not affect a candidate's score), so the refiner never discovers a donor-only move
+    (both candidates tie → is_alt keeps the incumbent) — there is no donor-side discovery-loss to
+    close.  For a both-boundary candidate the read's exon1 matches the aligner-placed (incumbent)
+    donor, so a donor edit-distance term would go NEGATIVE and could drag a genuine acceptor cryptic's
+    positive signal down, wrongly vetoing a real discovery.  So the discrimination lives entirely on
+    the acceptor/exon2 side that actually drives placement.  (See DISCOVERY_LOSS_PANEL_RESULT.md.)
+
+    Returns ``None`` when the acceptor did not move (exon2 discrimination undefined) or the rescue is
+    empty — callers then leave the veto to the margin/cap alone (conservative)."""
     if new_je == ne:
         return None
     rescue = q[q_split:q_split + W]
