@@ -1278,6 +1278,37 @@ def _apply_junction_replacement(
         )
         return False
 
+    # INVARIANT: refuse a BOTH-BOUNDARY move that increases the read's indel burden.
+    #
+    # The general path preserves the query span by re-labelling boundaries with
+    # COMPENSATING I/D ops — it never re-aligns the flank.  When BOTH the donor and the
+    # acceptor shift (delta_start != 0 AND delta_end != 0) and the move is not a clean
+    # microhomology slide (those return early via the fast path), it can only realize
+    # the move by adding compensating indel on BOTH flanks: a pure k-bp slide →
+    # I(k) … N … D(k), an asymmetric both-shift → D(a) … N … D(b).  The exon SEQUENCE
+    # stays where the aligner put it while only the N-op COORDINATE moves — fabricating
+    # a false junction position (and the downstream indel corrector mangles it further,
+    # not better — see the fast-path note above).  On real ONT DRS this was ~85–95% of
+    # "moved" reads at the SMA leads (dev/REPLACER_COMPENSATING_INDEL_BUG.md), a phantom
+    # 6–48 bp "drift".  Refinement corrects ONE splice site at a time; a simultaneous
+    # donor+acceptor relocation via compensating indels is the fabrication signature.
+    #
+    # Single-boundary corrections (donor-only or acceptor-only) are NOT touched — they
+    # move one splice site and the indel they add represents a real intron-length change
+    # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
+    # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
+    # (raw) placement — the conservative, correct outcome.
+    if delta_start != 0 and delta_end != 0:
+        old_indel = sum(l for op, l in cigar     if op in (_I, _D))
+        new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
+        if new_indel > old_indel:
+            logger.debug(
+                "refine_junction: both-boundary move adds compensating indel "
+                "(%d → %d) for read %s — unsupported relocation, refusing",
+                old_indel, new_indel, read.query_name,
+            )
+            return False
+
     read.cigartuples = new_cigar
     if new_ref_start != read.reference_start:
         read.reference_start = new_ref_start
