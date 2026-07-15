@@ -74,8 +74,48 @@ python render_single.py          # single moved read per locus, both placements,
 Figures: `single_{PCBP2,SNRPN,UBA1,CACNA2D3}_SMA_191.png`. The PCBP2 panel shows the N2805 + black-D-bar
 mechanism directly (re-placer exon2 lands at the same x as raw, with a 39 bp deletion bridging the slid N).
 
-## Next
+## FIX + §4b RE-RUN RESULT (2026-07-15)
 
-- [ ] Locate the I/D-emitting code path (bam_writer CIGAR stitch vs junction_refiner move reconstruction).
-- [ ] Re-run §4b fabrication classification on the TRUE acceptor metric; report corrected fabrication %.
-- [ ] Decide guard priority in light of corrected (much lower) genuine-drift fraction.
+Fixed in `_apply_junction_replacement` (commit e40ca00): refuse a BOTH-boundary move that RAISES the
+read's I+D burden. Genome-wide over the 13-sample panel, **~94% of the refiner's junction moves were the
+phantom** (reverted to raw); ~5.5% legit single-boundary, ~0.4% clean microhomology slide.
+
+§4b re-run (recall_analyze_v2.py `--revealed-from-lrdir`, matched filter OLD lr_junc vs FIXED
+lr_junc_fixed). **The fix nearly eliminates the fabrication while keeping — and PURIFYING — the genuine
+discovery signal:**
+
+| §4b (≥2 samples)          | OLD (buggy) | FIXED   | change |
+|---------------------------|-------------|---------|--------|
+| revealed non-canonical    | 170,066     | 23,277  | −86%   |
+| drift (fabrication)       | 39,933      | 3,488   | **−91%** |
+| recovery (genuine, SR-exact)| 8,101     | 1,462   | −82% (mostly phantom coincidences removed) |
+| drift RATE                | 23.5%       | 15.0%   |        |
+
+| §4b (≥5 samples, high-conf) | OLD    | FIXED  |        |
+|-----------------------------|--------|--------|--------|
+| revealed non-canonical      | 23,235 | 4,983  | −79%   |
+| recovery RATE               | 5.7%   | **10.8%** | ~2× precision |
+| drift RATE                  | 18.6%  | **9.1%**  | ~½     |
+
+§3 recall: arm-B recall **17.5% → 4.1%** (the inflated 17.5% was phantom); still ~8× over raw-mm2 (0.5%).
+SR-canonical control unchanged (0.946 both) — the fix does not touch canonical placement.
+
+Interpretation: arm-B's apparent non-canonical "discovery" was ~80–90% CIGAR fabrication (phantom N-op
+moves the read never supported). The fix removes it; the surviving reveals are ~2× more likely to be
+real recoveries and ~½ as likely to be drift. A residual ~9–15% drift remains (single-boundary /
+clean-slide moves to a canonical neighbor) — that is the genuine target for the microhomology guard /
+positional close, now a small-set problem rather than the dominant signal.
+
+NOTE: OLD_matched (170,066 revealed, 23.5% drift) differs from the published recall_result_fast.txt
+(142,498, 27.3%) because the matched re-run rebuilds the revealed set from lr_junc *.refined.junc.tsv
+(canonical==0) rather than the original panel_deep/*.revealed_noncanon.tsv generator. OLD_matched is the
+correct apples-to-apples baseline for the fix; the published number used a different generator.
+
+Result files (Sherlock): `/scratch/users/kevinroy/sma_recall/recall_result_{OLD,FIXED}_matched.txt`.
+
+## Done / Next
+
+- [x] Located the I/D-emitting code path: `_apply_junction_replacement` general path (junction_refiner.py).
+- [x] Fixed (commit e40ca00) + regression tests; §4b re-run confirms −91% fabrication.
+- [ ] (Optional) Full through-the-refiner re-run for publication (reconstruct the panel driver).
+- [ ] Re-evaluate the microhomology guard / positional close against the residual 9–15% drift (small set).
