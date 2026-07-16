@@ -152,6 +152,7 @@ def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
     seq_map: Dict[str, int] = {}   # sequential fallback
     n_dup = 0
     seq_counter = 0
+    n_records = 0                  # total reads seen (for duplicate-QNAME guard)
 
     with opener(reads_path, 'rt') as fh:
         while True:
@@ -171,6 +172,7 @@ def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
                 continue
             qname, rn = parse_rn_from_fastq_header(header)
             qname = qname[:254]
+            n_records += 1
             if rn is not None:
                 if qname in tag_map and tag_map[qname] != rn:
                     n_dup += 1
@@ -188,10 +190,28 @@ def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
             )
         return tag_map
 
-    # No RN:i: tags found — assign sequential integers
+    # No RN:i: tags found — assign sequential integers. But if the FASTQ has
+    # pervasive DUPLICATE QNAMEs, the per-QNAME sequential map assigns the SAME
+    # RN to distinct molecules, and the RN-keyed K-way consensus merge then
+    # collapses them to one record — silently dropping the rest (the ~87% cDNA
+    # align2 loss; see planning/251, /250a-c). Fail LOUD instead: distinct-name
+    # << record-count is never legitimate for a consensus/aligner input.
+    n_distinct = len(seq_map)
+    if n_records and (n_records - n_distinct) / n_records > 0.01:
+        raise RuntimeError(
+            f"FASTQ {reads_path}: {n_records} reads but only {n_distinct} distinct "
+            f"QNAMEs ({n_records - n_distinct} duplicates, "
+            f"{100 * (n_records - n_distinct) / n_records:.1f}%). Assigning "
+            "sequential RN per QNAME would give distinct molecules the same RN and "
+            "the RN-keyed consensus merge would silently COLLAPSE them (dropping "
+            "reads). Root cause is non-globally-unique read names — e.g. per-region "
+            "`rectify correct-cdna --region <chr>` output concatenated without a "
+            "region prefix. Regenerate with globally-unique names (the --region "
+            "path now prefixes cluster names with the region; see planning/251)."
+        )
     logger.info(
         "FASTQ %s: no RN:i tags found; assigned sequential RN for %d reads",
-        reads_path, len(seq_map),
+        reads_path, n_distinct,
     )
     return seq_map
 

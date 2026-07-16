@@ -64,7 +64,11 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
         read_subtype = rec.get_tag("XY")
         xc = int(rec.get_tag("XC"))
         xf = int(rec.get_tag("XF"))
-    except KeyError:
+    except (KeyError, ValueError):
+        # KeyError: an aligner (uLTRA) that didn't propagate the FASTQ comment.
+        # ValueError: a colliding non-cDNA tag (uLTRA emits XC:Z:NO_SPLICE) on a
+        # molecule with no minimap2 sibling to overwrite it. Either way the read
+        # has no valid cDNA metadata -> drop it cleanly instead of crashing.
         return None
 
     chrom = rec.reference_name

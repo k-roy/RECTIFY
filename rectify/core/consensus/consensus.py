@@ -345,6 +345,55 @@ def _parse_fastq_comment_tags(comment: str) -> List[Tuple[str, str, object]]:
     return tags
 
 
+_CDNA_COMMENT_TAGS = ('XU', 'XO', 'XT', 'XY', 'XC', 'XF', 'XM', 'XB', 'XR', 'XA')
+
+
+def _restore_comment_tags_from_siblings(best_read, aligner_reads):
+    """Ensure the consensus winner carries the authoritative cDNA FASTQ-comment
+    aux tags, copying them from a sibling aligner's record if the winner lacks
+    them — so a read another aligner mapped is NEVER dropped downstream just
+    because the *winning* aligner did not propagate the FASTQ comment.
+
+    The cDNA Stage-1 writer puts per-molecule metadata (XU=UMI, XO=orient,
+    XT/XY=read type, XC=cluster_size, XF=full-length tier, +XM/XB/XR/XA) on the
+    FASTQ comment; these reach the BAM ONLY via an aligner run with FASTQ-comment
+    pass-through (minimap2 / minimap2-family presets with ``-y``). A winner from a
+    junction aligner that does not pass FASTQ comments (uLTRA) either LACKS these
+    tags or carries its OWN colliding tags — uLTRA emits XA/XC with splice
+    semantics (e.g. ``XC:Z:NO_SPLICE``), which then crash cdna-analyze's
+    ``int(XC)`` and mis-key downstream joins.
+
+    Robust for ANY aligner combination (not hardcoded to minimap2): the UMI tag
+    ``XU`` is emitted only by the Stage-1 comment (uLTRA never produces it), so a
+    record carrying ``XU`` is an authoritative comment-propagating source. If the
+    winner already carries ``XU`` it is authoritative and left untouched; else we
+    copy the full comment-tag set from a sibling that carries ``XU`` (preferring
+    ``minimap2`` for determinism), OVERWRITING any colliding tags on the winner.
+    If no sibling carries ``XU`` (a rare molecule mapped only by a non-propagating
+    aligner) the winner is left as-is and cdna-analyze drops it via its defensive
+    tag guard.
+    """
+    if best_read.has_tag('XU'):
+        return  # winner is itself from a comment-propagating aligner
+    # Pick an authoritative source sibling: any record with XU, minimap2 first.
+    source = None
+    ordered = sorted(
+        (a for a in aligner_reads if aligner_reads[a] is not None),
+        key=lambda a: (a != 'minimap2', a),
+    )
+    for a in ordered:
+        rec = aligner_reads[a]
+        if rec is not best_read and rec.has_tag('XU'):
+            source = rec
+            break
+    if source is None:
+        return
+    for t in _CDNA_COMMENT_TAGS:
+        if source.has_tag(t):
+            val, vt = source.get_tag(t, with_value_type=True)
+            best_read.set_tag(t, val, value_type=vt)
+
+
 def _restore_sidecar_tags(read: pysam.AlignedSegment, read_num_sidecar) -> None:
     """Restore FASTQ-comment aux tags from a read-num sidecar, if available."""
     if read_num_sidecar is None:
@@ -414,6 +463,66 @@ def _check_read_name_compatibility(
                 )
 
 
+def _detect_duplicate_molecule_names(
+    bam_paths: Dict[str, str], use_rn_key: bool, sample: int = 200000
+) -> None:
+    """Fail loud on the duplicate-molecule-name pathology that silently
+    collapses the K-way merge.
+
+    Both the integer-RN key and the normalized-QNAME key are derived 1:1 from
+    the read name, so a Stage-1 FASTQ whose ``cluster_<cid>`` names collide
+    across regions (e.g. per-chromosome ``correct-cdna --region`` output
+    concatenated without a region prefix) makes DISTINCT molecules share one
+    merge key. The merge then collapses ~N distinct molecules to one output
+    record and drops the rest — historically ~87% of reads (see planning/251,
+    /250a-c). The fix is globally-unique Stage-1 names; this guard ensures a
+    regression fails immediately instead of silently.
+
+    Detection is cheap and specific: scan up to ``sample`` primary reads from
+    one name-sorted input BAM (colliding names are ADJACENT under name-sort) and
+    flag names that appear on ≥2 UNPAIRED primary records at DIFFERENT
+    (reference, position). Multimappers are excluded (only primary reads are
+    iterated; the cDNA presets run ``--secondary=no``); paired reads are exempt
+    (R1/R2 legitimately share a name and are mate-split downstream). Raises when
+    >1% of the sampled distinct names collide to distinct loci.
+    """
+    if not bam_paths:
+        return
+    probe_path = next(iter(bam_paths.values()))
+    name_loci: Dict[object, set] = defaultdict(set)
+    n_seen = 0
+    with pysam.AlignmentFile(probe_path, 'rb') as bam:
+        for read in _filtered_read_iterator(bam):
+            if read.is_paired:
+                return  # paired data: name-sharing is expected; guard N/A
+            key = _merge_key(read, use_rn_key)
+            if key is None:
+                continue
+            name_loci[key].add((read.reference_id, read.reference_start))
+            n_seen += 1
+            if n_seen >= sample:
+                break
+    n_names = len(name_loci)
+    if n_names == 0:
+        return
+    n_collide = sum(1 for loci in name_loci.values() if len(loci) > 1)
+    frac = n_collide / n_names
+    if frac > 0.01:
+        raise RuntimeError(
+            "Duplicate molecule names detected in the consensus input "
+            f"({probe_path}): {n_collide}/{n_names} ({100 * frac:.1f}%) of the "
+            f"first {n_seen} primary read names map to ≥2 distinct genomic loci. "
+            "The K-way consensus merge keys on the read name/RN and would "
+            "silently COLLAPSE these distinct molecules into one record "
+            "(dropping the rest — the ~87% cDNA align2 loss). Root cause is "
+            "non-globally-unique Stage-1 consensus names — e.g. per-region "
+            "`rectify correct-cdna --region <chr>` output concatenated without a "
+            "region prefix. Regenerate Stage-1 with globally-unique names "
+            "(fixed: the --region path now prefixes cluster names with the "
+            "region; see planning/251) and re-run align."
+        )
+
+
 def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     """
     K-way merge across name-sorted BAMs, yielding all alignments per read.
@@ -428,6 +537,7 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
     else:
         _check_read_name_compatibility(bam_paths)
         logger.info("Consensus K-way merge: using normalized QNAME keys")
+    _detect_duplicate_molecule_names(bam_paths, use_rn_key)
 
     bams = {}
     iterators = {}
@@ -705,6 +815,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 if result.false_junction_removed:
                     best_read.set_tag('Xv', 1)
                 _restore_sidecar_tags(best_read, read_num_sidecar)
+                _restore_comment_tags_from_siblings(best_read, aligner_reads)
                 out_bam.write(best_read)
 
 

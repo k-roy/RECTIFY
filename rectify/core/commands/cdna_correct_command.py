@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import logging
+import re
 import subprocess
 import time
 from collections import defaultdict
@@ -52,6 +53,25 @@ from rectify.core.cdna.umi import canonical_umi
 
 
 log = logging.getLogger("cdna_correct")
+
+
+def _region_cluster_prefix(region: Optional[str]) -> str:
+    """Stage-1 cluster-name prefix that makes per-region output globally unique.
+
+    The bare ``cluster_<cid>`` counter restarts at 0 in every ``correct-cdna``
+    invocation, so per-region (per-chromosome) runs whose FASTQs are later
+    concatenated for align2 collide (``cluster_0`` from chrI vs chrII vs …). The
+    align2 K-way consensus merge keys on the name/RN and would collapse those
+    distinct molecules to one record (the ~87% cDNA align2 loss; see
+    planning/251, /250a-c). Prefixing with the region makes concatenated names
+    globally unique. Sanitized to a normalize-safe token so ``chrI:1-1000`` ->
+    ``cluster_chrI_1_1000`` (not ``cluster_chrI:1-1000``), which
+    ``_normalize_bam_read_name`` leaves intact.
+    """
+    if not region:
+        return "cluster"
+    tok = re.sub(r"[^A-Za-z0-9]+", "_", str(region)).strip("_")
+    return f"cluster_{tok}" if tok else "cluster"
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +346,22 @@ def run(args) -> int:
         else:
             log.info("Multi-read cluster consensus: pileup-style (substitution-corrective only)")
 
+        # When restricted to a single region, namespace cluster names with the
+        # region so that per-region invocations (the production per-chromosome
+        # `correct-cdna --region chrX` pattern) produce GLOBALLY-UNIQUE read
+        # names after the per-region FASTQs are concatenated for align2. Without
+        # this the bare `cluster_<cid>` counter restarts at 0 in every region and
+        # the concatenated FASTQ collides ~7.5-way; the align2 K-way consensus
+        # merge then keys on the (colliding) name/RN and collapses ~7.5 distinct
+        # molecules to one, silently dropping ~87% of the reads (see planning/251,
+        # /250a-c). The internal multi-region parallel path already prefixes with
+        # region_id (_cdna_region_task); this makes the external single-region
+        # path consistent.
+        _cluster_prefix = _region_cluster_prefix(getattr(args, "region", None))
         fastq_stats = write_stage1_fastq(args.bam, out_fastq, clusters, umi_canon,
                                           cluster_xf_tier, cluster_tail_len,
                                           use_poa=use_poa,
+                                          cluster_name_prefix=_cluster_prefix,
                                           strand_aware_consensus=args.strand_aware_consensus,
                                           reference=args.reference)
         log.info("  wrote %d records (%d singletons, %d pileup, %d rep fallback) in %.1fs",
