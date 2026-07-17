@@ -673,6 +673,26 @@ def _restore_sequence_from_aligner_reads(
     )
 
 
+def _credit_tied_aligners(stats, result) -> None:
+    """Credit every aligner tied for the top junction score in the win tally.
+
+    On a score tie, select.py picks a single ``best_aligner`` via an arbitrary
+    ASCII-name fallback, but per Kevin's directive the tally must keep ALL tied
+    top aligners — so ``aligner_wins_*`` reflects "was among the top-scoring
+    aligners", not one arbitrary winner. ``tied_aligners == [best_aligner]`` on a
+    unique win, so single-winner reads (and the empty-alignments degenerate case,
+    ``tied_aligners == []`` / ``best_aligner == 'none'``, handled by the fallback)
+    are counted exactly as before; an N-way tie credits all N. This can make
+    ``by_aligner`` sum to >100% of reads — ``stats['tied_score']`` separately
+    counts the multi-credited reads.
+
+    Tally-only: this does NOT change which record is written to the consensus BAM
+    (``best_aligner`` alone still selects the written alignment).
+    """
+    for aligner in (result.tied_aligners or [result.best_aligner]):
+        stats['by_aligner'][aligner] += 1
+
+
 def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None, tiebreak='rectify'):
     """Process a batch of reads and write best alignments to output BAM."""
     if use_chimeric:
@@ -777,7 +797,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 stats['5prime_rescued'] += 1
             if result.n_tied_score > 1:
                 stats['tied_score'] += 1
-            stats['by_aligner'][result.best_aligner] += 1
+            _credit_tied_aligners(stats, result)
             stats['by_aligner_combo'][frozenset(result.aligners_compared)] += 1
 
             if result.best_aligner in aligner_reads:
