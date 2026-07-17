@@ -19,8 +19,11 @@ deSALT/gapmm2/mapPacBio can report a reference position AT or PAST the chromosom
 functions indexed `chrom_seq[first_rp]` / `chrom_seq[rp]` without bound-checking (unlike the guarded scan at
 line ~238/556 which already does `0 <= x < len(chrom_seq)`). FIX: bound-guard `first_rp` (only fire the terminal
 gate when in-range) and `continue` on any out-of-range/None `rp` in the scan loop, in BOTH walkback functions.
-Defensive-only (skips positions that would crash; cannot change correct-path behavior). H2 overlay
-`rectify_patched_250` patched identically to unblock the run-all analyze step.
+Defensive-only (skips positions that would crash; cannot change correct-path behavior). H2 overlay `rectify_patched_250` patched identically to unblock the run-all analyze step.
+SECOND bug exposed after that fix: `get_aligned_pairs(matches_only=False)` on a pathological deSALT/mapPacBio
+alignment with a huge reference span → `MemoryError` (pysam materialises every intron/deletion gap). FIX:
+`matches_only=True` (behaviour-identical — the code already filtered to both-not-None positions) so pysam
+never builds the giant list. Both walkback functions.
 
 # AGENT_FIXES.md
 

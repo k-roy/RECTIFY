@@ -156,7 +156,10 @@ def walkback_3prime(
 
     pairs = [
         (qp, rp)
-        for qp, rp in read.get_aligned_pairs(matches_only=False)
+        # matches_only=True yields exactly the both-not-None (M/=/X) positions the filter below keeps,
+        # but WITHOUT pysam materialising every intron/deletion gap — avoids MemoryError on pathological
+        # multi-aligner (deSALT/mapPacBio) alignments with huge reference spans. Behaviour-identical.
+        for qp, rp in read.get_aligned_pairs(matches_only=True)
         if qp is not None and rp is not None
     ]
     if not pairs:
@@ -232,7 +235,10 @@ def walkback_3prime_with_qpos(
 
     pairs = [
         (qp, rp)
-        for qp, rp in read.get_aligned_pairs(matches_only=False)
+        # matches_only=True yields exactly the both-not-None (M/=/X) positions the filter below keeps,
+        # but WITHOUT pysam materialising every intron/deletion gap — avoids MemoryError on pathological
+        # multi-aligner (deSALT/mapPacBio) alignments with huge reference spans. Behaviour-identical.
+        for qp, rp in read.get_aligned_pairs(matches_only=True)
         if qp is not None and rp is not None
     ]
     if not pairs:
