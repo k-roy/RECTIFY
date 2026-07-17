@@ -27,6 +27,25 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# The paired-end short-read COMPASS panel (the 111-adjudication set): the aligner
+# set that `--short-read --read2` expands to. STAR and HISAT2 each appear twice —
+# once in their canonical default mode and once in a non-canonical mode
+# (--scoreGapNoncan 0 / --pen-noncansplice 0) — so the consensus pool contains
+# both a canonical-biased and a non-canonical-tolerant call per read.
+#
+# Single source of truth: `run-all` (run/stages.py) imports this so its panel can
+# never drift from `align`'s. Order is significant only for logging/reporting.
+COMPASS_PE_ALIGNERS = [
+    'bbmap',
+    'STAR_default',
+    'STAR_noncanonical',
+    'HISAT2_default',
+    'HISAT2_noncanonical',
+    'magicblast',
+    'gsnap',
+]
+
+
 def _commit_indexed_bam(temp_bam: Path, final_bam: Path, index_runner) -> None:
     """Index a temporary BAM before atomically replacing the final BAM and BAI."""
     temp_bai = Path(str(temp_bam) + '.bai')
@@ -393,9 +412,7 @@ def run_align(args: argparse.Namespace) -> int:
         if getattr(args, 'short_read', False):
             if getattr(args, 'read2', None):
                 # Paired short-read → full COMPASS panel (the 111-adjudication set)
-                aligners = ['bbmap', 'STAR_default', 'STAR_noncanonical',
-                            'HISAT2_default', 'HISAT2_noncanonical',
-                            'magicblast', 'gsnap']
+                aligners = list(COMPASS_PE_ALIGNERS)
             else:
                 aligners = ['bbmap', 'bwa']
         else:

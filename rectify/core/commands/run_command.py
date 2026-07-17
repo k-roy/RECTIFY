@@ -51,6 +51,7 @@ Date: 2026-03-28
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Re-exports for backwards compatibility with batch_command.py and
 # tests/test_run_command_wiring.py, which reach in via
@@ -87,6 +88,7 @@ from .run.chunked_batch import _generate_chunked_pipeline  # noqa: F401
 __all__ = [
     'run',
     'create_run_parser',
+    '_validate_paired_end_args',
     # Backwards-compat re-exports
     '_bam_has_md_tags',
     '_collect_per_aligner_bams',
@@ -110,6 +112,64 @@ __all__ = [
 ]
 
 
+def _validate_paired_end_args(args: argparse.Namespace) -> Optional[str]:
+    """Validate the paired-end short-read (--read2) argument combination.
+
+    Returns an error message describing the first problem found, or None when
+    the combination is valid (including the common case of no --read2 at all).
+
+    Kept pure (no I/O, no sys.exit) so it is directly unit-testable: input-type
+    detection is extension-based, so no file needs to exist.
+    """
+    read2 = getattr(args, 'read2', None)
+    if read2 is None:
+        return None
+
+    if not getattr(args, 'short_read', False):
+        return (
+            "--read2 requires --short-read. Paired-end alignment is only "
+            "supported for short-read data (the COMPASS panel); long-read "
+            "protocols (DRS / PCR-cDNA) are single-end."
+        )
+
+    if getattr(args, 'manifest', None):
+        return (
+            "--read2 cannot be combined with --manifest: the manifest schema "
+            "(sample_id, path, condition) has no mate-2 column, so a single "
+            "--read2 cannot describe multiple samples. Run each paired sample "
+            "as its own `rectify run-all --short-read --read2 R2.fastq.gz "
+            "R1.fastq.gz` invocation."
+        )
+
+    input_path = getattr(args, 'input', None)
+    if input_path is not None:
+        from ..align.preprocess import detect_input_type
+        itype = detect_input_type(Path(str(input_path)))
+        if itype in ('bam', 'sam'):
+            return (
+                f"--read2 is not valid with an aligned {itype.upper()} input "
+                f"({input_path}): mates are already paired inside the "
+                f"{itype.upper()}. Pass the R1 FASTQ as the positional input "
+                f"to align from reads, or drop --read2 to correct the "
+                f"{itype.upper()} as-is."
+            )
+
+    if getattr(args, 'chunked_alignment', False):
+        return (
+            "--read2 is not supported with --chunked-alignment: the chunked "
+            "generator's alignment arrays are single-end/long-read only and "
+            "would silently drop R2. For a chunked paired-end COMPASS run use "
+            "the dedicated generator instead:\n"
+            "    rectify split R1.fastq.gz --read2 R2.fastq.gz --generate-slurm "
+            "--short-read \\\n"
+            "        -n <n_chunks> -o <chunks_dir> --genome <genome.fa> "
+            "--annotation <genes.gff>\n"
+            "which emits per-chunk COMPASS align+consensus array scripts."
+        )
+
+    return None
+
+
 def run(args: argparse.Namespace) -> None:
     """Dispatch to single-sample or multi-sample pipeline."""
     from rectify.slurm import set_thread_limits
@@ -121,6 +181,11 @@ def run(args: argparse.Namespace) -> None:
             "Provide one or the other.",
             file=sys.stderr,
         )
+        sys.exit(1)
+
+    _pe_error = _validate_paired_end_args(args)
+    if _pe_error:
+        print(f"ERROR: {_pe_error}", file=sys.stderr)
         sys.exit(1)
 
     # --chunked-alignment: generate scripts and exit (don't run inline),
@@ -201,6 +266,10 @@ def create_run_parser(subparsers):
       # Single sample from pre-aligned BAM (skips alignment)
       rectify run-all sample.bam --Scer -o results/sample/
 
+      # Paired-end short read (Illumina) — full COMPASS panel
+      rectify run-all R1.fastq.gz --short-read --read2 R2.fastq.gz \\
+      --genome genome.fa --annotation genes.gff -o results/sample/
+
       # Multi-sample from manifest (parallel correction + combined DESeq2)
       rectify run-all --manifest manifest.tsv --Scer -o results/
 
@@ -280,10 +349,33 @@ def create_run_parser(subparsers):
         action='store_true',
         default=False,
         help=(
-            'Input is short-read data (Illumina/Aviti ≤150 bp). Uses bbmap + bwa '
-            'instead of the long-read aligner panel (minimap2/mapPacBio/gapmm2) and '
+            'Input is short-read data (Illumina/Aviti ≤150 bp). Single-end: uses '
+            'bbmap + bwa. Paired-end (with --read2): uses the full COMPASS panel '
+            '(bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap). Either way this '
+            'replaces the long-read aligner panel (minimap2/mapPacBio/gapmm2) and '
             'disables poly(A)-tail trimming, A-tract correction, and indel modules.'
         ),
+    )
+    run_parser.add_argument(
+        '-2', '--read2',
+        dest='read2',
+        type=Path,
+        default=None,
+        help=(
+            'Mate-2 (R2) FASTQ for paired-end short-read alignment. Requires '
+            '--short-read and a FASTQ positional input (R1). Selects the full '
+            'COMPASS panel (bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap) run '
+            'paired, with COMPASS-tiebreak consensus. Not supported with '
+            '--manifest or --chunked-alignment.'
+        ),
+    )
+    run_parser.add_argument(
+        '--read-length',
+        dest='read_length',
+        type=int,
+        default=150,
+        help='Read length for STAR sjdbOverhang / index selection (default: 150). '
+             'Only used by the paired-end COMPASS panel (--short-read --read2).',
     )
 
     run_parser.add_argument(
@@ -499,17 +591,21 @@ def create_run_parser(subparsers):
     run_parser.add_argument(
         '--base-aligners',
         nargs='+',
-        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa'],
+        choices=['minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa',
+                 'STAR_default', 'STAR_noncanonical', 'HISAT2_default',
+                 'HISAT2_noncanonical', 'magicblast', 'gsnap'],
         default=None,
         metavar='ALIGNER',
         dest='base_aligners',
         help=(
             'Base aligners for the consensus pool. When omitted, the default '
-            'depends on --short-read: bbmap + bwa for short-read, '
+            'depends on --short-read: bbmap + bwa for short-read single-end, '
+            'the COMPASS panel for short-read paired-end (--read2), '
             'minimap2 + mapPacBio + gapmm2 for long-read. '
-            'Passing this flag overrides the default in both modes. '
+            'Passing this flag overrides the default in every mode. '
             'Example (force short-read panel even without --short-read): '
-            '--base-aligners bbmap bwa'
+            '--base-aligners bbmap bwa. The COMPASS members '
+            '(STAR_*/HISAT2_*/magicblast/gsnap) require --read2.'
         )
     )
 

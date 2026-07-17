@@ -49,6 +49,8 @@ def _run_alignment(
     checkpoint_dir: Optional[str] = None,
     short_read: bool = False,
     trust_existing_bams: bool = False,
+    read2: Optional[Path] = None,
+    read_length: int = 150,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -56,6 +58,9 @@ def _run_alignment(
     Default aligners: minimap2 + mapPacBio + gapmm2 (long-read Tier 1).
     Pass base_aligners to restrict or change the set (e.g. ['mapPacBio']).
     Pass short_read=True to use bbmap + bwa instead of the long-read panel.
+    Pass short_read=True *and* read2=<R2 FASTQ> to use the paired-end COMPASS
+    panel (bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap) — the same set
+    `rectify align --short-read --read2 --aligners all` selects.
     Pass junction_aligners=[] to disable uLTRA + deSALT.
 
     Skips automatically if the multialigned.bam already exists — safe to re-run.
@@ -111,8 +116,15 @@ def _run_alignment(
             "Pass --trust-existing-bams to override."
         )
 
+    # Panel selection. NOTE: run-all passes an EXPLICIT aligner list to run_align
+    # (see align_args below), so align_command's own "all"-expansion never fires
+    # from this path — the paired-COMPASS choice has to be made here too, or
+    # --read2 would silently run bbmap+bwa paired instead of the COMPASS panel.
+    from ..align_command import COMPASS_PE_ALIGNERS
     if base_aligners is not None:
         _base_aligners = base_aligners
+    elif short_read and read2 is not None:
+        _base_aligners = list(COMPASS_PE_ALIGNERS)
     elif short_read:
         _base_aligners = ['bbmap', 'bwa']
     else:
@@ -138,6 +150,10 @@ def _run_alignment(
         threads=threads,
         aligners=_base_aligners,
         short_read=short_read,
+        # Paired-end short-read (COMPASS panel): mate-2 FASTQ + read length for
+        # STAR's --sjdbOverhang. Both are None/default-safe for every other mode.
+        read2=read2,
+        read_length=read_length,
         junction_aligners=_junction_aligners,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,

@@ -181,6 +181,8 @@ def _process_one_sample(
                         checkpoint_dir=_consensus_ckpt_dir,
                         short_read=getattr(args, 'short_read', False),
                         trust_existing_bams=getattr(args, 'trust_existing_bams', False),
+                        read2=getattr(args, 'read2', None),
+                        read_length=getattr(args, 'read_length', 150),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -521,7 +523,13 @@ def _run_single_sample(args) -> int:
     # ── Step 0/1: Alignment ───────────────────────────────────────────────────
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
-        _align_mode = 'short-read (bbmap + bwa)' if getattr(args, 'short_read', False) else 'long-read consensus'
+        if getattr(args, 'short_read', False):
+            _align_mode = (
+                'short-read paired-end (COMPASS panel)'
+                if getattr(args, 'read2', None) else 'short-read (bbmap + bwa)'
+            )
+        else:
+            _align_mode = 'long-read consensus'
         print(f"\n[Step 1/3] Aligning ({_align_mode})...")
         print("-" * 50)
         _t0 = _time.perf_counter()
@@ -549,6 +557,8 @@ def _run_single_sample(args) -> int:
             checkpoint_dir=_single_ckpt_dir,
             short_read=getattr(args, 'short_read', False),
             trust_existing_bams=getattr(args, 'trust_existing_bams', False),
+            read2=getattr(args, 'read2', None),
+            read_length=getattr(args, 'read_length', 150),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
