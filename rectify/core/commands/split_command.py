@@ -475,6 +475,35 @@ def _run_calibration_probe(args, fastq_path, total_reads: int):
     return rec['reads_per_chunk']
 
 
+def _resolve_auto_chunk(args) -> None:
+    """Honor ``--auto-chunk`` by calibrating reads-per-chunk via a timed probe,
+    rewriting ``args.target_reads_per_chunk`` / ``args.n_chunks`` in place.
+
+    Shared by the single-end and paired (``--read2``) split paths so paired mode
+    calibrates too instead of silently using ``DEFAULT_TARGET_READS``. The paired
+    path invokes this BEFORE dispatching to ``_run_split_paired`` (which then reads
+    the resolved target). ``args.reads`` is R1 and the timing probe runs
+    single-end ``run-all`` on an R1 subsample — an approximate proxy for the
+    paired panel's per-read cost, so pass an explicit ``--target-reads-per-chunk``
+    / ``--n-chunks`` to override when the paired COMPASS panel's cost differs
+    materially.
+    """
+    if not getattr(args, 'auto_chunk', False):
+        return
+    logger.info("Counting reads in %s ...", args.reads)
+    _total = count_reads(args.reads)
+    _rec = _run_calibration_probe(args, args.reads, _total)
+    if _rec:
+        args.target_reads_per_chunk = _rec
+        args.n_chunks = None      # force the target-reads-per-chunk path
+    else:
+        logger.warning(
+            "auto-chunk calibration failed; falling back to "
+            "--target-reads-per-chunk=%d",
+            getattr(args, 'target_reads_per_chunk', DEFAULT_TARGET_READS),
+        )
+
+
 def compute_n_chunks(n_reads: int, target_per_chunk: int = DEFAULT_TARGET_READS) -> int:
     """
     Compute chunk count from target reads-per-chunk.
@@ -3068,6 +3097,10 @@ def run_split(args: argparse.Namespace) -> int:
     # keeps both mates together (shared RN, same chunk) and emits paired chunk
     # FASTQs. This path is self-contained and returns early.
     if getattr(args, 'read2', None) is not None:
+        # Honor --auto-chunk here (before dispatch): _run_split_paired then reads
+        # the calibrated args.target_reads_per_chunk / args.n_chunks. Without this
+        # the paired path silently used DEFAULT_TARGET_READS.
+        _resolve_auto_chunk(args)
         return _run_split_paired(args)
 
     # ── BAM input: convert to FASTQ once ──────────────────────────────────
@@ -3151,19 +3184,9 @@ def run_split(args: argparse.Namespace) -> int:
         args.reads = derived_fq
 
     # ── auto-chunk calibration (overrides target/-n via a timed probe) ────
-    if getattr(args, 'auto_chunk', False):
-        logger.info("Counting reads in %s ...", args.reads)
-        _total = count_reads(args.reads)
-        _rec = _run_calibration_probe(args, args.reads, _total)
-        if _rec:
-            args.target_reads_per_chunk = _rec
-            args.n_chunks = None      # force the target-reads-per-chunk path below
-        else:
-            logger.warning(
-                "auto-chunk calibration failed; falling back to "
-                "--target-reads-per-chunk=%d",
-                getattr(args, 'target_reads_per_chunk', DEFAULT_TARGET_READS),
-            )
+    # Runs here, after any BAM→FASTQ conversion, so the probe sees the real
+    # FASTQ. Shared with the paired path via _resolve_auto_chunk.
+    _resolve_auto_chunk(args)
 
     # ── Determine chunk count ─────────────────────────────────────────────
     if args.n_chunks is not None:
