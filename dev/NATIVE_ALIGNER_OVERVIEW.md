@@ -271,6 +271,69 @@ against the independent short-read (COMPASS) method? That single measurement dec
 to finish the guard (with the scorer-level fix) or leave it as dormant, default-off insurance
 and move on to the science. It is the honest next gate for the whole guard track.
 
+### Phase 6 (2026-07-17) — we ran that gate, and the plot-twist was bigger than expected
+
+We ran the real-data test. It didn't just answer the guard question — it **overturned the
+premise the whole guard track was built on**, and it did it by the simplest possible means:
+*we finally looked at the actual alignments, one read at a time.*
+
+**Step 1 — look at the real reads.** Instead of trusting summary counts, we pulled up the
+implicated alignments on the real Sumner SMA (Nanopore) data — in a genome browser and as
+single-read pictures showing both sides of each junction. The "fabrication" number that had
+been driving months of guard work was **27%** of the re-placer's novel junctions: junctions
+that looked like drift away from a well-supported site.
+
+**Step 2 — the plot-twist: it was mostly a *bookkeeping* bug, not a bad discovery.** Reading
+the alignments base-by-base, the "drifted" junctions weren't the aligner inventing a false
+splice site. They were an **accounting artifact** in how the tool *rewrites* an alignment
+after it moves a junction. When it slid a junction, it left behind a matched
+**insertion-and-deletion pair** that shoved the junction's *coordinate* sideways **while the
+read's actual sequence stayed exactly where it was.** In plain terms: the paperwork said the
+junction moved 40 letters; the read hadn't moved at all. The tool was reporting a junction
+position the read never supported — and then our own measurement was counting that as
+"fabrication." Both the tool *and* our scorecard were being fooled by the same messy
+paperwork. This was happening on **~85–95%** of the reads the re-placer touched.
+
+**Step 3 — a one-line rule fixes it.** The cure is a single, always-on principle: **a junction
+edit must never make the read's alignment messier than it already was.** If rewriting a
+junction would require adding that compensating insertion-and-deletion padding, the read never
+actually supported the move, so we refuse it and leave the read where it was. Across the whole
+13-sample panel this reverted **~94%** of the re-placer's junction moves — they were all the
+paperwork artifact — and, re-running the independent short-read check, it removed **~91% of the
+apparent fabrication at *zero* cost to real discovery.** The textbook-junction accuracy is
+untouched. The 27% "fabrication problem" was mostly a bug.
+
+Honesty check on the Phase-5 headline: the same paperwork bug had also *inflated* the celebrated
+"32× recall (0.5% → 17%)" number — a chunk of that 17% was phantom junctions the read never
+actually supported. Corrected, the re-placer's real recall is **~4%**, still an **~8× genuine win
+over raw minimap2 (0.5%)** and, at the highest-confidence junctions, the surviving discoveries are
+now about **twice as likely to be real**. So the discovery win is real and still large — just
+honestly smaller than the bug made it look. Better to find that ourselves than to have it found later.
+
+**Step 4 — so does the sophisticated guard still earn its place?** With the artifact gone, we
+asked the honest question about the elaborate guard we'd built in Phases 4–5: on *real* reads,
+can its signal actually tell a genuine novel junction from a fabricated one? We measured it
+directly. The answer is **no**: for the drifted (fabricated) junctions the signal behaves as
+designed, but for the *genuine* discoveries it is **a coin flip** (48% vs a random 50%) — it
+cannot recognize a real move on real Nanopore data. The reason is the same W-window limit the
+Phase-5 audit flagged, plus Nanopore's raw error rate drowning the tell-tale bases. A guard
+that fires on this signal would throw away roughly **half of all genuine discoveries** to chase
+a residual that is small and smeared thinly across the genome. That is the opposite of what a
+*discovery* tool should do.
+
+**The verdict, and the grand-scheme picture.** We **ship the one-line fix** (it's on by default,
+needs no tuning) and **shelve the guard** (its knobs were already off by default, so this costs
+nothing — we just leave them off). The elaborate microhomology guard was, in the end, built to
+suppress a problem that was **mostly a bug**, and it can't do its job on real data anyway. That
+sounds like wasted effort, but it is *exactly* the project's thesis proving itself one more
+time: **an elaborate idea did not survive contact with real ground truth.** The real-data gate
+we insisted on before shipping did precisely what it exists to do — it killed a complicated
+solution and revealed the real problem was simple. The **discovery engine** — the reason the
+native re-aligner exists — is intact, now with a clean specificity story (a simple invariant,
+not a fragile guard) *and* its real-data recall win. With the guard question settled, the road
+is clear to point the working, trustworthy engine at the actual **science**: the SMA splicing
+biology on the Sumner data. That is the prize, and we can now go get it.
+
 ---
 
 ## Background: what RECTIFY does, and why aligners matter
