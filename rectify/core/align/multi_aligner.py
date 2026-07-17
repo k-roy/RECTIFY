@@ -16,7 +16,7 @@ Tier 2 — Long-read, opt-in (`--tier2-aligners deSALT uLTRA`):
   - uLTRA:      Annotation-guided aligner; requires `--annotation` GFF/GTF
 
 Short-read mode (`--short-read`, Illumina/Aviti ≤150 bp):
-  - bbmap:      BBTools splice-aware aligner (`intronlen=20` for short introns)
+  - bbmap:      BBTools splice-aware aligner (`intronlen=40` for short introns)
   - bwa:        BWA-MEM aligner (not splice-aware; use bbmap for spliced data)
   When `--short-read` is active the Tier 1 long-read panel is replaced by
   bbmap + bwa, and poly(A)-tail modules are disabled.
@@ -817,7 +817,7 @@ def run_map_pacbio(
         'fastareadlen=100000',       # Belt-and-suspenders: also patched in mapPacBio.sh default
         # BBMap `intronlen` is the MIN deletion length relabeled D->N (Cufflinks
         # convention), NOT a max — keep it small or real introns stay D-ops.
-        'intronlen=10',
+        'intronlen=40',
         # `maxindel` caps the largest gap BBMap will SEARCH for; the default 16000
         # cannot span mammalian introns (read gets soft-clipped instead). Decoupled
         # from `max_intron` (which feeds minimap2 -G / gapmm2): BBMap needs >=200k
@@ -970,7 +970,7 @@ def run_bbmap(
 ) -> str:
     """Run vanilla BBMap for short-read splice-aware alignment (Illumina/Aviti).
 
-    Uses intronlen=20 so any reference gap ≥20 bp is encoded as an N-op
+    Uses intronlen=40 so any reference gap ≥40 bp is encoded as an N-op
     (intron skip) rather than a D-op (deletion).  This is critical for
     rectify's junction_refiner, which scans for N-ops.
 
@@ -1034,7 +1034,7 @@ def run_bbmap(
         f'out={sam_path}',
         f'threads={threads}',
         f'path={bbmap_index_dir}',
-        'intronlen=20',      # Gaps ≥20 bp → N-op (intron skip) in CIGAR
+        'intronlen=40',      # Gaps ≥40 bp → N-op (intron skip) in CIGAR
         *_bbmap_intron_args,  # maxindel (+ pairlen when paired)
         'minratio=0.56',     # Default short-read sensitivity
         'ambiguous=best',

@@ -1,3 +1,15 @@
+## [2026-07-17] CHANGE (align): bbmap `intronlen` 10/20 → 40 — stop sub-40bp deletions being mislabeled as introns
+
+bbmap relabels any reference gap ≥ `intronlen` bp as an N-op (fake intron). It was too low
+(`intronlen=10` in `run_map_pacbio`, `=20` in `run_bbmap`, `rectify/core/align/multi_aligner.py`), manufacturing
+fake introns from short deletions: **55.6% of the COMPASS panel's junction set was bbmap artifact** (97.4%
+motif-less, median 51 bp; Chanfreau `planning/303`). Raised both to **40** (S. cerevisiae min intron ~40 bp;
+"allow down to 40 to be safe"). HONEST CAVEAT — this does NOT fully de-contaminate: `intronlen=40` stops only the
+SUB-40bp deletion noise; ≥40bp fake introns (incl. the median-51bp artifacts) still pass bbmap and are handled
+DOWNSTREAM by junction QC (100%-persistent gap + zero intron-body coverage + no canonical motif ⇒ genomic-deletion
+allele, not splicing). Supersedes the 2026-05-25 mapPacBio note below (which set `intronlen=10`–`20` so mammalian
+introns emit as N-ops); for the yeast COMPASS panel, 40 is the correct floor. (this commit)
+
 ## [2026-07-17] BUG: cdna-analyze crashes on multi-aligner BAMs — walkback chrom_seq[rp] IndexError
 
 `rectify cdna-analyze` on a multi-aligner `multialigned.bam` (minimap2 + deSALT + gapmm2 + mapPacBio, from the
