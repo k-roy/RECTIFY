@@ -174,11 +174,13 @@ def walkback_3prime(
     # --- Terminal-position gate: skip walkback in the obvious-correct cases. ---
     first_qp, first_rp = scan_pairs[0]
     first_rb = qs[first_qp].upper()
-    first_gb = chrom_seq[first_rp].upper()
 
-    # Gate: non-stop read base matching genome → already anchored.
-    if first_rb != stop_base and first_rb == first_gb:
-        return original_3prime, original_3prime, APPLIED_NONE
+    # Gate: non-stop read base matching genome → already anchored. Bound-guard first_rp (a multi-aligner
+    # BAM can report a ref position at/past the chromosome end → chrom_seq[first_rp] IndexError).
+    if 0 <= first_rp < len(chrom_seq):
+        first_gb = chrom_seq[first_rp].upper()
+        if first_rb != stop_base and first_rb == first_gb:
+            return original_3prime, original_3prime, APPLIED_NONE
 
     # Walk back until a non-stop read-vs-ref match is found.
     # This covers terminal stop-base (A) regardless of genomic A-content:
@@ -187,6 +189,8 @@ def walkback_3prime(
     corrected = original_3prime
     changed = False
     for qp, rp in scan_pairs:
+        if rp is None or not (0 <= rp < len(chrom_seq)):
+            continue
         read_base = qs[qp].upper()
         ref_base = chrom_seq[rp].upper()
         if read_base == ref_base and read_base != stop_base:
@@ -245,15 +249,20 @@ def walkback_3prime_with_qpos(
 
     first_qp, first_rp = scan_pairs[0]
     first_rb = qs[first_qp].upper()
-    first_gb = chrom_seq[first_rp].upper()
-    if first_rb != stop_base and first_rb == first_gb:
-        # Terminal gate fires — already anchored at first_qp.
-        return original_3prime, original_3prime, APPLIED_NONE, first_qp
+    # Bound-guard: a multi-aligner BAM (deSALT/gapmm2/mapPacBio) can report a ref position at/past the
+    # chromosome end; chrom_seq[rp] would IndexError. Only fire the terminal gate when in-range.
+    if 0 <= first_rp < len(chrom_seq):
+        first_gb = chrom_seq[first_rp].upper()
+        if first_rb != stop_base and first_rb == first_gb:
+            # Terminal gate fires — already anchored at first_qp.
+            return original_3prime, original_3prime, APPLIED_NONE, first_qp
 
     corrected = original_3prime
     anchor_qp = -1
     changed = False
     for qp, rp in scan_pairs:
+        if rp is None or not (0 <= rp < len(chrom_seq)):
+            continue
         read_base = qs[qp].upper()
         ref_base = chrom_seq[rp].upper()
         if read_base == ref_base and read_base != stop_base:

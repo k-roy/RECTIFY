@@ -1,8 +1,34 @@
+## [2026-07-17] BUG: cdna-analyze crashes on multi-aligner BAMs — walkback chrom_seq[rp] IndexError
+
+`rectify cdna-analyze` on a multi-aligner `multialigned.bam` (minimap2 + deSALT + gapmm2 + mapPacBio, from the
+cDNA full-pool run-all, planning/259) crashes: `IndexError: string index out of range` at
+`rectify/core/correct/walkback.py` `walkback_3prime_with_qpos` (`ref_base = chrom_seq[rp].upper()`). Cause:
+deSALT/gapmm2/mapPacBio can report a reference position AT or PAST the chromosome end, and the two walkback
+functions indexed `chrom_seq[first_rp]` / `chrom_seq[rp]` without bound-checking (unlike the guarded scan at
+line ~238/556 which already does `0 <= x < len(chrom_seq)`). FIX: bound-guard `first_rp` (only fire the terminal
+gate when in-range) and `continue` on any out-of-range/None `rp` in the scan loop, in BOTH walkback functions.
+Defensive-only (skips positions that would crash; cannot change correct-path behavior). H2 overlay
+`rectify_patched_250` patched identically to unblock the run-all analyze step.
+
 # AGENT_FIXES.md
 
 Fast coordination log for active debugging sessions across M1 / H2 / Sherlock.
 **Read this before touching pipeline code. Update it when you find a bug.**
 Archive entries into CHANGELOG.md when the session wave is done.
+
+> **[2026-07-06] TODO — PROPAGATE the split-continuation fix (9efd4f0): H2/Sherlock rectify installs are STALE (0.9.0, pre-fix).**
+> `rectify split --generate-slurm --scheduler uge` in rectify **0.9.0** (the H2 env at
+> `/u/project/guillom/shared/envs/rectify`) emits `run_array_correct_*.sh` with **blank lines inside the
+> backslash-continued `rectify correct` command** (after `--annotation "..." \`). A blank line has no
+> trailing `\`, so bash TERMINATES the command at `--annotation`, dropping `-o`, `--aligner-bams`, etc. →
+> `rectify correct: error: the following arguments are required: -o/--output` on EVERY chunk → silent empty
+> aggregates. This bit the **xrn1-AID `drs_decay_mutants` fan-out (2026-07-06)** — all 9 conditions produced
+> zero 3'/5' output (diagnosed + patched-in-place; see Chanfreau `planning/111_xrn1_resubmit.md`).
+> **The generator bug is ALREADY FIXED in code by `9efd4f0` (2026-07-03, split_command.py + a 270-line test)
+> — but NOT propagated:** `drs-validation-rebuild` is **[ahead 2] of origin** (unpushed), and the H2 +
+> Sherlock envs still run **0.9.0**. **TODO: (1) push `9efd4f0` to GitHub; (2) reinstall/update the rectify
+> env on H2 (`/u/project/guillom/shared/envs/rectify`) AND Sherlock so future `rectify split` emits clean
+> scripts.** Interim workaround: `perl -i -0pe 's/\\\n\n+/\\\n/g'` on the generated correct scripts.
 
 > **[2026-05-29] OPS NOTICE — M1 is sluggish. Offload moderately-heavy work to a login node.**
 > All agents: do NOT run moderately-heavy in-process work on M1 right now (anything
@@ -19,6 +45,21 @@ hotspots). The 3'SS-rescue full-pool stall (entry below) is the worked example;
 it is likely not the only such bottleneck.
 
 ---
+
+## [2026-07-09] BUG: one pathological read crashes the WHOLE chunk_merge (Lazy HP scoring IndexError)
+
+**Status:** FIXED on M1 (uncommitted, drs-validation-rebuild) + SCG rectify_scg_src. Chanfreau
+`planning/180_bug3_hp_scoring_indexerror_fix.md`.
+
+`_read_hp_edit_distances_from_raw_bam` (core/consensus/corrected_consensus.py) scores each corrected read
+under `strict=True`; a single edge-case read (`IndexError: string index out of range` during
+`apply_corrected_edits_to_read`/`_cigar_hp_edit_distance` — e.g. a CIGAR/coord near a contig boundary)
+**re-raised and failed the entire chunk_merge task** (35k+ good reads lost), `afterok`-cascade-cancelling
+final_merge→consensus→merge_consensus → sample `.done_rc`=1. Data-dependent (hit 1 of wt_rep1's 109 chunks
+on the SCG panel), so it recurs across samples. **Fix (2 additive guards, no behavior change for valid
+input):** (1) wrap the per-read scoring loop in try/except → log + score worst-case
+`(inf, 0, _NO_JUNCTION_ANCHOR)` (read is already in `seen_corrected_ids`, so strict completeness still
+passes); (2) `core/splice/hp_penalty.py::_hp_run_length` bounds-guard `pos` before `seq[pos]`.
 
 ## [2026-06-14] FEAT: strip terminal (AAG/GAA)n triplet-repeat basecaller artifact in DRS pre-trim
 
