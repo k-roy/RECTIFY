@@ -1,106 +1,91 @@
-# SMN1/SMN2 differential splicing analysis — SCOPE (Sumner SMA ONT-DRS)
+# SMN1/SMN2 differential splicing — SCOPE **(REVISED 2026-07-17 after provenance dig)**
 
-Date: 2026-07-17. Data: Sumner lab ONT direct-RNA (DRS) motor-neuron iPSC panel, full-genome BAMs
-`/scratch/users/kevinroy/sumner_lab/full_genome_bams/*.bam` (GRCh38 / GENCODE v44). Dual purpose:
-(1) the plain-face SMA biology (SMN2 exon-7 skipping), (2) a robustness check for RECTIFY at a hard
-paralog locus. This is a PLAN, not results.
+> ⚠️ **CORRECTION TO THE FIRST DRAFT OF THIS DOC.** The first version scoped this as new work. It is not:
+> a **first pass was completed 2026-06-12** and it already independently converged on the same design
+> (exon-8 PSV avoiding the c.840 trap). **Do not re-derive it.** Canonical prior artifacts:
+> - `~/work/JHU/sumner_lab/smn_exon7/RESULTS_smn_exon7_20260612.{md,tsv}` — the results
+> - `smn_exon7/smn_exon7.py` (PSI+PSV caller), `smn1_genotype.py` (2-PSV noise check),
+>   `smn_compare_arms.py` (aligner-arm comparison)
+> - `~/work/JHU/sumner_lab/SUMNER_SMN_STATUS.md` §6.A — status + its own NEXT list
+> - `~/work/JHU/sumner_lab/SAMPLE_PROVENANCE_coriell.md`, `sample_sheet_genomewide.tsv` — genotypes
+> - Sherlock: `/scratch/users/kevinroy/sumner_lab/{smn_exon7/,gate2_smn_anchor.py,smn_region_heatmap_*.tsv}`
+> This doc is now **only** "what genuinely remains."
 
 ---
 
-## 1. The biology in one paragraph
-SMA is caused by loss of functional **SMN1**. A near-identical paralog **SMN2** differs by a critical
-**c.840 C→T** in the classic **exon 7** (a translationally-silent SNP that disrupts an exonic splicing
-enhancer / creates a silencer), so ~80–90% of SMN2 transcripts **skip exon 7** → unstable truncated
-**SMNΔ7** protein. Disease severity tracks SMN2 copy number (more SMN2 → more full-length SMN → milder).
-The canonical DRS readout is therefore **exon-7 inclusion vs skipping (PSI)**, split by paralog.
+## 1. GATE #1 (SMN1 genotype) — **RESOLVED**, no need to ask Stephen
+Two independent lines of evidence agree.
 
-## 2. Exact coordinates (GRCh38, + strand, GENCODE v44 MANE-Select)
-- **SMN1** gene chr5:70,925,030–70,953,942 (ENSG00000172062), MANE `ENST00000380707.9`
-- **SMN2** gene chr5:70,049,638–70,078,522 (ENSG00000205571), MANE `ENST00000380743.9` — ~875 kb apart.
-- **The critical exon** = classic SMA "exon 7" = **MANE exon 8**, the **54 bp** exon:
-  - SMN2: chr5:**70,076,521–70,076,574** ; SMN1: chr5:**70,951,941–70,951,994**
-  - c.840C>T lives INSIDE this exon.
-- MANE flanking exons (SMN2): exon7 = 70,070,641–70,070,751 (=classic exon 6); exon9 = 70,077,019–70,077,595
-  (=classic exon 8 / 3′UTR). SMN1 equivalents: exon7 70,944,658–70,944,753; exon9 70,952,439–70,953,015.
-- **Diagnostic junctions** (0-based half-open intron [donor, acceptor); per paralog):
-  - INCLUSION: upstream `exon7_end → crit_exon_start` + downstream `crit_exon_end → exon9_start`
-  - SKIPPING : `exon7_end → exon9_start` (the intron that skips the 54 bp exon)
-  - (compute exact donor/acceptor from the coords above at build time.)
+**(a) Documented (Coriell-verified, `SAMPLE_PROVENANCE_coriell.md`):**
+- **SMA_7.12** (GM09677) — SMN1 **0, homozygous EX7-8 deletion**, SMN2=3
+- **SMA_3.6** (GM03813) — SMN1 **0, homozygous EX7-8 deletion**, SMN2=3
+- **WT_4.2** (GM03814) — SMN1 **1 (carrier)**, SMN2=5; the **carrier MOTHER of SMA_3.6** (related pair!)
+- **WT_21.8** (GM02183) — genetically normal (HTT 33/18); no SMN record (HD subcollection)
+- SMN2 copy number known for all 7 SMA: **Type I = 2–3, Type II = 3**
 
-## 3. Feasibility (measured, full-depth BAMs)
-- **The apparent depth is an illusion of multi-mapping.** `samtools view -c` at SMN gave ~320 reads/locus,
-  but primary-only (`-F 0x900`) is **~5–58 at SMN1, ~4–505 at SMN2**, and **every primary read is MAPQ 0**
-  — minimap2 cannot assign the near-identical paralogs, so it emits one arbitrary primary + a secondary at
-  the other locus. Position ≠ paralog here.
-- **Distinct primary SMN reads per sample** (SMN1_prim+SMN2_prim): SMA 19–563 (pooled ~1,600);
-  WT 21–333 (pooled ~1,280). ⇒ **Pooled group PSI is well-powered; per-sample is fine for deep samples
-  (SMA_7.12_rep2=563, SMA_8.2=378, SMA_3.6=279, SMA_2713=237; WT_21.8_rep3=333, WT_4.2_rep2=235,
-  WT_HB53=226) and marginal for the thin ones (SMA_2945=19, SMA_191=23, WT_3939=21).** Plan for pooled +
-  per-deep-sample; report CIs.
-- **Genotype signal already visible:** SMA samples skew hard to SMN2-primary (e.g. SMA_3.6 16 vs 263,
-  SMA_2713 10 vs 227); WT is balanced (WT_21.8 98 vs 85). Consistent with **SMN1 deletion in SMA** — but
-  MAPQ0 makes it soft; CONFIRM genotype (see gates).
+**(b) Empirical, from our own DRS via the exon-8 PSV** (`RESULTS_smn_exon7_20260612.tsv`) — SMN1-assigned
+reads stratify into three clean tiers that MATCH documented copy number (a dose-response that both
+validates the assignment method AND extends genotype to the undocumented Greenstone/Iperian lines):
 
-## 4. Two axes — DIFFERENT treatment (hard wall between them)
-### Axis A — exon-7 in/out PSI = the biology. **Refiner-FREE, from RAW full-depth alignments.**
-- A read is INCLUSION if its CIGAR carries an aligned block over the 54 bp critical exon; SKIPPING if it
-  has the single N-op spanning exon7_end→exon9_start. This is a large presence/absence call, robust to
-  boundary drift AND to paralog mismapping (the exon block shows regardless of which locus the read landed).
-- **Do NOT route PSI through the refiner** — we just proved the re-placer fabricates at paralog loci; letting
-  it touch the readout risks manufacturing the effect. Use raw `sub`/full-depth CIGARs.
-- Per read: classify include/skip/ambiguous; require the read to span exon7_end..exon9_start. PSI =
-  include/(include+skip). Report pooled-by-group + per-deep-sample, with binomial CIs.
+| tier | SMN1 PSV reads | samples |
+|---|---|---|
+| **0 copies (SMN1-null)** | 0–3 | **all 7 SMA** (2 Coriell-confirmed) |
+| **1 copy (carrier)** | 13–14 | WT_4.2 (confirmed carrier), **WT_3939** (corroborates its fingerprint carrier flag) |
+| **2 copies (normal)** | 91–133 | WT_21.8, WT_HB53 |
 
-### Axis B — paralog assignment (SMN1 vs SMN2) = the hard axis. **Variant panel on the READ sequence.**
-- Position/MAPQ is useless (all MAPQ0). Assign by paralog-distinguishing bases the read carries.
-- **The c.840 trap:** c.840C>T is INSIDE the critical exon, so it is ABSENT from exactly the SKIPPED
-  (SMNΔ7) transcripts we care about. Do NOT classify Δ7 reads by c.840 alone — build a **multi-marker
-  panel** including **exon-8/3′UTR (MANE exon 9) paralog SNPs** and intronic paralog markers that survive
-  skipping. Classify each read by a **likelihood over all markers it covers** (ONT ~5–10% error → never
-  trust a single base). Track "unclassifiable" as its own bin; note that classifiability differing between
-  include and skip can BIAS PSI if unhandled → compute paralog-split PSI only on confidently-assigned reads
-  and report the assignment rate.
+⇒ **SMA = SMN1-null.** The paralog problem collapses for SMA samples (every SMN-locus read is SMN2, and
+any SMN1-locus read is definitionally mismapped = free dev-validation truth). It does NOT collapse for
+controls (they carry both) — the PSV assigner is still required there.
 
-## 5. SMA-vs-WT: separate DOSAGE from REGULATION
-- Total exon-7 PSI will be lower in SMA largely because SMN1 (all full-length) is gone — that is **gene
-  dosage, not a splicing change.** Report it, but the **regulatory** readout is **SMN2-specific exon-7 PSI**,
-  expected ~constant (~10–20%) unless something modifies it (a real differential-splicing finding).
-- Stratify by **SMN2 copy number** if available. Primary comparison: SMN2-specific PSI, SMA vs WT, pooled +
-  per-sample; secondary: total PSI (dosage).
+## 2. The biology headline — **already measured** (first pass, pooled)
+From `RESULTS_smn_exon7_20260612`:
+- **SMN1 PSI ≈ 98–100% vs SMN2 PSI ≈ 45–53%** — the c.840/C6T effect, cleanly reproduced.
+- **SMN2 inclusion is IDENTICAL in SMA (48%) and control (49%)** ⇒ an **intrinsic SMN2 property, not
+  dysregulated in SMA**. This is exactly the dosage-vs-regulation separation: the SMA deficit is **gene
+  dosage** (SMN1 gone), *not* altered SMN2 exon-7 regulation.
+- Method validation: PSV specificity ≤0.4% (SMA_8.2: 247 SMN2 vs 1 SMN1); PSI identical across
+  rectified/uLTRA/deSALT arms; ambig=0.
+- Caveats carried forward: **pooled only** (not powered per-sample / Type I vs II); **CNTL_HB53
+  lower-confidence** (degraded, SMN1 PSI 76% = base-call leakage); observed ~48% inclusion vs textbook
+  ~10–15% is expected (NMD depletes Δ7 from steady-state poly-A+; the metric undercounts inclusion →
+  conservative).
 
-## 6. Dev-validation arm (secondary; honest reframe)
-- **The hard problem at SMN is paralog DISAMBIGUATION (a mapping/MAPQ0 problem), which RECTIFY's junction
-  re-aligner does NOT solve** — it refines junction boundaries, not locus assignment. So SMN is a weak venue
-  for demonstrating the re-aligner's headline value (that lives in the genome-wide recall win already shown).
-- What SMN DOES test: (a) does the **compensating-indel fix** keep the re-placer well-behaved at a
-  near-identical paralog locus (no fabricated junctions here)? (b) a self-contained **mismapping-rate**
-  metric — of reads whose primary is the SMN1 locus, what fraction carry SMN2-specific bases (raw vs
-  refined). If genotype = SMN1-deletion, mismapping rate = fraction of SMN1-locus reads outright.
-- Re-refine ONLY the SMN locus (cheap) with the fixed refiner for this arm; keep it walled off from Axis A.
+## 3. What genuinely REMAINS (the actual work)
+Ranked by value. Items 1–2 are new to this session; 3–5 are the prior pass's own NEXT list.
 
-## 7. Gates & open questions (resolve before/while building)
-1. **[BLOCKING for interpretation] SMN1 genotype per patient** (homozygous exon-7 deletion vs point-mutant)
-   + **SMN2 copy number**. Ask Stephen Brown (sbrow208@jh.edu) / check line metadata. If SMN1-deleted →
-   paralog problem collapses (all SMN2; any SMN1-locus read is definitionally mismapped = free dev truth).
-2. **Cross-check** against the independent short-read **COMPASS** junctions at SMN, and against Stephen's
-   **FLAIR→OARFISH** isoform calls (`sumner_lab/flair_oarfish/`) + the existing **`smn_region_heatmap_*.tsv`**
-   paralog-expression work (reconcile, don't duplicate).
-3. Confirm strand/orientation of DRS reads at SMN (DRS is stranded; + gene).
-4. Decide ambiguous-read policy (reads spanning too little; MAPQ0 secondary handling).
+1. **★ Re-run on FULL-DEPTH BAMs with the FIXED refiner (the new, highest-value item).** The first pass
+   used chr5 / 3-aligner-consensus BAMs — produced **before** the compensating-indel fix (e40ca00). Two
+   questions only we can now answer: (a) does the fix change any SMN PSI number? (Prediction: **no** —
+   PSI was already identical across aligner arms, and exon in/out is a large presence/absence call robust
+   to boundary drift. Confirming this is a **clean, honest robustness check** of the fix at the hardest
+   paralog locus.) (b) full depth may lift the "pooled only" limit → **per-sample and Type I vs II PSI**.
+   Full-depth distinct primary SMN reads: SMA 19–563, WT 21–333 (pooled ~1,600 SMA / ~1,280 WT).
+2. **Mismapping-rate metric (dev arm, now trivially available).** Since SMA is SMN1-null, ANY SMA read
+   whose primary lands at the SMN1 locus is definitionally mismapped. Report that rate **raw vs refined**
+   — a self-contained RECTIFY metric needing no external truth. (NB all SMN primaries are **MAPQ 0** —
+   position never identifies paralog here; keep the multimappers, assign by PSV, never by MAPQ.)
+3. Realign locus reads to a **single SMN2 target** to collapse coordinates and resolve the few
+   cross-placed reads.
+4. Add **c.840 corroboration** for the degraded **CNTL_HB53** only (`smn1_genotype.py` already does this
+   2-PSV check).
+5. **Absolute-quantify SMN2 copy dosage** with depth normalization (ties PSI to the severity modifier).
 
-## 8. Concrete first steps (in order)
-1. Email Stephen for genotype + SMN2 copy number (gate #1) — do this first, it may halve the problem.
-2. Build the exact junction coordinate set (§2) + the paralog-marker panel (§4B) from the two MANE
-   transcripts + a SMN1/SMN2 sequence diff over the gene body.
-3. Axis A prototype on the 4 deepest samples (raw full-depth): per-read include/skip caller → PSI + CI.
-4. Axis B: marker-likelihood paralog classifier; report assignment rate + the c.840-trap handling.
-5. Paralog-split, dosage-separated SMA-vs-WT PSI (pooled + per-deep-sample) → the headline table + figure
-   (exon-7 inclusion, provenance footer).
-6. Dev arm: mismapping rate raw vs refined at the re-refined SMN locus.
+## 4. Design constraints that still bind (do not re-litigate)
+- **Exon-7 in/out PSI must stay refiner-FREE** for the biology readout (the re-placer must not be able to
+  manufacture the effect); the refiner appears only in the dev arm (item 2) and as the robustness check (1).
+- **Paralog assignment = exon-8 PSV `chr5:70,077,254` (A=SMN2 / G=SMN1)**, NOT c.840 — c.840 is inside
+  exon 7 and therefore ABSENT from the skipped (Δ7) reads we most need to count; using it would silently
+  drop skipped reads and inflate inclusion. Use c.840 only as a corroborating second PSV on reads that
+  include exon 7 (phasing both on one molecule is a DRS advantage).
+- **Relatedness:** WT_4.2 is the mother of SMA_3.6 — encode as related; not independent samples.
+- **Confounds:** age ↔ condition (controls adult, Type I toddlers); repository/batch (Coriell/Greenstone/
+  Iperian/collaborator); WT_4.2 is a carrier with SMN2=5, so it is not a clean "normal" control.
 
-## Files / provenance
-- BAMs: `sumner_lab/full_genome_bams/*.bam` (full depth; the downsampled `panel_deep/*.sub.bam` are TOO thin
-  for SMN — do NOT use for Axis A).
-- Annotation: `compass_a549/COMPASS/genome_references/GRCh38_gencode_v44.gtf` (MANE tx above).
-- Prior SMN work: `sumner_lab/smn_region_heatmap_{long,matrix}.tsv`, `sumner_lab/flair_oarfish/`.
-- Fixed refiner (dev arm): `/scratch/users/kevinroy/rectify_guard2` (has commit e40ca00 + `_positional_signal`).
+## 5. Coordinates (verified, GRCh38 / GENCODE v44 MANE)
+- SMN1 chr5:70,925,030–70,953,942 (`ENST00000380707.9`); SMN2 chr5:70,049,638–70,078,522
+  (`ENST00000380743.9`); ~875 kb apart, + strand, ~99.9% identical.
+- **Classic SMA "exon 7" = MANE exon 8 = the 54 bp exon**: SMN2 **70,076,521–70,076,574**;
+  SMN1 **70,951,941–70,951,994**. Flanks (SMN2): classic exon 6 = 70,070,641–70,070,751;
+  classic exon 8 = 70,077,019–70,077,595.
+- Junction logic (validated in `gate2_smn_anchor.py`): for an intron ending at the terminal acceptor
+  (SMN2 0-based **70,077,018**), donor == **70,070,751** ⇒ **SKIP**; donor > that ⇒ **INCLUSION**.
