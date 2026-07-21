@@ -332,6 +332,17 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     perf_group.add_argument(
+        '--keep-checkpoints',
+        action='store_true',
+        default=False,
+        help='When consensus selection runs with a checkpoint dir, retain the '
+             'per-batch checkpoint files (consensus_batch_*.bam/.done and '
+             'consensus_checkpoint.json) after a SUCCESSFUL run. By default these '
+             'dead resume-state files are deleted once the final BAM is written. '
+             'Failed/interrupted runs always keep checkpoints for resume.'
+    )
+
+    perf_group.add_argument(
         '--max-intron',
         type=int,
         default=5000,
@@ -913,6 +924,7 @@ def run_align(args: argparse.Namespace) -> int:
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
             checkpoint_dir=getattr(args, 'checkpoint_dir', None),
+            keep_checkpoints=getattr(args, 'keep_checkpoints', False),
             tiebreak=_tiebreak,
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")

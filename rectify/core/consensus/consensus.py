@@ -851,6 +851,7 @@ def run_consensus_selection(
     slurm_array_total: Optional[int] = None,
     use_chimeric: bool = False,
     checkpoint_dir: Optional[str] = None,
+    keep_checkpoints: bool = False,
     read_num_sidecar: Optional[str] = None,
     tiebreak: str = 'rectify',
 ) -> Dict[str, int]:
@@ -875,6 +876,15 @@ def run_consensus_selection(
                           hash(read_id) % slurm_array_total == slurm_array_task
                           are processed.
         slurm_array_total: Total number of SLURM array tasks.
+        checkpoint_dir: If set, write resumable per-batch checkpoints here
+                        (consensus_batch_*.bam + .done sentinels +
+                        consensus_checkpoint.json) and finalise via scratch.
+        keep_checkpoints: If False (default), delete the dead checkpoint resume
+                          state (per-batch BAMs, .done sentinels, JSON) after the
+                          final BAM is written successfully, leaving ~0 files.
+                          If True, retain the full resumable state for debugging.
+                          Only affects the success path; failures always keep
+                          checkpoints for resume.
 
     Returns:
         Summary statistics dict
@@ -1250,12 +1260,33 @@ def run_consensus_selection(
                 os.unlink(_p)
             except OSError:
                 pass
-        # Clean up per-batch BAMs (already merged+sorted)
-        for _b in _batch_bam_paths:
-            try:
-                os.unlink(_b)
-            except OSError:
-                pass
+        # ── Success-path checkpoint cleanup ─────────────────────────────────
+        # The final coordinate-sorted BAM (+ .bai) has now been written to
+        # output_bam above. The remaining checkpoint artefacts — per-batch BAMs
+        # (already merged+sorted), their .done sentinels, and
+        # consensus_checkpoint.json — are now DEAD resume state: a chunk that
+        # has finalised its output never resumes. On a large cluster panel
+        # these dominate the file/inode count, so remove them by default.
+        # keep_checkpoints=True (--keep-checkpoints) retains the full, coherent
+        # resume state (batch BAMs + sentinels + JSON) for debugging.
+        #
+        # This runs ONLY on the success path. The except-handler above closes
+        # out_bam and re-raises WITHOUT touching any checkpoint file, so an
+        # interrupted/failed run leaves the batch BAMs + sentinels + JSON intact
+        # and a requeued task resumes from the last committed batch.
+        if not keep_checkpoints:
+            _ckpt_cleanup: List[str] = []
+            for _b in _batch_bam_paths:
+                _ckpt_cleanup.append(_b)                            # consensus_batch_NNNNNN.bam
+                _ckpt_cleanup.append(_b[:-len('.bam')] + '.done')   # matching .done sentinel
+            _ckpt_cleanup.append(
+                os.path.join(checkpoint_dir, 'consensus_checkpoint.json')
+            )
+            for _p in _ckpt_cleanup:
+                try:
+                    os.unlink(_p)
+                except OSError:
+                    pass
     else:
         # Original behaviour: sort in-place at output_bam location
         # Pre-sort validation: sample first 1000 records to detect CIGAR/sequence mismatches

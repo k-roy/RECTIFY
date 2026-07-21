@@ -1066,6 +1066,7 @@ def process_bam_streaming_parallel(
     polya_model_path: Optional[str] = None,
     min_gap_size: int = 10000,
     checkpoint_dir: Optional[str] = None,
+    keep_checkpoints: bool = False,
     variant_scan_cache: Optional[str] = None,
     max_reads_for_variant_rescue: int = 500,
     dt_primed_cDNA: bool = False,
@@ -1094,6 +1095,14 @@ def process_bam_streaming_parallel(
         show_progress: Log reads/min progress
         variant_aware: Enable variant-aware homopolymer rescue (two-pass)
         variant_output_path: Optional path to write potential variants TSV
+        checkpoint_dir: If set, write resumable per-region checkpoints here
+                        (region_*.tsv/.stats.json/.done + rescue_scan.pkl).
+        keep_checkpoints: If False (default), delete the dead per-region
+                          checkpoint files (+ this chunk's rescue_scan.pkl) after
+                          the final output TSV is rebuilt successfully, leaving
+                          ~0 checkpoint files. If True, retain them for debugging.
+                          Only affects the success path; on failure the committed
+                          region checkpoints are always preserved for resume.
 
     Returns:
         ProcessingStats object
@@ -1314,6 +1323,33 @@ def process_bam_streaming_parallel(
             len(regions),
             stats,
         )
+
+        # ── Success-path checkpoint cleanup ─────────────────────────────────
+        # The final output TSV has now been rebuilt + atomically committed from
+        # the per-region checkpoints above, so region_NNNN.{tsv,stats.json,done}
+        # and this chunk's variant-scan pickle (rescue_scan.pkl) are DEAD resume
+        # state. On a large cluster panel these per-region files dominate the
+        # .checkpoints inode count (the driver of the Oak 15M-inode quota blow),
+        # so remove them by default. keep_checkpoints=True (--keep-checkpoints)
+        # retains them for debugging.
+        #
+        # Runs ONLY here, after a successful rebuild. The except/finally block
+        # above re-raises on failure and explicitly preserves committed region
+        # checkpoints ("committed region checkpoints preserved in ..."), so a
+        # requeued task still resumes from completed regions.
+        if not keep_checkpoints:
+            _region_cleanup: List[Path] = []
+            for _ridx in range(len(regions)):
+                _region_cleanup.append(_region_tsv_path(_chk_dir, _ridx))
+                _region_cleanup.append(_region_stats_path(_chk_dir, _ridx))
+                _region_cleanup.append(_region_done_path(_chk_dir, _ridx))
+            if _rescue_pkl is not None:
+                _region_cleanup.append(_rescue_pkl)
+            for _p in _region_cleanup:
+                try:
+                    _p.unlink()
+                except OSError:
+                    pass
 
     logger.info(f"Completed processing {stats.reads_processed:,} reads")
     logger.info(f"  Output written to {output_path}")

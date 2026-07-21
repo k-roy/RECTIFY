@@ -893,6 +893,7 @@ def run(args):
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     checkpoint_dir=getattr(args, 'checkpoint_dir', None),
+                    keep_checkpoints=getattr(args, 'keep_checkpoints', False),
                     variant_scan_cache=config.get('variant_scan_cache'),
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
                     use_dorado_polya=config.get('use_dorado_polya', False),
@@ -1790,6 +1791,18 @@ def create_correct_parser(subparsers):
              'When set, a failed run can be resumed: completed regions are skipped, '
              'the variant scan is reloaded from disk, and the partial output TSV is '
              'appended to rather than overwritten. Has no effect without --streaming.'
+    )
+
+    perf_group.add_argument(
+        '--keep-checkpoints',
+        action='store_true',
+        default=False,
+        help='Retain the per-region checkpoint files (region_*.tsv/.stats.json/.done '
+             'and rescue_scan.pkl) under --checkpoint-dir after a SUCCESSFUL run. '
+             'By default these dead resume-state files are deleted once the final '
+             'output is written (they otherwise dominate the .checkpoints inode '
+             'count on large chunked panels). Failed/interrupted runs always keep '
+             'checkpoints for resume regardless of this flag.'
     )
 
     perf_group.add_argument(

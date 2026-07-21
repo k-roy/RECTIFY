@@ -394,6 +394,8 @@ def run_consensus(args: argparse.Namespace) -> int:
             output_bam=str(output_bam),
             annotated_junctions=annotated_junctions,
             use_chimeric=use_chimeric,
+            checkpoint_dir=getattr(args, 'checkpoint_dir', None),
+            keep_checkpoints=getattr(args, 'keep_checkpoints', False),
             read_num_sidecar=str(read_num_sidecar) if read_num_sidecar is not None else None,
             tiebreak=getattr(args, 'tiebreak', 'rectify'),
         )
