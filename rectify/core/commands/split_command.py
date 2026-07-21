@@ -56,6 +56,11 @@ from rectify.core.chunking.sidecar import (
     sha256_file,
     split_fastq_header,
 )
+from rectify.core.umi.extract import (
+    extract_umi_from_read_id,
+    extract_umi_from_sequence,
+    strip_umi_from_read_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +353,9 @@ Examples:
         help='Also emit per-aligner corrected BAMs for IGV inspection '
              '(default off; lazy consensus path does not need them).',
     )
+
+    from rectify.core.umi.cli import add_umi_args
+    add_umi_args(parser)
 
     parser.add_argument('--verbose', action='store_true', help='Verbose logging')
     return parser
@@ -722,6 +730,10 @@ def split_fastq_paired(
     n_chunks: int,
     prefix: str = '',
     write_read_num_sidecar: bool = True,
+    umi: bool = False,
+    umi_location: str = 'read-id',
+    umi_length: Optional[int] = None,
+    umi_separator: str = '_',
 ) -> Tuple[List[Path], List[Path]]:
     """Split paired-end FASTQs into n_chunks paired files via round-robin over PAIRS.
 
@@ -744,6 +756,21 @@ def split_fastq_paired(
     A mismatch between mate qnames raises ``ValueError`` — this catches an
     R1/R2 desync (the exact failure mode round-robin would otherwise scatter
     silently) at split time rather than deep in alignment.
+
+    UMI handling (``umi=True``) attaches a standard fixed-length UMI to BOTH mate
+    headers as an ``RX:Z:`` comment token (see ``format_fastq_header_with_rn``),
+    which carries it to the BAM via both minimap2 ``-y`` and the COMPASS
+    post-alignment injection route. Modes:
+
+      - ``read-id`` (default): the UMI is already appended to the read name by an
+        upstream ``umi_tools extract`` (``@name_UMI``). It is parsed out and
+        stripped from the bare QNAME so mates still share an identical name. This
+        is the path for pre-extracted data (e.g. the RES CORALL libraries).
+      - ``r1-start``: the first ``umi_length`` bases of Read 1 are the UMI (the raw
+        CORALL layout, no linker); they are sliced off R1 and emitted as ``RX:Z:``.
+        Read 2 is untouched (CORALL carries no UMI on R2). A read too short to hold
+        the UMI is dropped (no usable insert) and counted.
+      - ``r2-start``: symmetric, slicing Read 2.
 
     Returns ``(r1_chunk_paths, r2_chunk_paths)``.
     """
@@ -779,6 +806,7 @@ def split_fastq_paired(
             )
 
         pair_idx = 0
+        n_umi_too_short = 0
         with _open_fastq(input_r1) as f1, _open_fastq(input_r2) as f2:
             while True:
                 h1 = f1.readline()
@@ -809,6 +837,36 @@ def split_fastq_paired(
                         f"out of sync; chunking would scatter mates."
                     )
 
+                # --- UMI extraction (optional) ---------------------------------
+                # umi_str, when set, is attached to BOTH mate headers as RX:Z: so
+                # it reaches the BAM for every aligner (see split_fastq_paired doc).
+                umi_str: Optional[str] = None
+                if umi:
+                    if umi_location == 'read-id':
+                        # UMI is in the read name (umi_tools convention). Parse it,
+                        # then strip it so mates keep an identical bare QNAME.
+                        umi_str = extract_umi_from_read_id(
+                            base1, expected_length=umi_length, separator=umi_separator
+                        )
+                        base1 = strip_umi_from_read_id(base1, separator=umi_separator)
+                    else:
+                        # r1-start / r2-start: slice the UMI off the sequence of the
+                        # carrying mate; the insert is what remains. The other mate
+                        # is left untouched (CORALL carries no UMI on R2).
+                        on_r2 = (umi_location == 'r2-start')
+                        seq_line = (s2 if on_r2 else s1).rstrip('\n')
+                        qual_line = (q2 if on_r2 else q1).rstrip('\n')
+                        ext = extract_umi_from_sequence(seq_line, qual_line, int(umi_length))
+                        if ext is None:
+                            # Read too short to hold the UMI -> no usable insert.
+                            n_umi_too_short += 1
+                            continue
+                        umi_str = ext.umi
+                        if on_r2:
+                            s2, q2 = ext.seq + '\n', ext.qual + '\n'
+                        else:
+                            s1, q1 = ext.seq + '\n', ext.qual + '\n'
+
                 chunk_idx = pair_idx % n_chunks
                 chunk_id = f"chunk_{chunk_idx:03d}_of_{n_chunks:03d}"
                 if sidecar_writer is not None:
@@ -817,13 +875,13 @@ def split_fastq_paired(
                     )
 
                 d1 = r1_files[chunk_idx]
-                d1.write(format_fastq_header_with_rn(base1, comment1, pair_idx))
+                d1.write(format_fastq_header_with_rn(base1, comment1, pair_idx, umi=umi_str))
                 d1.write(s1 if s1.endswith('\n') else s1 + '\n')
                 d1.write(p1 if p1.endswith('\n') else p1 + '\n')
                 d1.write(q1 if q1.endswith('\n') else q1 + '\n')
 
                 d2 = r2_files[chunk_idx]
-                d2.write(format_fastq_header_with_rn(base1, comment2, pair_idx))
+                d2.write(format_fastq_header_with_rn(base1, comment2, pair_idx, umi=umi_str))
                 d2.write(s2 if s2.endswith('\n') else s2 + '\n')
                 d2.write(p2 if p2.endswith('\n') else p2 + '\n')
                 d2.write(q2 if q2.endswith('\n') else q2 + '\n')
@@ -834,6 +892,13 @@ def split_fastq_paired(
             "Split %d read pairs into %d paired chunks (~%d pairs/chunk)",
             pair_idx, n_chunks, pair_idx // n_chunks if n_chunks else 0,
         )
+        if umi:
+            logger.info(
+                "UMI extraction (%s): %d pairs tagged with RX:Z%s",
+                umi_location, pair_idx,
+                f", {n_umi_too_short} dropped as too short to hold the UMI"
+                if n_umi_too_short else "",
+            )
     finally:
         for fh in r1_files:
             fh.close()
@@ -3009,6 +3074,12 @@ def _generate_paired_short_read_scripts(
 
 def _run_split_paired(args: argparse.Namespace) -> int:
     """Paired-end split: chunk R1/R2 by pair, shared RN, paired chunk FASTQs."""
+    from rectify.core.umi.cli import validate_umi_args
+    try:
+        validate_umi_args(args)
+    except ValueError as e:
+        logger.error(str(e))
+        return 1
     input_r1 = args.reads
     input_r2 = args.read2
     if not input_r2.exists():
@@ -3057,6 +3128,10 @@ def _run_split_paired(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         n_chunks=n_chunks,
         prefix=prefix,
+        umi=getattr(args, 'umi', False),
+        umi_location=getattr(args, 'umi_location', 'read-id'),
+        umi_length=getattr(args, 'umi_length', None),
+        umi_separator=getattr(args, 'umi_separator', '_'),
     )
 
     manifest = {

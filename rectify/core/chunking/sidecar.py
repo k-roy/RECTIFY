@@ -106,19 +106,29 @@ def sanitize_fastq_comment_for_aux(fastq_comment: str) -> str:
     return '\t'.join(kept)
 
 
-def format_fastq_header_with_rn(original_qname: str, fastq_comment: str, read_num: int) -> str:
-    """Build a FASTQ header carrying the RN aux tag in the comment field.
+def format_fastq_header_with_rn(original_qname: str, fastq_comment: str, read_num: int,
+                                umi: Optional[str] = None) -> str:
+    """Build a FASTQ header carrying the RN aux tag (and optionally a UMI) in the comment.
 
     The comment is filtered to valid SAM aux tokens (see
     ``sanitize_fastq_comment_for_aux``) so that ``minimap2 -y`` in the aligners
     cannot emit a malformed aux field that htslib rejects. The full unfiltered
     comment remains in the sidecar.
+
+    ``umi`` (when given) is emitted as an ``RX:Z:<umi>`` token -- the SAM-standard
+    raw-UMI tag. ``RX:Z:`` is itself a well-formed SAM aux token, so it serves BOTH
+    propagation routes at once: minimap2 ``-y`` copies it straight into the BAM, and
+    for the COMPASS short-read aligners (STAR/HISAT2/magicblast/gsnap, which have no
+    comment pass-through) it is re-parsed and injected post-alignment by
+    ``_load_fastq_umi_map`` / ``_inject_rn_into_bam`` in ``multi_aligner``.
     """
-    rn = f"RN:i:{int(read_num)}"
+    tags = [f"RN:i:{int(read_num)}"]
+    if umi:
+        tags.append(f"RX:Z:{umi}")
     safe_comment = sanitize_fastq_comment_for_aux(fastq_comment)
     if safe_comment:
-        return f"@{original_qname}\t{rn}\t{safe_comment}\n"
-    return f"@{original_qname}\t{rn}\n"
+        tags.append(safe_comment)
+    return f"@{original_qname}\t" + "\t".join(tags) + "\n"
 
 
 def parse_rn_from_comment(comment: str) -> Optional[int]:
@@ -130,6 +140,21 @@ def parse_rn_from_comment(comment: str) -> Optional[int]:
             except ValueError:
                 return None
     return None
+
+
+def parse_rx_from_comment(comment: str) -> Optional[str]:
+    """Extract ``RX:Z:<umi>`` (the SAM-standard raw UMI) from a FASTQ comment, if present."""
+    for tok in comment.split():
+        if tok.startswith('RX:Z:'):
+            umi = tok[5:]
+            return umi or None
+    return None
+
+
+def parse_rx_from_fastq_header(header: str) -> tuple:
+    """Return ``(qname, umi)`` from a FASTQ header line (``umi`` is None if absent)."""
+    qname, comment = split_fastq_header(header)
+    return qname, parse_rx_from_comment(comment)
 
 
 def parse_rn_from_fastq_header(header: str) -> tuple:

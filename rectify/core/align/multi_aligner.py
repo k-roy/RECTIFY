@@ -216,9 +216,72 @@ def _load_fastq_rn_map(reads_path: str) -> Dict[str, int]:
     return seq_map
 
 
-def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int]) -> int:
-    """Stream-rewrite a BAM, adding ``RN:i`` to records with a QNAME mapping."""
-    if not qname_to_rn:
+def _load_fastq_umi_map(reads_path: str) -> Dict[str, str]:
+    """Return QNAME -> UMI map from an input FASTQ carrying ``RX:Z:`` header tags.
+
+    This is the short-read UMI counterpart of :func:`_load_fastq_rn_map`, and it
+    exists for the same reason: STAR/HISAT2/magicblast/gsnap do NOT copy FASTQ
+    comments into the BAM (only ``minimap2 -y`` does), so a UMI written into the
+    comment by ``rectify split --umi`` would be silently lost for those aligners.
+    We re-read it here, keyed on QNAME, and re-attach it as ``RX:Z`` after
+    alignment via :func:`_inject_rn_into_bam`.
+
+    Returns ``{}`` when no ``RX:Z:`` tags are present (non-UMI runs), which makes
+    downstream injection a no-op -- so this is safe to call unconditionally in
+    every short-read runner. Deliberately additive: it does not touch the RN map,
+    whose duplicate-QNAME guards and loud-fail must stay exactly as they are.
+    """
+    from rectify.core.chunking.sidecar import parse_rx_from_fastq_header
+
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+    umi_map: Dict[str, str] = {}
+    n_conflict = 0
+    with opener(reads_path, 'rt') as fh:
+        while True:
+            try:
+                header = fh.readline()
+            except EOFError:
+                break
+            if not header:
+                break
+            try:
+                fh.readline()  # seq
+                fh.readline()  # +
+                fh.readline()  # qual
+            except EOFError:
+                break
+            if not header.startswith('@'):
+                continue
+            qname, umi = parse_rx_from_fastq_header(header)
+            if umi is None:
+                continue
+            qname = qname[:254]
+            existing = umi_map.get(qname)
+            if existing is None:
+                umi_map[qname] = umi
+            elif existing != umi:
+                # Both mates should carry the same fragment UMI; a conflict means
+                # a malformed header. Keep the first and count it.
+                n_conflict += 1
+    if n_conflict:
+        logger.warning(
+            "UMI map for %s saw %d QNAME(s) with conflicting RX tags; kept the first",
+            reads_path, n_conflict,
+        )
+    return umi_map
+
+
+def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
+                        qname_to_umi: Optional[Mapping[str, str]] = None) -> int:
+    """Stream-rewrite a BAM, adding ``RN:i`` (and optionally ``RX:Z`` UMI) per QNAME.
+
+    ``qname_to_umi``, when supplied, attaches the SAM-standard raw-UMI tag
+    ``RX:Z`` to every record whose QNAME is in the map -- so BOTH mates of a pair
+    receive the fragment's UMI (the UMI identifies the fragment, not one read).
+    Passing an empty/None UMI map preserves the original RN-only behaviour exactly.
+    """
+    has_umi = bool(qname_to_umi)
+    if not qname_to_rn and not has_umi:
         return 0
     import pysam
     from rectify.core.consensus.consensus import _normalize_bam_read_name
@@ -227,23 +290,31 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int]) -> int:
     tmp = src.with_suffix('.rn_injected.tmp.bam')
     n_tagged = 0
     n_missing = 0
+    n_umi_tagged = 0
     with pysam.AlignmentFile(str(src), 'rb') as bam_in, \
          pysam.AlignmentFile(str(tmp), 'wb', header=bam_in.header) as bam_out:
         for read in bam_in:
             qn = _normalize_bam_read_name(read.query_name or '')[:254]
-            rn = qname_to_rn.get(qn)
+            rn = qname_to_rn.get(qn) if qname_to_rn else None
             if rn is not None:
                 read.set_tag('RN', int(rn), value_type='i')
                 n_tagged += 1
             else:
                 n_missing += 1
+            if has_umi:
+                umi = qname_to_umi.get(qn)
+                if umi:
+                    read.set_tag('RX', umi, value_type='Z')
+                    n_umi_tagged += 1
             bam_out.write(read)
     tmp.replace(src)
-    if n_missing:
+    if n_missing and qname_to_rn:
         logger.warning(
             "[%s] RN injection: %d/%d records had no QNAME->RN mapping",
             bam_path, n_missing, n_tagged + n_missing,
         )
+    if has_umi:
+        logger.info("[%s] RX (UMI) injection: %d records tagged", bam_path, n_umi_tagged)
     return n_tagged
 
 # Maximum wall-clock seconds to wait for any single aligner subprocess.
@@ -992,6 +1063,7 @@ def run_bbmap(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
 
     # Resolve bbmap.sh: caller-provided path wins (absolute or PATH-resolvable);
     # otherwise fall back to PATH lookup of bare "bbmap.sh".
@@ -1091,7 +1163,7 @@ def run_bbmap(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bbmap complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bbmap')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
     return str(output_bam)
 
 
@@ -1130,6 +1202,7 @@ def run_bwa_mem(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
 
     # Resolve bwa: caller-provided path wins; otherwise PATH lookup.
     if bwa_path and bwa_path != 'bwa':
@@ -1205,7 +1278,7 @@ def run_bwa_mem(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bwa mem complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bwa')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
     return str(output_bam)
 
 
@@ -1431,11 +1504,18 @@ def _require_binary(name: str) -> str:
 
 
 def _finalize_short_read_bam(output_bam: Path, genome_path: str, reads_r1: str,
-                            aligner_name: str, qname_to_rn, threads: int) -> str:
-    """Shared post-alignment steps: calmd → QNAME validate → RN inject."""
+                            aligner_name: str, qname_to_rn, threads: int,
+                            qname_to_umi=None) -> str:
+    """Shared post-alignment steps: calmd → QNAME validate → RN (+ optional RX/UMI) inject.
+
+    This is the single choke point for the COMPASS PE panel (STAR/HISAT2/
+    magicblast/gsnap). ``qname_to_umi`` carries the standard short-read UMI to the
+    BAM as ``RX:Z`` -- necessary because none of these aligners pass FASTQ comments
+    through (unlike ``minimap2 -y``). None/empty ⇒ no UMI, original behaviour.
+    """
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     validate_post_alignment_qnames(str(output_bam), str(reads_r1), aligner_name)
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
     logger.info("%s complete: %s", aligner_name, output_bam)
     return str(output_bam)
 
@@ -1457,6 +1537,7 @@ def run_star(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
     _require_binary('STAR')
 
     paths = _compass_index_paths(genome_path, read_length=read_length)
@@ -1475,7 +1556,7 @@ def run_star(
     sam_path = Path(out_prefix + 'Aligned.out.sam')
     _sam_to_name_sorted_bam(sam_path, output_bam, threads)
     return _finalize_short_read_bam(
-        output_bam, genome_path, reads_path, label, qname_to_rn, threads
+        output_bam, genome_path, reads_path, label, qname_to_rn, threads, qname_to_umi
     )
 
 
@@ -1498,6 +1579,7 @@ def run_hisat2(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
     _require_binary('hisat2')
 
     paths = _compass_index_paths(genome_path)
@@ -1518,7 +1600,7 @@ def run_hisat2(
 
     _sam_to_name_sorted_bam(sam_path, output_bam, threads)
     return _finalize_short_read_bam(
-        output_bam, genome_path, reads_path, label, qname_to_rn, threads
+        output_bam, genome_path, reads_path, label, qname_to_rn, threads, qname_to_umi
     )
 
 
@@ -1538,6 +1620,7 @@ def run_magicblast(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
     _require_binary('magicblast')
 
     paths = _compass_index_paths(genome_path)
@@ -1578,7 +1661,7 @@ def run_magicblast(
             t.unlink(missing_ok=True)
 
     return _finalize_short_read_bam(
-        output_bam, genome_path, reads_path, 'magicblast', qname_to_rn, threads
+        output_bam, genome_path, reads_path, 'magicblast', qname_to_rn, threads, qname_to_umi
     )
 
 
@@ -1595,6 +1678,7 @@ def run_gsnap(
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
+    qname_to_umi = _load_fastq_umi_map(str(reads_path))  # RX:Z UMI, no-op if absent
     _require_binary('gsnap')
 
     paths = _compass_index_paths(genome_path)
@@ -1610,7 +1694,7 @@ def run_gsnap(
 
     _sam_to_name_sorted_bam(sam_path, output_bam, threads)
     return _finalize_short_read_bam(
-        output_bam, genome_path, reads_path, 'gsnap', qname_to_rn, threads
+        output_bam, genome_path, reads_path, 'gsnap', qname_to_rn, threads, qname_to_umi
     )
 
 

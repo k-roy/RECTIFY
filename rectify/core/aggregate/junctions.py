@@ -110,6 +110,7 @@ def aggregate_junctions(
     genome: Optional[Dict[str, str]] = None,
     annotation_df: Optional[pd.DataFrame] = None,
     min_reads: int = 1,
+    umi_tag: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Aggregate splice junctions from CIGAR N operations.
@@ -119,6 +120,13 @@ def aggregate_junctions(
         genome: Optional genome dict for motif extraction
         annotation_df: Optional annotation for status classification
         min_reads: Minimum reads per junction
+        umi_tag: If set (e.g. ``'RX'``), also count the number of DISTINCT UMIs
+            supporting each junction, added as an ``n_distinct_umis`` column. This
+            is the artifact-resistant support metric: a genuine novel junction is
+            backed by many distinct UMIs, whereas a PCR-jackpot artifact is one
+            molecule amplified (many reads, few distinct UMIs). Complements running
+            this on an already-deduplicated BAM (where ``full_junction_reads`` is
+            itself a molecule count).
 
     Returns:
         DataFrame with junction statistics
@@ -126,6 +134,7 @@ def aggregate_junctions(
     # Count junctions
     junction_counts: Dict[Tuple[str, int, int, str], int] = defaultdict(int)
     junction_reads: Dict[Tuple[str, int, int, str], List[str]] = defaultdict(list)
+    junction_umis: Dict[Tuple[str, int, int, str], set] = defaultdict(set)
 
     bam = pysam.AlignmentFile(bam_path, 'rb')
 
@@ -138,10 +147,19 @@ def aggregate_junctions(
 
         junctions = extract_junctions_from_cigar(read)
 
+        read_umi = None
+        if umi_tag is not None:
+            try:
+                read_umi = read.get_tag(umi_tag)
+            except KeyError:
+                read_umi = None
+
         for intron_start, intron_end in junctions:
             key = (chrom, intron_start, intron_end, strand)
             junction_counts[key] += 1
             junction_reads[key].append(read.query_name)
+            if read_umi:
+                junction_umis[key].add(read_umi)
 
     bam.close()
 
@@ -181,7 +199,7 @@ def aggregate_junctions(
             is_canonical = (five_ss_dinuc in CANONICAL_5SS and
                            three_ss_dinuc in CANONICAL_3SS)
 
-        results.append({
+        row = {
             'chrom': chrom,
             'strand': strand,
             'intron_start': intron_start,
@@ -191,7 +209,10 @@ def aggregate_junctions(
             'five_ss_dinuc': five_ss_dinuc,
             'three_ss_dinuc': three_ss_dinuc,
             'is_canonical': is_canonical,
-        })
+        }
+        if umi_tag is not None:
+            row['n_distinct_umis'] = len(junction_umis[(chrom, intron_start, intron_end, strand)])
+        results.append(row)
 
     df = pd.DataFrame(results)
 

@@ -141,6 +141,12 @@ Citation:
     create_aggregate_parser(subparsers)
 
     # =========================================================================
+    # umi-dedup command (collapse a UMI-tagged short-read BAM to molecules)
+    # =========================================================================
+    from .core.commands.umi_dedup_command import create_umi_dedup_parser
+    create_umi_dedup_parser(subparsers)
+
+    # =========================================================================
     # netseq command (NET-seq BAM processing)
     # =========================================================================
     from .core.commands.netseq_command import add_netseq_parser
@@ -271,6 +277,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'export-merged-tsv':
         from .core.commands import export_merged_tsv_command
         sys.exit(export_merged_tsv_command.run(args))
+    elif args.command == 'umi-dedup':
+        from .core.commands import umi_dedup_command
+        sys.exit(umi_dedup_command.run(args))
     else:
         parser.print_help()
         sys.exit(1)
