@@ -341,12 +341,24 @@ def _read_hp_edit_distances_from_raw_bam(
                 if correction is None:
                     continue
                 seen_corrected_ids.add(_normalize_bam_read_name(str(correction.get('read_id', read_id))))
-                apply_corrected_edits_to_read(read, correction, genome)
-                results[read_id] = (
-                    _cigar_hp_edit_distance(read, genome, penalty_table),
-                    _cigar_aligned_bases(read),
-                    _cigar_min_junction_anchor(read, genome),
-                )
+                try:
+                    apply_corrected_edits_to_read(read, correction, genome)
+                    results[read_id] = (
+                        _cigar_hp_edit_distance(read, genome, penalty_table),
+                        _cigar_aligned_bases(read),
+                        _cigar_min_junction_anchor(read, genome),
+                    )
+                except Exception as _read_exc:
+                    # A single pathological read (e.g. an edge-case CIGAR/coordinate
+                    # near a contig boundary that trips a string index) must NOT fail
+                    # the whole chunk under strict mode. Score it worst-case so it loses
+                    # winner-selection; the read was already added to seen_corrected_ids
+                    # above, so the strict completeness check still passes.
+                    logger.warning(
+                        "HP scoring skipped read %s in %s (%s: %s)",
+                        read_id, bam_path, type(_read_exc).__name__, _read_exc,
+                    )
+                    results[read_id] = (float('inf'), 0, _NO_JUNCTION_ANCHOR)
     except Exception:
         if strict:
             raise

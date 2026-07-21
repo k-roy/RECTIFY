@@ -86,6 +86,8 @@ if _NUMBA_AVAILABLE:
 
 def _hp_run_length(seq: str, pos: int) -> int:
     """Return the length of the homopolymer run containing position *pos*."""
+    if pos < 0 or pos >= len(seq):
+        return 1  # position outside the contig — neutral HP length, never index-error
     c = seq[pos]
     left = pos
     while left > 0 and seq[left - 1] == c:

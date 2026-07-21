@@ -25,6 +25,36 @@ alignment with a huge reference span → `MemoryError` (pysam materialises every
 `matches_only=True` (behaviour-identical — the code already filtered to both-not-None positions) so pysam
 never builds the giant list. Both walkback functions.
 
+## [2026-07-20] OPS: H2's shared rectify is a NON-GIT 0.9.0 tree missing BOTH cDNA crash fixes — check `rectify.__file__`, not `__version__`
+
+Found while staging the prp5/prp28/snp1 ONT PCR-cDNA run-all (Chanfreau `planning/377`).
+**`/u/home/k/kevinroy/software/rectify` is NOT a git repository** (`fatal: Not a git repository`) — it is a
+plain copy of the frozen **0.9.0** release, and the shared env
+`/u/project/guillom/shared/envs/rectify` imports rectify FROM IT. So on H2 you cannot `git pull`, and the
+HEAD is unknowable. Verified it lacks BOTH documented cDNA-path fixes: `walkback.py` has
+`matches_only=False` x3 / `matches_only=True` x0 (⇒ the pysam MemoryError + `chrom_seq[rp]` IndexError are
+LIVE), and `hp_penalty._hp_run_length` has no bounds guard (⇒ the whole-chunk_merge IndexError is LIVE).
+**Any cDNA multi-aligner run-all on the stock H2 env will hit these.**
+
+**Trap:** `rectify.__version__` reports `0.9.0` in the patched overlays too (the string was never bumped) —
+**identify a tree by `rectify.__file__`, never by the version string.**
+
+**Known-good source trees on H2** (carry the walkback fix, `matches_only=True` x4):
+`/u/project/guillom/kevinroy/rectify_patched_250/rectify`, `…/rectify_umi_run/rectify`.
+**Stale (0.9.0):** `/u/home/k/kevinroy/software/rectify`, `/u/project/guillom/shared/software/rectify`.
+
+**Workaround used:** isolated overlay `/u/project/guillom/kevinroy/rectify_377` (copy of patched_250 + the
+hp_penalty guard + the corrected_consensus per-read try/except), selected via
+`export PYTHONPATH=/u/project/guillom/kevinroy/rectify_377:$PYTHONPATH` on top of the shared env.
+⚠️ Note those last two fixes live as **uncommitted WIP on M1**, so a `git archive HEAD` deploy would MISS
+them — deploying "HEAD" is not sufficient to get a working cDNA pipeline on H2.
+
+**Env gotchas that cost 3 round-trips:** `module load conda/23.11.0` must precede sourcing `conda.sh`, and it
+needs `ssh … 'bash -lc'` — without a login shell there is no `module`, the activate silently fails, and you
+land on **/usr/bin/python 2.7.5**, which emits SyntaxErrors that look like corrupt source. H2's system
+`python3` is **3.6/ASCII**: patch scripts must pass `encoding="utf-8"` (rectify sources contain em-dashes)
+and must not `py_compile` a 3.7+ codebase.
+
 # AGENT_FIXES.md
 
 Fast coordination log for active debugging sessions across M1 / H2 / Sherlock.
