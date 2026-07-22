@@ -159,6 +159,13 @@ def has_soft_clip(read: pysam.AlignedSegment, side: str = 'any') -> bool:
 # Deletion Detection
 # =============================================================================
 
+# Largest N-op (intron) treated as plausible. N-ops above this are spurious
+# long-range splice artifacts (e.g. from deSALT/uLTRA); calling pysam
+# get_reference_sequence() on such reads can corrupt the heap (see
+# extract_deletions). ~50 kb is >> the S. cerevisiae maximum intron (~2.5 kb).
+_MAX_PLAUSIBLE_INTRON_BP = 50000
+
+
 def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
     """
     Extract all deletions from CIGAR string.
@@ -183,11 +190,23 @@ def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
 
     # Try to get reference sequence (if MD tag available)
     read_seq = read.query_sequence or ''
-    try:
-        ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
-    except (ValueError, KeyError, AssertionError):
-        # pysam ≥0.22 raises AssertionError for MD/CIGAR length mismatches
-        ref_seq = None
+    # get_reference_sequence() reconstructs ref bases from the MD tag over the
+    # read's full reference span. On reads carrying a spurious multi-kb N-op
+    # (e.g. 140 kb "introns" emitted by long-read splice aligners like
+    # deSALT/uLTRA; real S. cerevisiae introns are <3 kb) pysam's C
+    # implementation corrupts the process heap and aborts (SIGABRT) — which the
+    # try/except below CANNOT catch. Skip the call for implausible N-ops;
+    # ref_seq=None is already handled (deleted_seq stays '' so such a spurious
+    # alignment is simply not A-tract-classified). Root-cause fix 2026-07-22.
+    ref_seq = None
+    _max_n_op = max((length for op, length in read.cigartuples if op == 3),
+                    default=0)
+    if _max_n_op <= _MAX_PLAUSIBLE_INTRON_BP:
+        try:
+            ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
+        except (ValueError, KeyError, AssertionError):
+            # pysam ≥0.22 raises AssertionError for MD/CIGAR length mismatches
+            ref_seq = None
 
     for i, (op, length) in enumerate(read.cigartuples):
         if op == 2:  # Deletion

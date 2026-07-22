@@ -1,3 +1,89 @@
+## [2026-07-22] ✅ FIXED (correct) — `get_reference_sequence()` heap corruption / SIGABRT on spurious mega-intron reads
+
+**Filed & fixed by:** Chanfreau Session-B (Kevin Roy), 2026-07-22. **Fix:** `rectify/utils/alignment.py`
+`extract_deletions()` — guard the `read.get_reference_sequence()` call (skip when any N-op > `_MAX_PLAUSIBLE_INTRON_BP`
+= 50 kb). One-line-ish, additive; the existing `ref_seq=None` fallback already handles the skip.
+
+**Symptom.** `rectify correct` on a genomic BAM aborts with glibc `*** double free or corruption ***` /
+`corrupted size vs prev_size` inside `pysam/libcalignedsegment`, then HANGS. rc=134, **uncatchable** by the
+surrounding Python try/except (C-level SIGABRT). Reproduced with `-j 1` AND multithreaded; `--threads 1` and
+`--legacy-single-threaded` do NOT help.
+
+**Root cause.** `extract_deletions()` calls `read.get_reference_sequence()` (reconstructs ref bases from the MD tag
+over the read's full reference span). On reads carrying a spurious multi-kb `N`-op — 142–159 kb "introns" emitted by
+long-read splice aligners (deSALT/uLTRA) as long-range splice artifacts; real *S. cerevisiae* introns are <3 kb —
+pysam 0.23.3's C implementation corrupts the heap. Construct/intron-less reads never hit it; ~10% of genomic reads
+in the test locus did.
+
+**Diagnosis path (for future ref):** module bisect isolated `--skip-indel-correction`; per-read isolation found the
+mega-N-op CIGARs; keeping huge-N (skip only big indels) still crashed → the N-op is the trigger; `extract_deletions`
+is the only pysam-C call in that path.
+
+**Validated:** the exact original crash case (`correct` on a construct+chrXIII ROI, all modules) now completes
+rc=0, 25,110 reads corrected. **Note:** deeper upstream fix would cap the aligner's max-intron so these spurious
+alignments never win consensus; this correction-layer guard is the robust backstop. Full writeup: Chanfreau
+`planning/281`.
+
+---
+
+## [2026-07-21] 🔴 CRITICAL BUG (align) — **OPEN, NOT FIXED**: single-aligner output path is sample-keyed, so a per-aligner fan-out silently clobbers itself
+
+**Filed by:** Sumner (JHU) session-C, 2026-07-21 01:40 PT. **Reported by Kevin Roy**, who stated the
+invariant: *"There should always be the aligner and sample ID name in the prefix to avoid the
+race/clobbering issue."* **Not patched here — see "Why not fixed in this commit" below.**
+
+**Symptom.** Running the 3-aligner panel as one job per (sample × aligner) — the correct pattern, since
+uLTRA rebuilds a whole-genome index per invocation and must not be chunked — leaves a
+`<sample>_trimmed.rectified.bam` that is **not a consensus**. On the Sumner pilot (`WT_21.8_rep3`) it was
+byte-identical to the uLTRA BAM plus **one `@PG` record**: `rectified.bam` 3,692,200,234 B vs
+`uLTRA.bam` 3,692,200,211 B; `@PG` chain `samtools.4/samtools.5` vs `samtools.3/samtools.4`. **All three
+job logs contain** `Single-aligner output (sorted+indexed): …_trimmed.rectified.bam` — three writers,
+one path. Last writer wins (uLTRA, finishing last).
+
+**Cause.** `rectify/core/commands/align_command.py` (deployed Oak copy ~L810; M1 `drs-validation-rebuild`
+~L838):
+```python
+if len(successful_aligners) == 1 or getattr(args, 'no_consensus', False):
+    logger.info("Skipping consensus selection (single aligner or --no-consensus)")
+    if len(successful_aligners) == 1:            # ← fires REGARDLESS of --no-consensus
+        rectified_bam = args.output_dir / f"{prefix}.rectified.bam"
+        samtools sort -@ threads -o rectified_bam single_bam
+        samtools index rectified_bam
+    return 0
+```
+`prefix` is **sample-level** (`:416`, derived from the reads stem) with **no aligner component** ⇒ every
+single-aligner job for a sample targets the same path.
+
+**🔴 `--no-consensus` does NOT prevent it.** The outer guard is `len==1 OR no_consensus`, but the inner
+guard is `len==1` alone. A per-aligner fan-out always has `len==1`, so the block fires on every job.
+A caller passing `--no-consensus` to opt out of this behaviour **still gets it.**
+
+**Two costs.** (1) *Silent wrong data*: a consumer of `rectified.bam` gets **single-aligner** output while
+appearing to use the panel — and it fails in the worst way, since the file exists, is a plausible size,
+and passes `samtools quickcheck`. (2) *Pure waste*: each job pays an extra `samtools sort` + `index` of a
+3.4–4.1 GB BAM to produce a file that is immediately clobbered. On the Sumner 15-sample × 3-aligner
+panel that is **45 redundant multi-GB sorts.**
+
+**FIX (one line).** `f"{prefix}.rectified.bam"` → **`f"{prefix}.{aligner_name}.rectified.bam"`**
+(the single surviving key of `successful_aligners`). Optionally also gate the inner block on
+`not args.no_consensus` so the flag means what callers expect.
+⚠️ **Renaming alone does NOT fix it:** `drs-validation-rebuild` already renamed this to
+`.multialigned.bam` (~L843) and it is **still sample-level**, so the identical race exists there under a
+new filename. **The aligner component is the load-bearing part.**
+
+**Why not fixed in this commit.** At filing time **23 of 45 jobs of a live Sumner panel were RUNNING**;
+changing the deployed copy mid-panel would make early and late jobs behave differently. `align_command.py`
+is also traversed by COMPASS on this shared branch. **Apply deliberately once the panel drains, and
+re-run the two `--short-read` PE tests plus `tests/test_compass_aligner_cmds.py`.**
+
+**Interim handling for any consumer:** treat `*_trimmed.rectified.bam` / `*.multialigned.bam` produced by
+a per-aligner fan-out as **garbage**; never glob it into a downstream stage. A real consensus exists only
+where `rectify consensus` was run over the per-aligner BAMs (those ARE correctly named).
+
+**Generalizable rule:** any output path written by a parallel fan-out must be keyed on **every dimension
+the fan-out varies**. A path keyed on only some of them is a silent race.
+(Sumner cross-ref: `planning/sma_drs_program/30_CORRECTIONS_REGISTRY.md` §0.18, §0.25.)
+
 ## [2026-07-17] CHANGE (align): bbmap `intronlen` 10/20 → 40 — stop sub-40bp deletions being mislabeled as introns
 
 bbmap relabels any reference gap ≥ `intronlen` bp as an N-op (fake intron). It was too low
