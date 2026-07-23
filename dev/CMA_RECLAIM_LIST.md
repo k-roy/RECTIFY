@@ -1,9 +1,15 @@
-# Reclaim delete list — `aligner_chunks/` (AWAITING KEVIN'S APPROVAL)
+# Reclaim delete list — `aligner_chunks/` (✅ EXECUTED 2026-07-23)
 
-**Generated:** 2026-07-23 · **Status:** PROPOSED — nothing deleted. Approve the list before any removal.
-**Verification:** H2 `~/m0_scratch/reclaim_verify_all_20260723_1240.txt` (read-only). Method: per sample, for
-every aligner, `Σ(raw per-chunk *.<aligner>.bam primary reads) == merged_bams/<sample>.<aligner>.bam primary
-reads`, AND `consensus/corrected_consensus.bam` present. SAFE only if ALL aligners match AND consensus exists.
+**Status:** DONE — Kevin approved (spot-check → stage(mv) → purge). All 9 SAFE dirs purged; run
+**187 GB → 89 GB (~98 GB reclaimed)**. Post-purge, every sample's durable products
+(`merged_bams` + `consensus/corrected_consensus.bam` + `junction_pool.pkl`) verified INTACT;
+`Xrn1_AID_25C_repB_4aln` (UNSAFE) untouched.
+**Evidence chain (H2 `~/m0_scratch/`):** `reclaim_verify_all_20260723_1240.txt` (completeness) ·
+`reclaim_spotcheck_20260723_1309.txt` (field-identity md5 match) · `reclaim_purge_20260723_1321.txt` (purge + intact-confirm).
+
+**Verification method:** per sample, for every aligner, `Σ(raw per-chunk *.<aligner>.bam primary reads) ==
+merged_bams/<sample>.<aligner>.bam primary reads`, AND `consensus/corrected_consensus.bam` present; PLUS a
+field-identity spot-check (QNAME/FLAG/RNAME/POS/MAPQ/CIGAR sorted-multiset md5, merged vs concatenated chunks).
 
 Run: `/u/scratch/k/kevinroy/drs_decay_mutants_rectify_20260702/`
 
