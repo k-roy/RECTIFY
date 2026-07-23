@@ -133,12 +133,26 @@ real sample before any per-aligner BAM is deleted.
 
 ---
 
+## Shipped this session (branch `drs-validation-rebuild`)
+- `f60bc32` — **format core** (`rectify/core/multialign/`) + 8-test gate suite (both deletion gates).
+- `21849e7` — **`rectify cma {build,expand,validate,verify}`** (doc M2 backlog-reclaim ingest). Streaming
+  build (name-sort → `_iter_name_grouped_bams` → `build_cma`) scales to real merged_bams; `verify` runs BOTH
+  gates and prints PASS/FAIL (PASS = safe to delete the per-aligner BAMs). Deletes nothing.
+- `3272248` — **`align --emit-cma`** (doc M4 first step): opt-in, non-destructive native emission of
+  `<prefix>.cma.bam` + reusable `build_cma_from_bams`. 13 CMA tests total, all pass.
+
 ## Next steps
-- **Track 1:** on Kevin's go — completeness-check the other 9 decay samples, inventory `408d_plants`, build the
-  explicit delete list. (Reclaim ≈104 GB decay + TBD plants.)
-- **Track 2:** next doc-milestones are **backlog reclaim ingest** (`rectify cma build --from-aligner-bams`, doc
-  M2) and **DRS DAG wiring** (doc M4). The format core de-risks both.
+- **Track 1:** the full completeness verify (9 remaining decay samples + `408d_plants` inventory) is the
+  gate that produces the explicit delete list for Kevin's approval. Reclaim so far confirmed SAFE on
+  Dcp2_repA/repB, WT_30_1_repA (all `COMPLETE`). ≈104 GB decay + TBD plants. **Nothing deleted.**
+- **Migration reclaim (M2):** for any 5-aligner run, `rectify cma build` its `merged_bams` → `rectify cma
+  verify` (both gates) → then delete the originals by explicit list once verify PASSes. `align --emit-cma`
+  makes new runs emit the CMA natively.
+- **M4 destructive DAG rewrites DEFERRED** (delete per-aligner copies in split_command/chunked_batch):
+  deliberately not done this session — the branch has a pending merge + 2 CRITICAL `align_command.py` bugs.
+  Do after the branch stabilizes; doc §4 has the file:line list.
 - **Unrelated but open (inbox):** 2 CRITICAL Sumner-filed bugs in `AGENT_FIXES.md` — (a) `align_command.py`
   single-aligner output path is sample-keyed (per-aligner fan-out clobbers itself; `.multialigned.bam` rename
   didn't fix it — needs the aligner component); (b) `corrected_consensus.py` on the shared Oak env matches no
-  commit. Both untouched by this session's work.
+  commit. Both untouched by this session's work (the `--emit-cma` hook is in the multi-aligner block, separate
+  from the single-aligner bug).
