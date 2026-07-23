@@ -182,6 +182,9 @@ Citation:
     from .core.commands.run_command import create_run_parser
     create_run_parser(subparsers)
 
+    from .core.commands.cma_command import create_cma_parser
+    create_cma_parser(subparsers)
+
     return parser
 
 
@@ -247,6 +250,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'consensus':
         from .core.commands import consensus_command
         consensus_command.run(args)
+    elif args.command == 'cma':
+        from .core.commands import cma_command
+        sys.exit(cma_command.run(args))
     elif args.command == 'install-aligners':
         from .core.commands import install_aligners_command
         install_aligners_command.run(args)
