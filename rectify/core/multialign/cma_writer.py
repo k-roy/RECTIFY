@@ -176,6 +176,36 @@ def build_cma(read_stream, template_header, out_path: str, panel: Iterable[str],
     return {"reads": n_reads, "records": n_records}
 
 
+def build_cma_from_bams(aligner_bams: Dict[str, str], out_path: str, panel=None, genome=None) -> Dict[str, int]:
+    """Build a CMA from a ``{aligner: bam_path}`` map, streaming and scale-safe.
+
+    Name-sorts inputs as needed (the K-way merge requires queryname order), then
+    streams them through the production grouper (consensus._iter_name_grouped_bams)
+    into build_cma. Used by ``rectify cma build`` and ``align --emit-cma``.
+    """
+    import os
+    import tempfile
+
+    from ..consensus.consensus import _iter_name_grouped_bams
+
+    panel = list(panel) if panel else list(aligner_bams)
+    with tempfile.TemporaryDirectory(prefix="cma_build_") as td:
+        sorted_paths = {}
+        for aligner, path in aligner_bams.items():
+            with pysam.AlignmentFile(path, "rb") as f:
+                so = f.header.to_dict().get("HD", {}).get("SO")
+            if so == "queryname":
+                sorted_paths[aligner] = path
+            else:
+                sp = os.path.join(td, os.path.basename(path) + ".nsort.bam")
+                pysam.sort("-n", "-o", sp, path)
+                sorted_paths[aligner] = sp
+        first = next(iter(sorted_paths.values()))
+        with pysam.AlignmentFile(first, "rb") as f:
+            header = f.header
+        return build_cma(_iter_name_grouped_bams(sorted_paths), header, out_path, panel, genome=genome)
+
+
 def load_aligner_records(bam_paths: Dict[str, str]) -> Iterator[Tuple[object, Dict[str, pysam.AlignedSegment]]]:
     """In-memory per-read grouper for small inputs (fixtures, migration ingest).
 

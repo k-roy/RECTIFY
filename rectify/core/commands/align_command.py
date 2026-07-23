@@ -343,6 +343,18 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     perf_group.add_argument(
+        '--emit-cma',
+        action='store_true',
+        default=False,
+        help='Additionally write a compressed-multialign <prefix>.cma.bam next to '
+             'the multialigned BAM: the pre-correct per-aligner placements with '
+             'read SEQ/QUAL stored ONCE (deduplicated across aligners). Opt-in, '
+             'non-destructive (nothing is deleted); a lossless store enabling '
+             'add-an-aligner / resume-select at ~1/3 the retained footprint. See '
+             'planning/254 and `rectify cma`.'
+    )
+
+    perf_group.add_argument(
         '--max-intron',
         type=int,
         default=5000,
@@ -955,6 +967,25 @@ def run_align(args: argparse.Namespace) -> int:
         import traceback
         traceback.print_exc()
         return 1
+
+    # Opt-in compressed-multialign artifact (non-destructive; planning/254).
+    # Wrapped so a CMA failure can never fail an otherwise-successful alignment.
+    if getattr(args, 'emit_cma', False):
+        try:
+            from ..multialign import build_cma_from_bams, validate_cma
+            _cma_path = args.output_dir / f"{prefix}.cma.bam"
+            _cma_stats = build_cma_from_bams(
+                successful_aligners, str(_cma_path),
+                panel=list(successful_aligners), genome=genome,
+            )
+            _cma_probs = validate_cma(str(_cma_path))
+            logger.info(
+                f"CMA emitted: {_cma_path} ({_cma_stats['reads']} reads, "
+                f"{_cma_stats['records']} records; "
+                f"validate={'OK' if not _cma_probs else str(len(_cma_probs)) + ' problems'})"
+            )
+        except Exception as _e:
+            logger.warning(f"--emit-cma failed (non-fatal): {_e}")
 
     # Add MD tags via samtools calmd (required for indel correction and
     # alignment identity calculation downstream).

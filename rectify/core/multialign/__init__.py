@@ -26,7 +26,7 @@ from .cma_schema import (
     collapse_key,
     revcomp,
 )
-from .cma_writer import build_cma, load_aligner_records
+from .cma_writer import build_cma, build_cma_from_bams, load_aligner_records
 from .cma_reader import expand
 from .validate import validate_cma
 
@@ -40,6 +40,7 @@ __all__ = [
     "collapse_key",
     "revcomp",
     "build_cma",
+    "build_cma_from_bams",
     "load_aligner_records",
     "expand",
     "validate_cma",

@@ -18,11 +18,10 @@ import argparse
 import collections.abc
 import logging
 import os
-import tempfile
 
 import pysam
 
-from ..multialign import build_cma, expand, load_aligner_records, validate_cma
+from ..multialign import expand, load_aligner_records, validate_cma
 from ..multialign.cma_schema import decode_eq_seq
 
 logger = logging.getLogger(__name__)
@@ -80,17 +79,6 @@ def _parse_aligner_bams(items):
     return out
 
 
-def _ensure_name_sorted(path, tmpdir):
-    """Return a name(queryname)-sorted copy of ``path`` (the K-way merge needs it)."""
-    with pysam.AlignmentFile(path, "rb") as f:
-        so = f.header.to_dict().get("HD", {}).get("SO")
-    if so == "queryname":
-        return path
-    out = os.path.join(tmpdir, os.path.basename(path) + ".nsort.bam")
-    pysam.sort("-n", "-o", out, path)
-    return out
-
-
 def _genome_from_args(args):
     g = getattr(args, "genome", None)
     return _LazyGenome(g) if g else None
@@ -100,20 +88,13 @@ def _genome_from_args(args):
 # build
 # --------------------------------------------------------------------------- #
 def _run_build(args):
-    aligner_bams = _parse_aligner_bams(args.aligner_bams)
-    panel = args.panel.split(",") if args.panel else list(aligner_bams)
-    genome = _genome_from_args(args)
-    from ..consensus.consensus import _iter_name_grouped_bams
+    from ..multialign import build_cma_from_bams
 
-    with tempfile.TemporaryDirectory(prefix="cma_build_") as td:
-        sorted_paths = {a: _ensure_name_sorted(p, td) for a, p in aligner_bams.items()}
-        first = next(iter(sorted_paths.values()))
-        with pysam.AlignmentFile(first, "rb") as f:
-            header = f.header
-        logger.info("Building CMA from %d aligner BAMs → %s", len(sorted_paths), args.out)
-        stats = build_cma(
-            _iter_name_grouped_bams(sorted_paths), header, args.out, panel, genome=genome
-        )
+    aligner_bams = _parse_aligner_bams(args.aligner_bams)
+    panel = args.panel.split(",") if args.panel else None
+    genome = _genome_from_args(args)
+    logger.info("Building CMA from %d aligner BAMs → %s", len(aligner_bams), args.out)
+    stats = build_cma_from_bams(aligner_bams, args.out, panel=panel, genome=genome)
     if genome:
         genome.close()
     problems = validate_cma(args.out)

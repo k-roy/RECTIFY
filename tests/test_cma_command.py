@@ -74,3 +74,26 @@ def test_aligner_name_inference():
         ["/x/s.minimap2.bam", "uLTRA=/y/z.bam"]
     )
     assert parsed == {"minimap2": "/x/s.minimap2.bam", "uLTRA": "/y/z.bam"}
+
+
+def test_build_cma_from_bams_helper(tmp_path):
+    """The reusable builder used by both `cma build` and `align --emit-cma`."""
+    from rectify.core.multialign import build_cma_from_bams, validate_cma
+
+    aligner_bams = {a: str(FIXTURE / f"validation_reads.{a}.bam") for a in ALIGNERS}
+    cma = str(tmp_path / "h.cma.bam")
+    stats = build_cma_from_bams(aligner_bams, cma, panel=ALIGNERS, genome=None)
+    assert stats["reads"] == 36
+    assert validate_cma(cma) == []
+
+
+def test_align_parser_has_emit_cma():
+    import argparse
+
+    from rectify.cli import create_parser
+
+    p = create_parser()
+    sub = next(a for a in p._actions if isinstance(a, argparse._SubParsersAction))
+    align = sub.choices["align"]
+    opts = {s for act in align._actions for s in act.option_strings}
+    assert "--emit-cma" in opts
