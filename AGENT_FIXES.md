@@ -1,3 +1,201 @@
+## [2026-07-25] 🔴🔴 TRAP (reference) — a FASTA/GFF **contig-naming mismatch** makes the whole panel annotation-blind, silently
+
+**Found by:** Chanfreau 5′-rescue session, 2026-07-25 (`planning/460`). **Not a code bug — a reference-staging
+trap, and the most dangerous one yet, because every job exits 0 and every BAM looks normal.**
+
+**Symptom.** Nothing fails. The one and only visible signal is a single line in minimap2's stderr:
+
+```
+[mm_idx_bed_read_merge] read 0 introns, 0 of which are non-redundant
+```
+
+immediately after rectify logs `Extracted 402 introns` from the GFF. Junction hints are silently discarded.
+
+**Root cause.** The genome FASTA and the annotation use different chromosome vocabularies:
+
+| file | seqids |
+|---|---|
+| `S288C_reference_simple.fasta` (and every BAM built from it) | `I, II, … XVI, ref\|NC_001224\|` |
+| SGD `saccharomyces_cerevisiae_R64-5-1_*.gff` / `.gtf` | `chrI, chrII, … chrXVI, chrmt` |
+
+Both ship **side by side in the same lab reference directory**, so the pairing looks correct. minimap2 builds the
+junc-BED from the GFF (`chrI…`), then matches it against index contigs (`I…`) and finds nothing. uLTRA's
+`ultra_norm.gtf` inherits the same wrong names.
+
+**Why it matters far beyond alignment quality:** rectify's 5′ soft-clip rescue draws its candidate pool from
+*annotated junctions ∪ cross-aligner novel junctions*. With the annotated half empty, the pool is **novel-only** —
+i.e. the unfiltered short-anchor substrate that `min_junction_anchor_bp` exists to gate. Any rescue or
+junction-pool measurement taken on a mismatched reference is measuring the wrong thing.
+
+**Detection (do this once per reference dir, before any run):**
+```bash
+diff <(cut -f1 "$REF.fai" | sort -u) \
+     <(awk '/^##FASTA/{exit} !/^#/{print $1}' "$GFF" | sort -u)   # must be empty
+```
+Or, after a first minimap2 chunk: `grep mm_idx_bed_read_merge <log>` — a **0** there means annotation-blind.
+
+**Fix.** Normalise the annotation to the FASTA's vocabulary (whole-token replacement only — a naive
+`s/chrX/X/` will corrupt `chrXI`), covering feature column 1, `##sequence-region` pragmas, and `>id` headers in
+any embedded `##FASTA` block; then delete/regenerate `*.ultra_norm.gtf` so uLTRA rebuilds it. Keep the originals.
+Chanfreau copy of the converter: `planning/460` (`460_fix_ref_contigs.py`).
+
+---
+
+## [2026-07-25] 🔴 TRAP (align) — `minimap2 -y` on a non-SAM FASTQ comment aborts samtools, and the error is MASKED as SIGPIPE
+
+**Found by:** Chanfreau 5′-rescue session, 2026-07-25 (`planning/460`).
+
+**Symptom.** `rectify align` reports `minimap2 failed (exit -13)` (SIGPIPE) a second or two after
+`loaded/built the index`, with retries failing identically. The stderr shown is minimap2's, and it looks healthy.
+
+**Root cause.** `run_minimap2()` (`rectify/core/align/multi_aligner.py`) passes **`-y`**, which copies the FASTQ
+**comment** verbatim into the SAM record as aux fields. That is correct for the cDNA/UMI pipeline, whose comments
+are tab-separated SAM aux tags (`RN:i:5`, `pt:i:25`) — and wrong for any FASTQ whose comment is free text, e.g. a
+raw SRA header `@SRR32518273.1 e464c9e6-290a-…/1`. `samtools sort` then aborts:
+
+```
+[E::aux_parse] unrecognized type '4'
+samtools sort: truncated file. Aborting
+```
+
+killing the pipe, so minimap2 dies of SIGPIPE. **The real error is invisible** because `run_minimap2` checks
+`sam_output.returncode` (minimap2) *before* `sort_proc.returncode` (samtools) and raises on the former, discarding
+samtools' stderr.
+
+**Reproduce / confirm** — run the pipeline by hand and capture BOTH stderrs; `samtools sort` will name the problem:
+```bash
+minimap2 -ax splice -uf -k14 -G 5000 --splice-flank=no --secondary=no --MD -y -t 2 \
+    --junc-bed $BED $GENOME $FASTQ 2>mm2.err | samtools sort -n -@2 -o /dev/null 2>sort.err
+```
+
+**Workaround today.** Feed minimap2 only FASTQs that went through `rectify split` (it rewrites headers to
+`RN:i:<n>`), or strip the comment. **Chunked runs are safe; a run pointed straight at an SRA/dorado FASTQ is not.**
+
+**Suggested fixes (not yet applied).** (a) report samtools' stderr when minimap2's rc is `-13`, since a broken
+pipe means the *consumer* is the real failure; (b) sniff the first FASTQ comment and only pass `-y` when it parses
+as SAM aux (`^[A-Za-z][A-Za-z0-9]:[AifZHB]:`).
+
+---
+
+## [2026-07-25] 🔴 TRAP (align) — concurrent bbmap index build: `java.io.EOFException` on ONE array task
+
+**Found by:** Chanfreau 5′-rescue session, 2026-07-25 (`planning/460`).
+
+**Symptom.** In a mapPacBio array, exactly one task (usually the first) dies while its siblings pass:
+```
+NOTE:  Ignoring reference file because it already appears to have been processed.
+Exception in thread "main" java.lang.RuntimeException: java.io.EOFException
+    at dna.ChromosomeArray.read(ChromosomeArray.java:63)
+    at align2.BBMapPacBio.loadIndex(BBMapPacBio.java:392)
+```
+
+**Root cause.** All array tasks share one `path=<ref_dir>/bbmap_index`. The first task to arrive starts building
+it; a sibling sees the freshly-written `summary.txt`, concludes the index is ready, and reads a **still-being-
+written `chr1.chrom.gz`** → EOF. Later tasks read the finished file and succeed, so the failure looks
+input-specific ("chunk_000 must be corrupt") when it is purely a startup race.
+
+**Fix.** **Pre-build every shared index serially before submitting any array** — bbmap's `path=` index, deSALT's
+`desalt_index`, and uLTRA's `*.ultra_norm.gtf` (which uLTRA writes next to the annotation and which races the same
+way). One throwaway single-task alignment on a few thousand reads warms all of them. At 21-sample fan-out scale
+this is a blocker, not a nuisance.
+
+---
+
+## [2026-07-25] ✅ FIXED (run-all) — single-sample `--chunked-alignment` SKIPS the entire consensus chain (so 5′ rescue never runs)
+
+**Found & fixed by:** Chanfreau 5′-rescue session, 2026-07-25 (`planning/460`).
+**Fix:** `rectify/core/commands/run/chunked_batch.py`, single-sample branch of `_generate_chunked_pipeline`.
+
+**Symptom.** The chain runs to completion, then `run_correct_analyze.sh` dies with
+`ERROR: consensus BAM not found: <out>/consensus/<sample>.consensus.bam`.
+
+**Root cause — two independent defects, both required for a working chain.**
+1. **The middle of the pipeline was never wired.** The generated `submit_pipeline.sh` chained only
+   `split → mapPacBio/others → merge_aligners → correct_analyze`. `generate_alignment_scripts()` already returns
+   and writes `prescan`, `correct` (per aligner), `chunk_merge`, `final_merge`, `consensus_per_chunk` and
+   `merge_consensus_chunks` — none were submitted. **Consequence: no consensus BAM, and therefore no 5′
+   soft-clip rescue at all**, because the rescue happens inside consensus scoring (`consensus/scoring.py`
+   `_rescue_5prime_softclip`), not in `correct`.
+2. **The consensus path did not match.** `run_correct_analyze.sh` looked in `<out>/consensus/`, while
+   `run_merge_consensus_chunks.sh` writes to `<out>/chunks/consensus/` (its `OUTDIR` is the chunks dir). Fixing
+   (1) alone still fails with the identical error.
+
+Same family as the `KeyError: 'merge'` entry below: the single-sample branch is systematically behind the
+multi-sample one. ⚠️ **Still open:** the multi-sample branch stops at `final_merge` and likewise never produces a
+consensus BAM — so multi-sample `--chunked-alignment` also cannot rescue.
+
+**Validated:** `pytest -m "not slow" -k "chunk or split or run_command"` → **74 passed, 1 skipped**; regenerated
+pipeline inspected (15-stage chain, consensus path matching on both sides).
+
+---
+
+## [2026-07-25] 🔴 TRAP (align) — a reference genome in ANOTHER USER's directory silently fails EVERY uLTRA and deSALT task
+
+**Found by:** Chanfreau lariat/rescue session, 2026-07-25 (`planning/455`, `planning/456`). **Not a code bug —
+an environment trap that looks like an aligner bug, and it silently reduces a 4-aligner panel to 2.**
+
+**Symptom.** A `run-all --chunked-alignment` fan-out completes with `exit_status 0` for every minimap2 and gapmm2
+task and `exit_status 1` for **every** uLTRA and deSALT task (here: tasks 1-8 OK, 9-16 all failed, 3 retries each).
+No BAMs for those aligners. The consensus then runs on a **2-aligner** pool, so the cross-aligner junction pool —
+the whole basis of 5' soft-clip rescue — is silently crippled. `qstat` is empty and the top-level job looks fine.
+
+**Root cause (ONE cause, two messages).** Both aligners must WRITE derived artifacts *adjacent to the reference*:
+- uLTRA: `[Errno 13] Permission denied: '<ref_dir>/<genome>.ultra_norm.gtf'` — it normalises the GTF
+  (mRNA→transcript, deriving exons) into the reference directory.
+- deSALT: `deSALT index not found (or empty) adjacent to <genome.fa>. Looked at: <ref_dir>/desalt_index, ...`
+
+If the reference lives in a **read-only directory owned by another lab member** (ours was
+`/u/project/guillom/boli0204/S288C_reference_genome_R64-5-1_20240529/`), uLTRA cannot write its normalised GTF and
+deSALT's index can never be built there. minimap2/gapmm2 need no such sidecar, so they pass and mask the problem.
+
+**Fix.** Stage the reference into a **writable** location you own and build the index once:
+```bash
+REF=/u/project/guillom/kevinroy/refs/R64-5-1        # writable
+cp -p <src>/S288C_reference_simple.fasta <src>/*.gff <src>/*.gtf $REF/
+samtools faidx $REF/S288C_reference_simple.fasta
+deSALT index $REF/S288C_reference_simple.fasta $REF/desalt_index
+```
+then pass `--genome $REF/... --annotation $REF/...`. **Never point a multi-aligner run at a reference you cannot
+write to** — and per `shared/README.md` hygiene, do not write into another user's dir to work around it.
+
+**Detection.** After any multi-aligner run, assert one BAM per aligner per chunk before trusting the consensus:
+`for a in minimap2 gapmm2 uLTRA deSALT; do echo -n "$a "; ls <chunks>/aligner_chunks/$a/chunk_*/*.$a.bam | wc -l; done`
+A zero for any aligner means the pool is degraded even though the pipeline "succeeded".
+
+---
+
+## [2026-07-25] ✅ FIXED (run-all) — `--chunked-alignment` dies instantly with `KeyError: 'merge'`
+
+**Filed & fixed by:** Chanfreau lariat/rescue session (Kevin Roy), 2026-07-25.
+**Fix:** `rectify/core/commands/run/chunked_batch.py` — two stale dict keys
+`align_scripts['merge']` → `align_scripts['merge_aligners']` (L267 and the summary print at L365).
+
+**Symptom.** ANY `rectify run-all --chunked-alignment` run aborts in <60 s, after the split/chunk-count step:
+
+```
+File ".../run/chunked_batch.py", line 267, in _generate_chunked_pipeline
+    merge_script  = align_scripts['merge']
+KeyError: 'merge'
+```
+
+**Root cause.** `split_command.generate_alignment_scripts()` returns the key **`merge_aligners`**
+(alongside `mpb`, `others`, `prescan`, `correct`, `chunk_merge`, `final_merge`,
+`consensus_per_chunk`, `merge_consensus_chunks`, `submit`). The single-sample branch of
+`_generate_chunked_pipeline` still read the pre-rename name `merge`. Key-set diff confirms `'merge'`
+was the ONLY consumed key with no producer, and the **multi-sample branch (~L508) already used the
+correct `merge_aligners`** — so this was a rename that was propagated to one call path and not the other.
+Scheduler- and organism-independent: it fails before any scheduler branch is reached.
+
+**Validated:** key-set diff (consumed ⊆ returned) now closes; `pytest -m "not slow" -k "chunk or split or
+run_command"` → **74 passed, 1 skipped**. Chanfreau `planning/455`.
+
+**Note for callers:** `--chunked-alignment` is the mandatory submission mode for cluster rectify work in the
+Chanfreau workspace, so this bug blocked *all* compliant fan-outs. Also heed the runtime warning it prints on
+yeast: mapPacBio is in the panel with `min_junction_anchor_bp=0`, which re-opens the spurious-intron gaming
+vector — pass `--min-junction-anchor-bp 10` (or `--skip-map-pacbio`) for any junction-sensitive analysis.
+
+---
+
 ## [2026-07-22] ✅ FIXED (correct) — `get_reference_sequence()` heap corruption / SIGABRT on spurious mega-intron reads
 
 **Filed & fixed by:** Chanfreau Session-B (Kevin Roy), 2026-07-22. **Fix:** `rectify/utils/alignment.py`

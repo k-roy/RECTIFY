@@ -14,6 +14,7 @@ import bisect
 from typing import Dict, Optional, Set, Tuple
 
 from .extract import AlignmentInfo, ConsensusResult
+from .pool_gate import gated_alignment_junctions
 from .scoring import score_alignment
 
 
@@ -76,6 +77,8 @@ def select_best_alignment(
     genome: Dict[str, str],
     annotated_junctions: Optional[Set[Tuple[str, int, int, str]]] = None,
     tiebreak: str = 'rectify',
+    pool_min_anchor_bp: int = 0,
+    pool_max_intron_len: int = 0,
 ) -> ConsensusResult:
     """
     Select the best alignment from multiple aligners for a single read.
@@ -93,6 +96,12 @@ def select_best_alignment(
               is the established long-read order and is kept byte-identical.
             - ``'compass'`` (short-read splice-junction mode): the COMPASS published
               order ``ungapped > gapped > annotated > shorter-intron`` — prefer the
+        pool_min_anchor_bp: Minimum flanking anchor (nt) for a NON-annotated junction to
+            enter this read's candidate-junction pool. 0 (default) = no gate, preserving
+            historical behaviour. 8-12 is the measured recommendation; annotated
+            junctions always bypass. See ``pool_gate``.
+        pool_max_intron_len: Maximum intron length (nt) for a non-annotated junction to
+            enter the pool. 0 (default) = no limit; 3000 is right for S. cerevisiae.
               alignment with no introns, then more annotated junctions, then the
               shorter total intron length. On a score tie this conservatively favors
               the simplest explanation, which is what lets the short-read panel flag
@@ -145,9 +154,17 @@ def select_best_alignment(
             for j in annotated_junctions:
                 if j[0] == chrom_for_read:
                     candidate_junctions.add(j)
+    # Pool-entry gate (default off). Without it every junction from every aligner is
+    # admitted unconditionally, and since clips cost 1.0/base while N-ops are free, each
+    # one is a free licence to convert a soft clip into an alignment. See pool_gate for
+    # the measured anchor/read-count evidence.
     for alignment in alignments.values():
-        for junc_start, junc_end in alignment.junctions:
-            candidate_junctions.add((alignment.chrom, junc_start, junc_end, alignment.strand))
+        candidate_junctions.update(gated_alignment_junctions(
+            alignment,
+            annotated_junctions=annotated_junctions,
+            min_anchor_bp=pool_min_anchor_bp,
+            max_intron_len=pool_max_intron_len,
+        ))
 
     # Score all alignments
     for aligner, alignment in alignments.items():

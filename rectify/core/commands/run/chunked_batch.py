@@ -220,7 +220,11 @@ ls -lh "$CHUNKS_DIR/"*chunk*.fastq.gz 2>/dev/null | head -5 || true
         correct_header = _make_correct_analyze_header(
             f'{sample_prefix}_correct', 8, 32, '4:00:00', log_dir,
         )
-        consensus_bam = output_dir / 'consensus' / f'{sample_prefix}.consensus.bam'
+        # The consensus BAM is written by run_merge_consensus_chunks.sh, which puts it
+        # under the CHUNKS dir (its OUTDIR), not the top-level output dir. Pointing this
+        # at output_dir made run_correct_analyze.sh die with "consensus BAM not found"
+        # even when the consensus stage had run.
+        consensus_bam = chunks_dir / 'consensus' / f'{sample_prefix}.consensus.bam'
         ref_flags = _ref_flags()
         correct_analyze_content = f"""#!/bin/bash
 # RECTIFY — correction + analysis after chunked alignment
@@ -264,7 +268,22 @@ echo "Done: $(date)"
         # ── submit_pipeline.sh ─────────────────────────────────────────────
         mpb_script  = align_scripts['mpb']
         others_script = align_scripts['others']
-        merge_script  = align_scripts['merge']
+        # 'merge_aligners' is the key generate_alignment_scripts() actually returns; the bare
+        # 'merge' name is a stale leftover from a rename and raised KeyError for every
+        # --chunked-alignment run (the second code path at ~L508 already used the right name).
+        merge_script  = align_scripts['merge_aligners']
+        # The single-sample branch used to stop at merge_aligners and jump straight to
+        # correct+analyze, skipping the whole middle of the chain — so no consensus BAM
+        # was ever produced and the 5' soft-clip rescue (which happens during consensus
+        # scoring) never ran. These are the stages generate_alignment_scripts() already
+        # emits; the multi-sample branch wires prescan..final_merge but likewise stops
+        # short of consensus.
+        prescan_script          = align_scripts['prescan']
+        correct_scripts         = align_scripts['correct']       # {aligner: Path}
+        chunk_merge_script      = align_scripts['chunk_merge']
+        final_merge_script      = align_scripts['final_merge']
+        consensus_chunk_script  = align_scripts['consensus_per_chunk']
+        merge_consensus_script  = align_scripts['merge_consensus_chunks']
 
         if scheduler == 'slurm':
             submit_lines = [
@@ -290,8 +309,28 @@ echo "Done: $(date)"
                 merge_dep = '--dependency=afterok:$OTHERS_JOB'
             submit_lines += [
                 f'MERGE_JOB=$(sbatch {merge_dep} {merge_script} | awk \'{{print $4}}\')',
-                'echo "Merge+consensus: $MERGE_JOB"',
-                f'CA_JOB=$(sbatch --dependency=afterok:$MERGE_JOB {correct_analyze_script} | awk \'{{print $4}}\')',
+                'echo "Merge aligners: $MERGE_JOB"',
+                f'PRESCAN_JOB=$(sbatch --dependency=afterok:$MERGE_JOB {prescan_script} | awk \'{{print $4}}\')',
+                'echo "Prescan: $PRESCAN_JOB"',
+            ]
+            correct_vars = []
+            for aligner, cscript in correct_scripts.items():
+                var = f'CORRECT_{aligner.upper()}_JOB'
+                submit_lines += [
+                    f'{var}=$(sbatch --dependency=afterok:$PRESCAN_JOB {cscript} | awk \'{{print $4}}\')',
+                    f'echo "Correct {aligner}: ${{{var}}}"',
+                ]
+                correct_vars.append(f'${{{var}}}')
+            submit_lines += [
+                f'CHUNK_MERGE_JOB=$(sbatch --dependency=afterok:{":".join(correct_vars)} {chunk_merge_script} | awk \'{{print $4}}\')',
+                'echo "Chunk merge: $CHUNK_MERGE_JOB"',
+                f'FINAL_MERGE_JOB=$(sbatch --dependency=afterok:$CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $4}}\')',
+                'echo "Final merge: $FINAL_MERGE_JOB"',
+                f'CONSENSUS_JOB=$(sbatch --dependency=afterok:$FINAL_MERGE_JOB {consensus_chunk_script} | awk \'{{print $4}}\')',
+                'echo "Consensus array: $CONSENSUS_JOB"',
+                f'MERGE_CONSENSUS_JOB=$(sbatch --dependency=afterok:$CONSENSUS_JOB {merge_consensus_script} | awk \'{{print $4}}\')',
+                'echo "Merge consensus: $MERGE_CONSENSUS_JOB"',
+                f'CA_JOB=$(sbatch --dependency=afterok:$MERGE_CONSENSUS_JOB {correct_analyze_script} | awk \'{{print $4}}\')',
                 'echo "Correct+analyze: $CA_JOB"',
                 'echo ""',
                 'echo "Pipeline submitted. Monitor with: squeue -u $USER"',
@@ -319,8 +358,28 @@ echo "Done: $(date)"
                 merge_hold = '-hold_jid $OTHERS_JOB'
             submit_lines += [
                 f'MERGE_JOB=$(qsub {merge_hold} {merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
-                'echo "Merge+consensus: $MERGE_JOB"',
-                f'CA_JOB=$(qsub -hold_jid $MERGE_JOB {correct_analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Merge aligners: $MERGE_JOB"',
+                f'PRESCAN_JOB=$(qsub -hold_jid $MERGE_JOB {prescan_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Prescan: $PRESCAN_JOB"',
+            ]
+            correct_vars = []
+            for aligner, cscript in correct_scripts.items():
+                var = f'CORRECT_{aligner.upper()}_JOB'
+                submit_lines += [
+                    f'{var}=$(qsub -hold_jid $PRESCAN_JOB {cscript} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                    f'echo "Correct {aligner}: ${{{var}}}"',
+                ]
+                correct_vars.append(f'${{{var}}}')
+            submit_lines += [
+                f'CHUNK_MERGE_JOB=$(qsub -hold_jid {",".join(correct_vars)} {chunk_merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Chunk merge: $CHUNK_MERGE_JOB"',
+                f'FINAL_MERGE_JOB=$(qsub -hold_jid $CHUNK_MERGE_JOB {final_merge_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Final merge: $FINAL_MERGE_JOB"',
+                f'CONSENSUS_JOB=$(qsub -hold_jid $FINAL_MERGE_JOB {consensus_chunk_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Consensus array: $CONSENSUS_JOB"',
+                f'MERGE_CONSENSUS_JOB=$(qsub -hold_jid $CONSENSUS_JOB {merge_consensus_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
+                'echo "Merge consensus: $MERGE_CONSENSUS_JOB"',
+                f'CA_JOB=$(qsub -hold_jid $MERGE_CONSENSUS_JOB {correct_analyze_script} | awk \'{{print $3}}\' | grep -oE \'^[0-9]+\')',
                 'echo "Correct+analyze: $CA_JOB"',
                 'echo ""',
                 'echo "Pipeline submitted. Monitor with: qstat -u $USER"',
@@ -348,8 +407,28 @@ echo "Done: $(date)"
                 merge_dep = '-W depend=afterok:$OTHERS_JOB'
             submit_lines += [
                 f'MERGE_JOB=$(qsub {merge_dep} {merge_script})',
-                'echo "Merge+consensus: $MERGE_JOB"',
-                f'CA_JOB=$(qsub -W depend=afterok:$MERGE_JOB {correct_analyze_script})',
+                'echo "Merge aligners: $MERGE_JOB"',
+                f'PRESCAN_JOB=$(qsub -W depend=afterok:$MERGE_JOB {prescan_script})',
+                'echo "Prescan: $PRESCAN_JOB"',
+            ]
+            correct_vars = []
+            for aligner, cscript in correct_scripts.items():
+                var = f'CORRECT_{aligner.upper()}_JOB'
+                submit_lines += [
+                    f'{var}=$(qsub -W depend=afterok:$PRESCAN_JOB {cscript})',
+                    f'echo "Correct {aligner}: ${{{var}}}"',
+                ]
+                correct_vars.append(f'${{{var}}}')
+            submit_lines += [
+                f'CHUNK_MERGE_JOB=$(qsub -W depend=afterok:{":".join(correct_vars)} {chunk_merge_script})',
+                'echo "Chunk merge: $CHUNK_MERGE_JOB"',
+                f'FINAL_MERGE_JOB=$(qsub -W depend=afterok:$CHUNK_MERGE_JOB {final_merge_script})',
+                'echo "Final merge: $FINAL_MERGE_JOB"',
+                f'CONSENSUS_JOB=$(qsub -W depend=afterok:$FINAL_MERGE_JOB {consensus_chunk_script})',
+                'echo "Consensus array: $CONSENSUS_JOB"',
+                f'MERGE_CONSENSUS_JOB=$(qsub -W depend=afterok:$CONSENSUS_JOB {merge_consensus_script})',
+                'echo "Merge consensus: $MERGE_CONSENSUS_JOB"',
+                f'CA_JOB=$(qsub -W depend=afterok:$MERGE_CONSENSUS_JOB {correct_analyze_script})',
                 'echo "Correct+analyze: $CA_JOB"',
                 'echo ""',
                 'echo "Pipeline submitted. Monitor with: qstat -u $USER"',
@@ -362,7 +441,13 @@ echo "Done: $(date)"
         print(f"  Split:           {split_script}")
         print(f"  mapPacBio array: {align_scripts['mpb'] or '(skipped)'}")
         print(f"  Others array:    {align_scripts['others']}")
-        print(f"  Merge+consensus: {align_scripts['merge']}")
+        print(f"  Merge aligners:  {align_scripts['merge_aligners']}")
+        print(f"  Prescan:         {prescan_script}")
+        print(f"  Correct arrays:  {len(correct_scripts)} ({', '.join(correct_scripts)})")
+        print(f"  Chunk merge:     {chunk_merge_script}")
+        print(f"  Final merge:     {final_merge_script}")
+        print(f"  Consensus array: {consensus_chunk_script}")
+        print(f"  Merge consensus: {merge_consensus_script}")
         print(f"  Correct+analyze: {correct_analyze_script}")
         print(f"\nTo launch the pipeline:")
         print(f"  bash {submit_pipeline}")
