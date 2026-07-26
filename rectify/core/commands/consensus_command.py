@@ -95,6 +95,28 @@ Examples:
         help='Gene annotation GFF/GTF for annotated-junction scoring in consensus selection'
     )
 
+    # Junction-pool admission gate. The per-read candidate pool the 5' soft-clip rescue
+    # draws on is otherwise unfiltered, and since clips cost 1.0/base while intron N-ops
+    # are free, a spurious multi-kb junction is a licence to convert a clip into an
+    # alignment. Measured on ONT DRS: 13.4% of rescued spliced reads carried an N-op
+    # > 3 kb (vs 4.4% of untouched reads, 3.1x) with a tail to 369 kb. Annotated
+    # junctions always bypass the gate; both parameters default to 0 = off.
+    parser.add_argument(
+        '--junction-pool-min-anchor-bp', type=int, default=0, metavar='BP',
+        help=(
+            'Minimum flanking anchor (nt) for a NON-annotated junction to enter the '
+            "per-read candidate-junction pool used by 5' soft-clip rescue. "
+            '0 = off (default); 8 is the validated value.'
+        ),
+    )
+    parser.add_argument(
+        '--junction-pool-max-intron-len', type=int, default=0, metavar='BP',
+        help=(
+            'Maximum intron length (nt) for a non-annotated junction to enter the pool. '
+            '0 = no limit (default); 3000 suits S. cerevisiae.'
+        ),
+    )
+
     from rectify.data import add_organism_args
     add_organism_args(parser)
 
@@ -398,6 +420,8 @@ def run_consensus(args: argparse.Namespace) -> int:
             keep_checkpoints=getattr(args, 'keep_checkpoints', False),
             read_num_sidecar=str(read_num_sidecar) if read_num_sidecar is not None else None,
             tiebreak=getattr(args, 'tiebreak', 'rectify'),
+            pool_min_anchor_bp=getattr(args, 'junction_pool_min_anchor_bp', 0),
+            pool_max_intron_len=getattr(args, 'junction_pool_max_intron_len', 0),
         )
     except Exception as e:
         logger.error(f"Consensus selection failed: {e}")

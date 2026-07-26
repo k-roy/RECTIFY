@@ -693,7 +693,7 @@ def _credit_tied_aligners(stats, result) -> None:
         stats['by_aligner'][aligner] += 1
 
 
-def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None, tiebreak='rectify'):
+def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None, tiebreak='rectify', pool_min_anchor_bp=0, pool_max_intron_len=0):
     """Process a batch of reads and write best alignments to output BAM."""
     if use_chimeric:
         from .chimeric_consensus import select_best_chimeric, build_chimeric_read
@@ -786,7 +786,11 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             out_bam.write(out_read)
 
         else:
-            result = select_best_alignment(alignments, genome, annotated_junctions, tiebreak=tiebreak)
+            result = select_best_alignment(
+                alignments, genome, annotated_junctions, tiebreak=tiebreak,
+                pool_min_anchor_bp=pool_min_anchor_bp,
+                pool_max_intron_len=pool_max_intron_len,
+            )
             if result.confidence == 'high':
                 stats['consensus_high'] += 1
             elif result.confidence == 'medium':
@@ -854,6 +858,8 @@ def run_consensus_selection(
     keep_checkpoints: bool = False,
     read_num_sidecar: Optional[str] = None,
     tiebreak: str = 'rectify',
+    pool_min_anchor_bp: int = 0,
+    pool_max_intron_len: int = 0,
 ) -> Dict[str, int]:
     """
     Run consensus selection across multiple BAM files.
@@ -1147,6 +1153,8 @@ def run_consensus_selection(
                     read_num_sidecar=sidecar_reader,
                     chimeric_stats=chimeric_stats,
                     tiebreak=tiebreak,
+                    pool_min_anchor_bp=pool_min_anchor_bp,
+                    pool_max_intron_len=pool_max_intron_len,
                 )
                 read_batch = []
                 raw_read_batch = []
@@ -1184,6 +1192,8 @@ def run_consensus_selection(
                 read_num_sidecar=sidecar_reader,
                 chimeric_stats=chimeric_stats,
                 tiebreak=tiebreak,
+                pool_min_anchor_bp=pool_min_anchor_bp,
+                pool_max_intron_len=pool_max_intron_len,
             )
             n_batches += 1
             if checkpoint_dir:
