@@ -26,9 +26,9 @@ from ..bam.netseq_bam_processor import (
 from ..netseq.netseq_umi import (
     NETSEQ_UMI_LENGTH,
     NETSEQ_UMI_SOURCES,
+    SATURATION_KU_THRESHOLD,
     iter_netseq_fragments,
-    select_netseq_molecules,
-    summarize_positions,
+    stream_netseq_positions,
 )
 from ..umi.dedup import UmiDedupStats
 from ..netseq.netseq_deconvolution import deconvolve_all_regions
@@ -221,12 +221,17 @@ def _emit_molecule_track(
 ) -> None:
     """Write the UMI molecule-level outputs for one sample.
 
-    Three files, and all three matter:
-      ``<sample>_umi_stats.json``      duplication rate + family-size + within-family edit histograms --
-                                       the calibration outputs, not decoration.
+    Two files:
+      ``<sample>_umi_stats.json``      duplication rate + family-size histogram -- the calibration outputs,
+                                       not decoration.
       ``<sample>_molecules.tsv``       per 3'-end position: reads, distinct UMIs (k), occupancy-corrected
-                                       molecules (m_hat) and the SATURATED flag.
-      ``<sample>_molecule_ids.tsv``    one row per molecule (representative read -> molecule id, family size).
+                                       molecules (m_hat) and the SATURATED flag. Reads and molecules sit
+                                       side by side ON PURPOSE -- a 6-nt UMI saturates, so a molecule count
+                                       alone is silently compressed exactly where signal is highest.
+
+    Deliberately NOT a per-molecule read list: that would be one row per molecule (~20M for a real library)
+    and nothing downstream consumes it. Use ``core.netseq.netseq_umi.select_netseq_molecules`` directly if
+    you need representative QNAMEs for a subset.
     """
     import json
 
@@ -234,55 +239,59 @@ def _emit_molecule_track(
     print(f"   umi-length={umi_length} umi-source={umi_source} clustering={clustering} "
           f"edit-distance={edit_distance}")
     stats = UmiDedupStats()
-    fragments = list(iter_netseq_fragments(
+    mol_path = output_dir / f"{sample_name}_molecules.tsv"
+    n_positions = n_sat = 0
+    sum_reads = sum_k = 0
+    sum_mhat = 0.0
+    # Streamed, not materialised: a real library is ~50M reads over ~4M positions, and this pass runs on top
+    # of the read-level pass's ~23 GB. See stream_netseq_positions().
+    fragments = iter_netseq_fragments(
         str(input_path), umi_length=umi_length, umi_source=umi_source,
         exclusion_detector=exclusion_detector, min_mapq=min_mapq,
         rna3p_at=rna3p_at, max_reads=max_reads, stats=stats,
-    ))
-    if not fragments:
+    )
+    tmp = mol_path.with_suffix(".tsv.tmp")
+    with open(tmp, "w") as fh:
+        fh.write("chrom\tstrand\tposition\treads\tdistinct_umis\tmolecules_corrected\tsaturated\n")
+        for p in stream_netseq_positions(fragments, umi_length=umi_length,
+                                         edit_distance=edit_distance, clustering=clustering,
+                                         stats=stats):
+            n_positions += 1
+            sum_reads += p.reads
+            sum_k += p.distinct_umis
+            if p.saturated:
+                n_sat += 1
+            mh = "inf" if p.molecules_corrected == float('inf') else f"{p.molecules_corrected:.2f}"
+            if p.molecules_corrected != float('inf'):
+                sum_mhat += p.molecules_corrected
+            fh.write(f"{p.contig}\t{p.strand}\t{p.position}\t{p.reads}\t{p.distinct_umis}\t"
+                     f"{mh}\t{int(p.saturated)}\n")
+    tmp.replace(mol_path)
+
+    if not n_positions:
         print("   Warning: no reads carried a usable UMI -- molecule track not written")
         return
-    keepers, family_size = select_netseq_molecules(
-        fragments, edit_distance=edit_distance, clustering=clustering, stats=stats,
-    )
-    positions = summarize_positions(fragments, umi_length)
-    n_sat = sum(1 for p in positions if p.saturated)
-    sum_reads = sum(p.reads for p in positions)
-    sum_k = sum(p.distinct_umis for p in positions)
-    sum_mhat = sum(p.molecules_corrected for p in positions
-                   if p.molecules_corrected != float('inf'))
 
     stats_path = output_dir / f"{sample_name}_umi_stats.json"
     payload = stats.as_dict()
     payload.update({
         "umi_length": umi_length, "umi_source": umi_source, "clustering": clustering,
         "edit_distance": edit_distance, "rna3p_at": rna3p_at,
-        "n_positions": len(positions), "n_saturated_positions": n_sat,
-        "saturation_threshold_k_over_U": 0.5,
+        "n_positions": n_positions, "n_saturated_positions": n_sat,
+        "saturation_threshold_k_over_U": SATURATION_KU_THRESHOLD,
         "sum_reads": sum_reads, "sum_distinct_umis": sum_k,
         "sum_occupancy_corrected_molecules": round(sum_mhat, 1),
         "occupancy_inflation": round(sum_mhat / sum_k, 4) if sum_k else None,
     })
     stats_path.write_text(json.dumps(payload, indent=1))
 
-    mol_path = output_dir / f"{sample_name}_molecules.tsv"
-    with open(mol_path, "w") as fh:
-        fh.write("chrom\tstrand\tposition\treads\tdistinct_umis\tmolecules_corrected\tsaturated\n")
-        for p in positions:
-            mh = "inf" if p.molecules_corrected == float('inf') else f"{p.molecules_corrected:.2f}"
-            fh.write(f"{p.contig}\t{p.strand}\t{p.position}\t{p.reads}\t{p.distinct_umis}\t"
-                     f"{mh}\t{int(p.saturated)}\n")
-
-    ids_path = output_dir / f"{sample_name}_molecule_ids.tsv"
-    with open(ids_path, "w") as fh:
-        fh.write("representative_read\tmolecule_id\tfamily_size\n")
-        for qname, mol_id in keepers.items():
-            fh.write(f"{qname}\t{mol_id}\t{family_size.get(mol_id, 1)}\n")
-
     print(f"   reads with UMI: {stats.n_input_fragments:,}   molecules: {stats.n_molecules:,}   "
           f"duplication rate: {100 * stats.duplication_rate:.1f}%")
-    print(f"   positions: {len(positions):,}   SATURATED (k/U>0.5, fall back to reads there): {n_sat:,}")
-    for name, path in (("umi_stats", stats_path), ("molecules", mol_path), ("molecule_ids", ids_path)):
+    print(f"   positions: {n_positions:,}   SATURATED (k/U>{SATURATION_KU_THRESHOLD}, fall back to reads "
+          f"there): {n_sat:,}")
+    print("   ⚠️  duplication is depth-dependent: at positions deeper than ~1000 reads a 6-nt UMI is")
+    print("       exhausted, so the aggregate rate above is an UPPER bound. Read _molecules.tsv, not this.")
+    for name, path in (("umi_stats", stats_path), ("molecules", mol_path)):
         print(f"    {name}: {path.name}")
 
 

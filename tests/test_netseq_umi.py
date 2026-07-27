@@ -294,3 +294,62 @@ def test_summarize_positions_reports_reads_and_molecules_side_by_side():
     # the corrected count must never be BELOW the observed distinct count
     for r in rows.values():
         assert r.molecules_corrected >= r.distinct_umis
+
+
+# ---------------------------------------------------------------------------
+# STREAMING (what a real library actually goes through)
+# ---------------------------------------------------------------------------
+
+def test_streaming_matches_the_list_based_summary():
+    """The streaming path must be an optimisation, not a different answer."""
+    from rectify.core.netseq.netseq_umi import stream_netseq_positions
+
+    frags = ([_frag(f"d{i}", "ACGTAC", pos=1000) for i in range(5)]
+             + [_frag("e", "TTGGCC", pos=1000)]
+             + [_frag("f", "ACGTAC", pos=1200)]
+             + [_frag("g", "ACGTAC", pos=90000)])
+    listed = {(r.contig, r.strand, r.position): r for r in summarize_positions(frags, NETSEQ_UMI_LENGTH)}
+    streamed = {(r.contig, r.strand, r.position): r
+                for r in stream_netseq_positions(iter(frags), NETSEQ_UMI_LENGTH)}
+    assert set(listed) == set(streamed)
+    for key, row in listed.items():
+        assert streamed[key].reads == row.reads
+        assert streamed[key].distinct_umis == row.distinct_umis
+        assert streamed[key].saturated == row.saturated
+
+
+def test_streaming_flushes_across_a_contig_change():
+    """A contig change must finalise everything held -- coordinates restart, so the cursor cannot."""
+    from rectify.core.netseq.netseq_umi import stream_netseq_positions
+
+    frags = [_frag("a", "ACGTAC", pos=5000, contig="chrI"),
+             _frag("b", "ACGTAC", pos=10, contig="chrII")]
+    rows = list(stream_netseq_positions(iter(frags), NETSEQ_UMI_LENGTH))
+    assert {(r.contig, r.position) for r in rows} == {("chrI", 5000), ("chrII", 10)}
+
+
+def test_streaming_stats_match_the_list_based_stats():
+    from rectify.core.umi.dedup import UmiDedupStats
+    from rectify.core.netseq.netseq_umi import stream_netseq_positions
+
+    frags = [_frag("a", "ACGTAC"), _frag("b", "ACGTAC"), _frag("c", "TTGGCC")]
+    s_list, s_stream = UmiDedupStats(), UmiDedupStats()
+    select_netseq_molecules(frags, stats=s_list)
+    list(stream_netseq_positions(iter(frags), NETSEQ_UMI_LENGTH, stats=s_stream))
+    assert s_stream.n_input_fragments == s_list.n_input_fragments == 3
+    assert s_stream.n_molecules == s_list.n_molecules == 2
+    assert dict(s_stream.family_size_hist) == dict(s_list.family_size_hist)
+
+
+def test_streaming_holds_only_a_window_not_the_whole_library():
+    """The memory guarantee is the whole reason this path exists -- assert it, don't trust it."""
+    from rectify.core.netseq.netseq_umi import stream_netseq_positions
+
+    def gen(n=300000):
+        for i in range(n):
+            yield _frag(f"r{i}", "ACGTAC", pos=i * 10)
+
+    n_rows = 0
+    for _ in stream_netseq_positions(gen(), NETSEQ_UMI_LENGTH, flush_pad=2000):
+        n_rows += 1
+    assert n_rows == 300000

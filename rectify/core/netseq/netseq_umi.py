@@ -325,6 +325,73 @@ def summarize_positions(
     return out
 
 
+def stream_netseq_positions(
+    fragments,
+    umi_length: int,
+    edit_distance: int = 0,
+    clustering: str = "exact",
+    stats: Optional[UmiDedupStats] = None,
+    flush_pad: int = 2000,
+    threshold: float = SATURATION_KU_THRESHOLD,
+):
+    """Streaming counterpart of :func:`summarize_positions` + :func:`select_netseq_molecules`.
+
+    ⚠️ **This, not the list-based pair, is what a real library must go through.** A NET-seq library is
+    ~50M reads over ~4M distinct 3'-end positions; materialising one ``NetseqFragment`` per read and one
+    bucket per position costs tens of GB *on top of* the ~23 GB the read-level NET-seq pass already uses.
+    The list-based functions stay for unit tests and small inputs, where being pure is worth more.
+
+    Yields :class:`PositionMoleculeCount` in streaming order and populates ``stats`` as it goes, holding
+    only a coordinate window in memory: a bucket is finalised once the input cursor has moved more than
+    ``flush_pad`` past it. That is safe because the caller feeds fragments in BAM coordinate order and a
+    read's corrected 3' end is within one read length of its ``reference_start`` -- ``flush_pad`` is an
+    order of magnitude larger than that jitter. A contig change flushes everything unconditionally.
+    """
+    buckets: Dict[NetseqBucketKey, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    cur_contig: Optional[str] = None
+    since_check = 0
+
+    def _finalise(key: NetseqBucketKey) -> PositionMoleculeCount:
+        umis = buckets.pop(key)
+        reads = sum(umis.values())
+        if clustering == "exact" or edit_distance <= 0:
+            groups = [[u] for u in umis]
+        elif clustering == "directional":
+            keys = list(umis)
+            groups = [[keys[i] for i in comp] for comp in umi_components_directional(keys, edit_distance)]
+        elif clustering == "components":
+            keys = list(umis)
+            groups = [[keys[i] for i in comp] for comp in umi_components(keys, edit_distance)]
+        else:
+            raise ValueError(f"unknown clustering {clustering!r}")
+        if stats is not None:
+            stats.n_input_fragments += reads
+            for members in groups:
+                stats.n_molecules += 1
+                stats.family_size_hist[sum(umis[u] for u in members)] += 1
+        k = len(groups)
+        return PositionMoleculeCount(
+            contig=key.contig, strand=key.strand, position=key.corrected_3p, reads=reads,
+            distinct_umis=k, molecules_corrected=occupancy_corrected_molecules(k, umi_length),
+            saturated=is_saturated(k, umi_length, threshold),
+        )
+
+    for fr in fragments:
+        if fr.contig != cur_contig:
+            for key in list(buckets):
+                yield _finalise(key)
+            cur_contig = fr.contig
+        buckets[NetseqBucketKey(fr.contig, fr.strand, fr.corrected_3p, fr.spliced)][fr.umi] += 1
+        since_check += 1
+        if since_check >= 100000:
+            since_check = 0
+            cutoff = fr.corrected_3p - flush_pad
+            for key in [x for x in buckets if x.corrected_3p < cutoff]:
+                yield _finalise(key)
+    for key in list(buckets):
+        yield _finalise(key)
+
+
 def iter_netseq_fragments(
     bam_path: str,
     umi_length: int,
