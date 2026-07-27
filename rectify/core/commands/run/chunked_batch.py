@@ -212,6 +212,13 @@ ls -lh "$CHUNKS_DIR/"*chunk*.fastq.gz 2>/dev/null | head -5 || true
             rectify_src=rectify_src,
             other_aligners=None,  # use defaults
             skip_map_pacbio=False,
+            # run_array_consensus_per_chunk.sh consumes each aligner's per-chunk
+            # `corrected.bam`, which is only emitted when this is True. It defaults to
+            # False, so leaving it unset generates a consensus stage whose input nothing
+            # produces — every task dies with "corrected BAM not found for <aligner>
+            # chunk 000". Since this branch now wires the consensus stage, it must ask
+            # for the BAMs that stage reads.
+            write_per_aligner_corrected_bams=True,
             **{k: v for k, v in sched_kwargs.items() if k != 'scheduler'},
             scheduler=scheduler,
         )
