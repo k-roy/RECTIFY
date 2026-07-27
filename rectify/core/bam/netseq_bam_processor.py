@@ -224,17 +224,53 @@ def count_terminal_oligo_a_mismatches(
         return n_oligo_a_mismatches
 
 
+#: Which terminus of the SEQUENCED read is the RNA 3' end.
+#:
+#: ``read5p`` -- Churchman-style NET-seq (GSE25107, GSE159603, GSE61332, Burke C. neoformans): the 3' linker
+#: is ligated to the RNA 3' end and the read is revcomp(RNA), so the read's 5' terminus IS the RNA 3' end and
+#: the **gene strand is the INVERSE of the BAM strand**. This is the MEASURED convention -- verified three
+#: independent ways (strand concordance vs annotated genes 18-19%; the randomer-free 2011 library's read-5'
+#: soft clip is 85.6% T = a poly(A) tail through the reverse complement; the read-3' A-richness is the
+#: linker's constant A) and it reproduces ``408c_clipdump.py`` + the 697/697 intron self-test.
+#: See planning ``478a`` CP1.
+#:
+#: ``read3p`` -- LEGACY behaviour of this module (read treated as sense: ``strand = '-' if is_reverse``).
+#: ⚠️ It is WRONG for every NET-seq dataset in this project: it emits the RNA's 5'-ward terminus on the
+#: ANTISENSE strand, and makes ``detect_oligo_a_in_softclip`` read the wrong soft clip. Retained only so
+#: pre-existing output can be reproduced/diffed.
+NETSEQ_RNA3P_CHOICES = ("read5p", "read3p")
+NETSEQ_RNA3P_DEFAULT = "read5p"
+
+
+def netseq_gene_strand(read: pysam.AlignedSegment, rna3p_at: str = NETSEQ_RNA3P_DEFAULT) -> str:
+    """Gene/RNA strand of a NET-seq read under the requested convention.
+
+    Everything downstream in this module is expressed in terms of the returned STRAND (which soft clip holds
+    the tail, which alignment terminus is the 3' end, which base is oligo(A)), so this single function is
+    what makes the whole module correct or incorrect for a given chemistry.
+    """
+    if rna3p_at not in NETSEQ_RNA3P_CHOICES:
+        raise ValueError(f"unknown rna3p_at {rna3p_at!r}; expected one of {NETSEQ_RNA3P_CHOICES}")
+    if rna3p_at == "read5p":
+        return '+' if read.is_reverse else '-'
+    return '-' if read.is_reverse else '+'
+
+
 def get_netseq_3prime_position(
     read: pysam.AlignedSegment,
     trim_terminal_oligo_a: bool = True,
+    rna3p_at: str = NETSEQ_RNA3P_DEFAULT,
 ) -> Tuple[int, str, int]:
     """
-    Get 3' end position and strand from NET-seq read.
+    Get 3' end position and gene strand from a NET-seq read.
 
-    NET-seq captures nascent RNA 3' ends. The read represents the
-    terminal fragment, so:
-    - Forward strand (FLAG 0): 3' end = right side = reference_end - 1
-    - Reverse strand (FLAG 16): 3' end = left side = reference_start
+    Once the gene strand is known the position follows without a second convention:
+    - '+' gene: RNA 3' end = rightmost aligned base = reference_end - 1
+    - '-' gene: RNA 3' end = leftmost  aligned base = reference_start
+
+    ⚠️ The strand itself IS the convention. For Churchman-style NET-seq the read is revcomp(RNA), so the gene
+    strand is the INVERSE of the BAM strand (``rna3p_at='read5p'``, the default and the measured truth).
+    ``rna3p_at='read3p'`` reproduces this module's legacy sense-read assumption.
 
     If trim_terminal_oligo_a is True, detects and trims terminal A/T
     mismatches that should have been soft-clipped (oligo(A) bases).
@@ -242,11 +278,12 @@ def get_netseq_3prime_position(
     Args:
         read: pysam AlignedSegment
         trim_terminal_oligo_a: Whether to trim terminal oligo(A) mismatches
+        rna3p_at: 'read5p' (NET-seq, default) or 'read3p' (legacy sense-read assumption)
 
     Returns:
         Tuple of (position, strand, n_trimmed) where:
         - position is 0-based, adjusted for terminal mismatches if requested
-        - strand is '+' or '-'
+        - strand is the GENE strand, '+' or '-'
         - n_trimmed is number of terminal oligo(A) bases trimmed
     """
     if read.is_unmapped or read.reference_end is None:
@@ -255,7 +292,7 @@ def get_netseq_3prime_position(
             f"{read.query_name!r}"
         )
 
-    strand = '-' if read.is_reverse else '+'
+    strand = netseq_gene_strand(read, rna3p_at)
 
     if strand == '+':
         # Plus strand: 3' end is rightmost aligned base
@@ -386,6 +423,7 @@ def process_netseq_read(
     chrom_std: str,
     min_a_fraction: float = 0.8,
     trim_terminal_oligo_a: bool = True,
+    rna3p_at: str = NETSEQ_RNA3P_DEFAULT,
 ) -> UnifiedReadRecord:
     """
     Process single NET-seq read into UnifiedReadRecord.
@@ -402,13 +440,14 @@ def process_netseq_read(
         chrom_std: Standardized chromosome name
         min_a_fraction: Minimum A fraction for oligo(A) detection
         trim_terminal_oligo_a: Whether to trim terminal oligo(A) mismatches
+        rna3p_at: which read terminus is the RNA 3' end -- 'read5p' (NET-seq, default) or 'read3p' (legacy)
 
     Returns:
         UnifiedReadRecord with all fields populated
     """
     # Get 3' position and strand (with optional trimming)
     three_prime_corrected, strand, n_trimmed = get_netseq_3prime_position(
-        read, trim_terminal_oligo_a=trim_terminal_oligo_a
+        read, trim_terminal_oligo_a=trim_terminal_oligo_a, rna3p_at=rna3p_at
     )
 
     # Raw position is before trimming
@@ -499,6 +538,7 @@ def process_netseq_bam(
     max_reads: Optional[int] = None,
     show_progress: bool = True,
     progress_interval: int = 1_000_000,
+    rna3p_at: str = NETSEQ_RNA3P_DEFAULT,
 ) -> Generator[UnifiedReadRecord, None, None]:
     """
     Stream process NET-seq BAM file.
@@ -518,6 +558,7 @@ def process_netseq_bam(
         max_reads: Limit for testing (None = process all)
         show_progress: Print progress messages
         progress_interval: Print progress every N reads
+        rna3p_at: which read terminus is the RNA 3' end -- 'read5p' (NET-seq, default) or 'read3p' (legacy)
 
     Yields:
         UnifiedReadRecord for each valid read
@@ -575,7 +616,7 @@ def process_netseq_bam(
 
             # Get 3' position for exclusion check (with trimming)
             three_prime_pos, strand, _ = get_netseq_3prime_position(
-                read, trim_terminal_oligo_a=trim_terminal_oligo_a
+                read, trim_terminal_oligo_a=trim_terminal_oligo_a, rna3p_at=rna3p_at
             )
 
             # Check exclusion regions
@@ -586,7 +627,8 @@ def process_netseq_bam(
             # Process read
             record = process_netseq_read(
                 read, chrom_std, min_a_fraction,
-                trim_terminal_oligo_a=trim_terminal_oligo_a
+                trim_terminal_oligo_a=trim_terminal_oligo_a,
+                rna3p_at=rna3p_at,
             )
             n_yielded += 1
 

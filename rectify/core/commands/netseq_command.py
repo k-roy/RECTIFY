@@ -17,7 +17,20 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from ..bam.netseq_bam_processor import process_netseq_bam, aggregate_positions
+from ..bam.netseq_bam_processor import (
+    NETSEQ_RNA3P_CHOICES,
+    NETSEQ_RNA3P_DEFAULT,
+    process_netseq_bam,
+    aggregate_positions,
+)
+from ..netseq.netseq_umi import (
+    NETSEQ_UMI_LENGTH,
+    NETSEQ_UMI_SOURCES,
+    iter_netseq_fragments,
+    select_netseq_molecules,
+    summarize_positions,
+)
+from ..umi.dedup import UmiDedupStats
 from ..netseq.netseq_deconvolution import deconvolve_all_regions
 from ..netseq.netseq_output import export_netseq_results, write_exclusion_stats
 from ..exclusion_regions import ExclusionRegionDetector
@@ -37,6 +50,18 @@ def run_netseq(args) -> int:
     print("=" * 60)
     print("RECTIFY NET-seq Processing Pipeline")
     print("=" * 60)
+
+    rna3p_at = getattr(args, 'rna3p_at', NETSEQ_RNA3P_DEFAULT)
+    umi_length = int(getattr(args, 'umi_length', 0) or 0)
+    do_dedup = bool(getattr(args, 'dedup', False))
+    if rna3p_at == 'read3p':
+        print("\n  !! rna3p-at=read3p: the read is treated as SENSE. That is the LEGACY assumption and it is")
+        print("     wrong for Churchman-style NET-seq (measured: gene strand is the inverse of the BAM strand,")
+        print("     and the RNA 3' end is the read's 5' terminus). Use it only to reproduce old output.")
+    if do_dedup and umi_length <= 0:
+        print("Error: --dedup requires --umi-length (NET-seq randomer is "
+              f"{NETSEQ_UMI_LENGTH} nt for GSE159603/GSE61332-style libraries)")
+        return 1
 
     # Validate inputs
     input_paths = args.input
@@ -112,6 +137,7 @@ def run_netseq(args) -> int:
             min_a_fraction=0.8,
             max_reads=args.max_reads if hasattr(args, 'max_reads') else None,
             show_progress=True,
+            rna3p_at=rna3p_at,
         ))
 
         if not records:
@@ -157,12 +183,107 @@ def run_netseq(args) -> int:
         for name, path in outputs.items():
             print(f"    {name}: {path.name}")
 
+        # ---- molecule-level (UMI) track ------------------------------------------------------------
+        # Emitted ALONGSIDE the read-level track, never instead of it: a 6-nt UMI saturates at deep
+        # positions, so molecules alone would be silently compressed exactly where signal is highest.
+        if do_dedup:
+            _emit_molecule_track(
+                input_path=input_path, sample_name=sample_name, output_dir=output_dir,
+                umi_length=umi_length, umi_source=getattr(args, 'umi_source', 'read5p'),
+                clustering=getattr(args, 'umi_clustering', 'exact'),
+                edit_distance=int(getattr(args, 'umi_edit_distance', 0) or 0),
+                exclusion_detector=exclusion_detector,
+                min_mapq=args.min_mapq if hasattr(args, 'min_mapq') else 0,
+                rna3p_at=rna3p_at,
+                max_reads=args.max_reads if hasattr(args, 'max_reads') else None,
+            )
+
     print(f"\n{'='*60}")
     print("NET-seq processing complete!")
     print(f"Output directory: {output_dir}")
     print(f"{'='*60}")
 
     return 0
+
+
+def _emit_molecule_track(
+    input_path,
+    sample_name: str,
+    output_dir: Path,
+    umi_length: int,
+    umi_source: str,
+    clustering: str,
+    edit_distance: int,
+    exclusion_detector,
+    min_mapq: int,
+    rna3p_at: str,
+    max_reads,
+) -> None:
+    """Write the UMI molecule-level outputs for one sample.
+
+    Three files, and all three matter:
+      ``<sample>_umi_stats.json``      duplication rate + family-size + within-family edit histograms --
+                                       the calibration outputs, not decoration.
+      ``<sample>_molecules.tsv``       per 3'-end position: reads, distinct UMIs (k), occupancy-corrected
+                                       molecules (m_hat) and the SATURATED flag.
+      ``<sample>_molecule_ids.tsv``    one row per molecule (representative read -> molecule id, family size).
+    """
+    import json
+
+    print("\n5. Molecule-level (UMI) counting...")
+    print(f"   umi-length={umi_length} umi-source={umi_source} clustering={clustering} "
+          f"edit-distance={edit_distance}")
+    stats = UmiDedupStats()
+    fragments = list(iter_netseq_fragments(
+        str(input_path), umi_length=umi_length, umi_source=umi_source,
+        exclusion_detector=exclusion_detector, min_mapq=min_mapq,
+        rna3p_at=rna3p_at, max_reads=max_reads, stats=stats,
+    ))
+    if not fragments:
+        print("   Warning: no reads carried a usable UMI -- molecule track not written")
+        return
+    keepers, family_size = select_netseq_molecules(
+        fragments, edit_distance=edit_distance, clustering=clustering, stats=stats,
+    )
+    positions = summarize_positions(fragments, umi_length)
+    n_sat = sum(1 for p in positions if p.saturated)
+    sum_reads = sum(p.reads for p in positions)
+    sum_k = sum(p.distinct_umis for p in positions)
+    sum_mhat = sum(p.molecules_corrected for p in positions
+                   if p.molecules_corrected != float('inf'))
+
+    stats_path = output_dir / f"{sample_name}_umi_stats.json"
+    payload = stats.as_dict()
+    payload.update({
+        "umi_length": umi_length, "umi_source": umi_source, "clustering": clustering,
+        "edit_distance": edit_distance, "rna3p_at": rna3p_at,
+        "n_positions": len(positions), "n_saturated_positions": n_sat,
+        "saturation_threshold_k_over_U": 0.5,
+        "sum_reads": sum_reads, "sum_distinct_umis": sum_k,
+        "sum_occupancy_corrected_molecules": round(sum_mhat, 1),
+        "occupancy_inflation": round(sum_mhat / sum_k, 4) if sum_k else None,
+    })
+    stats_path.write_text(json.dumps(payload, indent=1))
+
+    mol_path = output_dir / f"{sample_name}_molecules.tsv"
+    with open(mol_path, "w") as fh:
+        fh.write("chrom\tstrand\tposition\treads\tdistinct_umis\tmolecules_corrected\tsaturated\n")
+        for p in positions:
+            mh = "inf" if p.molecules_corrected == float('inf') else f"{p.molecules_corrected:.2f}"
+            fh.write(f"{p.contig}\t{p.strand}\t{p.position}\t{p.reads}\t{p.distinct_umis}\t"
+                     f"{mh}\t{int(p.saturated)}\n")
+
+    ids_path = output_dir / f"{sample_name}_molecule_ids.tsv"
+    with open(ids_path, "w") as fh:
+        fh.write("representative_read\tmolecule_id\tfamily_size\n")
+        for qname, mol_id in keepers.items():
+            fh.write(f"{qname}\t{mol_id}\t{family_size.get(mol_id, 1)}\n")
+
+    print(f"   reads with UMI: {stats.n_input_fragments:,}   molecules: {stats.n_molecules:,}   "
+          f"duplication rate: {100 * stats.duplication_rate:.1f}%")
+    print(f"   positions: {len(positions):,}   SATURATED (k/U>0.5, fall back to reads there): {n_sat:,}")
+    for name, path in (("umi_stats", stats_path), ("molecules", mol_path), ("molecule_ids", ids_path)):
+        print(f"    {name}: {path.name}")
 
 
 def add_netseq_parser(subparsers) -> None:
@@ -276,6 +397,58 @@ def add_netseq_parser(subparsers) -> None:
         '--max-reads',
         type=int,
         help='Maximum reads to process (for testing)',
+    )
+
+    parser.add_argument(
+        '--rna3p-at',
+        choices=list(NETSEQ_RNA3P_CHOICES),
+        default=NETSEQ_RNA3P_DEFAULT,
+        help=(
+            "Which terminus of the SEQUENCED read is the RNA 3' end. "
+            "'read5p' (default) = Churchman-style NET-seq: the read is revcomp(RNA), so the gene strand is "
+            "the INVERSE of the BAM strand -- this is the MEASURED convention for GSE25107 / GSE159603 / "
+            "GSE61332. 'read3p' reproduces the legacy sense-read assumption and is wrong for those data."
+        ),
+    )
+
+    umi_group = parser.add_argument_group(
+        'UMI / molecule counting',
+        'OFF by default -- opt in per chemistry. The NET-seq randomer sits at the read 5\' end, i.e. ON TOP '
+        'of the RNA 3\' end, so the dedup key is the CORRECTED 3\' end x strand x UMI (never the '
+        'soft-clip-corrected 5\' end, which here is non-genomic).'
+    )
+    umi_group.add_argument(
+        '--umi-length',
+        type=int,
+        default=0,
+        help=f'UMI (randomer) length; {NETSEQ_UMI_LENGTH} for Churchman/Couvillion NET-seq. 0 = no UMI.',
+    )
+    umi_group.add_argument(
+        '--umi-source',
+        choices=list(NETSEQ_UMI_SOURCES),
+        default='read5p',
+        help=("Where to find the UMI. 'read5p' slices it off the read as sequenced -- requires the UNTRIMMED "
+              "build (on a hexamer-trimmed BAM the randomer is gone from SEQ). 'name' parses a "
+              "umi_tools-style suffix on the read name, which requires re-extraction from FASTQ."),
+    )
+    umi_group.add_argument(
+        '--dedup',
+        action='store_true',
+        help='Emit molecule-level output alongside the read-level output (requires --umi-length).',
+    )
+    umi_group.add_argument(
+        '--umi-clustering',
+        choices=['exact', 'directional', 'components'],
+        default='exact',
+        help=("How to group UMIs within a position. 'exact' (default) is the correct choice for a 6-nt UMI: "
+              "with U=4096 the distance-1 graph is dense at deep positions, so directional clustering "
+              "collapses giant components instead of correcting errors. The others are for measurement."),
+    )
+    umi_group.add_argument(
+        '--umi-edit-distance',
+        type=int,
+        default=0,
+        help='Max edit distance for non-exact clustering (default 0).',
     )
 
     parser.add_argument(
