@@ -80,9 +80,21 @@ def resolve_code_fingerprint() -> str:
             )
             if sha.returncode == 0 and sha.stdout.strip():
                 fp = "git:" + sha.stdout.strip()
+                # `+dirty` must mean "the CODE that ran differs from this
+                # commit" -- nothing else. Two scopings make that true on real
+                # deployments:
+                #   --untracked-files=no : deployments keep data/outputs beside
+                #       the checkout (the H2 tree is 37 GB); untracked data is
+                #       not a code change.
+                #   -- .  (cwd is pkg_dir) : restrict to the package subtree.
+                #       On H2, 498 tracked docs/scripts/tests differ from HEAD
+                #       while rectify/ itself is byte-identical to it -- so an
+                #       unscoped check would cry dirty on a run that IS exactly
+                #       reproducible from the commit.
                 dirty = subprocess.run(
-                    ["git", "-C", str(pkg_dir), "status", "--porcelain"],
-                    capture_output=True, text=True, timeout=10,
+                    ["git", "-C", str(pkg_dir), "status", "--porcelain",
+                     "--untracked-files=no", "--", "."],
+                    capture_output=True, text=True, timeout=30,
                 )
                 if dirty.returncode == 0 and dirty.stdout.strip():
                     fp += "+dirty"
