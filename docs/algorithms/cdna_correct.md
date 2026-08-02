@@ -35,6 +35,21 @@ reconciliation (`rectify cdna-analyze`) — operate on post-align coordinates.
 > enough for the ±5 bp grouping. The cross-orientation merge sections below
 > describe that design and are retained for background; the live command stops
 > at the per-cluster Stage-1 FASTQ.
+>
+> 🔴 **2026-08-02 — do not implement the Stage-2 merge as written; its premise is
+> refuted by the data.** `orient` is the **GENE STRAND**, not "which strand of the
+> duplex was sequenced" (measured: orient matches the annotated gene strand in
+> **99.5%** of 60,000 chrI reads). Both strands of one molecule share the same
+> `orient` and differ in **`is_reverse`**. So an `orient=fwd`+`orient=rev` UMI pair
+> is two **opposite-strand loci** — which is why this section's own chrI figure
+> found only 51 of 1,086 cross-orient UMI matches within 3 kb.
+>
+> The useful half — *all reads sharing a UMI collapse into one molecule, including
+> both duplex strands* — **already ships**: `is_reverse` is deliberately absent from
+> the Stage-1 bucket key, and `poa_consensus_strand_aware` builds a per-strand
+> sub-consensus then merges. Measured on chrI: **60.0% of multi-read clusters
+> contain both duplex strands**. What is still un-collapsed is **Type-1 ↔ Type-2**.
+> Full analysis: [`cdna_orientation_and_umi_collapse.md`](cdna_orientation_and_umi_collapse.md).
 
 ---
 
