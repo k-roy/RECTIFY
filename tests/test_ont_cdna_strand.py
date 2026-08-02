@@ -23,6 +23,7 @@ from rectify.core.correct.protocols.ont_cdna import (
     EVIDENCE_POLYA_3P,
     EVIDENCE_POLYT_5P,
     EVIDENCE_UNASSIGNED,
+    EVIDENCE_XO_ORIENT,
     resolve_rna_strand,
     three_prime_position,
 )
@@ -46,7 +47,8 @@ def _header():
     )
 
 
-def _read(start: int, end: int, is_reverse: bool, ro: str | None = None):
+def _read(start: int, end: int, is_reverse: bool, ro: str | None = None,
+          xo: str | None = None, xy: str | None = None):
     """Minimal gapless aligned segment spanning [start, end)."""
     a = pysam.AlignedSegment(_header())
     a.query_name = "r"
@@ -60,6 +62,10 @@ def _read(start: int, end: int, is_reverse: bool, ro: str | None = None):
     a.cigartuples = [(0, n)]  # nM
     if ro is not None:
         a.set_tag("ro", ro, value_type="A")
+    if xo is not None:
+        a.set_tag("XO", xo)
+    if xy is not None:
+        a.set_tag("XY", xy)
     return a
 
 
@@ -120,6 +126,56 @@ class TestTailEvidence:
         agreement with the annotated gene strand, same as the pure sense class."""
         read = _read(*READ_SPAN_P, is_reverse=False, ro="B")
         assert resolve_rna_strand(read, None) == ("+", EVIDENCE_POLYA_3P)
+
+
+# ---------------------------------------------------------------------------
+# The canonical `correct-cdna` orientation tag (XO / XY)
+# ---------------------------------------------------------------------------
+class TestCanonicalXOTag:
+    """`correct-cdna` stage 1 LABELS orientation as XO:Z:fwd|rev and `align -y`
+    carries it into the BAM; `cdna-analyze` maps {fwd:'+', rev:'-'}.  A BAM from
+    that path must resolve here identically, without needing `ro` or annotation.
+
+    XO is defined on BAM SEQ, so it gives the gene strand directly and is
+    INDEPENDENT of is_reverse — both is_reverse values must give the same answer
+    for a given XO.
+    """
+
+    @pytest.mark.parametrize("is_reverse", [False, True], ids=["fwd_aln", "rev_aln"])
+    @pytest.mark.parametrize("xo,exp", [("fwd", "+"), ("rev", "-")])
+    def test_xo_determines_strand_regardless_of_is_reverse(self, xo, exp, is_reverse):
+        read = _read(*READ_SPAN_P, is_reverse=is_reverse, xo=xo)
+        assert resolve_rna_strand(read, None) == (exp, EVIDENCE_XO_ORIENT)
+
+    @pytest.mark.parametrize("xy,exp", [("umi_captured_fwd", "+"),
+                                        ("umi_captured_rev", "-")])
+    def test_xy_subtype_used_when_xo_absent(self, xy, exp):
+        read = _read(*READ_SPAN_P, is_reverse=False, xy=xy)
+        assert resolve_rna_strand(read, None) == (exp, EVIDENCE_XO_ORIENT)
+
+    def test_umi_not_captured_falls_through(self, gene_trees):
+        read = _read(*READ_SPAN_P, is_reverse=False, xy="umi_not_captured")
+        strand, ev = resolve_rna_strand(read, gene_trees, chrom=CHROM)
+        assert ev == EVIDENCE_GENE_OVERLAP
+
+    def test_xo_outranks_ro(self):
+        """XO is per-MOLECULE consensus; `ro` is one read's tail. XO wins."""
+        read = _read(*READ_SPAN_P, is_reverse=False, ro="A", xo="fwd")
+        assert resolve_rna_strand(read, None) == ("+", EVIDENCE_XO_ORIENT)
+
+    def test_agrees_with_cdna_analyze_mapping(self):
+        """Lock the two XO consumers together — if cdna_analyze_command's
+        {fwd:'+', rev:'-'} ever changes, this fails rather than silently
+        diverging."""
+        import re
+        from pathlib import Path
+        from rectify.core.correct.protocols.ont_cdna import ORIENT_TO_STRAND
+        src = Path(__file__).resolve().parents[1] / (
+            "rectify/core/commands/cdna_analyze_command.py")
+        m = re.search(r'_orient_to_strand\s*=\s*(\{[^}]*\})', src.read_text())
+        assert m, "cdna_analyze_command no longer defines _orient_to_strand"
+        theirs = eval(m.group(1))  # noqa: S307 - fixed literal from our own repo
+        assert {k: v for k, v in theirs.items() if k in ("fwd", "rev")} == ORIENT_TO_STRAND
 
 
 # ---------------------------------------------------------------------------

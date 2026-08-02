@@ -23,19 +23,50 @@ and wrong for antisense ones — measured at ~2/3 of a real library.  See
 ``planning/541_ont_cdna_strand_fix.md`` and contract C8 in
 ``planning/518_ms2_metric_contract.md``.
 
+Relationship to the ``correct-cdna`` (UMI-consensus) path
+---------------------------------------------------------
+RECTIFY has TWO cDNA routes and they must not be confused:
+
+* **Path A (UMI-aware):** ``correct-cdna`` -> ``align -y`` -> ``cdna-analyze``.
+  Stage 1 emits one consensus per molecule and tags it ``XO:Z:fwd|rev``
+  (plus ``XY:Z:umi_captured_fwd|rev``); ``align -y`` carries those into the BAM
+  and ``cdna-analyze`` maps ``{fwd: '+', rev: '-'}`` to get the gene strand.
+* **Path B (pre-UMI-collapse reads):** ``trim-cdna-polya`` -> aligner ->
+  ``correct --ONT-cDNA``.  This is the route used for internal-poly(A) work,
+  where per-read tail/site *distributions* are wanted and UMI collapse is
+  deliberately skipped (contract C9).
+
+⚠️ **Path A does NOT normalise orientation** — despite what
+``docs/figures/generate_cdna_umi_v3.py`` claimed until 2026-08-01, stage 1
+restores the *basecalled* orientation and merely LABELS the molecule with
+``XO``; a ``rev`` molecule stays antisense in the FASTQ.  So reads in BOTH
+orientations reach the aligner on either path, and ``is_reverse`` is never the
+gene strand.  ``read_info.py`` says so explicitly: *"Direction of 'polyA side'
+is determined by **orient**, not is_reverse."*
+
+``XO`` is defined on BAM SEQ (reference orientation), whereas ``ro`` below is
+defined on the basecalled read; the two are equivalent under
+``gene_strand = '+' iff (read_is_sense XOR is_reverse)``.  Both are consumed
+here so this function is correct on a BAM from either path.
+
 Resolution order (documented precedence, C8 + 535i section 3.2)
 ---------------------------------------------------------------
-1. ``ro:A:`` BAM tag — read-intrinsic tail evidence written by
+1. ``XO:Z:fwd|rev`` (or ``XY:Z:umi_captured_fwd|rev``) — the canonical
+   orientation label written by ``rectify correct-cdna``.  Defined on BAM SEQ:
+   ``fwd`` = poly-A at the RIGHT of BAM SEQ = gene '+'; ``rev`` = poly-T at the
+   LEFT = gene '-'.  Preferred because it is the established convention and is
+   backed by per-molecule consensus rather than a single read.
+2. ``ro:A:`` BAM tag — read-intrinsic tail evidence written by
    ``rectify trim-cdna-polya`` and carried through alignment by ``minimap2 -y``.
    ``S`` = 3' poly-A (sense), ``A`` = 5' poly-T (antisense), ``B`` = both tails
    (resolved as **sense**: measured 98.3% agreement with the annotated gene
    strand, indistinguishable from the pure sense class), ``U`` = unresolved.
-   Strongest signal — needs no annotation and is independent of alignment.
-2. **Maximally-overlapping annotated gene.**  Queried on BOTH strands, so it is
+   Needs no annotation and is independent of alignment.
+3. **Maximally-overlapping annotated gene.**  Queried on BOTH strands, so it is
    *not* the circular strand-matched lookup that ``compute_read_gene_attribution``
    performs (that one filters to the alignment strand and can only ever return a
    strand-matched gene).
-3. Otherwise ``None`` -> ``unassigned``.  Never guessed.
+4. Otherwise ``None`` -> ``unassigned``.  Never guessed.
 
 Once the RNA strand is known, side and stop-base follow the same mapping DRS
 uses, because in alignment orientation ``pysam`` has already put the read into
@@ -60,7 +91,19 @@ from rectify.core.correct.walkback import (
 #: ``rectify trim-cdna-polya`` (see ``cdna_trim_command``).
 ORIENTATION_TAG = "ro"
 
+#: Canonical per-molecule orientation tag written by ``rectify correct-cdna``
+#: stage 1 and carried into the BAM by ``rectify align -y`` / ``minimap2 -y``.
+#: Defined on BAM SEQ, so it maps straight to gene strand.  ``XY`` carries the
+#: same information as ``umi_captured_fwd`` / ``umi_captured_rev``.
+CDNA_ORIENT_TAG = "XO"
+CDNA_SUBTYPE_TAG = "XY"
+
+#: ``rectify cdna_analyze_command`` uses exactly this mapping; kept identical so
+#: the two consumers of ``XO`` cannot drift apart.
+ORIENT_TO_STRAND = {"fwd": "+", "rev": "-"}
+
 #: ``strand_evidence`` values emitted into the corrected-3'-ends TSV.
+EVIDENCE_XO_ORIENT = "XO_orient"
 EVIDENCE_POLYA_3P = "polyA_3p"
 EVIDENCE_POLYT_5P = "polyT_5p"
 EVIDENCE_GENE_OVERLAP = "gene_overlap"
@@ -118,7 +161,24 @@ def resolve_rna_strand(
     when unresolvable, and *evidence* is one of the ``EVIDENCE_*`` constants.
     See the module docstring for the precedence.
     """
-    # --- 1. read-intrinsic tail evidence ---
+    # --- 1. canonical correct-cdna orientation label (XO, else XY) ---
+    # Defined on BAM SEQ, so it gives the gene strand directly with no
+    # is_reverse arithmetic.  Same mapping cdna_analyze_command.py uses.
+    orient = None
+    try:
+        orient = read.get_tag(CDNA_ORIENT_TAG)
+    except KeyError:
+        try:
+            # XY is 'umi_captured_fwd' / 'umi_captured_rev' / 'umi_not_captured'
+            sub = read.get_tag(CDNA_SUBTYPE_TAG)
+            if isinstance(sub, str) and sub.startswith("umi_captured_"):
+                orient = sub[len("umi_captured_"):]
+        except KeyError:
+            pass
+    if orient in ORIENT_TO_STRAND:
+        return ORIENT_TO_STRAND[orient], EVIDENCE_XO_ORIENT
+
+    # --- 2. read-intrinsic tail evidence from the pre-align trim ---
     try:
         label = read.get_tag(ORIENTATION_TAG)
     except KeyError:
@@ -128,13 +188,13 @@ def resolve_rna_strand(
     if label == "A":
         return _flip(_drs_rule_strand(read)), EVIDENCE_POLYT_5P
 
-    # --- 2. maximally-overlapping annotated gene (both strands) ---
+    # --- 3. maximally-overlapping annotated gene (both strands) ---
     if gene_interval_trees:
         gs = max_overlap_gene_strand(read, gene_interval_trees, chrom=chrom)
         if gs is not None:
             return gs, EVIDENCE_GENE_OVERLAP
 
-    # --- 3. never guess ---
+    # --- 4. never guess ---
     return None, EVIDENCE_UNASSIGNED
 
 

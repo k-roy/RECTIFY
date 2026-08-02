@@ -138,9 +138,10 @@ def build():
     out.append(text(x_start + total_w + 6, y2 + row_h/2 + 4, "3′",
                     size=11, color=PAL["muted"]))
 
-    # ── Footer note: correct-cdna normalises both ────────────────────────────
+    # ── Footer note: correct-cdna LABELS orientation, it does NOT normalise ──
     out.append(text(FIG_W/2, 290,
-                    "rectify correct-cdna strips SSP/UMI/GGG and poly(A/T) from both — output is one canonical orientation",
+                    "rectify correct-cdna strips SSP/UMI/GGG and poly(A/T) from both, but does NOT reorient: "
+                    "each consensus keeps its basecalled orientation and is labelled XO:Z:fwd|rev",
                     size=11, color=PAL["heading"], weight="600", anchor="middle"))
 
     out.append(svg_close())
