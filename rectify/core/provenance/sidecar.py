@@ -25,9 +25,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
+import logging
+
 from .cluster import detect_current_cluster
 from .hashing import normalized_config_hash, sha256_of_file
 from .path_resolver import PortablePath, tokenize_argv_paths
+
+_log = logging.getLogger(__name__)
 
 # Cached so repeated sidecar writes in one process don't re-hash the package.
 _CODE_FINGERPRINT: Optional[str] = None
@@ -95,11 +99,22 @@ def resolve_code_fingerprint() -> str:
                 h.update(str(f.relative_to(pkg_dir)).encode())
                 h.update(f.read_bytes())
             fp = "pkghash:" + h.hexdigest()[:12]
+            _log.warning(
+                "PROVENANCE: rectify at %s is NOT a git checkout — recording %s. "
+                "This fingerprint detects code drift but is NOT resolvable back to a "
+                "commit, so the run is not reproducible from provenance alone. "
+                "Deployments should be git checkouts.", pkg_dir, fp,
+            )
         except Exception:
             pass
     except Exception:
         pass
 
+    if fp == "unknown":
+        _log.error(
+            "PROVENANCE: could not identify the rectify code version at all; "
+            "outputs of this run will NOT be traceable to a code state."
+        )
     _CODE_FINGERPRINT = fp
     return fp
 

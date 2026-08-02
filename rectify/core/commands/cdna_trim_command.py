@@ -592,6 +592,10 @@ def trim_cdna_fastq_polya(
 
 def run(args) -> int:
     """Entry point called from rectify/cli.py for ``rectify trim-cdna-polya``."""
+    from datetime import datetime as _dt, timezone as _tz
+    from time import perf_counter as _perf
+    _stage_started_at = _dt.now(_tz.utc).isoformat()
+    _t_start = _perf()
     input_fastq = Path(args.input_fastq)
     if not input_fastq.exists():
         print(f"ERROR: Input FASTQ not found: {input_fastq}", file=sys.stderr)
@@ -663,6 +667,47 @@ def run(args) -> int:
     print(f"  polya_3p_seq / polya_3p_quals   — poly-A tail only")
     print(f"  adapter_3p_seq / adapter_3p_quals — adapter stub only")
     print(f"  polyt_5p_seq / polyt_5p_quals   — 5' poly-T (antisense reads)")
+
+    # ---- provenance sidecar -------------------------------------------------
+    # trim-cdna-polya REWRITES the reads, so its code version has to be pinned:
+    # every downstream coordinate depends on what this stage removed. Both bugs
+    # fixed on 2026-08-01 (the non-adapter-anchored 5' poly-T detector, and the
+    # missing orientation label) lived HERE, and this stage wrote no provenance
+    # at all — so the affected FASTQs carry no record of which code produced
+    # them. Non-fatal on failure, per the other stages' convention.
+    try:
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        from rectify.utils.version import get_rectify_git_sha as _get_sha_trim
+        _sc = ProvenanceRecord.from_components(
+            stage='trim_cdna_polya',
+            stage_subtype='ont_cdna',
+            sample_id=sample_stem,
+            sample_output_dir=output_dir,
+            started_at=_stage_started_at,
+            completed_at=_dt.now(_tz.utc).isoformat(),
+            exit_status=0,
+            inputs={'fastq': input_fastq},
+            outputs={'trimmed_fastq': out_fastq, 'trim_metadata': meta_path},
+            stats={
+                'wall_seconds': _perf() - _t_start,
+                'total': stats['total'],
+                'trimmed_3p': stats['trimmed_3p'],
+                'trimmed_5p': stats['trimmed_5p'],
+                'untrimmed': stats['untrimmed'],
+                'pass0': stats['pass_counts'][0],
+                'pass1': stats['pass_counts'][1],
+                'pass2': stats['pass_counts'][2],
+                # Orientation calls -- the signal `correct --ONT-cDNA` consumes.
+                'orientation_sense': stats.get('orientation', {}).get('S', 0),
+                'orientation_antisense': stats.get('orientation', {}).get('A', 0),
+                'orientation_both': stats.get('orientation', {}).get('B', 0),
+            },
+            argv=sys.argv,
+            rectify_git_sha=_get_sha_trim(),
+        )
+        write_stage_sidecar(_sc, sample_output=output_dir)
+    except Exception as _sc_exc:
+        logger.warning("Failed to write trim_cdna_polya sidecar: %s", _sc_exc)
 
     return 0
 

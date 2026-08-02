@@ -93,3 +93,46 @@ def test_record_carries_the_fingerprint(tmp_path):
     _reset()
     assert rec.rectify_git_sha != "unknown"
     assert rec.rectify_git_sha.startswith(("git:", "pkghash:"))
+
+
+def test_trim_cdna_polya_writes_a_sidecar_with_a_real_sha(tmp_path, monkeypatch):
+    """`trim-cdna-polya` rewrites the reads, so it MUST pin its code version.
+
+    It wrote no provenance at all until 2026-08-02 — which is how the FASTQs
+    behind the MS2 cDNA arm ended up with no record of the trim code that made
+    them, in the very stage where two bugs were later found.
+    """
+    import argparse
+    import gzip
+    import json
+    from rectify.core.commands import cdna_trim_command as ct
+
+    # PortablePath rightly refuses to record non-transient paths under $TMPDIR
+    # (ephemeral). pytest's tmp_path lives there, so root this run in $SCRATCH,
+    # which is a stable env root and wins on longest-prefix match.
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("L_SCRATCH", raising=False)
+    monkeypatch.setenv("SCRATCH", str(tmp_path.resolve()))
+
+    fq = tmp_path / "s.fastq.gz"
+    with gzip.open(fq, "wt") as fh:
+        for i in range(20):
+            fh.write("@r%d\n%s\n+\n%s\n" % (i, "ACGT" * 30 + "A" * 20, "I" * 140))
+    out = tmp_path / "trim"
+
+    args = argparse.Namespace(
+        input_fastq=str(fq), output_dir=str(out), prefix="s", tsv=True,
+        adapter_3p=ct._CRTA, adapter_5p=ct._CRTA_RC,
+        seed_len=ct._SEED_LEN, seed_max_mismatches=ct._SEED_MAX_MISMATCHES,
+        max_error_rate=0.0, max_consecutive_non_a=1,
+        adapter_window=ct._ADAPTER_WINDOW, trim_5p_polyt=True,
+        min_polya=1, min_polyt=1,
+    )
+    assert ct.run(args) == 0
+
+    sidecars = list(out.rglob("*provenance*.json"))
+    assert sidecars, "trim-cdna-polya wrote NO provenance sidecar"
+    d = json.loads(sidecars[0].read_text())
+    assert d["stage"] == "trim_cdna_polya"
+    assert d["rectify_git_sha"] != "unknown", "sidecar did not pin the code version"
+    assert d["rectify_git_sha"].startswith(("git:", "pkghash:", "injected"))

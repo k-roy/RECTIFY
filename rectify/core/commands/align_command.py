@@ -405,6 +405,10 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
 
 def run_align(args: argparse.Namespace) -> int:
     """Run align command."""
+    from datetime import datetime as _dt_al, timezone as _tz_al
+    from time import perf_counter as _perf_al
+    _align_started_at = _dt_al.now(_tz_al.utc).isoformat()
+    _t_align = _perf_al()
     # Setup logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -863,6 +867,7 @@ def run_align(args: argparse.Namespace) -> int:
             )
             _sp.run(['samtools', 'index', str(multialigned_bam)], check=True)
             logger.info(f"Single-aligner output (sorted+indexed): {multialigned_bam}")
+        _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
         return 0
 
     # Run consensus selection
@@ -1013,9 +1018,51 @@ def run_align(args: argparse.Namespace) -> int:
     except Exception as e:
         logger.warning(f"  samtools calmd error: {e}; proceeding without MD tags")
 
+    _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
     return 0
 
 
 def run(args: argparse.Namespace):
     """Entry point for CLI."""
     sys.exit(run_align(args))
+
+
+def _write_align_sidecar(args, prefix, out_bam, started_at, t_start, aligners=None):
+    """Record which rectify (and which aligners) produced this BAM.
+
+    `align` REWRITES coordinates -- every downstream 3'-end call inherits them --
+    yet until 2026-08-02 it wrote no provenance at all. Non-fatal on failure,
+    matching the convention in the other stages.
+    """
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from time import perf_counter as _perf
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        from rectify.utils.version import get_rectify_git_sha as _get_sha
+        _stats = {"wall_seconds": _perf() - t_start}
+        if aligners:
+            _stats["aligners"] = list(aligners)
+            try:
+                from rectify.utils.bam_provenance import get_aligner_version
+                _stats["aligner_versions"] = {
+                    a: (get_aligner_version(a) or "unknown") for a in aligners
+                }
+            except Exception:
+                pass
+        _inputs = {"reads": args.reads, "genome": args.genome}
+        _rec = ProvenanceRecord.from_components(
+            stage="align",
+            sample_id=prefix,
+            sample_output_dir=args.output_dir,
+            started_at=started_at,
+            completed_at=_dt.now(_tz.utc).isoformat(),
+            exit_status=0,
+            inputs=_inputs,
+            outputs={"bam": out_bam},
+            stats=_stats,
+            argv=sys.argv,
+            rectify_git_sha=_get_sha(),
+        )
+        write_stage_sidecar(_rec, sample_output=args.output_dir)
+    except Exception as exc:
+        logger.warning("Failed to write align sidecar: %s", exc)
