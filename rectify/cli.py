@@ -207,6 +207,35 @@ def main(argv: Optional[list] = None):
         from .data import resolve_reference_paths
         resolve_reference_paths(args, require_genome=False, verbose=False)
 
+    # ---- universal provenance: EVERY subcommand records its rectify version --
+    # Hooked here, at the single dispatch point, rather than in each command
+    # module: 21 of 26 modules wrote no provenance at all, and hand-wiring them
+    # would leave the 22nd command someone adds unguarded. Stages that write
+    # their own (richer) sidecar still do; this is the floor, under a distinct
+    # filename so the two never collide. See core/provenance/auto_sidecar.py.
+    from datetime import datetime as _dt_cli, timezone as _tz_cli
+    from time import perf_counter as _perf_cli
+    from .core.provenance.auto_sidecar import write_command_sidecar as _wcs
+    _cli_started = _dt_cli.now(_tz_cli.utc).isoformat()
+    _cli_t0 = _perf_cli()
+
+    def _emit(rc: int) -> None:
+        _wcs(args.command, args, _cli_started, _perf_cli() - _cli_t0, rc)
+
+    try:
+        _dispatch(args, parser)
+    except SystemExit as _e:
+        _code = _e.code
+        _emit(0 if _code is None else (_code if isinstance(_code, int) else 1))
+        raise
+    except BaseException:
+        _emit(1)
+        raise
+    _emit(0)
+
+
+def _dispatch(args, parser):
+    """The subcommand dispatch table (factored out so main() can wrap it)."""
     # Import commands only when needed
     if args.command == 'correct':
         from .core.commands import correct_command
