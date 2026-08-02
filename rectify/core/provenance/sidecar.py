@@ -74,9 +74,13 @@ def resolve_code_fingerprint() -> str:
         # (2) git work tree?
         try:
             import subprocess
+            # NOTE: `cwd=`, NOT `git -C`. `-C` requires git >= 1.8.5 and
+            # Hoffman2 ships git 1.8.3.1, where it silently fails -- which sent
+            # a REAL git checkout down the pkghash fallback. Caught only by
+            # running this on the actual cluster.
             sha = subprocess.run(
-                ["git", "-C", str(pkg_dir), "rev-parse", "HEAD"],
-                capture_output=True, text=True, timeout=5,
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(pkg_dir), capture_output=True, text=True, timeout=5,
             )
             if sha.returncode == 0 and sha.stdout.strip():
                 fp = "git:" + sha.stdout.strip()
@@ -92,9 +96,9 @@ def resolve_code_fingerprint() -> str:
                 #       unscoped check would cry dirty on a run that IS exactly
                 #       reproducible from the commit.
                 dirty = subprocess.run(
-                    ["git", "-C", str(pkg_dir), "status", "--porcelain",
-                     "--untracked-files=no", "--", "."],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "status", "--porcelain", "--untracked-files=no",
+                     "--", "."],
+                    cwd=str(pkg_dir), capture_output=True, text=True, timeout=30,
                 )
                 if dirty.returncode == 0 and dirty.stdout.strip():
                     fp += "+dirty"
