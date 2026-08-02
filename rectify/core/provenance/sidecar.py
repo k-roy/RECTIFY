@@ -29,6 +29,80 @@ from .cluster import detect_current_cluster
 from .hashing import normalized_config_hash, sha256_of_file
 from .path_resolver import PortablePath, tokenize_argv_paths
 
+# Cached so repeated sidecar writes in one process don't re-hash the package.
+_CODE_FINGERPRINT: Optional[str] = None
+
+
+def resolve_code_fingerprint() -> str:
+    """Identify the *code* that produced an output, as precisely as available.
+
+    Returns, in order of preference:
+
+    1. ``rectify.__git_sha__`` if a build injected one.
+    2. ``git:<sha>[+dirty]`` when the installed package sits in a git work tree.
+    3. ``pkghash:<12 hex>`` — sha256 over the sorted contents of every ``.py``
+       in the package. This is the important fallback: a deployment that is a
+       plain *copy* of the repo (no ``.git``) still gets a fingerprint that
+       changes whenever the code changes.
+    4. ``"unknown"`` only if even that fails.
+
+    Why this exists (2026-08-02): ``__git_sha__`` was read here but **never set
+    anywhere in the codebase**, so every provenance sidecar ever written — on
+    every machine — recorded ``rectify_git_sha: "unknown"``. The one field meant
+    to pin the code version was inert, and that is precisely how a ~2-month-stale
+    rectify on Hoffman2 (a non-git copy) produced the MS2 3'-end tables without
+    anything flagging the drift. ``pkghash`` closes the non-git case, which is
+    the case that actually bit us.
+    """
+    global _CODE_FINGERPRINT
+    if _CODE_FINGERPRINT is not None:
+        return _CODE_FINGERPRINT
+
+    fp = "unknown"
+    try:
+        import rectify as _rect
+        injected = getattr(_rect, "__git_sha__", None)
+        if injected:
+            _CODE_FINGERPRINT = str(injected)
+            return _CODE_FINGERPRINT
+        pkg_dir = Path(_rect.__file__).resolve().parent
+
+        # (2) git work tree?
+        try:
+            import subprocess
+            sha = subprocess.run(
+                ["git", "-C", str(pkg_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if sha.returncode == 0 and sha.stdout.strip():
+                fp = "git:" + sha.stdout.strip()
+                dirty = subprocess.run(
+                    ["git", "-C", str(pkg_dir), "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if dirty.returncode == 0 and dirty.stdout.strip():
+                    fp += "+dirty"
+                _CODE_FINGERPRINT = fp
+                return fp
+        except Exception:
+            pass
+
+        # (3) content hash of the installed package
+        try:
+            import hashlib
+            h = hashlib.sha256()
+            for f in sorted(pkg_dir.rglob("*.py")):
+                h.update(str(f.relative_to(pkg_dir)).encode())
+                h.update(f.read_bytes())
+            fp = "pkghash:" + h.hexdigest()[:12]
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    _CODE_FINGERPRINT = fp
+    return fp
+
 # ---------------------------------------------------------------------------
 # Entry dataclasses
 # ---------------------------------------------------------------------------
@@ -298,11 +372,7 @@ class ProvenanceRecord:
 
         # ---- resolve git sha + version ----
         if rectify_git_sha is None:
-            try:
-                import rectify as _rect
-                rectify_git_sha = getattr(_rect, "__git_sha__", "unknown")
-            except ImportError:
-                rectify_git_sha = "unknown"
+            rectify_git_sha = resolve_code_fingerprint()
 
         if rectify_version is None:
             try:
