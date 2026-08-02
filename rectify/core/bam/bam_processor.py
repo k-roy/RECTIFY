@@ -45,6 +45,11 @@ from ..correct import indel_corrector
 from ..netseq import netseq_refiner
 from ..correct.indel_corrector import VariantAwareHomopolymerRescue
 from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
+from ..correct.protocols.ont_cdna import (
+    resolve_rna_strand as _resolve_ont_cdna_strand,
+    three_prime_position as _ont_cdna_3prime,
+    walkback_ont_cdna,
+)
 from ..correct.walkback import (
     APPLIED_WALKBACK as _APPLIED_WALKBACK_READGENOME,
     walkback_drs_full,
@@ -277,6 +282,7 @@ def correct_read_3prime(
     gene_interval_trees: Optional[Dict] = None,
     polya_model: Optional[PolyAModel] = None,
     dt_primed_cDNA: bool = False,
+    ont_cDNA: bool = False,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
     use_dorado_polya: bool = False,
 ) -> List[Dict]:
@@ -324,6 +330,17 @@ def correct_read_3prime(
                     original_position = read.reference_start
             chrom = read.reference_name
             chrom_std = standardize_chrom_name(chrom)
+            _strand_evidence = ''
+            if ont_cDNA:
+                # PCR-cDNA reads occur in both orientations; resolve per read.
+                _rna_strand, _strand_evidence = _resolve_ont_cdna_strand(
+                    read, gene_interval_trees, chrom=chrom_std
+                )
+                if _rna_strand is not None:
+                    strand = _rna_strand
+                    _p = _ont_cdna_3prime(read, strand)
+                    if _p is not None:
+                        original_position = _p
             five_prime_position = get_read_5prime_position(read, strand)
             if five_prime_position is None:
                 return []
@@ -364,6 +381,7 @@ def correct_read_3prime(
                 'junctions': _chimeric_junctions,
                 'junctions_str': _chimeric_junctions_str,
                 'n_junctions': len(_chimeric_junctions),
+                'strand_evidence': _strand_evidence,
             }]
     except KeyError:
         pass
@@ -388,6 +406,25 @@ def correct_read_3prime(
 
     # Standardize chromosome name
     chrom_std = standardize_chrom_name(chrom)
+
+    # ONT PCR-cDNA: the library is double-stranded, so reads arrive in BOTH
+    # orientations and `is_reverse` alone does not give the RNA strand (gene
+    # strand is '+' iff read_is_sense XOR is_reverse).  Resolve per read from
+    # the trim-stage `ro` tail-evidence tag, falling back to the maximally-
+    # overlapping annotated gene, and take the terminus the resolved strand
+    # implies.  Unresolved reads keep the DRS-rule default and are labelled
+    # `unassigned` in strand_evidence so downstream can drop them — never
+    # guessed silently.  See rectify.core.correct.protocols.ont_cdna.
+    strand_evidence = ''
+    if ont_cDNA:
+        rna_strand, strand_evidence = _resolve_ont_cdna_strand(
+            read, gene_interval_trees, chrom=chrom_std
+        )
+        if rna_strand is not None:
+            strand = rna_strand
+            _p = _ont_cdna_3prime(read, strand)
+            if _p is not None:
+                original_position = _p
 
     # Get 5' end position (transcription start site)
     five_prime_position = get_read_5prime_position(read, strand)
@@ -559,6 +596,13 @@ def correct_read_3prime(
         'read_id': read.query_name,
         'chrom': chrom_std,  # Use Roman numeral format (chrI, chrII, etc.)
         'strand': strand,
+        # How `strand` was determined.  Only ONT PCR-cDNA populates this (the
+        # other protocols have a fixed, protocol-level strand rule); one of
+        # polyA_3p / polyT_5p / gene_overlap / unassigned.  `unassigned` marks a
+        # read whose orientation could not be established — it keeps the DRS
+        # default so the row is still emitted, but it must be filtered out of
+        # any strand-sensitive analysis.
+        'strand_evidence': strand_evidence,
         'original_3prime': original_position,
         'corrected_3prime': original_position,
         'five_prime_position': five_prime_position,  # TSS end of the read
@@ -811,7 +855,27 @@ def correct_read_3prime(
         and not softclip_rescue_applied
         and not overcall_rescue_applied
     ):
-        if dt_primed_cDNA:
+        if ont_cDNA:
+            # ONT PCR-cDNA: same walkback core as DRS, but side/stop_base come
+            # from the per-read resolved RNA strand rather than from is_reverse.
+            _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
+            wb = walkback_ont_cdna(
+                read, _chrom_seq, strand,
+                artifact_analyses=_artifact_analyses,
+            ) if _chrom_seq else None
+            if wb is not None:
+                result['correction_applied'].append('polya_walkback')
+                polya_walkback_applied = True
+                wb_bp = wb['correction_bp']
+                current_position = wb['corrected_pos']
+                if strand == '+':
+                    result['ambiguity_min'] = current_position
+                    result['ambiguity_max'] = original_position
+                else:
+                    result['ambiguity_min'] = original_position
+                    result['ambiguity_max'] = current_position
+                result['ambiguity_range'] = max(result['ambiguity_range'], abs(wb_bp))
+        elif dt_primed_cDNA:
             _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
             if _chrom_seq:
                 _orig_wb, _corr_wb, _applied_wb, _gene_strand_wb = walkback_quantseq_rev(
@@ -1141,6 +1205,7 @@ def process_bam_file(
     max_reads: Optional[int] = None,
     apply_3ss_rescue: bool = True,
     dt_primed_cDNA: bool = False,
+    ont_cDNA: bool = False,
     use_dorado_polya: bool = False,
 ) -> List[Dict]:
     """
@@ -1199,6 +1264,7 @@ def process_bam_file(
                 netseq_loader=netseq_loader,
                 apply_3ss_rescue=apply_3ss_rescue,
                 dt_primed_cDNA=dt_primed_cDNA,
+                ont_cDNA=ont_cDNA,
                 use_dorado_polya=use_dorado_polya,
             )
 

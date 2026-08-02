@@ -28,7 +28,14 @@ Adapter defaults
 
 5' adapter (before poly-T on antisense reads):
   CRTA_RC = CTTACCTGCGTCGCTCTATCTTCAGAGGAGAGTCCGCCGCCCGCAAG  (47 bp)
-  Seed    = first 12 bp = CTTACCTGCGTC
+  Seed    = LAST 12 bp = GCCGCCCGCAAG  (the boundary that abuts the poly-T)
+
+  The 5' seed is taken from the adapter's 3' end, mirroring the 3' path (which
+  seeds on the adapter's 5' end because that is the boundary abutting the
+  poly-A).  Measured on PBM17777 WT_BY4742_rep1 (planning/541): the last-12
+  seed matches 92.5% of antisense reads, the first-12 seed 0% — the observed
+  PCB114 primer diverges from CRTA_RC over its 5' ~12 bp but is exact over the
+  35 bp abutting the poly-T.
 
 Pass why these are "longer adapters": the DRS trim-polya module uses a 1-11 bp
 stub regex (``T[CT]{0,10}$``).  The cDNA CRTA adapter is 45 bp — substantially
@@ -63,6 +70,19 @@ _ADAPTER_WINDOW    = 200   # bp from 3' (or 5') end to search in
 _PASS2_MAX_STUB    = 20    # max stub length to try peeling in pass 2
 _MIN_POLYA_PASS2   = 5     # min poly-A length to accept a pass-2 call
 
+# Minimum tail length required before a tail is trusted as an ORIENTATION label
+# (as opposed to merely being trimmed).  Short A/T runs are common as genomic
+# sequence: on PBM17777 WT_BY4742_rep1, 9.4% of reads carry a 1-4 nt 3' "poly-A"
+# with no poly-T, which is far too weak to call a read sense.  Trimming keeps its
+# own (looser) min_polya / min_polyt thresholds; only the label uses this one.
+_MIN_ORIENTATION_TAIL = 10
+
+# Minimum poly-T run accepted when NO 5' adapter anchor was found.  With an
+# anchor the run position is known and any run length is meaningful; without
+# one we are scanning naked sequence and a short T-run is more likely genomic
+# than a reverse-transcription priming site, so require a real homopolymer.
+_MIN_POLYT_UNANCHORED = 10
+
 
 # ---------------------------------------------------------------------------
 # Adapter anchor detection helpers
@@ -87,6 +107,52 @@ def _find_adapter_anchor(seq: str, seed: str, max_mismatches: int) -> int:
         if _hamming(seq[i:i + k], seed) <= max_mismatches:
             return i
     return -1
+
+
+def _find_adapter_anchor_rightmost(seq: str, seed: str, max_mismatches: int) -> int:
+    """Rightmost position of *seed* in *seq* with ≤ max_mismatches (-1 if none).
+
+    Used for the 5' end: the poly-T abuts the LAST adapter copy, so on a
+    chimeric read carrying two adapter copies the rightmost one is the correct
+    boundary.  (The 3' path wants the leftmost for the mirror-image reason.)
+    """
+    k = len(seed)
+    for i in range(len(seq) - k, -1, -1):
+        if _hamming(seq[i:i + k], seed) <= max_mismatches:
+            return i
+    return -1
+
+
+def _scan_polyt(window: str, start: int, max_error_rate: float,
+                max_consecutive_non_t: int) -> int:
+    """Length of the poly-T run beginning at ``window[start]``.
+
+    Same tolerance semantics as :func:`_scan_polya` (which scans a poly-A from
+    the right), but scans rightward from an arbitrary offset.
+    """
+    n = len(window)
+    if start >= n:
+        return 0
+    errors = 0
+    total = 0
+    polyt_end = start
+    consecutive_non_t = 0
+    for i in range(start, n):
+        total += 1
+        if window[i] != 'T':
+            errors += 1
+            consecutive_non_t += 1
+        else:
+            consecutive_non_t = 0
+        if errors / total > max_error_rate:
+            break
+        if consecutive_non_t > max_consecutive_non_t:
+            break
+        polyt_end = i + 1
+    # Back off to the last T if the error budget over-consumed
+    while polyt_end > start and window[polyt_end - 1] != 'T':
+        polyt_end -= 1
+    return polyt_end - start
 
 
 # ---------------------------------------------------------------------------
@@ -182,56 +248,83 @@ def find_cdna_3p_polya_and_adapter(
 
 def find_cdna_5p_polyt(
     seq: str,
+    adapter_seed: str = _CRTA_RC[-_SEED_LEN:],
+    seed_max_mismatches: int = _SEED_MAX_MISMATCHES,
     max_error_rate: float = 0.0,
     max_consecutive_non_t: int = 1,
     adapter_window: int = _ADAPTER_WINDOW,
     min_polyt: int = 1,
-) -> int:
-    """Detect poly-T run at the 5' end of an antisense cDNA read.
+    min_polyt_unanchored: int = _MIN_POLYT_UNANCHORED,
+) -> Tuple[int, int]:
+    """Detect the poly-T run at the 5' end of an antisense cDNA read.
 
-    Walks from seq[0] rightward and stops at the first non-T (in strict mode)
-    or when the cumulative non-T fraction exceeds *max_error_rate* or two
-    consecutive non-T bases are encountered.
+    Returns ``(polyt_len, polyt_start)`` — the run length and its 0-based start
+    index in *seq*.  ``(0, -1)`` when no run is detected.
+
+    Two passes, mirroring :func:`find_cdna_3p_polya_and_adapter`:
+
+    Pass 1 (**anchored**) — locate the 5' adapter seed (the LAST ``_SEED_LEN``
+    bases of the 5' adapter, i.e. the boundary abutting the poly-T) anywhere in
+    the first *adapter_window* bases, then scan the poly-T rightward from the
+    end of that match.  This is the pass that fires in practice.
+
+    Pass 2 (**unanchored**) — no adapter seed found: scan the window for the
+    first T-run of at least *min_polyt_unanchored* bases.  Covers reads whose
+    adapter was trimmed upstream, and reads whose adapter basecall was too poor
+    to seed.  The stricter length floor keeps genomic T-tracts out.
+
+    .. note::
+       Before 2026-08-01 this function walked from ``seq[0]`` and stopped at the
+       first non-T, so it could only fire when the read *literally began* with
+       T's.  On SQK-PCB114 the poly-T sits behind ~120-140 nt of
+       adapter/barcode/UMI, so it fired on **0.11%** of reads instead of ~37%,
+       and the ONT-cDNA orientation label was effectively absent.  See
+       ``planning/541_ont_cdna_strand_fix.md`` section 4.
 
     Args:
-        seq: Read sequence (antisense reads start with poly-T).
+        seq: Read sequence (antisense reads carry poly-T behind the 5' adapter).
+        adapter_seed: Seed for the 5' adapter boundary (default: last 12 bases
+            of CRTA_RC).  Pass ``''`` to force the unanchored pass.
+        seed_max_mismatches: Mismatches allowed in the seed match (default 1).
         max_error_rate: Tolerated non-T fraction (default 0.0 = strict).
         max_consecutive_non_t: Stop at ≥(this+1) consecutive non-T (default 1).
         adapter_window: Bases from 5' end to inspect (default 200).
-        min_polyt: Minimum poly-T length to report (default 1).
+        min_polyt: Minimum poly-T length to report when anchored (default 1).
+        min_polyt_unanchored: Minimum length to report when NOT anchored.
 
     Returns:
-        Number of poly-T bases to trim from the 5' end (0 if none detected).
+        ``(polyt_len, polyt_start)``.
     """
     window = seq[:adapter_window]
+    if not window:
+        return 0, -1
+
+    # --- Pass 1: adapter-anchored ---
+    if adapter_seed:
+        anchor = _find_adapter_anchor_rightmost(window, adapter_seed, seed_max_mismatches)
+        if anchor >= 0:
+            start = anchor + len(adapter_seed)
+            run = _scan_polyt(window, start, max_error_rate, max_consecutive_non_t)
+            if run >= min_polyt:
+                return run, start
+            # Adapter present but no poly-T behind it — this is a sense read
+            # whose 5' end carries the adapter, not an antisense read.  Do NOT
+            # fall through to the unanchored scan: that would pick up a genomic
+            # T-tract and mislabel the read's orientation.
+            return 0, -1
+
+    # --- Pass 2: unanchored ---
     n = len(window)
-    if n == 0:
-        return 0
-
-    errors = 0
-    total  = 0
-    polyt_end = 0                 # exclusive end index of poly-T run
-    consecutive_non_t = 0
-
-    for i in range(n):
-        total += 1
+    i = 0
+    while i < n:
         if window[i] != 'T':
-            errors += 1
-            consecutive_non_t += 1
-        else:
-            consecutive_non_t = 0
-
-        if errors / total > max_error_rate:
-            break
-        if consecutive_non_t > max_consecutive_non_t:
-            break
-        polyt_end = i + 1         # advance past this T (or bridged error)
-
-    # Back off to the last T if we over-consumed
-    while polyt_end > 0 and window[polyt_end - 1] != 'T':
-        polyt_end -= 1
-
-    return polyt_end if polyt_end >= min_polyt else 0
+            i += 1
+            continue
+        run = _scan_polyt(window, i, max_error_rate, max_consecutive_non_t)
+        if run >= max(min_polyt, min_polyt_unanchored):
+            return run, i
+        i += max(run, 1)
+    return 0, -1
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +415,18 @@ def trim_cdna_fastq_polya(
         'trimmed_5p':  0,
         'untrimmed':   0,
         'pass_counts': {0: 0, 1: 0, 2: 0},
+        # Read-orientation calls from tail evidence: S=sense (3' poly-A),
+        # A=antisense (5' poly-T), B=both.  Unresolved reads are not counted.
+        'orientation': {'S': 0, 'A': 0, 'B': 0},
     }
     metadata_rows: List[Dict] = []
 
-    # Derive seeds from the full adapter sequences
+    # Derive seeds from the full adapter sequences.  The 3' seed is the
+    # adapter's FIRST seed_len bases and the 5' seed its LAST seed_len bases:
+    # in both cases that is the end of the adapter abutting the homopolymer,
+    # which is the boundary we need to locate.
     adapter_3p_seed = adapter_3p[:seed_len] if adapter_3p else ''
-    adapter_5p_seed = adapter_5p[:seed_len] if adapter_5p else ''
+    adapter_5p_seed = adapter_5p[-seed_len:] if adapter_5p else ''
 
     # Open output FASTQ
     out_path = str(output_fastq_path)
@@ -370,6 +469,8 @@ def trim_cdna_fastq_polya(
             saved_adapt_quals  = ''
             saved_5p_seq       = ''
             saved_5p_quals     = ''
+            saved_5p_prefix_seq   = ''
+            saved_5p_prefix_quals = ''
 
             if polya_len >= 1 and total_trim_3p < len(seq):
                 trim_3p_polya  = polya_len
@@ -389,26 +490,58 @@ def trim_cdna_fastq_polya(
                 stats['trimmed_3p'] += 1
 
             # ── 5' end: poly-T detection (antisense reads) ───────────────────
+            # The poly-T sits BEHIND the 5' adapter/barcode/UMI (~120-140 nt on
+            # SQK-PCB114), so everything from the read start through the end of
+            # the poly-T run is removed.  The prefix 5' of the run is kept in
+            # the sidecar (it carries the UMI) rather than discarded.
+            n_polyt = 0
+            polyt_start = -1
             if trim_5p_polyt and seq:
-                n_polyt = find_cdna_5p_polyt(
+                n_polyt, polyt_start = find_cdna_5p_polyt(
                     seq,
+                    adapter_seed          = adapter_5p_seed,
+                    seed_max_mismatches   = seed_max_mismatches,
                     max_error_rate        = max_error_rate,
                     max_consecutive_non_t = max_consecutive_non_a,  # symmetric
                     adapter_window        = adapter_window,
                     min_polyt             = min_polyt,
                 )
-                if n_polyt >= 1 and n_polyt < len(seq):
-                    saved_5p_seq   = seq[:n_polyt]
-                    saved_5p_quals = quals[:n_polyt]
-                    seq   = seq[n_polyt:]
-                    quals = quals[n_polyt:]
+                cut = polyt_start + n_polyt if n_polyt >= 1 else 0
+                if n_polyt >= 1 and cut < len(seq):
+                    saved_5p_prefix_seq   = seq[:polyt_start]
+                    saved_5p_prefix_quals = quals[:polyt_start]
+                    saved_5p_seq   = seq[polyt_start:cut]
+                    saved_5p_quals = quals[polyt_start:cut]
+                    seq   = seq[cut:]
+                    quals = quals[cut:]
                     stats['trimmed_5p'] += 1
+                else:
+                    n_polyt, polyt_start = 0, -1
 
             if trim_3p_polya == 0 and (not trim_5p_polyt or not saved_5p_seq):
                 stats['untrimmed'] += 1
 
-            # Write trimmed read (bare UUID as read name, no auxiliary tags)
-            out_fh.write(f'@{bare_id}\n{seq}\n+\n{quals}\n')
+            # Read orientation, from the tail evidence.  A 3' poly-A means the
+            # read is the mRNA sense strand; a 5' poly-T means it is the reverse
+            # complement.  Emitted as a SAM-style FASTQ comment so that
+            # `minimap2 -y` carries it into the BAM as `ro:A:S|A|U`, where
+            # `rectify correct --ONT-cDNA` consumes it to resolve RNA strand
+            # per read instead of applying the (DRS) fixed rule.
+            _has_a = trim_3p_polya  >= _MIN_ORIENTATION_TAIL
+            _has_t = len(saved_5p_seq) >= _MIN_ORIENTATION_TAIL
+            if _has_a and _has_t:
+                orientation = 'B'          # both tails — resolved as sense downstream
+            elif _has_t:
+                orientation = 'A'          # antisense
+            elif _has_a:
+                orientation = 'S'          # sense
+            else:
+                orientation = 'U'          # unresolved
+            if orientation != 'U':
+                stats['orientation'][orientation] += 1
+
+            # Write trimmed read (bare UUID as read name + the orientation tag)
+            out_fh.write(f'@{bare_id}\tro:A:{orientation}\n{seq}\n+\n{quals}\n')
 
             metadata_rows.append({
                 'read_id':            bare_id,
@@ -427,6 +560,13 @@ def trim_cdna_fastq_polya(
                 'polyt_5p_len':       len(saved_5p_seq),
                 'polyt_5p_seq':       saved_5p_seq,
                 'polyt_5p_quals':     saved_5p_quals,
+                # 5' prefix removed ahead of the poly-T (adapter/barcode/UMI)
+                'polyt_5p_offset':    polyt_start,
+                'prefix_5p_len':      len(saved_5p_prefix_seq),
+                'prefix_5p_seq':      saved_5p_prefix_seq,
+                'prefix_5p_quals':    saved_5p_prefix_quals,
+                # Read orientation label: S=sense, A=antisense, B=both, U=unresolved
+                'orientation':        orientation,
             })
 
     finally:
@@ -436,9 +576,12 @@ def trim_cdna_fastq_polya(
 
     logger.info(
         "trim_cdna_fastq_polya: total=%d trimmed_3p=%d trimmed_5p=%d untrimmed=%d "
-        "pass0=%d pass1=%d pass2=%d",
+        "pass0=%d pass1=%d pass2=%d | orientation sense=%d antisense=%d both=%d "
+        "unresolved=%d",
         stats['total'], stats['trimmed_3p'], stats['trimmed_5p'], stats['untrimmed'],
         stats['pass_counts'][0], stats['pass_counts'][1], stats['pass_counts'][2],
+        stats['orientation']['S'], stats['orientation']['A'], stats['orientation']['B'],
+        stats['total'] - sum(stats['orientation'].values()),
     )
     return stats
 

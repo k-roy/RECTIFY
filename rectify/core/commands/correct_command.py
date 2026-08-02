@@ -297,8 +297,9 @@ def validate_inputs(args) -> dict:
     # REV — so it routes through the same validated antisense walkback (gene strand
     # = opposite of BAM strand; CPA at the read 5' end).
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False) or is_netseq
-    # ONT PCR-cDNA (e.g. SQK-PCB114): same strand convention as DRS (no flip);
-    # poly-A tail IS present as a 3' soft-clip from minimap2 alignment.
+    # ONT PCR-cDNA (e.g. SQK-PCB114): the library is double-stranded, so reads
+    # arrive in BOTH orientations and the RNA strand must be resolved PER READ
+    # (rectify.core.correct.protocols.ont_cdna) — it is NOT the fixed DRS rule.
     # AG mispriming disabled (no oligo-dT priming step).
     is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     # Short-read mode (Illumina/Aviti): no poly(A) tail in reads; disable all
@@ -372,9 +373,13 @@ def validate_inputs(args) -> dict:
         # NET-seq CPA-intermediate arm: routes the antisense walkback (via
         # dt_primed_cDNA) but labels the protocol 'netseq' for stats/provenance.
         'is_netseq': is_netseq,
-        # ONT PCR-cDNA flag: same strand convention as DRS (no strand flip).
-        # Poly-A IS in the read as a right soft-clip; AG mispriming is disabled.
-        # Used for stats protocol label only — no bam_processor behaviour changes needed.
+        # ONT PCR-cDNA flag.  Routes bam_processor through the per-read strand
+        # resolution in rectify.core.correct.protocols.ont_cdna: the `ro` tail-
+        # evidence tag written by `rectify trim-cdna-polya` (carried through
+        # alignment by `minimap2 -y`), else the maximally-overlapping annotated
+        # gene, else `unassigned`.  Before 2026-08-01 this flag was a stats label
+        # only and the DRS fixed rule was applied, mis-stranding ~2/3 of reads —
+        # see planning/541_ont_cdna_strand_fix.md.
         'ont_cDNA': is_ont_cdna,
         # Organism name (normalized, e.g. 'saccharomyces_cerevisiae') for bundled
         # data resolution. May be None when only a genome path was supplied.
@@ -896,6 +901,7 @@ def run(args):
                     keep_checkpoints=getattr(args, 'keep_checkpoints', False),
                     variant_scan_cache=config.get('variant_scan_cache'),
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    ont_cDNA=config.get('ont_cDNA', False),
                     use_dorado_polya=config.get('use_dorado_polya', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
@@ -920,6 +926,7 @@ def run(args):
                     gene_interval_trees=gene_interval_trees,
                     polya_model_path=_polya_model_path,
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                    ont_cDNA=config.get('ont_cDNA', False),
                     use_dorado_polya=config.get('use_dorado_polya', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
@@ -962,6 +969,7 @@ def run(args):
                 polya_model_path=_polya_model_path,
                 variant_scan_cache=config.get('variant_scan_cache'),
                 dt_primed_cDNA=config.get('dt_primed_cDNA', False),
+                ont_cDNA=config.get('ont_cDNA', False),
                 use_dorado_polya=config.get('use_dorado_polya', False),
                 min_mapq=config.get('min_mapq', 0),
                 min_aligned_length=config.get('min_aligned_length', 0),

@@ -37,6 +37,11 @@ CORRECTION_TSV_HEADER = [
     'oc_terminal_base',
     'five_prime_upstream_trim',
     'reanchor_clip_len',
+    # How `strand` was determined. Populated by ONT PCR-cDNA only (other
+    # protocols carry a fixed protocol-level strand rule); one of
+    # polyA_3p / polyT_5p / gene_overlap / unassigned. Appended last so
+    # existing positional consumers are unaffected.
+    'strand_evidence',
 ]
 
 
@@ -83,6 +88,7 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         result.get('oc_terminal_base', ''),
         str(result.get('five_prime_upstream_trim', 0)),
         str(result.get('reanchor_clip_len', 0)),
+        result.get('strand_evidence', '') or '',
     ]
 
 

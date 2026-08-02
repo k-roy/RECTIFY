@@ -36,8 +36,14 @@ import pytest
 # Recorded golden hash for the validation minimap2 BAM at n_threads=2.
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
+#
+# 2026-08-01 — re-recorded for the ONT-cDNA strand fix (planning/541).  The
+# change is a pure SCHEMA addition: `strand_evidence` was added to the result
+# dict and is `''` for every non-ONT-cDNA row.  Verified before re-recording
+# that stripping the new key from the observed results reproduces the previous
+# golden a41ec734… exactly, i.e. no correction semantics moved.
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "a41ec734e189dcd0a2e2b96ceb092e490cbac5a6d148bba43261c69bc2ba03c6"
+    "93af5e77671e51127d5b22dc5d8c6836cbcce90cef4a6b441e73392fd593d629"
 )
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a
