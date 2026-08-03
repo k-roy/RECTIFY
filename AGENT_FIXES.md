@@ -1,3 +1,123 @@
+## [2026-08-03] 🔴🔴 ACTIVE — ONT PCR-cDNA: `run-all --ONT-cDNA` cannot supply the orientation signal; pre-`4cf3b9d` `gene_id` is corrupt
+
+**Found by:** `[[541]]` (`535i-cdna-strand`) while analysing the reprocessed 9-library cDNA panel.
+**Status: HOLD cDNA fan-out waves.** Raised to the anchor-guard session
+(`.claude/inbox/2026-08-03T0100Z__from-541__STOP-cDNA-waves-*.md`).
+
+### 1. `run-all --ONT-cDNA` selects a protocol it cannot feed
+`correct --ONT-cDNA` resolves the RNA strand per read as
+`XO`/`XY` tag → `ro` tag → maximal-overlap annotated gene → `unassigned`.
+`ro` is written **only** by `rectify trim-cdna-polya`; `XO` **only** by `correct-cdna` + `align -y`.
+**`run-all` calls neither** (grep: no `trim_cdna` in `run_command.py`/`run/stages.py`, no `-y` in
+`align_command.py`). So through `run-all` every read falls to the annotation fallback — the
+low-confidence class, whose 3' ends land >250 nt inside the CDS **19.0%** of the time versus
+**~1.7–2.2%** for the two tail-evidence classes. Nothing errors; it degrades silently.
+
+**Use the explicit route until this is wired:**
+`trim-cdna-polya` → `minimap2 -y -ax splice` → `correct --ONT-cDNA`
+(worked example: Chanfreau `planning/541_cdna.sh`).
+
+### 2. Any cDNA corrected before `4cf3b9d` has a corrupted `gene_id`
+`gene_id` was assigned on the **alignment** strand, which for an antisense read is the opposite of
+the gene strand. On `WT_BY4742_rep1` (6.06 M reads), fraction receiving a `gene_id`:
+`polyA_3p` **99.1%** · `gene_overlap` 93.7% · `polyT_5p` (antisense) **53.4%** — and that 53.4% were
+matched to a gene on the **opposite strand**, i.e. mis-attributed rather than dropped.
+**Pin cDNA runs to ≥ `4cf3b9d`.** Provenance now resolves `git:<sha>` (incl. on H2), so
+`rectify_git_sha` in each sidecar identifies which runs are trustworthy.
+
+### 3. Do not quote cDNA 3'-end folds yet
+The strand fix removed the driver `[[535i]]` identified — ρ(C13 pass rate, headline) **0.967 → 0.067** —
+but ski7Δ/WT stayed inverted (**0.47×**; DRS gives 1.65–1.80×) and a new technical driver replaced it:
+**ρ(tail-less read fraction, headline) = 0.967**, the exact number C13 used to have. Gate any cDNA
+3'-end metric to `strand_evidence ∈ {polyA_3p, polyT_5p}` and report class composition alongside.
+*(Provisional — measured pre-`4cf3b9d`; being recomputed.)*
+
+Detail: Chanfreau `planning/541_ont_cdna_strand_fix.md` §7.1/§10 ·
+`docs/algorithms/cdna_orientation_and_umi_collapse.md`.
+
+---
+
+## [2026-07-30] 🔴 BUG (correct) — large/streaming BAM: `-o` WITHOUT a `.tsv` suffix aborts the run (dir-mode path never created)
+
+**Found by:** Chanfreau MS2 tunicamycin session, 2026-07-30 (`planning/507`, `planning/509`; H2 arrays
+14189935 / 14190181 / 14190182). **Status: WORKAROUND KNOWN — always pass `-o <name>.tsv`.**
+
+**Symptom.** On a LARGE BAM (here ~7–12M primary-read DRS BAMs), `rectify correct` completes the
+variant-aware scan and then dies immediately:
+
+```
+Writing 4034 potential variants to <prefix>/corrected_3ends_potential_variants.tsv
+[Errno 2] No such file or directory: '<prefix>/corrected_3ends_potential_variants.tsv'
+```
+
+A small smoke of the SAME command on the SAME BAM subsample succeeds — which is what makes this
+expensive: the failure is **size-dependent**, so a naive small smoke does not reproduce it.
+
+**Root cause.** For large inputs `correct` switches from the flat output layout
+(`<prefix>.region_NNN.tsv`) to a **directory-based** layout rooted at `<prefix>/`, but it never
+`mkdir`s that directory. Passing `-o <name>` (no suffix) makes `<prefix>` = `<name>`, so the first
+dir-mode write fails. Passing `-o <name>.tsv` keeps it on the flat path
+(`<name>.3ends.region_000.tsv`), which is created normally.
+
+**Fix / workaround.**
+- **Always give `-o` a `.tsv` suffix** — `rectify correct in.bam --Scer -o sample.3ends.tsv -j 8`.
+  Downstream then reads `sample.3ends.region_000.tsv` (NOT `sample.3ends.tsv`, which is a prefix).
+- Live rescue for an already-running job: `mkdir -p <prefix>` before it finishes the scan; the run
+  then proceeds into region processing and you save the ~15 min re-scan.
+- ⚠️ A pre-fix run leaves a **stale directory** `<prefix>/` next to the good flat outputs. Do not glob
+  `<prefix>*` downstream — hard-code the `region_000.tsv` path.
+- Proper fix (not yet applied): `os.makedirs(out_dir, exist_ok=True)` on the dir-mode branch, or reject
+  a suffix-less `-o` at argument-parse time with a clear message.
+
+**Generalizable lesson.** This is the canonical case for the workspace smoke rule: the smoke must cross
+the size threshold that selects the production code branch, or it proves nothing. A 27k-read smoke passed
+while every 7–12M-read task failed.
+
+---
+
+## [2026-07-25] 🔴 BUG (cma build) — `Zq span != CIGAR query len` when an aligner OMITS terminal soft-clips
+
+**Found by:** Chanfreau CMA-on-Oak session, 2026-07-25 (`planning/472`, Sherlock job 35813205).
+**Status:** OPEN. `cma build` correctly REFUSES to emit (validation fails loudly) — no lossy CMA is
+produced — but it means CMA cannot yet compress panels containing such an aligner.
+
+**Symptom.** `rectify cma build` writes the CMA, then aborts:
+
+```
+[cma build] 43514 reads, 178364 records -> .../wt_rep2_chrI.cma.bam
+[cma build] VALIDATION FAILED (2150 problems):     # ~5% of reads
+   - SRR32518283.2760: Zq span 908 != CIGAR query len 905
+   - SRR32518283.1819: Zq span 616 != CIGAR query len 598
+```
+
+**Root cause.** `cma_schema.hclip_bounds()` derives the `Zq` slice as
+`(H_lead, payload_len - H_trail)` — it accounts for **hard** clips only. But some aligners drop the
+terminal **soft**-clipped bases from the CIGAR entirely, so their query length is shorter than the
+payload read with no hard clip to explain the difference:
+
+| read | deSALT | minimap2 | mapPacBio | **gapmm2** | **uLTRA** |
+|---|--:|--:|--:|--:|--:|
+| SRR32518283.2760 | 908 (`3S106M…`) | 908 (`3S106M…`) | 908 | **905** (`106M…` — 3S dropped) | 908 |
+| SRR32518283.1819 | 616 (`20S84M…`) | 616 | 616 | **616** | **598** (`1=1D83=…` — 20S dropped) |
+
+So `gapmm2` always drops leading soft-clips here, and `uLTRA` sometimes does. With `H=0`,
+`hclip_bounds` returns `(0, payload_len)` and the span overshoots that record's real query length.
+
+**Why planning/256 (M0) did not see it.** M0 measured mex67aa DRS where gapmm2 carried on-disk SEQ for
+100% of primaries and no clip anomaly appeared. This is a different aligner build/invocation
+(Apr-2026 beta output). ⇒ **the "all aligners share one byte-identical SEQ" premise is data-dependent,
+not universal.**
+
+**Fix direction (not yet implemented).** `Zq` must be derived from the record's OWN query span within
+the payload — i.e. locate the record's first aligned base in payload coordinates rather than assuming
+`payload_len - hard_clips`. Until then, either exclude soft-clip-dropping aligners from the panel
+passed to `cma build`, or restrict CMA to datasets verified free of this pattern.
+
+**Also (operator trap, not a code bug):** never pass a bare glob to `--aligner-bams` in a historical
+run dir — `*.chrI.*.bam` sweeps up `*.namesorted.bam` / `*.chimeric.bam` / `*.consensus.bam` and
+aligner-name inference then dies with `ValueError: duplicate aligner name 'namesorted'`. Pass explicit
+`aligner=path` pairs.
+
 ## [2026-07-25] 🔴🔴 TRAP (reference) — a FASTA/GFF **contig-naming mismatch** makes the whole panel annotation-blind, silently
 
 **Found by:** Chanfreau 5′-rescue session, 2026-07-25 (`planning/460`). **Not a code bug — a reference-staging
@@ -2194,3 +2314,79 @@ CLI flag through `split_command.py` so it propagates to the lazy consensus path.
 - Lazy path: 495 s wall, 286 MB peak RSS.
 - Full path (`rectify correct --write-corrected-bam` × 3): TIMEOUT >81 min.
 - Lower-bound speedup: **>9.9×** (true speedup likely 20–30×).
+
+---
+
+## OPEN BUGS — ONT PCR-cDNA 5′ path (found 2026-07-31, planning stream `[[531]]`, NOT yet fixed)
+
+Measured on real SQK-PCB114 data (`shared/processed/cdna_internal_pa_pathB_20260710/*.raw.fastq.gz`),
+10k-read and 6.08M-read samples. Full evidence:
+`~/work/UCLA/Chanfreau_Lab/planning/531_cdna_tails.md`.
+
+**Net effect: `rectify trim-cdna-polya --trim-5p-polyt` recovers a tail for only ~30% of reads.
+~44% of reads are ANTISENSE and it misses every one of them.** An independent scan of the same sample
+recovers 78.9% (2.6×).
+
+### B1 — `_CRTA_RC` is a corrupted reverse complement (`core/commands/cdna_trim_command.py:57`)
+
+**Symptom:** the 5′ adapter seed matches **0 / 10,000** reads, so no antisense read is ever trimmed.
+
+```
+_CRTA            CTTGCGGGCGGCGGACTCTCCTCTGAAGATAGAGCGACAGGCAAG    45 nt
+revcomp(_CRTA)   CTTGCCTGTCGCTCTATCTTCAGAGGAGAGTCCGCCGCCCGCAAG    45 nt  <- what is ACTUALLY in the reads
+_CRTA_RC (code)  CTTACCTGCGTCGCTCTATCTTCAGAGGAGAGTCCGCCGCCCGCAAG  47 nt  <- WRONG
+```
+`_CRTA_RC != revcomp(_CRTA)`. It differs **inside the first 12 nt**, which is the seed
+(`_SEED_LEN = 12`), by **4 mismatches** against `_SEED_MAX_MISMATCHES = 1` ⇒ the seed can **never**
+match. Empirically `revcomp(_CRTA)`'s first 15-mer `CTTGCCTGTCGCTCT` is present in **88.0%** of the
+5′ blocks of antisense reads. **Fix: derive it, `_CRTA_RC = revcomp(_CRTA)`, rather than hard-coding.**
+
+### B2 — `find_cdna_5p_polyt` has no adapter logic at all (`cdna_trim_command.py:183-234`)
+
+**Symptom:** `polyt_5p_len ≥ 10` in only **0.15%** of reads, though **44.6%** carry a real 5′ poly-T.
+
+`adapter_5p_seed` is derived at line 330 and then **never passed** — the call at lines 393–399 supplies
+only `max_error_rate`, `max_consecutive_non_t`, `adapter_window`, `min_polyt`. The function scans from
+`seq[0]` with `max_error_rate=0.0`, so at `i=0` a non-T gives `errors/total = 1.0 > 0.0` → **immediate
+break**. Unless the read literally begins with T, the result is 0.
+
+The real architecture is `[~130 nt block containing revcomp(CRTA)][poly-T ~21][cDNA revcomp]`
+(measured poly-T start offset p25/p50/p75 = 126/130/134, independent of read length; the block does not
+map to the genome — 0/300 vs 298/300 for mid-read controls). A seedless left-scan cannot cross it.
+**Fix: give the 5′ path the same seed + multi-pass treatment `find_cdna_3p_polya_and_adapter` has.**
+**B1 and B2 are independent — fixing only B1 will not help.**
+
+### B3 — `rectify correct --ONT-cDNA` applies the DRS strand rule to a bi-directional library
+
+`correct_command.py:1518-1522` documents "Strand convention is the same as DRS: is_reverse=True →
+minus-strand gene", and there is no `ont_cdna` protocol handler (`core/correct/protocols/` has only
+`netseq.py`, `quantseq_rev.py`), so strand comes from `is_minus_strand_dRNA(read)` alone. ONT PCR-cDNA
+sequences both strands, so for **antisense** reads both the strand **and** the 3′-end terminus are wrong.
+
+**Measured (10k reads, minimap2 + `rectify correct --ONT-cDNA`):**
+
+| read class | coordinate | top feature class | relpos along CDS (p50; 1.0 = CDS 3′ end) |
+|---|---|---|---|
+| sense | rectify's | 3UTR_proximal **82.9%** | **1.126** ✅ |
+| antisense | rectify's | intergenic 44.9% (3UTR_proximal **2.1%**) | **1.586** ❌ |
+| antisense | opposite terminus | 3UTR_proximal 23.7% | **1.040** ✅ |
+
+⚠️ **Do not diagnose this with "does `strand` match the annotated gene strand" — it reads 100% for BOTH
+orientations and cannot fail**, because `gene_id` is itself assigned by strand-matched overlap. The
+honest signal is the **`gene_id` assignment rate: 98.6% (sense) vs 53.5% (antisense)**.
+
+## B4 — `--ONT-cDNA` has NO protocol wrapper, so it inherits the DRS strand rule (root cause of B3)
+**Found 2026-07-31 by Chanfreau MS2 stream `535`, root-causing `531`'s B3.**
+`rectify correct --ONT-cDNA` emits the **BAM alignment strand**, not the RNA strand, for a bi-directional
+PCR-cDNA library. Confirmed by two independent routes.
+**Cause:** there is **no `ont_cdna.py` protocol wrapper** — `--ONT-cDNA` silently falls through to the DRS
+strand convention (`is_reverse=True -> minus-strand gene`), which is correct for DRS and wrong for PCB114 cDNA
+where reads occur in both orientations (`umi_captured_fwd`/`rev`).
+**Impact:** ~40–45% of reads get the wrong strand AND the wrong terminus. Downstream, cDNA cannot support a
+site-level internal-pA comparison (its headline metric correlates with C13 pass rate at rho=0.967 vs 0.068 for DRS).
+**Valid test (the obvious one is circular):** do NOT check `strand == gene_strand` — `gene_id` is assigned by
+strand-matched overlap, so it returns 1.000 by construction. Use a **TSV<->BAM `read_id` join** and compare
+`strand` against `is_reverse` directly (2946/2946 cDNA reads showed the alignment-strand behaviour).
+**Fix:** add an `ont_cdna` protocol wrapper resolving strand from the maximally-overlapping annotated gene,
+then take the corresponding terminus. See also B1 (`_CRTA_RC` corrupted revcomp) and B2 (`find_cdna_5p_polyt`
+has no adapter logic) — all three block a quantitative ONT-cDNA arm.
