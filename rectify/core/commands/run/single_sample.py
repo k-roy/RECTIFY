@@ -149,6 +149,48 @@ def _process_one_sample(
                     log.write(f"DRS trim failed: {e}\n")
                     return sample_id, 1
 
+            # ── ONT PCR-cDNA Step 0: poly(A)/poly(T) + adapter pre-trimming ──
+            # This stage is what makes --ONT-cDNA *work*, not merely parse.
+            # correct --ONT-cDNA resolves the RNA strand per read with the
+            # precedence XO/XY tag -> `ro` tag -> annotated-gene overlap. The
+            # `ro` label is written ONLY here, and `-y` (already passed by
+            # core/align/multi_aligner.py) carries it through alignment into the
+            # BAM. Without this stage every read falls through to the annotated
+            # -gene channel, which is by far the weakest: ~19% of its 3' ends
+            # land >250 nt inside the CDS versus ~1.7-2.2% for the two tailed
+            # classes -- and nothing errors, so the degradation is silent.
+            # trim_5p_polyt=True is required: it is what labels the ANTISENSE
+            # reads (~44% of a PCB114 library), which is the whole point.
+            if getattr(args, 'ONT_cDNA', False) and input_type in ('fastq', 'fastq.gz'):
+                from ..cdna_trim_command import trim_cdna_fastq_polya
+
+                _cdna_dir = _work / 'cdna_trim'
+                _cdna_dir.mkdir(parents=True, exist_ok=True)
+                # .stem on "x.fastq.gz" leaves "x.fastq"; strip it for clean names.
+                _base = input_path.name
+                for _ext in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
+                    if _base.endswith(_ext):
+                        _base = _base[:-len(_ext)]
+                        break
+                _cdna_fastq = _cdna_dir / f"{_base}_cdna_trimmed.fastq.gz"
+                _cdna_meta = sample_output / f"{_base}_cdna_trim_metadata.tsv"
+
+                print(f"  [{sample_id}] ONT cDNA poly(A)/poly(T) trimming…", flush=True)
+                try:
+                    _c_stats = trim_cdna_fastq_polya(
+                        input_fastq_path=str(input_path),
+                        output_fastq_path=str(_cdna_fastq),
+                        metadata_path=str(_cdna_meta),
+                        trim_5p_polyt=True,
+                    )
+                    log.write(f"ONT cDNA trim stats: {_c_stats}\n")
+                    input_path = _cdna_fastq
+                    input_type = 'fastq.gz'
+                    log.write(f"ONT cDNA trim FASTQ: {_cdna_fastq}\n")
+                except Exception as e:
+                    log.write(f"ONT cDNA trim failed: {e}\n")
+                    return sample_id, 1
+
             if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
                 print(f"  [{sample_id}] Aligning…", flush=True)
                 # --bam-dir: per-sample subdir within the requested bam_dir

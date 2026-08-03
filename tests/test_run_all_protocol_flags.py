@@ -99,3 +99,44 @@ def test_drs_plus_ont_cdna_is_rejected():
 def test_bare_namespace_is_safe():
     # Callers that build a partial namespace must not crash the validator.
     assert _validate_protocol_flags(argparse.Namespace()) is None
+
+
+# ── the trim stage that makes --ONT-cDNA actually work ─────────────────────
+# Regression guard for the defect 541 caught: --ONT-cDNA parsed and dispatched
+# correctly, but run-all never invoked trim-cdna-polya, so the `ro` orientation
+# label was never written and every read silently fell through to the weakest
+# strand-resolution channel (annotated-gene overlap, ~19% of 3' ends >250 nt
+# inside the CDS vs ~1.7-2.2% for the tailed classes).
+def test_single_sample_invokes_cdna_trim_under_ont_cdna():
+    import inspect
+    from rectify.core.commands.run import single_sample
+    src = inspect.getsource(single_sample)
+    assert 'trim_cdna_fastq_polya' in src, (
+        "run-all's single-sample path must call trim_cdna_fastq_polya, or "
+        "--ONT-cDNA cannot supply the `ro` tag its strand resolution needs"
+    )
+    assert "getattr(args, 'ONT_cDNA', False)" in src, \
+        "the cDNA trim stage must be gated on --ONT-cDNA"
+
+
+def test_cdna_trim_requests_5p_polyt():
+    """trim_5p_polyt=True is what labels ANTISENSE reads (~44% of a PCB114 lib).
+
+    Without it the trim runs but only sense reads get an `ro` label, so the
+    antisense half still falls to the annotation channel — a subtler version of
+    the same bug.
+    """
+    import inspect
+    from rectify.core.commands.run import single_sample
+    src = inspect.getsource(single_sample)
+    assert 'trim_5p_polyt=True' in src, \
+        "cDNA trim must pass trim_5p_polyt=True or antisense reads stay unlabelled"
+
+
+def test_cdna_trim_api_accepts_what_we_pass():
+    """Lock the call signature so a rename upstream fails here, not at 3am on H2."""
+    import inspect
+    from rectify.core.commands.cdna_trim_command import trim_cdna_fastq_polya
+    params = inspect.signature(trim_cdna_fastq_polya).parameters
+    for needed in ('input_fastq_path', 'output_fastq_path', 'metadata_path', 'trim_5p_polyt'):
+        assert needed in params, f"trim_cdna_fastq_polya lost parameter {needed}"
