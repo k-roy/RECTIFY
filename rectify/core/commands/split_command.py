@@ -2164,12 +2164,27 @@ def _generate_scripts(
     all_aligners   = (['mapPacBio'] if not skip_mpb else []) + other_aligners
 
     # Junction-anchor consensus gate threshold baked into the chunk-merge script.
-    from rectify.data import resolve_min_junction_anchor_bp
+    from rectify.data import (
+        resolve_min_junction_anchor_bp,
+        junction_anchor_gate_off_is_default,
+    )
     min_junction_anchor_bp = resolve_min_junction_anchor_bp(args)
     # Co-activation guard: mapPacBio is only safe in the panel while the gate is
     # active. A gate-off run with mapPacBio re-opens the spurious-intron gaming
     # vector the gate exists to close (see memory project-hped-anchor-gate).
-    if (not skip_mpb) and min_junction_anchor_bp == 0:
+    #
+    # Not on yeast, though: gate=0 IS the validated yeast default (it keeps the
+    # valued yeast mapPacBio panel byte-identical with the validated pipeline),
+    # so warning there fires on every correct yeast run and pushes users toward
+    # three remedies that are all wrong for yeast — --organism human switches
+    # the bundled reference, --skip-map-pacbio drops a useful aligner, and
+    # --min-junction-anchor-bp 10 breaks that byte-identity. Warn only where
+    # gate-off is unevaluated (human, or an undeclared organism).
+    if (
+        (not skip_mpb)
+        and min_junction_anchor_bp == 0
+        and not junction_anchor_gate_off_is_default(getattr(args, 'organism', None))
+    ):
         print(
             "WARNING: mapPacBio is in the aligner panel but the junction-anchor "
             "gate is OFF (min_junction_anchor_bp=0). On human/spliced data this "

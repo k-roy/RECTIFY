@@ -16,6 +16,7 @@ import pytest
 from rectify.data import (
     resolve_min_junction_anchor_bp,
     default_min_junction_anchor_bp,
+    junction_anchor_gate_off_is_default,
     add_junction_anchor_args,
 )
 from rectify.core.commands.split_command import (
@@ -131,3 +132,39 @@ def test_guard_silent_when_mappacbio_skipped(tmp_path, capsys):
     _gen(tmp_path, ['--skip-map-pacbio'])    # gate 0 but no mapPacBio → no warning
     err = capsys.readouterr().err
     assert 'spurious-intron gaming vector' not in err
+
+
+# ── the guard must distinguish "gate off, validated" from "gate off, unchecked" ──
+# yeast runs gate-off BY DESIGN, so warning there fires on every correct yeast run
+# and pushes users toward three remedies that are all wrong for yeast.
+@pytest.mark.parametrize("organism,evaluated", [
+    ('saccharomyces_cerevisiae', True),   # declared + default 0 → gate-off is validated
+    ('yeast', True),                      # alias must normalize
+    ('saccer', True),
+    ('homo_sapiens', False),              # declared but default 10 → gate-off is NOT the default
+    ('human', False),
+    ('mus_musculus', False),              # spliced + unevaluated → stay noisy
+    (None, False),                        # undeclared → stay noisy
+])
+def test_gate_off_is_default_only_for_evaluated_organisms(organism, evaluated):
+    assert junction_anchor_gate_off_is_default(organism) is evaluated
+
+
+@pytest.mark.parametrize("argv_extra", [
+    ['--Scer'],
+    ['--organism', 'saccharomyces_cerevisiae'],
+    ['--organism', 'yeast'],
+])
+def test_guard_silent_on_yeast(tmp_path, capsys, argv_extra):
+    # gate 0 AND mapPacBio in the panel, but that is yeast's validated config.
+    _gen(tmp_path, argv_extra)
+    err = capsys.readouterr().err
+    assert 'spurious-intron gaming vector' not in err
+
+
+def test_guard_still_warns_on_human_explicit_gate_off(tmp_path, capsys):
+    # Deliberately disabling the gate on human IS the footgun the guard exists
+    # for — suppressing yeast must not suppress this.
+    _gen(tmp_path, ['--organism', 'human', '--min-junction-anchor-bp', '0'])
+    err = capsys.readouterr().err
+    assert 'spurious-intron gaming vector' in err

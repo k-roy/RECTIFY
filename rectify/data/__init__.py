@@ -1076,6 +1076,23 @@ def resolve_min_junction_anchor_bp(args) -> int:
     return default_min_junction_anchor_bp(getattr(args, 'organism', None))
 
 
+def junction_anchor_gate_off_is_default(organism: Optional[str]) -> bool:
+    """True when a gate of 0 is this organism's *evaluated* default.
+
+    Distinguishes "gate is off because that is the validated setting here"
+    (yeast — the gate-off panel is byte-identical to the validated pipeline)
+    from "gate is off and nobody has checked" (human, or an undeclared
+    organism). Callers use it to suppress the mapPacBio co-activation warning
+    only where gate-off is known-good.
+
+    An organism absent from :data:`JUNCTION_ANCHOR_DEFAULTS` — including
+    ``None`` — is *not* evaluated, so this returns False and the caller warns.
+    """
+    if organism is None:
+        return False
+    return JUNCTION_ANCHOR_DEFAULTS.get(normalize_organism(organism)) == 0
+
+
 def add_junction_anchor_args(parser_or_group) -> None:
     """Attach ``--min-junction-anchor-bp`` to a parser or argument group.
 
