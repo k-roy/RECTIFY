@@ -255,3 +255,45 @@ class TestCorrectReadWiring:
         assert out[0]["strand"] == "-"
         assert out[0]["original_3prime"] == 1800
         assert out[0]["strand_evidence"] == ""
+
+
+class TestGeneAttributionUsesResolvedStrand:
+    """`gene_id` must be looked up on the RESOLVED RNA strand, not `is_reverse`.
+
+    Found 2026-08-02 on WT_BY4742_rep1: reads whose orientation resolved from a
+    5' poly-T received a `gene_id` only 53.4% of the time (vs 99.1% for 3'
+    poly-A reads) — and the ones that did resolve were matched to a gene on the
+    OPPOSITE strand, i.e. mis-attributed rather than merely dropped. Every
+    gene-based metric silently lost or corrupted the antisense half.
+    """
+
+    def test_antisense_read_is_attributed_to_the_correct_gene(self, gene_trees):
+        from rectify.core.analyze.gene_attribution import compute_read_gene_attribution
+
+        # Antisense read over the '+' gene: aligns reverse, so is_reverse-based
+        # lookup queries the '-' tree and finds nothing.
+        read = _read(*READ_SPAN_P, is_reverse=True, ro="A")
+        assert resolve_rna_strand(read, None)[0] == "+"
+
+        by_alignment = compute_read_gene_attribution(read, gene_trees, chrom=CHROM)
+        by_rna = compute_read_gene_attribution(read, gene_trees, chrom=CHROM,
+                                               rna_strand="+")
+        assert by_alignment == [], "precondition: the old behaviour finds nothing"
+        assert by_rna == ["GENE_P"], "resolved strand must find the real gene"
+
+    def test_sense_read_is_unaffected(self, gene_trees):
+        from rectify.core.analyze.gene_attribution import compute_read_gene_attribution
+
+        read = _read(*READ_SPAN_P, is_reverse=False, ro="S")
+        assert (compute_read_gene_attribution(read, gene_trees, chrom=CHROM)
+                == compute_read_gene_attribution(read, gene_trees, chrom=CHROM,
+                                                 rna_strand="+")
+                == ["GENE_P"])
+
+    def test_none_falls_back_to_alignment_strand(self, gene_trees):
+        """Other protocols pass nothing and must keep the old behaviour."""
+        from rectify.core.analyze.gene_attribution import compute_read_gene_attribution
+
+        read = _read(*READ_SPAN_P, is_reverse=False)
+        assert compute_read_gene_attribution(read, gene_trees, chrom=CHROM,
+                                             rna_strand=None) == ["GENE_P"]

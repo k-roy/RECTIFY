@@ -275,6 +275,7 @@ def compute_read_gene_attribution(
     read: pysam.AlignedSegment,
     interval_trees: Dict[Tuple[str, str], 'IntervalTree'],
     chrom: Optional[str] = None,
+    rna_strand: Optional[str] = None,
 ) -> List[str]:
     """
     Determine which genes a read body overlaps.
@@ -295,7 +296,19 @@ def compute_read_gene_attribution(
     if chrom is None:
         chrom = read.reference_name
 
-    strand = '-' if read.is_reverse else '+'
+    # `rna_strand` overrides the alignment-strand default. REQUIRED for ONT
+    # PCR-cDNA: those libraries are double-stranded, so for an antisense read
+    # `is_reverse` is the OPPOSITE of the gene strand and this lookup would
+    # query the wrong strand's tree. Measured on WT_BY4742_rep1 (2026-08-02):
+    # reads whose orientation resolved from a 5' poly-T got a gene_id only
+    # 53.4% of the time, versus 99.1% for 3' poly-A reads -- and the 53.4% that
+    # did resolve were matched against genes on the OPPOSITE strand, i.e.
+    # mis-attributed rather than merely dropped. Callers that know the RNA
+    # strand must pass it.
+    if rna_strand in ('+', '-'):
+        strand = rna_strand
+    else:
+        strand = '-' if read.is_reverse else '+'
     start, end = get_read_body_interval(read)
 
     overlaps = find_overlapping_genes(chrom, start, end, strand, interval_trees)

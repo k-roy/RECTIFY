@@ -651,7 +651,13 @@ def correct_read_3prime(
     if gene_interval_trees is not None:
         try:
             from ..analyze.gene_attribution import compute_read_gene_attribution
-            gene_ids = compute_read_gene_attribution(read, gene_interval_trees, chrom=chrom_std)
+            gene_ids = compute_read_gene_attribution(
+                read, gene_interval_trees, chrom=chrom_std,
+                # ONT PCR-cDNA: use the RESOLVED RNA strand, not is_reverse.
+                # Without this the antisense half is looked up on the wrong
+                # strand -- half get no gene_id at all and the rest are
+                # attributed to a gene on the opposite strand.
+                rna_strand=(strand if ont_cDNA else None))
             gene_id = gene_ids[0] if gene_ids else None
         except Exception as _e:
             logger.warning("Gene attribution failed for read %s: %s", read.query_name, _e)
