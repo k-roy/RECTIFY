@@ -284,6 +284,11 @@ def _run_correction(
     # Old --no-polya-sequenced is a deprecated alias for NOT passing --dT-primed-cDNA.
     # Default (no flag): direct RNA mode — poly-A IS in the read.
     polya_seq = getattr(args, 'dT_primed_cDNA', False)
+    # --ONT-cDNA selects the ONT PCR-cDNA protocol wrapper, which resolves the RNA
+    # strand PER READ (ro/XO tag -> gene overlap) instead of reading it off the BAM
+    # strand. Required for SQK-PCB114-style libraries, where reads arrive in both
+    # orientations; see rectify.core.correct.protocols.ont_cdna.
+    ont_cdna = getattr(args, 'ONT_cDNA', False)
     skip_indel = not has_md  # Can't correct indels without MD tags
     skip_variant = not has_md
 
@@ -329,6 +334,7 @@ def _run_correction(
         aligner_bams=[str(p) for p in _aligner_bams],
         dT_primed_cDNA=polya_seq,
         polya_sequenced=polya_seq,  # deprecated attr kept for compat
+        ONT_cDNA=ont_cdna,
         threads=getattr(args, 'threads', 4),
         filter_spikein=getattr(args, 'filter_spikein', None),
         streaming=getattr(args, 'streaming', False),

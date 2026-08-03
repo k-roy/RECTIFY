@@ -89,6 +89,7 @@ __all__ = [
     'run',
     'create_run_parser',
     '_validate_paired_end_args',
+    '_validate_protocol_flags',
     # Backwards-compat re-exports
     '_bam_has_md_tags',
     '_collect_per_aligner_bams',
@@ -110,6 +111,38 @@ __all__ = [
     '_run_single_sample',
     '_validate_bam_integrity',
 ]
+
+
+#: run-all protocol flags, in help order. Each selects a different strand
+#: convention and module set, so exactly one may be active.
+_PROTOCOL_FLAGS = (
+    ('--drs', 'drs'),
+    ('--dT-primed-cDNA', 'dT_primed_cDNA'),
+    ('--ONT-cDNA', 'ONT_cDNA'),
+    ('--short-read', 'short_read'),
+)
+
+
+def _validate_protocol_flags(args: argparse.Namespace) -> Optional[str]:
+    """Reject more than one protocol flag.
+
+    The protocols select mutually exclusive strand rules. Silently letting one
+    win is how a library gets corrected under the wrong convention — e.g. ONT
+    PCR-cDNA under ``--dT-primed-cDNA``'s fixed antisense rule, which puts the
+    3' end at the wrong terminus for roughly half the reads.
+
+    Returns an error message, or None when at most one protocol is active.
+    Pure (no I/O, no sys.exit) so it is directly unit-testable.
+    """
+    active = [flag for flag, dest in _PROTOCOL_FLAGS if getattr(args, dest, False)]
+    if len(active) <= 1:
+        return None
+    return (
+        f"{' and '.join(active)} are mutually exclusive protocols — pass exactly "
+        "one. For Oxford Nanopore PCR-cDNA (SQK-PCB114) use --ONT-cDNA; "
+        "--dT-primed-cDNA is for oligo-dT protocols (QuantSeq) and applies a "
+        "fixed antisense strand rule that is wrong for PCR-cDNA."
+    )
 
 
 def _validate_paired_end_args(args: argparse.Namespace) -> Optional[str]:
@@ -186,6 +219,11 @@ def run(args: argparse.Namespace) -> None:
     _pe_error = _validate_paired_end_args(args)
     if _pe_error:
         print(f"ERROR: {_pe_error}", file=sys.stderr)
+        sys.exit(1)
+
+    _proto_error = _validate_protocol_flags(args)
+    if _proto_error:
+        print(f"ERROR: {_proto_error}", file=sys.stderr)
         sys.exit(1)
 
     # --chunked-alignment: generate scripts and exit (don't run inline),
@@ -514,6 +552,17 @@ def create_run_parser(subparsers):
         action='store_true',
         default=False,
         help=argparse.SUPPRESS,  # Deprecated alias for --dT-primed-cDNA
+    )
+    run_parser.add_argument(
+        '--ONT-cDNA',
+        dest='ONT_cDNA',
+        action='store_true',
+        default=False,
+        help='Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). Reads arrive in '
+             'BOTH orientations, so the RNA strand is resolved per read rather than '
+             'from the BAM strand. Use this — NOT --dT-primed-cDNA — for ONT PCR-cDNA: '
+             '--dT-primed-cDNA applies QuantSeq REV\'s fixed antisense rule and puts '
+             'the 3\' end at the wrong terminus for roughly half the reads.'
     )
 
     # Optional analysis arguments

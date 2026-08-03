@@ -1524,10 +1524,12 @@ def create_correct_parser(subparsers):
         action='store_true',
         default=False,
         help='Input is Oxford Nanopore PCR-cDNA (e.g. SQK-PCB114). The poly(A) tail IS '
-             'present in the read as a 3\' soft-clip (minimap2 alignment). Strand '
-             'convention is the same as DRS: is_reverse=True → minus-strand gene. '
-             'Enables poly(A) trimming and indel correction; disables AG mispriming '
-             '(no oligo-dT priming step). Do NOT use --dT-primed-cDNA for this protocol.'
+             'present in the read as a 3\' soft-clip (minimap2 alignment). The library '
+             'is double-stranded, so reads arrive in BOTH orientations and the RNA '
+             'strand is resolved PER READ (ro/XO tag, then annotated-gene overlap) — '
+             'it is NOT the fixed DRS rule. Enables poly(A) trimming and indel '
+             'correction; disables AG mispriming (no oligo-dT priming step). '
+             'Do NOT use --dT-primed-cDNA for this protocol.'
     )
     tech_group.add_argument(
         '--netseq',
