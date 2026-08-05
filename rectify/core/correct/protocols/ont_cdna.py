@@ -91,6 +91,42 @@ from rectify.core.correct.walkback import (
 #: ``rectify trim-cdna-polya`` (see ``cdna_trim_command``).
 ORIENTATION_TAG = "ro"
 
+#: BAM aux tag carrying the trim-stage poly(A) TAIL LENGTH, orientation-aware
+#: (sense reads: the 3' poly-A; antisense reads: the 5' poly-T).  Written by
+#: ``rectify trim-cdna-polya`` and carried in by ``minimap2 -y``.
+#:
+#: 🔴 WHY THIS IS NOT OPTIONAL.  ``trim-cdna-polya`` REMOVES the tail before
+#: alignment, so the aligned read no longer contains it and any post-alignment
+#: poly(A) measurement is measuring a read that by construction has none.
+#: Measured on the 541 panel (planning/550): 96.0% of ``polyA_3p`` reads and
+#: 95.0% of ``polyT_5p`` reads arrive at ``correct`` with ``polya_length == 0``,
+#: although the trim stage measured a median 22 nt (sense) / 18 nt (antisense)
+#: tail for the very same reads.  Without this tag the tail length is simply
+#: lost, in BOTH orientations -- which silently zeroes the quantity the 3'-end
+#: projects use to distinguish biogenesis pathways.
+TAIL_LEN_TAG = "pl"
+
+#: ``polya_source`` value recorded when the length came from the trim stage.
+POLYA_SOURCE_TRIM = "trim_stage"
+
+
+def trim_stage_tail_length(read: pysam.AlignedSegment) -> Optional[int]:
+    """Return the trim-stage tail length from the ``pl`` tag, or ``None``.
+
+    ``None`` means the tag is absent -- i.e. the BAM did not come through
+    ``trim-cdna-polya`` + ``minimap2 -y``, so the caller should fall back to the
+    post-alignment measurement rather than assume a zero-length tail.
+    """
+    try:
+        value = read.get_tag(TAIL_LEN_TAG)
+    except KeyError:
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
 #: Canonical per-molecule orientation tag written by ``rectify correct-cdna``
 #: stage 1 and carried into the BAM by ``rectify align -y`` / ``minimap2 -y``.
 #: Defined on BAM SEQ, so it maps straight to gene strand.  ``XY`` carries the

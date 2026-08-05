@@ -46,8 +46,10 @@ from ..netseq import netseq_refiner
 from ..correct.indel_corrector import VariantAwareHomopolymerRescue
 from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
 from ..correct.protocols.ont_cdna import (
+    POLYA_SOURCE_TRIM as _POLYA_SOURCE_TRIM,
     resolve_rna_strand as _resolve_ont_cdna_strand,
     three_prime_position as _ont_cdna_3prime,
+    trim_stage_tail_length as _trim_stage_tail_length,
     walkback_ont_cdna,
 )
 from ..correct.walkback import (
@@ -712,6 +714,18 @@ def correct_read_3prime(
         result['polya_length'] = polya_result['polya_length']
         result['aligned_a_length'] = polya_result['aligned_a_length']
         result['soft_clip_a_length'] = polya_result['soft_clip_a_length']
+
+        # ONT PCR-cDNA: prefer the TRIM-STAGE tail measurement when present.
+        # `trim-cdna-polya` removes the tail before alignment, so the read
+        # measured just above no longer contains it and reports ~0 for 96% of
+        # sense and 95% of antisense reads (planning/550). The `pl` tag carries
+        # the pre-trim length, orientation-aware. Absent tag => fall back to the
+        # post-alignment value rather than assume a zero-length tail.
+        if ont_cDNA:
+            _trim_tail = _trim_stage_tail_length(read)
+            if _trim_tail is not None:
+                result['polya_length'] = _trim_tail
+                result['polya_source'] = _POLYA_SOURCE_TRIM
         # Dorado pt:i estimate (None when absent) — recorded for comparison and,
         # under --use-dorado-polya, already folded into polya_length above.
         result['dorado_polya_length'] = polya_result['dorado_polya_length']

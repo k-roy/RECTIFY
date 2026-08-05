@@ -83,6 +83,29 @@ _MIN_ORIENTATION_TAIL = 10
 # than a reverse-transcription priming site, so require a real homopolymer.
 _MIN_POLYT_UNANCHORED = 10
 
+# Minimum tail length required to call a read sense/antisense when the ADAPTER
+# was positively identified.  A splint-ligated adapter can only attach to a
+# 3'-terminal A-tail, so its presence is itself strong evidence of a genuine
+# terminus and the length floor can be relaxed -- exactly as the XF full-length
+# tier already does (MIN_HOMOPOLYMER_ANCHORED=6 vs MIN_HOMOPOLYMER_UNANCHORED=10
+# in core/cdna/_constants.py).
+#
+# Measured on PBM17777 WT_BY4742_rep1 (planning/550): among 2,088,487
+# adapter-positive reads, ZERO have polya_3p_len == 0 -- the adapter never
+# appears without a tail behind it.  7.6% of them carry a 1-9 nt tail and were
+# being discarded to 'U' by the flat >=10 gate (~159k reads/library) even though
+# a full-length adapter sat immediately behind the run.
+_MIN_ORIENTATION_TAIL_ANCHORED = 1
+
+# FASTQ-comment tag carrying the trim-stage tail-length measurement through to
+# the BAM (via `minimap2 -y`).  REQUIRED because trimming REMOVES the tail: the
+# aligned read no longer contains it, so `rectify correct` measures poly-A on a
+# read that by construction has none.  Measured downstream: 96.0% of sense
+# (polyA_3p) reads arrive at correct with polya_length == 0 despite the trim
+# stage having measured a median 22 nt tail (planning/550).  Orientation-aware:
+# sense reads report the 3' poly-A, antisense reads the 5' poly-T.
+_TAIL_LEN_TAG = 'pl'
+
 
 # ---------------------------------------------------------------------------
 # Adapter anchor detection helpers
@@ -418,6 +441,10 @@ def trim_cdna_fastq_polya(
         # Read-orientation calls from tail evidence: S=sense (3' poly-A),
         # A=antisense (5' poly-T), B=both.  Unresolved reads are not counted.
         'orientation': {'S': 0, 'A': 0, 'B': 0},
+        # Tail lengths emitted on the `pl:i` tag (orientation-aware). Summarised
+        # in the log so a downstream mean can be sanity-checked against it.
+        'tail_len_sum': 0,
+        'tail_len_n':   0,
     }
     metadata_rows: List[Dict] = []
 
@@ -527,8 +554,17 @@ def trim_cdna_fastq_polya(
             # `minimap2 -y` carries it into the BAM as `ro:A:S|A|U`, where
             # `rectify correct --ONT-cDNA` consumes it to resolve RNA strand
             # per read instead of applying the (DRS) fixed rule.
-            _has_a = trim_3p_polya  >= _MIN_ORIENTATION_TAIL
-            _has_t = len(saved_5p_seq) >= _MIN_ORIENTATION_TAIL
+            # An ANCHORED tail (adapter positively identified) needs only a
+            # minimal run: splint ligation cannot attach the adapter anywhere but
+            # a 3'-terminal A-tail, so the adapter itself carries the specificity
+            # that length would otherwise have to supply.  Unanchored runs keep
+            # the strict floor -- naked short A/T runs are common genomically.
+            _a_floor = (_MIN_ORIENTATION_TAIL_ANCHORED if trim_3p_pass > 0
+                        else _MIN_ORIENTATION_TAIL)
+            _t_floor = (_MIN_ORIENTATION_TAIL_ANCHORED if polyt_start > 0
+                        else _MIN_ORIENTATION_TAIL)
+            _has_a = trim_3p_polya  >= _a_floor
+            _has_t = len(saved_5p_seq) >= _t_floor
             if _has_a and _has_t:
                 orientation = 'B'          # both tails — resolved as sense downstream
             elif _has_t:
@@ -540,8 +576,28 @@ def trim_cdna_fastq_polya(
             if orientation != 'U':
                 stats['orientation'][orientation] += 1
 
-            # Write trimmed read (bare UUID as read name + the orientation tag)
-            out_fh.write(f'@{bare_id}\tro:A:{orientation}\n{seq}\n+\n{quals}\n')
+            # Tail length to carry downstream, in the read's own orientation:
+            # sense reads carry the 3' poly-A, antisense reads the 5' poly-T.
+            # 'B' (both tails) is resolved as sense downstream, so it reports the
+            # poly-A for consistency with that resolution.
+            if orientation in ('S', 'B'):
+                tail_len = trim_3p_polya
+            elif orientation == 'A':
+                tail_len = len(saved_5p_seq)
+            else:
+                tail_len = 0
+            stats['tail_len_sum'] += tail_len
+            if tail_len > 0:
+                stats['tail_len_n'] += 1
+
+            # Write trimmed read: bare UUID + orientation tag + tail length.
+            # `minimap2 -y` copies both FASTQ comment fields into BAM aux fields,
+            # which is the ONLY way the tail survives -- it has just been trimmed
+            # off the sequence itself.
+            out_fh.write(
+                f'@{bare_id}\tro:A:{orientation}\t{_TAIL_LEN_TAG}:i:{tail_len}\n'
+                f'{seq}\n+\n{quals}\n'
+            )
 
             metadata_rows.append({
                 'read_id':            bare_id,
@@ -577,11 +633,13 @@ def trim_cdna_fastq_polya(
     logger.info(
         "trim_cdna_fastq_polya: total=%d trimmed_3p=%d trimmed_5p=%d untrimmed=%d "
         "pass0=%d pass1=%d pass2=%d | orientation sense=%d antisense=%d both=%d "
-        "unresolved=%d",
+        "unresolved=%d | tail pl:i n=%d mean=%.1f",
         stats['total'], stats['trimmed_3p'], stats['trimmed_5p'], stats['untrimmed'],
         stats['pass_counts'][0], stats['pass_counts'][1], stats['pass_counts'][2],
         stats['orientation']['S'], stats['orientation']['A'], stats['orientation']['B'],
         stats['total'] - sum(stats['orientation'].values()),
+        stats['tail_len_n'],
+        (stats['tail_len_sum'] / stats['tail_len_n']) if stats['tail_len_n'] else 0.0,
     )
     return stats
 
