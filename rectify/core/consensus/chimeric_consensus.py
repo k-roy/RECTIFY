@@ -956,6 +956,29 @@ def build_chimeric_read(
     out.cigar = cigar_tuples
     out.mapping_quality = template_read.mapping_quality
 
+    # 🔴 Carry the template's aux tags across. A fresh AlignedSegment starts with
+    # NO tags, so every per-read annotation upstream of alignment was being
+    # destroyed here -- verified empirically: a template carrying ro/pl/XO/XU
+    # yielded an output with none of them. That silently voids the ONT-cDNA
+    # protocol, whose strand resolution and tail length are carried ONLY as tags:
+    # `ro` (orientation) and `pl` (poly-A length) from `trim-cdna-polya`, and
+    # `XO`/`XY`/`XU` from `correct-cdna`. Losing `pl` is the worst case -- it does
+    # not yield a missing value, it yields a confident, plausible ZERO.
+    # Position/alignment-derived tags (NM, MD, AS, ms, nn, ts, cm, s1, s2, de,
+    # rl, SA, cs, cg) are DELIBERATELY excluded: the chimeric CIGAR and
+    # reference_start differ from the template's, so those would be stale.
+    _POSITIONAL_TAGS = frozenset((
+        'NM', 'MD', 'AS', 'XS', 'ms', 'nn', 'ts', 'cm', 's1', 's2',
+        'de', 'rl', 'SA', 'cs', 'cg', 'tp',
+    ))
+    for _name, _value, _vtype in template_read.get_tags(with_value_type=True):
+        if _name in _POSITIONAL_TAGS:
+            continue
+        try:
+            out.set_tag(_name, _value, value_type=_vtype)
+        except (TypeError, ValueError):
+            continue
+
     # Custom tags — lowercase second-letter to avoid colliding with the
     # cDNA pipeline's X[upper] tags (XU=UMI, XC=cluster_size, XA=tail_len,
     # XS=sense/antisense, XK=3' pre-trim length, XI=isoform_id, ...).

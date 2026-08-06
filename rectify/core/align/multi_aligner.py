@@ -271,17 +271,101 @@ def _load_fastq_umi_map(reads_path: str) -> Dict[str, str]:
     return umi_map
 
 
+def _load_fastq_comment_tag_map(reads_path: str) -> Dict[str, list]:
+    """Return QNAME -> [(tag, type, value), ...] for FASTQ-comment aux tags.
+
+    🔴 WHY THIS EXISTS. Only minimap2 is invoked with ``-y``; mapPacBio, gapmm2,
+    uLTRA and deSALT do not propagate FASTQ comments at all, and several actively
+    strip them (``_sanitize_mpb_fastq`` / ``_clean_fastq``). Measured on a real
+    ONT-cDNA library (planning/561, 140,000-record consensus):
+
+        winner      share     pl/ro present
+        mapPacBio   48.4%     0.00%
+        minimap2    40.9%     100.00%
+        gapmm2      10.6%     0.00%
+        ALL                   40.94%
+
+    So on the DEFAULT 3-aligner panel **59% of records lost both ``pl`` (poly-A
+    tail length) and ``ro`` (read orientation)** -- and losing ``ro`` means
+    ``correct --ONT-cDNA`` cannot resolve per-read RNA strand, i.e. it silently
+    corrupts strand assignment, not merely tail length.
+
+    Restoring here -- inside ``_inject_rn_into_bam``, which already runs on EVERY
+    aligner's BAM -- fixes every aligner and every combination at one choke point,
+    rather than chasing per-aligner comment flags that may not exist.
+    """
+    from rectify.core.chunking.sidecar import split_fastq_header
+
+    opener = gzip.open if str(reads_path).endswith('.gz') else open
+    out: Dict[str, list] = {}
+    with opener(reads_path, 'rt') as fh:
+        while True:
+            header = fh.readline()
+            if not header:
+                break
+            fh.readline(); fh.readline(); fh.readline()
+            if not header.startswith('@'):
+                continue
+            qname, comment = split_fastq_header(header)
+            if not comment:
+                continue
+            tags = []
+            for tok in comment.replace(' ', '\t').split('\t'):
+                bits = tok.split(':')
+                # SAM aux syntax TAG:TYPE:VALUE. Skip RN -- it is injected
+                # separately and authoritatively below.
+                if len(bits) < 3 or len(bits[0]) != 2 or bits[0] == 'RN':
+                    continue
+                tag, typ, val = bits[0], bits[1], ':'.join(bits[2:])
+                if typ == 'i':
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        continue
+                elif typ == 'f':
+                    try:
+                        val = float(val)
+                    except ValueError:
+                        continue
+                elif typ not in ('Z', 'A'):
+                    continue
+                tags.append((tag, typ, val))
+            if tags:
+                out[qname[:254]] = tags
+    return out
+
+
 def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
-                        qname_to_umi: Optional[Mapping[str, str]] = None) -> int:
+                        qname_to_umi: Optional[Mapping[str, str]] = None,
+                        qname_to_tags: Optional[Mapping[str, list]] = None,
+                        reads_path: Optional[str] = None) -> int:
     """Stream-rewrite a BAM, adding ``RN:i`` (and optionally ``RX:Z`` UMI) per QNAME.
 
     ``qname_to_umi``, when supplied, attaches the SAM-standard raw-UMI tag
     ``RX:Z`` to every record whose QNAME is in the map -- so BOTH mates of a pair
     receive the fragment's UMI (the UMI identifies the fragment, not one read).
     Passing an empty/None UMI map preserves the original RN-only behaviour exactly.
+
+    ``qname_to_tags`` restores FASTQ-comment aux tags (``ro``, ``pl``, ``XU``,
+    ``XO``, …) on aligners that do not propagate comments. Existing tags are NEVER
+    overwritten -- an aligner that DID propagate (minimap2 ``-y``) stays
+    authoritative, so this is a pure gap-filler and a no-op on that path.
     """
+    # Build the comment-tag map here rather than at each call site: there are a
+    # dozen callers, and requiring each to pass it is precisely the copy-paste
+    # pattern that let the ONT-cDNA pre-trim exist in one run-all entry point and
+    # not the other. One choke point, every aligner, no per-caller drift.
+    if qname_to_tags is None and reads_path:
+        try:
+            qname_to_tags = _load_fastq_comment_tag_map(str(reads_path))
+        except Exception as exc:                      # never fail an alignment over this
+            logger.warning("[%s] comment-tag map unavailable (%s); "
+                           "FASTQ-comment tags will not be restored", bam_path, exc)
+            qname_to_tags = None
+
     has_umi = bool(qname_to_umi)
-    if not qname_to_rn and not has_umi:
+    has_tags = bool(qname_to_tags)
+    if not qname_to_rn and not has_umi and not has_tags:
         return 0
     import pysam
     from rectify.core.consensus.consensus import _normalize_bam_read_name
@@ -291,6 +375,7 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
     n_tagged = 0
     n_missing = 0
     n_umi_tagged = 0
+    n_tag_restored = 0
     with pysam.AlignmentFile(str(src), 'rb') as bam_in, \
          pysam.AlignmentFile(str(tmp), 'wb', header=bam_in.header) as bam_out:
         for read in bam_in:
@@ -306,8 +391,21 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
                 if umi:
                     read.set_tag('RX', umi, value_type='Z')
                     n_umi_tagged += 1
+            if has_tags:
+                for _tag, _typ, _val in qname_to_tags.get(qn, ()):
+                    # Never overwrite: an aligner that propagated the comment
+                    # itself (minimap2 -y) is authoritative.
+                    if read.has_tag(_tag):
+                        continue
+                    try:
+                        read.set_tag(_tag, _val, value_type=_typ)
+                        n_tag_restored += 1
+                    except (TypeError, ValueError):
+                        continue
             bam_out.write(read)
     tmp.replace(src)
+    if has_tags:
+        logger.info("[%s] FASTQ-comment tag restore: %d tags added", bam_path, n_tag_restored)
     if n_missing and qname_to_rn:
         logger.warning(
             "[%s] RN injection: %d/%d records had no QNAME->RN mapping",
@@ -566,7 +664,7 @@ def run_minimap2(
     logger.info(f"minimap2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'minimap2')
     qname_to_rn = _load_fastq_rn_map(str(reads_path))
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -1026,7 +1124,7 @@ def run_map_pacbio(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("mapPacBio complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(actual_reads_path), 'mapPacBio')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(actual_reads_path))
     return str(output_bam)
 
 
@@ -1163,7 +1261,7 @@ def run_bbmap(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bbmap complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bbmap')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -1278,7 +1376,7 @@ def run_bwa_mem(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info("bwa mem complete: %s", output_bam)
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'bwa')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -1515,7 +1613,7 @@ def _finalize_short_read_bam(output_bam: Path, genome_path: str, reads_r1: str,
     """
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     validate_post_alignment_qnames(str(output_bam), str(reads_r1), aligner_name)
-    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, qname_to_umi, reads_path=str(reads_r1))
     logger.info("%s complete: %s", aligner_name, output_bam)
     return str(output_bam)
 
@@ -2010,7 +2108,7 @@ def run_gapmm2(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"gapmm2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'gapmm2')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -2153,7 +2251,7 @@ def run_winnowmap2(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"winnowmap2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'winnowmap2')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -2301,7 +2399,7 @@ def run_minisplice_mm2(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"minisplice_mm2 complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'minisplice_mm2')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -2719,7 +2817,7 @@ def run_ultra(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"uLTRA complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'uLTRA')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -2941,7 +3039,7 @@ def run_desalt(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"deSALT complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'deSALT')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
@@ -3099,7 +3197,7 @@ def run_gmap(
     _apply_calmd_eq(output_bam, genome_path, threads=threads)
     logger.info(f"GMAP complete: {output_bam}")
     validate_post_alignment_qnames(str(output_bam), str(reads_path), 'gmap')
-    _inject_rn_into_bam(str(output_bam), qname_to_rn)
+    _inject_rn_into_bam(str(output_bam), qname_to_rn, reads_path=str(reads_path))
     return str(output_bam)
 
 
