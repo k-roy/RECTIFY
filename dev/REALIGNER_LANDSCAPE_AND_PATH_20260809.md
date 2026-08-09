@@ -93,6 +93,33 @@ disagreement discovery, non-canonical classes, relocations) while collapsing its
 cost to the flagged slice. The pre-registered `[[617]]` leave-one-out on CORRECTED output remains
 the formal adjudicator for removing it from the default panel — do not skip it.
 
+## 3b. Clarification (PI question, 2026-08-09): probe ≠ arbiter, and the trigger-power problem
+
+**Is the proposal "don't run mapPacBio on all reads — only on Station-C-flagged loci, as an
+arbiter"?** Half yes, with one correction and one honest weakness:
+
+- **Probe, not arbiter.** At a flagged locus mapPacBio GENERATES an alternative full-realignment
+  candidate; it never judges. The arbiter stays the evidence layer (hp_ed re-entry,
+  ambiguity-canonicalised scoring, recurrence/corroboration). An instrument whose beyond-minimap2
+  junction set is 98.1% junk cannot adjudicate anything — but its rare genuine disagreements
+  (SRC1: 112 reads) are exactly the candidates the arbiter needs to be SHOWN. Same asymmetry as
+  every station: proposal is cheap to forgive, judgment is not.
+- **The trigger-power problem (the weakness the question exposes).** The SRC1 class was DISCOVERED
+  via cross-family disagreement — i.e. using mapPacBio's panel-wide output. In the strong form
+  (mapPacBio never runs broadly), Station C loses its best trigger for the confident-but-wrong
+  class and must rely on mapPacBio-independent signals: minority distress, recurrent low-support
+  alternate placements, cross-sample recurrence, and a per-locus error-density anomaly (a spliced
+  read forced THROUGH a real intron should carry an error-dense segment). Plausible, unmeasured.
+- **The middle path — SCOUT MODE.** Run mapPacBio on a ~5–10% subsample (or only reads over loci
+  with any weak distress) purely as a trigger source. Fabrication is per-read random and does not
+  recur; genuine disagreement recurs at a locus — so locus-level trigger power survives
+  subsampling at ~5% of the compute (the same logic as the Sumner 5% genome-wide first pass).
+  Full-depth probe then runs only on flagged loci.
+- **The decision stays empirical:** the pre-registered `[[617]]` leave-one-out on CORRECTED output
+  decides whether mapPacBio's arm still contributes to the final product with resolver + triage in
+  place. Nothing → out of the consensus panel, retained as scout + probe. Something → it stays,
+  and Station C consumes its disagreements panel-wide.
+
 ## 4. The path (sequenced, falsifiable)
 
 1. **Land the resolver** (641/643 owns it): rebase `feat/overhang-resolver-641` onto the updated
