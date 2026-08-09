@@ -900,3 +900,182 @@ def _run_junction_aggregation(
         print(f"\nWarning: Junction aggregation failed: {e}", file=sys.stderr)
         print("Continuing without junction output...")
         return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Browser pack — the LAST step of run-all, and the only optional one
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Reads sampled per library for the QC pass. The selection is a hash on read_id,
+# so this is a target, not a cap on the file — see qc_command's SAMPLING note.
+_BROWSER_PACK_TARGET_READS = 200_000
+
+
+def add_browser_pack_args(parser) -> None:
+    """Attach ``--no-browser-pack`` to the ``run-all`` parser.
+
+    Called from ``rectify.cli.create_parser`` against the parser that
+    ``create_run_parser`` registered (that function does not return it).  A
+    ``None`` parser is tolerated so a rename of the subcommand degrades to a
+    missing flag rather than a CLI-wide crash.
+    """
+    if parser is None:
+        return
+    parser.add_argument(
+        '--no-browser-pack',
+        action='store_true',
+        default=False,
+        dest='no_browser_pack',
+        help='Skip the final browser-pack step (per-sample `rectify qc` + '
+             'analysis.json). The step is fail-soft and runs by default; use this '
+             'to save the QC BAM pass when the browser bundle is not wanted.',
+    )
+
+
+def _resolve_qc_bam(
+    sample_dir: Path,
+    sample_id: str,
+    fallback: Optional[Path] = None,
+) -> Optional[Path]:
+    """Pick the BAM whose geometry the QC block describes.
+
+    Preference order: the pre-correction multi-aligner BAM (its read lengths,
+    qualities and CIGARs are the alignment being characterised), then the final
+    rectified BAM, then whatever the caller had in hand.
+    """
+    for cand in (
+        _multialigned_bam_path(sample_id, sample_dir),
+        sample_dir / f"{sample_id}.rectified.bam",
+    ):
+        try:
+            if cand.exists() and cand.stat().st_size > 0:
+                return cand
+        except OSError:
+            continue
+    if fallback is not None:
+        try:
+            p = Path(fallback)
+            if p.exists() and p.suffix.lower() == '.bam' and p.stat().st_size > 0:
+                return p
+        except OSError:
+            pass
+    return None
+
+
+def _run_browser_pack(
+    analysis_dir: Path,
+    samples: List[Dict[str, object]],
+    args,
+    annotation_path: Optional[Path] = None,
+    modality: str = '',
+) -> Optional[Path]:
+    """Per-sample QC + pack ``analysis.json``.  Runs LAST; never fatal.
+
+    ``samples`` is a list of ``{'sample_id': str, 'bam': path|None,
+    'tsv': path|None}``.
+
+    🔴 FAIL-SOFT IS THE POINT.  A QC or packing failure must never fail a
+    12-hour ``run-all`` that already produced correct BAMs and tables, so every
+    step here is wrapped, the failure is printed loudly, and the function returns
+    ``None``.
+
+    Idempotent: a ``qc_<sample>.json`` that already exists and is non-empty is
+    reused, so a re-run regenerates ``analysis.json`` from what is on disk
+    without repeating the BAM pass.
+
+    Fail-open: a sample missing its BAM or TSV is skipped, and ``analysis.json``
+    is still written with whatever sections are available — the packer renders a
+    missing section as "not computed", never as an empty table.
+
+    Returns the ``analysis.json`` path, or ``None`` on any failure/skip.
+    """
+    if getattr(args, 'no_browser_pack', False):
+        print("\n[browser-pack] skipped (--no-browser-pack)")
+        return None
+
+    try:
+        import json as _json
+
+        analysis_dir = Path(analysis_dir)
+        qc_dir = analysis_dir / 'qc'
+        qc_dir.mkdir(parents=True, exist_ok=True)
+
+        print("\n[browser-pack] Per-library QC + analysis.json ...")
+        print("-" * 50)
+
+        # Protein-coding gene set (genes with >=1 CDS), derived once and shared.
+        coding = None
+        if annotation_path:
+            try:
+                from ..qc_command import coding_genes_from_gff
+                _sfx = [s.lower() for s in Path(annotation_path).suffixes]
+                if any(s in ('.gff', '.gff3') for s in _sfx):
+                    coding = coding_genes_from_gff(annotation_path)
+                    print(f"  coding-gene set: {len(coding):,} genes with >=1 CDS")
+            except Exception as e:
+                print(f"  WARNING: coding-gene set unavailable ({e}); "
+                      f"the coding fraction will render as not computed",
+                      file=sys.stderr)
+                coding = None
+
+        for s in samples:
+            sid = str(s.get('sample_id') or '')
+            if not sid:
+                continue
+            out_json = qc_dir / f"qc_{sid}.json"
+            try:
+                if out_json.exists() and out_json.stat().st_size > 0:
+                    print(f"  [{sid}] QC already present — reusing {out_json.name}")
+                    continue
+                bam = s.get('bam')
+                tsv = s.get('tsv')
+                if not bam or not tsv or not Path(str(bam)).exists() \
+                        or not Path(str(tsv)).exists():
+                    print(f"  [{sid}] QC skipped — needs both a BAM and a corrected "
+                          f"TSV (bam={bam}, tsv={tsv})", file=sys.stderr)
+                    continue
+                from ..qc_command import compute_qc
+                block = compute_qc(
+                    bam_path=str(bam),
+                    tsv_path=str(tsv),
+                    sample=sid,
+                    modality=modality or '',
+                    coding=coding,
+                    target_reads=_BROWSER_PACK_TARGET_READS,
+                )
+                with open(out_json, 'w') as fh:
+                    _json.dump(block, fh, indent=1)
+                print(f"  [{sid}] QC -> {out_json.name}  "
+                      f"err={block['error']['rate_pct']}%  "
+                      f"N50={block['read_len']['n50']}")
+            except Exception as e:
+                print(f"  WARNING: QC failed for {sid} (non-fatal): {e}",
+                      file=sys.stderr)
+
+        from ..browser_pack_command import run_browser_pack
+        out_path = analysis_dir / 'analysis.json'
+        pack_args = argparse.Namespace(
+            qc_dir=str(qc_dir),
+            analyze_dir=str(analysis_dir),
+            gene_index=getattr(args, 'gene_index', None),
+            library_depth=str(analysis_dir / 'library_depth.json'),
+            samples=None,
+            pressure=None,
+            top_n=getattr(args, 'browser_pack_top_n', 400),
+            dataset=None,
+            modality=modality or '',
+            rectify_version=None,
+            out=str(out_path),
+        )
+        rc = run_browser_pack(pack_args)
+        if rc != 0 or not out_path.exists():
+            print("WARNING: browser pack produced no analysis.json (non-fatal)",
+                  file=sys.stderr)
+            return None
+        print(f"  Browser bundle: {out_path}")
+        return out_path
+
+    except Exception as e:
+        print(f"WARNING: browser pack failed (non-fatal, pipeline outputs are "
+              f"unaffected): {e}", file=sys.stderr)
+        return None

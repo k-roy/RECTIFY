@@ -19,7 +19,10 @@ from typing import Optional
 from .helpers import _resolve_reference_paths
 from .single_sample import _process_one_sample
 from .stages import (
+    _per_aligner_canonical_output,
     _readable_corrected_tsv,
+    _resolve_qc_bam,
+    _run_browser_pack,
 )
 
 
@@ -215,6 +218,34 @@ def _run_multi_sample(args) -> int:
     except Exception as e:
         print(f"ERROR: Combined analysis failed: {e}", file=sys.stderr)
         return 1
+
+    # ── Stage 3b: browser pack (LAST step; fail-soft) ────────────────────────
+    # Per-library QC + analysis.json, folded from the tables Stage 3 just wrote.
+    # Never fatal: a 12-hour run that already produced correct BAMs and tables
+    # must not fail here.
+    _bp_samples = []
+    for s in successful_samples:
+        _sid = s['sample_id']
+        _sdir = output_dir / _sid
+        # Correction may emit either the per-region manifest (the default since
+        # Commit B) or the flat TSV; `_per_aligner_canonical_output` resolves
+        # whichever exists. Stage 2 above hardcodes `corrected_reads.tsv`, which
+        # is simply absent on the manifest path.
+        _tsv = _per_aligner_canonical_output(_sdir)
+        _bp_samples.append({
+            'sample_id': _sid,
+            'bam': _resolve_qc_bam(_sdir, _sid,
+                                   Path(s.get('path') or s.get('bam_path') or '')),
+            'tsv': _tsv,
+        })
+    _run_browser_pack(
+        analysis_dir=combined_dir,
+        samples=_bp_samples,
+        args=args,
+        annotation_path=Path(annotation_path) if annotation_path else None,
+        modality=('DRS' if getattr(args, 'drs', False) else
+                  ('cDNA' if getattr(args, 'ONT_cDNA', False) else '')),
+    )
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)

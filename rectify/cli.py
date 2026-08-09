@@ -78,6 +78,18 @@ Citation:
     from .core.commands.analyze_command import create_analyze_parser
     create_analyze_parser(subparsers)
 
+    # =========================================================================
+    # qc command (per-library sequencing QC: N50, base quality, error rate)
+    # =========================================================================
+    from .core.commands.qc_command import create_qc_parser
+    create_qc_parser(subparsers)
+
+    # =========================================================================
+    # pack-browser command (fold analyze tables + qc blocks into analysis.json)
+    # =========================================================================
+    from .core.commands.browser_pack_command import create_browser_pack_parser
+    create_browser_pack_parser(subparsers)
+
     # export command (parser wired in rectify.core.commands.export_command)
     from .core.commands.export_command import create_export_parser
     create_export_parser(subparsers)
@@ -182,6 +194,14 @@ Citation:
     from .core.commands.run_command import create_run_parser
     create_run_parser(subparsers)
 
+    # --no-browser-pack opts out of the final `pack-browser` step of run-all.
+    # Registered here, against the parser create_run_parser just added, because
+    # that function does not return its parser and the flag belongs with the
+    # packer wiring rather than with the pipeline flags. Guarded so a rename of
+    # the subcommand degrades to "flag missing", never to a CLI-wide crash.
+    from .core.commands.run.stages import add_browser_pack_args
+    add_browser_pack_args(subparsers.choices.get('run-all'))
+
     from .core.commands.cma_command import create_cma_parser
     create_cma_parser(subparsers)
 
@@ -252,6 +272,12 @@ def _dispatch(args, parser):
     elif args.command == 'analyze':
         from .core.commands.analyze_command import run_analyze
         sys.exit(run_analyze(args))
+    elif args.command == 'qc':
+        from .core.commands.qc_command import run_qc
+        sys.exit(run_qc(args))
+    elif args.command == 'pack-browser':
+        from .core.commands.browser_pack_command import run_browser_pack
+        sys.exit(run_browser_pack(args))
     elif args.command == 'export':
         from .core.commands import export_command
         sys.exit(export_command.run(args))

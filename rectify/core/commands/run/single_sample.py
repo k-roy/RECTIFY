@@ -28,6 +28,7 @@ from .helpers import (
 )
 from .stages import (
     _run_alignment,
+    _run_browser_pack,
     _run_correction,
     _run_correction_per_aligner,
     _run_analysis,
@@ -840,6 +841,32 @@ def _run_single_sample(args) -> int:
     except Exception as e:
         print(f"ERROR in analysis step: {e}", file=sys.stderr)
         # Not fatal — correction output is still usable
+
+    # ── Browser pack (LAST step; fail-soft) ──────────────────────────────────
+    # Per-library QC + analysis.json, folded from the tables analyze just wrote.
+    # Placed here rather than at the very end of the function so a later
+    # optional stage (junction aggregation, DRS poly(A) restore) cannot cost the
+    # browser bundle; nothing downstream feeds the packer. work_dir == output_dir
+    # by this point on the scratch path too, so analysis.json lands durably.
+    # Derived locally rather than reusing ``sample_id``: that name is only bound
+    # on the FASTQ branches and by the (try-wrapped) sample-column block above,
+    # so referencing it here could raise NameError on a BAM input — in the one
+    # step that must never fail the run.
+    _bp_sample_id = (
+        input_path.stem.replace('.fastq', '').replace('.gz', '').replace('.bam', '')
+    )
+    _run_browser_pack(
+        analysis_dir=work_dir,
+        samples=[{
+            'sample_id': _bp_sample_id,
+            'bam': bam_to_correct,
+            'tsv': corrected_tsv,
+        }],
+        args=args,
+        annotation_path=annotation_path,
+        modality=('DRS' if drs_mode else
+                  ('cDNA' if getattr(args, 'ONT_cDNA', False) else '')),
+    )
 
     # ── Junction aggregation ─────────────────────────────────────────────────
     if genome_path and annotation_path:
