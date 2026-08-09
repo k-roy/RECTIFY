@@ -519,6 +519,28 @@ def _is_homopolymer_ref(seq: str, pos: int, min_run: int = 3) -> bool:
     return (right - left) >= min_run
 
 
+def _homopolymer_run_len(seq: str, pos: int) -> Tuple[int, str]:
+    """Length of the homopolymer run covering position *pos*, and its base.
+
+    Returns ``(run_len, base)``; ``(0, '')`` if *pos* is out of range or the base
+    is N. Used by the C1 length-law gap cost to look up the empirical per-(run
+    length, base) deletion/insertion penalty. Shares the scan logic with
+    ``_is_homopolymer_ref`` but returns the LENGTH (the load-bearing quantity for
+    the penalty table) rather than a >= min_run boolean."""
+    if pos < 0 or pos >= len(seq):
+        return 0, ""
+    base = seq[pos].upper()
+    if base == 'N':
+        return 0, ""
+    left = pos
+    while left > 0 and seq[left - 1].upper() == base:
+        left -= 1
+    right = pos + 1
+    while right < len(seq) and seq[right].upper() == base:
+        right += 1
+    return right - left, base
+
+
 def align_exon_block_global(
     query: str,
     ref: str,
@@ -526,6 +548,9 @@ def align_exon_block_global(
     ref_offset: int = 0,
     homo_mismatch: float = -2.0,
     min_run: int = 3,
+    penalty_table=None,
+    lam: float = 1.0,
+    ins_lengthlaw: bool = False,
 ) -> List[Tuple[int, int]]:
     """
     Global (Needleman-Wunsch) affine-gap alignment with homopolymer-aware scoring.
@@ -594,6 +619,34 @@ def align_exon_block_global(
     else:
         homo_mask = [False] * R
 
+    # C1 length-law gap-OPEN deltas (added to gap_open at HP-mask ref positions
+    # only; penalty_table is any object exposing del_open_delta(hp, base, lam) /
+    # ins_open_delta(...). penalty_table=None => all-zero => byte-identical to the
+    # legacy DP, the Cat3 / junction-rescue regression guard). The delta is
+    # POSITIVE in longer runs (rate rises with hp) => the gap-open is less
+    # negative => the DP prefers the in-run deletion over out-of-run misplacement.
+    #
+    # INSERTION discount is GATED OFF by default (ins_lengthlaw=False): the real-SIRV
+    # over-call ablation (c1_real_sirv_ablation.py) showed it HALLUCINATES indels —
+    # a cheap insertion lets the DP rewrite a length-preserving substitution as a
+    # spurious D+I (3-7% over-call on sub-only windows, vs 0% for the deletion-only
+    # law, replicated on LRGASP + SG-NEx real SIRV). The deletion law is safe (0%).
+    # Re-enable ins only once it is independently validated (the injection-simulator
+    # Claim B; see dev/C1_DESIGN.md). The generator injects deletions only anyway.
+    del_open_d = [0.0] * R
+    ins_open_d = [0.0] * R
+    if penalty_table is not None and chrom_ref:
+        rseq = chrom_ref
+        for j in range(R):
+            if not homo_mask[j]:
+                continue
+            run_len, base = _homopolymer_run_len(rseq, ref_offset + j)
+            if run_len <= 0:
+                continue
+            del_open_d[j] = penalty_table.del_open_delta(run_len, base, lam)
+            if ins_lengthlaw:
+                ins_open_d[j] = penalty_table.ins_open_delta(run_len, base, lam)
+
     # Main DP
     for i in range(1, Q + 1):
         qi = query[i - 1].upper()
@@ -621,10 +674,12 @@ def align_exon_block_global(
                 else:
                     tbH[i][j] = _TBH_I
 
-            # D: deletion (gap in query, reference consumed)
+            # D: deletion (gap in query, reference consumed). The length-law delta
+            # adjusts the OPEN cost only (paid once per gap), gated on ref[j-1]'s
+            # HP context; extend stays flat (continuation is a separate axis).
             h_prev = H[i][j-1]
             d_prev = D[i][j-1]
-            d_open   = (h_prev + _GAP_OPEN + _GAP_EXTEND) if h_prev != _NEG_INF else _NEG_INF
+            d_open   = (h_prev + _GAP_OPEN + _GAP_EXTEND + del_open_d[j-1]) if h_prev != _NEG_INF else _NEG_INF
             d_extend = (d_prev + _GAP_EXTEND)              if d_prev != _NEG_INF else _NEG_INF
             if d_open >= d_extend:
                 D[i][j] = d_open
@@ -633,10 +688,12 @@ def align_exon_block_global(
                 D[i][j] = d_extend
                 tbD[i][j] = _TBX_EXTEND
 
-            # I: insertion (gap in reference, query consumed)
+            # I: insertion (gap in reference, query consumed). Length-law delta on
+            # OPEN only, using the HP context of the preceding ref base (j-1).
             h_prev2 = H[i-1][j]
             i_prev  = I_[i-1][j]
-            i_open   = (h_prev2 + _GAP_OPEN + _GAP_EXTEND) if h_prev2 != _NEG_INF else _NEG_INF
+            i_delta = ins_open_d[j-1] if j >= 1 else 0.0
+            i_open   = (h_prev2 + _GAP_OPEN + _GAP_EXTEND + i_delta) if h_prev2 != _NEG_INF else _NEG_INF
             i_extend = (i_prev  + _GAP_EXTEND)              if i_prev  != _NEG_INF else _NEG_INF
             if i_open >= i_extend:
                 I_[i][j] = i_open

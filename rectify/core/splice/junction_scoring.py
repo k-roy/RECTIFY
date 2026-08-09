@@ -37,10 +37,83 @@ from .hp_penalty import (
     _NUMBA_AVAILABLE,
     _hp_run_length,
     _precompute_del_costs,
+    _precompute_refcol_ins_costs,
     _score_hp_dp_numba,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# EXPERIMENTAL FLAG — full-run (cut-independent) insertion cost
+# ---------------------------------------------------------------------------
+# When True, _score_junction precomputes per-position insertion costs ONCE on the
+# FULL rescue window (using each base's homopolymer run length measured over the
+# whole rescue substring) and threads them, cut-INDEPENDENTLY, into every per-k
+# _score_hp_anchored call — analogous to how del_costs_fwd/rev are already
+# precomputed on the fixed reference windows.
+#
+# Default False -> byte-identical to the legacy per-cut behaviour (ins_costs are
+# recomputed on the per-k TRUNCATED substring inside _score_hp_anchored). See
+# dev/INSCOST_INVESTIGATION.md for the fabrication witness, call-change rate, and
+# guard-interaction analysis. The env var lets a subprocess opt in with a fresh
+# fork (so a reused worker pool cannot silently retain the old value).
+_USE_FULL_RUN_INS: bool = os.environ.get("RECTIFY_FULL_RUN_INS", "") == "1"
+
+
+# ---------------------------------------------------------------------------
+# EXPERIMENTAL FLAG — reference-column (cut-independent) insertion cost
+# ---------------------------------------------------------------------------
+# When True, _score_junction precomputes per-GAP insertion costs ONCE on the two
+# FIXED reference windows (exon2-start and intron-end) using the GENOME/REFERENCE
+# homopolymer run length at each aligned column — exactly mirroring how
+# _precompute_del_costs already indexes DELETION cost by the genome HP run. An
+# insertion aligns to NO reference base, so its cost is charged against the
+# reference context at the DP COLUMN (gap) where the insertion fires:
+# hp_len = max(run(genome[gp-1]), run(genome[gp])) — the same axis the penalty
+# table was CALIBRATED on (profiler Phase 5, empirical_cigar_error_profiler.py).
+#
+# This makes the ins-cost vector length R+1 (one per DP gap, not per query base),
+# a function of the fixed reference window + absolute genome position ONLY — so it
+# is computed ONCE outside the k-loop and passed UNCHANGED to every k (no slicing).
+# That is the cut-independence proof (stronger than full-run, which had to slice a
+# query-indexed vector). Like full-run it unlocks the single-pass concat DP, but it
+# charges the over-call against the run the read aligns TO (the genome), not the
+# read's own possibly-over-called run — the physically/calibration-correct axis.
+#
+# Default False -> byte-identical to the legacy per-cut behaviour. Refcol takes
+# PRECEDENCE over _USE_FULL_RUN_INS when both are set (mutually exclusive semantics;
+# they index different axes). See dev/INSCOST_REFCOL_BUILD.md and
+# dev/INSCOST_AUDIT_model-correctness.md (KEY FINDING #3, the reference-column axis).
+_USE_REFCOL_INS: bool = os.environ.get("RECTIFY_REFCOL_INS", "") == "1"
+
+
+# ---------------------------------------------------------------------------
+# PERF FLAG — vectorized (concat) DP for the table-free re-placer
+# ---------------------------------------------------------------------------
+# _score_junction's bilateral k-sweep does up to 2L (~60) _score_hp_anchored DP
+# calls per candidate. When penalty_table is None the insertion cost is flat, so
+# the per-cut ins truncation that blocks the general concat DP does NOT exist —
+# ALL t1(k) and ALL t2(k) collapse into ONE vectorized DP pass each (the query-
+# suffix reversal trick in _all_suffix_scores), reproducing min_k[t1(k)+t2(k)]
+# EXACTLY. ~14x fewer cell-ops, verified byte-identical (8000/8000, table=None).
+# GATED strictly on penalty_table is None (the flat-ins path) — the ONLY config
+# where the fast path is provably identical (MECH2 per-cut ins vanishes; costs are
+# exactly float-representable so MECH3 FP tolerance vanishes; MECH1 boundary is
+# handled by k in [0,L)). The shipped native re-aligner (motif-blind + guard) runs
+# table-free, so this covers it. Default False. See dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
+_USE_CONCAT_DP: bool = os.environ.get("RECTIFY_CONCAT_DP", "1") != "0"  # DEFAULT ON (2026-07-09); RECTIFY_CONCAT_DP=0 forces legacy (A/B)
+
+# Flat (penalty_table=None) DP cost constants — the SINGLE source of truth shared by
+# _score_hp_anchored and the vectorized _all_suffix_scores fast path. Byte-identity of
+# the _USE_CONCAT_DP fast path depends on both using IDENTICAL flat costs; factoring
+# them here prevents a future retune of one path from silently breaking identity
+# (auditor recommendation, dev/CONCAT_DP_TABLEFREE_AUDIT.md). All dyadic (exactly
+# float-representable) — the basis of the 0-ULP guarantee.
+_FLAT_SUB: float = float(os.environ.get("RECTIFY_FLAT_SUB", "1.0"))
+_FLAT_DEL_NORMAL: float = float(os.environ.get("RECTIFY_FLAT_DEL_NORMAL", "1.0"))
+_FLAT_DEL_HP: float = float(os.environ.get("RECTIFY_FLAT_DEL_HP", "0.5"))
+_FLAT_INS: float = float(os.environ.get("RECTIFY_FLAT_INS", "1.25"))
 
 
 # ---------------------------------------------------------------------------
@@ -693,16 +766,18 @@ def _candidates_near(
 def _score_hp_anchored(
     query: str,
     ref: str,
-    sub: float = 1.0,
-    del_normal: float = 1.0,
-    del_hp: float = 0.5,
-    ins: float = 1.25,
+    sub: float = _FLAT_SUB,
+    del_normal: float = _FLAT_DEL_NORMAL,
+    del_hp: float = _FLAT_DEL_HP,
+    ins: float = _FLAT_INS,
     hp_min_run: int = 4,
     penalty_table: Optional[HpPenaltyTable] = None,
     genome_seq: Optional[str] = None,
     ref_genome_start: int = 0,
     ref_genome_rev: bool = False,
     precomputed_del_costs: Optional[List[float]] = None,
+    precomputed_ins_costs: Optional[List[float]] = None,
+    precomputed_refcol_ins: Optional[List[float]] = None,
 ) -> float:
     """Left-anchored HP-aware semi-global alignment.
 
@@ -744,6 +819,14 @@ def _score_hp_anchored(
     if Q == 0:
         return 0.0
     if R == 0:
+        # No ref to match: every query base is an insertion.
+        # Reference-column (experimental): the single gap-0 cost (no ref context)
+        # applies to every inserted base — cut-independent by construction.
+        if precomputed_refcol_ins is not None:
+            return float(Q * precomputed_refcol_ins[0])
+        # Full-run (experimental): caller supplies cut-independent per-query costs.
+        if precomputed_ins_costs is not None:
+            return float(sum(precomputed_ins_costs))
         if penalty_table is not None:
             return Q * penalty_table.ins_cost(1, query[0] if Q > 0 else 'A')
         return Q * ins  # all insertions, no ref to match
@@ -763,8 +846,44 @@ def _score_hp_anchored(
     # Insertion cost: use table lookup for first query base HP context when table provided.
     # For the DP, we need per-query-position ins cost; we approximate using the HP
     # context of each query base.
-    if penalty_table is not None:
-        ins_costs: List[float] = [
+    #
+    # Callers may supply precomputed_ins_costs (already aligned to this call's query
+    # positions) to make the ins cost cut-INDEPENDENT — i.e. measured on the full
+    # rescue run rather than the per-k truncated substring. This is the experimental
+    # full-run path (see _USE_FULL_RUN_INS); when None, fall back to the legacy
+    # per-substring HP-run lookup.
+    #
+    # Reference-column (experimental) path: precomputed_refcol_ins is a length-(R+1)
+    # vector indexed by DP GAP/column (genome HP context at that column), NOT by
+    # query position. It changes the insertion transition to charge the cost of the
+    # COLUMN where the insertion fires. This is the calibration-correct axis; it must
+    # take the pure-Python branch because the numba kernel expects a length-Q,
+    # query-indexed ins vector (feeding a length-(R+1) array would be mis-indexed).
+    if precomputed_refcol_ins is not None:
+        ins_col = precomputed_refcol_ins  # length R+1, indexed by gap/column j
+        INF = float('inf')
+        prev = [INF] * (R + 1)
+        prev[0] = 0.0
+        for j in range(1, R + 1):
+            prev[j] = prev[j - 1] + del_costs[j - 1]  # leading ref deletions
+        for i in range(1, Q + 1):
+            curr = [INF] * (R + 1)
+            curr[0] = i * ins_col[0]  # i insertions at gap 0 (before ref[0])
+            qi = query[i - 1].upper()
+            for j in range(1, R + 1):
+                cost_sub = 0.0 if qi == ref[j - 1].upper() else sub
+                diag  = prev[j - 1] + cost_sub          # match / mismatch
+                above = prev[j]     + ins_col[j]        # insertion at column j
+                left  = curr[j - 1] + del_costs[j - 1]  # deletion (ref base, no query)
+                curr[j] = min(diag, above, left)
+            prev = curr
+        return min(prev)  # free right suffix: best end column over all j in [0, R]
+
+    ins_costs: List[float]
+    if precomputed_ins_costs is not None:
+        ins_costs = precomputed_ins_costs
+    elif penalty_table is not None:
+        ins_costs = [
             penalty_table.ins_cost(_hp_run_length(query, i), query[i]) for i in range(Q)
         ]
     else:
@@ -798,6 +917,63 @@ def _score_hp_anchored(
         prev = curr
 
     return min(prev)  # free right suffix: best end column over all j in [0, R]
+
+
+# ---------------------------------------------------------------------------
+# Vectorized table-free DP: ALL query-suffix scores in one pass (perf fast path)
+# ---------------------------------------------------------------------------
+
+def _all_suffix_scores(
+    query: str,
+    ref: str,
+    del_costs: List[float],
+    ins: float = _FLAT_INS,
+    sub: float = _FLAT_SUB,
+) -> List[float]:
+    """Return ``[score(query[k:], ref) for k in range(len(query)+1)]`` for the
+    flat-insertion (penalty_table=None) DP of :func:`_score_hp_anchored`, computed
+    in a SINGLE O(len(query)*len(ref)) pass instead of ``len(query)`` separate DPs.
+
+    ``score(query[k:], ref)`` = query-global (every base of ``query[k:]`` consumed)
+    + ref left end deletable at ``del_costs`` + ref right suffix free (``min`` over
+    the end column) — identical to ``_score_hp_anchored(query[k:], ref, ...)`` when
+    ``penalty_table`` is None so insertion cost is the flat ``ins``.
+
+    Reversal trick: ``score(query[k:], ref)`` over the reversed sequences becomes a
+    query-PREFIX-length-(L-k) alignment with the ref right end anchored (col R) and
+    the ref left prefix free, so ONE forward DP over ``reverse(query)`` vs
+    ``reverse(ref)`` exposes every ``k`` at row ``L-k``, column ``R``. Verified
+    byte-identical to the per-``k`` reference (dev/concat_dp_prototype.py, 0/3000).
+    """
+    L, R = len(query), len(ref)
+    out: List[float] = [None] * (L + 1)  # type: ignore[list-item]
+    if L == 0:
+        return [0.0]
+    if R == 0:
+        # all-insertion: score(query[k:], "") = (L-k)*ins
+        return [(L - k) * ins for k in range(L + 1)]
+    rq = query[::-1]
+    rr = ref[::-1]
+    dc = del_costs[::-1]  # del_costs[j] indexes ref[j]; reversed to align with rr
+    INF = float("inf")
+    # Row m=0: reverse(query)[:0] empty -> free ref left-prefix skip = 0 at every col.
+    prev = [0.0] * (R + 1)
+    out[L] = prev[R]  # k = L: empty query suffix -> score 0
+    for m in range(1, L + 1):
+        curr = [INF] * (R + 1)
+        curr[0] = m * ins  # m query bases inserted, no ref consumed
+        qm = rq[m - 1].upper()
+        for j in range(1, R + 1):
+            cost_sub = 0.0 if qm == rr[j - 1].upper() else sub
+            diag = prev[j - 1] + cost_sub
+            above = prev[j] + ins
+            left = curr[j - 1] + dc[j - 1]
+            curr[j] = diag if diag < above else above
+            if left < curr[j]:
+                curr[j] = left
+        prev = curr
+        out[L - m] = prev[R]  # score(query[(L-m):], ref)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -896,6 +1072,52 @@ def _score_junction(
     if profile is not None:
         profile.add_time('score_junction_del_costs', time.perf_counter() - _t_delcosts)
 
+    # PERF FAST PATH (table-free only): with penalty_table None the insertion cost is
+    # flat, so ALL t1(k) and ALL t2(k) collapse into two vectorized DP passes that
+    # reproduce min_k[t1(k)+t2(k)] EXACTLY (~14x fewer cell-ops). Strictly gated on
+    # penalty_table is None — the only config where flat ins makes the fast path
+    # provably byte-identical. See _USE_CONCAT_DP / dev/PERF_PIVOT_TABLEFREE_CONCAT.md.
+    if _USE_CONCAT_DP and penalty_table is None:
+        t1_vec = _all_suffix_scores(rescue, ref_exon2_start, del_costs_fwd)
+        t2_vec = _all_suffix_scores(rescue[::-1], ref_intron_end_rev, del_costs_rev)
+        best = float("inf")
+        for k in range(L):
+            # t2(k) = score(reverse(rescue[:k]), ref_intron_end_rev)
+            #       = score(reverse(rescue)[L-k:], ...) = t2_vec[L-k]; t2(0)=0.
+            s = t1_vec[k] + (0.0 if k == 0 else t2_vec[L - k])
+            if s < best:
+                best = s
+                if best == 0.0:
+                    break
+        if profile is not None:
+            profile.add_time('score_junction_total', time.perf_counter() - _t_total)
+        return best, 0
+
+    # Full-run (cut-independent) insertion costs — experimental. Precompute ONCE on
+    # the FULL rescue window using each base's homopolymer run measured over the
+    # whole rescue substring, then slice per-k (analogous to how the query itself is
+    # sliced) so a homopolymer straddling the cut is charged at its FULL run length
+    # regardless of where the k-cut falls. Only active with a penalty_table (the
+    # flat-ins path is already cut-independent). See _USE_FULL_RUN_INS.
+    full_ins_costs: Optional[List[float]] = None
+    # Reference-column (cut-independent) insertion costs — experimental, PRECEDENCE
+    # over full-run. Indexed by DP column (genome HP context at each aligned gap),
+    # computed ONCE on the two fixed reference windows and reused UNCHANGED across
+    # all k (never sliced) — the cut-independence proof. Mirrors del_costs_fwd/rev.
+    refcol_ins_fwd: Optional[List[float]] = None   # length len(ref_exon2_start)+1
+    refcol_ins_rev: Optional[List[float]] = None   # length len(ref_intron_end_rev)+1
+    if _USE_REFCOL_INS and penalty_table is not None:
+        refcol_ins_fwd = _precompute_refcol_ins_costs(
+            ref_exon2_start, genome_seq, intron_end, False, penalty_table,
+        )
+        refcol_ins_rev = _precompute_refcol_ins_costs(
+            ref_intron_end_rev, genome_seq, intron_end - 1, True, penalty_table,
+        )
+    elif _USE_FULL_RUN_INS and penalty_table is not None:
+        full_ins_costs = [
+            penalty_table.ins_cost(_hp_run_length(rescue, j), rescue[j]) for j in range(L)
+        ]
+
     best_score = float("inf")
 
     for k in range(L):
@@ -908,6 +1130,8 @@ def _score_junction(
             q1, ref_exon2_start, penalty_table=penalty_table,
             genome_seq=genome_seq, ref_genome_start=intron_end,
             precomputed_del_costs=del_costs_fwd,
+            precomputed_ins_costs=(full_ins_costs[k:] if full_ins_costs is not None else None),
+            precomputed_refcol_ins=refcol_ins_fwd,  # cut-independent: passed unchanged
         )
         if profile is not None:
             profile.inc('score_hp_anchored_t1_calls')
@@ -922,6 +1146,8 @@ def _score_junction(
                 genome_seq=genome_seq, ref_genome_start=intron_end - 1,
                 ref_genome_rev=True,
                 precomputed_del_costs=del_costs_rev,
+                precomputed_ins_costs=(full_ins_costs[:k][::-1] if full_ins_costs is not None else None),
+                precomputed_refcol_ins=refcol_ins_rev,  # cut-independent: passed unchanged
             )
             if profile is not None:
                 profile.inc('score_hp_anchored_t2_calls')

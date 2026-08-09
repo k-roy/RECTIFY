@@ -64,6 +64,33 @@ SLURM bans accounts that spawn more processes than allocated CPUs.
 numpy/sklearn/pydeseq2 import. **MUST** set `LOKY_MAX_CPU_COUNT` (loky
 ignores `JOBLIB_WORKERS`).
 
+### Vet alignments at the INDIVIDUAL-READ level at EVERY pipeline stage
+
+**Never trust a summary metric (junction counts, recall %, "fabrication" rate)
+until you have looked at the actual per-read alignments that produced it — CIGAR
+by CIGAR, ideally in a genome browser AND as single-read both-flank pictures.**
+Summary numbers are computed from coordinates (e.g. N-op boundaries), and a
+coordinate can be wrong in ways that *look* like signal. Concretely (2026-07):
+a "27% fabrication / 32× recall" story survived months of guard-building and an
+8-reviewer audit, yet a single afternoon of reading individual alignments showed
+~85–95% of it was a **CIGAR-bookkeeping artifact** — the refiner slid a junction
+*coordinate* with a compensating insertion+deletion pair while the read's actual
+exon sequence never moved. The metric (N-op coordinate) and the elaborate guard
+built to suppress it were both fooled by the same padding. A one-line invariant
+("a junction edit must not raise the read's indel burden") fixed it and dissolved
+the guard's entire premise.
+
+Practical rules:
+- When a stage reports a suspicious/large effect, **pull the specific reads and
+  render them** (`get_aligned_pairs(with_seq=True)`, both flanks, N/D op lengths;
+  reconstruct reference from MD tags when no FASTA is handy) before believing it.
+- **Measure where the read SEQUENCE lands, not just where an op BOUNDARY sits** —
+  skip leading D / trailing I when deriving a "true" junction position.
+- Do this at *every* stage (align → correct → refine → consensus), not just the
+  end: an artifact injected early is laundered into a plausible summary downstream.
+- A clean control channel that behaves as expected is your proof the *metric* is
+  sound; use it to tell "real finding" from "computation bug."
+
 ---
 
 ## Coordinate conventions
