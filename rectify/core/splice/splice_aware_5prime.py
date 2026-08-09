@@ -1116,7 +1116,11 @@ def _terminal_peel_rescue(
     # narrows the set anyway, so distant junctions almost never win.
     _MAX_NEARBY_JUNCTIONS = 20
     if len(_nearby_with_dist) > _MAX_NEARBY_JUNCTIONS:
-        _nearby_with_dist.sort(key=lambda x: x[0])
+        # Coordinate is part of the key so equidistant candidates are cut
+        # reproducibly: the input order comes from iterating a SET, so a
+        # distance-only sort leaves the surviving slice PYTHONHASHSEED-dependent
+        # (planning/649).
+        _nearby_with_dist.sort(key=lambda x: (x[0], x[1][0], x[1][1], x[1][2]))
         _nearby_with_dist = _nearby_with_dist[:_MAX_NEARBY_JUNCTIONS]
     nearby_junctions: Set[Tuple] = {jd[1] for jd in _nearby_with_dist}
     max_edge_dist = max(jd[0] for jd in _nearby_with_dist)
@@ -1537,6 +1541,17 @@ def _rescue_3ss_truncation_body(
             _j[1] <= align_5prime + _nb_W_full and _j[2] >= align_5prime - _nb_W_full
         ):
             _OI_COUNTERS['candidates_skipped'] += 1
+
+    # Deterministic candidate order (planning/649).  ``candidate_junctions`` is a
+    # SET, so the iteration above inherits PYTHONHASHSEED — and equal-edit-distance
+    # candidates are resolved by ENCOUNTER order once the 4-level tiebreaker at the
+    # bottom of the loop runs out.  Measured: two runs of the same tree over the
+    # same BAM and pool differed in 3/474 corrected rows (all five_prime_rescued).
+    # Sorting by coordinate makes the winner reproducible and makes byte-identity
+    # gates (planning/596) meaningful; it also fixes the distance-cap slice below,
+    # whose ``sorted``/``sort`` are stable and therefore only as deterministic as
+    # their input order.
+    _nearby_junctions.sort(key=lambda _j: (_j[0], _j[1], _j[2]))
 
     # Cap to K closest junctions when the set is large.  On junction-dense loci
     # (human chr5 SMN1/SMN2) the proximity filter can still admit 50-200+ entries.
