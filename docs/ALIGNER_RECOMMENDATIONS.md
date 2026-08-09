@@ -3,6 +3,24 @@
 **Date**: 2026-03-10  
 **Updated**: 2026-06-14
 
+> 💰 **This page decides the panel on QUALITY. For what a panel COSTS — measured on real production
+> libraries — see [Compute and Storage Costs](COMPUTE_AND_STORAGE_COSTS.md).** Three findings there
+> bear directly on panel choice:
+>
+> 1. **`correct`, not alignment, is the pipeline — and `correct` runs once per aligner.** On a
+>    1.26 M-read production DRS library the *entire* align stage was **2.50 CPU-h** while `correct`'s
+>    minimap2 arm alone was **217.9 CPU-h**. **Alignment is 0.25–0.54% of the bill.** So the cost of
+>    adding an aligner is *its correction arm*, and those differ by **7×**
+>    (minimap2 1.00× · mapPacBio 1.24× · uLTRA 2.60× · deSALT 5.45× · **gapmm2 6.99×**).
+> 2. **The panel adds NO coverage.** Read-level, the union of all four aligners equals what minimap2
+>    aligns alone (33,923/33,923); **not one contributes a unique read**, and gapmm2's read set is a
+>    strict subset of minimap2's.
+> 3. **mapPacBio is 75.2% of the align stage** on DRS — not uLTRA/deSALT (13.3% combined).
+>
+> None of this overrides the panel decision made on this page — it sharpens what the panel is *for*.
+> The panel buys **arbitration between competing placements of the same reads**, which is exactly the
+> accuracy question this page settles. It does not buy reads, and it is not priced at the align stage.
+
 ---
 
 ## Production Aligner Panel

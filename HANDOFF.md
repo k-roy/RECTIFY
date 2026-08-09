@@ -1,3 +1,69 @@
+# HANDOFF — CMA compression (footprint reclaim + format core) — CURRENT 2026-07-23
+
+**Branch:** `drs-validation-rebuild` (SHARED). This session built the CMA toolchain + measured H2 reclaim.
+Full record: **`dev/CMA_PROGRESS.md`**. Older 2026-06-26 PR#3 handoff preserved below the divider.
+
+## Done
+- CMA format core `rectify/core/multialign/` + `rectify cma {build,expand,validate,verify}` + `align --emit-cma`.
+  Commits **`f60bc32`, `21849e7`, `3272248`**. 13 CMA tests pass. Surgical staging; additive-only.
+
+## Verified
+- BOTH deletion gates pass on the 36-read DRS fixture: PRIMARY (`select_best_alignment` identical winner+3′
+  end on expand(CMA) vs originals) + SECONDARY (field view, 18 reverse frames).
+- Reclaim completeness (raw-chunk-sum == merged, consensus present): decay samples **Dcp2_repA, Dcp2_repB,
+  WT_30_1_repA, WT_W303_control_repA = SAFE** so far.
+
+## Reclaim — ✅ COMPLETE 2026-07-23
+- Kevin approved spot-check → stage(mv) → purge. Spot-check PASSED (field-identity md5 match). All 9 SAFE
+  `aligner_chunks/` purged; run **187 GB → 89 GB (~98 GB reclaimed)**. Every sample's `merged_bams` +
+  `consensus/corrected_consensus.bam` + `junction_pool.pkl` verified INTACT post-purge. `Xrn1_repB_4aln`
+  (UNSAFE) untouched. Record: `dev/CMA_RECLAIM_LIST.md`; evidence H2 `~/m0_scratch/reclaim_{verify_all,spotcheck,purge}_*.txt`.
+
+## In-flight: SCOPING all-rectify reclaim — classification DONE, orphaned-chunk gate finishing
+- Aligner_chunks 5× lever LARGELY SPENT (decay reclaimed ~98 GB). Remaining space = DIFFERENT problem.
+- **Classified (H2 `~/m0_scratch/rectify_scope_20260723_1448.txt` + `rectify_scope2_*.txt`):**
+  `408d_plants` 129 GB = raw/ 69 GB **PRIMARY off-limits** + trim/ 42 GB + bam/ 16 GB (data-project, ASK);
+  `sy14_p5b_retired` 47 GB = 3 SRA runs, likely re-downloadable (ASK); `398l_quantseq` 29 GB bam/, `invitro_rnt1`
+  24 GB / `compare_pare`+`pare` 24 GB = mostly primary fastq. `/u/home`+`/u/project` have NO chunked-rectify layout.
+- **In-flight: orphaned `rectify_*` chunk gate** (job `b3cgoasbm` → `~/m0_scratch/rectify_scope2_*.txt`):
+  31 GB scattered per-chunk BAMs of DECAY samples; test = scattered reads ⊆ that sample's verified merged_bams.
+- Deliverable = safety-classified ledger. HARD LINE: no deletion of any NEW target without redundancy proof + Kevin's go.
+
+## PAUSED by Kevin ("Wait") 2026-07-23 — reclaim execution on hold. NOTHING deleted since the decay run.
+Full scope ledger committed: `dev/CMA_RECLAIM_SCOPE.md` (`c88dde5`). Two targets were approved then paused:
+
+- **`sy14_p5b_retired` (47 GB) — HANDS OFF: ANOTHER AGENT is moving it (Kevin, 2026-07-23).** Do NOT touch,
+  mv, or delete it — a concurrent agent owns that operation; racing it risks corrupting their move. (For the
+  record: my inspection showed it is a rectify short-read HISAT2 run = 36.9 GB regenerable BAMs + 12.9 GB derived
+  `.counts`/stats/reports, NOT bare re-downloadable SRA — so the original delete premise was wrong anyway.)
+- **Orphaned `rectify_*` scratch — ✅ RECLAIMED ~28 GB (2026-07-24).** QNAME-subset verify (all 15 pairs
+  `missing=0 SAFE=YES`; the earlier read-count `le=NO` was a false alarm = duplicate copies, not missing reads).
+  Completeness cross-check caught FOREIGN content in the `rectify_*` namespace → excluded 10 dirs (5 ysh1
+  single-runs, 3 empty, `rectify_bench`, **`rectify_deploy`**). Staged (mv→`_TRASH_orphan_rectify_20260724`)
+  the 397 verified-redundant dirs, confirmed decay merged_bams/consensus untouched + exclusions preserved, then
+  purged (rc=0). Evidence: `~/m0_scratch/{orphan_qname_verify2,orphan_safe_delete_dirs,orphan_purge_*}.txt`.
+
+## Reclaim tally this effort: ~98 GB (decay aligner_chunks) + ~28 GB (orphaned scratch) = ~126 GB.
+
+## Open / next (no in-flight reclaim; nothing staged)
+1. `sy14_p5b_retired` (47 GB): HANDS OFF — another agent owns it.
+2. Data-project intermediates (`plants/trim` 42 GB, `398l/bam` 29 GB) + regenerable decay chunk fastqs (~30 GB)
+   = Kevin's retention call; do NOT auto-delete. Primary fastq (~106 GB) = off-limits.
+3. CMA lever-A on retained `merged_bams` (2-aligner ~1.5–2×, small) — optional, via `rectify cma build`+`verify`.
+
+## Open / next
+- Further reclaim on OTHER runs (e.g. 5-aligner mex67aa-style, where CMA also compresses `merged_bams`):
+  `rectify cma build --aligner-bams <merged_bams>/*.bam --Scer --out X.cma.bam` → `rectify cma verify --cma
+  X.cma.bam --aligner-bams <same> --Scer` → PASS licenses deleting the originals by explicit list.
+- M4 destructive DAG rewrites (native per-aligner-copy deletion in split_command/chunked_batch) still DEFERRED
+  until the branch stabilizes (pending merge + 2 CRITICAL align_command bugs in AGENT_FIXES.md).
+
+## Files
+- `dev/CMA_PROGRESS.md`, `rectify/core/multialign/`, `rectify/core/commands/cma_command.py`,
+  `tests/test_cma_{drs_expand,command}.py`. H2: `~/m0_scratch/{footprint_sweep,reclaim_verify2,reclaim_verify_all}_*.txt`.
+
+---
+
 # HANDOFF — DRS validation bundle: winner-selection bug + coherent rebuild
 
 **Date:** 2026-06-26 · **Branch:** `drs-validation-rebuild` (SHARED — a concurrent COMPASS session also

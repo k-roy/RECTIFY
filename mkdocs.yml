@@ -154,6 +154,7 @@ nav:
     - DRS 5' End Limitations: DRS_FIVE_PRIME_END_LIMITATIONS.md
     - Three-Pass Adapter Trimming: THREE_PASS_ADAPTER_TRIMMING.md
     - DRS Poly-A Adapter Analysis: DRS_POLYA_ADAPTER_ANALYSIS.md
+    - Compute and Storage Costs: COMPUTE_AND_STORAGE_COSTS.md
   - Coordinate System: coordinate_system.md
   - API Reference:
     - Overview: api/index.md

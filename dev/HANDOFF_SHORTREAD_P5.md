@@ -1,5 +1,282 @@
 ════════════════════════════════════════════════════════════════════════════════
-# ★ CURRENT HANDOFF (2026-06-26) — COMPASS short-read 111-adjudication: DELIVERED ✅
+# ★★ CURRENT HANDOFF (2026-06-26 PM) — 2-corroborated CROSS-PLATFORM follow-up + de-novo-aligner Q
+(Newest. Supersedes the DELIVERED block below for current state. The 111 deliverable itself is still
+DELIVERED & locked on Oak — unchanged.)
+
+## DONE (this session)
+- **Characterized the 2 corroborated junctions** (forward NEXT item #1) into a verdict-ready packet,
+  reusing the live rectify lib on-cluster. Tool: `dev/compass_corroborated_junctions_characterize.py`
+  (deployed `$W/rectify_src/dev/`; out `$W/corroborated_2_characterization.json`). SELF-CHECK PASSED
+  (recomputed short-read depths = 12 and 3 = locked json). Cross-platform table doc:
+  `dev/COMPASS_2corroborated_CROSSPLATFORM.md`. Long-read probe: `dev/longread_probe.py`
+  (out `$W/longread_probe_out.txt`).
+  - **J1 chr5:140564954-140565547 (593bp, SLC35A4 +) → REAL novel junction (high confidence).** Canonical
+    GT..AG, no annotated junction in-locus. Corroborated by minimap2(101)+deSALT(102)+uLTRA(81)+GMAP+
+    COMPASS short(168) → **NOT actually gmap-only**: the "111 gmap-only" label was a 3bp ambiguity-
+    normalization gap (others place the SAME 593bp intron 3bp shifted at 140564957-550, which strict
+    base-equality normalize() didn't merge; adjudication depth 12 UNDERCOUNTS — true short-read ≈168).
+  - **J2 chr5:179823051-179823857 (806bp, SQSTM1 +) → INCONCLUSIVE (leans not-confirmed).** A +2bp
+    alt-acceptor off the ANNOTATED 804bp SQSTM1 intron (same donor 179823053; acceptor 859 vs 857).
+    Short reads: 857=2258 sharp, 859=3 (0.13%, noise-level). Long reads SMEAR acceptor 855–862 (no clean
+    859 peak) → platforms do NOT agree on a specific ~0.13% alt-acceptor freq (Kevin's cross-platform
+    frequency test, the RIGHT test, is NOT satisfied). Canonical but not provably real nor a seq error.
+- **Answered Kevin's de-novo-aligner "where were we" Q:** the idea (realign within the panel-mapped locus,
+  scored by empirical ED tables) = **facet C1 of the RECTIFY native aligner member**. Status: DESIGNED, not
+  built; build gated on a simulation benchmark that doesn't exist yet. Docs: `dev/ALIGNER_PROGRAM_SCOPING.md`
+  + `dev/ALIGNER_MEMBER_DESIGN.md` (both 2026-06-18). Tables+realign DP both exist in prod but NOT wired
+  (`realign_exon_blocks` read_edits.py:791 → `align_exon_block_global` local_aligner.py:522 still uses FLAT
+  costs; TODO at local_aligner.py:37-60). Next concrete step = C1 Phase 0 equivalence harness, AFTER the
+  benchmark gate.
+
+## ⚠ RECOUNT RESULT (DONE) — the "109/111 artifacts" headline is NOT robust as stated
+`dev/recount_111.py` (out `$W/recount_111_out.txt`): EXACT-normalized∩COMPASS = 2 (reproduces adjudication);
+**RELAXED (same intron length, |Δstart|≤5)∩COMPASS = 4.** Two of the "109 artifacts" actually have STRONG
+independent short-read support at a same-length ≤5bp-shifted coord the exact match missed:
+  • `chr5:179824400-179832205` (7805bp, gmap 12) → **2959** COMPASS reads
+  • `chr5:177592500-177593474` (974bp, gmap 23) → **323** COMPASS reads
+→ corroboration is ≥4/111 (≥107 artifacts), AND the adjudication's exact-coordinate match SYSTEMATICALLY
+undercounts (the 3bp normalization gap, same one that split J1). **Methodological fix needed**: length-aware /
+windowed merge of same-length placements BEFORE the gmap-only test + motif-check AT the supported coordinate.
+- **J1 REINTERPRETED (downgrade — earlier "clean real novel junction" was WRONG):** the bulk J1 support is at
+  the NON-canonical placement 140564957-550 (donor AG, acceptor CA — NOT GT-AG, verified from genome), 156
+  short + minimap2 101 + deSALT 102 + uLTRA 81; only the MINOR placement 140564954-547 is canonical GT-AG (12
+  short + 8 GMAP). The two are different spliced products 3bp apart (GTG≠TCA, not an ambiguity slide). 4
+  aligners + Illumina uniformly placing a 593bp gap at a non-canonical breakpoint ⇒ more consistent with a
+  recurrent ~593bp GENOMIC DELETION/SV in A549 (CNV-rich line) or shared alignment artifact than splicing.
+  J1 is NOT a confirmed canonical novel junction. (J2 verdict unchanged: inconclusive.)
+
+## DE-NOVO ALIGNER (parallel track) — benchmark GATE built by dedicated agent ✅
+User chose "simulation benchmark (the gate)" as first deliverable. A worktree-isolated agent BUILT +
+validated + committed Deliverable A on branch **`worktree-agent-a25a2c1e784ad37dc`** (off
+`drs-validation-rebuild`; NOT committed to the shared branch; all under benchmark-only paths
+`rectify/core/benchmark/`, `scripts/benchmark/`, `dev/`). Scoped brief + the agent's own RESUME:
+`dev/HANDOFF_ALIGNER_BENCHMARK.md`. Smoke green (1bp-shift→TP-not-FP; indel concordance 0.997; the live
+flat-affine DP scores 0.980 on HP_HARD-noisy with 24/24 failures = the indel-vs-sub misplacement C1 targets
+→ the gate CAN discriminate the member). **OPEN:** pbsim3 live run not executed (bioconda solve was slow on
+Sherlock; wrapper code-complete, MAF→genome validated locally). **NEXT cycle (now unblocked, gated on this):**
+prove length-law arm > flat arm on HP_HARD-noisy (harness ready); THEN C1 member code. For Kevin: review/merge
+the worktree branch when ready.
+
+## #2 circRNA check — DONE (2026-06-28): NOT circRNA (mechanism = non-canonical LINEAR splicing)
+`dev/circ_check.py`/`circ_check2.py` on the long-read per-aligner BAMs. Across minimap2/deSALT/uLTRA/GMAP at
+all 3 loci: **rolling-circle = 0, head-to-tail back-splice = 0.** Direct read inspection confirms FORWARD
+N-op orientation (deSALT read N-op 179824391→179833031, donor<acceptor = linear). → forward linear RNA gaps
+over present DNA = **non-canonical LINEAR splicing**, not back-splicing. Wrinkle: minimap2 renders the 7805
+locus as 6447 CHIMERIC (SA) reads split to OTHER loci (not back into locus) → the 7805 reads may be part of
+complex/chimeric transcripts; deSALT/uLTRA/GMAP call a clean forward intron. (forward-gap recount in
+circ_check2 had a tolerance bug, but collect_junction_counts already proved the N-ops + direct dump confirms.)
+
+## #2b FUSION/CHIMERA check — DONE (2026-06-28): NOT a distant fusion; all 3 INTRAGENIC
+`dev/chimera_invest.py`: the 7805 locus's 6446 minimap2-chimeric reads map their SA segments back into SQSTM1
+itself (chr5:179.8-179.9Mb) — local multi-exon read splitting, NO distant partner. All 3 are intragenic,
+sense strand: 7805∈SQSTM1(+), 974∈TMED9(+), J1-593∈SLC35A4(+) (SQSTM1 hosts TWO incl. J2). Each dominant
+NON-canonical coord has a canonical GT-AG/GC-AG 1-4bp away (ambiguity 0 = distinct placement). Accurate
+SHORT reads place at the NON-canonical coord → leans genuinely-non-canonical (vs canonical-misplaced-by-
+breakpoint-errors; resolve via motif-aware realign = the C1 feature / RT-PCR). → 3 = REAL intragenic novel
+RNA junctions, DNA-confirmed, not deletions/circRNA/fusion.
+
+## #1 v3 json — STAGED (generator ready, not yet locked): `$W/make_v3.py`
+Run AFTER #3: `python $W/make_v3.py "<het-result-string>"` → writes `$W/adjudication_111_v3.json` (full
+method chain + per-junction investigation + corrected summary: 107 artifacts / 3 real intragenic RNA
+junctions / 1 inconclusive / 0 deletions/circRNA/fusion). Then copy to Oak + chmod 444 (chmod u+w $OAK first,
+re-lock dir after) — same recipe as v2. Supersedes v1 ("109/2") AND v2 (STRUCTURAL_DELETION).
+
+## ✅ GMAP TRACK FINALIZED (2026-07-02) — verdict corrected + consistent
+Reval done (job 32220563): corrected (ambiguity-tolerant) gmap-only test → **201 candidates / 5 SUPPORTED /
+~1 well-supported** across 5 chroms (vs inflated exact-match 349/13). VERIFIED KEY POINT: the 3 "real
+intragenic junctions" (SLC35A4/TMED9/SQSTM1) are EXCLUDED from the corrected gmap-only set → they're real but
+MULTI-ALIGNER, NOT gmap-unique. So GMAP's genuinely-unique well-supported yield ≈ 1/5-chrom (chr1:19219782).
+**Final verdict: GMAP appropriate but LOW-unique-value; keep fenced; well-supported DROP candidate once C1
+lands.** Fully consolidated in `dev/GMAP_PANEL_APPROPRIATENESS.md` (§F + rewritten VERDICT/RECOMMENDATION;
+§D/§E numbers marked superseded). Files: `$W/reval_chr{5,1,11,17,19}.json`, `$W/agg_reval.py`, `$W/confirm_13.json`.
+- OPTIONAL follow-ups (low priority, none blocking): (a) genome-wide confirm — harness ready (`--chrom all`)
+  but needs a genome-wide GMAP+indep LR panel; 5-chrom is already decision-grade → low marginal value.
+  (b) note in `adjudication_111_v3.json` that the 3 real junctions are multi-aligner not gmap-unique (reality
+  unchanged, only gmap-credit). (c) C1 realigner on the non-canonical junctions (inbox note already sent).
+
+## (DONE, see above) HARNESS FIX + RE-VALIDATION — job 32220563 (2026-06-30)
+Fixed `dev/gmap_validate_harness.py` STEP-1: "others" (gmap-only) test is now AMBIGUITY-TOLERANT (exact OR
+same-intron-length within ±win), not exact-normalized — closes the over-count the confirm exposed. Re-running
+5 chroms (chr5 full panel + chr1/11/17/19 morechrom): `$W/reval5.sbatch` → `$W/reval_chr{5,1,11,17,19}.json`,
+sentinel `$W/.gmap_reval5_rc`. EXPECT materially FEWER gmap-only candidates than the old 349 (the exact-match
+inflated it; the truly-gmap-only 13→~3 pattern suggests a big drop).
+- **RESUME:** `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.gmap_reval5_rc; for c in chr5 chr1 chr11 chr17 chr19; do python3 -c "import json;d=json.load(open(\"/scratch/users/kevinroy/compass_a549/reval_$c.json\"));print(\"$c\",d[\"TOTAL\"] if \"TOTAL\" in d else d[\"per_chrom_summary\"])"; done'`
+  - sentinel `0` → aggregate corrected candidates→SUPPORTED across 5 chroms; update `GMAP_PANEL_APPROPRIATENESS.md`
+    §D/§E with the corrected (lower) gmap-only count. Job gone & no sentinel → `sacct -j 32220563 -X -o State`;
+    re-`sbatch $W/reval5.sbatch`.
+
+## ✅ 13-SUPPORTED CONFIRM — DONE (2026-06-30): none are SV; harness "gmap-only" is inflated
+Ran WGS + reliable cross-aligner confirm on all 13 SUPPORTED (`$W/confirm_13.json`, `dev/confirm13*.py`).
+- **WGS: 13/13 present normal-copy (ratio 0.72-1.33) → NONE a deletion/SV** → all RNA-level (splicing).
+- **Cross-aligner (collect-based, the reliable method; manual-walk attempt was buggy): 10/13 are actually
+  MULTI-aligner** (≥2 of minimap2/deSALT/uLTRA place them, a few bp off GMAP's coord) → the harness STEP-1
+  "gmap-only" exact-match is INFLATED by the same normalization gap as the 111. **Genuinely gmap-only = 3/13**;
+  of those only chr1:19219782 (sr99, non-canon) is well-supported (GMAP uniquely finding a real short-read-
+  corroborated junction) — chr11:308314 (sr1), chr19:48965691 (sr2) are thin. GMAP's genuinely-unique
+  well-corroborated yield across 5 chroms ≈ **1-2 junctions**. Folded into `GMAP_PANEL_APPROPRIATENESS.md` §E.
+- **TWO FIXES for the harness before genome-wide run:** (1) apply ambiguity-tolerant (length-matched) matching
+  to STEP-1's "others" set (currently exact-normalized → over-counts gmap-only); (2) the confirm's
+  collect-cache OOMs if it holds many full-chrom dicts — free per-chrom (see `dev/confirm_chr19.py` lean pattern).
+
+## ✅ GMAP-VALIDATION 5-CHROM — DONE (job 31903808 COMPLETED, 2026-06-30)
+Harness ran chr5+chr1/11/17/19 (GMAP-2021 added to DRS morechrom panel, 999,228 primary aligns).
+**RESULT: 349 gmap-only-recurrent-canonical-novel candidates → 13 short-read-SUPPORTED (~7 with real depth
+sr≥30); well-supported calls mostly NON-canonical/complex-locus; ~0-1 well-supported canonical unique novel
+per chromosome — chr5's "3-4" was the high end, pattern generalizes.** Folded into
+`dev/GMAP_PANEL_APPROPRIATENESS.md` §D + verdict (GMAP = LOW-unique-value, kept because fully fenced; the
+"needs genome-wide count" caveat is now substantially answered). Per-chrom jsons `$W/gmap_validate_chr{1,11,17,19}.json`;
+aggregator `$W/agg5.py`; GMAP bam `$W/morechrom_trimmed.GMAP.bam`.
+- **OPEN (cheap next step, NOT done):** the 13 SUPPORTED have short-read corroboration but not the full
+  cross-aligner+WGS motif confirm (the chr5-grade adjudication). Close by feeding the 13 to `dev/lr_probe_4loci.py`
+  + `dev/dna_split.py` + the WGS BAM. Also: extend to remaining autosomes for a true genome-wide count (needs
+  GMAP+indep aligner on those chroms — morechrom only had chr1/11/17/19).
+- NOTE: the job's `echo 0 > $SENT` sentinel line apparently didn't land (log shows `[done]` + all 4 jsons
+  present + State COMPLETED) — result is complete regardless; verified via the jsons, not the sentinel.
+
+## (superseded — see above) GMAP-VALIDATION EXTENDED to chr1/11/17/19 — job 31903808
+Reuses the DRS agent's `morechrom` panel (READ-ONLY): minimap2/deSALT/uLTRA aligned across chr1/11/17/19
+(coords == GRCh38, confirmed). GMAP was the only missing aligner → `$W/gmap_morechrom.sbatch` builds a
+gmap-2021 index for morechrom_ref.fa + aligns GMAP → `$W/morechrom_trimmed.GMAP.bam` (MY workspace, NOT the
+DRS dir) → runs `dev/gmap_validate_harness.py` per chrom → `$W/gmap_validate_chr{1,11,17,19}.json`. Sentinel
+`$W/.gmap_morechrom_rc`. (DRS coordination note dropped in inbox.) Extends validation chr5 → 5 chromosomes.
+- **⚠ SSH (2026-06-29):** the **M1's** Sherlock ControlMaster expired (Kerberos, ~daily) — agent ssh gets
+  `Permission denied (gssapi-with-mic)`. The job runs ON Sherlock regardless. To re-check: USER runs
+  `! ssh sherlock` **in the Claude session on the M1** + Duo (the iMac's live session does NOT refresh the
+  M1 master). Then resume below.
+- **RESUME:** `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.gmap_morechrom_rc; for c in chr1 chr11 chr17 chr19; do echo $c; python3 -c "import json;d=json.load(open(\"/scratch/users/kevinroy/compass_a549/gmap_validate_$c.json\"));print(d[\"TOTAL\"])"; done'`
+  - sentinel `0` → read the 4 per-chrom jsons: TOTAL candidates → SUPPORTED. Aggregate with chr5 (111→4) for
+    a 5-chrom GMAP unique-real-novel estimate → update `dev/GMAP_PANEL_APPROPRIATENESS.md` (genome-wide-ward count).
+  - `11`=gmap_build failed / `12`=align failed → `$W/gmap_morechrom.<JID>.out`, `$W/morechrom_gmap/gmap_*.log`.
+  - sentinel absent & job gone (`sacct -j 31903808 -X -o State`) → re-`sbatch $W/gmap_morechrom.sbatch` (idempotent: skips built index / existing GMAP bam).
+- NOTE: morechrom covers only 4 chroms (not full genome); true genome-wide still needs the remaining chroms
+  aligned (GMAP + an independent aligner). This is the tractable next increment, not the whole genome.
+
+## ✅ GOAL-2 SYNTHESIS + HARNESS + CASE STUDIES (2026-06-29)
+- GMAP-appropriateness verdict: `dev/GMAP_PANEL_APPROPRIATENESS.md` — GMAP appropriate (FENCED); ~97% of its
+  unique-junction output non-canonical; of 111 chr5 best unique-novel candidates only ~3-4 real. KEEP fenced;
+  genome-wide validated count needed before any DROP (advisor corrected an earlier "marginal/30x-overstated"
+  overreach — chr5 3-4 scales to ~tens genome-wide; fence-test "~100 genuine" is an unvalidated chr5 candidate count).
+- **VALIDATION HARNESS built + self-tested:** `dev/gmap_validate_harness.py` (chrom-agnostic, `--chrom all`):
+  candidate-gen → short-read ambiguity-tolerant validation → motif → (optional WGS). chr5 self-test reproduces
+  the hand analysis EXACTLY (111 → 107 ARTIFACT / 4 SUPPORTED from raw BAMs). Out: `$W/gmap_validate_chr5.json`.
+  **Genome-wide run BLOCKED on data:** need genome-wide A549 long-read alignments (GMAP + ≥1 independent
+  aligner); current BAMs are chr5-trimmed. Short-read consensus (Oak) + WGS are genome-wide.
+- Case studies: added "human non-canonical junction discovery (A549)" section + acceptance criteria to
+  `rectify/data/validation/CASE_STUDIES.md` (points to the cross-platform doc; yeast footer preserved).
+- C1 inbox note: `.claude/inbox/20260629T065724Z__from-compass-111-rna__c1-realign-testcase.md`.
+
+## ✅ #3 + #1 DONE (2026-06-28) — het-SV EXCLUDED; v3 LOCKED on Oak
+#3 deep WGS (job 31821023 COMPLETED, ~9-10x, `$W/wgs/a549_wgs_deep.bam`): all 3 interiors normal-copy
+(interior/flank 0.99/0.78/1.0, 100% cov ~9-10x) → het-del EXCLUDED. `dev/dna_split.py`: DNA reads cross all
+breakpoints continuously (0 soft-clip, 0 split/SA) → NO balanced rearrangement. **Every genomic alternative
+ruled out → the 3 are real intragenic RNA splice junctions** (SQSTM1/TMED9/SLC35A4). #1: `$OAK/adjudication_111_v3.json`
+(chmod 444, md5 439ec68c…) LOCKED — supersedes v1 ("109/2") + v2 (STRUCTURAL_DELETION). Generator `$W/make_v3.py`.
+FINAL: 107 artifacts / 3 real intragenic RNA junctions / 1 inconclusive (J2) / 0 del/circRNA/fusion. ONLY open
+science Q: genuinely-non-canonical vs canonical-placed-a-few-bp-off → motif-aware realign (the C1 feature) / RT-PCR.
+
+## (DONE, see above) #3 DEEP WGS (het-SV exclusion) — job 31821023
+Existing 1.3x already DISFAVORS het (interiors show no coverage halving: 7805 interior 1.63 ≈ genome 1.52).
+Firming up: `$W/wgs_deep.sbatch` PARALLEL byte-range downloads first ~15GB of ENCODE R1 (~10x; single-stream
+was 570KB/s bottleneck, ENCODE S3 honors HTTP Range = 206, full R1=31GB) → minimap2 → `$W/wgs/a549_wgs_deep.bam`
+→ depth-ratio report `$W/wgs/wgs_deep_coverage.txt`. Sentinel `$W/.wgs_deep_rc`.
+- **RESUME:** `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.wgs_deep_rc; cat /scratch/users/kevinroy/compass_a549/wgs/wgs_deep_coverage.txt'`
+  - sentinel `0` → read report: INTERIOR/flank meandepth ratio ~1.0 = normal copy (no del, het EXCLUDED);
+    ~0.5 = het deletion; ~0 = homo (already excluded). Then proceed to #1 (re-lock v3 json).
+  - `11`=download failed / `12`=align failed → `$W/wgs/wgs_deep.<JID>.out`, `$W/wgs/mm2_deep.log`.
+  - sentinel absent & job gone (`sacct -j 31821023 -X -o State`) → re-`sbatch $W/wgs_deep.sbatch` (idempotent).
+- **#1 (LAST, after #3):** re-lock `$OAK/adjudication_111_v3.json` — corrected verdict: 3 SUPPORTED junctions =
+  real non-canonical LINEAR splice junctions (DNA-confirmed genomic, not deletions, not circRNA, not artifacts);
+  J2 inconclusive alt-acceptor; ~107 artifacts. Supersede v2's STRUCTURAL_DELETION calls.
+
+## ✅ A549 WGS DELETION-CHECK (homozygous) — DONE (2026-06-28): deletion REFUTED → real RNA splicing
+RESULT: at ~1.3x A549 WGS (ENCODE ENCSR521ELB, `$W/wgs/a549_wgs_partial.bam`), all 3 candidate interiors
+(7805/974/J1-593bp) have NORMAL DNA coverage (%cov 73/68/62 = genome-avg ~71) — NO dropout → **NOT deletions;
+the genomic sequence is PRESENT.** Sequence present in DNA + removed in RNA = **splicing**, not deletion, not
+artifact. So the 3 SUPPORTED_NONCANONICAL are **real non-canonical RNA junctions** (DNA-confirmed genomic,
+multi-platform). REVERSES the "structural deletion" verdict. Full table + caveats in
+`dev/COMPASS_2corroborated_CROSSPLATFORM.md` (top). Coverage report `$W/wgs/wgs_partial_coverage.txt`.
+- **TODO (open, not started):** (a) `$OAK/adjudication_111_v2.json` STRUCTURAL_DELETION verdicts now WRONG →
+  re-lock a v3 (DNA-confirmed-genomic / RNA-spliced / mechanism-open). (b) MECHANISM: non-canonical cis-splice
+  vs **circRNA back-splice** (check head-to-tail/out-of-order junction orientation) vs trans-splice. (c) deeper
+  WGS via PARALLEL-stream download (single-stream ENCODE/S3 ~570 KB/s was the bottleneck; no aria2c) to exclude
+  het-SV; ONT A549 WGS (ENA PRJEB90580/ERR15968645) for DNA-level SV confirmation.
+- Pipeline note: `wgs_del_check.sbatch` used `set -o pipefail` which tripped on the truncated-gz `zcat` AFTER
+  minimap2+sort succeeded → false rc12; finalize the `.tmp` BAM manually or drop pipefail for that pipe.
+
+## (cancelled) A549 WGS DELETION-CHECK — job 31810428 (too slow)
+Testing whether the 3 SUPPORTED_NONCANONICAL "novels" (7805bp, 974bp, J1-593bp) are STRUCTURAL DELETIONS in
+A549 vs real splicing — the RNA span-test was non-discriminating (real introns also look empty in mRNA-seq;
+positive-control proved it). DNA settles it: a deletion = ~0 DNA coverage in the interval interior; real
+genomic sequence (intron) = full DNA coverage.
+- **Data:** ENCODE A549 WGS `ENCSR521ELB` (Illumina HiSeq X Ten 151bp; files ENCFF122NPY/ENCFF846WHK), raw
+  FASTQ. **Sherlock login node has NO working curl** (binary 7.29 vs libcurl 8.9 mismatch → rc43) but wget &
+  python urllib WORK → job downloads first 60M reads/file (~5.8x, first-N of Illumina FASTQ ≈ uniform genome
+  sample) via python urllib stream, minimap2 -ax sr → BAM, samtools coverage at the 3 candidate interiors +
+  flanks + a real-SQSTM1-intron control + intergenic control. Script `$W/wgs_del_check.sbatch` (idempotent:
+  skips existing fastq/BAM on requeue).
+- **⚠ DOWNLOAD TOO SLOW:** ENCODE/S3 single-stream from Sherlock = ~570 KB/s, so 60M reads/file ≈ 5h. CANCELLED
+  job 31810428; salvaged the partial download `$W/wgs/sub1_partial.fastq.gz` (~11M reads ≈ 0.5x, R1 only) and
+  submitted a quick align job **31813174** (`$W/wgs_align_partial.sbatch`) → `$W/wgs/a549_wgs_partial.bam` +
+  coverage `$W/wgs/wgs_partial_coverage.txt`, sentinel `$W/.wgs_partial_rc`. 0.5x is enough for the BIG 7805bp
+  locus (~26 reads if present vs 0 if deleted) but THIN for 974bp/J1-593bp. For deeper depth: no aria2c → use
+  PARALLEL streams (download R1+R2 concurrently, or python byte-range threads) — single-stream curl/wget is the
+  bottleneck. **RESUME (partial):** `ssh sherlock 'cat $W/.wgs_partial_rc; cat $W/wgs/wgs_partial_coverage.txt'`.
+- (orig full job, cancelled) Sentinel `$W/.wgs_del_rc`; report `$W/wgs/wgs_coverage_report.txt`.
+- **RESUME:** `ssh sherlock 'cat /scratch/users/kevinroy/compass_a549/.wgs_del_rc 2>/dev/null; \
+  cat /scratch/users/kevinroy/compass_a549/wgs/wgs_coverage_report.txt 2>/dev/null'`
+  - sentinel `0` → read report. **Candidate INTERIOR meandepth ≈0 while flanks+real-intron-control are full
+    → homozygous DELETION confirmed** (→ these are NOT novel junctions; finalize v2 as structural). Interior
+    ≈50% of flank → het deletion. Interior ≈ flank ≈ control → genomic sequence present → reconsider (could be
+    real intron after all).
+  - sentinel `11`=download failed / `12`=align failed → read `$W/wgs/wgs_del.<JID>.out` + `$W/wgs/minimap2.log`.
+  - sentinel absent & job gone (`sacct -j 31810428 -X -o State`) → died; re-`sbatch $W/wgs_del_check.sbatch`
+    (idempotent, resumes from downloaded fastqs).
+- **Then:** if deletions confirmed, the locked `$OAK/adjudication_111_v2.json` STRUCTURAL_DELETION verdicts are
+  DNA-confirmed (drop the "pending WGS" hedge); ONT A549 WGS (ENA PRJEB90580/ERR15968645) is the optional
+  long-read SV confirmation.
+
+## ✅ 111 RE-DERIVATION COMPLETE (2026-06-26 PM) — locked v2 on Oak
+Done via `dev/rederive_111.py` (ambiguity-tolerant same-len ±5 + motif-at-supported-coord) +
+`dev/lr_probe_4loci.py` (cross-aligner long-read placement = the decisive discriminator). Authoritative
+writeup: `dev/COMPASS_2corroborated_CROSSPLATFORM.md` (top section). **CORRECTED VERDICT:** ~107/111 clean
+GMAP artifacts; the 4 with independent short-read support are NOT validated novel splice junctions — **3 are
+recurrent structural-DELETION signatures in A549** (multi-aligner+Illumina uniformly at a non-canonical
+breakpoint; splice-aware aligners don't snap to the nearby GT-AG/GC-AG; standout = ~7.8kb deletion INSIDE
+SQSTM1, 2959 short + ~400 long reads), **1 inconclusive +2 alt-acceptor (J2)**. **NONE rescued as a clean
+novel splice junction.** The original "2 corroborated → likely real" is wrong in interpretation.
+- **Corrected json LOCKED on Oak:** `$OAK/adjudication_111_v2.json` (chmod 444, md5 5deba55…, generated by
+  `$W/make_v2.py` from `$W/rederive_111.json`). SUPERSEDES `$OAK/adjudication_111.json` (left untouched for
+  provenance; its "109/2" headline is corrected by v2). Dir re-locked dr-xr-s (read-only).
+- **NEXT (confirmation, for Kevin):** IGV the 7805bp (chr5:179824400-179832205) + 974bp (chr5:177592500-177593474)
+  loci — deletion-breakpoint signatures (soft-clips/microhomology) vs clean exon/exon — and overlay an A549
+  WGS/CNV track to confirm deletion-vs-splicing. Fix the 2 auto-classifier caveats before reusing
+  `rederive_111.py` on other chroms (974 canonical-1bp-off mislabel; J2 alt-SS XOR-on-normalized-coord).
+- (carried) Forward NEXT items #2 rep2/rep3, #3 split_command.py rm-rf/wildcard hardening (coordinate w/ DRS
+  agent), #4 DRS/cDNA backlog (owned by DRS agent) — unchanged from block below.
+
+## RESUME (concrete)
+SSH `sherlock` (never tear down ControlMaster; retry transient sshd serially). `$W=/scratch/users/kevinroy/compass_a549`.
+1. **Read the recount result:**
+   `ssh sherlock 'cat $W/recount_111_out.txt'`
+   - **empty?** still running (or died) — check `pgrep -fl recount_111` on sherlock; if gone & empty, re-run:
+     `cd $W/rectify_src && PYTHONPATH=$W/rectify_src python dev/recount_111.py > $W/recount_111_out.txt 2>&1`
+     (rectify env; ~2min collect over the 6.9G Oak BAM).
+   - **"RELAXED … intersection: 2"** (== EXACT 2) → the **109/111 artifacts headline HOLDS**; J1 was the rare
+     normalization-split case. Say so plainly to Kevin; ship the characterization as-is.
+   - **RELAXED materially > 2** → "109 artifacts" is an OVERCOUNT (more junctions gain COMPASS support under
+     the same-length ±5bp match). Report the new number + the gained-junction list to Kevin BEFORE he trusts 109.
+2. **Then** (regardless) the J1/J2 packet + de-novo-aligner answer are already delivered to Kevin in-chat;
+   the durable artifacts are the two `dev/COMPASS_*` / `dev/compass_*` files + the on-cluster JSON/txt.
+
+## FILES (this session, all UNCOMMITTED, working tree)
+- `dev/compass_corroborated_junctions_characterize.py`, `dev/longread_probe.py`, `dev/recount_111.py`
+  (all deployed to `$W/rectify_src/dev/`), `dev/COMPASS_2corroborated_CROSSPLATFORM.md`.
+- On cluster: `$W/corroborated_2_characterization.json`, `$W/longread_probe_out.txt`, `$W/recount_111_out.txt`.
+- Long-read panel BAMs: `…/rectify_human_validation/sgnex_a549/alignments/a549_chr5_trimmed.{minimap2,deSALT,mapPacBio,GMAP,uLTRA,rectified}.bam`.
+- NOTE: shared branch `drs-validation-rebuild` has a concurrent DRS agent — do NOT `git add -A`; stage only
+  these explicit `dev/` paths if committing.
+════════════════════════════════════════════════════════════════════════════════
+# ★ HANDOFF (2026-06-26) — COMPASS short-read 111-adjudication: DELIVERED ✅
 (Authoritative current state. Detailed chronological history is below this block.)
 
 ## DONE

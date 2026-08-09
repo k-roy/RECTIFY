@@ -117,6 +117,9 @@ site/
 dev_runs/
 _h2_rebaseline/
 scripts/validation_data/rebuild_2026_05/
+# ...except test-fixture inputs required by the bundled test suite (CI needs them)
+!scripts/validation_data/rebuild_2026_05/trimmed/
+!scripts/validation_data/rebuild_2026_05/trimmed/validation_reads_polya_trim_metadata.tsv
 scripts/calibration/runs/
 docs/figures/*.v2-backup.png
 docs/figures/*.v2-backup.svg
