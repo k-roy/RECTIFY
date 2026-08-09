@@ -445,6 +445,31 @@ class TestRearbitration:
         assert stats.extra.get('arb_shifted', 0) == 0
         assert self._junction(r) == (self.D, self.E_TRUE)
 
+    def test_pseudo_slide_grammar_tiebreak(self):
+        # SRC1-class dispute: the claimed junction is a pseudo-slide of the
+        # truth (+4 on BOTH boundaries, beyond the legal window because the
+        # 4-bp homology is partial: 1 mismatch). The DP near-ties (margin
+        # can't move it) but only the true placement is canonical-class —
+        # splicing grammar must adjudicate.
+        g = list(self._genome())
+        D, E = self.D, self.E_TRUE
+        # partial homology g[D+i]==g[E+i] for i in {0,1,3}, differing at i=2
+        g[E], g[E + 1] = g[D], g[D + 1]          # == 'G','T'
+        g[E + 3] = g[D + 3] = 'A'
+        g[D + 2] = 'C'
+        g[E + 2] = 'G'
+        g[D + 4] = 'A'                            # claimed donor dinuc 'A?' -> non-canonical
+        g[E + 4] = 'T' if g[D + 4] != 'T' else 'C'
+        g = ''.join(g)
+        query = g[D - 60:D] + g[E:E + 60]
+        cigar = [(0, 64), (3, E - D), (0, 56)]    # claimed = (D+4, E+4)
+        r = self._mk_read(g, query, cigar, D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_shifted') == 1, stats.extra
+        assert self._junction(r) == (D, E)
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
     def test_dop_converted_to_snapped_intron(self):
         # the intron expressed as a 300-bp deletion at the exact bounds
         g = self._genome()

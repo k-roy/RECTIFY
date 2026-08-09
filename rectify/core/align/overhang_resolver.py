@@ -62,6 +62,7 @@ import pysam
 from ..splice.overhang_informativeness import (
     COUNTERS,
     assess_overhang,
+    canonical_in_class,
     hp_edit_distance_bounded,
     same_junction,
 )
@@ -452,21 +453,36 @@ def _iter_ref_ops(cigartuples):
             qi += ln
 
 
-def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg):
+def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None):
     """Score the current interpretation exactly, then alternatives under an
-    exact cutoff at (ed_cur - arb_margin). ``alts`` entries are
-    (d, e, alt_ref, alt_qwin): a LEFT-boundary shift by delta moves the
-    junction's query split by delta too, so each alternative is scored
-    against its own query window (equal length; same locality). Returns
-    (ed_cur, winner) with winner = (ed, d, e) or None."""
+    exact cutoff. ``alts`` entries are (d, e, alt_ref, alt_qwin): a
+    LEFT-boundary shift by delta moves the junction's query split by delta
+    too, so each alternative is scored against its own query window (equal
+    length; same locality).
+
+    Acceptance: an alternative must beat the current placement by
+    ``arb_margin`` — OR, when the CURRENT junction is non-canonical-class
+    and the alternative is canonical, match-or-beat it (splicing grammar as
+    the tiebreaker, mirroring the rescue path's canonical-donor tiebreak;
+    planning/644b: the SRC1 4-bp donor dispute ties the DP and only the
+    GT/GC..AG grammar can adjudicate it). Returns (ed_cur, winner) with
+    winner = (ed, d, e) or None."""
     ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
+    cur_canon = (canonical_in_class(chrom_seq, *cur_junc)
+                 if cur_junc is not None else True)
     bound = ed_cur - cfg.arb_margin
-    if bound < 0:
+    grammar_bound = ed_cur if not cur_canon else -1.0
+    prune_at = max(bound, grammar_bound)
+    if prune_at < 0:
         return ed_cur, None
     scored = []
     for d_alt, e_alt, alt_ref, alt_qwin in alts:
-        ed = hp_edit_distance_bounded(alt_qwin, alt_ref, cutoff=bound)
-        if ed <= bound and ed <= cfg.max_edit_frac * len(alt_qwin):
+        ed = hp_edit_distance_bounded(alt_qwin, alt_ref, cutoff=prune_at)
+        if ed > cfg.max_edit_frac * len(alt_qwin):
+            continue
+        if ed <= bound or (
+                ed <= grammar_bound
+                and canonical_in_class(chrom_seq, d_alt, e_alt)):
             scored.append((ed, d_alt, e_alt))
     if not scored:
         return ed_cur, None
@@ -567,10 +583,33 @@ def _rearbitrate_read(
                 alts.append((d_alt, e,
                              chrom_seq[d_alt - L1:d_alt] + chrom_seq[e:e + L2],
                              dq[q_split + delta - L1:q_split + delta + L2]))
+        # diagonal (pseudo-slide) shifts: BOTH boundaries move by delta with
+        # the intron length preserved — the beyond-legal-slide class where
+        # partial homology lets two placements near-tie (the SRC1 4-bp donor
+        # dispute). Frame-safe only when nothing but the tail follows ('last'
+        # or single-N 'both'): every op downstream shifts by delta.
+        if which in ('both', 'last'):
+            span = e - d
+            for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
+                d_alt = int(d_alt)
+                delta = d_alt - d
+                if delta == 0:
+                    continue
+                e_alt = d_alt + span
+                if index.sites_in(chrom_key, right_kind, e_alt, e_alt + 1).size == 0:
+                    continue
+                if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0 \
+                        or e_alt + L2 > len(chrom_seq):
+                    continue
+                if q_split + delta - L1 < 0 or q_split + delta + L2 > len(dq):
+                    continue
+                alts.append((d_alt, e_alt,
+                             chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                             dq[q_split + delta - L1:q_split + delta + L2]))
         if not alts:
             continue
         cur_ref = chrom_seq[d - L1:d] + chrom_seq[e:e + L2]
-        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=(d, e))
         if win is None:
             _bump(stats, 'arb_no_gain')
             continue

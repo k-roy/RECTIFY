@@ -260,6 +260,28 @@ def same_junction(chrom_seq: str, a: Tuple[int, int], b: Tuple[int, int], max_sh
         canonicalize_junction(chrom_seq, *b, max_shift=max_shift)
 
 
+_CANONICAL_DINUCS = frozenset(
+    # (donor-side, acceptor-side) on the FORWARD genome: GT/GC..AG for
+    # plus-strand introns, CT..AC / CT..GC for minus-strand.
+    [('GT', 'AG'), ('GC', 'AG'), ('CT', 'AC'), ('CT', 'GC')]
+)
+
+
+def is_canonical_junction(chrom_seq: str, start: int, end: int) -> bool:
+    """Canonical splice grammar at the WRITTEN coordinates (either strand)."""
+    if start < 0 or end > len(chrom_seq):
+        return False
+    return (chrom_seq[start:start + 2].upper(),
+            chrom_seq[end - 2:end].upper()) in _CANONICAL_DINUCS
+
+
+def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60) -> bool:
+    """True iff ANY member of the junction's ambiguity class is canonical."""
+    l, r = ambiguity_window(chrom_seq, start, end, max_shift=max_shift)
+    return any(is_canonical_junction(chrom_seq, start + d, end + d)
+               for d in range(-l, r + 1))
+
+
 # ---------------------------------------------------------------------------
 # HP-aware global edit distance with an exact early-exit cutoff.
 #
