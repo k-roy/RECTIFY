@@ -35,6 +35,12 @@ import pysam
 
 from ...utils.genome import standardize_chrom_name
 from ...config import CHROM_TO_GENOME
+from .overhang_informativeness import (
+    COUNTERS as _OI_COUNTERS,
+    assess_overhang as _oi_assess,
+    gate_alpha as _oi_gate_alpha,
+    gate_enabled as _oi_gate_enabled,
+)
 
 try:
     from intervaltree import IntervalTree
@@ -1245,6 +1251,24 @@ def _rescue_3ss_truncation_body(
         else:
             rescue_seq = rescue_seq[:five_clip]
 
+    # --- Informativeness gate (planning/641 §2; DARK by default) -----------
+    # RECTIFY_OVERHANG_INFO_GATE=1 enables. A rescue sequence whose effective
+    # information content cannot distinguish its true placement from chance in
+    # any window (poly(A), homopolymer, periodic repeat) has its SEQUENCE
+    # search refused — a first-class outcome, not a failure. The structural
+    # evidence paths below (N-op match, intronic snap, proximity-only) do not
+    # depend on the sequence and stay live. When the sequence is informative
+    # but weakly so, W_max additionally tightens the candidate-narrowing
+    # window (never the N-op-matched branch).
+    _oi_w_max: Optional[int] = None
+    if rescue_seq and _oi_gate_enabled():
+        _oi_assessment = _oi_assess(rescue_seq, alpha=_oi_gate_alpha())
+        if _oi_assessment.refused:
+            rescue_seq = ''
+            rescue_type_candidate = 'none'
+        else:
+            _oi_w_max = _oi_assessment.w_max_bp
+
     # --- Try sequence-based rescue against each candidate junction ---
     best_ed: float = -1.0
     best_junction = None
@@ -1307,7 +1331,14 @@ def _rescue_3ss_truncation_body(
     # _leading_del N-op-match path, where the spanned intron can sit farther from
     # align_5prime). Anything dropped here would be skipped by the cheap gate at
     # the top of every loop anyway, so no winning candidate is excluded.
-    _nb_W = junction_proximity_bp + five_clip + _MAX_SS_SHIFT + 5
+    _nb_W_full = junction_proximity_bp + five_clip + _MAX_SS_SHIFT + 5
+    _nb_W = _nb_W_full
+    if _oi_w_max is not None:
+        # Informativeness gate: the rescue sequence cannot distinguish its
+        # placement beyond W_max, so candidates farther out are chance hits
+        # by construction. N-op-matched junctions (the OR-branch below) are
+        # CIGAR evidence, not a sequence search, and keep the full window.
+        _nb_W = min(_nb_W_full, _oi_w_max + _MAX_SS_SHIFT + 5)
     _nb_W2 = junction_proximity_bp + 5
     _nearby_junctions = []
     for _j in candidate_junctions:
@@ -1320,6 +1351,10 @@ def _rescue_3ss_truncation_body(
             for _ns, _ne in _n_intervals
         ):
             _nearby_junctions.append(_j)
+        elif _nb_W < _nb_W_full and (
+            _j[1] <= align_5prime + _nb_W_full and _j[2] >= align_5prime - _nb_W_full
+        ):
+            _OI_COUNTERS['candidates_skipped'] += 1
 
     # Cap to K closest junctions when the set is large.  On junction-dense loci
     # (human chr5 SMN1/SMN2) the proximity filter can still admit 50-200+ entries.

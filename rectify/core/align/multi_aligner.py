@@ -507,6 +507,14 @@ class MultiAlignerConfig:
         enabled=False,  # Opt-in: only appropriate for short reads (Illumina/Aviti)
         path="bwa"
     ))
+    # Information-bounded splice-overhang resolver (planning/641): the
+    # mapPacBio-role replacement. Native (no external binary); consumes the
+    # minimap2 arm BAM, so minimap2 must run in the same invocation.
+    overhang_resolver: AlignerConfig = field(default_factory=lambda: AlignerConfig(
+        name="overhang_resolver",
+        enabled=False,  # Opt-in until the planning/641 T3-T6 acceptance runs pass
+        path=""
+    ))
 
     # Junction annotation options
     use_junction_annotation: bool = True
@@ -943,12 +951,21 @@ def run_map_pacbio(
             logger.info("mapPacBio merge complete: %s", output_bam)
             return str(output_bam)
         else:
+            # HARD ERROR, not a silent fallback (planning/641 §3, planning/632):
+            # "--mapPacBio-chunks N" without "--mapPacBio-chunk-idx" is the
+            # MERGE verb. Falling back to a full single-pass alignment here
+            # turned an intended parallel run into a ~41 h monolith once
+            # already. Fail loudly with the two legitimate next steps.
             missing = [p.name for p in chunk_bams if not p.exists()]
-            logger.warning(
-                "%d/%d chunk BAMs missing (%s) — falling back to full alignment",
-                len(missing), n_chunks, ', '.join(missing),
+            raise FileNotFoundError(
+                f"mapPacBio chunk merge: {len(missing)}/{n_chunks} chunk BAMs "
+                f"missing ({', '.join(missing)}). --mapPacBio-chunks N without "
+                f"--mapPacBio-chunk-idx MERGES existing chunks — it does not "
+                f"parallelise. Either run each chunk first "
+                f"(--mapPacBio-chunks {n_chunks} --mapPacBio-chunk-idx K for "
+                f"K=0..{n_chunks - 1}), or drop --mapPacBio-chunks for a full "
+                f"single-pass alignment."
             )
-            # fall through to full alignment below
 
     # ── Chunk extraction mode: write only reads for this chunk ─────────────
     actual_reads_path = reads_path
@@ -1032,9 +1049,15 @@ def run_map_pacbio(
         ' '.join(cmd[:5]) + (f' [chunk {chunk_idx}/{n_chunks}]' if chunk_idx is not None else ''),
     )
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
-    if chunk_tmp_fq:
-        Path(chunk_tmp_fq).unlink(missing_ok=True)
+    # The sanitised FASTQ is only needed while mapPacBio runs. Unlink it in a
+    # finally: it is uncompressed and was measured at 55.1% of a whole panel
+    # output directory when leaked (planning/641 §3 / planning/586).
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
+    finally:
+        _mpb_san_fq.unlink(missing_ok=True)
+        if chunk_tmp_fq:
+            Path(chunk_tmp_fq).unlink(missing_ok=True)
     if result.returncode != 0:
         lost = _parse_mpb_lost_reads(result.stderr)
         if (lost is not None and 0 < lost <= _MAX_MPB_LOST_READS
@@ -3254,6 +3277,9 @@ def run_multi_aligner(
             aligners.append('bbmap')
         if config.bwa_mem.enabled:
             aligners.append('bwa')
+        if config.overhang_resolver.enabled:
+            # Must come after minimap2 (consumes its BAM).
+            aligners.append('overhang_resolver')
 
     # COMPASS short-read aligners are run paired-end; they need a mate-2 FASTQ.
     _paired_required = {
@@ -3298,6 +3324,24 @@ def run_multi_aligner(
                     output_bam=str(output_bam),
                     threads=threads,
                     extra_args=config.gapmm2.extra_args
+                )
+            elif aligner == 'overhang_resolver':
+                # Native mapPacBio-role replacement (planning/641): re-places
+                # terminal soft clips of the minimap2 arm across junctions
+                # under an information bound, so it needs that BAM first.
+                if 'minimap2' not in results:
+                    logger.error(
+                        "overhang_resolver requires the minimap2 arm from this "
+                        "invocation — list minimap2 before overhang_resolver; "
+                        "skipping."
+                    )
+                    continue
+                from .overhang_resolver import run_overhang_resolver
+                results['overhang_resolver'] = run_overhang_resolver(
+                    base_bam=results['minimap2'],
+                    genome_path=genome_path,
+                    output_bam=str(output_bam),
+                    threads=threads,
                 )
             elif aligner == 'bbmap':
                 results['bbmap'] = run_bbmap(
