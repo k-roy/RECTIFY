@@ -453,7 +453,7 @@ def _iter_ref_ops(cigartuples):
             qi += ln
 
 
-def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None):
+def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None, ed_cur=None):
     """Score the current interpretation exactly, then alternatives under an
     exact cutoff. ``alts`` entries are (d, e, alt_ref, alt_qwin): a
     LEFT-boundary shift by delta moves the junction's query split by delta
@@ -467,7 +467,8 @@ def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None):
     planning/644b: the SRC1 4-bp donor dispute ties the DP and only the
     GT/GC..AG grammar can adjudicate it). Returns (ed_cur, winner) with
     winner = (ed, d, e) or None."""
-    ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
+    if ed_cur is None:
+        ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
     cur_canon = (canonical_in_class(chrom_seq, *cur_junc)
                  if cur_junc is not None else True)
     bound = ed_cur - cfg.arb_margin
@@ -553,6 +554,15 @@ def _rearbitrate_read(
             dq = _decoded_query(read, chrom_seq)
         qwin = dq[q_split - L1:q_split + L2]
         _bump(stats, 'arb_njunc_checked')
+        # Fast path: a canonical-class junction whose window already scores
+        # under the margin cannot be displaced (an alt would need ed < 0 and
+        # the grammar tiebreak is off) — skip candidate enumeration entirely.
+        # This is most junctions, and most of Case A's cost.
+        cur_ref = chrom_seq[d - L1:d] + chrom_seq[e:e + L2]
+        ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
+        if ed_cur < cfg.arb_margin and canonical_in_class(chrom_seq, d, e):
+            _bump(stats, 'arb_clean_skip')
+            continue
         a = assess_overhang(qwin, alpha=cfg.alpha, max_window=cfg.arb_window)
         if a.refused:
             _bump(stats, 'arb_refused')
@@ -608,8 +618,8 @@ def _rearbitrate_read(
                              dq[q_split + delta - L1:q_split + delta + L2]))
         if not alts:
             continue
-        cur_ref = chrom_seq[d - L1:d] + chrom_seq[e:e + L2]
-        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=(d, e))
+        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg,
+                                  cur_junc=(d, e), ed_cur=ed_cur)
         if win is None:
             _bump(stats, 'arb_no_gain')
             continue
