@@ -18,10 +18,78 @@ Algorithms:
 """
 from __future__ import annotations
 
+import logging
+import os
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from rapidfuzz.distance import Levenshtein
+
+logger = logging.getLogger(__name__)
+
+# 651: a pip sdist fallback silently installs rapidfuzz as pure Python (Root-Is-Purelib), which
+# runs this module's distance computations interpreted (~50x slower; cost 200 CPU-h on H2 before
+# it was caught — planning/619). Warn loudly at import so it can never be silent again.
+_HAS_CPP_BACKEND = "cpp" in getattr(Levenshtein.distance, "__module__", "")
+if not _HAS_CPP_BACKEND:
+    logger.warning(
+        "rapidfuzz C++ backend unavailable (Levenshtein.distance resolves to %s) — UMI "
+        "clustering will run ~50x slower. Fix: pip install --force-reinstall "
+        "--only-binary=:all: rapidfuzz",
+        getattr(Levenshtein.distance, "__module__", "?"))
+
+
+def _levenshtein_neighbour_sets(unique: List[str], max_edit: int
+                                ) -> Optional[Dict[int, set]]:
+    """Exact undirected neighbour sets {i -> {j}} for Lev(u_i, u_j) <= max_edit.
+
+    651: computes the pair set ONCE per bucket with rapidfuzz ``process.cdist`` — the same
+    predicate and cutoff as the per-pair loop, but batched on the C++ side (row-chunked so the
+    dense block stays ~<=32 MB; entries above the cutoff come back as cutoff+1 and are masked
+    out). The result feeds BOTH the directional adjacency build and ``_split_into_stars``, which
+    previously paid a second quadratic distance pass on percolated components.
+
+    Returns None when the batched path is unavailable (pure-Python rapidfuzz backend, or numpy /
+    process missing) — callers fall back to the original per-pair loop.
+
+    ``RECTIFY_UMI_CDIST_WORKERS`` (default 1) sets cdist's thread count. It stays 1 by default
+    because the production caller (`correct-cdna --workers N`) already runs one process per
+    region; raise it only for serial single-region runs.
+    """
+    if not _HAS_CPP_BACKEND:
+        return None
+    try:
+        import numpy as np
+        from rapidfuzz import process as _rf_process
+    except ImportError:
+        return None
+    neighbours: Dict[int, set] = {}
+    n = len(unique)
+    if n < 2:
+        return neighbours
+    workers = 1
+    env = os.environ.get("RECTIFY_UMI_CDIST_WORKERS")
+    if env:
+        try:
+            workers = max(1, int(env))
+        except ValueError:
+            pass
+    block_rows = max(1, min(n, (32 << 20) // n))
+    for r0 in range(0, n, block_rows):
+        rows = unique[r0:r0 + block_rows]
+        cols = unique[r0:]  # upper triangle only (plus a negligible in-block lower wedge)
+        block = _rf_process.cdist(rows, cols, scorer=Levenshtein.distance,
+                                  score_cutoff=max_edit, dtype=np.uint8,
+                                  workers=workers)
+        ii, jj = np.nonzero(block <= max_edit)
+        for il, jl in zip(ii.tolist(), jj.tolist()):
+            i = r0 + il
+            j = r0 + jl
+            if j > i:
+                neighbours.setdefault(i, set()).add(j)
+                neighbours.setdefault(j, set()).add(i)
+    return neighbours
+
 
 
 def umi_components(umis: List[str], max_edit: int) -> List[List[int]]:
@@ -100,6 +168,15 @@ def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]
     counts = [len(umi_to_read_indices[u]) for u in unique]
     n_uniq = len(unique)
 
+    # NOTE (planning/633, /634): an earlier guard here refused merging when a BUCKET was
+    # almost all singletons ("no amplification evidence"). It was REMOVED because it is
+    # refuted: healthy buckets reach 0.9997 distinct/read — HIGHER than broken ones — so no
+    # cut on that ratio separates them, and the per-CLUSTER version fails for the same reason
+    # (median distinct/reads ~1.0 at EVERY cluster size, because at ONT error rates on a 27-nt
+    # UMI two genuine duplicates usually do NOT share an exact UMI). Counting distinct UMIs
+    # cannot distinguish the two ways a cluster acquires them. The GEOMETRY can — see
+    # `_split_into_stars` below, which is the replacement.
+
     # Order unique UMIs by count desc (ties broken by UMI lex order for determinism).
     order_desc = sorted(range(n_uniq), key=lambda i: (-counts[i], unique[i]))
     pos_in_order = [0] * n_uniq
@@ -140,6 +217,17 @@ def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]
                             if a != b:
                                 candidate_neighbours[a].add(b)
 
+    # 651: for the ed>1 path, precompute the exact undirected pair set once (batched C++
+    # cdist). Reused twice: adjacency filter below, and _split_into_stars membership (which
+    # previously re-computed distances hub-by-hub — a second quadratic pass on percolated
+    # components). None -> per-pair fallback loop. On the fast_hamming path the masked-key
+    # candidate sets ARE the exact Lev<=1 neighbour sets (equal length: Lev 1 <=> Hamming 1).
+    neighbour_sets: Optional[Dict[int, set]] = None
+    if not fast_hamming:
+        neighbour_sets = _levenshtein_neighbour_sets(unique, max_edit)
+    star_neighbours: Optional[Dict[int, set]] = (
+        candidate_neighbours if fast_hamming else neighbour_sets)
+
     # Build adjacency: directed edge a->b for b later in order_desc (count(b) <=
     # count(a)) whose count satisfies the 2x rule (count(b) <= (count(a)+1)//2) and
     # whose distance to a is <= max_edit.
@@ -155,8 +243,15 @@ def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]
                     if pos_in_order[b] > ai_pos and counts[b] <= max_cb]
             for b in sorted(cand, key=lambda b: pos_in_order[b]):
                 adj[a].append(b)
+        elif neighbour_sets is not None:
+            # 651: exact pair set precomputed by batched cdist — filter to later-in-order +
+            # 2x rule; no per-pair Python-loop distance calls. Same edge set as the loop below.
+            cand = [b for b in neighbour_sets.get(a, ())
+                    if pos_in_order[b] > ai_pos and counts[b] <= max_cb]
+            for b in sorted(cand, key=lambda b: pos_in_order[b]):
+                adj[a].append(b)
         else:
-            # Fallback (max_edit > 1 or mixed-length umis): all-pairs Levenshtein.
+            # Fallback (batched path unavailable): all-pairs Levenshtein.
             # counts in order_desc are non-increasing; skip until first b with cb <= max_cb.
             bi_start = ai_pos + 1
             while bi_start < n_uniq and counts[order_desc[bi_start]] > max_cb:
@@ -182,12 +277,72 @@ def umi_components_directional(umis: List[str], max_edit: int) -> List[List[int]
             for v in adj[u]:
                 if v not in visited:
                     queue.append(v)
-        # Expand back to read indices.
-        read_indices: List[int] = []
-        for uid in component_uniqs:
-            read_indices.extend(umi_to_read_indices[unique[uid]])
-        clusters.append(read_indices)
+        # ---- 635: ENFORCE THE STAR INVARIANT (radius, not chain depth) ----------------
+        # A cluster asserts that all members are error copies of ONE true UMI, so every
+        # member must lie within max_edit of an OBSERVED centre. BFS does not enforce that:
+        # it admits transitive chains a~b~c whose ends are >= 2*max_edit apart.
+        for star in _split_into_stars(component_uniqs, unique, counts, max_edit,
+                                      neighbours=star_neighbours):
+            read_indices: List[int] = []
+            for uid in star:
+                read_indices.extend(umi_to_read_indices[unique[uid]])
+            clusters.append(read_indices)
     return clusters
+
+
+def _split_into_stars(component: List[int], unique: List[str], counts: List[int],
+                      max_edit: int,
+                      neighbours: Optional[Dict[int, set]] = None) -> List[List[int]]:
+    """Partition a connected component into STARS, each centred on an OBSERVED member.
+
+    WHY. Connected-components/BFS answers "is there a path?", but a UMI cluster claims
+    something stronger: that every member is an error copy of ONE true sequence. Under that
+    claim every member must be within `max_edit` of a single centre — and that centre must be
+    something we actually observed, not an inferred consensus. BFS instead admits chains
+    a~b~c where a and c are 2*max_edit apart or more, which merges distinct molecules.
+
+    MEASURED (planning/635b — matched control, same BAM, same reads, ed the ONLY variable;
+    radius = edit distance from each member to the cluster consensus):
+
+        ed=1 : median radius 0, max 1, 100.0% of members within ed<=3   -> STARS
+        ed=3 : median radius 6, max 16,  22.3% within ed<=3             -> CHAINS
+               and it degrades with size: 36% at 10-30 reads -> 0.0% above 1,000 reads
+
+    So the chaining is caused by the edit radius allowing transitive closure, and this
+    restores the invariant directly rather than trying to predict which buckets will break
+    (three count-based predictors were tried and refuted — planning/626, /633, /634).
+
+    GREEDY, and a NO-OP on components that are already valid stars: take the highest-count
+    remaining member as the hub, absorb everything within `max_edit` of it, repeat. If the
+    component was a genuine star the first pass absorbs all of it and output is unchanged —
+    which is why this is safe to apply unconditionally, including at max_edit=1.
+
+    Deterministic: hubs are chosen by (-count, umi) so ties break on UMI lex order.
+
+    651: when the caller already holds the exact neighbour sets (batched cdist, or the
+    fast_hamming masked-key candidates at ed=1), membership is a set lookup and NO distances are
+    re-computed here. With ``neighbours=None`` the original per-pair verification runs unchanged.
+    """
+    if len(component) <= 1:
+        return [component]
+    remaining = sorted(component, key=lambda i: (-counts[i], unique[i]))
+    stars: List[List[int]] = []
+    while remaining:
+        hub = remaining[0]
+        hub_umi = unique[hub]
+        hub_neigh = neighbours.get(hub, ()) if neighbours is not None else None
+        star = [hub]
+        rest: List[int] = []
+        for i in remaining[1:]:
+            if (i in hub_neigh) if hub_neigh is not None else (
+                    Levenshtein.distance(hub_umi, unique[i],
+                                         score_cutoff=max_edit) <= max_edit):
+                star.append(i)
+            else:
+                rest.append(i)
+        stars.append(star)
+        remaining = rest
+    return stars
 
 
 def position_components_directional(positions: List[int], weights: List[int],

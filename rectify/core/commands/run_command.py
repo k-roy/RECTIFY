@@ -247,6 +247,26 @@ def run(args: argparse.Namespace) -> None:
             )
             # Fall through to normal single-sample processing below
         else:
+            # 🔴 The chunked generator emits its own `rectify correct` command line
+            # and does NOT forward protocol flags (verified: zero occurrences of
+            # --ONT-cDNA/--drs/--dT-primed-cDNA in run/chunked_batch.py). A cDNA
+            # library would therefore be corrected under the DRS strand rule --
+            # wrong terminus for ~half the reads -- with nothing erroring. Refuse
+            # rather than emit a script that produces a confident wrong answer.
+            _active_proto = [
+                flag for flag, dest in _PROTOCOL_FLAGS
+                if flag != '--short-read' and getattr(args, dest, False)
+            ]
+            if _active_proto:
+                print(
+                    "ERROR: --chunked-alignment does not propagate protocol flags "
+                    f"({', '.join(_active_proto)}) into the generated scripts, so the "
+                    "data would be corrected under the default (DRS) strand rule.\n"
+                    "       Run without --chunked-alignment, or generate the scripts "
+                    "and add the flag to the emitted `rectify correct` command by hand.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             rc = _generate_chunked_pipeline(args)
             sys.exit(rc)
 
@@ -562,7 +582,31 @@ def create_run_parser(subparsers):
              'BOTH orientations, so the RNA strand is resolved per read rather than '
              'from the BAM strand. Use this — NOT --dT-primed-cDNA — for ONT PCR-cDNA: '
              '--dT-primed-cDNA applies QuantSeq REV\'s fixed antisense rule and puts '
-             'the 3\' end at the wrong terminus for roughly half the reads.'
+             'the 3\' end at the wrong terminus for roughly half the reads. '
+             'DEFAULT behaviour is Path A: reads are UMI-collapsed to MOLECULES '
+             '(trim -> pre-align -> correct-cdna) before the main pipeline, so '
+             'counts are molecule counts. See --ont-cdna-path.'
+    )
+    run_parser.add_argument(
+        '--ont-cdna-path',
+        dest='ont_cdna_path',
+        choices=['a', 'b'],
+        default='a',
+        help='ONT PCR-cDNA processing path. "a" (DEFAULT) = UMI-collapse to '
+             'MOLECULES via correct-cdna, then align+correct; one output row per '
+             'molecule. "b" = trim only; one output row per READ, NOT '
+             'UMI-deduplicated. PCB114 is PCR-amplified, so a read is not a '
+             'molecule and duplicates inflate counts unevenly between libraries: '
+             'use "b" only for read-level diagnostics, never for abundance.'
+    )
+    run_parser.add_argument(
+        '--ont-cdna-poa',
+        dest='ont_cdna_poa',
+        action='store_true',
+        default=False,
+        help='Path A only: build an abPOA consensus SEQUENCE per UMI cluster. '
+             'Deduplication does not need one and POA is ~44%% of stage-1 runtime, '
+             'so it is off by default.'
     )
 
     # Optional analysis arguments

@@ -109,6 +109,53 @@ def _cdna_region_task(
     reads, n_rdna_masked = _stream(
         _P(bam_path), region_str, reference=reference, rdna_intervals=rdna_intervals
     )
+
+    # ---- 624: ANCHOR-IN-REGION FILTER — makes --workers N EXACTLY equal --workers 1 ----
+    # `stream_reads` fetches via pysam, which returns every read OVERLAPPING the interval,
+    # and regions are contiguous. Two failure modes follow, and they are NOT the same bug:
+    #
+    #   (a) DUPLICATION — a read overlapping two regions is clustered in both and emitted
+    #       twice. Fixed by any partition-by-position rule.
+    #   (b) SPLITTING   — two reads of the SAME molecule land in different regions, are never
+    #       compared, and the molecule is emitted as two. Measured on a 440,009-read subset:
+    #       partitioning on `aln_start` conserved reads exactly (436,013 both arms) but still
+    #       produced +293 molecules (+0.096%), all of this kind.
+    #
+    # planning/584b attributed its "+7 molecules on 63,508" to double-counting; the read-
+    # conservation check above shows that diagnosis was wrong — nothing is duplicated, molecules
+    # are fragmented.
+    #
+    # THE FIX: partition on the CLUSTERING KEY, not on the alignment start. `cluster_reads`
+    # buckets on (chrom, anchor // anchor_window, orient, read_type) — so at anchor_window == 1
+    # two reads co-cluster ONLY IF their anchors are IDENTICAL. Assigning each read to the region
+    # containing its ANCHOR therefore keeps every member of a bucket in the same region by
+    # construction: no duplication AND no splitting.
+    #
+    # Safety: the anchor is derived by walking back from the read's 3' end, so it always lies
+    # inside the aligned span — a read whose anchor is in this region necessarily overlaps it and
+    # is therefore returned by this fetch. And `get_processing_regions` tiles every chromosome
+    # disjointly over [0, chrom_len), so each anchor falls in exactly one region.
+    #
+    # ⚠️ At anchor_window > 1 a bucket spans `anchor_window` positions, so a bucket straddling a
+    # region boundary can still split. Exactness is guaranteed only for anchor_window == 1 (the
+    # lab's production setting, planning/584d). Residual splitting is reported below.
+    #
+    # `region_str` is f"{chrom}:{start+1}-{end}" (1-based inclusive); rsplit(":", 1) so
+    # chromosome names containing ':' are handled.
+    try:
+        _span = region_str.rsplit(":", 1)[1]
+        _r_start0, _r_end = _span.split("-")
+        _r_start0 = int(_r_start0) - 1          # back to 0-based, matching ref coords
+        _r_end = int(_r_end)
+        _n_before = len(reads)
+        reads = [r for r in reads if _r_start0 <= r.anchor < _r_end]
+        _n_boundary = _n_before - len(reads)
+    except (IndexError, ValueError):
+        # Unparseable region (e.g. a whole-chromosome string with no coords): no filtering.
+        # Serial mode passes region=None and never reaches this function, so this is only a
+        # guard against a future caller shape, not an expected path.
+        _n_boundary = 0
+
     if not reads:
         # Write empty gzip FASTQ so the merge step has a file to cat
         import gzip as _gz
@@ -139,6 +186,9 @@ def _cdna_region_task(
         cluster_name_prefix=region_name,
     )
     fq_stats["n_rdna_masked"] = n_rdna_masked
+    # 624: report what the start-in-region filter removed, so the correction is visible in the
+    # run log rather than silent (workspace rule: never a silent cap).
+    fq_stats["n_boundary_dropped"] = _n_boundary
     return fq_stats
 
 
@@ -193,12 +243,21 @@ def _run_cdna_correct_parallel(
                 )
                 futures[fut] = plan.region_id
 
+            # 624: n_boundary_dropped accumulates the reads removed by the start-in-region
+            # filter — i.e. exactly the double-counting that --workers > 1 used to introduce.
             total_stats: Dict = {"input_reads": 0, "written": 0, "from_singletons": 0,
-                                  "from_multi_pileup": 0, "from_multi_fallback": 0}
+                                  "from_multi_pileup": 0, "from_multi_fallback": 0,
+                                  "n_boundary_dropped": 0}
             for fut in as_completed(futures):
                 s = fut.result()
                 for k in total_stats:
                     total_stats[k] += s.get(k, 0)
+            if total_stats["n_boundary_dropped"]:
+                log.info(
+                    "  region-boundary de-duplication: %d overlapping read placements "
+                    "excluded (start-in-region filter; makes workers=%d identical to workers=1)",
+                    total_stats["n_boundary_dropped"], workers,
+                )
 
         # Concatenate gzipped FASTQ shards into the final output
         existing_fastqs = [f for f in per_region_fastqs if Path(f).exists()]

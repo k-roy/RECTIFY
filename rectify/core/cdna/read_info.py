@@ -58,7 +58,18 @@ def _find_anchor_fuzzy(window: str, anchor: str, rightmost: bool) -> int:
         if not locs:
             return -1
         # locations are (start, end_inclusive) within `window`
-        return locs[-1][0] if rightmost else locs[0][0]
+        start = locs[-1][0] if rightmost else locs[0][0]
+        # edlib HW/locations can return a location whose START is None — the match END is
+        # found but the start is not localizable. Guarding only on editDistance == -1 and an
+        # empty `locations` list misses this, and the None then flows into the callers'
+        # `if p >= 0` tests as `TypeError: '>=' not supported between 'NoneType' and 'int'`.
+        # An un-localizable start carries no usable position, so report it as "no hit" using
+        # this function's documented sentinel (-1), matching the find/rfind fallback below.
+        # Same defect and same fix as `cdna/walkback.py::_find_adapter_anchor_pos`, where it
+        # DID fire in production and crashed every ONT-cDNA run on Sherlock (planning/623).
+        if start is None:
+            return -1
+        return start
     # Fallback: exact match
     return window.rfind(anchor) if rightmost else window.find(anchor)
 

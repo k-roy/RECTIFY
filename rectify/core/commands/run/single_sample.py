@@ -36,6 +36,200 @@ from .stages import (
 )
 
 
+def _run_ont_cdna_path_a(
+    args,
+    input_path: Path,
+    input_type: str,
+    work_dir: Path,
+    sample_output: Path,
+    sample_id: str,
+    log=None,
+) -> Tuple[Path, str]:
+    """ONT PCR-cDNA **Path A**: UMI-collapse to MOLECULES before the main pipeline.
+
+    Returns ``(new_input_path, new_input_type)`` — a FASTQ of one consensus record
+    per molecule, which the caller then feeds to the normal align → correct flow.
+
+    🔴 WHY THIS IS THE DEFAULT (Kevin, standing policy 2026-08-03).
+    *"cDNA analyses should always use umi deduped reads. DRS needs no such
+    treatment."* SQK-PCB114 is PCR-amplified and carries a 27-nt UMI, so a READ is
+    NOT a MOLECULE: duplicates inflate counts and do so **unevenly between
+    libraries**, which is why the inflation does not cancel in a ratio. Path B
+    (trim → align → correct) emits pre-collapse reads and cannot satisfy that
+    policy no matter how well the rest of the pipeline behaves.
+
+    THE CHAIN (Kevin's spec, 2026-08-04) — **NO PRE-TRIM**:
+      1. a pre-alignment — ``correct-cdna`` derives its clustering anchor from
+         alignment coordinates and skips unmapped reads
+         (``cdna/read_info.py::extract_read_info``), so it requires an ALIGNED BAM.
+         The reads go in **INTACT**: adapter, UMI and poly-A still attached.
+      2. ``correct-cdna`` — groups reads into UMI molecules on their 5'/3' ends with
+         window tolerance plus UMI edit distance, collapses each group to one
+         consensus molecule, records the poly-A tail length, then ``pretrim_consensus``
+         (``cdna/io.py:168``) strips the 3' tail+adapter and 5' UMI+adapter from the
+         CONSENSUS, keeping the strip lengths as ``XQ``/``XK``.
+      3. the caller re-aligns the collapsed mRNA body and corrects it as usual.
+
+    🔴 **The trim happens AFTER collapse, never before.** An earlier version of this
+    function ran ``trim-cdna-polya`` first; that was the defect. ``correct-cdna``
+    reads the read SEQUENCE (``extract_read_info`` has ZERO ``get_tag`` calls), so
+    pre-trimming removes the very structure it needs — see the comment at step 1.
+
+    ``-y`` is required at every alignment so any FASTQ-comment tags survive into the
+    BAM; ``stages._run_alignment`` handles that for the caller's alignment, and the
+    pre-alignment here passes it explicitly.
+
+    Raises on failure — a silently-skipped collapse would emit read-level counts
+    under a molecule-level contract, which is precisely the defect this prevents.
+    """
+    import subprocess as _subprocess
+
+    def _log(msg: str) -> None:
+        print(f"  [{sample_id}] {msg}", flush=True)
+        if log is not None:
+            log.write(msg + "\n")
+
+    if input_type not in ('fastq', 'fastq.gz'):
+        raise ValueError(
+            "ONT-cDNA Path A needs FASTQ input; got %r. Convert the BAM to FASTQ "
+            "first, or pass an already-collapsed BAM with --ont-cdna-path b."
+            % input_type
+        )
+
+    cdna_dir = work_dir / 'cdna_path_a'
+    cdna_dir.mkdir(parents=True, exist_ok=True)
+
+    base = input_path.name
+    for ext in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+
+    # ---- 1. pre-alignment (correct-cdna needs alignment anchors) ------------
+    # 🔴 NO PRE-TRIM HERE. `correct-cdna` reads the read SEQUENCE, not tags --
+    # `cdna/read_info.py::extract_read_info` contains ZERO `get_tag` calls -- and it
+    # derives the UMI, the orientation, the XF full-length tier and the tail length
+    # from the adapter/UMI/poly-A structure still attached to the read. Trimming
+    # first removes exactly what it needs. Measured (planning/567):
+    #   detect_full_length_tier 2 -> 0 on every molecule (XF destroyed, and XF is
+    #     the full-length gate every 3'-end analysis depends on)
+    #   ~9% of reads (Type-2, SSP-less) hit read_info.py `return None` and are
+    #     silently DROPPED, exit 0
+    #   the survivors are a BIASED sample -- the trim fires only on reads with a
+    #     detectable tail, i.e. selectively on the highest-quality reads
+    # Smoke on 9,976 untrimmed reads: Type-2 = 13.1% (expected ~9%, NOT ~0%) and
+    # XF=2 = 73.5% -- both correct only when the reads arrive intact.
+    # The trim belongs AFTER collapse, and already happens there:
+    # `pretrim_consensus` in cdna/io.py:168 strips adapter/UMI/poly-A from the
+    # consensus and records the strip lengths as XQ/XK.
+    pre_bam = cdna_dir / f"{base}_pre.bam"
+    if pre_bam.exists() and pre_bam.stat().st_size > 0:
+        _log(f"ONT-cDNA Path A: reusing existing pre-alignment {pre_bam.name}")
+    else:
+        _log("ONT-cDNA Path A step 1/2: pre-alignment for UMI anchors…")
+        threads = str(getattr(args, 'threads', 4))
+        mm2 = _subprocess.Popen(
+            ['minimap2', '-y', '-t', threads, '-ax', 'splice', '--secondary=no',
+             str(args.genome), str(input_path)],
+            stdout=_subprocess.PIPE, stderr=_subprocess.DEVNULL,
+        )
+        sort = _subprocess.Popen(
+            ['samtools', 'sort', '-@', '2', '-o', str(pre_bam)],
+            stdin=mm2.stdout, stderr=_subprocess.DEVNULL,
+        )
+        mm2.stdout.close()
+        sort.communicate()
+        if sort.returncode != 0 or mm2.wait() != 0:
+            raise RuntimeError("ONT-cDNA Path A pre-alignment failed")
+        _subprocess.run(['samtools', 'index', str(pre_bam)], check=True)
+
+    # ---- 2. UMI collapse: reads -> molecules --------------------------------
+    stage1_dir = cdna_dir / 'stage1'
+    collapsed = stage1_dir / 'stage1_consensus.fastq.gz'
+    if collapsed.exists() and collapsed.stat().st_size > 0:
+        _log(f"ONT-cDNA Path A: reusing existing UMI collapse {collapsed.name}")
+    else:
+        _log("ONT-cDNA Path A step 2/2: UMI clustering (reads → molecules)…")
+        stage1_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, '-m', 'rectify', 'correct-cdna', str(pre_bam),
+               '-o', str(stage1_dir), '--reference', str(args.genome)]
+        if getattr(args, 'annotation', None):
+            cmd += ['--gff', str(args.annotation)]
+        # Dedup does not need a consensus SEQUENCE, and POA is ~44% of stage-1
+        # runtime, so skip it unless the caller explicitly wants consensus bases.
+        if not getattr(args, 'ont_cdna_poa', False):
+            cmd.append('--no-poa')
+        rc = _subprocess.run(cmd).returncode
+        if rc != 0:
+            raise RuntimeError(f"rectify correct-cdna failed (rc={rc})")
+    if not collapsed.exists() or collapsed.stat().st_size == 0:
+        raise RuntimeError(
+            "ONT-cDNA Path A produced no collapsed FASTQ at %s" % collapsed)
+
+    _log(f"ONT-cDNA Path A complete → {collapsed} (one record per MOLECULE)")
+    return collapsed, 'fastq.gz'
+
+
+def _run_ont_cdna_prepare(
+    args,
+    input_path: Path,
+    input_type: str,
+    work_dir: Path,
+    sample_output: Path,
+    sample_id: str,
+    log=None,
+) -> Tuple[Path, str]:
+    """Dispatch ONT PCR-cDNA preparation: Path A (default) or Path B.
+
+    🔴 CALLED FROM BOTH ``_run_single_sample`` AND ``_process_one_sample`` — that is
+    the point of this function. The previous implementation lived inline in
+    ``_process_one_sample`` only, so ``run-all --ONT-cDNA reads.fastq`` (positional
+    input, the command a lab member would naturally type) silently skipped cDNA
+    preparation entirely and resolved every read by annotated-gene overlap: ~19% of
+    3' ends land >250nt inside the CDS that way, versus ~1.7-2.2% for tag-resolved
+    reads. Nothing errored. **Do not re-inline this; add callers instead.**
+
+    Path A (``--ont-cdna-path a``, DEFAULT) → one record per MOLECULE (UMI-collapsed).
+    Path B (``--ont-cdna-path b``)         → one record per READ (trim only).
+    """
+    mode = str(getattr(args, 'ont_cdna_path', 'a') or 'a').lower()
+
+    if mode == 'a':
+        return _run_ont_cdna_path_a(
+            args, input_path, input_type, work_dir, sample_output, sample_id, log=log)
+
+    # ---- Path B: trim only; output rows are pre-collapse READS --------------
+    from ..cdna_trim_command import trim_cdna_fastq_polya
+
+    msg = ("ONT-cDNA Path B selected: output rows are pre-collapse READS, not "
+           "molecules. Counts/abundance from this output are NOT UMI-deduplicated.")
+    print(f"  [{sample_id}] WARNING: {msg}", flush=True)
+    if log is not None:
+        log.write(msg + "\n")
+
+    cdna_dir = work_dir / 'cdna_trim'
+    cdna_dir.mkdir(parents=True, exist_ok=True)
+    base = input_path.name
+    for ext in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+    cdna_fastq = cdna_dir / f"{base}_cdna_trimmed.fastq.gz"
+    cdna_meta = sample_output / f"{base}_cdna_trim_metadata.tsv"
+
+    print(f"  [{sample_id}] ONT cDNA poly(A)/poly(T) trimming…", flush=True)
+    stats = trim_cdna_fastq_polya(
+        input_fastq_path=str(input_path),
+        output_fastq_path=str(cdna_fastq),
+        metadata_path=str(cdna_meta),
+        trim_5p_polyt=True,
+    )
+    if log is not None:
+        log.write(f"ONT cDNA trim stats: {stats}\n")
+        log.write(f"ONT cDNA trim FASTQ: {cdna_fastq}\n")
+    return cdna_fastq, 'fastq.gz'
+
+
 def _run_samtools_fastq(input_bam: Path, output_fastq: Path, *, threads: int) -> None:
     import subprocess as _subprocess
 
@@ -163,33 +357,15 @@ def _process_one_sample(
             # trim_5p_polyt=True is required: it is what labels the ANTISENSE
             # reads (~44% of a PCB114 library), which is the whole point.
             if getattr(args, 'ONT_cDNA', False) and input_type in ('fastq', 'fastq.gz'):
-                from ..cdna_trim_command import trim_cdna_fastq_polya
-
-                _cdna_dir = _work / 'cdna_trim'
-                _cdna_dir.mkdir(parents=True, exist_ok=True)
-                # .stem on "x.fastq.gz" leaves "x.fastq"; strip it for clean names.
-                _base = input_path.name
-                for _ext in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
-                    if _base.endswith(_ext):
-                        _base = _base[:-len(_ext)]
-                        break
-                _cdna_fastq = _cdna_dir / f"{_base}_cdna_trimmed.fastq.gz"
-                _cdna_meta = sample_output / f"{_base}_cdna_trim_metadata.tsv"
-
-                print(f"  [{sample_id}] ONT cDNA poly(A)/poly(T) trimming…", flush=True)
                 try:
-                    _c_stats = trim_cdna_fastq_polya(
-                        input_fastq_path=str(input_path),
-                        output_fastq_path=str(_cdna_fastq),
-                        metadata_path=str(_cdna_meta),
-                        trim_5p_polyt=True,
+                    input_path, input_type = _run_ont_cdna_prepare(
+                        args, input_path, input_type, _work, sample_output,
+                        sample_id, log=log,
                     )
-                    log.write(f"ONT cDNA trim stats: {_c_stats}\n")
-                    input_path = _cdna_fastq
-                    input_type = 'fastq.gz'
-                    log.write(f"ONT cDNA trim FASTQ: {_cdna_fastq}\n")
                 except Exception as e:
-                    log.write(f"ONT cDNA trim failed: {e}\n")
+                    log.write(f"ONT cDNA preparation failed: {e}\n")
+                    print(f"ERROR: [{sample_id}] ONT cDNA preparation failed: {e}",
+                          file=sys.stderr)
                     return sample_id, 1
 
             if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
@@ -562,6 +738,26 @@ def _run_single_sample(args) -> int:
         # Re-classify as FASTQ so the alignment step proceeds on trimmed reads.
         input_path = _trimmed_fastq
         input_type = 'fastq.gz'
+
+    # ── Step 0 (ONT PCR-cDNA): UMI collapse (Path A) or trim-only (Path B) ───
+    # 🔴 THIS CALL WAS MISSING. The cDNA preparation existed only in
+    # `_process_one_sample` (the --manifest worker), so a positional invocation
+    # -- `run-all --ONT-cDNA reads.fastq`, the natural one -- parsed the flag,
+    # ran, exited 0, and silently corrected every read through the weakest
+    # strand channel. Both entry points now call the SAME helper.
+    if getattr(args, 'ONT_cDNA', False) and input_type in ('fastq', 'fastq.gz'):
+        _t0_cdna = _time.perf_counter()
+        _cdna_in = input_path
+        input_path, input_type = _run_ont_cdna_prepare(
+            args, input_path, input_type, work_dir, output_dir,
+            input_path.stem.replace('.fastq', '').replace('.gz', ''),
+        )
+        print(f"[TIMING] ONT-cDNA prep: {_time.perf_counter() - _t0_cdna:.1f}s")
+        tracker.record_step(
+            'ont_cdna_prepare',
+            input_files=[_cdna_in],
+            output_files=[input_path],
+        )
 
     # ── Step 0/1: Alignment ───────────────────────────────────────────────────
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):

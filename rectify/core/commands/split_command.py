@@ -1719,6 +1719,7 @@ FINAL_MERGE_CPUS=${{SLURM_CPUS_PER_TASK:-${{NSLOTS:-${{PBS_NUM_PPN:-{FINAL_MERGE
 {limits}
 
 OUTDIR="{output_dir}"
+SAMPLE="{sample_prefix}"
 N_CHUNKS={n_chunks}
 CONSENSUS_DIR="$OUTDIR/consensus"
 mkdir -p "$CONSENSUS_DIR"
