@@ -608,7 +608,7 @@ def run_align(args: argparse.Namespace) -> int:
             elif aligner == 'mapPacBio':
                 _n_chunks = getattr(args, 'mapPacBio_chunks', 1) or 1
                 _chunk_idx = getattr(args, 'mapPacBio_chunk_idx', None)
-                run_map_pacbio(
+                _mpb_out = run_map_pacbio(
                     reads_path=str(args.reads),
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
@@ -617,6 +617,13 @@ def run_align(args: argparse.Namespace) -> int:
                     n_chunks=_n_chunks if _n_chunks > 1 else None,
                     max_intron=getattr(args, 'max_intron', 5000),
                 )
+                # Chunk mode redirects the output to *.chunk_K_of_N.bam and
+                # returns that path. Rebind so the coord-sort/index/summary
+                # below operate on the artifact that exists — otherwise a
+                # SUCCESSFUL chunk ends in "No aligners succeeded" against
+                # the merged name (planning/644, chunk-0 smoke).
+                if _mpb_out:
+                    output_bam = Path(_mpb_out)
             elif aligner == 'gapmm2':
                 run_gapmm2(
                     reads_path=str(args.reads),
