@@ -203,6 +203,14 @@ def resolve_clip(
     # --- Candidate lookup (binary search, bounded by W) --------------------
     placements: List[_Placement] = []
     best_ed = float('inf')
+
+    def _cutoff() -> float:
+        # Exact pruning bound: a candidate with ed > max_edit_frac*lc can
+        # never be accepted, and one with ed >= best + margin can neither win
+        # nor block on ambiguity — so anything above
+        # min(best, threshold) + margin is irrelevant. Values AT the bound
+        # are still computed exactly (the DP prunes on > only).
+        return min(best_ed, cfg.max_edit_frac * lc) + cfg.min_margin
     if side == _LEFT:
         # near site e in [edge - slop, edge]; far site f in [e - w, e - min_intron]
         near_sites = index.sites_in(chrom_key, near_kind, edge - cfg.edge_slop, edge + 1)
@@ -221,8 +229,9 @@ def resolve_clip(
                 ref = chrom_seq[f - m:f] + chrom_seq[e:edge]
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
-                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=best_ed + cfg.min_margin)
-                if ed <= best_ed + cfg.min_margin:
+                _c = _cutoff()
+                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=_c)
+                if ed <= _c:
                     placements.append(_Placement(
                         ed=ed, intron_start=f, intron_end=e, lead=lead, m=m,
                         canonical_rank=_donor_rank(chrom_seq, side, strand, f, e),
@@ -246,8 +255,9 @@ def resolve_clip(
                 ref = chrom_seq[edge:d] + chrom_seq[e:e + m]
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
-                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=best_ed + cfg.min_margin)
-                if ed <= best_ed + cfg.min_margin:
+                _c = _cutoff()
+                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=_c)
+                if ed <= _c:
                     placements.append(_Placement(
                         ed=ed, intron_start=d, intron_end=e, lead=lead, m=m,
                         canonical_rank=_donor_rank(chrom_seq, side, strand, d, e),
