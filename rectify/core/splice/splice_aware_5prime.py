@@ -666,7 +666,134 @@ _hp_ed_del = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
 _hp_ed_ins = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
 
 
-def _hp_edit_distance(s1: str, s2: str) -> float:
+# ---------------------------------------------------------------------------
+# Optional Numba JIT for the _hp_edit_distance inner loop
+# ---------------------------------------------------------------------------
+# 🔴 NOTE: hp_penalty._score_hp_dp_numba is NOT reusable here. That kernel is
+# SEMI-GLOBAL (left end of ref fixed, right suffix free, returns prev.min());
+# _hp_edit_distance is GLOBAL (returns the corner dp[n][m]). Different
+# recurrences — hence this separate kernel, which replicates the pure-Python
+# recurrence in this file exactly, including the homopolymer 0.5-cost rule and
+# the every-8th-row cutoff test.
+#
+# Mirrors the pattern in hp_penalty.py: the symbol is importable in both cases
+# (None when numba is absent) and every call site is guarded.
+# 🔴 MEMORY GATE — default OFF. BAM region workers use the `spawn` start method
+# (`bam/parallel.py::_get_bam_worker_context`), so EVERY worker re-imports this
+# module and therefore imports numba independently. Numba's import footprint
+# (~100+ MB RSS) multiplied by N workers is enough to OOM a memory-constrained
+# host: on an 8 GB M1 with swap already near-full, enabling this turned a clean
+# 276-passed run into 84 fixture ERRORS, while the same tests passed one at a
+# time. The kernel itself is correct (1,400 randomised pairs assert bit-identity
+# with the Python loop) -- the cost is RSS, not correctness.
+#
+# ⇒ Opt in explicitly on a machine with headroom:  RECTIFY_HP_ED_NUMBA=1
+_HP_ED_NUMBA_REQUESTED = os.environ.get('RECTIFY_HP_ED_NUMBA', '0').strip() not in (
+    '', '0', 'false', 'False', 'no', 'off',
+)
+
+if _HP_ED_NUMBA_REQUESTED:
+    try:
+        import numba as _numba_mod
+        import numpy as _np_mod
+        _HP_ED_NUMBA = True
+    except ImportError:                               # pragma: no cover
+        _HP_ED_NUMBA = False
+else:
+    _HP_ED_NUMBA = False
+
+_hp_ed_dp_numba = None
+
+# Below this many DP cells the JIT call + array marshalling costs more than the
+# pure-Python loop saves, so the dispatcher stays on the Python path.
+_HP_ED_NUMBA_MIN_CELLS = 400
+
+if _HP_ED_NUMBA:
+    @_numba_mod.njit(cache=True)
+    def _hp_ed_dp_numba(a1, a2, cutoff):  # noqa: F811  (intentional stub override)
+        """Global HP-aware edit distance. Bit-identical to the Python loop.
+
+        a1, a2 : uint8 arrays of UPPERCASE ASCII codes, already truncated to
+                 _HP_ED_MAX_LEN by the caller.
+        cutoff : < 0 disables pruning; otherwise abort once a whole row exceeds
+                 it and return cutoff + 1.0 (see the exactness argument on
+                 _hp_edit_distance -- prune on strictly-greater ONLY).
+        """
+        n = len(a1)
+        m = len(a2)
+        if n == 0:
+            return float(m)
+        if m == 0:
+            return float(n)
+
+        # Per-position HP costs — identical rule to the Python version.
+        dcost = _np_mod.empty(n, dtype=_np_mod.float64)
+        for i in range(1, n + 1):
+            if (i >= 2 and a1[i - 2] == a1[i - 1]) or (i < n and a1[i - 1] == a1[i]):
+                dcost[i - 1] = 0.5
+            else:
+                dcost[i - 1] = 1.0
+        icost = _np_mod.empty(m, dtype=_np_mod.float64)
+        for j in range(1, m + 1):
+            if (j >= 2 and a2[j - 2] == a2[j - 1]) or (j < m and a2[j - 1] == a2[j]):
+                icost[j - 1] = 0.5
+            else:
+                icost[j - 1] = 1.0
+
+        # Two rolling rows: only the corner and the per-row minima are needed.
+        prev = _np_mod.empty(m + 1, dtype=_np_mod.float64)
+        curr = _np_mod.empty(m + 1, dtype=_np_mod.float64)
+        prev[0] = 0.0
+        for j in range(1, m + 1):
+            prev[j] = prev[j - 1] + icost[j - 1]
+
+        prune = cutoff >= 0.0
+        for i in range(1, n + 1):
+            dc = dcost[i - 1]
+            c1 = a1[i - 1]
+            curr[0] = prev[0] + dc
+            rmin = curr[0]
+            for j in range(1, m + 1):
+                if c1 == a2[j - 1]:
+                    v = prev[j - 1]
+                else:
+                    v = prev[j - 1] + 1.0
+                    a = prev[j] + dc
+                    if a < v:
+                        v = a
+                    l = curr[j - 1] + icost[j - 1]
+                    if l < v:
+                        v = l
+                curr[j] = v
+                if v < rmin:
+                    rmin = v
+            if prune and (i & 7) == 0 and rmin > cutoff:
+                return cutoff + 1.0
+            for j in range(m + 1):
+                prev[j] = curr[j]
+        return prev[m]
+
+
+def _warmup_hp_ed_numba() -> None:
+    """Force JIT compilation BEFORE forking worker processes.
+
+    This path runs inside ProcessPoolExecutor workers; without a pre-fork warmup
+    every worker pays the ~1 s compile independently. Mirrors
+    ``junction_refiner._warmup_numba_dp``. Safe to call repeatedly and safe when
+    numba is absent.
+    """
+    if not _HP_ED_NUMBA or _hp_ed_dp_numba is None:
+        return
+    try:
+        a = _np_mod.frombuffer(b"ACGTACGTAC", dtype=_np_mod.uint8)
+        b = _np_mod.frombuffer(b"ACGTACGTAG", dtype=_np_mod.uint8)
+        _hp_ed_dp_numba(a, b, -1.0)
+        _hp_ed_dp_numba(a, b, 1.0)
+    except Exception:                                  # pragma: no cover
+        pass
+
+
+def _hp_edit_distance(s1: str, s2: str, cutoff: float = -1.0) -> float:
     """Edit distance with 0.5 penalty for indels within homopolymer runs.
 
     Nanopore sequencers under/over-call homopolymer run lengths.  A deletion
@@ -713,6 +840,23 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
     if m == 0:
         return float(n)
 
+    # ---- Numba fast path -------------------------------------------------
+    # Same recurrence, same HP-cost rule, same every-8th-row cutoff test, so
+    # results are bit-identical (asserted in tests/test_hp_edit_distance_cutoff.py
+    # against this very function's pure-Python branch). Skipped for small DPs
+    # where marshalling costs more than the loop saves, and it falls through to
+    # the Python path on any encoding surprise rather than raising.
+    if (_HP_ED_NUMBA and _hp_ed_dp_numba is not None
+            and n * m >= _HP_ED_NUMBA_MIN_CELLS):
+        try:
+            return _hp_ed_dp_numba(
+                _np_mod.frombuffer(s1.encode('ascii'), dtype=_np_mod.uint8),
+                _np_mod.frombuffer(s2.encode('ascii'), dtype=_np_mod.uint8),
+                cutoff,
+            )
+        except (UnicodeEncodeError, ValueError):       # pragma: no cover
+            pass                                        # fall through
+
     # Fill HP-cost arrays in-place (no allocation).
     # _hp_ed_del[i-1] = cost to delete s1[i-1] (0.5 if in HP run, else 1.0).
     # _hp_ed_ins[j-1] = cost to insert s2[j-1].
@@ -733,6 +877,24 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
     _dp[0] = 0.0
     for j in range(1, m + 1):
         _dp[j] = _dp[j - 1] + _hp_ed_ins[j - 1]
+
+    # ---- Exact early-exit pruning (only when the caller supplies a cutoff) ----
+    # 🔑 WHY THIS IS EXACT.  Every edit cost here is NON-NEGATIVE (HP costs are
+    # 0.5 or 1.0; substitution 1.0).  Any path to dp[n][m] passes through row i
+    # at some column j, and DP values along a path are non-decreasing because
+    # each step adds a non-negative cost.  Therefore
+    #       dp[n][m] >= min_j dp[i][j]
+    # so once a whole row exceeds `cutoff`, the final value must exceed it too
+    # and this candidate cannot win.  We return a value that is merely known to
+    # be > cutoff (not the true distance) -- which is safe ONLY because the
+    # caller uses the result solely to compare against its running best.
+    #
+    # 🔴 PRUNE ON STRICTLY-GREATER, NEVER >=.  The caller
+    # (`_rescue_3ss_truncation_body`) treats an ED *tie* as a live candidate and
+    # breaks it with a 4-level tiebreaker (in-ambiguity-window -> canonical
+    # donor -> |shift|).  Pruning at equality would silently change which
+    # junction wins -- a result change, not an optimisation.
+    _prune = cutoff >= 0.0
     for i in range(1, n + 1):
         _row  = i * _S
         _prev = _row - _S
@@ -748,6 +910,12 @@ def _hp_edit_distance(s1: str, s2: str) -> float:
                     _dp[_prev + j]     + dc,           # deletion
                     _dp[_row  + j - 1] + _hp_ed_ins[j - 1],  # insertion
                 )
+        # Row-minimum test every 8th row: a C-level min() over the row slice,
+        # so the inner loop above stays untouched and the no-cutoff path pays
+        # exactly nothing.
+        if _prune and (i & 7) == 0:
+            if min(_dp[_row:_row + m + 1]) > cutoff:
+                return cutoff + 1.0
     return _dp[n * _S + m]
 
 
@@ -1517,6 +1685,9 @@ def _rescue_3ss_truncation_body(
                 _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
                 exon_seq = ""
                 _eff_intron_start = intron_start
+                # Loop-invariant across BOTH the _shift and _off loops below —
+                # previously recomputed on every _hp_edit_distance call.
+                _rseq_u = _rseq.upper()
 
                 for _shift in range(_shift_lo, _shift_hi + 1):
                     _eff_start = intron_start + _shift
@@ -1539,7 +1710,9 @@ def _rescue_3ss_truncation_body(
                         _cand = genome_seq[_es:_eff_start - _off].upper()
                         if len(_cand) < _rlen:
                             continue
-                        _ed = _hp_edit_distance(_rseq.upper(), _cand)
+                        # Cutoff = the running best. Pruning is strictly-greater
+                        # only, so ED-ties still reach the tiebreaker below.
+                        _ed = _hp_edit_distance(_rseq_u, _cand, _best_local_ed)
                         _shift_abs = abs(_shift)
                         # Two-step scoring (lower tuple = better):
                         #   Step 1 — match quality: minimise HP-edit-distance.
@@ -1685,6 +1858,8 @@ def _rescue_3ss_truncation_body(
                 _best_local_shift_abs = max(abs(_shift_lo), _shift_hi) + 1
                 exon_seq = ""
                 _eff_intron_end = intron_end
+                # Loop-invariant across BOTH loops below — see + strand block.
+                _rseq_u = _rseq.upper()
 
                 for _shift in range(_shift_lo, _shift_hi + 1):
                     _eff_end = intron_end + _shift
@@ -1701,7 +1876,8 @@ def _rescue_3ss_truncation_body(
                         _cand = genome_seq[_cs:_cs + _rlen].upper()
                         if len(_cand) < _rlen:
                             continue
-                        _ed = _hp_edit_distance(_rseq.upper(), _cand)
+                        # Cutoff = running best; strictly-greater pruning only.
+                        _ed = _hp_edit_distance(_rseq_u, _cand, _best_local_ed)
                         _shift_abs = abs(_shift)
                         # Two-step scoring — see + strand block (lines ~1141-1156)
                         # for the full rationale. Tuple ordering matches the +

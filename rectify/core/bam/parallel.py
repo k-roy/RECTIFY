@@ -39,6 +39,29 @@ logger = logging.getLogger(__name__)
 _REGION_WORKER_STATE: Dict = {}
 
 
+def _warmup_hp_ed_numba() -> None:
+    """Pre-fork JIT warmup for the 3'SS-rescue DP kernel.
+
+    ⚠️ **Near-inert under the DEFAULT start method.** ``_get_bam_worker_context``
+    defaults to ``spawn``, and spawned workers do NOT inherit the parent's
+    compiled code -- they re-import and reload from numba's on-disk cache.  So
+    under the default it is ``@njit(cache=True)`` that actually saves the
+    workers, not this call.  It is kept because it DOES help when
+    ``RECTIFY_BAM_MP_START_METHOD=fork``, and because it surfaces any JIT
+    failure in the parent (where it is visible) rather than in N workers.
+
+    Imported lazily: ``splice_aware_5prime`` is not a top-level dependency of
+    this module and a module-level import would risk a cycle.  Best-effort by
+    design -- a warmup failure must never break a correction run.  No-op when
+    numba is absent.
+    """
+    try:
+        from ..splice.splice_aware_5prime import _warmup_hp_ed_numba as _w
+        _w()
+    except Exception:                                   # pragma: no cover
+        pass
+
+
 def _get_bam_worker_context() -> mp.context.BaseContext:
     """Return the multiprocessing context used for pysam region workers.
 
@@ -811,6 +834,10 @@ def process_bam_file_parallel(
             "Using multiprocessing start method '%s' for BAM region workers",
             ctx.get_start_method(),
         )
+        # Compile the 3'SS-rescue DP kernel BEFORE forking so workers inherit
+        # compiled code; otherwise each worker pays the ~1 s JIT independently.
+        # Mirrors junction_refiner._warmup_numba_dp. No-op without numba.
+        _warmup_hp_ed_numba()
         _new_pool = ctx.Pool(
             n_threads,
             initializer=_init_region_worker_state,
@@ -1263,6 +1290,8 @@ def process_bam_streaming_parallel(
             _region_tasks = [
                 (region, bam_path, variant_aware_rescue) for region in _regions_to_run
             ]
+            # Pre-fork JIT warmup — see the sibling call above.
+            _warmup_hp_ed_numba()
             with ctx.Pool(
                 n_threads,
                 initializer=_init_region_worker_state,
