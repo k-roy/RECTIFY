@@ -17,11 +17,22 @@ _MANIFEST_HEADER_COLS = ['region_id', 'chrom', 'start', 'end', 'tsv_path', 'n_ro
 
 
 def _is_manifest(filepath: str) -> bool:
-    """Return True if filepath is a corrected_reads.manifest.tsv (Commit B format)."""
+    """Return True if filepath is a corrected_reads.manifest.tsv (Commit B format).
+
+    🔴 Tests that the required columns are PRESENT, not that the header is exactly equal.
+    Exact equality made this silently fragile: anything that appended a column to a manifest
+    (run-all's single-sample path used to add `sample`) flipped this to False, and the manifest
+    was then read as if it were a reads TSV — one bogus row, no error, and analyze produced no
+    clusters while still exiting 0. A superset header is still a manifest.
+
+    Misclassifying a reads TSV as a manifest is not a real risk: a reads table would have to
+    contain `region_id`, `tsv_path` AND `sha256` columns to collide.
+    """
     try:
         with open(filepath) as fh:
             first_line = fh.readline().rstrip('\n')
-        return first_line.split('\t') == _MANIFEST_HEADER_COLS
+        cols = first_line.split('\t')
+        return all(c in cols for c in _MANIFEST_HEADER_COLS)
     except OSError:
         return False
 
@@ -289,7 +300,21 @@ def _load_large_file_chunked(
     aggregated_chunks = []
 
     total_rows = 0
-    for chunk_num, chunk in enumerate(pd.read_csv(filepath, sep='\t', chunksize=chunk_size, usecols=_usecols)):
+    for chunk_num, chunk in enumerate(pd.read_csv(filepath, sep='\t', chunksize=chunk_size, low_memory=False)):
+        # select cols AFTER a full-typed read; avoids the pandas usecols+chunksize `_concatenate_chunks`
+        # IndexError when a numeric col has empty values in some chunk. dedup: _usecols can list the
+        # position_col (e.g. corrected_3prime) twice, which would create a duplicate column -> groupby fails.
+        chunk = chunk[list(dict.fromkeys(_usecols))]
+        # Coerce ALL numeric columns to numeric: with the full-typed read above, any numeric column that has
+        # empty values in some row gets inferred as object/str for the whole column, which later breaks both
+        # the `>=` position filters (TypeError str vs int) AND the groupby sum on `fraction` (float + str).
+        for _nc in ({position_col, 'corrected_position', 'corrected_3prime', 'fraction',
+                     'alignment_start', 'alignment_end'} & set(chunk.columns)):
+            chunk[_nc] = pd.to_numeric(chunk[_nc], errors='coerce')
+        chunk = chunk.dropna(subset=[position_col])
+        chunk[position_col] = chunk[position_col].astype('int64')
+        if 'fraction' in chunk.columns:
+            chunk['fraction'] = chunk['fraction'].fillna(1.0)  # missing weight -> a full read
         if max_rows and total_rows >= max_rows:
             break
 

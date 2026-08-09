@@ -788,14 +788,40 @@ def _run_single_sample(args) -> int:
         work_dir = output_dir  # analysis outputs go directly to Oak
 
     # Add sample column (needed by analyze even for single sample)
+    #
+    # 🔴 `corrected_tsv` may be the per-region MANIFEST, not a reads table — since Commit B made
+    # `corrected_reads.manifest.tsv` the default artifact, `_run_correction` returns the manifest
+    # whenever it exists. Writing a `sample` column into the MANIFEST appends an 8th column to its
+    # 7-column header, which breaks every `_is_manifest()` signature check downstream
+    # (`analyze/loaders.py`, `bam/bam_writer.py`, `commands/qc_command.py`). Those then fall back to
+    # reading the manifest as if it were a reads TSV — one bogus row — so **analyze silently
+    # produced no clusters at all and run-all still exited 0**. Observed end-to-end 2026-08-08:
+    # `cpa_clusters.tsv` absent, empty `tables/`, "Pipeline Complete!".
+    #
+    # The sample column belongs in the REGION TSVs, which is what
+    # `_load_manifest_as_dataframe` actually reads. The manifest is an index and must stay a
+    # 7-column index.
+    sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '').replace('.bam', '')
     try:
         import pandas as pd
-        df = pd.read_csv(corrected_tsv, sep='\t')
-        sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '').replace('.bam', '')
-        df['sample'] = sample_id
-        df.to_csv(corrected_tsv, sep='\t', index=False)
-    except Exception:
-        pass  # Not fatal — analyze can work without sample column
+        from ...bam.tsv_partition import load_manifest
+        from ...analyze.loaders import _is_manifest as _loader_is_manifest
+
+        targets = []
+        if _loader_is_manifest(str(corrected_tsv)):
+            targets = [e['tsv_path'] for e in load_manifest(Path(corrected_tsv))]
+        else:
+            targets = [Path(corrected_tsv)]
+
+        for _t in targets:
+            df = pd.read_csv(_t, sep='\t')
+            df['sample'] = sample_id
+            df.to_csv(_t, sep='\t', index=False)
+    except Exception as _e:
+        # Still not fatal — analyze can work without the sample column — but it must not be
+        # SILENT. The bug above survived because this handler swallowed everything.
+        print(f"  WARNING: could not add the 'sample' column ({type(_e).__name__}: {_e}); "
+              f"analyze will fall back to a single unnamed sample", file=sys.stderr)
 
     # ── Step 2/3: Analysis ───────────────────────────────────────────────────
     print(f"\n[Step {step_correction + 1}/3] Analyzing results (single-sample)...")

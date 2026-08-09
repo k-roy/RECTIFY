@@ -1,3 +1,110 @@
+## [2026-08-08] 🟢 FIXED (UNCOMMITTED) — `run-all` was broken in BOTH modes since the per-region manifest became the default: single-sample silently produced no analysis, multi-sample crashed
+
+**Found by:** Chanfreau `[[630]]` (Rbrowse Analysis tab) while running `run-all` end to end to
+exercise a new final step. Full account: `~/work/UCLA/Chanfreau_Lab/planning/630l_runall_manifest_corruption_bug.md`.
+
+🔴 **The fixes are IN THE WORKING TREE AND NOT COMMITTED** — the checkout is on
+`feat/netseq-umi-dedup-478` (NOT `drs-validation-rebuild`) with ~19 files of unrelated live WIP, so
+`[[630]]` deliberately did not commit or switch branches. **Someone who owns this repo needs to land
+them.** Six files: `run/single_sample.py`, `run/multi_sample.py`, `run/stages.py`,
+`analyze/loaders.py`, `analyze/clustering.py`, `commands/qc_command.py`.
+
+### Why all three hid: `correct` now emits `corrected_reads.manifest.tsv` by default (Commit B) and
+### renames the merged table to `corrected_reads.region_000.tsv`. Three call sites never caught up.
+
+**Bug 1 — single-sample: the manifest was CORRUPTED BY run-all itself, and analyze silently produced nothing.**
+`single_sample.py` did `pd.read_csv(corrected_tsv) → df['sample'] = … → to_csv(corrected_tsv)`, but
+`corrected_tsv` is the **manifest**. That appended an 8th column to its 7-column header, so every
+`_is_manifest()` signature check (`analyze/loaders.py:24`, `bam/bam_writer.py:224`) returned False and
+the manifest was parsed **as a reads table** — one bogus row.
+Measured on `validation_reads.bam`: **no `cpa_clusters.tsv` written at all**, empty `tables/`,
+QC's whole TSV half blank — and `run-all` printed **"Pipeline Complete!" and exited 0**.
+*Fix:* the `sample` column goes into the **region TSVs** (what `_load_manifest_as_dataframe` reads);
+the manifest stays a 7-column index. The `except: pass` that hid it now warns.
+
+**Bug 2 — multi-sample: the analyze sample-manifest pointed at a file that does not exist.**
+`multi_sample.py` hardcoded `output_dir/<sample_id>/corrected_reads.tsv`. Pass 1 survives anyway
+(`manifest.py:232` `load_position_index` derives `corrected_reads_index.bed.gz` from the path), so the
+run prints a healthy `loaded index (35 positions…)` and then dies at Pass 1b with `FileNotFoundError`.
+⚠️ **Do NOT "fix" this by pointing `path` at the manifest.** Four passes `pd.read_csv` it directly
+(`manifest.py` 244, 437, 583, 808) and **three of them `continue` on a header mismatch** — the sample
+would be **silently dropped from the analysis** instead. *Fix:* new
+`stages._readable_corrected_tsv()` resolves to a real reads TSV, refuses loudly otherwise, and
+warns rather than guessing if a manifest ever names >1 region.
+
+**Bug 3 — `KeyError: 'gene_id'` whenever zero clusters form.**
+`clustering.annotate_clusters_with_genes` returned early on an empty frame **without** the three
+columns its own docstring promises, so the caller's `clusters_df['gene_id']` raised. Multi-sample
+`run-all` aborted `ERROR: Combined analysis failed: 'gene_id'`, RC=1, on any dataset yielding no
+clusters (legitimate: e.g. `min_reads=5` vs single-read positions). **This is what hid Bug 2** — the
+run died at `[2/9]` before reaching `[2b/9]`. *Fix:* the empty branch returns the full schema.
+
+### Verified after the fixes (same commands, same inputs)
+- single-sample: `Detected manifest format` · `Loaded 35 positions` · QC `n_tsv_rows=35, joined=35`
+- multi-sample: **RC=0** (was 1) · Pass 1b runs · browser-pack emits QC for **both** libraries +
+  `analysis.json` · QC populated 35/35 and 31/31
+- `pytest -m "not slow"` targeted (manifest/loader/analyze/cluster/run/partition): **270 passed, 0 failed**
+- **FULL `pytest -m "not slow"` after all six edits: `1986 passed, 41 skipped, 4 deselected, 1 xfailed`
+  — byte-identical to the pre-change baseline. Zero regressions.**
+
+### 🔑 The generalizable lesson
+**A default-artifact change (Commit B) needs a sweep of every consumer, not just the writer.** All
+three bugs are the same shape — code that still assumes `corrected_reads.tsv`. And two of the three
+failed **silently or with a misattributed error**, so the unit tests stayed green throughout. If you
+add a fourth consumer, grep for `corrected_reads.tsv` first.
+
+---
+
+## [2026-08-07] 🔴 ACTIVE — `correct` cost scales with local junction-pool DENSITY (not reads), and `--junction-max-candidates-per-nop` does NOT gate the path that causes it
+
+**Found by:** Chanfreau `[[589]]` (panel pressure test) while comparing a single-aligner run against
+the full panel; root-caused with `py-spy`. Cost context: `[[586]]`, `docs/COMPUTE_AND_STORAGE_COSTS.md` §8.
+
+### The symptom
+Same reads, same BAM, **same number of aligner BAMs** — only the junction pool differs:
+
+| observation | pool-density ratio | cost ratio |
+|---|---:|---:|
+| 3-region pass (partial — slower arm never finished, so a LOWER BOUND; also inflated by a per-aligner `correct` shape) | ~7.2× | ≥33× |
+| **PTC7, completed A/B under a single-`correct` design** | **4.9×** | **3.7×** |
+
+⚠️ **The exponent is NOT established.** An earlier version of this entry said "~quadratic"; the
+completed head-to-head gives roughly **linear** in pool density. Treat it as unknown between
+~linear and worse. **The MECHANISM below is verified; only the exponent is open.**
+
+Not an I/O artifact: Δcpu/Δwall over 200 s = **2.00 cores** on both jobs, `ioops` frozen (+29/+18),
+`ps` shows 2 workers at 99% and 6 idle.
+
+### Root cause (py-spy, 4 hot workers / 2 jobs / 2 compute nodes — same frame every time)
+```
+_hp_edit_distance             splice_aware_5prime.py:742/744/746/749
+_rescue_3ss_truncation_body   splice_aware_5prime.py:1542, 2033
+rescue_3ss_truncation         splice_aware_5prime.py:1147, 1155
+correct_read_3prime           bam_processor.py:491
+```
+Module 2F's 3′SS rescue runs `for _shift … × for _off … × _hp_edit_distance` (an O(n·m) DP)
+**once per candidate junction**. `_RESCUE_DP_CAP` (=100, `splice_aware_5prime.py:663`) bounds the DP
+**sequence length** only — **nothing bounds candidate multiplicity.**
+
+### 🐛 The defect
+**`--junction-max-candidates-per-nop` is plumbed into refinement but NOT into 3′SS rescue.**
+`correct_command.py:357` reads it; `:764` passes it to `refine_bam_junctions`. That is the only
+consumer — `rescue_3ss_truncation` takes no candidate cap (no `max_candidates` symbol exists in
+`splice_aware_5prime.py`). **The flag a user would reach for to bound this cost does not bound it.**
+
+### What it invalidates
+- **Read-count extrapolation of `correct` cost is invalid.** Cost tracks pool density, not reads.
+  A benchmark over a small region has a small pool and understates cost badly — this is the likely
+  resolution of the documented 12–90× gap between bench and production per-read correct cost.
+- Anything sized from a small-window `correct` timing should be re-derived at production pool density.
+
+### Workaround until fixed
+Size `correct` on a region whose pool density matches production. There is currently **no flag** that
+caps 3′SS-rescue candidates. Wiring `max_candidates_per_nop` (or an equivalent bound) through
+`rescue_3ss_truncation` is the obvious fix; it is **not yet implemented**.
+
+---
+
 ## [2026-08-03] 🔴🔴 ACTIVE — ONT PCR-cDNA: `run-all --ONT-cDNA` cannot supply the orientation signal; pre-`4cf3b9d` `gene_id` is corrupt
 
 **Found by:** `[[541]]` (`535i-cdna-strand`) while analysing the reprocessed 9-library cDNA panel.

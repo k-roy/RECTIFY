@@ -533,6 +533,16 @@ def annotate_clusters_with_genes(
             gene_id, gene_name, distance_to_gene_3prime
     """
     if clusters_df.empty:
+        # 🔴 Return the SAME SCHEMA as the non-empty path. Returning the frame untouched omits the
+        # three columns this function's contract promises, so any caller that then reads
+        # `clusters_df['gene_id']` raises KeyError — which is exactly how multi-sample `run-all`
+        # died ("Combined analysis failed: 'gene_id'") whenever the data yielded no clusters,
+        # masking a separate FileNotFoundError further down the pipeline. An empty result is a
+        # legitimate outcome (e.g. min_reads not met); it must not be a crash.
+        clusters_df = clusters_df.copy()
+        for _col in ('gene_id', 'gene_name', 'distance_to_gene_3prime'):
+            if _col not in clusters_df.columns:
+                clusters_df[_col] = pd.Series(dtype=object)
         return clusters_df
 
     # Add annotation columns

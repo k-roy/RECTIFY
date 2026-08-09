@@ -18,6 +18,9 @@ from typing import Optional
 
 from .helpers import _resolve_reference_paths
 from .single_sample import _process_one_sample
+from .stages import (
+    _readable_corrected_tsv,
+)
 
 
 def _run_analysis_manifest(
@@ -168,14 +171,31 @@ def _run_multi_sample(args) -> int:
     combined_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_rows = []
+    unresolved = []
     for s in successful_samples:
+        # 🔴 This used to hardcode `corrected_reads.tsv`, which has not existed since Commit B made
+        # the per-region manifest the default artifact (the merged TSV is renamed to
+        # `corrected_reads.region_000.tsv`). Every path written here pointed at a missing file:
+        # Pass 1 happened to survive on `corrected_reads_index.bed.gz`, then Pass 1b died with
+        # FileNotFoundError. Resolve to something that is actually readable as a reads table.
+        resolved = _readable_corrected_tsv(output_dir / s['sample_id'])
+        if resolved is None:
+            unresolved.append(s['sample_id'])
+            continue
         row = {
             'sample_id': s['sample_id'],
-            'path': str(output_dir / s['sample_id'] / 'corrected_reads.tsv'),
+            'path': str(resolved),
         }
         if 'condition' in s:
             row['condition'] = s.get('condition', '')
         manifest_rows.append(row)
+
+    if unresolved:
+        # Fail loudly rather than analysing a silently smaller cohort.
+        print(f"ERROR: no readable corrected TSV for: {', '.join(unresolved)}. "
+              f"Expected corrected_reads.tsv or a corrected_reads.manifest.tsv naming one region "
+              f"TSV under {output_dir}/<sample_id>/.", file=sys.stderr)
+        return 1
 
     manifest_for_analyze = combined_dir / 'corrected_manifest.tsv'
     pd.DataFrame(manifest_rows).to_csv(manifest_for_analyze, sep='\t', index=False)

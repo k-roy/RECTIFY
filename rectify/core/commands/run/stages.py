@@ -396,6 +396,51 @@ def _per_aligner_canonical_output(aligner_output_dir: Path) -> Optional[Path]:
     return None
 
 
+def _readable_corrected_tsv(sample_dir: Path) -> Optional[Path]:
+    """Return a path that can be ``pd.read_csv``'d as a READS table, or None.
+
+    🔴 Deliberately different from :func:`_per_aligner_canonical_output`, which prefers the
+    per-region *manifest*. The multi-sample analyze manifest carries one ``path`` per sample and
+    every manifest-mode pass in ``analyze/manifest.py`` does ``pd.read_csv(path)`` on it directly
+    (lines 244, 437, 583, 808). Handing those a per-region manifest is wrong twice over: it is not
+    a reads table, and the header check silently ``continue``s, so the sample vanishes from the
+    analysis with no error.
+
+    Before this existed, ``multi_sample.py`` hardcoded ``corrected_reads.tsv`` — which has not
+    existed since Commit B made manifest-only the default (the merged TSV is renamed to
+    ``corrected_reads.region_000.tsv``). Pass 1 survived on the position index, then Pass 1b died
+    with ``FileNotFoundError``. Reproduced end-to-end 2026-08-08.
+    """
+    flat = sample_dir / 'corrected_reads.tsv'
+    if flat.exists():
+        return flat
+
+    manifest_path = sample_dir / 'corrected_reads.manifest.tsv'
+    if not manifest_path.exists():
+        return None
+
+    try:
+        from ...bam.tsv_partition import load_manifest
+        regions = [Path(str(e['tsv_path'])) for e in load_manifest(manifest_path)]
+    except Exception as exc:
+        print(f"  WARNING: could not read {manifest_path}: {exc}", file=sys.stderr)
+        return None
+
+    regions = [r for r in regions if r.exists()]
+    if len(regions) == 1:
+        return regions[0]
+    if not regions:
+        return None
+    # A single-path sample manifest cannot express several shards. `correct` currently emits a
+    # one-entry manifest, so this is unreachable today — but it must fail LOUDLY if that changes,
+    # not quietly analyse one shard and drop the rest.
+    print(f"  WARNING: {manifest_path} names {len(regions)} region TSVs; the analyze sample "
+          f"manifest holds one path per sample, so this sample would be analysed from only part "
+          f"of its reads. Re-run correct with --emit-merged-tsv, or use "
+          f"'rectify export-merged-tsv' to produce a single TSV.", file=sys.stderr)
+    return None
+
+
 def _run_correction_per_aligner(
     per_aligner_bams: Dict[str, Path],
     output_dir: Path,
