@@ -112,6 +112,19 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
              '--aligner-bams. Annotated junctions are always retained. For '
              'S. cerevisiae, 10000 is a conservative organism-tuned cap.',
     )
+    junc.add_argument(
+        '--complexity-alpha',
+        type=float,
+        default=None,
+        metavar='ALPHA',
+        help='Structural pool-admission gate (planning/648/649): drop a NOVEL '
+             'junction when its observed span D exceeds what its worse 15-nt '
+             'exonic flank can distinguish from chance '
+             '(D * 2^-I_eff > ALPHA). Refuses long-range junctions anchored on '
+             'low-complexity/homopolymer flanks — the class that inflates '
+             'correct-stage cost panel-wide. Annotated junctions are always '
+             'retained. Default: off (no filtering). Suggested: 0.01.',
+    )
 
     from rectify.data import add_organism_args
     add_organism_args(parser)
@@ -171,6 +184,19 @@ def run(args: argparse.Namespace) -> int:
 
     t0_total = time.perf_counter()
 
+    # Loaded on first use and shared by both steps (the complexity gate in
+    # step 2 needs it too, and it is the most expensive thing to load twice).
+    _genome_cache = {}
+
+    def _get_genome():
+        if 'g' not in _genome_cache:
+            from ...utils.genome import load_genome
+            _t = time.perf_counter()
+            logger.info("  Loading genome...")
+            _genome_cache['g'] = load_genome(args.genome)
+            logger.info(f"  Genome loaded in {time.perf_counter() - _t:.1f}s")
+        return _genome_cache['g']
+
     # ------------------------------------------------------------------
     # Step 1: Variant scan (Module 2D Pass 1)
     # ------------------------------------------------------------------
@@ -178,11 +204,7 @@ def run(args: argparse.Namespace) -> int:
         logger.info("=== Step 1: Variant scan (Module 2D) ===")
         logger.info(f"  BAM: {args.bam}")
 
-        from ...utils.genome import load_genome
-        t0 = time.perf_counter()
-        logger.info("  Loading genome...")
-        genome = load_genome(args.genome)
-        logger.info(f"  Genome loaded in {time.perf_counter() - t0:.1f}s")
+        genome = _get_genome()
 
         from ..bam.variant_scan import run_variant_aware_scan
         t0 = time.perf_counter()
@@ -239,11 +261,32 @@ def run(args: argparse.Namespace) -> int:
             f"{len(all_junctions)} total, {len(annotated_set)} annotated"
         )
 
+        # Structural complexity gate (planning/649). Off unless requested, so
+        # the default pool is byte-identical to before this flag existed.
+        if args.complexity_alpha is not None:
+            from ..splice.overhang_informativeness import (
+                filter_pool_by_flank_complexity,
+            )
+            t0 = time.perf_counter()
+            _before = len(all_junctions)
+            all_junctions, _n_refused = filter_pool_by_flank_complexity(
+                all_junctions, annotated_set,
+                _get_genome(), alpha=args.complexity_alpha,
+            )
+            logger.info(
+                "  Complexity gate (alpha=%g): refused %d of %d novel junctions "
+                "in %.1fs; pool %d -> %d",
+                args.complexity_alpha, _n_refused,
+                _before - len(annotated_set), time.perf_counter() - t0,
+                _before, len(all_junctions),
+            )
+
         pool_data = {
             'all_junctions': all_junctions,
             'annotated_set': annotated_set,
             'min_observed_support': args.junction_min_support,
             'max_junction_size': args.junction_max_size,
+            'complexity_alpha': args.complexity_alpha,
         }
         with open(junction_pool_path, 'wb') as fh:
             pickle.dump(pool_data, fh, protocol=pickle.HIGHEST_PROTOCOL)

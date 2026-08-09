@@ -221,6 +221,103 @@ def assess_overhang(
 
 
 # ---------------------------------------------------------------------------
+# Pool-admission complexity gate (planning/648 §1 form 2, planning/649).
+#
+# Same I_eff, different decision form from the search-radius gate above: the
+# junction's intron span D is OBSERVED, so instead of deriving a window from
+# the information we ask whether the observed placement beats chance —
+#
+#     E_chance = D * 2**(-I_eff)      admit iff E_chance <= alpha
+#
+# scored on the WORSE of the two genomic exonic flanks (the read-independent
+# per-junction feature; planning/465b). The D-dependence is the point: a
+# long-range junction on a low-complexity flank is refused while a short,
+# annotated-length intron on the same flank is not. Measured on the dense
+# PTC7+SUS1 pool (planning/649): alpha=0.01 refuses 19/109 novel junctions,
+# all long-range/low-complexity (worst D=8,684 on TTCTTTTTTTTTTTT,
+# E_chance=376), with 0/19 refused matching the planning/617 gold catalogue.
+# ---------------------------------------------------------------------------
+
+DEFAULT_POOL_FLANK_BP = 15
+
+
+def flank_information_bits(
+    chrom_seq: str,
+    intron_start: int,
+    intron_end: int,
+    flank_bp: int = DEFAULT_POOL_FLANK_BP,
+    hp_discount: float = DEFAULT_HP_DISCOUNT,
+) -> float:
+    """I_eff (bits) of the WORSE of the two exonic flanks of an intron.
+
+    Coordinates are 0-based half-open (intron = ``[intron_start, intron_end)``),
+    matching the pool convention. Flanks are exonic: ``flank_bp`` bases ending
+    at ``intron_start`` (exon-1 side) and starting at ``intron_end`` (exon-2
+    side). I_eff is strand-safe: composition entropy and the dinucleotide
+    distribution are invariant under reverse complement.
+    """
+    left = chrom_seq[max(0, intron_start - flank_bp):intron_start]
+    right = chrom_seq[intron_end:intron_end + flank_bp]
+    return min(
+        effective_information_bits(left, hp_discount=hp_discount),
+        effective_information_bits(right, hp_discount=hp_discount),
+    )
+
+
+def junction_chance_expectation(
+    chrom_seq: str,
+    intron_start: int,
+    intron_end: int,
+    flank_bp: int = DEFAULT_POOL_FLANK_BP,
+    hp_discount: float = DEFAULT_HP_DISCOUNT,
+) -> float:
+    """E_chance = D * 2**(-I_eff) for one junction (see module comment above)."""
+    d = max(0, intron_end - intron_start)
+    i_eff = flank_information_bits(
+        chrom_seq, intron_start, intron_end,
+        flank_bp=flank_bp, hp_discount=hp_discount,
+    )
+    return d * (2.0 ** -min(i_eff, _MAX_I_EFF_EXP))
+
+
+def filter_pool_by_flank_complexity(
+    all_junctions,
+    annotated_set,
+    genome: Dict[str, str],
+    alpha: float,
+    flank_bp: int = DEFAULT_POOL_FLANK_BP,
+    hp_discount: float = DEFAULT_HP_DISCOUNT,
+):
+    """Drop NOVEL pool junctions whose span exceeds what their worse exonic
+    flank can distinguish from chance (``E_chance > alpha``).
+
+    Annotated junctions are always retained. Junctions on chromosomes missing
+    from ``genome`` are retained (conservative: never drop for lack of
+    evidence). Returns ``(filtered_set, n_refused)``; the input sets are not
+    mutated. ``alpha=None`` is handled by callers as gate-off (byte parity).
+    """
+    refused = 0
+    kept = set()
+    for j in all_junctions:
+        if j in annotated_set:
+            kept.add(j)
+            continue
+        chrom_seq = genome.get(j[0])
+        if chrom_seq is None:
+            kept.add(j)
+            continue
+        e_chance = junction_chance_expectation(
+            chrom_seq, int(j[1]), int(j[2]),
+            flank_bp=flank_bp, hp_discount=hp_discount,
+        )
+        if e_chance <= alpha:
+            kept.add(j)
+        else:
+            refused += 1
+    return kept, refused
+
+
+# ---------------------------------------------------------------------------
 # Junction ambiguity canonicalisation (planning/621).
 #
 # For an intron [s, e) (0-based half-open) the spliced product is invariant
