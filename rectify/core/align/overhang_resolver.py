@@ -87,6 +87,13 @@ class ResolverConfig:
     max_edit_frac: float = 0.2   # accept threshold on best ED / matched length
     min_margin: float = 1.0      # runner-up (different junction) must be this much worse
     min_far_match: int = 8       # minimum exon bases beyond the far site
+    # Near sites up to this many bp INSIDE the aligned block are also
+    # candidates, re-assigning those aligned bases across the junction.
+    # planning/644 T4c: minimap2 routinely mis-anchors the aligned start
+    # 10-18 bp past a true acceptor into the intron tail (local homology),
+    # which both hides the true near site and lets a chance site win
+    # uncontested. Letting inside-edge sites compete fixes both.
+    edge_inside_slop: int = 24
 
 
 @dataclass
@@ -120,6 +127,8 @@ class _Placement:
     lead: int            # exon bases between the near site and the aligned edge
     m: int               # exon bases matched beyond the far site
     canonical_rank: int  # 0 = GT/AG-class donor, 1 = GC-class
+    k_inside: int = 0    # aligned bases re-assigned across the junction
+                         # (inside-edge near site; planning/644 T4c)
 
 
 def _clip_lens(cigartuples) -> Tuple[int, int]:
@@ -158,12 +167,17 @@ def resolve_clip(
     edge: int,
     cfg: ResolverConfig,
     stats: Optional[ResolverStats] = None,
+    inside_seq: str = '',
 ) -> Optional[_Placement]:
     """Resolve one terminal soft clip against the splice-site index.
 
     ``edge`` is the aligned boundary the clip attaches to: ``reference_start``
     for a LEFT clip, ``reference_end`` (exclusive) for a RIGHT clip. Returns
     an accepted :class:`_Placement` or None (refusal / no unambiguous winner).
+
+    ``inside_seq``: the aligned query bases immediately adjacent to the clip
+    (already '='-decoded by the caller), enabling inside-edge near sites —
+    the mis-anchored-edge geometry from planning/644 T4c. Empty disables.
     """
     if stats is None:
         stats = ResolverStats()
@@ -204,20 +218,30 @@ def resolve_clip(
     placements: List[_Placement] = []
     best_ed = float('inf')
 
+    k_cap = min(cfg.edge_inside_slop, len(inside_seq))
+
     def _cutoff() -> float:
-        # Exact pruning bound: a candidate with ed > max_edit_frac*lc can
-        # never be accepted, and one with ed >= best + margin can neither win
-        # nor block on ambiguity — so anything above
-        # min(best, threshold) + margin is irrelevant. Values AT the bound
-        # are still computed exactly (the DP prunes on > only).
-        return min(best_ed, cfg.max_edit_frac * lc) + cfg.min_margin
+        # Exact pruning bound: a candidate with ed > max_edit_frac*len(cmp)
+        # can never be accepted, and one with ed >= best + margin can neither
+        # win nor block on ambiguity — so anything above
+        # min(best, threshold) + margin is irrelevant. The threshold uses the
+        # LONGEST comparison length (lc + k_cap) so the bound is valid for
+        # every candidate; values AT the bound are still computed exactly
+        # (the DP prunes on > only).
+        return min(best_ed, cfg.max_edit_frac * (lc + k_cap)) + cfg.min_margin
     if side == _LEFT:
-        # near site e in [edge - slop, edge]; far site f in [e - w, e - min_intron]
-        near_sites = index.sites_in(chrom_key, near_kind, edge - cfg.edge_slop, edge + 1)
+        # near site e in [edge - slop, edge + k_cap]; far f in [e - w, e - min_intron]
+        near_sites = index.sites_in(chrom_key, near_kind,
+                                    edge - cfg.edge_slop, edge + k_cap + 1)
         for e in near_sites:
             e = int(e)
-            lead = edge - e
-            m = lc - lead
+            if e <= edge:
+                lead, k = edge - e, 0
+                cmp_seq = clip_used
+            else:
+                lead, k = 0, e - edge
+                cmp_seq = clip_used + inside_seq[:k]
+            m = len(cmp_seq) - lead
             if m < cfg.min_far_match:
                 continue
             far_lo = max(0, e - w)
@@ -226,24 +250,31 @@ def resolve_clip(
                 f = int(f)
                 if f - m < 0:
                     continue
-                ref = chrom_seq[f - m:f] + chrom_seq[e:edge]
+                ref = chrom_seq[f - m:f] + (chrom_seq[e:edge] if k == 0 else '')
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
                 _c = _cutoff()
-                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=_c)
+                ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                 if ed <= _c:
                     placements.append(_Placement(
                         ed=ed, intron_start=f, intron_end=e, lead=lead, m=m,
                         canonical_rank=_donor_rank(chrom_seq, side, strand, f, e),
+                        k_inside=k,
                     ))
                     best_ed = min(best_ed, ed)
     else:
-        # near site d in [edge, edge + slop]; far site e in [d + min_intron, d + w]
-        near_sites = index.sites_in(chrom_key, near_kind, edge, edge + cfg.edge_slop + 1)
+        # near site d in [edge - k_cap, edge + slop]; far e in [d + min_intron, d + w]
+        near_sites = index.sites_in(chrom_key, near_kind,
+                                    edge - k_cap, edge + cfg.edge_slop + 1)
         for d in near_sites:
             d = int(d)
-            lead = d - edge
-            m = lc - lead
+            if d >= edge:
+                lead, k = d - edge, 0
+                cmp_seq = clip_used
+            else:
+                lead, k = 0, edge - d
+                cmp_seq = inside_seq[len(inside_seq) - k:] + clip_used
+            m = len(cmp_seq) - lead
             if m < cfg.min_far_match:
                 continue
             far_lo = d + cfg.min_intron
@@ -252,15 +283,16 @@ def resolve_clip(
                 e = int(e)
                 if e + m > len(chrom_seq):
                     continue
-                ref = chrom_seq[edge:d] + chrom_seq[e:e + m]
+                ref = (chrom_seq[edge:d] if k == 0 else '') + chrom_seq[e:e + m]
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
                 _c = _cutoff()
-                ed = hp_edit_distance_bounded(clip_used, ref, cutoff=_c)
+                ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                 if ed <= _c:
                     placements.append(_Placement(
                         ed=ed, intron_start=d, intron_end=e, lead=lead, m=m,
                         canonical_rank=_donor_rank(chrom_seq, side, strand, d, e),
+                        k_inside=k,
                     ))
                     best_ed = min(best_ed, ed)
 
@@ -271,7 +303,9 @@ def resolve_clip(
     # --- Selection: unambiguous winner only --------------------------------
     placements.sort(key=lambda p: (p.ed, p.canonical_rank, p.intron_start))
     best = placements[0]
-    if best.ed > cfg.max_edit_frac * lc:
+    # comparison length = m + lead for k==0 (== lc) and m for k>0 (== lc + k);
+    # both equal p.m + p.lead.
+    if best.ed > cfg.max_edit_frac * (best.m + best.lead):
         stats.rejected_edit += 1
         return None
     for other in placements[1:]:
@@ -302,6 +336,7 @@ def _rewrite_cigar(
     ct = list(read.cigartuples)
     remainder = clip_len - clip_used_len
     intron_len = placement.intron_end - placement.intron_start
+    k = placement.k_inside
 
     if side == _LEFT:
         new_ops: List[Tuple[int, int]] = []
@@ -310,6 +345,10 @@ def _rewrite_cigar(
         new_ops.append((0, placement.m))
         new_ops.append((3, intron_len))
         rest = ct[1:]
+        if k > 0:
+            # k aligned bases moved across the junction into the exon-1 M;
+            # the caller guarantees rest[0] is an M op longer than k.
+            rest = [(0, rest[0][1] - k)] + rest[1:]
         if placement.lead > 0:
             if rest and rest[0][0] == 0:
                 rest = [(0, placement.lead + rest[0][1])] + rest[1:]
@@ -319,6 +358,8 @@ def _rewrite_cigar(
         read.reference_start = placement.intron_start - placement.m
     else:
         rest = ct[:-1]
+        if k > 0:
+            rest = rest[:-1] + [(0, rest[-1][1] - k)]
         new_ops = []
         if placement.lead > 0:
             if rest and rest[-1][0] == 0:
@@ -373,28 +414,53 @@ def resolve_read(
     if left_len >= cfg.min_clip:
         clip_seq = read.query_sequence[:left_len]
         clip_used_len = min(left_len, cfg.max_clip_match)
+        # Aligned bases adjacent to the clip, '='-decoded from the reference
+        # (calmd encodes matches as '='), for inside-edge near sites. Capped
+        # at first-M-length - 1 so the CIGAR rewrite always leaves a valid op.
+        ct = read.cigartuples
+        inside = ''
+        if len(ct) > 1 and ct[1][0] == 0 and ct[1][1] > 1:
+            n_in = min(cfg.edge_inside_slop, ct[1][1] - 1)
+            raw = read.query_sequence[left_len:left_len + n_in]
+            rs = read.reference_start
+            inside = ''.join(
+                chrom_seq[rs + i] if b == '=' else b for i, b in enumerate(raw))
         placement = resolve_clip(
             chrom_seq, index, chrom_key, _LEFT, strand, clip_seq,
-            edge=read.reference_start, cfg=cfg, stats=stats,
+            edge=read.reference_start, cfg=cfg, stats=stats, inside_seq=inside,
         )
         if placement is not None:
             _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len)
             stats.resolved += 1
             stats.resolved_left += 1
+            if placement.k_inside:
+                stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
             changed = True
 
     _, right_len = _clip_lens(read.cigartuples)
     if right_len >= cfg.min_clip and read.reference_end is not None:
         clip_seq = read.query_sequence[-right_len:]
         clip_used_len = min(right_len, cfg.max_clip_match)
+        ct = read.cigartuples
+        inside = ''
+        if len(ct) > 1 and ct[-2][0] == 0 and ct[-2][1] > 1:
+            n_in = min(cfg.edge_inside_slop, ct[-2][1] - 1)
+            qlen = len(read.query_sequence)
+            raw = read.query_sequence[qlen - right_len - n_in:qlen - right_len]
+            re_ = read.reference_end
+            inside = ''.join(
+                chrom_seq[re_ - n_in + i] if b == '=' else b
+                for i, b in enumerate(raw))
         placement = resolve_clip(
             chrom_seq, index, chrom_key, _RIGHT, strand, clip_seq,
-            edge=read.reference_end, cfg=cfg, stats=stats,
+            edge=read.reference_end, cfg=cfg, stats=stats, inside_seq=inside,
         )
         if placement is not None:
             _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len)
             stats.resolved += 1
             stats.resolved_right += 1
+            if placement.k_inside:
+                stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
             changed = True
 
     return changed
