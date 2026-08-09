@@ -72,7 +72,40 @@ the by4742 incident in [minimap2.md](minimap2.md#-duplicate-primary-alignments--
 
 ---
 
-## Deterministic SIGSEGV / OOM crashes — empty-BAM fallback
+## ✅ ROOT-CAUSED AND FIXED (2026-08-09) — `1.5.6-chanfreau1`, see `planning/639`
+
+The deterministic SIGSEGV/SIGABRT documented below (upstream deSALT#49) has been
+**root-caused and patched**. It is a **heap buffer overflow of the reference-window
+buffer `tseq`** in `align_core_primary` (`src/aln_2pass.c`): `tseq` is sized once
+per read from the pseudo-exon key span, but the per-anchor gap-fill loop recomputes
+fill windows from the anchors themselves and overruns it; because `tseq` lives in a
+kalloc pool the write lands on neighbouring pool allocations and surfaces later as
+the composition/architecture-dependent crash. Two amplifiers: reference reads past
+the packed-genome end, and window-length underflow on overlapping consecutive
+anchors (the two-strand compact-locus geometry in the forensics below).
+
+**The fix** is a 6-commit patch series on `chanfreau/fix-v1.5.6` (M1 `~/work/deSALT`,
+off tag `v1.5.6`): grow `tseq`/`junc` before every fill (`TSEQ_FIT`), clamp all
+reference reads at `reference_len`, guard degenerate windows, atomic-max the
+`max_exon_num_per_read`/`readlen_max` seeding race, bound `fix_cigar`, and a final
+CIGAR-vs-SEQ consistency gate that marks any inconsistent read unmapped rather than
+emit malformed SAM. Version string bumped to `1.5.6-chanfreau1`.
+
+**Verified** (`planning/639`): completes the full `ysh1_rep1` DRS sample
+(1,224,892 records; vanilla crashed), byte-identical to bioconda on the
+9,401/9,402 shared records of the rna15 reproducer's pre-crash output (extra
+records are pure recovery), 0 malformed CIGARs, `samtools quickcheck` PASS, and a
+non-empty `.deSALT.bam` through the real `run_desalt` chain. Builds and runs on H2,
+Sherlock, and SCG. Portable build: `make CFLAGS="… -fcommon -gdwarf-4 …"
+LIBS="-lm -lz -lpthread"` (the `-fcommon` works around header-defined globals; the
+vestigial `-lgomp` is dropped).
+
+⇒ With `1.5.6-chanfreau1` the empty-BAM crash fallback below **should no longer
+fire** in practice; it remains as defence-in-depth. The `_DESALT_CRASH_EXITS` set
+should also include `134`/`-6` (SIGABRT) — the whole-sample crash observed in
+`[[632]]` exited 134, which the legacy set does not cover.
+
+## Deterministic SIGSEGV / OOM crashes — empty-BAM fallback (legacy behaviour, pre-fix)
 
 deSALT v1.5.6 segfaults (**SIGSEGV, exit 139**) or is **OOM-killed (exit 137)**
 during its second-pass `Loop-ProcessReads` when certain pseudo-exon structures are
