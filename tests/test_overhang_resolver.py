@@ -274,6 +274,86 @@ class TestDriver:
         assert 'rectify-overhang-resolver' in pg_ids
 
 
+class TestInsideEdge:
+    """planning/644 T4c geometry: minimap2 mis-anchors the aligned start past
+    the true acceptor when the intron tail duplicates the exon-1 end. The
+    true near site then sits INSIDE the aligned block; the inside-edge
+    extension must let it compete (and win) with the aligned bases
+    re-assigned across the junction."""
+
+    D, E = 1200, 1500
+
+    @classmethod
+    def _genome(cls):
+        rng = random.Random(777)
+        seq = [rng.choice('ACGT') for _ in range(4000)]
+        D, E = cls.D, cls.E
+
+        def put(pos, s):
+            seq[pos:pos + len(s)] = list(s)
+
+        put(D, 'GT')
+        put(E - 2, 'AG')
+        # exon-1 end whose last 2 nt are AG, duplicated as the intron tail —
+        # the homology that makes minimap2 anchor 10 bp into the intron.
+        put(D - 10, ''.join(rng.choice('ACGT') for _ in range(8)) + 'AG')
+        seq[E - 10:E] = seq[D - 10:D]
+        return ''.join(seq)
+
+    def _read(self, g, inside_encoded=False):
+        D, E = self.D, self.E
+        clip20 = g[D - 30:D - 10]
+        inside = '=' * 10 if inside_encoded else g[E - 10:E]
+        query = clip20 + inside + g[E:E + 50]
+        header = pysam.AlignmentHeader.from_dict({
+            'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrI', 'LN': len(g)}]})
+        r = pysam.AlignedSegment(header)
+        r.query_name = 'misanchor'
+        r.query_sequence = query
+        r.flag = 0
+        r.reference_id = 0
+        r.reference_start = E - 10
+        r.mapping_quality = 60
+        r.cigartuples = [(4, 20), (0, 60)]
+        return r
+
+    def _run(self, inside_encoded):
+        from rectify.core.splice.overhang_informativeness import same_junction
+        g = self._genome()
+        genome = {'chrI': g}
+        index = SpliceSiteIndex.build(genome)
+        cfg = ResolverConfig(alpha=0.01, max_intron=5000)
+        r = self._read(g, inside_encoded=inside_encoded)
+        stats = ResolverStats()
+        assert resolve_read(r, genome, index, cfg, stats), \
+            f"not resolved: {stats.as_dict()}"
+        assert stats.extra.get('resolved_inside_edge', 0) == 1
+        # junction identity up to the (deliberate) 10-bp ambiguity class
+        m = re_len = None
+        ref = r.reference_start
+        for op, ln in r.cigartuples:
+            if op == 3:
+                m, re_len = ref, ref + ln
+                break
+            if op in (0, 2, 7, 8):
+                ref += ln
+        assert m is not None, r.cigartuples
+        assert same_junction(g, (m, re_len), (self.D, self.E))
+        # query length must be conserved by the rewrite
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(r.query_sequence)
+        return r, stats
+
+    def test_misanchored_acceptor_recovered(self):
+        r, stats = self._run(inside_encoded=False)
+        assert r.get_tag('XJ')
+
+    def test_eq_encoded_inside_bases_decoded(self):
+        # calmd '='-encoded aligned bases must be decoded from the reference
+        # before entering the comparison (the clip itself still hard-fails).
+        self._run(inside_encoded=True)
+
+
 # ---------------------------------------------------------------------------
 # rescue_3ss_truncation gate wiring (dark by default)
 # ---------------------------------------------------------------------------
