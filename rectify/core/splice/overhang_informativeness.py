@@ -72,6 +72,32 @@ def reset_counters() -> None:
         COUNTERS[k] = 0
 
 
+def _maybe_register_counter_dump() -> None:
+    """When RECTIFY_OVERHANG_INFO_COUNTS names a file, append this process's
+    counters as one JSON line at exit. Best-effort instrumentation for A/B
+    gates (planning/644 T8): reliable in the main process; under spawn-start
+    workers each re-import registers its own handler, but worker atexit is
+    not guaranteed (planning/596) — run single-threaded when the counts must
+    be complete."""
+    path = os.environ.get('RECTIFY_OVERHANG_INFO_COUNTS')
+    if not path:
+        return
+    import atexit
+    import json
+
+    def _dump() -> None:
+        try:
+            with open(path, 'a') as fh:
+                fh.write(json.dumps({'pid': os.getpid(), **COUNTERS}) + '\n')
+        except OSError:
+            pass
+
+    atexit.register(_dump)
+
+
+_maybe_register_counter_dump()
+
+
 def gate_enabled() -> bool:
     """Rescue-path wiring is DARK by default (policy change, not an exact
     optimization — see planning/596's T4 exclusion). Enable with
