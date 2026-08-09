@@ -354,6 +354,133 @@ class TestInsideEdge:
         self._run(inside_encoded=True)
 
 
+class TestRearbitration:
+    """planning/644b — the peelback move generalized: junction ASSIGNMENTS
+    and suspicious linear structure are hypotheses, re-scored against
+    index-derived competitors under the information budget."""
+
+    D, E_TRUE = 1200, 1500     # true intron [D, E_TRUE), GT..AG
+    E_DEC = 1488               # decoy AG 12 bp inside the intron tail
+
+    @classmethod
+    def _genome(cls):
+        rng = random.Random(20260809)
+        seq = [rng.choice('ACGT') for _ in range(4000)]
+
+        def put(pos, s):
+            seq[pos:pos + len(s)] = list(s)
+
+        put(cls.D, 'GT')
+        put(cls.E_TRUE - 2, 'AG')
+        put(cls.E_DEC - 2, 'AG')       # the chance acceptor
+        return ''.join(seq)
+
+    @staticmethod
+    def _mk_read(g, query, cigar, rs):
+        header = pysam.AlignmentHeader.from_dict({
+            'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrI', 'LN': len(g)}]})
+        r = pysam.AlignedSegment(header)
+        r.query_name = 'arb'
+        r.query_sequence = query
+        r.flag = 0
+        r.reference_id = 0
+        r.reference_start = rs
+        r.mapping_quality = 60
+        r.cigartuples = cigar
+        return r
+
+    def _run(self, g, read):
+        genome = {'chrI': g}
+        index = SpliceSiteIndex.build(genome)
+        cfg = ResolverConfig(alpha=0.01, max_intron=5000)
+        stats = ResolverStats()
+        changed = resolve_read(read, genome, index, cfg, stats)
+        return changed, stats
+
+    def _junction(self, read):
+        ref = read.reference_start
+        for op, ln in read.cigartuples:
+            if op == 3:
+                return ref, ref + ln
+            if op in (0, 2, 7, 8):
+                ref += ln
+        return None
+
+    def test_acceptor_shift_recovers_true_junction(self):
+        # read spliced at (D, E_TRUE) but CIGAR asserts the decoy acceptor:
+        # M_right's query (true exon-2) is misaligned over the intron tail
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 60), (3, self.E_DEC - self.D), (0, 60)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_shifted') == 1
+        assert self._junction(r) == (self.D, self.E_TRUE)
+        assert r.get_tag('XB').startswith('shift:')
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_donor_shift_recovers_true_junction(self):
+        # decoy donor 8 bp downstream of the true one (GT planted at both);
+        # the claimed CIGAR over-extends exon-1 by 8 query bases
+        g = list(self._genome())
+        g[self.D + 8:self.D + 10] = list('GT')
+        g = ''.join(g)
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 68), (3, self.E_TRUE - (self.D + 8)), (0, 52)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_shifted', 0) >= 1
+        assert self._junction(r) == (self.D, self.E_TRUE)
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_correct_junction_not_shifted(self):
+        # control: the true assignment must survive re-arbitration untouched
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 60), (3, self.E_TRUE - self.D), (0, 60)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_shifted', 0) == 0
+        assert self._junction(r) == (self.D, self.E_TRUE)
+
+    def test_dop_converted_to_snapped_intron(self):
+        # the intron expressed as a 300-bp deletion at the exact bounds
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 60), (2, self.E_TRUE - self.D), (0, 60)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_dop_spliced') == 1
+        assert self._junction(r) == (self.D, self.E_TRUE)
+        assert not any(op == 2 and ln >= 20 for op, ln in r.cigartuples)
+
+    def test_linear_block_spliced_on_mismatch_cluster(self):
+        # spliced molecule aligned LINEARLY through the intron: exon-2 query
+        # misaligned over intron sequence => mismatch storm past the donor
+        g = self._genome()
+        query = g[self.D - 200:self.D] + g[self.E_TRUE:self.E_TRUE + 160]
+        cigar = [(0, 360)]
+        r = self._mk_read(g, query, cigar, self.D - 200)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_mm_flagged', 0) >= 1
+        assert changed and stats.extra.get('arb_mm_spliced') == 1
+        assert self._junction(r) == (self.D, self.E_TRUE)
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_linear_matching_block_untouched(self):
+        # control: a genuinely linear (e.g. intron-retained) read must NOT be spliced
+        g = self._genome()
+        query = g[self.D - 200:self.D + 160]
+        cigar = [(0, 360)]
+        r = self._mk_read(g, query, cigar, self.D - 200)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_mm_spliced', 0) == 0
+        assert r.cigartuples == [(0, 360)]
+
+
 # ---------------------------------------------------------------------------
 # rescue_3ss_truncation gate wiring (dark by default)
 # ---------------------------------------------------------------------------

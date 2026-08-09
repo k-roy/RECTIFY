@@ -95,6 +95,22 @@ class ResolverConfig:
     # uncontested. Letting inside-edge sites compete fixes both.
     edge_inside_slop: int = 24
 
+    # --- v2 junction re-arbitration (planning/644b) --------------------------
+    # The peelback move generalized: treat the aligner's junction ASSIGNMENT
+    # (and suspicious linear stretches) as hypotheses and re-score competing
+    # spliced interpretations from the splice-site index, under the same
+    # information budget and margin discipline. Targets the T3 residual:
+    # junctions minimap2 mis-assigned to a nearby boundary (alt-SS class) or
+    # missed entirely in a linear alignment.
+    arb_enable: bool = True
+    arb_window: int = 300        # max boundary shift searched (also clamped by W_max)
+    arb_seg: int = 40            # query bases per junction side used for scoring
+    arb_margin: float = 2.0      # an alternative must beat the current placement by this
+    arb_dop_min: int = 20        # D op at least this long = putative intron (Case B)
+    arb_dop_slop: int = 12       # boundary snap window around a D op
+    arb_mm_win: int = 50         # mismatch-cluster trigger: window (query bases)
+    arb_mm_frac: float = 0.30    # ...and the mismatch fraction that flags it
+
 
 @dataclass
 class ResolverStats:
@@ -381,6 +397,357 @@ def _rewrite_cigar(
     )
 
 
+# ---------------------------------------------------------------------------
+# v2 junction re-arbitration (planning/644b) — the peelback move generalized
+# to fully-aligned reads and internal junctions.
+# ---------------------------------------------------------------------------
+
+def _bump(stats: ResolverStats, key: str, n: int = 1) -> None:
+    stats.extra[key] = stats.extra.get(key, 0) + n
+
+
+def _boundary_kinds(strand: str) -> Tuple[str, str]:
+    """(left_kind, right_kind) of an intron's genomic boundaries."""
+    if strand == '+':
+        return 'don_plus', 'acc_plus'
+    return 'acc_minus', 'don_minus'
+
+
+def _decoded_query(read: pysam.AlignedSegment, chrom_seq: str) -> str:
+    """Query sequence with calmd '=' bytes decoded from the reference.
+    Soft clips and insertions are returned verbatim (never '='-encoded)."""
+    q = read.query_sequence
+    if '=' not in q:
+        return q
+    out = []
+    qi = 0
+    ref = read.reference_start
+    for op, ln in read.cigartuples:
+        if op in (0, 7, 8):  # M/=/X consume both
+            seg = q[qi:qi + ln]
+            if '=' in seg:
+                seg = ''.join(
+                    chrom_seq[ref + i] if b == '=' else b
+                    for i, b in enumerate(seg))
+            out.append(seg)
+            qi += ln
+            ref += ln
+        elif op in (1, 4):   # I/S consume query only
+            out.append(q[qi:qi + ln])
+            qi += ln
+        elif op in (2, 3):   # D/N consume reference only
+            ref += ln
+    return ''.join(out)
+
+
+def _iter_ref_ops(cigartuples):
+    """Yield (op_index, op, length, ref_start, q_start) walking the CIGAR."""
+    ref = 0
+    qi = 0
+    for i, (op, ln) in enumerate(cigartuples):
+        yield i, op, ln, ref, qi
+        if op in (0, 2, 3, 7, 8):
+            ref += ln
+        if op in (0, 1, 4, 7, 8):
+            qi += ln
+
+
+def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg):
+    """Score the current interpretation exactly, then alternatives under an
+    exact cutoff at (ed_cur - arb_margin). ``alts`` entries are
+    (d, e, alt_ref, alt_qwin): a LEFT-boundary shift by delta moves the
+    junction's query split by delta too, so each alternative is scored
+    against its own query window (equal length; same locality). Returns
+    (ed_cur, winner) with winner = (ed, d, e) or None."""
+    ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
+    bound = ed_cur - cfg.arb_margin
+    if bound < 0:
+        return ed_cur, None
+    scored = []
+    for d_alt, e_alt, alt_ref, alt_qwin in alts:
+        ed = hp_edit_distance_bounded(alt_qwin, alt_ref, cutoff=bound)
+        if ed <= bound and ed <= cfg.max_edit_frac * len(alt_qwin):
+            scored.append((ed, d_alt, e_alt))
+    if not scored:
+        return ed_cur, None
+    scored.sort()
+    best = scored[0]
+    for other in scored[1:]:
+        if other[0] - best[0] >= cfg.min_margin:
+            break
+        if not same_junction(chrom_seq, (best[1], best[2]), (other[1], other[2])):
+            return ed_cur, None   # ambiguous among alternatives
+    return ed_cur, best
+
+
+def _rearbitrate_read(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    index: SpliceSiteIndex,
+    chrom_key: str,
+    strand: str,
+    cfg: ResolverConfig,
+    stats: ResolverStats,
+) -> bool:
+    """Case A: re-arbitrate the FIRST/LAST N-op's boundaries against nearby
+    index sites (mis-ASSIGNED junctions, the alt-SS class). Case B: convert
+    intron-length D ops to index-snapped N (MISSED junction expressed as a
+    deletion), and splice mismatch-flagged terminal linear blocks. All under
+    the information budget + margin discipline; query length is conserved by
+    every rewrite."""
+    ct = list(read.cigartuples)
+    q = read.query_sequence
+    if not ct or not q:
+        return False
+    dq = None  # decoded lazily, once
+    left_kind, right_kind = _boundary_kinds(strand)
+    changed = False
+
+    n_idx = [i for i, (op, _) in enumerate(ct) if op == 3]
+
+    # ---- Case A: boundary shifts on the first/last N op -------------------
+    # Left-boundary shifts only on the FIRST N, right-boundary only on the
+    # LAST (interior junctions would drag every later op into a new frame).
+    # A single N is both — and its two boundary directions must compete in
+    # ONE round: sequential greedy rounds can lock in a local optimum (a
+    # 12-ED left shift accepted before the 0-ED right shift is ever offered).
+    # Rewrites never change the op count, so indexes stay valid.
+    targets = []
+    if len(n_idx) == 1:
+        targets.append(('both', n_idx[0]))
+    elif n_idx:
+        targets.append(('first', n_idx[0]))
+        targets.append(('last', n_idx[-1]))
+    for which, i in targets:
+        # flanking blocks must be M
+        if i == 0 or i == len(ct) - 1 or ct[i - 1][0] not in (0, 7, 8) or ct[i + 1][0] not in (0, 7, 8):
+            continue
+        walk = {j: (op, ln, rs, qs) for j, op, ln, rs, qs in _iter_ref_ops(ct)}
+        _, nlen, n_rs, _ = walk[i]
+        d = read.reference_start + n_rs
+        e = d + nlen
+        m_l = ct[i - 1][1]
+        m_r = ct[i + 1][1]
+        _, _, _, q_split = walk[i + 1]      # query index where exon-2 resumes
+        L1 = min(cfg.arb_seg, m_l)
+        L2 = min(cfg.arb_seg, m_r)
+        if L1 < 10 or L2 < 10 or d - L1 < 0 or e + L2 > len(chrom_seq):
+            continue
+        if dq is None:
+            dq = _decoded_query(read, chrom_seq)
+        qwin = dq[q_split - L1:q_split + L2]
+        _bump(stats, 'arb_njunc_checked')
+        a = assess_overhang(qwin, alpha=cfg.alpha, max_window=cfg.arb_window)
+        if a.refused:
+            _bump(stats, 'arb_refused')
+            continue
+        W = a.w_max_bp
+        alts = []
+        # right-boundary shifts (last N only): N length changes, nothing else
+        if which in ('last', 'both'):
+            for e_alt in index.sites_in(chrom_key, right_kind, e - W, e + W + 1):
+                e_alt = int(e_alt)
+                if e_alt == e or not (cfg.min_intron <= e_alt - d <= cfg.max_intron):
+                    continue
+                if e_alt + L2 > len(chrom_seq):
+                    continue
+                alts.append((d, e_alt,
+                             chrom_seq[d - L1:d] + chrom_seq[e_alt:e_alt + L2], qwin))
+        # left-boundary shifts (first N only): query swaps between the M blocks
+        if which in ('first', 'both'):
+            for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
+                d_alt = int(d_alt)
+                delta = d_alt - d
+                if delta == 0 or not (cfg.min_intron <= e - d_alt <= cfg.max_intron):
+                    continue
+                if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0:
+                    continue
+                if q_split + delta - L1 < 0 or q_split + delta + L2 > len(dq):
+                    continue
+                alts.append((d_alt, e,
+                             chrom_seq[d_alt - L1:d_alt] + chrom_seq[e:e + L2],
+                             dq[q_split + delta - L1:q_split + delta + L2]))
+        if not alts:
+            continue
+        cur_ref = chrom_seq[d - L1:d] + chrom_seq[e:e + L2]
+        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+        if win is None:
+            _bump(stats, 'arb_no_gain')
+            continue
+        _, d_new, e_new = win
+        if d_new != d:                       # left shift: swap query between Ms
+            delta = d_new - d
+            ct[i - 1] = (0, m_l + delta)
+            ct[i + 1] = (0, m_r - delta)
+        ct[i] = (3, e_new - d_new)
+        read.cigartuples = ct
+        for tag in ('MD', 'NM'):
+            if read.has_tag(tag):
+                read.set_tag(tag, None)
+        read.set_tag('XB', f'shift:{d}-{e}>{d_new}-{e_new}:{ed_cur:.1f}>{win[0]:.1f}')
+        _bump(stats, 'arb_shifted')
+        changed = True
+        ct = list(read.cigartuples)
+        n_idx = [j for j, (op, _) in enumerate(ct) if op == 3]
+
+    # ---- Case B1: intron-length D ops -> index-snapped N ------------------
+    for i, (op, ln) in enumerate(list(ct)):
+        if op != 2 or ln < cfg.arb_dop_min:
+            continue
+        if i == 0 or i == len(ct) - 1 or ct[i - 1][0] not in (0, 7, 8) or ct[i + 1][0] not in (0, 7, 8):
+            continue
+        walk = {j: (o, l, rs, qs) for j, o, l, rs, qs in _iter_ref_ops(ct)}
+        _, dlen, d_rs, _ = walk[i]
+        p_start = read.reference_start + d_rs
+        p_end = p_start + dlen
+        m_l = ct[i - 1][1]
+        m_r = ct[i + 1][1]
+        _, _, _, q_split = walk[i + 1]
+        L1 = min(cfg.arb_seg, m_l)
+        L2 = min(cfg.arb_seg, m_r)
+        if L1 < 10 or L2 < 10 or p_start - L1 < 0 or p_end + L2 > len(chrom_seq):
+            continue
+        if dq is None:
+            dq = _decoded_query(read, chrom_seq)
+        qwin = dq[q_split - L1:q_split + L2]
+        _bump(stats, 'arb_dop_checked')
+        s2 = cfg.arb_dop_slop
+        alts = []
+        for d_alt in index.sites_in(chrom_key, left_kind, p_start - s2, p_start + s2 + 1):
+            d_alt = int(d_alt)
+            delta = d_alt - p_start
+            if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0:
+                continue
+            if q_split + delta - L1 < 0 or q_split + delta + L2 > len(dq):
+                continue
+            for e_alt in index.sites_in(chrom_key, right_kind, p_end - s2, p_end + s2 + 1):
+                e_alt = int(e_alt)
+                if not (cfg.min_intron <= e_alt - d_alt <= cfg.max_intron):
+                    continue
+                if e_alt + L2 > len(chrom_seq):
+                    continue
+                alts.append((d_alt, e_alt,
+                             chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                             dq[q_split + delta - L1:q_split + delta + L2]))
+        if not alts:
+            continue
+        cur_ref = chrom_seq[p_start - L1:p_start] + chrom_seq[p_end:p_end + L2]
+        # A deletion and an intron at identical bounds are the same spliced
+        # product, so no margin is demanded — canonical-class snapping within
+        # the slop is the win; ties go to the index site.
+        ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
+        scored = sorted(
+            (hp_edit_distance_bounded(aq, ref, cutoff=ed_cur), da, ea)
+            for da, ea, ref, aq in alts)
+        best = scored[0]
+        if best[0] > ed_cur or best[0] > cfg.max_edit_frac * len(qwin):
+            _bump(stats, 'arb_no_gain')
+            continue
+        _, d_new, e_new = best
+        delta = d_new - p_start
+        if delta:
+            ct[i - 1] = (0, m_l + delta)
+            ct[i + 1] = (0, m_r - delta)
+        ct[i] = (3, e_new - d_new)
+        read.cigartuples = ct
+        for tag in ('MD', 'NM'):
+            if read.has_tag(tag):
+                read.set_tag(tag, None)
+        read.set_tag('XB', f'dop:{p_start}-{p_end}>{d_new}-{e_new}')
+        _bump(stats, 'arb_dop_spliced')
+        changed = True
+        ct = list(read.cigartuples)
+
+    # ---- Case B2: mismatch-flagged TERMINAL linear block -> spliced -------
+    # Right-side hypothesis on the read's last M block (no N after it): a
+    # spliced molecule aligned linearly shows a mismatch cluster downstream
+    # of the missed donor. Left side is the mirror; v2 implements the right
+    # side (the common missed-3'-portion case) and counts what it flags.
+    last_m = None
+    for j, (op, ln) in enumerate(ct):
+        if op in (0, 7, 8):
+            last_m = j
+    if last_m is not None and ct[last_m][1] >= 3 * cfg.arb_mm_win \
+            and not any(op == 3 for op, _ in ct[last_m:]):
+        walk = {j: (o, l, rs, qs) for j, o, l, rs, qs in _iter_ref_ops(ct)}
+        _, mlen, m_rs, m_qs = walk[last_m]
+        block_ref = read.reference_start + m_rs
+        if dq is None:
+            dq = _decoded_query(read, chrom_seq)
+        # coarse mismatch scan. On calmd '='-encoded input (the production
+        # case) a mismatch is simply a non-'=' byte in the M block, countable
+        # at C speed; otherwise fall back to a per-base compare.
+        eq_mode = '=' in q
+        onset = None
+        for off in range(cfg.arb_mm_win, mlen - cfg.arb_mm_win, cfg.arb_mm_win // 2):
+            if eq_mode:
+                seg = q[m_qs + off:m_qs + off + cfg.arb_mm_win]
+                mm = len(seg) - seg.count('=')
+            else:
+                seg = dq[m_qs + off:m_qs + off + cfg.arb_mm_win]
+                ref = chrom_seq[block_ref + off:block_ref + off + cfg.arb_mm_win]
+                mm = sum(1 for a_, b_ in zip(seg, ref) if a_ != b_)
+            if mm >= cfg.arb_mm_frac * cfg.arb_mm_win:
+                onset = off
+                break
+        if onset is not None:
+            _bump(stats, 'arb_mm_flagged')
+            L1 = cfg.arb_seg
+            # The true donor sits where matching stops — anywhere within the
+            # flagged window (mismatches begin mid-window), so search a span
+            # covering the window plus slack on both sides.
+            donors = index.sites_in(
+                chrom_key, left_kind,
+                block_ref + max(0, onset - 20),
+                block_ref + onset + cfg.arb_mm_win + 20)
+            best_overall = None
+            ed_cur_o = None
+            for d_alt in donors:
+                d_alt = int(d_alt)
+                o = d_alt - block_ref
+                if o < L1 or mlen - o < 10:
+                    continue
+                q_j = m_qs + o
+                L2 = min(cfg.arb_seg, mlen - o)
+                qwin = dq[q_j - L1:q_j + L2]
+                a = assess_overhang(dq[q_j:q_j + L2], alpha=cfg.alpha,
+                                    max_window=cfg.max_intron)
+                if a.refused:
+                    _bump(stats, 'arb_refused')
+                    continue
+                W = a.w_max_bp
+                alts = []
+                for e_alt in index.sites_in(chrom_key, right_kind,
+                                            d_alt + cfg.min_intron, d_alt + W + 1):
+                    e_alt = int(e_alt)
+                    if e_alt + L2 > len(chrom_seq):
+                        continue
+                    alts.append((d_alt, e_alt,
+                                 chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                                 qwin))
+                if not alts:
+                    continue
+                cur_ref = chrom_seq[d_alt - L1:d_alt + L2]
+                ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+                if win is not None and (best_overall is None or win[0] < best_overall[0]):
+                    best_overall = win
+                    ed_cur_o = ed_cur
+                    best_o = o
+            if best_overall is not None:
+                _, d_new, e_new = best_overall
+                new_ct = ct[:last_m] + [(0, best_o), (3, e_new - d_new),
+                                        (0, mlen - best_o)] + ct[last_m + 1:]
+                read.cigartuples = new_ct
+                for tag in ('MD', 'NM'):
+                    if read.has_tag(tag):
+                        read.set_tag(tag, None)
+                read.set_tag('XB', f'mm:{d_new}-{e_new}:{ed_cur_o:.1f}>{best_overall[0]:.1f}')
+                _bump(stats, 'arb_mm_spliced')
+                changed = True
+
+    return changed
+
+
 def resolve_read(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -461,6 +828,12 @@ def resolve_read(
             stats.resolved_right += 1
             if placement.k_inside:
                 stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
+            changed = True
+
+    # v2: re-arbitrate junction assignments and suspicious linear structure
+    # (runs after clip resolution so a freshly placed junction competes too).
+    if cfg.arb_enable:
+        if _rearbitrate_read(read, chrom_seq, index, chrom_key, strand, cfg, stats):
             changed = True
 
     return changed
