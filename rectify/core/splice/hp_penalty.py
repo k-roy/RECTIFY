@@ -431,6 +431,60 @@ def _precompute_del_costs(
     return del_costs
 
 
+def _precompute_refcol_ins_costs(
+    ref: str,
+    genome_seq: Optional[str],
+    ref_genome_start: int,
+    ref_genome_rev: bool,
+    penalty_table: Optional[HpPenaltyTable],
+    default_ins: float = 1.25,
+) -> List[float]:
+    """Per-DP-COLUMN insertion costs for a reference window (refcol-ins path).
+
+    Companion to :func:`_precompute_del_costs`, for the experimental
+    reference-column insertion axis (``junction_scoring._USE_REFCOL_INS``,
+    env ``RECTIFY_REFCOL_INS``, default OFF): an insertion aligns to NO
+    reference base, so its cost is charged against the GENOME homopolymer
+    context at the DP column (gap) where it fires —
+    ``hp_len = max(run(genome[gp-1]), run(genome[gp]))`` with the base taken
+    from the longer-run flank. The vector has length ``len(ref) + 1`` (one
+    entry per gap, incl. before ref[0] and after ref[-1]), is a function of
+    the fixed reference window + absolute genome position only, and is
+    computed once outside the k-loop (cut-independent by construction).
+
+    PROVENANCE: the original definition was written in the (since-deleted)
+    benchmark agent worktree but never committed — commit ``56addde`` landed
+    only the junction_scoring side, leaving a latent ImportError. This is a
+    spec-faithful reimplementation of that default-OFF experimental path from
+    the committed call sites and their documentation (dev/INSCOST_REFCOL_*.md).
+    """
+    R = len(ref)
+    n = len(genome_seq) if genome_seq is not None else 0
+
+    def _flank_context(gp: int) -> Tuple[int, str]:
+        if genome_seq is not None and 0 <= gp < n:
+            return _hp_run_length(genome_seq, gp), genome_seq[gp]
+        return 0, ''
+
+    costs: List[float] = []
+    for j in range(R + 1):
+        # Genome positions flanking gap j (between ref[j-1] and ref[j]).
+        if ref_genome_rev:
+            left_gp = ref_genome_start - (j - 1)
+            right_gp = ref_genome_start - j
+        else:
+            left_gp = ref_genome_start + (j - 1)
+            right_gp = ref_genome_start + j
+        run_l, base_l = _flank_context(left_gp)
+        run_r, base_r = _flank_context(right_gp)
+        run, base = (run_l, base_l) if run_l >= run_r else (run_r, base_r)
+        if penalty_table is not None and run >= 1 and base:
+            costs.append(penalty_table.ins_cost(run, base))
+        else:
+            costs.append(default_ins)
+    return costs
+
+
 # ---------------------------------------------------------------------------
 # Heuristic HP-aware edit distance
 # ---------------------------------------------------------------------------
