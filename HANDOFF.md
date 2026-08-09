@@ -44,11 +44,9 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
 
 ## Open / in flight
 
-- **[IN FLIGHT] Clean-tree full suite** (background task `bzgwtfyf1`) on detached scratch worktree
-  at `999ceb5` (excludes 653's live WIP):
-  `<scratchpad>/suite_check`, log `<scratchpad>/../tasks/bzgwtfyf1.output`.
-- **[BLOCKED on suite] master fast-forward** — ref-update only (master is checked out nowhere):
-  `git fetch . chore/vendor-desalt-chanfreau1:master` (refuses non-ff by construction).
+- ✅ **Clean-tree full suite PASSED** (2026-08-09 evening): `1986 passed, 41 skipped, 4 deselected,
+  1 xfailed` in 57:48 at `999ceb5` — identical counts to 630's baseline.
+- ✅ **master FAST-FORWARDED** `255a06d → a6bdd69` (ref-update only; first sync in ~377 commits).
 - Still-open bugs (filed, NOT this session's scope): AGENT_FIXES.md 2026-07-21 CRITICAL
   single-aligner path race (`align_command.py`); 2026-08-07 junction-pool-density cost scaling;
   Oak editable-install drift (Sherlock env runs uncommitted vintage).
@@ -56,35 +54,30 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
   they land it themselves after cluster acceptance T3–T8; the triage layer adopts it as its
   overhang leg.
 
-## Resume (concrete)
+## Resume (concrete) — Phase 0 CLOSED; Phase 1 state below
 
-1. `pgrep -f suite_check || cat <scratchpad>/../tasks/bzgwtfyf1.output`
-   - **PASS** (`… passed`, 0 failed) → `git fetch . chore/vendor-desalt-chanfreau1:master` →
-     `git log -1 --oneline master` confirms → commit this HANDOFF refresh + audit-doc restore →
-     start Phase 1 (next item).
-   - **FAIL** → read the failing test; if it is in qc/browser/analyze/ont-cdna units, fix forward
-     on this branch (the units are separable commits — worst case `git revert <unit>`); re-run.
-     Do NOT ff master on a red suite.
-2. **Phase 1.1 (port = MERGE):** `git worktree add <path> -b feat/realigner-triage master` (fresh
-   worktree — NEVER switch branches in the main checkout, 653 is live) → `git merge 2b8d2ed`
-   (= `worktree-agent-a25a2c1e784ad37dc`, the validated native re-aligner tip; Kevin already
-   approved this merge once in July — it never executed). Expected conflicts are small and mapped:
-   - `hp_penalty.py`: keep HEAD's `_hp_run_length` bounds-guard (1821d4d) + take wt's rate-table
-     additions; the `from_tsv` return line combines both kwarg sets.
-   - `junction_scoring.py`: wt side is additive (concat-DP `_USE_CONCAT_DP` default ON, flat-cost
-     constants, full-run/refcol ins flags default OFF).
-   - `local_aligner.py`: wt adds C1 knob (`penalty_table/lam/ins_lengthlaw`, None ⇒ byte-identical).
-   - `junction_refiner.py` + `test_junction_refiner.py`: purely additive (motif_blind, guards
-     dormant at 0.0, compensating-indel invariant e40ca00 always-on).
-   Then full suite + the branch's fence suites (`test_junction_refiner`, `test_hp_drift_guard`,
-   `test_microhom_drift_guard`, `test_c1_lengthlaw`) must be green; byte-identical-off fences are
-   the acceptance bar. Port prep diffs: `<scratchpad>/port/port__*.diff`.
-3. **Phase 1.2:** the `scoring.py::_count_junction_proximity_errors` post-N `prev_rp` surgical fix
-   (audit §5.1) behind `discovery_tiebreak_probe.py` + `smoke_roundtrip.py`.
-4. **Phase 1.3:** triage layer per `dev/DENOVO_ALIGNER_REASSESSMENT_20260809.md` §3 (bypass /
-   re-align / re-entry; pool-level discovery gate separate from read-level accuracy gate).
+**Phase 1 all landed on `feat/realigner-triage`** (worktree
+`/Users/kevinroy/work/rectify_worktrees/realigner-triage`, based at `999ceb5`):
 
-`<scratchpad>` = `/private/tmp/claude-501/-Users-kevinroy-work-rectify/12349562-4dab-426f-bb0c-0f5ca6d90c91/scratchpad`
+- `bd5872c` — MERGE of the native re-aligner branch (`worktree-agent-a25a2c1e784ad37dc` @
+  `2b8d2ed`): motif_blind refiner, compensating-indel invariant (e40ca00), concat-DP (default ON),
+  C1-del knob, dormant guard machinery, noncanon_sim harness + fence suites. Only 3 doc conflicts.
+- `f2eec4a` — reimplemented `_precompute_refcol_ins_costs` (56addde landed only its call sites;
+  the definition died uncommitted with the deleted worktree). Fence suites: 84 passed / 17 skipped.
+  `smoke_roundtrip.py` gate: PASSED. The scoring.py post-N `prev_rp` fix arrived via the merge.
+- `fc3f0c9` — the TRIAGE LAYER MVP (`rectify/core/consensus/triage.py`, `rectify triage` CLI,
+  `tests/test_triage.py` = 11 passed incl. end-to-end bundled smoke).
+- `eb573f9` + `34be42e` — `dev/REALIGNER_LANDSCAPE_AND_PATH_20260809.md`: the three-station
+  architecture, probe-not-arbiter, scout mode, and the sequenced path.
+
+**Next (per the path doc §4):**
+1. Full `pytest -m "not slow"` on `feat/realigner-triage` (not yet run there — only fence suites +
+   smoke; run it before any merge toward master).
+2. Triage-policy tuning on real corpora (upf1Δ 617 gold windows = ready truth set); wire the
+   triage clip legs to Cat3/rescue-gate + resolver machinery.
+3. Station C (pool-level discovery gate) + the second-corpus 8×-recall reproduction (Sherlock).
+4. 641/643 own landing `feat/overhang-resolver-641` (rebase onto master `a6bdd69`, T6 decoy
+   mitigation before human use); the `[[617]]` leave-one-out decides mapPacBio's panel status.
 
 ## Files
 
