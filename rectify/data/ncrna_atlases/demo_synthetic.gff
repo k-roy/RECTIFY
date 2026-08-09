@@ -1,0 +1,9 @@
+##gff-version 3
+# Synthetic ncRNA fixture for RECTIFY transcript-model classifier tests/demos.
+# NOT real coordinates for CUT/SUT — these are placed to exercise the
+# antisense-to-CDS classification path (169 D4). Build: R64/sacCer3 nuclear.
+# GFF is 1-based inclusive; the loader converts to 0-based half-open.
+# demo_cut1 is placed antisense to PDR5 / YOR153W (chrXV +, CDS 619840-624375)
+# to mirror the Vera&Dowell2016 CUT310 ⟂ PDR5 oracle case (planning/170d e1).
+chrXV	synthetic	CUT	624207	624338	.	-	.	ID=demo_cut1;Name=demo_cut1
+chrXII	synthetic	CUT	819883	819995	.	-	.	ID=demo_cut2;Name=demo_cut2

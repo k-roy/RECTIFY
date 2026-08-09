@@ -75,18 +75,41 @@ def _build_cluster_gene_attribution_table(
     lookup,
     annotation_df,
     chrom_format,
+    model=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build and apply the requested cluster→gene attribution table."""
+    """Build and apply the requested cluster→gene attribution table.
+
+    ``model`` is an optional prebuilt :class:`~..analyze.transcript_model.TranscriptModel`
+    used by the ``containment`` modes (167 Part A). When absent for a containment
+    mode it is built on demand from ``annotation_df``.
+    """
     from ...utils.chromosome import normalize_chromosome
 
-    mode = getattr(args, 'gene_attribution_mode', 'annotation')
+    mode = getattr(args, 'gene_attribution_mode', 'containment')
     chrom_normalizer = lambda x: normalize_chromosome(x, chrom_format)
     annotation_fallback = annotation_cluster_attributions(clusters_df, source='annotation')
 
     if mode == 'none':
         return clusters_df, annotation_fallback.iloc[0:0].copy()
-    if mode == 'annotation':
+    if mode in {'annotation', 'legacy-3prime-window'}:
+        # pure nearest-3'-end window: legacy gene_id already on clusters_df
         attr_df = annotation_fallback
+    elif mode in {'containment', 'containment-then-annotation'}:
+        from .transcript_model import (
+            build_transcript_model_for_analyze,
+            containment_attributions_from_clusters,
+        )
+        if model is None:
+            model = build_transcript_model_for_analyze(args, annotation_df, chrom_format)
+        if model is None:
+            raise ValueError(
+                "--gene-attribution-mode containment requires a usable --annotation"
+            )
+        attr_df = containment_attributions_from_clusters(clusters_df, model)
+        # containment-first, proximity-window fallback (167 Part A): fill clusters
+        # not contained by any gene body from the legacy nearest-3'-end attribution
+        # so canonical readthrough-zone clusters keep their gene_id.
+        attr_df = apply_annotation_fallback(attr_df, annotation_fallback, clusters_df)
     elif mode in {'reference', 'reference-then-annotation'}:
         paths = getattr(args, 'gene_attributions', None) or []
         if not paths:
@@ -648,6 +671,12 @@ def _run_analyze_manifest(
         print(f"  Kept {len(clusters_df):,}/{_n_before:,} clusters present in >= {_min_cluster_samples} samples")
     print(f"  Matrix shape: {count_matrix.shape[0]:,} clusters × {count_matrix.shape[1]} samples")
 
+    # Build the transcript model once (containment attribution + region class).
+    _transcript_model = None
+    if annotation_df is not None:
+        from .transcript_model import build_transcript_model_for_analyze
+        _transcript_model = build_transcript_model_for_analyze(args, annotation_df, chrom_format)
+
     cluster_gene_attributions = None
     try:
         clusters_df, cluster_gene_attributions = _build_cluster_gene_attribution_table(
@@ -657,6 +686,7 @@ def _run_analyze_manifest(
             lookup=lookup,
             annotation_df=annotation_df,
             chrom_format=chrom_format,
+            model=_transcript_model,
         )
         attr_path = output_dir / 'cluster_gene_attributions.tsv'
         cluster_gene_attributions.to_csv(attr_path, sep='\t', index=False)
@@ -667,12 +697,28 @@ def _run_analyze_manifest(
             f"{n_attr_clusters:,} clusters, {n_attr_genes:,} genes → {attr_path}"
         )
     except Exception as _attr_exc:
-        mode = getattr(args, 'gene_attribution_mode', 'annotation')
-        if mode not in {'annotation', 'none'}:
+        mode = getattr(args, 'gene_attribution_mode', 'containment')
+        _soft_modes = {'annotation', 'none', 'legacy-3prime-window',
+                       'containment', 'containment-then-annotation'}
+        if mode not in _soft_modes:
             print(f"ERROR: cluster gene attribution failed for mode '{mode}': {_attr_exc}", flush=True)
             return 1
-        print(f"  WARNING: cluster gene attribution failed: {_attr_exc}")
+        print(f"  WARNING: cluster gene attribution failed for mode '{mode}': {_attr_exc}")
         cluster_gene_attributions = None
+
+    # Per-site region classification (adds region_class + coords; never sets gene_id).
+    if _transcript_model is not None:
+        try:
+            from .transcript_model import annotate_clusters_with_transcript_model
+            _norm = lambda x: normalize_chromosome(x, chrom_format)
+            clusters_df = annotate_clusters_with_transcript_model(
+                clusters_df, _transcript_model,
+                samples=samples, cluster_lookup=lookup, chrom_normalizer=_norm,
+            )
+            _n_rc = int(clusters_df['region_class'].notna().sum()) if 'region_class' in clusters_df.columns else 0
+            print(f"  Region classification: {_n_rc:,} clusters classified")
+        except Exception as _rc_exc:
+            print(f"  WARNING: region classification failed: {_rc_exc}")
 
     clusters_df.to_csv(clusters_path, sep='\t', index=False)
     print(f"  Saved clusters to {clusters_path}")

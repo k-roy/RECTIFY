@@ -394,6 +394,13 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     sample_names = count_matrix.columns.tolist()
     lookup = _make_cluster_lookup(clusters_df)
+    _chrom_format = getattr(args, 'chrom_format', 'passthrough')
+    # Build the transcript model once (used by both containment attribution and
+    # per-site region classification). None on absent/degraded annotation.
+    _transcript_model = None
+    if annotation_df is not None:
+        from ..analyze.transcript_model import build_transcript_model_for_analyze
+        _transcript_model = build_transcript_model_for_analyze(args, annotation_df, _chrom_format)
     cluster_gene_attributions = None
     try:
         _samples_for_attr = [{'sample_id': 'input', 'path': args.input}]
@@ -403,7 +410,8 @@ def run_analyze(args: argparse.Namespace) -> int:
             clusters_df=clusters_df,
             lookup=lookup,
             annotation_df=annotation_df,
-            chrom_format=getattr(args, 'chrom_format', 'passthrough'),
+            chrom_format=_chrom_format,
+            model=_transcript_model,
         )
         attr_path = output_dir / 'cluster_gene_attributions.tsv'
         cluster_gene_attributions.to_csv(attr_path, sep='\t', index=False)
@@ -414,12 +422,35 @@ def run_analyze(args: argparse.Namespace) -> int:
             f"{n_attr_clusters:,} clusters, {n_attr_genes:,} genes → {attr_path}"
         )
     except Exception as _attr_exc:
-        mode = getattr(args, 'gene_attribution_mode', 'annotation')
-        if mode not in {'annotation', 'none'}:
+        mode = getattr(args, 'gene_attribution_mode', 'containment')
+        # containment (the default) degrades gracefully to the legacy gene_id
+        # already on clusters_df, so the default flip never turns a working
+        # --annotation run into a hard failure. body/reference stay hard-fail.
+        _soft_modes = {'annotation', 'none', 'legacy-3prime-window',
+                       'containment', 'containment-then-annotation'}
+        if mode not in _soft_modes:
             print(f"ERROR: cluster gene attribution failed for mode '{mode}': {_attr_exc}", flush=True)
             return 1
-        print(f"  WARNING: cluster gene attribution failed: {_attr_exc}")
+        print(f"  WARNING: cluster gene attribution failed for mode '{mode}': {_attr_exc}")
         cluster_gene_attributions = None
+
+    # Per-site region classification (region_class + continuous transcript
+    # coordinates + antisense/also_within/intron evidence). Adds columns ONLY;
+    # never touches gene_id. Runs regardless of attribution mode; never fatal.
+    if _transcript_model is not None:
+        try:
+            from ..analyze.transcript_model import annotate_clusters_with_transcript_model
+            from ...utils.chromosome import normalize_chromosome
+            _norm = lambda x: normalize_chromosome(x, _chrom_format)
+            clusters_df = annotate_clusters_with_transcript_model(
+                clusters_df, _transcript_model,
+                samples=[{'sample_id': 'input', 'path': args.input}],
+                cluster_lookup=lookup, chrom_normalizer=_norm,
+            )
+            _n_rc = int(clusters_df['region_class'].notna().sum()) if 'region_class' in clusters_df.columns else 0
+            print(f"  Region classification: {_n_rc:,} clusters classified")
+        except Exception as _rc_exc:
+            print(f"  WARNING: region classification failed: {_rc_exc}")
 
     # Save clusters after cross-sample filters are applied.
     clusters_df.to_csv(clusters_path, sep='\t', index=False)
@@ -804,6 +835,42 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
         help='Gene annotation file (GTF/GFF or TSV)',
     )
 
+    parser.add_argument(
+        '--ncrna-atlas',
+        help='Named supplementary ncRNA atlas (CUT/SUT/XUT ...) from the bundled registry '
+             '(rectify/data/ncrna_atlases/atlases.yaml), layered on top of --annotation for '
+             'the transcript-model classifier. Default: SGD-core only.',
+    )
+
+    parser.add_argument(
+        '--ncrna-annotations',
+        nargs='+',
+        metavar='FILE:SOURCE:CLASS',
+        help='Ad-hoc supplementary ncRNA track(s) as file.gff:source:class '
+             '(e.g. mycuts.gff:MyStudy2024:CUT). Force-tags every feature with the given '
+             'source/class regardless of the file column-3 type. Combines with --ncrna-atlas.',
+    )
+
+    parser.add_argument(
+        '--gene-attribution-window',
+        type=int,
+        default=100,
+        metavar='BP',
+        help='For --gene-attribution-mode containment, the downstream window (bp) past a gene '
+             '3prime end within which an uncontained cluster is classified downstream_readthrough '
+             '(kept equal to the legacy proximity fallback so gene_id and region_class stay '
+             'coherent). Default: 100.',
+    )
+
+    parser.add_argument(
+        '--utr3-proximal-distal-split',
+        type=int,
+        default=150,
+        metavar='BP',
+        help='Boundary (nt past the stop codon) between region_class 3primeUTR_proximal and '
+             '3primeUTR_distal for the transcript-model classifier. Default: 150.',
+    )
+
     from rectify.data import add_organism_args
     add_organism_args(parser)
 
@@ -901,6 +968,9 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         '--gene-attribution-mode',
         choices=[
+            'containment',
+            'containment-then-annotation',
+            'legacy-3prime-window',
             'annotation',
             'none',
             'body',
@@ -908,9 +978,12 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
             'reference',
             'reference-then-annotation',
         ],
-        default='annotation',
+        default='containment',
         help='How CPA clusters are assigned to genes for gene-level DESeq2 and shift analysis. '
-             'annotation keeps the legacy nearest-TES rule. body uses read-body overlap from '
+             'containment (default) attributes each cluster to the gene whose transcribed body '
+             'contains its modal position, falling back to the nearest-3prime-end window for '
+             'clusters not contained by any gene body (167 Part A). legacy-3prime-window (alias: '
+             'annotation) keeps the pure nearest-TES rule. body uses read-body overlap from '
              'corrected TSV alignment spans. reference maps external long-read per-position '
              'attribution TSVs onto current clusters. *-then-annotation fills missing clusters '
              'with the legacy annotation fallback.',

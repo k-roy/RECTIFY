@@ -1015,3 +1015,89 @@ class TestAdaptiveClusteringBoundaries:
             row.start <= 103 <= row.end
             for row in clusters.itertuples(index=False)
         )
+
+
+# =============================================================================
+# Transcript-model attribution wiring (planning/167 default-flip regression)
+# =============================================================================
+import os as _os_tm
+from types import SimpleNamespace as _NS
+
+_BUNDLED_GFF_TM = _os_tm.path.join(
+    _os_tm.path.dirname(_os_tm.path.dirname(_os_tm.path.abspath(__file__))),
+    "rectify", "data", "genomes", "saccharomyces_cerevisiae",
+    "saccharomyces_cerevisiae_R64-5-1_20240529.gff.gz",
+)
+
+
+def _tm_cluster(cid, chrom, strand, pos, n=50, r=5):
+    return {"cluster_id": cid, "chrom": chrom, "strand": strand,
+            "start": pos - r, "end": pos + r, "modal_position": pos, "n_reads": n}
+
+
+@pytest.mark.skipif(not _os_tm.path.exists(_BUNDLED_GFF_TM), reason="bundled SGD GFF missing")
+class TestContainmentAttributionWiring:
+    """Exercises _build_cluster_gene_attribution_table's containment mode + the
+    default-flip regression that canonical calls must not move (167 §5)."""
+
+    def _dispatch(self, clusters_df, mode):
+        from rectify.core.analyze.manifest import _build_cluster_gene_attribution_table
+        from rectify.core.commands.analyze_command import _make_cluster_lookup
+        ann = load_annotation(_BUNDLED_GFF_TM, normalize_chroms=False)
+        # mirror the pipeline: legacy nearest-3' window runs first
+        # (analyze_command:333), populating the legacy gene_id that the
+        # containment proximity fallback reads.
+        clusters_df = annotate_clusters_with_genes(clusters_df.copy(), ann)
+        args = _NS(gene_attribution_mode=mode)
+        lookup = _make_cluster_lookup(clusters_df)
+        return _build_cluster_gene_attribution_table(
+            args, samples=[], clusters_df=clusters_df, lookup=lookup,
+            annotation_df=ann, chrom_format="passthrough", model=None,
+        )
+
+    def test_canonical_gene_id_stable_across_default_flip(self):
+        """A canonical 3'UTR cluster (PGK1) attributes to the SAME gene under
+        legacy-3prime-window AND containment — the default flip must not move it."""
+        clusters = pd.DataFrame([_tm_cluster("d1", "chrIII", "+", 139100)])
+        legacy_df, _ = self._dispatch(clusters, "legacy-3prime-window")
+        cont_df, _ = self._dispatch(clusters, "containment")
+        legacy_gene = legacy_df.set_index("cluster_id").loc["d1", "gene_id"]
+        cont_gene = cont_df.set_index("cluster_id").loc["d1", "gene_id"]
+        assert legacy_gene == "YCR012W"
+        assert cont_gene == "YCR012W"
+
+    def test_containment_rescues_deep_cds_cluster(self):
+        """A deep-CDS cluster (RAD3) is intergenic under legacy, rescued under containment."""
+        clusters = pd.DataFrame([_tm_cluster("c1", "chrV", "+", 528000)])
+        legacy_df, _ = self._dispatch(clusters, "legacy-3prime-window")
+        cont_df, _ = self._dispatch(clusters, "containment")
+        legacy_gene = legacy_df.set_index("cluster_id").loc["c1", "gene_id"]
+        assert legacy_gene is None or pd.isna(legacy_gene)
+        assert cont_df.set_index("cluster_id").loc["c1", "gene_id"] == "YER171W"
+
+    def test_readthrough_cluster_keeps_gene_id_under_containment(self):
+        """A canonical cluster just past a gene 3' end (not body-contained) keeps
+        its gene_id via the proximity-window fallback under the containment default."""
+        ann = load_annotation(_BUNDLED_GFF_TM, normalize_chroms=False)
+        from rectify.core.analyze.transcript_model import TranscriptModel
+        m = TranscriptModel(ann)
+        pos = m.genes["YCR012W"].canonical_cpa + 40   # +40 downstream, readthrough
+        clusters = pd.DataFrame([_tm_cluster("rt", "chrIII", "+", pos)])
+        cont_df, _ = self._dispatch(clusters, "containment")
+        assert cont_df.set_index("cluster_id").loc["rt", "gene_id"] == "YCR012W"
+
+    def test_full_column_set_added_by_classifier(self):
+        """annotate_clusters_with_transcript_model adds region_class + coords."""
+        from rectify.core.analyze.transcript_model import (
+            TranscriptModel, annotate_clusters_with_transcript_model)
+        ann = load_annotation(_BUNDLED_GFF_TM, normalize_chroms=False)
+        m = TranscriptModel(ann)
+        clusters = pd.DataFrame([
+            _tm_cluster("i1", "chrXVI", "+", 173400),   # intronic
+            _tm_cluster("u1", "chrIII", "+", 139100),   # 3'UTR
+        ])
+        out = annotate_clusters_with_transcript_model(clusters, m)
+        assert "region_class" in out.columns and "distance_to_stop_codon" in out.columns
+        by = out.set_index("cluster_id")
+        assert by.loc["i1", "region_class"] == "intronic"
+        assert by.loc["u1", "region_class"].startswith("3primeUTR")

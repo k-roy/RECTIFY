@@ -1,0 +1,67 @@
+# RECTIFY ncRNA atlas registry (planning/169 D2)
+#
+# A pluggable, versioned layer of study-defined non-coding-RNA annotations
+# (CUT / SUT / XUT ...) that the transcript-model CPA classifier composes on TOP
+# of the SGD core GFF. The core GFF (bundled with rectify) is NEVER edited;
+# updating the atlas = drop a file + bump an entry here (no code change).
+#
+# Selection: `rectify analyze --ncrna-atlas <key>` (a key below) or the ad-hoc
+# `--ncrna-annotations file.gff:source:class ...` form. With neither flag the
+# classifier is SGD-core-only (snoRNA/tRNA/snRNA/rRNA come free) — backward
+# compatible.
+#
+# Build compatibility is asserted on the shared R64 / sacCer3 NUCLEAR frame
+# (tolerant of the SGD `#!assembly R64-4-1` label lag), not an exact `-5-1`
+# substring — see planning/170b §5e.
+#
+# NOTE: the production `chanfreau_ncrna_v1` track files are NOT committed to the
+# repo (they live on Sherlock Oak). Populate them once from
+#   /oak/stanford/groups/larsms/Users/kevinroy/common/annotation_files/non_coding_rna/
+#     {CUTs_Xu2009.gff, SUTs_Xu2009.gff, XUTs_VanDijk2011.gff}
+# into this directory (strip the stray leading 'CUTs' line from the SUT file,
+# 170b §2c), then `--ncrna-atlas chanfreau_ncrna_v1` works. Until then, the
+# `demo_synthetic` atlas (a tiny bundled fixture) is available for tests/demos.
+
+default: demo_synthetic
+
+atlases:
+
+  # Tiny synthetic fixture bundled with the repo — for tests + `--ncrna-atlas`
+  # smoke-checks. NOT biology; do not use for real analysis.
+  demo_synthetic:
+    genome_build: R64-5-1
+    description: Synthetic 3-feature CUT/SUT/XUT fixture for tests and demos (not real coordinates)
+    tracks:
+      - file: demo_synthetic.gff
+        source: synthetic
+        ncrna_class: CUT
+
+  # Production default (planning/169 D2): Xu2009 CUTs+SUTs (SGD-lifted to
+  # R64-1-1) + vanDijk2011 XUTs (author-provided sacCer3). All nuclear ⇒ R64
+  # coordinate-compatible; no runtime liftover (170b §3). Track files must be
+  # populated from Oak (see header) before this key resolves.
+  chanfreau_ncrna_v1:
+    genome_build: R64-5-1
+    description: Xu2009 CUTs+SUTs + vanDijk2011 XUTs, R64/sacCer3 nuclear (populate from Oak)
+    tracks:
+      - file: xu2009_cuts.gff
+        source: Xu2009
+        ncrna_class: CUT
+        n_features: 925
+        pmid: 19169243
+        orig_build: "SGD V56 (2007-09-04)"
+        liftover: "SGD-curated -> R64-1-1 (V64.1.1)"
+      - file: xu2009_suts.gff
+        source: Xu2009
+        ncrna_class: SUT
+        n_features: 847
+        pmid: 19169243
+        orig_build: "SGD V56 (2007-09-04)"
+        liftover: "SGD-curated -> R64-1-1 (V64.1.1)"
+      - file: vandijk2011_xuts.gff
+        source: vanDijk2011
+        ncrna_class: XUT
+        n_features: 1658
+        pmid: 21697827
+        orig_build: "R64/sacCer3 (author-provided)"
+        liftover: none
