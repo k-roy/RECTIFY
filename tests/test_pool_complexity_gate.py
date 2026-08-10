@@ -104,3 +104,27 @@ def test_input_sets_are_not_mutated():
 
 def test_flank_bp_default_matches_465b_prototype():
     assert DEFAULT_POOL_FLANK_BP == 15
+
+
+# --- CLI default (flipped ON at alpha=0.01, Kevin 2026-08-10, planning/649) ---
+
+def _build_prescan_parser():
+    import argparse
+    from rectify.core.commands.prescan_command import create_prescan_parser
+    root = argparse.ArgumentParser()
+    return create_prescan_parser(root.add_subparsers(dest="command"))
+
+
+def test_cli_default_is_gate_on_at_0_01():
+    parser = _build_prescan_parser()
+    assert parser.get_default("complexity_alpha") == pytest.approx(0.01)
+
+
+def test_alpha_zero_is_the_escape_hatch():
+    from rectify.core.commands.prescan_command import _complexity_gate_enabled
+    assert not _complexity_gate_enabled(0)
+    assert not _complexity_gate_enabled(0.0)
+    assert not _complexity_gate_enabled(None)
+    assert not _complexity_gate_enabled(-1.0)
+    assert _complexity_gate_enabled(0.01)
+    assert _complexity_gate_enabled(0.001)
