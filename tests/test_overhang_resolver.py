@@ -533,6 +533,51 @@ class TestRearbitration:
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
 
+    def test_interior_dmerge_preserves_downstream_junction(self):
+        # stage-1 vicinity triggers: a mis-assigned FIRST junction (M D4 N,
+        # SRC1 pattern) in a two-intron read must be merged while the second
+        # junction stays byte-identical (frame safety)
+        g = list(self._genome())
+        D, E = self.D, self.E_TRUE
+        D2, E2 = 1700, 1900
+        g[D:D + 2] = list('GC')
+        g[D + 4:D + 6] = list('GT')
+        g[D2:D2 + 2] = list('GT')
+        g[E2 - 2:E2] = list('AG')
+        g = ''.join(g)
+        query = g[D - 60:D] + g[E:D2] + g[E2:E2 + 60]
+        cigar = [(0, 60), (2, 4), (3, E - (D + 4)), (0, D2 - E), (3, E2 - D2), (0, 60)]
+        r = self._mk_read(g, query, cigar, D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_dmerge') == 1
+        juncs = []
+        ref = r.reference_start
+        for op, ln in r.cigartuples:
+            if op == 3:
+                juncs.append((ref, ref + ln))
+            if op in (0, 2, 3, 7, 8):
+                ref += ln
+        assert juncs == [(D, E), (D2, E2)]
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_head_storm_spliced_left_mirror(self):
+        # B3: linear alignment THROUGH the intron anchored on exon-2 — the
+        # exon-1 query bases smear over the intron tail (storm at the block
+        # HEAD); splicing re-anchors reference_start leftward
+        g = self._genome()
+        D, E = self.D, self.E_TRUE
+        query = g[D - 160:D] + g[E:E + 200]
+        cigar = [(0, 360)]
+        r = self._mk_read(g, query, cigar, E - 160)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_mm_spliced') == 1, stats.extra
+        assert self._junction(r) == (D, E)
+        assert r.reference_start == D - 160
+        assert r.get_tag('XB').startswith('mmL:')
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
     def test_linear_matching_block_untouched(self):
         # control: a genuinely linear (e.g. intron-retained) read must NOT be spliced
         g = self._genome()
