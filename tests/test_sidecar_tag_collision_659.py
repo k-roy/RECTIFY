@@ -70,3 +70,30 @@ def test_non_cdna_tags_keep_dont_clobber_guard():
     read.set_tag("Zx", "keepme_read", value_type="Z")
     _restore_sidecar_tags(read, _Sidecar(COMMENT))
     assert read.get_tag("Zx") == "keepme_read"  # not in _CDNA_COMMENT_TAGS -> guard holds
+
+
+def test_inject_rn_overwrites_ultra_collisions(tmp_path):
+    """The PER-ALIGNER injection choke point (multi_aligner._inject_rn_into_bam) is the site
+    that actually bit in production: uLTRA BAM records reached consensus already carrying
+    XU (restored) + uLTRA's own XC:Z:NO_SPLICE (guarded, unfixed), so the sibling-restore
+    saw XU and early-returned. The comment set must overwrite there too."""
+    import gzip
+
+    from rectify.core.align.multi_aligner import _inject_rn_into_bam
+
+    bam_path = tmp_path / "ultra.bam"
+    with pysam.AlignmentFile(str(bam_path), "wb", header=HEADER) as bam:
+        bam.write(_ultra_winner())
+    fq_path = tmp_path / "stage1.fastq.gz"
+    with gzip.open(fq_path, "wt") as fq:
+        seq = "ACGT" * 25
+        fq.write(f"@cluster_r000_7\t{COMMENT}\n{seq}\n+\n{'?' * len(seq)}\n")
+
+    _inject_rn_into_bam(str(bam_path), qname_to_rn={}, reads_path=str(fq_path))
+
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        rec = next(iter(bam))
+    assert int(rec.get_tag("XC")) == 5      # overwrote XC:Z:NO_SPLICE
+    assert rec.get_tag("XA") == 12          # overwrote uLTRA's empty XA:Z
+    assert rec.get_tag("XU") == "TTACACTTCAGGTTGCATTTGCCGAGA"
+    assert rec.get_tag("NM") == 3           # aligner tag untouched

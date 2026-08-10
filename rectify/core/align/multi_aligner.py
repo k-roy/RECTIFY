@@ -347,9 +347,12 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
     Passing an empty/None UMI map preserves the original RN-only behaviour exactly.
 
     ``qname_to_tags`` restores FASTQ-comment aux tags (``ro``, ``pl``, ``XU``,
-    ``XO``, …) on aligners that do not propagate comments. Existing tags are NEVER
-    overwritten -- an aligner that DID propagate (minimap2 ``-y``) stays
-    authoritative, so this is a pure gap-filler and a no-op on that path.
+    ``XO``, …) on aligners that do not propagate comments. Stage-1 cDNA tags
+    (``_CDNA_COMMENT_TAGS``) OVERWRITE same-named aligner-emitted tags — the
+    comment is authoritative for them, and uLTRA emits colliding ``XC:Z``/``XA:Z``
+    (659). All other existing tags are never overwritten; on minimap2 ``-y``
+    records the cDNA-set overwrite is value-identical, so that path is unchanged
+    in effect.
     """
     # Build the comment-tag map here rather than at each call site: there are a
     # dozen callers, and requiring each to pass it is precisely the copy-paste
@@ -368,7 +371,10 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
     if not qname_to_rn and not has_umi and not has_tags:
         return 0
     import pysam
-    from rectify.core.consensus.consensus import _normalize_bam_read_name
+    from rectify.core.consensus.consensus import (
+        _CDNA_COMMENT_TAGS,
+        _normalize_bam_read_name,
+    )
 
     src = Path(bam_path)
     tmp = src.with_suffix('.rn_injected.tmp.bam')
@@ -393,9 +399,15 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
                     n_umi_tagged += 1
             if has_tags:
                 for _tag, _typ, _val in qname_to_tags.get(qn, ()):
-                    # Never overwrite: an aligner that propagated the comment
-                    # itself (minimap2 -y) is authoritative.
-                    if read.has_tag(_tag):
+                    # 659: for the Stage-1 cDNA tag set the FASTQ comment is AUTHORITATIVE and
+                    # must OVERWRITE a colliding aligner-emitted tag — uLTRA writes its own
+                    # XC:Z:NO_SPLICE / XA:Z: with splice semantics, and the old blanket
+                    # don't-clobber guard let them shadow XC:i/XA:i; cdna-analyze's int(XC)
+                    # then dropped every uLTRA-won molecule (7.0% of rna15aa_rep1, biased
+                    # toward spliced reads). On minimap2 -y records the overwrite is a
+                    # value-identical no-op, so that path stays authoritative in effect.
+                    # Non-cDNA tags keep the original guard.
+                    if read.has_tag(_tag) and _tag not in _CDNA_COMMENT_TAGS:
                         continue
                     try:
                         read.set_tag(_tag, _val, value_type=_typ)
