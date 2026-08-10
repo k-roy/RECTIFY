@@ -71,8 +71,21 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
   architecture, probe-not-arbiter, scout mode, and the sequenced path.
 
 **Next (per the path doc §4):**
-1. Full `pytest -m "not slow"` on `feat/realigner-triage` (not yet run there — only fence suites +
-   smoke; run it before any merge toward master).
+1. **[IN FLIGHT 2026-08-09 ~18:00 PDT] Full `pytest -m "not slow"` on `feat/realigner-triage`**
+   (background task `b3r10yctw`, no `-x`, pipefail; ~1 h; log
+   `/private/tmp/claude-501/-Users-kevinroy-work-rectify/12349562-4dab-426f-bb0c-0f5ca6d90c91/tasks/b3r10yctw.output`).
+   A first run (`-x`) caught ONE real merge collision, already FIXED (`7c0a8f6`): the simple-slide
+   fall-through test pinned the general path's compensating-indel realization, which the merged
+   e40ca00 invariant now correctly refuses — the test now pins the stronger refusal outcome.
+   Refiner+slide+triage suites re-verified green (52 passed) after the fix.
+   RESUME: `tail -5 <that log>`
+   - **PASS** (`… passed, 0 failed`) → branch is merge-ready; items 2–4 below. No auto-merge —
+     Kevin decides when it lands, ideally AFTER `feat/overhang-resolver-641`.
+   - **FAIL** → fix forward in `/Users/kevinroy/work/rectify_worktrees/realigner-triage` (the run
+     surveys ALL failures — triage each; merge-collision suspects: tests pinning pre-invariant
+     CIGAR-surgery outcomes, concat-DP interactions). Re-run same command.
+   - Session died mid-run → re-run:
+     `cd /Users/kevinroy/work/rectify_worktrees/realigner-triage && /Users/kevinroy/miniconda3/bin/python -m pytest -m "not slow" -q`.
 2. Triage-policy tuning on real corpora (upf1Δ 617 gold windows = ready truth set); wire the
    triage clip legs to Cat3/rescue-gate + resolver machinery.
 3. Station C (pool-level discovery gate) + the second-corpus 8×-recall reproduction (Sherlock).
