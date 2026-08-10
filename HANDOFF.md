@@ -75,8 +75,19 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
    skipped, 4 deselected, 1 xfailed, 0 failed` in 10:01 (pipefail-verified). +81 tests vs the main
    line (merged fence suites + triage). One merge collision was caught and fixed en route
    (`7c0a8f6` — the simple-slide fall-through test now pins the e40ca00 refusal outcome).
-   **The branch is MERGE-READY at `7c0a8f6`.** No auto-merge — Kevin decides when it lands,
-   ideally AFTER `feat/overhang-resolver-641` (merge-order note sent to 641/643).
+   **The branch is MERGE-READY (now at `7b931dc`).** No auto-merge — Kevin decides when it
+   lands, ideally AFTER `feat/overhang-resolver-641` (merge-order note sent to 641/643).
+1b. **[2026-08-09 late] Resolver check + the missing discovery control RUN.** 641 is ACTIVE
+   (v2 junction re-arbitration, commits through `de98896` 20:06; planning/644b/644c — Kevin's
+   junction-proximal-ED hunch adjudicated SRC1: two REAL alt donors, 67/121 read split, minimap2
+   forces one). Our control (`dev/REARB_NONCANON_CONTROL_20260809.md` + committed driver):
+   **v2 rearb flattens cryptic non-canonical junctions −6.0 pp (HP) / −2.5 pp (plain)** — 15
+   grammar-tiebreak shifts (all cryptic, some at EQUAL ED) + 18 margin-beats (pool-level-only
+   fixable). Three asks sent to 641's inbox (split arb_grammar knob; distinct tag on grammar
+   moves so triage never bypasses them; adopt the control into their verdict criteria).
+   RESUME: check 641's inbox reply + their H2 job `14271360` (their sentinel `.p644b_v2_rc`);
+   the control re-runs via
+   `python scratchpad/rearb_noncanon_control.py` on any merged scratch of the two branches.
 2. Triage-policy tuning on real corpora (upf1Δ 617 gold windows = ready truth set); wire the
    triage clip legs to Cat3/rescue-gate + resolver machinery.
 3. Station C (pool-level discovery gate) + the second-corpus 8×-recall reproduction (Sherlock).
