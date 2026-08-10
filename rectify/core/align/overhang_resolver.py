@@ -104,6 +104,15 @@ class ResolverConfig:
     # junctions minimap2 mis-assigned to a nearby boundary (alt-SS class) or
     # missed entirely in a linear alignment.
     arb_enable: bool = True
+    # Canonical-preference tiebreak at equal/better ED when the CURRENT
+    # junction is non-canonical-class (the SRC1 adjudicator). Measured cost
+    # (realigner noncanon control, 2026-08-09): on genuine non-canonical
+    # junctions with a canonical decoy in range, this snap flattens real
+    # signal (-6.0 pp cryptic recovery on the smoke mixture). Leave ON for
+    # annotated/SMD accuracy work; turn OFF for non-canonical discovery
+    # missions (upf1d/prp18d-type). Grammar-driven moves are marked ':g' in
+    # the XB tag and counted as arb_grammar_tiebreak either way.
+    arb_grammar: bool = True
     arb_window: int = 300        # max boundary shift searched (also clamped by W_max)
     arb_seg: int = 40            # query bases per junction side used for scoring
     arb_margin: float = 2.0      # an alternative must beat the current placement by this
@@ -461,21 +470,23 @@ def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None, ed_cur=None)
     length; same locality).
 
     Acceptance: an alternative must beat the current placement by
-    ``arb_margin`` — OR, when the CURRENT junction is non-canonical-class
-    and the alternative is canonical, match-or-beat it (splicing grammar as
-    the tiebreaker, mirroring the rescue path's canonical-donor tiebreak;
-    planning/644b: the SRC1 4-bp donor dispute ties the DP and only the
-    GT/GC..AG grammar can adjudicate it). Returns (ed_cur, winner) with
-    winner = (ed, d, e) or None."""
+    ``arb_margin`` — OR, when ``cfg.arb_grammar`` is on, the CURRENT
+    junction is non-canonical-class and the alternative is canonical,
+    match-or-beat it (splicing grammar as the tiebreaker, mirroring the
+    rescue path's canonical-donor tiebreak; planning/644b: the SRC1 4-bp
+    donor dispute ties the DP and only the GT/GC..AG grammar can adjudicate
+    it). Returns (ed_cur, winner, via_grammar) with winner = (ed, d, e) or
+    None; via_grammar is True when the winner was admitted ONLY by the
+    grammar tiebreak (it did not clear the margin bound)."""
     if ed_cur is None:
         ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
     cur_canon = (canonical_in_class(chrom_seq, *cur_junc)
                  if cur_junc is not None else True)
     bound = ed_cur - cfg.arb_margin
-    grammar_bound = ed_cur if not cur_canon else -1.0
+    grammar_bound = ed_cur if (cfg.arb_grammar and not cur_canon) else -1.0
     prune_at = max(bound, grammar_bound)
     if prune_at < 0:
-        return ed_cur, None
+        return ed_cur, None, False
     scored = []
     for d_alt, e_alt, alt_ref, alt_qwin in alts:
         ed = hp_edit_distance_bounded(alt_qwin, alt_ref, cutoff=prune_at)
@@ -486,15 +497,15 @@ def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None, ed_cur=None)
                 and canonical_in_class(chrom_seq, d_alt, e_alt)):
             scored.append((ed, d_alt, e_alt))
     if not scored:
-        return ed_cur, None
+        return ed_cur, None, False
     scored.sort()
     best = scored[0]
     for other in scored[1:]:
         if other[0] - best[0] >= cfg.min_margin:
             break
         if not same_junction(chrom_seq, (best[1], best[2]), (other[1], other[2])):
-            return ed_cur, None   # ambiguous among alternatives
-    return ed_cur, best
+            return ed_cur, None, False   # ambiguous among alternatives
+    return ed_cur, best, best[0] > bound
 
 
 def _rearbitrate_read(
@@ -667,8 +678,9 @@ def _rearbitrate_read(
                              dq[q_split + delta - L1:q_split + delta + L2]))
         if not alts:
             continue
-        ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg,
-                                  cur_junc=(d, e), ed_cur=ed_cur)
+        ed_cur, win, via_grammar = _score_alts(qwin, cur_ref, alts, chrom_seq,
+                                               cfg, cur_junc=(d, e),
+                                               ed_cur=ed_cur)
         if win is None:
             _bump(stats, 'arb_no_gain')
             continue
@@ -682,8 +694,12 @@ def _rearbitrate_read(
         for tag in ('MD', 'NM'):
             if read.has_tag(tag):
                 read.set_tag(tag, None)
-        read.set_tag('XB', f'shift:{d}-{e}>{d_new}-{e_new}:{ed_cur:.1f}>{win[0]:.1f}')
+        gmark = ':g' if via_grammar else ''
+        read.set_tag('XB', f'shift:{d}-{e}>{d_new}-{e_new}'
+                           f':{ed_cur:.1f}>{win[0]:.1f}{gmark}')
         _bump(stats, 'arb_shifted')
+        if via_grammar:
+            _bump(stats, 'arb_grammar_tiebreak')
         changed = True
         ct = list(read.cigartuples)
         n_idx = [j for j, (op, _) in enumerate(ct) if op == 3]
@@ -826,7 +842,7 @@ def _rearbitrate_read(
                 if not alts:
                     continue
                 cur_ref = chrom_seq[d_alt - L1:d_alt + L2]
-                ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+                ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
                 if win is not None and (best_overall is None or win[0] < best_overall[0]):
                     best_overall = win
                     ed_cur_o = ed_cur
@@ -916,7 +932,7 @@ def _rearbitrate_read(
                 if not alts:
                     continue
                 cur_ref = chrom_seq[e_alt - L1:e_alt + L2]
-                ed_cur, win = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+                ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
                 if win is not None and (best_overall is None or win[0] < best_overall[0]):
                     best_overall = win
                     ed_cur_o = ed_cur

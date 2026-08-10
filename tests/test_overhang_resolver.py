@@ -389,10 +389,10 @@ class TestRearbitration:
         r.cigartuples = cigar
         return r
 
-    def _run(self, g, read):
+    def _run(self, g, read, **cfg_kw):
         genome = {'chrI': g}
         index = SpliceSiteIndex.build(genome)
-        cfg = ResolverConfig(alpha=0.01, max_intron=5000)
+        cfg = ResolverConfig(alpha=0.01, max_intron=5000, **cfg_kw)
         stats = ResolverStats()
         changed = resolve_read(read, genome, index, cfg, stats)
         return changed, stats
@@ -467,8 +467,35 @@ class TestRearbitration:
         changed, stats = self._run(g, r)
         assert changed and stats.extra.get('arb_shifted') == 1, stats.extra
         assert self._junction(r) == (D, E)
+        # a grammar-admitted move is marked ':g' and counted, so the triage
+        # layer can treat it as TRIAGED rather than high-confidence
+        assert r.get_tag('XB').endswith(':g')
+        assert stats.extra.get('arb_grammar_tiebreak') == 1
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
+
+    def test_grammar_off_preserves_noncanonical_claim(self):
+        # arb_grammar=False: the same SRC1-class dispute must NOT be snapped
+        # to the canonical placement — the DP near-ties and margin alone
+        # cannot move it. This is the discovery-mission setting (realigner
+        # noncanon control: grammar snap flattens genuine non-canonical
+        # junctions when a canonical decoy is in range).
+        g = list(self._genome())
+        D, E = self.D, self.E_TRUE
+        g[E], g[E + 1] = g[D], g[D + 1]
+        g[E + 3] = g[D + 3] = 'A'
+        g[D + 2] = 'C'
+        g[E + 2] = 'G'
+        g[D + 4] = 'A'
+        g[E + 4] = 'T' if g[D + 4] != 'T' else 'C'
+        g = ''.join(g)
+        query = g[D - 60:D] + g[E:E + 60]
+        cigar = [(0, 64), (3, E - D), (0, 56)]    # claimed = (D+4, E+4)
+        r = self._mk_read(g, query, cigar, D - 60)
+        changed, stats = self._run(g, r, arb_grammar=False)
+        assert stats.extra.get('arb_shifted', 0) == 0, stats.extra
+        assert stats.extra.get('arb_grammar_tiebreak', 0) == 0
+        assert self._junction(r) == (D + 4, E + 4)
 
     def test_boundary_deletion_merged_into_intron(self):
         # the SRC1 smoking gun (planning/644c): M D4 N — the aligner encodes
