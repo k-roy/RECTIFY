@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rectify prescan --complexity-alpha` — structural pool-admission gate,
+  ON BY DEFAULT at `0.01`** (`prescan_command.py`,
+  `splice/overhang_informativeness.py`). A novel junction is admitted to the
+  shared junction pool only if its placement beats chance:
+  `D * 2^-I_eff <= alpha`, where `D` is the observed intron span and `I_eff`
+  the homopolymer-discounted information content of the worse 15-nt genomic
+  exonic flank. Refuses long-range junctions anchored on low-complexity
+  flanks — the class that inflates `correct`-stage cost panel-wide. Annotated
+  junctions are always retained; `--complexity-alpha 0` disables the gate and
+  reproduces the previous pool byte-identically. Measured on dense windows:
+  `correct` wall 1.32x on a length-capped pool, 5.1x uncapped (minimap2 arm),
+  21.3x on the deSALT arm, with zero gold-catalogue junctions lost at pool or
+  corrected-output level. Gate decisions are logged and recorded in
+  `junction_pool.pkl`.
+- **Deterministic rescue-candidate ordering in `rectify correct`**
+  (`splice/splice_aware_5prime.py`): candidate narrowing and the terminal-peel
+  distance cap now break ties by coordinate instead of hash/encounter order.
+  Previously identical runs could differ on ~0.6% of reads unless
+  `PYTHONHASHSEED` was pinned; output is now run-to-run byte-identical.
+
 - **`rectify cdna-analyze` now emits a per-molecule `corrected_reads.tsv`**
   (`cdna_analyze_command.py`) — one row per UMI-consensus molecule, using the
   same per-read column schema as the DRS `rectify correct` output, so a single

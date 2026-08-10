@@ -115,7 +115,7 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
     junc.add_argument(
         '--complexity-alpha',
         type=float,
-        default=None,
+        default=0.01,
         metavar='ALPHA',
         help='Structural pool-admission gate (planning/648/649): drop a NOVEL '
              'junction when its observed span D exceeds what its worse 15-nt '
@@ -123,7 +123,7 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
              '(D * 2^-I_eff > ALPHA). Refuses long-range junctions anchored on '
              'low-complexity/homopolymer flanks — the class that inflates '
              'correct-stage cost panel-wide. Annotated junctions are always '
-             'retained. Default: off (no filtering). Suggested: 0.01.',
+             'retained. Default: 0.01 (gate ON). Pass 0 to disable filtering.',
     )
 
     from rectify.data import add_organism_args
@@ -157,6 +157,11 @@ def create_prescan_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
     )
 
     return parser
+
+
+def _complexity_gate_enabled(alpha) -> bool:
+    """Pool complexity gate is ON for any positive alpha; 0/None disable it."""
+    return alpha is not None and alpha > 0
 
 
 def _strip_aligner_prefix(path_str: str) -> str:
@@ -261,9 +266,10 @@ def run(args: argparse.Namespace) -> int:
             f"{len(all_junctions)} total, {len(annotated_set)} annotated"
         )
 
-        # Structural complexity gate (planning/649). Off unless requested, so
-        # the default pool is byte-identical to before this flag existed.
-        if args.complexity_alpha is not None:
+        # Structural complexity gate (planning/649). Default ON at alpha=0.01
+        # (Kevin, 2026-08-10); --complexity-alpha 0 is the escape hatch that
+        # reproduces the pre-gate pool byte-identically.
+        if _complexity_gate_enabled(args.complexity_alpha):
             from ..splice.overhang_informativeness import (
                 filter_pool_by_flank_complexity,
             )
