@@ -92,6 +92,7 @@ def _cdna_region_task(
     umi_clustering: str,
     use_poa: bool,
     strand_aware_consensus: bool,
+    adaptive_threshold: int = 0,
 ) -> Dict:
     """Process one BAM region into a FASTQ chunk.
 
@@ -165,7 +166,8 @@ def _cdna_region_task(
                 "from_multi_pileup": 0, "from_multi_fallback": 0, "n_rdna_masked": 0}
 
     clusters, stats = _cluster(reads, anchor_window_bp, umi_edit_distance, per_cluster_cap,
-                                clustering_method=umi_clustering)
+                                clustering_method=umi_clustering,
+                                adaptive_threshold=adaptive_threshold)
 
     def _median(xs: List[int]) -> int:
         if not xs: return 0
@@ -189,6 +191,9 @@ def _cdna_region_task(
     # 624: report what the start-in-region filter removed, so the correction is visible in the
     # run log rather than silent (workspace rule: never a silent cap).
     fq_stats["n_boundary_dropped"] = _n_boundary
+    # 658: surface the per-region adaptive-ed decisions so the parallel path is not blind to them.
+    fq_stats["adaptive_deep_buckets"] = stats.get("adaptive_deep_buckets", 0)
+    fq_stats["adaptive_deep_reads"] = stats.get("adaptive_deep_reads", 0)
     return fq_stats
 
 
@@ -204,6 +209,7 @@ def _run_cdna_correct_parallel(
     use_poa: bool,
     strand_aware_consensus: bool,
     workers: int,
+    adaptive_threshold: int = 0,
 ) -> Dict:
     """Region-parallel stage-1 consensus FASTQ.
 
@@ -240,6 +246,7 @@ def _run_cdna_correct_parallel(
                     rdna_intervals,
                     anchor_window_bp, umi_edit_distance, per_cluster_cap,
                     umi_clustering, use_poa, strand_aware_consensus,
+                    adaptive_threshold,
                 )
                 futures[fut] = plan.region_id
 
@@ -247,11 +254,17 @@ def _run_cdna_correct_parallel(
             # filter — i.e. exactly the double-counting that --workers > 1 used to introduce.
             total_stats: Dict = {"input_reads": 0, "written": 0, "from_singletons": 0,
                                   "from_multi_pileup": 0, "from_multi_fallback": 0,
-                                  "n_boundary_dropped": 0}
+                                  "n_boundary_dropped": 0,
+                                  "adaptive_deep_buckets": 0, "adaptive_deep_reads": 0}
             for fut in as_completed(futures):
                 s = fut.result()
                 for k in total_stats:
                     total_stats[k] += s.get(k, 0)
+            if adaptive_threshold > 0:
+                log.info("  adaptive ed: %d deep buckets (%d reads) clustered at ed=1 "
+                         "(threshold %d reads/bucket)",
+                         total_stats["adaptive_deep_buckets"],
+                         total_stats["adaptive_deep_reads"], adaptive_threshold)
             if total_stats["n_boundary_dropped"]:
                 log.info(
                     "  region-boundary de-duplication: %d overlapping read placements "
@@ -291,6 +304,8 @@ def run(args) -> int:
         ("umi_clustering", "directional"),
         ("strand_aware_consensus", False),
         ("no_mask_rdna", False),
+        ("umi_adaptive_threshold", 0),
+        ("umi_profile", False),
     ]:
         if not hasattr(args, attr): setattr(args, attr, default)
 
@@ -347,6 +362,28 @@ def run(args) -> int:
             log.info("rDNA masking ON: %d rRNA_gene loci across %d chrom(s) "
                      "(--no-mask-rdna to disable)", n_rdna_loci, len(rdna_intervals))
 
+    # 658: per-library UMI error-profile calibration (spacer ground truth; capped
+    # pre-pass, ~1-2 min). Written as a sidecar for provenance/QC and downstream
+    # calibrated merge rules; does not change clustering behaviour by itself.
+    if args.umi_profile:
+        import json as _json
+        from rectify.core.cdna.profile import derive_umi_error_profile
+        _t_prof = time.time()
+        _prof = derive_umi_error_profile(str(args.bam))
+        _prof_path = args.out / "umi_error_profile.json"
+        with open(_prof_path, "w") as _fh:
+            _json.dump(_prof, _fh, indent=1)
+        for _reg, _r in _prof.get("regimes", {}).items():
+            log.info("UMI profile [%s]: n=%d clean=%.1f%% frameshift=%.2f%% "
+                     "sub/base=%.3f%% meanQ=%.1f", _reg, _r["n"], 100 * _r["clean"],
+                     100 * _r["frameshift"], 100 * _r["inframe_sub_per_base"],
+                     _r["mean_umi_Q"])
+        log.info("UMI error profile -> %s (%.0fs)", _prof_path, time.time() - _t_prof)
+
+    if args.umi_adaptive_threshold > 0:
+        log.info("Adaptive UMI edit distance ON: ed=%d below %d reads/bucket, ed=1 at/above "
+                 "(planning/654 policy)", args.umi_edit_distance, args.umi_adaptive_threshold)
+
     use_poa = HAS_POA and not args.no_poa
     out_fastq = args.out / "stage1_consensus.fastq.gz"
     _workers = max(1, getattr(args, "workers", 1) or 1)
@@ -357,6 +394,7 @@ def run(args) -> int:
             args.bam, out_fastq, args.reference, rdna_intervals,
             args.anchor_window_bp, args.umi_edit_distance, args.per_cluster_cap,
             args.umi_clustering, use_poa, args.strand_aware_consensus, _workers,
+            adaptive_threshold=args.umi_adaptive_threshold,
         )
         print()
         print("=" * 70)
@@ -383,9 +421,14 @@ def run(args) -> int:
                  args.anchor_window_bp, args.umi_edit_distance, args.umi_clustering)
         clusters, stats = cluster_reads(reads, args.anchor_window_bp,
                                          args.umi_edit_distance, args.per_cluster_cap,
-                                         clustering_method=args.umi_clustering)
+                                         clustering_method=args.umi_clustering,
+                                         adaptive_threshold=args.umi_adaptive_threshold)
         log.info("  %d molecule clusters (%.1fs)  biggest bucket=%d reads",
                  stats["molecule_clusters"], time.time() - t1, stats["biggest_bucket_size"])
+        if stats.get("adaptive_deep_buckets"):
+            log.info("  adaptive ed: %d deep buckets (%d reads) clustered at ed=1; "
+                     "the rest at ed=%d", stats["adaptive_deep_buckets"],
+                     stats["adaptive_deep_reads"], args.umi_edit_distance)
 
         umi_canon = {cid: canonical_umi([r.umi for r in c]) for cid, c in enumerate(clusters)}
         cluster_xf_tier = {cid: max((r.xf_tier for r in c), default=0)
@@ -556,6 +599,28 @@ def create_correct_cdna_parser(subparsers):
         type=int,
         default=3,
         help='Max Levenshtein distance between UMIs in the same cluster',
+    )
+    correct_cdna_parser.add_argument(
+        '--umi-adaptive-threshold',
+        dest='umi_adaptive_threshold',
+        type=int,
+        default=0,
+        help='Depth-adaptive UMI edit distance (0 = off). Type-1 anchor buckets with >= N '
+             'reads cluster at ed=1; buckets below N at --umi-edit-distance. Ground-truth '
+             'pricing (Chanfreau planning/652+654): over-merge at ed>=2 grows with bucket '
+             'depth without bound while under-merge stays ~+2%% at any depth. Production '
+             'policy: --umi-edit-distance 2 --umi-adaptive-threshold 5000.',
+    )
+    correct_cdna_parser.add_argument(
+        '--umi-profile',
+        dest='umi_profile',
+        action='store_true',
+        default=False,
+        help='Derive the per-library UMI error profile from the fixed-T spacers before '
+             'clustering (capped pre-pass, ~1-2 min) and write umi_error_profile.json '
+             'beside the stage-1 output. Per-regime (pore-entry vs pore-exit) clean/'
+             'frameshift/substitution rates — provenance + QC + input for calibrated '
+             'merge rules (planning/650/655).',
     )
     correct_cdna_parser.add_argument(
         '--anchor-window-bp',

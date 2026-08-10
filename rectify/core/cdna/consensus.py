@@ -84,12 +84,13 @@ def restore_eq_seq(seg: pysam.AlignedSegment,
 
 
 def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optional[pysam.FastaFile]" = None) -> Optional[Tuple[str, List[Tuple[int, int]], int, str]]:
-    """Build pileup-based consensus across a multi-read cluster (v1.5).
+    """Build pileup-based consensus across a multi-read cluster (v1.5; 653 quality-weighted).
 
     For each reference position covered by ≥ ceil(N/2) reads in the cluster, the
-    consensus base is the majority across reads; positions with low M-coverage
-    (insufficient reads have a matched base there) are emitted as 'D' (deletion)
-    in the consensus CIGAR.
+    consensus base is the phred-quality-weighted majority across reads (raw count
+    when quality strings are absent); positions with low M-coverage (insufficient
+    reads have a matched base there) are emitted as 'D' (deletion) in the
+    consensus CIGAR.
 
     Returns (consensus_seq, cigartuples, ref_start, qual_string) or None if
     insufficient data. cigartuples uses pysam op codes (0=M, 2=D).
@@ -116,12 +117,19 @@ def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optio
         seq = restore_eq_seq(read, fasta)
         if seq is None:
             continue
-        # Walk M-aligned pairs (excludes I, S, H, N, D)
+        # 653: weight each vote by the base's phred quality instead of +1. PCR-cDNA read pools
+        # mix the two sequencing-time regimes (planning/650: pore-entry bases run ~1.7x the
+        # error of pore-exit bases, a gradient along each read), so on an even strand split a
+        # raw-count vote is a coin flip while the quality-weighted vote resolves toward the
+        # strand that read this REGION at pore exit. Reads without quality strings vote with
+        # weight 1 (the pre-653 behaviour); `coverage` stays a read count, so the majority
+        # coverage threshold below is unchanged.
+        quals = read.query_qualities
         for q_pos, r_pos in read.get_aligned_pairs(matches_only=True):
             if r_pos is None or q_pos is None:
                 continue
             base = seq[q_pos].upper()
-            base_counts[r_pos][base] += 1
+            base_counts[r_pos][base] += quals[q_pos] if quals else 1
             coverage[r_pos] += 1
 
     # Build consensus sequence + CIGAR walking the full span

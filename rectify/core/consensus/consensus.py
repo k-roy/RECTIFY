@@ -412,7 +412,13 @@ def _restore_sidecar_tags(read: pysam.AlignedSegment, read_num_sidecar) -> None:
         )
         return
     for tag, typ, value in _parse_fastq_comment_tags(row.fastq_comment):
-        if read.has_tag(tag):
+        # 659: the FASTQ comment is the AUTHORITATIVE source for the Stage-1 cDNA tags, so
+        # for those the sidecar must OVERWRITE a colliding aligner-emitted tag — uLTRA writes
+        # its own XC:Z:NO_SPLICE / XA:Z: with splice semantics, and the old don't-clobber
+        # guard let them survive; cdna-analyze's int(XC) then dropped every uLTRA-won record
+        # as "missing required tags" (7.0% of rna15aa_rep1, BIASED toward spliced molecules).
+        # Same rule as _restore_comment_tags_from_siblings. Non-cDNA tags keep the guard.
+        if read.has_tag(tag) and tag not in _CDNA_COMMENT_TAGS:
             continue
         read.set_tag(tag, value, value_type=typ)
 

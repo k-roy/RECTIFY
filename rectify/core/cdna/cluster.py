@@ -18,7 +18,8 @@ from .umi import (
 
 def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
                   per_cluster_cap: int,
-                  clustering_method: str = "directional"
+                  clustering_method: str = "directional",
+                  adaptive_threshold: int = 0
                   ) -> Tuple[List[List[ReadInfo]], dict]:
     """Stage-1 clustering: anchor-bucket reads, then UMI-cluster within each bucket.
 
@@ -28,6 +29,18 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
         still processed).
       - "components" (legacy): connected-components; needs `per_cluster_cap` to
         drop oversized buckets to avoid catastrophic chain-merge.
+
+    adaptive_threshold (658; ground-truth pricing in Chanfreau planning/652+654):
+      0 (default) = off; every Type-1 bucket clusters at `max_edit` unchanged.
+      N > 0 = depth-adaptive edit distance: buckets with >= N reads cluster at
+      ed=1, buckets below N at `max_edit`. Rationale: under-merge at the real
+      duplication (~1.13 reads/molecule) is bounded (~+2%) at any depth, while
+      over-merge at ed>=2 grows with bucket depth without bound (singleton
+      percolation: -6% at 20k reads, -22% in the CCW12 regime). The production
+      policy is `max_edit=2, adaptive_threshold=5000`. Exactness note: at
+      anchor_window == 1 bucket sizes are global (the 624 anchor partition keeps
+      buckets whole per region), so serial and --workers N make identical
+      per-bucket ed decisions.
     """
     # Bucket key includes read_type (v1.15) — Type-1 and Type-2 reads never
     # mix within a bucket, so they get different clustering algorithms.
@@ -49,6 +62,9 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
         type2_clusters=0,
         type1_reads=sum(1 for r in reads if r.read_type == 1),
         type2_reads=sum(1 for r in reads if r.read_type == 2),
+        adaptive_threshold=adaptive_threshold,
+        adaptive_deep_buckets=0,
+        adaptive_deep_reads=0,
     )
 
     umi_cluster_fn = umi_components_directional if clustering_method == "directional" else umi_components
@@ -66,7 +82,12 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
             continue
         if read_type == 1:
             umis = [r.umi for r in bucket_reads]
-            comps = umi_cluster_fn(umis, max_edit)
+            bucket_ed = max_edit
+            if adaptive_threshold > 0 and bsize >= adaptive_threshold:
+                bucket_ed = 1
+                stats["adaptive_deep_buckets"] += 1
+                stats["adaptive_deep_reads"] += bsize
+            comps = umi_cluster_fn(umis, bucket_ed)
         else:
             comps = position_components(bucket_reads)
         for comp in comps:
@@ -83,11 +104,20 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
 
 
 def pick_representative(reads_in_cluster: List[pysam.AlignedSegment]) -> pysam.AlignedSegment:
-    """Choose the cluster representative (umi_tools-style longest-and-best).
+    """Choose the cluster representative (highest-accuracy member).
 
     Used for singletons (size 1) and as fallback when pileup consensus fails.
+
+    653: rank by mean basecall quality FIRST. All T1 members of a cluster are reads of the
+    same molecule, so span differences are clipping/pore-truncation noise, while mean Q is the
+    direct per-read accuracy signal — and it varies systematically ~3Q between the two
+    sequencing-time regimes of PCR-cDNA (UMI-at-pore-entry vs -exit, planning/650). The
+    pre-653 keys (span, MAPQ, name) are kept as tie-breakers, so reads without quality
+    strings order exactly as before.
     """
     def key(r: pysam.AlignedSegment) -> tuple:
+        quals = r.query_qualities
+        mean_q = (sum(quals) / len(quals)) if quals else 0.0
         ref_len = (r.reference_end or 0) - r.reference_start
-        return (-ref_len, -r.mapping_quality, r.query_name)
+        return (-mean_q, -ref_len, -r.mapping_quality, r.query_name)
     return min(reads_in_cluster, key=key)
