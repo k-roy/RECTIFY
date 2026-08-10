@@ -497,6 +497,50 @@ class TestRearbitration:
         assert stats.extra.get('arb_grammar_tiebreak', 0) == 0
         assert self._junction(r) == (D + 4, E + 4)
 
+    def test_ref_consuming_tail_refuses_shift_conserves_query(self):
+        # v5.1 regression (chrII 98b21cfd, 2026-08-10): junction followed by
+        # 1I 4M 4D 54M 1S — a shift here changes net reference consumption
+        # and (pre-fix) the delta<0 M-swap overwrote the flanking 1I with a
+        # manufactured M, losing a query base (htslib-unreadable record).
+        # Post-fix: the junction enters arbitration but is frame-unsafe —
+        # no shift, CIGAR untouched, query length conserved.
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        nd = self.E_DEC - self.D
+        cigar = [(0, 60), (3, nd), (1, 1), (0, 4), (2, 4), (0, 54), (4, 1)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_shifted', 0) == 0, stats.extra
+        assert stats.extra.get('arb_frame_unsafe_skip', 0) >= 1, stats.extra
+        assert self._junction(r) == (self.D, self.E_DEC)   # held, not corrupted
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_interior_junction_shift_refused_downstream_anchored(self):
+        # v5.1: shifting an interior junction displaces every ref-consuming
+        # op downstream (a -delta interior left shift moves the NEXT
+        # junction off its index sites). Interior junctions must be refused
+        # shift arbitration; both junctions stay put.
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        nd = self.E_DEC - self.D
+        cigar = [(0, 60), (3, nd), (0, 20), (3, 200), (0, 40)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_shifted', 0) == 0, stats.extra
+        assert stats.extra.get('arb_frame_unsafe_skip', 0) >= 1, stats.extra
+        juncs = []
+        ref = r.reference_start
+        for op, ln in r.cigartuples:
+            if op == 3:
+                juncs.append((ref, ref + ln))
+            if op in (0, 2, 3, 7, 8):
+                ref += ln
+        assert juncs == [(self.D, self.E_DEC),
+                         (self.E_DEC + 20, self.E_DEC + 220)]
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
     def test_boundary_deletion_merged_into_intron(self):
         # the SRC1 smoking gun (planning/644c): M D4 N — the aligner encodes
         # the GC-donor evidence as a 4-bp deletion while asserting the GT

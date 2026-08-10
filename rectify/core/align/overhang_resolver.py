@@ -603,6 +603,23 @@ def _rearbitrate_read(
         # arbitration. Windows stop at the soft clips.
         m_l = ct[i - 1][1] if ct[i - 1][0] in (0, 7, 8) else 0
         m_r = ct[i + 1][1] if ct[i + 1][0] in (0, 7, 8) else 0
+        # Frame safety (v5.1 — the chrII 98b21cfd corruption, 2026-08-10).
+        # (1) A d-moving rewrite swaps query between the FLANKING ops, so
+        # both must be M-type: the m_l/m_r=0 sentinel let a delta<0 swap
+        # overwrite a flanking 1I with a manufactured M (query-length
+        # violation; htslib refuses the record — 11/17 chromosome BAMs).
+        # (2) EVERY shift changes net reference consumption through the
+        # junction, displacing all ref-consuming ops downstream of the
+        # right flank (measured: a +2 donor shift moved a trailing
+        # 4M4D55M block by +2; an interior-N shift displaces the NEXT
+        # junction by -delta) — so shifts are offered only when nothing
+        # beyond the right flank consumes reference. Interior junctions
+        # keep the D-merge; their shift arbitration belongs to stage-2's
+        # junction-local traceback realigner.
+        flank_m = ct[i - 1][0] in (0, 7, 8) and ct[i + 1][0] in (0, 7, 8)
+        if not all(o in (1, 4, 5) for o, _ in ct[i + 2:]):
+            _bump(stats, 'arb_frame_unsafe_skip')
+            continue
         _, _, _, q_split = walk[i + 1]      # query index where exon-2 resumes
         lclip = ct[0][1] if ct[0][0] == 4 else 0
         rclip = ct[-1][1] if ct[-1][0] == 4 else 0
@@ -639,8 +656,9 @@ def _rearbitrate_read(
                     continue
                 alts.append((d, e_alt,
                              chrom_seq[d - L1:d] + chrom_seq[e_alt:e_alt + L2], qwin))
-        # left-boundary shifts (any N — frame-safe): query swaps between Ms
-        if which in ('left_only', 'both'):
+        # left-boundary shifts: query swaps between the flanking Ms (both
+        # flanks must BE Ms — flank_m; see the frame-safety note above)
+        if which in ('left_only', 'both') and flank_m:
             for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
                 d_alt = int(d_alt)
                 delta = d_alt - d
@@ -656,9 +674,8 @@ def _rearbitrate_read(
         # diagonal (pseudo-slide) shifts: BOTH boundaries move by delta with
         # the intron length preserved — the beyond-legal-slide class where
         # partial homology lets two placements near-tie (the SRC1 4-bp donor
-        # dispute). Frame-safe only on the LAST N: every op downstream
-        # shifts by delta.
-        if which == 'both':
+        # dispute). Needs the same M-flank swap as the left family.
+        if which == 'both' and flank_m:
             span = e - d
             for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
                 d_alt = int(d_alt)
@@ -726,6 +743,10 @@ def _rearbitrate_read(
         qwin = dq[q_split - L1:q_split + L2]
         _bump(stats, 'arb_dop_checked')
         s2 = cfg.arb_dop_slop
+        # frame safety: an asymmetric snap (delta_e != delta_d) changes net
+        # reference consumption and displaces every ref-consuming op beyond
+        # the right flank — allow it only when there are none (v5.1)
+        b1_tail_clear = all(o in (1, 4, 5) for o, _ in ct[i + 2:])
         alts = []
         for d_alt in index.sites_in(chrom_key, left_kind, p_start - s2, p_start + s2 + 1):
             d_alt = int(d_alt)
@@ -739,6 +760,8 @@ def _rearbitrate_read(
                 if not (cfg.min_intron <= e_alt - d_alt <= cfg.max_intron):
                     continue
                 if e_alt + L2 > len(chrom_seq):
+                    continue
+                if not b1_tail_clear and (e_alt - p_end) != (d_alt - p_start):
                     continue
                 alts.append((d_alt, e_alt,
                              chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
@@ -782,7 +805,8 @@ def _rearbitrate_read(
         if op in (0, 7, 8):
             last_m = j
     if last_m is not None and ct[last_m][1] >= 3 * cfg.arb_mm_win \
-            and not any(op == 3 for op, _ in ct[last_m:]):
+            and not any(op == 3 for op, _ in ct[last_m:]) \
+            and all(op in (1, 4, 5) for op, _ in ct[last_m + 1:]):
         walk = {j: (o, l, rs, qs) for j, o, l, rs, qs in _iter_ref_ops(ct)}
         _, mlen, m_rs, m_qs = walk[last_m]
         block_ref = read.reference_start + m_rs
