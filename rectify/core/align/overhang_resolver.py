@@ -520,6 +520,50 @@ def _rearbitrate_read(
     left_kind, right_kind = _boundary_kinds(strand)
     changed = False
 
+    # ---- Case A0: boundary-deletion merge (planning/644c, the SRC1 smoking
+    # gun). A D op abutting an N is the aligner encoding "these reference
+    # bases have no query support" while asserting the wrong boundary —
+    # minimap2 wrote M D4 N at SRC1, i.e. the GC-donor evidence AND the GT
+    # claim in one CIGAR. Merging the D into the intron is ALIGNMENT-
+    # IDENTICAL (same query, same reference consumption), strictly more
+    # parsimonious, and accepted only when the merged junction is
+    # canonical-in-class. The boundary-adjacent generalization of BBMap's
+    # intronlen D->N semantics.
+    merged = True
+    while merged:
+        merged = False
+        for i, (op, ln) in enumerate(ct):
+            if op != 3:
+                continue
+            walk = {j: (o, l, rs, qs) for j, o, l, rs, qs in _iter_ref_ops(ct)}
+            _, nlen, n_rs, _ = walk[i]
+            d = read.reference_start + n_rs
+            e = d + nlen
+            if i >= 1 and ct[i - 1][0] == 2:
+                dl = ct[i - 1][1]
+                if (e - (d - dl)) <= cfg.max_intron and \
+                        canonical_in_class(chrom_seq, d - dl, e):
+                    ct = ct[:i - 1] + [(3, nlen + dl)] + ct[i + 1:]
+                    _bump(stats, 'arb_dmerge')
+                    merged = True
+                    changed = True
+                    break
+            if i + 1 < len(ct) and ct[i + 1][0] == 2:
+                dl = ct[i + 1][1]
+                if ((e + dl) - d) <= cfg.max_intron and \
+                        canonical_in_class(chrom_seq, d, e + dl):
+                    ct = ct[:i] + [(3, nlen + dl)] + ct[i + 2:]
+                    _bump(stats, 'arb_dmerge')
+                    merged = True
+                    changed = True
+                    break
+    if changed:
+        read.cigartuples = ct
+        for tag in ('MD', 'NM'):
+            if read.has_tag(tag):
+                read.set_tag(tag, None)
+        read.set_tag('XB', 'dmerge')
+
     n_idx = [i for i, (op, _) in enumerate(ct) if op == 3]
 
     # ---- Case A: boundary shifts on the first/last N op -------------------
@@ -536,22 +580,28 @@ def _rearbitrate_read(
         targets.append(('first', n_idx[0]))
         targets.append(('last', n_idx[-1]))
     for which, i in targets:
-        # flanking blocks must be M
-        if i == 0 or i == len(ct) - 1 or ct[i - 1][0] not in (0, 7, 8) or ct[i + 1][0] not in (0, 7, 8):
+        if i == 0 or i == len(ct) - 1:
             continue
         walk = {j: (op, ln, rs, qs) for j, op, ln, rs, qs in _iter_ref_ops(ct)}
         _, nlen, n_rs, _ = walk[i]
         d = read.reference_start + n_rs
         e = d + nlen
-        m_l = ct[i - 1][1]
-        m_r = ct[i + 1][1]
+        # M flank lengths gate only the left/diagonal REWRITE bookkeeping;
+        # SCORING windows come from the decoded query itself, so ONT indel
+        # fragmentation at a mis-assigned boundary (planning/644c: the very
+        # signature of mis-assignment) cannot exempt a junction from
+        # arbitration. Windows stop at the soft clips.
+        m_l = ct[i - 1][1] if ct[i - 1][0] in (0, 7, 8) else 0
+        m_r = ct[i + 1][1] if ct[i + 1][0] in (0, 7, 8) else 0
         _, _, _, q_split = walk[i + 1]      # query index where exon-2 resumes
-        L1 = min(cfg.arb_seg, m_l)
-        L2 = min(cfg.arb_seg, m_r)
-        if L1 < 10 or L2 < 10 or d - L1 < 0 or e + L2 > len(chrom_seq):
-            continue
+        lclip = ct[0][1] if ct[0][0] == 4 else 0
+        rclip = ct[-1][1] if ct[-1][0] == 4 else 0
         if dq is None:
             dq = _decoded_query(read, chrom_seq)
+        L1 = min(cfg.arb_seg, q_split - lclip)
+        L2 = min(cfg.arb_seg, len(dq) - rclip - q_split)
+        if L1 < 10 or L2 < 10 or d - L1 < 0 or e + L2 > len(chrom_seq):
+            continue
         qwin = dq[q_split - L1:q_split + L2]
         _bump(stats, 'arb_njunc_checked')
         # Fast path: a canonical-class junction whose window already scores

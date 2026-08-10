@@ -470,6 +470,44 @@ class TestRearbitration:
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
 
+    def test_boundary_deletion_merged_into_intron(self):
+        # the SRC1 smoking gun (planning/644c): M D4 N — the aligner encodes
+        # the GC-donor evidence as a 4-bp deletion while asserting the GT
+        # donor 4 bp downstream; merging the D into the intron is
+        # alignment-identical and lands on the canonical GC junction
+        g = list(self._genome())
+        D, E = self.D, self.E_TRUE
+        g[D:D + 2] = list('GC')       # true donor (GC class)
+        g[D + 4:D + 6] = list('GT')   # the decoy donor the aligner asserted
+        g = ''.join(g)
+        query = g[D - 60:D] + g[E:E + 60]
+        cigar = [(0, 60), (2, 4), (3, E - (D + 4)), (0, 60)]
+        r = self._mk_read(g, query, cigar, D - 60)
+        changed, stats = self._run(g, r)
+        assert changed and stats.extra.get('arb_dmerge') == 1, stats.extra
+        assert self._junction(r) == (D, E)
+        assert not any(op == 2 for op, _ in r.cigartuples)
+        qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(query)
+
+    def test_boundary_deletion_not_merged_when_noncanonical(self):
+        # control: absorbing the D must be refused when the merged junction's
+        # ambiguity class has no canonical member
+        g = list(self._genome())
+        D, E = self.D, self.E_TRUE
+        g[D:D + 2] = list('AA')       # merged donor would be non-canonical
+        g[D + 2] = 'C'                # break any slide chain at the boundary
+        g[D + 4:D + 6] = list('GT')
+        g = ''.join(g)
+        from rectify.core.splice.overhang_informativeness import canonical_in_class
+        assert not canonical_in_class(g, D, E)
+        query = g[D - 60:D] + g[E:E + 60]
+        cigar = [(0, 60), (2, 4), (3, E - (D + 4)), (0, 60)]
+        r = self._mk_read(g, query, cigar, D - 60)
+        changed, stats = self._run(g, r)
+        assert stats.extra.get('arb_dmerge', 0) == 0
+        assert (2, 4) in r.cigartuples
+
     def test_dop_converted_to_snapped_intron(self):
         # the intron expressed as a 300-bp deletion at the exact bounds
         g = self._genome()
