@@ -219,8 +219,21 @@ this ledger does not credit.
 2. **A clean whole-pipeline `run-all` wall time.** The only in-corpus DRS `run-all` with `[TIMING]`
    prints **failed at the correction step**; its alignment numbers are sound, its total is not
    quotable.
-3. **The `analyze` stage** — no `[TIMING] Analysis:` line was produced by any run found. Assumed
-   identical between configs (it consumes corrected output, not aligner BAMs).
+3. ~~The `analyze` stage — never measured.~~ ✅ **MEASURED 2026-08-10 (planning/657, tree
+   `999ceb5`, 9-library AA DRS panel, manifest mode, `--run-deseq2`): full-genome analyze =
+   2,862 s wall ≈ 0.8 CPU-h ONCE per panel (~0.03% of the per-sample bill).** Per-stage: CPA
+   clustering `[2/9]` **47.3%** (the only SUPERLINEAR stage: 52× wall at 17.5× clusters — the
+   watch-item if panels get much deeper), genomic distribution 22.5%, count matrix 13.2%,
+   DESeq2 3.9%. True max RSS **5.86 GB** — the 34.5 GB "maxvmem" seen in qacct is address
+   space, not working set. cpu/wall ≈ 1.18 despite `--threads 8`: effectively serial, do not
+   request 8 slots for it.
+   **Consensus read selection is also now measured** (same unit, 31.9 k-read window, threads 1):
+   raw `rectify consensus` 21–34 s at 2→5 aligners (sublinear in arm count, 1.5–1.6×),
+   `--chimeric` **2.7×** dearer; corrected consensus (`merge_corrected_tsvs` +
+   `write_corrected_consensus_bam`) 37→59.5 s at 2→5 arms (merge:write ≈ 3:1). Linear per-read
+   projection to a 1.26 M-read PROD sample: raw ~22 min, corrected ~39 min, chimeric ~59 min,
+   single-threaded ⇒ **~0.1% of the post-gate per-sample bill. Neither consensus nor analyze is
+   a lever; `correct` remains ~99% even after the planning/649 pool gate.**
 4. **Whether the panel's winning placements beat minimap2's** on reads all aligners placed. That
    needs a concordance comparison of *corrected* output.
 5. 🔴 **A 12–90× discrepancy in per-read correct cost**: 0.95–2.86 CPU-s/read at PROD versus
