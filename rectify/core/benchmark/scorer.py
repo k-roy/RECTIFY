@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""Ambiguity-aware per-junction + per-indel accuracy scorer (component 3).
+
+Consumes an aligner/consensus BAM + the per-read truth table (component 2) and
+emits TP/FP/FN per aligner, stratified by junction class (annotated/NIC/NNC) AND
+read-class, plus the **framing metric**: EXACT INDEL-POSITION CONCORDANCE WITH
+TRUTH, ambiguity-aware, NEVER edit distance.
+
+Ambiguity-awareness reuses the in-tree primitives
+(``chimeric_consensus.normalize_junction`` / ``junction_ambiguity_window`` /
+``_canonical_within_window``, ``chimeric_consensus.py:59-155``) so that:
+
+* a junction called one bp into a donor/acceptor repeat is NOT charged FP — both
+  truth and call are left-normalized to the leftmost ambiguity-equivalent
+  coordinate, so set membership IS the ambiguity-aware match (the exact trap that
+  produced the GMAP 0.09 artifact);
+* an HP/STR indel placed anywhere within its run is credited as a TP — the net
+  (D-I) over the truth ``[eq_start, eq_end)`` span is compared to the truth net,
+  not the literal edit position (edit distance ties by construction).
+
+Mirrors ``validate_command.py``'s CPA-truth scoring pattern, lifted to junctions
++ indels (it does not score junctions today).
+
+Author: Kevin R. Roy
+"""
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union, Iterable
+
+import pysam
+
+from ..consensus.chimeric_consensus import (
+    normalize_junction,
+    _canonical_within_window,
+    junction_ambiguity_window,
+)
+from .truth_schema import (
+    ReadTruth,
+    JunctionTruth,
+    IndelTruth,
+    JunctionClass,
+    IndelKind,
+    read_truth_table,
+)
+
+logger = logging.getLogger(__name__)
+
+_REF_CONSUMING = {0, 2, 3, 7, 8}   # M D N = X
+_QUERY_CONSUMING = {0, 1, 4, 7, 8}  # M I S = X
+
+
+# ---------------------------------------------------------------------------
+# CIGAR feature extraction
+# ---------------------------------------------------------------------------
+def extract_junctions(ref_start: int, cigartuples) -> List[Tuple[int, int]]:
+    """Return intron ``[start, end)`` spans (N-ops) in genome coords."""
+    out = []
+    pos = ref_start
+    for op, ln in cigartuples or []:
+        if op == 3:  # N
+            out.append((pos, pos + ln))
+            pos += ln
+        elif op in _REF_CONSUMING:
+            pos += ln
+    return out
+
+
+def net_indel_in_span(ref_start: int, cigartuples,
+                      span_start: int, span_end: int) -> Tuple[int, int]:
+    """Net ``(deletion - insertion)`` base count whose REF position lies within
+    ``[span_start, span_end)``, and the indel base count OUTSIDE the span.
+
+    Deletions consume ref (their bases overlap the span by genome position);
+    insertions are charged to the span if the insertion point (the current ref
+    position) lies within ``[span_start, span_end]``. Mirrors the vertical-slice
+    ``net_indel_in_run`` ambiguity-aware match generalized to a named span.
+    """
+    pos = ref_start
+    in_span = 0
+    out_span = 0
+    for op, ln in cigartuples or []:
+        if op in (0, 7, 8):            # M/=/X
+            pos += ln
+        elif op == 2:                  # D consumes ref
+            overlap = max(0, min(pos + ln, span_end) - max(pos, span_start))
+            in_span += overlap
+            out_span += (ln - overlap)
+            pos += ln
+        elif op == 1:                  # I consumes query, ref pos fixed
+            # An insertion into a run of length L has L+1 equivalent insertion
+            # points (before each base AND after the last), so the RIGHT bound is
+            # INCLUSIVE for insertions (unlike a deletion, whose ref positions span
+            # the half-open [s,e)). Must match has_unexplained's kind-aware test.
+            if span_start <= pos <= span_end:
+                in_span -= ln
+            else:
+                out_span += ln
+        elif op == 3:                  # N intron — not an indel
+            pos += ln
+        # S/H clipping ignored
+    return in_span, out_span
+
+
+def all_indel_positions(ref_start: int, cigartuples) -> List[Tuple[int, int, int]]:
+    """Return every indel as ``(ref_pos, length, kind)`` where kind 2=D, 1=I.
+    ``ref_pos`` is the genome position at the start of the op."""
+    pos = ref_start
+    out = []
+    for op, ln in cigartuples or []:
+        if op == 2:
+            out.append((pos, ln, 2))
+            pos += ln
+        elif op == 1:
+            out.append((pos, ln, 1))
+        elif op in _REF_CONSUMING:
+            pos += ln
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Result containers
+# ---------------------------------------------------------------------------
+@dataclass
+class JunctionScore:
+    tp: int = 0
+    fp: int = 0
+    fn: int = 0
+    # stratified TP/FP/FN keyed by class label ("ANNOTATED"/"NIC"/"NNC") and by
+    # canonicity ("canonical"/"noncanonical")
+    by_class: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    by_canon: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    fp_variant_adjacent: int = 0   # C6: false junctions near a truth variant
+    fp_canonical_snap: int = 0     # point-4: canonical FP snapped from a non-canonical truth
+
+    @property
+    def recall(self) -> float:
+        d = self.tp + self.fn
+        return self.tp / d if d else 0.0
+
+    @property
+    def precision(self) -> float:
+        d = self.tp + self.fp
+        return self.tp / d if d else 0.0
+
+    @property
+    def fdr(self) -> float:
+        d = self.tp + self.fp
+        return self.fp / d if d else 0.0
+
+
+@dataclass
+class IndelScore:
+    """Position-exact (ambiguity-aware) indel concordance — the framing metric."""
+    correct: int = 0          # net-in-span matched truth net (TP)
+    incorrect: int = 0        # truth indel present but net mismatched (FN)
+    false_indels: int = 0     # reads/positions with an indel outside every truth span
+    clean_reads: int = 0      # k=0 reads scored for the false-indel-rate control
+    clean_reads_with_false_indel: int = 0
+    # C1 cell accounting: keyed by (base_class, run_copies, context)
+    by_cell: Dict[Tuple[str, int, str], Dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+
+    @property
+    def position_exact_concordance(self) -> float:
+        d = self.correct + self.incorrect
+        return self.correct / d if d else 0.0
+
+    @property
+    def false_indel_rate(self) -> float:
+        return (self.clean_reads_with_false_indel / self.clean_reads
+                if self.clean_reads else 0.0)
+
+
+@dataclass
+class AlignerScore:
+    aligner: str
+    reads_scored: int = 0
+    reads_placed: int = 0          # present + mapped in this BAM
+    reads_missing_contig: int = 0  # mapped to a contig absent from `genome`
+    # C4 window/locus selection: did the read map to its TRUE origin contig?
+    # Only INTERESTING for paralog strata (the genome carries >=2 near-identical
+    # contigs); trivially correct for unique-contig strata. mapq0 = the aligner
+    # flagged the placement ambiguous (the window-excluding-fragment regime).
+    locus_correct: int = 0
+    locus_incorrect: int = 0
+    locus_mapq0: int = 0
+    junction: JunctionScore = field(default_factory=JunctionScore)
+    indel: IndelScore = field(default_factory=IndelScore)
+    cpa_abs_errors: List[int] = field(default_factory=list)
+
+    @property
+    def locus_accuracy(self) -> float:
+        d = self.locus_correct + self.locus_incorrect
+        return self.locus_correct / d if d else 0.0
+
+    def summary(self) -> Dict:
+        cpa = sorted(self.cpa_abs_errors)
+        median_cpa = cpa[len(cpa) // 2] if cpa else None
+        return {
+            "aligner": self.aligner,
+            "reads_scored": self.reads_scored,
+            "reads_placed": self.reads_placed,
+            "reads_missing_contig": self.reads_missing_contig,
+            "locus_accuracy": round(self.locus_accuracy, 4),
+            "locus_correct": self.locus_correct,
+            "locus_incorrect": self.locus_incorrect,
+            "locus_mapq0": self.locus_mapq0,
+            "junction_recall": round(self.junction.recall, 4),
+            "junction_precision": round(self.junction.precision, 4),
+            "junction_fdr": round(self.junction.fdr, 4),
+            "junction_tp": self.junction.tp,
+            "junction_fp": self.junction.fp,
+            "junction_fn": self.junction.fn,
+            "junction_fp_variant_adjacent": self.junction.fp_variant_adjacent,
+            "junction_fp_canonical_snap": self.junction.fp_canonical_snap,
+            "junction_by_class": {k: dict(v) for k, v in self.junction.by_class.items()},
+            "junction_by_canonicity": {k: dict(v) for k, v in self.junction.by_canon.items()},
+            "indel_position_exact_concordance": round(self.indel.position_exact_concordance, 4),
+            "indel_correct": self.indel.correct,
+            "indel_incorrect": self.indel.incorrect,
+            "indel_false_indel_rate": round(self.indel.false_indel_rate, 4),
+            "indel_clean_reads": self.indel.clean_reads,
+            "median_abs_cpa_error": median_cpa,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Genome loading (light FASTA reader — pysam.FastaFile preferred)
+# ---------------------------------------------------------------------------
+def open_fasta(fasta_path: Union[str, Path]) -> pysam.FastaFile:
+    """Open a FASTA, guaranteeing the ``.fai`` is not STALE.
+
+    ``pysam.FastaFile`` silently reuses an existing ``.fai`` even when the FASTA
+    has since been rewritten (the index has no mtime check). The benchmark
+    regenerates ``ref.fa`` in place (e.g. when a new stratum adds contigs), so a
+    leftover index from a prior run would expose only the OLD contig set —
+    ``load_genome`` would drop the new contigs and ``cigar_records_to_bam`` would
+    emit a header with ``get_tid`` == -1 for them (silent truncation, the exact
+    bug that broke the gate smoke). Drop a ``.fai`` older than its FASTA so pysam
+    rebuilds it.
+    """
+    fasta = Path(fasta_path)
+    fai = Path(str(fasta) + ".fai")
+    try:
+        if fai.exists() and fai.stat().st_mtime < fasta.stat().st_mtime:
+            fai.unlink()
+    except OSError:
+        pass
+    return pysam.FastaFile(str(fasta))
+
+
+def load_genome(fasta_path: Union[str, Path]) -> Dict[str, str]:
+    fa = open_fasta(fasta_path)
+    return {c: fa.fetch(c) for c in fa.references}
+
+
+# ---------------------------------------------------------------------------
+# BAM-ization of an INTERNAL DP arm (so the gate can score the arms it exists to
+# adjudicate — flat-affine vs C1 length-law — not just BAM-producing aligners)
+# ---------------------------------------------------------------------------
+def cigar_records_to_bam(records: Iterable[Tuple[str, str, int, list, str]],
+                         ref_fa: Union[str, Path],
+                         out_bam: Union[str, Path]) -> str:
+    """Write a sorted+indexed BAM from ``(read_id, chrom, ref_start, cigartuples,
+    seq)`` records. This is how an internal DP arm (e.g. ``align_exon_block_global``
+    or the future C1 length-law DP) is fed to ``score_bam`` — the gate's exit
+    criterion is that the arm-flat vs arm-law ABLATION is runnable, which requires
+    scoring DP output that never produced a BAM."""
+    import subprocess
+    out_bam = str(out_bam)
+    fa = open_fasta(ref_fa)
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"},
+              "SQ": [{"LN": fa.get_reference_length(c), "SN": c} for c in fa.references]}
+    unsorted = out_bam + ".unsorted.bam"
+    with pysam.AlignmentFile(unsorted, "wb", header=header) as bam:
+        for (rid, chrom, ref_start, cig, seq) in records:
+            a = pysam.AlignedSegment(bam.header)
+            a.query_name = rid
+            a.query_sequence = seq
+            a.flag = 0
+            a.reference_id = bam.header.get_tid(chrom)
+            a.reference_start = ref_start
+            a.mapping_quality = 60
+            a.cigartuples = cig
+            bam.write(a)
+    subprocess.run(["samtools", "sort", "-o", out_bam, unsorted],
+                   check=True, capture_output=True)
+    Path(unsorted).unlink(missing_ok=True)
+    subprocess.run(["samtools", "index", out_bam], check=True, capture_output=True)
+    return out_bam
+
+
+# ---------------------------------------------------------------------------
+# Core scorer
+# ---------------------------------------------------------------------------
+def _normalized_truth_juncs(rt: ReadTruth, genome: Dict[str, str]) -> Dict[Tuple[int, int], JunctionTruth]:
+    """Truth junctions keyed by (already-normalized) intron coords."""
+    return {(j.intron_start, j.intron_end): j for j in rt.junctions}
+
+
+def _variant_positions(rt: ReadTruth) -> List[int]:
+    return [v.pos for v in rt.variants]
+
+
+def score_bam(bam_path: Union[str, Path],
+              truth: Union[Dict[str, ReadTruth], List[ReadTruth]],
+              genome: Dict[str, str],
+              aligner_name: Optional[str] = None,
+              variant_adjacency_bp: int = 10) -> AlignerScore:
+    """Score one BAM against the truth table. Returns an ``AlignerScore``.
+
+    Junctions: each aligner N-op is left-normalized (``normalize_junction``) and
+    matched against the (normalized) truth set — ambiguity-aware TP. Unmatched
+    aligner junctions are FP (tagged variant-adjacent if within
+    ``variant_adjacency_bp`` of a truth variant); unmatched truth junctions FN.
+
+    Indels: per truth indel, ``net_indel_in_span`` over ``[eq_start, eq_end)`` is
+    compared to the truth net (DEL=+L, INS=-L) → position-exact TP/FN. A
+    clean/no-error read with any indel outside every truth span counts toward the
+    false-indel rate.
+    """
+    if isinstance(truth, list):
+        truth = {t.read_id: t for t in truth}
+    name = aligner_name or Path(bam_path).stem
+    score = AlignerScore(aligner=name)
+
+    placed_ids = set()
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        for read in bam:
+            if read.is_secondary or read.is_supplementary:
+                continue
+            rt = truth.get(read.query_name)
+            if rt is None:
+                continue
+            if read.is_unmapped:
+                continue
+            placed_ids.add(read.query_name)
+            chrom = read.reference_name
+            seq = genome.get(chrom)
+            if seq is None:
+                # LOUD, never silent: an empty genome_seq disables
+                # normalize_junction in _score_read, so junctions get compared
+                # RAW — silently manufacturing the GMAP-0.09 FP artifact the gate
+                # exists to prevent. This is exactly the stale-.fai failure mode
+                # (genome dropped a contig). Count it; warn once below.
+                score.reads_missing_contig += 1
+                seq = ""
+            _score_read(score, read, rt, seq, variant_adjacency_bp)
+
+    if score.reads_missing_contig:
+        logger.warning(
+            "%s: %d read(s) mapped to a contig ABSENT from the genome dict — "
+            "junctions for these were scored WITHOUT the ambiguity-aware match "
+            "(normalize_junction disabled). Check the genome FASTA covers all BAM "
+            "contigs (a stale .fai is the usual cause; load_genome guards against "
+            "it).", score.aligner, score.reads_missing_contig)
+
+    # FN bookkeeping: truth reads NOT placed in this BAM contribute all their
+    # truth junctions as FN (the aligner failed to place => missed every junction)
+    score.reads_placed = len(placed_ids)
+    for rid, rt in truth.items():
+        score.reads_scored += 1
+        if rid not in placed_ids:
+            for j in rt.junctions:
+                score.junction.fn += 1
+                score.junction.by_class[j.klass.value]["fn"] += 1
+                score.junction.by_canon["canonical" if j.canonical else "noncanonical"]["fn"] += 1
+            for ind in rt.indels:
+                score.indel.incorrect += 1
+    return score
+
+
+def _score_read(score: AlignerScore, read, rt: ReadTruth, genome_seq: str,
+                variant_adjacency_bp: int, snap_window_bp: int = 10) -> None:
+    cig = read.cigartuples
+    rstart = read.reference_start
+
+    # ---- Locus / window selection (C4 paralog metric) --------------------
+    # Did the read map to its TRUE origin contig? For paralog strata the genome
+    # carries >=2 near-identical contigs; a read mapping to the WRONG copy is a
+    # window-selection error (mis-clustering) — the C4-addressable failure. A
+    # window-excluding fragment is informationally identical to both copies, so a
+    # per-read seed-and-chain aligner can only guess (mapping_quality==0); the
+    # benchmark MEASURES that, the C4 ablation tests whether pooling recovers it.
+    if read.reference_name == rt.chrom:
+        score.locus_correct += 1
+    else:
+        score.locus_incorrect += 1
+    if read.mapping_quality == 0:
+        score.locus_mapq0 += 1
+
+    # ---- Junctions -------------------------------------------------------
+    truth_set = {(j.intron_start, j.intron_end) for j in rt.junctions}
+    truth_by_coord = {(j.intron_start, j.intron_end): j for j in rt.junctions}
+    called = extract_junctions(rstart, cig)
+    matched_truth = set()
+    fp_canonical_calls = []  # canonical FP coords, for the snap metric (below)
+    var_pos = _variant_positions(rt)
+    for (cs, ce) in called:
+        ns, ne = normalize_junction(cs, ce, genome_seq) if genome_seq else (cs, ce)
+        if (ns, ne) in truth_set:
+            j = truth_by_coord[(ns, ne)]
+            score.junction.tp += 1
+            score.junction.by_class[j.klass.value]["tp"] += 1
+            score.junction.by_canon["canonical" if j.canonical else "noncanonical"]["tp"] += 1
+            matched_truth.add((ns, ne))
+        else:
+            score.junction.fp += 1
+            # canonicity of the FALSE call (for the non-canonical FDR track)
+            if genome_seq:
+                l_amb, r_amb = junction_ambiguity_window(ns, ne, genome_seq)
+                canon = _canonical_within_window(ns, ne, genome_seq, l_amb, r_amb)
+            else:
+                canon = False
+            score.junction.by_canon["canonical" if canon else "noncanonical"]["fp"] += 1
+            score.junction.by_class["FP_NOVEL"]["fp"] += 1
+            if canon:
+                fp_canonical_calls.append((ns, ne))
+            # variant-adjacent if NEAR EITHER boundary (donor ns OR acceptor ne) —
+            # a variant at the acceptor end fabricates junctions too.
+            if var_pos and min(min(abs(ns - vp), abs(ne - vp))
+                               for vp in var_pos) <= variant_adjacency_bp:
+                score.junction.fp_variant_adjacent += 1
+    for (ts, te) in truth_set - matched_truth:
+        j = truth_by_coord[(ts, te)]
+        score.junction.fn += 1
+        score.junction.by_class[j.klass.value]["fn"] += 1
+        score.junction.by_canon["canonical" if j.canonical else "noncanonical"]["fn"] += 1
+
+    # ---- Canonical-snap (junction-discovery bias, point 4) ----------------
+    # A CANONICAL false-positive junction lying within snap_window_bp of an
+    # UNMATCHED NON-CANONICAL truth junction = the aligner SNAPPED a non-canonical
+    # junction onto a nearby canonical motif instead of reporting it de-novo (the
+    # motif-bias that defeats non-canonical intron discovery). Counted per snapped
+    # FP. (The reads are spliced at the true site by construction, so this is a
+    # member-addressable bias, not an evidence gap.)
+    if fp_canonical_calls:
+        noncanon_unmatched = [(j.intron_start, j.intron_end) for j in rt.junctions
+                              if (j.intron_start, j.intron_end) not in matched_truth
+                              and not j.canonical]
+        for (fs, fe) in fp_canonical_calls:
+            if any(abs(fs - ts) <= snap_window_bp or abs(fe - te) <= snap_window_bp
+                   for (ts, te) in noncanon_unmatched):
+                score.junction.fp_canonical_snap += 1
+
+    # ---- Indels (the framing metric) ------------------------------------
+    # An aligner placement is position-exact ONLY if (a) the net (D-I) inside each
+    # truth ambiguity-span equals the truth net AND (b) it introduces NO indel
+    # OUTSIDE every truth span (the vertical-slice ``out_run == 0`` requirement) —
+    # otherwise a spurious extra indel on an indel-bearing read would score free,
+    # letting an aligner hide errors on exactly the contested reads. So compute
+    # the unexplained-indel flag ONCE per read against ALL truth spans, and gate
+    # every per-indel TP on it.
+    truth_spans: List[Tuple[int, int]] = [(ind.eq_start, ind.eq_end) for ind in rt.indels]
+    has_unexplained = False
+    for (ipos, ilen, ikind) in all_indel_positions(rstart, cig):
+        # insertion (kind 1): right bound INCLUSIVE (L+1 equivalent points);
+        # deletion (kind 2): half-open [s,e). Mirrors net_indel_in_span.
+        if ikind == 1:
+            covered = any(s <= ipos <= e for (s, e) in truth_spans)
+        else:
+            covered = any(s <= ipos < e for (s, e) in truth_spans)
+        if not covered:
+            has_unexplained = True
+            break
+    is_clean_read = True
+    for ind in rt.indels:
+        truth_net = ind.length if ind.kind == IndelKind.DEL else -ind.length
+        if truth_net != 0:
+            is_clean_read = False
+        in_span, _out = net_indel_in_span(rstart, cig, ind.eq_start, ind.eq_end)
+        cell = (ind.base_class, ind.run_copies, ind.context)
+        if in_span == truth_net and not has_unexplained:
+            score.indel.correct += 1
+            score.indel.by_cell[cell]["correct"] += 1
+        else:
+            score.indel.incorrect += 1
+            score.indel.by_cell[cell]["incorrect"] += 1
+
+    # false-indel control: indel bases the aligner introduced OUTSIDE every truth
+    # span. A read with NO truth indel (clean / k=0) is the FP control.
+    if is_clean_read:
+        score.indel.clean_reads += 1
+        if has_unexplained:
+            score.indel.clean_reads_with_false_indel += 1
+            score.indel.false_indels += 1
+
+    # ---- CPA -------------------------------------------------------------
+    if rt.true_cpa is not None:
+        # 3' end genome coord per RECTIFY convention
+        if read.is_reverse:
+            est = read.reference_start
+        else:
+            est = read.reference_end - 1
+        score.cpa_abs_errors.append(abs(est - rt.true_cpa))
+
+
+def score_panel(bam_paths: Dict[str, Union[str, Path]],
+                truth_path: Union[str, Path],
+                genome_path: Union[str, Path]) -> Dict[str, Dict]:
+    """Score a panel of per-aligner BAMs against truth. Returns a dict of
+    ``{aligner: summary}`` plus a ``_which_aligners_placed`` per-read map (so
+    'panel-unplaced' is decidable, §9)."""
+    truth = read_truth_table(truth_path)
+    truth_map = {t.read_id: t for t in truth}
+    genome = load_genome(genome_path)
+    summaries = {}
+    placed_by_aligner: Dict[str, set] = {}
+    for aln, bp in bam_paths.items():
+        s = score_bam(bp, truth_map, genome, aligner_name=aln)
+        summaries[aln] = s.summary()
+        with pysam.AlignmentFile(str(bp), "rb") as bam:
+            placed = {r.query_name for r in bam
+                      if not r.is_unmapped and not r.is_secondary and not r.is_supplementary}
+        placed_by_aligner[aln] = placed & set(truth_map)
+
+    which_placed = {}
+    panel_unplaced = []
+    for rid in truth_map:
+        plc = [a for a, s in placed_by_aligner.items() if rid in s]
+        which_placed[rid] = plc
+        if not plc:
+            panel_unplaced.append(rid)
+    summaries["_which_aligners_placed"] = which_placed
+    summaries["_panel_unplaced_reads"] = panel_unplaced
+    summaries["_panel_unplaced_fraction"] = round(
+        len(panel_unplaced) / len(truth_map), 4) if truth_map else 0.0
+    return summaries

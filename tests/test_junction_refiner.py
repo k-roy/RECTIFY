@@ -535,6 +535,44 @@ class TestApplyJunctionReplacement:
         assert new_ref == 120, f"Ref span changed: {new_ref}"
         assert new_q   == 20,  f"Query span changed: {new_q}"
 
+    def test_both_boundary_pure_slide_nonmicrohomology_refused(self):
+        """A both-boundary PURE SLIDE onto NON-identical flanks must be REFUSED.
+
+        When donor+acceptor both shift by the same k but the k flipped bases are NOT
+        identical at the two placements, the fast path (clean microhomology slide) fails
+        and the general path can only realize the move with a compensating I(k)/D(k) pair
+        on BOTH flanks — the exon SEQUENCE stays put while only the N COORDINATE moves
+        (the phantom-drift signature seen on real ONT DRS, dev/REPLACER_COMPENSATING_
+        INDEL_BUG.md).  The invariant refuses it; the read keeps its incumbent placement.
+        """
+        seq = 'A' * 20
+        read = self._make_read('10M100N10M', 900757, seq)
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
+        # Genome: exon2/donor flank is 'A', acceptor flank (>=900867) is 'C' → the k=+5
+        # flipped bases differ (A vs C) → fast-path microhomology check fails.
+        g = 'A' * 900867 + 'C' * 200 + 'A' * (2000000 - 900867 - 200)
+        applied = _apply_junction_replacement(
+            read, 1, 900767, 900867, 900772, 900872, g, '+', 0.25, 15
+        )
+        assert not applied, "both-boundary non-microhomology pure slide must be refused"
+        # Read CIGAR unchanged (incumbent kept)
+        assert read.cigarstring == '10M100N10M', f"read mutated: {read.cigarstring}"
+
+    def test_both_boundary_microhomology_slide_still_applies(self):
+        """A both-boundary pure slide onto IDENTICAL flanks (real microhomology) still
+        applies cleanly via the fast path — no indel added, only match lengths shift."""
+        seq = 'A' * 20
+        read = self._make_read('10M100N10M', 900757, seq)
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
+        g = 'A' * 2000000  # identical flanks → clean slide
+        applied = _apply_junction_replacement(
+            read, 1, 900767, 900867, 900770, 900870, g, '+', 0.25, 15
+        )
+        assert applied, "clean microhomology slide should apply"
+        # No I/D introduced (fast path is a pure match-length transfer)
+        assert not any(op in (1, 2) for op, _ in read.cigartuples), \
+            f"microhomology slide should add no indel: {read.cigarstring}"
+
     def test_unchanged_when_same_junction(self):
         """No-op: old and new junction are identical → should return False."""
         seq = 'A' * 20

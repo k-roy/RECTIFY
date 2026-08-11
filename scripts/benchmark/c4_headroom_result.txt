@@ -1,0 +1,40 @@
+
+================ C4 WINDOW-SELECTION HEADROOM (decoder-free) ================
+stratum=PARALOG  reps=100/copy/kind  families=3  noise=0.05  aligner=minimap2 -ax splice -uf
+
+SPAN control (covers ALL spread SNPs, redundant evidence): locus_acc=0.9967  (598/600 placed)  -> at-ceiling check (the metric is not trivially failing)
+
+WEAK fragments (cover EXACTLY ONE distinguishing SNP), n=600
+  evidence      correct   WRONG  unplaced      n
+  intact            574       0         0    574
+  looks_other         0       9         0      9
+  third               9       8         0     17
+
+ceiling  (IDENTIFIABLE universe = intact-base reads)        = 574
+incumbent(minimap2 correct | intact base, placed)           = 1.0000 (574/574)
+HEADROOM (intact base BUT mis-placed = genuine C4 gap)      = 0.0000 (0; mapq0=0, mapq>0=0)
+zero-evidence null (looks_other + third corrupted-base)     = 26 (9 wrong-evidence + 17 ambiguous)
+intact unplaced (alignment-sensitivity / C5, not C4)        = 0
+
+---- smoke (F) pooling-recovery AUDIT (truth-circular + redundant) ----
+  para0_A   : pool-majority-base=C true=C  minimap2 placement={'para0_A': 95, 'para0_B': 5}
+  para0_B   : pool-majority-base=G true=G  minimap2 placement={'para0_B': 100}
+  para1_A   : pool-majority-base=T true=T  minimap2 placement={'para1_A': 95, 'para1_B': 5}
+  para1_B   : pool-majority-base=A true=A  minimap2 placement={'para1_B': 99, 'para1_A': 1}
+  para2_A   : pool-majority-base=G true=G  minimap2 placement={'para2_A': 99, 'para2_B': 1}
+  para2_B   : pool-majority-base=T true=T  minimap2 placement={'para2_B': 95, 'para2_A': 5}
+(F) truth-grouped pooling recovery = 6/6  [but pools are formed FROM truth -> circular]
+minimap2 OWN per-read placement-majority already recovers = 6/6 pools  [pooling adds nothing the incumbent didn't deliver]
+
+---- VERDICT (pre-committed) ----
+  HEADROOM=0.0000 ~ 0  => minimap2 AT CEILING on identifiable
+  (intact-base) paralog reads. The entire below-ceiling weak gap falls on
+  CORRUPTED-base reads (looks_other = wrong-evidence; third = zero-evidence)
+  -> the pre-committed paralog-zero-evidence NULL. The smoke (F) pooling proof
+  is truth-circular (pools = truth copy label) AND redundant (minimap2's own
+  placement already recovers the pools).
+  => C4-as-window-selection REFUTED on this stratum. Document + stop; do NOT
+     build a pooling member. Named residue: a >=3-copy / mapq0-with-evidence
+     construct (true SMN1/SMN2) is UNEXERCISED here (2 copies + 1 covered SNP
+     => an intact base is decisive by exactly 1 mismatch => mapq>0 always).
+     Defer to a MEASURED real-data trigger; do not synthesize a gap.

@@ -655,8 +655,13 @@ def _count_junction_proximity_errors(
                     errors += weight
                 prev_rp = rp
             ref_pos += length
-        elif op == 3:  # N: intron skip
-            prev_rp = ref_pos + length - 1
+        elif op == 3:  # N: intron skip. Attribute a FOLLOWING insertion to the first
+            # exon base (intron_end), which lies in the exon-side proximity window
+            # [intron_end, intron_end+w). The old `+ length - 1` pointed at the last
+            # intron base (intron_end-1) — an intron-side blind spot that let a snapped
+            # junction hide its shift-insertion and win the consensus via the tiebreaker
+            # (Discovery gate 2026-06-30; see dev/DISCOVERY_TIEBREAK.md).
+            prev_rp = ref_pos + length
             ref_pos += length
 
     return errors
