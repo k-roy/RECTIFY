@@ -84,14 +84,16 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
    the stage-2 sizing). Our control re-run at `a7bdd7e`: flattening GONE (v2 ≡ mm2 every cell;
    931/1036 visits frame-refused) — addendum `ed4a805`: safety-by-IMPOTENCE; the control is the
    pre-registered STAGE-2 gate. Reply + stage-2-use-the-refiner suggestion sent to 641
-   (their 3 messages archived). **[IN FLIGHT] 644f support-stratified census** answering
-   Kevin's "how much of mapPacBio can Station C harvest": running on H2
-   (`644_accept/644f_stationc_gate_census.py`, log `644f.log`, out
-   `t3/full/644f_stationc_gate.json`; the hung-ssh background task `bbwvyodoi` completes when
-   it exits). RESUME: `ssh h2 'tail -30 /u/scratch/k/kevinroy/644_accept/644f.log'` — when
-   `wrote ...json` appears, fetch the JSON, report the support-threshold table (gold vs junk
-   survival, beyond-mm2 + beyond-both frames) to Kevin + 641; if the log shows a traceback,
-   fix the script (local copy in scratchpad) and relaunch the same way.
+   (their 3 messages archived). ✅ **644f census DONE + reported** (2026-08-10 ~21:30): true mapPacBio-only
+   residual = **37 gold** (23 canonical-class incl. 20 alt introns; 14 Gould, 0/14 canonical)
+   vs 5,414 junk. support≥2 + canonical-in-class → **12 gold / 13 junk (~48% precision)**;
+   non-canonical track ~0.3% at ANY support threshold because **33% of mapPacBio junk RECURS**
+   (systematic, not per-read random — scout-mode statistic corrected in the landscape doc §3b).
+   Station-C spec = two-track admission. Finding `dev/STATIONC_MAPPACBIO_HARVEST_20260810.md` +
+   tool `scripts/benchmark/644f_stationc_gate_census.py` (both on the triage branch, `687d1b1`);
+   641 notified (incl. the 22→37 residual correction for their 644b doc). Next measured probe:
+   mm2-side distress co-localization at the recurrent non-canonical junk vs Gould loci
+   (644d machinery).
 1b. **[2026-08-09 late] Resolver check + the missing discovery control RUN.** 641 is ACTIVE
    (v2 junction re-arbitration, commits through `de98896` 20:06; planning/644b/644c — Kevin's
    junction-proximal-ED hunch adjudicated SRC1: two REAL alt donors, 67/121 read split, minimap2
