@@ -73,3 +73,37 @@ support ≥2 + canonical-in-class → straight to hp_ed re-entry/adjudication. T
 class; abstain (report, don't assert) otherwise. Next measurement worth its cost: how many of
 the 1,779 track-2 junk (and the 6 Gould) show co-localized minimap2-side distress — that is the
 scout-free trigger's true precision, and the 644d D-signature census machinery already exists.
+
+## PI reframe (2026-08-10 night) — the two-phase architecture this census must serve
+
+Kevin's corrections to the analysis above, now the governing frame:
+
+1. **"True junk" is unknowable at the junction level** — low-level alt splicing is
+   well-documented in yeast, so non-canonical singletons may be real biology. Never treat
+   the not-in-catalogue count as ground-truth junk; it is only a comparative-arm statistic.
+2. **Phase 1 (rectify consensus) is per-READ, and it is where most junk dies:** the best
+   alignment per read wins; a mapPacBio junk junction on a read that minimap2 aligns better
+   never survives to output. ⇒ the arm-level 5,414 junk is the WRONG denominator for the
+   panel decision — the right one is measured by `644g_phase1_contest.py` (per-read contest
+   on the beyond-arm supporting reads + the 5'-clip routing budget). Aligners can also game
+   phase 1 (free N-ops vs soft clips for short overhangs) — which is exactly why the
+   Re-aligner must function well HERE, and why "can consensus recall mapPacBio's true
+   positives" is the panel-membership criterion: **if the residual-gold reads LOSE the
+   per-read contest, mapPacBio comes back into the panel despite its cost.** The economic
+   middle path: route only (5'-)soft-clipped reads into mapPacBio — spend its compute only on
+   the reads the Resolver/Re-aligner is likely to miss (budget measured in 644g).
+3. **Phase 2 (the all-important one) is per-JUNCTION:** collect ALL read evidence per
+   junction and score a likelihood from junction-overhang quality across reads. **The single
+   most important metric: the longest high-quality overhang on the SHORT-EXON side** — high
+   complexity + length + low error/mismatch rate. One golden read with a 40 bp clean,
+   high-complexity short-exon overhang outweighs twenty reads with 9 bp overhangs in an
+   A-run. This SUBSUMES the two-track admission above: canonical-in-class and read support
+   become soft covariates; the overhang-quality likelihood is the primary axis, and it is
+   motif-blind — so it adjudicates the non-canonical track without borrowing annotation.
+   **Existing machinery for every term:** `overhang_informativeness.assess_overhang` / I_eff
+   (complexity×length in bits — the resolver's own currency), junction-proximal
+   error counting (`scoring._count_junction_proximity_errors`), per-read overhang extraction
+   (`junction_scoring` anchor machinery), `calibrate_junction_overhang.OverhangTable` (the
+   calibration substrate). Station C's scorer = max over supporting reads of
+   short-exon-side overhang I_eff, error-discounted; junction likelihood calibrated on
+   annotated junctions as the positive class.
