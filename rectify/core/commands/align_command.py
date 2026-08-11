@@ -161,6 +161,20 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--trust-existing-bams',
+        dest='trust_existing_bams',
+        action='store_true',
+        help=(
+            'Reuse existing per-aligner BAMs even when their provenance '
+            'sidecar (rectify SHA / aligner version) does not match the '
+            'current run. The checkpoint logic already consumed this flag '
+            '(see bam_provenance.py) but only run-all exposed it; needed on '
+            'align for reruns that add a panel arm (e.g. overhang_resolver) '
+            'across a code update without re-paying the alignment.'
+        )
+    )
+
+    aligner_group.add_argument(
         '--no-consensus',
         action='store_true',
         help='Skip consensus selection, output separate BAMs per aligner'
