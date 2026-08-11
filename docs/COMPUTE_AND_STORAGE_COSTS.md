@@ -237,8 +237,21 @@ this ledger does not credit.
 4. **Whether the panel's winning placements beat minimap2's** on reads all aligners placed. That
    needs a concordance comparison of *corrected* output.
 5. 🔴 **A 12–90× discrepancy in per-read correct cost**: 0.95–2.86 CPU-s/read at PROD versus
-   0.011–0.078 CPU-s/read in BENCH-DRS. **Now likely explained — see §8.** Either way,
-   **plan with the PROD figure, not the bench one.**
+   0.011–0.078 CPU-s/read in BENCH-DRS. **Partially accounted 2026-08-11 (planning/666,
+   3-scale × 3-pool grid on the dense windows): startup amortisation and local pool density
+   are now excluded — MARGINAL bench cost is 0.018 (gated pool) / 0.042 (ungated) CPU-s/read,
+   leaving a REAL 23–68× residual vs PROD.** Leading suspects, testable in order: the
+   production pool is panel-wide and genome-wide (~2 orders more junctions in the index),
+   per-aligner arms with higher rescue rates (uLTRA), hardware. The closing experiment:
+   `correct` the same window reads against the actual production `junction_pool.pkl`.
+   **Until then, still plan with the PROD figure.**
+   Three quotation rules from the same unit: (i) **quote MARGINAL per-read cost, never
+   total/reads** — fixed startup is 10–28 s, so any per-read figure from a ≤500-read run is
+   startup-dominated; (ii) `--threads 4` buys only **1.27–1.51×** (32–38% efficiency) —
+   CPU-h is nearly threading-invariant, don't request wide allocations for `correct`;
+   (iii) threaded output differs from serial on **~0.9% of reads** on pre-`305daff` trees
+   (tie-break nondeterminism) — byte-identity gates must run single-threaded or on a tree
+   with the coordinate-ordering fix.
 
 ## 8. ⚠️ `correct` cost scales with local junction-pool DENSITY, not with read count
 
