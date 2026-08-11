@@ -4,7 +4,10 @@ The resolver (planning/641/644) is a post-pass on the finished minimap2 arm,
 not an external aligner: `rectify align --junction-aligners overhang_resolver`
 must parse, must run the post-pass after the aligner loop, and must fail LOUD
 when minimap2 is not part of the same invocation (a silent skip would feed
-downstream junction-pool prescans an unresolved pool with exit 0).
+downstream junction-pool prescans an unresolved pool with exit 0). Its output
+SUBSTITUTES the minimap2 arm downstream (passthrough-or-rewrite, same read
+set) — carrying both arms would buy a duplicate `correct` pass over
+~98%-identical records (planning/669 §1).
 
 RN passthrough matters here: the consensus K-way merge keys on RN:i, and the
 resolver arm inherits its records from the RN-injected minimap2 BAM.
