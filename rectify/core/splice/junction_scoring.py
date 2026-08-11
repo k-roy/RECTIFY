@@ -157,6 +157,8 @@ DEFAULT_MIN_JUNCTION_ANCHOR = 10
 ALIGNER_FAMILY: Dict[str, str] = {
     "minimap2": "minimap2",
     "gapmm2": "minimap2",      # minimap2 wrapper (mappy) + edlib terminal refinement
+    "overhang_resolver": "minimap2",  # re-placement of the minimap2 arm's clips
+                                      # (planning/641) — NOT an independent vote
     "ultra": "ultra",          # annotation-guided collinear chaining (MEM)
     "mappacbio": "bbmap",      # BBMap long-read mode
     "desalt": "desalt",        # de Bruijn graph / deBGA (RdBG)
