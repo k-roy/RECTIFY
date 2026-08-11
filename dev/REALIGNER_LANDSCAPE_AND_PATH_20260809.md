@@ -150,6 +150,49 @@ arbiter"?** Half yes, with one correction and one honest weakness:
 6. **Retire the shelved drift-guard machinery** (dormant params) in a cleanup pass once the triage
    layer is the specificity control — one system, not two.
 
+### 4b. Clip-leg wiring — the one-sided-anchor division of labor (641 proposal, 2026-08-11; ACCEPTED as the design)
+
+641's 644f forensics (H2 14283115) closed the mechanism question on the resolver's 14-junction
+Gould residual and handed the acceptance decision to this layer, with a measured case:
+
+- All 14 are non-canonical junctions with exactly ONE canonical side (5 canonical-donor,
+  9 canonical-acceptor); index_visible 0/14.
+- On the 39 supporting reads, **minimap2 itself performs the canonical-preference flatten** the
+  noncanon control measured in the rearb pass: 32/39 reads assert a canonical-in-class variant
+  with ONE boundary shifted 1–9 bp (25 off by exactly 1 bp; chrXI:93365 = 11/11 reads uniformly
+  off-by-1). 7/39 express the junction as a 14–22 bp terminal clip.
+- Per-read the snap moves junction-proximal ED by only ~1–2 — under arb_margin (2.0), so no
+  per-read contest can displace the canonical incumbent. **Recurrence across reads is the only
+  decisive signal** — the "18 margin-beats need pool-level evidence" argument, now with a
+  concrete 32-read, 13-locus instance.
+
+**Division of labor (CORRECTED per Kevin 2026-08-11 — the governing spec is
+`~/work/UCLA/Chanfreau_Lab/planning/644h_realigner_integration.md` §3; 641-impl has handed the
+whole sequence to this agent):**
+1. **Enumeration (resolver library, post-landing work):** per flagged junction test BOTH
+   hypotheses — (A) donor held, acceptor scanned ±w; (B) acceptor held, donor scanned ±w —
+   grammar-free on the scanned side, w ≈ 16 bp, scored with the existing bounded DP. The
+   original one-sided proposal is superseded: **the incumbent does not reveal which side was
+   snapped** (both its ends look canonical — that is what the snap did). Both-free excluded
+   initially; A∪B contains every measured truth.
+2. **Trigger (Kevin's criterion): side-split flank error density.** A wrong boundary
+   concentrates mismatch/indel density in the first bases of ONE junction-adjacent flank; the
+   pooled ed_cur misses 1-bp snaps (~1–2 ED, under the clean-skip threshold). Flag liberally —
+   acceptance is downstream.
+3. **Adjudication (triage layer):** per-read deltas are sub-margin by construction, so no
+   per-read rule can take these without reopening the FP door. The resolver emits per-read
+   evidence records (read, incumbent, hypothesis, best_alt, ed_delta, flank_density_L/R); the
+   triage layer aggregates per locus and **accepts on pool recurrence** (chrXI:93365 = 11/11
+   reads voting the same off-by-1) — same discipline as the Cat3/rescue plan and §3b's
+   two-track admission. The 7 clipped reads route through the terminal-clip leg with the same
+   two-sided candidate class. Phase-2 note: the 644h overhang-quality likelihood applies
+   unchanged — candidates are admitted on (recurrence × short-side overhang quality), never on
+   margin alone.
+
+Also riding with the resolver branch: `124c84a` RECTIFY_SKIP_REGIONS (yeast-rdna shorthand;
+resolver + rescue bypass for rDNA reads; 2.6× on chrXII, byte-identical non-rDNA output, zero
+gold cost — the 10 rDNA Gould entries are 9,139-bp repeat-unit artifacts hit by no arm).
+
 ## 5. What NOT to do (the closed doors, so they stay closed)
 
 - No likelihood/−logP-guided boundary search, in any station (impossibility argument; arm-C,
