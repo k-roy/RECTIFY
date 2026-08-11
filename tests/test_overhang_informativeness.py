@@ -98,8 +98,16 @@ class TestAlphaKnob:
         w2 = max_search_window_bp(seq, alpha=0.01, max_window=10**9)
         w3 = max_search_window_bp(seq, alpha=0.1, max_window=10**9)
         assert w1 <= w2 <= w3
-        if 0 < w1 and w3 < 10**9:
+        from rectify.core.splice.overhang_informativeness import (
+            min_self_match_period,
+        )
+        period_capped = (min_self_match_period(seq) is not None
+                         and w3 <= (min_self_match_period(seq) or 1))
+        if 0 < w1 and w3 < 10**9 and not period_capped:
             # In the unclamped regime the ratio is exactly the alpha ratio.
+            # A tandem-periodic sequence (e.g. (AAG)n) is instead capped at
+            # period-1 INDEPENDENT of alpha — the 2026-08-11 period gate —
+            # so only weak monotonicity applies there.
             assert w3 >= 10 * w2 >= 100 * w1 or w1 == 0
 
 

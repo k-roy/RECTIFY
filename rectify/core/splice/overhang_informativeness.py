@@ -62,6 +62,7 @@ COUNTERS: Dict[str, int] = {
     'assessed': 0,          # overhangs assessed
     'refused': 0,           # W_max < 1 => sequence search refused
     'window_bounded': 0,    # W_max < the caller's default window (search shrunk)
+    'period_bounded': 0,    # W_max capped at (self-match period - 1)
     'candidates_evaluated': 0,   # candidate placements actually scored (resolver)
     'candidates_skipped': 0,     # candidates excluded by the W_max bound (rescue)
     'skipped_region': 0,         # reads bypassing rescue via RECTIFY_SKIP_REGIONS
@@ -169,15 +170,66 @@ def effective_information_bits(seq: str, hp_discount: float = DEFAULT_HP_DISCOUN
     return min(i_comp, i_cond)
 
 
+# --- Tandem-period self-match (the 2026-08-11 reporter-construct fix) -------
+#
+# The two I_eff estimators are blind to periodicity with unit length > ~3:
+# an MS2 stem-loop array (19-nt unit) scores 76-81 bits and passes the gate,
+# yet it matches ITSELF at every 19-nt shift — placements differing by the
+# period are indistinguishable, so W_max must not exceed the period. Measured
+# consequence of the blind spot: >500x resolver slowdown on MS2 reporter
+# constructs (depth x full candidate DP ending in rejected_ambiguous), and
+# the same pathology at genomic tandem loci (rDNA precedent; clip legs on
+# plain DRS). This term GENERALIZES the existing refusals: poly(A) is the
+# period-1 case, (AG)n the period-2 case.
+
+DEFAULT_PERIOD_MAX_SHIFT = 32
+DEFAULT_PERIOD_MATCH_FRAC = 0.8   # tolerant of ~10-15% read error in arrays
+DEFAULT_PERIOD_MIN_OVERLAP = 12
+
+
+def min_self_match_period(
+    seq: str,
+    max_shift: int = DEFAULT_PERIOD_MAX_SHIFT,
+    match_frac: float = DEFAULT_PERIOD_MATCH_FRAC,
+    min_overlap: int = DEFAULT_PERIOD_MIN_OVERLAP,
+) -> Optional[int]:
+    """Smallest shift ``s <= max_shift`` at which the overhang matches itself
+    over the full overlap at >= ``match_frac`` identity, or None.
+
+    A hit means placements differing by ``s`` are (near-)indistinguishable,
+    so the sequence search may not range wider than ``s - 1``. Uppercased
+    raw sequence; non-ACGT characters simply fail to match (conservative:
+    N-runs are not reported as periodic — their low I_eff already gates them).
+    Chance identity is 0.25/base, so 0.8 over >= 12 bases is far off random.
+    """
+    s = seq.upper()
+    n = len(s)
+    top = min(max_shift, n - min_overlap)
+    for shift in range(1, top + 1):
+        ov = n - shift
+        need = match_frac * ov
+        matches = 0
+        for i in range(ov):
+            if s[i] == s[i + shift]:
+                matches += 1
+        if matches >= need:
+            return shift
+    return None
+
+
 def max_search_window_bp(
     seq: str,
     alpha: float = DEFAULT_ALPHA,
     max_window: Optional[int] = None,
     hp_discount: float = DEFAULT_HP_DISCOUNT,
 ) -> int:
-    """W_max = alpha * 2**I_eff, clamped to [0, max_window]. 0 => refuse."""
+    """W_max = min(alpha * 2**I_eff, period - 1), clamped to [0, max_window].
+    0 => refuse. ``period`` is the tandem self-match period (None => no cap)."""
     i_eff = effective_information_bits(seq, hp_discount=hp_discount)
     w = alpha * (2.0 ** min(i_eff, _MAX_I_EFF_EXP))
+    period = min_self_match_period(seq)
+    if period is not None:
+        w = min(w, float(period - 1))
     if w < 1.0:
         return 0
     if max_window is not None and w > max_window:
@@ -192,6 +244,7 @@ class OverhangAssessment:
     w_max_bp: int          # clamped; 0 == refused
     refused: bool
     alpha: float
+    period: Optional[int] = None   # tandem self-match period (None = aperiodic)
 
 
 def assess_overhang(
@@ -204,6 +257,11 @@ def assess_overhang(
     s = [b for b in seq.upper() if b in _ACGT]
     i_eff = effective_information_bits(seq, hp_discount=hp_discount)
     w = alpha * (2.0 ** min(i_eff, _MAX_I_EFF_EXP))
+    period = min_self_match_period(seq)
+    period_capped = False
+    if period is not None and (period - 1) < w:
+        w = float(period - 1)
+        period_capped = True
     if w < 1.0:
         w_bp = 0
     elif max_window is not None and w > max_window:
@@ -212,12 +270,15 @@ def assess_overhang(
         w_bp = int(w)
     refused = w_bp == 0
     COUNTERS['assessed'] += 1
+    if period_capped:
+        COUNTERS['period_bounded'] += 1
     if refused:
         COUNTERS['refused'] += 1
     elif max_window is not None and w_bp < max_window:
         COUNTERS['window_bounded'] += 1
     return OverhangAssessment(
-        length=len(s), i_eff_bits=i_eff, w_max_bp=w_bp, refused=refused, alpha=alpha,
+        length=len(s), i_eff_bits=i_eff, w_max_bp=w_bp, refused=refused,
+        alpha=alpha, period=period,
     )
 
 
