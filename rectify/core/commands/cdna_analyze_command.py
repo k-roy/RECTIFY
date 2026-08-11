@@ -125,6 +125,8 @@ def run(args) -> int:
                         format="%(asctime)s %(levelname)s %(message)s")
     log = logging.getLogger("cdna-analyze")
     t0 = time.time()
+    from datetime import datetime as _dt, timezone as _tz
+    _stage_started_at = _dt.now(_tz.utc).isoformat()
 
     if args.reference is None:
         log.error("--reference is required (walkback needs the genome FASTA)")
@@ -312,6 +314,41 @@ def run(args) -> int:
              tagged_bam, n_tagged, time.time() - t4)
 
     log.info("Total runtime: %.1fs", time.time() - t0)
+
+    # 659: stage-level provenance with hashed inputs/outputs. cdna-analyze produces the
+    # per-molecule DELIVERABLES (clusters/corrected_reads/isoforms/t1t2/tagged BAM) yet was
+    # the only cDNA stage without a hashed stage record — only the argv-level
+    # <command>.command.provenance.json existed. Non-fatal on failure, like cdna_stage1's.
+    try:
+        import sys as _sys
+        from rectify.core.provenance import ProvenanceRecord, write_stage_sidecar
+        from rectify.utils.version import get_rectify_git_sha as _get_sha
+        _inputs = {"consensus_bam": str(args.bam), "reference": str(args.reference)}
+        if getattr(args, "gff", None) is not None:
+            _inputs["gff"] = str(args.gff)
+        _record = ProvenanceRecord.from_components(
+            stage="cdna_analyze",
+            sample_id=args.out.name,
+            sample_output_dir=args.out,
+            started_at=_stage_started_at,
+            completed_at=_dt.now(_tz.utc).isoformat(),
+            exit_status=0,
+            inputs=_inputs,
+            outputs={
+                "clusters_tsv": str(manifest),
+                "corrected_reads_tsv": str(corrected_reads),
+                "isoforms_tsv": str(iso_path),
+                "t1t2_pairs_tsv": str(pairs_tsv),
+                "consensus_tagged_bam": str(tagged_bam),
+            },
+            stats={"wall_seconds": time.time() - t0},
+            argv=_sys.argv,
+            rectify_git_sha=_get_sha(),
+        )
+        write_stage_sidecar(_record, sample_output=args.out)
+    except Exception as _sc_exc:
+        log.warning("Failed to write cdna_analyze sidecar: %s", _sc_exc)
+
     return 0
 
 
