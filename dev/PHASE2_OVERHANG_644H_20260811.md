@@ -51,11 +51,18 @@ the rest is dispersed homology, Ty/paralog-class.
 
 ## Consequences for Station C (the spec, updated with numbers)
 
-1. **Phase-2 scorer = overhang quality × placement UNIQUENESS × recurrence.** The missing leg
-   is uniqueness/mappability of the overhang+junction context — the same T6 decoy check named
-   for the resolver, now measured as the binding constraint on the non-canonical track. The
-   644f "orthogonal evidence" requirement stands, sharpened: uniqueness is the orthogonal axis
-   to build FIRST (cross-sample recurrence and short-read corroboration remain).
+1. **Phase-2 scorer = overhang quality × repeat-context flag × recurrence** (PI correction,
+   2026-08-11: this is not a major problem — Station C should carry a **direct-repeat flag**:
+   rDNA, tandem arrays with CDS, tandemly arrayed families like CUP1/ENA, Ty/LTR,
+   subtelomeric families). **Measured support: the high-q junk is strongly
+   locus-concentrated** — the 1,537 ≥80-bit non-canonical survivors collapse to rDNA + ~251
+   loci (1 kb linkage); **rDNA + top-20 loci = 48%, + top-100 = 85%**. So an annotation-driven
+   repeat flag PLUS a data-driven recurrent-junk locus census (the flagged-locus list is
+   discoverable from the census itself) absorbs the bulk; a full per-overhang
+   uniqueness/mappability computation (T6-style) is only needed for the residual outside
+   flagged loci. **One measured caveat: the flag must DEMOTE (require orthogonal evidence),
+   never discard** — Gould gold chrXVI:795133-795394 sits inside a 27-junction junk cluster
+   (which may itself be boundary-jitter votes for the real junction; see #3).
 2. **Adopt the canonical-track upgrade now:** support≥2 + canonical-in-class + q≥40 → ~79%
    precision, 11/12 gold — a reviewable shortlist that no longer needs manual triage.
 3. **The jitter-twin observation feeds the two-sided enumeration design**
