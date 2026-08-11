@@ -530,6 +530,13 @@ def trim_drs_bam_polya(
         ) as bam_out:
 
             for read in bam_in:
+                # 668: secondary/supplementary records share the primary's QNAME; the trim
+                # output is rebuilt un-flagged, so passing them through creates duplicate
+                # QNAMEs the aligner panel's RN-keyed merge would silently collapse (and
+                # SEQ-less secondaries were being written as empty "unmapped" records here).
+                # One record per molecule: the primary. Same fix as _trim_region_task.
+                if read.is_secondary or read.is_supplementary:
+                    continue
                 stats['total'] += 1
 
                 seq = read.query_sequence
@@ -851,6 +858,19 @@ def _trim_region_task(
          pysam.AlignmentFile(out_bam_path, "wb", header=hdr) as bam_out:
         for read in bam_in.fetch(chrom, start, end):
             if read.is_unmapped or not read.query_sequence:
+                continue
+            # 668: two duplicate-QNAME sources, both real (caught by align's RN-collision
+            # guard: 130,311 dup QNAMEs / 3.2% on wt_rep1):
+            #  (a) fetch() returns reads OVERLAPPING the region, so a boundary-spanning read
+            #      is emitted by BOTH neighbouring workers — the same defect class fixed in
+            #      cdna_correct (624). Partition on reference_start: regions tile disjointly,
+            #      so each read starts in exactly one region.
+            #  (b) secondary/supplementary records share the primary's QNAME, and the trim
+            #      output is rebuilt UN-flagged, so they can't be filtered downstream. Trim
+            #      wants one record per molecule: the primary.
+            if read.is_secondary or read.is_supplementary:
+                continue
+            if not (start <= read.reference_start < end):
                 continue
             rec, row, _, was_trimmed = _process_mapped_read(
                 read, hdr, max_error_rate, max_consecutive_non_a, adapter_window,
