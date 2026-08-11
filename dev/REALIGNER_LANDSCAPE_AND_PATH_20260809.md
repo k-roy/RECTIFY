@@ -115,6 +115,14 @@ arbiter"?** Half yes, with one correction and one honest weakness:
   recur; genuine disagreement recurs at a locus — so locus-level trigger power survives
   subsampling at ~5% of the compute (the same logic as the Sumner 5% genome-wide first pass).
   Full-depth probe then runs only on flagged loci.
+  **⚠ MEASURED CORRECTION (2026-08-10, `dev/STATIONC_MAPPACBIO_HARVEST_20260810.md`):** the
+  recurrence statistics above hold only for RANDOM fabrication — 33% of mapPacBio's junk
+  junctions recur (≥2 reads; systematic repeat/homology misalignment), so recurrence is a first
+  gate (3× cut), never a sufficient one. Admission must be TWO-TRACK: canonical-class +
+  support≥2 ≈ 48% precision (harvests half the canonical residual as a ~25-candidate
+  shortlist); the non-canonical track (where the unique Gould-class discovery lives, 0/14
+  canonical) stays ~0.3% under any support threshold and requires orthogonal evidence
+  (short-read corroboration, cross-sample recurrence, co-localized mm2-side distress).
 - **The decision stays empirical:** the pre-registered `[[617]]` leave-one-out on CORRECTED output
   decides whether mapPacBio's arm still contributes to the final product with resolver + triage in
   place. Nothing → out of the consensus panel, retained as scout + probe. Something → it stays,
