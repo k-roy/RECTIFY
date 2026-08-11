@@ -992,9 +992,16 @@ def resolve_read(
     index: SpliceSiteIndex,
     cfg: ResolverConfig,
     stats: ResolverStats,
+    sides: str = 'LR',
 ) -> bool:
     """Attempt overhang resolution on both terminal clips of a primary
-    alignment. Mutates ``read`` in place; returns True if anything changed."""
+    alignment. Mutates ``read`` in place; returns True if anything changed.
+
+    ``sides`` restricts which genomic clip sides are attempted (``'L'``,
+    ``'R'``, or the default ``'LR'``). The triage terminal-clip leg passes a
+    single side so the 5' clip stays the Cat3/rescue leg's territory and every
+    overhang is assessed exactly once (one refusal discipline across legs —
+    dev/REALIGNER_LANDSCAPE_AND_PATH_20260809.md §4 step 2)."""
     if read.is_unmapped or read.is_secondary or read.is_supplementary:
         stats.passthrough_nonprimary += 1
         return False
@@ -1020,7 +1027,7 @@ def resolve_read(
     changed = False
 
     left_len, _ = _clip_lens(read.cigartuples)
-    if left_len >= cfg.min_clip:
+    if _LEFT in sides and left_len >= cfg.min_clip:
         clip_seq = read.query_sequence[:left_len]
         clip_used_len = min(left_len, cfg.max_clip_match)
         # Aligned bases adjacent to the clip, '='-decoded from the reference
@@ -1047,7 +1054,7 @@ def resolve_read(
             changed = True
 
     _, right_len = _clip_lens(read.cigartuples)
-    if right_len >= cfg.min_clip and read.reference_end is not None:
+    if _RIGHT in sides and right_len >= cfg.min_clip and read.reference_end is not None:
         clip_seq = read.query_sequence[-right_len:]
         clip_used_len = min(right_len, cfg.max_clip_match)
         ct = read.cigartuples
