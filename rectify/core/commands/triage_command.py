@@ -43,6 +43,7 @@ def run_triage(args: argparse.Namespace) -> int:
         max_clip_5p=args.max_clip_5p,
         max_clip_3p=args.max_clip_3p,
         triage_unannotated_junctions=not args.no_triage_unannotated,
+        clip_legs_enable=getattr(args, 'clip_legs', False),
     )
 
     penalty_table = None
@@ -117,6 +118,11 @@ def create_triage_parser(subparsers) -> argparse.ArgumentParser:
                    help='3\' soft-clip bases tolerated before triage (default 30)')
     p.add_argument('--no-triage-unannotated', action='store_true', default=False,
                    help='Do not triage reads solely for carrying an unannotated junction')
+    p.add_argument('--clip-legs', dest='clip_legs', action='store_true',
+                   default=False,
+                   help='Enable the clip legs: terminal clips to the overhang '
+                        'resolver, 5\' clips to Cat3 rescue, one refusal '
+                        'discipline, hp_ed re-entry as the arbiter (default off)')
 
     from rectify.data import add_organism_args
     add_organism_args(p)

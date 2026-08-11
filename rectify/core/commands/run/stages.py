@@ -1079,3 +1079,137 @@ def _run_browser_pack(
         print(f"WARNING: browser pack failed (non-fatal, pipeline outputs are "
               f"unaffected): {e}", file=sys.stderr)
         return None
+
+
+def _run_station_bc(
+    work_dir: Path,
+    sample_id: str,
+    fallback_bam: Optional[Path],
+    genome_path: Optional[Path],
+    annotation_path: Optional[Path],
+    args,
+) -> None:
+    """Re-aligner Stations B + C as run-all post-stages (both fail-soft).
+
+    Station B (``--triage``, opt-in): the consensus-triage layer classifies
+    the corrected BAM and re-aligns the triaged minority (motif-blind refiner
+    + clip legs when ``--triage-clip-legs``), strict hp_ed re-entry as the
+    arbiter. v0 emits REVIEW ARTIFACTS (``triage/triage.tsv`` + the triaged
+    BAM); the analyze tables upstream are not rewritten — full dataflow
+    integration is a follow-up.
+
+    Station C (default ON, ``--no-pool-gate`` to skip): the pool-level
+    junction admission REPORT (``rectify pool-gate``) over the triaged BAM
+    when Station B ran, else the rectified/fallback BAM. Report-only.
+
+    🔴 FAIL-SOFT like the browser pack: neither station may cost a finished
+    run its outputs; failures print loudly and return.
+    """
+    if genome_path is None or annotation_path is None:
+        return
+
+    bam = _resolve_qc_bam(work_dir, sample_id, fallback=fallback_bam)
+    # Station B/C want the CORRECTED geometry — prefer the rectified BAM over
+    # the pre-correction multialigned one that _resolve_qc_bam favours.
+    rectified = work_dir / f"{sample_id}.rectified.bam"
+    if rectified.exists() and rectified.stat().st_size > 0:
+        bam = rectified
+    if bam is None:
+        print("[station-b/c] skipped: no BAM found to census", file=sys.stderr)
+        return
+
+    gate_input = bam
+
+    if getattr(args, 'triage', False):
+        try:
+            import time as _time
+            from rectify.utils.genome import load_genome as _load_g
+            from ..triage_command import run_triage  # reuse the CLI face
+            import argparse as _ap
+            t0 = _time.perf_counter()
+            triage_dir = work_dir / 'triage'
+            print(f"\n[station-b] triage (clip legs "
+                  f"{'ON' if getattr(args, 'triage_clip_legs', False) else 'off'}) "
+                  f"on {bam.name} ...")
+            ns = _ap.Namespace(
+                input=str(bam), output=str(triage_dir),
+                genome=str(genome_path), annotation=str(annotation_path),
+                pool_bams=None, penalty_table=None, realign=True,
+                max_junction_proximal_errors=1.0, max_clip_5p=30,
+                max_clip_3p=30, no_triage_unannotated=False,
+                organism=None, Scer=False,
+                clip_legs=getattr(args, 'triage_clip_legs', False),
+            )
+            rc = run_triage(ns)
+            triaged = triage_dir / (Path(bam).stem + '.triaged.bam')
+            if rc == 0 and triaged.exists() and triaged.stat().st_size > 0:
+                gate_input = triaged
+            print(f"[station-b] done in {_time.perf_counter() - t0:.1f}s")
+        except Exception as e:
+            print(f"WARNING: Station B (triage) failed (non-fatal): {e}",
+                  file=sys.stderr)
+
+    if getattr(args, 'no_pool_gate', False):
+        return
+    try:
+        import time as _time
+        from rectify.utils.genome import load_genome as _load_g
+        from ...consensus.station_c import (
+            PoolGateConfig, find_bundled_selfhom_bed, pool_gate,
+            write_pool_gate_outputs,
+        )
+        t0 = _time.perf_counter()
+        print(f"\n[station-c] pool-gate junction admission report on "
+              f"{Path(gate_input).name} ...")
+        genome = _load_g(Path(genome_path))
+        selfhom = find_bundled_selfhom_bed(Path(genome_path))
+        rows, summary = pool_gate(
+            str(gate_input), genome, Path(annotation_path),
+            cfg=PoolGateConfig(), selfhom_bed=selfhom,
+        )
+        tsv, js = write_pool_gate_outputs(
+            rows, summary, work_dir / sample_id)
+        v = summary['verdicts']
+        print(f"[station-c] {summary['n_junctions_censused']} junctions "
+              f"({summary['n_annotated']} annotated) — "
+              f"admit={v.get('admit_candidate', 0)} "
+              f"review={v.get('review', 0)} "
+              f"demote={v.get('demote_orthogonal_evidence', 0)} "
+              f"-> {tsv.name}  [{_time.perf_counter() - t0:.1f}s]")
+    except Exception as e:
+        print(f"WARNING: Station C (pool-gate) failed (non-fatal): {e}",
+              file=sys.stderr)
+
+
+def add_station_bc_args(parser) -> None:
+    """Attach the Re-aligner Station B/C flags to the ``run-all`` parser
+    (same registration pattern + None-tolerance as ``add_browser_pack_args``)."""
+    if parser is None:
+        return
+    parser.add_argument(
+        '--triage',
+        action='store_true',
+        default=False,
+        dest='triage',
+        help='Re-aligner Station B: run the consensus-triage layer as a '
+             'post-stage (classification + motif-blind re-align, hp_ed '
+             're-entry). Emits triage/triage.tsv + a triaged BAM as review '
+             'artifacts; fail-soft; experimental.',
+    )
+    parser.add_argument(
+        '--triage-clip-legs',
+        action='store_true',
+        default=False,
+        dest='triage_clip_legs',
+        help='With --triage: enable the clip legs (terminal clips to the '
+             'overhang resolver, 5\' clips to Cat3 rescue).',
+    )
+    parser.add_argument(
+        '--no-pool-gate',
+        action='store_true',
+        default=False,
+        dest='no_pool_gate',
+        help='Skip Re-aligner Station C (the per-junction pool-gate admission '
+             'report, <sample>.pool_gate.tsv). The report is fail-soft, '
+             'report-only, and runs by default.',
+    )

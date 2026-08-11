@@ -97,6 +97,13 @@ Citation:
     from .core.commands.triage_command import create_triage_parser
     create_triage_parser(subparsers)
 
+    # =========================================================================
+    # pool-gate command (Station C v0: per-junction admission report —
+    # overhang quality x repeat flags x recurrence, two-track)
+    # =========================================================================
+    from .core.commands.pool_gate_command import create_pool_gate_parser
+    create_pool_gate_parser(subparsers)
+
     # export command (parser wired in rectify.core.commands.export_command)
     from .core.commands.export_command import create_export_parser
     create_export_parser(subparsers)
@@ -206,8 +213,9 @@ Citation:
     # that function does not return its parser and the flag belongs with the
     # packer wiring rather than with the pipeline flags. Guarded so a rename of
     # the subcommand degrades to "flag missing", never to a CLI-wide crash.
-    from .core.commands.run.stages import add_browser_pack_args
+    from .core.commands.run.stages import add_browser_pack_args, add_station_bc_args
     add_browser_pack_args(subparsers.choices.get('run-all'))
+    add_station_bc_args(subparsers.choices.get('run-all'))
 
     from .core.commands.cma_command import create_cma_parser
     create_cma_parser(subparsers)
@@ -288,6 +296,9 @@ def _dispatch(args, parser):
     elif args.command == 'triage':
         from .core.commands.triage_command import run_triage
         sys.exit(run_triage(args))
+    elif args.command == 'pool-gate':
+        from .core.commands.pool_gate_command import run_pool_gate
+        sys.exit(run_pool_gate(args))
     elif args.command == 'export':
         from .core.commands import export_command
         sys.exit(export_command.run(args))

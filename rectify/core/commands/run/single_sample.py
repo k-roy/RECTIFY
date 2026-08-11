@@ -33,6 +33,7 @@ from .stages import (
     _run_correction_per_aligner,
     _run_analysis,
     _run_junction_aggregation,
+    _run_station_bc,
 )
 
 
@@ -1062,6 +1063,17 @@ def _run_single_sample(args) -> int:
         annotation_path=annotation_path,
         modality=('DRS' if drs_mode else
                   ('cDNA' if getattr(args, 'ONT_cDNA', False) else '')),
+    )
+
+    # ── Re-aligner Stations B + C (fail-soft; B opt-in via --triage,
+    #    C = the pool-gate junction admission report, on by default) ─────────
+    _run_station_bc(
+        work_dir=work_dir,
+        sample_id=_bp_sample_id,
+        fallback_bam=bam_to_correct,
+        genome_path=genome_path,
+        annotation_path=annotation_path,
+        args=args,
     )
 
     # ── Junction aggregation ─────────────────────────────────────────────────
