@@ -84,15 +84,17 @@ Program state of record: `dev/ALIGNER_BENCH_STATE_AUDIT_20260721.md` (restored c
    the stage-2 sizing). Our control re-run at `a7bdd7e`: flattening GONE (v2 ≡ mm2 every cell;
    931/1036 visits frame-refused) — addendum `ed4a805`: safety-by-IMPOTENCE; the control is the
    pre-registered STAGE-2 gate. Reply + stage-2-use-the-refiner suggestion sent to 641
-   (their 3 messages archived). **[IN FLIGHT 2026-08-10 ~23:15] 644g phase-1 contest census** (H2, `644_accept/644g_phase1_contest.py`,
-   log `644g.log`, out `t3/full/644g_phase1_contest.json`; Monitor `b9wj82hck` notifies).
-   Measures Kevin's reframe: per-read mm2-vs-mpb contest (score = NM + clip bases, N free) on
-   the reads supporting the beyond-arm junctions → junk refuted per-read? residual-gold reads
-   WIN? + the 5'-clip routing recall/compute budget. RESUME:
-   `ssh h2 'tail /u/scratch/k/kevinroy/644_accept/644g.log'`; when `wrote ...json` → fetch,
-   report {junk read-verdicts, junctions surviving ≥1/≥2 wins, gold win rate, routing budget}
-   to Kevin + 641; traceback → fix scratchpad copy, redeploy same way. PI's two-phase spec
-   captured in `dev/STATIONC_MAPPACBIO_HARVEST_20260810.md` §"PI reframe" (`b39fcc4`).
+   (their 3 messages archived). ✅ **644g phase-1 contest DONE + reported** (2026-08-10 ~23:59): free-N gaming MEASURED —
+   junk read-slots win-or-tie the flat contest 94% vs gold 96% (no discrimination; the free
+   N-op absorbs clip/mismatch cost). Gold recall through consensus CONFIRMED (35/37 residual
+   gold keep winning reads). 5'-clip routing REFUTED (9% gold-read recall at 14% compute; the
+   unique-gold reads are UNCLIPPED confidently-misplaced — SRC1 mechanism); distress-routing
+   (644d M-D-N census) is the economical trigger. Finding `dev/PHASE1_CONTEST_644G_20260810.md`
+   + tool (triage branch `4bbf870`); 641 notified. NEXT MEASUREMENTS (open): (i) the
+   PRODUCTION-fenced phase-1 contest — correct+consensus over mm2+mapPacBio arms on a
+   gold-window subset (do the score_segment fences refute what the flat score cannot?);
+   (ii) prototype the PI's phase-2 short-exon-overhang likelihood against the 644g census
+   (35 gold vs 1,737 recurrent junk separation).
 ✅ **644f census DONE + reported** (2026-08-10 ~21:30): true mapPacBio-only
    residual = **37 gold** (23 canonical-class incl. 20 alt introns; 14 Gould, 0/14 canonical)
    vs 5,414 junk. support≥2 + canonical-in-class → **12 gold / 13 junk (~48% precision)**;
