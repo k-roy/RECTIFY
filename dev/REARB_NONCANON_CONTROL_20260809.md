@@ -1,5 +1,19 @@
 # FINDING — the v2 re-arbitration flattens genuine non-canonical junctions (measured; two mechanisms)
 
+> **ADDENDUM 2026-08-10 — the flattening COLLAPSES at `a7bdd7e` (re-run, same panel/BAM):**
+> v2 recovery ≡ raw minimap2 on every cell (R3-HP 0.735 = 0.735; all controls clean);
+> `arb_frame_unsafe_skip = 931` of 1,036 visits, `arb_shifted = 0`. ALL 33 earlier shifts —
+> both the 15 grammar snaps and the 18 margin-beats — depended on frame-unsafe geometry the
+> corruption fix now refuses (any downstream ref-consuming op past the right flank). Matches
+> 641's production numbers (grammar tiebreak fired 0, shifts 2, of 591,739 scored genome-wide).
+> **⚠ Interpretation discipline: this is safety-by-IMPOTENCE, not safety-by-design.** The
+> frame guard is a bookkeeping refusal, not an evidence judgment; boundary-shift arbitration is
+> currently near-inert on realistic (error-bearing) reads. The identity-loss exposure this
+> control measured migrates INTACT to "stage 2" (the junction-local traceback realigner sized
+> by the 1.45 M frame-unsafe visits): whatever machinery re-enables those shifts re-opens this
+> population. **This control is therefore a pre-registered GATE for stage 2** (run with grammar
+> knob per mission + pool adjudication), not a closed finding about v5.1.
+
 **Date:** 2026-08-09 (late evening). **Context:** the resolver's v2 junction re-arbitration
 (`feat/overhang-resolver-641` @ `de98896`; Chanfreau planning/644b) added a splicing-grammar
 tiebreak: a non-canonical-class incumbent junction loses to a canonical-class alternative at
