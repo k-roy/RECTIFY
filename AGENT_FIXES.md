@@ -2497,3 +2497,23 @@ strand-matched overlap, so it returns 1.000 by construction. Use a **TSV<->BAM `
 **Fix:** add an `ont_cdna` protocol wrapper resolving strand from the maximally-overlapping annotated gene,
 then take the corresponding terminus. See also B1 (`_CRTA_RC` corrupted revcomp) and B2 (`find_cdna_5p_polyt`
 has no adapter logic) — all three block a quantitative ONT-cDNA arm.
+
+## [2026-08-11] 🔴 ACTIVE — DRS multialigned consensus emits MULTIPLE winner records per read (~2.23×)
+
+**Found by:** 668 DRS re-panel smoke (Chanfreau `planning/668`), first DRS dataset through the
+3-aligner K-way consensus (minimap2 + uLTRA + deSALT, trimmed-fastq input, plain uuid QNAMEs).
+
+**Symptom.** `wt_rep1.multialigned.bam`: 8,654,356 records — ALL primary — from 3,882,433 input
+reads; distinct QNAMEs 3,859,034; per-read histogram ~2–3 records. Decisive probe: read
+`0001c0ca-db19-…` has TWO records, **same RN:i:75800, same pos 88403, same flag 16**, one
+`Xa:Z:deSALT` and one `Xa:Z:minimap2` — i.e. the (QNAME,RN) group was SPLIT and each subgroup
+crowned its own winner. RN assignment is consistent (same RN both records), so the defect is in
+the name-grouped iteration/merge (`consensus.py::_iter_name_grouped_bams` and/or its callers) on
+this input shape. The cDNA path is NOT affected (659/662 outputs verified 1:1 records:molecules).
+
+**Blast radius.** Any DRS (plain-QNAME) multi-aligner consensus BAM: read counts inflated ~2.2×,
+and junction-pool/prescan support counts double-counted. Chanfreau 668 DRS fan-out is HELD on
+this; the smoke's prescan pkls must be regenerated after the fix.
+
+**Repro substrate:** `/u/scratch/k/kevinroy/668_drs/wt_rep1/` (H2) — trimmed fastq +
+3 per-aligner BAMs + the defective multialigned.bam. Tree at 23df220.
