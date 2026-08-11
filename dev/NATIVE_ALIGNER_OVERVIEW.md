@@ -1,0 +1,725 @@
+# RECTIFY native aligner + its gating benchmark — overview
+
+*A living document, plain-language first, headed for the README in some form.
+Revisit and polish as the work evolves. Working state:
+`dev/HANDOFF_ALIGNER_BENCHMARK.md`; technical spec:
+`dev/SIMULATION_BENCHMARK_SPEC.md`; design seed:
+`dev/ALIGNER_IDEATION_SYNTHESIS.md`; design refinements:
+`dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`.*
+
+**Last updated:** 2026-07-14 (Phase 5: real-data 32× recall win + the microhomology-drift
+guard *close* + its 8-reviewer audit; see the "Phase 5" section)
+
+---
+
+## The one-sentence version
+
+We are building a **new, native RECTIFY alignment algorithm** that complements
+the existing panel of aligners with a deliberately *orthogonal* approach — one
+that recovers **novel transcript isoforms** the current aligners flatten away and
+that is robust to the **specific error modes of Nanopore direct-RNA sequencing
+(DRS)** — and, *before* we build it, we are building a **ground-truth benchmark**
+that can prove the new approach actually earns its place.
+
+---
+
+## In plain English — what we're doing, and where we are
+
+*(A jargon-free companion to the rest of this document — read this first if the
+acronyms are new.)*
+
+**The goal.** RECTIFY reads noisy Nanopore RNA-sequencing data and works out, for
+each read, exactly where it came from in the genome — including the hard parts
+(splice junctions; the 3′ poly-A tail). It never trusts one alignment tool: it runs
+**a panel** of several, then **picks the best answer per read** (the "consensus" or
+"arbiter"). We're building a brand-new, home-grown aligner to add to that panel —
+one that's good at the things the existing tools are bad at.
+
+**The rule that governs everything.** We do **not** write a line of the new aligner
+until we've *proven*, against a known-correct answer ("truth"), that it actually
+helps. Every candidate capability ("facet," labelled C1, C2, C3, …) goes on **trial
+first**. The trial — "the gate" — asks two questions: *is the current system
+actually getting this wrong?* and *would the proposed idea genuinely fix it?* If the
+current system is already as good as the data allows, the idea is rejected before
+any code is written. This sounds harsh, but it's the point: most plausible ideas
+don't survive contact with truth, and it's far cheaper to learn that *before*
+building.
+
+### Phase 1 — we put every idea on trial, and almost all failed
+We tested a whole slate of candidate improvements (fixing length mistakes in
+`AAAAA…` runs, placing the 3′ tail end, letting the "picker" use probabilities,
+telling look-alike genes apart, finding "lost" reads, handling genetic variants).
+**Almost every one was rejected** — the tools RECTIFY already ships turned out to be
+about as good as the data allows on those tasks. The one clear keeper was the
+length-mistake fix (and, as a bonus, the trials *exposed a real bug in the existing
+consensus*, which we fixed and shipped). That's the process working: it's far
+cheaper to kill a weak idea in a trial than after months of building. For a while
+this looked like "maybe we don't need a new aligner at all."
+
+### Phase 2 — the one thing we'd never actually tested
+Then the PI pushed back, correctly: we'd never tested the single thing the new
+aligner exists *for* — **discovering novel splice sites** (unusual, unannotated,
+"non-canonical" junctions) that the standard tools quietly *flatten* into the
+nearest textbook site. And there's a chicken-and-egg reason we'd missed it: you
+*can't* measure this on real data, because the tools are biased against reporting
+novel sites in the first place — so real data has no "right answer" for the very
+junctions they hide. **Only a simulation, where we build the truth ourselves, can
+see it.** That's what the simulator is for.
+
+So we built a graded test — junctions ranging from textbook to increasingly unusual
+— and measured how often the popular tool (minimap2) reports the *true* novel site
+vs. snapping it to a nearby textbook one. The result was stark: **minimap2 flattens
+40–100% of novel non-canonical junctions, even on perfect error-free reads**, and it
+held up on a real yeast genome. So the "flattening" problem is real and large.
+
+### Phase 3 — a plot-twist, and reconciling it with real data
+One catch: a different panel member, **mapPacBio**, *did* recover those novel
+junctions in the simulation — which briefly looked like "the panel already covers
+this, no new aligner needed." But the PI flagged that mapPacBio behaves badly on
+real human data, so we measured it directly on real Nanopore data. The reconciliation
+is decisive: **mapPacBio "recovers" novel junctions by fabricating junctions almost
+everywhere** — on real human data ~97% of its unique novel calls are spurious. Its
+simulation "win" is exactly its real-world disease (it has no splice-site
+sanity-check and emits any gap as a junction). So on real data:
+- the **precise** tools (minimap2, uLTRA, deSALT) are ~97–98% textbook — they
+  *flatten* novel sites;
+- the **sensitive** tools (mapPacBio, GMAP) *fabricate* — mostly junk;
+- **no tool is both precise and sensitive to novel junctions.** That gap is exactly
+  what a new, Nanopore-calibrated aligner would target.
+
+### Where we are right now (and the honest caveat)
+The *disease* — flattening — is real and confirmed on real data. But we're being
+careful not to overstate the *fixable* size of the gap: when we looked closely, the
+novel junctions the good tools "miss" are mostly the two sloppy tools agreeing with
+*each other* (likely artifacts, not real biology), and the good tools already do
+recover a real chunk of novel sites on their own. **So we don't yet know how much a
+new aligner would actually add** — that needs cross-checking the disputed junctions
+against an independent (short-read) method, and, crucially, *proving a new aligner can
+recover them precisely* (the real make-or-break, still untested).
+
+### The decision, and what's next
+The PI has chosen to **build the aligner anyway** — for two good reasons: mapPacBio
+was never updated for Nanopore (so an Nanopore-native tool should genuinely help),
+and *"what I cannot create, I do not understand"* — building forces us to pin down
+exactly how junction-scoring should work, which is itself the understanding we're
+after. The one guardrail: **the new aligner is always scored against known truth**,
+so "build to learn" never drifts into fooling ourselves.
+
+Next steps: (1) cross-check the disputed novel junctions against short reads to size
+the real gap; (2) the make-or-break test — can a Nanopore-calibrated, probability-based
+re-aligner recover the flattened junctions *precisely* (high hit-rate, low fabrication)?;
+(3) build it, one testable increment at a time. The design in a phrase: a
+**Nanopore-calibrated, motif-blind, probability-scored re-aligner** that re-examines
+each read in the window the panel already found, judging junctions by *evidence*
+rather than by "does it look textbook."
+
+### Phase 4 (2026-07) — we built the re-aligner's junction logic, and vetted its one real risk
+
+We built the core move: **motif-blind re-placement.** Inside the window the panel
+already found, the re-aligner re-examines each splice junction and judges it *by the
+read's evidence* — not by "does it snap to a textbook `GT-AG` site." That is exactly
+the anti-flattening lever: a genuine novel junction is kept where the read says it is,
+instead of being pulled onto the nearest canonical motif.
+
+But motif-blindness has a **specific, predictable failure mode**, and vetting it was
+the real work. Nanopore's single biggest error is **homopolymer under-counting** — a
+read run of `AAAAAAAA` routinely comes back one `A` short. When a real junction sits
+right next to such a run, an evidence-only re-aligner can be *fooled into inventing a
+fake novel junction*: sliding the boundary **one base into the run** makes the read
+align "perfectly" (the missing `A` gets hidden inside the intron), which scores better
+than the truth ("a base was miscalled here"). We call this **homopolymer drift**, and
+because under-counts are everywhere, it would fabricate false novel sites at scale.
+
+- **The obvious fix backfired.** We first tried feeding the re-aligner RECTIFY's
+  empirical error-cost table (which *knows* `AAAA` runs mis-count). It made the drift
+  **worse**, not better — because the boundary slide is a *tie the data makes exact*
+  (both placements explain the read equally once you allow the miscount), and a cost
+  table can't break a tie; it just greases the slide. An independent Opus red-team
+  confirmed this is **fundamental to any boundary search**, not a bug we could patch.
+  (This is why the error-cost table stays where it was always valid — *ranking* the
+  panel's fixed alignments and scoring indels *inside* exons — and is kept **out** of
+  the junction *search*.)
+- **The targeted fix worked.** We built a **homopolymer-drift guard** that fires
+  *only* when a move would land a boundary **inside** a homopolymer run, demanding
+  extra evidence there — and **never** touches a move to a genuine novel site at a
+  real sequence transition. So it fixes the fake-junction problem with **zero cost to
+  real discovery** (the two are cleanly decoupled — we swept the setting and confirmed
+  discovery is untouched at every level). It's unit-tested (11 tests) and, the honest
+  final check, run on **real Nanopore yeast data**: of the placements it changed,
+  **every single one fixed a real drift** (moved a junction back to the correct site),
+  **zero harm**, and overall accuracy did not drop. On wild-type yeast the effect is
+  small (real drift is rare there), but when the re-aligner *does* drift on a real
+  under-count, the guard catches it **100% correctly** — and the payoff scales up in
+  the mutant / heavy-under-count settings this is ultimately for.
+
+**How narrow the guard's footprint actually is (worth being precise about).** The drift — and therefore
+the guard — engages *only* at a junction where an **exonic homopolymer runs directly up against the splice
+site**: a run in the exon immediately **upstream of the 5′ splice site** (`…AAAAAAA|GT…`) or immediately
+**downstream of the 3′ splice site** (`…AG|AAAAAAA…`). If even one or two non-run bases sit between the run
+and the cut (`…AAAAA·CG|GT…`), the drift *cannot* happen — sliding the boundary into the run would have to
+swallow those real bases too, which misaligns them, so the junction never moves. In that separated case the
+under-count is simply **interior to the exon**, and a *different* module handles it (the ordinary
+exon-interior indel correction, C1 — it just places the deletion somewhere inside the run); the junction
+re-aligner is not involved. (Reads contain only *exonic* sequence — introns are spliced out — so a run on
+the intronic side of the cut is invisible to this entirely.) This is why the guard is safe *by
+construction*: the vast majority of junctions — anything without an exonic run pressed right against the
+donor or acceptor — are never touched at all.
+
+**Bottom line after Phase 4:** the re-aligner's junction engine has a **validated,
+shippable design — motif-blind re-placement + the homopolymer-drift guard** — proven
+three independent ways (built-in-truth simulation, unit tests, and a real-Nanopore
+do-no-harm transfer test). It is still a *re-aligner* (it refines within the panel's
+window; it is not yet a standalone genome-wide aligner — see "What it is, mechanically"
+below).
+
+**Closed since:** two threads that were open are now settled. (1) We asked whether *any*
+coherent error-cost term (a proper log-odds law, not the heuristic table we'd rejected)
+could help the boundary search — and, after an adversarial triple-check caught a subtle
+bug and a faithful re-run corrected it, the answer is a **definitive no**: an analytical
+impossibility result shows the run-absorption ambiguity is invariant to *any* deletion
+cost, so the guard (a positional prior) is the only thing that fixes it — the empirical
+table stays out of the search entirely. (2) We carried the whole thing to **real human
+data** (A549 chr5 direct-RNA vs GENCODE): the guard's drift-fix **transfers with zero
+harm** (it held ~956 chr5 junctions the motif-blind pass drifted into homopolymer runs,
+raising annotation concordance and lowering it nowhere). The one caveat human exposes:
+most of the guard's activity there is at *novel/unannotated* junctions that annotation
+alone can't score — which is exactly what the short-read (COMPASS) cross-check is for
+(the next milestone).
+
+### Phase 5 (2026-07) — the real-data win, the general drift problem, and *closing* it
+
+Two big things happened after Phase 4: a **real-data payoff** for the core engine, and a
+**hard, honest fight** to make the safety guard trustworthy for the general case.
+
+**First, the payoff — the discovery engine works on real data.** We ran the motif-blind
+re-placer against an *independent* short-read method (COMPASS-mode, a different sequencing
+technology entirely) on real human data. The result is the headline we'd been chasing:
+the re-placer recovers **~32× more novel (non-canonical) junctions than raw minimap2**
+(0.5% → 17% of an independent truth set), while leaving the textbook-junction accuracy
+essentially untouched. Raw minimap2 flattens ~99.5% of the real novel junctions the
+independent method sees; the re-placer keeps them. This is real-data evidence — not
+simulation — that the *anti-flattening* idea does what it's for. (The honest caveat: the
+absolute recovery number is held down by a cohort mismatch and by short-read noise, so the
+robust claim is the **32× comparison**, not the absolute level.)
+
+**Second, the fight — generalizing the safety guard, and discovering it wasn't safe yet.**
+The Phase-4 guard fixes the *homopolymer* version of boundary-drift (`AAAA` runs). But the
+same trap exists for **any short repeated sequence** next to a junction — a `CAGCAG…`
+repeat, a two-base `ATAT`, etc. can let a real junction slide to a look-alike spot, or let
+a fabricated one appear. So we built the **general ("microhomology") drift guard** — same
+idea, broader trigger. Then we did the thing this project always does: **tried to break it.**
+
+- **A rigorous adversarial audit found the guard only *bounded* the problem, not *closed*
+  it.** Several independent AI reviewers (Opus-Max, run in redundant pairs so a crash can't
+  hide a fault) hammered it. The core finding was sharp and real: the guard as first built
+  was **read-blind** — it decided whether to distrust a boundary move from the *genome*
+  sequence alone, ignoring what the *read* actually said. So it could veto a genuinely real
+  novel junction just because the genome happened to have a repeat nearby. (The same audits
+  also caught **two real bugs** in the detector — treating ambiguous `N` bases as matching,
+  and a masking bug on two-sided moves — which we fixed.)
+- **We measured exactly how bad it was, instead of guessing.** Same discipline as always:
+  build reads that genuinely come from a *real* novel junction sitting next to a repeat, and
+  count how often the guard wrongly vetoes them. Answer: the simple version throws away
+  **~24% of real discovery** — far too much for a tool whose whole job is discovery.
+- **The real fix: look at the read, not just the genome.** The root cause turned out to be
+  that the scorer was quietly *ignoring* ("soft-clipping") the very bases that tell a real
+  junction apart from a fabricated one. We added a signal that looks **exactly at those
+  bases** (a hard-anchored comparison of the read against the two competing placements). It
+  cleanly separates real novel junctions from fabricated drift (**98–99%**), which drops the
+  wrongful-veto rate from **~24% to ~0.4%** — *for junctions where the tell-tale base is close
+  to the cut.* That is the **in-window "close."**
+- **…but a rigorous 8-reviewer follow-up audit found the close is *not* complete.** The signal
+  can only "see" the distinguishing base if it sits within a fixed window (~28 letters) of the
+  junction. When the look-alike repeat is *longer* than that — long `CAGCAG…` microsatellites,
+  long homopolymers, the kind of near-identical **paralog** sequence around genes like
+  **SMN1/SMN2** — the tell-tale base falls *outside* the window, the signal goes blank, and the
+  guard reverts to wrongly vetoing real discoveries (14–100% loss in that regime). That regime is
+  *exactly* what the guard was built for, so the honest statement is: **the fix closes the
+  short-repeat case and still degrades on the long-repeat one.** The same audit also flagged that
+  we built a slightly *cruder* version of a comparison the aligner's scorer already contains — the
+  cleaner design puts the fix *inside* the scorer rather than bolting a new knob on top. So the
+  close is a real, correct step, but **"solved" is overclaiming it** — and, tellingly, none of it
+  is tested on real data yet.
+- **A bonus finding from being careful.** While extending the fix to the "donor" (5′) side
+  of junctions, we discovered the re-aligner only ever *scores* the "acceptor" (3′) side —
+  so there is **no donor-side problem to fix** (and forcing one in would actually *hurt*
+  real discovery). Investigating before building saved us from shipping a harmful change —
+  the process working again.
+
+**Where this leaves us — and the honest caveat that matters most.** The general guard is
+now built, correct, and validated three ways (unit tests, a ground-truth panel, and an
+8-reviewer adversarial audit). It ships **OFF by default** and is byte-for-byte invisible
+when off. **But every bit of that validation is on junctions we *simulated ourselves*.**
+The guard has *not* yet been proven on real Nanopore data. So the real-world verdict is
+still pending, and it rests on exactly the same gate as everything else: **does it hold on
+real data, cross-checked against the independent short-read (COMPASS) method?** Until that,
+the guard is best understood as **well-engineered insurance** — it only earns its keep *if*
+real data shows fabrication is a problem worth suppressing, and that is a real-data
+decision, not a simulation one.
+
+**The grand-scheme picture.** The native re-aligner's **discovery engine** (motif-blind
+re-placement) is the deliverable, and it now has *both* a simulation win *and* a real-data
+recall win (the 32×). The **guards** on top of it (homopolymer + microhomology drift) are
+**specificity insurance** — they trade a little machinery to avoid fabricating false novel
+junctions. We've built that insurance to a genuinely high bar and *partially* closed its
+hardest failure mode (the short-repeat case; the long-repeat / paralog case still degrades).
+But the audit's real lesson is a **process** one: we built the close before running the one
+test that says whether the fabrication it fixes is even a real problem on real data. So what
+remains is **not more building** — it's **the real-data test**: does fabrication actually
+happen, and at the long-repeat paralog loci (SMN1/SMN2), on real Nanopore data cross-checked
+against the independent short-read (COMPASS) method? That single measurement decides whether
+to finish the guard (with the scorer-level fix) or leave it as dormant, default-off insurance
+and move on to the science. It is the honest next gate for the whole guard track.
+
+### Phase 6 (2026-07-17) — we ran that gate, and the plot-twist was bigger than expected
+
+We ran the real-data test. It didn't just answer the guard question — it **overturned the
+premise the whole guard track was built on**, and it did it by the simplest possible means:
+*we finally looked at the actual alignments, one read at a time.*
+
+**Step 1 — look at the real reads.** Instead of trusting summary counts, we pulled up the
+implicated alignments on the real Sumner SMA (Nanopore) data — in a genome browser and as
+single-read pictures showing both sides of each junction. The "fabrication" number that had
+been driving months of guard work was **27%** of the re-placer's novel junctions: junctions
+that looked like drift away from a well-supported site.
+
+**Step 2 — the plot-twist: it was mostly a *bookkeeping* bug, not a bad discovery.** Reading
+the alignments base-by-base, the "drifted" junctions weren't the aligner inventing a false
+splice site. They were an **accounting artifact** in how the tool *rewrites* an alignment
+after it moves a junction. When it slid a junction, it left behind a matched
+**insertion-and-deletion pair** that shoved the junction's *coordinate* sideways **while the
+read's actual sequence stayed exactly where it was.** In plain terms: the paperwork said the
+junction moved 40 letters; the read hadn't moved at all. The tool was reporting a junction
+position the read never supported — and then our own measurement was counting that as
+"fabrication." Both the tool *and* our scorecard were being fooled by the same messy
+paperwork. This was happening on **~85–95%** of the reads the re-placer touched.
+
+**Step 3 — a one-line rule fixes it.** The cure is a single, always-on principle: **a junction
+edit must never make the read's alignment messier than it already was.** If rewriting a
+junction would require adding that compensating insertion-and-deletion padding, the read never
+actually supported the move, so we refuse it and leave the read where it was. Across the whole
+13-sample panel this reverted **~94%** of the re-placer's junction moves — they were all the
+paperwork artifact — and, re-running the independent short-read check, it removed **~91% of the
+apparent fabrication at *zero* cost to real discovery.** The textbook-junction accuracy is
+untouched. The 27% "fabrication problem" was mostly a bug.
+
+Honesty check on the Phase-5 headline: the same paperwork bug had also *inflated* the celebrated
+"32× recall (0.5% → 17%)" number — a chunk of that 17% was phantom junctions the read never
+actually supported. Corrected, the re-placer's real recall is **~4%**, still an **~8× genuine win
+over raw minimap2 (0.5%)** and, at the highest-confidence junctions, the surviving discoveries are
+now about **twice as likely to be real**. So the discovery win is real and still large — just
+honestly smaller than the bug made it look. Better to find that ourselves than to have it found later.
+
+**Step 4 — so does the sophisticated guard still earn its place?** With the artifact gone, we
+asked the honest question about the elaborate guard we'd built in Phases 4–5: on *real* reads,
+can its signal actually tell a genuine novel junction from a fabricated one? We measured it
+directly. The answer is **no**: for the drifted (fabricated) junctions the signal behaves as
+designed, but for the *genuine* discoveries it is **a coin flip** (48% vs a random 50%) — it
+cannot recognize a real move on real Nanopore data. The reason is the same W-window limit the
+Phase-5 audit flagged, plus Nanopore's raw error rate drowning the tell-tale bases. A guard
+that fires on this signal would throw away roughly **half of all genuine discoveries** to chase
+a residual that is small and smeared thinly across the genome. That is the opposite of what a
+*discovery* tool should do.
+
+**The verdict, and the grand-scheme picture.** We **ship the one-line fix** (it's on by default,
+needs no tuning) and **shelve the guard** (its knobs were already off by default, so this costs
+nothing — we just leave them off). The elaborate microhomology guard was, in the end, built to
+suppress a problem that was **mostly a bug**, and it can't do its job on real data anyway. That
+sounds like wasted effort, but it is *exactly* the project's thesis proving itself one more
+time: **an elaborate idea did not survive contact with real ground truth.** The real-data gate
+we insisted on before shipping did precisely what it exists to do — it killed a complicated
+solution and revealed the real problem was simple. The **discovery engine** — the reason the
+native re-aligner exists — is intact, now with a clean specificity story (a simple invariant,
+not a fragile guard) *and* its real-data recall win. With the guard question settled, the road
+is clear to point the working, trustworthy engine at the actual **science**: the SMA splicing
+biology on the Sumner data. That is the prize, and we can now go get it.
+
+---
+
+## Background: what RECTIFY does, and why aligners matter
+
+Nanopore (ONT) sequencing reads RNA directly (direct-RNA, "DRS") or as cDNA. The
+first thing any analysis must do is **align** each read to the genome — and for
+RNA, find its **splice junctions** (where introns were removed). Getting the
+junctions right is what lets you discover transcript **isoforms** (alternative
+splice forms of a gene); getting the **3′ end / cleavage-and-polyadenylation
+(CPA)** site right is core to RECTIFY's mission.
+
+RECTIFY doesn't trust one aligner. It runs a **panel** (minimap2, gapmm2, uLTRA,
+deSALT, gmap, …), corrects characteristic ONT errors, and forms a **consensus**,
+picking the best-supported alignment per read. Different aligners fail in
+different ways, so combining beats any one alone. (This per-read multi-aligner
+arbitration idea is the PI's published **COMPASS** method, Roy et al. 2023 NAR,
+now living inside RECTIFY.)
+
+But the panel has **shared blind spots** — and that is the opening for a new
+algorithm.
+
+---
+
+## The gap we are filling — the main point
+
+Three facts define the opportunity:
+
+1. **The panel "herds."** Several panel members share the same underlying
+   engine family — a **flat, affine-gap, quality-blind** cost model. So they tend
+   to make the *same* mistakes and agree with each other for the *wrong* reason.
+   Counting their agreement therefore overcounts confidence (the "herd trap"). A
+   new member only adds real information if its errors are **independent** of that
+   shared family.
+
+2. **Novel isoforms get flattened.** Existing aligners are biased toward the
+   *expected*: minimap2 **snaps** a real but non-canonical splice junction onto
+   the nearest canonical `GT-AG` motif (or onto an annotated junction) instead of
+   reporting the true, novel site — and it does this *even on error-free reads*.
+   So genuine discoveries get silently turned into known isoforms.
+
+3. **DRS has its own error modes.** Direct-RNA reads mis-length **homopolymers**
+   (`AAAA…`), carry errors in **bursts** on globally **"hot"** reads (not
+   uniformly), and have hard-to-place **poly-A / CPA** ends. Generic affine-gap
+   aligners handle these poorly.
+
+### How the new algorithm is *orthogonal* (the design's central lever)
+
+The unifying move (four of six independent ideation lenses converged on it):
+**replace hard / flat / quality-blind costs with calibrated likelihoods, and emit
+posteriors.** Instead of an integer "best score," the native aligner scores
+placements on an **empirical −log P penalty scale** (RECTIFY already ships such
+HP/error tables) and produces **probabilities**. This is simultaneously:
+
+- **the orthogonality source** — its error axis differs from the panel's shared
+  flat-affine family, so its mistakes are independent and it genuinely *de-herds*
+  the consensus; and
+- **a structural defense against scoring artifacts** — see the 0.09→1.07 story
+  below.
+
+### What the new algorithm *is*, mechanically
+
+Not a 6th correlated placer. It is primarily a **native realignment / arbitration
+layer that runs *downstream* of the panel**: reuse the 5 aligners' placement
+cluster as a **localization window**, then do **local realignment** inside that
+window on a calibrated scale. A key insight bounds the ambition honestly: **the
+discovery ceiling is at the *window* level, not the junction level** — a read in
+the right window but with a mis-called junction *inside* it is still recoverable
+by realignment; only reads with **no acceptable window at all** (all aligners
+misplace; ~12% are unmapped) are out of reach, and those are the *only* place an
+independent localizer earns its keep.
+
+---
+
+## Why a benchmark has to come first — "the GATE"
+
+To claim the new aligner *improves* anything you must measure it against a
+**known-correct answer**. With real biological data you don't know the right
+answer — that's the whole problem you're solving. So we build a benchmark with
+**ground truth** first, and enforce a hard rule:
+
+> **No native-aligner ("member") code is written until a validated ground-truth
+> benchmark proves, against truth, that the new approach beats the incumbent on
+> the case it targets.**
+
+Two disciplines make the gate trustworthy:
+
+- **Fitness is the truth set, NEVER the internal score.** The cautionary tale:
+  re-weighting the *internal* consensus score once flipped an aligner's apparent
+  quality from **0.09 to 1.07 with no change to any alignment**. An internal
+  score can be gamed; truth cannot. (Tuning the error model against *simulated*
+  errors and trusting a green number is the same trap one level up —
+  "hill-climbing into the simulator's error model.")
+- **A stratum only counts if the incumbent is BELOW CEILING on it *and* the gap
+  is ADDRESSABLE by the proposed member.** A benchmark where the incumbent already
+  scores 100% cannot separate the concepts (the "vertical-slice finding": an
+  isolated, cleanly-flanked homopolymer is non-discriminating — *both* minimap2
+  and the candidate DP score 1.000, because any in-run indel placement is
+  ambiguity-equivalent). The real signal lives at the **hard boundary cases**
+  (indel-vs-substitution at run edges, run-bleeds-into-flank, adjacent runs,
+  background noise) — and we guard against the opposite error too (the "paralog
+  zero-evidence trap": a case the incumbent fails but *no* method could recover
+  doesn't count either).
+
+### The framing metric
+
+**Exact indel-position concordance with truth — not edit distance.** At every
+contested position edit distance is *tied by construction*, so it can't separate
+the concepts; only *which tied placement matches truth* can. Scoring is
+**ambiguity-aware**: a call one base into a donor/acceptor repeat, or an indel
+anywhere inside a homopolymer run, is *not* charged as an error — only genuine
+mistakes count.
+
+### Two kinds of ground truth (we use both, deliberately)
+
+- **Simulation** — reads where we *know* the truth because we built the
+  transcript, then injected errors. Absolute per-base truth — but only as
+  realistic as the injected error model. Validates **placement mechanics**.
+- **Real spike-ins (SIRV / Sequins / ERCC)** — synthetic RNA of *known sequence*
+  spiked into a real run → **real ONT errors on known sequences**. The gold
+  standard for whether our *simulated* errors are realistic, and the only truth
+  valid at homopolymers and native CPA.
+
+A simulation win is **necessary, not sufficient** — it must *transfer* to real
+data. This is the separate, complementary **Deliverable B**: real-data
+corroboration, whose orthogonal junction truth set is the **COMPASS short-read
+detector** (an independent, non-ONT view of which junctions are real).
+
+### Two-tier benchmark
+
+- **Tier 1 — controlled micro-benchmark:** hand-built mini-loci with known truth
+  per failure mode → *discriminates the concepts* (where position-exact
+  concordance is scored). Light enough to run on a laptop.
+- **Tier 2 — realistic transcriptome simulation:** whole-transcriptome reads with
+  per-read origin → global novel-junction recall/FDR and **sizing the
+  panel-failure tail**. Heavy → runs on the cluster.
+
+---
+
+## The targeted capabilities (the "C-facets") — the new aligner's to-do list
+
+Each is a benchmark stratum **and** a candidate member capability; each had to
+clear three bars to qualify — **orthogonal**, **dependency-light**, and **has a
+position-exact ablation**:
+
+| Facet | Status | Capability | Mechanism | Incumbent weakness it targets |
+|---|---|---|---|---|
+| **C1** | ✅ built + Claim-A-proven (del-only; ins gated off after real SIRV caught it) | Homopolymer / STR indel correction | calibrated **HP-length-law** emission cost wired into the gap recurrence (−log P(obs_run\|true_run)) | flat affine misplaces indels out of the run / "repairs" a mismatch with a spurious indel |
+| **C2** | ❌ refuted *as placement* (gate, 2026-06-29): shipped guarded walkback already at ceiling on the identifiable genomic-A drift; a soft CPA posterior is deferred behind C3 | 3′ poly-A **CPA** placement | 2-state templated-vs-tail **change-point** under the A-run length law (joint localize+refine) | 3′ ends drift; genomic-A tracts confound |
+| **C3** | ❌ **refuted as accuracy** (gate, 2026-06-29): the shipped `hp_edit_distance` arbiter is AT CEILING on recoverable reads (indel AND junction strata) — it already picks the truth-correct member, so an LLR adds no accuracy. C1's win flows through it with no LLR. See `dev/C3_DESIGN.md` | Calibrated arbitration | refiner emits **posterior + runner-up**; consensus compares paths by **likelihood ratio (LLR)**, not integer-max | hard, quality-blind scores → the 0.09→1.07 artifact |
+| **C4** | ⬜ future | Paralog / multi-copy loci (e.g. SMN1/SMN2) | **POA-pooled** per-locus consensus (cluster → consensus → align once → project back) | per-read placement ambiguous at the lone distinguishing base; mis-clustering |
+| **C5** | ⬜ future (gated on a measured tail) | The **panel-failure tail** | **FracMinHash** containment fallback localizer — the only mechanism for reads with no acceptable window; **gated** behind a measured depletion trigger | reads no incumbent places are invisible to a single-aligner run |
+| **C6** | ⬜ future (stratum built + discriminating) | Variant-aware junctions | variant/haplotype-aware emission | a deletion near a splice site gets re-expressed as a spurious intron |
+| **Discovery** | ✅ guardrail prototype done (WS-3; soft prior) | Novel-junction recovery | evidence-weighing instead of motif/annotation snapping; novel-call support must not be read-quality-tail-enriched | the headline isoform-flattening bias |
+
+A spin-off research idea threads through these: a read's **"hotness"** (how
+error-prone it is, *estimable from its own well-aligned exon regions*) as a new
+signal to **down-weight unreliable reads when discovering novel junctions** — but
+only as a **soft** down-weight (a read can be clean in its exons yet bursty at the
+junction), and only if the benchmark proves the FDR lift.
+
+### Read-quality structure & the "novel-feature support" principle (pan-dataset view)
+
+A guiding, dataset-agnostic principle for both the aligner *and* whole-pipeline QC,
+distilled from looking at real ONT error structure:
+
+- **Reads are not one population.** Plotting each read's error rate often shows
+  *structure* — frequently a **bimodal** distribution: a large peak of decent-to-good
+  reads plus a smaller, well-separated **error-rich tail**. (A clean way to see it:
+  fit a two-component Gaussian mixture to per-read error rate and ask whether the
+  minor peak separates.) That minor peak is itself worth labeling — is it
+  **contamination** (reads that aren't really from the target — they map better to
+  another reference) or **genuinely error-rich reads** (degraded molecules / poor
+  pores)? Tracking that split **across runs and chemistries** is a window into
+  flow-cell/pore behavior (e.g. RNA002 vs RNA004), and is exactly the lens needed to
+  read the RNA004 "hot tail" finding (is it a separable minor peak, and which kind?).
+
+- **For building the aligner, we can largely *disregard* the low-Q tail.** The job
+  is robust non-canonical splice sites and 5′/3′ ends recovered from the **bulk of
+  decent-to-good reads.** The error-rich tail neither defines nor should drive those
+  calls.
+
+- **The principle that makes this actionable — novel features must be supported by
+  decent reads in proportion to the overall quality spectrum.** If a dataset is, say,
+  90% decent / 10% low-Q and that error is spread roughly uniformly across reads,
+  then a *real* novel isoform (novel junction or novel 3′ end) should **sample from
+  that same spectrum** — i.e. be supported by ~90% decent reads. If instead a putative
+  novel 3′ end or splice site is **90% low-Q and only 10% decent** — and especially
+  if the errors are **enriched in exactly the read segments that dictate that novel
+  call** — be **immediately suspicious**: it is far more likely a low-quality artifact
+  than real biology. This is a per-read-reliability-weighted FDR control on discovery,
+  and it operationalizes the "hotness" idea above into a concrete, testable check:
+  *novel-feature support, stratified by read quality, must not be tail-enriched.*
+
+This is the high-level, pan-dataset assessment lens for both the de-novo aligner and
+the whole pipeline — a benchmarkable metric (novel-call support vs the read-quality
+spectrum) and a guardrail against discovering isoforms that exist only in the noise.
+(Caveat to honor: distinguishing a *genuine* low-prevalence isoform that happens to
+sit in hard-to-sequence sequence from a noise artifact is itself subtle — the test
+is a *prior*, not a hard gate, consistent with the soft-down-weight discipline.)
+
+### Design discipline: what was *rejected*, and why (so it isn't re-proposed)
+
+The orthogonality bar is a real gatekeeper. A WFA-banded engine as a standalone
+member was rejected — it "shares minimap2's affine optimum," so it is enabling
+*infrastructure*, not an orthogonal concept. Pangenome/variation-graph,
+strobemer reseeding, and r-index localization were rejected as
+dependency-violating or paradigm-renames. Several figures motivating the work
+(e.g. uncorrected-3′-drift %, the count of recurrent GMAP-only novels) are
+explicitly **unverified** — they are exactly what the benchmark and Deliverable B
+must *measure*, not assert.
+
+---
+
+## Where we are now (2026-06-29)
+
+**The gate (benchmark) is built, green, and red-teamed** — it generates controlled
+strata (homopolymers, junctions, paralogs, variants), simulates reads, runs the
+incumbent aligner, and scores against truth (ambiguity-aware; separate annotated/
+novel and canonical/non-canonical tracks).
+
+**The first aligner facet, C1, is built and proven** — an empirical in-run gap
+discount that measurably improves homopolymer indel *placement* against truth
+(hand-verified at the CIGAR level), without hallucinating on clean reads. Notably,
+**real SIRV data caught a bug in C1** (an insertion-discount that hallucinated
+indels, 3–7% on two independent real datasets); we gated it off, and the
+deletion-only law is what ships — the spike-in grounding working exactly as
+intended. A measurement bug (introns inflating the per-read error span) was also
+fixed so error rates are now per-exonic-base.
+
+**Real-data grounding is live, with one open puzzle.** Four independent real
+spike-in sources are measured. Two RNA002-era SIRV sources agree the clean,
+mod-free error clustering is *low*; the current-chemistry **RNA004** source looked
+divergently *burstier* — but the signature points to a **hot-read subpopulation /
+contamination artifact**, not a chemistry effect, and a competitive-re-alignment
+job (WS-1) is settling it now. The injector's magnitude knobs remain
+**placeholders** pending that clean number.
+
+**Claim B was correctly ruled out on real SIRV.** The per-length error-*shape*
+cannot be honestly validated on SIRV (too few long homopolymers; and a
+"truth-confounded" trap where the only discriminating reads have unknowable
+per-read truth). The genuine validation path — a held-out injection simulator — is
+specified and deferred (multi-night). This is the adversarial process catching a
+would-be fake win, not a setback.
+
+**Three workstreams are in flight** (see Priorities): WS-1 (settle RNA004 + a fair
+four-way + the biological-excess contrast), C2 (the next facet), and WS-3 (the
+novel-feature discovery guardrail).
+
+---
+
+## Priorities (2026-06-29) — the scoping rule for directing this work
+
+Two tracks run in parallel. **The facet track is the deliverable; the realism
+track exists only to keep the gate trustworthy.** The one-line rule (advisor):
+***aim, not breadth*** — facet-building is the goal; realism work must not crowd it
+out, and the RNA004 puzzle needs one competitive re-alignment, not a swarm.
+
+**Track A — aligner facets (the product):**
+1. **C1** ✅ done (homopolymer indel placement).
+2. **C2** ❌ **refuted as a placement facet** (gate, 2026-06-29): the shipped guarded
+   walkback is already at ceiling on the identifiable genomic-A drift, so there's no
+   placement headroom to build into — the gate killed a redundant facet. Tellingly,
+   the CPA *uncertainty* (`ambiguity_range`) already ships **with no consumer**, so a
+   soft CPA posterior only earns its keep once C3 exists → this independently
+   promotes C3.
+3. **C3 — ❌ REFUTED as accuracy** (gate, 2026-06-29; calibrated LLR arbitration):
+   the shipped `hp_edit_distance` arbiter is already AT CEILING on recoverable reads
+   (indel AND junction strata — it picks the truth-correct member even at 100% member
+   disagreement and with minimap2 snapping 47%), so an LLR adds no accuracy. C1's win
+   flows through the existing arbiter with no LLR — the keystone premise ("C1 needs C3
+   to land") is empirically weakened. The 0.09→1.07 home (`junction_score`'s
+   canonical tiebreaker) is closed structurally (the snap loses on the PRIMARY score
+   via junction-proximity errors → a tiebreaker reweight, not an LLR). The one
+   unexercised locus = a multi-event/adjacent-runs stratum (the `penalty_score`
+   incoherence is real but unreachable on current strata). See `dev/C3_DESIGN.md`.
+4. **C4 / C5 / C6** — gated, later (each needs its enabling measurement: C5 a
+   measured panel-failure tail — the JUNCTION_DISCOVERY all-herd/snap case is C5, not
+   C3; C4/C6 strata already exist and discriminate).
+- **Discovery guardrail** (novel-feature support, the read-quality-tail FDR prior):
+  prototype done (WS-3); the canonical-snap tiebreaker bias is now ITS domain (C3 refuted).
+
+*Pattern worth noting:* the gate has now **refuted or deferred four plausible
+directions** (C1's insertion-discount, the SIRV length-shape "Claim B,"
+C2-as-placement, and C3-as-accuracy) and **confirmed one** (C1 deletion placement). That hit rate is the
+prove-don't-assert discipline working as intended — most plausible ideas don't
+survive contact with truth, and catching that *before* shipping code is the point.
+
+**Track B — error realism / gate calibration (in service of the gate):**
+1. **Settle RNA004** (WS-1, in flight): competitive alignment to strip
+   contamination → real-vs-artifact; plus the fair four-way and the same-sample
+   SIRV-vs-endogenous *biological-excess* contrast (the systematic-error-vs-biology
+   axis).
+2. **Calibrate the injector** to the cleaned real targets once WS-1 lands (the
+   magnitude is still a placeholder).
+3. **Genuine length-shape validation (Claim B):** the held-out injection simulator
+   on natural long-homopolymer templates at SIRV-measured rates. Multi-night.
+
+---
+
+## The end game
+
+1. A **trustworthy, ground-truth benchmark** that can decide whether any aligner
+   change is a real improvement on the targeted capabilities.
+2. A **realistic, calibrated read simulator** (anchored to SIRV absolute truth,
+   cross-checked against a second simulator and real reads) so simulation results
+   transfer to real data — with real-data corroboration (Deliverable B / COMPASS)
+   as the independent check.
+3. A **native RECTIFY aligner** — an orthogonal, calibrated-likelihood
+   realignment/arbitration layer (plus a gated FracMinHash fallback for the tail)
+   — that **complements the panel's blind spots**, measurably improving recovery
+   of **novel isoforms** and handling of **DRS error modes**, shipped only where
+   the benchmark proves the gain.
+4. Generalization from the **yeast** proving ground to **human** loci (SMN1/SMN2
+   and other paralog / novel-isoform-rich regions), with organism differences (RNA
+   modifications, longer poly-A) accounted for — one engine, per-organism parameter
+   sets.
+
+The throughline: **every claimed improvement is backed by measurement against
+truth, not by intuition.**
+
+---
+
+## Label schemes — the four naming axes (don't conflate them)
+
+The project uses four *separate* labeling systems. They look similar (letters and
+numbers) but mean very different things:
+
+1. **C-facets — `C1`…`C6` (+ "Discovery").** The de-novo aligner's candidate
+   *capabilities* — **what we're building** ("C" = concept/capability, from the
+   ideation panel). Each is gated (incumbent must be below ceiling *and* the gap
+   addressable). See the **"targeted capabilities"** table above for the full
+   list + live status. The numbering is roughly readiness order, **not** strict
+   priority. Quick map: **C1** homopolymer/STR indel correction (✅ built+proven);
+   **C2** 3′/poly-A CPA placement (❌ refuted as placement — incumbent at ceiling);
+   **C3** calibrated posterior + LLR arbitration (⬜ the active next facet, the
+   keystone); **C4** paralog/POA pooling; **C5** panel-failure tail / FracMinHash
+   fallback; **C6** variant-aware junctions; **Discovery** novel-junction recovery
+   + the read-quality-tail FDR guardrail.
+
+2. **Deliverables — `A` / `B`.** The two *validation pillars* — **how we prove a
+   facet is real.** **Deliverable A** = the simulation ground-truth **benchmark
+   (the GATE)** — everything in this repo's `scripts/benchmark/`. **Deliverable B**
+   = **real-data corroboration** — the PI's **COMPASS** short-read junction
+   detector as an independent, non-ONT truth set for which junctions are real. A
+   sim win (A) is necessary but not sufficient; it must transfer (B).
+
+3. **Workstreams — `WS-1` / `WS-2` / `WS-3`.** *Transient* labels for a single
+   session's parallel investigation fan-out — **this week's tasks**, not permanent
+   capabilities. (e.g. WS-1 = competitive re-alignment + the four-way error-structure
+   grounding; WS-3 = the Discovery guardrail prototype; WS-2 was folded into WS-1.)
+   These are scratch labels; they expire — don't treat them like C-facets.
+
+4. **Smoke assertions — `(A)`…`(G)`.** Regression-test IDs *inside*
+   `scripts/benchmark/smoke_roundtrip.py` — **the checks that keep the GATE
+   honest.** e.g. (A) junction round-trip, (C) indel concordance, (D) the HP_HARD
+   two-arm ablation, (E) VARIANT specificity, (G) JUNCTION_DISCOVERY motif-snapping.
+   Unrelated to the C-facets and the Deliverable letters despite sharing glyphs.
+
+**One-line mental model:** **C-facets** = what we build · **Deliverable A/B** = how
+we prove it (sim gate + real transfer) · **WS-n** = this session's investigation
+tasks · **smoke (A)–(G)** = the regression tests guarding the gate.
+
+---
+
+## Mini-glossary
+
+- **Panel / consensus** — the set of existing aligners RECTIFY runs, and the
+  per-read arbitration (COMPASS-style) that picks the best.
+- **Member / native aligner** — the new orthogonal algorithm being added.
+- **Orthogonal** — making *independent* errors vs the panel's shared flat-affine,
+  quality-blind family (so it adds real information / de-herds the consensus).
+- **Junction classes** — ANNOTATED (in the reference), NIC (novel combination of
+  known sites), NNC (novel site). Recall and FDR are tracked separately for
+  canonical vs non-canonical.
+- **CPA** — cleavage-and-polyadenylation site (the transcript 3′ end).
+- **Tier 1 / Tier 2** — controlled discrimination vs realistic external validity.
+- **SIRV / Sequins / ERCC** — synthetic spike-in RNAs of known sequence
+  (absolute truth).
+- **Deliverable A / B** — the simulation benchmark (this GATE) / real-data
+  corroboration (COMPASS orthogonal junction truth).
+
+---
+
+*Provenance: written by the benchmark-builder agent on branch
+`worktree-agent-a25a2c1e784ad37dc`; render date 2026-06-29. Sources in this repo:
+`dev/SIMULATION_BENCHMARK_SPEC.md`, `dev/ALIGNER_IDEATION_SYNTHESIS.md`,
+`dev/ALIGNER_INVESTIGATION_SYNTHESIS.md`, `dev/HANDOFF_ALIGNER_BENCHMARK.md`, and
+the RECTIFY architecture docs. Figures flagged "unverified" above are pending
+measurement by the benchmark / Deliverable B.*

@@ -262,11 +262,19 @@ def test_minus_strand_slide_uses_same_fast_path(chrI_seq):
 
 def test_negative_slide_falls_through_if_bases_differ(chrI_seq):
     """When the slide window bases do NOT match (e.g. delta_start = -1 and
-    genome[old_ns - 1] != genome[old_ne - 1]), the fast path must NOT fire
-    and we fall back to the general boundary-D/I emission.
+    genome[old_ns - 1] != genome[old_ne - 1]), the fast path must NOT fire.
 
     This pins the safety of the fast path: it must only fire when the slide
     is provably equivalent.
+
+    UPDATED for the compensating-indel invariant (e40ca00, merged 2026-08-09):
+    the general path used to REALIZE this both-boundary move by emitting
+    compensating boundary I/D ops (modified=True, non-trivial CIGAR). That
+    realization is exactly the fabrication signature the invariant refuses —
+    the exon sequence never moves, only the N-op coordinate does (~91% of
+    apparent fabrication on real DRS; dev/REPLACER_COMPENSATING_INDEL_BUG.md).
+    The correct outcome is now stronger: the unsupported move is REFUSED
+    outright and the read keeps its original CIGAR.
     """
     # Pick a coord pair where genome[ns-1] != genome[ne-1].
     # We need an N-op on chrI where genome[ns-1] != genome[ne-1].
@@ -296,15 +304,17 @@ def test_negative_slide_falls_through_if_bases_differ(chrI_seq):
         hp_pen=0.25,
         W=15,
     )
-    assert modified
+    # The fast path must not fire (bases differ), and the general path must
+    # REFUSE the compensating-indel realization: no move, read unchanged.
+    assert modified is False
     out = cigar_to_str(list(read.cigartuples))
-    # Must NOT be a clean slide (8= → 7=, 51= → 52=) because the bases differ;
-    # general path emits boundary I/D ops instead.  Just assert it does NOT
-    # match the trivial-slide form.
     trivial = (
         "14=1D7=366N52=1I2=2D32=3X18=2X1=2X13=3D38=1X124=1I78=2I99=2X60="
         "1D27=3I55=1D49=1D13=2X9=2D30=3D6=1X32="
     )
     assert out != trivial, (
         "Fast path fired when genome bases differ — this is unsafe."
+    )
+    assert out == CAT3_INPUT_CIGAR, (
+        "Refused move must leave the read's original CIGAR untouched."
     )

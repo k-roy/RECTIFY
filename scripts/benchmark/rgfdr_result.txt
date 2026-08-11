@@ -1,0 +1,8 @@
+rgfdr — real yeast S288C, 2-intron, 2% error, INTRONFREE control (job 32435780)
+rung          mm2.rec mm2.fpnc  mpb.rec mpb.fpnc  PANELrec
+GT-AG_canon    0.950   0.017     0.733   0.100     0.967
+AT-AC          0.267   0.600     0.733   0.167     0.767
+GA-AG_1off     0.117   0.317     0.633   0.217     0.683
+CT-AC_2off     0.067   0.900     0.800   0.150     0.817
+CA-TC_deep     0.000   1.033     0.733   0.250     0.733
+INTRONFREE      n/a    0.000      n/a    0.000      n/a

@@ -459,6 +459,176 @@ def _has_boundary_error(
     return False
 
 
+# Only the four real DNA bases can constitute a homopolymer run or a microhomology
+# match; a shared ambiguity code (N) or non-ACGT symbol must NOT (audit A5).
+_ACGT = frozenset("ACGT")
+
+
+def _hp_run_across(seq: str, pos: int, min_run: int) -> int:
+    """If a junction boundary at *pos* (between ``seq[pos-1]`` and ``seq[pos]``) sits
+    INSIDE a reference homopolymer run — same base on both sides — return that run's
+    length; otherwise 0.
+
+    This is the HP-drift-guard detector.  Ubiquitous ONT homopolymer undercalls let
+    an evidence-only re-placer slide a junction boundary *within* a run (re-parti-
+    tioning identical bases between intron and exon) — fabricating a false
+    non-canonical junction.  A move that lands a boundary inside a run (this returns
+    >0) is required to clear a stronger evidence margin; a move to a genuine sequence
+    TRANSITION (``seq[pos-1] != seq[pos]`` → 0 here), e.g. a real non-canonical
+    acceptor, is untouched.  So motif-blind discovery is preserved everywhere except
+    the one spot ubiquitous undercalls make the evidence untrustworthy."""
+    n = len(seq)
+    if pos <= 0 or pos >= n:
+        return 0
+    b = seq[pos]
+    if b not in _ACGT:
+        return 0                    # ambiguity/non-ACGT (N) run is NOT a homopolymer
+    if b != seq[pos - 1]:
+        return 0                    # boundary is a sequence transition, not in a run
+    i = pos - 1
+    while i > 0 and seq[i - 1] == b:
+        i -= 1
+    j = pos
+    while j < n - 1 and seq[j + 1] == b:
+        j += 1
+    run = j - i + 1
+    return run if run >= min_run else 0
+
+
+def _frac_match(a: str, b: str) -> float:
+    """Fraction of positions where equal-length strings *a* and *b* agree (0.0 if
+    empty or mismatched length).
+
+    Only ACGT bases can MATCH: a shared ambiguity code (N==N, or lowercase/non-ACGT)
+    is NOT counted as agreement.  Genome ambiguity runs (N…N, gaps) would otherwise
+    score frac 1.0 → a phantom microhomology that falsely vetoes a genuine move
+    (audit A5).  x==y with x in _ACGT ⇒ both are the same real base."""
+    if not a or len(a) != len(b):
+        return 0.0
+    return sum(1 for x, y in zip(a, b) if x == y and x in _ACGT) / len(a)
+
+
+def _move_microhomology(seq: str, ns: int, ne: int, js: int, je: int) -> float:
+    """Microhomology-drift-guard detector (the general, non-homopolymer analog of
+    ``_hp_run_across``).
+
+    For a candidate junction move ``(ns, ne) -> (js, je)`` that shifts the donor
+    and/or acceptor by ``k`` bp, return the FRACTION of the shifted ``k``-mer that
+    REPEATS at the drift distance — i.e. how much local microhomology (a near-tandem
+    direct repeat) makes the ``k``-bp boundary drift near-tied by evidence.
+
+    Mechanism (spike-in-confirmed): a canonical junction fabricates a false
+    NON-canonical junction only when the ``k`` bases that flip between exon and intron
+    near-match the ``k`` bases at the drift distance (so ONT error tips the near-tie).
+    A homopolymer is the MAXIMAL case (frac -> 1.0); this catches the PARTIAL-repeat
+    non-HP drift the HP-guard misses.  A move to a genuine sequence transition (a real
+    non-canonical splice site) has LOW microhomology (~0.25 random) and is untouched,
+    preserving motif-blind discovery.
+
+    Combination rule = MIN over the boundaries that ACTUALLY MOVED (audit A8): a move is
+    drift-suspect only if EVERY shifted boundary sits in microhomology.  A genuine
+    sequence TRANSITION on any moved boundary (low frac) SPARES the whole move — an
+    unrelated tandem repeat on the OTHER boundary must not mask it (max() did, vetoing
+    e.g. a both-boundary move whose donor abuts a (CAG)n microsatellite but whose
+    acceptor is a real non-canonical transition).  A boundary that moved but runs off
+    the genome edge (unassessable) contributes 0.0 → does not flag (favours discovery).
+    Single-boundary moves are unchanged (min == that boundary's frac)."""
+    n = len(seq)
+    fracs: List[float] = []
+    # Acceptor shift (intron|exon2): a k-bp slide between the two candidate acceptors is
+    # enabled by a DOWNSTREAM tandem repeat seq[lo:hi] ~ seq[hi:hi+k] (the read's exon2
+    # start k-mer repeats at the drift distance).  Direction-independent in lo/hi.
+    if je != ne:
+        lo, hi = (ne, je) if ne < je else (je, ne)
+        k = hi - lo
+        fracs.append(_frac_match(seq[lo:hi], seq[hi:hi + k]) if hi + k <= n else 0.0)
+    # Donor shift (exon1|intron): enabled by an UPSTREAM tandem repeat
+    # seq[lo-k:lo] ~ seq[lo:hi] (the read's exon1 end k-mer repeats upstream).
+    if js != ns:
+        lo, hi = (ns, js) if ns < js else (js, ns)
+        k = hi - lo
+        fracs.append(_frac_match(seq[lo - k:lo], seq[lo:hi]) if lo - k >= 0 else 0.0)
+    return min(fracs) if fracs else 0.0
+
+
+def _effective_veto_margin(hold_margin: float, eff_margin: float,
+                           drift_near_tie_cap: float) -> float:
+    """Effective move-veto margin after the read-evidence near-tie cap.
+
+    ``eff_margin`` = ``hold_margin`` + drift-flagged additions (hp_drift + microhom_drift).
+    The drift additions are decided from GENOMIC context ONLY (``_move_microhomology`` /
+    ``_hp_run_across`` are read-blind), so on their own they can veto a move the READ
+    strongly supports (a real cryptic the read distinguishes, delta_improve > 0).  When
+    ``drift_near_tie_cap`` > 0, cap the DRIFT portion so the veto fires only within a
+    near-tie band, while NEVER capping ``hold_margin`` (the read-agnostic blunt prior):
+
+        veto_margin = max(hold_margin, min(eff_margin, drift_near_tie_cap))
+
+    Consequence: a move with ``delta_improve >= drift_near_tie_cap`` is never drift-vetoed,
+    bounding the read-blind discovery-loss.  HONEST SCOPE (see MICROHOM_AUDIT_SYNTHESIS.md):
+    delta_improve, eff_margin and the cap share the SAME score axis, so the cap BOUNDS —
+    it does not add a discriminating signal inside the ``(0, cap)`` near-tie band, where
+    real cryptics and fabricated drift still overlap.  Cap disabled (<= 0.0) OR no drift
+    margin added (eff_margin == hold_margin) → returns ``eff_margin`` unchanged
+    (byte-identical to the pre-cap veto).
+    """
+    if drift_near_tie_cap > 0.0 and eff_margin > hold_margin:
+        return max(hold_margin, min(eff_margin, drift_near_tie_cap))
+    return eff_margin
+
+
+def _semiglobal_ed(query: str, ref: str) -> int:
+    """Edit distance aligning ALL of ``query`` to a PREFIX of ``ref`` (free ref suffix, HARD-
+    anchored at ``ref[0]`` — no free query/ref prefix).  Indel-tolerant; lower = query matches
+    ref better.  O(len(query)·len(ref)); only called on the rare would-be-veto path."""
+    m, n = len(query), len(ref)
+    if m == 0:
+        return 0
+    if n == 0:
+        return m
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        cur = [i] + [0] * n
+        qi = query[i - 1]
+        for j in range(1, n + 1):
+            cost = 0 if qi == ref[j - 1] else 1
+            cur[j] = min(prev[j - 1] + cost, prev[j] + 1, cur[j - 1] + 1)
+        prev = cur
+    return min(prev)
+
+
+def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: int,
+                       W: int = 28) -> Optional[int]:
+    """Indel-robust positional-distinctiveness signal for an ACCEPTOR move ``ne -> new_je``.
+
+    ``ed(rescue, incumbent exon2) - ed(rescue, moved exon2)`` where ``rescue = q[q_split:]`` is the
+    read's exon2 bases.  ``> 0`` ⇒ the read's exon2 matches the MOVED acceptor better, i.e. genuine
+    read evidence for the move — the discriminating bases the scorer's free-``k`` soft-clip escape
+    HIDES from ``delta_improve``.  Hard-anchored (no free-prefix split) is exactly what removes that
+    escape (panel: cap+ed(>0) → ~0.3% discovery loss at ~cap-alone fabrication; 98–99% balanced
+    separation of real cryptics vs error-driven drift in the delta overlap band).
+
+    ACCEPTOR-ONLY by design.  ``_score_junction`` is acceptor-centric (``intron_start`` is unused →
+    the donor does not affect a candidate's score), so the refiner never discovers a donor-only move
+    (both candidates tie → is_alt keeps the incumbent) — there is no donor-side discovery-loss to
+    close.  For a both-boundary candidate the read's exon1 matches the aligner-placed (incumbent)
+    donor, so a donor edit-distance term would go NEGATIVE and could drag a genuine acceptor cryptic's
+    positive signal down, wrongly vetoing a real discovery.  So the discrimination lives entirely on
+    the acceptor/exon2 side that actually drives placement.  (See DISCOVERY_LOSS_PANEL_RESULT.md.)
+
+    Returns ``None`` when the acceptor did not move (exon2 discrimination undefined) or the rescue is
+    empty — callers then leave the veto to the margin/cap alone (conservative)."""
+    if new_je == ne:
+        return None
+    rescue = q[q_split:q_split + W]
+    if not rescue:
+        return None
+    n = len(genome_seq)
+    ref_inc = genome_seq[ne:min(n, ne + W + 6)]
+    ref_mov = genome_seq[new_je:min(n, new_je + W + 6)]
+    return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_mov)
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -475,6 +645,14 @@ def refine_read_junctions(
     max_candidates_per_nop: Optional[int] = None,
     profile: Optional[JunctionRefineProfile] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
+    motif_blind: bool = False,
+    hold_margin: float = 0.0,
+    hp_drift_margin: float = 0.0,
+    hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
@@ -603,6 +781,7 @@ def refine_read_junctions(
         # canonical annotated junctions are preferred.
 
         best_tuple = None   # best (score_bin, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
         # When the current junction is non-canonical (tier ≥ 4), a canonical
@@ -613,7 +792,12 @@ def refine_read_junctions(
         _t_tier = time.perf_counter() if profile is not None else 0.0
         current_tier = _canonical_tier(ns, ne, genome_seq, strand)
         _profile_time(profile, 'canonical_tier_current_scoring', _t_tier)
-        tier_beats_alt = current_tier >= 4  # True → prefer canonical over current
+        # Motif-blind (arm-B): decide placement on read evidence alone.  The current
+        # junction's canonicity never triggers a canonical preference (so the
+        # _CANONICAL_HP_PRIOR discount below is also disabled), and tier / is_novel
+        # are dropped from the tie-break sort (below).  motif_blind=False is
+        # byte-identical to the incumbent (arm-A).
+        tier_beats_alt = (current_tier >= 4) and not motif_blind  # True → prefer canonical over current
 
         for js, je in candidates:
             if je <= js:
@@ -648,6 +832,8 @@ def refine_read_junctions(
                 score_cmp = score - canonical_discount
             else:
                 score_cmp = score
+            if is_alt == 0:              # this candidate IS the read's current placement
+                incumbent_score = score_cmp
 
             # Scoring priority (lower = better):
             #   1. score_cmp — binned when tier_beats_alt, raw otherwise
@@ -655,12 +841,16 @@ def refine_read_junctions(
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
             #   5. abs_delta — prefer minimal rescue split (final tiebreaker only)
+            # Motif-blind drops the canonical-tier and annotation priors from the
+            # tie-break (they collapse to constants), leaving score → is_alt → shift.
+            tier_key = 0 if motif_blind else tier
+            novel_key = 0 if motif_blind else is_novel
             if tier_beats_alt:
                 # Current junction is non-canonical: prefer canonical alternatives
-                candidate_tuple = (score_cmp, tier, is_alt, is_novel, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, abs(delta), js, je, delta)
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
-                candidate_tuple = (score_cmp, is_alt, tier, is_novel, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, abs(delta), js, je, delta)
             if best_tuple is None or candidate_tuple < best_tuple:
                 best_tuple = candidate_tuple
 
@@ -668,10 +858,79 @@ def refine_read_junctions(
             continue
 
         # best_tuple = (score, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        best_score_cmp = best_tuple[0]
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
+        moves = (new_js != ns or new_je != ne)
+        # Move gate.  Two priors against a marginally-better-scoring displacement:
+        #   * hold_margin      — a BLUNT prior: any move must beat the incumbent by it.
+        #   * hp_drift_margin   — a TARGETED prior: only a move that slides a boundary
+        #                         INTO a homopolymer run (the ubiquitous-undercall
+        #                         drift that fabricates false non-canonical junctions)
+        #                         must clear the extra margin; a move to a genuine
+        #                         sequence transition (a real non-canonical acceptor)
+        #                         is untouched, preserving motif-blind discovery.
+        # Both default to 0.0 → byte-identical incumbent behaviour.
+        eff_margin = hold_margin
+        if moves and hp_drift_margin > 0.0:
+            into_hp = (_hp_run_across(genome_seq, new_js, hp_drift_min_run) > 0 or
+                       _hp_run_across(genome_seq, new_je, hp_drift_min_run) > 0)
+            if into_hp:
+                eff_margin += hp_drift_margin
+                if profile is not None:
+                    profile.inc('hp_drift_flagged')
+        #   * microhom_drift_margin — the GENERAL analog of hp_drift_margin: a move
+        #     whose boundary shift sits in a local MICROHOMOLOGY context (a near-tandem
+        #     repeat at the drift distance, microhomology fraction >= microhom_threshold)
+        #     is the non-homopolymer drift that fabricates false non-canonical junctions
+        #     (spike-in-confirmed, HP-guard-blind). A move to a genuine transition (low
+        #     microhomology, a real non-canonical site) is untouched. Default 0.0 → off.
+        if moves and microhom_drift_margin > 0.0:
+            if _move_microhomology(genome_seq, ns, ne, new_js, new_je) >= microhom_threshold:
+                eff_margin += microhom_drift_margin
+                if profile is not None:
+                    profile.inc('microhom_drift_flagged')
+        #   * drift_near_tie_cap — a READ-EVIDENCE ceiling on the read-BLIND drift
+        #     margins (hp_drift + microhom_drift are decided from GENOMIC context only,
+        #     so on their own they can veto a move the READ strongly supports). When
+        #     > 0.0, cap the drift-added portion of eff_margin so the drift veto fires
+        #     only within a near-tie band: veto_margin = max(hold_margin,
+        #     min(eff_margin, drift_near_tie_cap)). hold_margin (read-agnostic blunt
+        #     prior) is NEVER capped. NOTE (honest framing — see MICROHOM_AUDIT_SYNTHESIS):
+        #     delta_improve, eff_margin and the cap all live on the SAME scalar (score)
+        #     axis, so the cap BOUNDS the read-blind discovery-loss (a move with
+        #     delta_improve >= cap is never drift-vetoed) but does NOT add a new
+        #     discriminating signal inside the (0, cap) band. Its value is STRUCTURAL:
+        #     it decouples hold_margin from the drift margins and makes the discovery-loss
+        #     ceiling explicit + tunable. Default 0.0 → cap disabled → byte-identical.
+        #   * drift_positional_gate — the read-evidence signal that CLOSES the read-blind
+        #     fault (the cap only BOUNDS it — same score axis).  When a drift-context move
+        #     would be vetoed, SPARE it if the read carries indel-robust POSITIONAL evidence
+        #     for the moved acceptor: `_positional_signal` (hard-anchored edit distance,
+        #     removing the scorer's free-k soft-clip escape) >= the gate.  This separates a
+        #     real cryptic (read matches the moved exon2) from an error-driven drift (read
+        #     matches the incumbent) INSIDE the delta near-tie band the cap cannot.  Default
+        #     0.0 → gate off → byte-identical.  (Acceptor moves only; donor/both-boundary
+        #     moves fall through to the margin/cap decision — conservative.)
+        if moves and eff_margin > 0.0 and incumbent_score is not None:
+            veto_margin = _effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)
+            if profile is not None and veto_margin < eff_margin:
+                profile.inc('near_tie_cap_applied')
+            if best_score_cmp > incumbent_score - veto_margin:
+                spared = False
+                if drift_positional_gate > 0.0:
+                    psig = _positional_signal(genome_seq, q, q_split, ne, new_je)
+                    if psig is not None and psig >= drift_positional_gate:
+                        spared = True
+                        if profile is not None:
+                            profile.inc('positional_gate_spared')
+                if not spared:
+                    moves = False
+                    if profile is not None:
+                        profile.inc('move_margin_vetoes')
+
         # Only emit a replacement if the junction actually changes.
-        if new_js != ns or new_je != ne:
+        if moves:
             replacements.append((cigar_idx, ns, ne, new_js, new_je))
             if profile is not None:
                 profile.inc('replacements_emitted')
@@ -1019,6 +1278,37 @@ def _apply_junction_replacement(
         )
         return False
 
+    # INVARIANT: refuse a BOTH-BOUNDARY move that increases the read's indel burden.
+    #
+    # The general path preserves the query span by re-labelling boundaries with
+    # COMPENSATING I/D ops — it never re-aligns the flank.  When BOTH the donor and the
+    # acceptor shift (delta_start != 0 AND delta_end != 0) and the move is not a clean
+    # microhomology slide (those return early via the fast path), it can only realize
+    # the move by adding compensating indel on BOTH flanks: a pure k-bp slide →
+    # I(k) … N … D(k), an asymmetric both-shift → D(a) … N … D(b).  The exon SEQUENCE
+    # stays where the aligner put it while only the N-op COORDINATE moves — fabricating
+    # a false junction position (and the downstream indel corrector mangles it further,
+    # not better — see the fast-path note above).  On real ONT DRS this was ~85–95% of
+    # "moved" reads at the SMA leads (dev/REPLACER_COMPENSATING_INDEL_BUG.md), a phantom
+    # 6–48 bp "drift".  Refinement corrects ONE splice site at a time; a simultaneous
+    # donor+acceptor relocation via compensating indels is the fabrication signature.
+    #
+    # Single-boundary corrections (donor-only or acceptor-only) are NOT touched — they
+    # move one splice site and the indel they add represents a real intron-length change
+    # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
+    # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
+    # (raw) placement — the conservative, correct outcome.
+    if delta_start != 0 and delta_end != 0:
+        old_indel = sum(l for op, l in cigar     if op in (_I, _D))
+        new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
+        if new_indel > old_indel:
+            logger.debug(
+                "refine_junction: both-boundary move adds compensating indel "
+                "(%d → %d) for read %s — unsupported relocation, refusing",
+                old_indel, new_indel, read.query_name,
+            )
+            return False
+
     read.cigartuples = new_cigar
     if new_ref_start != read.reference_start:
         read.reference_start = new_ref_start
@@ -1097,6 +1387,14 @@ def _run_sequential(
     max_candidates_per_nop: Optional[int],
     penalty_table: Optional[HpPenaltyTable],
     penalty_table_set: Optional[PenaltyTableSet] = None,
+    motif_blind: bool = False,
+    hold_margin: float = 0.0,
+    hp_drift_margin: float = 0.0,
+    hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
@@ -1143,6 +1441,14 @@ def _run_sequential(
                     max_candidates_per_nop=max_candidates_per_nop,
                     profile=read_profile,
                     penalty_table=eff_table,
+                    motif_blind=motif_blind,
+                    hold_margin=hold_margin,
+                    hp_drift_margin=hp_drift_margin,
+                    hp_drift_min_run=hp_drift_min_run,
+                    microhom_drift_margin=microhom_drift_margin,
+                    microhom_threshold=microhom_threshold,
+                    drift_near_tie_cap=drift_near_tie_cap,
+                    drift_positional_gate=drift_positional_gate,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1184,6 +1490,14 @@ def _run_parallel(
     n_workers: int,
     batch_size: int,
     penalty_table_set: Optional[PenaltyTableSet] = None,
+    motif_blind: bool = False,
+    hold_margin: float = 0.0,
+    hp_drift_margin: float = 0.0,
+    hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
     """Parallel junction refinement using multiprocessing.Pool (Linux fork).
@@ -1232,6 +1546,14 @@ def _run_parallel(
         'max_junction_size': max_junction_size,
         'max_candidates_per_nop': max_candidates_per_nop,
         'penalty_table': penalty_table,
+        'motif_blind': motif_blind,
+        'hold_margin': hold_margin,
+        'hp_drift_margin': hp_drift_margin,
+        'hp_drift_min_run': hp_drift_min_run,
+        'microhom_drift_margin': microhom_drift_margin,
+        'microhom_threshold': microhom_threshold,
+        'drift_near_tie_cap': drift_near_tie_cap,
+        'drift_positional_gate': drift_positional_gate,
     }
     _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
     _WORKER_POOL_STATE['profile_enabled'] = profile is not None
@@ -1400,6 +1722,14 @@ def refine_bam_junctions(
     penalty_table_set: Optional['PenaltyTableSet'] = None,
     profile_path: Optional[str] = None,
     profile_sample_rate: int = 1,
+    motif_blind: bool = False,
+    hold_margin: float = 0.0,
+    hp_drift_margin: float = 0.0,
+    hp_drift_min_run: int = 4,
+    microhom_drift_margin: float = 0.0,
+    microhom_threshold: float = 0.5,
+    drift_near_tie_cap: float = 0.0,
+    drift_positional_gate: float = 0.0,
 ) -> Dict[str, int]:
     """Refine all N-op junctions in a BAM file.
 
@@ -1498,7 +1828,13 @@ def refine_bam_junctions(
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, max_junction_size, max_candidates_per_nop,
             penalty_table, n_workers, batch_size,
-            penalty_table_set=penalty_table_set, profile=profile,
+            penalty_table_set=penalty_table_set, motif_blind=motif_blind,
+            hold_margin=hold_margin, hp_drift_margin=hp_drift_margin,
+            hp_drift_min_run=hp_drift_min_run, profile=profile,
+            microhom_drift_margin=microhom_drift_margin,
+            microhom_threshold=microhom_threshold,
+            drift_near_tie_cap=drift_near_tie_cap,
+            drift_positional_gate=drift_positional_gate,
         )
     else:
         _run_sequential(
@@ -1506,7 +1842,13 @@ def refine_bam_junctions(
             hp_pen, W, max_slide, search_radius, max_boundary_shift,
             boundary_error_window, max_junction_size, max_candidates_per_nop,
             penalty_table,
-            penalty_table_set=penalty_table_set, profile=profile,
+            penalty_table_set=penalty_table_set, motif_blind=motif_blind,
+            hold_margin=hold_margin, hp_drift_margin=hp_drift_margin,
+            hp_drift_min_run=hp_drift_min_run, profile=profile,
+            microhom_drift_margin=microhom_drift_margin,
+            microhom_threshold=microhom_threshold,
+            drift_near_tie_cap=drift_near_tie_cap,
+            drift_positional_gate=drift_positional_gate,
         )
 
     if sort_and_index:

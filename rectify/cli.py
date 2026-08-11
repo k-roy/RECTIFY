@@ -90,6 +90,13 @@ Citation:
     from .core.commands.browser_pack_command import create_browser_pack_parser
     create_browser_pack_parser(subparsers)
 
+    # =========================================================================
+    # triage command (consensus triage: high-confidence bypass vs targeted
+    # motif-blind re-align with hp_ed re-entry)
+    # =========================================================================
+    from .core.commands.triage_command import create_triage_parser
+    create_triage_parser(subparsers)
+
     # export command (parser wired in rectify.core.commands.export_command)
     from .core.commands.export_command import create_export_parser
     create_export_parser(subparsers)
@@ -278,6 +285,9 @@ def _dispatch(args, parser):
     elif args.command == 'pack-browser':
         from .core.commands.browser_pack_command import run_browser_pack
         sys.exit(run_browser_pack(args))
+    elif args.command == 'triage':
+        from .core.commands.triage_command import run_triage
+        sys.exit(run_triage(args))
     elif args.command == 'export':
         from .core.commands import export_command
         sys.exit(export_command.run(args))
