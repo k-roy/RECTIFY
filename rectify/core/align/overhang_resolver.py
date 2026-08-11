@@ -66,6 +66,7 @@ from ..splice.overhang_informativeness import (
     hp_edit_distance_bounded,
     same_junction,
 )
+from ..splice.region_skip import overlaps_skip_region, skip_regions_from_env
 from ..splice.repeat_expansion import is_repeat_expansion
 from ..splice.splice_site_index import SpliceSiteIndex
 from ...config import CHROM_TO_GENOME
@@ -120,6 +121,14 @@ class ResolverConfig:
     arb_dop_slop: int = 12       # boundary snap window around a D op
     arb_mm_win: int = 50         # mismatch-cluster trigger: window (query bases)
     arb_mm_frac: float = 0.30    # ...and the mismatch fraction that flags it
+
+    # Reads overlapping these reference regions bypass ALL junction rescue
+    # (clip resolution + re-arbitration) and are written through untouched.
+    # {chrom: [(start, end), ...]}, 0-based half-open. The canonical use is
+    # the yeast rDNA repeat (region_skip.YEAST_RDNA_SPEC): rRNA is not a
+    # spliceosomal substrate, and on the v5.1 run the locus was 47% of ALL
+    # CPU (planning/644b). Populated from RECTIFY_SKIP_REGIONS by the driver.
+    skip_regions: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -995,6 +1004,10 @@ def resolve_read(
     chrom = standardize_chrom_name(read.reference_name) if read.reference_name else None
     if not chrom:
         return False
+    if cfg.skip_regions and overlaps_skip_region(
+            cfg.skip_regions, chrom, read.reference_start, read.reference_end):
+        _bump(stats, 'skipped_region')
+        return False
     if chrom in genome:
         chrom_key = chrom
     else:
@@ -1085,6 +1098,8 @@ def run_overhang_resolver(
     function as ``run_overhang_resolver.last_stats`` for tests/drivers.
     """
     cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron)
+    if not cfg.skip_regions:
+        cfg.skip_regions = skip_regions_from_env()
     genome = load_genome(Path(genome_path))
     index = SpliceSiteIndex.load_or_build(str(genome_path), genome)
     stats = ResolverStats()

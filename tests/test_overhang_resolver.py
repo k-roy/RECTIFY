@@ -541,6 +541,36 @@ class TestRearbitration:
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
 
+    def test_skip_region_bypasses_all_rescue(self):
+        # rDNA-filter contract (planning/644b perf lever): a read overlapping
+        # a skip region is written through UNTOUCHED — the acceptor-shift
+        # scenario that normally fires arb_shifted must not fire, and only
+        # the skipped_region counter moves.
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 60), (3, self.E_DEC - self.D), (0, 60)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(
+            g, r, skip_regions={'chrI': [(0, 4000)]})
+        assert not changed
+        assert stats.extra.get('skipped_region') == 1
+        assert stats.extra.get('arb_shifted', 0) == 0
+        assert stats.clips_seen == 0
+        assert self._junction(r) == (self.D, self.E_DEC)
+
+    def test_skip_region_elsewhere_does_not_bypass(self):
+        # same read, region on a coordinate range the read never touches —
+        # rescue proceeds normally (the shift fires as in the base test)
+        g = self._genome()
+        query = g[self.D - 60:self.D] + g[self.E_TRUE:self.E_TRUE + 60]
+        cigar = [(0, 60), (3, self.E_DEC - self.D), (0, 60)]
+        r = self._mk_read(g, query, cigar, self.D - 60)
+        changed, stats = self._run(
+            g, r, skip_regions={'chrI': [(3900, 4000)]})
+        assert changed and stats.extra.get('arb_shifted') == 1
+        assert stats.extra.get('skipped_region', 0) == 0
+        assert self._junction(r) == (self.D, self.E_TRUE)
+
     def test_boundary_deletion_merged_into_intron(self):
         # the SRC1 smoking gun (planning/644c): M D4 N — the aligner encodes
         # the GC-donor evidence as a 4-bp deletion while asserting the GT

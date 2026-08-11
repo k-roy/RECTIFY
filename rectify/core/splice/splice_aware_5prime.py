@@ -41,6 +41,13 @@ from .overhang_informativeness import (
     gate_alpha as _oi_gate_alpha,
     gate_enabled as _oi_gate_enabled,
 )
+from .region_skip import overlaps_skip_region, skip_regions_from_env
+
+# Reference regions whose reads bypass junction rescue entirely (the yeast
+# rDNA repeat is the canonical case — planning/644b: 47% of resolver CPU;
+# rRNA is not a spliceosomal substrate). Read once from RECTIFY_SKIP_REGIONS
+# at import; empty when unset, so default behavior is unchanged.
+_SKIP_REGIONS = skip_regions_from_env()
 
 try:
     from intervaltree import IntervalTree
@@ -1253,6 +1260,13 @@ def rescue_3ss_truncation(
 
     chrom = standardize_chrom_name(read.reference_name) if read.reference_name else read.reference_name
     if not chrom:
+        return _no_rescue(read, strand)
+
+    # Skip-region bypass (RECTIFY_SKIP_REGIONS, e.g. the yeast rDNA repeat):
+    # the read is left untouched; rescue is simply not attempted.
+    if _SKIP_REGIONS and read.reference_end is not None and overlaps_skip_region(
+            _SKIP_REGIONS, chrom, read.reference_start, read.reference_end):
+        _OI_COUNTERS['skipped_region'] += 1
         return _no_rescue(read, strand)
 
     # Genome may be keyed by NCBI format (NC_001133.3) or canonical (chrI).

@@ -64,6 +64,7 @@ COUNTERS: Dict[str, int] = {
     'window_bounded': 0,    # W_max < the caller's default window (search shrunk)
     'candidates_evaluated': 0,   # candidate placements actually scored (resolver)
     'candidates_skipped': 0,     # candidates excluded by the W_max bound (rescue)
+    'skipped_region': 0,         # reads bypassing rescue via RECTIFY_SKIP_REGIONS
 }
 
 
