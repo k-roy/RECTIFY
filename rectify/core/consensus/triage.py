@@ -9,13 +9,19 @@ The consensus-triage layer of the Rectify Re-aligner
      unexplained 5'/3' soft clips, and junction annotation status. Clean
      alignments are labelled ``high_confidence`` and BYPASSED (the do-no-harm
      data say they are at ceiling: touching them is downside + compute).
-  2. **Re-align** only the triaged minority, one leg per failure mode. This
-     module implements the JUNCTION leg: motif-blind refinement
+  2. **Re-align** only the triaged minority, one leg per failure mode.
+     JUNCTION leg: motif-blind refinement
      (``refine_bam_junctions(motif_blind=True)``, compensating-indel invariant
      always-on) over a junction pool built from the FULL BAM's evidence.
-     The 5'/3' soft-clip legs route to the existing clip-rescue machinery
-     (Cat3 / ``overhang_resolver``) and are NOT wired here yet — soft-clip
-     triage reads keep their label for those legs.
+     CLIP legs (landscape §4 step 2; OFF by default —
+     ``TriagePolicy.clip_legs_enable``): the TERMINAL-CLIP leg hands the 3'
+     clip to the overhang resolver (``resolve_read``, shared
+     ``SpliceSiteIndex``); the 5'-CLIP leg routes to the Cat3 rescue
+     machinery (``rescue_3ss_truncation`` + the bam_writer application path).
+     ONE refusal discipline across both: every overhang is assessed exactly
+     once via ``assess_overhang`` (the resolver assesses internally; the 5'
+     leg assesses before invoking the rescue) and a refused overhang is never
+     sequence-searched — refusal is a counted, first-class outcome.
   3. **Re-entry, never auto-accept**: a re-aligned candidate replaces the
      original ONLY if it strictly improves the HP-aware edit distance
      (``_cigar_hp_edit_distance``) — the validated consensus arbiter (the C3
@@ -82,6 +88,9 @@ class TriagePolicy:
     max_clip_3p: int = 30                       # bases of 3' soft clip tolerated
     triage_unannotated_junctions: bool = True   # unannotated junction => re-check placement
     junction_window_bp: int = 5                 # window for the proximity-error signal
+    # Clip legs (landscape §4 step 2). OFF by default: with False the triage
+    # output is byte-identical to the junction-leg-only behavior.
+    clip_legs_enable: bool = False
 
 
 @dataclass
@@ -99,6 +108,16 @@ class TriageResult:
     def junction_leg(self) -> bool:
         """True when the junction re-align leg should act on this read."""
         return any(r in _JUNCTION_LEG_REASONS for r in self.reasons)
+
+    @property
+    def clip5_leg(self) -> bool:
+        """True when the 5'-clip (Cat3 rescue) leg should act on this read."""
+        return REASON_CLIP_5P in self.reasons
+
+    @property
+    def clip3_leg(self) -> bool:
+        """True when the terminal-clip (resolver) leg should act on this read."""
+        return REASON_CLIP_3P in self.reasons
 
 
 def _annotated_3tuples(
@@ -201,6 +220,139 @@ def reentry_accept(
     return ed_new < ed_old - _REENTRY_EPS
 
 
+# ---------------------------------------------------------------------------
+# Clip legs (landscape §4 step 2). Both legs PROPOSE candidate rewrites on a
+# COPY of the incumbent record; the existing arbiter (``reentry_accept``,
+# strict hp_ed improvement) DECIDES. Refusals are counted first-class.
+# ---------------------------------------------------------------------------
+
+def two_sided_candidate_seam(read, index, cfg) -> List:
+    """SEAM — two-sided junction-hypothesis enumeration (landscape §4b).
+
+    Post-landing resolver-library work (owned by the resolver line, NOT this
+    branch) will enumerate BOTH one-sided-anchor hypotheses per flagged
+    junction — (A) donor held, acceptor scanned ±w; (B) acceptor held, donor
+    scanned ±w (grammar-free on the scanned side) — and emit per-read evidence
+    records for pool-recurrence adjudication (the chrXI:93365 11/11 off-by-1
+    class; see dev/REALIGNER_LANDSCAPE_AND_PATH_20260809.md §4b and
+    644h_realigner_integration.md §3). Until that lands this hook returns no
+    candidates; anything it returns will enter the SAME adjudication path as
+    the resolver's proposals (reentry_accept + pool aggregation).
+    """
+    return []
+
+
+def _clip_copy(read: pysam.AlignedSegment) -> pysam.AlignedSegment:
+    """Materialized deep copy of a record (safe to mutate / outlive files)."""
+    return pysam.AlignedSegment.from_dict(read.to_dict(), read.header)
+
+
+def _five_prime_clip_leg(
+    cand: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    candidate_junctions: Set[Tuple[str, int, int]],
+    rcfg,
+) -> Tuple[bool, bool]:
+    """5'-clip leg: route the 5' soft clip through the Cat3 rescue machinery.
+
+    Gate first (the ONE refusal discipline): the junction-proximal portion of
+    the 5' clip is assessed exactly once via ``assess_overhang`` (plus the
+    repeat-expansion short-circuit, mirroring the resolver's ``resolve_clip``);
+    a refused overhang is NEVER sequence-searched. ``rescue_3ss_truncation``'s
+    internal informativeness gate stays env-dark (``RECTIFY_OVERHANG_INFO_GATE``),
+    so by default the assessment here is the only one. On sequence-confirmed
+    rescue the BAM surgery is applied with the same read_edits machinery
+    bam_writer uses (reanchor pre-pass + ``extend_read_5prime_for_junction_rescue``)
+    — reuse, not reimplementation.
+
+    Mutates ``cand`` in place on a proposal. Returns ``(proposed, refused)``.
+    """
+    from rectify.core.splice.overhang_informativeness import assess_overhang
+    from rectify.core.splice.repeat_expansion import is_repeat_expansion
+
+    ct = cand.cigartuples
+    seq = cand.query_sequence
+    if not ct or not seq:
+        return False, False
+    strand = '-' if cand.is_reverse else '+'
+    if strand == '+':
+        clip = seq[:ct[0][1]] if ct[0][0] == 4 else ''
+        clip_used = clip[-rcfg.max_clip_match:]   # attaches at its right end
+    else:
+        clip = seq[-ct[-1][1]:] if ct[-1][0] == 4 else ''
+        clip_used = clip[:rcfg.max_clip_match]    # attaches at its left end
+    if not clip:
+        return False, False
+
+    # --- The shared gate: refuse before any sequence search ----------------
+    if is_repeat_expansion(clip_used):
+        return False, True
+    assessment = assess_overhang(clip_used, alpha=rcfg.alpha,
+                                 max_window=rcfg.max_intron)
+    if assessment.refused:
+        return False, True
+
+    if not candidate_junctions:
+        return False, False
+
+    from rectify.core.splice.splice_aware_5prime import rescue_3ss_truncation
+    res = rescue_3ss_truncation(cand, genome, candidate_junctions, strand)
+    if not res.get('rescued') or res.get('rescue_type') not in (
+            'softclip', 'mpb_mismatch'):
+        # intronic_snap / proximity are TSV-level outcomes in the correct
+        # stage; the triage leg proposes BAM rewrites only for the
+        # sequence-confirmed classes.
+        return False, False
+
+    from rectify.core.bam.read_edits import (
+        _apply_reanchor_from_clip_len,
+        extend_read_5prime_for_junction_rescue,
+    )
+    changed = False
+    rcl = int(res.get('reanchor_clip_len', 0) or 0)
+    if rcl > 0:
+        changed |= _apply_reanchor_from_clip_len(cand, rcl)
+    sc_len = rcl if rcl > 0 else len(clip)
+    changed |= extend_read_5prime_for_junction_rescue(
+        cand,
+        res['five_prime_corrected'],
+        sc_len,
+        strand,
+        exon_cigar_str=res.get('five_prime_exon_cigar', '') or '',
+        upstream_trim=int(res.get('five_prime_upstream_trim', 0) or 0),
+    )
+    return changed, False
+
+
+def _terminal_clip_leg(
+    cand: pysam.AlignedSegment,
+    genome: Dict[str, str],
+    index,
+    rcfg,
+    rstats,
+) -> Tuple[bool, int]:
+    """Terminal-clip leg: hand the 3'-end soft clip to the overhang resolver.
+
+    The resolver is restricted to the 3' clip's genomic side (``sides=``) so
+    the 5' clip stays the Cat3 leg's territory and each overhang is assessed
+    exactly once (the resolver's internal ``assess_overhang`` call is the one
+    assessment for this clip). Mutates ``cand`` in place on a proposal.
+    Returns ``(proposed, n_refused_delta)``.
+    """
+    from rectify.core.align.overhang_resolver import resolve_read
+
+    side = 'L' if cand.is_reverse else 'R'   # genomic side of the 3' clip
+    refused_before = rstats.refused_low_info + rstats.refused_repeat
+    changed = resolve_read(cand, genome, index, rcfg, rstats, sides=side)
+    # §4b seam: two-sided enumeration candidates would compete here, through
+    # the same adjudication as the resolver's rewrite. No-op until the
+    # resolver-library work lands.
+    for _cand in two_sided_candidate_seam(cand, index, rcfg):
+        pass
+    refused_delta = (rstats.refused_low_info + rstats.refused_repeat) - refused_before
+    return changed, refused_delta
+
+
 def triage_realign_bam(
     input_bam: str,
     output_bam: str,
@@ -212,17 +364,31 @@ def triage_realign_bam(
     realign: bool = True,
     refine_kwargs: Optional[dict] = None,
     sort_and_index: bool = True,
+    resolver_config=None,
+    splice_site_index=None,
 ) -> Tuple[List[dict], Dict[str, int]]:
     """Classify a consensus BAM; motif-blind-re-align the triaged junction reads.
 
     Pipeline (see module docstring):
       classify → junction pool from the FULL evidence (``pool_bams`` or the
       input BAM itself) → ``refine_bam_junctions(motif_blind=True)`` on ONLY
-      the triaged junction-leg reads → hp_ed re-entry per read → final BAM.
+      the triaged junction-leg reads → hp_ed re-entry per read → clip legs
+      (``policy.clip_legs_enable``, OFF by default) → final BAM.
+
+    Clip legs (landscape §4 step 2): when ``policy.clip_legs_enable`` is True,
+    reads triaged for a 3' soft clip are handed per-read to the overhang
+    resolver (``resolve_read`` with the shared ``splice_site_index`` — built
+    from ``genome`` when not supplied — and ``resolver_config``, default
+    ``ResolverConfig(arb_enable=False)``); reads triaged for a 5' soft clip
+    route through the Cat3 rescue machinery behind the shared informativeness
+    gate. Every proposal enters the SAME strict hp_ed re-entry arbiter;
+    refusals are counted and the read passes through unchanged.
 
     Returns ``(rows, stats)`` where ``rows`` are per-read TSV dicts and
     ``stats`` counts {classified, high_confidence, triaged, junction_leg,
-    realigned, accepted}.
+    realigned, accepted} plus the clip-leg counters (``clip5_leg``,
+    ``clip3_leg``, ``clip{5,3}_refused/_proposed/_accepted`` — all zero when
+    the legs are disabled).
     """
     from rectify.core.splice.junction_refiner import refine_bam_junctions
     from rectify.core.splice.junction_scoring import build_junction_pool
@@ -254,6 +420,15 @@ def triage_realign_bam(
         'junction_leg': len(junction_ids),
         'realigned': 0,
         'accepted': 0,
+        # Clip-leg counters (always present; zero while clip_legs_enable=False)
+        'clip5_leg': 0,
+        'clip3_leg': 0,
+        'clip5_refused': 0,
+        'clip3_refused': 0,
+        'clip5_proposed': 0,
+        'clip3_proposed': 0,
+        'clip5_accepted': 0,
+        'clip3_accepted': 0,
     }
 
     accepted: Dict[str, pysam.AlignedSegment] = {}
@@ -312,6 +487,68 @@ def triage_realign_bam(
                             cand.to_dict(), cand.header)
             stats['realigned'] = len(realigned_ids)
             stats['accepted'] = len(accepted)
+
+    # ── Clip legs (OFF by default; landscape §4 step 2) ─────────────────────
+    clip5_ids: Set[str] = set()
+    clip3_ids: Set[str] = set()
+    if realign and policy.clip_legs_enable:
+        clip5_ids = {rid for rid, r in results.items() if r.clip5_leg}
+        clip3_ids = {rid for rid, r in results.items() if r.clip3_leg}
+    if clip5_ids or clip3_ids:
+        from rectify.core.align.overhang_resolver import (
+            ResolverConfig, ResolverStats)
+        from rectify.core.splice.splice_site_index import SpliceSiteIndex
+
+        # arb_enable=False: junction re-arbitration is the junction leg's /
+        # Station-C's territory — the clip leg stays clip-scoped.
+        rcfg = resolver_config or ResolverConfig(arb_enable=False)
+        index = splice_site_index or SpliceSiteIndex.build(genome)
+        rstats = ResolverStats()
+        seen_clip: Set[str] = set()
+        with pysam.AlignmentFile(input_bam, 'rb', check_sq=False) as bam:
+            for read in bam.fetch(until_eof=True):
+                rid = read.query_name
+                if (not _classifiable(read) or rid in seen_clip
+                        or (rid not in clip5_ids and rid not in clip3_ids)):
+                    continue
+                seen_clip.add(rid)
+                incumbent = accepted.get(rid, read)
+
+                if rid in clip5_ids:
+                    stats['clip5_leg'] += 1
+                    cand = _clip_copy(incumbent)
+                    proposed, refused = _five_prime_clip_leg(
+                        cand, genome, annotated_3 or set(), rcfg)
+                    if refused:
+                        stats['clip5_refused'] += 1
+                    if proposed:
+                        stats['clip5_proposed'] += 1
+                        realigned_ids.add(rid)
+                        if reentry_accept(incumbent, cand, genome, penalty_table):
+                            accepted[rid] = cand
+                            incumbent = cand
+                            stats['clip5_accepted'] += 1
+
+                if rid in clip3_ids:
+                    stats['clip3_leg'] += 1
+                    cand = _clip_copy(incumbent)
+                    proposed, refused_delta = _terminal_clip_leg(
+                        cand, genome, index, rcfg, rstats)
+                    stats['clip3_refused'] += refused_delta
+                    if proposed:
+                        stats['clip3_proposed'] += 1
+                        realigned_ids.add(rid)
+                        if reentry_accept(incumbent, cand, genome, penalty_table):
+                            accepted[rid] = cand
+                            stats['clip3_accepted'] += 1
+        logger.info(
+            'triage clip legs: 5p leg=%d (refused=%d proposed=%d accepted=%d) '
+            '3p leg=%d (refused=%d proposed=%d accepted=%d)',
+            stats['clip5_leg'], stats['clip5_refused'],
+            stats['clip5_proposed'], stats['clip5_accepted'],
+            stats['clip3_leg'], stats['clip3_refused'],
+            stats['clip3_proposed'], stats['clip3_accepted'],
+        )
 
     # ── Final BAM: originals, with accepted replacements swapped in ─────────
     replaced: Set[str] = set()
