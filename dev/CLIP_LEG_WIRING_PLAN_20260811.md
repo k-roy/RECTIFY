@@ -207,3 +207,10 @@ gate; 4. tests; 5. gate run + status appends here.
 
 ## 6. Status checkpoints
 - [2026-08-11] Plan written; contract verified by reading all listed modules.
+- [2026-08-11] `resolve_read(sides=…)` landed (35d1188); 35 resolver tests green.
+- [2026-08-11] Clip legs wired (bbc054e). Default-path identity VERIFIED:
+  SAM md5 49f09eb076fe93bbe870df3ed8df74e6 + rows md5
+  7ae98b75494e77cb44737c25b6e0be57 identical pre/post change. Legs-on bundled
+  smoke: clip5_leg=2 → 2 proposed, 2 accepted (36S→1I13M3D9M3D13M+333N,
+  47S→504N+24M…, query length conserved, vetted per-read); clip3_leg=2 → 0
+  proposals (no unambiguous resolver winner). 11 existing triage tests green.
