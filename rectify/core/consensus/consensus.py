@@ -201,6 +201,32 @@ def _ensure_name_sorted(bam_path: str) -> str:
     return sorted_path
 
 
+def _ensure_rn_sorted(bam_path: str) -> str:
+    """
+    Ensure a BAM is sorted by its integer ``RN:i`` tag (the K-way merge key).
+
+    The RN-keyed merge requires every input stream to yield RN in
+    non-decreasing order. Name-sort does NOT guarantee that: RN is assigned
+    in FASTQ record order (``_build_qname_rn_map``), and natural QNAME order
+    is unrelated to FASTQ order for plain-uuid reads (ONT DRS). With
+    name-sorted inputs the merge desynchronises wherever a read is missing
+    from a subset of aligners and emits split groups (~2.2 primary records
+    per read on the 668 DRS panel). Sorting by the merge key itself is the
+    only ordering correct for every QNAME shape.
+    """
+    sorted_path = bam_path.replace('.bam', '.rnsorted.bam')
+    if os.path.exists(sorted_path):
+        if os.path.getmtime(sorted_path) > os.path.getmtime(bam_path):
+            logger.info(f"Using existing RN-sorted BAM: {sorted_path}")
+            return sorted_path
+
+    logger.info(f"RN-sorting BAM: {bam_path} -> {sorted_path}")
+    # -t RN sorts by the integer tag value; -n makes ties break by natural
+    # QNAME (deterministic). Same -m rationale as _ensure_name_sorted.
+    pysam.sort('-t', 'RN', '-n', '-m', '1G', '-o', sorted_path, bam_path)
+    return sorted_path
+
+
 def _read_id_hash(read_id: str, n_buckets: int) -> int:
     """Deterministic hash of read_id for SLURM array splitting."""
     h = hashlib.md5(str(read_id).encode()).hexdigest()
@@ -529,15 +555,23 @@ def _detect_duplicate_molecule_names(
         )
 
 
-def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
+def _iter_name_grouped_bams(bam_paths: Dict[str, str], use_rn_key: Optional[bool] = None):
     """
-    K-way merge across name-sorted BAMs, yielding all alignments per read.
+    K-way merge across merge-key-sorted BAMs, yielding all alignments per read.
 
     Memory: O(n_aligners) per read instead of O(total_reads * n_aligners).
-    When every input BAM carries RN tags, the merge key is the integer RN;
-    otherwise the legacy normalized-QNAME key path is used unchanged.
+    When every input BAM carries RN tags, the merge key is the integer RN
+    and inputs MUST be RN-sorted (``_ensure_rn_sorted``); otherwise the
+    normalized-QNAME key path is used and inputs must be name-sorted.
+
+    The merge is only correct when each input stream yields keys in
+    non-decreasing order — a stream sorted on a DIFFERENT key desynchronises
+    wherever a read is missing from a subset of aligners, silently splitting
+    (QNAME, RN) groups into multiple output records (the 668 DRS defect).
+    A per-stream monotonicity guard therefore fails loud on out-of-order keys.
     """
-    use_rn_key = _all_inputs_have_rn(bam_paths)
+    if use_rn_key is None:
+        use_rn_key = _all_inputs_have_rn(bam_paths)
     if use_rn_key:
         logger.info("Consensus K-way merge: using RN:i keys")
     else:
@@ -545,12 +579,37 @@ def _iter_name_grouped_bams(bam_paths: Dict[str, str]):
         logger.info("Consensus K-way merge: using normalized QNAME keys")
     _detect_duplicate_molecule_names(bam_paths, use_rn_key)
 
+    def _monotone_checked(aligner: str, path: str, it):
+        """Yield reads, raising if the merge key ever decreases (fail loud
+        instead of silently splitting groups)."""
+        prev_sort_value = None
+        prev_key = None
+        for read in it:
+            key = _merge_key(read, use_rn_key)
+            if key is not None:
+                sort_value = _merge_key_sort_value(key)
+                if prev_sort_value is not None and sort_value < prev_sort_value:
+                    raise RuntimeError(
+                        f"Consensus input BAM for aligner {aligner!r} ({path}) is "
+                        f"not sorted by the K-way merge key "
+                        f"({'RN:i' if use_rn_key else 'normalized QNAME'}): key "
+                        f"{key!r} follows {prev_key!r}. The merge would silently "
+                        f"split read groups and emit multiple primary records per "
+                        f"read. Re-sort the input with "
+                        f"{'samtools sort -t RN -n' if use_rn_key else 'samtools sort -n'} "
+                        f"(rectify does this automatically in run_consensus_selection)."
+                    )
+                prev_sort_value = sort_value
+                prev_key = key
+            yield read
+
     bams = {}
     iterators = {}
     for aligner, path in bam_paths.items():
         bam = pysam.AlignmentFile(path, 'rb')
         bams[aligner] = bam
-        iterators[aligner] = _filtered_read_iterator(bam)
+        iterators[aligner] = _monotone_checked(
+            aligner, path, _filtered_read_iterator(bam))
 
     current_reads = {}
     for aligner, it in iterators.items():
@@ -942,15 +1001,21 @@ def run_consensus_selection(
     if n_workers <= 0:
         n_workers = get_available_cpus()
 
-    # Ensure BAMs are name-sorted
+    # Ensure BAMs are sorted by the K-way merge key. RN-keyed merges need
+    # RN-sorted inputs; name-sort is only correct for the QNAME-keyed path
+    # (RN is assigned in FASTQ order, which natural QNAME order does not
+    # follow for plain-uuid reads — the 668 DRS group-split defect).
     import time as _time
     _t_total = _time.perf_counter()
-    logger.info("Ensuring BAMs are name-sorted...")
+    use_rn_key = _all_inputs_have_rn(bam_paths)
+    _sorter = _ensure_rn_sorted if use_rn_key else _ensure_name_sorted
+    logger.info(
+        f"Ensuring BAMs are {'RN' if use_rn_key else 'name'}-sorted...")
     _t_ns = _time.perf_counter()
     sorted_bam_paths = {}
     for aligner, path in bam_paths.items():
-        sorted_bam_paths[aligner] = _ensure_name_sorted(path)
-    logger.info(f"[TIMING] Name-sort: {_time.perf_counter() - _t_ns:.1f}s")
+        sorted_bam_paths[aligner] = _sorter(path)
+    logger.info(f"[TIMING] Merge-key sort: {_time.perf_counter() - _t_ns:.1f}s")
 
     # Get header from first BAM
     first_bam_path = list(sorted_bam_paths.values())[0]
@@ -1114,7 +1179,8 @@ def run_consensus_selection(
         n_batches = 0
         _n_skipped = 0  # reads skipped for checkpoint resume
 
-        for read_id, aligner_reads in _iter_name_grouped_bams(sorted_bam_paths):
+        for read_id, aligner_reads in _iter_name_grouped_bams(
+                sorted_bam_paths, use_rn_key=use_rn_key):
             # SLURM array filtering
             if use_slurm_filter:
                 if _read_id_hash(read_id, slurm_array_total) != slurm_array_task:

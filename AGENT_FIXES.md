@@ -2498,7 +2498,17 @@ strand-matched overlap, so it returns 1.000 by construction. Use a **TSV<->BAM `
 then take the corresponding terminus. See also B1 (`_CRTA_RC` corrupted revcomp) and B2 (`find_cdna_5p_polyt`
 has no adapter logic) — all three block a quantitative ONT-cDNA arm.
 
-## [2026-08-11] 🔴 ACTIVE — DRS multialigned consensus emits MULTIPLE winner records per read (~2.23×)
+## [2026-08-11] ✅ FIXED (f652331) — DRS multialigned consensus emits MULTIPLE winner records per read (~2.23×)
+
+**FIXED 2026-08-11, commit `f652331`.** Root cause: the K-way merge keys on integer `RN:i`
+(assigned in FASTQ record order) but inputs were NAME-sorted — non-monotone key streams for
+plain-uuid QNAMEs desync the merge wherever a read is missing from a subset of aligners
+(measured 100,099 RN-order violations / first 200k name-sorted primaries). Fix: consensus
+inputs are now sorted by the merge key itself (`_ensure_rn_sorted`, `samtools sort -t RN -n`)
+and `_iter_name_grouped_bams` carries a per-stream monotonicity guard that raises on any
+out-of-order key. Regression tests: `tests/test_consensus_rn_sort_668.py`. Pre-fix
+multi-aligner consensus BAMs from plain-uuid inputs (DRS, raw-window subsets) carry inflated
+read counts — regenerate before quantifying. Original entry follows.
 
 **Found by:** 668 DRS re-panel smoke (Chanfreau `planning/668`), first DRS dataset through the
 3-aligner K-way consensus (minimap2 + uLTRA + deSALT, trimmed-fastq input, plain uuid QNAMEs).

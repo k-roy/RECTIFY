@@ -144,13 +144,18 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     aligner_group.add_argument(
         '--junction-aligners',
         nargs='+',
-        choices=['uLTRA', 'deSALT', 'gmap'],
+        choices=['uLTRA', 'deSALT', 'gmap', 'overhang_resolver'],
         default=[],
         metavar='ALIGNER',
         help=(
             'Opt-in splice-aware aligners to add to the consensus pool '
-            '(choices: uLTRA, deSALT, gmap). uLTRA requires --annotation; '
-            'gmap requires a pre-built db (see --gmap-db). '
+            '(choices: uLTRA, deSALT, gmap, overhang_resolver). uLTRA requires '
+            '--annotation; gmap requires a pre-built db (see --gmap-db). '
+            'overhang_resolver is not an external aligner: it re-places '
+            'terminal soft clips of the minimap2 arm across canonical '
+            'junctions under an information bound (planning/641/644), and its '
+            'output SUBSTITUTES the minimap2 arm downstream (one correct arm, '
+            'not two — planning/669). Requires minimap2 in --aligners. '
             'Benchmark before using in production.'
         )
     )
@@ -446,7 +451,12 @@ def run_align(args: argparse.Namespace) -> int:
             aligners = ['minimap2', 'mapPacBio', 'gapmm2']
 
     junction_aligners = getattr(args, 'junction_aligners', []) or []
+    # overhang_resolver is a post-pass on the finished minimap2 arm, not a
+    # dispatchable aligner — pulled out here and run after the aligner loop.
+    want_resolver = 'overhang_resolver' in junction_aligners
     for ja in junction_aligners:
+        if ja == 'overhang_resolver':
+            continue
         if ja not in aligners:
             aligners.append(ja)
 
@@ -828,6 +838,66 @@ def run_align(args: argparse.Namespace) -> int:
         for aligner in aligners:
             aligner_name, bam_path = _run_one_aligner(aligner)
             results[aligner_name] = bam_path
+
+    # Overhang-resolver post-pass (planning/641/644): re-places terminal soft
+    # clips of the minimap2 arm across canonical junctions under an
+    # information bound. The resolved BAM SUBSTITUTES the minimap2 arm
+    # downstream (passthrough-or-rewrite: same read set, strictly refined
+    # placements) — it is NOT an additional arm. Carrying both would (a) buy a
+    # duplicate `correct` arm over ~98%-identical records (+~1.0× the minimap2
+    # correct bill, planning/669 §1) and (b) add near-duplicate tie noise to
+    # consensus. The raw minimap2 BAM stays on disk for the delta census
+    # (rewritten records carry XB tags). Runs after the aligner loop because
+    # it consumes the finished (RN-injected) minimap2 BAM. Fails LOUD when
+    # requested but unrunnable — a silent skip would feed downstream
+    # junction-pool prescans an unresolved pool with exit 0.
+    if want_resolver:
+        if not results.get('minimap2'):
+            logger.error(
+                "--junction-aligners overhang_resolver requires a successful "
+                "minimap2 arm in the same invocation (add minimap2 to "
+                "--aligners)."
+            )
+            return 1
+        from ..align.overhang_resolver import run_overhang_resolver
+        resolver_bam = args.output_dir / f"{prefix}.overhang_resolver.bam"
+        _base_bam = Path(results['minimap2'])
+        if (resolver_bam.exists() and resolver_bam.stat().st_size > 2000
+                and resolver_bam.stat().st_mtime > _base_bam.stat().st_mtime):
+            # Same idempotent-resume spirit as the per-aligner BAM checkpoint:
+            # reuse only an output newer than its input arm.
+            logger.info(f"overhang_resolver: reusing existing {resolver_bam}")
+        else:
+            import time as _time
+            _t_res = _time.perf_counter()
+            run_overhang_resolver(
+                base_bam=str(_base_bam),
+                genome_path=str(args.genome),
+                output_bam=str(resolver_bam),
+                threads=args.threads,
+            )
+            logger.info(
+                f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"
+            )
+            # Beta-ledger record (realigner runbook 2026-08-11): per-dataset
+            # resolver stats next to the BAM, for attributing user-reported
+            # alignment oddities to a stage.
+            _stats = getattr(run_overhang_resolver, 'last_stats', None)
+            if _stats is not None:
+                import json as _json
+                _stats_path = args.output_dir / f"{prefix}.overhang_resolver.stats.json"
+                try:
+                    _stats_path.write_text(_json.dumps(
+                        _stats.as_dict() if hasattr(_stats, 'as_dict')
+                        else vars(_stats), indent=2))
+                except (TypeError, OSError) as _e:
+                    logger.warning(f"could not write resolver stats JSON: {_e}")
+        logger.info(
+            "overhang_resolver: SUBSTITUTING the minimap2 arm with the "
+            f"resolved BAM ({resolver_bam}); raw minimap2 BAM retained at "
+            f"{_base_bam} for the XB delta census (not passed downstream)."
+        )
+        results['minimap2'] = str(resolver_bam)
 
     # Summary of alignment step
     logger.info(f"\nAlignment summary:")

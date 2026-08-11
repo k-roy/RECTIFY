@@ -58,15 +58,23 @@ def test_iter_name_grouped_bams_falls_back_when_any_input_lacks_rn(tmp_path):
     assert groups[0][0] == 'read1'
 
 
-def test_process_batch_restores_sidecar_tags_without_overwriting(tmp_path, monkeypatch):
+def test_process_batch_sidecar_tags_overwrite_cdna_keep_guard_for_others(tmp_path, monkeypatch):
+    """Since f20a8e6 the sidecar/FASTQ-comment is AUTHORITATIVE for the
+    Stage-1 cDNA tag set (_CDNA_COMMENT_TAGS): a colliding aligner-emitted
+    tag (uLTRA's own XC:Z:NO_SPLICE / XA:Z:) must be OVERWRITTEN, or
+    cdna-analyze drops the record as "missing required tags" (the 7% biased
+    uLTRA-won molecule drop, planning/659). Tags OUTSIDE that set keep the
+    original don't-clobber guard."""
     sidecar_path = tmp_path / 'sample.read_num_sidecar.parquet'
     with ReadNumSidecarWriter(sidecar_path, sample_id='sample') as w:
-        w.add(3, 'read3', 'XA:Z:tail\tXC:i:42\tXF:Z:full', 'chunk_000_of_001', 'ACGT', 'IIII')
+        w.add(3, 'read3', 'XA:Z:tail\tXC:i:42\tXF:Z:full\tZZ:Z:sidecar',
+              'chunk_000_of_001', 'ACGT', 'IIII')
     sc = ReadNumSidecar.open(sidecar_path)
 
     header = _header()
     read = _read(header, 'read3', rn=3)
-    read.set_tag('XA', 'existing')
+    read.set_tag('XA', 'existing')      # cDNA tag: sidecar must overwrite
+    read.set_tag('ZZ', 'aligner')       # non-cDNA tag: guard must hold
     out_path = tmp_path / 'out.bam'
     with pysam.AlignmentFile(out_path, 'wb', header=header) as out:
         monkeypatch.setattr(c, 'select_best_alignment', lambda *args, **kwargs: ConsensusResult(
@@ -84,6 +92,7 @@ def test_process_batch_restores_sidecar_tags_without_overwriting(tmp_path, monke
         )
     with pysam.AlignmentFile(out_path, 'rb') as inp:
         rec = next(inp)
-        assert rec.get_tag('XA') == 'existing'
+        assert rec.get_tag('XA') == 'tail'      # authoritative sidecar wins
         assert rec.get_tag('XC') == 42
         assert rec.get_tag('XF') == 'full'
+        assert rec.get_tag('ZZ') == 'aligner'   # non-cDNA guard preserved
