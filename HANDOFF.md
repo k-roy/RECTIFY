@@ -1,5 +1,43 @@
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
+## Delta ~01:50 — peer review from the cDNA session; two of my statements corrected
+
+- **`684` runs NO resolver.** Its align line is `--aligners minimap2 --junction-aligners uLTRA
+  deSALT` — the resolver is not in the panel, so **684 will never produce an
+  `overhang_resolver.stats.json`.** My Resume step 3 asked for one from it; that ask is void.
+- **🔴 CORRECTION — the 683 G-overhang arbiter has ZERO MEASURED IMPACT.** I earlier relayed to
+  Kevin that the 1-bp bridge-G exposure was "frequent, not rare" (~34% of molecules reach the
+  5' rescue arbiter), citing the 681 tail. The cDNA session's **683 CP2 supersedes that**:
+  **0 of 23,663 suspect bridge-G clips fall within 10 bp of a 3'SS**, because the bridge G sits
+  at the TSS while the rescue arbitrates 3' splice sites.
+  ⚠️ **Both numbers are true and measure different things — do not conflate them:** ~34% is the
+  1-bp G *PREVALENCE* across molecules; 0/23,663 is how often one *REACHES THE ARBITER*. The
+  first was stated before the second was measured. The guard is correct and well-gated
+  but fires on nothing. Parked for Kevin's decision; patch + design at Chanfreau
+  `planning/683_arbiter.patch` · `683_test_bridge_g_arbiter.py` · `683_g_aware_5p_clip_arbiter.md`
+  (reapply with `git apply` — deliberately extracted, NOT lost).
+- **Ceiling calibration corrected (`b153303`, docs/test only).** The peer — who produced the 361
+  measurement — pointed out that **361 is the PRE-FIX PATHOLOGY, not a healthy maximum**, and
+  that my rationale invited exactly the wrong future edit. Both CP6 figures are now recorded in
+  `ResolverConfig` and the test: pre-fix 17 clips/6,137 candidates = **361/clip**; post-fix
+  9 clips/60 = **6.7/clip**. The `> 361` test is a **deliberately conservative floor, NOT a
+  calibration target** — tightening toward the post-fix mean would refuse legitimate clips on
+  repetitive/custom references, the case the ceiling exists for.
+  **Histogram ask WITHDRAWN**: pre-fix percentiles describe a distribution that no longer
+  exists, and healthy data cannot calibrate a bound on the pathological tail. The ceiling stays
+  a safety BOUND, not a tuned parameter; 2000 stands.
+  Also recorded: the guard bounds **COUNT, not TIME** — 2000 candidates is ~24 ms/clip with
+  numba but **~7 s/clip pure-Python**, so a numba-less run on a pathological contig is bounded
+  yet still slow. **Prefer enabling numba over lowering the ceiling.**
+- **Gap (a) checked by the peer, not bitten:** every completed 684 sample has all three arm BAMs
+  + `.multialigned.bam`. The 36 "not found at" log lines are OLD pre-PATH-fix runs (an SGE job
+  does not inherit the conda env). That failure was loud only because ALL THREE dropped; with
+  one missing it would have silently become a 2-aligner panel at exit 0. They will add
+  `--require-aligners` on the next wave.
+- **My process error, recorded:** I staged their `HANDOFF_681_*.md` while they were mid-thread,
+  which pushed them into defensively extracting 683 to a patch file. In a shared working tree,
+  stage only your OWN paths — being explicit is not sufficient if the path is someone else's.
+
 ## Delta ~23:55 — candidate-blowup ceiling IMPLEMENTED (Kevin: "implement it now")
 
 - **`ResolverConfig.max_candidates_per_clip` (default 2000)** + **`ResolverStats.
@@ -240,7 +278,9 @@ No cDNA arm is queued anywhere — the freeze is actually in force, not just dec
 3. **674 needs `h_data` raised** before it reruns (OOM'd at 22.469 G against a 24 G ceiling).
 4. **668b exit-1 root cause** still unconfirmed ("shell killed hard"); unit 682 owns it — its
    off-scratch sentinels will show whether it recurs.
-5. ✅ **LANDED ON MASTER — `origin/master` = `3b7c408`**, suite **2286 passed / 0 failed**
+5. ✅ **LANDED ON MASTER — `origin/master` = `6490803`** (was 3b7c408; the calibration
+   follow-up `b153303` merged on top, resolver subset 519 passed / 0 failed).
+   The 3b7c408 landing ran the full suite: **2286 passed / 0 failed**
    (b3a8c35 trim fix · 4533de5 dropped-aligner gate · 24c7805 candidate ceiling · fd02807
    fixture fix · records). Merged via the `rectify_worktrees/land-master` worktree so the
    shared tree was never switched under the live agents.
@@ -249,6 +289,9 @@ No cDNA arm is queued anywhere — the freeze is actually in force, not just dec
    because the overhang gate caps `W_max` at period-1 and the far window collapses below
    `min_intron` — silently, no counter. Rebuilt aperiodic with planted sites (781 vs 6 at
    ceiling=5); `fd02807` is test-only.
+5c. **rbrowse tip from the cDNA session (may pre-empt a change request):** `de.clusters` rows
+   already carry `chrom/start/end/strand/pos`, where `pos` = `modal_position` = the 3' anchor.
+   Only `de.genes` lacks them — so rbrowse's blocking ask needs no code.
 5b. **cDNA agent NOTIFIED** (inbox note + live ping, 2026-08-12 ~01:30 PT): master landed;
    their fix confirmed in production; the two 684 tree gaps; the fixture trap; and a request
    for `overhang_resolver.stats.json` percentiles to replace the provisional 2000 ceiling.
