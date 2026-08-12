@@ -156,6 +156,54 @@ motif requirement is arm-independent.
 The one arm that differs is **uLTRA**, the only one with a sub-20 population (132 N-ops < 20 bp;
 16 at 10–14, 8 at 15–19) — consistent with a lower or absent floor on that path.
 
+## ✅ CLOSED: the driver is per-library basecall quality, and it is quantitatively linked
+
+**Strain background REFUTED outright.** Same anchor-away background, different deposit:
+
+| sample | background | deposit | junctions | annotated |
+|---|---|---|---:|---:|
+| `wtaa_rep1/2/3` | **HHY168-AA** | `wtaa_drs_2025` | **1,266 / 1,323 / 1,366** | 262 |
+| `wt_rep1/2/3` | **HHY168-AA** | `PRJNA1229592` | **34,122 / 34,680 / 19,095** | 264–269 |
+
+Identical background, **22× apart** on the means. Genotype is refuted too — `wt_rep1` (the WT-AA
+*control*) sits at 34k while `wtaa`, also WT-AA, sits at 1.3k.
+
+**The extreme samples are the `pod5_skip` batch.** `ysh1_rep1` (178,469) and `ysh1_rep2` (196,643)
+are the corpus's only two `pod5_skip` libraries — two barcodes of one flow cell, already flagged
+INDEPENDENTLY for untailed-read excess, and split the same way by three other QC metrics and by the
+pipeline's own PCA/correlation clustering. Their own third replicate sits at 23,915.
+
+### The two QC signals scale together ~1:1 — strong evidence of a single upstream cause
+
+| sample | junctions | × sibling | untailed reads | × sibling | ratio of folds |
+|---|---:|---:|---:|---:|---:|
+| `ysh1_rep1` | 178,469 | **7.46×** | 14.7 % | **7.74×** | **0.96** |
+| `ysh1_rep2` | 196,643 | **8.22×** | 13.9 % | **7.32×** | **1.12** |
+| `ysh1_rep3` | 23,915 | 1.00× | 1.9 % | 1.00× | — |
+
+Two independently-derived QC signals — one from poly(A) tailing, one from junction counting —
+track each other within ~12 % across an 8× range. That is what a common upstream driver
+(basecall quality → per-read deletion rate) looks like, and it is hard to explain as coincidence.
+
+**`annotated` stays 262–271 across all nine samples, spanning a 155× range of totals** — the
+internal control that real signal is detected consistently while only the false population moves.
+
+### 🔴 ACTIONABLE: quarantine `ysh1_rep1` and `ysh1_rep2` from junction-level analysis
+
+178k–197k censused with 99k–108k in `review`, against 24k for their own third replicate. **Any
+cross-genotype junction comparison including them compares library quality, not biology.** The
+corpus now has two independent reasons to exclude them.
+
+### A useful inversion
+
+If junction count tracks basecall quality this tightly, **junction count is itself a cheap
+library-quality QC metric** — screenable before a junction table is trusted. The artefact doubles
+as a diagnostic.
+
+**Still open:** whether `pod5_skip` per se or a correlated property (chemistry, basecaller version,
+flow-cell health) is proximate. Directly testable as per-read deletion rate for these libraries vs
+`wtaa`, which would convert "library quality" into a measurable covariate.
+
 ## Method note
 
 Four hypotheses were proposed and tested overnight; three were refuted by measurement
