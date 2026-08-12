@@ -27,6 +27,11 @@ from .consensus import (
 )
 from .read_info import ReadInfo, extract_read_info
 
+# Reverse-complementing a consensus swaps which end the SSP sits at, which is exactly the
+# fwd/rev distinction (`ReadInfo.orient`: "fwd" = SSP at LEFT of BAM SEQ, "rev" = SSP_RC at
+# RIGHT). So flipping the label alongside the sequence is definitionally exact.
+_FLIP_ORIENT = {"fwd": "rev", "rev": "fwd"}
+
 
 def stream_reads(bam_path: Path, region: Optional[str],
                  reference: Optional[Path] = None,
@@ -114,6 +119,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     opener = gzip.open if is_gz else open
 
     written = singleton = multi_pileup = multi_fallback = 0
+    n_frame_flipped = n_frame_mismatch = n_noop_5 = n_noop_3 = 0
 
     # Reference is needed to resolve calmd '=' (match-to-ref) placeholders in SEQ
     # back to real bases before re-emitting; without it the FASTQ is unmappable.
@@ -127,6 +133,17 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
 
             method = "rep"
             seq: Optional[str] = None
+            # Frame bookkeeping (planning/681). `orient` is a BAM-SEQ-frame label — it is
+            # computed by extract_read_info on `read.query_sequence`, which pysam returns
+            # reference-forward. The singleton and rep_fallback branches then RC the
+            # sequence into basecalled frame, so for a minus-strand source read the label
+            # and the sequence end up in OPPOSITE frames and every trim searches the wrong
+            # pattern at the wrong end. That silently no-op'd the trim on 39.7% of all
+            # molecules and sent ~145 nt of adapter+UMI+poly-A into the aligner as a soft
+            # clip. Track which frame the assembled sequence is actually in and flip the
+            # label with it; by the codebase's own definition ("fwd" = SSP_FWD at the LEFT
+            # of BAM SEQ) the RC of a fwd sequence IS a rev sequence, so the flip is exact.
+            seq_in_bam_frame = True
 
             if len(segs) == 1:
                 seg = segs[0]
@@ -135,6 +152,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 # alignments; we want the original read sequence for re-alignment.
                 if seg.is_reverse:
                     seq = seq[::-1].translate(COMPLEMENT_TABLE)
+                    seq_in_bam_frame = False
                 singleton += 1
             else:
                 if use_poa:
@@ -150,12 +168,22 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 if not seq:
                     rep = pick_representative(segs)
                     seq = restore_eq_seq(rep, fasta) or ""
+                    # Key the flip on the segment that was actually RC'd. pick_representative
+                    # need not return c[0], so `rep.is_reverse` and c[0]'s strand can differ.
                     if rep.is_reverse:
                         seq = seq[::-1].translate(COMPLEMENT_TABLE)
+                        seq_in_bam_frame = False
                     method = "rep_fallback"
                     multi_fallback += 1
                 else:
                     multi_pileup += 1
+                # poa_consensus / pileup_consensus both build in BAM (reference) frame and
+                # apply no RC, so seq_in_bam_frame stays True for them — which is CORRECT
+                # and must stay that way. A pileup consensus is built from
+                # get_aligned_pairs(matches_only=True) and so contains no soft-clip, hence
+                # no adapter to strip at all (planning/681 CP2: its molecules carry 13.7 nt
+                # clips vs 145.2 nt for the genuinely untrimmed singletons). Adding the RC
+                # here would break a correctly-framed branch.
 
             if not seq:
                 continue
@@ -165,11 +193,22 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
             # the aligner can reconstruct the full-length CIGAR with soft-clips.
             orient = c[0].orient
             read_type = c[0].read_type
-            trimmed_seq, q_trim_5, _ = pretrim_consensus(seq, orient, read_type)
+            trim_orient = orient if seq_in_bam_frame else _FLIP_ORIENT[orient]
+            if not seq_in_bam_frame:
+                n_frame_flipped += 1
+            pre = pretrim_consensus(seq, trim_orient, read_type)
+            trimmed_seq, q_trim_5, q_trim_3 = pre.seq, pre.trim_5p, pre.trim_3p
             if not trimmed_seq:
                 trimmed_seq = seq
-                q_trim_5 = 0
-            q_trim_3 = len(seq) - q_trim_5 - len(trimmed_seq)
+                q_trim_5 = q_trim_3 = 0
+            # Fail-loud instrumentation. A silent trim no-op is what let this defect run
+            # for months as a throughput mystery; surface it as a number instead.
+            if pre.frame_mismatch:
+                n_frame_mismatch += 1
+            if read_type == 1 and q_trim_5 == 0:
+                n_noop_5 += 1
+            if q_trim_3 == 0:
+                n_noop_3 += 1
 
             n_top, n_bot = cluster_strand_split[cid]
             tag_parts = [
@@ -200,4 +239,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
         fasta.close()
 
     return dict(input_reads=n_in, written=written, from_singletons=singleton,
-                from_multi_pileup=multi_pileup, from_multi_fallback=multi_fallback)
+                from_multi_pileup=multi_pileup, from_multi_fallback=multi_fallback,
+                trim_frame_flipped=n_frame_flipped,
+                trim_frame_mismatch=n_frame_mismatch,
+                trim_noop_5p=n_noop_5, trim_noop_3p=n_noop_3)

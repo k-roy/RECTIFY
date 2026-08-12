@@ -342,29 +342,101 @@ class TestPretrimConsensus:
     def test_fwd_strips_ssp_umi_ggg_and_polya(self):
         mrna = "ATGCATGC"
         full = self._make_fwd_consensus(mrna)
-        trimmed, q_trim_5, pretrim_pa_len = pretrim_consensus(full, "fwd", read_type=1)
-        assert trimmed == mrna, (
-            f"expected trimmed=={mrna!r}, got {trimmed!r}"
-        )
-        assert q_trim_5 == len(SSP_FWD) + UMI_LEN + 3  # 23 + 27 + 3 = 53
-        assert pretrim_pa_len == 8
+        r = pretrim_consensus(full, "fwd", read_type=1)
+        assert r.seq == mrna, f"expected trimmed=={mrna!r}, got {r.seq!r}"
+        assert r.trim_5p == len(SSP_FWD) + UMI_LEN + 3  # 23 + 27 + 3 = 53
+        assert r.pa_len == 8
 
     def test_fwd_type2_no_5p_trim(self):
         """Type-2 reads have no SSP — only poly-A strip applies."""
         mrna = "GCTAGCTAGC"
         seq = mrna + "A" * 12 + ANCHOR_FWD
-        trimmed, q_trim_5, pretrim_pa_len = pretrim_consensus(seq, "fwd", read_type=2)
-        assert q_trim_5 == 0, "Type-2 should not strip a 5' prefix"
-        assert trimmed == mrna
-        assert pretrim_pa_len == 12
+        r = pretrim_consensus(seq, "fwd", read_type=2)
+        assert r.trim_5p == 0, "Type-2 should not strip a 5' prefix"
+        assert r.seq == mrna
+        assert r.pa_len == 12
 
     def test_fwd_no_ssp_found_returns_full_with_no_5p_trim(self):
         """If SSP is absent from a Type-1 consensus (e.g. POA artifact), the
         function should not crash and should not trim the 5' end."""
         seq = "ATGCATGC" + "A" * 6
-        trimmed, q_trim_5, _ = pretrim_consensus(seq, "fwd", read_type=1)
-        assert q_trim_5 == 0
-        assert trimmed.startswith("ATGCATGC")
+        r = pretrim_consensus(seq, "fwd", read_type=1)
+        assert r.trim_5p == 0
+        assert r.seq.startswith("ATGCATGC")
+
+    # ---- planning/681: the frame bug ------------------------------------------------
+    # `orient` is computed in BAM-SEQ frame but some consensus branches emit basecalled
+    # frame, so a minus-strand molecule arrived labelled "fwd" carrying SSP_RC and every
+    # trim silently no-op'd — 39.7% of all molecules, ~145 nt of adapter into the aligner.
+
+    def test_trims_in_both_frames_regardless_of_label(self):
+        """The SAME molecule must trim identically in either frame, and must not depend
+        on the `orient` label being right — the label is the thing that was wrong."""
+        mrna = "ATGCATGCGTACGTACGGCTTACGATCAGCTTGACC"
+        fwd_seq = self._make_fwd_consensus(mrna)
+        rev_seq = revcomp(fwd_seq)
+
+        for seq, expect, label in ((fwd_seq, mrna, "fwd"), (rev_seq, revcomp(mrna), "rev")):
+            for given in ("fwd", "rev"):           # correct label AND wrong label
+                r = pretrim_consensus(seq, given, read_type=1)
+                assert r.seq == expect, (
+                    f"{label} molecule labelled {given!r}: expected {expect!r}, got {r.seq!r}"
+                )
+                assert r.trim_5p == len(SSP_FWD) + UMI_LEN + 3, (
+                    f"{label} molecule labelled {given!r}: XQ should be the true mRNA-5' "
+                    f"trim (53), got {r.trim_5p}"
+                )
+                assert r.trim_3p > 0, "XK should be the true mRNA-3' trim, not zero"
+                assert r.frame == label
+                assert r.frame_mismatch == (given != label)
+
+    def test_xq_xk_are_true_5p_and_3p_in_rev_frame(self):
+        """Regression on the tag inversion: pre-681 the rev branch put the LEFT (poly-T =
+        mRNA 3') trim in XQ and left the mRNA 5' trim to be derived by subtraction, so
+        XQ/XK were swapped on every rev molecule."""
+        mrna = "ATGCATGCGTACGTACGGCTTACGATCAGCTTGACC"
+        rev_seq = revcomp(self._make_fwd_consensus(mrna))
+        r = pretrim_consensus(rev_seq, "rev", read_type=1)
+        # In rev frame the mRNA 5' end is at the RIGHT, so the 5' trim is the RIGHT trim.
+        assert r.trim_5p == r.right_trim and r.trim_3p == r.left_trim
+        assert r.trim_5p == len(SSP_FWD) + UMI_LEN + 3
+        assert r.seq == rev_seq[r.left_trim:len(rev_seq) - r.right_trim]
+
+    def test_fuzzy_ssp_is_window_gated_and_does_not_eat_mrna(self):
+        """Phase-3 hazard guard: the fuzzy SSP search must not fire in the middle of a
+        long adapter-free consensus. An ungated edlib HW k=3 hit on a 23-mer lands in
+        ordinary genomic sequence and would trim real mRNA — worst on pileup consensuses,
+        which carry no adapter at all by construction (planning/681 CP2)."""
+        import random
+        random.seed(11)
+        # An SSP planted deep in the interior, far outside the terminal search window.
+        body = "".join(random.choice("ACGT") for _ in range(900))
+        seq = body + SSP_FWD + "".join(random.choice("ACGT") for _ in range(900))
+        # Exact match still wins (unwindowed, historical behaviour preserved)...
+        assert pretrim_consensus(seq, "fwd", read_type=1).trim_5p > 0
+        # ...but a 1-edit SSP that far inside must NOT be found by the fuzzy fallback.
+        mutated = SSP_FWD[:11] + ("A" if SSP_FWD[11] != "A" else "C") + SSP_FWD[12:]
+        seq2 = body + mutated + body
+        assert pretrim_consensus(seq2, "fwd", read_type=1).trim_5p == 0
+
+    def test_fuzzy_ssp_recovers_an_ont_error_at_the_expected_end(self):
+        """The ~29% residual: SSP present but not exactly. Within the terminal window the
+        fuzzy fallback should recover it."""
+        mrna = "ATGCATGCGTACGTACGGCTTACGATCAGCTTGACC"
+        mutated = SSP_FWD[:11] + ("A" if SSP_FWD[11] != "A" else "C") + SSP_FWD[12:]
+        seq = mutated + "T" * UMI_LEN + "GGG" + mrna + "A" * 8 + ANCHOR_FWD
+        r = pretrim_consensus(seq, "fwd", read_type=1)
+        pytest.importorskip("edlib")
+        assert r.trim_5p == len(SSP_FWD) + UMI_LEN + 3
+        assert r.seq == mrna
+
+    def test_degenerate_double_hit_does_not_trim_to_empty(self):
+        """A spurious hit at each end must not consume the whole molecule — an empty
+        record is unmappable, the failure mode restore_eq_seq exists to prevent."""
+        seq = SSP_FWD + "T" * UMI_LEN + "GGG" + "AAAAAAAAAA"
+        r = pretrim_consensus(seq, "fwd", read_type=1)
+        assert r.seq, "trim must not empty the molecule"
+        assert r.seq == seq and r.trim_5p == 0 and r.trim_3p == 0
 
 
 # ---------------------------------------------------------------------------

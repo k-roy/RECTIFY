@@ -19,7 +19,7 @@ clean mRNA sequence.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import pysam
 
@@ -32,17 +32,25 @@ from ._constants import (
     POLY_T_ANCH_RE,
     POLY_T_UNANCH_RE,
     SSP_FWD,
+    SSP_MAX_EDIT,
     SSP_RC,
+    SSP_SEARCH_WIN,
     UMI_LEN,
 )
 from .walkback import _find_adapter_anchor_pos
 
-# Optional dependency (loaded lazily so the module imports without it).
+# Optional dependencies (loaded lazily so the module imports without them).
 try:
     import pyabpoa
     HAS_POA = True
 except ImportError:
     HAS_POA = False
+
+try:
+    import edlib
+    HAS_EDLIB = True
+except ImportError:
+    HAS_EDLIB = False
 
 
 def restore_eq_seq(seg: pysam.AlignedSegment,
@@ -245,125 +253,178 @@ def poa_consensus_strand_aware(reads_in_cluster: List[pysam.AlignedSegment],
     return poa_consensus_from_strings([top_cons, bot_cons])
 
 
-def pretrim_consensus(consensus_seq: str, orient: str, read_type: int
-                      ) -> Tuple[str, int, int]:
-    """Strip SSP/UMI/GGG from 5' and poly-A/adapter from 3' of a consensus sequence.
+class PretrimResult(NamedTuple):
+    """What :func:`pretrim_consensus` stripped, in both coordinate systems.
 
-    This ensures aligners receive clean mRNA sequence — no adapter contamination
-    at either end. Downstream `rectify align` re-aligns the trimmed consensus
-    and the aligner produces appropriate soft-clips for the stripped bases.
+    The old 3-tuple ``(trimmed_seq, q_trim_5, pretrim_pa_len)`` conflated two different
+    things: on the ``fwd`` branch ``q_trim_5`` was the mRNA 5' trim, but on the ``rev``
+    branch it was the LEFT (poly-T = mRNA **3'**) trim, and the mRNA 5' trim was not
+    returned at all — the function's own comment admitted "right-side trim is not encoded
+    in q_trim_5". The caller then derived ``XK`` by subtraction, so ``XQ``/``XK`` were
+    **swapped on every rev molecule**. Nothing consumes those tags yet (planning/679 CP9a),
+    so this widens the contract while it is still free to do so.
+
+    ``seq == input[left_trim : len(input) - right_trim]`` always holds.
+    """
+    seq: str            # the trimmed sequence handed to the aligner
+    left_trim: int      # bases removed from the LEFT of the input (frame-relative)
+    right_trim: int     # bases removed from the RIGHT of the input (frame-relative)
+    trim_5p: int        # bases removed from the mRNA 5' end  → XQ
+    trim_3p: int        # bases removed from the mRNA 3' end  → XK
+    pa_len: int         # A's stripped with the poly-A tail (XA fallback)
+    frame: str          # the frame actually trimmed in ('fwd' / 'rev')
+    frame_mismatch: bool  # the sequence's frame disagreed with the `orient` label
+
+
+def _find_ssp(seq: str, frame: str) -> int:
+    """Return the start index of the SSP in `seq` for `frame`, or -1.
+
+    ``fwd`` → ``SSP_FWD``, expected near the LEFT; ``rev`` → ``SSP_RC``, near the RIGHT
+    (hence ``rfind``: the rightmost hit is the real adapter).
+
+    Exact search runs first and is unwindowed, preserving the historical behaviour — an
+    exact 23-mer arises by chance at ~4⁻²³. The **fuzzy** fallback is deliberately
+    WINDOW-GATED to the end where the SSP belongs (planning/681): edlib ``HW`` over a full
+    ~2 kb consensus finds a ≤3-edit 23-mer in ordinary genomic sequence and would trim real
+    mRNA — worst on the pileup molecules, which carry no adapter at all and so have nothing
+    but mRNA to hit. Mirrors ``_find_adapter_anchor_pos``, which is already fuzzy and
+    already windowed on the 3' anchor.
+    """
+    pattern = SSP_FWD if frame == "fwd" else SSP_RC
+    p = seq.find(pattern) if frame == "fwd" else seq.rfind(pattern)
+    if p >= 0 or not HAS_EDLIB:
+        return p
+    if frame == "fwd":
+        off, window = 0, seq[:SSP_SEARCH_WIN]
+    else:
+        off = max(0, len(seq) - SSP_SEARCH_WIN)
+        window = seq[off:]
+    r = edlib.align(pattern, window, mode="HW", task="locations", k=SSP_MAX_EDIT)
+    if r["editDistance"] == -1 or not r["locations"]:
+        return -1
+    # edlib HW can return a location whose START is None (end found, start not
+    # localizable). It carries no usable position — report the documented sentinel, the
+    # same defect and fix as read_info._find_anchor_fuzzy and walkback._find_adapter_anchor_pos.
+    start = r["locations"][-1][0] if frame == "rev" else r["locations"][0][0]
+    return -1 if start is None else off + start
+
+
+def _detect_frame(consensus_seq: str, orient: str, read_type: int) -> Tuple[str, bool]:
+    """Return (frame_to_trim_in, disagreed_with_label).
+
+    ``orient`` is a **BAM-SEQ-frame** label (``read_info.py:171`` calls it on
+    ``read.query_sequence``; see the ``ReadInfo.orient`` docstring), but some consensus
+    branches emit a basecalled-frame sequence. Rather than trust the label, key on the
+    pattern actually present: exactly one of SSP_FWD / SSP_RC decides the frame. When both
+    or neither is present (chimera, or an ONT-degraded SSP) fall back to the label.
+
+    Type-2 molecules have no SSP by design, so the label is all there is — which is exactly
+    why the caller must still propagate a correct frame (planning/681 CP0).
+    """
+    if read_type != 1:
+        return orient, False
+    has_fwd = SSP_FWD in consensus_seq
+    has_rev = SSP_RC in consensus_seq
+    if has_fwd == has_rev:            # both, or neither → no evidence; trust the label
+        return orient, False
+    detected = "fwd" if has_fwd else "rev"
+    return detected, detected != orient
+
+
+def pretrim_consensus(consensus_seq: str, orient: str, read_type: int) -> PretrimResult:
+    """Strip SSP/UMI/GGG from the mRNA 5' end and poly-A/adapter from the 3' end.
+
+    This ensures aligners receive clean mRNA sequence — no adapter contamination at either
+    end. Downstream `rectify align` re-aligns the trimmed consensus and the aligner
+    produces appropriate soft-clips for the stripped bases.
+
+    `orient` is a **hint**, not a selector: the frame is taken from whichever SSP pattern
+    the sequence actually carries (:func:`_detect_frame`), because the label is computed in
+    BAM-SEQ frame while some consensus branches emit basecalled frame. See planning/681.
 
     5' trim (Type-1 only — Type-2 has no SSP/UMI):
-      - orient=fwd: SSP_FWD (23nt) + UMI (27nt) + GGG bridge (3nt) = 53 nt
-      - orient=rev: SSP_RC at the RIGHT of BAM SEQ + UMI_RC + CCC bridge
-        For rev, the mRNA 5' end is at the RIGHT; the poly-A (= polyT in BAM SEQ)
-        is at the LEFT. We strip the CCC+AAA+UMI_RC+SSP_RC suffix.
+      - fwd: SSP_FWD (23nt) + UMI (27nt) + GGG bridge (3nt) = 53 nt off the LEFT
+      - rev: the mRNA 5' end is at the RIGHT — strip the CCC+UMI_RC+SSP_RC suffix.
 
     3' trim (both types):
-      - orient=fwd: poly-A is at the RIGHT of BAM SEQ. Strip from the start of
-        the first homopolymer A run of length >= MIN_HOMOPOLYMER_ANCHORED.
-      - orient=rev: poly-T is at the LEFT. Strip from position 0 up to the end
-        of the first homopolymer T run.
+      - fwd: poly-A at the RIGHT. Strip from the start of the first homopolymer A run of
+        length >= MIN_HOMOPOLYMER_ANCHORED.
+      - rev: poly-T at the LEFT. Strip position 0 through the end of the first T run.
 
-    Returns:
-      (trimmed_seq, q_trim_5, pretrim_pa_len) where:
-        trimmed_seq    — the sequence passed to aligners
-        q_trim_5       — bases stripped from 5' (for restoring soft-clip)
-        pretrim_pa_len — A's stripped from 3' (for XA fallback if walkback fails)
+    Returns a :class:`PretrimResult`.
     """
-    q_trim_5 = 0
-    pretrim_pa_len = 0
+    frame, frame_mismatch = _detect_frame(consensus_seq, orient, read_type)
+    n = len(consensus_seq)
+    left_trim = right_trim = pa_len = 0
 
-    # ---- 5' trim (SSP/UMI/GGG) ----
-    if read_type == 1:
-        if orient == "fwd":
-            p = consensus_seq.find(SSP_FWD)
+    if frame == "fwd":
+        # ---- 5' (LEFT): SSP + UMI + GGG ----
+        if read_type == 1:
+            p = _find_ssp(consensus_seq, "fwd")
             if p >= 0:
-                q_trim_5 = p + len(SSP_FWD) + UMI_LEN + BRIDGE_LEN
-            else:
-                # SSP not found in consensus (degenerate) — skip 5' trim
-                q_trim_5 = 0
-        else:  # orient == "rev"
-            p = consensus_seq.find(SSP_RC)
-            if p >= UMI_LEN + BRIDGE_LEN:
-                # SSP_RC found; trim everything from (p - UMI_LEN - BRIDGE_LEN) onward
-                # The mRNA body occupies consensus_seq[0 : p - UMI_LEN - BRIDGE_LEN]
-                # We express this as a suffix trim (handled below as rev 3' trim equiv).
-                # For rev: the "5'" of the mRNA is at the RIGHT, and "5' trim" means
-                # removing from the right end. We encode as q_trim_5 on rev in terms of
-                # the sequence orientation: suffix_len = len(consensus_seq) - (p - UMI_LEN - BRIDGE_LEN)
-                # We use a separate variable to keep the logic clear:
-                pass  # handled in the 3' trim block for rev
+                left_trim = p + len(SSP_FWD) + UMI_LEN + BRIDGE_LEN
 
-    # ---- 3' trim (poly-A/adapter) ----
-    if orient == "fwd":
-        # For fwd: poly-A is at the RIGHT of BAM SEQ. Strip from last A-run.
-        # Search for the poly-A start using the adapter anchor first (Tier 2),
-        # fall back to unanchored poly-A detection (Tier 1).
-        seq_to_search = consensus_seq[q_trim_5:]
+        # ---- 3' (RIGHT): poly-A. Anchored (Tier 2) first, unanchored (Tier 1) second ----
+        seq_to_search = consensus_seq[left_trim:]
+        pa_start = None
         adp_pos = _find_adapter_anchor_pos(seq_to_search, "fwd")
         if adp_pos is not None:
             # Poly-A is in the 30 bp UPSTREAM of the adapter anchor
             upstream_start = max(0, adp_pos - ANCHOR_UPSTREAM_WIN)
-            upstream = seq_to_search[upstream_start:adp_pos]
-            m = POLY_A_ANCH_RE.search(upstream)
+            m = POLY_A_ANCH_RE.search(seq_to_search[upstream_start:adp_pos])
             if m:
-                pa_start = q_trim_5 + upstream_start + m.start()
-                pretrim_pa_len = m.group(0).count("A")
-                trimmed_seq = consensus_seq[q_trim_5:pa_start]
-                return (trimmed_seq, q_trim_5, pretrim_pa_len)
-        # Unanchored fallback: find rightmost A-run (>= MIN_HOMOPOLYMER_ANCHORED) in
-        # last END_WINDOW_BP bases. Using the anchored threshold (6+) rather than
-        # the conservative unanchored threshold (10+) because in a cDNA consensus
-        # sequence we know the poly-A is at the 3' end. Taking the RIGHTMOST match
-        # avoids stripping on internal A-runs (e.g. gene body A's).
-        window = seq_to_search[-END_WINDOW_BP:] if len(seq_to_search) > END_WINDOW_BP else seq_to_search
-        window_off = len(seq_to_search) - len(window)
-        all_pa_matches = list(POLY_A_ANCH_RE.finditer(window))
-        if all_pa_matches:
-            m = all_pa_matches[-1]  # rightmost = closest to 3' end
-            pa_start = q_trim_5 + window_off + m.start()
-            pretrim_pa_len = m.group(0).count("A")
-            trimmed_seq = consensus_seq[q_trim_5:pa_start]
-            return (trimmed_seq, q_trim_5, pretrim_pa_len)
-        # No poly-A found: return 5'-trimmed only
-        trimmed_seq = consensus_seq[q_trim_5:]
-        return (trimmed_seq, q_trim_5, 0)
-    else:  # orient == "rev"
-        # For rev: poly-T is at the LEFT of BAM SEQ (basecalled poly-A in +ref coords).
-        # The mRNA body is to the RIGHT; the SSP_RC/UMI_RC/CCC are also to the RIGHT.
-        # Strip poly-T from left, and SSP_RC suffix from right.
+                pa_start = left_trim + upstream_start + m.start()
+                pa_len = m.group(0).count("A")
+        if pa_start is None:
+            # Unanchored fallback: rightmost A-run (>= MIN_HOMOPOLYMER_ANCHORED) in the last
+            # END_WINDOW_BP bases. The anchored threshold (6+) rather than the conservative
+            # unanchored one (10+) because in a cDNA consensus we know the poly-A is at the
+            # 3' end; RIGHTMOST avoids stripping on internal A-runs (e.g. gene-body A's).
+            window = seq_to_search[-END_WINDOW_BP:] if len(seq_to_search) > END_WINDOW_BP else seq_to_search
+            window_off = len(seq_to_search) - len(window)
+            matches = list(POLY_A_ANCH_RE.finditer(window))
+            if matches:
+                m = matches[-1]
+                pa_start = left_trim + window_off + m.start()
+                pa_len = m.group(0).count("A")
+        if pa_start is not None:
+            right_trim = n - pa_start
 
-        # First: find poly-T at left end (= 3' trim in rev orientation).
-        seq = consensus_seq
-        adp_pos = _find_adapter_anchor_pos(seq, "rev")
+    else:  # frame == "rev" — mRNA runs right-to-left in this sequence
+        # ---- 3' (LEFT): poly-T (the RC of the basecalled poly-A) ----
+        adp_pos = _find_adapter_anchor_pos(consensus_seq, "rev")
         if adp_pos is not None:
-            # poly-T is in 30 bp DOWNSTREAM of the anchor (adapter at LEFT, polyT just after)
-            ds_end = adp_pos + ANCHOR_LEN + ANCHOR_UPSTREAM_WIN
-            downstream = seq[adp_pos + ANCHOR_LEN: min(ds_end, len(seq))]
+            # poly-T is in the 30 bp DOWNSTREAM of the anchor (adapter at LEFT, polyT after)
+            ds_start = adp_pos + ANCHOR_LEN
+            downstream = consensus_seq[ds_start:min(ds_start + ANCHOR_UPSTREAM_WIN, n)]
             m = POLY_T_ANCH_RE.search(downstream)
             if m:
-                pt_end = adp_pos + ANCHOR_LEN + m.end()
-                pretrim_pa_len = downstream[m.start():m.end()].count("T")
-                seq = seq[pt_end:]
-                q_trim_5 = pt_end
+                left_trim = ds_start + m.end()
+                pa_len = m.group(0).count("T")
         else:
-            # Unanchored: find first T-run in first END_WINDOW_BP bases
-            window = seq[:END_WINDOW_BP]
-            m = POLY_T_UNANCH_RE.search(window)
+            # Unanchored: first T-run in the first END_WINDOW_BP bases
+            m = POLY_T_UNANCH_RE.search(consensus_seq[:END_WINDOW_BP])
             if m:
-                pt_end = m.end()
-                pretrim_pa_len = window[m.start():m.end()].count("T")
-                seq = seq[pt_end:]
-                q_trim_5 = pt_end
+                left_trim = m.end()
+                pa_len = m.group(0).count("T")
 
-        # Second: strip SSP_RC/UMI_RC/CCC suffix from the RIGHT (rev 5' trim)
-        p = seq.find(SSP_RC)
-        if p >= UMI_LEN + BRIDGE_LEN:
-            ssp_trim_start = p - UMI_LEN - BRIDGE_LEN  # start of CCC in the seq
-            seq = seq[:ssp_trim_start]
-        # Note: q_trim_5 for rev tracks left-side trim; right-side trim is not
-        # encoded in q_trim_5. The right suffix trim is implicit in the trimmed_seq
-        # length: suffix_trim = (len(consensus_seq) - q_trim_5) - len(seq).
+        # ---- 5' (RIGHT): CCC + UMI_RC + SSP_RC suffix ----
+        if read_type == 1:
+            rest = consensus_seq[left_trim:]
+            p = _find_ssp(rest, "rev")
+            if p >= UMI_LEN + BRIDGE_LEN:
+                right_trim = len(rest) - (p - UMI_LEN - BRIDGE_LEN)
 
-        return (seq, q_trim_5, pretrim_pa_len)
+    # Degenerate guard: a spurious hit at each end can ask for more than the sequence has.
+    # Trimming to empty makes the molecule unmappable, which is the failure mode
+    # restore_eq_seq was written to prevent — drop the trim entirely instead.
+    if left_trim < 0 or right_trim < 0 or left_trim + right_trim >= n:
+        left_trim = right_trim = pa_len = 0
+
+    trimmed = consensus_seq[left_trim:n - right_trim] if right_trim else consensus_seq[left_trim:]
+    if frame == "fwd":
+        trim_5p, trim_3p = left_trim, right_trim
+    else:
+        trim_5p, trim_3p = right_trim, left_trim
+    return PretrimResult(trimmed, left_trim, right_trim, trim_5p, trim_3p,
+                         pa_len, frame, frame_mismatch)
