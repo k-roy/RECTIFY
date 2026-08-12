@@ -1,5 +1,52 @@
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
+## Delta ~02:10 — 🔴 NEW CORRECTNESS FINDING (peer-reported, INDEPENDENTLY VERIFIED): consensus selects physically impossible alignments
+
+**Reported by the cDNA session (`planning/684c_impossible_junctions_desalt_ultra.md`); I
+re-measured it myself on a different slice rather than take it on trust.**
+
+My verification — `684_p1cdna_1M/WT_BY4742_rep1/align/*.multialigned.bam`, 400,001 primary reads:
+
+| check | count |
+|---|---:|
+| alignments ending **PAST the contig end** | **3** |
+| N-op **> 10 kb** | **268** (0.067 %) |
+| **max N-op** | **261,350 bp** |
+
+The longest annotated intron in *S. cerevisiae* is **~1 kb**. Example CIGARs:
+- `r030_7056` chrIV: `…190957N…` and ends at **1,593,636 vs contig length 1,531,933** — 61,703 bp
+  past the end of the chromosome.
+- `r036_7091` chrV: `…150801N…99483N…102507N…` — three separate ~100–150 kb "introns" in one read.
+
+Peer's per-arm census (3 samples, ~2.7 M reads/arm) attributes it: **minimap2 = 0 past-end, 0
+>10 kb**; uLTRA 2,372 >10 kb; deSALT 47 past-end / 6,022 >10 kb; and `multialigned` inherits
+36 / 1,886. Read-level proof in their doc shows minimap2 and uLTRA agreeing in-bounds while
+deSALT appends a 192,339 bp N-op running off the chromosome — **and the consensus picks deSALT.**
+Whatever the scorer optimises, "spans more query" is beating "is physically possible".
+
+**Two distinct defects:**
+1. **Consensus selection** admits a reference span past the contig end and N-ops far beyond the
+   organism's max intron. `-G` constrains the minimap2 arm; nothing equivalent constrains
+   uLTRA/deSALT or the selection step.
+2. **`overhang_informativeness.ambiguity_window:402` CRASHES** on such input
+   (`IndexError: string index out of range` at `g[end - 1 - l_amb]`) — that is how the peer
+   found it, via `rectify pool-gate`.
+
+⚠️ **Fix BOTH or neither** — a bounds check alone would silence the crash and HIDE defect 1.
+
+**NOT [[681]]:** the trim acts on the consensus sequence pre-alignment, and minimap2 on the same
+trimmed input is clean. Contigs are not mismatched (17/17 identical name+length).
+
+**NOT YET MEASURED — the number that decides nuisance vs. correctness:** how many of these
+survive `cdna-analyze`'s own filters into a junction table. The peer offered to run it on 684
+output; I have accepted.
+
+**Design fork worth Kevin's call before implementing:** rejecting an arm outright vs. flagging +
+counting it. A hard reject is the correct-looking move but it changes aligner-selection semantics
+for every dataset, and mis-set it would discard legitimate alignments — the same shape of trap as
+the candidate ceiling. Detection (an invariant + counter at consensus write time, same shape as
+`--require-aligners`) is safe to land unilaterally; policy is not.
+
 ## Delta ~01:50 — peer review from the cDNA session; two of my statements corrected
 
 - **`684` runs NO resolver.** Its align line is `--aligners minimap2 --junction-aligners uLTRA
