@@ -119,9 +119,24 @@ rectify emits **no** three-class concordance. `Xa`=selected aligner, `Xc`=**sele
 - 3′ ends use the **per-read** `ambiguity_min`/`ambiguity_max`/`ambiguity_range`, not a constant.
 - Class 3 is **~20 % of reads** and concentrates where other aligners failed. Not an edge case.
 
-Status: **NOT BUILT.** rbrowse is holding pending Kevin; they will send the measured class
-distribution before shipping. `682_drs1m` is the **only** source of concordance data that exists —
-tell rbrowse before it moves or is re-run.
+Status: **BUILDING — Kevin greenlit it 2026-08-12 ~11:40.** rbrowse is slicing a rectify-corrected
+DRS rebuild of the nsd panel from `682_drs1m` (all 12 libraries, corrected 3′ ends, all four
+genotypes), shipping **alongside** the existing uncorrected ~30M nsd page so users can compare —
+Kevin: *"rapid iteration and QC, so my users can view both and see how the rectify one compares."*
+The concordance classifier is next-up against the taxonomy above; **they will send YOU the measured
+class distribution before anything ships.**
+
+🔴 **`682_drs1m` now feeds a shipping page. It is the ONLY source of concordance data that exists —
+tell rbrowse BEFORE it moves, is cleaned up, or is re-run.**
+
+⚠️ **A misreading the comparison page manufactures, flagged to rbrowse 2026-08-12 ~11:45 — check it
+was defused.** The two pages differ in TWO ways, not one: the uncorrected page is single-aligner
+map-ont (minimap2 produces **zero** >10 kb N-ops) while the rectify page is the 4-arm panel
+(uLTRA/deSALT produce them; 0.215 % of DRS reads, 3,789/3,789 surviving into corrected 3′ ends).
+So long spurious junctions appear **only on the rectify page**, and the natural reading is *"rectify
+introduced these"* — it did not. They are a uLTRA/deSALT alignment artifact that minimap2's `-G`
+refuses, already fixed by `d0e3a0f`, which landed AFTER this consensus was built. Fix is either a
+page note or a consensus-only re-run (arm BAMs on disk, DRS has the before-numbers banked).
 
 ---
 
