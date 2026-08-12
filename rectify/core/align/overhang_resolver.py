@@ -108,14 +108,31 @@ class ResolverConfig:
     # ceiling the clip is abandoned (the read passes through untouched) and
     # `refused_candidate_blowup` records it.
     #
-    # PROVISIONAL VALUE, deliberately loose. Post-trim cDNA runs ~6.7
-    # candidates/clip; the worst legitimate figure observed is the 361/clip of
-    # the untrimmed pathology. 2000 is ~300x the normal mean, so it should never
-    # fire on healthy data — it exists to convert an unbounded stall into a
-    # bounded one. Tighten from real percentiles once DRS stats.json lands
-    # (see HANDOFF.md §Resume step 3). A ceiling set too LOW would silently
-    # refuse legitimate clips, which is the failure mode this guard must not
-    # become: that is why it is counted and logged, never silent.
+    # CALIBRATION — read before changing this number.
+    # Measured (planning/681 CP6, real resolver over 2,000 real cDNA molecules,
+    # only the input sequence differing between arms):
+    #     pre-trim-fix   17 clips ->  6,137 candidates  =  361 / clip
+    #     post-trim-fix   9 clips ->     60 candidates  =  6.7 / clip
+    # Production now lives in the ~6.7/clip regime, so 2000 is ~300x typical and
+    # should never fire on healthy data.
+    #
+    # 🔴 The 361 figure is the PRE-FIX PATHOLOGY, not a healthy maximum, and
+    # `tests/test_resolver_candidate_ceiling.py` pins the default above it as a
+    # deliberately conservative floor. Do NOT "tighten toward the post-fix mean"
+    # — a ceiling near 6.7 would refuse legitimate clips on repetitive or custom
+    # references, which is precisely the case this guard exists to survive.
+    # Re-deriving percentiles from pre-fix data would calibrate against a
+    # distribution that no longer exists.
+    #
+    # The guard bounds COUNT, not time, and the two differ by the DP backend:
+    # 2000 candidates is ~24 ms/clip with the numba kernel (RECTIFY_HP_ED_NUMBA)
+    # but ~7 s/clip on the pure-Python path, so a numba-less run on a truly
+    # pathological contig is still slow — bounded, but slow. If that case ever
+    # shows up, prefer enabling numba over lowering this.
+    #
+    # A ceiling set too LOW silently refuses legitimate clips — the failure mode
+    # this guard must not become. That is why every refusal is counted and
+    # logged rather than silent.
     max_candidates_per_clip: int = 2000
 
     # --- v2 junction re-arbitration (planning/644b) --------------------------

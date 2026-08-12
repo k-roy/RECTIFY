@@ -119,6 +119,13 @@ def test_ceiling_bounds_the_work_and_counts_the_refusal(tmp_path):
     loose, _ = _run(tmp_path, 100_000, 'loose')
     tight, _ = _run(tmp_path, 5, 'tight')
 
+    # Mutation-style contrast: the SAME input with the ceiling effectively
+    # removed must behave differently, so the assertions below cannot pass for
+    # any reason other than the guard firing. (Recommended by the cdna-trim-fix
+    # session, which mutation-tested its own pileup no-flip guard the same way.)
+    assert loose.refused_candidate_blowup == 0
+    assert loose.candidates_evaluated > 100
+
     assert tight.refused_candidate_blowup == 1
     # Work stops at the budget (+1, the candidate that trips it) instead of
     # running to completion — that is the stall being converted into a bound.
@@ -141,9 +148,17 @@ def test_abandoned_clip_is_passthrough_not_a_dropped_read(tmp_path):
 def test_default_ceiling_is_loose_enough_for_real_data():
     """Guard the constant against being tightened into a silent-loss setting.
 
-    Post-trim cDNA runs ~6.7 candidates/clip; the worst legitimate figure ever
-    observed is the 361/clip of the untrimmed pathology (planning/681 CP6). A
-    default at or below that would refuse real work.
+    Measured (planning/681 CP6, real resolver, 2,000 real cDNA molecules):
+        pre-trim-fix   17 clips ->  6,137 candidates  =  361 / clip
+        post-trim-fix   9 clips ->     60 candidates  =  6.7 / clip
+
+    🔴 361 is the PRE-FIX PATHOLOGY, not a healthy maximum. It is used here as a
+    deliberately conservative floor, NOT as a calibration target. Production now
+    lives at ~6.7/clip, and a future reader who "tightens toward the post-fix
+    mean" would start refusing legitimate clips on repetitive or custom
+    references — exactly the case the ceiling exists to survive. Percentiles
+    re-derived from pre-fix data would describe a distribution that no longer
+    exists.
     """
     assert ResolverConfig().max_candidates_per_clip > 361
 
