@@ -235,12 +235,27 @@ def ambiguity_window(chrom_seq: str, start: int, end: int, max_shift: int = 60) 
     """(l_amb, r_amb): how far the junction can slide left/right as a no-op."""
     g = chrom_seq
     n = len(g)
+    # Out-of-bounds junctions occur FOR REAL, they are not defensive
+    # paranoia: consensus has been observed selecting alignments whose N-op
+    # runs past the end of the contig (planning/684c — 3 of 400,001 reads,
+    # max N-op 261,350 bp on a genome whose longest intron is ~1 kb). The
+    # unguarded `g[end - 1 - l_amb]` below then raised
+    # `IndexError: string index out of range`, which is how that defect was
+    # first noticed — `rectify pool-gate` died on it.
+    #
+    # ⚠️ This guard does NOT make such a junction legitimate, and must never
+    # be the only fix: on its own it would silence the crash and HIDE the
+    # impossible alignment. The alignment is truncated at source by
+    # `consensus/intron_sanity.py`; this only keeps a reporting path from
+    # dying on malformed input that predates that fix (e.g. an older BAM).
+    if not (0 <= start <= n and 0 <= end <= n):
+        return 0, 0
     r_amb = 0
-    while (r_amb < max_shift and end + r_amb < n
+    while (r_amb < max_shift and end + r_amb < n and start + r_amb < n
            and g[start + r_amb].upper() == g[end + r_amb].upper()):
         r_amb += 1
     l_amb = 0
-    while (l_amb < max_shift and start - 1 - l_amb >= 0
+    while (l_amb < max_shift and start - 1 - l_amb >= 0 and end - 1 - l_amb >= 0
            and g[start - 1 - l_amb].upper() == g[end - 1 - l_amb].upper()):
         l_amb += 1
     return l_amb, r_amb
