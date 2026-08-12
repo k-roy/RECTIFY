@@ -108,6 +108,22 @@ def run_analyze(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success)
     """
+    # Exactly one input channel is required, and manifest mode does not use the
+    # positional. It is `nargs='?'` so `--manifest M` alone parses; validate the
+    # combination here instead, where the message can name both options.
+    # (Passing the manifest path as BOTH input and manifest stays valid — that is
+    # what run/multi_sample.py:43 does, and existing callers rely on it.)
+    if not getattr(args, 'manifest', None) and not getattr(args, 'input', None):
+        # This runs BEFORE the module's logger is set up (it is created inside
+        # run_analyze, further down), so use a local one rather than a name
+        # that does not exist yet.
+        import logging as _log_early
+        _log_early.getLogger(__name__).error(
+            "rectify analyze needs an input: either a positional TSV of corrected "
+            "positions, or --manifest SAMPLES.tsv for multi-sample mode. Got neither."
+        )
+        return 2
+
     # Must be called before any numpy/pandas/sklearn/pydeseq2 import side-effects
     # so thread limits take effect before those libraries auto-spawn workers.
     from ...slurm import set_thread_limits
@@ -815,7 +831,13 @@ def create_analyze_parser(subparsers) -> argparse.ArgumentParser:
     # Required arguments
     parser.add_argument(
         'input',
-        help='Input TSV with corrected positions',
+        nargs='?',
+        default=None,
+        help='Input TSV with corrected positions. OMIT when using --manifest: '
+             'in manifest mode this value is never read, but argparse made it '
+             'required, so a correct manifest-mode invocation died on '
+             '"the following arguments are required: input" (reported by the '
+             '668-drs-arm session, 4 minutes into a cohort run).',
     )
 
     parser.add_argument(
