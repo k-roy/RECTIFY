@@ -421,7 +421,32 @@ file list.** Everything landed is additive or test-covered.
    for every dataset and needs its own validation pass.
    **NEITHER IS IMPLEMENTED. Nothing landed overnight touches this — it is Kevin's call.**
    Not done unilaterally because the blast radius is dataset-wide.
-   Still open: the **per-arm histogram** (arms carry different thresholds — 40 BBMap-family, 20
+   **✅ CLOSED — the driver is PER-LIBRARY BASECALL QUALITY, with a quantitative link:**
+   - **Strain background REFUTED:** `wtaa_rep1/2/3` and `wt_rep1/2/3` share the HHY168-AA
+     background across different deposits and sit **22× apart** (1,318 vs 29,299 mean). Genotype
+     refuted too — `wt_rep1` is the WT-AA *control* at 34k while `wtaa`, also WT-AA, is at 1.3k.
+   - **The extremes are the `pod5_skip` batch:** `ysh1_rep1` 178,469 and `ysh1_rep2` 196,643 are
+     the corpus's only two `pod5_skip` libraries (two barcodes of one flow cell), already flagged
+     INDEPENDENTLY for untailed-read excess; their own third replicate is 23,915.
+   - **🔑 The two QC signals scale ~1:1** — junction-fold **7.46× / 8.22×** against untailed-fold
+     **7.74× / 7.32×**, agreeing within **12 %** across an 8× range. Two independently-derived
+     metrics tracking that closely indicate a **common upstream driver**, not coincidence.
+   - **`annotated` stays 262–271 across all nine samples spanning a 155× range of totals** — real
+     signal flat, false population moving 155×.
+   - **🔴 ACTIONABLE: quarantine `ysh1_rep1` / `ysh1_rep2` from junction-level analysis.** Any
+     cross-genotype junction comparison including them compares LIBRARY QUALITY, not biology.
+   - **Useful inversion: junction count is itself a cheap library-quality QC metric** — Station C
+     already emits it, so the artefact doubles as a diagnostic screen.
+   **Arm signatures are OPPOSITE, and this is the dangerous misreading:** the long impossible class
+   is uLTRA/deSALT-specific with **minimap2 at zero**; the short D→N class is **panel-wide with
+   minimap2 participating equally (~34,000)**. ⚠️ **Switching to minimap2-only — the natural
+   mitigation for the long class — carries the short population entirely untouched.**
+   My per-arm-threshold prediction was **refuted**: every arm cliffs at ~40 including minimap2,
+   which is not on the BBMap path, and we pass minimap2 no min-intron parameter. Revised (untested)
+   hypothesis: a **scoring crossover** — affine deletion cost grows with length while intron cost is
+   roughly fixed, so gaps flip above the crossover with no threshold required, which also explains
+   the steep rise rather than a hard zero. **Test: vary minimap2 `-O`/`-E` and re-histogram.**
+   Still open: **uLTRA's sub-20 population** (132 N-ops < 20 bp, the only arm with any) (arms carry different thresholds — 40 BBMap-family, 20
    STAR/HISAT2 — so a per-arm cliff at each arm's own threshold would confirm outright; the
    sub-40 residue of 19+156 is consistent with a second path). And `wtaa`/`ysh1` remain queued,
    though deposit-vs-background is largely reframed: the driver is **per-library deletion rate**,
