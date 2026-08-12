@@ -1,5 +1,48 @@
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
+## Delta ~10:30 — 690: I_GR (SUS repetitiveness) SEPARATES the junctions Station C wrongly admits
+
+Kevin proposed combining `I_eff` (within-sequence) with the SCORE repetitiveness indices
+(Li/Vonesch/Roy…Steinmetz, *Sci Adv* 2025, PMC12577706) — `I_LR` local, `I_GR` global, both defined
+by **shortest unique substring (SUS)**. Implemented `I_GR` as a per-base SUS track over R64-5-1 and
+tested it on 110,219 Station C rows (31 cDNA samples). **Record: Chanfreau `planning/690`.**
+
+| class | frac SUS>32 |
+|---|---:|
+| real spliceosomal introns | **0.049** |
+| genome background | 0.054 |
+| short novel `admit_candidate` | **0.049** |
+| mid novel `admit_candidate` | 0.019 |
+| **long (>10 kb) novel `admit_candidate`** | **0.875** |
+
+**18× separation between what Station C wrongly admits and real splicing — and what it RIGHTLY
+admits is indistinguishable from real introns (0.049 vs 0.049).** So I_GR separates correct from
+incorrect admissions, which q / canonicity / support / length all failed to do.
+**72.2 % of long-admitted termini are CAPPED** — no 64-mer there is unique genome-wide.
+
+**MECHANISTIC CLOSE:** `PoolGateConfig.overhang_cap = 60`, so q is scored on ≤60 bases — but these
+termini need >64 bases to be unique. **The scoring window is smaller than the uniqueness
+requirement**, so q measures information that cannot disambiguate the placement. That is why
+q=96.5 coexists with a 111 kb artifact, and it closes the earlier finding that
+`W_max = alpha·2^I_eff` is non-binding at every threshold Station C uses.
+
+**PROPOSED RULE — parameter-free:** *an overhang cannot justify a placement at a locus whose SUS
+exceeds the overhang length used to score it.* No length cutoff, no organism constant, no
+annotation dependence — two measured quantities. Subsumes the resolver's period gate (same
+principle, local rather than distal self-similarity).
+
+⚠️ **CONTROL FAILURE, recorded:** my first positive control ("annotated introns") came out at 0.172,
+ABOVE background — impossible if real splice sites are unique. Cause: **tRNA introns at 0.758**
+(multi-copy gene families, ~17 % of the set). Split out → spliceosomal introns 0.049 and the control
+works. **The SAME contamination skewed the intron-length analysis** (58 of 60 sub-40 bp annotated
+introns are tRNA). **tRNA introns contaminate ANY annotation-derived control in this genome — split
+them out by default.**
+
+Caveats: n=72 termini (36 junctions) in the long-admit class — large effect, small sample; cDNA
+only, DRS untested; `I_LR` (local) not computed and is the one predicted to track the short D→N
+class; the 562-hotspot overlap was NOT run (Table S8 is journal-supplement only, and the hotspots
+compound repetitiveness with PAM density + chromatin, so the direct test was cleaner and unblocked).
+
 ## Delta ~03:30 — overnight autonomous run: impossible-junction guard LANDED; three peer-driven fixes
 
 Kevin signed off ~02:15 with "proceed autonomously through the night and coordinate with rbrowse
@@ -370,6 +413,19 @@ file list.** Everything landed is additive or test-covered.
 | DRS ~15× faster w/ numba | 682 smoke frac 0.99966 at 4,927 s ≈ 1 h 22 m/sample vs ~22.1 h |
 
 ## Open
+
+0. **🔴 THREE DECISIONS WAIT ON KEVIN, and 690 arguably supersedes the first two:**
+   a. **SUS/I_GR gate (`planning/690`)** — parameter-free, separates correct from incorrect
+      admissions at 18×. **My recommendation, over (b) and (c).**
+   b. **Length pre-gate on Station C verdicts** — needs an organism constant; nuclear max annotated
+      intron is **1,002 bp**, chrmt 2,483 (all long introns are mitochondrial self-splicing).
+   c. **`flagged` consulted on BOTH branches** — smaller and more principled than (b); the repeat
+      flags already fire correctly on the 111 kb artifact and are ignored on the canonical branch.
+      Also fix the docstring contradiction that caused it (§Repeat-context flags promises
+      unconditional demotion; the verdict table restricts it to non-canonical; code follows the
+      table).
+   **NOTHING implemented — all three change Station C's scientific output and rbrowse consumes the
+   schema live.**
 
 1. **🔴 RESIDUAL — "guard landed" ≠ "class closed".** The 10 kb bound misses the **2–10 kb band**
    (DRS: 1,013 vs 860 per 400k ⇒ ~15 % of the >2 kb population). **Cannot** be closed by lowering
