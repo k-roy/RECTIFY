@@ -161,6 +161,22 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--require-aligners',
+        dest='require_aligners',
+        action='store_true',
+        help=(
+            'Exit non-zero if any requested aligner produced no BAM. By '
+            'default a missing binary (or an unmet precondition such as uLTRA '
+            'without --annotation) is logged as a warning and the run '
+            'continues, so a requested 3-aligner panel can silently become a '
+            '2-aligner one and still exit 0 — which passes any acceptance gate '
+            'that only checks the exit code. Use this in production/array '
+            'jobs. The end-of-run DROPPED-ALIGNER summary is emitted either '
+            'way; this flag only decides whether it is fatal.'
+        )
+    )
+
+    aligner_group.add_argument(
         '--trust-existing-bams',
         dest='trust_existing_bams',
         action='store_true',
@@ -852,6 +868,29 @@ def run_align(args: argparse.Namespace) -> int:
         for aligner in aligners:
             aligner_name, bam_path = _run_one_aligner(aligner)
             results[aligner_name] = bam_path
+
+    # Dropped-aligner gate. Every `return aligner, None` path above (missing
+    # binary, uLTRA without --annotation, a PE aligner without --read2, an
+    # unknown name) logs a warning and lets the run continue to exit 0, so a
+    # requested 3-aligner panel silently becomes a 2-aligner one and still
+    # passes any acceptance gate that checks only the exit code (observed on
+    # SCG: deSALT absent from the env → green "3-aligner" run with 2 arms).
+    # Emit ONE greppable summary line regardless, and make it fatal under
+    # --require-aligners. Same fail-loud principle as the resolver check below.
+    dropped = [a for a in aligners if not results.get(a)]
+    if dropped:
+        logger.error(
+            "DROPPED-ALIGNER: %d of %d requested aligners produced no BAM: %s "
+            "(produced: %s). Scroll up for the per-aligner reason.",
+            len(dropped), len(aligners), ', '.join(dropped),
+            ', '.join(a for a in aligners if results.get(a)) or 'none',
+        )
+        if getattr(args, 'require_aligners', False):
+            logger.error(
+                "--require-aligners was passed; failing rather than emitting a "
+                "partial panel with exit 0."
+            )
+            return 1
 
     # Overhang-resolver post-pass (planning/641/644): re-places terminal soft
     # clips of the minimap2 arm across canonical junctions under an

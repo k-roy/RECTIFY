@@ -1096,7 +1096,25 @@ def run_overhang_resolver(
     so the output keeps the panel's name-sort convention with no extra sort
     step. Returns ``output_bam``. Stats are logged and attached to the
     function as ``run_overhang_resolver.last_stats`` for tests/drivers.
+
+    .. warning::
+       ``threads`` is **accepted but NOT implemented** — the body below is a
+       single-threaded stream. The parameter is kept because callers already
+       pass it (``align_command`` forwards ``args.threads``), but it buys
+       nothing, and jobs have been sized against it: a DRS array requesting 8
+       slots got one core's worth of resolver. It is logged rather than
+       silently ignored so capacity planning stops inheriting the wrong
+       number. Per-contig sharding would be the natural implementation and
+       would also bound pathological contigs (the rDNA / reporter-construct
+       class that needs ``RECTIFY_SKIP_REGIONS`` today).
     """
+    if threads and threads > 1:
+        logger.warning(
+            "overhang_resolver: threads=%d requested but the resolver is "
+            "SINGLE-THREADED (parameter accepted for API compatibility, not "
+            "implemented). Size jobs for 1 core on this stage.",
+            threads,
+        )
     cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron)
     if not cfg.skip_regions:
         cfg.skip_regions = skip_regions_from_env()
