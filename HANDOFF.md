@@ -397,22 +397,65 @@ file list.** Everything landed is additive or test-covered.
    whether they predate `b3a8c35`.
 5. **Both peers are doing consensus-only re-runs** of completed samples (arm BAMs on disk, no
    realignment) before drawing Station B/C conclusions. Baselines banked.
-6. **🔴 OPEN QUESTION (peer-flagged, not a finding): a 46× spread in Station C junction counts.**
+6. **🔴 OPEN QUESTION — THE BIGGEST UNRESOLVED THING IN THIS WORKSPACE: ~70 % of spliced reads
+   in some DRS samples each invent a UNIQUE, HIGH-QUALITY junction.**
+   *(Started as "a 46× spread in Station C junction counts"; two rounds of discriminating tests
+   have moved it a long way — the noise explanation is REFUTED.)*
    Across 16 samples at matched ~1M depth: total censused 741 → 34,122 (**46×**), novel **70.7×**,
    while **`annotated` is flat at 222–270 (1.21×)** — so real biology is detected consistently and
    the entire spread is in NOVEL junctions.
    **My analysis of their table:** the gate absorbs most of it — `admit_candidate` spread is only
    **10.6×**, and the admit RATE runs **1.12 % in the four high-count samples vs 4.84 % in the
    five low-count ones (4.3× lower)**. Shape is consistent with the excess being low-evidence junk.
-   ⚠️ **But a competing explanation fits equally well and must be excluded first:** admit requires
-   `support >= 2`, so genuinely higher junction diversity at fixed depth loses admits to SUPPORT
-   DILUTION alone. **The discriminator is `q`, not support** — `q_max` is per-read overhang
-   information and does not depend on read count. **Stratify novel junctions per sample by `q_max`
-   and `min_anchor`:** excess at low q / short anchor ⇒ noise (matches `pool_gate.py`'s own prior
-   that 68 % of the historic pool was 3-nt-anchor novel-canonical); excess at normal q but low
-   support ⇒ dilution, junctions possibly real but under-sampled. Data is already in the
-   per-junction TSV — a groupby, not a new run. Note `rrp6aa_rep2` is also HHY168-AA yet sits at
-   2,136, which argues against a pure strain-background story.
+   **✅ DISCRIMINATOR RUN (25 samples) — NOISE IS REFUTED, it is the dilution branch:**
+   | metric | HIGH-count | LOW-count |
+   |---|---:|---:|
+   | median `q_max` | **93.3** | 28.5 |
+   | % q < 50 | **12.0** | 62.4 |
+   | % repeat_flag | **12.6** | 42.6 |
+   | **% support == 1** | **96.2** | 81.9 |
+   The excess junctions are BETTER informed and LESS repeat-associated than the low-count
+   samples' — they simply have one read each. This also kills `pool_gate.py`'s 3-nt-anchor prior
+   as the driver (that predicts low q, high repeat_flag; both go the other way). **Read length is
+   also refuted** by the peer: `wt_rep1` and `dst1d_rep1` have near-identical length distributions
+   and differ 46×. N-op-carrying read fraction differs only 1.3× (23.4 % vs 17.9 %) — so it is
+   not a splicing-rate difference either.
+
+   **MY DECOMPOSITION of their figures — the anomaly is the singleton tail:**
+   | sample | novel | singletons | multi-read core | reads/core junction |
+   |---|---:|---:|---:|---:|
+   | wt_rep1 | 33,853 | **32,567** | 1,286 | **11.1** |
+   | dst1d_rep1 | 479 | 392 | 87 | **407.0** |
+   Singleton tail **83×** apart; multi-read core only **14.8×**. **69.6 % of wt_rep1's
+   junction-carrying reads produce a junction seen exactly once, vs 1.1 % in dst1d_rep1.** At
+   matched depth that is reads being SPREAD, not more junctions existing.
+
+   **THREE CANDIDATE MECHANISMS + their tests (all groupbys on existing data, all orthogonal to
+   the deposit-vs-background test, so they can run in parallel):**
+   - **H1 coordinate jitter beyond the ambiguity window** — the same true junction called at
+     slightly different coordinates per read never coalesces. `PoolGateConfig.max_ambiguity_shift
+     = 30`; `ambiguity_window` defaults `max_shift=60`. Fits everything: high q, support 1, low
+     repeat_flag. **Test: proximity-cluster novel junctions, merging when BOTH boundaries fall
+     within ±50 bp then ±200 bp. If 33,853 collapses to ~10³ clusters it is jitter.**
+   - **H2 the impossible-junction class below threshold** — long clips placed idiosyncratically;
+     long clip ⇒ high q. The ~860/sample figure counts only the >10 kb tail; the 2–10 kb residual
+     (Open #1) and everything below is uncounted. **Test: intron-LENGTH distribution of singleton
+     junctions; excess above the ~1 kb yeast maximum ⇒ spurious placement.**
+   - **H3 arm attribution** — **test: winning aligner for reads contributing singleton vs core
+     junctions.** Disproportionate uLTRA/deSALT ⇒ same aligner story in a new guise.
+   H1 and H2 are not exclusive; jitter could be the downstream signature of long-clip placement.
+
+   ⚠️ **IF H1 HOLDS, THE 46× IS SUBSTANTIALLY AN ARTEFACT OF COUNTING** — true junction diversity
+   would be far closer between samples than the totals suggest, and Station C's `support >= 2`
+   gate would be defeated by jitter rather than by genuine singleton biology. **Worth settling
+   before any beta reviewer reads a junction count.**
+
+   **Deposit-vs-background is still open and is the peer's test:** `wtaa_rep{1,2,3}` (same
+   HHY168-AA background, DIFFERENT deposit) is the clean discriminator — high ⇒ background, low ⇒
+   deposit/run effect. `ysh1_rep{2,3}` is the reciprocal. `rrp6aa_rep2` at 2,136 in the same
+   background already argues against a pure background story. Note that even if "deposit" wins,
+   it may be the LABEL for whatever drives the jitter (basecaller version, chemistry, read
+   quality) rather than the explanation.
 7. **Station B costs ~30× Station C** (751–1,062 s vs 34 s, ~1 row per read). Relevant to run-all
    capacity: if a reviewer needs only junction verdicts, C alone is ~3 % of the cost.
 8. 674 still needs `h_data` raised; 668b exit-1 root cause still unconfirmed (682 owns it).
