@@ -455,6 +455,85 @@ def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60
 
 _HP_ED_MAX_LEN = 200
 
+# --- Optional numba kernel (the 2026-08-12 cDNA-throughput fix) -------------
+#
+# Measured: the resolver on Path-A cDNA consensus molecules runs at ~1-4
+# reads/s (vs ~1,600 r/s on trimmed DRS) because long high-complexity clips
+# legitimately pass the gate and each one scores ~hundreds of candidates with
+# this pure-Python DP (cProfile: 122 s of a 125 s / 50-read run inside this
+# function). Same knob + guard pattern as splice_aware_5prime's kernel
+# (RECTIFY_HP_ED_NUMBA; import-guarded; default OFF for the spawn-RSS reason
+# documented there — production job scripts opt in explicitly). This kernel
+# prunes EVERY row (not every 8th) and returns cutoff + 1.0 at the same
+# detection point as the Python loop, so results are bit-identical in both
+# the pruned and unpruned regimes.
+
+_HP_ED_NUMBA_REQUESTED = os.environ.get('RECTIFY_HP_ED_NUMBA', '0').strip() not in (
+    '', '0', 'false', 'False', 'no', 'off',
+)
+_hp_ed_bounded_numba = None
+_HP_ED_NUMBA_MIN_CELLS = 400
+
+if _HP_ED_NUMBA_REQUESTED:
+    try:
+        import numba as _numba_mod
+        import numpy as _np_mod
+
+        @_numba_mod.njit(cache=True)
+        def _hp_ed_bounded_numba(a1, a2, cutoff):
+            """Bit-identical twin of the Python loop below (uint8 inputs,
+            already truncated to _HP_ED_MAX_LEN; every-row pruning)."""
+            n = len(a1)
+            m = len(a2)
+            if n == 0:
+                return float(m)
+            if m == 0:
+                return float(n)
+            dcost = _np_mod.empty(n, dtype=_np_mod.float64)
+            for i in range(1, n + 1):
+                if (i >= 2 and a1[i - 2] == a1[i - 1]) or (i < n and a1[i - 1] == a1[i]):
+                    dcost[i - 1] = 0.5
+                else:
+                    dcost[i - 1] = 1.0
+            icost = _np_mod.empty(m, dtype=_np_mod.float64)
+            for j in range(1, m + 1):
+                if (j >= 2 and a2[j - 2] == a2[j - 1]) or (j < m and a2[j - 1] == a2[j]):
+                    icost[j - 1] = 0.5
+                else:
+                    icost[j - 1] = 1.0
+            prev = _np_mod.empty(m + 1, dtype=_np_mod.float64)
+            curr = _np_mod.empty(m + 1, dtype=_np_mod.float64)
+            prev[0] = 0.0
+            for j in range(1, m + 1):
+                prev[j] = prev[j - 1] + icost[j - 1]
+            prune = cutoff >= 0.0
+            for i in range(1, n + 1):
+                dc = dcost[i - 1]
+                c1 = a1[i - 1]
+                curr[0] = prev[0] + dc
+                rmin = curr[0]
+                for j in range(1, m + 1):
+                    if c1 == a2[j - 1]:
+                        v = prev[j - 1]
+                    else:
+                        v = prev[j - 1] + 1.0
+                        d = prev[j] + dc
+                        if d < v:
+                            v = d
+                        ins = curr[j - 1] + icost[j - 1]
+                        if ins < v:
+                            v = ins
+                    curr[j] = v
+                    if v < rmin:
+                        rmin = v
+                if prune and rmin > cutoff:
+                    return cutoff + 1.0
+                for j in range(m + 1):
+                    prev[j] = curr[j]
+            return prev[m]
+    except ImportError:  # pragma: no cover - numba genuinely absent
+        _hp_ed_bounded_numba = None
+
 
 def hp_edit_distance_bounded(s1: str, s2: str, cutoff: float = -1.0) -> float:
     """HP-aware global edit distance; returns > cutoff early when provably
@@ -471,6 +550,12 @@ def hp_edit_distance_bounded(s1: str, s2: str, cutoff: float = -1.0) -> float:
         return float(m)
     if m == 0:
         return float(n)
+
+    if (_hp_ed_bounded_numba is not None
+            and n * m >= _HP_ED_NUMBA_MIN_CELLS):
+        a1 = _np_mod.frombuffer(s1.encode('ascii', 'replace'), dtype=_np_mod.uint8)
+        a2 = _np_mod.frombuffer(s2.encode('ascii', 'replace'), dtype=_np_mod.uint8)
+        return float(_hp_ed_bounded_numba(a1, a2, float(cutoff)))
 
     del_cost = [
         0.5 if (i >= 2 and s1[i - 2] == s1[i - 1]) or (i < n and s1[i - 1] == s1[i])
