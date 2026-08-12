@@ -73,8 +73,13 @@ because they overlap almost completely in length.
 
 ## ✅ The right lever: require a canonical motif for SHORT gaps
 
-Real spliceosomal introns are essentially all GT-AG; the false population is **81.5 %
-non-canonical**. So a motif requirement separates them where length cannot:
+⚠️ **READ THE QUALIFICATION BELOW FIRST — an earlier draft of this section overstated the
+evidence.** The motif is the right LEVER, but the 81.5 %-non-canonical figure is **not** diagnostic
+of the D→N class; it is the baseline for *novel* junctions generally in this data. The cliff at 40
+is the evidence for the mechanism. See "What the motif figure does and does not show".
+
+Real spliceosomal introns are essentially all GT-AG. So a motif requirement is a usable separator
+where length is not:
 
 > A reference gap below some length may be called an intron (N) only if it carries a canonical
 > donor/acceptor; otherwise it stays a deletion (D).
@@ -203,6 +208,62 @@ as a diagnostic.
 **Still open:** whether `pod5_skip` per se or a correlated property (chemistry, basecaller version,
 flow-cell health) is proximate. Directly testable as per-read deletion rate for these libraries vs
 `wtaa`, which would convert "library quality" into a measurable covariate.
+
+## What the motif figure does and does NOT show (correction, `668-drs-arm`)
+
+**The ~80 % non-canonical fraction is NOT specific to the short D→N class.** Measured on the same
+data, novel junctions **> 150 bp** are `wt_rep1` **79.5 %** and `ysh1_rep1` **79.3 %**
+non-canonical — essentially the same as the short class's 81.5 %.
+
+⇒ **Non-canonical distinguishes NOVEL from ANNOTATED, not the D→N class from anything else.**
+81.5 % is therefore *not elevated* relative to other novel junctions, and an earlier framing here
+(and in my first relay of it) implied that it was. Corrected:
+
+- **Evidence for the diagnosis = the cliff at 40**, plus the arm-independence and the per-library
+  scaling. Not the motif fraction.
+- **The motif is a LEVER, not a diagnostic.** It happens to remove ~82 % of the short class, which
+  is useful, but it would remove ~80 % of long novel junctions too.
+- ⇒ **Restricting the filter to short gaps is a POLICY CHOICE, not something the data forces.** If
+  the target is the D→N artefact specifically, keep the length restriction. If the target is
+  spurious junctions generally, the same rule hits the long class — **which overlaps
+  `intron_sanity.py`'s truncation guard, and the interaction of the two needs thinking about
+  before both are enabled.**
+
+## Reporting-side placement has a STRUCTURALLY ZERO cost to known introns
+
+Verified in source: Station C **excludes annotated junctions from its table before writing**
+
+```python
+station_c.py:371   if (chrom, s, e) in annotated:
+                       n_annotated += 1
+                       continue        # counted, then SKIPPED — never reaches the rows
+```
+
+so **every row is novel by construction, and a motif filter applied there cannot remove a single
+annotated intron.** Not "removes few" — *cannot*. That is a stronger safety property than the
+annotation-side analysis above had to assume, and it separates the two placements sharply:
+
+| placement | risk to annotated introns | reversible | changes CIGARs |
+|---|---|---|---|
+| **1. reporting-side (Station C table)** | **structurally zero** | yes | no |
+| 2. alignment-side (D/N decision) | real — acts before annotation is consulted; the ~2-of-318 sub-40 figure applies | no | yes, every dataset |
+
+Also verified: `canonical_in_class` is a genuine motif test — *"True iff ANY member of the
+junction's ambiguity class is canonical"* via `is_canonical_junction` over the ambiguity window.
+It is **conservative in the safe direction**: a junction counts as canonical if any shifted
+position in its window is GT-AG, so the non-canonical fractions quoted here are lower bounds on
+how non-canonical the population really is.
+
+### Measured benefit on DRS (novel junctions ≤ 150 bp a canonical requirement would remove)
+
+| sample | novel ≤150 bp | non-canonical | removed |
+|---|---:|---:|---:|
+| `wt_rep1` | 28,007 | 22,933 | **81.9 %** |
+| `ysh1_rep1` | 119,393 | 98,717 | **82.7 %** |
+| `wtaa_rep1` (clean library) | 200 | 128 | **64.0 %** |
+
+The filter is **least** effective on the clean library and most on the degraded ones — consistent
+with it removing the false population rather than a fixed share of everything.
 
 ## Method note
 
