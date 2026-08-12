@@ -413,12 +413,25 @@ file list.** Everything landed is additive or test-covered.
    separate the populations; they overlap almost completely. (58 of the 60 sub-40 bp annotated
    introns are **tRNA** introns, so `intronlen=40` itself costs only **2 of 318** spliceosomal
    introns and is well chosen AS a threshold.)
-   **✅ THE RIGHT LEVER IS THE MOTIF.** Real spliceosomal introns are essentially all GT-AG; the
-   false population is **81.5 % non-canonical**. Require a canonical donor/acceptor before a SHORT
-   gap may be called an intron. Two placements: **(1) reporting-side** — filter in the junction
+   **✅ THE RIGHT LEVER IS THE MOTIF — with one framing correction.** ⚠️ **The 81.5 %
+   non-canonical figure is NOT diagnostic of the D→N class.** Long novel junctions are ~the same
+   (`wt_rep1` 79.5 %, `ysh1_rep1` 79.3 %), so non-canonical distinguishes **novel from annotated**,
+   not this class from anything else. An earlier version of this handoff implied otherwise.
+   **The evidence for the mechanism is the CLIFF AT 40**, not the motif fraction; the motif is a
+   lever. ⇒ **restricting the filter to SHORT gaps is a POLICY CHOICE**, not forced by the data —
+   the same rule would remove ~80 % of LONG novel junctions too, **which overlaps
+   `intron_sanity.py` and the interaction needs thought before both are enabled.**
+   Require a canonical donor/acceptor before a SHORT gap may be called an intron. Two placements: **(1) reporting-side** — filter in the junction
    table using Station C's existing `canonical_in_class`, nearly free, reversible, changes no
    alignment; **(2) alignment-side** — at the D/N decision, correct at source but changes CIGARs
    for every dataset and needs its own validation pass.
+   **Placement 1 is markedly safer than assumed — verified in source:** Station C skips annotated
+   junctions before writing rows (`station_c.py:371`), so every row is novel by construction and a
+   reporting-side motif filter **CANNOT remove an annotated intron** — not "removes few", *cannot*.
+   Placement 2 acts before annotation is consulted, so the ~2-of-318 sub-40 cost applies there.
+   **Measured benefit (novel ≤150 bp removed):** `wt_rep1` 81.9 %, `ysh1_rep1` 82.7 %,
+   `wtaa_rep1` (clean library) 64.0 % — least effective on the clean library, which is the
+   behaviour you want.
    **NEITHER IS IMPLEMENTED. Nothing landed overnight touches this — it is Kevin's call.**
    Not done unilaterally because the blast radius is dataset-wide.
    **✅ CLOSED — the driver is PER-LIBRARY BASECALL QUALITY, with a quantitative link:**
