@@ -142,8 +142,10 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
         raise RuntimeError(f"BAM quickcheck failed for checkpoint batch {path}: {exc}") from exc
 
     mismatch_count = 0
+    past_contig = []
     try:
         with pysam.AlignmentFile(path, 'rb') as bam:
+            contig_lens = dict(zip(bam.references, bam.lengths))
             for i, read in enumerate(bam.fetch(until_eof=True)):
                 if i >= max_records:
                     break
@@ -153,6 +155,21 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
                 cigar_query_span = sum(length for op, length in read.cigartuples if op in query_ops)
                 if cigar_query_span != len(read.query_sequence):
                     mismatch_count += 1
+                # Invariant: an alignment may not run off the end of its contig.
+                # `intron_sanity` truncates such records before they are written,
+                # so this should be unreachable — which is the point. Truncation
+                # fixes the alignments we know about; this is what stops the class
+                # returning silently years from now (arg. from the 668-drs-arm
+                # session). See planning/684c: deSALT produced 36 past-contig
+                # alignments per 400k reads on DRS before the fix.
+                if not read.is_unmapped and read.reference_end is not None:
+                    clen = contig_lens.get(read.reference_name)
+                    if clen is not None and read.reference_end > clen:
+                        if len(past_contig) < 5:
+                            past_contig.append(
+                                f"{read.query_name} {read.reference_name}:"
+                                f"{read.reference_start}-{read.reference_end} > {clen}"
+                            )
     except Exception as exc:
         raise RuntimeError(f"Could not read checkpoint batch BAM {path}: {exc}") from exc
 
@@ -160,6 +177,13 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
         raise RuntimeError(
             f"Checkpoint batch validation failed for {path}: "
             f"{mismatch_count}/{max_records} sampled reads have CIGAR/sequence length mismatches"
+        )
+    if past_contig:
+        raise RuntimeError(
+            f"Checkpoint batch validation failed for {path}: alignment(s) whose "
+            f"reference span runs PAST THE CONTIG END — malformed by definition, and "
+            f"intron_sanity should have truncated them before write. Examples: "
+            + '; '.join(past_contig)
         )
 
 
