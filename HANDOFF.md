@@ -1,5 +1,26 @@
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
+## Delta ~11:30 — SESSION CLOSED. Successor brief: `HANDOFF_REALIGNER_NEXT.md`
+
+- **`origin/master` = `0128840`**, suite **2,312 passed / 0 failed**.
+- **🔴 `0128840` fixes a tag collision I introduced:** the impossible-intron guard wrote `Xn`,
+  which has meant `n_aligners_agree` since consensus selection was written, and the guard runs
+  AFTER it — so every read the guard fired for silently lost its concordance count. Renamed to
+  **`Xi`**, regression test pins both halves. Found independently and simultaneously by rbrowse
+  (which consumes `Xn`) and 668-drs-arm (who also proposed `Xi`).
+  **`682_drs1m` is VERIFIED CLEAN** (only 1/2/3 across 600k reads, 3 samples) despite the
+  `ea4401e` umbrella — its consensus predates the guard. **Do NOT order a re-tag of it.**
+  Anything else built on `ea4401e..cdf4bd9` is silently ambiguous.
+- **Concordance taxonomy AGREED with rbrowse** (4 classes incl. UNKNOWN for single-arm reads,
+  ~20 % of the data) with three traps recorded: use `same_junction`/`canonicalize_junction` not
+  coordinate equality; compare 5′ ends PRE-rescue; 3′ ends use the PER-READ ambiguity window.
+  **NOT BUILT** — rbrowse holds pending Kevin. `682_drs1m` is the ONLY source of concordance data
+  that exists; tell rbrowse before it moves.
+- **Three gate decisions still with Kevin**, ranked in the successor brief: (a) SUS/`I_GR` gate
+  (`planning/690`, parameter-free, 18× separation — recommended), (b) length pre-gate,
+  (c) `flagged` on both branches + the docstring contradiction.
+- **676 deletion NOT done**, and must not be without Kevin approving the file list.
+
 ## Delta ~10:30 — 690: I_GR (SUS repetitiveness) SEPARATES the junctions Station C wrongly admits
 
 Kevin proposed combining `I_eff` (within-sequence) with the SCORE repetitiveness indices
