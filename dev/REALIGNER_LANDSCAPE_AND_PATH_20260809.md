@@ -193,6 +193,22 @@ Also riding with the resolver branch: `124c84a` RECTIFY_SKIP_REGIONS (yeast-rdna
 resolver + rescue bypass for rDNA reads; 2.6× on chrXII, byte-identical non-rDNA output, zero
 gold cost — the 10 rDNA Gould entries are 9,139-bp repeat-unit artifacts hit by no arm).
 
+### 4c. The three "gates" — reconciliation (669-prodgap's ask, 2026-08-11)
+
+One I_eff currency (`overhang_informativeness.effective_information_bits`), three decision
+forms at three stages; none share a knob, none double-fire:
+
+| gate | stage | decision form | knob |
+|---|---|---|---|
+| search-radius gate (+ period cap) | resolver / rescue / clip legs, per READ | `W_max = min(α·2^I_eff, period−1)` | `ResolverConfig.alpha`, env `RECTIFY_OVERHANG_INFO_ALPHA` |
+| pool-admission complexity gate (649) | prescan, per JUNCTION entering the CORRECTION pool | `E_chance = D·2^−I_eff(worse flank) ≤ α` | `--complexity-alpha` (default 0.01, ON) |
+| Station C "pool-gate" (report) | post-consensus, per JUNCTION | overhang-q × repeat flags × recurrence, two-track | `q_canon/q_noncanon/min_support` |
+
+Interaction check (2026-08-11): the complexity gate calls `effective_information_bits`
+directly, so the period cap (which lives in `assess_overhang`/`max_search_window_bp`) does
+NOT alter its behavior — the 666/669 2.31× measurement stands. Naming discipline: "the
+complexity gate" = prescan; "pool-gate" = the Station C report (`rectify pool-gate`).
+
 ## 5. What NOT to do (the closed doors, so they stay closed)
 
 - No likelihood/−logP-guided boundary search, in any station (impossibility argument; arm-C,
