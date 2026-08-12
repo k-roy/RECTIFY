@@ -1,5 +1,90 @@
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
+## Delta ~02:10 — 🔴 NEW CORRECTNESS FINDING (peer-reported, INDEPENDENTLY VERIFIED): consensus selects physically impossible alignments
+
+**Reported by the cDNA session (`planning/684c_impossible_junctions_desalt_ultra.md`); I
+re-measured it myself on a different slice rather than take it on trust.**
+
+My verification — `684_p1cdna_1M/WT_BY4742_rep1/align/*.multialigned.bam`, 400,001 primary reads:
+
+| check | count |
+|---|---:|
+| alignments ending **PAST the contig end** | **3** |
+| N-op **> 10 kb** | **268** (0.067 %) |
+| **max N-op** | **261,350 bp** |
+
+The longest annotated intron in *S. cerevisiae* is **~1 kb**. Example CIGARs:
+- `r030_7056` chrIV: `…190957N…` and ends at **1,593,636 vs contig length 1,531,933** — 61,703 bp
+  past the end of the chromosome.
+- `r036_7091` chrV: `…150801N…99483N…102507N…` — three separate ~100–150 kb "introns" in one read.
+
+Peer's per-arm census (3 samples, ~2.7 M reads/arm) attributes it: **minimap2 = 0 past-end, 0
+>10 kb**; uLTRA 2,372 >10 kb; deSALT 47 past-end / 6,022 >10 kb; and `multialigned` inherits
+36 / 1,886. Read-level proof in their doc shows minimap2 and uLTRA agreeing in-bounds while
+deSALT appends a 192,339 bp N-op running off the chromosome — **and the consensus picks deSALT.**
+Whatever the scorer optimises, "spans more query" is beating "is physically possible".
+
+**Two distinct defects:**
+1. **Consensus selection** admits a reference span past the contig end and N-ops far beyond the
+   organism's max intron. `-G` constrains the minimap2 arm; nothing equivalent constrains
+   uLTRA/deSALT or the selection step.
+2. **`overhang_informativeness.ambiguity_window:402` CRASHES** on such input
+   (`IndexError: string index out of range` at `g[end - 1 - l_amb]`) — that is how the peer
+   found it, via `rectify pool-gate`.
+
+⚠️ **Fix BOTH or neither** — a bounds check alone would silence the crash and HIDE defect 1.
+
+**NOT [[681]]:** the trim acts on the consensus sequence pre-alignment, and minimap2 on the same
+trimmed input is clean. Contigs are not mismatched (17/17 identical name+length).
+
+**NOT YET MEASURED — the number that decides nuisance vs. correctness:** how many of these
+survive `cdna-analyze`'s own filters into a junction table. The peer offered to run it on 684
+output; I have accepted.
+
+**Design fork worth Kevin's call before implementing:** rejecting an arm outright vs. flagging +
+counting it. A hard reject is the correct-looking move but it changes aligner-selection semantics
+for every dataset, and mis-set it would discard legitimate alignments — the same shape of trap as
+the candidate ceiling. Detection (an invariant + counter at consensus write time, same shape as
+`--require-aligners`) is safe to land unilaterally; policy is not.
+
+## Delta ~01:50 — peer review from the cDNA session; two of my statements corrected
+
+- **`684` runs NO resolver.** Its align line is `--aligners minimap2 --junction-aligners uLTRA
+  deSALT` — the resolver is not in the panel, so **684 will never produce an
+  `overhang_resolver.stats.json`.** My Resume step 3 asked for one from it; that ask is void.
+- **🔴 CORRECTION — the 683 G-overhang arbiter has ZERO MEASURED IMPACT.** I earlier relayed to
+  Kevin that the 1-bp bridge-G exposure was "frequent, not rare" (~34% of molecules reach the
+  5' rescue arbiter), citing the 681 tail. The cDNA session's **683 CP2 supersedes that**:
+  **0 of 23,663 suspect bridge-G clips fall within 10 bp of a 3'SS**, because the bridge G sits
+  at the TSS while the rescue arbitrates 3' splice sites.
+  ⚠️ **Both numbers are true and measure different things — do not conflate them:** ~34% is the
+  1-bp G *PREVALENCE* across molecules; 0/23,663 is how often one *REACHES THE ARBITER*. The
+  first was stated before the second was measured. The guard is correct and well-gated
+  but fires on nothing. Parked for Kevin's decision; patch + design at Chanfreau
+  `planning/683_arbiter.patch` · `683_test_bridge_g_arbiter.py` · `683_g_aware_5p_clip_arbiter.md`
+  (reapply with `git apply` — deliberately extracted, NOT lost).
+- **Ceiling calibration corrected (`b153303`, docs/test only).** The peer — who produced the 361
+  measurement — pointed out that **361 is the PRE-FIX PATHOLOGY, not a healthy maximum**, and
+  that my rationale invited exactly the wrong future edit. Both CP6 figures are now recorded in
+  `ResolverConfig` and the test: pre-fix 17 clips/6,137 candidates = **361/clip**; post-fix
+  9 clips/60 = **6.7/clip**. The `> 361` test is a **deliberately conservative floor, NOT a
+  calibration target** — tightening toward the post-fix mean would refuse legitimate clips on
+  repetitive/custom references, the case the ceiling exists for.
+  **Histogram ask WITHDRAWN**: pre-fix percentiles describe a distribution that no longer
+  exists, and healthy data cannot calibrate a bound on the pathological tail. The ceiling stays
+  a safety BOUND, not a tuned parameter; 2000 stands.
+  Also recorded: the guard bounds **COUNT, not TIME** — 2000 candidates is ~24 ms/clip with
+  numba but **~7 s/clip pure-Python**, so a numba-less run on a pathological contig is bounded
+  yet still slow. **Prefer enabling numba over lowering the ceiling.**
+- **Gap (a) checked by the peer, not bitten:** every completed 684 sample has all three arm BAMs
+  + `.multialigned.bam`. The 36 "not found at" log lines are OLD pre-PATH-fix runs (an SGE job
+  does not inherit the conda env). That failure was loud only because ALL THREE dropped; with
+  one missing it would have silently become a 2-aligner panel at exit 0. They will add
+  `--require-aligners` on the next wave.
+- **My process error, recorded:** I staged their `HANDOFF_681_*.md` while they were mid-thread,
+  which pushed them into defensively extracting 683 to a patch file. In a shared working tree,
+  stage only your OWN paths — being explicit is not sufficient if the path is someone else's.
+
 ## Delta ~23:55 — candidate-blowup ceiling IMPLEMENTED (Kevin: "implement it now")
 
 - **`ResolverConfig.max_candidates_per_clip` (default 2000)** + **`ResolverStats.
@@ -201,122 +286,102 @@ No cDNA arm is queued anywhere — the freeze is actually in force, not just dec
 
 ## Done
 
-- **679** — answered Kevin's question: the "genuinely high-complexity" cDNA clips were
-  untrimmed adapter + 27-nt UMI + poly(A), not genomic sequence. Correctness cleared (0
-  junctions were placed off them). Record: Chanfreau `planning/679` (CP0–CP10).
-- **681** — the fix, by a dedicated agent: `b3a8c35`, suite **2228 passed / 0 failed**
-  (baseline 2216). Soft-clip 65.8→3.8 nt; `XQ==0` 52.5→13.5 % (real defect 39.7→**0.65 %**);
-  resolver **15.5×** faster from the trim alone, candidate DP **−99.0 %**.
-- **4533de5** — `--require-aligners` + always-on `DROPPED-ALIGNER` summary; `threads` no-op on
-  `run_overhang_resolver` now warns instead of silently lying.
-- **24c7805** — pathological-contig breaker: `max_candidates_per_clip` (2000) +
-  `refused_candidate_blowup`, loud by construction. 680 candidates unbounded vs 6 at ceiling=5.
-- **644k sentinels** — both shapes fixed on H2; `.644k_rc` corrected 0→5.
-- **676 storage — COMPLETE.** 12/12 uBAMs moved scratch→project, "ALL 12 MOVED + VERIFIED",
-  **scratch 1,977.59 → 1,657.13 GB (320 GB reclaimed; 343 GB headroom)**, 0 left on scratch.
-  The orphaned rsync temp from the qdel'd 14293025 (`.prp28_rep1.ubam.bam.lAyJ9o`, 11.98 GB)
-  removed by explicit named path; project dir now exactly 313 G / 12 files.
-- **680** — dataset triage. **The cDNA freeze has LIFTED** (its blocker, 681, is committed+green).
+- **679/681** — the cDNA "high-complexity clips" were untrimmed adapter+UMI+poly(A). Fixed by the
+  cDNA session (`b3a8c35`): soft clip 65.8→3.8 nt, `XQ==0` 52.5→13.5 %, resolver 15.5× faster,
+  candidate DP −99.0 %. **Confirmed live in 684 production at `XQ==0` = 12.4 %.**
+- **False-green sweep** — `--require-aligners` + `DROPPED-ALIGNER` summary (`4533de5`); resolver
+  `threads` no-op now warns; both 644k sentinels fixed on H2 (`.644k_rc` corrected 0→5).
+- **Candidate-blowup ceiling** (`24c7805`) + calibration rationale corrected after peer review
+  (`b153303`): 361 is the PRE-FIX pathology, a conservative floor, NOT a tuning target.
+- **676 storage COMPLETE** — 12/12 uBAMs moved, **320 GB scratch reclaimed**, orphan temp removed.
+- ✅ **LANDED AND PUSHED: `origin/master` = `6490803`.** Full suite at the 3b7c408 landing:
+  **2286 passed / 0 failed**; resolver subset on the follow-up: 519 passed / 0 failed.
 
 ## Verified
 
 | claim | evidence |
 |---|---|
-| 681 fix real + green | `b3a8c35`; suite 2228/0; focused sets re-run by me 37 passed/2 skipped |
-| my two commits safe | align CLI 9 passed; resolver/junction set **126 passed / 1 skipped** (was 119 pre-change) |
-| 684 cDNA wave carries the fix | tree_p1cdna_1M @ e1bfb8c (277c708+b3a8c35); its stage-1 output measures **`XQ==0` = 12.4 %** over 20k molecules — vs 52.5 % pre-fix and the ~12.8 % by-design floor 681 predicted |
-| **DRS ~15× faster with numba** | 682 smoke finished **frac 0.99966 at 4,927 s ≈ 1 h 22 m/sample**, vs pre-numba ~22.1 h. Projection made at frac 0.232 (~1 h 26 m) held to within ~5 % |
-| ceiling guard fires and bounds | 680 candidates unbounded vs 6 at ceiling=5; 7/7 tests, incl. an anti-vacuity assert |
-| 644k was a false green | STATUS: 8 legs, 5 non-zero (SIGSEGV 139, SIGTERM 143, three rc=1) under a hardcoded `echo 0` |
-| `pt` constraint satisfied | all 12 retired uBAMs have dorado uBAM deposits carrying `pt:i:`; 9 differ by exactly 27 bytes = one `@PG` line |
-| move completed cleanly | sentinel `.676b_move_ubam_rc`=0; log "ALL 12 MOVED + VERIFIED"; 12 files, 0 dotfile temps |
+| master is green | full suite 2286 passed/0 failed at 3b7c408; subset 519/0 at 6490803 |
+| 684 carries the trim fix | `tree_p1cdna_1M` @ e1bfb8c; its stage-1 measures `XQ==0` = **12.4 %** over 20k molecules (vs 52.5 % pre-fix, ~12.8 % predicted floor) |
+| DRS ~15× faster with numba | 682 smoke **frac 0.99966 at 4,927 s ≈ 1 h 22 m/sample** vs ~22.1 h pre-numba |
+| 🔴 **impossible junctions in `multialigned.bam`** | MY re-measurement, 400,001 primary reads: **3 past contig end, 268 N-op >10 kb (0.067 %), max 261,350 bp**. `r030_7056` ends 61.7 kb past chrIV. minimap2 arm = 0 |
+| 676 move clean | sentinel 0; "ALL 12 MOVED + VERIFIED"; 12 files, 0 dotfile temps |
 
 ## Open
 
-1. **676 (a) deletion — NOT started, needs Kevin.** Data is safe on project; nothing deleted.
-   Run the count proof (§Resume 1) and **show Kevin the per-file list before any delete.**
-2. **Candidate ceiling constant** — 2000 is provisional. Tighten from real percentiles once a
-   682 `stats.json` exists (§Resume 3). Must stay **> 361** (test-pinned).
-3. **674 needs `h_data` raised** before it reruns (OOM'd at 22.469 G against a 24 G ceiling).
-4. **668b exit-1 root cause** still unconfirmed ("shell killed hard"); unit 682 owns it — its
-   off-scratch sentinels will show whether it recurs.
-5. ✅ **LANDED ON MASTER — `origin/master` = `3b7c408`**, suite **2286 passed / 0 failed**
-   (b3a8c35 trim fix · 4533de5 dropped-aligner gate · 24c7805 candidate ceiling · fd02807
-   fixture fix · records). Merged via the `rectify_worktrees/land-master` worktree so the
-   shared tree was never switched under the live agents.
-   ⚠️ **First merge attempt FAILED the suite (2 failed / 2284 passed)** — both my own ceiling
-   tests. My fixture was a period-30 tandem repeat: 680 candidates pre-gate, **0 on master**,
-   because the overhang gate caps `W_max` at period-1 and the far window collapses below
-   `min_intron` — silently, no counter. Rebuilt aperiodic with planted sites (781 vs 6 at
-   ceiling=5); `fd02807` is test-only.
-5b. **cDNA agent NOTIFIED** (inbox note + live ping, 2026-08-12 ~01:30 PT): master landed;
-   their fix confirmed in production; the two 684 tree gaps; the fixture trap; and a request
-   for `overhang_resolver.stats.json` percentiles to replace the provisional 2000 ceiling.
-   **The DRS session has NOT been pinged** — it would also want the master landing and is the
-   other half of the percentile data.
-6. **Other sessions own live work — do not touch their trees or jobs:** unit **682** (DRS,
-   array `14295895` running, `HANDOFF_682_drs_arm.md`), unit **684** (cDNA P1 wave, job
-   `14295902`, `HANDOFF_684_p1cdna_1M.md`), and the 681 agent (still editing
-   `splice_aware_5prime.py` on the G-overhang thread).
+1. **🔴 IMPOSSIBLE JUNCTIONS — awaiting one number and one decision.**
+   - Waiting on the cDNA session for **how many survive `cdna-analyze` filters into a junction
+     table** — that decides nuisance vs. correctness.
+   - **Kevin's call pending:** land DETECTION now (invariant + counter at consensus write time,
+     safe, `--require-aligners`-shaped) vs. also POLICY (consensus refuses such an arm — changes
+     aligner-selection semantics for every dataset; mis-set it discards legitimate alignments).
+   - ⚠️ `ambiguity_window:402` bounds check must ship WITH the selection fix, never alone —
+     alone it hides the defect.
+2. **676 (a) deletion — needs Kevin.** Nothing deleted; data safe on project. Count proof in
+   §Resume 1, then show him the per-file list.
+3. **674 needs `h_data` raised** (OOM'd at 22.469 G against a 24 G ceiling) before it reruns.
+4. **668b exit-1 root cause** unconfirmed; unit 682 owns it.
+5. **Ceiling constant is SETTLED at 2000** — a safety bound, deliberately not tuned. Do not
+   "tighten toward the post-fix mean" (see `b153303`). Trigger for revisiting is a non-zero
+   `refused_candidate_blowup` on healthy data.
+6. **683 G-overhang arbiter parked for Kevin: ZERO measured impact** (0 of 23,663 bridge-G clips
+   within 10 bp of a 3'SS). Patch at Chanfreau `planning/683_arbiter.patch` — extracted
+   deliberately, not lost.
+7. **Live peers own their work — do not touch their trees or jobs:** cDNA session `b7b384`
+   (684 wave, 20/31 green, Stations B/C as post-stages) and DRS session `718301` (682 array).
 
 ## Resume
 
 ```bash
-# 1. 676 (a) — the deletion gate. Data is on project; scratch copies are GONE.
+# 1. 676 (a) — the deletion gate (data is on project; scratch copies are gone)
 ssh hoffman2 'ls -l /u/project/guillom/kevinroy/676_ubam_retire/'
 ```
-Count proof — **md5 is the WRONG test** (9 files differ from their deposit twin by exactly 27
-bytes of `@PG`; the 3 wtaa are genuine shard merges):
-- 9 single-file cases: `samtools view -c` retired vs
-  `shared/raw/cDNA/intronic_pa_snp1_prp28_prp5_cdna_pcb114_2026/<sample>.bam`
-- wtaa_rep1/2/3: summed `samtools view -c` over
-  `shared/raw/cDNA/cdna_wt_rna15_ysh1_20260711/wtaa_rep*/PBM45482_*.bam` vs the merged count
-- deposit-side integrity from the deposit's own `MANIFEST.sha256`
-**Then show Kevin the per-file list. Delete only on his go-ahead, explicit named paths, no
-globs.** `pt` is already confirmed preserved in every deposit (planning/676 §9).
+**md5 is the WRONG test** (9 files differ from their deposit twin by exactly 27 bytes of `@PG`;
+the 3 wtaa are genuine shard merges). Use: 9 single-file cases `samtools view -c` retired vs
+`shared/raw/cDNA/intronic_pa_snp1_prp28_prp5_cdna_pcb114_2026/<sample>.bam`; wtaa_rep1/2/3 summed
+over `cdna_wt_rna15_ysh1_20260711/wtaa_rep*/PBM45482_*.bam`; deposit integrity from its own
+`MANIFEST.sha256`. **Show Kevin the per-file list; delete only on his go-ahead, explicit named
+paths, no globs.** `pt` already confirmed preserved in every deposit (planning/676 §9).
 
 ```bash
-# 2. Watch the two live waves (NOT yours — recover only if their sessions died)
+# 2. Impossible junctions — reproduce in one command before touching code
+ssh hoffman2 'export PATH=~/.conda/envs/rectify/bin:$PATH; python -c "
+import pysam
+b=pysam.AlignmentFile(\"/u/scratch/k/kevinroy/684_p1cdna_1M/WT_BY4742_rep1/align/WT_BY4742_rep1.multialigned.bam\")
+L=dict(zip(b.references,b.lengths)); past=big=0
+for i,r in enumerate(b):
+    if i>400000: break
+    if r.is_unmapped or r.is_secondary or r.is_supplementary: continue
+    if r.reference_end and r.reference_end>L[r.reference_name]: past+=1
+    if max([l for o,l in r.cigartuples or [] if o==3] or [0])>10000: big+=1
+print(past,big)"'
+```
+- Expect `3 268`. Full record: Chanfreau `planning/684c_impossible_junctions_desalt_ultra.md`.
+- **If Kevin says land detection only:** add an invariant + counter at consensus write time
+  (`no ref_end > contig length`; N-op sanity bound vs. organism max intron) — report, don't
+  reject. Plus the `ambiguity_window` bounds check IN THE SAME CHANGE.
+- **If he says fix selection too:** constrain the scorer so an out-of-bounds or
+  absurd-N-op alignment cannot win. Verify on `r030_7056`/`r036_7091` (chrIV/chrV) at the read
+  level before trusting any summary — and check the minimap2 arm still wins where it should.
+
+```bash
+# 3. Watch the peers' waves (NOT yours — recover only if their sessions died)
 ssh hoffman2 'qstat -u kevinroy; ls -l /u/project/guillom/kevinroy/682_sentinels/'
 ```
-- **682 (DRS)**: `.rc682_<sample>`=0 + `.done682_<sample>` → read the acceptance block
-  (records==primary==distinct QNAMEs; resolver BAM + `stats.json`; XB delta) before trusting a
-  wave. Job gone with NO sentinel = the 668b failure recurring → `qacct -j <id>` for the node,
-  and delete any truncated `*.overhang_resolver.bam` by explicit path before rerunning.
-- **684 (cDNA P1)**: must be running a tree at **`b3a8c35` or later** — anything earlier
-  reintroduces the untrimmed-adapter defect. Verify before trusting its output.
-- Re-runs of frozen cDNA arms (662's 5 remaining + the 10 already-done, 673, 674, 678) are
-  resolver+consensus+prescan only via `--trust-existing-bams`; add `--require-aligners`
-  (4533de5) while touching those scripts.
-
-```bash
-# 3. Tighten the candidate ceiling (guard is LANDED; only the constant is open)
-ssh hoffman2 'cat /u/scratch/k/kevinroy/668_drs/*/align/*overhang_resolver.stats.json'
-```
-Set `max_candidates_per_clip` from `candidates_evaluated`/`clips_assessed` percentiles across
-DRS (that JSON), cDNA post-trim (~6.7/clip; pre-trim 361/clip), and the reporter contigs (673).
-**Keep it > 361** — test-pinned, because too low silently refuses legitimate clips. A non-zero
-`refused_candidate_blowup` on healthy data means the constant is too tight, not that the data
-is bad.
-
-```bash
-# 4. Reconcile onto master (nothing from tonight is on master)
-cd ~/work/rectify && git log --oneline origin/master -1   # 277c708
-```
-Merge/rebase `chore/vendor-desalt-chanfreau1` (b3a8c35, 4533de5, 24c7805) onto `277c708`, run
-`pytest -m "not slow"` on the result, and push. **Surgical staging only** — Kevin has unrelated
-WIP (`Rectify_readme_changes_KR_proposed.txt`, `TODO_KR_NOTES.txt`,
-`scripts/validation_data/*`), and the 681 agent has live edits in `splice_aware_5prime.py`.
+682: `.rc682_<sample>`=0 + `.done682_<sample>` → read the acceptance block before trusting a wave;
+job gone with NO sentinel = the 668b failure recurring (`qacct -j <id>` for the node, and delete
+any truncated `*.overhang_resolver.bam` by explicit path first). 684 runs **no resolver**, so it
+produces no `overhang_resolver.stats.json` — don't wait on one.
 
 ## Files
 
-- Briefs: `HANDOFF_668_drs_arm.md` (→ picked up as 682) · `HANDOFF_679_cdna_trim.md`
-  (superseded banner listing its 3 errors) · `HANDOFF_681_cdna_trim_fix.md` ·
-  `HANDOFF_682_drs_arm.md` · `HANDOFF_684_p1cdna_1M.md` (other sessions' records)
-- Chanfreau `planning/`: `679_*` (evidence) · `680_*` (triage) · `681_*` (the fix, CP0–CP8)
-- Commits on `chore/vendor-desalt-chanfreau1`: `b3a8c35` · `4533de5` · `24c7805`
-- H2: `/u/project/guillom/kevinroy/{676_ubam_retire/,676b_move_ubam_par.sh,679_*,682_sentinels/,logs676b/}`
-  · `/u/scratch/k/kevinroy/644k_blast_radius/{README_644k_SENTINEL_CORRECTED.md,*.pre644kfix}`
+- Briefs: `HANDOFF_668_drs_arm.md` (→682) · `HANDOFF_679_cdna_trim.md` (superseded banner) ·
+  `HANDOFF_681_cdna_trim_fix.md` · `HANDOFF_682_drs_arm.md` · `HANDOFF_684_p1cdna_1M.md`
+- Chanfreau `planning/`: `679_*` · `680_*` · `681_*` · `683_*` (parked patch) ·
+  **`684c_impossible_junctions_desalt_ultra.md`** (the new finding)
+- `origin/master` = **`6490803`**; branch `chore/vendor-desalt-chanfreau1` is merged into it
+- H2: `/u/project/guillom/kevinroy/{676_ubam_retire/,679_*,682_sentinels/,684_chain.sh,logs676b/}`
+  · `/u/scratch/k/kevinroy/{684_p1cdna_1M/,644k_blast_radius/}`
 - Sentinels: `.676b_move_ubam_rc`=**0 (done)** · `.679_rc`=0 · `.679b_rc`=0 ·
   `644k_blast_radius/.644k_rc`=5 (corrected) · `682_sentinels/.rc682_*` (pending)
 

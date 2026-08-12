@@ -56,6 +56,7 @@ import hashlib
 import re
 import shutil
 from collections import defaultdict
+from .intron_sanity import truncate_impossible_introns, max_reportable_intron_from_env
 from typing import Dict, List, Optional, Tuple, Set
 
 import pysam
@@ -141,8 +142,10 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
         raise RuntimeError(f"BAM quickcheck failed for checkpoint batch {path}: {exc}") from exc
 
     mismatch_count = 0
+    past_contig = []
     try:
         with pysam.AlignmentFile(path, 'rb') as bam:
+            contig_lens = dict(zip(bam.references, bam.lengths))
             for i, read in enumerate(bam.fetch(until_eof=True)):
                 if i >= max_records:
                     break
@@ -152,6 +155,21 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
                 cigar_query_span = sum(length for op, length in read.cigartuples if op in query_ops)
                 if cigar_query_span != len(read.query_sequence):
                     mismatch_count += 1
+                # Invariant: an alignment may not run off the end of its contig.
+                # `intron_sanity` truncates such records before they are written,
+                # so this should be unreachable — which is the point. Truncation
+                # fixes the alignments we know about; this is what stops the class
+                # returning silently years from now (arg. from the 668-drs-arm
+                # session). See planning/684c: deSALT produced 36 past-contig
+                # alignments per 400k reads on DRS before the fix.
+                if not read.is_unmapped and read.reference_end is not None:
+                    clen = contig_lens.get(read.reference_name)
+                    if clen is not None and read.reference_end > clen:
+                        if len(past_contig) < 5:
+                            past_contig.append(
+                                f"{read.query_name} {read.reference_name}:"
+                                f"{read.reference_start}-{read.reference_end} > {clen}"
+                            )
     except Exception as exc:
         raise RuntimeError(f"Could not read checkpoint batch BAM {path}: {exc}") from exc
 
@@ -159,6 +177,13 @@ def _validate_bam_sample(path: str, *, max_records: int = 1000) -> None:
         raise RuntimeError(
             f"Checkpoint batch validation failed for {path}: "
             f"{mismatch_count}/{max_records} sampled reads have CIGAR/sequence length mismatches"
+        )
+    if past_contig:
+        raise RuntimeError(
+            f"Checkpoint batch validation failed for {path}: alignment(s) whose "
+            f"reference span runs PAST THE CONTIG END — malformed by definition, and "
+            f"intron_sanity should have truncated them before write. Examples: "
+            + '; '.join(past_contig)
         )
 
 
@@ -758,8 +783,41 @@ def _credit_tied_aligners(stats, result) -> None:
         stats['by_aligner'][aligner] += 1
 
 
+def _enforce_intron_sanity(read, out_bam, max_intron_bp, stats=None):
+    """Soft-clip a winning alignment at its first physically impossible intron.
+
+    uLTRA/deSALT emit N-ops of hundreds of kb and the scorer SELECTS them —
+    "spans more query" outranks "is physically possible" (planning/684c: 268 of
+    400,001 reads with an N-op > 10 kb, max 261,350 bp, 3 running off the contig
+    end, in a genome whose longest annotated intron is ~1 kb; the minimap2 arm,
+    constrained by -G, produced zero). This is the last point before the record
+    reaches `multialigned.bam`, which is what `cdna-analyze` consumes.
+
+    Tags the read `Xn:i:<offending bp>` so downstream viewers (rbrowse) can
+    flag it, and counts it. Truncating rather than dropping keeps the
+    well-supported 5' portion — see intron_sanity for why.
+    """
+    if max_intron_bp <= 0 or read.is_unmapped or not read.cigartuples:
+        return
+    try:
+        contig_len = out_bam.get_reference_length(read.reference_name)
+    except (KeyError, ValueError):
+        contig_len = None
+    new_cigar, offending_bp = truncate_impossible_introns(
+        read.cigartuples, max_intron_bp, read.reference_start or 0, contig_len,
+    )
+    if not offending_bp:
+        return
+    read.set_tag('Xn', int(offending_bp), value_type='i')
+    if stats is not None:
+        stats['impossible_intron_truncated'] += 1
+    if new_cigar is not None:
+        read.cigartuples = new_cigar
+
+
 def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None, tiebreak='rectify', pool_min_anchor_bp=0, pool_max_intron_len=0):
     """Process a batch of reads and write best alignments to output BAM."""
+    _max_reportable_intron = max_reportable_intron_from_env()
     if use_chimeric:
         from .chimeric_consensus import select_best_chimeric, build_chimeric_read
 
@@ -848,6 +906,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             # QNAMEs into every downstream QNAME-keyed join.
             out_read.query_name = _normalize_bam_read_name(out_read.query_name or '')
             _restore_sidecar_tags(out_read, read_num_sidecar)
+            _enforce_intron_sanity(out_read, out_bam, _max_reportable_intron, stats)
             out_bam.write(out_read)
 
         else:
@@ -905,6 +964,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                     best_read.set_tag('Xv', 1)
                 _restore_sidecar_tags(best_read, read_num_sidecar)
                 _restore_comment_tags_from_siblings(best_read, aligner_reads)
+                _enforce_intron_sanity(best_read, out_bam, _max_reportable_intron, stats)
                 out_bam.write(best_read)
 
 
@@ -1049,6 +1109,9 @@ def run_consensus_selection(
         '5prime_rescued': 0,
         'tied_score': 0,
         'chimeric_reads': 0,
+        # Consensus selected an alignment carrying a physically impossible
+        # intron (planning/684c); truncated at that junction before writing.
+        'impossible_intron_truncated': 0,
         'by_aligner': defaultdict(int),
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }
