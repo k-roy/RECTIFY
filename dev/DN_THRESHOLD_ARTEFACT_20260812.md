@@ -104,6 +104,58 @@ increasing invasiveness:
   path at a different threshold — STAR/HISAT2 default to `--min-intronlen 20`. A **per-arm**
   histogram, each arm showing a cliff at its own threshold, would confirm. Not yet run.
 
+## 🔴 THE TWO PHENOMENA HAVE OPPOSITE ARM SIGNATURES — minimap2-only is NOT a refuge
+
+Per-arm, `wt_rep1`, 300k reads/arm (measured by `668-drs-arm`):
+
+| arm | short D→N class (~40–120 bp) | long impossible class (>10 kb) | N-ops < 20 bp |
+|---|---:|---:|---:|
+| minimap2 | **~34,000** | **0** | 0 |
+| uLTRA | ~35,000 | 394 | **132** |
+| deSALT | ~35,000 | 2,067 | 0 |
+| overhang_resolver | ~34,000 (byte-identical to minimap2) | **0** | 0 |
+
+**The long class is uLTRA/deSALT-specific and minimap2 is clean. The short class is PANEL-WIDE and
+minimap2 participates equally.** So "minimap2 is the clean arm" is true only of the long class.
+
+⚠️ **The natural mitigation — switch to minimap2-only to avoid impossible junctions — carries the
+short D→N population entirely untouched.** State this wherever the long class is discussed.
+
+`overhang_resolver` is byte-identical to minimap2 here, confirming again that Station A inherits
+minimap2 placements and contributes nothing of its own to either class.
+
+### Correction: the 40 boundary is NOT a shared parameter we set
+
+A per-arm histogram was predicted to show each arm cliffing at ITS OWN threshold (40 BBMap-family,
+20 STAR/HISAT2). **It does not — every arm cliffs at ~40, including minimap2**, which is not on the
+BBMap path. And rectify passes minimap2 **no min-intron parameter at all**:
+
+```
+run_minimap2: -ax splice -uf -k14 -G <max_intron> --splice-flank=no --secondary=no --MD -y
+```
+
+So this is not a rule we configure on that arm, and not (as first supposed) a shared
+post-alignment D→N normalisation — no such step exists in the tree.
+
+**HYPOTHESIS (untested): it is a SCORING CROSSOVER intrinsic to splice-aware alignment.** A
+deletion of length L costs `gap_open + L * gap_extend` (affine, grows with L) while an intron costs
+a roughly fixed splice penalty. Above a crossover length the intron is simply cheaper, so gaps
+flip from D to N there — no threshold required. That crossover lands in the 30–40 bp region under
+default long-read parameters, which is also where BBMap's explicit `intronlen=40` rule sits, so the
+panel looks like one boundary while arriving at it by two different routes. It also explains why
+the transition is a steep RISE rather than a hard zero: a cost crossover is soft, a rule is not.
+
+**TEST: vary minimap2's gap costs (`-O`/`-E`) or the splice penalty and re-histogram.** If the
+crossover MOVES, it is scoring; if it stays at ~40 regardless, there is a hard rule somewhere still
+to be found. Cheap — one small realignment.
+
+**If the crossover explanation holds, it strengthens the motif fix decisively:** you cannot
+parameterise your way out uniformly, because each arm reaches the boundary by different means. A
+motif requirement is arm-independent.
+
+The one arm that differs is **uLTRA**, the only one with a sub-20 population (132 N-ops < 20 bp;
+16 at 10–14, 8 at 15–19) — consistent with a lower or absent floor on that path.
+
 ## Method note
 
 Four hypotheses were proposed and tested overnight; three were refuted by measurement
