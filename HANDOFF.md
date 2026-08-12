@@ -224,6 +224,7 @@ No cDNA arm is queued anywhere — the freeze is actually in force, not just dec
 |---|---|
 | 681 fix real + green | `b3a8c35`; suite 2228/0; focused sets re-run by me 37 passed/2 skipped |
 | my two commits safe | align CLI 9 passed; resolver/junction set **126 passed / 1 skipped** (was 119 pre-change) |
+| 684 cDNA wave carries the fix | tree_p1cdna_1M @ e1bfb8c (277c708+b3a8c35); its stage-1 output measures **`XQ==0` = 12.4 %** over 20k molecules — vs 52.5 % pre-fix and the ~12.8 % by-design floor 681 predicted |
 | **DRS ~15× faster with numba** | 682 smoke finished **frac 0.99966 at 4,927 s ≈ 1 h 22 m/sample**, vs pre-numba ~22.1 h. Projection made at frac 0.232 (~1 h 26 m) held to within ~5 % |
 | ceiling guard fires and bounds | 680 candidates unbounded vs 6 at ceiling=5; 7/7 tests, incl. an anti-vacuity assert |
 | 644k was a false green | STATUS: 8 legs, 5 non-zero (SIGSEGV 139, SIGTERM 143, three rc=1) under a hardcoded `echo 0` |
@@ -239,9 +240,20 @@ No cDNA arm is queued anywhere — the freeze is actually in force, not just dec
 3. **674 needs `h_data` raised** before it reruns (OOM'd at 22.469 G against a 24 G ceiling).
 4. **668b exit-1 root cause** still unconfirmed ("shell killed hard"); unit 682 owns it — its
    off-scratch sentinels will show whether it recurs.
-5. **This branch is BEHIND `origin/master`.** `chore/vendor-desalt-chanfreau1` = e7499ef + three
-   new commits; `origin/master` = `277c708` (numba twin). All three must be reconciled onto
-   master — **nothing here is on master yet.**
+5. ✅ **LANDED ON MASTER — `origin/master` = `3b7c408`**, suite **2286 passed / 0 failed**
+   (b3a8c35 trim fix · 4533de5 dropped-aligner gate · 24c7805 candidate ceiling · fd02807
+   fixture fix · records). Merged via the `rectify_worktrees/land-master` worktree so the
+   shared tree was never switched under the live agents.
+   ⚠️ **First merge attempt FAILED the suite (2 failed / 2284 passed)** — both my own ceiling
+   tests. My fixture was a period-30 tandem repeat: 680 candidates pre-gate, **0 on master**,
+   because the overhang gate caps `W_max` at period-1 and the far window collapses below
+   `min_intron` — silently, no counter. Rebuilt aperiodic with planted sites (781 vs 6 at
+   ceiling=5); `fd02807` is test-only.
+5b. **cDNA agent NOTIFIED** (inbox note + live ping, 2026-08-12 ~01:30 PT): master landed;
+   their fix confirmed in production; the two 684 tree gaps; the fixture trap; and a request
+   for `overhang_resolver.stats.json` percentiles to replace the provisional 2000 ceiling.
+   **The DRS session has NOT been pinged** — it would also want the master landing and is the
+   other half of the percentile data.
 6. **Other sessions own live work — do not touch their trees or jobs:** unit **682** (DRS,
    array `14295895` running, `HANDOFF_682_drs_arm.md`), unit **684** (cDNA P1 wave, job
    `14295902`, `HANDOFF_684_p1cdna_1M.md`), and the 681 agent (still editing
