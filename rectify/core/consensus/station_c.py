@@ -49,6 +49,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -425,11 +426,29 @@ def pool_gate(
 
 
 def write_pool_gate_outputs(rows: List[dict], summary: dict, out_prefix: Path) -> Tuple[Path, Path]:
-    """Write ``<prefix>.pool_gate.tsv`` + ``<prefix>.pool_gate.json``."""
-    out_prefix = Path(out_prefix)
+    """Write ``<prefix>.pool_gate.tsv`` + ``<prefix>.pool_gate.json``.
+
+    ``out_prefix`` is a PREFIX, not a directory: ``-o results/wt_rep1`` yields
+    ``results/wt_rep1.pool_gate.tsv``.
+
+    Uses string concatenation rather than ``Path.with_suffix``, which REPLACES
+    an existing suffix and is silently lossy on a dotted prefix — ``sample.v2``
+    became ``sample.pool_gate.tsv``, so ``sample.v1`` and ``sample.v2`` would
+    overwrite each other with no warning. A directory-looking prefix is
+    rejected outright rather than writing ``<dir>.pool_gate.tsv`` *beside* the
+    directory, which cost two sessions a confused pass each.
+    """
+    raw = str(out_prefix)
+    if raw.endswith(('/', os.sep)) or Path(raw).is_dir():
+        raise ValueError(
+            f"-o takes an output PREFIX, not a directory: got {raw!r}. "
+            f"Include a filename stem, e.g. {raw.rstrip('/' + os.sep)}/<sample> "
+            f"-> <sample>.pool_gate.tsv"
+        )
+    out_prefix = Path(raw)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    tsv = out_prefix.with_suffix('.pool_gate.tsv')
-    js = out_prefix.with_suffix('.pool_gate.json')
+    tsv = Path(raw + '.pool_gate.tsv')
+    js = Path(raw + '.pool_gate.json')
     cols = ['chrom', 'start', 'end', 'support', 'q_max', 'q_2nd',
             'canonical_in_class', 'repeat_flag', 'selfhom_flag', 'verdict',
             'orthogonal_evidence', 'cross_sample_support']
