@@ -13,14 +13,30 @@ clip is abandoned, the read passes through UNTOUCHED, and
 
 The risk this guard must not become: a ceiling set too low silently refuses
 legitimate clips — the same false-green class the guard exists to prevent. The
-tests pin BOTH directions, and the fixture is built from a GT/AG-rich tandem
-repeat so the enumeration loop is genuinely entered (680 candidates on a 3.6 kb
-contig). An earlier version of this file used a splice-site-free genome and
-passed VACUOUSLY at candidates_evaluated=0 — if you edit the fixture, re-check
-that `candidates_evaluated` is non-zero or these tests prove nothing.
+tests pin BOTH directions.
+
+🔴 TWO FIXTURE TRAPS, both hit while writing this file — read before editing it:
+
+1. A splice-site-free genome makes every test here pass VACUOUSLY at
+   `candidates_evaluated=0`, never entering the loop under test.
+   `test_fixture_actually_enumerates_candidates` exists to fail loudly if that
+   returns.
+2. A TANDEM-REPEAT genome is not usable either, even though it produces plenty
+   of sites. The overhang gate caps W_max at period-1 for periodic sequence, so
+   on a period-30 repeat the far window collapses below `min_intron` and
+   enumeration yields nothing — silently, with no refusal counter. The fixture
+   must not be built from the very sequence class the product defends against.
+   (That version passed on a pre-gate branch and failed the moment it met
+   master, which is how the trap surfaced.)
+
+Hence the fixture below: an APERIODIC random backbone with splice sites
+PLANTED deliberately — one acceptor at the alignment edge, ~300 donors upstream
+at irregular offsets inside [min_intron, max_intron]. That yields ~780
+candidates for one clip without any periodicity for the gate to catch.
 """
 
 import logging
+import random
 
 import pysam
 
@@ -31,13 +47,27 @@ from rectify.core.align.overhang_resolver import (
     run_overhang_resolver,
 )
 
-# Tandem repeat carrying both GT (donor) and AG (acceptor) dinucleotides, so
-# the splice-site index is dense and the far-site window returns many hits.
-_UNIT = 'GGTAAGTTCACTAACGCTTGCAGAACCTTA'
+_SEED = 20260812
+_LEN = 12000
+_EDGE = 9000  # alignment start; the LEFT clip attaches here
 
 
-def _repeat_genome(tmp_path):
-    seq = _UNIT * 120  # 3600 bp
+def _planted_genome(tmp_path):
+    """Aperiodic backbone + deliberately planted splice sites.
+
+    LEFT clip on the plus strand: the near site is an acceptor (AG) at the
+    intron end, the far sites are donors (GT) upstream. Planting one acceptor
+    flush with the alignment edge and many donors across the window gives a
+    large near x far product — a blow-up — with no repeat structure.
+    """
+    rng = random.Random(_SEED)
+    g = [rng.choice('ACGT') for _ in range(_LEN)]
+    g[_EDGE - 2], g[_EDGE - 1] = 'A', 'G'          # acceptor at the edge
+    off = 60
+    while off < 4800:                               # inside max_intron (5000)
+        g[_EDGE - off], g[_EDGE - off + 1] = 'G', 'T'
+        off += rng.choice((7, 11, 13, 17, 19, 23))  # irregular => aperiodic
+    seq = ''.join(g)
     (tmp_path / 'g.fa').write_text('>chrI\n' + seq + '\n')
     return seq
 
@@ -52,9 +82,9 @@ def _clipped_bam(tmp_path, seq):
         r = pysam.AlignedSegment(header)
         r.query_name = 'r1'
         r.reference_id = 0
-        r.reference_start = 1800
+        r.reference_start = _EDGE
         r.mapping_quality = 60
-        r.query_sequence = seq[1740:1860]
+        r.query_sequence = seq[_EDGE - 60:_EDGE + 60]
         r.cigarstring = '60S60M'
         r.query_qualities = pysam.qualitystring_to_array('I' * 120)
         r.set_tag('RN', 1, value_type='i')
@@ -64,7 +94,7 @@ def _clipped_bam(tmp_path, seq):
 
 def _run(tmp_path, ceiling, tag):
     ohr._BLOWUP_WARNED.clear()
-    seq = _repeat_genome(tmp_path)
+    seq = _planted_genome(tmp_path)
     bam_in = _clipped_bam(tmp_path, seq)
     out = tmp_path / f'out_{tag}.bam'
     run_overhang_resolver(
@@ -119,7 +149,7 @@ def test_default_ceiling_is_loose_enough_for_real_data():
 
 
 def test_default_ceiling_does_not_fire_on_this_contig(tmp_path):
-    """The other direction: 680 candidates is dense, but not pathological."""
+    """The other direction: ~780 candidates is dense, but not pathological."""
     stats, _ = _run(tmp_path, ResolverConfig().max_candidates_per_clip, 'default')
     assert stats.refused_candidate_blowup == 0
 
