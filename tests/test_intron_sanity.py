@@ -175,4 +175,23 @@ def test_consensus_write_path_is_wired_to_the_guard():
            '"impossible_intron_truncated"' in src
 
     body = inspect.getsource(cons._enforce_intron_sanity)
-    assert "set_tag('Xn'" in body, "reads must carry the Xn flag for rbrowse"
+    assert "set_tag('Xi'" in body, "reads must carry the Xi flag for rbrowse"
+
+
+def test_guard_does_not_clobber_the_consensus_concordance_tag():
+    """Regression: the guard originally wrote `Xn`, which ALREADY means
+    `n_aligners_agree` in the aligner-selection block — and the guard runs
+    AFTER it, so every read the guard fired for silently lost its concordance
+    count. Caught by the rbrowse session, which consumes Xn.
+
+    Pins both halves: the guard uses Xi, and Xn is still the aligner count.
+    """
+    import inspect
+    from rectify.core.consensus import consensus as cons
+
+    guard = inspect.getsource(cons._enforce_intron_sanity)
+    assert "set_tag('Xi'" in guard
+    assert "set_tag('Xn'" not in guard, "Xn is n_aligners_agree — do not reuse it"
+
+    src = inspect.getsource(cons)
+    assert "set_tag('Xn', result.n_aligners_agree)" in src

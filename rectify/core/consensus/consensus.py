@@ -793,7 +793,7 @@ def _enforce_intron_sanity(read, out_bam, max_intron_bp, stats=None):
     constrained by -G, produced zero). This is the last point before the record
     reaches `multialigned.bam`, which is what `cdna-analyze` consumes.
 
-    Tags the read `Xn:i:<offending bp>` so downstream viewers (rbrowse) can
+    Tags the read `Xi:i:<offending bp>` so downstream viewers (rbrowse) can
     flag it, and counts it. Truncating rather than dropping keeps the
     well-supported 5' portion — see intron_sanity for why.
     """
@@ -808,7 +808,13 @@ def _enforce_intron_sanity(read, out_bam, max_intron_bp, stats=None):
     )
     if not offending_bp:
         return
-    read.set_tag('Xn', int(offending_bp), value_type='i')
+    # Xi, NOT Xn — `Xn` is already `n_aligners_agree`, set ~150 lines below at
+    # the aligner-selection block, and _enforce_intron_sanity runs AFTER it, so
+    # writing Xn here silently overwrote the consensus concordance count on
+    # every read the guard fired for. Caught by the rbrowse session, which
+    # consumes Xn. The comment on that block spells out the convention this
+    # violated: lowercase second letter, and do not collide.
+    read.set_tag('Xi', int(offending_bp), value_type='i')
     if stats is not None:
         stats['impossible_intron_truncated'] += 1
     if new_cigar is not None:
