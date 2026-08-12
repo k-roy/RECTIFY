@@ -397,7 +397,38 @@ file list.** Everything landed is additive or test-covered.
    whether they predate `b3a8c35`.
 5. **Both peers are doing consensus-only re-runs** of completed samples (arm BAMs on disk, no
    realignment) before drawing Station B/C conclusions. Baselines banked.
-6. **🔴 OPEN QUESTION — THE BIGGEST UNRESOLVED THING IN THIS WORKSPACE: ~70 % of spliced reads
+6. **✅ SOLVED overnight — and it needs a DESIGN DECISION FROM KEVIN: the `intronlen=40` D→N
+   threshold manufactures novel junctions.** Full write-up: **`dev/DN_THRESHOLD_ARTEFACT_20260812.md`**
+   (`5ade34a`).
+   **What it is:** the panel converts a reference gap to an N-op purely on LENGTH
+   (`multi_aligner.py:1016-1018`, `intronlen=40`). An N-op consumes reference without consuming
+   query, so it cannot absorb errors *in* the read — and DRS's dominant error mode is deletion
+   relative to reference. **Confirmed by histogram: 99.5 % of singleton novel junctions sit at or
+   above 40 bp, ZERO between 20 and 29, a step change at exactly 40, peak at 50–54.** A
+   splicing-length distribution has no reason to know about 40. These are **deletions relabelled
+   as introns** — not splicing, not spurious splicing, not a junction-gate phenomenon.
+   **🔴 THE OBVIOUS FIX IS WRONG — I checked it against the bundled annotation.** Raising
+   `intronlen` far enough to remove the false population (~100 bp, since it peaks at 50–54 with a
+   long tail) would suppress **~107 real spliceosomal introns, ~a third of them**. Length cannot
+   separate the populations; they overlap almost completely. (58 of the 60 sub-40 bp annotated
+   introns are **tRNA** introns, so `intronlen=40` itself costs only **2 of 318** spliceosomal
+   introns and is well chosen AS a threshold.)
+   **✅ THE RIGHT LEVER IS THE MOTIF.** Real spliceosomal introns are essentially all GT-AG; the
+   false population is **81.5 % non-canonical**. Require a canonical donor/acceptor before a SHORT
+   gap may be called an intron. Two placements: **(1) reporting-side** — filter in the junction
+   table using Station C's existing `canonical_in_class`, nearly free, reversible, changes no
+   alignment; **(2) alignment-side** — at the D/N decision, correct at source but changes CIGARs
+   for every dataset and needs its own validation pass.
+   **NEITHER IS IMPLEMENTED. Nothing landed overnight touches this — it is Kevin's call.**
+   Not done unilaterally because the blast radius is dataset-wide.
+   Still open: the **per-arm histogram** (arms carry different thresholds — 40 BBMap-family, 20
+   STAR/HISAT2 — so a per-arm cliff at each arm's own threshold would confirm outright; the
+   sub-40 residue of 19+156 is consistent with a second path). And `wtaa`/`ysh1` remain queued,
+   though deposit-vs-background is largely reframed: the driver is **per-library deletion rate**,
+   and "deposit" was the label for it.
+
+7. **(the trail that got there — kept because the refutations are the useful part)** ORIGINALLY:
+   "THE BIGGEST UNRESOLVED THING IN THIS WORKSPACE: ~70 % of spliced reads
    in some DRS samples each invent a UNIQUE, HIGH-QUALITY junction.**
    *(Started as "a 46× spread in Station C junction counts"; two rounds of discriminating tests
    have moved it a long way — the noise explanation is REFUTED.)*
@@ -491,9 +522,9 @@ file list.** Everything landed is additive or test-covered.
    background already argues against a pure background story. Note that even if "deposit" wins,
    it may be the LABEL for whatever drives the jitter (basecaller version, chemistry, read
    quality) rather than the explanation.
-7. **Station B costs ~30× Station C** (751–1,062 s vs 34 s, ~1 row per read). Relevant to run-all
+8. **Station B costs ~30× Station C** (751–1,062 s vs 34 s, ~1 row per read). Relevant to run-all
    capacity: if a reviewer needs only junction verdicts, C alone is ~3 % of the cost.
-8. 674 still needs `h_data` raised; 668b exit-1 root cause still unconfirmed (682 owns it).
+9. 674 still needs `h_data` raised; 668b exit-1 root cause still unconfirmed (682 owns it).
 
 ## Lesson worth carrying (three instances tonight)
 
