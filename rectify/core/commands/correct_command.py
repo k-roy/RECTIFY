@@ -67,6 +67,45 @@ def _estimate_n_reads(bam_path: str) -> int:
         return 0
 
 
+def build_no_bam_output_warning(config, stats) -> Optional[list]:
+    """Warn when CIGAR-level corrections were computed but no BAM will carry them.
+
+    ``correct`` makes two kinds of edit that live in the CIGAR, not in the TSV:
+    the 5' rescue N-op and the 3' hard clip.  Both reach a BAM only when an
+    output BAM was requested (``--write-corrected-bam`` / ``--write-softclipped-bam``
+    / ``--output-bam``).  With no BAM flag the command still exits 0 and its
+    stats block still reports the corrections, so nothing distinguishes "no
+    corrections were needed" from "the corrections were computed and thrown
+    away".  Every consumer that reads a BAM rather than the TSV — genome
+    browser, junction census, cross-aligner comparison — then sees the
+    UNCORRECTED alignments.
+
+    That is not hypothetical: a 51-sample DRS cohort was corrected with no BAM
+    flag, discarding a 121,215-read 5' rescue per sample, and the browser drew
+    the raw soft clips under a page labelled "rectify-corrected"
+    (``planning/691``).  Exit status, stats block and TSV all looked healthy.
+
+    Returns the warning lines, or ``None`` when no warning is warranted — i.e.
+    a BAM output was requested, or nothing CIGAR-level was actually corrected.
+    """
+    if any(config.get(k) for k in ('corrected_bam', 'softclipped_bam', 'output_bam')):
+        return None
+    n_5p = int(getattr(stats, 'ends_five_prime_rescued', 0) or 0) if stats else 0
+    n_3p = int(getattr(stats, 'total_position_shifts', 0) or 0) if stats else 0
+    if not (n_5p or n_3p):
+        return None
+    return [
+        "NO CORRECTED BAM WAS WRITTEN — the corrections above exist only in the TSV.",
+        f"  {n_5p:,} read(s) had a 5' end rescued at a 3' splice site "
+        f"(each needs an N-op written into its CIGAR)",
+        f"  {n_3p:,} read(s) had a 3' end moved "
+        f"(each needs its alignment hard-clipped)",
+        "  Any BAM consumer — genome browser, junction census, cross-aligner",
+        "  comparison — will see the UNCORRECTED alignments.",
+        "  Re-run with:  --write-corrected-bam <path>",
+    ]
+
+
 def _strip_aligner_prefix(bam_entry: str) -> str:
     """Strip optional ``aligner:`` prefix from a BAM path entry.
 
@@ -833,6 +872,12 @@ def run(args):
             except Exception as e:
                 logger.warning("Per-read gene attribution unavailable: %s", e)
 
+        # Assigned ~200 lines below (after the stats report) and read ~300 lines
+        # below that (after the success banner). Initialised here so the emit
+        # site can never raise NameError on a path that skips the assignment —
+        # a guard that only fails WHEN IT FIRES is invisible on the happy path.
+        _no_bam_warn_lines = None
+
         # Choose processing mode
         _t_proc = _time.perf_counter()
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
@@ -1048,6 +1093,11 @@ def run(args):
         logger.info("=" * 70)
 
         print(report)
+
+        # Silent-discard guard (planning/691). Built here, where `stats` is
+        # fresh, but EMITTED after the success banner — a warning printed above
+        # "RECTIFY completed successfully!" is a warning nobody reads.
+        _no_bam_warn_lines = build_no_bam_output_warning(config, stats)
 
         # Write poly(A)-trimmed BAM if requested
         if config.get('output_bam'):
@@ -1345,6 +1395,21 @@ def run(args):
         logger.info("RECTIFY completed successfully!")
         logger.info(f"[TIMING] Correction total: {_wall_total_secs:.1f}s")
         logger.info("=" * 70)
+
+        # Silent-discard guard (see the block next to the summary report above).
+        # Emitted LAST, after the success banner, so it is the final thing on the
+        # console and in a SLURM .err — the failure mode this defends against is
+        # precisely a run that looks green.
+        if _no_bam_warn_lines:
+            for _line in _no_bam_warn_lines:
+                logger.warning(_line)
+            sys.stderr.flush()
+            print("!" * 70, file=sys.stderr)
+            print("WARNING: " + _no_bam_warn_lines[0], file=sys.stderr)
+            for _line in _no_bam_warn_lines[1:]:
+                print(_line, file=sys.stderr)
+            print("!" * 70, file=sys.stderr)
+            sys.stderr.flush()
 
         # ---------- Stage-level sidecar emission (Commit B, 2026-05-20) ----------
         # CRITICAL: sidecar MUST be written AFTER all durable outputs exist.
