@@ -430,7 +430,42 @@ file list.** Everything landed is additive or test-covered.
    junction-carrying reads produce a junction seen exactly once, vs 1.1 % in dst1d_rep1.** At
    matched depth that is reads being SPREAD, not more junctions existing.
 
-   **THREE CANDIDATE MECHANISMS + their tests (all groupbys on existing data, all orthogonal to
+   **🔴 UPDATE — H1 and H2 BOTH REFUTED, and H2 came out INVERTED. There are TWO phenomena in
+   different samples, not one:**
+   - **H1 coordinate jitter: REFUTED.** Proximity-merge collapses `wt_rep1` only **1.7×** at
+     ±50 bp (33,853 → 20,093) and 1.2×10⁴ even at ±200 bp; low-count samples collapse by a
+     similar 1.3×, so the behaviour does not distinguish them. **These are genuinely distinct
+     junctions.**
+   - **H2 intron length: REFUTED, and BACKWARDS.** The HIGH-count excess is **SHORT — 81 bp
+     median, only 1.7 % above 1 kb**. The **LOW**-count samples carry the implausible lengths
+     (`ski7d_rep1` core median **24,313 bp**, 72.8 % > 1 kb). **The impossible-junction class the
+     10 kb guard addresses is concentrated in the LOW-count samples.**
+   ⇒ **Two problems:** HIGH-count = tens of thousands of distinct, short (~81 bp), high-q,
+   **81.5 % NON-canonical**, singleton junctions. LOW-count = few junctions, large fraction from
+   the long spurious class (Open #1's residual).
+
+   **MY CURRENT HYPOTHESIS for the 81 bp class — a threshold artefact, testable in one histogram.**
+   The panel relabels DELETIONS as introns at a fixed length, explicitly in source:
+   `multi_aligner.py:1016` *"BBMap `intronlen` is the MIN deletion length relabeled D->N"*,
+   `:1018 'intronlen=40'`, `:1177` *"any reference gap >= 40 bp is encoded as an N-op"*;
+   `overhang_resolver.py:85 min_intron = 40`; `--min-intronlen` default 20 on the STAR/HISAT2 path.
+   **An 81 bp median sits just above a 40 bp cutoff.**
+   **TEST: histogram singleton intron lengths across 20–120 bp. A CLIFF at exactly 40 (nothing
+   below, pile-up above, decaying tail) ⇒ these are DELETIONS RECLASSIFIED AS INTRONS, not
+   spurious splicing. Smooth through 40 ⇒ the peer's error-cluster reading stands.**
+   Mechanistic note: an N-op consumes REFERENCE without consuming query, so it does not absorb
+   errors *in* the read — it absorbs a reference gap, and DRS's dominant error mode is deletion
+   relative to reference. **If this holds the fix is NOT in Station C** — it is the D/N boundary
+   (raise `intronlen`, or require a canonical motif before a SHORT gap may be called an intron) —
+   different code, different owner, and untouched by anything landed tonight.
+   ⚠️ It also predicts H3 for a DIFFERENT reason: arms carry different D→N thresholds (40 / 20 /
+   minimap2's own), so an arm-dependent singleton rate may be threshold difference, not error
+   handling. **Per-arm intron-length histograms, each showing a cliff at its own arm's threshold,
+   would settle it outright.**
+   **`review` counts are NOT comparable across samples in either direction** — same column, two
+   different phenomena.
+
+   **(superseded) the three candidate mechanisms + their tests (all groupbys on existing data, all orthogonal to
    the deposit-vs-background test, so they can run in parallel):**
    - **H1 coordinate jitter beyond the ambiguity window** — the same true junction called at
      slightly different coordinates per read never coalesces. `PoolGateConfig.max_ambiguity_shift
