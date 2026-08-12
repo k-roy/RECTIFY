@@ -240,11 +240,20 @@ this ledger does not credit.
    0.011–0.078 CPU-s/read in BENCH-DRS. **Partially accounted 2026-08-11 (planning/666,
    3-scale × 3-pool grid on the dense windows): startup amortisation and local pool density
    are now excluded — MARGINAL bench cost is 0.018 (gated pool) / 0.042 (ungated) CPU-s/read,
-   leaving a REAL 23–68× residual vs PROD.** Leading suspects, testable in order: the
-   production pool is panel-wide and genome-wide (~2 orders more junctions in the index),
-   per-aligner arms with higher rescue rates (uLTRA), hardware. The closing experiment:
-   `correct` the same window reads against the actual production `junction_pool.pkl`.
-   **Until then, still plan with the PROD figure.**
+   leaving a REAL 23–68× residual vs PROD.** The pool-size closing arm ran 2026-08-11
+   (planning/669, same window reads against the ACTUAL `ysh1_rep1` production
+   `junction_pool.pkl`): **the production pool — measured at 647,810 junctions, built with
+   support floor 1 and NO size cap (385 annotated) — raises marginal cost to 0.144
+   CPU-s/read = 3.4× the window cap pool. Strikingly SUB-LINEAR: ~1,300× the junctions for
+   3.4× the cost. A ~7–20× residual vs PROD remains unexplained**; suspects left, in order:
+   uLTRA-arm rescue rates (its BAM is 2.60× minimap2's to correct), SCG-vs-H2 hardware.
+   Two corollaries from the same unit: the prod-pool profile is a DP monoculture
+   (`_hp_edit_distance` 85% cum, `builtins.min` 1.09 B calls at 3,978 reads;
+   `_score_hp_anchored` collapses to 1.9%) — so at production shape the levers are the
+   planning/649 α-gate + a `--junction-max-size` cap on the PRODUCTION pool, then the
+   numba DP kernel; and the `--variant-scan-cache` is irrelevant to both cost and output
+   (hash-identical swap test). **Until the residual is closed, still plan with the PROD
+   figure.**
    Three quotation rules from the same unit: (i) **quote MARGINAL per-read cost, never
    total/reads** — fixed startup is 10–28 s, so any per-read figure from a ≤500-read run is
    startup-dominated; (ii) `--threads 4` buys only **1.27–1.51×** (32–38% efficiency) —
