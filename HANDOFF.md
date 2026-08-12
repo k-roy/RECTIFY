@@ -380,14 +380,42 @@ file list.** Everything landed is additive or test-covered.
    reachable." Plumbing gap, not closed.
 3. **676 (a) deletion — NEEDS KEVIN.** Nothing deleted; data safe on project. Count proof in
    §Resume 1; show him the per-file list first.
-4. **Pre-681 data may be ~24× worse** (1.593 % vs 0.067 % N-ops >5 kb). Mechanism UNPROVEN —
-   cDNA session's `684e` controlled test running. **Do NOT build the 24× into any rationale until
-   it lands.** If it holds, prioritise re-inspection by whether a run predates `b3a8c35`.
+4. ✅ **`684e` LANDED — quote 13.6×, RETIRE the 24×.** The 24× was an uncontrolled field
+   comparison (587 vs 684, different trees and depths). The controlled test — same 60,000 reads,
+   same aligners, same flags, **only the trim differing** — gives:
+   | arm | untrimmed N>5 kb | trimmed | reduction |
+   |---|---:|---:|---:|
+   | minimap2 | **0** | **0** | clean either way (`-G` refuses) |
+   | uLTRA | 185 | 17 | 10.9× |
+   | deSALT | 252 | 46 | 5.5× |
+   | **multialigned** | **341** | **25** | **13.6×** |
+   Mechanism confirmed: an untrimmed molecule carries ~150 nt of non-genomic adapter+UMI that an
+   unbounded aligner must place somewhere; minimap2's `-G` refuses, uLTRA/deSALT have no such
+   bound. **Scope: cDNA only** — `b3a8c35` touches only `rectify/core/cdna/*` and the DRS correct
+   path imports nothing from `core.cdna`, so DRS carries no pre/post era (which is what allowed
+   the confound to be demonstrated rather than assumed). Prioritise re-inspection of cDNA runs by
+   whether they predate `b3a8c35`.
 5. **Both peers are doing consensus-only re-runs** of completed samples (arm BAMs on disk, no
    realignment) before drawing Station B/C conclusions. Baselines banked.
-6. **Station B costs ~30× Station C** (751–1,062 s vs 34 s, ~1 row per read). Relevant to run-all
+6. **🔴 OPEN QUESTION (peer-flagged, not a finding): a 46× spread in Station C junction counts.**
+   Across 16 samples at matched ~1M depth: total censused 741 → 34,122 (**46×**), novel **70.7×**,
+   while **`annotated` is flat at 222–270 (1.21×)** — so real biology is detected consistently and
+   the entire spread is in NOVEL junctions.
+   **My analysis of their table:** the gate absorbs most of it — `admit_candidate` spread is only
+   **10.6×**, and the admit RATE runs **1.12 % in the four high-count samples vs 4.84 % in the
+   five low-count ones (4.3× lower)**. Shape is consistent with the excess being low-evidence junk.
+   ⚠️ **But a competing explanation fits equally well and must be excluded first:** admit requires
+   `support >= 2`, so genuinely higher junction diversity at fixed depth loses admits to SUPPORT
+   DILUTION alone. **The discriminator is `q`, not support** — `q_max` is per-read overhang
+   information and does not depend on read count. **Stratify novel junctions per sample by `q_max`
+   and `min_anchor`:** excess at low q / short anchor ⇒ noise (matches `pool_gate.py`'s own prior
+   that 68 % of the historic pool was 3-nt-anchor novel-canonical); excess at normal q but low
+   support ⇒ dilution, junctions possibly real but under-sampled. Data is already in the
+   per-junction TSV — a groupby, not a new run. Note `rrp6aa_rep2` is also HHY168-AA yet sits at
+   2,136, which argues against a pure strain-background story.
+7. **Station B costs ~30× Station C** (751–1,062 s vs 34 s, ~1 row per read). Relevant to run-all
    capacity: if a reviewer needs only junction verdicts, C alone is ~3 % of the cost.
-7. 674 still needs `h_data` raised; 668b exit-1 root cause still unconfirmed (682 owns it).
+8. 674 still needs `h_data` raised; 668b exit-1 root cause still unconfirmed (682 owns it).
 
 ## Lesson worth carrying (three instances tonight)
 
@@ -433,9 +461,9 @@ ssh hoffman2 'qstat -u kevinroy; ls -l /u/project/guillom/kevinroy/682_sentinels
 682 (DRS): 32/51 chains at last report, zero failure sentinels. 684 (cDNA): 27 samples through
 consensus. Both have their own handoffs (`HANDOFF_682_drs_arm.md`, `HANDOFF_684_p1cdna_1M.md`).
 
-**Awaiting from peers:** Station C verdict distribution across ~32 samples / 17 conditions (DRS job
-`682h`/14298271), post-re-run survival vs the banked 3,789/3,789 + 84/84 baseline, and the `684e`
-trim-vs-untrimmed controlled test.
+**Awaiting from peers:** the remaining Station C samples (16 of ~32 in), the `q_max`/`min_anchor`
+stratification that decides the 46× question, and the post-re-run survival number vs the banked
+3,789/3,789 + 84/84 baseline. `684e` has LANDED (see Open #4).
 
 ## Files
 
