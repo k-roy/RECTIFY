@@ -55,6 +55,32 @@ from rectify.core.cdna.umi import canonical_umi
 log = logging.getLogger("cdna_correct")
 
 
+def _print_pretrim_health(fastq_stats: Dict) -> None:
+    """Report adapter-pretrim no-op rates (planning/681).
+
+    A silently no-op'd trim sends ~124 nt of adapter + random 27-nt UMI + poly-A into the
+    aligner as a soft clip; the junction resolver then enumerates hundreds of GT/AG
+    candidates against sequence that can never align, and — because a random UMI is
+    maximally high-complexity — no complexity gate rejects it. That cost months as an
+    unexplained "1-4 reads/s cDNA" pathology. Printing the rate makes a regression a number
+    instead of a stall.
+
+    Expected floor for ``5' trim NO-OP``: Type-2 molecules have no SSP by design, and
+    pileup/POA consensuses are built from aligned positions only and so carry no adapter to
+    strip at all. ``frame vs XO label mismatch`` should be ~0 once the caller propagates the
+    frame correctly — a nonzero rate means the label and the sequence have drifted apart
+    again, which is the original defect.
+    """
+    n = max(1, fastq_stats.get("written", 0))
+    print("Adapter pretrim health:")
+    for label, key in (("frame flipped (basecalled seq)", "trim_frame_flipped"),
+                       ("frame vs XO label mismatch", "trim_frame_mismatch"),
+                       ("5' trim NO-OP (Type-1 only)", "trim_noop_5p"),
+                       ("3' trim NO-OP", "trim_noop_3p")):
+        v = fastq_stats.get(key, 0)
+        print(f"  {label:<32s} {v:>8d}  ({100 * v / n:.1f}%)")
+
+
 def _region_cluster_prefix(region: Optional[str]) -> str:
     """Stage-1 cluster-name prefix that makes per-region output globally unique.
 
@@ -255,7 +281,10 @@ def _run_cdna_correct_parallel(
             total_stats: Dict = {"input_reads": 0, "written": 0, "from_singletons": 0,
                                   "from_multi_pileup": 0, "from_multi_fallback": 0,
                                   "n_boundary_dropped": 0,
-                                  "adaptive_deep_buckets": 0, "adaptive_deep_reads": 0}
+                                  "adaptive_deep_buckets": 0, "adaptive_deep_reads": 0,
+                                  # planning/681 adapter-pretrim health counters
+                                  "trim_frame_flipped": 0, "trim_frame_mismatch": 0,
+                                  "trim_noop_5p": 0, "trim_noop_3p": 0}
             for fut in as_completed(futures):
                 s = fut.result()
                 for k in total_stats:
@@ -404,6 +433,7 @@ def run(args) -> int:
         print(f"  singletons (passed through):     {fastq_stats['from_singletons']:>8d}")
         print(f"  multi-read (pileup/POA):         {fastq_stats['from_multi_pileup']:>8d}")
         print(f"  multi-read (rep fallback):       {fastq_stats['from_multi_fallback']:>8d}")
+        _print_pretrim_health(fastq_stats)
         print()
         print(f"Output FASTQ: {out_fastq}")
         print("Next step: `rectify align` on this FASTQ → `rectify cdna-analyze`")
@@ -481,6 +511,7 @@ def run(args) -> int:
         print(f"  singletons (passed through):     {fastq_stats['from_singletons']:>8d}")
         print(f"  multi-read (pileup consensus):   {fastq_stats['from_multi_pileup']:>8d}")
         print(f"  multi-read (rep fallback):       {fastq_stats['from_multi_fallback']:>8d}")
+        _print_pretrim_health(fastq_stats)
         print(f"polyA-pileup buckets dropped:    {stats['buckets_dropped_polyA_pileup']:>8d}"
               f"  ({stats['reads_in_dropped_buckets']} reads — these need POA + position-aware handling)")
         n_t1 = stats.get('type1_reads', 0); n_t2 = stats.get('type2_reads', 0)
