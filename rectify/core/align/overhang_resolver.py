@@ -97,6 +97,27 @@ class ResolverConfig:
     # uncontested. Letting inside-edge sites compete fixes both.
     edge_inside_slop: int = 24
 
+    # --- Pathological-contig circuit breaker --------------------------------
+    # Candidate enumeration is near_sites x far_sites, and on a repetitive or
+    # low-complexity contig that product explodes: measured 361 candidates per
+    # clip on untrimmed cDNA (planning/681 CP6), and a reporter-construct contig
+    # ran ~555x below baseline (planning/673) until an operator set
+    # RECTIFY_SKIP_REGIONS by hand. Skip regions require knowing the bad contig
+    # IN ADVANCE, so any unanticipated custom reference degrades to a silent
+    # multi-hour stall. This bounds the per-clip DP work instead: past the
+    # ceiling the clip is abandoned (the read passes through untouched) and
+    # `refused_candidate_blowup` records it.
+    #
+    # PROVISIONAL VALUE, deliberately loose. Post-trim cDNA runs ~6.7
+    # candidates/clip; the worst legitimate figure observed is the 361/clip of
+    # the untrimmed pathology. 2000 is ~300x the normal mean, so it should never
+    # fire on healthy data — it exists to convert an unbounded stall into a
+    # bounded one. Tighten from real percentiles once DRS stats.json lands
+    # (see HANDOFF.md §Resume step 3). A ceiling set too LOW would silently
+    # refuse legitimate clips, which is the failure mode this guard must not
+    # become: that is why it is counted and logged, never silent.
+    max_candidates_per_clip: int = 2000
+
     # --- v2 junction re-arbitration (planning/644b) --------------------------
     # The peelback move generalized: treat the aligner's junction ASSIGNMENT
     # (and suspicious linear stretches) as hypotheses and re-score competing
@@ -139,6 +160,7 @@ class ResolverStats:
     clips_assessed: int = 0
     refused_low_info: int = 0
     refused_repeat: int = 0
+    refused_candidate_blowup: int = 0
     no_candidates: int = 0
     rejected_edit: int = 0
     rejected_ambiguous: int = 0
@@ -190,6 +212,31 @@ def _donor_rank(chrom_seq: str, side: str, strand: str,
         return 0 if dinuc == 'GT' else 1
     dinuc = chrom_seq[intron_end - 2:intron_end].upper()
     return 0 if dinuc == 'AC' else 1
+
+
+_BLOWUP_WARNED: set = set()
+
+
+def _warn_blowup(chrom: str, ceiling: int) -> None:
+    """Log a candidate blow-up ONCE per contig.
+
+    A pathological contig produces one blow-up per clip — potentially millions
+    — so an unthrottled warning would itself become the performance problem it
+    is reporting. One line names the contig, which is the actionable part: the
+    operator adds it to RECTIFY_SKIP_REGIONS. The per-clip tally stays exact in
+    `stats.refused_candidate_blowup`.
+    """
+    if chrom in _BLOWUP_WARNED:
+        return
+    _BLOWUP_WARNED.add(chrom)
+    logger.warning(
+        "overhang_resolver: candidate blow-up on contig %r — a clip exceeded "
+        "%d candidates and was ABANDONED (read passes through untouched). "
+        "This is the repetitive/low-complexity-contig class; further "
+        "occurrences on this contig are counted in refused_candidate_blowup "
+        "but not logged. Consider adding %r to RECTIFY_SKIP_REGIONS.",
+        chrom, ceiling, chrom,
+    )
 
 
 def resolve_clip(
@@ -252,6 +299,13 @@ def resolve_clip(
     # --- Candidate lookup (binary search, bounded by W) --------------------
     placements: List[_Placement] = []
     best_ed = float('inf')
+    # Per-clip candidate budget (see ResolverConfig.max_candidates_per_clip).
+    # Checked inside both enumeration loops rather than pre-counted: the DP's
+    # pruning cutoff tightens as `best_ed` improves, so the loops must run in
+    # their existing order, and a pre-count would have to duplicate the range
+    # arithmetic and could drift from it. The cost of bailing late is bounded
+    # by the ceiling itself.
+    n_cand = 0
 
     k_cap = min(cfg.edge_inside_slop, len(inside_seq))
 
@@ -288,6 +342,11 @@ def resolve_clip(
                 ref = chrom_seq[f - m:f] + (chrom_seq[e:edge] if k == 0 else '')
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
+                n_cand += 1
+                if n_cand > cfg.max_candidates_per_clip:
+                    stats.refused_candidate_blowup += 1
+                    _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                    return None
                 _c = _cutoff()
                 ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                 if ed <= _c:
@@ -321,6 +380,11 @@ def resolve_clip(
                 ref = (chrom_seq[edge:d] if k == 0 else '') + chrom_seq[e:e + m]
                 stats.candidates_evaluated += 1
                 COUNTERS['candidates_evaluated'] += 1
+                n_cand += 1
+                if n_cand > cfg.max_candidates_per_clip:
+                    stats.refused_candidate_blowup += 1
+                    _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                    return None
                 _c = _cutoff()
                 ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                 if ed <= _c:
@@ -1137,12 +1201,24 @@ def run_overhang_resolver(
 
     logger.info(
         'overhang_resolver: %d reads, %d clips seen, %d resolved '
-        '(L=%d R=%d), refused low-info=%d repeat=%d, no-candidates=%d, '
-        'rejected edit=%d ambiguous=%d, candidates evaluated=%d',
+        '(L=%d R=%d), refused low-info=%d repeat=%d blowup=%d, '
+        'no-candidates=%d, rejected edit=%d ambiguous=%d, '
+        'candidates evaluated=%d',
         stats.reads, stats.clips_seen, stats.resolved,
         stats.resolved_left, stats.resolved_right,
-        stats.refused_low_info, stats.refused_repeat, stats.no_candidates,
+        stats.refused_low_info, stats.refused_repeat,
+        stats.refused_candidate_blowup, stats.no_candidates,
         stats.rejected_edit, stats.rejected_ambiguous, stats.candidates_evaluated,
     )
+    # Escalate the blow-up count out of the info line: an acceptance gate that
+    # skims the summary must not have to notice a non-zero field buried mid-row.
+    if stats.refused_candidate_blowup:
+        logger.warning(
+            'overhang_resolver: %d clip(s) ABANDONED on the candidate ceiling '
+            '(%d). Those reads passed through unresolved — real junctions may '
+            'be unplaced on the affected contig(s). Investigate before trusting '
+            'junction counts there.',
+            stats.refused_candidate_blowup, cfg.max_candidates_per_clip,
+        )
     run_overhang_resolver.last_stats = stats
     return output_bam
