@@ -167,6 +167,12 @@ Citation:
     create_aggregate_parser(subparsers)
 
     # =========================================================================
+    # attribute-reads command (per-read readthrough-aware gene attribution)
+    # =========================================================================
+    from .core.commands.attribute_reads_command import create_attribute_reads_parser
+    create_attribute_reads_parser(subparsers)
+
+    # =========================================================================
     # umi-dedup command (collapse a UMI-tagged short-read BAM to molecules)
     # =========================================================================
     from .core.commands.umi_dedup_command import create_umi_dedup_parser
@@ -311,6 +317,9 @@ def _dispatch(args, parser):
     elif args.command == 'aggregate':
         from .core.commands import aggregate_command
         aggregate_command.run(args)
+    elif args.command == 'attribute-reads':
+        from .core.commands import attribute_reads_command
+        sys.exit(attribute_reads_command.run(args))
     elif args.command == 'prescan':
         from .core.commands import prescan_command
         sys.exit(prescan_command.run(args))
