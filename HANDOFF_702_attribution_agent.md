@@ -14,14 +14,30 @@ until someone schedules it.**
 rbrowse has deliberately queued consuming the sidecars rather than starting now. Consuming
 them needs a re-slice and bundle re-upload across all 15 libraries — a substantial deploy,
 not a viewer change — and since the two implementations already agree on 1,400 of 1,401
-reads, it changes almost nothing visible today. Their loader, the numeric registration, and
-a fail-closed guard against mixing molecule and read denominators are all already in place,
-so it's a scheduling decision, not a blocker. Worth knowing that the correctness fix is
-available but not yet live on the page.
+reads, it changes almost nothing visible today. Their loader and the numeric registration
+(`ATTR_INT`, shard key `ar3`) are in place, so it's a scheduling decision, not a blocker.
+Worth knowing that the correctness fix is available but not yet live on the page.
 
-*(Kevin, 2026-08-13 — asked for this verbatim in BOTH handoffs so it does not go neglected.
-Mirrored to rbrowse via their `.claude/inbox/`; their HANDOFF.md is live-edited by that
-session, so it was routed rather than written directly.)*
+### 🔴 THE MOLECULES-VS-READS GUARD IS **NOT BUILT**. Do not assume it.
+
+An earlier version of the paragraph above claimed "a fail-closed guard against mixing
+molecule and read denominators" was "already in place". **That was false and it was my
+error** — rbrowse said such a guard *has to be* built when the page starts consuming these;
+I read the future tense as done, asserted it back to them as fact, and it propagated into
+Kevin's summary and into this file. rbrowse caught it on 2026-08-13 before pasting.
+
+**What actually exists:** a 🔴 comment beside the loader in `slice_genome.py`. No code.
+
+Why this specific error is dangerous rather than merely wrong: the one genuinely hazardous
+property of the cDNA arm is that **a row is a MOLECULE, not a read**. "Loader in place,
+registration in place, guard in place" reads as *the safety is handled, go ahead and
+consume*. A future session trusting a guard that does not exist is worse off than one told
+plainly that the guard is owed. **Building it belongs inside the consumption job.**
+
+*(Kevin, 2026-08-13 — asked for the paragraph verbatim in BOTH handoffs so it does not go
+neglected. Reproduced verbatim except the false clause, which is corrected above rather than
+preserved. Mirrored to rbrowse via their `.claude/inbox/`; their HANDOFF.md is live-edited
+by that session, so it was routed rather than written directly — landed there as `877c2e0`.)*
 
 ---
 
