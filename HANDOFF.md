@@ -1,3 +1,105 @@
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-13
+
+## Delta 2026-08-13 — 🔴 RESOLVER JOB IN FLIGHT ON H2 · W_max calibration diagnosed · three gates refuted
+
+### 🔴 IN FLIGHT — check this FIRST
+
+**`overhang_resolver` running on the cDNA arm**, launched 2026-08-13 ~09:28 PT, so Kevin can get an
+apples-to-apples cDNA-vs-DRS comparison. The cDNA cohort (684) was built WITHOUT the resolver; DRS
+(682) was built WITH it.
+
+- Host: H2. Dir: **`/u/scratch/k/kevinroy/699_cdna_resolver/`**
+- Tree: **`tree_277c708`** — deliberately the SAME tree both existing cohorts used, so the resolver
+  is the only variable. Do NOT "upgrade" it to master for this comparison.
+- Input: `684_p1cdna_1M/WT_BY4742_rep1/align/WT_BY4742_rep1.minimap2.rnsorted.bam`
+- Sentinel: **`.resolver_rc`** (written by `run.sh` after the python exits). Log: `resolver.log`.
+- Single-threaded by design (`run_overhang_resolver` accepts `threads` but ignores it — documented
+  at `overhang_resolver.py:1188`). Expect roughly 20-40 min for ~900k reads.
+
+### Done (this session)
+
+- Commits: `2d77575` (no-BAM warning + 8 tests), `3f1b956` (triage), `51b3011` (handoff).
+- Planning artifacts **691-700**. The load-bearing ones: **694** (long-intron root cause),
+  **696** (feature sweep + retractions), **697** (the 50-intron browser panel, DELIVERED to
+  rbrowse), **698** (Resolver-vs-mapPacBio synthesis), **700** (W_max calibration).
+- **50-intron confounding panel shipped to rbrowse** — 10 per length bin, one per gene,
+  `planning/697_panel_annotated.tsv`. Kevin intends to walk these one by one in the browser.
+
+### Verified
+
+- **`max_intron` is never passed to deSALT or uLTRA** — the only two wrappers in the panel that
+  don't get it. deSALT runs at its own `-I` default of 200,000. Across 31 cDNA samples the >10 kb
+  population has its 99th percentile at 196,914 bp with 0.55 % above 200,000 — a parameter cliff.
+  🔴 This inverts a recorded conclusion: minimap2's "clean max N-op 5,064 bp" IS rectify's own
+  `-G 5000`, not an algorithm property.
+- **W_max stops binding at ~15 clean bases** (`alpha·2^I = G` ⇒ I = 30.2 bits). Refusal rate is
+  62.5 % at 8 bp and **0.0 % from 20 bp up**. So the gate is a low-complexity refusal, not an
+  information budget. `_MAX_I_EFF_EXP = 64` is meaningless — the genome has ~23.5 bits of address
+  space. **Median SUS = 16 bases vs W_max binding at 15.1 — the model is right on the median and
+  hands 10^17 bp windows to the 4-5 % tail of loci that need >64 bases to be unique.**
+- **The cDNA cohort ran without the resolver**; DRS ran with it. And the resolver SUBSTITUTES the
+  minimap2 arm (`align_command.py:951`), it does not add a 4th arm — so `Xa=minimap2` on DRS
+  actually denotes the resolver output. Both cohorts are 3-arm in consensus.
+- Resolver emits **0 past-contig and 0 N-ops >10 kb** (DRS per-arm census) — it caps itself at
+  `ResolverConfig.max_intron = 5000`.
+
+### Open — three proposed gates REFUTED, do not re-propose without new evidence
+
+| proposal | refuted because |
+|---|---|
+| canonical motif | circular — uLTRA is motif/annotation-guided, minimap2 scores GT-AG; 4/12 long junk was already canonical |
+| min exon anchor | **INVERTED** — real annotated introns median 18 bp vs junk 28 bp |
+| multi-aligner agreement | majority vote punishes the specialist that is uniquely right (bbmap/mapPacBio on non-canonical), **and mapPacBio is not even in the 684 panel** |
+
+Also open:
+1. **UNCOMMITTED** `max_intron` -> deSALT/uLTRA patch (`multi_aligner.py`, `align_command.py`).
+   111 related tests pass. **Not smoke-tested.** Kevin: 5,000 is a yeast constant; make it
+   annotation-derived before landing.
+2. The W_max recalibration (`700` §"honest bound") is proposed, **not implemented or costed**.
+3. `682_drs1m` stage-4 re-run with `--write-corrected-bam` — still the thing that fixes Kevin's
+   original RPL22B view. Not started.
+4. NN **695** claimed but unwritten (reserved for the max_intron smoke test); release if abandoned.
+
+### Resume
+
+```bash
+# 1. FIRST — the in-flight resolver job.
+ssh h2 'cd /u/scratch/k/kevinroy/699_cdna_resolver && cat .resolver_rc 2>/dev/null || echo RUNNING'
+#  IF the file is absent -> still running. Confirm it is alive, do NOT relaunch:
+ssh h2 'pgrep -u kevinroy -f overhang_resolver >/dev/null && echo alive || echo DEAD'
+#     * alive  -> wait; the BAM grows monotonically (ls -la the .bam twice, a minute apart).
+#     * DEAD with no .resolver_rc -> it died silently. Read resolver.log, then relaunch:
+#           ssh h2 'cd /u/scratch/k/kevinroy && nohup bash 699_cdna_resolver/run.sh &'
+#  IF .resolver_rc == 0 -> proceed to step 2.
+#  IF .resolver_rc != 0 -> read 699_cdna_resolver/resolver.log; the usual causes are a wrong
+#     genome path or a missing .bai on the input arm.
+
+# 2. When rc==0, build the apples-to-apples consensus (NO realignment needed).
+#    The resolver SUBSTITUTES the minimap2 arm, so pass it AS minimap2:
+ssh h2 'export PYTHONPATH=/u/scratch/k/kevinroy/tree_277c708/rectify
+  R=/u/scratch/k/kevinroy; S=WT_BY4742_rep1
+  ~/.conda/envs/rectify/bin/python -m rectify.cli consensus     minimap2:$R/699_cdna_resolver/$S.overhang_resolver.bam     uLTRA:$R/684_p1cdna_1M/$S/align/$S.uLTRA.bam     deSALT:$R/684_p1cdna_1M/$S/align/$S.deSALT.bam     --genome $R/587_ms2_cdna/refs/S288C_reference_sequence_R64-5-1_20240529.fsa     --annotation $R/587_ms2_cdna/refs/saccharomyces_cerevisiae_R64-5-1_20240529.gff     --prefix ${S}_resolver -o $R/699_cdna_resolver'
+#    🔴 Write to 699_cdna_resolver, NOT into 684_p1cdna_1M — the existing multialigned.bam is what
+#    the 697 browser panel coordinates were derived from. Do not clobber the "before".
+
+# 3. Then compare, which is the deliverable Kevin asked for:
+ssh h2 'cd /u/scratch/k/kevinroy && ~/.conda/envs/rectify/bin/python 697b_arms.py     697_confounding_intron_panel.tsv 699_cdna_resolver/WT_BY4742_rep1_resolver.multialigned.bam     699_panel_with_resolver.tsv minimap2=699_cdna_resolver/WT_BY4742_rep1.overhang_resolver.bam     uLTRA=684_p1cdna_1M/WT_BY4742_rep1/align/WT_BY4742_rep1.uLTRA.bam     deSALT=684_p1cdna_1M/WT_BY4742_rep1/align/WT_BY4742_rep1.deSALT.bam'
+#    Read 699_cdna_resolver/*.overhang_resolver.stats.json FIRST — resolved / refused_low_info /
+#    rejected_ambiguous / refused_candidate_blowup. ANTI-VACUITY: if resolved == 0 the arm changed
+#    nothing and any "comparison" is vacuous; say so rather than reporting a null.
+
+# 4. Tell rbrowse the resolver track exists so the 5kb+ bin stops being uLTRA/deSALT unopposed.
+```
+
+### Files
+
+- `~/work/UCLA/Chanfreau_Lab/planning/69{1,2,3,4,6,7,8}_*.{md,py,tsv}`, `700_wmax_calibration.{md,py,json}`
+- `dev/TRIAGE_PRE_RERUN_20260812.md` · `tests/test_correct_no_bam_warning.py`
+- H2: `/u/scratch/k/kevinroy/699_cdna_resolver/`, `69{4,4b,4c,4d,6,7b}_*.py`, `697_panel_annotated.tsv`
+- rbrowse inbox: `~/work/rbrowse/.claude/inbox/2026-08-13T0010Z__from-rectify-agent__*`
+
+---
+
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-12 late
 
 ## Delta 2026-08-12 — 5' rescue cleared, long-intron ROOT CAUSE found, anchor-filter trap avoided
