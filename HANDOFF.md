@@ -1,3 +1,116 @@
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-12 late
+
+## Delta 2026-08-12 — 5' rescue cleared, long-intron ROOT CAUSE found, anchor-filter trap avoided
+
+**Role change: Kevin stood down the DRS (`668-drs-arm`) and cDNA (`cdna-trim-fix`) sessions.
+There are now exactly two agents: the Rectify Agent (this one, owns everything rectify) and the
+Rbrowse Agent.** Do not defer rectify-side work to a peer; inherit it. Agent inbox is EMPTY
+(all six messages actioned + archived).
+
+### Done
+
+- **`2d77575` fix(correct): warn loudly when CIGAR-level corrections reach no BAM.**
+  `build_no_bam_output_warning()` in `correct_command.py`, emitted AFTER the success banner.
+  `tests/test_correct_no_bam_warning.py`, 8 tests, deliberately NOT marked slow.
+- **`3f1b956` docs(triage): `dev/TRIAGE_PRE_RERUN_20260812.md`** — every known issue bucketed by
+  whether it changes the re-run, each row tagged VERIFIED / REPORTED / SUPERSEDED.
+- **Planning artifacts** (Chanfreau `planning/`): **691** (5' rescue not in BAM), **692** (I_GR
+  redundant with `selfhom_flag`), **693** (I_LR null + cDNA census), **694** (long-intron root
+  cause), **696** (transferable discriminator). **695 is CLAIMED but UNWRITTEN** — reserved for
+  the max_intron smoke test below; release it (`~/work/bin/nn_release.sh`) if that is abandoned.
+
+### Verified
+
+- **The 5' soft-clip rescue is NOT broken.** Rescues 1 bp -> 57 bp, annotated AND novel-pool, in
+  every execution mode incl. full `run-all`. In production `ski2d_rep1` it fired on 82,642 /
+  796,709 rows. **The bug was that `682_drs1m` stage 4 omitted `--write-corrected-bam`
+  (`corrected_bam = None` in the provenance), so no corrected BAM exists**, and rbrowse's
+  `nsd_rectify_genome.json` imports `align/<s>.multialigned.bam` — the INPUT to `correct`.
+- **ROOT CAUSE of the impossible long introns: `max_intron` is never passed to deSALT or uLTRA.**
+  Every other wrapper gets it (minimap2 `-G` :603, BBMap :1023, STAR :1520, gapmm2 :2115, GMAP
+  :3172). deSALT therefore runs at its own `-I` default of **200,000**. Measured: across 31 cDNA
+  samples the >10 kb population has its **99th percentile at 196,914 bp and only 0.55 % above
+  200,000** — a parameter cliff, not biology.
+  🔴 **This inverts a recorded conclusion:** minimap2's "clean max N-op 5,064 bp" is not an
+  algorithm property, it is rectify's own `-G 5000`. minimap2 is clean BECAUSE it is capped.
+- **The transferable discriminator is CROSS-ALIGNER AGREEMENT (`Xn`), not length/motif/anchor.**
+  n=27/26/28: annotated **26/27** have all 3 arms on the identical N-op; novel 1-5 kb 21/26;
+  novel >10 kb **0/28** (27/28 single-arm). Already computed (`extract.py:115`), already in the
+  BAM (`consensus.py:964`), and `pool_gate.tsv` has **no aligner-agreement column**.
+- 🔴 **min_anchor is INVERTED — do not gate on it.** Real annotated introns median 18 bp vs junk
+  28 bp; 17/27 real introns are under 25 bp. An anchor filter deletes real splicing preferentially.
+- **Station C `ambiguity_window` IndexError is ALREADY FIXED on master** (`:392-410`); probed
+  clean. 668-drs-arm's uncommitted H2 patch is SUPERSEDED — do not retrieve it.
+- Negative results, recorded so they are not re-run: **I_GR adds nothing** over `selfhom_flag`
+  (0 additive catches on all 14 long admits, `692`); **I_LR is flat** on the D->N class after a
+  ladder-saturation fix (`693`). **The short D->N class is mostly REAL** (8/12 three-arm
+  agreement) — do not filter it; close triage 3.d as not-a-defect.
+
+### Open
+
+1. **UNCOMMITTED PATCH** — `rectify/core/align/multi_aligner.py` + `core/commands/align_command.py`:
+   threads `max_intron` into `run_desalt()` (`-I`) and `run_ultra()` (`--max_intron`).
+   Imports clean; `pytest -k "aligner or align_command or multi_align"` = **111 passed**.
+   **NOT smoke-tested.** Kevin's standing objection: 5,000 is a yeast constant and will not
+   transfer to human — make it **annotation-derived** (max annotated intron x margin, falling back
+   to the aligner default when no annotation) before it lands.
+2. **Matched-support control, and it gates the whole agreement story.** In `696` class A has
+   median support 253 vs 1 for B and C, so support and class are CONFOUNDED — the agreement result
+   could be a depth effect. Untested. **Do this before setting any Xn threshold.**
+3. **Single-arm exemption unresolved.** A read only one aligner could place cannot reach `Xn>=2`
+   through no fault of its junction. `Xt` is NOT arms-available (it is "aligners tied for top
+   score", `extract.py:117`) — that conditioning attempt is retracted in `694 §6`. Needs a
+   per-arm read-name pass.
+4. **The 682_drs1m re-run** (stage 4 + `--write-corrected-bam`, on current master so the
+   impossible-intron guard applies) — the thing that actually fixes Kevin's RPL22B view.
+   Not started. rbrowse notified; their page currently draws uncorrected reads.
+5. Triage buckets 1/2/3 in `dev/TRIAGE_PRE_RERUN_20260812.md` are otherwise untouched.
+
+### Resume
+
+```bash
+cd ~/work/rectify && git log --oneline -1        # expect 3f1b956
+git status --short                                # expect the 2 modified align files, uncommitted
+
+# BRANCH A — if Kevin wants the matched-support control first (RECOMMENDED, it gates #2):
+#   Re-run 696 restricted to junctions with support==1 in ALL THREE classes, so class and depth
+#   are decoupled. Annotated introns at support==1 are rare, so widen to several samples:
+ssh h2 'cd /u/scratch/k/kevinroy && ls 684_p1cdna_1M/*/station_c.pool_gate.tsv | wc -l'   # 31
+#   Script to adapt: /u/scratch/k/kevinroy/696_features.py (add a --max-support filter).
+#   IF agreement still separates at matched support -> the Xn gate is real; proceed to emit the
+#   column into pool_gate.tsv. IF it collapses -> the 696 result was a depth artifact; STOP and
+#   re-plan, do not gate.
+
+# BRANCH B — if Kevin wants the max_intron smoke test (100k reads) first:
+ssh h2 'ls -d /u/scratch/k/kevinroy/tree_277c708'          # the UNPATCHED control tree
+#   1. cp -r tree_277c708 tree_695_patched ; apply ONLY the -I / --max_intron change there,
+#      so the A/B differs in exactly one variable (do NOT rsync the M1 tree — it carries
+#      2d77575 and other deltas).
+#   2. zcat 684_p1cdna_1M/WT_BY4742_rep1/stage1/stage1_consensus.fastq.gz | head -400000 > sub100k.fastq
+#   3. run `rectify align --aligners minimap2 --junction-aligners uLTRA deSALT` from BOTH trees.
+#   🔴 ANTI-VACUITY GATE: the UNPATCHED arm MUST produce >10 kb N-ops. At 100k reads expect
+#      ~14 (137 per 1M in WT_BY4742_rep1). If it produces ZERO, the subset is too small and the
+#      test proves nothing — increase to 500k rather than reporting a pass.
+#   4. Compare N-op length distributions per arm; expect ~99% of >10 kb gone in deSALT.
+
+# BRANCH C — if Kevin wants the DRS re-run: stage 4 only, arm BAMs + pool caches are on disk at
+#   /u/project/guillom/kevinroy/682_drs1m/<sample>/{align,prescan}/ — add --write-corrected-bam,
+#   run on CURRENT master (not 277c708) so d0e3a0f/ae69e79 apply, then tell rbrowse to repoint
+#   nsd_rectify_genome.json off *.multialigned.bam.
+```
+
+### Files
+
+- Commits: `2d77575`, `3f1b956` (branch `chore/vendor-desalt-chanfreau1`, 4 ahead of origin/master).
+- Uncommitted: `rectify/core/align/multi_aligner.py`, `rectify/core/commands/align_command.py`.
+- `dev/TRIAGE_PRE_RERUN_20260812.md` · `tests/test_correct_no_bam_warning.py`
+- `~/work/UCLA/Chanfreau_Lab/planning/69{1,2,3,4,6}_*.{md,py}`
+- H2 scratch: `/u/scratch/k/kevinroy/69{4,4b,4c,4d,6}_*.py`, `694_out.md`, `696_features.json`
+- M1 scratch (probes + synthetic fixtures):
+  `/private/tmp/claude-501/-Users-kevinroy-work-rectify/a08714c5-*/scratchpad/`
+
+---
+
 # HANDOFF — 679 cDNA trim bug (F1 root cause) · DRS handed to unit 682 · 313 GB move ~1/3 done — CURRENT 2026-08-11 ~23:00 PDT
 
 ## Delta ~11:30 — SESSION CLOSED. Successor brief: `HANDOFF_REALIGNER_NEXT.md`
