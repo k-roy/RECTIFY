@@ -71,19 +71,25 @@ adds only its own `HANDOFF.md` and touches **none** of the attribution files, so
 equivalent for adoption purposes. But it means the branch tip is not a stable identifier and
 may move again.
 
-🔴 **NOT PUSHED.** `git ls-remote origin feat/attribution-sidecar` is empty; the branch is
-local to the M1. Pushing needs Kevin.
+✅ **PUSHED 2026-08-14** (Kevin authorised). The branch is on GitHub:
 
-**Pin the module by content hash instead** — verified 2026-08-14, all four copies identical:
+    git fetch origin && git checkout feat/attribution-sidecar   # remote tip 88e3e15
+    https://github.com/k-roy/RECTIFY  →  feat/attribution-sidecar
+
+The push carried 12 commits vs `origin/master`: my 5, the other session's `dfa1509`, and 6
+of Kevin's earlier unpushed handoff commits that were already in the branch's history.
+
+**Still pin the module by content hash, not by branch tip** — the tip can move again while
+two sessions share this working tree. Verified identical in all five locations 2026-08-14:
 
     md5(read_attribution.py) = 7d41f700eac08ab9f322045e8f970f37
 
-    committed at HEAD ...................................... 7d41f70…
+    origin/feat/attribution-sidecar ....................... 7d41f70…
+    committed at local HEAD ............................... 7d41f70…
     M1 working tree ....................................... 7d41f70…
     H2 /u/scratch/k/kevinroy/620_rbrowse/ ................. 7d41f70…
     H2 /u/home/k/kevinroy/software/rectify/rectify/core/analyze/  7d41f70…
 
-So the adoption can run **today, without a push** — H2 already carries the exact bytes.
 Check that md5 before each run; if it differs, someone re-synced and the run is not this code.
 
 ### 2. H2 run recipe — CONFIRMED unchanged
