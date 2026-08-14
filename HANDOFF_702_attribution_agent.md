@@ -55,6 +55,113 @@ trusting a guard that does not exist is worse off than one told plainly the guar
 
 ---
 
+## CLOSE-OUT ANSWERS — for the Chanfreau 29-library adoption (planning/717)
+
+Answering the four asks in
+`.claude/inbox/2026-08-14T2150Z__from-chanfreau-712-pathway__status-and-closeout-asks.md`.
+
+### 1. Blessed commit — `f6fdcf9`, but **pin by md5, not by branch tip**
+
+`f6fdcf9` is the last attribution commit. All code is in `5bb2efd`; `7f18e56`, `43c0cf1`,
+`f6fdcf9` are docs.
+
+⚠️ **The branch tip has moved to `dfa1509`, which is NOT mine** — the other rectify session
+(cDNA resolver) shares this working tree and committed onto `feat/attribution-sidecar`. It
+adds only its own `HANDOFF.md` and touches **none** of the attribution files, so it is
+equivalent for adoption purposes. But it means the branch tip is not a stable identifier and
+may move again.
+
+🔴 **NOT PUSHED.** `git ls-remote origin feat/attribution-sidecar` is empty; the branch is
+local to the M1. Pushing needs Kevin.
+
+**Pin the module by content hash instead** — verified 2026-08-14, all four copies identical:
+
+    md5(read_attribution.py) = 7d41f700eac08ab9f322045e8f970f37
+
+    committed at HEAD ...................................... 7d41f70…
+    M1 working tree ....................................... 7d41f70…
+    H2 /u/scratch/k/kevinroy/620_rbrowse/ ................. 7d41f70…
+    H2 /u/home/k/kevinroy/software/rectify/rectify/core/analyze/  7d41f70…
+
+So the adoption can run **today, without a push** — H2 already carries the exact bytes.
+Check that md5 before each run; if it differs, someone re-synced and the run is not this code.
+
+### 2. H2 run recipe — CONFIRMED unchanged
+
+`planning/709`'s drive-the-module-directly recipe still stands, and the reason still holds:
+**the H2 rectify checkout is older than the M1 tree and its `cli.py` lacks `qc_command`**, so
+`python -m rectify.cli` dies on import there. I hit this once and restored their `cli.py`
+with `git checkout --`. **Do not sync `cli.py` to H2.** Also: H2's default `python3` is 3.6
+and the module needs ≥3.7 (`from __future__ import annotations`) — use the conda env.
+
+```bash
+ssh hoffman2 'module load conda/23.11.0; conda activate rectify; \
+  cd /u/scratch/k/kevinroy/620_rbrowse && python <driver>.py'
+# driver imports: sys.path.insert(0, ".") then `from read_attribution import ...`
+# templates: 709_emit_sidecars.py (DRS/reads), 709b_emit_cdna.py (cDNA/molecules)
+```
+
+`rectify attribute-reads` (the CLI) works fine **on the M1**; it is only H2 that is stale.
+
+### 3. Molecules-vs-reads guard — STILL NOT BUILT. This is the sharp edge.
+
+Restating because the adoption puts cDNA next to DRS, which is exactly the collision:
+
+🔴 **A cDNA sidecar row is a UMI-COLLAPSED MOLECULE. A DRS sidecar row is a READ.** Every
+file states which in a `# unit:` header line. **Nothing enforces it.** rbrowse has a comment
+beside their loader and no code; there is no check on the rectify side either.
+
+Concretely, for the adoption: **any ppm, escape%, or per-gene count that pools a
+`unit: molecules` file with a `unit: reads` file is meaningless**, and it will not error —
+it will return a plausible number. `n_reads` in the cDNA TSV is the family size if you need
+to convert, but converting is a modelling choice, not an identity. Read the `# unit:` line
+programmatically and refuse to mix; do not rely on remembering which cohort is which.
+
+### 4. WT_4NQOctrl as `--control-tsv` — upstream-heavy does NOT disqualify it, for a reason worth knowing
+
+**The structural point first, because it changes the question.** The CPA reference is keyed
+on **the gene containing the read's 5′ end** (`build_cpa_reference` → `genes.at(five_p)`).
+So a read whose 5′ end lies upstream of gene G is attributed to the **upstream** gene and
+**never enters G's reference at all**. An upstream-heavy library therefore does *not* pollute
+the downstream gene's CPA estimate. That contamination path does not exist.
+
+What upstream-heaviness actually costs you, in order of how much I'd worry:
+
+1. **Reduced n per gene → silent fallback.** Genes below `MIN_REF_READS` (20) get no profile
+   and fall back to the annotated end + 281 bp. That is a *measured* fallback (annotation
+   tracks observed CPA to a median of −29 bp), not a guess — but it is a quiet degradation.
+   **Measure it: count genes profiled from 4NQOctrl vs from a normal WT.** If the profiled
+   count drops a lot, the reference is thinner than it looks.
+2. **The real risk is readthrough OUT, not upstream-in.** A gene's *own* readthrough reads
+   DO enter its own reference, with far-downstream 3′ ends. The mode is robust to a minority
+   tail — but if a gene's readthrough exceeds ~50%, the mode itself moves downstream, the
+   boundary moves out, and that gene under-calls escapes. Your panel numbers (50–65% in
+   rna15/ysh1/dst1Δ) are above that line, which is precisely why the reference must come from
+   controls. The question for 4NQOctrl is whether *it* has high readthrough-out, which is a
+   different statistic from the upstream-in share you quoted.
+3. **A WT control with 50–56% upstream-5′ is anomalous on its own terms**, independent of my
+   rule. I would want to know why before trusting it as any kind of baseline.
+
+**Recommendation:** don't use a single upstream-heavy library as the sole reference. Prefer
+pooling several controls (I used 3 WT reps; pooling makes the mode dominated by the shared
+true CPA), and note from `planning/711` that the reference is **largely structural** — 81.4%
+of genes showed *zero* modal shift between WT and upf1Δ — so borrowing a cleaner control is
+defensible and better than using a contaminated matched one.
+
+**Do not take this on my reasoning — it is ~10 minutes to settle empirically.** Run the
+`planning/711` protocol with 4NQOctrl swapped in: build the reference two ways, reclassify,
+and count how many molecules change `escapes_gene_cpa`. **Report it as a fraction of ESCAPE
+CALLS, not of all molecules** — in 711 the same result read as 0.24% or 6.97% depending on
+the denominator, and only the second is meaningful.
+
+⚠️ **One caveat that applies to the whole adoption:** Rule B's `+281 bp` was measured on the
+**S. cerevisiae WT anchor-away DRS** libraries, and validated against one hard constraint
+(PLB3 WT escape = 0/845, matching rbrowse independently). Neither the constant nor the
+validation automatically transfers to a 29-library panel spanning sen1/rrp6/dst1Δ/4NQO/ski/upf1.
+**Re-validate on a locus where you already know the answer before trusting panel-wide
+numbers**, and if you re-derive the constant, the constraint to preserve is *WT escape = 0*,
+not the elegance of the statistic.
+
 ## Done
 
 - **Module** `rectify/core/analyze/read_attribution.py` — per-read readthrough-aware gene
