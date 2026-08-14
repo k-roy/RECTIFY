@@ -133,10 +133,24 @@ trusting a guard that does not exist is worse off than one told plainly the guar
   attributing by gene overlap is circular and cannot fail. **The 98.4% is an UPPER BOUND.**
   Needs `strand_evidence` in the cDNA TSV; `rectify correct` emits it (`bam/output.py:44`)
   but that cohort predates it.
-- **NOT VERIFIED: that upf1Δ's per-gene modal 3′ ends match WT's**, which the WT_BY4742-only
-  CPA reference assumes. NMD loss stabilises transcripts that would otherwise be degraded,
-  which can change which 3′ ends are observed per gene. WT-only is the safe default, not a
-  measured equivalence.
+- ~~NOT VERIFIED: upf1Δ/WT CPA equivalence~~ → **MEASURED** (`planning/711`). They do **not**
+  fully agree, and the WT-only choice is now a justified decision rather than an assumption.
+  - 81.4% of genes show **zero** modal shift (median 0, p95 +25 bp), but 7.3% of genes get a
+    different boundary.
+  - 🔴 **Denominator matters:** only 0.24% of *molecules* change `escapes_gene_cpa`, but that
+    is **6.97% of ESCAPE CALLS** (21,088 of 302,497), with a systematic **5.33% net
+    reduction** under a upf1Δ-derived reference.
+  - **KEEP WT-only. Do NOT re-emit.** NMD degrades long-3′UTR and readthrough products, so
+    in upf1Δ those are stabilised — a upf1Δ-derived reference would absorb that phenotype
+    exactly as a rna15-derived one would absorb readthrough. The measured sign (fewer
+    escapes under the upf1Δ reference) is what absorbing a real phenotype looks like.
+  - The script's own auto-verdict says "re-emit with a per-condition reference" — **it is
+    wrong**, fired off a threshold picked before seeing data, and is corrected in the
+    `INTERPRETATION` section appended to `711_upf1d_cpa_equivalence.md`.
+  - ⚠️ **Still not established:** that upf1Δ's shifted 3′-end usage is genuinely phenotypic
+    rather than a depth/composition artifact. The argument is mechanistic, not measured.
+    Settling it needs a designed test (are the shifted genes enriched for known NMD
+    substrates?). **Do not upgrade this to "verified".**
 - **`region_class` is empty in v1**, deliberately: the vocabulary is cluster-keyed and the
   spec forbids that join. rbrowse confirmed nothing breaks. Add only when derivable per-read
   from the rules `analyze` already uses — do **not** reimplement the vocabulary.
