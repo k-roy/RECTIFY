@@ -1,3 +1,99 @@
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-14
+
+## Delta 2026-08-14 — cDNA resolver DONE; a MATCHED re-run (699b) is IN FLIGHT
+
+**Supersedes the 2026-08-13 delta below, which described `699` as in flight. `699` is COMPLETE
+(rc=0).** The job now running is `699b`, a re-run that fixes a confound I introduced.
+
+### 🔴 IN FLIGHT — check this FIRST
+
+**`699b` — cDNA resolver re-run WITH the rDNA skip region**, launched 2026-08-14.
+
+- Dir: **`/u/scratch/k/kevinroy/699b_cdna_resolver_rdnaskip/`** · sentinel `.resolver_rc` · log `resolver.log`
+- Identical to `699` except **`RECTIFY_SKIP_REGIONS=yeast-rdna`** is exported.
+- **Why:** `699` did NOT set it; the DRS run DID (`skipped_region: 9,622` in DRS stats, key absent
+  in cDNA stats). `run_overhang_resolver` reads the env at `overhang_resolver.py:1208` and my
+  first `run.sh` never set it. rDNA is documented as **47 % of all resolver CPU** (`region_skip.py`),
+  and rRNA is not a spliceosomal substrate, so any resolution there is noise. `699` is kept
+  deliberately so `699 - 699b` MEASURES the rDNA contribution instead of erasing it.
+- 🔴 **Do not `pgrep -f overhang_resolver` to check liveness** — it self-matches your own command
+  line and reports ALIVE forever. The sentinel is authoritative.
+
+### Done / Verified since the last delta
+
+**`699` cDNA resolver complete** (rc=0, 913,703 reads, ~33 min, tree `277c708`). Against DRS:
+
+| | DRS | cDNA (699, UNMATCHED) |
+|---|---:|---:|
+| clips assessed | 97,303 | 126,620 |
+| refused low-info | 31,403 (32.3 %) | 51,344 (40.6 %) |
+| **resolved** | **8,370 (8.6 %)** | **2,491 (2.0 %)** |
+| resolved L / R | 4,534 / 3,836 | 896 / **1,595** |
+| candidates evaluated | 16.7 M | 45.4 M |
+| candidates / assessed clip | 171 | **359** |
+| **candidates per resolution** | **1,993** | **18,225** |
+| `arb_dmerge` | 68 | **24,688** |
+| `skipped_region` | 9,622 | **absent (the confound)** |
+
+Two unexplained observations, both worth chasing:
+1. **359 candidates/assessed clip on cDNA** is the *pre-trim-fix pathology* number —
+   `ResolverConfig`'s own note says post-fix production runs ~6.7/clip and calls 361 "the PRE-FIX
+   PATHOLOGY". Is the 684 stage-1 input actually carrying the trim fix (`b3a8c35`)?
+2. **`arb_dmerge` 24,688 vs 68** — a 363x asymmetry between modalities, mechanism unknown.
+
+**Resolver tag semantics confirmed** (answers Kevin's question): the resolver BAM is a complete,
+order-preserving SUPERSET of the minimap2 arm — every record written, resolved or passthrough
+(single write site `overhang_resolver.py:1224`). Changed records carry **`XJ`** (clip resolved:
+`start-end:ed:side`) or **`XB`** (re-arbitration, TYPED: `dmerge` / `shift:d-e>d-e` / `dop:` /
+`mm:` / `mmL:`, `:g` = grammar-driven). So `has XJ or has XB` == "differs from minimap2", and you
+only need the resolver BAM. Measured on DRS: 8,370 XJ + 71 XB = **0.970 % of records changed**,
+99.03 % passthrough.
+
+🔴 **The resolver SUBSTITUTES the minimap2 arm** (`align_command.py:951`) — it is not a 4th arm.
+So `Xa=minimap2` on DRS denotes RESOLVER output, and both cohorts are 3-arm in consensus.
+
+### Open
+
+Unchanged from the 2026-08-13 delta (three refuted gates; uncommitted `max_intron` patch;
+W_max recalibration proposed-not-implemented; `682_drs1m` stage-4 re-run not started; NN 695
+claimed-unwritten), PLUS the two unexplained observations above.
+
+### Resume
+
+```bash
+# 1. The in-flight job.
+ssh h2 'cat /u/scratch/k/kevinroy/699b_cdna_resolver_rdnaskip/.resolver_rc 2>/dev/null || echo RUNNING'
+#   RUNNING  -> confirm the BAM is GROWING (ls -la twice, a minute apart). Do NOT use pgrep -f.
+#   rc == 0  -> step 2.
+#   rc != 0  -> read 699b_cdna_resolver_rdnaskip/resolver.log; relaunch with
+#               ssh h2 'cd /u/scratch/k/kevinroy && nohup bash 699b_cdna_resolver_rdnaskip/run.sh &'
+#   no sentinel AND BAM not growing -> died silently; same relaunch.
+
+# 2. Compare the three stats files. This is the deliverable.
+ssh h2 'cd /u/scratch/k/kevinroy
+  echo DRS:;   cat /u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/align/wt_by4742_rep1.overhang_resolver.stats.json
+  echo cDNA-unmatched:; cat 699_cdna_resolver/WT_BY4742_rep1.overhang_resolver.stats.json
+  echo cDNA-matched:;   cat 699b_cdna_resolver_rdnaskip/WT_BY4742_rep1.overhang_resolver.stats.json'
+#   ANTI-VACUITY: if 699b `resolved` == 0, or `skipped_region` is ABSENT from 699b, the env var did
+#   not take and the re-run is void — say so rather than reporting a difference.
+#   The rDNA contribution = (699 - 699b) on candidates_evaluated and resolved.
+
+# 3. Tag census on the matched arm (701_xb.py prints XJ/XB/passthrough):
+ssh h2 'cd /u/scratch/k/kevinroy && ~/.conda/envs/rectify/bin/python 701_xb.py     699b_cdna_resolver_rdnaskip/WT_BY4742_rep1.overhang_resolver.bam'
+
+# 4. Then the 3-arm consensus (resolver passed AS minimap2, since it substitutes that arm) —
+#    command is in the 2026-08-13 delta below, step 2. Write to 699b_*, NEVER into 684_p1cdna_1M:
+#    the existing multialigned.bam is the "before" the 697 browser panel was derived from.
+```
+
+### Files
+
+- H2: `699_cdna_resolver/`, `699b_cdna_resolver_rdnaskip/`, `701_xb.py`, `69{4,6,7b}_*.py`
+- `~/work/UCLA/Chanfreau_Lab/planning/69{1,2,3,4,6,7,8}_*`, `700_wmax_calibration.*`
+- rbrowse inbox: `2026-08-13T0010Z__from-rectify-agent__*` (50-intron panel request)
+
+---
+
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-13
 
 ## Delta 2026-08-13 — 🔴 RESOLVER JOB IN FLIGHT ON H2 · W_max calibration diagnosed · three gates refuted
