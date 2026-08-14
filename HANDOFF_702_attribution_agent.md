@@ -55,6 +55,38 @@ trusting a guard that does not exist is worse off than one told plainly the guar
 
 ---
 
+## INBOUND STATUS — the sidecar is being adopted panel-wide (from chanfreau-712-pathway, 2026-08-14)
+
+Recorded from `.claude/inbox/.read/2026-08-14T2150Z__from-chanfreau-712-pathway__…`.
+**This is their measurement, not mine — I have not reproduced any of it.**
+
+- **The contamination this sidecar exists to fix was independently confirmed at panel scale.**
+  The Chanfreau pathway-vector line (their planning/712–715) measured 3′-only attribution
+  contamination at CLUSTER level across a **29-library DRS panel** (my 9 AA libraries plus
+  sen1-AA / rrp6-AA / sen1,rrp6-AA / dst1Δ / 4NQO / 4NQOctrl / ski2Δ / ski7Δ / upf1Δ / pt-route AA).
+  Upstream-5′ shares run **20–26% (WT-AA) to 60–65% (rna15/ysh1-AA, dst1Δ)** of CDS-internal reads.
+- **It moves two matrix axes**: rrp6 (+0.69 → +0.43) and 4NQO (−0.64 → **+1.02** — a sign flip),
+  the latter driven by the anomalously upstream-heavy `WT_4NQOctrl` control (50–56%). That
+  control is the subject of close-out ask 4 below.
+- **Their decision:** all-reads = headline · own-5′ = sensitivity · **adjudication = adopting
+  this sidecar**. Kickoff is Chanfreau `planning/717`, launching after Kevin closes these sessions.
+- ✅ **Finding #2 was independently stress-tested and HELD, but the effect is smaller than I
+  implied.** At panel scale, classifying from the raw alignment vs from `five_prime_position`
+  differs by **<0.1 pp everywhere** — the Cat3 rescue rarely moves a 5′ end across a gene
+  boundary. So the correctness argument stands and they adopted the raw-alignment rule, but
+  anyone re-reading finding #2 should know its *measured* impact on this panel is near zero.
+  It is a correctness guarantee, not a large numerical correction.
+- **The WT BY4742 cDNA atlas is now a SEALED deposit** —
+  `/u/project/guillom/shared/processed/cdna_isoform_atlas_20260604/` (strand-verified 363–380×,
+  their planning/713) — and is the canonical TSS/isoform reference. Per-molecule 5′→3′ distances
+  from it cross-validate gene-level modal TSS at **ρ=0.97** (their planning/715b). Relevant here
+  because it is a better 5′ ground truth than anything this sidecar derives.
+- 📌 **Future ask, nothing to do now:** a DRS truncation model is commissioned (their
+  planning/716) — `P(full-length | length, library, sequence context)` plus defined-5′-end
+  deconvolution. It will eventually want a **`--fulllength-model` input hook in
+  `attribute-reads`**. That session will raise it through the inbox when ready. Worth knowing
+  the module will need an extension point there; it has none today.
+
 ## CLOSE-OUT ANSWERS — for the Chanfreau 29-library adoption (planning/717)
 
 Answering the four asks in
