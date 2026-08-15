@@ -1,3 +1,141 @@
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-14 (late)
+
+## Delta 2026-08-14 late — 699b CLOSED the confound (it was nil). NOTHING IN FLIGHT.
+
+**Supersedes both 2026-08-13 and the earlier 2026-08-14 delta below.** Both resolver runs are
+COMPLETE (rc=0). No background job is running. The marker may be cleared.
+
+### The confound test — my own hypothesis, refuted
+
+`699` (no `RECTIFY_SKIP_REGIONS`) vs `699b` (`yeast-rdna`), same input, same tree:
+
+| | 699 | 699b | delta |
+|---|---:|---:|---:|
+| **resolved** | **2,491** | **2,491** | **0 (identical)** |
+| candidates evaluated | 45,399,652 | 45,398,346 | 1,306 (**0.003 %**) |
+| clips assessed | 126,620 | 126,617 | 3 |
+| `skipped_region` | absent | **10** | — |
+
+🔴 **The rDNA skip is worth 10 reads on this cDNA library, against 9,622 on DRS.** So the
+missing env var did NOT explain anything, and the DRS-vs-cDNA resolver gap reported earlier is
+REAL, not an artifact of my run recipe. Use `699b` as the matched arm; `699` is redundant and
+can be deleted if space is needed.
+
+Why the asymmetry is itself informative: the DRS library carries heavy rDNA (rRNA is the dominant
+non-mRNA species in native RNA), while this cDNA library is poly(A)-selected and barely touches
+it. **`skipped_region` is therefore a cheap rRNA-contamination metric**, already emitted.
+
+### The real DRS-vs-cDNA comparison (now trustworthy)
+
+| | DRS | cDNA (699b, matched) |
+|---|---:|---:|
+| reads | 869,448 | 913,703 |
+| clips assessed | 97,303 | 126,617 |
+| refused low-info | 31,403 (32.3 %) | 51,343 (40.6 %) |
+| **resolved** | **8,370 (8.6 %)** | **2,491 (2.0 %)** |
+| resolved L / R | 4,534 / 3,836 | 896 / **1,595** |
+| candidates evaluated | 16.7 M | 45.4 M |
+| candidates / assessed clip | 171 | **359** |
+| **candidates per resolution** | **1,993** | **18,225** |
+| `arb_dmerge` | 68 | **24,688** |
+| `skipped_region` | 9,622 | 10 |
+
+**The resolver does 4x less work of value on cDNA while paying 2.7x more for it — a 9x worse
+yield per candidate.** Two unexplained, both still open:
+1. **359 candidates / assessed clip** is the number `ResolverConfig`'s own calibration note calls
+   "the PRE-FIX PATHOLOGY" (post-trim-fix production is ~6.7/clip). **Does the 684 stage-1 input
+   actually carry the trim fix `b3a8c35`?** If not, everything characterised on this cohort —
+   including the `697` browser panel — is measuring adapter stubs, not biology. **Highest-value
+   next question.**
+2. `arb_dmerge` 24,688 vs 68 — a 363x modality asymmetry, mechanism unknown.
+
+### Git state — two sessions shared this tree; resolved
+
+The Attribution Agent checked the shared tree from `chore/vendor-desalt-chanfreau1` to
+`feat/attribution-sidecar` on 2026-08-13 12:50, so `dfa1509` (mine) landed on their branch.
+
+- **`dfa1509` cherry-picked to `chore/vendor-desalt-chanfreau1` as `7a2d132`** (byte-identical,
+  md5 `d29cbf53...`). Done in a SEPARATE worktree
+  (`/private/tmp/.../scratchpad/cp_chore`) — the shared tree was never touched.
+- **`dfa1509` deliberately LEFT on `feat/attribution-sidecar`.** That branch is PUSHED
+  (origin at `c83570e`) and the peer session was still committing to it; rewriting a pushed
+  branch under a live peer is not acceptable. Duplication is harmless.
+- Full audit: every commit I authored is on at least one branch. The 8 commits `git log
+  --not --branches` calls unreachable (`e9e57de`, `a7bdd7e`, the rearb/resolver-v2 series) are
+  NOT lost — they are reachable from the `realigner-triage` worktree at `277c708`, which that
+  command cannot see (detached-HEAD worktrees).
+- Uncommitted `max_intron` patch survived the branch switch and is still in the tree.
+
+🔴 **Convention gap worth fixing:** `~/work/CLAUDE.md` says one agent per workspace, but two
+sessions shared `~/work/rectify` on different branches with no error — commits just land
+somewhere unexpected. Worth an explicit rule.
+
+### 🔴 Durability exposure
+
+**All 13 planning docs (691-700) are UNTRACKED — `planning/` is gitignored
+(`~/work/UCLA/Chanfreau_Lab/.gitignore:25`).** No commit protects `694` (long-intron root cause),
+`696` (inverted-anchor finding), `697` (the 50-intron panel + TSV), `698` (Resolver synthesis),
+`700` (W_max calibration). **The M1 is the only copy.** This is the workspace convention, not a
+mistake, but Kevin was asked whether to mirror them to Oak and has not yet answered.
+
+### Open (unchanged unless noted)
+
+- Three gates REFUTED, do not re-propose: motif (circular), min-anchor (**inverted**),
+  multi-aligner agreement (punishes the specialist; mapPacBio is not even in the 684 panel).
+- Uncommitted `max_intron` -> deSALT/uLTRA patch; 111 tests pass; NOT smoke-tested; 5,000 is a
+  yeast constant and should be annotation-derived before landing.
+- W_max recalibration (`700`) proposed, not implemented or costed.
+- `682_drs1m` stage-4 re-run with `--write-corrected-bam` — not started.
+- 50-intron panel with rbrowse — request sent, setup not confirmed.
+- NN 695 claimed but unwritten; release if abandoned.
+- **The message in `.claude/inbox/2026-08-14T2150Z__from-chanfreau-712-pathway__*` is addressed to
+  the ATTRIBUTION AGENT, not this session.** Left unarchived deliberately so its recipient sees
+  it. Do not answer its four asks from here — they concern their sidecar, planning/709/711, and a
+  molecules-vs-reads guard this session never touched.
+
+### Resume
+
+```bash
+# NOTHING IS IN FLIGHT. Both resolver runs are complete (rc=0).
+ssh h2 'cat /u/scratch/k/kevinroy/699b_cdna_resolver_rdnaskip/.resolver_rc'   # expect 0
+
+# HIGHEST-VALUE NEXT STEP — settle open question #1 above, because it can invalidate the cohort:
+#   Does the 684 stage-1 input carry the trim fix b3a8c35? Two independent checks:
+ssh h2 'python3 -c "
+import json; d=json.load(open(\"/u/scratch/k/kevinroy/684_p1cdna_1M/WT_BY4742_rep1/align/align.command.provenance.json\"))
+print(d.get(\"rectify_git_sha\"))"'
+#   Tree 277c708 = 11ed647 + numba; b3a8c35 landed SEPARATELY. If the sha does not contain
+#   b3a8c35, the cohort is PRE-trim-fix and its clip burden is adapter stubs.
+#   Cross-check empirically (the fix drove max soft-clip 148 -> 7.6 nt):
+ssh h2 'cd /u/scratch/k/kevinroy && ~/.conda/envs/rectify/bin/python -c "
+import pysam,statistics as st
+b=pysam.AlignmentFile(\"684_p1cdna_1M/WT_BY4742_rep1/align/WT_BY4742_rep1.minimap2.bam\")
+v=[]
+for i,r in enumerate(b):
+    if i>200000: break
+    if r.is_unmapped or r.is_secondary: continue
+    c=r.cigartuples or []
+    v.append(max([l for o,l in (c[:1]+c[-1:]) if o==4] or [0]))
+print(\"mean max soft clip:\", round(st.mean(v),1), \" n=\", len(v))"'
+#   BRANCH: ~65-148 nt => PRE-fix, and the 697 panel + all cDNA clip findings need re-basing on a
+#           re-trimmed cohort. Tell Kevin BEFORE any further cDNA analysis.
+#           ~4-8 nt   => post-fix; the 359 candidates/clip has another cause — chase arb_dmerge.
+
+# Then: the 3-arm consensus using the resolver AS the minimap2 arm (it SUBSTITUTES that arm).
+#   Command in the 2026-08-13 delta below, step 2. Write to 699b_*, NEVER into 684_p1cdna_1M —
+#   the existing multialigned.bam is the "before" the 697 panel coordinates came from.
+```
+
+### Files
+
+- H2: `699_cdna_resolver/` (redundant), `699b_cdna_resolver_rdnaskip/` (**the matched arm**),
+  `701_xb.py`, `69{4,6,7b}_*.py`, `697_panel_annotated.tsv`
+- `~/work/UCLA/Chanfreau_Lab/planning/69{1..8}_*`, `700_wmax_calibration.*` (UNTRACKED)
+- Cherry-pick worktree: `/private/tmp/claude-501/-Users-kevinroy-work-rectify/a08714c5-*/scratchpad/cp_chore`
+  (remove with `git worktree remove` when done)
+
+---
+
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-14
 
 ## Delta 2026-08-14 — cDNA resolver DONE; a MATCHED re-run (699b) is IN FLIGHT
