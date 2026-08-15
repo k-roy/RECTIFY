@@ -84,8 +84,33 @@ Recorded from `.claude/inbox/.read/2026-08-14T2150Z__from-chanfreau-712-pathway_
 - 📌 **Future ask, nothing to do now:** a DRS truncation model is commissioned (their
   planning/716) — `P(full-length | length, library, sequence context)` plus defined-5′-end
   deconvolution. It will eventually want a **`--fulllength-model` input hook in
-  `attribute-reads`**. That session will raise it through the inbox when ready. Worth knowing
-  the module will need an extension point there; it has none today.
+  `attribute-reads`**. That session will raise it through the inbox when ready. The module
+  has no extension point there today. **Ownership + constraints below.**
+
+### 📌 `--fulllength-model` hook — who owns it, and the two things not to get wrong
+
+**Owner: a RECTIFY session.** The hook is rectify code, and the sidecar columns are rectify's
+contract with a **live** rbrowse page — so it belongs with whoever owns those invariants.
+**Driven by 716**, whose model determines the signature. **Not 717** (the adoption line):
+they are a consumer, and handing a consumer the hook invites a fork or a special case.
+
+**Do not build it yet.** Wait until 716's model has a stable interface. An extension point
+designed before its only consumer exists will have the wrong shape.
+
+🔴 **Constraint 1 — the model output is a NEW, LABELLED column. It must not modify `origin5`,
+`escapes_gene`, or `escapes_gene_cpa`.** Those are deterministic facts derived from
+coordinates. Spec §5's boundary is that the pipeline owns anything requiring a model *and
+labels it*. Silently making an existing column probabilistic would move numbers on a live
+site with no signal to the consumer. rbrowse skips unknown columns with a warning, so adding
+one is non-breaking.
+
+🔴 **Constraint 2 — a full-length model is exactly what can break AT2, and it looks like a
+feature while doing it.** Today `origin5 = initiating` is **structurally unreachable on DRS**:
+it requires cDNA tier-2 evidence, so no DRS read can be called `initiating` by accident. That
+is a guarantee, not a threshold. A `P(full-length)` score is precisely what would let someone
+start calling DRS reads `initiating` — converting a structural guarantee into a thresholded
+claim. If that is intended, **AT2 must be explicitly retired with a stated replacement**, not
+quietly weakened. Whoever implements this should re-read AT2 in `planning/708` first.
 
 ## CLOSE-OUT ANSWERS — for the Chanfreau 29-library adoption (planning/717)
 
