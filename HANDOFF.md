@@ -1,3 +1,92 @@
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-16
+
+## Delta 2026-08-16 — 682 stage-4 RE-RUN launched (the fix for Kevin's original RPL22B complaint)
+
+**Supersedes the 2026-08-14 deltas below.** Kevin's call: stop characterising, fix the thing that
+started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
+(2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
+
+### 🔴 IN FLIGHT — smoke task on the scheduler
+
+**Job `14371561`, task 34 = `wt_by4742_rep1`**, submitted 2026-08-16 16:43 PDT, campus2.q@n7127.
+This is the SMOKE for a 48-sample fan-out — do not submit the rest until it lands rc=0.
+
+- Driver: `/u/scratch/k/kevinroy/710_correct_rerun.sh` (one sample per call, idempotent —
+  skips if the corrected BAM already exists)
+- Array wrapper: `/u/scratch/k/kevinroy/710_qsub.sh` · list: `710_samples.txt` (**48 samples**)
+- Output: `/u/project/guillom/kevinroy/682_drs1m/<S>/correct_v2/` · sentinel `.rc` · log `correct.log`
+- Tree: **`/u/scratch/k/kevinroy/tree_master_0128840/rectify`** at origin/master `0128840`
+  (verified: `Xi` at consensus.py:817, `Xn` at :964 — the tag collision fix is in)
+- Progress at last check: 25 % of 129 regions in ~4 min.
+
+🔴 **Writes to `correct_v2/`, NOT `correct/`.** The original stage-4 output is the "before" and
+must not be clobbered — `planning/697`'s browser panel coordinates derive from that cohort.
+
+### Two smoke failures already caught and fixed (this is why it was a smoke)
+
+1. **`python cli.py correct` → `ImportError: attempted relative import with no known parent
+   package`.** Must be `python -m rectify.cli`. The ORIGINAL 682 run used the `cli.py` form and
+   worked only because it ran from a different tree layout; `planning/709` warns about exactly this
+   ("drive the module directly, never sync cli.py").
+2. **`samtools sort -@8` failed on the LOGIN NODE**, so the junction-refined BAM was never indexed
+   and the parallel workers died with `fetch called on bamfile without index`. The same sort
+   succeeds at `-@2`. Fix: run on a compute node via qsub, `-pe shared 4`, `-j 4`.
+   ⚠️ **The sort failure was logged as a WARNING and the run continued for another 90 s before
+   dying with an unrelated-looking error.** A `samtools sort` failure inside `refine_bam_junctions`
+   should be fatal — worth a real fix in `junction_refiner.py`, not just a workaround.
+
+### Resume
+
+```bash
+# 1. SMOKE STATUS
+ssh h2 'cat /u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2/.rc 2>/dev/null || echo RUNNING'
+ssh h2 'qstat -u kevinroy | grep 14371561 || echo "job finished/gone"'
+#   rc==0 -> VERIFY BEFORE FANNING OUT (exit code is not enough):
+ssh h2 'D=/u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2
+  grep -E "soft-clip rescued|Reads written|Sorted and indexed" $D/correct.log
+  ls -la $D/*.rectified_corrected_3end.bam*'
+#   Expect ~121,215 (14.3 %) rescued for this sample, a non-empty BAM, and a .bai.
+#   🔴 THE REAL CHECK — the N-op must be IN THE BAM (the whole point of the re-run):
+ssh h2 'samtools view /u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2/*.rectified_corrected_3end.bam chrVI:64595-64605 | head -3 | cut -f1-6'
+#   Expect CIGARs containing "321N" (the RPL22B intron). If NONE do, STOP — the re-run did not
+#   fix the original complaint and fanning out 48 samples would waste ~8 h of queue.
+#   rc!=0 -> read $D/correct.log; grep -v "^\t" to skip the /usr/bin/time block.
+
+# 2. FAN OUT (only after the above passes)
+ssh h2 'cd /u/scratch/k/kevinroy && qsub -t 1-48 710_qsub.sh'
+#   Task 34 is idempotent (skips on existing BAM), so re-submitting the whole range is safe.
+#   Poll: ls /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc | wc -l   (expect 48)
+#         grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc  (lists failures)
+
+# 3. THEN tell rbrowse to repoint nsd_rectify_genome.json at
+#    <S>/correct_v2/<S>.rectified_corrected_3end.bam instead of align/<S>.multialigned.bam.
+```
+
+### Open (unchanged unless noted)
+
+- **`max_intron` patch still uncommitted** in the M1 tree (`multi_aligner.py`,
+  `align_command.py`); 111 tests pass; not smoke-tested; **must be annotation-derived, not 5,000**,
+  before landing. This is item (2) of Kevin's plan.
+- `2d77575` (the no-BAM warning) is **NOT on origin/master** — it is on
+  `chore/vendor-desalt-chanfreau1` + `feat/attribution-sidecar` only. The re-run tree does not
+  carry it, which is fine (we pass the flag explicitly) but means the guard is not protecting
+  anyone yet.
+- Resolver work `700`-`708`: **scope-limited by `planning/709`** — those numbers describe the
+  RESOLVER (a stage not in the production cDNA panel), not `correct`'s 5' rescue. Do not quote the
+  "86.4 % of compute" figure as a live saving.
+- `planning/708`'s triage is unvalidated against real resolutions (do the 2,491 `699b` resolutions
+  survive it?).
+- 50-intron browser panel: Kevin is reviewing in parallel with rbrowse.
+- All 15 planning docs (691-709) remain UNTRACKED (`planning/` is gitignored).
+
+### Files
+
+- H2: `710_correct_rerun.sh`, `710_qsub.sh`, `710_samples.txt`, `710_logs/`,
+  `tree_master_0128840/`, `699b_cdna_resolver_rdnaskip/`
+- `~/work/UCLA/Chanfreau_Lab/planning/69{1..9}_*`, `70{0,2,3,5,6,7,8,9}_*`
+
+---
+
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-14 (late)
 
 ## Delta 2026-08-14 late — 699b CLOSED the confound (it was nil). NOTHING IN FLIGHT.
