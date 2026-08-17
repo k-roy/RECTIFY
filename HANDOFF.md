@@ -18,7 +18,7 @@ started the session. Two items, in order: (1) the 682 re-run with `--write-corre
   `64074 52M2D57M3D104M1D106M2I126M1I75M **321N** 25M1I11M1I6M`
 
 **🔴 2 FAILURES — `4nqo_rep1` and `dis3rrp6_rep2`, rc=1. NOT a cluster hiccup. Full write-up:
-`planning/711`.**
+`planning/719`.**
 
 The 5′ rescue extended an alignment **off the START of a contig**, producing a negative POS, and
 `samtools index` then refused the whole file:
@@ -68,7 +68,7 @@ specifically, compare against `correct/`-era output, not the align-stage BAM.
 ssh h2 'ls /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc | wc -l'          # expect 48
 ssh h2 'grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc'        # lists failures
 ssh h2 'qstat -u kevinroy | grep 14372527 || echo "array finished"'
-#   EXPECT at least the 2 known failures (4nqo_rep1, dis3rrp6_rep2 — planning/711).
+#   EXPECT at least the 2 known failures (4nqo_rep1, dis3rrp6_rep2 — planning/719).
 #   If OTHER samples failed, read their correct.log; grep -v "^\t" skips the /usr/bin/time block.
 
 # 2. VERIFY A SAMPLE ON CONTENT, never on rc alone — the check that matters:
@@ -81,7 +81,7 @@ ssh h2 'for b in /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/*.rectified_
    n=$(samtools view "$b" 2>/dev/null | awk "\$4<0" | wc -l); [ "$n" -gt 0 ] && echo "$n $b"; done'
 #   Any output = a sample carrying a negative-POS read. Expect the 2 known ones.
 
-# 4. THE 2 FAILURES: do NOT hand-edit the BAMs. Fix planning/711 first (clamp at source +
+# 4. THE 2 FAILURES: do NOT hand-edit the BAMs. Fix planning/719 first (clamp at source +
 #    two-sided invariant + regression test), then re-run just those two:
 ssh h2 'cd /u/scratch/k/kevinroy && for S in 4nqo_rep1 dis3rrp6_rep2; do
    rm -rf /u/project/guillom/kevinroy/682_drs1m/$S/correct_v2; done
