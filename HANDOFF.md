@@ -6,21 +6,30 @@
 started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
 (2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
 
-### 🔴 IN FLIGHT — smoke task on the scheduler
+### 🔴 IN FLIGHT — 48-sample fan-out
 
-**Job `14371561`, task 34 = `wt_by4742_rep1`**, submitted 2026-08-16 16:43 PDT, campus2.q@n7127.
-This is the SMOKE for a 48-sample fan-out — do not submit the rest until it lands rc=0.
+**Array job `14372527`, tasks 1-48**, submitted 2026-08-16 17:11 PDT. ~30 min/sample.
 
-- Driver: `/u/scratch/k/kevinroy/710_correct_rerun.sh` (one sample per call, idempotent —
-  skips if the corrected BAM already exists)
-- Array wrapper: `/u/scratch/k/kevinroy/710_qsub.sh` · list: `710_samples.txt` (**48 samples**)
+**The smoke (`14371561.34`, `wt_by4742_rep1`) PASSED and was verified on content, not exit code:**
+- rc=0, corrected BAM 547 MB + `.bai` written
+- `5' soft-clip rescued: 121,215 (14.3 %)` — matches the original run exactly
+- 🔴 **at RPL22B (chrVI:64595-64605): 144 of 187 reads now carry `321N`.** The intron Kevin
+  reported missing is in the BAM. Example CIGAR:
+  `64074 52M2D57M3D104M1D106M2I126M1I75M 321N 25M1I11M1I6M`
+
+- Driver: `/u/scratch/k/kevinroy/710_correct_rerun.sh` (idempotent — skips if the BAM exists, so
+  re-submitting the full range is safe)
+- Array wrapper: `710_qsub.sh` · list: `710_samples.txt` (**48 samples**)
 - Output: `/u/project/guillom/kevinroy/682_drs1m/<S>/correct_v2/` · sentinel `.rc` · log `correct.log`
-- Tree: **`/u/scratch/k/kevinroy/tree_master_0128840/rectify`** at origin/master `0128840`
-  (verified: `Xi` at consensus.py:817, `Xn` at :964 — the tag collision fix is in)
-- Progress at last check: 25 % of 129 regions in ~4 min.
+- Tree: `/u/scratch/k/kevinroy/tree_master_0128840/rectify` at `0128840`
+- **rbrowse notified** (`~/work/rbrowse/.claude/inbox/2026-08-16T1715Z__*`) with the new path, the
+  completion check, and the caveat that three things changed at once (see below).
 
-🔴 **Writes to `correct_v2/`, NOT `correct/`.** The original stage-4 output is the "before" and
-must not be clobbered — `planning/697`'s browser panel coordinates derive from that cohort.
+⚠️ **The new BAMs are NOT a pure "5' rescue added" delta.** The re-run is on `0128840`, which the
+original cohort predates, so they also carry the impossible-intron guard (`d0e3a0f`, N-ops >10 kb
+truncated + tagged `Xi`), the `Xn`/`Xi` separation, and the past-contig invariant (`ae69e79`). To
+attribute a difference to the rescue specifically, compare against `correct/`-era output, not
+against the align-stage BAM.
 
 ### Two smoke failures already caught and fixed (this is why it was a smoke)
 
