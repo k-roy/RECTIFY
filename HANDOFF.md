@@ -6,30 +6,47 @@
 started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
 (2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
 
-### 🔴 IN FLIGHT — 48-sample fan-out
+### 🔴 IN FLIGHT — 48-sample fan-out, with 2 KNOWN FAILURES (a real bug, see below)
 
-**Array job `14372527`, tasks 1-48**, submitted 2026-08-16 17:11 PDT. ~30 min/sample.
+**Array job `14372527`, tasks 1-48**, submitted 2026-08-16 17:11 PDT. At last check:
+**44 sentinels written, 44 corrected BAMs on disk, 3 tasks still running, 2 FAILED.**
 
-**The smoke (`14371561.34`, `wt_by4742_rep1`) PASSED and was verified on content, not exit code:**
-- rc=0, corrected BAM 547 MB + `.bai` written
+**The smoke (`14371561.34`, `wt_by4742_rep1`) PASSED and was verified on CONTENT, not exit code:**
 - `5' soft-clip rescued: 121,215 (14.3 %)` — matches the original run exactly
 - 🔴 **at RPL22B (chrVI:64595-64605): 144 of 187 reads now carry `321N`.** The intron Kevin
-  reported missing is in the BAM. Example CIGAR:
-  `64074 52M2D57M3D104M1D106M2I126M1I75M 321N 25M1I11M1I6M`
+  reported missing is in the BAM:
+  `64074 52M2D57M3D104M1D106M2I126M1I75M **321N** 25M1I11M1I6M`
 
-- Driver: `/u/scratch/k/kevinroy/710_correct_rerun.sh` (idempotent — skips if the BAM exists, so
-  re-submitting the full range is safe)
-- Array wrapper: `710_qsub.sh` · list: `710_samples.txt` (**48 samples**)
+**🔴 2 FAILURES — `4nqo_rep1` and `dis3rrp6_rep2`, rc=1. NOT a cluster hiccup. Full write-up:
+`planning/711`.**
+
+The 5′ rescue extended an alignment **off the START of a contig**, producing a negative POS, and
+`samtools index` then refused the whole file:
+
+```
+INPUT :  chrXV  POS 1   25S 4M1I11M ... 34264N ... 43M1S
+OUTPUT:  chrXV  POS -23 25M 4M1I11M ... 34264N ... 42M2H
+```
+
+A read at POS 1 with a 25-base leading soft clip; the rescue converted `25S` -> `25M` and walked 25
+bases off the left edge. **One read per sample kills a 30-minute run**, and it is silent until
+indexing.
+
+🔴 **`ae69e79`'s write-time invariant is ONE-SIDED** — `consensus.py:167` checks only
+`read.reference_end > clen`. There is no `reference_start < 0` check, so the guard written for
+exactly this class did not fire. Fix needs both a clamp at source (in the rescue extension path)
+and a two-sided invariant. Proposed but **NOT IMPLEMENTED**.
+
+- Driver: `/u/scratch/k/kevinroy/710_correct_rerun.sh` (idempotent — safe to re-submit the range)
 - Output: `/u/project/guillom/kevinroy/682_drs1m/<S>/correct_v2/` · sentinel `.rc` · log `correct.log`
 - Tree: `/u/scratch/k/kevinroy/tree_master_0128840/rectify` at `0128840`
-- **rbrowse notified** (`~/work/rbrowse/.claude/inbox/2026-08-16T1715Z__*`) with the new path, the
-  completion check, and the caveat that three things changed at once (see below).
+- **rbrowse notified** (`~/work/rbrowse/.claude/inbox/2026-08-16T1715Z__*`) — they have the
+  completion check and know not to repoint until it passes.
 
 ⚠️ **The new BAMs are NOT a pure "5' rescue added" delta.** The re-run is on `0128840`, which the
-original cohort predates, so they also carry the impossible-intron guard (`d0e3a0f`, N-ops >10 kb
-truncated + tagged `Xi`), the `Xn`/`Xi` separation, and the past-contig invariant (`ae69e79`). To
-attribute a difference to the rescue specifically, compare against `correct/`-era output, not
-against the align-stage BAM.
+original cohort predates, so they also carry the impossible-intron guard (`d0e3a0f`), the `Xn`/`Xi`
+separation, and the past-contig invariant (`ae69e79`). To attribute a difference to the rescue
+specifically, compare against `correct/`-era output, not the align-stage BAM.
 
 ### Two smoke failures already caught and fixed (this is why it was a smoke)
 
@@ -47,28 +64,31 @@ against the align-stage BAM.
 ### Resume
 
 ```bash
-# 1. SMOKE STATUS
-ssh h2 'cat /u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2/.rc 2>/dev/null || echo RUNNING'
-ssh h2 'qstat -u kevinroy | grep 14371561 || echo "job finished/gone"'
-#   rc==0 -> VERIFY BEFORE FANNING OUT (exit code is not enough):
-ssh h2 'D=/u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2
-  grep -E "soft-clip rescued|Reads written|Sorted and indexed" $D/correct.log
-  ls -la $D/*.rectified_corrected_3end.bam*'
-#   Expect ~121,215 (14.3 %) rescued for this sample, a non-empty BAM, and a .bai.
-#   🔴 THE REAL CHECK — the N-op must be IN THE BAM (the whole point of the re-run):
-ssh h2 'samtools view /u/project/guillom/kevinroy/682_drs1m/wt_by4742_rep1/correct_v2/*.rectified_corrected_3end.bam chrVI:64595-64605 | head -3 | cut -f1-6'
-#   Expect CIGARs containing "321N" (the RPL22B intron). If NONE do, STOP — the re-run did not
-#   fix the original complaint and fanning out 48 samples would waste ~8 h of queue.
-#   rc!=0 -> read $D/correct.log; grep -v "^\t" to skip the /usr/bin/time block.
+# 1. FAN-OUT STATUS
+ssh h2 'ls /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc | wc -l'          # expect 48
+ssh h2 'grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc'        # lists failures
+ssh h2 'qstat -u kevinroy | grep 14372527 || echo "array finished"'
+#   EXPECT at least the 2 known failures (4nqo_rep1, dis3rrp6_rep2 — planning/711).
+#   If OTHER samples failed, read their correct.log; grep -v "^\t" skips the /usr/bin/time block.
 
-# 2. FAN OUT (only after the above passes)
-ssh h2 'cd /u/scratch/k/kevinroy && qsub -t 1-48 710_qsub.sh'
-#   Task 34 is idempotent (skips on existing BAM), so re-submitting the whole range is safe.
-#   Poll: ls /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc | wc -l   (expect 48)
-#         grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc  (lists failures)
+# 2. VERIFY A SAMPLE ON CONTENT, never on rc alone — the check that matters:
+ssh h2 'samtools view /u/project/guillom/kevinroy/682_drs1m/<S>/correct_v2/<S>.rectified_corrected_3end.bam \
+   chrVI:64595-64605 | awk "\$6 ~ /321N/" | wc -l'
+#   Non-zero => the RPL22B intron is in the BAM. Zero on a WT-like sample => investigate.
 
-# 3. THEN tell rbrowse to repoint nsd_rectify_genome.json at
-#    <S>/correct_v2/<S>.rectified_corrected_3end.bam instead of align/<S>.multialigned.bam.
+# 3. SWEEP for the 711 bug across ALL outputs (not yet done):
+ssh h2 'for b in /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/*.rectified_corrected_3end.bam; do
+   n=$(samtools view "$b" 2>/dev/null | awk "\$4<0" | wc -l); [ "$n" -gt 0 ] && echo "$n $b"; done'
+#   Any output = a sample carrying a negative-POS read. Expect the 2 known ones.
+
+# 4. THE 2 FAILURES: do NOT hand-edit the BAMs. Fix planning/711 first (clamp at source +
+#    two-sided invariant + regression test), then re-run just those two:
+ssh h2 'cd /u/scratch/k/kevinroy && for S in 4nqo_rep1 dis3rrp6_rep2; do
+   rm -rf /u/project/guillom/kevinroy/682_drs1m/$S/correct_v2; done
+   grep -nx -e 4nqo_rep1 -e dis3rrp6_rep2 710_samples.txt'   # -> task ids to qsub -t
+
+# 5. When 48/48: tell rbrowse to repoint nsd_rectify_genome.json at
+#    <S>/correct_v2/<S>.rectified_corrected_3end.bam (they are already briefed).
 ```
 
 ### Open (unchanged unless noted)
