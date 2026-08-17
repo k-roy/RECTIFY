@@ -6,6 +6,113 @@
 started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
 (2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
 
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-17
+
+## Delta 2026-08-17 — mapPacBio gap DOCUMENTED IN CODE. Two things in flight.
+
+Kevin: *"document the gap and proceed with finalizing the resolver + stations A-C."* Gap
+documentation is DONE (uncommitted, pending the suite). Finalization is NOT done.
+
+### 🔴 IN FLIGHT (two)
+
+**1. Full test suite on the M1**, started ~09:00 PDT, at **91 %** after 22 min. Log:
+`/private/tmp/claude-501/-Users-kevinroy-work-rectify/a08714c5-*/scratchpad/suite2.log`
+(sentinel: the line `RC=<n>` is appended on exit).
+⚠️ **This run is itself the reason the M1 feels slow** — load average **16.3 on 8 cores** from
+pytest's multiprocessing pools, and swap is **8,148 MB / 9,216 MB = 88 % full** with 13.5 M
+pageouts. That violates the `~/work/CLAUDE.md` rule "never run >2 concurrent memory-heavy COMPUTE
+subprocesses; default ALL heavy iteration to the cluster". **Next full-suite run should go to H2**
+(same tree available at `/u/scratch/k/kevinroy/tree_master_0128840`), or be worker-capped locally.
+Independent of pytest, these macOS daemons were burning ~65 % of a core: `exchangesyncd` 17 %,
+`ecosystemd` 14 %, `dataaccessd` 12 %, `trustd` 11 %, `ecosystemanalyticsd` 11 % — looks like a
+retry loop, worth Kevin's attention, not mine to kill.
+
+**2. H2 job `14382552`, tasks 1-4** — the 4 DRS samples that TIMED OUT of the first fan-out.
+`qacct` proved the cause: `failed 44 : execd enforced h_rt limit`, `exit_status 137`,
+`ru_wallclock 28800` — **walltime, NOT OOM** (maxvmem 16.5-22.4 G against an 8 G/slot × 4 request
+that was never hit). Resubmitted with `h_rt=24:00:00`, `-pe shared 8`, `highp`, `-j 8`.
+List: `710_slow.txt` = `dis3rrp6_rep1 rna15_rep1 ysh1_rep1 ysh1_rep2`.
+
+### 682 fan-out status: 44/48 samples have corrected BAMs
+
+| outcome | n | samples |
+|---|---:|---|
+| ✅ rc=0, corrected BAM + .bai | **44** | — |
+| ❌ negative-POS bug (`planning/719`) | 2 | `4nqo_rep1`, `dis3rrp6_rep2` |
+| ⏳ timed out, resubmitted as `14382552` | 4 | `dis3rrp6_rep1`, `rna15_rep1`, `ysh1_rep1`, `ysh1_rep2` |
+
+### Done — the mapPacBio gap is now documented where callers hit it (UNCOMMITTED)
+
+Three places, all in the working tree pending the suite:
+1. **`overhang_resolver.py`** module docstring: a `🔴 SCOPE LIMIT` block with the 99.1 % annotated /
+   **34.5 % non-canonical** table, the structural cause (`SpliceSiteIndex` is GT/AG-class only, so a
+   non-canonical junction has no entry and cannot be enumerated), and guidance — net gain as a panel
+   arm, NOT a substitute for non-canonical discovery, set `arb_grammar=False` for those missions.
+2. **`align_command.py --junction-aligners` help**: RECOMMENDED + the `720` numbers, then LIMITATION
+   + the `721` numbers and the named conditions (upf1Δ, prp18Δ, cryptic splicing).
+3. **`tests/test_resolver_noncanonical_gap.py`** — 5 tests, **all passing**. Pins the gap as a
+   property of the index rather than re-measuring 34.5 %. If someone extends the index the tests
+   FAIL, which is the signal to re-measure and update the quoted figures. One test asserts the
+   docstring still carries the limitation.
+
+**A fixture trap, recorded because it nearly produced a false pass:** the first draft of the
+negative test FAILED spuriously — incidental GT/AG dinucleotides in the exon backbone put indexed
+sites at 29/30, within ±1 of the donor at 31. Fixed with a backbone containing **no
+GT/GC/AG/CT/AC dinucleotide anywhere**, plus a test enforcing that property on future edits.
+**Anti-vacuity verified:** substituting a canonical `GT..AG` intron into the same slot DOES index
+(sites 30, 31, 101, 102), so the negative assertions are load-bearing.
+
+### Resume
+
+```bash
+# 1. THE SUITE
+grep "^RC=" /private/tmp/claude-501/-Users-kevinroy-work-rectify/a08714c5-*/scratchpad/suite2.log
+#   absent -> still running; do NOT start another heavy local job (swap is 88% full).
+#   RC=0 -> expect ~2,325 passed (2,320 baseline + 5 new). COMMIT the three files:
+git add rectify/core/align/overhang_resolver.py rectify/core/commands/align_command.py \
+        tests/test_resolver_noncanonical_gap.py
+#   🔴 Do NOT stage rectify/core/align/multi_aligner.py in that commit — it carries the
+#   SEPARATE, still-unfinished max_intron patch (see Open #1).
+#   RC!=0 -> read the log; if only the 5 new tests fail the fixture regressed, if others fail
+#   the docstring edit broke an import (it is docstring-only, so unlikely).
+
+# 2. THE 4 RESUBMITTED SAMPLES
+ssh h2 'ls /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc | wc -l'   # 44 -> 48
+ssh h2 'qstat -u kevinroy | grep 14382552 || echo "array done"'
+ssh h2 'grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc'  # failures
+#   If any of the 4 time out AGAIN at 24 h, they are pathological (ysh1_rep1/rep2 are the corpus
+#   pod5_skip libraries, 178k/197k junctions vs 24k for their sibling — see HANDOFF_682 §3).
+#   Do not keep raising h_rt; investigate why correct is 3x slower on them.
+#   VERIFY ON CONTENT, not rc:
+ssh h2 'samtools view <BAM> chrVI:64595-64605 | awk "\$6 ~ /321N/" | wc -l'   # non-zero
+
+# 3. THEN finalization, in this order (nothing here is started):
+#   a. planning/719 negative-POS fix: clamp in the 5' rescue extension path AND make
+#      consensus.py:167's invariant two-sided (it checks only reference_end > contig_len).
+#      Then re-run 4nqo_rep1 + dis3rrp6_rep2.
+#   b. max_intron -> deSALT/uLTRA, ANNOTATION-DERIVED not 5000 (Kevin's constraint).
+#   c. Add overhang_resolver to the DEFAULT junction-aligner list (planning/720 verdict).
+#   d. Station C: consult `flagged` on both verdict branches + fix the contradicting docstring
+#      (station_c.py:24-25 vs :29-37) — NEEDS KEVIN, it changes admissions.
+#   e. Make Stations B/C fail LOUDLY in run-all (currently `except Exception -> WARNING`,
+#      stages.py:~1150) or at least write a JSON recording the failure.
+```
+
+### Open
+
+- **Uncommitted:** `multi_aligner.py` (max_intron patch, needs annotation-derived constant) +
+  the three gap-doc files above (pending suite).
+- `planning/719` negative-POS bug: root-caused, NOT fixed. 2 samples blocked on it.
+  ⚠️ `4nqo_rep1` overshot by 80,234 bp vs `dis3rrp6_rep2`'s 23 bp — a 25 bp clip cannot explain
+  the former, so there is likely a second path (long N-op × rescue). Not investigated.
+- `refine_bam_junctions` logs a `samtools sort` failure as a WARNING and continues, dying 90 s
+  later with an unrelated-looking error. Should be fatal.
+- Station C `flagged` decision (needs Kevin) · Stations B/C fail-soft · the 2-10 kb impossible
+  intron residual · W_max recalibration (`planning/700`) — all unstarted.
+- **NN collision fixed:** my negative-POS doc was renumbered 711 -> **719** (the Attribution Agent
+  held 711 since 2026-08-14). I wrote it without claiming — use `nn_claim.sh`.
+- All planning docs remain UNTRACKED (`planning/` is gitignored in the Chanfreau workspace).
+
 ## Delta 2026-08-16 (latest) — 🔴 THE RESOLVER DOES NOT INHERIT mapPacBio's DISCOVERY ROLE
 
 Kevin: *"The main question is whether it is getting the true positives that mapPacBio was
