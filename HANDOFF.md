@@ -6,6 +6,42 @@
 started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
 (2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
 
+## Delta 2026-08-16 (late) — RESOLVER PANEL QUESTION: TESTED AND ANSWERED. Adopt as default.
+
+Kevin asked whether "is the resolver in the default panel" is decidable now rather than a parked
+decision. **It was. Pre-registered test, `planning/720`, all four criteria pass.**
+
+Paired per-read, 897,415 reads, `WT_BY4742_rep1`: A = raw minimap2 arm, B = resolver output
+(`699b`). The resolver SUBSTITUTES the minimap2 arm, so this is the exact substitution at issue.
+**Criteria were committed to the script docstring before the run.**
+
+| criterion | value | verdict |
+|---|---:|---|
+| C1 GAIN — reads gaining an N-op | **26,565 (2.96 %)** | ADOPT-SUPPORTING |
+| C2 COST — gained junctions that are ANNOTATED | **93.6 %** (24,857/26,567) | PASS |
+| C3 HARM — lost/moved annotated | **31** | PASS |
+| C4 IMPOSSIBLE — past-contig introduced | **0** | PASS |
+
+**⇒ Add `overhang_resolver` to the default cDNA panel.** `684` ran without it and thereby lost
+~26.5k correctly-recovered annotated junctions per 900k reads at no measured cost.
+**Implementation NOT done** — it is a change to the default `--junction-aligners` list.
+
+### 🔴 Two corrections this test forced, both to claims I made earlier this session
+
+1. **`XB` is written on EVERY read** (mostly `0/1`-style clip counts), not only changed ones.
+   My `planning/703`-era rule "`has XJ or has XB` == differs from minimap2" is **WRONG** — it
+   marks 100 % of reads. The right discriminator is `XJ` plus the *typed* `XB` kinds
+   (`dmerge`/`shift`/`dop`/`mm`/`mmL`). The DRS "0.970 % changed" figure was an under-count.
+2. **The resolver's value is v2 re-arbitration, not v1 clip resolution.** `arb_dmerge` = 24,686
+   vs `XJ` = 2,491. It mostly fixes junctions minimap2 placed but split, rather than rescuing
+   soft clips. This inverts `planning/698` §"~1 % of reads, almost entirely the v1 clip job",
+   which rested on the same faulty test. **The arm should be documented as a junction
+   re-arbitrator first.**
+
+⚠️ **C2 uses "annotated" as a proxy for "correct", so this test is blind to the novel half** —
+a resolver that recovered only annotated junctions and missed novel ones would score 100 % here.
+The 50-intron browser panel (`697`) is the instrument for that, and Kevin is reviewing it now.
+
 ### 🔴 IN FLIGHT — 48-sample fan-out, with 2 KNOWN FAILURES (a real bug, see below)
 
 **Array job `14372527`, tasks 1-48**, submitted 2026-08-16 17:11 PDT. At last check:
