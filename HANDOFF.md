@@ -6,6 +6,51 @@
 started the session. Two items, in order: (1) the 682 re-run with `--write-corrected-bam`,
 (2) the `max_intron` patch made annotation-derived. **(1) is IN FLIGHT. (2) NOT STARTED.**
 
+## Delta 2026-08-16 (latest) — 🔴 THE RESOLVER DOES NOT INHERIT mapPacBio's DISCOVERY ROLE
+
+Kevin: *"The main question is whether it is getting the true positives that mapPacBio was
+getting."* **Tested (`planning/721`). Answer: on annotated junctions yes; on non-canonical ones,
+no.**
+
+Substrate: `596_gate/inputs/s1_upf1d_trimmed.*` — the SAME upf1Δ reads through minimap2 AND
+mapPacBio, plus the resolver run on that minimap2 arm. 30,928 reads in all three arms. The
+population scored is `J(mapPacBio) − J(minimap2)`, i.e. mapPacBio's actual contribution.
+
+| class of mapPacBio-unique junction | n | recovered | recovery |
+|---|---:|---:|---:|
+| **annotated** | 1,053 | 1,044 | **99.1 %** |
+| **novel NON-CANONICAL** | **417** | **144** | **34.5 %** |
+| ALL | 1,472 | 1,189 | 80.8 % |
+
+**Pre-registered thresholds (fixed before the run): ≥50 % inherits · 20-50 % partial · <20 % does
+not. Result 34.5 % ⇒ PARTIAL, a poor substitute for discovery.**
+
+🔴 **This is exactly the blind spot `720` flagged in its own caveats and could not measure.**
+`720` scored 93.6 % annotated recovery and returned ADOPT; its caveat warned that a resolver
+recovering only annotated junctions would score ~100 % there and still be bad for discovery.
+That is what is happening: **it misses 273 of 417 non-canonical junctions mapPacBio found**, in
+the condition where cryptic splicing IS the phenomenon.
+
+**Mechanism, from the module rather than speculation:** resolver candidates come from a
+splice-site index built on GT/AG-class dinucleotides (`splice_site_index.py:135`). **A
+non-canonical junction has no entry in that index and cannot be enumerated as a candidate at
+all.** That is a structural ceiling, not a tuning knob. `arb_grammar` (−6.0 pp measured cryptic
+recovery) is a second, smaller motif dependency on top.
+
+**What this does and does not change:**
+- `720`'s ADOPT verdict **stands** — the resolver is still a net gain and should go in the default
+  panel (~26.5k annotated junctions recovered per 900k reads, 31 reads harmed).
+- **It must NOT be described as replacing mapPacBio.** `planning/698` framed it as "mapPacBio's
+  role, done deliberately". True for annotated; **one third** for non-canonical. De-paneling
+  mapPacBio cost real discovery capability that has not been replaced.
+- **For non-canonical missions (upf1Δ, prp18Δ) the panel is currently weaker than it was.**
+  Options, none evaluated: re-panel mapPacBio for those runs despite compute; extend the index
+  with non-canonical classes (changes the candidate space and the FDR budget); or document the gap.
+
+⚠️ **"mapPacBio-unique" is not "true"** — some fraction are mapPacBio's own false positives, the
+liability Kevin named. 34.5 % is recovery of mapPacBio's *claims*. The honest adjudication is the
+50-intron browser panel (`697`), which is per-junction and human-reviewed.
+
 ## Delta 2026-08-16 (late) — RESOLVER PANEL QUESTION: TESTED AND ANSWERED. Adopt as default.
 
 Kevin asked whether "is the resolver in the default panel" is decidable now rather than a parked
