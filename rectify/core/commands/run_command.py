@@ -733,6 +733,18 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--resolver-acceptor-classes',
+        choices=['canonical', 'prp18'],
+        default='canonical',
+        help=(
+            "Acceptor candidate classes for the overhang_resolver post-pass. "
+            "'prp18' adds the Roy et al. 2023 NAR alternative-3'SS classes "
+            "(BG: TG/CG/GG + non-G: AT) — opt-in for splicing missions "
+            "(upf1D, prp18D). Default 'canonical'. See planning/722b."
+        )
+    )
+
+    run_parser.add_argument(
         '--max-intron',
         type=int,
         default=None,

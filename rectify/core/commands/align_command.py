@@ -184,6 +184,24 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--resolver-acceptor-classes',
+        choices=['canonical', 'prp18'],
+        default='canonical',
+        help=(
+            "Acceptor candidate classes for the overhang_resolver. "
+            "'canonical' (default) = AG-class only, the planning/720-measured "
+            "configuration. 'prp18' additionally enumerates the alternative "
+            "3'SS classes measured in Roy et al. 2023 NAR (gkad968): BG "
+            "(TG/CG/GG) + non-G HAU (AT). Opt-in for splicing missions "
+            "(upf1D, prp18D/prp18-AA): published utilized alt-3'SS become "
+            "enumerable 47%%->88%% (prp18) / 62%%->85%% (upf1D-only) at "
+            "~x4.8 acceptor candidate density (planning/722b). Pair with "
+            "non-canonical discovery settings (arb_grammar off) where "
+            "appropriate."
+        )
+    )
+
+    aligner_group.add_argument(
         '--require-aligners',
         dest='require_aligners',
         action='store_true',
@@ -998,6 +1016,8 @@ def run_align(args: argparse.Namespace) -> int:
                 output_bam=str(resolver_bam),
                 threads=args.threads,
                 max_intron=getattr(args, 'max_intron', 5000),
+                acceptor_classes=getattr(
+                    args, 'resolver_acceptor_classes', 'canonical'),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"

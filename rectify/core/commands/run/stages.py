@@ -52,6 +52,7 @@ def _run_alignment(
     read2: Optional[Path] = None,
     read_length: int = 150,
     max_intron: Optional[int] = None,
+    resolver_acceptor_classes: str = 'canonical',
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -165,6 +166,7 @@ def _run_alignment(
         # longest annotated intron; the bundled yeast annotation derives the
         # historical 5000).
         max_intron=max_intron,
+        resolver_acceptor_classes=resolver_acceptor_classes,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
         junc_bonus=9,

@@ -40,9 +40,22 @@ Consequences for callers:
     remaining shortfall as a known, unfilled gap rather than an absence of
     signal.
 
-Extending the index with non-canonical dinucleotide classes would change both
-the candidate space and the false-discovery budget (``alpha`` is calibrated
-against the current candidate density), so it is a design change, not a flag.
+**Partial mitigation (2026-08-17, planning/722b, opt-in):**
+``ResolverConfig(acceptor_classes='prp18')`` extends the ACCEPTOR candidate
+classes with the alternative-3'SS set measured in Roy et al. 2023 NAR
+(gkad968): BG (TG/CG/GG) + non-G HAU (AT). Measured benefit on the published
+junction table: utilized alt-3'SS become enumerable 47%→88% (prp18 mutants)
+and 62%→85% (upf1Δ-only — NMD stabilizes the same isoforms, so this matters
+for plain upf1Δ libraries). Measured price: acceptor candidate density
+x4.82 (+2.3 bits of candidate space; ~x5 resolver CPU), which is why it is
+an opt-in mission flag, not the default. It does NOT close the rest of the
+721 gap: donors stay GT/GC (deliberate — 4/1,833 published alt-3'SS
+junctions had non-canonical donors), and the flat-spectrum singleton noise
+that dominates the mapPacBio-unique residual (planning/722) is not made
+enumerable by any dinucleotide class. Everything below about a motif-FREE
+search stands: extending further would change both the candidate space and
+the false-discovery budget (``alpha`` is calibrated against the candidate
+density), so it is a design change, not a flag.
 
 Per terminal soft clip:
 
@@ -118,6 +131,18 @@ _RIGHT = 'R'
 class ResolverConfig:
     alpha: float = 0.01          # false-discovery budget (641 T7: a published knob)
     max_intron: int = 5000       # per-reference intron cap (clamps W_max)
+    # Acceptor candidate classes. 'canonical' = the AG-class index (default —
+    # the planning/720 ADOPT verdict was measured here). 'prp18' additionally
+    # enumerates the Roy et al. 2023 NAR (gkad968) alternative-3'SS classes:
+    # BG (TG/CG/GG) + non-G HAU (AT) — see the SpliceSiteIndex docstring for
+    # the measured price (acceptor density x4.82, +2.3 bits of candidate
+    # space) and benefit (published utilized alt-3'SS enumerable 47%->88% in
+    # prp18, 62%->85% in upf1Δ-only; planning/722b). OPT-IN for splicing
+    # missions (upf1Δ / prp18Δ / prp18-AA); donors stay GT/GC — the published
+    # set had 4/1,833 non-canonical donors. For such missions also consider
+    # arb_grammar=False (the canonical-preference snap works against exactly
+    # these junctions).
+    acceptor_classes: str = 'canonical'
     min_intron: int = 40         # matches BBMap intronlen=40 D->N semantics
     min_clip: int = 8            # clips shorter than this are never assessed
     max_clip_match: int = 200    # junction-proximal bases used for matching
@@ -250,11 +275,23 @@ def _clip_lens(cigartuples) -> Tuple[int, int]:
     return left, right
 
 
-def _site_kinds(side: str, strand: str) -> Tuple[str, str]:
+def _acc_kind(base: str, acceptor_classes: str) -> str:
+    """Map an acceptor kind to its union variant under 'prp18' classes."""
+    if acceptor_classes == 'prp18' and base in ('acc_plus', 'acc_minus'):
+        return base + '_all'
+    return base
+
+
+def _site_kinds(side: str, strand: str,
+                acceptor_classes: str = 'canonical') -> Tuple[str, str]:
     """(near_kind, far_kind) for a clip side x transcript strand."""
     if side == _LEFT:
-        return ('acc_plus', 'don_plus') if strand == '+' else ('don_minus', 'acc_minus')
-    return ('don_plus', 'acc_plus') if strand == '+' else ('acc_minus', 'don_minus')
+        near, far = (('acc_plus', 'don_plus') if strand == '+'
+                     else ('don_minus', 'acc_minus'))
+    else:
+        near, far = (('don_plus', 'acc_plus') if strand == '+'
+                     else ('acc_minus', 'don_minus'))
+    return (_acc_kind(near, acceptor_classes), _acc_kind(far, acceptor_classes))
 
 
 def _donor_rank(chrom_seq: str, side: str, strand: str,
@@ -347,7 +384,7 @@ def resolve_clip(
         return None
     w = assessment.w_max_bp
 
-    near_kind, far_kind = _site_kinds(side, strand)
+    near_kind, far_kind = _site_kinds(side, strand, cfg.acceptor_classes)
 
     # --- Candidate lookup (binary search, bounded by W) --------------------
     placements: List[_Placement] = []
@@ -542,11 +579,14 @@ def _bump(stats: ResolverStats, key: str, n: int = 1) -> None:
     stats.extra[key] = stats.extra.get(key, 0) + n
 
 
-def _boundary_kinds(strand: str) -> Tuple[str, str]:
+def _boundary_kinds(strand: str,
+                    acceptor_classes: str = 'canonical') -> Tuple[str, str]:
     """(left_kind, right_kind) of an intron's genomic boundaries."""
     if strand == '+':
-        return 'don_plus', 'acc_plus'
-    return 'acc_minus', 'don_minus'
+        left, right = 'don_plus', 'acc_plus'
+    else:
+        left, right = 'acc_minus', 'don_minus'
+    return (_acc_kind(left, acceptor_classes), _acc_kind(right, acceptor_classes))
 
 
 def _decoded_query(read: pysam.AlignedSegment, chrom_seq: str) -> str:
@@ -654,7 +694,7 @@ def _rearbitrate_read(
     if not ct or not q:
         return False
     dq = None  # decoded lazily, once
-    left_kind, right_kind = _boundary_kinds(strand)
+    left_kind, right_kind = _boundary_kinds(strand, cfg.acceptor_classes)
     changed = False
 
     # ---- Case A0: boundary-deletion merge (planning/644c, the SRC1 smoking
@@ -1212,6 +1252,7 @@ def run_overhang_resolver(
     threads: int = 1,
     max_intron: int = 5000,
     alpha: float = 0.01,
+    acceptor_classes: str = 'canonical',
     config: Optional[ResolverConfig] = None,
 ) -> str:
     """Stream the (name-sorted) minimap2 arm BAM through the resolver.
@@ -1239,7 +1280,8 @@ def run_overhang_resolver(
             "implemented). Size jobs for 1 core on this stage.",
             threads,
         )
-    cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron)
+    cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron,
+                                   acceptor_classes=acceptor_classes)
     if not cfg.skip_regions:
         cfg.skip_regions = skip_regions_from_env()
     genome = load_genome(Path(genome_path))

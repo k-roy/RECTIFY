@@ -20,6 +20,27 @@ array            forward-genome dinucleotide    stored coordinate
 (minus-strand introns read GT..AG on the transcript, i.e. CT..AC / CT..GC on
 the forward genome.)
 
+**Extended (Prp18-class) acceptors** — Roy et al. 2023 NAR (PMID 37956322,
+gkad968) measured genome-wide activation of NON-YAG 3'SS in prp18 mutants,
+and the same junction classes accumulate in plain upf1Δ (NMD stabilizes the
+non-productive isoforms). The alternative acceptor terminal dinucleotides are
+the **BG class (TG / CG / GG)** plus the **non-G HAU class (AT)**; donors
+stay GT/GC (4 of 1,833 published alt-3'SS junctions had a non-canonical
+donor — the donor index never needs extension). The index therefore ALWAYS
+carries two extra arrays (built unconditionally; querying is opt-in via the
+``acc_plus_all`` / ``acc_minus_all`` union kinds):
+
+===================  ==========================================  ============
+``acc_plus_ext``     TG|CG|GG|AT at [e-2, e)                     e = intron
+                                                                 END (excl.)
+``acc_minus_ext``    CA|CG|CC|AT at [s, s+2)  (revcomp reading)  s = intron
+                                                                 START
+===================  ==========================================  ============
+
+Measured price (planning/722b): acceptor density 5.83 %/bp -> 22.3 %/bp
+(x4.82); measured benefit on the published junction set: enumerable
+utilized alt-3'SS 47 % -> 88 % in prp18, 62 % -> 85 % in upf1Δ-only.
+
 The index is cached beside the genome as ``<genome>.splice_sites.npz`` with a
 provenance fingerprint (realpath + size + mtime_ns + format version); a
 mismatch triggers a silent rebuild. Yeast builds in <1 s; large genomes load
@@ -38,9 +59,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2  # v2: + acc_plus_ext / acc_minus_ext (Prp18 classes)
 
-_KINDS = ('don_gt_plus', 'don_gc_plus', 'acc_plus', 'don_minus', 'acc_minus')
+_KINDS = ('don_gt_plus', 'don_gc_plus', 'acc_plus', 'don_minus', 'acc_minus',
+          'acc_plus_ext', 'acc_minus_ext')
 
 
 def _dinuc_positions(seq_u8: np.ndarray, a: str, b: str) -> np.ndarray:
@@ -79,6 +101,21 @@ class SpliceSiteIndex:
             don_m = np.sort(np.concatenate([ac, gc])).astype(np.uint32)
             arrays[f'{chrom}|don_minus'] = (don_m + 2).astype(np.uint32)
             arrays[f'{chrom}|acc_minus'] = ct
+            # Prp18-class extended acceptors (module docstring). Plus strand:
+            # transcript acceptor dinuc in {TG, CG, GG, AT} at the intron end.
+            tg = _dinuc_positions(u8, 'T', 'G')
+            cgg = _dinuc_positions(u8, 'G', 'G')
+            at = _dinuc_positions(u8, 'A', 'T')
+            cg = _dinuc_positions(u8, 'C', 'G')
+            acc_ext_p = np.sort(np.concatenate([tg, cg, cgg, at])).astype(np.uint32)
+            arrays[f'{chrom}|acc_plus_ext'] = (acc_ext_p + 2).astype(np.uint32)
+            # Minus strand: transcript acceptor is at the intron START read in
+            # revcomp, so the forward-genome dinucleotides are the revcomps
+            # {CA, CG, CC, AT}, stored at the intron start like acc_minus.
+            ca = _dinuc_positions(u8, 'C', 'A')
+            cc = _dinuc_positions(u8, 'C', 'C')
+            acc_ext_m = np.sort(np.concatenate([ca, cg, cc, at])).astype(np.uint32)
+            arrays[f'{chrom}|acc_minus_ext'] = acc_ext_m
         return cls(arrays, fingerprint=fingerprint)
 
     @staticmethod
@@ -133,11 +170,21 @@ class SpliceSiteIndex:
         """Sorted positions of ``kind`` in ``[lo, hi)`` on ``chrom``.
 
         ``kind`` is one of don_gt_plus / don_gc_plus / acc_plus / don_minus /
-        acc_minus, or the convenience union ``don_plus`` (GT+GC).
+        acc_minus / acc_plus_ext / acc_minus_ext, or a convenience union:
+        ``don_plus`` (GT+GC), ``acc_plus_all`` / ``acc_minus_all``
+        (canonical AG-class + the Prp18 extended classes).
         """
         if kind == 'don_plus':
             a = self.sites_in(chrom, 'don_gt_plus', lo, hi)
             b = self.sites_in(chrom, 'don_gc_plus', lo, hi)
+            return np.sort(np.concatenate([a, b]))
+        if kind in ('acc_plus_all', 'acc_minus_all'):
+            # (A v1 cache without the ext arrays can never be loaded here —
+            # the format-version bump makes its fingerprint mismatch, which
+            # forces a rebuild in load_or_build.)
+            base = kind.replace('_all', '')
+            a = self.sites_in(chrom, base, lo, hi)
+            b = self.sites_in(chrom, base + '_ext', lo, hi)
             return np.sort(np.concatenate([a, b]))
         arr = self._arrays.get(f'{chrom}|{kind}')
         if arr is None or arr.size == 0:

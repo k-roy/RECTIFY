@@ -104,18 +104,40 @@ def test_noncanonical_intron_edges_are_NOT_indexed():
         'figures are stale, re-measure')
 
 
-def test_index_kinds_are_canonical_only():
-    """The site classes themselves encode the limitation.
+def test_index_kinds_are_pinned():
+    """The site classes themselves encode the (default) limitation.
 
-    Pins the vocabulary: every kind the index exposes names a GT/GC/AG-class
-    dinucleotide. A new kind (e.g. 'don_at_plus') means the gap is being closed
-    and both the alpha calibration and the quoted recovery numbers need review.
+    2026-08-17 update (planning/722b): this pin fired, as designed, when the
+    Prp18-class acceptor extension landed. The index now ALWAYS carries two
+    extra acceptor arrays (acc_plus_ext / acc_minus_ext: TG/CG/GG/AT
+    transcript-frame acceptors, Roy et al. 2023 NAR gkad968), but querying
+    them is OPT-IN via the *_all union kinds + ResolverConfig
+    acceptor_classes='prp18'. The DEFAULT query path is still canonical-only,
+    so the planning/721 figures (99.1 % annotated / 34.5 % non-canonical)
+    continue to describe default behavior. Donors were NOT extended.
+
+    Any further vocabulary growth fails here again — that is the signal to
+    re-price (candidate density, alpha) and re-measure before shipping.
     """
     idx = SpliceSiteIndex.build({'chrC': CANON})
     kinds = {k.split('|', 1)[1] for k in idx._arrays}
-    assert kinds <= set(_KINDS), (
-        f'unexpected splice-site kinds {kinds - set(_KINDS)} — the index has '
-        f'grown beyond GT/AG classes; see planning/721')
+    assert kinds == set(_KINDS) | {'acc_plus_ext', 'acc_minus_ext'}, (
+        f'splice-site kind vocabulary changed ({kinds}) — re-price and '
+        f're-measure; see planning/721 + 722b')
+
+
+def test_default_query_path_is_still_canonical_only():
+    """The 721 figures describe DEFAULT behavior; pin that the default
+    resolver kind selection never touches the extended arrays."""
+    from rectify.core.align.overhang_resolver import (
+        _boundary_kinds, _site_kinds,
+    )
+    canon = set(_KINDS) | {'don_plus'}
+    for side in ('L', 'R'):
+        for strand in ('+', '-'):
+            assert set(_site_kinds(side, strand)) <= canon
+    for strand in ('+', '-'):
+        assert set(_boundary_kinds(strand)) <= canon
 
 
 def test_docstring_records_the_gap():
