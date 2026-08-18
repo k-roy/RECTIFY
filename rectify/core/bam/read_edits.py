@@ -1383,6 +1383,18 @@ def extend_read_5prime_for_junction_rescue(
         # New reference_start = five_prime_position - exon_ref_span + 1
         new_ref_start = five_prime_position - exon_ref_span + 1
 
+        # 🔴 Contig-edge REFUSAL (planning/719): a rescue whose exon segment
+        # would start before base 0 is walking off the START of the contig —
+        # the proposed placement is physically impossible, so refuse it and
+        # leave the read unmodified (clamping would fabricate alignment).
+        # A single negative-POS record makes the whole BAM unindexable, and
+        # the failure is silent until `samtools index`. Observed live: a read
+        # at POS 0 with a 25 bp leading soft clip rescued to POS -23, and a
+        # second class where a bogus five_prime_position put new_ref_start
+        # 80 kb off the edge — this guard catches both.
+        if new_ref_start < 0:
+            return False
+
         if intron_len <= 0:
             # No intron gap — just prepend exon ops.
             for op_tup in reversed(exon_ops):
@@ -1430,6 +1442,30 @@ def extend_read_5prime_for_junction_rescue(
         expected_query = actual_sc + effective_trim
         if exon_query_span != expected_query:
             exon_ops = [(0, expected_query)]
+
+        # 🔴 Contig-edge REFUSAL (planning/719, mirror of the plus-strand
+        # guard): the minus-strand rescue extends reference_end rightward,
+        # so a bad five_prime_position (or a clip at the last bases of the
+        # contig) can walk the alignment off the contig END. Project the
+        # post-edit reference_end from the already-built local cigar and
+        # refuse — read untouched — if it exceeds the contig length. The
+        # header is absent only on synthetic AlignedSegments; those skip the
+        # check (production reads always come from an AlignmentFile).
+        _clen = None
+        try:
+            if read.reference_name is not None:
+                _clen = read.header.get_reference_length(read.reference_name)
+        except Exception:
+            _clen = None
+        if _clen is not None:
+            _body_ref_span = sum(
+                l for op, l in cigar if op in (0, 2, 3, 7, 8))
+            _exon_ref_span = sum(
+                l for op, l in exon_ops if op in _ref_consuming_exon)
+            _new_ref_end = (read.reference_start + _body_ref_span
+                            + max(intron_len, 0) + _exon_ref_span)
+            if _new_ref_end > _clen:
+                return False
 
         if intron_len <= 0:
             for op_tup in exon_ops:
