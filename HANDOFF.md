@@ -30,7 +30,20 @@ Kevin's follow-up directives, both done:
    rep2 `_pre.bam` 16.7M mapped, rep3 827k mapped (shallow rep). All 33 MS2 samples now
    have `_pre.bam`.
 
-### Resume (722b commit — the ONLY thing pending on the M1)
+### ✅ RESOLVED — 722b committed (`5093534`) and PUSHED; origin/master = `7c6a536`
+
+The gate came back 2,374/1; the one failure (`test_validation_reads_upf1d
+cat7_minus_2 test_no_five_prime_rescue`) is an **xdist ordering flake, adjudicated
+before landing**: passes in isolation, whole file passes serially (77/77), and no code
+path connects 722b to correct's 5' rescue (only SpliceSiteIndex consumer outside the
+resolver is Station B triage, which the fixture never runs). ⚠️ Flake is now a KNOWN
+open item — if it recurs under -n 4, chase the corrected-fixture ordering, don't
+re-blame the change du jour. **H2 tree renamed: `tree_master_7c6a536`** (was
+_56a01d5; advanced + renamed before any production job started — this is the tree for
+the MS2 run AND it carries `--resolver-acceptor-classes prp18` for the later upf1Δ
+flag-on evaluation). The block below is the historical resume plan, superseded:
+
+### ~~Resume (722b commit — the ONLY thing pending on the M1)~~ (DONE, kept for context)
 
 ```bash
 # 1. The suite gate for the 722b changes (started ~18:4x PDT, ~11 min expected):
