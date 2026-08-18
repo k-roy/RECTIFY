@@ -49,20 +49,21 @@ gotchas section below.
 
 | Input | Notes |
 |-------|-------|
-| Aligned BAM | Pre-aligned with `rectify align --short-read` (bbmap + bwa), or with BWA-MEM / BBMap directly. `rectify correct --dT-primed-cDNA` works on the resulting BAM; it does **not** align FASTQ itself for this protocol (the built-in FASTQ path uses minimap2 only, which mis-aligns short antisense reads). |
+| Aligned BAM | Pre-aligned with `rectify align --short-read --dT-primed-cDNA` (bbmap + bwa), or with BWA-MEM / BBMap directly. `rectify correct --dT-primed-cDNA` works on the resulting BAM; it does **not** align FASTQ itself for this protocol (the built-in FASTQ path uses minimap2 only, which mis-aligns short antisense reads). |
 | Reference genome | FASTA (gzip OK). Required for read-vs-reference walkback. |
 | Annotation | GFF or GTF (gzip OK). Required for gene assignment in `rectify analyze`. |
 
 ## Step-by-step
 
-### 1. Align with `rectify align --short-read`
+### 1. Align with `rectify align --short-read --dT-primed-cDNA`
 
 QuantSeq REV reads are short (typically 75–150 bp) and 3'-end focused. The
-simplest path is RECTIFY's own short-read panel, which runs bbmap + bwa and
+simplest path is RECTIFY's own dT-primed short-read panel (`--short-read
+--dT-primed-cDNA`), which runs bbmap + bwa and
 writes a sorted, indexed BAM:
 
 ```bash
-rectify align reads.fastq.gz --short-read --genome genome.fa --prefix sample -o aligned/
+rectify align reads.fastq.gz --short-read --dT-primed-cDNA --genome genome.fa --prefix sample -o aligned/
 ```
 
 `-o` is an output **directory**; the sorted, indexed BAM is written as
@@ -111,7 +112,9 @@ What each flag does:
   into the priming site.
 - `--short-read` disables long-read-only modules (poly-A tail trimming,
   full-read indel correction) and uses short-read tolerances. It pairs with
-  the `rectify align --short-read` panel (bbmap + bwa) used in step 1.
+  the `rectify align --short-read --dT-primed-cDNA` panel (bbmap + bwa) used
+  in step 1. (Plain `--short-read` without the dT flag selects the TruSeq
+  COMPASS panel — not what you want for QuantSeq.)
 
 Internally this dispatches to the `walkback_quantseq_rev()` protocol
 wrapper (`rectify/core/correct/protocols/quantseq_rev.py`):
@@ -173,7 +176,7 @@ strand-confused because both signals overlay.
 
 ## Multi-aligner consensus
 
-`rectify align --short-read` already runs a bbmap + bwa panel and selects a
+`rectify align --short-read --dT-primed-cDNA` already runs a bbmap + bwa panel and selects a
 best alignment per read, so the recommended workflow above is multi-aligner.
 What is **not** yet wired is feeding a multi-aligner consensus directly through
 the `rectify correct --short-read --dT-primed-cDNA` step — that step currently

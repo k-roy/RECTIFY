@@ -73,7 +73,7 @@ Illumina QSrev**, and the gap grows with run length.
 > reproduces them (0.438/0.173/0.032). Per-platform observed rates:
 > `rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/error_rates_{drs,cdna,qsrev}.tsv`;
 > full per-modality figure in the
-> [penalty_tables README](../rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/README.md).
+> [penalty_tables README](https://github.com/k-roy/RECTIFY/blob/master/rectify/data/genomes/saccharomyces_cerevisiae/penalty_tables/README.md).
 
 **In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS
 is the only modality whose poly-T/poly-U tract 3′ ends *saturate inside the tract* (lock at ~the

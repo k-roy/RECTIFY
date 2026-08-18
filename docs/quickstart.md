@@ -54,7 +54,7 @@ For Dorado direct RNA-seq BAMs, use `--drs` with `rectify run-all`. This activat
 | Step | Description |
 |------|-------------|
 | **Step 0** (DRS only) | `rectify trim-polya` — 3-pass poly(A) + adapter trimming |
-| **Step 1** | Multi-aligner alignment (minimap2, mapPacBio, gapmm2, uLTRA, deSALT) |
+| **Step 1** | Multi-aligner alignment (minimap2, uLTRA, deSALT + the overhang resolver on the minimap2 arm) |
 | **Step 2** | `rectify correct` — post-consensus correction on winning aligner's BAM |
 | **Step 3** | `rectify analyze` |
 | **Step 4** (DRS only) | `rectify restore-softclip` — re-attaches poly(A) as soft-clips for IGV |

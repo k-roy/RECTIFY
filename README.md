@@ -14,7 +14,7 @@
 
 Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-junction overhangs that are soft-clipped, junctions forced to annotated sites when an alternative is a better match, and poly(A) tails that align over genomic A-tracts so the apparent 3' end overshoots the true cleavage site — sometimes by thousands of bases with an artifactual intron added. **RECTIFY corrects each of these in one pass**: it runs multiple aligners in parallel, corrects each independently using **chemistry-specific empirical error models** (indel penalties calibrated by homopolymer length and base class, with bundled tables for *S. cerevisiae* and *H. sapiens*), then selects the single best-corrected alignment per read. The bases at the read ends then mean what biology says they should — 5' end → transcription start site, N-cigar op → splice junction, 3' end → cleavage and polyadenylation (CPA) site.
 
-One pipeline, three RNA-seq technologies.
+One pipeline, two sequencing families — **ONT long reads** (DRS, PCR-cDNA) and **NGS short reads** (TruSeq/CORALL v2, QuantSeq REV 3'-end).
 
 <p align="center">
   <img src="docs/figures/pipeline_overview.png#gh-light-mode-only" alt="RECTIFY pipeline overview" width="820">
@@ -25,14 +25,15 @@ One pipeline, three RNA-seq technologies.
 
 ## Inputs
 
-|                       | **ONT DRS**            | **ONT PCR-cDNA**                            | **QuantSeq REV**           |
-|---                    |---                     |---                                          |---                         |
-| Chemistry             | Direct RNA, long read  | PCB114.24 (SSP + 27-nt UMI), long read      | dT-primed short read       |
-| Poly(A) in read?      | Yes                    | Yes (poly-A *or* poly-T, depending on orient) | No                         |
-| 3' end side of read   | right                  | right (`fwd`) / left (`rev`)                | left                       |
-| Gene strand vs BAM    | matches                | matches (`fwd`) / inverted (`rev`)          | **inverted (antisense)**   |
+|                       | **ONT DRS**            | **ONT PCR-cDNA**                            | **TruSeq / CORALL v2**                        | **QuantSeq REV**           |
+|---                    |---                     |---                                          |---                                            |---                         |
+| Family                | ONT long read          | ONT long read                               | NGS short read                                | NGS short read             |
+| Chemistry             | Direct RNA             | PCB114.24 (SSP + 27-nt UMI)                 | Whole-transcriptome (CORALL v2: 12-nt UMI at R1 start) | dT-primed **3'-end**       |
+| Poly(A) in read?      | Yes                    | Yes (poly-A *or* poly-T, depending on orient) | No                                            | No                         |
+| 3' end side of read   | right                  | right (`fwd`) / left (`rev`)                | n/a — reads are internal fragments            | left                       |
+| Gene strand vs BAM    | matches                | matches (`fwd`) / inverted (`rev`)          | kit-dependent (stranded kits)                 | **inverted (antisense)**   |
 
-Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** reverse-complement antisense reads. About half come out as `orient=fwd` (SSP+UMI at basecalled 5′, poly-A at 3′ — same layout as DRS) and half as `orient=rev` (SSP_RC+UMI_RC at basecalled 3′, poly-T at 5′ — mirror layout). `rectify correct-cdna` normalises both so all downstream stages see a single canonical orientation per read. All three chemistries converge at the multi-aligner and correction stages.
+Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** reverse-complement antisense reads. About half come out as `orient=fwd` (SSP+UMI at basecalled 5′, poly-A at 3′ — same layout as DRS) and half as `orient=rev` (SSP_RC+UMI_RC at basecalled 3′, poly-T at 5′ — mirror layout). `rectify correct-cdna` normalises both so all downstream stages see a single canonical orientation per read. All four chemistries converge at the multi-aligner stage.
 
 ---
 
@@ -40,12 +41,13 @@ Both strands of each PCR-cDNA amplicon are sequenced; Dorado does **not** revers
 
 ### (a) Per-protocol pre-process
 
-Nanopore reads carry non-genomic sequence — basecalled poly(A), template-switching primers, UMIs, adapter stubs — that causes aligners to misplace the exact 5' and 3' ends. Pre-processing strips this material so every downstream step sees a clean mRNA body.
+Reads carry non-genomic sequence — basecalled poly(A), template-switching primers, UMIs, adapter stubs — that causes aligners to misplace the exact 5' and 3' ends. Pre-processing strips this material so every downstream step sees a clean mRNA body.
 
 | Protocol     | Step                    | What it does |
 |---           |---                      |---           |
 | **DRS**      | `rectify trim-polya`    | Strip basecalled poly(A) + adapter from the 3' end; cache as soft-clip metadata for later restoration |
 | **ONT cDNA** | `rectify correct-cdna`  | Extract 27-nt UMI, directional cluster reads by molecule, build abPOA consensus per cluster, strip SSP+UMI+GGG (5') and poly(A) (3') |
+| **TruSeq / CORALL** | `rectify split --umi` | Slice the CORALL 12-nt UMI off the R1 start (`--umi-location r1-start --umi-length 12`) into an `RX` tag; the COMPASS aligners carry it through, and `rectify umi-dedup` collapses reads to one record per molecule after alignment |
 | **QSrev**    | *(none)*                | Reads carry no poly(A); strand inversion is handled at the correction step |
 
 <p align="center">
@@ -55,9 +57,18 @@ Nanopore reads carry non-genomic sequence — basecalled poly(A), template-switc
   <img src="docs/figures/cdna_umi_architecture_dark.png#gh-dark-mode-only" alt="ONT PCR-cDNA UMI architecture" width="660">
 </p>
 
-### (b) Multi-aligner (parallel) + junction pool
+### (b) Multi-aligner (parallel) + overhang resolver + junction pool
 
-`rectify align` runs **minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT** in parallel for long reads, or **bbmap + bwa** for short reads (`--short-read`). Aligners disagree on junctions within reads for several reasons — inherent ambiguity at homopolymer donor/acceptor sites, differing gap-open penalties, different handling of soft-clips — so running them in parallel gives RECTIFY a panel of candidate alignments per read to reconcile. **Each aligner produces its own BAM** with its own junction set; junctions observed across all BAMs are unioned with the annotated splice database to form a shared **junction pool** that the correction step uses to rescue partial alignments.
+`rectify align` runs **minimap2 + uLTRA + deSALT** in parallel for long reads. Short reads (`--short-read`) pick their panel by protocol: TruSeq-style whole-transcriptome RNA-seq uses the **COMPASS splice-aware panel** (bbmap + STAR ×2 + HISAT2 ×2, joined by magicblast + gsnap when paired via `--read2`), while dT-primed 3'-end libraries (`--dT-primed-cDNA`, e.g. QuantSeq REV) use **bbmap + bwa** — there, exact 3'-end placement matters more than splice recall. For UMI kits (Lexogen CORALL v2), the R1 UMI extracted at `rectify split --umi` rides through the COMPASS panel as an `RX` tag; `rectify umi-dedup` then collapses PCR duplicates to molecules. Aligners disagree on junctions within reads for several reasons — inherent ambiguity at homopolymer donor/acceptor sites, differing gap-open penalties, different handling of soft-clips — so running them in parallel gives RECTIFY a panel of candidate alignments per read to reconcile. **Each aligner produces its own BAM** with its own junction set; junctions observed across all BAMs are unioned with the annotated splice database to form a shared **junction pool** that the correction step uses to rescue partial alignments.
+
+The panel's fourth arm is RECTIFY's own **overhang resolver** — a native re-alignment stage (Station A of the re-aligner; no external binary) that consumes the finished minimap2 BAM, re-places terminal soft-clipped overhangs across splice junctions, and substitutes the resolved BAM for the raw minimap2 arm. It was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2)'s insight that a minimap2 alignment can be post-processed to recover terminal splice overhangs, with several deliberate upgrades:
+
+- the search window for each overhang is **bounded by its information content** — an explicit false-discovery budget instead of a fixed genomic window;
+- low-information overhangs (poly(A) tails, repeat expansions, short or low-complexity clips) are **refused rather than force-placed** — refusal is a counted, first-class outcome;
+- candidate sites come from a **precomputed splice-site index** (binary-search range query, never a scan), with configurable acceptor classes for alternative-3'SS studies (`--resolver-acceptor-classes prp18`);
+- placements are scored with RECTIFY's **chemistry-calibrated homopolymer-aware penalties**, and accepted only when the winner is unambiguous after junction-ambiguity canonicalization — competitors within the score margin must be the *same* junction, not merely a nearby coordinate.
+
+Additional arms (mapPacBio, gapmm2, GMAP, winnowmap2, minisplice) remain available via `--aligners` / `--junction-aligners`. mapPacBio in particular is retained as a discovery scout for non-canonical splicing studies: its motif-free placement can find junctions the index-driven resolver cannot enumerate, and Station C (below) is the gate that adjudicates such candidates.
 
 <p align="center">
   <img src="docs/figures/multi_aligner_consensus.png#gh-light-mode-only" alt="Multi-aligner pipeline" width="720">
@@ -129,7 +140,14 @@ See [docs/EMPIRICAL_HP_PENALTY_SCORING.md](docs/EMPIRICAL_HP_PENALTY_SCORING.md)
 
 ### (e) Consensus → rectified BAM
 
-Now that every aligner's output has been independently rescued and scored on the same scale, the consensus step picks the **best corrected alignment per read** by priority (5' rescued → confidence → 3' agreement → span → junction count). Optional chimeric reconstruction stitches complementary junction sets across aligners to recover junctions no single aligner produced on its own. Output: one BAM where every record has been independently rescued, scored, and reconciled across the full aligner panel.
+Now that every aligner's output has been independently rescued and scored on the same scale, the consensus step picks the **best corrected alignment per read** — primary key: lowest homopolymer-aware edit distance over the corrected CIGAR (the same empirical error model as (d)), with alignment span as the tie-breaker. Optional chimeric reconstruction stitches complementary junction sets across aligners to recover junctions no single aligner produced on its own. Output: one BAM where every record has been independently rescued, scored, and reconciled across the full aligner panel.
+
+### (f) Re-aligner stations B and C
+
+The rectified BAM then passes through the remaining two stations of RECTIFY's **re-aligner architecture**. All three stations share one contract: a *constrained proposer* plus an *evidence arbiter*, with refusal as a first-class outcome — no station ever force-places an alignment the read evidence cannot support.
+
+- **Station B — consensus triage** (`rectify triage`; opt-in via `run-all --triage`). Classifies every corrected alignment from read evidence alone (junction-proximal errors, unexplained soft clips, annotation status). Clean alignments are bypassed untouched; only the distressed minority is re-aligned (motif-blind junction refinement over the full evidence pool, plus optional clip legs that reuse the overhang resolver and the 5' rescue machinery). A re-aligned candidate replaces the original **only if it strictly improves the homopolymer-aware edit distance** — the re-aligner proposes, the arbiter disposes.
+- **Station C — pool-level junction gate** (`rectify pool-gate`; on by default in `run-all`, report-only). Judges each junction over its whole pool of supporting reads: overhang quality, repeat-context flags (rRNA/Ty/LTR annotation + genome self-homology), an annotation-derived intron-length pre-gate, and separate admission bars for canonical vs non-canonical junctions. It annotates — writing a per-junction admission table (`admit_candidate` / `review` / `demote_orthogonal_evidence`) — and never deletes a read or a junction.
 
 ---
 
@@ -212,7 +230,7 @@ rectify run-all reads.fastq.gz --short-read --dT-primed-cDNA --genome genome.fa 
 
 # Step by step — pass FASTQ to `rectify align --short-read` first;
 # piping straight to `rectify correct` bypasses the proper short-read aligner panel.
-rectify align   reads.fastq.gz --short-read --genome genome.fa --prefix sample -o aligned/
+rectify align   reads.fastq.gz --short-read --dT-primed-cDNA --genome genome.fa --prefix sample -o aligned/
 rectify correct aligned/sample.rectified.bam --short-read --dT-primed-cDNA --genome genome.fa -o corrected.tsv
 rectify analyze corrected.tsv  --annotation genes.gff -o results/
 ```
@@ -265,10 +283,15 @@ read003 │ chrII │   +    │     283109      │      283104      │      3
 | `rectify run-all`      | End-to-end pipeline (manifest support, provenance, step-skip)                  |
 | `rectify trim-polya`   | DRS pre-process: strip poly(A) + adapter                                       |
 | `rectify correct-cdna` | ONT cDNA Stage 1: UMI cluster + abPOA consensus + pre-trim                     |
-| `rectify align`        | Multi-aligner consensus (long-read or `--short-read`)                          |
+| `rectify align`        | Multi-aligner panel + overhang resolver (long-read or `--short-read`)          |
 | `rectify correct`      | 5'/intron/3' end correction per read                                           |
 | `rectify cdna-analyze` | ONT cDNA Stage 3: post-align isoform assembly + T1↔T2 linkage                 |
+| `rectify triage`       | Station B: classify corrected alignments, re-align the distressed minority     |
+| `rectify pool-gate`    | Station C: per-junction admission report over the whole read pool              |
 | `rectify analyze`      | Clustering, DESeq2, GO, motifs                                                 |
+| `rectify attribute-reads` | Per-read gene-attribution sidecar (readthrough-aware)                       |
+| `rectify qc`           | Per-library sequencing QC (N50, base quality, error rate, clips, tails)        |
+| `rectify umi-dedup`    | Collapse a UMI-tagged (`RX`) short-read BAM to one record per molecule         |
 | `rectify export`       | Corrected positions → bigWig/bedGraph                                          |
 | `rectify aggregate`    | Reads → 3'-end / 5'-end / junction datasets                                    |
 | `rectify netseq`       | NET-seq A-tract refinement (see below)                                         |

@@ -19,7 +19,7 @@ Precision transcript structure mapping for direct RNA nanopore sequencing. RECTI
 
 | Feature | Description |
 |:--------|:------------|
-| **Multi-Aligner Consensus** | Runs minimap2, mapPacBio (BBMap), gapmm2 (optionally uLTRA + deSALT) and selects best junction set per read |
+| **Multi-Aligner Consensus** | Runs minimap2, uLTRA and deSALT in parallel, plus RECTIFY's overhang resolver on the minimap2 arm, and selects the best junction set per read |
 | **3' End Soft-Clip Rescue** | Rescues 3' soft-clipped bases at homopolymer boundaries by extending the 3' end outward |
 | **3' End Indel Correction** | Walk-back algorithm fixes alignment artifacts where poly(A) tails land on genomic A-tracts |
 | **False Junction Handling** | Removes spurious N-operations created by poly(A) tail alignment into downstream A-tracts |
@@ -61,7 +61,7 @@ See the [Quick Start guide](quickstart.md) for a step-by-step walkthrough.
 
 ### 1. Multi-Aligner Consensus
 
-Different aligners make different tradeoffs at splice junctions. RECTIFY runs up to five aligners in parallel, attempts to rescue soft-clips through known junctions, scores alignments by canonical GT-AG sites and annotation matches, and selects the best alignment per read.
+Different aligners make different tradeoffs at splice junctions. RECTIFY runs minimap2, uLTRA and deSALT in parallel, re-places terminal soft-clipped splice overhangs on the minimap2 arm with its own overhang resolver, corrects each arm independently, and selects the best corrected alignment per read by homopolymer-aware edit distance.
 
 ### 2. 3' End Indel Correction
 

@@ -19,20 +19,23 @@ RTD answers *what does this function do?* — this document answers
 
 RECTIFY corrects systematic errors in poly(A)-tailed RNA-seq data and then
 performs differential 3' end usage analysis across conditions. The pipeline
-supports three protocol tracks that share a common correction core but differ
-in pre-processing, alignment strategy, and post-correction analysis:
+supports two sequencing families — ONT long reads (DRS, PCR-cDNA) and NGS
+short reads (TruSeq/CORALL v2, QuantSeq REV) — as four protocol tracks that
+share a common core but differ in pre-processing, alignment strategy, and
+post-correction analysis:
 
 | Track | Input | Pre-processing | Alignment | 3' end | 5' end |
 |---|---|---|---|---|---|
-| **DRS** (Direct RNA-seq) | Dorado BAM (pt:i: tags) | poly(A)+adapter pre-trim → FASTQ | minimap2 + mapPacBio + gapmm2 | read-vs-ref walkback | splice-aware rescue |
-| **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → pre-trim → per-cluster FASTQ → multi-aligner re-alignment | minimap2 + mapPacBio + gapmm2 | post-align walkback in `cdna-analyze` | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering in `cdna-analyze` |
-| **QuantSeq REV** | pre-aligned BAM | (external alignment) | BWA-MEM (+ BBMap target) | read-vs-ref walkback (inverted: 3'=left) | N/A (3'-biased protocol) |
+| **DRS** (Direct RNA-seq) | Dorado BAM (pt:i: tags) | poly(A)+adapter pre-trim → FASTQ | minimap2 + uLTRA + deSALT + overhang resolver | read-vs-ref walkback | splice-aware rescue |
+| **ONT cDNA** (PCB114.24) | pre-aligned BAM | UMI extraction → directional clustering → abPOA consensus → pre-trim → per-cluster FASTQ → multi-aligner re-alignment | minimap2 + uLTRA + deSALT + overhang resolver | post-align walkback in `cdna-analyze` | T1 (5' UMI-anchored) / T2 (3' pA-anchored) isoform clustering in `cdna-analyze` |
+| **TruSeq / CORALL v2** (NGS short read) | FASTQ (R1 [+ R2]) | `rectify split --umi` (CORALL: 12-nt R1 UMI → `RX` tag) → post-align `rectify umi-dedup` | COMPASS panel: bbmap + STAR×2 + HISAT2×2 (+ magicblast + gsnap when paired) | n/a (internal fragments; 3'-end modules off) | n/a |
+| **QuantSeq REV** (NGS 3'-end short read) | pre-aligned BAM | (external alignment) | bbmap + bwa (dT-primed panel) | read-vs-ref walkback (inverted: 3'=left) | N/A (3'-biased protocol) |
 
 ---
 
 ## Key contributions
 
-Two design decisions underpin RECTIFY's correction accuracy:
+Three design decisions underpin RECTIFY's correction accuracy:
 
 **1. Correct-first, then compare.**
 Raw alignment scores (MAPQ, AS tag, soft-clip count) are not cross-comparable across
@@ -50,6 +53,19 @@ calibrated from 9.7 M WT R10.4.1 reads. A deletion at HP=8 carries a penalty of 
 — nearly free — compared to 0.44 at HP=1, because Nanopore basecallers routinely
 under-call long homopolymer runs. See
 [docs/EMPIRICAL_HP_PENALTY_SCORING.md](EMPIRICAL_HP_PENALTY_SCORING.md).
+
+**3. Constrained re-alignment with refusal (the Re-aligner, Stations A–C).**
+Rather than trusting any single aligner's placement of ambiguous read segments,
+RECTIFY runs three "stations" that share one contract: a *constrained proposer*
+(candidates come from enumerable splice-site evidence, never an open-ended
+search) plus an *evidence arbiter* (a proposal is accepted only when it strictly
+improves the HP-aware edit distance or wins unambiguously within an explicit
+false-discovery budget), with **refusal as a first-class outcome** — a
+low-information overhang is left untouched and counted, never force-placed.
+Station A (the overhang resolver) acts per terminal soft clip at align time;
+Station B (consensus triage) acts per read after correction; Station C (the
+pool gate) acts per junction over the whole read pool. See
+[The Re-aligner: Stations A-C](#the-re-aligner-stations-a-c).
 
 ---
 
@@ -83,9 +99,16 @@ Dorado-aligned BAM (with pt:i: tags)
     │
     ▼
 [Step 1: Alignment]        multi-aligner rectification pipeline
-    │                      Tier 1: minimap2 + mapPacBio + gapmm2
-    │                      Tier 2 (ON by default for long-read run-all): + deSALT, + uLTRA
-    │                      (disable with --no-junction-aligners; default panel = 5 aligners)
+    │                      Long-read panel: minimap2 + uLTRA + deSALT
+    │                      + overhang resolver (Station A): a native post-pass on the
+    │                        finished minimap2 arm that re-places terminal soft-clipped
+    │                        overhangs across splice junctions, then SUBSTITUTES the
+    │                        resolved BAM for the raw minimap2 arm in the panel.
+    │                      (junction-aligner default = [uLTRA, deSALT, overhang_resolver];
+    │                       disable with --no-junction-aligners. mapPacBio / gapmm2 /
+    │                       GMAP / winnowmap2 / minisplice remain opt-in arms;
+    │                       max_intron is derived from the annotation — 2× the longest
+    │                       annotated intron, so yeast derives the historical 5000.)
     │
     │  Each enabled aligner is launched in turn with the full thread budget
     │  (no in-process parallel pool across aligners).
@@ -132,13 +155,11 @@ Dorado-aligned BAM (with pt:i: tags)
     ▼
 [Step 3: Consensus]        select best corrected output per read    corrected_consensus.py
     │   For each read, selects the winning aligner from the per-aligner corrected TSVs.
-    │   `corrected_consensus.py` carries two selection orders (the choice between
-    │   them is an architectural decision still pending — see CLAUDE.md / HANDOFF):
-    │     • Legacy (production): five_prime_rescued → confidence
-    │       ('high'>'medium'>'low') → corrected_3prime majority agreement →
-    │       alignment span → n_junctions.
-    │     • HP-edit-distance: primary = hp_edit_distance (ascending),
-    │       tiebreak = alignment span (descending).
+    │   Selection uses the HP-aware edit distance computed from the final
+    │   corrected CIGAR:
+    │     • primary  = hp_edit_distance (ascending; soft-clips 1.0/base,
+    │       N-ops free, indels priced by the empirical penalty table)
+    │     • tiebreak = alignment span (descending)
     │   Winner's corrected row is kept; winning aligner name recorded in the
     │   winning_aligner column.
     ▼
@@ -157,6 +178,17 @@ Dorado-aligned BAM (with pt:i: tags)
                                   symlink is dropped alongside it for one release.
                                   Exactly one file matches `*.rectified.bam` per run.
     <sample>.stats.tsv            per-sample QC report
+    │
+    ▼
+[Step 3b: Re-aligner Stations B + C]    post-stages on the rectified BAM (both fail-soft)
+    │   Station B (--triage, opt-in): read-evidence triage + targeted re-alignment
+    │     of the distressed minority; strict hp_ed re-entry. Emits review
+    │     artifacts (triage/triage.tsv + triaged BAM).
+    │   Station C (default ON, --no-pool-gate to skip): pool-level junction
+    │     admission REPORT (pool_gate.tsv) — annotates, never deletes.
+    │   Failures append <sample>.station_failures.json; the run's outputs are
+    │   never forfeited to a station failure.
+    │   (Details: "The Re-aligner: Stations A–C" below.)
     │
     ▼
 [Step 4 (DRS only, opt-in): Restore poly(A) tail]    rectify restore-softclip  [--write-polya-bam]
@@ -246,7 +278,7 @@ Pre-aligned BAM (minimap2)
     │
     ▼
 [Stage 2: Multi-aligner Re-alignment]    rectify align
-    │   minimap2 (+ mapPacBio + gapmm2 default panel) → chimeric consensus
+    │   minimap2 + uLTRA + deSALT + overhang resolver → chimeric consensus
     │   `minimap2 -y` propagates FASTQ comment tags to the BAM aux fields.
     │
     ▼
@@ -298,6 +330,143 @@ Pre-aligned BAM (BWA-MEM or user-supplied)
 
 ---
 
+## The Re-aligner: Stations A-C
+
+RECTIFY's re-alignment layer is organized as three "stations" that intervene at
+three different granularities. All three share **one contract**:
+
+1. a **constrained proposer** — candidate placements come from enumerable
+   evidence (a precomputed splice-site index, the panel's observed junction
+   pool), never from an open-ended sequence search;
+2. an **evidence arbiter** — a proposal is accepted only when it strictly
+   improves the HP-aware edit distance, or wins unambiguously within an
+   explicit false-discovery budget;
+3. **refusal as a first-class outcome** — a low-information overhang (poly(A)
+   tail, repeat expansion, short or low-complexity clip) is emitted unchanged
+   and counted, never force-placed. Refusing to search is a correct answer.
+
+| Station | Granularity | Runs at | Module | CLI |
+|---|---|---|---|---|
+| **A — overhang resolver** | per terminal soft clip | align stage (on the minimap2 arm) | `core/align/overhang_resolver.py` | inside `rectify align` (default junction aligner) |
+| **B — consensus triage** | per read | after correction + consensus | `core/consensus/triage.py` | `rectify triage` / `run-all --triage` |
+| **C — pool gate** | per junction | after Station B (or on the rectified BAM) | `core/consensus/station_c.py` | `rectify pool-gate` / on by default in `run-all` |
+
+### Station A — the overhang resolver
+
+A native (no external binary) post-pass that consumes the finished, name-sorted
+minimap2 BAM, re-places terminal soft-clipped overhangs across splice
+junctions, and emits a BAM in the same order — so it drops into the panel as a
+substitute for the raw minimap2 arm (`_collect_per_aligner_bams` swaps the
+resolved BAM into the minimap2 slot so per-aligner `correct` runs on the
+resolved arm, not the raw one). Accepted placements carry
+`XJ:Z:<intron_start>-<intron_end>:<ed>:<side>`.
+
+The idea — post-processing a minimap2 alignment to recover terminal splice
+overhangs — was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2).
+The resolver rebuilds it around several deliberate improvements:
+
+- **Information-bounded search.** Each clip is assessed by the shared
+  informativeness gate (`core/splice/overhang_informativeness.py`): its
+  effective information content `I_eff` sets the search window
+  `W_max = alpha * 2**I_eff`. The false-discovery budget is explicit — a
+  12-base A-rich clip gets a tiny window, not a genome-scale one.
+- **Refusal.** A refused clip (poly(A), repeat expansion, low information) is
+  emitted unchanged; no candidate is ever evaluated for it, and the refusal is
+  counted.
+- **Indexed candidates.** Candidate splice sites come from a precomputed
+  `SpliceSiteIndex` (`core/splice/splice_site_index.py`) — a binary-search
+  range query bounded by `W_max`, never a scan. Acceptor classes are
+  configurable: the default is canonical GT/GC donors + AG acceptors, and
+  `--resolver-acceptor-classes prp18` opts in the alternative-3'SS classes
+  measured in Roy et al. 2023 NAR (BG: TG/CG/GG + non-G: AT) for
+  alternative-splicing missions (~×4.8 acceptor candidate density, hence
+  opt-in).
+- **HP-aware scoring.** Each candidate placement is scored with the same
+  chemistry-calibrated homopolymer-aware edit distance used everywhere else in
+  RECTIFY, with a strict `>`-only early-exit cutoff.
+- **Unambiguous-winner acceptance.** A placement is accepted only when
+  `ed <= max_edit_frac * L` **and** every competitor within `min_margin` is the
+  *same* junction after ambiguity canonicalization — never a fixed ±k window.
+- **Annotation-derived `max_intron`.** The search bound is derived as 2× the
+  longest annotated intron (capped to [1000, 500000]); yeast derives the
+  historical 5000.
+
+Measured admission (planning/720): +26.5k annotated junctions per 900k cDNA
+reads, 31 reads harmed, 0 impossible junctions introduced.
+
+**Scope limit (measured; do not overstate).** The resolver does **not** fully
+replace mapPacBio. On identical reads, scoring the junctions mapPacBio found
+that minimap2 missed: annotated junctions are recovered at **99.1%**, but novel
+**non-canonical** junctions only at **34.5%** — structurally, because a
+non-canonical junction has no entry in the GT/AG-class `SpliceSiteIndex` and
+therefore cannot be enumerated as a candidate at all. For non-canonical
+discovery missions, add mapPacBio back to the panel as a motif-free scout and
+let Station C adjudicate its candidates.
+
+### Station B — consensus triage (`rectify triage`)
+
+Read-level triage of the corrected/consensus BAM
+(design: `dev/DENOVO_ALIGNER_REASSESSMENT_20260809.md`):
+
+1. **Classify** each alignment from READ EVIDENCE only — junction-proximal
+   mismatch/indel weight, unexplained 5'/3' soft clips, junction annotation
+   status. Clean alignments are labelled `high_confidence` and **bypassed**
+   (the do-no-harm data say they are at ceiling; touching them is downside).
+   Classification is deliberately blind to any internal model score — every
+   signal is observable read evidence.
+2. **Re-align** only the triaged minority, one leg per failure mode. The
+   JUNCTION leg runs motif-blind junction refinement
+   (`refine_bam_junctions(motif_blind=True)`, compensating-indel invariant
+   always on) over a junction pool built from the full BAM's evidence. The
+   optional CLIP legs (`--triage-clip-legs`) hand the 3' clip to the overhang
+   resolver and route the 5' clip to the Cat3 rescue machinery — with the same
+   single refusal discipline: every overhang is assessed exactly once, and a
+   refused overhang is never sequence-searched.
+3. **Re-entry, never auto-accept**: a re-aligned candidate replaces the
+   original ONLY if it strictly improves the HP-aware edit distance. The
+   re-aligner proposes; the arbiter disposes.
+
+v0 emits review artifacts (`triage/triage.tsv` + the triaged BAM); the analyze
+tables are not rewritten.
+
+### Station C — the pool-level junction gate (`rectify pool-gate`)
+
+Stations A and B act per read; a flattened non-canonical junction can look
+clean read-by-read (the aligner snaps it to a nearby canonical motif with tidy
+overhangs), so read-level triage cannot see it. Station C judges per
+**junction**, over the whole pool of supporting evidence, and is deliberately
+**report-only**: it censuses junctions from the BAM, scores each one, and
+writes a per-junction admission table (`pool_gate.tsv`). It annotates — it
+never deletes a read or a junction. Scoring terms (thresholds from the
+measured 644-series campaign):
+
+- **Overhang quality** `q`: per supporting read, the short-exon-side overhang
+  is scored `max(0, I_eff − 2·errors)`; the junction takes the max over reads.
+- **Repeat-context flags**: rRNA/Ty/LTR/tRNA/telomere-class annotation
+  features + a genome self-homology track. A flag **demotes** (to `review` on
+  the canonical track; to needs-orthogonal-evidence on the non-canonical
+  track) — it never discards. Flags are consulted on **both** tracks.
+- **Length pre-gate**: junctions longer than the annotation-derived
+  `max_intron` demote before any verdict branch (`over_max_intron` column) —
+  length is the one term that stops the physically impossible.
+- **Two-track admission**: canonical-in-class and non-canonical candidates
+  never share a threshold.
+
+Verdicts, in order of application: `demote_orthogonal_evidence` → `review` →
+`admit_candidate`.
+
+### run-all wiring
+
+In `rectify run-all`, Stations B and C run as post-stages on the rectified BAM
+(`_run_station_bc` in `core/commands/run/stages.py`): Station B is opt-in
+(`--triage`, clip legs via `--triage-clip-legs`), Station C is on by default
+(`--no-pool-gate` to skip) and censuses the triaged BAM when Station B ran,
+else the rectified BAM. Both are **fail-soft**: a station failure prints
+loudly, appends `<sample>.station_failures.json`, and never costs a finished
+run its outputs.
+
+---
+
 ## CLI subcommand dispatch
 
 Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
@@ -312,6 +481,15 @@ Entry point: `rectify.cli:main` → `create_parser()` → per-subcommand
 | `restore-softclip` | `core/commands/restore_polya_command.py` | **Step 4 (DRS only, opt-in)** — reconstruct full Dorado read by pulling winning aligner's raw BAM record and restoring poly(A) from parquet as soft clip; for IGV validation only |
 | `run-all` | `core/commands/run_command.py` (+ `core/commands/run/`) | Full end-to-end pipeline (Steps 0–5) |
 | `analyze` | `core/commands/analyze_command.py` | **Step 5** — downstream analysis (clustering, DESeq2, GO enrichment, motifs) |
+| `triage` | `core/commands/triage_command.py` | **Station B** — read-evidence triage of a corrected BAM + targeted re-alignment of the distressed minority (strict hp_ed re-entry) |
+| `pool-gate` | `core/commands/pool_gate_command.py` | **Station C** — report-only per-junction admission table over the whole read pool |
+| `attribute-reads` | `core/commands/attribute_reads_command.py` | Per-read gene-attribution sidecar (readthrough-aware) from corrected-reads TSVs |
+| `qc` | `core/commands/qc_command.py` | Per-library sequencing QC (N50, base quality, error rate, clips, tails) |
+| `browser-pack` | `core/commands/browser_pack_command.py` | Pack analyze outputs + QC blocks into one browser `analysis.json` |
+| `umi-dedup` | `core/commands/umi_dedup_command.py` | Collapse a UMI-tagged (RX) short-read BAM to one record per molecule |
+| `netseq-cpa` | `core/commands/netseq_cpa_command.py` | Recover CPA cleavage intermediates from NET-seq via soft-clipped oligo(A) |
+| `cma` | `core/commands/cma_command.py` | Compressed-multialign (CMA) build/expand/validate/verify — read SEQ/QUAL stored once across per-aligner BAMs |
+| `export-merged-tsv` | `core/commands/export_merged_tsv_command.py` | Concatenate a `corrected_reads.manifest.tsv` into one merged TSV (back-compat shim) |
 | `batch` | `core/commands/batch_command.py` | Parallel correction across samples; interactive mode auto-sizes to available CPUs, HPC mode generates array job scripts for SLURM, PBS/Torque, or UGE/SGE via a portable scheduler abstraction |
 | `train-polya` | `core/commands/train_polya_command.py` | Train a poly(A) tail model from calibration data (see below) |
 | `validate` | `core/commands/validate_command.py` | Post-correction quality check against NET-seq or known CPA sites (see below) |
@@ -386,19 +564,27 @@ flowchart TD
         TPOL["tag_polya_command.py<br/><i>rectify tag-polya</i>"]
     end
 
+    subgraph station_commands["Re-aligner Stations"]
+        TRIC["triage_command.py<br/><i>rectify triage (Station B)</i>"]
+        PGC["pool_gate_command.py<br/><i>rectify pool-gate (Station C)</i>"]
+    end
+
     subgraph utilities["Other Subcommands"]
-        EX["export_command.py<br/>extract_command.py<br/>aggregate_command.py<br/>netseq_command.py<br/>validate_command.py<br/>train_polya_command.py"]
+        EX["export_command.py<br/>extract_command.py<br/>aggregate_command.py<br/>attribute_reads_command.py<br/>qc_command.py · browser_pack_command.py<br/>netseq_command.py<br/>validate_command.py<br/>train_polya_command.py"]
     end
 
     CLI --> orchestrators
     CLI --> drs_commands
     CLI --> cdna_commands
+    CLI --> station_commands
     CLI --> utilities
 
     RC -->|"Step 0 (--drs BAM)"| TC
     RC -->|"Step 1"| AL
     RC -->|"Step 2 (per aligner)"| CC
     RC -->|"Step 3 (merge corrected)"| CON
+    RC -->|"Step 3b (--triage, opt-in)"| TRIC
+    RC -->|"Step 3b (default on)"| PGC
     RC -->|"Step 4 (--drs --write-polya-bam)"| RSC
     RC -->|"Step 5"| AC
 
@@ -447,11 +633,24 @@ flowchart TD
     end
 
     subgraph alignment["align_command.py internals"]
-        MA["multi_aligner.py<br/><i>minimap2 · mapPacBio<br/>gapmm2 · deSALT · uLTRA</i>"]
+        MA["multi_aligner.py<br/><i>minimap2 · uLTRA · deSALT<br/>(+ opt-in arms)</i>"]
+        OR["overhang_resolver.py<br/><i>Station A — re-places terminal<br/>splice overhangs, substitutes mm2 arm</i>"]
         CS["consensus.py<br/><i>per-read aligner selection</i>"]
         CHM["chimeric_consensus.py<br/><i>sync-point stitching</i>"]
+        MA -->|"minimap2 arm"| OR
+        OR --> CS
         MA --> CS
         MA --> CHM
+    end
+
+    subgraph stations["Re-aligner Stations B + C internals"]
+        TRI["consensus/triage.py<br/><i>Station B — read-evidence triage<br/>+ motif-blind re-align, hp_ed re-entry</i>"]
+        STC["consensus/station_c.py<br/><i>Station C — pool-level junction gate<br/>(report-only)</i>"]
+        SSI["splice/splice_site_index.py<br/><i>indexed splice-site candidates</i>"]
+        OIF["splice/overhang_informativeness.py<br/><i>I_eff gate — shared refusal currency</i>"]
+        TRI --> STC
+        SSI --> TRI
+        OIF --> STC
     end
 
     subgraph analysis["analyze_command.py internals"]
@@ -502,10 +701,19 @@ rectify/                              ← git repo root
 │   │   │   │   ├── single_sample.py  single-sample pipeline + per-sample worker
 │   │   │   │   ├── multi_sample.py   manifest-driven multi-sample pipeline
 │   │   │   │   └── chunked_batch.py  scheduler-array shell-script generator (--chunked-alignment)
-│   │   │   ├── align_command.py      Step 1 CLI wrapper
+│   │   │   ├── align_command.py      Step 1 CLI wrapper (panel + overhang resolver post-pass)
 │   │   │   ├── correct_command.py    Step 2 CLI wrapper (DRS / generic)
 │   │   │   ├── consensus_command.py  per-aligner BAM aligner-selection (`rectify consensus`)
+│   │   │   ├── triage_command.py     Station B CLI (`rectify triage`)
+│   │   │   ├── pool_gate_command.py  Station C CLI (`rectify pool-gate`)
 │   │   │   ├── analyze_command.py    Step 5 CLI wrapper + GFF/GTF parsing
+│   │   │   ├── attribute_reads_command.py   per-read gene-attribution sidecar
+│   │   │   ├── qc_command.py         per-library sequencing QC
+│   │   │   ├── browser_pack_command.py      analyze outputs + QC → browser analysis.json
+│   │   │   ├── umi_dedup_command.py  UMI-tagged short-read BAM → per-molecule collapse
+│   │   │   ├── netseq_cpa_command.py NET-seq CPA-intermediate capture
+│   │   │   ├── cma_command.py        compressed-multialign build/expand/validate
+│   │   │   ├── export_merged_tsv_command.py manifest TSV concatenation shim
 │   │   │   ├── batch_command.py      parallel/SLURM batch correction
 │   │   │   ├── cdna_correct_command.py   ONT cDNA pipeline Stage 1 (UMI → consensus FASTQ)
 │   │   │   ├── cdna_analyze_command.py   ONT cDNA pipeline Stage 3 (post-align analysis)
@@ -525,18 +733,29 @@ rectify/                              ← git repo root
 │   │   │   └── test_command.py           installation smoke-test
 │   │   │
 │   │   ├── align/                    alignment-layer modules
-│   │   │   ├── multi_aligner.py      Tier 1: minimap2+mapPacBio+gapmm2; Tier 2: +deSALT+uLTRA
+│   │   │   ├── multi_aligner.py      panel dispatch: minimap2+uLTRA+deSALT default; opt-in arms
+│   │   │   ├── overhang_resolver.py  Station A: information-bounded splice-overhang resolver
 │   │   │   ├── mpb_split_reads.py    mapPacBio long-read splitting and stitching
 │   │   │   ├── local_aligner.py      Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR
+│   │   │   ├── qname_validator.py    QNAME sanity checks across panel BAMs
 │   │   │   └── preprocess.py         input detection (FASTQ vs BAM), bundled genome prep
 │   │   │
-│   │   ├── consensus/                aligner-consensus selection
+│   │   ├── consensus/                aligner-consensus selection + Stations B/C
 │   │   │   ├── consensus.py          per-read optimal aligner selection (non-chimeric fallback)
 │   │   │   ├── chimeric_consensus.py chimeric alignment stitching from sync-points
 │   │   │   ├── corrected_consensus.py    select winner from per-aligner CORRECTED TSVs (Step 3)
+│   │   │   ├── triage.py             Station B: read-evidence triage + targeted re-alignment
+│   │   │   ├── station_c.py          Station C: pool-level junction admission report
+│   │   │   ├── intron_sanity.py      junction sanity checks shared by the stations
 │   │   │   ├── extract.py            extract per-aligner alignment info for scoring
 │   │   │   ├── scoring.py            composite alignment scoring helpers
 │   │   │   └── select.py             tie-breakers and selection logic
+│   │   │
+│   │   ├── multialign/               compressed-multialign (CMA) container
+│   │   │   ├── cma_schema.py         format schema
+│   │   │   ├── cma_writer.py         build CMA from per-aligner BAMs
+│   │   │   ├── cma_reader.py         expand CMA back to BAMs
+│   │   │   └── validate.py           round-trip verification
 │   │   │
 │   │   ├── bam/                      BAM I/O + per-read correction core
 │   │   │   ├── bam_processor.py      `correct_read_3prime`: per-read correction (Step 2①–⑨)
@@ -566,8 +785,12 @@ rectify/                              ← git repo root
 │   │   │
 │   │   ├── splice/                   splice-junction handling
 │   │   │   ├── splice_aware_5prime.py    5' soft-clip junction rescue (Module 2F)
-│   │   │   ├── junction_refiner.py       post-consensus N-op refinement (Module 2H)
+│   │   │   ├── junction_refiner.py       post-consensus N-op refinement (Module 2H; motif_blind mode for Station B)
 │   │   │   ├── junction_scoring.py       HP-aware split-alignment scoring
+│   │   │   ├── splice_site_index.py      precomputed splice-site index (resolver + triage candidates)
+│   │   │   ├── overhang_informativeness.py   I_eff informativeness gate (shared refusal currency)
+│   │   │   ├── region_skip.py            skip-region masking for the resolver
+│   │   │   ├── repeat_expansion.py       repeat-expansion detection (refusal class)
 │   │   │   ├── junction_validator.py     cross-sample COMPASS-style junction validation
 │   │   │   ├── false_junction_filter.py  poly(A)-artifact N-op (splice junction) removal
 │   │   │   ├── hp_penalty.py             homopolymer-aware indel penalties
@@ -801,17 +1024,42 @@ Handles both single-sample (no DESeq2) and manifest mode (full analysis).
 **`core/align/multi_aligner.py`** — Runs each enabled aligner as a subprocess,
 launched in turn with the full per-job thread budget (no in-process pool across
 aligners; coarse parallelism comes from the chunked SLURM array pipeline).
-Tier 1: minimap2, mapPacBio, gapmm2. Tier 2: deSALT (high-sensitivity splice
-aligner) and uLTRA (annotation-guided aligner, requires a GFF/GTF). For
-**long-read `rectify run-all`, Tier 2 is ON by default** (the default panel is
-all 5 aligners; disable with `--no-junction-aligners`). For the bare
-`rectify align` command and for short-read mode, Tier 2 is OFF by default and is
-opted in via `--junction-aligners deSALT uLTRA`. `gmap` (and winnowmap2 /
-minisplice) remain opt-in `--junction-aligners` choices everywhere. Each aligner
-produces a sorted, indexed BAM. Junction annotations from GFF are passed
-to minimap2 via `--junc-bed` to improve splice site accuracy while keeping
-scoring annotation-blind (novel junctions are still discoverable). Returns
+The long-read panel is **minimap2** plus the junction-aligner set, which
+defaults to **uLTRA** (annotation-guided, requires a GFF/GTF; gracefully
+skipped without one) + **deSALT** (high-sensitivity splice aligner) + the
+**overhang resolver** (Station A — native, see below), identically under
+`rectify run-all` and the bare `rectify align` command. Disable all
+junction aligners with `--no-junction-aligners`. Short reads
+(`--short-read`) select their panel by protocol: TruSeq-style RNA-seq gets
+the COMPASS splice-aware set (bbmap + STAR_default/noncanonical +
+HISAT2_default/noncanonical single-end; magicblast + gsnap join when paired
+via `--read2`), while dT-primed 3'-end libraries (`--dT-primed-cDNA`, e.g.
+QuantSeq REV) get bbmap + bwa — exact 3'-end placement matters more than
+splice recall there. UMI kits (Lexogen CORALL v2: 12-nt N-mer at the R1
+start) are handled by `rectify split --umi`, which slices the UMI into an
+`RX` FASTQ-header tag; the COMPASS wrappers re-attach it to the BAM
+(`_load_fastq_umi_map`, since only `minimap2 -y` copies FASTQ comments), and
+`rectify umi-dedup` collapses reads to molecules after consensus selection. **mapPacBio and gapmm2 — the
+original panel arms, whose terminal-overhang role the resolver now fills —
+remain available as opt-in arms via `--aligners` / `--base-aligners`**
+(de-paneled from the defaults 2026-08-17), and `gmap` / `winnowmap2` /
+`minisplice` remain opt-in `--junction-aligners` choices everywhere. Each
+aligner produces a sorted, indexed BAM. Junction annotations from GFF are
+passed to minimap2 via `--junc-bed` to improve splice site accuracy while
+keeping scoring annotation-blind (novel junctions are still discoverable).
+`max_intron` for every arm is derived from the annotation (2× the longest
+annotated intron, capped to [1000, 500000]) when not given explicitly. Returns
 per-aligner BAM paths.
+
+**`core/align/overhang_resolver.py`** — Station A of the Re-aligner: the
+information-bounded splice-overhang resolver. Consumes the finished,
+name-sorted minimap2 BAM, re-places terminal soft-clipped overhangs across
+splice junctions (candidates from `SpliceSiteIndex`, HP-aware scoring,
+unambiguous-winner acceptance, refusal first-class), and emits a BAM in the
+same order that **substitutes** for the raw minimap2 arm in the panel. Inspired
+by gapmm2's terminal-refinement idea; see
+[The Re-aligner: Stations A-C](#the-re-aligner-stations-a-c) for the design,
+the measured admission numbers, and the non-canonical scope limit.
 
 **`core/consensus/chimeric_consensus.py`** — Chimeric rectification: finds "sync
 points" where two or more aligners agree on query→reference mapping, then
@@ -1056,6 +1304,11 @@ Support modules called by `bam_processor`:
 | `core/consensus/extract.py` | `extract_alignment_info`, `extract_junctions_from_cigar` |
 | `core/consensus/scoring.py` | `score_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
 | `core/consensus/select.py` | `select_best_alignment` |
+| `core/align/overhang_resolver.py` | Station A: `run_overhang_resolver`, `resolve_read` — terminal-overhang re-placement on the minimap2 arm |
+| `core/consensus/triage.py` | Station B: read-evidence classification, targeted re-align legs, hp_ed re-entry |
+| `core/consensus/station_c.py` | Station C: pool-level junction census + admission report |
+| `core/splice/splice_site_index.py` | Precomputed donor/acceptor index (binary-search range queries; configurable acceptor classes) |
+| `core/splice/overhang_informativeness.py` | `assess_overhang`, `I_eff` — the shared refusal gate |
 | `core/align/multi_aligner.py` | Per-aligner subprocess management (sequential launch, full thread budget each) |
 | `core/bam/bam_processor.py` | Per-read correction core: `correct_read_3prime` calls all modules in order |
 | `core/bam/parallel.py` | Region-parallel / streaming wrappers around `correct_read_3prime` |
@@ -1355,6 +1608,27 @@ that genuinely belong at non-canonical junctions (e.g. when many reads from the
 same splice isoform all score perfectly at a novel non-canonical site). Annotation
 and canonical tier remain as TIE-BREAKERS only, never as gates. **This policy is
 permanent and must not be re-introduced.**
+
+**Why an in-house overhang resolver instead of gapmm2 / mapPacBio?**
+Measurement showed the specialist arms' real contribution was narrower than
+their cost. mapPacBio contributes zero unique *reads* to the panel — its actual
+role is alternative placement of terminal overhangs across splice junctions —
+and it performs that role with a mammalian constant (`maxindel=200000` ≈
+12,500 chance AG acceptors per search window on both strands), which is
+simultaneously the compute bill and the false-positive rate. gapmm2 supplied
+the right *idea* — post-process the minimap2 alignment to recover terminal
+splice overhangs — but with a fixed search strategy and a per-read
+terminal-refinement loop that is impractical at mammalian genome scale
+(~28–50 h single-threaded on human data). The overhang resolver does the
+overhang-placement job deliberately: information-bounded search windows,
+first-class refusal, indexed candidates, HP-aware scoring, and
+unambiguous-winner acceptance (see
+[The Re-aligner: Stations A-C](#the-re-aligner-stations-a-c)). The honest
+limit: the resolver recovers 99.1% of mapPacBio's annotated-junction
+contribution but only ~35% of its novel non-canonical one (non-canonical
+junctions are not enumerable from a GT/AG-class index), so for non-canonical
+discovery missions mapPacBio is re-paneled as a motif-free scout and Station C
+adjudicates its candidates.
 
 **Why read-vs-reference walkback replaced reference-only A-tract detection?**
 The original 3' end correction (`atract_detector.py`) looked only at the reference

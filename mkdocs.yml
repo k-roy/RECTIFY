@@ -110,6 +110,7 @@ nav:
   - Installation: installation.md
   - Quick Start:
     - DRS: quickstart.md
+    - ONT PCR-cDNA: quickstart_cdna.md
     - QuantSeq REV: quickstart_quantseq_rev.md
   - Architecture: ARCHITECTURE.md
   - User Guide:

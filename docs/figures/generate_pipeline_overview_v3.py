@@ -16,7 +16,7 @@ import subprocess
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 FIG_W = 760
-FIG_H = 640
+FIG_H = 756
 FONT = "Inter, Helvetica Neue, Helvetica, Arial, sans-serif"
 
 PAL = dict(
@@ -33,22 +33,25 @@ PAL = dict(
     teal_l  = "#ccfbf1",
     orange  = "#d97706",
     orange_l= "#fed7aa",
+    green   = "#059669",
+    green_l = "#d1fae5",
     indigo  = "#4f46e5",
     indigo_l= "#e0e7ff",
     slate   = "#334155",
     slate_l = "#f1f5f9",
 )
 
-# Per-chemistry track colors
+# Per-chemistry track colors — two families x two chemistries
 CHEM = {
-    "drs":   dict(color=PAL["blue"],   fill=PAL["blue_l"],   name="ONT DRS",        sub="direct RNA"),
-    "cdna":  dict(color=PAL["teal"],   fill=PAL["teal_l"],   name="ONT PCR-cDNA",   sub="UMI, full-length"),
-    "qsrev": dict(color=PAL["orange"], fill=PAL["orange_l"], name="QuantSeq REV",   sub="short read, antisense"),
+    "drs":    dict(color=PAL["blue"],   fill=PAL["blue_l"],   name="ONT DRS",           sub="direct RNA"),
+    "cdna":   dict(color=PAL["teal"],   fill=PAL["teal_l"],   name="ONT PCR-cDNA",      sub="UMI, full-length"),
+    "truseq": dict(color=PAL["green"],  fill=PAL["green_l"],  name="TruSeq / CORALL v2", sub="UMI, whole transcriptome"),
+    "qsrev":  dict(color=PAL["orange"], fill=PAL["orange_l"], name="QuantSeq REV",      sub="3'-end, antisense"),
 }
 
-# Column centers for the three input lanes
-COL = {"drs": 135, "cdna": 380, "qsrev": 625}
-CHIP_W = 180
+# Column centers for the four input lanes (two per family)
+COL = {"drs": 137, "cdna": 293, "truseq": 467, "qsrev": 623}
+CHIP_W = 150
 CHIP_H = 38
 
 
@@ -150,25 +153,35 @@ def build():
     out.append(text(FIG_W / 2, 28, "RECTIFY", size=18,
                     color=PAL["title"], weight="700", anchor="middle"))
     out.append(text(FIG_W / 2, 48,
-                    "one pipeline · three RNA chemistries",
+                    "one pipeline · ONT long reads + NGS short reads",
                     size=11.5, color=PAL["muted"], anchor="middle"))
 
-    # ── INPUTS ───────────────────────────────────────────────────────────────
-    y_inputs_head = 78
+    # ── INPUTS (two families: ONT long read · NGS short read) ────────────────
+    y_inputs_head = 74
     out.append(section_head(60, y_inputs_head, "INPUTS"))
 
-    y_chip = 100
-    for key in ("drs", "cdna", "qsrev"):
+    # family group labels, each spanning its two lanes, with a light rule
+    y_group = 94
+    for label, gx1, gx2 in (("ONT LONG READ", 62, 368), ("NGS SHORT READ", 392, 698)):
+        gcx = (gx1 + gx2) / 2
+        out.append(text(gcx, y_group, label, size=10, color=PAL["heading"],
+                        weight="700", anchor="middle", letter_spacing="0.8"))
+        out.append(hdivider(y_group + 8, x1=gx1, x2=gx2))
+
+    y_chip = 124
+    for key in ("drs", "cdna", "truseq", "qsrev"):
         c = CHEM[key]
         out.append(chip(COL[key], y_chip, CHIP_W, CHIP_H,
                         c["name"], c["color"], c["fill"], sub=c["sub"]))
 
-    # ── PRE-PROCESS (per-protocol pills, just below each chip) ───────────────
-    y_pre_label = 153
+    # ── PRE-PROCESS (per-protocol labels, just below each chip's subtitle) ───
+    y_pre_label = 178
     out.append(text(COL["drs"], y_pre_label, "trim-polya",
                     size=11, color=PAL["blue"], weight="600", anchor="middle"))
     out.append(text(COL["cdna"], y_pre_label, "correct-cdna",
                     size=11, color=PAL["teal"], weight="600", anchor="middle"))
+    out.append(text(COL["truseq"], y_pre_label, "split --umi",
+                    size=11, color=PAL["green"], weight="600", anchor="middle"))
     out.append(text(COL["qsrev"], y_pre_label, "(no pre-process)",
                     size=11, color=PAL["muted"], weight="400", anchor="middle"))
     out.append(text(FIG_W / 2, y_pre_label + 14,
@@ -184,48 +197,62 @@ def build():
 
     # Multi-aligner box
     aligner_h = 44
-    y_aligner_top = 218
+    y_aligner_top = 232
     y_aligner_bot = y_aligner_top + aligner_h          # 262
     y_aligner     = y_aligner_top + aligner_h / 2      # center, 240
 
+    # Overhang resolver box (Station A — consumes the minimap2 arm)
+    resolver_h = 32
+    y_resolver_top = y_aligner_bot + ARROW_GAP         # 286
+    y_resolver_bot = y_resolver_top + resolver_h       # 318
+    y_resolver     = y_resolver_top + resolver_h / 2   # 302
+
     # Junction pool box
     jpool_h = 32
-    y_jpool_top = y_aligner_bot + ARROW_GAP            # 286
-    y_jpool_bot = y_jpool_top + jpool_h                # 318
-    y_jpool     = y_jpool_top + jpool_h / 2            # 302
+    y_jpool_top = y_resolver_bot + ARROW_GAP           # 342
+    y_jpool_bot = y_jpool_top + jpool_h                # 374
+    y_jpool     = y_jpool_top + jpool_h / 2            # 358
 
     # Correct box
     correct_h = 88
-    y_correct_top = y_jpool_bot + ARROW_GAP            # 342
-    y_correct_bot = y_correct_top + correct_h          # 430
-    y_correct     = y_correct_top + correct_h / 2      # 386
+    y_correct_top = y_jpool_bot + ARROW_GAP            # 398
+    y_correct_bot = y_correct_top + correct_h          # 486
+    y_correct     = y_correct_top + correct_h / 2      # 442
 
     # Consensus box
     consensus_h = 32
-    y_consensus_top = y_correct_bot + ARROW_GAP        # 454
-    y_consensus_bot = y_consensus_top + consensus_h    # 486
-    y_consensus     = y_consensus_top + consensus_h / 2  # 470
+    y_consensus_top = y_correct_bot + ARROW_GAP        # 510
+    y_consensus_bot = y_consensus_top + consensus_h    # 542
+    y_consensus     = y_consensus_top + consensus_h / 2  # 526
 
     # Rectified BAM box
     bam_h = 28
-    y_bam_top = y_consensus_bot + ARROW_GAP            # 510
-    y_bam_bot = y_bam_top + bam_h                      # 538
-    y_bam     = y_bam_top + bam_h / 2                  # 524
+    y_bam_top = y_consensus_bot + ARROW_GAP            # 566
+    y_bam_bot = y_bam_top + bam_h                      # 594
+    y_bam     = y_bam_top + bam_h / 2                  # 580
 
     # ── CONVERGING ARROWS (3 inputs → multi-aligner) ─────────────────────────
     # Each arrow drops straight down on the column center and lands on the
     # aligner box top edge — uniform ARROW_GAP length matches downstream arrows.
-    y_arrow_from = y_aligner_top - ARROW_GAP           # 194
-    for key in ("drs", "cdna", "qsrev"):
+    y_arrow_from = y_aligner_top - ARROW_GAP
+    for key in ("drs", "cdna", "truseq", "qsrev"):
         out.append(arrow(COL[key], y_arrow_from, COL[key], y_aligner_top))
 
     # ── MULTI-ALIGNER (parallel, NOT consensus — consensus happens later) ────
     out.append(shared_box(cx_funnel, y_aligner, 520, aligner_h,
                           "rectify align — run aligners in parallel",
-                          sub="minimap2 + mapPacBio + gapmm2 · or bbmap + bwa-mem (--short-read) · each produces its own BAM"))
+                          sub="minimap2 + uLTRA + deSALT · short reads: COMPASS (TruSeq) or bbmap + bwa (QuantSeq)"))
+
+    # arrow down to overhang resolver
+    out.append(arrow(cx_funnel, y_aligner_bot, cx_funnel, y_resolver_top))
+
+    # ── OVERHANG RESOLVER (Station A — substitutes the minimap2 arm) ─────────
+    out.append(shared_box(cx_funnel, y_resolver, 520, resolver_h,
+                          "overhang resolver — re-places soft-clipped splice overhangs on the minimap2 arm",
+                          sub=None))
 
     # arrow down to junction pool
-    out.append(arrow(cx_funnel, y_aligner_bot, cx_funnel, y_jpool_top))
+    out.append(arrow(cx_funnel, y_resolver_bot, cx_funnel, y_jpool_top))
 
     # ── JUNCTION POOL ────────────────────────────────────────────────────────
     out.append(shared_box(cx_funnel, y_jpool, 420, jpool_h,
@@ -271,15 +298,24 @@ def build():
     out.append(shared_box(cx_funnel, y_bam, 220, bam_h,
                           "rectified BAM", sub=None))
 
+    # ── RE-ALIGNER STATIONS B + C (post-stages on the rectified BAM) ─────────
+    y_st = y_bam_bot + 30
+    out.append(pill(cx_funnel - 168, y_st, 300, 26,
+                    "Station B · triage re-align (--triage)",
+                    PAL["indigo"], PAL["indigo_l"]))
+    out.append(pill(cx_funnel + 168, y_st, 300, 26,
+                    "Station C · pool-gate report (default)",
+                    PAL["indigo"], PAL["indigo_l"]))
+
     # divider before downstream
-    out.append(hdivider(y_bam_bot + 16))
+    out.append(hdivider(y_st + 24))
 
     # ── ANALYZE + DESEQ2 (two rows of chips) ─────────────────────────────────
-    y_down_head = 575
+    y_down_head = 689
     out.append(section_head(60, y_down_head, "DOWNSTREAM"))
 
     # row 1: analyze outputs
-    y_an = 595
+    y_an = 709
     out.append(text(60, y_an + 3, "analyze", size=11,
                     color=PAL["heading"], weight="600"))
     analyze_items = [
@@ -291,7 +327,7 @@ def build():
         out.append(pill(cx, y_an, 130, 24, label, PAL["slate"], PAL["slate_l"]))
 
     # row 2: DESeq2
-    y_de = 625
+    y_de = 739
     out.append(text(60, y_de + 3, "DESeq2", size=11,
                     color=PAL["heading"], weight="600"))
     de_items = [

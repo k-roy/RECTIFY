@@ -150,8 +150,9 @@ rectify align out/stage1_consensus.fastq.gz \
     -o out/
 ```
 
-Runs the standard RECTIFY multi-aligner panel (minimap2 + mapPacBio + gapmm2
-+ optional uLTRA + deSALT) on the per-cluster FASTQ from Stage 1. The
+Runs the standard RECTIFY multi-aligner panel (minimap2 + uLTRA + deSALT,
+with the overhang resolver on the minimap2 arm) on the per-cluster FASTQ
+from Stage 1. The
 `--prefix stage1` flag ensures the output BAM is named `out/stage1.rectified.bam`.
 `minimap2 -y` propagates each `XX:T:value` tag from the FASTQ comment into its
 own BAM auxiliary field — the Stage 1 metadata (`XU`, `XC`, `XO`, `XT`, `XY`,

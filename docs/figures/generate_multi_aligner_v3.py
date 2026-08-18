@@ -16,7 +16,7 @@ import subprocess
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 FIG_W = 760
-FIG_H = 540
+FIG_H = 610
 FONT = "Inter, Helvetica Neue, Helvetica, Arial, sans-serif"
 
 PAL = dict(
@@ -38,9 +38,9 @@ PAL = dict(
 
 # Per-aligner colors (consistent with hero figure)
 ALIGNERS = [
-    ("minimap2",  PAL["blue"],   PAL["blue_l"]),
-    ("mapPacBio", PAL["teal"],   PAL["teal_l"]),
-    ("gapmm2",    PAL["orange"], PAL["orange_l"]),
+    ("minimap2", PAL["blue"],   PAL["blue_l"]),
+    ("uLTRA",    PAL["teal"],   PAL["teal_l"]),
+    ("deSALT",   PAL["orange"], PAL["orange_l"]),
 ]
 
 
@@ -116,10 +116,11 @@ def build():
     COL_BOX_W = 160           # unified box width across aligner / correct columns
     y_input    = 80
     y_aligner  = 170   # +40px gap from FASTQ (was 130)
-    y_pool     = 228   # maintained gap from aligner
-    y_correct  = 310   # +30px extra gap below pool (was 252)
-    y_consen   = 420   # maintained relative gap from correct
-    y_bam      = 478   # gives 30px bottom margin at FIG_H=540
+    y_resolver = 240   # overhang resolver (Station A) on the minimap2 lane
+    y_pool     = 298   # maintained gap from resolver row
+    y_correct  = 380   # +30px extra gap below pool
+    y_consen   = 490   # maintained relative gap from correct
+    y_bam      = 548   # gives 30px bottom margin at FIG_H=610
 
     # ── FASTQ at top ─────────────────────────────────────────────────────────
     out.append(chip(cx, y_input, 130, 32, "FASTQ", PAL["slate"], PAL["slate_l"]))
@@ -131,8 +132,18 @@ def build():
     # ── 3 aligner chips (same width as correct boxes below for clean columns)
     for (name, color, fill), x in zip(ALIGNERS, col_x):
         out.append(chip(x, y_aligner, COL_BOX_W, 30, name, color, fill, sub="raw BAM"))
-        # arrow down to junction pool
-        out.append(arrow(x, y_aligner + 15, x, y_pool - 17))
+        if x == col_x[0]:
+            # minimap2 arm feeds the overhang resolver, which substitutes it
+            out.append(arrow(x, y_aligner + 15, x, y_resolver - 20))
+        else:
+            # other arms go straight to the junction pool
+            out.append(arrow(x, y_aligner + 15, x, y_pool - 17))
+
+    # ── Overhang resolver (Station A) on the minimap2 lane ───────────────────
+    out.append(chip(col_x[0], y_resolver, COL_BOX_W + 20, 38,
+                    "overhang resolver", PAL["blue"], PAL["blue_l"],
+                    sub="replaces the mm2 arm"))
+    out.append(arrow(col_x[0], y_resolver + 19, col_x[0], y_pool - 17))
 
     # ── Junction pool (spans exactly the 3 column boxes) ─────────────────────
     pool_w = (col_x[-1] - col_x[0]) + COL_BOX_W
