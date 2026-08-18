@@ -188,3 +188,10 @@ rectify/data/output/aligners/uLTRA_ultra_tmp/
 dev/_*.py
 dev/_*.qsub
 *_preview.html
+
+# Internal session handoffs / agent state — never public (Kevin 2026-08-17)
+HANDOFF*.md
+*HANDOFF*.md
+*handoff*.md
+/handoffs/
+dev/handoffs/
