@@ -1,5 +1,111 @@
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-17
 
+## Delta 2026-08-17 (night, part 3) — inputs restructured as two families (docs+figure only, no code)
+
+Kevin: TruSeq/CORALL v2 belongs next to QuantSeq; two sections (ONT long read /
+NGS short read), two subarms each; mark QuantSeq as 3'-end. DONE: pipeline_overview
+figure reworked (4 input chips under two family group labels; QuantSeq sub =
+"3'-end, antisense"; title sub = "ONT long reads + NGS short reads"), README
+(intro line, 4-column Inputs table + Family row, TruSeq/CORALL pre-process row:
+`split --umi` r1-start 12-nt → RX → post-align `umi-dedup`, §(b) CORALL UMI
+sentence, Commands += umi-dedup), ARCHITECTURE (four-track intro + TruSeq/CORALL
+row in the tracks table, Layer-3 CORALL UMI flow). CORALL facts verified against
+`core/umi/extract.py` (12-nt N12 at R1 start, no linker, R2 no UMI; Lexogen UG
+citations in that module). Strandedness deliberately stated as "kit-dependent"
+(not recorded in-repo). No code changed in part 3 — suite verdict from part 2
+(2,379/0) still covers the tree.
+
+## Delta 2026-08-17 (night, part 2) — uLTRA/deSALT default in bare `align`; TruSeq-vs-QuantSeq short-read panel split; suite gate PASSED (2,379/0)
+
+Kevin's two follow-up directives, both implemented (uncommitted):
+
+1. **uLTRA + deSALT wired in by default everywhere** — bare `rectify align`'s
+   long-read junction default was `['overhang_resolver']` only; now
+   `['uLTRA','deSALT','overhang_resolver']`, identical to run-all. (uLTRA
+   gracefully skips without --annotation; `--require-aligners` makes that fatal.)
+2. **Short-read panels split by protocol**: plain `--short-read` (TruSeq-style
+   RNA-seq) now selects the COMPASS splice-aware panel — new
+   `COMPASS_SE_ALIGNERS = [bbmap, STAR_default, STAR_noncanonical,
+   HISAT2_default, HISAT2_noncanonical]` single-end (magicblast/gsnap stay
+   PE-only, join with --read2 as before); `--short-read --dT-primed-cDNA`
+   (QuantSeq REV) keeps bbmap + bwa. Enablers: `_build_star_cmd`/`_build_hisat2_cmd`
+   + `run_star`/`run_hisat2` now accept reads2=None (SE: STAR one input file,
+   HISAT2 `-U`); `--dT-primed-cDNA` flag added to the bare align parser;
+   `_run_alignment` gained `dt_primed_cdna` param, plumbed from both
+   single_sample call sites; run-all/align help texts updated. QuantSeq docs
+   (README step-by-step + quickstart_quantseq_rev) now pass the dT flag to
+   `align` — REQUIRED post-change or QuantSeq gets the COMPASS panel.
+   Targeted tests 41/41 green incl. new SE cmd-builder pins + the
+   TruSeq/QuantSeq panel-selection pair.
+
+**Suite gate: ✅ PASSED — 2,379 passed / 0 failed** (41 skipped, 1 xfailed,
+14.5 min, RC=0; `scratchpad/panel_suite2.log`). The cat7 xdist flake did not
+recur. First gate (depanel_suite.log, ~86%) was killed as stale after the
+panel-split edits; this gate covers the COMBINED tree (docs + de-panel +
+uLTRA/deSALT bare-align default + TruSeq/QuantSeq split). Everything is
+uncommitted and Kevin has NOT asked for a commit — the surgical git add list
+is in the Resume block below.
+
+## Delta 2026-08-17 (night) — docs/figures reflect the resolver + Stations B/C; mapPacBio+gapmm2 DE-PANELED from code defaults (Kevin-approved); suite gate WAS in flight (superseded — see part 2)
+
+**Kevin's directives this session, both actioned:** (1) update README + ARCHITECTURE
+(+ figures) for the resolver / Stations B/C, gapmm2+mapPacBio out of the panel story,
+gapmm2-inspiration note — **DONE, uncommitted**; (2) *"de-panel mapPacBio and gapmm2
+from the code defaults too"* — **DONE, uncommitted, suite gate RUNNING**.
+
+### What changed (all uncommitted, working tree)
+
+- **Docs/figures**: README §(b) rewritten (panel = minimap2+uLTRA+deSALT + overhang
+  resolver substituting the mm2 arm; gapmm2-inspired-with-improvements paragraph;
+  mapPacBio = opt-in non-canonical scout), new §(f) Stations B/C, Commands table
+  updated. ARCHITECTURE: new "The Re-aligner: Stations A-C" section, Step 1/3/3b
+  blocks, mermaid + dir tree + CLI table updated, new design-decision entry.
+  index.md + both quickstarts panel lines fixed. Figures regenerated from the v3
+  generators (pipeline_overview + multi_aligner_consensus, light+dark, renders
+  verified by eye; cdna_umi_architecture_dark incidentally caught up with its
+  light source's caption).
+- **Code de-panel** (13 mechanical edits): `run/stages.py` long-read base default
+  `['minimap2','mapPacBio','gapmm2']` → `['minimap2']`; `align_command.py` 'all'
+  expansion likewise; test pin `test_run_all_compass_pe.py::test_long_read_default_is_unchanged`
+  updated to `['minimap2']`; help/docstrings in run_command/align_command/stages/
+  cdna_analyze_command/`__init__.py` updated. Choices lists and `_ALIGNER_NAMES`
+  deliberately UNCHANGED (mapPacBio/gapmm2 stay valid opt-in arms).
+- Targeted tests green (27/27: compass_pe + resolver CLI + parallel schedule).
+
+### 🔴 KNOWN FOLLOW-UP — `rectify split` chunked path NOT de-paneled (deliberate)
+
+`split_command.py` still defaults to a mapPacBio array + `OTHER_ALIGNERS_DEFAULT =
+['minimap2','gapmm2','uLTRA','deSALT']`. NOT mechanical to change: the resolver
+cannot run as an others-array leg (it consumes the finished minimap2 arm in the
+same invocation), so de-paneling there today would leave the chunked HPC path with
+NO terminal-overhang arm. Needs a design decision: resolver leg after the minimap2
+chunk task, or resolver at merge. Until then the chunked generator keeps the old
+panel deliberately.
+
+### Resume
+
+```bash
+# Suite gate for the combined de-panel + panel-split change (~11 min):
+tail -3 /private/tmp/claude-501/-Users-kevinroy-work-rectify/a5bd79f6-ef3f-4051-a315-d4fd938e6da4/scratchpad/panel_suite2.log
+# RC=0  -> commit the docs+figures+de-panel set (surgical git add: README.md,
+#          docs/ARCHITECTURE.md, docs/index.md, docs/quickstart*.md, docs/figures/
+#          {generate_pipeline_overview_v3.py,generate_multi_aligner_v3.py,
+#           pipeline_overview*,multi_aligner_consensus*,cdna_umi_architecture_dark*},
+#          rectify/core/commands/{run_command.py,align_command.py,cdna_analyze_command.py},
+#          rectify/core/commands/run/stages.py, rectify/__init__.py,
+#          tests/test_run_all_compass_pe.py) — Kevin has NOT yet asked for a commit;
+#          confirm before committing/pushing.
+# RC!=0 -> read depanel_suite.log; failures naming aligners/panel = a missed pin;
+#          broad failures = unrelated (check the known cat7 xdist flake first).
+# If the log vanished (reboot): re-run
+#   /Users/kevinroy/miniconda3/bin/python3 -m pytest -m "not slow" -q -n 4
+```
+
+### Inbox (unarchived, production line): correct_v2 rerun INCOMPLETE (44/48, 2 rc=1,
+5 samples absent, queue empty — rbrowse blocked on 48/48); 722 eyeball verdicts
+(all 9 loci artifacts; mapPacBio systematic 1–6 bp boundary error; ±6 bp collapse
+recommended for any exact-coordinate matching vs mapPacBio junctions).
+
 ## Delta 2026-08-17 (evening) — Prp18 acceptor classes SHIPPED opt-in (722b); eyeball panel sent to rbrowse; prp5 staging DONE
 
 Kevin's follow-up directives, both done:
