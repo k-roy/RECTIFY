@@ -1,4 +1,94 @@
-# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-16
+# HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-17
+
+## Delta 2026-08-17 (later) — FINALIZATION LANDED: 5 commits, suite-gated; 722 refutes the index extension; MS2 full-depth is the mission
+
+**Supersedes the earlier 2026-08-17 delta below.** Kevin's directives this session, in
+order: (1) *"finalize the resolver and realigner (Stations A-C)"* — **DONE, committed**;
+(2) *"get all inhouse cDNA datasets for MS2 processed with our updated pipeline and live
+on rbrowse"* — **the standing mission, production run NOT yet launched**; (3) *"revisit
+the GT/AG index — price non-canonical dinucleotides or motif-free"* — **DONE, planning/722,
+recommendation: don't**.
+
+### Landed commits (local branch `feat/attribution-sidecar`; origin/master `0128840` is an
+ANCESTOR of HEAD — 28 ahead / 0 behind, so master lands by FAST-FORWARD, no merge needed)
+
+| commit | what |
+|---|---|
+| `17d1c35` | **planning/719 FIX**: 5' rescue REFUSES extensions off either contig edge (read left untouched); `_validate_bam_sample` invariant now two-sided (negative POS is fatal); 11 regression tests |
+| `ae5a6dc` | resolver mapPacBio-gap docs (the former uncommitted gap-doc set + `tests/test_resolver_noncanonical_gap.py`) |
+| `fa63c12` | **resolver in the DEFAULT panel** (align + run-all: long-read junction default = `[uLTRA, deSALT, overhang_resolver]`, `--no-junction-aligners` escape, defaulted-resolver degrades to WARNING without minimap2) + **annotation-derived `max_intron`** (`derive_max_intron`: 2x longest annotated intron, cap [1000, 500000]; yeast derives EXACTLY 5000 = zero behavior change; deSALT/uLTRA finally capped, planning/694 cliff amputated at source) + `_collect_per_aligner_bams` now substitutes the resolver BAM into the minimap2 slot (without this, per-aligner `correct` silently ran on the RAW arm) |
+| `fa7342a` | **Station C: all three 684c defects** (Kevin-approved): flags consulted on BOTH tracks (canonical+flagged caps at `review` — kills the 111 kb LTR admit), length pre-gate (`over_max_intron` column, annotation-derived bound, `--max-intron` on `pool-gate` + run-all), docstring contradiction fixed + pinned by test. Plus `_record_station_failure`: Station B/C failures now append `<sample>.station_failures.json` (fail-soft kept, but machine-readable) |
+| `07f...` | HANDOFF_702 doc fixes per the rbrowse review (GAP 3 dispositioned; push status corrected; `initiating` dead on BOTH cohorts; strand_evidence re-emit owned by rbrowse's re-slice job; 717's sidecar-v2 wishlist recorded). Both inbox messages archived. |
+
+**Suite: 2,365 passed / 0 failed** post-commit (fastsuite2.log, RC=0).
+**PUSHED: origin/master fast-forwarded `0128840` → `56a01d5`**; `feat/attribution-sidecar`
+updated to the same SHA (`c83570e` → `56a01d5`). The final commit is the HANDOFF_702 doc
+fix (`56a01d5`); the four code commits are `17d1c35`/`ae5a6dc`/`fa63c12`/`fa7342a`.
+
+### planning/722 — the GT/AG index extension is REFUTED by measurement (Kevin's ask 3)
+
+Motif spectrum of the 273 missed non-canonical instances (identical 721 population,
+H2 `722_motif_spectrum.{py,tsv}`): **FLAT** — top dinucleotide pair 10 %, top-20 = 49 %;
+**86 % of distinct missed junctions are single-read**; the support≥3 misses collapse to
+TWO boundary-jittered loci (NOP10, SND3/IML3) that look like strain deletions, not
+splicing; **no AT..AC signal** (yeast has no minor spliceosome). Compute price: candidates
+scale as donor×acceptor PRODUCT — motif-free = ×191 candidates ≈ order 100 CPU-h/sample
+and −7.6 bits of FDR budget, re-creating the 644g no-discrimination contest.
+**Recommendation: no index extension; non-canonical discovery stays Station C + scout
+(mapPacBio as probe) per the standing architecture.** Cheap follow-up: browser-check the
+two jittered loci.
+
+### Kevin's decisions this session (recorded, all implemented except the run)
+
+1. Station C: ALL THREE 684c fixes — done (`fa7342a`).
+2. Land: **merge to master + push** — approved; fast-forward pending the suite gate.
+3. MS2 scope: **all 31 samples at FULL depth + stage prp5_AA reps 2–3 from raw**.
+
+### 🔴 NEXT (production run — provisioning DONE, driver + smoke + fan-out NOT started)
+
+Done this session: ✅ push (see above) · ✅ H2 tree `/u/scratch/k/kevinroy/tree_master_56a01d5/rectify`
+(git clone, verified at `56a01d5`, data/ 89M in-repo) · ✅ prp5 staging launched · ✅ rbrowse
+briefed (`~/work/rbrowse/.claude/inbox/2026-08-17T1900Z__*` — schema + verdict changes,
+do-not-repoint-yet).
+
+1. **prp5 staging**: H2 array `14388164` tasks 1-2 = S1 minimap2 pre-alignment for
+   prp5_rep2 (22.5 GB fastq, ~17M reads) + prp5_rep3 (1.5 GB) into
+   `662_cdna/prp5_rep{2,3}/prp5_rep*_pre.bam`. Sentinel `.rc723_s1`, log `723_logs/`.
+   Script `/u/scratch/k/kevinroy/723_prp5_stage_s1.sh` (idempotent, exact 662 S1 recipe;
+   minimap2-only so tree-independent).
+2. **Build the full-depth driver** (next big block): the per-sample pipeline is the
+   662/684 chain shape — S1 `_pre.bam` → S2 `correct-cdna` (UMI collapse, `--no-poa
+   --umi-edit-distance 2 --umi-adaptive-threshold 5000 --anchor-window-bp 1`) → S3 align
+   panel → correct → consensus → analyze — but ALL rectify stages must run from
+   `tree_master_56a01d5` (`PYTHONPATH` + `python -m rectify.cli`, planning/709: never
+   sync cli.py; NOT the conda env's installed rectify, which 662_generic uses). Full
+   depth = consume `_pre.bam` whole (684's keep_frac subsample step simply omitted).
+   Sources: `SRC_ROOT` map in `/u/project/guillom/kevinroy/684_chain.sh` (587_ms2_cdna
+   + 662_cdna per sample); depths 5.3-11.9M reads (`684_p1cdna_1M/subsample_manifest.tsv`),
+   33 samples total (31 + prp5_rep2/3).
+3. **SMOKE first** (policy): one sample, subset ~10k molecules BUT the production code
+   path (same chain, same flags). Verify on CONTENT: resolver stats JSON written +
+   `arb_dmerge`>0; junction default printed as `uLTRA + deSALT + overhang_resolver`;
+   corrected BAM indexed (the 719 class would kill indexing); `pool_gate.tsv` carries
+   `over_max_intron`; `station_failures.json` ABSENT.
+4. Fan out 33 (h2-qsub, 24 h, `-pe shared 8`, scratch staging, per-stage sentinels;
+   ysh1-class libraries may need more — see the 682 walltime lesson).
+5. Re-run the 2 DRS negative-POS samples (4nqo_rep1, dis3rrp6_rep2) on the NEW tree —
+   commands in the SUPERSEDED 2026-08-17 delta below, but point at tree_master_56a01d5.
+6. After the fan-out: per-reference analyze ×3, robustness filter (positive control MUST
+   fire — HANDOFF_684 §Resume 2), pack-browser with `--library-depth`, THEN tell rbrowse
+   to repoint.
+
+### In flight / unchanged
+
+- H2 `14382552` (4 timed-out DRS samples, 24 h walltime): **still qw after ~9 h** (highp
+  queue wait). The 719 fix is now committed, so when these run they still use the OLD tree
+  `0128840` — fine (these 4 samples never hit the negative-POS bug; it was 4nqo_rep1 +
+  dis3rrp6_rep2, which must be re-run on the NEW tree after the push — Resume step 4 of
+  the earlier delta).
+- 682: 44/48 corrected BAMs done; the 2 negative-POS samples wait on the new tree.
+
+# HANDOFF — Rectify Agent (sole owner) — SUPERSEDED 2026-08-16
 
 ## Delta 2026-08-16 — 682 stage-4 RE-RUN launched (the fix for Kevin's original RPL22B complaint)
 
