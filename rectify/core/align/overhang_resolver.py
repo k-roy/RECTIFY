@@ -8,6 +8,42 @@ aligner with a mammalian constant (``maxindel=200000`` == ~12,500 chance AG
 acceptors per window on both strands — simultaneously the compute bill and
 the false-positive rate).
 
+🔴 **SCOPE LIMIT — this module does NOT fully replace mapPacBio, and must not be
+described as doing so** (measured, planning/721; do not re-litigate without new
+data). On the SAME upf1Δ reads through minimap2 and mapPacBio, scoring the
+junctions mapPacBio found that minimap2 missed:
+
+===========================  =====  =========
+class of mapPacBio-unique    n      recovered
+===========================  =====  =========
+annotated                    1,053  **99.1%**
+novel NON-CANONICAL            417  **34.5%**
+===========================  =====  =========
+
+**Cause is structural, not a tuning knob.** Candidates come from
+:class:`~rectify.core.splice.splice_site_index.SpliceSiteIndex`, which is built
+on GT/AG-class dinucleotides only (``don_gt_plus`` / ``don_gc_plus`` /
+``acc_plus`` / ``don_minus`` / ``acc_minus``). **A non-canonical junction has no
+entry in that index and therefore cannot be enumerated as a candidate at all.**
+mapPacBio aligns and lets the sequence decide; this module can only propose
+placements the index already contains. ``arb_grammar`` (canonical-preference
+tiebreak, measured −6.0 pp cryptic recovery) is a second, smaller motif
+dependency layered on top.
+
+Consequences for callers:
+  * as a panel arm this is a net gain and belongs in the default panel
+    (planning/720: +26.5k annotated junctions per 900k cDNA reads, 31 reads
+    harmed, 0 impossible junctions introduced);
+  * for **non-canonical discovery missions** (upf1Δ, prp18Δ, cryptic splicing)
+    the panel is weaker without mapPacBio than with it, and this module does not
+    close that gap. Set ``arb_grammar=False`` for such runs, and treat the
+    remaining shortfall as a known, unfilled gap rather than an absence of
+    signal.
+
+Extending the index with non-canonical dinucleotide classes would change both
+the candidate space and the false-discovery budget (``alpha`` is calibrated
+against the current candidate density), so it is a design change, not a flag.
+
 Per terminal soft clip:
 
 1. **Assess** the clip with the shared informativeness gate
