@@ -1,5 +1,58 @@
 # HANDOFF — Rectify Agent (sole owner) — CURRENT 2026-08-17
 
+## Delta 2026-08-17 (evening) — Prp18 acceptor classes SHIPPED opt-in (722b); eyeball panel sent to rbrowse; prp5 staging DONE
+
+Kevin's follow-up directives, both done:
+
+1. **"Browser eyeball now"** → panel sent to rbrowse
+   (`~/work/rbrowse/.claude/inbox/2026-08-17T2000Z__*`): the 4 recurrent missed loci +
+   5 singleton calibration novels, with the discriminator to look for. 🔴 Key reframe
+   found while building it: **the SUS1 and PTC7 "novel non-canonical" misses are 6–8 bp
+   SHIFTED variants of ANNOTATED introns** (SUS1 intron 2 = chrII 462,429–462,499;
+   PTC7 = chrVIII 251,155–251,248; both just past TOL=5) — but they lack canonical
+   donors, so likely mapPacBio boundary misplacement, not alt-3′SS. Await rbrowse verdicts.
+2. **"Use the 2023 Prp18 study 3′SS motifs"** → measured, validated, SHIPPED opt-in
+   (`planning/722b`). Paper: Roy et al. 2023 NAR gkad968 (supp tables fetched via Europe
+   PMC → H2 `gkad968_supp/`). Classes: acceptor-only BG (TG/CG/GG) + non-G (AT); donors
+   stay GT/GC (4/1,833 published junctions non-canonical donor). Price ×4.82 acceptor
+   density, no donor compounding. Benefit on the paper's S1 table: utilized alt-3′SS
+   enumerable **47→88 % (prp18)**, **62→85 % (upf1Δ-only — MS2-relevant)**. On the 722
+   missed set: ~nothing (8/204, all singletons) — confirms that residual is noise.
+   Implementation: SpliceSiteIndex v2 (always builds `acc_*_ext`, cache format bump),
+   `ResolverConfig.acceptor_classes='canonical'|'prp18'` through clip legs AND re-arb,
+   `--resolver-acceptor-classes` on align + run-all. **Default byte-identical to the
+   720-measured config** (pinned by test). 9 new tests + gap-pin tests updated (the
+   vocabulary pin fired as designed). polyU-as-hard-gate REJECTED (kills half the real
+   events; median paper polyU-count of gained junctions = 4).
+   **Pre-registered next test recorded in 722b §Recommended**: full-depth upf1Δ flag-on
+   vs flag-off against the 512 upf1-utilized S1 junctions.
+3. **prp5_rep2/rep3 staging DONE + content-verified** (job 14388164, both rc=0):
+   rep2 `_pre.bam` 16.7M mapped, rep3 827k mapped (shallow rep). All 33 MS2 samples now
+   have `_pre.bam`.
+
+### Resume (722b commit — the ONLY thing pending on the M1)
+
+```bash
+# 1. The suite gate for the 722b changes (started ~18:4x PDT, ~11 min expected):
+grep "^RC=" /private/tmp/claude-501/-Users-kevinroy-work-rectify/4d240441-d471-4fbd-a449-adf7e54bc600/scratchpad/fastsuite3.log
+#   absent -> still running (do not start another heavy local job)
+#   RC=0   -> expect ~2,378 passed (2,365 + 9 new prp18 tests + updated gap pins). Then:
+git add rectify/core/splice/splice_site_index.py rectify/core/align/overhang_resolver.py \
+        rectify/core/commands/align_command.py rectify/core/commands/run_command.py \
+        rectify/core/commands/run/stages.py rectify/core/commands/run/single_sample.py \
+        tests/test_resolver_prp18_acceptors.py tests/test_resolver_noncanonical_gap.py
+git commit   # msg: feat(resolver): opt-in Prp18-class acceptor extension (planning/722b)
+git add HANDOFF.md && git commit --amend --no-edit   # or separate docs(handoff) commit
+git push origin HEAD:master HEAD:feat/attribution-sidecar   # Kevin approved this land path
+#   RC!=0  -> read fastsuite3.log; only-new-tests-failing = fixture issue in
+#             test_resolver_prp18_acceptors.py; broad failures = the SpliceSiteIndex
+#             v2 format bump broke a consumer (grep for acc_plus_ext in the log).
+# 2. If the scratchpad log vanished (M1 reboot): re-run the gate:
+#    /Users/kevinroy/miniconda3/bin/python3 -m pytest -m "not slow" -q -n 4
+# 3. H2 job 14382552 (4 DRS samples) STILL qw ~11 h (highp queue wait — normal). Check:
+ssh h2 'qstat -u kevinroy | grep 14382552 || echo done; grep -L "^0" /u/project/guillom/kevinroy/682_drs1m/*/correct_v2/.rc'
+```
+
 ## Delta 2026-08-17 (later) — FINALIZATION LANDED: 5 commits, suite-gated; 722 refutes the index extension; MS2 full-depth is the mission
 
 **Supersedes the earlier 2026-08-17 delta below.** Kevin's directives this session, in
