@@ -50,6 +50,7 @@ def _run_alignment(
     short_read: bool = False,
     trust_existing_bams: bool = False,
     read2: Optional[Path] = None,
+    dt_primed_cdna: bool = False,
     read_length: int = 150,
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
@@ -57,9 +58,11 @@ def _run_alignment(
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
 
-    Default aligners: minimap2 + mapPacBio + gapmm2 (long-read Tier 1).
+    Default base aligner: minimap2 (long-read; mapPacBio/gapmm2 are opt-in).
     Pass base_aligners to restrict or change the set (e.g. ['mapPacBio']).
-    Pass short_read=True to use bbmap + bwa instead of the long-read panel.
+    Pass short_read=True for the single-end COMPASS subset (bbmap + STAR×2 +
+    HISAT2×2 — TruSeq-style RNA-seq); add dt_primed_cdna=True for
+    QuantSeq-class 3'-end libraries (bbmap + bwa instead).
     Pass short_read=True *and* read2=<R2 FASTQ> to use the paired-end COMPASS
     panel (bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap) — the same set
     `rectify align --short-read --read2 --aligners all` selects.
@@ -122,15 +125,22 @@ def _run_alignment(
     # (see align_args below), so align_command's own "all"-expansion never fires
     # from this path — the paired-COMPASS choice has to be made here too, or
     # --read2 would silently run bbmap+bwa paired instead of the COMPASS panel.
-    from ..align_command import COMPASS_PE_ALIGNERS
+    from ..align_command import COMPASS_PE_ALIGNERS, COMPASS_SE_ALIGNERS
     if base_aligners is not None:
         _base_aligners = base_aligners
     elif short_read and read2 is not None:
         _base_aligners = list(COMPASS_PE_ALIGNERS)
-    elif short_read:
+    elif short_read and dt_primed_cdna:
+        # QuantSeq-class 3'-end library → the dT-primed panel
         _base_aligners = ['bbmap', 'bwa']
+    elif short_read:
+        # TruSeq-style RNA-seq, single-end → COMPASS splice-aware SE subset
+        _base_aligners = list(COMPASS_SE_ALIGNERS)
     else:
-        _base_aligners = ['minimap2', 'mapPacBio', 'gapmm2']
+        # De-paneled 2026-08-17 (Kevin): mapPacBio and gapmm2 are opt-in arms —
+        # the overhang resolver fills their terminal-overhang role. Re-add via
+        # --base-aligners for non-canonical discovery missions (mapPacBio scout).
+        _base_aligners = ['minimap2']
     # Junction-aligner default depends on --short-read: BBMap's intronlen=20
     # already covers splicing for short reads, so uLTRA/deSALT aren't useful
     # and shouldn't be the default. Long-read protocols default to

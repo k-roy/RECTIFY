@@ -4,7 +4,8 @@ RECTIFY run-all command — complete end-to-end pipeline.
 
 Handles everything from FASTQ (or BAM) to final results:
 
-  Step 0  Alignment    triple-aligner consensus (minimap2 + mapPacBio + gapmm2)
+  Step 0  Alignment    multi-aligner panel (minimap2 + uLTRA + deSALT +
+                       overhang resolver on the minimap2 arm)
                        Skipped automatically if {sample}.consensus.bam already exists,
                        or if input is already a BAM, or if --skip-alignment is set.
 
@@ -407,11 +408,13 @@ def create_run_parser(subparsers):
         action='store_true',
         default=False,
         help=(
-            'Input is short-read data (Illumina/Aviti ≤150 bp). Single-end: uses '
-            'bbmap + bwa. Paired-end (with --read2): uses the full COMPASS panel '
-            '(bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap). Either way this '
-            'replaces the long-read aligner panel (minimap2/mapPacBio/gapmm2) and '
-            'disables poly(A)-tail trimming, A-tract correction, and indel modules.'
+            'Input is short-read data (Illumina/Aviti ≤150 bp). TruSeq-style '
+            'RNA-seq uses the COMPASS splice-aware panel: bbmap + STAR×2 + '
+            'HISAT2×2 single-end, plus magicblast + gsnap when paired '
+            "(--read2). With --dT-primed-cDNA (QuantSeq-class 3'-end "
+            'libraries): bbmap + bwa. Either way this replaces the long-read '
+            'aligner panel and disables poly(A)-tail trimming, A-tract '
+            'correction, and indel modules.'
         ),
     )
     run_parser.add_argument(
@@ -564,6 +567,8 @@ def create_run_parser(subparsers):
         default=False,
         help='Input is dT-primed cDNA (QuantSeq, etc.) — poly(A) NOT in read. '
              'Enables indel artifact correction and poly(A) trimming modules. '
+             "With --short-read, also selects the 3'-end aligner panel "
+             '(bbmap + bwa) instead of the TruSeq COMPASS panel. '
              'By default run-all assumes nanopore direct RNA (poly-A IS in read).'
     )
     run_parser.add_argument(
@@ -647,8 +652,8 @@ def create_run_parser(subparsers):
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            'Run minimap2, mapPacBio, and gapmm2 in parallel during alignment (default: enabled). '
-            'Threads are divided evenly across aligners (e.g., --threads 16 → 5 per aligner). '
+            'Run the enabled panel aligners in parallel during alignment (default: enabled). '
+            'Threads are divided evenly across aligners. '
             'Reduces wall-clock time for the alignment step at the cost of higher peak memory. '
             'Use --no-parallel-aligners to force sequential alignment.'
         )
@@ -694,7 +699,7 @@ def create_run_parser(subparsers):
             'Base aligners for the consensus pool. When omitted, the default '
             'depends on --short-read: bbmap + bwa for short-read single-end, '
             'the COMPASS panel for short-read paired-end (--read2), '
-            'minimap2 + mapPacBio + gapmm2 for long-read. '
+            'minimap2 for long-read (mapPacBio and gapmm2 are opt-in arms). '
             'Passing this flag overrides the default in every mode. '
             'Example (force short-read panel even without --short-read): '
             '--base-aligners bbmap bwa. The COMPASS members '
@@ -818,7 +823,7 @@ def create_run_parser(subparsers):
         '--keep-aligner-bams',
         action='store_true',
         default=False,
-        help='Retain per-aligner BAMs (minimap2, mapPacBio, gapmm2) after '
+        help='Retain per-aligner BAMs (one per panel arm) after '
              'consensus selection. By default, per-aligner BAMs are excluded '
              'from the Oak sync to save disk space; only the rectified BAM is kept.'
     )

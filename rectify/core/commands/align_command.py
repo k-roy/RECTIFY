@@ -45,6 +45,18 @@ COMPASS_PE_ALIGNERS = [
     'gsnap',
 ]
 
+# Single-end COMPASS subset: the default for TruSeq-style short reads without
+# --read2. STAR/HISAT2 run single-end; magicblast/gsnap are PE-only and join
+# only with --read2. QuantSeq-class 3'-end libraries (--dT-primed-cDNA) use
+# bbmap + bwa instead (splice recall matters less than 3'-end placement there).
+COMPASS_SE_ALIGNERS = [
+    'bbmap',
+    'STAR_default',
+    'STAR_noncanonical',
+    'HISAT2_default',
+    'HISAT2_noncanonical',
+]
+
 
 def _commit_indexed_bam(temp_bam: Path, final_bam: Path, index_runner) -> None:
     """Index a temporary BAM before atomically replacing the final BAM and BAI."""
@@ -95,10 +107,22 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=False,
         help=(
             'Input is short-read data (Illumina/Aviti ≤150 bp). When set, "all" '
-            'expands to bbmap + bwa (single-end) or the full COMPASS panel '
-            '(bbmap + STAR×2 + HISAT2×2 + magicblast + gsnap) when --read2 is '
-            'given, instead of minimap2 + mapPacBio + gapmm2. '
-            'Ignored if --aligners is specified explicitly.'
+            'expands by protocol: TruSeq-style RNA-seq (no --dT-primed-cDNA) '
+            'uses the COMPASS splice-aware panel — bbmap + STAR×2 + HISAT2×2 '
+            'single-end, plus magicblast + gsnap when paired (--read2); '
+            "QuantSeq-class 3'-end libraries (--dT-primed-cDNA) use "
+            'bbmap + bwa. Ignored if --aligners is specified explicitly.'
+        ),
+    )
+    parser.add_argument(
+        '--dT-primed-cDNA',
+        dest='dT_primed_cDNA',
+        action='store_true',
+        default=False,
+        help=(
+            "Short-read input is a dT-primed 3'-end library (QuantSeq REV "
+            'etc.). With --short-read, "all" selects the 3\'-end panel '
+            '(bbmap + bwa) instead of the TruSeq COMPASS panel.'
         ),
     )
     parser.add_argument(
@@ -133,8 +157,12 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
                  'all', 'none'],
         default=['all'],
         help=(
-            'Aligners to run. "all" = minimap2 + mapPacBio + gapmm2 (long-read, default); '
-            'with --short-read "all" = bbmap + bwa, or the COMPASS panel when --read2 is set. '
+            'Aligners to run. "all" = minimap2 (long-read, default; the overhang resolver '
+            'is added as the default junction aligner — see --junction-aligners); '
+            'mapPacBio and gapmm2 are opt-in arms, listed explicitly. '
+            'with --short-read "all" = the COMPASS panel (single-end subset; '
+            'full panel with --read2), or bbmap + bwa when --dT-primed-cDNA '
+            'is set. '
             '"winnowmap2" and "minisplice_mm2" are opt-in extras (not in "all"); '
             'winnowmap2 requires meryl on PATH; minisplice_mm2 requires --minisplice-model. '
             'Use "none" to run only --junction-aligners (deSALT/uLTRA). (default: all)'
@@ -150,8 +178,9 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help=(
             'Splice-aware aligners to add to the consensus pool '
             '(choices: uLTRA, deSALT, gmap, overhang_resolver). '
-            'DEFAULT when omitted: overhang_resolver on long-read runs '
-            '(planning/720 ADOPT verdict), nothing under --short-read. Pass '
+            'DEFAULT when omitted: uLTRA + deSALT + overhang_resolver on '
+            'long-read runs (matches run-all; resolver per the planning/720 '
+            'ADOPT verdict), nothing under --short-read. Pass '
             'an explicit list to override; pass only uLTRA/deSALT/gmap to '
             'drop the resolver. uLTRA requires '
             '--annotation; gmap requires a pre-built db (see --gmap-db). '
@@ -536,23 +565,32 @@ def run_align(args: argparse.Namespace) -> int:
             if getattr(args, 'read2', None):
                 # Paired short-read → full COMPASS panel (the 111-adjudication set)
                 aligners = list(COMPASS_PE_ALIGNERS)
-            else:
+            elif getattr(args, 'dT_primed_cDNA', False):
+                # QuantSeq-class 3'-end library → the dT-primed panel
                 aligners = ['bbmap', 'bwa']
+            else:
+                # TruSeq-style RNA-seq, single-end → COMPASS SE subset
+                aligners = list(COMPASS_SE_ALIGNERS)
         else:
-            aligners = ['minimap2', 'mapPacBio', 'gapmm2']
+            # De-paneled 2026-08-17: mapPacBio/gapmm2 are opt-in (--aligners),
+            # the overhang resolver (default junction aligner) fills their role.
+            aligners = ['minimap2']
 
-    # Junction aligners. None = not given -> the measured default: the
-    # overhang resolver on long-read runs (planning/720: +26.5k annotated
-    # junctions per 900k cDNA reads, 31 reads harmed, 0 impossible junctions;
-    # ADOPT), nothing on short-read (no minimap2 arm to resolve). An explicit
-    # list (including []) always wins.
+    # Junction aligners. None = not given -> the default long-read set
+    # [uLTRA, deSALT, overhang_resolver] (Kevin 2026-08-17: bare align matches
+    # run-all — uLTRA/deSALT stay wired in unless measured to add little; the
+    # resolver per the planning/720 ADOPT verdict). uLTRA gracefully skips
+    # without --annotation; deSALT skips without its binary. Nothing on
+    # short-read (no minimap2 arm to resolve). An explicit list (including
+    # []) always wins.
     _ja_raw = getattr(args, 'junction_aligners', None)
     _ja_explicit = _ja_raw is not None
     if _ja_explicit:
         junction_aligners = list(_ja_raw)
     else:
         junction_aligners = (
-            [] if getattr(args, 'short_read', False) else ['overhang_resolver'])
+            [] if getattr(args, 'short_read', False)
+            else ['uLTRA', 'deSALT', 'overhang_resolver'])
     # overhang_resolver is a post-pass on the finished minimap2 arm, not a
     # dispatchable aligner — pulled out here and run after the aligner loop.
     want_resolver = 'overhang_resolver' in junction_aligners
@@ -631,9 +669,10 @@ def run_align(args: argparse.Namespace) -> int:
         elif aligner in ('STAR_default', 'STAR_noncanonical', 'HISAT2_default',
                          'HISAT2_noncanonical', 'magicblast', 'gsnap'):
             # COMPASS short-read panel: binary resolved inside the wrapper
-            # (_require_binary); all are paired-end and need a mate-2 FASTQ.
+            # (_require_binary). STAR/HISAT2 run single- or paired-end;
+            # magicblast/gsnap are paired-end only.
             exec_path = None
-            if not _reads2:
+            if aligner in ('magicblast', 'gsnap') and not _reads2:
                 logger.error(
                     "Aligner %s needs paired reads; pass --read2 R2.fastq.gz "
                     "(or paired chunk FASTQs from `rectify split --read2`). Skipping.",

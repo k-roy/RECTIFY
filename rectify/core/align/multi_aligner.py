@@ -1487,12 +1487,14 @@ def _is_gz(p) -> bool:
 
 def _build_star_cmd(reads_r1, reads_r2, star_genome_dir, out_prefix, threads,
                     read_length: int = 150, noncanonical: bool = False) -> List[str]:
+    # reads_r2=None -> single-end (TruSeq-style SE COMPASS subset)
+    reads_in = [str(reads_r1)] + ([str(reads_r2)] if reads_r2 else [])
     cmd = [
         'STAR',
         '--runThreadN', str(threads),
         '--genomeDir', str(star_genome_dir),
         '--sjdbOverhang', str(read_length - 1),
-        '--readFilesIn', str(reads_r1), str(reads_r2),
+        '--readFilesIn', *reads_in,
         '--outFileNamePrefix', str(out_prefix),
         '--alignEndsType', 'EndToEnd',
         '--outSAMattributes', 'NH', 'HI', 'NM', 'MD', 'AS', 'nM', 'jM', 'jI', 'XS',
@@ -1514,7 +1516,13 @@ def _build_hisat2_cmd(reads_r1, reads_r2, hisat2_index, splice_sites, out_sam,
         '--threads', str(threads),
         '--time', '--reorder',
         '-x', str(hisat2_index),
-        '-1', str(reads_r1), '-2', str(reads_r2),
+    ]
+    # reads_r2=None -> single-end (-U); else paired (-1/-2)
+    if reads_r2:
+        cmd += ['-1', str(reads_r1), '-2', str(reads_r2)]
+    else:
+        cmd += ['-U', str(reads_r1)]
+    cmd += [
         '-S', str(out_sam),
         '--min-intronlen', str(min_intron),
         '--max-intronlen', str(max_intron),
@@ -1655,7 +1663,7 @@ def _finalize_short_read_bam(output_bam: Path, genome_path: str, reads_r1: str,
 
 def run_star(
     reads_path: str,
-    reads2_path: str,
+    reads2_path: Optional[str],
     genome_path: str,
     output_bam: str,
     threads: int = 8,
@@ -1663,9 +1671,11 @@ def run_star(
     noncanonical: bool = False,
     star_genome_dir: Optional[str] = None,
 ) -> str:
-    """STAR paired-end splice-aware alignment (COMPASS default / non-canonical).
+    """STAR splice-aware alignment (COMPASS default / non-canonical).
 
-    noncanonical=True adds ``--scoreGapNoncan 0`` (COMPASS STAR_noncanonical).
+    Paired-end when ``reads2_path`` is given, single-end when it is None
+    (TruSeq-style SE mode). noncanonical=True adds ``--scoreGapNoncan 0``
+    (COMPASS STAR_noncanonical).
     """
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
@@ -1695,7 +1705,7 @@ def run_star(
 
 def run_hisat2(
     reads_path: str,
-    reads2_path: str,
+    reads2_path: Optional[str],
     genome_path: str,
     output_bam: str,
     threads: int = 8,
@@ -1705,9 +1715,11 @@ def run_hisat2(
     hisat2_index: Optional[str] = None,
     splice_sites: Optional[str] = None,
 ) -> str:
-    """HISAT2 paired-end splice-aware alignment (COMPASS default / non-canonical).
+    """HISAT2 splice-aware alignment (COMPASS default / non-canonical).
 
-    noncanonical=True adds ``--pen-noncansplice 0`` (COMPASS HISAT2_noncanonical).
+    Paired-end when ``reads2_path`` is given, single-end (``-U``) when it is
+    None (TruSeq-style SE mode). noncanonical=True adds
+    ``--pen-noncansplice 0`` (COMPASS HISAT2_noncanonical).
     """
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)

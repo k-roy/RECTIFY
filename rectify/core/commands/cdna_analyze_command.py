@@ -3,7 +3,8 @@
 
 Reads the BAM produced by `rectify align` on the per-cluster consensus FASTQ
 output by `rectify correct-cdna`. Each BAM record is one UMI cluster's
-consensus aligned via the multi-aligner (minimap2 + mapPacBio + gapmm2) and
+consensus aligned via the multi-aligner panel (minimap2 + uLTRA + deSALT +
+overhang resolver) and
 chimeric-consensus integration.
 
 Recomputes tail_len (XA), 5' TSS correction (pos5_corrected), gene assignment

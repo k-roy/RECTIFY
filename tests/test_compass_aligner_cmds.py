@@ -22,6 +22,32 @@ def _joined(cmd):
     return ' '.join(str(c) for c in cmd)
 
 
+# ── Single-end forms (TruSeq-style SE COMPASS subset, 2026-08-17) ────────────
+
+def test_star_cmd_single_end_omits_r2():
+    cmd = _build_star_cmd('R1.fastq.gz', None, '/idx/star', '/o/p.', 8)
+    j = _joined(cmd)
+    assert 'None' not in j
+    i = cmd.index('--readFilesIn')
+    assert cmd[i + 1] == 'R1.fastq.gz'
+    assert cmd[i + 2].startswith('--')  # exactly one input file
+
+
+def test_hisat2_cmd_single_end_uses_U():
+    cmd = _build_hisat2_cmd('R1.fastq.gz', None, '/idx/ht2', '/idx/ss.txt',
+                            '/o/out.sam', 8, 20, 200000, '/o/nsj.txt', '/o/sum.txt')
+    j = _joined(cmd)
+    assert 'None' not in j
+    assert '-U' in cmd and cmd[cmd.index('-U') + 1] == 'R1.fastq.gz'
+    assert '-1' not in cmd and '-2' not in cmd
+
+
+def test_hisat2_cmd_paired_still_uses_1_2():
+    cmd = _build_hisat2_cmd('R1.fastq.gz', 'R2.fastq.gz', '/idx/ht2', '/idx/ss.txt',
+                            '/o/out.sam', 8, 20, 200000, '/o/nsj.txt', '/o/sum.txt')
+    assert '-1' in cmd and '-2' in cmd and '-U' not in cmd
+
+
 # ── Index path derivation ────────────────────────────────────────────────────
 
 def test_index_paths_match_compass_layout():

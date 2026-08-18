@@ -170,15 +170,28 @@ class TestRunAllPanelSelection:
         assert args.read2 == Path('R2.fastq.gz')
         assert args.read_length == 100
 
-    def test_single_end_short_read_is_unchanged(self, tmp_path, monkeypatch):
+    def test_single_end_truseq_selects_the_compass_se_panel(self, tmp_path, monkeypatch):
+        """Plain --short-read (TruSeq-style RNA-seq) = splice-aware COMPASS
+        SE subset (Kevin 2026-08-17: QuantSeq vs TruSeq panels split)."""
         args = self._captured_align_args(tmp_path, monkeypatch, short_read=True)
+        assert list(args.aligners) == [
+            'bbmap', 'STAR_default', 'STAR_noncanonical',
+            'HISAT2_default', 'HISAT2_noncanonical',
+        ]
+        assert args.read2 is None
+
+    def test_single_end_dt_primed_selects_the_3prime_panel(self, tmp_path, monkeypatch):
+        """--short-read + dT-primed (QuantSeq REV) keeps the 3'-end panel."""
+        args = self._captured_align_args(
+            tmp_path, monkeypatch, short_read=True, dt_primed_cdna=True)
         assert list(args.aligners) == ['bbmap', 'bwa']
         assert args.read2 is None
 
     def test_long_read_default_is_unchanged(self, tmp_path, monkeypatch):
-        """The DRS/PCR-cDNA production path must not move."""
+        """The DRS/PCR-cDNA production base panel: minimap2 alone —
+        mapPacBio/gapmm2 de-paneled 2026-08-17 (opt-in via --base-aligners)."""
         args = self._captured_align_args(tmp_path, monkeypatch)
-        assert list(args.aligners) == ['minimap2', 'mapPacBio', 'gapmm2']
+        assert list(args.aligners) == ['minimap2']
         assert args.read2 is None
         assert args.read_length == 150
 

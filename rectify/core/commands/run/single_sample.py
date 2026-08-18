@@ -402,6 +402,7 @@ def _process_one_sample(
                         short_read=getattr(args, 'short_read', False),
                         trust_existing_bams=getattr(args, 'trust_existing_bams', False),
                         read2=getattr(args, 'read2', None),
+                        dt_primed_cdna=getattr(args, 'dT_primed_cDNA', False),
                         read_length=getattr(args, 'read_length', 150),
                         max_intron=getattr(args, 'max_intron', None),
                         resolver_acceptor_classes=getattr(
@@ -767,10 +768,12 @@ def _run_single_sample(args) -> int:
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
         sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
         if getattr(args, 'short_read', False):
-            _align_mode = (
-                'short-read paired-end (COMPASS panel)'
-                if getattr(args, 'read2', None) else 'short-read (bbmap + bwa)'
-            )
+            if getattr(args, 'read2', None):
+                _align_mode = 'short-read paired-end (COMPASS panel)'
+            elif getattr(args, 'dT_primed_cDNA', False):
+                _align_mode = "short-read dT-primed 3'-end (bbmap + bwa)"
+            else:
+                _align_mode = 'short-read single-end (COMPASS SE panel)'
         else:
             _align_mode = 'long-read consensus'
         print(f"\n[Step 1/3] Aligning ({_align_mode})...")
@@ -801,6 +804,7 @@ def _run_single_sample(args) -> int:
             short_read=getattr(args, 'short_read', False),
             trust_existing_bams=getattr(args, 'trust_existing_bams', False),
             read2=getattr(args, 'read2', None),
+            dt_primed_cdna=getattr(args, 'dT_primed_cDNA', False),
             read_length=getattr(args, 'read_length', 150),
             max_intron=getattr(args, 'max_intron', None),
             resolver_acceptor_classes=getattr(

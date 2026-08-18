@@ -11,7 +11,8 @@ Modules:
 - Visualization (optional, requires matplotlib)
 
 Features (v0.9.0 — first public release):
-- Multi-aligner consensus (minimap2, mapPacBio, gapmm2, uLTRA, deSALT) with per-read selection
+- Multi-aligner consensus (minimap2, uLTRA, deSALT + the overhang resolver;
+  opt-in arms incl. mapPacBio, gapmm2) with per-read selection
 - 3' end indel correction and soft-clip rescue at homopolymer boundaries
 - 5' splice-junction rescue (Cat3) and intronic-tail rerouting
 - False junction handling for poly(A) tails landing on genomic A-tracts
