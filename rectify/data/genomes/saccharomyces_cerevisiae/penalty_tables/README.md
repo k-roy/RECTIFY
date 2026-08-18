@@ -92,12 +92,12 @@ for singletons and conservative for high-consensus reads. Stratification lets
 RECTIFY apply appropriate junction-scoring confidence per read.
 
 **Calibration sample:** `stage1_consensus.bam` from
-`/u/scratch/k/kevinroy/ont_cdna_v4/wt_rep2/out/` — **UMI-consensus** ONT
+`<cluster-scratch>/ont_cdna_v4/wt_rep2/out/` — **UMI-consensus** ONT
 PCR-cDNA reads (median ~1.9 kb). 5-aligner concordance panel:
 minimap2 + mapPacBio + gapmm2 + uLTRA + deSALT (same as DRS).
 **Read-coord exclusion:** (5'=50 bp, 3'=50 bp) to mask template-switch
 adapter bleed at both ends.
-**Compute:** Sherlock larsms partition (JID 25334819), 8 chunks, all 5 aligners.
+**Compute:** an HPC cluster (SLURM JID 25334819), 8 chunks, all 5 aligners.
 
 > **Important caveat:** the per-bin tables are calibrated on UMI-consensus
 > reads from a single replicate (`wt_rep2`). Running RECTIFY on raw

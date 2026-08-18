@@ -195,3 +195,19 @@ HANDOFF*.md
 *handoff*.md
 /handoffs/
 dev/handoffs/
+
+# Internal dev work — never public (Kevin 2026-08-17)
+/dev/
+/tools/
+/scripts/benchmark/
+/scripts/validation_data/
+/scripts/calibration/
+/scripts/timing/
+/scripts/diagnostics/
+/scripts/polya_analysis_results/
+/AGENT_FIXES.md
+/AGENTS.md
+/CLAUDE.md
+/run_tier2.sbatch
+/*.sbatch
+/pA_tail_DRS_adapter_executive_summary.html

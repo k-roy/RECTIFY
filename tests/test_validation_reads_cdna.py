@@ -3,7 +3,7 @@
 Mirrors :mod:`tests.test_validation_reads` but for the cDNA arm. The
 bundled BAM at ``rectify/data/validation/validation_reads_cdna.bam``
 contains 12 primary reads from
-``/Users/kevinroy/work/ont_cdna/test_data/wt_rep1.chrI.bam`` covering
+``~/work/ont_cdna/test_data/wt_rep1.chrI.bam`` covering
 three distinct cDNA correction scenarios:
 
   * ``cat1_cdna_polya``      — 3'-end poly-A indel artifact (4 reads,

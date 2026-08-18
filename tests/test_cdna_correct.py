@@ -191,9 +191,10 @@ class TestRevComp:
 # ---------------------------------------------------------------------------
 # End-to-end CLI smoke test (opt-in: requires the chrI test data on disk)
 # ---------------------------------------------------------------------------
-_CHRI_BAM = Path("/Users/kevinroy/work/ont_cdna/test_data/wt_rep1.chrI.bam")
-_GFF = Path("/Users/kevinroy/work/ont_cdna/test_data/saccharomyces_cerevisiae_R64-5-1_20240529.gff")
-_FASTA = Path("/Users/kevinroy/work/ont_cdna/test_data/S288C_reference_sequence_R64-5-1_20240529.fsa")
+_TEST_DATA = Path.home() / "work/ont_cdna/test_data"  # opt-in local smoke data
+_CHRI_BAM = _TEST_DATA / "wt_rep1.chrI.bam"
+_GFF = _TEST_DATA / "saccharomyces_cerevisiae_R64-5-1_20240529.gff"
+_FASTA = _TEST_DATA / "S288C_reference_sequence_R64-5-1_20240529.fsa"
 
 
 @pytest.mark.slow

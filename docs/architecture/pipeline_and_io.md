@@ -29,14 +29,14 @@ rectify split reads.fastq.gz \
     --short-read --dT-primed-cDNA \
     -n 16 \
     --prefix sample_name --generate-slurm \
-    --slurm-partition larsms,owners \
+    --slurm-partition <partition>,owners \
     --oak-output-dir /oak/.../sample_name/ \
     -o $SCRATCH/sample_name_chunks/
 bash $SCRATCH/sample_name_chunks/submit_pipeline.sh
 
 # Long-read (DRS / nanopore):
 rectify run-all reads.fastq.gz --Scer --chunked-alignment \
-    --slurm-partition larsms,owners \
+    --slurm-partition <partition>,owners \
     -o results/sample/
 bash results/sample/submit_pipeline.sh
 ```
@@ -115,7 +115,7 @@ rectify split reads.fastq.gz \
     -o $SCRATCH/sample_chunks/ \
     --genome genome.fa --annotation genes.gff \
     --oak-output-dir /oak/.../final_bams/ \
-    --generate-slurm --slurm-partition larsms,owners
+    --generate-slurm --slurm-partition <partition>,owners
 
 bash $SCRATCH/sample_chunks/submit_pipeline.sh
 ```

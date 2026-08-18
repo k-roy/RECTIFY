@@ -264,7 +264,7 @@ def render(svg_str, name):
     with open(svg_path, "w") as f:
         f.write(svg_str)
     subprocess.run(
-        ["/Users/kevinroy/miniconda3/bin/cairosvg", svg_path, "-o", png_path,
+        ["cairosvg", svg_path, "-o", png_path,
          "--output-width", str(FIG_W * 2)],
         check=True,
     )

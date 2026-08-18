@@ -5,7 +5,7 @@
   "runs": [
     {
       "timestamp": "2026-05-04T15:44:48.923686",
-      "command": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify/rectify/cli.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --write-corrected-bam /tmp/regen_validation_3008/rectified_corrected_3end.bam --write-softclipped-bam /tmp/regen_validation_3008/rectified_pA_tail_trimmed.bam -o /tmp/regen_validation_3008/corrected_3ends.tsv",
+      "command": "rectify/cli.py correct rectify/data/validation/validation_reads.bam --genome rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa --annotation rectify/data/saccharomyces_cerevisiae_R64-5-1_20240529.gff --write-corrected-bam /tmp/regen_validation_3008/rectified_corrected_3end.bam --write-softclipped-bam /tmp/regen_validation_3008/rectified_pA_tail_trimmed.bam -o /tmp/regen_validation_3008/corrected_3ends.tsv",
       "config": {
         "bam_path": "rectify/data/validation/validation_reads.bam",
         "genome_path": "rectify/data/S288C_reference_sequence_R64-5-1_20240529.fsa",
@@ -41,7 +41,7 @@
         "min_mapq": 0
       },
       "python_version": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:50:58) [GCC 12.3.0]",
-      "working_dir": "/oak/stanford/groups/larsms/Users/kevinroy/software/rectify",
+      "working_dir": "<repo-root>",
       "outputs": [
         {
           "path": "/tmp/regen_validation_3008/corrected_3ends.tsv",

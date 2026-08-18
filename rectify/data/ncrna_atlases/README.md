@@ -24,7 +24,7 @@ rectify analyze ... --ncrna-annotations mycuts.gff:MyStudy2024:CUT
 ```
 
 ## Populating the production tracks (once)
-From Sherlock Oak (`/oak/stanford/groups/larsms/Users/kevinroy/common/annotation_files/non_coding_rna/`):
+From the lab annotation archive (`<lab-archive>/non_coding_rna/`):
 - `CUTs_Xu2009.gff`  → `xu2009_cuts.gff`  (925 CUT, Xu 2009, SGD-lifted to R64-1-1)
 - `SUTs_Xu2009.gff`  → `xu2009_suts.gff`  (847 SUT; **strip the stray leading `CUTs` line**, 170b §2c)
 - `XUTs_VanDijk2011.gff` → `vandijk2011_xuts.gff` (1658 XUT, van Dijk 2011, sacCer3)

@@ -10,7 +10,7 @@ Figures generated:
   5. walkback_readvsref     — read-vs-reference walkback algorithm (correct algorithm + bug note)
   6. splice_classification  — GT-AG / AT-AC / non-canonical + chimeric voting
 
-Run from /Users/kevinroy/work/rectify/:
+Run from the repo root:
     python3 generate_cdna_figures.py
 """
 
@@ -18,7 +18,7 @@ import os
 import pathlib
 import cairosvg
 
-OUTDIR = pathlib.Path("/Users/kevinroy/work/rectify/docs/figures")
+OUTDIR = pathlib.Path(__file__).resolve().parents[2] / "docs" / "figures"
 OUTDIR.mkdir(parents=True, exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════════════════

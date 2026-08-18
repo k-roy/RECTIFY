@@ -153,7 +153,7 @@ loop dominates and blows past the 6 h `ALIGNER_TIMEOUT` (multi_aligner.py:232).
   minimap2 (redundant with the panel's minimap2).
 
 **Node architecture note (2026-05-25):** SG-NEx A549 chr5, 10k-read benchmark on sh02-03n47
-(old Sherlock Intel node) took **4,644 s → 0.46 s/read**: ~2× slower than AMD Milan larsms
+(old Sherlock Intel node) took **4,644 s → 0.46 s/read**: ~2× slower than AMD Milan nodes
 nodes. A separate Intel owners-queue node (sh04-05n15) measured **0.21 s/read** vs 0.19 s/read
 on AMD Milan — ~10% variance between similar-generation Intel nodes. Treat 0.19–0.21 s/read
 as the range for modern nodes (AMD Milan / recent Intel); old sh02 Intel is ~0.45 s/read.

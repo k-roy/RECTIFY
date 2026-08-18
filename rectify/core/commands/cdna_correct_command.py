@@ -588,7 +588,7 @@ def run(args) -> int:
 
 # Module is invoked via rectify CLI: `rectify correct-cdna ...` calls run(args).
 # No __main__ block — the standalone entry point lives in the ont_cdna staging
-# repo at /Users/kevinroy/work/ont_cdna/src/cdna_correct.py.
+# repo at ~/work/ont_cdna/src/cdna_correct.py.
 
 
 def create_correct_cdna_parser(subparsers):

@@ -358,12 +358,12 @@ unanimous concordance, the other 2 contributed minimap2 + uLTRA).
 
 | File | Path |
 |------|------|
-| 1-read trigger BAM | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d.bam` |
-| Full chr4 deSALT BAM | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr4/chr4.deSALT.bam` |
-| chr7 deSALT BAM (same failure mode) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr7/chr7.deSALT.bam` |
-| Smoke crash log (-j 1) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_j1_26621424.out` |
-| MD-stripped smoke (passes) | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d_noMD_corrected.tsv` |
-| Bisect sbatch scripts | `/scratch/users/kevinroy/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_*.sbatch` |
+| 1-read trigger BAM | `<scratch>/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d.bam` |
+| Full chr4 deSALT BAM | `<scratch>/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr4/chr4.deSALT.bam` |
+| chr7 deSALT BAM (same failure mode) | `<scratch>/rectify_human_validation/error_model_gm12878/junction_overhang/perchrom/chr7/chr7.deSALT.bam` |
+| Smoke crash log (-j 1) | `<scratch>/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_j1_26621424.out` |
+| MD-stripped smoke (passes) | `<scratch>/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_dd4d4d_noMD_corrected.tsv` |
+| Bisect sbatch scripts | `<scratch>/rectify_human_validation/error_model_gm12878/desalt_smoke/chr4_*.sbatch` |
 
 ---
 
@@ -414,7 +414,7 @@ intervention is needed to proceed with the set2 correction runs.
 ## Investigation results (2026-05-18/19)
 
 All experiments used `rna15_rep3/chunk_003` (203,832 clean reads) and
-`~/bin/deSALT` (vendored, he4a0461_5). Work directory: `/scratch/users/kevinroy/desalt_bisect_33632/`.
+`~/bin/deSALT` (vendored, he4a0461_5). Work directory: `<scratch>/desalt_bisect_33632/`.
 
 ### Finding 1: crash is data-dependent, NOT a thread race
 
@@ -505,7 +505,7 @@ and running the vendored binary at -t 1 also exits 139. Any ordering of these
 arrive at `Loop-ProcessReads`.
 
 Job 25452208 ran both tests on sh03-08n22 on 2026-05-19; logs at
-`/scratch/users/kevinroy/desalt_bisect_33632/final_tests_25452208.{out,err}`.
+`<scratch>/desalt_bisect_33632/final_tests_25452208.{out,err}`.
 
 ### Finding 6: crash requires the specific original read set — random subsampling does not reproduce it
 
@@ -527,10 +527,10 @@ A random draw of even 7,000 reads (≈half the background) never reproduced the 
 5 seeds. The critical graph state depends on a precise combination of reads, not just any
 large-enough random subset. The smallest confirmed reproducer remains `repro_14900.fastq`
 (14,900 reads, gzipped to ~10 MB at
-`/scratch/users/kevinroy/desalt_bisect_33632/desalt_minimal_reproducer.fastq.gz`).
+`<scratch>/desalt_bisect_33632/desalt_minimal_reproducer.fastq.gz`).
 
 Job 25457452 ran the minsearch on sh02-04n20 on 2026-05-19; logs at
-`/scratch/users/kevinroy/desalt_bisect_33632/desalt_minsearch_25457452.{out,err}`.
+`<scratch>/desalt_bisect_33632/desalt_minsearch_25457452.{out,err}`.
 
 ### Finding 7: wt_tfiiib_rep3/chunk_005 confirmed crash at -t 1, with matching random and prefix search results
 
@@ -693,15 +693,15 @@ hardware can use the wt_tfiiib 20k-read reproducer directly.
 
 | File | Path |
 |------|------|
-| Reproducer FASTQ (14,900 reads, raw) | `/scratch/users/kevinroy/desalt_bisect_33632/repro_14900.fastq` |
-| Reproducer FASTQ (14,900 reads, gzipped) | `/scratch/users/kevinroy/desalt_bisect_33632/desalt_minimal_reproducer.fastq.gz` |
-| First-pass bin (crash state) | `/scratch/users/kevinroy/desalt_bisect_33632/repro.bin1pass_anchor.{lines,pos}` |
-| Full cleaned FASTQ (rna15_rep3/chunk_003) | `/scratch/users/kevinroy/desalt_bisect_33632/cleaned.fastq` |
-| Bisect logs directory | `/scratch/users/kevinroy/desalt_bisect_33632/` |
+| Reproducer FASTQ (14,900 reads, raw) | `<scratch>/desalt_bisect_33632/repro_14900.fastq` |
+| Reproducer FASTQ (14,900 reads, gzipped) | `<scratch>/desalt_bisect_33632/desalt_minimal_reproducer.fastq.gz` |
+| First-pass bin (crash state) | `<scratch>/desalt_bisect_33632/repro.bin1pass_anchor.{lines,pos}` |
+| Full cleaned FASTQ (rna15_rep3/chunk_003) | `<scratch>/desalt_bisect_33632/cleaned.fastq` |
+| Bisect logs directory | `<scratch>/desalt_bisect_33632/` |
 | Failing FASTQ (wt_tfiiib_rep3) | `/oak/.../v3_20260429/set2_cpa_machinery/wt_tfiiib_rep3/chunks/wt_tfiiib_rep3_trimmed_chunk_005_of_016.fastq.gz` |
 | Failing FASTQ (rna15_rep3) | `/oak/.../v3_20260429/set2_cpa_machinery/rna15_rep3/chunks/rna15_rep3_trimmed_chunk_003_of_004.fastq.gz` |
-| wt_tfiiib cleaned FASTQ | `/scratch/users/kevinroy/desalt_tfiiib_bisect/cleaned.fastq` |
-| wt_tfiiib investigation logs | `/scratch/users/kevinroy/desalt_tfiiib_bisect/wt_tfiiib_search_25461125.{out,err}` |
+| wt_tfiiib cleaned FASTQ | `<scratch>/desalt_tfiiib_bisect/cleaned.fastq` |
+| wt_tfiiib investigation logs | `<scratch>/desalt_tfiiib_bisect/wt_tfiiib_search_25461125.{out,err}` |
 | Crash logs (production) | `/oak/.../wt_tfiiib_rep3/chunks/logs/25388629_53.err`, `.../rna15_rep3/chunks/logs/25388631_15.err` |
 | deSALT index (yeast) | `/oak/.../software/rectify/rectify/data/genomes/saccharomyces_cerevisiae/desalt_index` |
 

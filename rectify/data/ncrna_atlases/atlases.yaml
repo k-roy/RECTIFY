@@ -16,7 +16,7 @@
 #
 # NOTE: the production `chanfreau_ncrna_v1` track files are NOT committed to the
 # repo (they live on Sherlock Oak). Populate them once from
-#   /oak/stanford/groups/larsms/Users/kevinroy/common/annotation_files/non_coding_rna/
+#   <lab-archive>/non_coding_rna/
 #     {CUTs_Xu2009.gff, SUTs_Xu2009.gff, XUTs_VanDijk2011.gff}
 # into this directory (strip the stray leading 'CUTs' line from the SUT file,
 # 170b §2c), then `--ncrna-atlas chanfreau_ncrna_v1` works. Until then, the

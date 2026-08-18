@@ -21,7 +21,7 @@
 #
 # Or, for the lab-shared env on Hoffman2:
 #
-#     conda activate /u/project/guillom/shared/envs/rectify
+#     conda activate <shared-envs>/rectify
 #     bash scripts/setup/setup_rectify_env.sh
 #
 # Safe to re-run — both steps are idempotent.

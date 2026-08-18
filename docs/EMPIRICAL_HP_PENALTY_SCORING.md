@@ -78,7 +78,7 @@ Illumina QSrev**, and the gap grows with run length.
 **In-vivo imprint:** this chemistry bias leaves a measurable mark on precise 3′-end calling — DRS
 is the only modality whose poly-T/poly-U tract 3′ ends *saturate inside the tract* (lock at ~the
 9th T), while cDNA and QSrev track the last templated T. Full analysis and figures:
-`handoffs/REPORT_hp_undercalling_termination_20260531.html` (lab workspace).
+an internal lab report (not distributed).
 
 ---
 
@@ -303,16 +303,16 @@ I        AT          1          0.0012     1738667      1.2500         False
 
 ```bash
 rectify correct \
-    --junction-penalty-table /oak/stanford/groups/larsms/Users/kevinroy/common/scripts/nanopore/error_profile_20260422/penalty_scores.tsv \
-    --str-penalty-table      /oak/stanford/groups/larsms/Users/kevinroy/common/scripts/nanopore/error_profile_20260422/str_penalty_scores.tsv \
+    --junction-penalty-table /path/to/error_profile_20260422/penalty_scores.tsv \
+    --str-penalty-table      /path/to/error_profile_20260422/str_penalty_scores.tsv \
     [other flags ...]
 ```
 
 ### Batch profile YAML
 
 ```yaml
-junction_penalty_table: /oak/stanford/groups/larsms/Users/kevinroy/common/scripts/nanopore/error_profile_20260422/penalty_scores.tsv
-str_penalty_table:      /oak/stanford/groups/larsms/Users/kevinroy/common/scripts/nanopore/error_profile_20260422/str_penalty_scores.tsv
+junction_penalty_table: /path/to/error_profile_20260422/penalty_scores.tsv
+str_penalty_table:      /path/to/error_profile_20260422/str_penalty_scores.tsv
 ```
 
 Both flags affect Module 2H (`junction_refiner.py`) and the 3'SS rescue scorer

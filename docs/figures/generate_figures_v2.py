@@ -20,7 +20,7 @@ os.makedirs(OUTDIR, exist_ok=True)
 
 # Embed Inter font (available in conda at this path) so cairosvg uses it
 # regardless of which system fonts fontconfig finds on Sherlock.
-_FONT_DIR = "/home/groups/larsms/users/kevinroy/anaconda3/lib/lib/fonts"
+_FONT_DIR = os.environ.get("RECTIFY_FONT_DIR", "")  # dir containing Inter-*.otf
 FONT_FACE = f"""
 @font-face {{
   font-family: 'Inter';
