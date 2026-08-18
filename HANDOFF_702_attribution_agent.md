@@ -1,6 +1,12 @@
 # HANDOFF — 702 Attribution Agent (rectify `attribute-reads` → rbrowse)
 
-**Session:** 2026-08-13 · **Status:** scope complete, committed, not pushed
+**Session:** 2026-08-13 · **Status:** scope complete, committed, **PUSHED 2026-08-14**
+(header corrected 2026-08-17 per rbrowse review — two stale "not pushed" lines contradicted
+§Close-out 1; the push is real, verified by ls-remote. Scope note, same review: **spec §3
+GAP 3 (per-locus truncation calibration) was designed in planning/703 but never built** —
+superseded by the commissioned DRS truncation model (Chanfreau planning/716), which is the
+same need met properly. "Scope complete" means GAPs 1–2 emitted + GAP 3 dispositioned, not
+GAP 3 built.)
 **Spec:** `~/work/UCLA/Chanfreau_Lab/planning/702_attribution_agent_spec.md` (from rbrowse)
 **Design + findings:** `…/planning/703_attribution_sidecar_design.md`
 **Peer:** rbrowse agent — coordinated live all session; their consumer is on PROD
@@ -251,7 +257,10 @@ not the elegance of the statistic.
 - **AT1** PLB3→RCL1: rna15_rep1 = **30** (spec ≥30), wt_rep1 = **0**. Across all 9:
   wt 0/0/0 · rna15 30/34/30 · ysh1 36/51/56. ✅
 - **AT2** nothing classed `initiating` without cDNA tier-2 evidence — structurally
-  unreachable on DRS, so it cannot be reached by accident. ✅
+  unreachable on DRS, so it cannot be reached by accident. ✅ *(rbrowse review 2026-08-17:
+  `initiating` is in fact dead on BOTH shipped cohorts — the shipped cDNA cohort's 11-column
+  schema carries no fl-tier columns, so `cdna_fl2` evidence cannot exist there either. A
+  reader of spec GAP 2's table should not expect the class to be live anywhere yet.)*
 - **AT3** cDNA strand: TSV `strand` attributes **98.4%** vs **51.2%** on its flip,
   reproducing the documented 99.1%-vs-53.4% signature. ✅ *(upper bound — see Open)*
 - **AT4** split composition survives (3′ group at 309,250: `YOL010W` 84,
@@ -302,7 +311,12 @@ not the elegance of the statistic.
   gene overlap (tier 3, `ont_cdna.resolve_rna_strand`) cannot be excluded — for those,
   attributing by gene overlap is circular and cannot fail. **The 98.4% is an UPPER BOUND.**
   Needs `strand_evidence` in the cDNA TSV; `rectify correct` emits it (`bam/output.py:44`)
-  but that cohort predates it.
+  but that cohort predates it. **OWNED (2026-08-17, per rbrowse review): the re-emit is
+  folded into rbrowse's already-queued consumption re-slice job**, which rebuilds the by4742
+  cDNA bundles anyway — owned once, there, not twice. Likewise the window-rule alignment
+  (Rule B boundary vs rbrowse's `attrMaxDist=1000` fallback, which agreed 1,400/1,401 at
+  PLB3 by luck not by construction) is an explicit line item of that same job; the page
+  adopts the sidecar's rule per spec amendment 2.
 - ~~NOT VERIFIED: upf1Δ/WT CPA equivalence~~ → **MEASURED** (`planning/711`). They do **not**
   fully agree, and the WT-only choice is now a justified decision rather than an assumption.
   - 81.4% of genes show **zero** modal shift (median 0, p95 +25 bp), but 7.3% of genes get a
@@ -324,7 +338,14 @@ not the elegance of the statistic.
 - **`region_class` is empty in v1**, deliberately: the vocabulary is cluster-keyed and the
   spec forbids that join. rbrowse confirmed nothing breaks. Add only when derivable per-read
   from the rules `analyze` already uses — do **not** reimplement the vocabulary.
-- **Not pushed.** Two commits sit on `feat/attribution-sidecar` locally.
+- ~~Not pushed. Two commits sit on `feat/attribution-sidecar` locally.~~ **STALE — the push
+  happened 2026-08-14 (see §Close-out 1); rbrowse re-verified via ls-remote.** The remote tip
+  keeps moving as sessions commit to the shared branch, which is why the md5 pin
+  (`7d41f700…`), not the tip, is the adoption identifier.
+- **Sidecar v2 wishlist (from the Chanfreau planning/717 adoption, 2026-08-16):** carry the
+  `init_gene` identity (or at least an intergenic flag) so the ext-vs-rt split inside
+  `upstream_origin` stops needing heuristic re-derivation from `attr_genes` multiplicity.
+  No action now; goes with the 716-owned `--fulllength-model` hook whenever v2 happens.
 - H2 `rectify` checkout is OLDER than the M1 tree — its `cli.py` lacks `qc_command`. I
   overwrote it once and **restored it with `git checkout --`**. Drive the module directly on
   H2 (`planning/709`); do **not** sync `cli.py` there.
