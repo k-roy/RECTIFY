@@ -37,10 +37,18 @@ def run_pool_gate(args: argparse.Namespace) -> int:
     selfhom = Path(args.selfhom_bed) if args.selfhom_bed else \
         find_bundled_selfhom_bed(Path(args.genome))
 
+    # Length pre-gate bound: explicit flag wins; otherwise derived from the
+    # annotation (2x the longest annotated intron — yeast derives 5000).
+    _max_intron = getattr(args, 'max_intron', None)
+    if _max_intron is None:
+        from rectify.core.align.multi_aligner import derive_max_intron
+        _max_intron = derive_max_intron(str(args.annotation))
+
     cfg = PoolGateConfig(
         q_canon=args.q_canon,
         q_noncanon=args.q_noncanon,
         min_support=args.min_support,
+        max_intron=_max_intron,
     )
     rows, summary = pool_gate(
         args.input, genome, Path(args.annotation), cfg=cfg, selfhom_bed=selfhom,
@@ -83,6 +91,11 @@ def create_pool_gate_parser(subparsers) -> argparse.ArgumentParser:
                    help='Non-canonical-track threshold, bits (default 80)')
     p.add_argument('--min-support', type=int, default=2,
                    help='Within-sample read-support gate (default 2)')
+    p.add_argument('--max-intron', type=int, default=None, metavar='BP',
+                   help='Length pre-gate: junctions longer than this demote '
+                        'before the verdict (planning/684c). Default: derived '
+                        'from --annotation as 2x the longest annotated intron '
+                        '(yeast derives 5000)')
 
     from rectify.data import add_organism_args
     add_organism_args(p)

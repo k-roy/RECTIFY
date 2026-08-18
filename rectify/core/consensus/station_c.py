@@ -22,22 +22,36 @@ thresholds come from the measured 644-series campaign:
   measured gold cost) + genome self-homology track (bundled BED for yeast;
   ``minimap2 -DP -k19 -w19 -m200 G G`` merged +/-200 bp). Variant
   multiplicity was measured and REJECTED as a flag. A flag DEMOTES a
-  candidate to needs-orthogonal-evidence; it never discards.
+  candidate — to ``review`` on the canonical track, to
+  needs-orthogonal-evidence on the non-canonical track; it never discards.
+  **Flags are consulted on BOTH tracks** (planning/684c: the flag was
+  originally unreachable when ``canonical_in_class=1``, which admitted a
+  111 kb LTR-to-LTR artifact with both flags lit; ``canonical_in_class``
+  is a weak shield exactly in repeat context, since one chance GT-AG
+  anywhere in the ambiguity window satisfies it).
+- **Length pre-gate** (planning/684c): junctions longer than
+  ``cfg.max_intron`` (annotation-derived; 5,000 bp for yeast) demote
+  BEFORE the verdict branches — never eligible for ``admit_candidate``.
+  Deterministic aligner artifacts defeat every recurrence check, so
+  length is the one term that stops the physically impossible.
 - **Two-track admission** (dev/STATIONC_MAPPACBIO_HARVEST_20260810.md): the
   canonical-in-class and non-canonical tracks never share a threshold.
 
-Verdicts (non-annotated junctions):
+Verdicts (non-annotated junctions), applied in this order:
 
 ==============================  =============================================
-``admit_candidate``             canonical track: support>=2 AND q>=q_canon;
-                                non-canonical track: unflagged AND support>=2
-                                AND q>=q_noncanon
-``review``                      evidence below the admit bar but nothing
-                                against it (low support and/or low q)
-``demote_orthogonal_evidence``  non-canonical AND (repeat-flagged OR
-                                q < q_noncanon): admissible only with
+``demote_orthogonal_evidence``  length > max_intron (the pre-gate, any
+                                track); OR non-canonical AND (repeat-flagged
+                                OR q < q_noncanon): admissible only with
                                 orthogonal evidence (short-read/COMPASS,
                                 cross-sample recurrence, mm2-side distress)
+``review``                      canonical AND repeat-flagged (flag caps the
+                                canonical track at review); or evidence
+                                below the admit bar but nothing against it
+                                (low support and/or low q)
+``admit_candidate``             canonical track: unflagged AND support>=2
+                                AND q>=q_canon; non-canonical track:
+                                unflagged AND support>=2 AND q>=q_noncanon
 ==============================  =============================================
 
 Cross-sample recurrence and the orthogonal-evidence channels are recorded as
@@ -84,6 +98,15 @@ class PoolGateConfig:
     min_support: int = 2         # recurrence gate within this sample
     repeat_margin: int = 500     # bp around an annotated repeat feature
     max_ambiguity_shift: int = 30
+    # Length pre-gate (planning/684c): junctions longer than this are never
+    # ELIGIBLE for admit_candidate — they demote before the verdict branches
+    # run. Callers should pass the annotation-derived value
+    # (multi_aligner.derive_max_intron; 5000 is exactly what the bundled
+    # yeast annotation derives). A deterministic aligner artifact defeats
+    # every recurrence check, so length is the one term that stops the
+    # physically impossible (the measured case: a 111 kb LTR-to-LTR junction
+    # with support=19, q=96.5).
+    max_intron: int = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -380,8 +403,28 @@ def pool_gate(
         q = rec['q_max']
         support = rec['support']
 
-        if canon:
-            if support >= cfg.min_support and q >= cfg.q_canon:
+        # Length pre-gate (planning/684c fix 1, Kevin-approved 2026-08-17):
+        # runs BEFORE the verdict branches so an implausible junction is
+        # never eligible for admit_candidate. Recurrence cannot save it — a
+        # deterministic aligner artifact reproduces by construction, so the
+        # 111 kb LTR class satisfied support>=19 across ten libraries.
+        over_len = (e - s) > cfg.max_intron
+
+        if over_len:
+            verdict = 'demote_orthogonal_evidence'
+        elif canon:
+            # planning/684c fix 2: `flagged` is consulted on BOTH branches.
+            # On the canonical track a set repeat flag caps the verdict at
+            # `review` (one-step demotion — the ambiguity class carries a
+            # canonical member, a stronger prior than the non-canonical
+            # track, so the flag demands review rather than orthogonal
+            # evidence). Previously the flag was unreachable here, which is
+            # how an LTR-to-LTR artifact with both flags lit was admitted;
+            # canonical_in_class is a weak shield exactly there, since one
+            # chance GT-AG anywhere in the ambiguity window satisfies it.
+            if flagged:
+                verdict = 'review'
+            elif support >= cfg.min_support and q >= cfg.q_canon:
                 verdict = 'admit_candidate'
             else:
                 verdict = 'review'
@@ -401,6 +444,7 @@ def pool_gate(
             'canonical_in_class': int(canon),
             'repeat_flag': ann_flag or '',
             'selfhom_flag': int(bool(sh_flag)),
+            'over_max_intron': int(over_len),
             'verdict': verdict,
             'orthogonal_evidence': '',   # v0 placeholder columns for the
             'cross_sample_support': '',  # downstream evidence channels

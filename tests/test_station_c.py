@@ -165,10 +165,66 @@ def test_selfhom_bed_flags_demote(mini):
     by = _rows_by_junction(rows)
     assert by[("chrA", *mini["j_non"])]["selfhom_flag"] == 1
     assert by[("chrA", *mini["j_non"])]["verdict"] == "demote_orthogonal_evidence"
-    # canonical track is never demoted by flags (644i: flags gate the
-    # non-canonical track only)
+    # the canonical junction is UNFLAGGED here (the BED covers only j_non),
+    # so it stays admitted — flagged-canonical behavior is pinned separately
+    # in test_flagged_canonical_caps_at_review (planning/684c fix 2)
     assert by[("chrA", *mini["j_can"])]["verdict"] == "admit_candidate"
     assert summary["selfhom_intervals"] == 1
+
+
+def test_flagged_canonical_caps_at_review(mini):
+    """planning/684c fix 2: flags are consulted on BOTH tracks.
+
+    The bug this pins: `flagged` was unreachable when canonical_in_class=1,
+    so a 111 kb LTR-to-LTR artifact with BOTH repeat flags lit was admitted
+    (support=19, q=96.5) — canonical_in_class is satisfied by one chance
+    GT-AG anywhere in the ambiguity window, so the bypassing branch is
+    exactly where repeat artifacts land. On the canonical track a set flag
+    caps the verdict at `review` (one-step demotion, never discard).
+    """
+    bed = mini["dir"] / "canflag.selfhomology.bed"
+    j = mini["j_can"]
+    bed.write_text(f"chrA\t{j[0] - 10}\t{j[1] + 10}\n")
+    rows, _ = pool_gate(str(mini["bam"]), mini["genome"], mini["gff"],
+                        selfhom_bed=bed)
+    by = _rows_by_junction(rows)
+    can = by[("chrA", *mini["j_can"])]
+    assert can["canonical_in_class"] == 1
+    assert can["selfhom_flag"] == 1
+    # support and q both pass the admit bar — the flag alone must demote
+    assert can["support"] == 2 and can["q_max"] >= 40
+    assert can["verdict"] == "review"
+
+
+def test_length_pregate_demotes_before_verdict(mini):
+    """planning/684c fix 1: junctions past max_intron are never eligible
+    for admit_candidate, whatever their support/q/track — recurrence cannot
+    rescue a deterministic aligner artifact."""
+    cfg = PoolGateConfig(max_intron=50)  # both 80 bp test introns trip it
+    rows, _ = pool_gate(str(mini["bam"]), mini["genome"], mini["gff"],
+                        cfg=cfg, selfhom_bed=mini["bed"])
+    by = _rows_by_junction(rows)
+    for j in (mini["j_can"], mini["j_non"]):
+        row = by[("chrA", *j)]
+        assert row["over_max_intron"] == 1
+        assert row["verdict"] == "demote_orthogonal_evidence"
+
+
+def test_length_pregate_default_leaves_plausible_junctions_alone(mini):
+    rows, _ = pool_gate(str(mini["bam"]), mini["genome"], mini["gff"],
+                        selfhom_bed=mini["bed"])
+    by = _rows_by_junction(rows)
+    assert by[("chrA", *mini["j_can"])]["over_max_intron"] == 0
+    assert by[("chrA", *mini["j_can"])]["verdict"] == "admit_candidate"
+
+
+def test_docstring_documents_both_track_flags():
+    """The planning/684c defect 3 pin: the module docstring must not revert
+    to promising flag semantics the verdict table doesn't implement."""
+    import rectify.core.consensus.station_c as sc
+    doc = sc.__doc__ or ""
+    assert "BOTH tracks" in doc
+    assert "Length pre-gate" in doc
 
 
 def test_outputs_roundtrip(mini, tmp_path):

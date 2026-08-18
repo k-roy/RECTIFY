@@ -1091,6 +1091,47 @@ def _run_browser_pack(
         return None
 
 
+def _record_station_failure(
+    work_dir: Path, sample_id: str, station: str, exc: Exception,
+) -> None:
+    """Durably record a Station B/C failure next to the sample outputs.
+
+    Stations B/C are fail-soft by design (a report stage may not cost a
+    finished run its outputs), but a WARNING on stderr of an array task is
+    write-only — nobody reads 48 task logs. This JSON is the machine-readable
+    record: an acceptance gate (or a human) can glob
+    ``*.station_failures.json`` and know exactly which samples are missing
+    their triage/pool-gate artifacts and why, instead of discovering an
+    absent ``pool_gate.tsv`` months later. Appends (one entry per failure),
+    never overwrites; its own failures are swallowed — it must not turn a
+    fail-soft path fatal.
+    """
+    import json as _json
+    import traceback as _tb
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        path = work_dir / f"{sample_id}.station_failures.json"
+        entries = []
+        if path.exists():
+            try:
+                entries = _json.loads(path.read_text())
+                if not isinstance(entries, list):
+                    entries = [entries]
+            except Exception:
+                entries = []
+        entries.append({
+            'station': station,
+            'sample_id': sample_id,
+            'error': f"{type(exc).__name__}: {exc}",
+            'traceback': _tb.format_exc(),
+            'timestamp': _dt.now(_tz.utc).isoformat(),
+        })
+        path.write_text(_json.dumps(entries, indent=2))
+        print(f"[{station}] failure recorded in {path}", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _run_station_bc(
     work_dir: Path,
     sample_id: str,
@@ -1158,6 +1199,7 @@ def _run_station_bc(
         except Exception as e:
             print(f"WARNING: Station B (triage) failed (non-fatal): {e}",
                   file=sys.stderr)
+            _record_station_failure(work_dir, sample_id, 'station_b_triage', e)
 
     if getattr(args, 'no_pool_gate', False):
         return
@@ -1173,9 +1215,15 @@ def _run_station_bc(
               f"{Path(gate_input).name} ...")
         genome = _load_g(Path(genome_path))
         selfhom = find_bundled_selfhom_bed(Path(genome_path))
+        # Length pre-gate bound: the user's --max-intron if given, else
+        # annotation-derived (the same rule the aligner panel uses).
+        _mi = getattr(args, 'max_intron', None)
+        if _mi is None:
+            from rectify.core.align.multi_aligner import derive_max_intron
+            _mi = derive_max_intron(str(annotation_path))
         rows, summary = pool_gate(
             str(gate_input), genome, Path(annotation_path),
-            cfg=PoolGateConfig(), selfhom_bed=selfhom,
+            cfg=PoolGateConfig(max_intron=_mi), selfhom_bed=selfhom,
         )
         tsv, js = write_pool_gate_outputs(
             rows, summary, work_dir / sample_id)
@@ -1189,6 +1237,7 @@ def _run_station_bc(
     except Exception as e:
         print(f"WARNING: Station C (pool-gate) failed (non-fatal): {e}",
               file=sys.stderr)
+        _record_station_failure(work_dir, sample_id, 'station_c_pool_gate', e)
 
 
 def add_station_bc_args(parser) -> None:
