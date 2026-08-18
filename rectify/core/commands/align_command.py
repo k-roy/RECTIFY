@@ -145,18 +145,41 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         '--junction-aligners',
         nargs='+',
         choices=['uLTRA', 'deSALT', 'gmap', 'overhang_resolver'],
-        default=[],
+        default=None,
         metavar='ALIGNER',
         help=(
-            'Opt-in splice-aware aligners to add to the consensus pool '
-            '(choices: uLTRA, deSALT, gmap, overhang_resolver). uLTRA requires '
+            'Splice-aware aligners to add to the consensus pool '
+            '(choices: uLTRA, deSALT, gmap, overhang_resolver). '
+            'DEFAULT when omitted: overhang_resolver on long-read runs '
+            '(planning/720 ADOPT verdict), nothing under --short-read. Pass '
+            'an explicit list to override; pass only uLTRA/deSALT/gmap to '
+            'drop the resolver. uLTRA requires '
             '--annotation; gmap requires a pre-built db (see --gmap-db). '
             'overhang_resolver is not an external aligner: it re-places '
             'terminal soft clips of the minimap2 arm across canonical '
             'junctions under an information bound (planning/641/644), and its '
             'output SUBSTITUTES the minimap2 arm downstream (one correct arm, '
             'not two — planning/669). Requires minimap2 in --aligners. '
-            'Benchmark before using in production.'
+            'RECOMMENDED for general use (measured: +26.5k annotated junctions '
+            'recovered per 900k cDNA reads, 31 reads harmed, 0 impossible '
+            'junctions — planning/720). '
+            'LIMITATION: it recovers 99% of the annotated junctions mapPacBio '
+            'finds but only ~35% of the NON-CANONICAL ones, because its '
+            'candidates come from a GT/AG-class splice-site index and a '
+            'non-canonical junction has no entry there (planning/721). For '
+            'non-canonical discovery work (upf1D, prp18D, cryptic splicing) it '
+            'does NOT substitute for mapPacBio.'
+        )
+    )
+
+    aligner_group.add_argument(
+        '--no-junction-aligners',
+        dest='junction_aligners',
+        action='store_const',
+        const=[],
+        help=(
+            'Disable all junction aligners, including the default '
+            'overhang_resolver post-pass (run only --aligners).'
         )
     )
 
@@ -392,12 +415,17 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     perf_group.add_argument(
         '--max-intron',
         type=int,
-        default=5000,
+        default=None,
         metavar='BP',
         help=(
-            'Maximum intron size passed to minimap2 (-G) and gapmm2 (-i). '
-            'Default 5000 is appropriate for S. cerevisiae. '
-            'Use 500000 or larger for human data.'
+            'Maximum intron size passed to the aligner panel (minimap2 -G, '
+            'gapmm2 -i, deSALT -I, uLTRA --max_intron, BBMap, STAR, GMAP). '
+            'Default: derived from --annotation as 2x the longest annotated '
+            'intron, rounded up to 100 and clamped to [1000, 500000] — for '
+            'the bundled S. cerevisiae annotation this derives exactly the '
+            'historical 5000. Without an annotation the fallback is 5000. '
+            'Pass a value to override (e.g. 500000 or larger for human data '
+            'with no annotation).'
         )
     )
 
@@ -466,6 +494,21 @@ def run_align(args: argparse.Namespace) -> int:
     # Determine prefix
     prefix = args.prefix if args.prefix else args.reads.stem.replace('.fastq', '').replace('.fq', '')
 
+    # Max intron: when not given explicitly (None = auto), derive it from the
+    # annotation — 2x the longest annotated intron, rounded up to 100
+    # (derive_max_intron docstring has the rule + bounds). For the bundled
+    # yeast annotation this derives exactly the historical constant 5000, so
+    # existing cohorts are unchanged; other organisms get an honest cap
+    # instead of a yeast constant. No annotation -> fallback 5000.
+    if getattr(args, 'max_intron', None) is None:
+        from ..align.multi_aligner import derive_max_intron
+        args.max_intron = derive_max_intron(
+            str(args.annotation) if getattr(args, 'annotation', None) else None)
+        logger.info(
+            f"max_intron: derived {args.max_intron} bp from "
+            f"{'annotation' if getattr(args, 'annotation', None) else 'fallback (no annotation)'}"
+        )
+
     # Expand 'all' to list of aligners, then append any junction-mode aligners
     aligners = list(args.aligners)
     if 'none' in aligners:
@@ -480,7 +523,18 @@ def run_align(args: argparse.Namespace) -> int:
         else:
             aligners = ['minimap2', 'mapPacBio', 'gapmm2']
 
-    junction_aligners = getattr(args, 'junction_aligners', []) or []
+    # Junction aligners. None = not given -> the measured default: the
+    # overhang resolver on long-read runs (planning/720: +26.5k annotated
+    # junctions per 900k cDNA reads, 31 reads harmed, 0 impossible junctions;
+    # ADOPT), nothing on short-read (no minimap2 arm to resolve). An explicit
+    # list (including []) always wins.
+    _ja_raw = getattr(args, 'junction_aligners', None)
+    _ja_explicit = _ja_raw is not None
+    if _ja_explicit:
+        junction_aligners = list(_ja_raw)
+    else:
+        junction_aligners = (
+            [] if getattr(args, 'short_read', False) else ['overhang_resolver'])
     # overhang_resolver is a post-pass on the finished minimap2 arm, not a
     # dispatchable aligner — pulled out here and run after the aligner loop.
     want_resolver = 'overhang_resolver' in junction_aligners
@@ -682,6 +736,7 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     annotation_path=str(args.annotation),
                     threads=n_threads,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'deSALT':
                 run_desalt(
@@ -690,6 +745,7 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     annotation_path=str(args.annotation) if args.annotation else None,
                     threads=n_threads,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'gmap':
                 run_gmap(
@@ -906,12 +962,25 @@ def run_align(args: argparse.Namespace) -> int:
     # junction-pool prescans an unresolved pool with exit 0.
     if want_resolver:
         if not results.get('minimap2'):
-            logger.error(
-                "--junction-aligners overhang_resolver requires a successful "
-                "minimap2 arm in the same invocation (add minimap2 to "
-                "--aligners)."
-            )
-            return 1
+            if not _ja_explicit:
+                # The resolver arrived by DEFAULT, not by request — a panel
+                # deliberately run without minimap2 should not fail on a
+                # default it never asked for. Degrade to a loud warning.
+                logger.warning(
+                    "overhang_resolver (default junction aligner) skipped: "
+                    "no successful minimap2 arm in this invocation. Pass "
+                    "--junction-aligners overhang_resolver to make this "
+                    "fatal instead."
+                )
+                want_resolver = False
+            else:
+                logger.error(
+                    "--junction-aligners overhang_resolver requires a successful "
+                    "minimap2 arm in the same invocation (add minimap2 to "
+                    "--aligners)."
+                )
+                return 1
+    if want_resolver:
         from ..align.overhang_resolver import run_overhang_resolver
         resolver_bam = args.output_dir / f"{prefix}.overhang_resolver.bam"
         _base_bam = Path(results['minimap2'])
@@ -928,6 +997,7 @@ def run_align(args: argparse.Namespace) -> int:
                 genome_path=str(args.genome),
                 output_bam=str(resolver_bam),
                 threads=args.threads,
+                max_intron=getattr(args, 'max_intron', 5000),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"

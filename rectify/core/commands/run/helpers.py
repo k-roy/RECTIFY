@@ -165,6 +165,26 @@ def _collect_per_aligner_bams(
                     aligner, _exc,
                 )
         bams[aligner] = bam
+
+    # Overhang-resolver substitution (Station A): when the resolver ran,
+    # its output SUBSTITUTES the minimap2 arm for every downstream stage —
+    # align_command.run_align performs the same swap in-process for
+    # consensus, but this collector re-derives arms from DISK, and without
+    # the swap per-aligner correction would silently run on the RAW
+    # minimap2 BAM, undoing the resolution for the correct stage. Same
+    # freshness gate as run_align's reuse check (newer than its input arm,
+    # non-trivial size). The raw minimap2 BAM stays on disk for the XB
+    # delta census; it is just not handed downstream.
+    if 'minimap2' in bams:
+        _resolver_bam = sample_output_dir / f"{sample_id}.overhang_resolver.bam"
+        if (_resolver_bam.exists() and _resolver_bam.stat().st_size > 2000
+                and _resolver_bam.stat().st_mtime
+                >= bams['minimap2'].stat().st_mtime):
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "per-aligner collection: substituting the minimap2 arm with "
+                "the overhang-resolver output (%s).", _resolver_bam)
+            bams['minimap2'] = _resolver_bam
     return bams
 
 

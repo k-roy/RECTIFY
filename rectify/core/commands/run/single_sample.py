@@ -391,7 +391,7 @@ def _process_one_sample(
                         threads=getattr(args, 'threads', 4),
                         parallel_aligners=getattr(args, 'parallel_aligners', False),
                         base_aligners=getattr(args, 'base_aligners', None),
-                        junction_aligners=getattr(args, 'junction_aligners', []),
+                        junction_aligners=getattr(args, 'junction_aligners', None),
                         chimeric_consensus=getattr(args, 'chimeric_consensus', True),
                         ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
                         desalt_path=getattr(args, 'desalt_path', 'deSALT'),
@@ -403,6 +403,7 @@ def _process_one_sample(
                         trust_existing_bams=getattr(args, 'trust_existing_bams', False),
                         read2=getattr(args, 'read2', None),
                         read_length=getattr(args, 'read_length', 150),
+                        max_intron=getattr(args, 'max_intron', None),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -787,7 +788,7 @@ def _run_single_sample(args) -> int:
             threads=getattr(args, 'threads', 4),
             parallel_aligners=getattr(args, 'parallel_aligners', False),
             base_aligners=getattr(args, 'base_aligners', None),
-            junction_aligners=getattr(args, 'junction_aligners', []),
+            junction_aligners=getattr(args, 'junction_aligners', None),
             chimeric_consensus=getattr(args, 'chimeric_consensus', True),
             ultra_path=getattr(args, 'ultra_path', 'uLTRA'),
             desalt_path=getattr(args, 'desalt_path', 'deSALT'),
@@ -799,6 +800,7 @@ def _run_single_sample(args) -> int:
             trust_existing_bams=getattr(args, 'trust_existing_bams', False),
             read2=getattr(args, 'read2', None),
             read_length=getattr(args, 'read_length', 150),
+            max_intron=getattr(args, 'max_intron', None),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")

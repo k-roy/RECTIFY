@@ -705,15 +705,18 @@ def create_run_parser(subparsers):
     run_parser.add_argument(
         '--junction-aligners',
         nargs='+',
-        choices=['uLTRA', 'deSALT', 'gmap'],
+        choices=['uLTRA', 'deSALT', 'gmap', 'overhang_resolver'],
         default=None,
         metavar='ALIGNER',
         help=(
             'Junction-aware aligners for the consensus pool '
-            '(choices: uLTRA, deSALT, gmap). uLTRA requires --annotation; '
-            'gmap requires a pre-built db (--gmap-db). '
+            '(choices: uLTRA, deSALT, gmap, overhang_resolver). uLTRA '
+            'requires --annotation; gmap requires a pre-built db (--gmap-db). '
+            'overhang_resolver is the Station-A post-pass on the minimap2 '
+            'arm; its output SUBSTITUTES that arm downstream (planning/720 '
+            'ADOPT verdict). '
             'When omitted, defaults to [] (disabled) under --short-read and '
-            '[uLTRA, deSALT] under long-read. '
+            '[uLTRA, deSALT, overhang_resolver] under long-read. '
             'Pass --no-junction-aligners to explicitly disable.'
         )
     )
@@ -723,7 +726,24 @@ def create_run_parser(subparsers):
         dest='junction_aligners',
         action='store_const',
         const=[],
-        help='Disable uLTRA and deSALT (use only the --base-aligners set).'
+        help=(
+            'Disable uLTRA, deSALT and the overhang_resolver post-pass '
+            '(use only the --base-aligners set).'
+        )
+    )
+
+    run_parser.add_argument(
+        '--max-intron',
+        type=int,
+        default=None,
+        metavar='BP',
+        help=(
+            'Maximum intron size for the whole aligner panel. Default: '
+            'derived from --annotation as 2x the longest annotated intron '
+            '(rounded up to 100, clamped to [1000, 500000]); for the bundled '
+            'S. cerevisiae annotation this derives the historical 5000. '
+            'Fallback without an annotation: 5000.'
+        )
     )
 
     run_parser.add_argument(

@@ -2626,12 +2626,101 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
                 fh.write('\t'.join(ex_parts) + '\n')
 
 
+#: Fallback max intron (bp) when no annotation is available to derive one
+#: from. This is the historical S. cerevisiae constant (minimap2 -G 5000);
+#: kept only as the no-annotation fallback — see derive_max_intron().
+DEFAULT_MAX_INTRON = 5000
+
+#: Bounds on the annotation-derived max intron. The floor keeps a sparse or
+#: intron-poor annotation from strangling the aligners; the ceiling matches
+#: the long-standing "use 500000 or larger for human" guidance and caps the
+#: compute/false-positive bill an outlier annotated intron would otherwise buy.
+_DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
+
+
+def derive_max_intron(
+    annotation_path: Optional[str],
+    fallback: int = DEFAULT_MAX_INTRON,
+) -> int:
+    """Derive a max-intron cap (bp) from an annotation, organism-agnostically.
+
+    Rule: ``2 x longest annotated intron``, rounded UP to the nearest 100,
+    clamped to ``_DERIVED_MAX_INTRON_BOUNDS``. The 2x margin admits real
+    introns modestly longer than anything annotated while still amputating
+    the parameter-cliff class (deSALT's own -I default of 200,000 bp on
+    yeast produced a >10 kb junction population whose 99th percentile sat at
+    196,914 bp — planning/694: a parameter echo, not biology).
+
+    For the bundled S. cerevisiae R64 annotation the longest annotated
+    intron is 2,483 bp (the chrmt Q0060 group-II introns), so the derived
+    value is 2*2483 = 4966 -> **5,000** — bit-identical to the historical
+    yeast constant, i.e. zero behavior change on existing cohorts while the
+    rule itself generalizes to other organisms.
+
+    Intron lengths are taken from explicit ``intron`` features when the
+    annotation has them (the R64 GFF does); otherwise they are derived from
+    per-transcript exon gaps (the GTF case). Returns ``fallback`` when no
+    annotation is given or no intron can be found.
+    """
+    if not annotation_path:
+        return fallback
+    path = str(annotation_path)
+    try:
+        opener = gzip.open if path.endswith('.gz') else open
+        max_len = 0
+        exons_by_parent: Dict[str, List[Tuple[int, int]]] = {}
+        with opener(path, 'rt') as fh:
+            for line in fh:
+                if line.startswith('#'):
+                    continue
+                if line.startswith('>'):
+                    break  # trailing FASTA section (GFF3 ##FASTA convention)
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) < 9:
+                    continue
+                ftype = parts[2]
+                if ftype == 'intron':
+                    max_len = max(max_len, int(parts[4]) - int(parts[3]) + 1)
+                elif ftype == 'exon' and max_len == 0:
+                    # Only pay the exon-gap bookkeeping while no explicit
+                    # intron feature has been seen.
+                    attrs = parts[8]
+                    parent = None
+                    if 'Parent=' in attrs:
+                        parent = attrs.split('Parent=')[1].split(';')[0]
+                    elif 'transcript_id "' in attrs:
+                        parent = attrs.split('transcript_id "')[1].split('"')[0]
+                    if parent:
+                        exons_by_parent.setdefault(parent, []).append(
+                            (int(parts[3]), int(parts[4])))
+        if max_len == 0:
+            for ivs in exons_by_parent.values():
+                if len(ivs) < 2:
+                    continue
+                ivs.sort()
+                for (s1, e1), (s2, e2) in zip(ivs, ivs[1:]):
+                    gap = s2 - e1 - 1
+                    if gap > max_len:
+                        max_len = gap
+        if max_len <= 0:
+            return fallback
+        derived = -(-2 * max_len // 100) * 100  # 2x, rounded up to 100
+        lo, hi = _DERIVED_MAX_INTRON_BOUNDS
+        return max(lo, min(hi, derived))
+    except Exception as exc:  # unreadable/malformed annotation: fall back
+        logger.warning(
+            "derive_max_intron: could not derive from %s (%s); "
+            "falling back to %d", path, exc, fallback)
+        return fallback
+
+
 def run_ultra(
     reads_path: str,
     genome_path: str,
     output_bam: str,
     annotation_path: str,
     threads: int = 8,
+    max_intron: int = 5000,
     extra_args: Optional[List[str]] = None
 ) -> str:
     """Run uLTRA annotation-guided alignment.
@@ -2796,6 +2885,20 @@ def run_ultra(
     if not (extra_args and any('--reduce_read_ployA' in str(a) for a in extra_args)):
         cmd += ['--reduce_read_ployA', str(_ULTRA_DISABLE_POLYA_REDUCE)]
 
+    # Max intron. uLTRA and deSALT were the ONLY two wrappers in the panel that
+    # never received rectify's ``max_intron`` — every other one does (minimap2
+    # -G, BBMap maxindel, STAR --max-intronlen, gapmm2 -i, GMAP
+    # --max-intronlength-*). They are also exactly the two arms that emit
+    # physically impossible introns, and that is not a coincidence: uncapped,
+    # deSALT runs at its own -I default of 200,000 bp on a genome whose longest
+    # real intron is ~1 kb. Measured across 31 cDNA samples (planning/694), the
+    # >10 kb junction population has its 99th percentile at 196,914 bp and only
+    # 0.55 % above 200,000 — a parameter cliff, not biology. Capping here removes
+    # the class at source, which is why the downstream 10 kb guard (d0e3a0f)
+    # should not have to be the primary control.
+    if not (extra_args and any('--max_intron' in str(a) for a in extra_args)):
+        cmd += ['--max_intron', str(max_intron)]
+
     cmd += [
         ref_path,
         ann_path,
@@ -2901,6 +3004,7 @@ def run_desalt(
     annotation_path: Optional[str] = None,
     threads: int = 8,
     index_path: Optional[str] = None,
+    max_intron: int = 5000,
     extra_args: Optional[List[str]] = None
 ) -> str:
     """Run deSALT De Bruijn graph splice aligner.
@@ -2992,6 +3096,14 @@ def run_desalt(
     # NOTE: deSALT's -G annotation flag causes a SIGSEGV when loading yeast GTF.
     # Skip -G entirely; deSALT de novo splice detection is sufficient.
     _ = annotation_path
+
+    # Max intron (-I). deSALT's own default is 200,000 bp; uncapped it is the
+    # dominant source of the impossible-intron class — 11 of the 12 longest
+    # junctions in a cDNA sample were deSALT-only, single-read, anchored by
+    # 15-57 bp of exon against a ~200 kb gap (planning/694). See the matching
+    # note in run_ultra() for why these two wrappers were the ones missing it.
+    if not (extra_args and any(str(a) in ('-I', '--max-intron-len') for a in extra_args)):
+        cmd += ['-I', str(max_intron)]
 
     if extra_args:
         cmd.extend(extra_args)

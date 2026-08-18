@@ -51,6 +51,7 @@ def _run_alignment(
     trust_existing_bams: bool = False,
     read2: Optional[Path] = None,
     read_length: int = 150,
+    max_intron: Optional[int] = None,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -131,10 +132,15 @@ def _run_alignment(
         _base_aligners = ['minimap2', 'mapPacBio', 'gapmm2']
     # Junction-aligner default depends on --short-read: BBMap's intronlen=20
     # already covers splicing for short reads, so uLTRA/deSALT aren't useful
-    # and shouldn't be the default. Long-read protocols still default to
-    # [uLTRA, deSALT]. Explicit user list (including []) overrides.
+    # and shouldn't be the default. Long-read protocols default to
+    # [uLTRA, deSALT, overhang_resolver] — the resolver joined the default
+    # panel on the planning/720 ADOPT verdict (+26.5k annotated junctions per
+    # 900k cDNA reads, 31 reads harmed, 0 impossible junctions; its output
+    # SUBSTITUTES the minimap2 arm, it is not an extra arm). Explicit user
+    # list (including []) overrides.
     if junction_aligners is None:
-        _junction_aligners = [] if short_read else ['uLTRA', 'deSALT']
+        _junction_aligners = (
+            [] if short_read else ['uLTRA', 'deSALT', 'overhang_resolver'])
     else:
         _junction_aligners = junction_aligners
     all_aligners = _base_aligners + _junction_aligners
@@ -155,6 +161,10 @@ def _run_alignment(
         read2=read2,
         read_length=read_length,
         junction_aligners=_junction_aligners,
+        # None = auto: run_align derives it from the annotation (2x the
+        # longest annotated intron; the bundled yeast annotation derives the
+        # historical 5000).
+        max_intron=max_intron,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
         junc_bonus=9,
