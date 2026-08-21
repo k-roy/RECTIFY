@@ -217,6 +217,27 @@ def test_pare_pileup_fivep_clip_gate(tmp_path):
     assert cpa[0]["n_reads"] == "2"        # CPA side keeps both
 
 
+def test_pare_pileup_censuses_unmapped_and_ambiguous(tmp_path):
+    """Short-read loss and ambiguous placement must be visible, never silent."""
+    genome = _write_genome(tmp_path, REF_PLUS)
+    hdr = _header()
+    good = _read(hdr, name="good", start=1000, seq="ACGTC", cigar=((0, 5),),
+                 mapq=60)
+    ambig = _read(hdr, name="ambig", start=1000, seq="ACGTC", cigar=((0, 5),),
+                  mapq=1)
+    lost = _read(hdr, name="lost20", unmapped=True, seq="A" * 20)
+    bam = _write_bam(tmp_path, [good, ambig, lost])
+    stats = pileup.pare_pileup(bam, genome, tmp_path / "out", "s1")
+    assert stats["reads_used"] == 2 and stats["reads_unmapped"] == 1
+    assert stats["ambiguous_reads"] == 1
+    assert stats["ambiguous_fraction"] == pytest.approx(0.5)
+    lengths = _read_tsv_gz(tmp_path / "out" / "read_lengths.tsv.gz")
+    um = {r["value"]: r["count"] for r in lengths if r["metric"] == "unmapped_len"}
+    assert um == {"20": "1"}          # the discarded 20-nt tag is on the record
+    mq = {r["value"]: r["count"] for r in lengths if r["metric"] == "mapq"}
+    assert mq == {"1": "1", "60": "1"}
+
+
 # --------------------------------------------------------------------------- #
 # Rescue: unmapped 3' poly-A trim + (5'P, pA-junction) quantify
 # --------------------------------------------------------------------------- #

@@ -58,8 +58,14 @@ from ..netseq_cpa.pileup import (
 )
 
 FIVEP_COLUMNS = ["chrom", "pos", "strand", "n_reads", "sample"]
-LENGTH_METRICS = ("query_len", "aligned_len", "clip5", "clip3", "oaNT")
+# ``unmapped_len`` and ``mapq`` exist so short-read loss and ambiguous placement
+# are VISIBLE rather than silent: closely spaced cleavage sites are resolved only
+# by short, uniquely placed reads, so a pipeline that quietly drops 20-nt tags —
+# or keeps them at MAPQ 0 — would understate exactly the sites we are hunting.
+LENGTH_METRICS = ("query_len", "aligned_len", "clip5", "clip3", "oaNT",
+                  "mapq", "unmapped_len")
 MAX_FIVEP_CLIP_DEFAULT = 0
+AMBIGUOUS_MAPQ = 3          # below this a placement is effectively multi-mapping
 
 
 def geometry_for_read(read: pysam.AlignedSegment) -> Tuple[str, str, str]:
@@ -154,12 +160,18 @@ def pare_pileup(
     agg_cpa: Dict[Tuple[str, int, str], list] = defaultdict(lambda: [0] * 10)
     agg_5p: Dict[Tuple[str, int, str], int] = defaultdict(int)
     hist: Dict[str, Dict[int, int]] = {m: defaultdict(int) for m in LENGTH_METRICS}
-    n_seen = n_used = n_5p = n_5p_excl = oaNT2 = sum_oaNT = 0
+    n_seen = n_used = n_5p = n_5p_excl = oaNT2 = sum_oaNT = n_unmapped = 0
+    n_ambig = 0
     try:
         for read in bam.fetch(until_eof=True):
             n_seen += 1
-            if (read.is_unmapped or read.is_secondary or read.is_supplementary
-                    or read.reference_end is None):
+            if read.is_secondary or read.is_supplementary:
+                continue
+            if read.is_unmapped or read.reference_end is None:
+                # census the losses: a short-read floor that silently discards
+                # 20-nt tags would erase closely spaced cleavage sites
+                hist["unmapped_len"][len(read.query_sequence or "")] += 1
+                n_unmapped += 1
                 continue
             short = read.reference_name.split()[0]
             chrom = chrom_map.get(short, short)
@@ -214,6 +226,10 @@ def pare_pileup(
             hist["clip5"][fp_clip] += 1
             hist["clip3"][_rna3_clip_len(read, side)] += 1
             hist["oaNT"][oa_nt] += 1
+            mq = int(read.mapping_quality or 0)
+            hist["mapq"][mq] += 1
+            if mq < AMBIGUOUS_MAPQ:
+                n_ambig += 1
 
             if reads_parquet is not None:
                 at_cpa = ((chrom, gstrand, corr) in cpa_set
@@ -254,6 +270,9 @@ def pare_pileup(
     stats: Dict[str, object] = {
         "reads_seen": n_seen,
         "reads_used": n_used,
+        "reads_unmapped": n_unmapped,
+        "ambiguous_reads": n_ambig,
+        "ambiguous_fraction": (n_ambig / n_used) if n_used else 0.0,
         "fivep_used": n_5p,
         "fivep_clip_excluded": n_5p_excl,
         "fivep_clip_fraction": (n_5p_excl / n_used) if n_used else 0.0,
