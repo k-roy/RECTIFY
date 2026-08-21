@@ -138,7 +138,7 @@ def pare_pileup(
     """Single Tier-1 pass over the mapped primary reads of ``bam_path``.
 
     Returns summary stats: ``reads_seen``, ``reads_used``, ``fivep_used``,
-    ``fivep_clip_excluded``, ``fivep_clip_fraction``, ``cpa_positions``,
+    ``fivep_clip_excluded``, ``fivep_clip_fraction``, ``read3p_positions``,
     ``fivep_positions``, ``oaNT_ge2_reads``, ``sum_oaNT`` + bedgraph row counts.
 
     ``reads_parquet`` (a :class:`rectify.core.pare.reads_parquet.PareReadWriter`)
@@ -276,7 +276,11 @@ def pare_pileup(
         "fivep_used": n_5p,
         "fivep_clip_excluded": n_5p_excl,
         "fivep_clip_fraction": (n_5p_excl / n_used) if n_used else 0.0,
-        "cpa_positions": len(agg_cpa),
+        # NOT a count of CPA calls: this is every distinct walkback-corrected
+        # READ 3' END. In a library whose 3' end is set by random priming or a
+        # fixed-length enzymatic cut it is not a 3'-end measurement at all. The
+        # CPA-evidence number is oaNT_ge2_reads (non-templated poly(A) support).
+        "read3p_positions": len(agg_cpa),
         "fivep_positions": len(agg_5p),
         "oaNT_ge2_reads": oaNT2,
         "sum_oaNT": sum_oaNT,
