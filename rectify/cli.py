@@ -158,6 +158,12 @@ Citation:
     from .core.commands.netseq_cpa_command import create_netseq_cpa_parser
     create_netseq_cpa_parser(subparsers)
 
+    # =========================================================================
+    # pare command (5'P PARE/degradome: 5'P pileup + soft-clipped poly(A) CPA capture)
+    # =========================================================================
+    from .core.commands.pare_command import create_pare_parser
+    create_pare_parser(subparsers)
+
     # trim-polya command (parser wired in rectify.core.commands.drs_trim_command)
     from .core.commands.drs_trim_command import create_trim_polya_parser
     create_trim_polya_parser(subparsers)
@@ -265,6 +271,9 @@ def main(argv: Optional[list] = None):
     elif args.command == 'netseq-cpa':
         from .core.commands import netseq_cpa_command
         sys.exit(netseq_cpa_command.run(args))
+    elif args.command == 'pare':
+        from .core.commands import pare_command
+        sys.exit(pare_command.run(args))
     elif args.command == 'trim-polya':
         from .core.commands import drs_trim_command
         sys.exit(drs_trim_command.run(args))
