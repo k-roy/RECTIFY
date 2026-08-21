@@ -90,18 +90,22 @@ def run(args: argparse.Namespace) -> int:
         _log(f"input is a BAM; using as aligned (unmapped reads must be retained): {aligned}")
     else:
         adapter = getattr(args, "adapter", None)
-        if not adapter:
-            raise SystemExit("--adapter is required for FASTQ input")
-        trimmed = out / "trimmed.fq.gz"
-        k = min(len(adapter), 23)
-        _log(f"[1] bbduk 3' adapter trim (k={k})")
-        bbduk = _bbtool(getattr(args, "bbduk_bin", "bbduk.sh"), getattr(args, "bbmap_mem", None)) + [
-            f"in={inp}", f"out={trimmed}", f"literal={adapter}",
-            "ktrim=r", f"k={k}", f"mink={min(11, k - 1)}", "hdist=1",
-            f"minlen={int(getattr(args, 'minlen', 18))}",
-            f"threads={threads}", "overwrite=t",
-        ]
-        _run(bbduk)
+        if adapter:
+            trimmed = out / "trimmed.fq.gz"
+            k = min(len(adapter), 23)
+            _log(f"[1] bbduk 3' adapter trim (k={k})")
+            bbduk = _bbtool(getattr(args, "bbduk_bin", "bbduk.sh"), getattr(args, "bbmap_mem", None)) + [
+                f"in={inp}", f"out={trimmed}", f"literal={adapter}",
+                "ktrim=r", f"k={k}", f"mink={min(11, k - 1)}", "hdist=1",
+                f"minlen={int(getattr(args, 'minlen', 18))}",
+                f"threads={threads}", "overwrite=t",
+            ]
+            _run(bbduk)
+        else:
+            # e.g. PRJNA1330880: deposit is already adapter-free (verified
+            # empirically 2026-08-21: uniform 47 nt, 0.0% adapter) — align as-is.
+            trimmed = inp
+            _log("[1] no --adapter given: skipping bbduk, aligning input as-is")
         aligned = out / "aligned.bam"
         _log("[2] bbmap local=t (keep unmapped)")
         bbmap = _bbtool(getattr(args, "bbmap_bin", "bbmap.sh"), getattr(args, "bbmap_mem", None)) + [
@@ -228,8 +232,9 @@ def create_pare_parser(subparsers) -> None:
     p.add_argument("--genome", type=Path, required=True, help="Reference genome FASTA.")
     p.add_argument("-o", "--output-dir", type=Path, required=True, dest="output_dir")
     p.add_argument("--adapter", default=None,
-                   help="3' adapter literal for bbduk (FASTQ input). comPARE "
-                        "PRJNA663967: TGGAATTCTCGGGTGCCAAGG; PRJNA1330880: AGATCGGAAGAGC.")
+                   help="3' adapter literal for bbduk (FASTQ input); omit for an "
+                        "already-trimmed deposit. comPARE PRJNA663967: "
+                        "TGGAATTCTCGGGTGCCAAGG; PRJNA1330880: none (pre-trimmed).")
     p.add_argument("--label", default=None, help="Sample label (default: output dir name).")
     p.add_argument("--drs-clusters", type=Path, default=None, dest="drs_clusters",
                    help="DRS CPA cluster TSV (chrom, strand, modal_position) for "
