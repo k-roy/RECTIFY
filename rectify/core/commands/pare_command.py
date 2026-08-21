@@ -71,6 +71,20 @@ def _is_bam(path: Path) -> bool:
     return path.suffix.lower() in (".bam", ".cram", ".sam")
 
 
+def _bbmap_index_path(args, out: Path) -> str:
+    """Where bbmap should keep its index (``path=``).
+
+    Defaults to a PER-RUN directory inside the output dir. bbmap otherwise
+    writes its index into ``./ref/`` relative to the process CWD, so a job array
+    whose tasks share a working directory has every task building the same index
+    concurrently — the losers load a half-written index and die with
+    ``AssertionError`` in ``dna.Data.setGenome2``. Observed 2026-08-21: SGE array
+    14493065 tasks 2 and 4 failed exactly this way while 1 and 3 won the race.
+    """
+    explicit = getattr(args, "bbmap_index", None)
+    return str(explicit) if explicit else str(out / "bbmap_index")
+
+
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     out = Path(args.output_dir)
@@ -111,9 +125,8 @@ def run(args: argparse.Namespace) -> int:
         bbmap = _bbtool(getattr(args, "bbmap_bin", "bbmap.sh"), getattr(args, "bbmap_mem", None)) + [
             f"in={trimmed}", f"out={aligned}", f"ref={genome}",
             "local=t", f"threads={threads}", "overwrite=t",
+            f"path={_bbmap_index_path(args, out)}",
         ]
-        if getattr(args, "bbmap_index", None):
-            bbmap.append(f"path={args.bbmap_index}")
         _run(bbmap)
 
     # ------------------------------------------- per-read parquet sidecar
@@ -166,9 +179,8 @@ def run(args: argparse.Namespace) -> int:
             f"in={anchors_fq}", f"out={anchors_bam}", f"ref={genome}",
             "local=t", "maxindel=5", "ambiguous=random",
             f"threads={threads}", "overwrite=t",
+            f"path={_bbmap_index_path(args, out)}",
         ]
-        if getattr(args, "bbmap_index", None):
-            bbmap2.append(f"path={args.bbmap_index}")
         _run(bbmap2)
         qstats = _rescue.quantify_rescue(
             anchors_bam, drs, min_mapq=int(getattr(args, "min_mapq", 3)),
@@ -267,7 +279,10 @@ def create_pare_parser(subparsers) -> None:
     p.add_argument("--bbduk-bin", default="bbduk.sh", dest="bbduk_bin")
     p.add_argument("--bbmap-bin", default="bbmap.sh", dest="bbmap_bin")
     p.add_argument("--bbmap-index", default=None, dest="bbmap_index",
-                   help="Pre-built bbmap index dir (path=...). Built on the fly if omitted.")
+                   help="Pre-built bbmap index dir (path=...). Default: a PER-RUN "
+                        "index under the output dir, so concurrent array tasks never "
+                        "race on a shared ./ref/. Point several runs at one prebuilt "
+                        "index only if nothing is building it at the same time.")
     p.add_argument("--bbmap-mem", default=None, dest="bbmap_mem",
                    help="Cap the bbmap/bbduk JVM heap (e.g. 8g). Forwards -Xmx. "
                         "Set on login / cgroup-limited nodes; omit on dedicated compute nodes.")
