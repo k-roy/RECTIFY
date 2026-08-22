@@ -31,7 +31,7 @@ READ_INTRINSIC_TAGS = frozenset(
         "RX",
         "pt",
         # cDNA comment-tag block (rectify/core/cdna/io.py)
-        "XU", "XO", "XC", "XR", "XM", "XF", "XA", "XT", "XY", "XB", "XQ", "XK",
+        "XU", "XO", "XC", "XR", "XM", "XF", "XA", "XT", "XY", "XB", "XQ", "XK", "XN",
     }
 )
 

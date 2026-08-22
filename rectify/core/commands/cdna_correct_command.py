@@ -27,6 +27,8 @@ Tag glossary:
   XF  full-length tier (0/1/2)              XY  read subtype (umi_captured_fwd/rev, umi_not_captured)
   XQ  5' pre-trim bases stripped             XK  3' pre-trim bases stripped
        (SSP+UMI+GGG for T1 / polyT for rev)       (polyA for fwd / SSP_RC suffix for rev)
+  XN  oriented (always 1): the consensus is emitted RNA-sense, so after alignment
+       is_reverse IS the gene strand and minimap2 -uf is valid (planning/730, 2026-08-21)
 
 Usage (via rectify CLI):
     rectify correct-cdna INPUT.bam --out OUTDIR [options]
@@ -608,7 +610,7 @@ def create_correct_cdna_parser(subparsers):
             'FASTQ before alignment. Emits a representative-read or pileup-based '
             'consensus per cluster (POA if pyabpoa is available).\n\n'
             'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
-            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB) '
+            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN) '
             'for `rectify align -y` to propagate into the post-align BAM. Gene assignment, '
             'isoform clustering, and Type-1↔Type-2 pairing run downstream in '
             '`rectify cdna-analyze`.'

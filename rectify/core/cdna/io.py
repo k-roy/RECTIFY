@@ -90,6 +90,11 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     cdna-analyze only overrides it with its own walkback when the tail is still
     present in the aligned SEQ.
 
+    Every molecule is emitted **RNA-sense** (``XN:i:1``): a ``rev``-frame sequence is
+    reverse-complemented before writing, so after alignment ``is_reverse`` IS the gene
+    strand (flag 0 on a '+' gene, flag 16 on a '-' gene) and minimap2 ``-uf`` is
+    correct. ``XO`` is unchanged and still describes the molecule in BAM-SEQ frame.
+
     Read naming: `cluster_<cid>`.
     """
     # Build read_id → cluster_id index
@@ -121,7 +126,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     opener = gzip.open if is_gz else open
 
     written = singleton = multi_pileup = multi_fallback = 0
-    n_frame_flipped = n_frame_mismatch = n_noop_5 = n_noop_3 = 0
+    n_frame_flipped = n_frame_mismatch = n_noop_5 = n_noop_3 = n_reoriented = 0
 
     # Reference is needed to resolve calmd '=' (match-to-ref) placeholders in SEQ
     # back to real bases before re-emitting; without it the FASTQ is unmappable.
@@ -212,6 +217,23 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
             if q_trim_3 == 0:
                 n_noop_3 += 1
 
+            # Orientation normalisation (planning/730, BUGS_TO_FIX A0). `trim_orient` is the
+            # orient label in the frame of the sequence we are about to emit: 'fwd' = SSP/UMI
+            # at the LEFT and poly(A) at the RIGHT = already RNA-sense; 'rev' = poly(T) at
+            # the LEFT = antisense. Emit every molecule RNA-sense so `rectify align`'s
+            # minimap2 `-uf` scores splice motifs on the transcript strand. Before this, the
+            # pA-first half of a Path-A library reached the aligner antisense and `-uf`
+            # manufactured decoy junctions on 15.7 % of those spliced reads (5.5x the
+            # sense half). Equivalent to 730m's rule
+            #   keep = (not pre_aln_is_reverse and XO=='fwd') or (pre_aln_is_reverse and XO=='rev')
+            # because seq_in_bam_frame == (not pre_aln_is_reverse) on the branches that RC.
+            # XQ/XK are mRNA-relative (PretrimResult.trim_5p/trim_3p) so they do not swap;
+            # XO keeps its BAM-SEQ-frame meaning (after alignment the sense molecule maps
+            # flag 0 on a '+' gene / flag 16 on a '-' gene, so the label is still exact).
+            if trim_orient == "rev":
+                trimmed_seq = trimmed_seq[::-1].translate(COMPLEMENT_TABLE)
+                n_reoriented += 1
+
             n_top, n_bot = cluster_strand_split[cid]
             tag_parts = [
                 f"XU:Z:{umi_canonical[cid]}",
@@ -226,6 +248,7 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 f"XQ:i:{q_trim_5}",
                 f"XK:i:{q_trim_3}",
                 f"XB:Z:{n_top}/{n_bot}",
+                f"XN:i:1",   # oriented: this molecule is emitted RNA-sense (see above)
             ]
 
             # Tab-separate the read name and tags so `minimap2 -y` (and the
@@ -244,4 +267,5 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 from_multi_pileup=multi_pileup, from_multi_fallback=multi_fallback,
                 trim_frame_flipped=n_frame_flipped,
                 trim_frame_mismatch=n_frame_mismatch,
-                trim_noop_5p=n_noop_5, trim_noop_3p=n_noop_3)
+                trim_noop_5p=n_noop_5, trim_noop_3p=n_noop_3,
+                reoriented_to_sense=n_reoriented)

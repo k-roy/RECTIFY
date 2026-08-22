@@ -36,13 +36,18 @@ RECTIFY has TWO cDNA routes and they must not be confused:
   where per-read tail/site *distributions* are wanted and UMI collapse is
   deliberately skipped (contract C9).
 
-⚠️ **Path A does NOT normalise orientation** — despite what
-``docs/figures/generate_cdna_umi_v3.py`` claimed until 2026-08-01, stage 1
-restores the *basecalled* orientation and merely LABELS the molecule with
-``XO``; a ``rev`` molecule stays antisense in the FASTQ.  So reads in BOTH
-orientations reach the aligner on either path, and ``is_reverse`` is never the
-gene strand.  ``read_info.py`` says so explicitly: *"Direction of 'polyA side'
-is determined by **orient**, not is_reverse."*
+**Path A normalises orientation at emission since 2026-08-21** (planning/730,
+BUGS_TO_FIX A0): ``rectify correct-cdna`` reverse-complements every ``rev``-frame
+molecule before writing the consensus FASTQ and tags it ``XN:i:1``, so every
+Path-A molecule reaches the aligner RNA-sense and, after alignment,
+``is_reverse`` IS the gene strand.  This was not true before: stage 1 restored
+the *basecalled* orientation and merely LABELLED the molecule with ``XO``, so
+the pA-first half reached minimap2 antisense and ``-uf`` manufactured decoy
+junctions on 15.7 % of those spliced reads.  Path B and any BAM without
+``XN:i:1`` still carry BOTH orientations, so this function keeps resolving
+strand from ``XO`` / ``ro`` rather than from ``is_reverse``.  ``read_info.py``
+still holds for the BAM-SEQ frame: *"Direction of 'polyA side' is determined by
+**orient**, not is_reverse."*
 
 ``XO`` is defined on BAM SEQ (reference orientation), whereas ``ro`` below is
 defined on the basecalled read; the two are equivalent under
