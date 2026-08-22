@@ -1219,7 +1219,8 @@ def _run_station_bc(
         import time as _time
         from rectify.utils.genome import load_genome as _load_g
         from ...consensus.station_c import (
-            PoolGateConfig, find_bundled_selfhom_bed, pool_gate,
+            PoolGateConfig, find_bundled_background_sv_bed,
+            find_bundled_selfhom_bed, pool_gate,
             write_pool_gate_outputs,
         )
         t0 = _time.perf_counter()
@@ -1236,6 +1237,8 @@ def _run_station_bc(
         rows, summary = pool_gate(
             str(gate_input), genome, Path(annotation_path),
             cfg=PoolGateConfig(max_intron=_mi), selfhom_bed=selfhom,
+            background_sv_bed=find_bundled_background_sv_bed(
+                Path(genome_path)),
         )
         tsv, js = write_pool_gate_outputs(
             rows, summary, work_dir / sample_id)

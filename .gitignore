@@ -159,6 +159,9 @@ rectify/data/genomes/*/penalty_tables/*
 !rectify/data/genomes/*/penalty_tables/*.tsv
 !rectify/data/genomes/*/penalty_tables/*.md
 !rectify/data/genomes/*/penalty_tables/*.json
+# Lightweight curated flag tracks (Station C): self-homology + background-SV
+!rectify/data/genomes/*/*selfhomology.bed
+!rectify/data/genomes/*/*background_sv.bed
 
 # Auto-generated provenance and output data (not source)
 rectify/data/README.md

@@ -17,9 +17,12 @@ filter, not a data filter.
 
 Region spec format (``RECTIFY_SKIP_REGIONS`` env var or explicit config):
 ``chrom:start-end[,chrom:start-end...]`` with 0-based half-open reference
-coordinates, or the shorthand ``yeast-rdna`` for the S. cerevisiae R64 rDNA
+coordinates, or a shorthand: ``yeast-rdna`` for the S. cerevisiae R64 rDNA
 envelope (chrXII 451,574-468,812: RDN37-1 through NTS2-2, from the lab
-R64-5-1 GFF). Shorthands and explicit specs may be mixed.
+R64-5-1 GFF), or ``yeast-srd1-sv`` for the R64 chrIII SRD1 flank-A
+background-SV window (148,500-151,800 — the reference carries sequence real
+strains lack; yKR888 T2T, planning/730 W6). Shorthands and explicit specs
+may be mixed.
 """
 
 import os
@@ -29,8 +32,16 @@ from typing import Dict, List, Tuple
 # GFF (1-based): RDN37-1 starts 451,575; NTS2-2 ends 468,812.
 YEAST_RDNA_SPEC = 'chrXII:451574-468812'
 
+# R64 chrIII SRD1 flank-A background SV (planning/730 W6, Kevin 2026-08-20):
+# the segment distal to chrIII:148,614 is deleted-and-replaced-by-Ty1 in real
+# strain genomes (yKR888 T2T), so terminal-clip resolution there bridges the
+# SV as a canonical-looking 1.9-2.9 kb "intron". Matches the bundled
+# R64_background_sv.bed interval.
+YEAST_SRD1_SV_SPEC = 'chrIII:148500-151800'
+
 _SHORTHANDS = {
     'yeast-rdna': YEAST_RDNA_SPEC,
+    'yeast-srd1-sv': YEAST_SRD1_SV_SPEC,
 }
 
 SkipRegions = Dict[str, List[Tuple[int, int]]]

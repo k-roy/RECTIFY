@@ -1,0 +1,18 @@
+# Known background structural-variant regions of the R64 reference: intervals
+# where the R64 assembly does not represent common lab-strain genomes, so
+# alignments and junctions here are reference artifacts, not biology.
+# A junction overlapping any interval is flagged `background_sv` by Station C
+# (pool-gate) and demoted to demote_orthogonal_evidence on BOTH tracks.
+#
+# chrIII SRD1 flank-A (Kevin Roy, adjudicated 2026-08-20): the segment
+# distal to chrIII:148,614 is deleted and replaced by Ty1 in real strain
+# genomes (yKR888 T2T assembly; SGTC WGS_lineage_T2T CHRIII_MECHANISM_
+# CONSENSUS_20260625 — 17 split-junction ONT reads join donor-end 148,618 to
+# flank-B 151,520/151,669; window is 0x in founders DHY214/X303 and yKR888/
+# yKR901). Independently reproduced in BY4742 cDNA (Chanfreau planning/730:
+# terminal-clip bridging manufactures canonical-looking 1.9-2.9 kb "introns"
+# chrIII:148,615-151,517 and 149,817-151,668). Interval covers both observed
+# donor ends and both flank-B endpoints with ~100 bp margin.
+#
+# Columns: chrom  start  end  name   (BED, 0-based half-open)
+chrIII	148500	151800	SRD1_flankA_Ty1_background_SV

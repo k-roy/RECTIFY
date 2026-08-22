@@ -41,7 +41,12 @@ Verdicts (non-annotated junctions), applied in this order:
 
 ==============================  =============================================
 ``demote_orthogonal_evidence``  length > max_intron (the pre-gate, any
-                                track); OR non-canonical AND (repeat-flagged
+                                track); OR overlapping a known background-SV
+                                region of the reference (bundled
+                                ``R64_background_sv.bed`` — e.g. the chrIII
+                                SRD1 flank-A Ty1 replacement, yKR888 T2T /
+                                planning/730 W6 — any track); OR
+                                non-canonical AND (repeat-flagged
                                 OR q < q_noncanon): admissible only with
                                 orthogonal evidence (short-read/COMPASS,
                                 cross-sample recurrence, mm2-side distress)
@@ -178,6 +183,44 @@ def find_bundled_selfhom_bed(genome_path: Path) -> Optional[Path]:
         import rectify
         bundled = (Path(rectify.__file__).parent / 'data' / 'genomes'
                    / 'saccharomyces_cerevisiae' / 'R64_selfhomology.bed')
+        if bundled.exists() and Path(genome_path).stem.startswith('S288C'):
+            return bundled
+    except Exception:  # pragma: no cover - import-shape guard
+        pass
+    return None
+
+
+def load_background_sv_bed(bed_path: Path) -> IntervalFlags:
+    """Known background-SV regions of the REFERENCE (BED col 4 = SV name).
+
+    Unlike the repeat/self-homology tracks (priors), these are intervals where
+    the reference assembly is KNOWN not to represent common strain genomes —
+    e.g. the R64 chrIII SRD1 flank-A segment, deleted-and-replaced-by-Ty1 in
+    real strains (yKR888 T2T; Kevin 2026-08-20). Reads bridging such a region
+    produce canonical-looking junctions that are reference artifacts, so an
+    overlapping junction demotes to ``demote_orthogonal_evidence`` on BOTH
+    tracks (planning/730 W6).
+    """
+    flags = IntervalFlags()
+    with open(bed_path) as fh:
+        for line in fh:
+            if line.startswith('#') or not line.strip():
+                continue
+            f = line.rstrip('\n').split('\t')
+            label = f[3] if len(f) > 3 and f[3] else 'background_sv'
+            flags.add(f[0], int(f[1]), int(f[2]), label)
+    return flags.freeze()
+
+
+def find_bundled_background_sv_bed(genome_path: Path) -> Optional[Path]:
+    """A ``*background_sv.bed`` beside the genome, or the bundled R64 track."""
+    candidates = list(Path(genome_path).parent.glob('*background_sv.bed'))
+    if candidates:
+        return candidates[0]
+    try:
+        import rectify
+        bundled = (Path(rectify.__file__).parent / 'data' / 'genomes'
+                   / 'saccharomyces_cerevisiae' / 'R64_background_sv.bed')
         if bundled.exists() and Path(genome_path).stem.startswith('S288C'):
             return bundled
     except Exception:  # pragma: no cover - import-shape guard
@@ -373,6 +416,7 @@ def pool_gate(
     annotation_path: Path,
     cfg: Optional[PoolGateConfig] = None,
     selfhom_bed: Optional[Path] = None,
+    background_sv_bed: Optional[Path] = None,
 ) -> Tuple[List[dict], dict]:
     """Run Station C v0 over one BAM. Returns (rows, summary).
 
@@ -383,6 +427,8 @@ def pool_gate(
     cfg = cfg or PoolGateConfig()
     ann_flags = load_repeat_flags(annotation_path, margin=cfg.repeat_margin)
     sh_flags = load_selfhom_bed(selfhom_bed) if selfhom_bed else None
+    bg_flags = (load_background_sv_bed(background_sv_bed)
+                if background_sv_bed else None)
     annotated = load_annotated_canonical(annotation_path, genome, cfg)
 
     J = census_bam(bam_path, genome, cfg)
@@ -399,6 +445,7 @@ def pool_gate(
                                    max_shift=cfg.max_ambiguity_shift)
         ann_flag = ann_flags.flag_of(chrom, s, e)
         sh_flag = sh_flags.flag_of(chrom, s, e) if sh_flags else None
+        bg_flag = bg_flags.flag_of(chrom, s, e) if bg_flags else None
         flagged = ann_flag or sh_flag
         q = rec['q_max']
         support = rec['support']
@@ -410,7 +457,13 @@ def pool_gate(
         # 111 kb LTR class satisfied support>=19 across ten libraries.
         over_len = (e - s) > cfg.max_intron
 
-        if over_len:
+        if over_len or bg_flag:
+            # Background-SV regions (planning/730 W6, Kevin 2026-08-20): the
+            # reference is KNOWN wrong there (e.g. R64 chrIII SRD1 flank-A,
+            # deleted-and-replaced-by-Ty1 in real strains — yKR888 T2T), so a
+            # junction bridging one is a reference artifact regardless of
+            # motif, support, or overhang quality. Demotes on BOTH tracks;
+            # like every flag it annotates, never deletes.
             verdict = 'demote_orthogonal_evidence'
         elif canon:
             # planning/684c fix 2: `flagged` is consulted on BOTH branches.
@@ -444,6 +497,7 @@ def pool_gate(
             'canonical_in_class': int(canon),
             'repeat_flag': ann_flag or '',
             'selfhom_flag': int(bool(sh_flag)),
+            'background_sv_flag': bg_flag or '',
             'over_max_intron': int(over_len),
             'verdict': verdict,
             'orthogonal_evidence': '',   # v0 placeholder columns for the
@@ -457,12 +511,15 @@ def pool_gate(
         'bam': str(bam_path),
         'params': asdict(cfg),
         'selfhom_bed': str(selfhom_bed) if selfhom_bed else None,
+        'background_sv_bed': (str(background_sv_bed)
+                              if background_sv_bed else None),
         'n_junctions_censused': len(J),
         'n_annotated': n_annotated,
         'n_reported': len(rows),
         'verdicts': verdict_counts,
         'repeat_intervals': ann_flags.n_intervals,
         'selfhom_intervals': sh_flags.n_intervals if sh_flags else 0,
+        'background_sv_intervals': bg_flags.n_intervals if bg_flags else 0,
     }
     logger.info('station-c: %d junctions censused (%d annotated); verdicts %s',
                 len(J), n_annotated, verdict_counts)
@@ -494,7 +551,8 @@ def write_pool_gate_outputs(rows: List[dict], summary: dict, out_prefix: Path) -
     tsv = Path(raw + '.pool_gate.tsv')
     js = Path(raw + '.pool_gate.json')
     cols = ['chrom', 'start', 'end', 'support', 'q_max', 'q_2nd',
-            'canonical_in_class', 'repeat_flag', 'selfhom_flag', 'verdict',
+            'canonical_in_class', 'repeat_flag', 'selfhom_flag',
+            'background_sv_flag', 'over_max_intron', 'verdict',
             'orthogonal_evidence', 'cross_sample_support']
     with open(tsv, 'w') as fh:
         fh.write('\t'.join(cols) + '\n')

@@ -22,7 +22,8 @@ def run_pool_gate(args: argparse.Namespace) -> int:
     from rectify.data import resolve_reference_paths
     from rectify.utils.genome import load_genome
     from rectify.core.consensus.station_c import (
-        PoolGateConfig, find_bundled_selfhom_bed, pool_gate,
+        PoolGateConfig, find_bundled_background_sv_bed,
+        find_bundled_selfhom_bed, pool_gate,
         write_pool_gate_outputs,
     )
 
@@ -36,6 +37,8 @@ def run_pool_gate(args: argparse.Namespace) -> int:
 
     selfhom = Path(args.selfhom_bed) if args.selfhom_bed else \
         find_bundled_selfhom_bed(Path(args.genome))
+    background_sv = Path(args.background_sv_bed) if args.background_sv_bed \
+        else find_bundled_background_sv_bed(Path(args.genome))
 
     # Length pre-gate bound: explicit flag wins; otherwise derived from the
     # annotation (2x the longest annotated intron — yeast derives 5000).
@@ -52,6 +55,7 @@ def run_pool_gate(args: argparse.Namespace) -> int:
     )
     rows, summary = pool_gate(
         args.input, genome, Path(args.annotation), cfg=cfg, selfhom_bed=selfhom,
+        background_sv_bed=background_sv,
     )
     tsv, js = write_pool_gate_outputs(rows, summary, Path(args.output))
 
@@ -66,6 +70,8 @@ def run_pool_gate(args: argparse.Namespace) -> int:
     else:
         print("  self-homology track: none (annotation flag only — see "
               "dev/STATIONC_REPEAT_FLAG_644I_20260811.md to build one)")
+    if background_sv:
+        print(f"  background-SV track: {background_sv}")
     print(f"  table: {tsv}\n  summary: {js}")
     return 0
 
@@ -84,6 +90,13 @@ def create_pool_gate_parser(subparsers) -> argparse.ArgumentParser:
     p.add_argument('--selfhom-bed', default=None,
                    help='Genome self-homology BED (default: auto-detect beside '
                         'the genome / bundled yeast track)')
+    p.add_argument('--background-sv-bed', default=None,
+                   help='Known background-SV regions of the reference, BED '
+                        'col4=name (default: auto-detect *background_sv.bed '
+                        'beside the genome / bundled R64 track). Junctions '
+                        'overlapping one demote on BOTH tracks — the '
+                        'reference is known wrong there (e.g. R64 chrIII '
+                        'SRD1 flank-A, yKR888 T2T)')
     p.add_argument('--q-canon', type=float, default=40.0,
                    help='Canonical-track overhang-quality admit threshold, bits '
                         '(default 40 — measured 644h)')
