@@ -83,10 +83,12 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     propagate them through to the output BAM.
 
     Only alignment-independent tags are emitted here. Gene/strand/isoform/pair
-    tags (XG, XS, XI, XL) and any pre-align poly-A length are recomputed by
-    `rectify cdna-analyze` on the post-align CIGAR, so emitting them here would
-    be misleading by the time downstream consumers read them. Tail length is
-    still emitted as XA for upstream debuggability; cdna-analyze overwrites it.
+    tags (XG, XS, XI, XL) are recomputed by `rectify cdna-analyze` on the
+    post-align CIGAR, so emitting them here would be misleading by the time
+    downstream consumers read them. Tail length IS emitted as XA and is
+    authoritative whenever the tail was stripped pre-alignment (b3a8c35+):
+    cdna-analyze only overrides it with its own walkback when the tail is still
+    present in the aligned SEQ.
 
     Read naming: `cluster_<cid>`.
     """

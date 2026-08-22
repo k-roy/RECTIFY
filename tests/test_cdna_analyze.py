@@ -358,3 +358,137 @@ def test_cdna_analyze_chri_smoke(tmp_path):
         f"raw chrI BAM has no XU/XC/XR/XT/XY/XF/XB tags — clusters.tsv "
         f"should be empty, got {len(rows)} rows"
     )
+
+
+# ---------------------------------------------------------------------------
+# 4) Carried poly(A) tail length (XA) survives a pretrimmed consensus record
+# ---------------------------------------------------------------------------
+def _build_pretrimmed_consensus_bam(tmp_path: Path) -> Path:
+    """Three records that exercise the three tail-length provenance paths.
+
+      cluster_0  pretrimmed (no tail in SEQ) + carried XA:i:23  → tail_len 23 (carried)
+      cluster_1  tail still in SEQ            + stale XA:i:7     → walkback value (>0, ≠7)
+      cluster_2  pretrimmed, no XA tag at all                    → tail_len 0
+    """
+    bam_path = tmp_path / "consensus_pretrimmed.bam"
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "chrT", "LN": _TINY_CHROM_LEN}]}
+    umis = [
+        "ACGTACGTACGTACGTACGTACGTACG",
+        "TGCATGCATGCATGCATGCATGCATGC",
+        "CCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    ]
+    specs = [
+        ("cluster_0", "ACGTACGTAC", 23, "rd_p1,rd_p2"),
+        ("cluster_1", "ACGTACGTAC" + "A" * 20, 7, "rd_w1,rd_w2"),
+        ("cluster_2", "ACGTACGTAC", None, "rd_z1"),
+    ]
+    with pysam.AlignmentFile(str(bam_path), "wb", header=header) as bam:
+        for (qname, seq, xa, rids), umi in zip(specs, umis):
+            r = pysam.AlignedSegment(bam.header)
+            r.query_name = qname
+            r.query_sequence = seq
+            r.flag = 0
+            r.reference_id = 0
+            r.reference_start = 200
+            r.mapping_quality = 60
+            r.cigartuples = [(0, len(seq))]
+            r.set_tag("XU", umi, "Z")
+            r.set_tag("XO", "fwd", "Z")
+            r.set_tag("XT", 1, "i")
+            r.set_tag("XY", "umi_captured_fwd", "Z")
+            r.set_tag("XC", len(rids.split(",")), "i")
+            r.set_tag("XF", 2, "i")
+            r.set_tag("XR", rids, "Z")
+            if xa is not None:
+                r.set_tag("XA", xa, "i")
+            bam.write(r)
+    pysam.index(str(bam_path))
+    return bam_path
+
+
+def test_cdna_analyze_honours_carried_xa_on_pretrimmed_records(tmp_path):
+    """Regression for AGENT_FIXES 2026-08-21: after b3a8c35 `correct-cdna` strips
+    the poly(A) tail BEFORE alignment and carries the measured length as XA:i.
+    cdna-analyze used to recompute by walkback on the tail-less record and
+    overwrite XA with 0 on 100 % of molecules (exit 0, no warning).
+
+    The carried value must survive into clusters.tsv (tail_len),
+    corrected_reads.tsv (polya_length) and the tagged BAM (XA); a record whose
+    tail IS still in SEQ must keep the walkback value (it is the post-align
+    measurement, more accurate than the pre-align one).
+    """
+    from rectify.core.cdna.walkback import walk_back_anchor_and_tail
+    from rectify.core.commands import cdna_analyze_command
+
+    ref = _build_tiny_reference(tmp_path)
+    gff = _build_tiny_gff(tmp_path)
+    bam = _build_pretrimmed_consensus_bam(tmp_path)
+    out = tmp_path / "out"
+
+    # Independent expectation for the walkback path: same record, same genome.
+    with pysam.FastaFile(str(ref)) as fa:
+        chrom_seq = fa.fetch("chrT").upper()
+    with pysam.AlignmentFile(str(bam), "rb") as b:
+        rec1 = [r for r in b.fetch(until_eof=True) if r.query_name == "cluster_1"][0]
+    _anchor, expected_walkback = walk_back_anchor_and_tail(rec1, chrom_seq, "fwd")
+    assert expected_walkback > 0, "fixture must have a walkable tail in SEQ"
+    assert expected_walkback != 7, "fixture's stale XA must differ from the walkback value"
+
+    rc = cdna_analyze_command.run(_make_args(bam=bam, out=out, gff=gff, ref=ref))
+    assert rc == 0
+
+    lines = (out / "clusters.tsv").read_text().rstrip("\n").split("\n")
+    cols = lines[0].split("\t")
+    by_rids = {row.split("\t")[cols.index("read_ids")]: row.split("\t") for row in lines[1:]}
+    tl = cols.index("tail_len")
+    assert int(by_rids["rd_p1,rd_p2"][tl]) == 23, "carried XA must survive a pretrimmed record"
+    assert int(by_rids["rd_w1,rd_w2"][tl]) == expected_walkback, "walkback wins when the tail is in SEQ"
+    assert int(by_rids["rd_z1"][tl]) == 0, "no tail anywhere → 0"
+
+    cr = (out / "corrected_reads.tsv").read_text().rstrip("\n").split("\n")
+    cr_cols = cr[0].split("\t")
+    pl = {row.split("\t")[0]: int(row.split("\t")[cr_cols.index("polya_length")]) for row in cr[1:]}
+    assert pl["ACGTACGTACGTACGTACGTACGTACG"] == 23
+    assert pl["TGCATGCATGCATGCATGCATGCATGC"] == expected_walkback
+    assert pl["CCCCCCCCCCCCCCCCCCCCCCCCCCC"] == 0
+
+    with pysam.AlignmentFile(str(out / "consensus_tagged.bam"), "rb") as b:
+        xa = {r.query_name: r.get_tag("XA") for r in b.fetch(until_eof=True)}
+    assert xa == {"cluster_0": 23, "cluster_1": expected_walkback, "cluster_2": 0}
+
+
+def test_cdna_analyze_warns_when_tail_len_is_dead(tmp_path, caplog):
+    """A library where neither SEQ nor XA carries a tail must warn loudly — a
+    silently dead column is exactly the failure the fix is for."""
+    import logging as _logging
+    from rectify.core.commands import cdna_analyze_command
+
+    ref = _build_tiny_reference(tmp_path)
+    gff = _build_tiny_gff(tmp_path)
+    bam_path = tmp_path / "dead_tail.bam"
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "chrT", "LN": _TINY_CHROM_LEN}]}
+    with pysam.AlignmentFile(str(bam_path), "wb", header=header) as bam:
+        for i in range(3):
+            r = pysam.AlignedSegment(bam.header)
+            r.query_name = f"cluster_{i}"
+            r.query_sequence = "ACGTACGTAC"
+            r.flag = 0
+            r.reference_id = 0
+            r.reference_start = 200
+            r.mapping_quality = 60
+            r.cigartuples = [(0, 10)]
+            r.set_tag("XU", "ACGT" * 6 + chr(65 + i) * 3, "Z")
+            r.set_tag("XO", "fwd", "Z")
+            r.set_tag("XT", 1, "i")
+            r.set_tag("XY", "umi_captured_fwd", "Z")
+            r.set_tag("XC", 1, "i")
+            r.set_tag("XF", 2, "i")
+            r.set_tag("XR", f"rd_{i}", "Z")
+            r.set_tag("XA", 0, "i")
+            bam.write(r)
+    pysam.index(str(bam_path))
+
+    with caplog.at_level(_logging.WARNING, logger="cdna-analyze"):
+        rc = cdna_analyze_command.run(_make_args(bam=bam_path, out=tmp_path / "out", gff=gff, ref=ref))
+    assert rc == 0
+    assert any("tail_len is 0 for" in m for m in caplog.messages), caplog.messages

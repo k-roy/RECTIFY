@@ -7,11 +7,17 @@ consensus aligned via the multi-aligner panel (minimap2 + uLTRA + deSALT +
 overhang resolver) and
 chimeric-consensus integration.
 
-Recomputes tail_len (XA), 5' TSS correction (pos5_corrected), gene assignment
-(XG), sense/antisense classification (XS), isoform clustering (XI), and
+Recomputes 5' TSS correction (pos5_corrected), gene assignment (XG),
+sense/antisense classification (XS), isoform clustering (XI), and
 Type-1↔Type-2 same-orient pairing (XL) using the post-align coordinates —
 which are more accurate than the pre-align values that were used for UMI
 bucketing in `correct-cdna`.
+
+Tail length (XA) is recomputed by walkback ONLY when the poly(A) tail is still
+present in the aligned SEQ. Since b3a8c35 `correct-cdna` strips the tail before
+alignment and carries the measured length as `XA:i` in the FASTQ comment (which
+`rectify align` preserves), so the post-align record usually has no tail left to
+walk; in that case the carried `XA` is honoured rather than overwritten with 0.
 
 Outputs (in --out directory):
   - clusters.tsv          per-cluster manifest with corrected positions
@@ -47,14 +53,33 @@ from rectify.core.cdna.walkback import (
 )
 
 
+def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
+    """Poly(A) tail length carried from `correct-cdna` as ``XA:i`` (0 if absent/garbage).
+
+    `correct-cdna` (b3a8c35+) strips the tail pre-alignment and emits the measured
+    length in the FASTQ comment; `rectify align` propagates it as an aux tag. A
+    non-integer ``XA`` (e.g. a colliding ``XA:Z`` from a non-cDNA aligner) is
+    treated as absent rather than crashing the stream.
+    """
+    try:
+        return max(0, int(rec.get_tag("XA")))
+    except (KeyError, ValueError, TypeError):
+        return 0
+
+
 def _read_info_from_bam_record(rec: pysam.AlignedSegment,
                                 chrom_seq: str,
+                                tail_stats: Optional[Dict[str, int]] = None,
                                 ) -> Optional[Tuple[ReadInfo, int]]:
     """Build a synthetic ReadInfo from one post-align consensus BAM record.
 
     Returns (read_info, cluster_size) or None if the record is unmapped or
     missing required tags.  cluster_size comes from the XC tag (count of
     original input reads that contributed to this consensus).
+
+    ``tail_stats`` (optional) is incremented in place with the provenance of the
+    tail length: ``walkback`` (tail found in SEQ), ``carried`` (pretrimmed record,
+    ``XA`` honoured) or ``zero`` (neither source had a tail).
     """
     if rec.is_unmapped or not rec.cigartuples:
         return None
@@ -76,8 +101,19 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     aln_start = rec.reference_start
     aln_end = rec.reference_end or aln_start
 
-    # Recompute tail_len + canonical cleavage anchor via walkback on post-align coords
-    anchor, tail_len = walk_back_anchor_and_tail(rec, chrom_seq, orient)
+    # Canonical cleavage anchor via walkback on post-align coords. The tail length
+    # from the same walk is only meaningful when the tail is still in SEQ; a record
+    # pretrimmed by `correct-cdna` (b3a8c35+) has nothing to walk and yields 0, so
+    # fall back to the carried XA:i instead of silently zeroing the column
+    # (AGENT_FIXES 2026-08-21: 100 % tail_len==0 on a 4.63 M-molecule library).
+    anchor, tail_len_walk = walk_back_anchor_and_tail(rec, chrom_seq, orient)
+    if tail_len_walk > 0:
+        tail_len, source = tail_len_walk, "walkback"
+    else:
+        tail_len = _carried_tail_len(rec)
+        source = "carried" if tail_len > 0 else "zero"
+    if tail_stats is not None:
+        tail_stats[source] = tail_stats.get(source, 0) + 1
 
     # Recompute pos5_corrected via bridge-G walk-forward
     pos5_corrected = walk_forward_tss(rec, orient, chrom_seq)
@@ -157,6 +193,7 @@ def run(args) -> int:
     qname_to_cid: Dict[str, int] = {}
 
     n_in = n_unmapped = n_missing_tags = 0
+    tail_stats: Dict[str, int] = {"walkback": 0, "carried": 0, "zero": 0}
 
     with pysam.AlignmentFile(str(args.bam), "rb") as bam:
         for rec in bam.fetch(until_eof=True):
@@ -165,7 +202,7 @@ def run(args) -> int:
                 n_unmapped += 1
                 continue
             chrom_seq = chrom_cache.get(rec.reference_name, "")
-            result = _read_info_from_bam_record(rec, chrom_seq)
+            result = _read_info_from_bam_record(rec, chrom_seq, tail_stats)
             if result is None:
                 n_missing_tags += 1
                 continue
@@ -186,6 +223,16 @@ def run(args) -> int:
     log.info("  %d records read (%d unmapped, %d missing required tags)",
              n_in, n_unmapped, n_missing_tags)
     log.info("  %d usable consensus clusters", len(clusters))
+    log.info("  tail_len provenance: %d walkback (tail in SEQ), %d carried XA "
+             "(pretrimmed), %d zero",
+             tail_stats["walkback"], tail_stats["carried"], tail_stats["zero"])
+    if clusters and tail_stats["zero"] > 0.95 * len(clusters):
+        # A silently dead column is worse than a loud one: the pretrim fix ran for a
+        # full library with 100 % zeros and exit 0 before anyone noticed.
+        log.warning("tail_len is 0 for %.1f%% of %d molecules — the poly(A) tail is "
+                    "neither in SEQ nor carried as XA:i; check that correct-cdna emitted "
+                    "XA and that the aligner preserved FASTQ comments (minimap2 -y).",
+                    100.0 * tail_stats["zero"] / len(clusters), len(clusters))
 
     # Gene / sense-antisense classification on post-align positions
     t1 = time.time()
