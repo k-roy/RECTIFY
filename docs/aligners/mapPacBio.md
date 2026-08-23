@@ -152,9 +152,12 @@ mapPacBio asserts/crashes on long reads unless handled:
 
 ## 6 h `ALIGNER_TIMEOUT` and chunking
 
-`ALIGNER_TIMEOUT = 21600 s` (multi_aligner.py:232) caps each aligner subprocess.
-Large samples (≳400k reads) exceed it on a single mapPacBio pass. Use the built-in
-interleaved chunking:
+`ALIGNER_TIMEOUT = 21600 s` (`multi_aligner.py`) caps each aligner subprocess.
+mapPacBio runs at ~1,000 reads/min per 4 threads on ONT cDNA/DRS, so any sample
+≳300k reads exceeds it on a single pass and is killed with NO output (2026-08-22:
+9 of 11 cohort arms lost after 6 h each). **Since 2026-08-22 `run_map_pacbio` REFUSES a
+single-pass run above `MPB_MONOLITH_MAX_READS = 300_000`** (override for a deliberate
+long run: `RECTIFY_MAPPACBIO_ALLOW_MONOLITH=1`). Use the built-in interleaved chunking:
 
 ```bash
 # one task per chunk (1/N of reads, even read-length distribution):
@@ -163,7 +166,7 @@ rectify align <reads> --aligners mapPacBio --mapPacBio-chunks 8 --mapPacBio-chun
 rectify align <reads> --aligners mapPacBio --mapPacBio-chunks 8 ...
 ```
 
-> ⚠️ **chunk-idx exit-1 bug:** in chunk-idx mode the chunk alignment succeeds and
+> ⚠️ **chunk-idx exit-1 bug (FIXED — `align_command` now rebinds the output to the chunk path, planning/644):** historically, in chunk-idx mode the chunk alignment succeeds and
 > writes `{prefix}.mapPacBio.chunk_K_of_N.bam`, but the task **exits 1** —
 > `align_command._run_one_aligner` validates the standard `mapPacBio.bam` path,
 > not the chunk path `run_map_pacbio` actually returned. The chunk BAMs are
