@@ -187,7 +187,9 @@ class KmerIndex:
                                'rebuilding: %s', exc, cache)
         idx = cls.build(genome, k=k, fingerprint=want)
         try:
-            tmp = cache.with_name(cache.name + '.tmp')
+            # PID-suffixed: concurrent array tasks on a cold cache would
+            # otherwise race one another on a single fixed .tmp path.
+            tmp = cache.with_name(f'{cache.name}.{os.getpid()}.tmp')
             with open(tmp, 'wb') as fh:
                 np.savez(fh, order=idx.order, starts=idx.starts,
                          names=np.array(idx.names),
