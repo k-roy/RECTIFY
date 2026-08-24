@@ -233,11 +233,33 @@ class TestResolution:
         stats = ResolverStats()
         assert resolve_read(r, GENOME, index, cfg, stats)
         assert r.has_tag('XJ')
-        assert r.has_tag('XQ')
+        # XW, not XQ: XQ:i is the cDNA 5' pre-trim strip length (cdna/io.py:248,
+        # READ_INTRINSIC in cma_schema.py). Appending to it clobbers a value
+        # correct-cdna depends on, AND changes its type from i to Z.
+        assert r.has_tag('XW')
+        assert 'arm=' in str(r.get_tag('XW'))
         # XJ's three-field grammar is load-bearing for existing consumers
         for fld in str(r.get_tag('XJ')).split(','):
             span, ed, side = fld.split(':')
             assert '-' in span and float(ed) >= 0 and side in ('L', 'R', 'A1')
+
+
+    def test_resolver_does_not_clobber_the_cdna_XQ_tag(self, index, cfg):
+        """XQ:i belongs to correct-cdna (5' pre-trim strip length) and must survive.
+
+        The resolver's own metadata rode on XQ until 2026-08-24, when a real
+        production record read `XQ:Z:140,arm=arm2;...` — every read of the 748
+        fixture carries an XQ:i, so the append silently overwrote it and changed
+        its type. No test caught it because the fixtures here carry no XQ.
+        """
+        clip = GENOME_SEQ[P_DON - 30:P_DON]
+        query = clip + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('xq_guard', query, [(4, 30), (0, 60)], P_ACC)
+        r.set_tag('XQ', 140, 'i')
+        stats = ResolverStats()
+        assert resolve_read(r, GENOME, index, cfg, stats)
+        assert r.get_tag('XQ') == 140      # untouched, still an int
+        assert r.has_tag('XW')             # resolver metadata went elsewhere
 
 
 class TestRejection:

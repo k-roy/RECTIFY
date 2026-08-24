@@ -783,10 +783,18 @@ def _rewrite_cigar(
     # `span, ed, side = fld.split(':')`), and a fourth field makes every one of
     # them raise ValueError and SILENTLY skip the record -- exactly the
     # invisible-failure class this whole change set exists to remove.
-    # XQ is parallel to XJ: one comma-separated entry per XJ entry, same order.
-    xq = f'arm={placement.arm};gB={placement.gain_b:.1f};gC={placement.gain_c:.1f};k={k}'
-    prevq = str(read.get_tag('XQ')) if read.has_tag('XQ') else ''
-    read.set_tag('XQ', f'{prevq},{xq}' if prevq else xq)
+    #
+    # 🔴 The tag is XW, NOT XQ. XQ:i is ALREADY TAKEN -- it is the cDNA 5'
+    # pre-trim strip length written by core/cdna/io.py:248 and declared
+    # READ_INTRINSIC in multialign/cma_schema.py:34. Every read of the 748
+    # fixture's minimap2 arm carries one (5,000/5,000 sampled), so appending to
+    # it produced `XQ:Z:140,arm=arm2;...` -- a type change (i -> Z) that
+    # CLOBBERS a value correct-cdna depends on. Caught by reading a real
+    # production record, not by any test. XW/XD/XE/XH/XP/XZ are all free.
+    # Parallel to XJ: one comma-separated entry per XJ entry, same order.
+    xw = f'arm={placement.arm};gB={placement.gain_b:.1f};gC={placement.gain_c:.1f};k={k}'
+    prevw = str(read.get_tag('XW')) if read.has_tag('XW') else ''
+    read.set_tag('XW', f'{prevw},{xw}' if prevw else xw)
 
 
 # ---------------------------------------------------------------------------
@@ -1613,9 +1621,9 @@ def _arm1_junction_peel(
         entry = f'{d2}-{e2}:{float(v):.1f}:A1'
         prev = str(read.get_tag('XJ')) if read.has_tag('XJ') else ''
         read.set_tag('XJ', f'{prev},{entry}' if prev else entry)
-        xq = f'arm=arm1;ed={v};cur={cur};from={d}-{e}'
-        prevq = str(read.get_tag('XQ')) if read.has_tag('XQ') else ''
-        read.set_tag('XQ', f'{prevq},{xq}' if prevq else xq)
+        xw = f'arm=arm1;ed={v};cur={cur};from={d}-{e}'
+        prevw = str(read.get_tag('XW')) if read.has_tag('XW') else ''
+        read.set_tag('XW', f'{prevw},{xw}' if prevw else xw)
         _bump(stats, 'arm1_resolved')
         # One move per read: the CIGAR walk above is now stale.
         return True
