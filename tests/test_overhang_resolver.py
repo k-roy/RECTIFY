@@ -187,7 +187,15 @@ class TestResolution:
         assert resolve_read(r, GENOME, index, cfg, stats)
         assert r.cigartuples == [(4, 10), (0, 30), (3, P_ACC - P_DON), (0, 60)]
 
-    def test_md_nm_dropped_on_rewrite(self, index, cfg):
+    def test_md_dropped_and_nm_recomputed_on_rewrite(self, index, cfg):
+        """MD stays dropped (stale after CIGAR surgery, and not recomputed);
+        NM is now RE-EMITTED against the rewritten placement.
+
+        planning/769 defect 1 / planning/771 A5: the resolver used to drop NM
+        and never put one back, so a 70%-mismatched block was invisible to
+        every consumer that trusts NM — the single largest reason the P02
+        artifact reached consensus unnoticed. This test previously asserted the
+        old (defective) behaviour."""
         clip = GENOME_SEQ[P_DON - 30:P_DON]
         query = clip + GENOME_SEQ[P_ACC:P_ACC + 60]
         r = _read('tags', query, [(4, 30), (0, 60)], P_ACC)
@@ -195,7 +203,41 @@ class TestResolution:
         r.set_tag('MD', '60')
         stats = ResolverStats()
         assert resolve_read(r, GENOME, index, cfg, stats)
-        assert not r.has_tag('NM') and not r.has_tag('MD')
+        assert not r.has_tag('MD')
+        assert r.has_tag('NM')
+        # the query was built verbatim from the reference at both placements
+        assert r.get_tag('NM') == 0
+
+    def test_nm_reports_a_mismatched_rescue(self, index, cfg):
+        """A rescued block that does NOT match the reference must show it in NM."""
+        clip = GENOME_SEQ[P_DON - 30:P_DON]
+        # corrupt 4 bases of the clip: they still place (hp-ED 4 <= 0.2*30=6)
+        bad = list(clip)
+        for i in (3, 9, 15, 21):
+            bad[i] = 'A' if bad[i] != 'A' else 'C'
+        query = ''.join(bad) + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('tags_mm', query, [(4, 30), (0, 60)], P_ACC)
+        stats = ResolverStats()
+        if resolve_read(r, GENOME, index, cfg, stats):
+            assert r.has_tag('NM')
+            assert r.get_tag('NM') >= 1
+
+    def test_xj_appends_rather_than_overwrites(self, index, cfg):
+        """Two resolved clips on one read must both appear in XJ.
+
+        The previous unconditional ``set_tag('XJ', ...)`` silently dropped the
+        first entry; every consumer already splits XJ on ','."""
+        clip = GENOME_SEQ[P_DON - 30:P_DON]
+        query = clip + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('xj', query, [(4, 30), (0, 60)], P_ACC)
+        stats = ResolverStats()
+        assert resolve_read(r, GENOME, index, cfg, stats)
+        assert r.has_tag('XJ')
+        assert r.has_tag('XQ')
+        # XJ's three-field grammar is load-bearing for existing consumers
+        for fld in str(r.get_tag('XJ')).split(','):
+            span, ed, side = fld.split(':')
+            assert '-' in span and float(ed) >= 0 and side in ('L', 'R', 'A1')
 
 
 class TestRejection:

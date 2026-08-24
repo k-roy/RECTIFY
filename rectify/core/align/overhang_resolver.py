@@ -116,12 +116,33 @@ from ..splice.overhang_informativeness import (
     same_junction,
 )
 from ..splice.region_skip import overlaps_skip_region, skip_regions_from_env
+from ..splice.clip_mappability import KmerIndex, best_out_of_window
 from ..splice.repeat_expansion import is_repeat_expansion
 from ..splice.splice_site_index import SpliceSiteIndex
 from ...config import CHROM_TO_GENOME
 from ...utils.genome import load_genome, standardize_chrom_name
 
 logger = logging.getLogger(__name__)
+
+# Arm 1 scores with PLAIN Levenshtein, never hp-ED: hp-ED charges 0.5 for a
+# homopolymer indel, which is exactly the tolerance arm 1 exists to refuse
+# (planning/770 -- the first pass was run with hp-ED and had to be discarded).
+try:
+    from rapidfuzz.distance import Levenshtein as _Lev
+    # planning/619/651: a pip sdist fallback installs rapidfuzz pure-Python and
+    # runs ~50x slower with no error. Check the BACKEND, not the version.
+    if 'cpp' not in getattr(_Lev.distance, '__module__', ''):
+        logger.warning(
+            'rapidfuzz C++ backend unavailable (Levenshtein.distance resolves to %s) -- '
+            'resolver arm 1 will run ~50x slower. Fix: pip install --force-reinstall '
+            '--only-binary=:all: rapidfuzz',
+            getattr(_Lev.distance, '__module__', '?'))
+    _plain_ed = _Lev.distance
+except ImportError:  # pragma: no cover - rapidfuzz is a core dependency
+    _Lev = None
+
+    def _plain_ed(a, b, score_cutoff=None):
+        raise RuntimeError('resolver arm 1 requires rapidfuzz (core dependency)')
 
 _LEFT = 'L'
 _RIGHT = 'R'
@@ -221,6 +242,77 @@ class ResolverConfig:
     arb_mm_win: int = 50         # mismatch-cluster trigger: window (query bases)
     arb_mm_frac: float = 0.30    # ...and the mismatch fraction that flags it
 
+    # --- v3 refusal clauses (planning/771 Brief A; measured in 769b-769d) ----
+    # The 2026-08-09 `edge_inside_slop` feature (fc85930) let a near site 19 bp
+    # INSIDE minimap2's aligned block create a candidate that did not previously
+    # exist, and the P02 Ty1-delta-LTR artifact rode it through the gate at
+    # hp-ED 35.0 vs threshold 36.0 — margin 1.0 (planning/769b). Three clauses
+    # refuse that class without regressing the peelback the feature exists for.
+    #
+    # Clause A (Kevin's constraint, planning/769c): a peelback (k_inside > 0)
+    # placement may win only if it beats the best no-peelback (k == 0)
+    # placement by `min_margin` — today they compete on raw ED across DIFFERENT
+    # comparison lengths, which is apples to oranges. If no k == 0 candidate
+    # exists a k > 0 candidate may still win (clauses B/C then adjudicate).
+    # 🔴 This is NOT a ban on re-assigning well-aligned bases: peelback is the
+    # feature (`resolved_inside_edge` is 1,351 of 3,627 rescues in one
+    # production sample), and the blanket prohibition floated in 769b rec 2 is
+    # withdrawn. A k > 0 candidate that fails clause A is DEMOTED to the best
+    # k == 0 candidate, not refused.
+    clause_a: bool = True
+    # Clause B (the within-window null, planning/769c/769d): before accepting,
+    # score the placed query at EVERY position of the search window, not only
+    # index-derived candidates; refuse when any position beats the accepted
+    # placement by `clause_b_margin`. This is the clause that refuses P02 —
+    # ~48 positions inside the resolver's own window score better than the one
+    # it picked, and the resolver's ambiguity test could not see them because
+    # it only compares indexed candidates (`rejected_ambiguous` fired 4 times
+    # in 52,591 reads).
+    clause_b: bool = True
+    # MARGIN_B, hp-edits. FROZEN at 5.0 by planning/771 against 3,187 accepted
+    # rescues over 6 fixture samples: refuses 26 (0.8%), ALL of them P02; zero
+    # other panel rows, zero of 47 off-panel rescues. The separation is wide,
+    # not marginal — the largest non-P02 improvement anywhere is 3.0 and P02's
+    # are 13.0-18.5, so any margin in 4-12 is equivalent. Exposed as a config
+    # field rather than a literal so the planning/772 PRODUCTION measurement
+    # can move the default without a code change.
+    clause_b_margin: float = 5.0
+    # Clause C (genome-wide clip mappability, planning/769d): required for the
+    # P07 class, which clause B structurally cannot see — P07 scores gain 0.0
+    # in-window (its placement really is rank-1 within +/-5 kb) while the clip
+    # places at hp-ED 2.0 sixty to sixty-seven kb away.
+    # 🔴 MARGIN_C IS NOT CALIBRATED (planning/771 A3). Clause C therefore ships
+    # REPORT-ONLY: with `clause_c_margin=None` it scores and records the
+    # genome-wide competitor but never refuses. Set a float only after running
+    # the planning/769d-style panel-wide impact measurement.
+    # 🔴 Uniqueness is computed on the CLIP, never on the read's MAPQ — all four
+    # artifact reads are MAPQ 60; the MAPQ 0 in 769b was the clip re-mapped
+    # alone (769d correction 1).
+    clause_c: bool = False
+    clause_c_margin: Optional[float] = None
+
+    # --- Arm 1: index-blind near-exact peel (planning/770, JUNCTION LEG ONLY) -
+    # Peel-forward/peel-back around junctions minimap2 already found, with no
+    # splice-site index and PLAIN Levenshtein (🔴 never hp-ED — hp-ED collapses
+    # homopolymers, exactly the tolerance arm 1 exists to refuse).
+    # 🔴 The 5' CLIP leg is deliberately absent: measured yield ZERO (173 clips
+    # >= 24 nt, not one ed <= 2 20-mer match anywhere within +/-5 kb). Clips are
+    # the error-burdened, motif-dependent case arm 2 exists for.
+    # OFF by default: planning/770's discovery set is 11 reads at 3 loci from
+    # one sample's first 3,000 reads and the whole-cohort number is unmeasured.
+    arm1: bool = False
+    arm1_x: int = 20             # query bases per side straddling the junction
+    arm1_max_ed: float = 2.0     # plain-Levenshtein budget over the 2X-mer
+    arm1_shift: int = 25         # max boundary shift searched (both directions)
+
+    # Emit NM on every rewritten record. planning/769 defect 1: resolver
+    # records carry NO NM (minimap2 NM=0, deSALT NM=19, mapPacBio NM=8, resolver
+    # `-`), so a 70%-mismatched block is invisible to every consumer that
+    # trusts NM — which is why nothing caught P02. Computed against the
+    # '='-DECODED query, so it is correct even though calmd is deliberately not
+    # re-run after the CIGAR surgery.
+    emit_nm: bool = True
+
     # Reads overlapping these reference regions bypass ALL junction rescue
     # (clip resolution + re-arbitration) and are written through untouched.
     # {chrom: [(start, end), ...]}, 0-based half-open. The canonical use is
@@ -264,6 +356,16 @@ class _Placement:
     canonical_rank: int  # 0 = GT/AG-class donor, 1 = GC-class
     k_inside: int = 0    # aligned bases re-assigned across the junction
                          # (inside-edge near site; planning/644 T4c)
+    # The CONTIGUOUS half of the comparison — the query bases that become the
+    # new M block and the genomic start they are placed at. Clause B scans this
+    # against every window position; storing it avoids re-deriving the
+    # side/lead geometry outside resolve_clip.
+    qblk: str = ''
+    blk_start: int = 0
+    ed_blk: float = -1.0   # exact hp-ED of qblk at blk_start (clause B baseline)
+    gain_b: float = 0.0    # best in-window improvement found by clause B
+    gain_c: float = 0.0    # best out-of-window improvement found by clause C
+    arm: str = 'arm2'      # which arm produced the call (planning/771 A5)
 
 
 def _clip_lens(cigartuples) -> Tuple[int, int]:
@@ -327,6 +429,58 @@ def _warn_blowup(chrom: str, ceiling: int) -> None:
         "but not logged. Consider adding %r to RECTIFY_SKIP_REGIONS.",
         chrom, ceiling, chrom,
     )
+
+
+def _within_window_null(
+    chrom_seq: str,
+    qblk: str,
+    blk_start: int,
+    edge: int,
+    ed_blk: float,
+    margin: float,
+    half_window: int,
+) -> Tuple[float, int]:
+    """Clause B: how much better does ``qblk`` score somewhere else in the window?
+
+    Scans EVERY position in ``[edge - half_window, edge + half_window]`` -- not
+    only the splice-site-indexed candidates -- with the DP cutoff seeded at
+    ``ed_blk - margin``, and returns ``(gain, best_pos)`` where ``gain`` is
+    ``ed_blk - best_alternative_ed`` (0.0 when nothing beats the bound).
+
+    This is the hole planning/769c found: the resolver's ambiguity test compares
+    only *indexed* candidates, so a dispersed repeat is unambiguous-by-
+    construction inside W. For the P02 read ~48 non-site positions in the
+    resolver's own window score strictly better than the placement it accepted;
+    genuine rescues sampled the same way are rank 1 (two at rank 2).
+
+    The scan runs ONCE per accepted rescue (722 of 52,591 reads in the fixture,
+    3,627 of 913,703 in production), not once per candidate, and the cutoff is
+    tight enough that almost every position prunes on the DP's first row.
+
+    🔴 Window-local BY CONSTRUCTION. It cannot catch the P07 class, whose better
+    placements sit 60-67 kb away and which scores gain 0.0 here -- that is what
+    clause C is for (planning/769d correction 2).
+    """
+    cutoff = ed_blk - margin
+    if cutoff < 0:
+        return 0.0, -1
+    n = len(qblk)
+    lo = max(0, edge - half_window)
+    hi = min(len(chrom_seq), edge + half_window) - n
+    best_ed = None
+    best_pos = -1
+    for pos in range(lo, hi + 1):
+        # The accepted placement is not its own competitor.
+        if pos == blk_start:
+            continue
+        e2 = hp_edit_distance_bounded(qblk, chrom_seq[pos:pos + n], cutoff=cutoff)
+        if e2 <= cutoff and (best_ed is None or e2 < best_ed):
+            best_ed, best_pos = e2, pos
+            if best_ed <= 0.0:
+                break
+    if best_ed is None:
+        return 0.0, -1
+    return ed_blk - best_ed, best_pos
 
 
 def resolve_clip(
@@ -492,12 +646,29 @@ def resolve_clip(
     # --- Selection: unambiguous winner only --------------------------------
     placements.sort(key=lambda p: (p.ed, p.canonical_rank, p.intron_start))
     best = placements[0]
+    pool = placements
+
+    # --- Clause A (planning/769c): peelback must BEAT no-peelback ----------
+    # k>0 and k==0 candidates were competing on raw ED across DIFFERENT
+    # comparison lengths (k>0 is scored over lc+k bases, k==0 over lc) -- apples
+    # to oranges, and the accept threshold `max_edit_frac * m` RISES with
+    # peelback length, so peeling was structurally cheap. Require the peelback
+    # to win by `min_margin`; otherwise DEMOTE to the best no-peelback
+    # placement rather than refuse. If no k==0 candidate exists at all (the P02
+    # geometry -- `edge_slop=5` admitted nothing outside the edge) a k>0
+    # candidate may still win, and clauses B/C adjudicate it.
+    if cfg.clause_a and best.k_inside > 0:
+        k0 = [p for p in placements if p.k_inside == 0]  # preserves the sort
+        if k0 and not (best.ed <= k0[0].ed - cfg.min_margin):
+            best, pool = k0[0], k0
+            _bump(stats, 'clauseA_demoted')
+
     # comparison length = m + lead for k==0 (== lc) and m for k>0 (== lc + k);
     # both equal p.m + p.lead.
     if best.ed > cfg.max_edit_frac * (best.m + best.lead):
         stats.rejected_edit += 1
         return None
-    for other in placements[1:]:
+    for other in pool[1:]:
         if other.ed - best.ed >= cfg.min_margin:
             break  # sorted: everything after is at least as far
         if not same_junction(
@@ -507,6 +678,40 @@ def resolve_clip(
         ):
             stats.rejected_ambiguous += 1
             return None
+
+    # --- The contiguous half of the comparison (clause B/C scan unit) ------
+    # LEFT : cmp_seq[:m]  <-> chrom[f-m:f]   and cmp_seq[m:]  <-> chrom[e:edge]
+    # RIGHT: cmp_seq[:lead] <-> chrom[edge:d] and cmp_seq[-m:] <-> chrom[e:e+m]
+    # For k>0 lead is 0 and the whole comparison is contiguous.
+    k = best.k_inside
+    if side == _LEFT:
+        cmp_seq = (clip_used + inside_seq[:k]) if k else clip_used
+        best.qblk = cmp_seq[:best.m]
+        best.blk_start = best.intron_start - best.m
+    else:
+        cmp_seq = (inside_seq[len(inside_seq) - k:] + clip_used) if k else clip_used
+        best.qblk = cmp_seq[len(cmp_seq) - best.m:]
+        best.blk_start = best.intron_end
+
+    # --- Clause B (planning/769c/769d): the within-window null -------------
+    # `best.ed` covers m+lead bases against a TWO-PIECE reference; the scan
+    # compares m bases against contiguous windows, so the baseline is
+    # recomputed on the contiguous block alone. (planning/769d scanned the
+    # block but kept the whole-comparison ED as the baseline, which inflates
+    # the gain slightly -- conservative in the refusing direction, and it
+    # measured zero collateral at margin 5 anyway.)
+    if cfg.clause_b:
+        best.ed_blk = hp_edit_distance_bounded(
+            best.qblk, chrom_seq[best.blk_start:best.blk_start + best.m])
+        gain, _pos = _within_window_null(
+            chrom_seq, best.qblk, best.blk_start, edge,
+            best.ed_blk, cfg.clause_b_margin, cfg.max_intron)
+        best.gain_b = gain
+        if gain >= cfg.clause_b_margin:
+            _bump(stats, 'refused_clause_b')
+            _bump(stats, 'refused_clause_b_' + side)
+            return None
+
     return best
 
 
@@ -564,10 +769,24 @@ def _rewrite_cigar(
     for tag in ('MD', 'NM'):
         if read.has_tag(tag):
             read.set_tag(tag, None)
-    read.set_tag(
-        'XJ',
-        f'{placement.intron_start}-{placement.intron_end}:{placement.ed:.1f}:{side}',
-    )
+    # APPEND, never overwrite: a read can be resolved on BOTH terminal clips,
+    # and the previous unconditional set_tag silently dropped the first entry
+    # (every consumer already splits XJ on ',' -- 769d/772 both do).
+    entry = f'{placement.intron_start}-{placement.intron_end}:{placement.ed:.1f}:{side}'
+    prev = str(read.get_tag('XJ')) if read.has_tag('XJ') else ''
+    read.set_tag('XJ', f'{prev},{entry}' if prev else entry)
+
+    # planning/771 A5 asks for the clause-B gain and the producing arm on XJ.
+    # 🔴 They go on a SEPARATE tag instead, deliberately: XJ's three
+    # colon-separated fields are load-bearing for existing consumers
+    # (769d_clauseB_full.py and 772_clauseB_prod.py both do
+    # `span, ed, side = fld.split(':')`), and a fourth field makes every one of
+    # them raise ValueError and SILENTLY skip the record -- exactly the
+    # invisible-failure class this whole change set exists to remove.
+    # XQ is parallel to XJ: one comma-separated entry per XJ entry, same order.
+    xq = f'arm={placement.arm};gB={placement.gain_b:.1f};gC={placement.gain_c:.1f};k={k}'
+    prevq = str(read.get_tag('XQ')) if read.has_tag('XQ') else ''
+    read.set_tag('XQ', f'{prevq},{xq}' if prevq else xq)
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +833,45 @@ def _decoded_query(read: pysam.AlignedSegment, chrom_seq: str) -> str:
         elif op in (2, 3):   # D/N consume reference only
             ref += ln
     return ''.join(out)
+
+
+def _compute_nm(cigartuples, ref_start: int, dq: str, chrom_seq: str) -> int:
+    """SAM ``NM`` for a (possibly rewritten) record: mismatches + inserted +
+    deleted bases; ``N`` is a skip, not a deletion, so it is not charged.
+
+    planning/769 defect 1 -- the resolver emitted NO ``NM`` at all (minimap2
+    NM=0, deSALT NM=19, mapPacBio NM=8, resolver ``-``), so a 70%-mismatched
+    block was invisible to every consumer that trusts NM. That is the single
+    largest reason the P02 artifact reached consensus unnoticed.
+
+    ``dq`` must be the '='-DECODED query taken under the record's ORIGINAL
+    placement: ``rectify align`` runs ``samtools calmd -e`` before this module
+    and the resolver deliberately does not re-run it, so ``read.query_sequence``
+    still carries '=' bytes that mean "matches the reference where minimap2 put
+    me" -- decoding them at the NEW coordinates would score moved bases as
+    perfect matches and defeat the whole point of the tag.
+    """
+    nm = 0
+    qi = 0
+    rp = ref_start
+    for op, ln in cigartuples:
+        if op in (0, 7, 8):          # M / = / X
+            for t in range(ln):
+                if dq[qi + t] != chrom_seq[rp + t]:
+                    nm += 1
+            qi += ln
+            rp += ln
+        elif op == 1:                # I
+            nm += ln
+            qi += ln
+        elif op == 2:                # D
+            nm += ln
+            rp += ln
+        elif op == 4:                # S
+            qi += ln
+        elif op == 3:                # N -- a skip, not an edit
+            rp += ln
+    return nm
 
 
 def _iter_ref_ops(cigartuples):
@@ -1143,6 +1401,228 @@ def _rearbitrate_read(
     return changed
 
 
+def _apply_clause_c(
+    placement: _Placement,
+    genome: Dict[str, str],
+    chrom_key: str,
+    chrom_seq: str,
+    cfg: ResolverConfig,
+    stats: ResolverStats,
+    kmer_index: Optional[KmerIndex],
+) -> Optional[_Placement]:
+    """Clause C: score the placed block genome-wide and refuse when an
+    OUT-OF-WINDOW placement beats it by ``clause_c_margin``.
+
+    Required for the P07 class, which clause B structurally cannot see: P07's
+    placement is genuinely rank-1 within +/-5 kb (clause-B gain 0.0) while the
+    clip places at hp-ED 2.0 sixty to sixty-seven kb away (planning/769d
+    correction 2).
+
+    🔴 REPORT-ONLY unless ``clause_c_margin`` is set. planning/771 A3 is explicit
+    that MARGIN_C is **not calibrated** — derive it and report the panel-wide
+    impact the way planning/769d did before adopting a value. With the margin
+    unset this records ``gain_c`` on the XQ tag and a counter, and refuses
+    nothing.
+    """
+    if kmer_index is None or not placement.qblk:
+        return placement
+    ed_base = placement.ed_blk
+    if ed_base < 0:
+        ed_base = hp_edit_distance_bounded(
+            placement.qblk,
+            chrom_seq[placement.blk_start:placement.blk_start + placement.m])
+        placement.ed_blk = ed_base
+    # Probe margin: with MARGIN_C unset we still want a usable REPORT, so probe
+    # at 1.0 (anything better than the accepted placement is worth recording).
+    probe = cfg.clause_c_margin if cfg.clause_c_margin is not None else 1.0
+    gain, cn, cp = best_out_of_window(
+        kmer_index, genome, placement.qblk, chrom_key,
+        placement.blk_start - cfg.max_intron,
+        placement.blk_start + cfg.max_intron,
+        ed_base, probe, hp_edit_distance_bounded,
+    )
+    placement.gain_c = gain
+    if gain > 0:
+        _bump(stats, 'clauseC_better_elsewhere')
+    if cfg.clause_c_margin is not None and gain >= cfg.clause_c_margin:
+        _bump(stats, 'refused_clause_c')
+        logger.debug('clause C refused %s:%d (gain %.1f, better at %s:%d)',
+                     chrom_key, placement.blk_start, gain, cn, cp)
+        return None
+    return placement
+
+
+# ---------------------------------------------------------------------------
+# Arm 1 (planning/770): index-blind near-exact peel — JUNCTION LEG ONLY.
+# ---------------------------------------------------------------------------
+
+def _arm1_window_unique(chrom_seq: str, q: str, pos: int,
+                        max_ed: int, half_window: int) -> bool:
+    """Clause B for arm 1: no OTHER position in the window matches ``q`` within
+    ``max_ed`` PLAIN edits.
+
+    planning/771 A4: "an index-blind exact match inside a Ty1 LTR is the same
+    repeat trap with a tighter threshold". The rescue path's clause B compares
+    hp-EDs with a margin of 5; that is vacuous here because a near-exact 20-mer
+    cannot be beaten by 5 edits. The equivalent test for a near-exact match is
+    plain UNIQUENESS at the same tolerance."""
+    n = len(q)
+    lo = max(0, pos - half_window)
+    hi = min(len(chrom_seq), pos + half_window) - n
+    for p in range(lo, hi + 1):
+        if p == pos:
+            continue
+        if _plain_ed(q, chrom_seq[p:p + n], score_cutoff=max_ed) <= max_ed:
+            return False
+    return True
+
+
+def _arm1_junction_peel(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    cfg: ResolverConfig,
+    stats: ResolverStats,
+    dq0: Optional[str],
+    ref_start0: int,
+) -> bool:
+    """Peel-forward/peel-back around a junction the aligner ALREADY found, with
+    no splice-site index and PLAIN Levenshtein.
+
+    Why it exists (planning/770): arm 2 can only propose placements the
+    GT/AG-class :class:`SpliceSiteIndex` already contains, so a boundary the
+    aligner mis-assigned by 1-4 bp to a non-indexed dinucleotide is invisible to
+    it. Measured on one sample's first 3,000 reads: minimap2's current boundary
+    already scores ed 0 on 1,447/1,813 N ops (80%); 11 junctions at 3 loci
+    (chrII:407028-407122, chrII:406883-407183, chrII:604515-604927 = panel
+    P03/P22/P36) have current ed > 2 AND exactly one ed <= 2 alternative — and
+    arm 2 found NOTHING on any of them (`XJ` absent).
+
+    🔴 PLAIN Levenshtein, never hp-ED. hp-ED charges 0.5 for a homopolymer indel;
+    collapsing homopolymers is exactly the tolerance this arm exists to refuse.
+
+    🔴 Ambiguity discipline is mandatory, not optional. Even at X=30 the median
+    junction has 3-8 alternative ed<=2 placements within +/-25 (mean 4.43 at X=12
+    -> 3.74 at X=30 — raising X barely helps). Requiring UNIQUENESS after a
+    `same_junction` collapse is what took the discovery set from ~500 to 11.
+
+    🔴 The 5' CLIP leg is deliberately not built: 173 clips >= 24 nt, ZERO with an
+    ed<=2 20-mer match anywhere within +/-5 kb. Unsurprising in hindsight — if a
+    clip matched near-exactly nearby, the aligner would have aligned it.
+
+    Geometry note: this uses the EXACT formulation — a donor shift of ``a`` moves
+    the query split by ``a`` too, so each candidate is scored against its own
+    query window (the same convention :func:`_score_alts` uses). planning/770's
+    measurement held the query window fixed, which is an approximation that lets
+    the effective split float inside the DP; hit counts may therefore differ
+    slightly from that table.
+    """
+    if _Lev is None:
+        return False
+    X = int(cfg.arm1_x)
+    SH = int(cfg.arm1_shift)
+    MAXED = int(cfg.arm1_max_ed)
+    ct = list(read.cigartuples or [])
+    if len(ct) < 3:
+        return False
+    dq = dq0 if dq0 is not None else _decoded_query(read, chrom_seq)
+    L = len(chrom_seq)
+    nops = len(ct)
+
+    for i, op, ln, ref_off, q_off in list(_iter_ref_ops(ct)):
+        if op != 3 or i == 0 or i + 1 >= nops:
+            continue
+        if ct[i - 1][0] not in (0, 7, 8) or ct[i + 1][0] not in (0, 7, 8):
+            continue
+        m_l, m_r = ct[i - 1][1], ct[i + 1][1]
+        d = read.reference_start + ref_off
+        e = d + ln
+        qp = q_off
+        if qp < X + SH or qp + X + SH > len(dq):
+            continue
+        if d - X - SH < 0 or e + X + SH > L:
+            continue
+        _bump(stats, 'arm1_junctions')
+
+        # A boundary move that CHANGES the intron length displaces every
+        # ref-consuming op downstream of the right flank (the same frame-safety
+        # constraint Case A enforces). Rigid moves (b == a) are always safe.
+        downstream_ref_free = all(o in (1, 4, 5) for o, _ in ct[i + 2:])
+
+        cur = _plain_ed(dq[qp - X:qp + X], chrom_seq[d - X:d] + chrom_seq[e:e + X])
+        if cur <= MAXED:
+            _bump(stats, 'arm1_clean')
+            continue
+
+        hits: List[Tuple[int, int, int, int, int]] = []
+        for a in range(-SH, SH + 1):
+            if m_l + a < 1 or m_r - a < 1:
+                continue
+            # Left-half prefilter: ed<=MAXED over the 2X window requires the
+            # left X bases alone to fit the budget AT THIS SPLIT. Every split is
+            # scanned, so nothing reachable is lost — and this is what keeps the
+            # scan ~200 DPs per junction instead of (2*SH+1)^2 = 2,601.
+            if _plain_ed(dq[qp + a - X:qp + a], chrom_seq[d + a - X:d + a],
+                         score_cutoff=MAXED) > MAXED:
+                continue
+            qwin = dq[qp + a - X:qp + a + X]
+            for b in range(-SH, SH + 1):
+                if a == 0 and b == 0:
+                    continue
+                if b != a and not downstream_ref_free:
+                    continue
+                d2, e2 = d + a, e + b
+                if not (cfg.min_intron <= e2 - d2 <= cfg.max_intron):
+                    continue
+                if e2 + (m_r - a) > L:
+                    continue
+                v = _plain_ed(qwin, chrom_seq[d2 - X:d2] + chrom_seq[e2:e2 + X],
+                              score_cutoff=MAXED)
+                if v <= MAXED:
+                    hits.append((v, a, b, d2, e2))
+        if not hits:
+            _bump(stats, 'arm1_no_hit')
+            continue
+
+        hits.sort()
+        distinct: List[Tuple[int, int, int, int, int]] = []
+        for h in hits:
+            if not any(same_junction(chrom_seq, (h[3], h[4]), (g[3], g[4]))
+                       for g in distinct):
+                distinct.append(h)
+        if len(distinct) != 1:
+            _bump(stats, 'arm1_ambiguous')
+            continue
+
+        v, a, b, d2, e2 = distinct[0]
+        if cfg.clause_b and not (
+                _arm1_window_unique(chrom_seq, dq[qp + a - X:qp + a],
+                                    d2 - X, MAXED, cfg.max_intron)
+                and _arm1_window_unique(chrom_seq, dq[qp + a:qp + a + X],
+                                        e2, MAXED, cfg.max_intron)):
+            _bump(stats, 'arm1_refused_clause_b')
+            continue
+
+        new_ct = list(ct)
+        new_ct[i - 1] = (ct[i - 1][0], m_l + a)
+        new_ct[i] = (3, e2 - d2)
+        new_ct[i + 1] = (ct[i + 1][0], m_r - a)
+        read.cigartuples = new_ct
+        for tag in ('MD', 'NM'):
+            if read.has_tag(tag):
+                read.set_tag(tag, None)
+        entry = f'{d2}-{e2}:{float(v):.1f}:A1'
+        prev = str(read.get_tag('XJ')) if read.has_tag('XJ') else ''
+        read.set_tag('XJ', f'{prev},{entry}' if prev else entry)
+        xq = f'arm=arm1;ed={v};cur={cur};from={d}-{e}'
+        prevq = str(read.get_tag('XQ')) if read.has_tag('XQ') else ''
+        read.set_tag('XQ', f'{prevq},{xq}' if prevq else xq)
+        _bump(stats, 'arm1_resolved')
+        # One move per read: the CIGAR walk above is now stale.
+        return True
+
+    return False
+
+
 def resolve_read(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -1150,6 +1630,7 @@ def resolve_read(
     cfg: ResolverConfig,
     stats: ResolverStats,
     sides: str = 'LR',
+    kmer_index: Optional[KmerIndex] = None,
 ) -> bool:
     """Attempt overhang resolution on both terminal clips of a primary
     alignment. Mutates ``read`` in place; returns True if anything changed.
@@ -1183,6 +1664,15 @@ def resolve_read(
     strand = '-' if read.is_reverse else '+'
     changed = False
 
+    # 🔴 Decode the query ONCE, HERE, before any rewrite. `rectify align` runs
+    # `samtools calmd -e` upstream, so query_sequence carries '=' bytes meaning
+    # "matches the reference AT MY CURRENT PLACEMENT". Every rewrite below moves
+    # bases, after which those bytes are stale; decoding later would silently
+    # score moved bases as perfect matches (planning/769 §2 -- the trap that
+    # inflated the first mismatch survey to 89.4% and had to be discarded).
+    dq0 = _decoded_query(read, chrom_seq) if cfg.emit_nm else None
+    ref_start0 = read.reference_start
+
     left_len, _ = _clip_lens(read.cigartuples)
     if _LEFT in sides and left_len >= cfg.min_clip:
         clip_seq = read.query_sequence[:left_len]
@@ -1202,6 +1692,9 @@ def resolve_read(
             chrom_seq, index, chrom_key, _LEFT, strand, clip_seq,
             edge=read.reference_start, cfg=cfg, stats=stats, inside_seq=inside,
         )
+        if placement is not None and cfg.clause_c:
+            placement = _apply_clause_c(placement, genome, chrom_key, chrom_seq,
+                                        cfg, stats, kmer_index)
         if placement is not None:
             _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len)
             stats.resolved += 1
@@ -1228,6 +1721,9 @@ def resolve_read(
             chrom_seq, index, chrom_key, _RIGHT, strand, clip_seq,
             edge=read.reference_end, cfg=cfg, stats=stats, inside_seq=inside,
         )
+        if placement is not None and cfg.clause_c:
+            placement = _apply_clause_c(placement, genome, chrom_key, chrom_seq,
+                                        cfg, stats, kmer_index)
         if placement is not None:
             _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len)
             stats.resolved += 1
@@ -1241,6 +1737,22 @@ def resolve_read(
     if cfg.arb_enable:
         if _rearbitrate_read(read, chrom_seq, index, chrom_key, strand, cfg, stats):
             changed = True
+
+    # Arm 1 (planning/770): index-blind near-exact peel around junctions
+    # minimap2 already found. Junction leg only -- the 5' clip leg measured
+    # ZERO yield and is deliberately not built.
+    if cfg.arm1:
+        if _arm1_junction_peel(read, chrom_seq, cfg, stats, dq0, ref_start0):
+            changed = True
+
+    # planning/771 A5 / planning/769 defect 1: emit NM on every rewritten
+    # record. Passthroughs keep the input aligner's NM untouched.
+    if changed and cfg.emit_nm and dq0 is not None:
+        try:
+            read.set_tag('NM', _compute_nm(read.cigartuples, read.reference_start,
+                                           dq0, chrom_seq), 'i')
+        except IndexError:  # pragma: no cover - a rewrite ran off the contig
+            _bump(stats, 'nm_compute_failed')
 
     return changed
 
@@ -1286,6 +1798,14 @@ def run_overhang_resolver(
         cfg.skip_regions = skip_regions_from_env()
     genome = load_genome(Path(genome_path))
     index = SpliceSiteIndex.load_or_build(str(genome_path), genome)
+    kmer_index = None
+    if cfg.clause_c:
+        kmer_index = KmerIndex.load_or_build(str(genome_path), genome)
+        if cfg.clause_c_margin is None:
+            logger.info('overhang_resolver: clause C is REPORT-ONLY '
+                        '(clause_c_margin unset -- MARGIN_C is not calibrated, '
+                        'planning/771 A3). Gains are recorded on XQ and counted '
+                        'as clauseC_better_elsewhere; nothing is refused.')
     stats = ResolverStats()
 
     with pysam.AlignmentFile(base_bam, 'rb', check_sq=False) as inp:
@@ -1298,7 +1818,8 @@ def run_overhang_resolver(
         with pysam.AlignmentFile(output_bam, 'wb', header=header) as out:
             for read in inp.fetch(until_eof=True):
                 stats.reads += 1
-                resolve_read(read, genome, index, cfg, stats)
+                resolve_read(read, genome, index, cfg, stats,
+                             kmer_index=kmer_index)
                 out.write(read)
 
     logger.info(
