@@ -29,6 +29,7 @@ from ._constants import (
     SSP_RC,
     UMI_LEN,
 )
+from ..bam.bam_writer import _decode_eq_seq_inplace
 from .walkback import walk_back_anchor_and_tail, walk_forward_tss
 
 # edlib is an optional dep (loaded lazily so the module imports without it).
@@ -212,6 +213,15 @@ def extract_read_info(read: pysam.AlignedSegment,
 
     if chrom_seq_cache is not None and read.reference_name in chrom_seq_cache:
         chrom_seq = chrom_seq_cache[read.reference_name]
+        # Decode calmd '=' before the walkback reads query_sequence — the same
+        # guard bam_processor.py:316 already applies on its own path. Path A
+        # feeds this a bare `minimap2 | samtools sort` pre-alignment that was
+        # never calmd'd, so this is a no-op there; it matters if correct-cdna is
+        # ever pointed at a `rectify align` output, where SEQ is ~99.8 % '='-
+        # encoded and the walkback would silently return the raw alignment end
+        # with tail_len 0 (planning/578). _decode_eq_seq_inplace is idempotent
+        # and returns immediately when SEQ carries no '='.
+        _decode_eq_seq_inplace(read, chrom_seq_cache)
         anchor, tail_len = walk_back_anchor_and_tail(read, chrom_seq, orient)
         # v1.19: 5' TSS walk-forward (Type-1 only — Type-2 5' is the truncation
         # point, not the SSP-bridge boundary).

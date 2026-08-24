@@ -15,6 +15,7 @@ Helpers shared across the ``rectify run-all`` runners.
 - ``_validate_bam_integrity``: existence + ``.bai`` + ``samtools quickcheck``.
 """
 
+import subprocess as _subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
