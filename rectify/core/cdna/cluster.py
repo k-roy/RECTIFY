@@ -62,6 +62,9 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
         type2_clusters=0,
         type1_reads=sum(1 for r in reads if r.read_type == 1),
         type2_reads=sum(1 for r in reads if r.read_type == 2),
+        # Sub-type (XY) read tally — 1a (fwd) / 1b (rev) / 2. Counted here so the
+        # parallel path can sum it per region; the QC block reports it every run.
+        subtype_reads=_subtype_tally(reads),
         adaptive_threshold=adaptive_threshold,
         adaptive_deep_buckets=0,
         adaptive_deep_reads=0,
@@ -121,3 +124,16 @@ def pick_representative(reads_in_cluster: List[pysam.AlignedSegment]) -> pysam.A
         ref_len = (r.reference_end or 0) - r.reference_start
         return (-mean_q, -ref_len, -r.mapping_quality, r.query_name)
     return min(reads_in_cluster, key=key)
+
+
+def _subtype_tally(reads) -> dict:
+    """Count reads per ``XY`` sub-type (``1a`` fwd, ``1b`` rev, ``2``).
+
+    Tolerates a read object without ``read_subtype`` (older fixtures) by falling back to
+    the main type, so QC never crashes a production run over a missing attribute.
+    """
+    out: dict = {}
+    for r in reads:
+        k = getattr(r, "read_subtype", None) or str(getattr(r, "read_type", "?"))
+        out[str(k)] = out.get(str(k), 0) + 1
+    return out

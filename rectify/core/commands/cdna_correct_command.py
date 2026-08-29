@@ -222,6 +222,29 @@ def _cdna_region_task(
     # 658: surface the per-region adaptive-ed decisions so the parallel path is not blind to them.
     fq_stats["adaptive_deep_buckets"] = stats.get("adaptive_deep_buckets", 0)
     fq_stats["adaptive_deep_reads"] = stats.get("adaptive_deep_reads", 0)
+    # QC: these were computed here and then DISCARDED, so --workers>1 (the path any real
+    # run takes) shipped without the read-type / XF / tail QC the serial path prints.
+    # Fold them into the return so the parent can sum them across regions.
+    from rectify.core.cdna.qc import TAIL_BINS as _TB
+    fq_stats["input_reads"] = len(reads)
+    for _k in ("type1_reads", "type2_reads", "type1_clusters", "type2_clusters",
+               "buckets_dropped_polyA_pileup", "reads_in_dropped_buckets"):
+        fq_stats[_k] = stats.get(_k, 0)
+    fq_stats["subtype_reads"] = dict(stats.get("subtype_reads", {}) or {})
+    _tiers: Dict[int, int] = {0: 0, 1: 0, 2: 0}
+    for _v in cluster_xf_tier.values():
+        _tiers[int(_v)] = _tiers.get(int(_v), 0) + 1
+    fq_stats["xf_tier_counts"] = _tiers
+    _hist = [0] * len(_TB)
+    for _cid in range(len(clusters)):
+        if cluster_xf_tier.get(_cid, 0) < 2:
+            continue
+        _tl = cluster_tail_len.get(_cid, 0)
+        for _i, (_lo, _hi) in enumerate(_TB):
+            if _lo <= _tl < _hi:
+                _hist[_i] += 1
+                break
+    fq_stats["tail_hist"] = _hist
     return fq_stats
 
 
@@ -287,10 +310,29 @@ def _run_cdna_correct_parallel(
                                   # planning/681 adapter-pretrim health counters
                                   "trim_frame_flipped": 0, "trim_frame_mismatch": 0,
                                   "trim_noop_5p": 0, "trim_noop_3p": 0}
+            total_stats.update({"input_reads": 0, "type1_reads": 0, "type2_reads": 0,
+                                "type1_clusters": 0, "type2_clusters": 0,
+                                "buckets_dropped_polyA_pileup": 0,
+                                "reads_in_dropped_buckets": 0, "n_rdna_masked": 0})
+            agg_tiers: Dict[int, int] = {0: 0, 1: 0, 2: 0}
+            agg_tail: List[int] = []
+            agg_sub: Dict[str, int] = {}
             for fut in as_completed(futures):
                 s = fut.result()
                 for k in total_stats:
                     total_stats[k] += s.get(k, 0)
+                for _t, _n in (s.get("xf_tier_counts") or {}).items():
+                    agg_tiers[int(_t)] = agg_tiers.get(int(_t), 0) + _n
+                _h = s.get("tail_hist") or []
+                if not agg_tail:
+                    agg_tail = list(_h)
+                elif _h:
+                    agg_tail = [a + b for a, b in zip(agg_tail, _h)]
+                for _k, _n in (s.get("subtype_reads") or {}).items():
+                    agg_sub[_k] = agg_sub.get(_k, 0) + _n
+            total_stats["xf_tier_counts"] = agg_tiers
+            total_stats["tail_hist"] = agg_tail
+            total_stats["subtype_reads"] = agg_sub
             if adaptive_threshold > 0:
                 log.info("  adaptive ed: %d deep buckets (%d reads) clustered at ed=1 "
                          "(threshold %d reads/bucket)",
@@ -427,17 +469,21 @@ def run(args) -> int:
             args.umi_clustering, use_poa, args.strand_aware_consensus, _workers,
             adaptive_threshold=args.umi_adaptive_threshold,
         )
+        from rectify.core.cdna.qc import collect_qc, render_qc, write_qc_json
+        _qc = collect_qc(
+            fastq_stats=fastq_stats, stats=fastq_stats,
+            n_clusters=fastq_stats.get("written", 0),
+            tier_counts=fastq_stats.get("xf_tier_counts"),
+            tail_hist=fastq_stats.get("tail_hist"),
+            n_input_reads=fastq_stats.get("input_reads"),
+            workers=_workers, sample=args.out.name,
+        )
         print()
-        print("=" * 70)
-        print(f"cdna_correct v1 — Stage-1 dedup complete (parallel {_workers} workers)")
-        print("=" * 70)
-        print(f"output records (one per molecule): {fastq_stats['written']:>8d}")
-        print(f"  singletons (passed through):     {fastq_stats['from_singletons']:>8d}")
-        print(f"  multi-read (pileup/POA):         {fastq_stats['from_multi_pileup']:>8d}")
-        print(f"  multi-read (rep fallback):       {fastq_stats['from_multi_fallback']:>8d}")
-        _print_pretrim_health(fastq_stats)
+        print(render_qc(_qc))
+        _qp = write_qc_json(_qc, args.out)
         print()
         print(f"Output FASTQ: {out_fastq}")
+        print(f"Stage-1 QC:   {_qp}")
         print("Next step: `rectify align` on this FASTQ → `rectify cdna-analyze`")
     else:
         log.info("Streaming reads from %s region=%s ...", args.bam, args.region or "all")
@@ -503,59 +549,19 @@ def run(args) -> int:
                  fastq_stats["from_multi_pileup"], fastq_stats["from_multi_fallback"],
                  time.time() - t2)
 
+        from rectify.core.cdna.qc import collect_qc, render_qc, write_qc_json
+        _qc = collect_qc(
+            fastq_stats=fastq_stats, stats=stats,
+            n_clusters=len(clusters),
+            cluster_xf_tier=cluster_xf_tier, cluster_tail_len=cluster_tail_len,
+            n_input_reads=len(reads), workers=1, sample=args.out.name,
+        )
         print()
-        print("=" * 70)
-        print("cdna_correct v1 — Stage-1 dedup complete")
-        print("=" * 70)
-        print(f"input reads (UMI-extractable): {len(reads):>8d}")
-        print(f"output records (one per molecule): {fastq_stats['written']:>8d}"
-              f"  ({100 * fastq_stats['written'] / max(1, len(reads)):.1f}% of input)")
-        print(f"  singletons (passed through):     {fastq_stats['from_singletons']:>8d}")
-        print(f"  multi-read (pileup consensus):   {fastq_stats['from_multi_pileup']:>8d}")
-        print(f"  multi-read (rep fallback):       {fastq_stats['from_multi_fallback']:>8d}")
-        _print_pretrim_health(fastq_stats)
-        print(f"polyA-pileup buckets dropped:    {stats['buckets_dropped_polyA_pileup']:>8d}"
-              f"  ({stats['reads_in_dropped_buckets']} reads — these need POA + position-aware handling)")
-        n_t1 = stats.get('type1_reads', 0); n_t2 = stats.get('type2_reads', 0)
-        n_total_typed = max(1, n_t1 + n_t2)
-        print(f"Read-type breakdown:")
-        print(f"  Type 1 (SSP+UMI captured):       {n_t1:>8d}  ({100*n_t1/n_total_typed:.1f}%)  → {stats.get('type1_clusters', 0)} clusters")
-        print(f"  Type 2 (SSP-less, 5'-truncated): {n_t2:>8d}  ({100*n_t2/n_total_typed:.1f}%)  → {stats.get('type2_clusters', 0)} clusters")
-        print()
-        print("XF tier breakdown (full-length confidence):")
-        tier_counts: defaultdict[int, int] = defaultdict(int)
-        for v in cluster_xf_tier.values():
-            tier_counts[v] += 1
-        n_clust = max(1, len(clusters))
-        print(f"  XF=2 (anchored, HIGH confidence):     {tier_counts[2]:>8d} clusters"
-              f"  ({100*tier_counts[2]/n_clust:.1f}%)")
-        print(f"  XF=1 (unanchored, MEDIUM confidence): {tier_counts[1]:>8d} clusters"
-              f"  ({100*tier_counts[1]/n_clust:.1f}%)")
-        print(f"  XF=0 (not detected):                  {tier_counts[0]:>8d} clusters"
-              f"  ({100*tier_counts[0]/n_clust:.1f}%)")
-        n_full = tier_counts[1] + tier_counts[2]
-        print(f"  XF≥1 (any full-length):               {n_full:>8d} clusters"
-              f"  ({100*n_full/n_clust:.1f}%)")
-        print()
-        print("PolyA tail-length distribution (per-cluster median, sequence-level, XF=2 only):")
-        bins = [(0, 1), (1, 10), (10, 20), (20, 30), (30, 50), (50, 75),
-                (75, 100), (100, 150), (150, 250), (250, 10_000)]
-        bin_counts = [0] * len(bins)
-        for cid in range(len(clusters)):
-            if cluster_xf_tier[cid] < 2: continue
-            tl = cluster_tail_len[cid]
-            for i, (lo, hi) in enumerate(bins):
-                if lo <= tl < hi:
-                    bin_counts[i] += 1; break
-        n_with_tl = sum(bin_counts)
-        print(f"  (restricted to XF=2 anchored clusters: N={n_with_tl})")
-        print(f"  {'range':<12} {'count':>8} {'pct':>6}")
-        for (lo, hi), n in zip(bins, bin_counts):
-            label = f"{lo}-{hi-1}" if hi < 10_000 else f"≥{lo}"
-            pct = 100 * n / max(1, n_with_tl)
-            print(f"  {label:<12} {n:>8d} {pct:>5.1f}%")
+        print(render_qc(_qc))
+        _qp = write_qc_json(_qc, args.out)
         print()
         print(f"Output FASTQ: {out_fastq}")
+        print(f"Stage-1 QC:   {_qp}")
         print("Next step: `rectify align` on this FASTQ → `rectify cdna-analyze` "
               "for clusters.tsv / isoforms.tsv / t1t2_pairs.tsv.")
 
