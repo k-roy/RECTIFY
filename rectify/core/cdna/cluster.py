@@ -19,7 +19,8 @@ from .umi import (
 def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
                   per_cluster_cap: int,
                   clustering_method: str = "directional",
-                  adaptive_threshold: int = 0
+                  adaptive_threshold: int = 0,
+                  type2_collapse: str = "none"
                   ) -> Tuple[List[List[ReadInfo]], dict]:
     """Stage-1 clustering: anchor-bucket reads, then UMI-cluster within each bucket.
 
@@ -41,6 +42,31 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
       anchor_window == 1 bucket sizes are global (the 624 anchor partition keeps
       buckets whole per region), so serial and --workers N make identical
       per-bucket ed decisions.
+
+    type2_collapse:
+      "none" (DEFAULT) = Type-2 reads are NOT collapsed; each is one observation.
+      "position" = LEGACY, opt-in only: collapse exact (aln_start, aln_end) matches.
+
+      🔴 Why the default changed. Type-2 reads are SSP-less, so they carry **no UMI** —
+      there is no evidence by which to call two of them the same molecule. The old
+      behaviour collapsed exact (aln_start, aln_end) matches and called them PCR
+      duplicates. It is the coordinate-collapse fallacy: it measures **positional
+      concentration, not amplification**, which is precisely the substitution the
+      Chanfreau DRS/cDNA invariants forbid ("Do NOT substitute coordinate-collapse for
+      UMI dedup") — the same proxy reports ~65% "duplicates" on DRS, which is
+      unamplified and cannot have any.
+
+      Measured on the 827 splicing_aa cohort (18 libraries): the old path removed
+      **51.5% of all Type-2 reads** (13,292,754 -> 6,450,950). The rate scaled with
+      DEPTH — 4-6% on the ~50k-read libraries vs 44-57% on the multi-million-read ones
+      — while true PCR duplication measured by UMI on the SAME libraries was 24-41%.
+      Duplication does not scale with depth like that; positional crowding does. So the
+      excess was genuine distinct molecules being merged away, and Type-2 abundance was
+      understated roughly two-fold in a depth-dependent way.
+
+      Grouping Type-2 reads by 3' end is still legitimate — but it is ISOFORM/CPA-site
+      clustering, it belongs in `cdna-analyze` (Stage 3) where it is labelled as such,
+      and it must never be presented as deduplication.
     """
     # Bucket key includes read_type (v1.15) — Type-1 and Type-2 reads never
     # mix within a bucket, so they get different clustering algorithms.
@@ -60,6 +86,7 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
         molecule_clusters_size_ge_3=0,
         type1_clusters=0,
         type2_clusters=0,
+        type2_reads_collapsed=0,
         type1_reads=sum(1 for r in reads if r.read_type == 1),
         type2_reads=sum(1 for r in reads if r.read_type == 2),
         # Sub-type (XY) read tally — 1a (fwd) / 1b (rev) / 2. Counted here so the
@@ -91,8 +118,15 @@ def cluster_reads(reads: List[ReadInfo], anchor_window: int, max_edit: int,
                 stats["adaptive_deep_buckets"] += 1
                 stats["adaptive_deep_reads"] += bsize
             comps = umi_cluster_fn(umis, bucket_ed)
-        else:
+        elif type2_collapse == "position":
+            # LEGACY, opt-in only — see the docstring. Retained solely to reproduce
+            # pre-fix outputs; it violates the coordinate-collapse-is-not-dedup rule.
             comps = position_components(bucket_reads)
+            stats["type2_reads_collapsed"] += bsize - len(comps)
+        else:
+            # DEFAULT: Type-2 reads carry NO UMI, so there is no evidence by which to
+            # call any two of them the same molecule. Each read is one observation.
+            comps = [[i] for i in range(bsize)]
         for comp in comps:
             cluster = [bucket_reads[i] for i in comp]
             out_clusters.append(cluster)

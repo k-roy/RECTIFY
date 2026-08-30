@@ -121,6 +121,7 @@ def _cdna_region_task(
     use_poa: bool,
     strand_aware_consensus: bool,
     adaptive_threshold: int = 0,
+    type2_collapse: str = "none",
 ) -> Dict:
     """Process one BAM region into a FASTQ chunk.
 
@@ -195,7 +196,8 @@ def _cdna_region_task(
 
     clusters, stats = _cluster(reads, anchor_window_bp, umi_edit_distance, per_cluster_cap,
                                 clustering_method=umi_clustering,
-                                adaptive_threshold=adaptive_threshold)
+                                adaptive_threshold=adaptive_threshold,
+                                type2_collapse=type2_collapse)
 
     def _median(xs: List[int]) -> int:
         if not xs: return 0
@@ -261,6 +263,7 @@ def _run_cdna_correct_parallel(
     strand_aware_consensus: bool,
     workers: int,
     adaptive_threshold: int = 0,
+    type2_collapse: str = "none",
 ) -> Dict:
     """Region-parallel stage-1 consensus FASTQ.
 
@@ -297,7 +300,7 @@ def _run_cdna_correct_parallel(
                     rdna_intervals,
                     anchor_window_bp, umi_edit_distance, per_cluster_cap,
                     umi_clustering, use_poa, strand_aware_consensus,
-                    adaptive_threshold,
+                    adaptive_threshold, type2_collapse,
                 )
                 futures[fut] = plan.region_id
 
@@ -378,6 +381,7 @@ def run(args) -> int:
         ("strand_aware_consensus", False),
         ("no_mask_rdna", False),
         ("umi_adaptive_threshold", 0),
+        ("type2_collapse", "none"),
         ("umi_profile", False),
     ]:
         if not hasattr(args, attr): setattr(args, attr, default)
@@ -468,6 +472,7 @@ def run(args) -> int:
             args.anchor_window_bp, args.umi_edit_distance, args.per_cluster_cap,
             args.umi_clustering, use_poa, args.strand_aware_consensus, _workers,
             adaptive_threshold=args.umi_adaptive_threshold,
+            type2_collapse=args.type2_collapse,
         )
         from rectify.core.cdna.qc import collect_qc, render_qc, write_qc_json
         _qc = collect_qc(
@@ -500,7 +505,8 @@ def run(args) -> int:
         clusters, stats = cluster_reads(reads, args.anchor_window_bp,
                                          args.umi_edit_distance, args.per_cluster_cap,
                                          clustering_method=args.umi_clustering,
-                                         adaptive_threshold=args.umi_adaptive_threshold)
+                                         adaptive_threshold=args.umi_adaptive_threshold,
+                                         type2_collapse=args.type2_collapse)
         log.info("  %d molecule clusters (%.1fs)  biggest bucket=%d reads",
                  stats["molecule_clusters"], time.time() - t1, stats["biggest_bucket_size"])
         if stats.get("adaptive_deep_buckets"):
@@ -638,6 +644,21 @@ def create_correct_cdna_parser(subparsers):
         type=int,
         default=3,
         help='Max Levenshtein distance between UMIs in the same cluster',
+    )
+    correct_cdna_parser.add_argument(
+        '--type2-collapse',
+        dest='type2_collapse',
+        choices=['none', 'position'],
+        default='none',
+        help='How to treat Type-2 (SSP-less, no-UMI) reads. "none" (DEFAULT): do NOT '
+             'collapse them -- with no UMI there is no evidence two Type-2 reads are the '
+             'same molecule, so each read is one observation. "position": LEGACY, collapse '
+             'exact (aln_start, aln_end) matches as duplicates -- this is the '
+             'coordinate-collapse fallacy (it measures positional concentration, not '
+             'amplification) and removed 51.5%% of Type-2 reads on the 827 cohort in a '
+             'depth-dependent way. Use it ONLY to reproduce pre-fix outputs. Grouping '
+             'Type-2 reads by 3\' end is legitimate as ISOFORM clustering and belongs in '
+             '`cdna-analyze`, never here as deduplication.',
     )
     correct_cdna_parser.add_argument(
         '--umi-adaptive-threshold',
