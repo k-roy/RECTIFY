@@ -128,9 +128,12 @@ def run_netseq(args) -> int:
         print(f"Sample name: {sample_name}")
         print(f"{'='*60}")
 
+        output_formats = args.output_format if hasattr(args, 'output_format') else ['parquet', 'bedgraph']
+        want_parquet = 'parquet' in output_formats
+
         # Process BAM
         print("\n1. Processing BAM file...")
-        records = list(process_netseq_bam(
+        record_stream = process_netseq_bam(
             input_path,
             exclusion_detector=exclusion_detector,
             min_mapq=args.min_mapq if hasattr(args, 'min_mapq') else 0,
@@ -138,16 +141,28 @@ def run_netseq(args) -> int:
             max_reads=args.max_reads if hasattr(args, 'max_reads') else None,
             show_progress=True,
             rna3p_at=rna3p_at,
-        ))
+        )
 
-        if not records:
-            print("  Warning: No records generated!")
-            continue
-
-        # Aggregate positions
-        print("\n2. Aggregating positions...")
-        raw_counts = aggregate_positions(iter(records))
-        print(f"  Unique positions: {len(raw_counts):,}")
+        # Only the read-level parquet needs every record in memory (~23 GB per 50M reads).
+        # Position tracks are aggregated in one streaming pass when parquet is not requested,
+        # so a 100-180M-read library fits in a few GB.
+        if want_parquet:
+            records = list(record_stream)
+            if not records:
+                print("  Warning: No records generated!")
+                continue
+            print("\n2. Aggregating positions...")
+            raw_counts = aggregate_positions(iter(records))
+            total_reads = len(records)
+        else:
+            records = []
+            print("\n2. Aggregating positions (streaming; no parquet requested)...")
+            raw_counts = aggregate_positions(record_stream)
+            total_reads = int(sum(raw_counts.values()))
+            if not raw_counts:
+                print("  Warning: No records generated!")
+                continue
+        print(f"  Unique positions: {len(raw_counts):,}  (reads: {total_reads:,})")
 
         # Deconvolution
         deconv_counts = None
@@ -164,7 +179,6 @@ def run_netseq(args) -> int:
 
         # Export outputs
         print("\n4. Exporting results...")
-        output_formats = args.output_format if hasattr(args, 'output_format') else ['parquet', 'bedgraph']
         normalize_rpm = not getattr(args, 'no_rpm_normalize', False)
 
         outputs = export_netseq_results(
@@ -173,7 +187,8 @@ def run_netseq(args) -> int:
             deconv_counts=deconv_counts,
             output_dir=output_dir,
             sample_name=sample_name,
-            export_parquet='parquet' in output_formats,
+            total_reads=total_reads,
+            export_parquet=want_parquet,
             export_bedgraph='bedgraph' in output_formats,
             export_bigwig='bigwig' in output_formats,
             normalize_rpm=normalize_rpm,

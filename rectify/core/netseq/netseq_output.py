@@ -208,6 +208,7 @@ def export_netseq_results(
     export_bedgraph: bool = True,
     export_bigwig: bool = True,
     normalize_rpm: bool = True,
+    total_reads: Optional[int] = None,
 ) -> Dict[str, Path]:
     """
     Export all NET-seq output files.
@@ -230,6 +231,8 @@ def export_netseq_results(
         export_bedgraph: Generate bedgraph files
         export_bigwig: Generate bigwig files
         normalize_rpm: Apply RPM normalization
+        total_reads: Read total for RPM normalization. Defaults to len(records); pass it
+            explicitly when records were streamed (not materialised) into raw_counts.
 
     Returns:
         Dict mapping output type to path
@@ -240,7 +243,8 @@ def export_netseq_results(
     outputs: Dict[str, Path] = {}
 
     # Calculate total reads for normalization
-    total_reads = len(records)
+    if total_reads is None:
+        total_reads = len(records) if records else int(sum(raw_counts.values()))
 
     # Export parquet (read-level)
     if export_parquet and records:
