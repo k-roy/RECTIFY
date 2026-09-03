@@ -136,6 +136,17 @@ See [NET-seq Refinement](../../algorithms/netseq_refinement.md) for details on t
 
 ---
 
+## From FASTQ: `rectify run-all --netseq`
+
+`rectify netseq` starts from an **aligned BAM** — it does no trimming and no alignment. To go from
+raw reads to tracks in one command, use `rectify run-all --netseq`, which runs cutadapt (3' linker,
+randomer left in place) → STAR with absolute match floors (optionally against a combined spike-in
+index) → this command, with the NET-seq defaults already set (`--rna3p-at read5p`, corrected-end
+tracks, junction rescue on, Pol III/snRNA included, counts not RPM). See
+[run-all § NET-seq](run.md#net-seq).
+
+---
+
 ## Notes
 
 - rDNA and Pol III genes are excluded by default because their extremely high signal density distorts the deconvolution PSF
