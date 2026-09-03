@@ -256,13 +256,24 @@ interpreting the output.
 |---|---|---|
 | SSP found? | Yes | No |
 | UMI available? | Yes | No |
-| Deduplication | UMI-anchored | None (each read is one observation) |
+| Deduplication | UMI-anchored | **None — each read is one observation** (enforced; see note) |
 | 5' end in output | Corrected (walk-forward) | Stochastic truncation — unreliable |
 | 3' end in output | Corrected (walkback) | Corrected (walkback) |
 | Isoform grouping | By 5' + 3' | By 3' only |
 
+> 🔴 **Type-2 reads are never deduplicated, and this is now enforced in code.** Until the
+> `--type2-collapse` flag was added, Stage 1 silently collapsed Type-2 reads that shared an
+> exact `(aln_start, aln_end)` and counted them as PCR duplicates. With no UMI there is no
+> evidence two Type-2 reads are the same molecule, so that measured **positional
+> concentration, not amplification** — on one 18-library cohort it removed **51.5 % of all
+> Type-2 reads**, scaling with depth (4-6 % at ~50 k reads, 44-57 % at multi-million) while
+> true UMI-measured duplication on the same libraries was 24-41 %. The default is now
+> `--type2-collapse none`; `position` reproduces the old behaviour and should be used only
+> for that.
+
 Type-2 reads are NOT discarded: they carry a valid, corrected 3' end and are
-clustered separately by CPA site. If a matching Type-1 cluster exists, the pair
+clustered separately by CPA site **in Stage 3** — that is isoform/CPA clustering, which is a
+different operation from deduplication and is labelled as such. If a matching Type-1 cluster exists, the pair
 is recorded in `t1t2_pairs.tsv` and the Type-2 cluster gains the
 `XL` same-molecule cross-reference — its CPA call is then corroborated by a
 full-length read.

@@ -49,6 +49,15 @@ Open a GitHub issue with:
 
 For sensitive data or security issues, see [SECURITY.md](SECURITY.md).
 
+**Before reporting, check [KNOWN_ISSUES.md](KNOWN_ISSUES.md)** — it lists defects that are open, or
+fixed only on an unmerged branch, together with workarounds. Note its scope banner: that list is
+not yet a complete audit, so absence from it is not evidence that something works.
+
+If you find a defect that affects the **correctness of published output** — not just a crash —
+please say so explicitly in the issue. Those are the ones that need an entry in
+`KNOWN_ISSUES.md` while a fix is pending, so that people running the released version are warned
+rather than silently producing wrong numbers.
+
 ## Pull request review
 
 Reviews typically respond within a week. The reviewer will check:
@@ -56,6 +65,11 @@ Reviews typically respond within a week. The reviewer will check:
 - Tests cover the new behavior and the suite is green
 - Public-facing changes are documented in CHANGELOG and (where relevant) under
   `docs/`
+- **If the PR fixes something listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md), the PR DELETES that
+  entry** and records the fix in `CHANGELOG.md`. Closing the entry is part of the fix — a stale
+  issues list that claims fixed things are still broken is worse than no list at all.
+- **If the PR fixes a correctness defect that is NOT yet listed**, and the fix will sit on a branch
+  before it merges, add an entry so that anyone on `master` is warned in the meantime
 - No regression in the bundled-data smoke check
   (`rectify test`)
 - Coding style passes `black` and `flake8`
