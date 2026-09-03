@@ -1644,6 +1644,55 @@ def _require_binary(name: str) -> str:
     return resolved
 
 
+def _require_compass_index(label: str, kind: str, path) -> None:
+    """Refuse to launch a COMPASS arm whose prebuilt index is absent.
+
+    🔴 Not cosmetic. Nothing in RECTIFY builds the COMPASS indices
+    (``_compass_index_paths`` only *derives* their location), and launching an
+    aligner against a missing one is not a clean failure:
+
+    * ``STAR`` does fail fast and cleanly (``could not open genome file …``).
+    * ``hisat2`` does **not**. Its Perl wrapper re-spawns itself; when
+      ``hisat2-align-s`` dies on the missing index the direct child exits but the
+      re-spawned wrapper is reparented to init and keeps the stdout/stderr pipe
+      write ends open, so the ``subprocess.run(..., capture_output=True)`` here
+      never sees EOF. With ``ALIGNER_TIMEOUT = 21600`` (6 h) the whole
+      ``run-all`` sits at 0 % CPU until the scheduler kills it, with no
+      diagnostic. Measured on Hoffman2, ``run-all --short-read --Scer``
+      (planning 861 S3: two ``[perl] <defunct>`` children, two orphan
+      ``perl …/hisat2`` at PPID 1, parent in ``poll_schedule_timeout`` holding
+      four pipe read fds).
+
+    Checking first turns that hang into the ``DROPPED-ALIGNER`` the caller
+    already knows how to report. It is a MITIGATION, not a cure: the same
+    deadlock is reachable for any fast-failing wrapper-script aligner (corrupt
+    index, unreadable path), so the subprocess plumbing is the real fix
+    (KNOWN_ISSUES).
+    """
+    p = Path(path)
+    if kind == 'star':
+        ok = (p / 'SAindex').exists() and (p / 'genomeParameters.txt').exists()
+        what = f"STAR genome dir {p} (needs SAindex + genomeParameters.txt)"
+    elif kind == 'hisat2':
+        ok = Path(str(p) + '.1.ht2').exists() or Path(str(p) + '.1.ht2l').exists()
+        what = f"HISAT2 index prefix {p} (needs <prefix>.1.ht2)"
+    elif kind == 'blast':
+        ok = any(Path(str(p) + e).exists() for e in ('.nin', '.nal', '.nsq'))
+        what = f"BLAST database {p} (needs <db>.nin/.nsq)"
+    elif kind == 'gsnap':
+        ok = p.is_dir() and any(p.iterdir())
+        what = f"GSNAP genome dir {p}"
+    else:  # pragma: no cover - defensive
+        ok, what = p.exists(), str(p)
+    if not ok:
+        raise FileNotFoundError(
+            f"{label}: prebuilt COMPASS index missing — {what}. RECTIFY does not "
+            f"build COMPASS indices; create it under the genome FASTA's parent "
+            f"directory using the COMPASS layout, or drop this arm from "
+            f"--base-aligners."
+        )
+
+
 def _finalize_short_read_bam(output_bam: Path, genome_path: str, reads_r1: str,
                             aligner_name: str, qname_to_rn, threads: int,
                             qname_to_umi=None) -> str:
@@ -1685,6 +1734,8 @@ def run_star(
 
     paths = _compass_index_paths(genome_path, read_length=read_length)
     star_dir = Path(star_genome_dir) if star_genome_dir else paths.star_dir
+    label_pre = 'STAR_noncanonical' if noncanonical else 'STAR_default'
+    _require_compass_index(label_pre, 'star', star_dir)
     out_prefix = str(output_bam.with_suffix('')) + '.'  # STAR appends 'Aligned.out.sam'
     cmd = _build_star_cmd(
         reads_path, reads2_path, star_dir, out_prefix, threads,
@@ -1732,6 +1783,15 @@ def run_hisat2(
     ss = splice_sites if splice_sites else str(paths.splice_sites)
     sam_path = output_bam.with_suffix('.sam')
     label = 'HISAT2_noncanonical' if noncanonical else 'HISAT2_default'
+    _require_compass_index(label, 'hisat2', idx)
+    # hisat2 accepts a non-existent --known-splicesite-infile SILENTLY (exit 0,
+    # normal alignment rate) -- so a half-built index dir yields a green run with
+    # zero annotated junctions. Warn loudly rather than fail: novel splicing is
+    # still on, and the arm is usable, just not "annotated" (planning 861 S3).
+    if not Path(ss).exists():
+        logger.warning(
+            "%s: known-splicesite file %s does not exist; hisat2 accepts this "
+            "silently and the arm will run with NO annotated junctions.", label, ss)
     novel_sj = str(output_bam.with_suffix('.novel_splicesites.txt'))
     summary = str(output_bam.with_suffix('.summary.txt'))
     cmd = _build_hisat2_cmd(
@@ -1770,6 +1830,7 @@ def run_magicblast(
 
     paths = _compass_index_paths(genome_path)
     idx = blast_index if blast_index else str(paths.blast_index)
+    _require_compass_index('magicblast', 'blast', idx)
     sam_path = output_bam.with_suffix('.sam')
 
     # Magic-BLAST gz support is version-dependent (older builds choke on a gzipped
@@ -1829,6 +1890,7 @@ def run_gsnap(
     paths = _compass_index_paths(genome_path)
     gdir = gsnap_genome_dir if gsnap_genome_dir else str(paths.gsnap_dir)
     gv = genome_version if genome_version else paths.genome_version
+    _require_compass_index('gsnap', 'gsnap', Path(gdir) / gv)
     sam_path = output_bam.with_suffix('.sam')
     cmd = _build_gsnap_cmd(reads_path, reads2_path, gdir, gv, sam_path, threads,
                            ambig_splice_noclip=_gsnap_supports_ambig_noclip())
