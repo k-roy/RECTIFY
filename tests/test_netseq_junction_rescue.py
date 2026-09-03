@@ -421,3 +421,19 @@ def test_junction_tsv_rejects_a_bad_header(tmp_path):
     path.write_text("chrom\tstart\tend\tstrand\nchrT\t1\t2\t+\n")
     with pytest.raises(ValueError, match="chrom/donor/acceptor/strand"):
         load_junction_tsv(path)
+
+
+def test_walkback_can_be_gated_on_clip_evidence():
+    """A nascent-RNA library's 3' ends mostly carry NO tail, so an unconditional walkback moves
+    ends on no evidence -- measured on wt_rep3 chrI+chrII: 41,711 of 42,644 walkbacks had an empty
+    or randomer-only clip, and at RPL32 (exon 1 ends ...AAAA) 24 of 33 reads on the exon-1 3' end
+    were walked 4 nt off it. The gate is opt-in; the default stays invariant 7."""
+    stop = 'C' if SEQ[96] == 'A' else SEQ[96]
+    genome = {CHROM: SEQ[:96] + stop + "AAA" + SEQ[100:]}
+    no_clip = make_read('+', genome[CHROM][60:100], 60, clip_rna="")
+    assert call_tail(no_clip, '+', 99, genome[CHROM]).walkback == 3
+    assert call_tail(no_clip, '+', 99, genome[CHROM], require_clip_evidence=True).walkback == 0
+    # a read WITH a non-templated A next to the alignment still walks back
+    with_clip = make_read('+', genome[CHROM][60:100], 60, clip_rna="AA")
+    gated = call_tail(with_clip, '+', 99, genome[CHROM], require_clip_evidence=True)
+    assert gated.clip_a_run == 2 and gated.walkback == 3 and gated.tail_len == 5

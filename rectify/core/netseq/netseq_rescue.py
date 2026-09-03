@@ -327,6 +327,7 @@ def call_tail(
     clip_rna: Optional[str] = None,
     ref_to_query: Optional[Dict[int, int]] = None,
     max_walkback: int = 60,
+    require_clip_evidence: bool = False,
 ) -> TailCall:
     """Call the non-templated 3' tail of one NET-seq read.
 
@@ -349,6 +350,13 @@ def call_tail(
         clip_rna: precomputed :func:`rna_clip` result (avoids recomputation).
         ref_to_query: precomputed reference->query map.
         max_walkback: safety bound on the walkback.
+        require_clip_evidence: only walk back when the clip carries at least one non-templated A
+            adjacent to the alignment. OFF by default, which is invariant 7 / rectify's own
+            ``walkback_3prime`` (a terminal read A over a genomic A is deliberately NOT skipped).
+            Turn it ON for a nascent-RNA library where most 3' ends carry no tail at all: MEASURED
+            on wt_rep3 chrI+chrII, 41,711 of 42,644 walkbacks had no clip evidence, and at RPL32
+            (whose exon 1 ends ...AAAA) 24 of the 33 reads sitting on the exon-1 3' end -- 22 of
+            them classified as splicing intermediates -- were walked 4 nt off it, erasing the peak.
     """
     clip = rna_clip(read, strand) if clip_rna is None else clip_rna
     randomer = ""
@@ -363,7 +371,8 @@ def call_tail(
         a_run += 1
 
     walkback = 0
-    if genome_seq is not None and a_run == len(tail_region):
+    _evidence_ok = (a_run > 0) or not require_clip_evidence
+    if genome_seq is not None and a_run == len(tail_region) and _evidence_ok:
         # The whole non-randomer clip region is A (possibly empty) -> the tail may continue into
         # bases the aligner placed on the genome.
         seq = (read.query_sequence or "").upper()

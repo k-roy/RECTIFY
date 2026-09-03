@@ -188,6 +188,7 @@ def run_netseq(args) -> int:
             rescue_max_intronic=args.rescue_max_intronic,
             rescue_min_k=args.rescue_min_k,
             detect_tail=detect_tail,
+            walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', False),
         )
 
         # Only the read-level parquet needs every record in memory (~23 GB per 50M reads).
@@ -253,6 +254,7 @@ def run_netseq(args) -> int:
             'rescue_min_k': args.rescue_min_k,
             'allowed_remainders': list(allowed_remainders(umi_length)),
             'tail_detection': detect_tail,
+            'walkback_requires_clip_a': getattr(args, 'walkback_requires_clip_a', False),
             'annotation': str(annotation_path) if annotation_path else None,
         })
         summary_path.write_text(json.dumps(payload, indent=1))
@@ -523,6 +525,16 @@ def add_netseq_parser(subparsers) -> None:
         help='Minimum number of exon-2 bases that must be recovered for a rescue (default 1). '
              'Raise it to suppress the 1-nt chance matches that a randomer produces -- the '
              'summary JSON reports the decoy-acceptor null so the cost is measurable.',
+    )
+    rescue_group.add_argument(
+        '--walkback-requires-clip-a',
+        action='store_true',
+        help="Only run the poly(A) walkback on reads whose clip carries a non-templated A next to "
+             "the alignment. OFF by default = invariant 7 (a terminal read A over a genomic A is "
+             "NOT skipped), which is right for a library where every read has a tail. For nascent "
+             "RNA most 3' ends have NO tail, so the unconditional walkback moves ~22%% of ends 1-5 "
+             "nt on no evidence and specifically erodes the exon-1 3' end of A-ending exons "
+             "(measured: RPL32, 24 of 33 splicing-intermediate reads walked 4 nt off the 5'SS).",
     )
     rescue_group.add_argument(
         '--no-tail-detection',

@@ -440,6 +440,7 @@ def process_netseq_read(
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
     detect_tail: bool = True,
+    walkback_requires_clip_a: bool = False,
 ) -> UnifiedReadRecord:
     """
     Process single NET-seq read into a UnifiedReadRecord (a NetseqReadRecord when the rescue or
@@ -466,6 +467,7 @@ def process_netseq_read(
         rescue_max_intronic: how far past the donor the aligned end may sit (nt)
         rescue_min_k: minimum recovered exon-2 length for a rescue
         detect_tail: run the randomer-aware tail call
+        walkback_requires_clip_a: require a non-templated A in the clip before walking back
 
     Returns:
         UnifiedReadRecord (NetseqReadRecord) with all fields populated
@@ -510,6 +512,7 @@ def process_netseq_read(
         tail = call_tail(
             read, strand, three_prime_corrected, genome_seq,
             umi_length=umi_length, clip_rna=clip_rna, ref_to_query=ref_to_query,
+            require_clip_evidence=walkback_requires_clip_a,
         )
         three_prime_corrected += rna_5prime_ward(strand) * tail.walkback
 
@@ -610,6 +613,7 @@ def process_netseq_bam(
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
     detect_tail: bool = True,
+    walkback_requires_clip_a: bool = False,
 ) -> Generator[UnifiedReadRecord, None, None]:
     """
     Stream process NET-seq BAM file.
@@ -636,6 +640,7 @@ def process_netseq_bam(
         rescue_max_intronic: how far past the donor the aligned end may sit (nt)
         rescue_min_k: minimum recovered exon-2 length for a rescue
         detect_tail: run the randomer-aware tail call
+        walkback_requires_clip_a: require a non-templated A in the clip before walking back
 
     Yields:
         UnifiedReadRecord for each valid read
@@ -712,6 +717,7 @@ def process_netseq_bam(
                 rescue_max_intronic=rescue_max_intronic,
                 rescue_min_k=rescue_min_k,
                 detect_tail=detect_tail,
+                walkback_requires_clip_a=walkback_requires_clip_a,
             )
             n_yielded += 1
 
