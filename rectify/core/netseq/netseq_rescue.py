@@ -164,7 +164,8 @@ class JunctionPool:
     # -- constructors -------------------------------------------------------------------------
 
     @classmethod
-    def from_annotation(cls, annotation_path, include_trna: bool = False) -> "JunctionPool":
+    def from_annotation(cls, annotation_path, include_trna: bool = False,
+                        include_organellar: bool = False) -> "JunctionPool":
         """Build the pool from a GFF/GTF.
 
         Introns are read with :func:`parse_gff_introns`, which also resolves each intron's PARENT
@@ -175,6 +176,10 @@ class JunctionPool:
 
         Args:
             annotation_path: GFF3/GTF, optionally gzipped.
+            include_organellar: keep mitochondrial/organellar introns in the pool. **OFF by
+                default** — they are group I/II SELF-SPLICING introns on a genome Pol II does not
+                transcribe, and their parent type is ``mRNA`` so the tRNA filter misses them
+                (measured on wt_rep3: 94 of 580 rescues, 16 %, were fabricated on chrMito).
             include_trna: keep tRNA introns in the pool. **OFF by default.** tRNA splicing is a
                 different machinery (a tRNA endonuclease/ligase pathway, not the spliceosome) at
                 Pol III loci that ``rectify netseq`` excludes from its tracks anyway, so a tRNA
@@ -194,6 +199,11 @@ class JunctionPool:
                     pool.dropped_by_parent_type[parent_type] = \
                         pool.dropped_by_parent_type.get(parent_type, 0) + 1
                     continue
+                if not include_organellar and is_organellar_contig(chrom):
+                    key = f"{parent_type} (organellar)"
+                    pool.dropped_by_parent_type[key] = \
+                        pool.dropped_by_parent_type.get(key, 0) + 1
+                    continue
                 pool.by_parent_type[parent_type] = pool.by_parent_type.get(parent_type, 0) + 1
                 pool.add(make_junction(chrom, start, end, strand))
             return pool
@@ -202,6 +212,10 @@ class JunctionPool:
 
         for chrom, start, end, strand in load_annotated_junctions(str(annotation_path)):
             if end <= start or strand not in ('+', '-'):
+                continue
+            if not include_organellar and is_organellar_contig(chrom):
+                pool.dropped_by_parent_type['unknown (organellar)'] = \
+                    pool.dropped_by_parent_type.get('unknown (organellar)', 0) + 1
                 continue
             pool.by_parent_type['unknown'] = pool.by_parent_type.get('unknown', 0) + 1
             pool.add(make_junction(chrom, start, end, strand))
@@ -221,6 +235,30 @@ class JunctionPool:
 #: ``tRNA_gene``; the id also carries the ``_tRNA`` suffix, and both are checked because an
 #: annotation that omits the ``tRNA`` feature line still names its parent that way.
 _TRNA_PARENT_TYPES = frozenset({'trna', 'trna_gene'})
+
+
+def is_organellar_contig(chrom: str) -> bool:
+    """Whether ``chrom`` is a mitochondrial (or otherwise organellar) contig.
+
+    Mitochondrial introns are **group I and group II self-splicing** introns — in S. cerevisiae,
+    ~32 of them across COX1, COB and 21S rRNA. They are not spliceosomal, they carry no
+    GT..AG-style donor/acceptor grammar this rescue models, and Pol II does not transcribe the
+    mitochondrial genome at all, so a nascent-Pol-II 3' end cannot legitimately sit at one. Their
+    parent feature type is ``mRNA``, exactly like a nuclear intron, so :func:`is_trna_parent`
+    does not catch them — the CONTIG is the signal.
+
+    Measured on wt_rep3 (planning 856, 2026-09-03): with mito introns in the pool, **94 of 580
+    rescues — 16 %% — were on chrMito**, i.e. fabricated 3'-end re-placements on a genome the assay
+    does not measure. Same argument, and the same measurement, that dropped tRNA introns.
+
+    The patterns are shared with :class:`rectify.core.exclusion_regions.ExclusionRegionDetector`.
+    """
+    from ..exclusion_regions import ExclusionRegionDetector
+
+    lowered = (chrom or '').lower()
+    if any(pat.lower() in lowered for pat in ExclusionRegionDetector.MITO_PATTERNS):
+        return True
+    return chrom in ExclusionRegionDetector.MITO_NCBI
 
 
 def is_trna_parent(parent_type: str, parent_id: str) -> bool:

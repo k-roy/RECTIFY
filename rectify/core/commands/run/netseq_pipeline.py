@@ -298,6 +298,7 @@ _NETSEQ_FORWARDED: Tuple[Tuple[str, str], ...] = (
     ('netseq_rescue_min_k', 'rescue_min_k'),
     ('netseq_rescue_min_k_with_remainder', 'rescue_min_k_with_remainder'),
     ('netseq_pool_include_trna', 'pool_include_trna'),
+    ('netseq_pool_include_organellar', 'pool_include_organellar'),
     ('netseq_no_deconvolution', 'no_deconvolution'),
     ('netseq_min_atract_length', 'min_atract_length'),
     ('netseq_walkback_unconditional', None),   # inverted below
@@ -691,6 +692,7 @@ def run_netseq_pipeline(
         'rescue_min_k': netseq_args.rescue_min_k,
         'rescue_min_k_with_remainder': netseq_args.rescue_min_k_with_remainder,
         'pool_include_trna': netseq_args.pool_include_trna,
+        'pool_include_organellar': netseq_args.pool_include_organellar,
     }
     (output_dir / f"{sample_id}.runall_netseq.json").write_text(json.dumps(summary, indent=1))
 

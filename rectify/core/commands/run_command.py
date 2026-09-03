@@ -829,6 +829,13 @@ def create_run_parser(subparsers):
         help="Keep tRNA introns in the rescue pool (they are excised by the tRNA endonuclease, "
              "not the spliceosome, and can only manufacture rescues).")
     trim_help(
+        '--netseq-pool-include-organellar', dest='netseq_pool_include_organellar',
+        action='store_true', default=False,
+        help="Keep mitochondrial/organellar introns in the rescue pool. OFF by default: they are "
+             "group I/II SELF-SPLICING introns on a genome Pol II does not transcribe, and their "
+             "parent feature type is `mRNA` so the tRNA filter misses them. Measured on wt_rep3, "
+             "94 of 580 rescues (16%%) were fabricated on chrMito before this filter existed.")
+    trim_help(
         '--netseq-walkback-unconditional', dest='netseq_walkback_unconditional',
         action='store_true', default=False,
         help="Walk back through terminal A's over genomic A's even with no non-templated A in the "

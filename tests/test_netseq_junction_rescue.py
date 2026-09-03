@@ -640,3 +640,66 @@ def test_is_trna_parent_matches_the_type_or_the_id_suffix():
     assert is_trna_parent("unknown", "YNCO0031W_tRNA")       # annotation omits the tRNA line
     assert not is_trna_parent("mRNA", "YAL003W_id001")
     assert not is_trna_parent("snoRNA", "snR100_snoRNA")
+
+
+# ---------------------------------------------------------------------------------------------
+# ORGANELLAR INTRONS -- group I/II self-splicing, not spliceosomal (planning 856, 2026-09-03)
+# ---------------------------------------------------------------------------------------------
+
+def _gff_with_a_mito_intron(tmp_path):
+    """SGD-shaped GFF: one nuclear intron, one mito intron, one tRNA intron. All parents differ."""
+    p = tmp_path / 'mix.gff'
+    p.write_text(
+        "##gff-version 3\n"
+        "chrI\tSGD\tmRNA\t1\t1000\t.\t+\t.\tID=YAL001C_mRNA\n"
+        "chrI\tSGD\tintron\t101\t160\t.\t+\t.\tID=i_nuc;Parent=YAL001C_mRNA\n"
+        "chrmt\tSGD\tmRNA\t1\t9000\t.\t+\t.\tID=Q0045_mRNA\n"
+        "chrmt\tSGD\tintron\t501\t1500\t.\t+\t.\tID=aI1;Parent=Q0045_mRNA\n"
+        "chrIII\tSGD\ttRNA\t1\t100\t.\t+\t.\tID=YNCC0001W_tRNA\n"
+        "chrIII\tSGD\tintron\t40\t60\t.\t+\t.\tID=i_trna;Parent=YNCC0001W_tRNA\n"
+    )
+    return p
+
+
+def test_mito_introns_are_dropped_from_the_pool_by_default(tmp_path):
+    """🔴 The wt_rep3 finding: mito group I/II introns have parent type `mRNA`, so the tRNA filter
+    misses them, and 94 of 580 rescues were fabricated on chrMito."""
+    from rectify.core.netseq.netseq_rescue import is_organellar_contig
+
+    pool = JunctionPool.from_annotation(_gff_with_a_mito_intron(tmp_path))
+    contigs = {c for c, _s in pool._by_exon1}
+    assert contigs == {'chrI'}, f"pool should hold the nuclear intron only, got {contigs}"
+    assert any('organellar' in k for k in pool.dropped_by_parent_type), pool.dropped_by_parent_type
+    assert is_organellar_contig('chrMito') and is_organellar_contig('chrmt')
+    assert is_organellar_contig('chrM') and is_organellar_contig('MT')
+    assert not is_organellar_contig('chrI') and not is_organellar_contig('chrXIII')
+
+
+def test_pool_include_organellar_restores_them(tmp_path):
+    pool = JunctionPool.from_annotation(_gff_with_a_mito_intron(tmp_path),
+                                        include_organellar=True)
+    assert {c for c, _s in pool._by_exon1} == {'chrI', 'chrMito'}
+
+
+def test_trna_and_organellar_filters_are_independent(tmp_path):
+    gff = _gff_with_a_mito_intron(tmp_path)
+    both_on = JunctionPool.from_annotation(gff, include_trna=True, include_organellar=True)
+    assert {c for c, _s in both_on._by_exon1} == {'chrI', 'chrIII', 'chrMito'}
+    trna_only = JunctionPool.from_annotation(gff, include_trna=True)
+    assert {c for c, _s in trna_only._by_exon1} == {'chrI', 'chrIII'}
+
+
+def test_exon_derived_fallback_also_drops_organellar(tmp_path):
+    """The exon-only-GTF path must not reintroduce them."""
+    p = tmp_path / 'exons.gff'
+    p.write_text(
+        "##gff-version 3\n"
+        "chrI\tX\tmRNA\t1\t1000\t.\t+\t.\tID=m1\n"
+        "chrI\tX\texon\t1\t100\t.\t+\t.\tParent=m1\n"
+        "chrI\tX\texon\t161\t400\t.\t+\t.\tParent=m1\n"
+        "chrmt\tX\tmRNA\t1\t9000\t.\t+\t.\tID=m2\n"
+        "chrmt\tX\texon\t1\t500\t.\t+\t.\tParent=m2\n"
+        "chrmt\tX\texon\t1501\t2000\t.\t+\t.\tParent=m2\n"
+    )
+    pool = JunctionPool.from_annotation(p)
+    assert {c for c, _s in pool._by_exon1} == {'chrI'}, "exon-derived fallback kept a mito intron"
