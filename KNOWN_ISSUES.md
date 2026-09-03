@@ -260,25 +260,32 @@ molecule positions do not exist in the read track.
 
 ---
 
-## 🟠 Two NET-seq correction defaults are judgement calls, and the summary JSON reports both sides
+## 🟠 Two NET-seq correction defaults are calibrated, not obvious — and the summary JSON reports both sides
 
 - **Status:** OPEN by design on `feat/netseq-junction-rescue-836`; not a bug, a calibration
 - **Affects:** `rectify netseq --junction-rescue` and the poly(A) walkback
 
-1. **`--rescue-min-k 1` is noise-dominated in a randomer library.** A 1-nt exon-2 match plus an
-   allowed randomer remainder is accepted, and a randomer's first base matches exon 2 by chance a
-   quarter of the time. Measured on a 194 k-read yeast slice: 227 rescues, of which the built-in
-   decoy-acceptor null (the same rule against a sequence 50 nt further into exon 2) would have
-   produced **54**, all at `k <= 4`; the decoy never reaches `k >= 5`. At *EFB1* this moved 9 reads
-   off the genuine exon-1 3' end. **Read `decoy_rescued` and `rescued_by_k_clean` in
-   `<sample>.netseq_summary.json`, and raise `--rescue-min-k` for single-nt work.**
-2. **The unconditional poly(A) walkback moves ~22 % of NET-seq ends on no evidence.** Invariant:
-   a terminal read A over a genomic A is deliberately not skipped, which is right when every read
-   has a tail. Most nascent 3' ends have none, and ~25 % of reads end on an A over a genomic A by
-   chance. Measured: 42,644 walkbacks, 41,711 with no clip evidence; at *RPL32*, whose exon 1 ends
-   `...AAAA`, 24 of the 33 reads on the exon-1 3' end were walked 4 nt off it, taking the
-   splicing-intermediate peak from 33 to 1. **`--walkback-requires-clip-a` gates it**; the summary
-   always reports `tail_clip_evidence` against `tail_walkback_only`.
+Both were calibrated on measurement and the defaults now reflect it; this entry records what the
+defaults are and what reverting them costs.
+
+1. **The rescue floor is remainder-aware, because the chance channel is the remainder.**
+   `--rescue-min-k` (default 1) applies when the clip is exon-2 sequence and nothing else
+   (`r == 0`); `--rescue-min-k-with-remainder` (default 4) applies when a randomer is invoked to
+   explain the rest. Measured on a 194 k-read yeast slice, 504 candidate reads: the decoy-acceptor
+   null produced `k=1` 70 times against 67 observed in the randomer channel, `k=2` 24 against 19,
+   `k=3` 10 against 6 — at or above the observed rate — and **never reached `k >= 4`**. With the
+   defaults the run rescues **160 reads at `decoy_rescued` = 0**; with a flat `min_k = 1` it
+   rescued 227 at a chance floor of 54. **Read `decoy_rescued`, `rescued_by_k_clean` and
+   `near_donor_k_randomer` in `<sample>.netseq_summary.json` before trusting a rescue count.**
+2. **The poly(A) walkback is GATED on clip evidence by default in `rectify netseq`.** Invariant 7
+   (a terminal read A over a genomic A is not skipped) is right when every read has a tail; most
+   nascent 3' ends have none, and ~25 % of reads end on an A over a genomic A by chance. Measured
+   unconditionally: 42,644 walkbacks, **41,711 with no clip evidence**, 22.06 % of all ends moved,
+   and at *RPL32* (exon 1 ends `...AAAA`) 24 of the 33 reads on the exon-1 3' end were walked 4 nt
+   off it, taking the splicing-intermediate peak from 33 to 1. Gated, the same run moves 0.56 % of
+   ends and that peak reads 33 → 29, while real CPA tails are unaffected (*TEF2* `tail >= 3` is
+   57.9 % either way). **`--walkback-unconditional` restores invariant-7 behaviour — use it for a
+   poly(A)-SELECTED input, not for nascent RNA.**
 
 ---
 

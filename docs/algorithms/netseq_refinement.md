@@ -204,9 +204,23 @@ k = length of the longest prefix of S equal to the genome from exon2_first, gene
 r = len(S) - k                                    # the non-templated remainder
 ```
 
-Rescue when `k >= --rescue-min-k` **and** `r` is an allowed remainder — `{0}` with no randomer, and
-`{0, N-1, N, N+1}` with `--umi-length N`, because a randomer's terminal 1–2 nt align by chance
-(measured 1 : 0.28 : 0.09 for a 6-nt randomer). The rescued 3' end is `k - 1` nt into exon 2.
+Rescue when `r` is an allowed remainder — `{0}` with no randomer, and `{0, N-1, N, N+1}` with
+`--umi-length N`, because a randomer's terminal 1–2 nt align by chance (measured 1 : 0.28 : 0.09 for
+a 6-nt randomer) — **and** `k` clears a **remainder-aware** floor. The rescued 3' end is `k - 1` nt
+into exon 2.
+
+| remainder | floor | why |
+|---|---|---|
+| `r == 0` | `--rescue-min-k` (default **1**) | every base of the clip is exon-2 sequence; a 1-nt overhang with nothing beyond it is real evidence |
+| `r > 0` | `--rescue-min-k-with-remainder` (default **4**) | a randomer is being invoked to explain the rest, and a randomer's first base matches exon 2 a quarter of the time |
+
+**The chance channel is the remainder, not low `k` as such** — the decoy table below is what settles
+it. Setting the two flags equal restores a flat floor.
+
+A read that fails the floor is **not** moved and keeps the class its geometry implies (`exon1_end` at
+the exon-1 boundary, `intronic_end` inside the intron), so raising a floor returns chance-matched
+reads to the splicing-intermediate tally rather than hiding them. `ambiguous` is reserved for the
+genuinely undecidable case: `k >= 1` with a remainder no randomer length can explain.
 
 Read classes, all reported in `<sample>.netseq_summary.json`:
 
@@ -221,11 +235,24 @@ Read classes, all reported in `<sample>.netseq_summary.json`:
 ### The chance-match null — read it before trusting a low `k`
 
 Every candidate read is also matched against a **decoy acceptor** 50 nt further into exon 2, under
-the identical acceptance rule. `decoy_rescued` in the summary is therefore the chance-match floor
-for the rescue count itself. On a 194 k-read *S. cerevisiae* chrI+chrII slice: 504 reads reached a
-pooled donor, 227 were rescued, and the decoy would have rescued **54** — all of the decoy's hits at
-`k <= 4`, none at `k >= 5`. A `--rescue-min-k` of 1 is therefore noise-dominated in a randomer
-library; raise it (or read `rescued_by_k_clean`, the `r == 0` channel) when single-nt calls matter.
+the identical acceptance rule (one `_accept()` closure serves both, so the null tracks the
+configuration). `decoy_rescued` in the summary is therefore the chance-match floor for the rescue
+count itself.
+
+Measured on a 194 k-read *S. cerevisiae* chrI+chrII slice, 504 reads reached a pooled donor. The
+per-`k` comparison is what motivates the remainder-aware floor:
+
+| k | observed, `r == 0` | observed, `r > 0` | decoy |
+|---|---|---|---|
+| 1 | 1 | 67 | **70** |
+| 2 | 0 | 19 | **24** |
+| 3 | 0 | 6 | **10** |
+| 4 | 5 | 8 | 2 |
+| ≥5 | 123 | 32 | **0** |
+
+At `k <= 3` the randomer channel is at or below the decoy rate; at `k >= 4` it separates cleanly, and
+the decoy never reaches `k >= 4` at all. With the default floors the run rescues **160 reads at a
+`decoy_rescued` of 0**; with a flat `min_k = 1` it rescued 227 at a floor of 54.
 
 ### Non-templated tails
 
@@ -241,12 +268,19 @@ The same clip carries the poly(A)/oligo(A) tail, and in a randomer library it ca
 This replaces the legacy "≥ 80 % A over the whole clip" test, which classifies every
 randomer-bearing read as untailed.
 
-⚠️ Step 3 is invariant 7 (a terminal read A over a genomic A is *not* skipped) and is right for a
-library where every read has a tail. Nascent RNA is not that library: on the slice above, 41,711 of
-42,644 walkbacks had no clip evidence at all, and at *RPL32* — whose exon 1 ends `…AAAA` — 24 of the
-33 reads sitting on the exon-1 3' end were walked 4 nt off it. `--walkback-requires-clip-a` gates
-the walkback on a non-templated A being present; the summary always reports `tail_clip_evidence`
-against `tail_walkback_only` so the choice can be made from data.
+🔴 **Step 3 is gated by default in `rectify netseq`, and that is a deliberate departure from
+invariant 7.** Not skipping a terminal read A that matches a genomic A is right for a library where
+every read has a tail. Nascent RNA is not that library. Measured on the slice above, running the
+walkback unconditionally: 42,644 reads walked back, **41,711 of them with no clip evidence at all**,
+22.06 % of ALL ends moved — and at *RPL32*, whose exon 1 ends `…AAAA`, **24 of the 33 reads sitting
+on the exon-1 3' end were walked 4 nt off it, taking that peak from 33 to 1**. That peak is the
+splicing-intermediate signal.
+
+With the gate on (`--walkback-requires-clip-a`, the default) the same run moves 0.56 % of ends, the
+*RPL32* exon-1 peak reads 33 → 29, and the CPA tails are untouched where they are real (*TEF2*
+`tail >= 3` is 57.9 % either way). `--walkback-unconditional` restores invariant-7 behaviour for a
+poly(A)-selected input. The summary always reports `tail_clip_evidence` against
+`tail_walkback_only`, so the choice stays checkable from data.
 
 ---
 

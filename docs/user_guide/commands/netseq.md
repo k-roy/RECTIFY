@@ -69,8 +69,10 @@ rectify netseq netseq.bam \
 | `--junction-rescue` / `--no-junction-rescue` | ON when a junction source exists | Re-place a 1-10 nt exon-2 overhang across the 5' splice site |
 | `--junction-pool FILE` | — | External junction TSV (`chrom`/`donor`/`acceptor`/`strand`) merged with the annotated introns |
 | `--rescue-max-intronic` | 10 | How far past the donor the aligned RNA 3' end may sit |
-| `--rescue-min-k` | 1 | Minimum recovered exon-2 length for a rescue |
-| `--walkback-requires-clip-a` | off | Only walk back when the clip carries a non-templated A |
+| `--rescue-min-k` | 1 | Minimum recovered exon-2 length when there is NO non-templated remainder (`r == 0`) |
+| `--rescue-min-k-with-remainder` | 4 | The floor when a randomer remainder is invoked (`r > 0`) — that is where the chance matches live |
+| `--walkback-requires-clip-a` | **ON** | Only walk back when the clip carries a non-templated A (nascent 3' ends have no tail by default) |
+| `--walkback-unconditional` | off | Restore invariant-7 walkback, for a poly(A)-selected input |
 | `--no-tail-detection` | off | Disable the tail call entirely |
 
 See [NET-seq Refinement](../../algorithms/netseq_refinement.md#donor-side-junction-rescue-rectify-netseq)
