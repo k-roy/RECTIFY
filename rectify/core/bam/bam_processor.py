@@ -483,7 +483,7 @@ def correct_read_3prime(
         if pool_chrom_index:
             _tree = pool_chrom_index.get(chrom_std)
             if _tree:
-                _w = _POOL_FETCH_HALF_WINDOW + _get_5prime_softclip_len(read)
+                _w = _POOL_FETCH_HALF_WINDOW + _get_5prime_softclip_len(read, strand)
                 for _iv in _tree.overlap(five_prime_position - _w,
                                          five_prime_position + _w + 1):
                     _ss_junctions.add((chrom_std, _iv.data[0], _iv.data[1]))

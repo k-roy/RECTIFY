@@ -360,11 +360,29 @@ def correct_5prime_batch(
 # Post-Consensus 3'SS Truncation Rescue
 # =============================================================================
 
-def _get_5prime_softclip_len(read: pysam.AlignedSegment) -> int:
-    """Return the explicit 5' soft-clip length (S op adjacent to the 5' end)."""
+def _transcript_5prime_is_right(read: pysam.AlignedSegment, strand: Optional[str] = None) -> bool:
+    """Is the transcript 5' end at the RIGHT (high-coordinate) end of the BAM record?
+
+    The whole 3'SS-rescue module computes its coordinates from the GENE strand
+    (``align_5prime = reference_start`` on '+', ``reference_end - 1`` on '-'), so the clip it reads
+    has to follow the gene strand too. Under a SENSE protocol gene strand and ``read.is_reverse``
+    coincide and this is a no-op; under an ANTISENSE protocol (``--netseq``, ``--dT-primed-cDNA``)
+    they are opposite ends of the read, and the module was comparing the RNA-3'-end clip (which
+    holds the randomer/tail) against exon-1 sequence -- verified by execution, planning 834 §7.1.
+
+    ``strand`` is the gene strand; ``None`` falls back to the pre-fix ``is_reverse`` behaviour so
+    every sense caller stays byte-identical.
+    """
+    if strand in ('+', '-'):
+        return strand == '-'
+    return bool(read.is_reverse)
+
+
+def _get_5prime_softclip_len(read: pysam.AlignedSegment, strand: Optional[str] = None) -> int:
+    """Return the explicit 5' soft-clip length (S op adjacent to the transcript 5' end)."""
     if not read.cigartuples:
         return 0
-    if read.is_reverse:
+    if _transcript_5prime_is_right(read, strand):
         last_op, last_len = read.cigartuples[-1]
         return last_len if last_op == 4 else 0
     else:
@@ -376,6 +394,7 @@ def _extract_5prime_rescue_seq(
     read: pysam.AlignedSegment,
     genome_seq: str = '',
     scan_ref_bp: int = 50,
+    strand: Optional[str] = None,
 ) -> str:
     """Unified 5'-end rescue sequence extractor.
 
@@ -394,6 +413,9 @@ def _extract_5prime_rescue_seq(
 
     Stops at N ops (existing splice junctions).
     Returns ``''`` if no imperfect op is found within the scan window.
+
+    ``strand`` is the GENE strand and selects which end of the record is the transcript 5' end
+    (see :func:`_transcript_5prime_is_right`); ``None`` keeps the pre-fix ``is_reverse`` behaviour.
 
     Replaces three earlier helpers:
         - ``_extract_5prime_terminal_error_seq``  (Case 2 mismatch scan)
@@ -417,7 +439,8 @@ def _extract_5prime_rescue_seq(
     found_explicit = False
     has_m_ops = False     # any M op seen (may need genome fallback)
 
-    ops = reversed(read.cigartuples) if read.is_reverse else iter(read.cigartuples)
+    _five_is_right = _transcript_5prime_is_right(read, strand)
+    ops = reversed(read.cigartuples) if _five_is_right else iter(read.cigartuples)
     for op, length in ops:
         if op == 5:   # H: not in query_sequence
             continue
@@ -436,7 +459,7 @@ def _extract_5prime_rescue_seq(
             break
 
     if found_explicit and last_imp_q > 0:
-        if read.is_reverse:
+        if _five_is_right:
             return query_seq[n_query - last_imp_q:]
         else:
             return query_seq[:last_imp_q]
@@ -455,7 +478,7 @@ def _extract_5prime_rescue_seq(
     ref_count = 0
     last_imp_qp = -1  # query index of last mismatching position
 
-    if read.is_reverse:
+    if _five_is_right:
         for qp, rp in reversed(pairs):
             if rp is not None:
                 ref_count += 1
@@ -489,9 +512,9 @@ def _extract_5prime_rescue_seq(
     if last_imp_qp < 0:
         return ''
 
-    if read.is_reverse:
-        # last_imp_qp is the query index; for minus strand the 5' end is at the
-        # right of query_seq.  We want all bases from last_imp_qp to the right end.
+    if _five_is_right:
+        # last_imp_qp is the query index; when the transcript 5' end is the right end of the
+        # record we want all bases from last_imp_qp to the right end.
         return query_seq[last_imp_qp:]
     else:
         return query_seq[:last_imp_qp + 1]
@@ -998,7 +1021,7 @@ def _peel_candidate_depths(
         pairs = read.get_aligned_pairs()
     except Exception:
         return []
-    if read.is_reverse:
+    if _transcript_5prime_is_right(read, strand):
         pairs = list(reversed(pairs))
     # N ops (existing splice gaps) detected from the CIGAR, not from aligned-pair
     # ref jumps: pysam emits per-base (None, ref) pairs for N just like D, so a
@@ -1072,7 +1095,8 @@ def _terminal_peel_rescue(
 
     # Gate A — terminal boundary evidence near the 5' end (S/X/I/D). No evidence
     # => clean terminal alignment => do not peel.
-    if not _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp):
+    if not _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp,
+                                      strand=strand):
         return None
 
     # 5' alignment boundary (first aligned base in transcript orientation).
@@ -1387,7 +1411,7 @@ def _rescue_3ss_truncation_body(
     All early returns in this function operate on a potentially-reanchored read;
     the caller is responsible for restore + emitting reanchor_clip_len.
     """
-    five_clip = _get_5prime_softclip_len(read)
+    five_clip = _get_5prime_softclip_len(read, strand)
 
     # --- Determine 5' alignment boundary (first aligned base, after any soft-clip) ---
     # + strand: reference_start is already the first aligned base
@@ -1408,7 +1432,8 @@ def _rescue_3ss_truncation_body(
     if rescue_seq_override is not None:
         rescue_seq = rescue_seq_override
     else:
-        rescue_seq = _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp)
+        rescue_seq = _extract_5prime_rescue_seq(read, genome_seq=genome_seq, scan_ref_bp=scan_bp,
+                                                strand=strand)
     rescue_type_candidate = (
         "softclip" if (five_clip > 0 and rescue_seq)
         else ("mpb_mismatch" if rescue_seq else "none")
@@ -2090,7 +2115,7 @@ def _rescue_3ss_truncation_body(
                 _overshoot = read.reference_end - _intron_start
                 if 0 < _overshoot:
                     _q = read.query_sequence or ''
-                    _scl = _get_5prime_softclip_len(read)
+                    _scl = _get_5prime_softclip_len(read, strand)
                     _max_k = min(_overshoot, _MAX_K)
                     # Iterate from largest k downward so the first hit is
                     # the maximum-absorption case.
@@ -2136,7 +2161,7 @@ def _rescue_3ss_truncation_body(
                 _undershoot = _intron_end - read.reference_start
                 if 0 < _undershoot:
                     _q = read.query_sequence or ''
-                    _scl = _get_5prime_softclip_len(read)
+                    _scl = _get_5prime_softclip_len(read, strand)
                     _max_k = min(_undershoot, _MAX_K)
                     for _k_try in range(_max_k, 0, -1):
                         if _scl <= 0 or len(_q) < _scl + _k_try:
