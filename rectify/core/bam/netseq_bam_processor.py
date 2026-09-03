@@ -242,6 +242,17 @@ NETSEQ_RNA3P_CHOICES = ("read5p", "read3p")
 NETSEQ_RNA3P_DEFAULT = "read5p"
 
 
+def rna_5prime_ward(strand: str) -> int:
+    """Reference-coordinate step that moves 5'-ward along the RNA: ``-1`` on ``+``, ``+1`` on ``-``.
+
+    Every 3'-end correction in this module (terminal oligo(A) trim, poly(A) walkback) shortens the
+    RNA from its 3' end, i.e. moves the called end 5'-ward. Expressing that as one signed step keeps
+    the two strands symmetric by construction -- the inverted minus-strand sign fixed in
+    :func:`get_netseq_3prime_position` was exactly a hand-written copy of this going the wrong way.
+    """
+    return -1 if strand == '+' else 1
+
+
 def netseq_gene_strand(read: pysam.AlignedSegment, rna3p_at: str = NETSEQ_RNA3P_DEFAULT) -> str:
     """Gene/RNA strand of a NET-seq read under the requested convention.
 
@@ -305,14 +316,13 @@ def get_netseq_3prime_position(
     if trim_terminal_oligo_a:
         n_trimmed = count_terminal_oligo_a_mismatches(read, strand)
         if n_trimmed > 0:
-            if strand == '-':
-                # Minus strand: oligo-A mismatches at the left side of the
-                # alignment push reference_start rightward. Shift leftward
-                # (decrease) to recover the true 3' end position.
-                position -= n_trimmed
-            else:
-                # Plus strand: shift leftward (decrease position)
-                position -= n_trimmed
+            # Trimming always moves the 3' end 5'-ward IN RNA, and RNA 5'-ward is the DIRECTION
+            # SET BY THE GENE STRAND, not a fixed sign:
+            #   '+' gene: the tail extends rightward, so reference_end-1 is too HIGH  -> subtract
+            #   '-' gene: the tail extends leftward,  so reference_start  is too LOW  -> ADD
+            # The old code subtracted on both strands, which on a '-' gene moved the position a
+            # further n_trimmed nt AWAY from the truth (measured 2 x n error, planning 834 Appendix).
+            position += rna_5prime_ward(strand) * n_trimmed
 
     return position, strand, n_trimmed
 
@@ -424,39 +434,53 @@ def process_netseq_read(
     min_a_fraction: float = 0.8,
     trim_terminal_oligo_a: bool = True,
     rna3p_at: str = NETSEQ_RNA3P_DEFAULT,
+    junction_pool=None,
+    genome=None,
+    umi_length: int = 0,
+    rescue_max_intronic: int = 10,
+    rescue_min_k: int = 1,
+    detect_tail: bool = True,
 ) -> UnifiedReadRecord:
     """
-    Process single NET-seq read into UnifiedReadRecord.
+    Process single NET-seq read into a UnifiedReadRecord (a NetseqReadRecord when the rescue or
+    tail passes run).
 
     Creates a record with:
-    - three_prime_raw: Raw 3' position from alignment (before trimming)
-    - three_prime_corrected: Position after terminal oligo(A) trimming
-    - soft_clip_a_length: Oligo(A) in 3' soft-clip
+    - three_prime_raw: Raw 3' position from alignment (before any correction)
+    - three_prime_corrected: terminal oligo(A) trim -> poly(A) walkback -> donor-side junction rescue
+    - soft_clip_a_length: legacy 0.8-A-fraction oligo(A) call over the whole clip (kept for
+      back-compat; the authoritative tail call is ``tail_len``)
     - aligned_a_length: Oligo(A) bases aligned as mismatches (trimmed)
+    - rescue_* / tail_* : see :mod:`rectify.core.netseq.netseq_rescue`
     - All other standard fields
 
     Args:
         read: pysam AlignedSegment
         chrom_std: Standardized chromosome name
-        min_a_fraction: Minimum A fraction for oligo(A) detection
+        min_a_fraction: Minimum A fraction for the legacy whole-clip oligo(A) call
         trim_terminal_oligo_a: Whether to trim terminal oligo(A) mismatches
         rna3p_at: which read terminus is the RNA 3' end -- 'read5p' (NET-seq, default) or 'read3p' (legacy)
+        junction_pool: optional :class:`~rectify.core.netseq.netseq_rescue.JunctionPool`
+        genome: optional ``{chrom: sequence}`` -- required for the walkback and the rescue
+        umi_length: declared randomer length (0 = none)
+        rescue_max_intronic: how far past the donor the aligned end may sit (nt)
+        rescue_min_k: minimum recovered exon-2 length for a rescue
+        detect_tail: run the randomer-aware tail call
 
     Returns:
-        UnifiedReadRecord with all fields populated
+        UnifiedReadRecord (NetseqReadRecord) with all fields populated
     """
+    from ..netseq.netseq_rescue import (
+        NetseqReadRecord, RescueCall, TailCall, _ref_to_query, call_tail, rescue_read, rna_clip,
+    )
+
     # Get 3' position and strand (with optional trimming)
     three_prime_corrected, strand, n_trimmed = get_netseq_3prime_position(
         read, trim_terminal_oligo_a=trim_terminal_oligo_a, rna3p_at=rna3p_at
     )
 
-    # Raw position is before trimming
-    # For minus strand: corrected = raw - n_trimmed  =>  raw = corrected + n_trimmed
-    # For plus strand:  corrected = raw - n_trimmed  =>  raw = corrected + n_trimmed
-    if strand == '-':
-        three_prime_raw = three_prime_corrected + n_trimmed
-    else:
-        three_prime_raw = three_prime_corrected + n_trimmed
+    # The trim moved the end 5'-ward IN RNA, so the raw end is n_trimmed back the OTHER way.
+    three_prime_raw = three_prime_corrected - rna_5prime_ward(strand) * n_trimmed
 
     # Get 5' position
     if strand == '+':
@@ -473,11 +497,36 @@ def process_netseq_read(
     # Parse CIGAR
     cigar_str = parse_cigar(read.cigartuples) if read.cigartuples else ''
 
+    # ---- 3'-end correction: walkback, then donor-side junction rescue ---------------------------
+    # Both need the chromosome sequence; both are no-ops without it.
+    genome_seq = None
+    if genome is not None:
+        genome_seq = genome.get(chrom_std) or genome.get(read.reference_name)
+    clip_rna = rna_clip(read, strand)
+    ref_to_query = _ref_to_query(read) if (genome_seq is not None or junction_pool is not None) else None
+
+    tail = TailCall(clip_rna=clip_rna)
+    if detect_tail:
+        tail = call_tail(
+            read, strand, three_prime_corrected, genome_seq,
+            umi_length=umi_length, clip_rna=clip_rna, ref_to_query=ref_to_query,
+        )
+        three_prime_corrected += rna_5prime_ward(strand) * tail.walkback
+
+    rescue = rescue_read(
+        read, strand, chrom_std, three_prime_raw, junction_pool, genome_seq,
+        umi_length=umi_length, max_intronic=rescue_max_intronic, min_k=rescue_min_k,
+        clip_rna=clip_rna, ref_to_query=ref_to_query,
+    )
+    if rescue.position is not None:
+        # A rescued read's clip is exon-2 sequence, not a tail -- the walkback result is discarded.
+        three_prime_corrected = rescue.position
+
     # Total oligo(A) = soft-clipped + aligned-as-mismatch
     total_oligo_a = oligo_a_info['soft_clip_a_length'] + n_trimmed
 
-    # Create UnifiedReadRecord
-    record = UnifiedReadRecord(
+    # Create the record
+    record = NetseqReadRecord(
         read_id=read.query_name,
         chrom=chrom_std,
         strand=strand,
@@ -490,7 +539,7 @@ def process_netseq_read(
 
         # 3' end positions
         three_prime_raw=three_prime_raw,
-        three_prime_corrected=three_prime_corrected,  # After terminal oligo(A) trimming
+        three_prime_corrected=three_prime_corrected,  # trim -> walkback -> junction rescue
 
         # Alignment span
         alignment_start=read.reference_start,
@@ -524,6 +573,21 @@ def process_netseq_read(
 
         # Count
         count=1,
+
+        # NET-seq rescue / tail
+        rescue_status=rescue.status,
+        rescue_k=rescue.k,
+        rescue_r=rescue.r,
+        rescue_n_intronic=rescue.n_intronic,
+        rescue_decoy_k=rescue.decoy_k,
+        rescue_intron_start=rescue.junction.intron_start if rescue.junction else -1,
+        rescue_intron_end=rescue.junction.intron_end if rescue.junction else -1,
+        tail_len=tail.tail_len,
+        tail_clip_a_run=tail.clip_a_run,
+        tail_walkback=tail.walkback,
+        tail_class=tail.tail_class,
+        clip_rna=tail.clip_rna,
+        three_prime_shift=three_prime_corrected - three_prime_raw,
     )
 
     return record
@@ -539,6 +603,12 @@ def process_netseq_bam(
     show_progress: bool = True,
     progress_interval: int = 1_000_000,
     rna3p_at: str = NETSEQ_RNA3P_DEFAULT,
+    junction_pool=None,
+    genome=None,
+    umi_length: int = 0,
+    rescue_max_intronic: int = 10,
+    rescue_min_k: int = 1,
+    detect_tail: bool = True,
 ) -> Generator[UnifiedReadRecord, None, None]:
     """
     Stream process NET-seq BAM file.
@@ -559,6 +629,12 @@ def process_netseq_bam(
         show_progress: Print progress messages
         progress_interval: Print progress every N reads
         rna3p_at: which read terminus is the RNA 3' end -- 'read5p' (NET-seq, default) or 'read3p' (legacy)
+        junction_pool: optional JunctionPool enabling the donor-side rescue
+        genome: optional {chrom: sequence}; required for the walkback and the rescue
+        umi_length: declared randomer length (0 = none)
+        rescue_max_intronic: how far past the donor the aligned end may sit (nt)
+        rescue_min_k: minimum recovered exon-2 length for a rescue
+        detect_tail: run the randomer-aware tail call
 
     Yields:
         UnifiedReadRecord for each valid read
@@ -629,6 +705,12 @@ def process_netseq_bam(
                 read, chrom_std, min_a_fraction,
                 trim_terminal_oligo_a=trim_terminal_oligo_a,
                 rna3p_at=rna3p_at,
+                junction_pool=junction_pool,
+                genome=genome,
+                umi_length=umi_length,
+                rescue_max_intronic=rescue_max_intronic,
+                rescue_min_k=rescue_min_k,
+                detect_tail=detect_tail,
             )
             n_yielded += 1
 
@@ -680,3 +762,42 @@ def aggregate_positions(
         counts[key] = counts.get(key, 0) + record.count
 
     return counts
+
+
+def aggregate_netseq_stream(
+    records,
+    collect: bool = False,
+):
+    """One streaming pass over NET-seq records -> (raw_counts, corrected_counts, summary, records).
+
+    ``aggregate_positions`` can only build ONE dict per generator, and the streaming path added in
+    429f1c9 deliberately never materialises records (~23 GB per 50 M reads). Emitting BOTH a raw and
+    a corrected track therefore has to happen in a single pass, together with the per-sample
+    correction counters -- which is what this does.
+
+    Args:
+        records: iterable of records from :func:`process_netseq_bam`.
+        collect: also return the records in a list (only when parquet is requested).
+
+    Returns:
+        ``(raw_counts, corrected_counts, summary, records_list)`` where the two count dicts are
+        ``{(chrom, strand, position): count}`` and ``summary`` is a
+        :class:`~rectify.core.netseq.netseq_rescue.NetseqCorrectionSummary`.
+    """
+    from ..netseq.netseq_rescue import NetseqCorrectionSummary
+
+    raw_counts: Dict[Tuple[str, str, int], int] = {}
+    corrected_counts: Dict[Tuple[str, str, int], int] = {}
+    summary = NetseqCorrectionSummary()
+    kept: List = [] if collect else []
+
+    for record in records:
+        raw_key = (record.chrom, record.strand, record.three_prime_raw)
+        raw_counts[raw_key] = raw_counts.get(raw_key, 0) + record.count
+        cor_key = (record.chrom, record.strand, record.three_prime_corrected)
+        corrected_counts[cor_key] = corrected_counts.get(cor_key, 0) + record.count
+        summary.observe(record)
+        if collect:
+            kept.append(record)
+
+    return raw_counts, corrected_counts, summary, kept
