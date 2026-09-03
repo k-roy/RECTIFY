@@ -29,9 +29,8 @@ broken is worse than no list at all.
 - **Affects:** any multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
   default** (`run_command.py:1021-1034`). `rectify align` / `rectify consensus` default it OFF.
   The mechanism is datatype-independent — it lives in the disagreement fallback, not in anything
-  short-read-specific — and it has now been measured on **two** short-read panels (below).
-  Long-read panels are not yet measured; how often minimap2 + the resolver arms, which share a
-  seed chain, disagree on contig is unknown.
+  short-read-specific — and it has now been measured on **four** panels, short-read AND long-read
+  (below).
 - **Impact:** an output record can carry one aligner's **chromosome, strand, MAPQ and aux tags**
   with another aligner's **position and CIGAR**, while the `Xa` tag credits the second one.
   Sometimes it crashes; otherwise it is written silently to a locus no aligner reported.
@@ -53,6 +52,13 @@ Measured on `fd2e2d2`:
 | QuantSeq `--short-read --dT-primed-cDNA`, 200k reads, bbmap + bwa | 2,532 / 179,062 reads took the cross-contig fallback |
 | TruSeq short-read panel, 200k reads SE, 5 arms | **115 / 157,475 = 0.073 %** written to the wrong chromosome |
 | TruSeq short-read panel, 200k read pairs PE, 7 arms | **25 / 20,000 = 0.125 %** (first two checkpoint batches) |
+| ONT DRS, 50k reads, minimap2 + uLTRA + deSALT + overhang-resolver | **29 / 48,362 = 0.060 %** |
+| ONT DRS, 10k reads, same panel | **7 / 9,743 = 0.072 %** |
+| ONT PCR-cDNA, 5k clusters, minimap2 + uLTRA | **5 / 4,787 = 0.104 %** (4 contig + 1 **strand**) |
+
+The two long-read rows are **lower bounds**: those runs deleted their per-aligner BAMs, so the
+check there was contig+strand against each arm's per-read correction record, not the full
+(RNAME, POS, CIGAR) triple.
 
 Only ~8 % of the swapped records overran the borrowed contig and were caught by
 `_validate_bam_sample`; the rest passed every guard. One QuantSeq example: read
