@@ -191,13 +191,16 @@ minimap2's return code before samtools'.
 
 ---
 
-## 🟡 NET-seq / QuantSeq defects — fixed on a branch, not on `master`
+## ✅ NET-seq / QuantSeq defects — ALL SIX FIXED ON `master`
 
-- **Status:** fixed on `feat/netseq-junction-rescue-836`; **`master` still has all of them**
-- **Affects:** `rectify netseq`, `rectify correct --netseq` / `--dT-primed-cDNA`,
+- **Status:** **fixed and merged** (`feat/netseq-junction-rescue-836` → `master` @ `457fe00`,
+  2026-09-02). This entry is kept as the record of what the defects were and what the numbers
+  looked like on either side of them; the "workaround" lines apply only to a checkout OLDER than
+  `457fe00`.
+- **Affected:** `rectify netseq`, `rectify correct --netseq` / `--dT-primed-cDNA`,
   `rectify run-all --short-read`, `rectify align --help`, `rectify correct --netseq-dir`
 
-Six independent defects, each verified by execution against `master` before the fix:
+Six independent defects, each verified by execution before the fix:
 
 1. **`rectify netseq` tracks are built on the RAW alignment terminus.** `aggregate_positions`
    defaults to `three_prime_raw` and the command never overrides it, so every bedgraph, BigWig and
@@ -228,11 +231,16 @@ Six independent defects, each verified by execution against `master` before the 
    *Workaround on `master`:* point `--netseq-dir` at a directory holding one flavour only, and
    accept that both strands are still summed.
 
-Also on that branch, and NOT defects on `master` so much as missing capability: a donor-side
-junction rescue for NET-seq geometry (nothing in RECTIFY re-places a 3' soft clip across a
-junction — Module 2F is transcript-5'-only and the three 3'-side modules are contiguous-reference),
-and a randomer-aware non-templated 3'-tail call. See
-`docs/algorithms/netseq_refinement.md` § *Donor-side junction rescue*.
+Landed alongside them, and missing capability rather than defects: the donor-side junction rescue
+for NET-seq geometry (nothing in RECTIFY re-placed a 3' soft clip across a junction — Module 2F is
+transcript-5'-only and the three 3'-side modules are contiguous-reference) and the randomer-aware
+non-templated 3'-tail call. See `docs/algorithms/netseq_refinement.md` § *Donor-side junction
+rescue*.
+
+🔴 **Still open: there is no donor-side rescue inside `rectify correct`.** The rescue lives in
+`rectify netseq`, which is where the NET-seq geometry is. `correct --netseq` on its own still
+calls a spliced read with a soft-clipped exon-2 overhang at the 5' splice site — a false splicing
+intermediate. For NET-seq use `run-all --netseq` (or `rectify netseq`), not `correct --netseq`.
 
 ---
 
@@ -303,6 +311,16 @@ Both were recorded internally as outstanding but were checked against the curren
 - **ONT PCR-cDNA via `run-all`** — a Path A route (pre-alignment → UMI collapse) is implemented, so
   the previous advice to use only the explicit `trim-cdna-polya → minimap2 → correct` chain no
   longer applies.
+- **`run-all --short-read` collected only the bbmap arm** — `_ALIGNER_NAMES` (`run/helpers.py`)
+  listed no COMPASS aligner, so `_collect_per_aligner_bams` never saw the STAR / HISAT2 /
+  magicblast / gsnap BAMs and `corrected_reads.tsv` was bbmap-only while the 5- or 7-way consensus
+  sat unused in `multialigned.bam`. Fixed 2026-09-03; the list is now a superset of
+  `align_command`'s `--aligners` choices and `tests/test_run_all_wp0_remnants.py` parametrizes over
+  `COMPASS_{SE,PE}_ALIGNERS` so a new arm cannot be added without being collectable.
+- **`run-all --ONT-cDNA` renamed every sample to `stage1_consensus`** (and `--drs` appended
+  `_trimmed`) — the sample id was re-derived from `input_path.stem` at four sites AFTER Step 0 had
+  replaced `input_path` with a derived FASTQ. Fixed 2026-09-03: one `_canonical_sample_id()` call
+  on the ORIGINAL input, before Step 0.
 
 ⚠️ Historical-data caveat, not a live bug: ONT-cDNA outputs produced **before** `gene_id` was
 assigned on the gene strand carry corrupt `gene_id` for antisense reads. Regenerate rather than
