@@ -437,3 +437,31 @@ def test_walkback_can_be_gated_on_clip_evidence():
     with_clip = make_read('+', genome[CHROM][60:100], 60, clip_rna="AA")
     gated = call_tail(with_clip, '+', 99, genome[CHROM], require_clip_evidence=True)
     assert gated.clip_a_run == 2 and gated.walkback == 3 and gated.tail_len == 5
+
+
+def test_molecule_track_uses_the_same_corrected_position_as_the_read_track(tmp_path):
+    """planning 834 defect (c): the molecule track keyed on a DIFFERENT position from the read
+    track. Now that the read track keys on trim + walkback + rescue, `iter_netseq_fragments` has to
+    be handed the same inputs, or every walked-back / rescued read lands on its own coordinate."""
+    from rectify.core.netseq.netseq_umi import iter_netseq_fragments
+
+    stop = 'C' if SEQ[96] == 'A' else SEQ[96]
+    genome = {CHROM: SEQ[:96] + stop + "AAA" + SEQ[100:]}
+    # one walked-back read and one junction-rescued read, both with a usable 6-nt UMI
+    walked = make_read('+', genome[CHROM][60:100], 60, clip_rna="ACGTAC", qname="wb")
+    rescued = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:4] + non_matching_run(EXON2_PLUS[4], 6),
+                        qname="rescue")
+    bam_path = tmp_path / "m.bam"
+    with pysam.AlignmentFile(str(bam_path), "wb", header=_HEADER) as out:
+        for r in (walked, rescued):
+            out.write(r)
+
+    read_positions = {
+        process_netseq_read(r, CHROM, junction_pool=plus_pool(), genome=genome, umi_length=6).three_prime_corrected
+        for r in (walked, rescued)
+    }
+    frags = list(iter_netseq_fragments(
+        str(bam_path), umi_length=6, genome=genome, junction_pool=plus_pool(),
+    ))
+    assert len(frags) == 2
+    assert {f.corrected_3p for f in frags} == read_positions

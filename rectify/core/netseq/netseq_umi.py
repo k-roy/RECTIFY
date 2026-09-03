@@ -401,6 +401,12 @@ def iter_netseq_fragments(
     rna3p_at: str = "read5p",
     max_reads: Optional[int] = None,
     stats: Optional[UmiDedupStats] = None,
+    genome: Any = None,
+    junction_pool: Any = None,
+    rescue_max_intronic: int = 10,
+    rescue_min_k: int = 1,
+    detect_tail: bool = True,
+    walkback_requires_clip_a: bool = False,
 ):
     """Yield one :class:`NetseqFragment` per usable NET-seq read.
 
@@ -410,14 +416,31 @@ def iter_netseq_fragments(
     SAME positions -- a molecule count anchored on a different position than its read count would be
     unusable side by side, which is exactly how it must be reported.
 
-    The randomer-overshoot correction (``L < umi_length``) is applied on top of the processor's position.
+    🔴 That guarantee is only true if this function is given the SAME correction inputs as the read
+    pass. It used to call ``get_netseq_3prime_position`` alone, i.e. the terminal-oligo(A) trim and
+    nothing else, while the read track keyed on the raw terminus -- planning 834 defect (c). Now
+    that the read track keys on trim + poly(A) walkback + donor-side junction rescue, the same
+    ``genome`` / ``junction_pool`` / knobs have to be passed through here, and ``run_netseq`` does.
+    Omit them and the molecule positions fall back to the trim-only position, which is a DIFFERENT
+    coordinate for every walked-back or rescued read.
+
+    The randomer-overshoot correction (``L < umi_length``: part of the randomer aligned by chance)
+    is applied on top, but ONLY when neither the walkback nor the rescue fired -- both already move
+    the end 5'-ward for the same physical reason, and applying two of them double-counts.
+
+    ⚠️ **The overshoot is the one remaining reason a molecule position can be absent from the read
+    track, and it is deliberate.** ``randomer_overshoot(L, N)`` returns ``N - L`` for every ``L < N``,
+    including ``L == 0``, because on a library where EVERY read carries an N-nt randomer a zero-length
+    clip means all N randomer bases aligned by chance. On a MIXED library that assumption is false
+    for the randomer-free class and shifts those reads by the full ``N`` (planning 829 §4 measured
+    ~58-60 % zero-clip reads in PRJNA1521488, and 50.1 % of reads shifted here in consequence).
+    That is why 829's standing conclusion for that dataset is **no ``--umi-length``, no ``--dedup``**:
+    a barcode present on ~30 % of reads cannot deduplicate the rest. Use the molecule track only on
+    a library where the randomer is universal.
     """
     import pysam
 
-    from ..bam.netseq_bam_processor import (
-        get_netseq_3prime_position,
-        standardize_netseq_chrom,
-    )
+    from ..bam.netseq_bam_processor import process_netseq_read, standardize_netseq_chrom
 
     bam = pysam.AlignmentFile(str(bam_path), "rb")
     try:
@@ -428,11 +451,20 @@ def iter_netseq_fragments(
                 continue
             if read.mapping_quality < min_mapq:
                 continue
-            pos, strand, _ = get_netseq_3prime_position(read, rna3p_at=rna3p_at)
-            over = randomer_overshoot(five_prime_terminal_clip(read), umi_length)
-            if over:
-                pos = pos - over if strand == "+" else pos + over
             chrom = chrom_map.get(read.reference_name, read.reference_name)
+            record = process_netseq_read(
+                read, chrom, rna3p_at=rna3p_at,
+                junction_pool=junction_pool, genome=genome, umi_length=umi_length,
+                rescue_max_intronic=rescue_max_intronic, rescue_min_k=rescue_min_k,
+                detect_tail=detect_tail,
+                walkback_requires_clip_a=walkback_requires_clip_a,
+            )
+            pos, strand = record.three_prime_corrected, record.strand
+            if getattr(record, 'tail_walkback', 0) == 0 and \
+                    getattr(record, 'rescue_status', 'none') != 'spliced_rescued':
+                over = randomer_overshoot(five_prime_terminal_clip(read), umi_length)
+                if over:
+                    pos = pos - over if strand == "+" else pos + over
             if exclusion_detector is not None and exclusion_detector.is_excluded(chrom, pos):
                 continue
             umi = extract_netseq_umi(read, umi_length, umi_source)

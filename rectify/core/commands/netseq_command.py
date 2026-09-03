@@ -134,8 +134,12 @@ def run_netseq(args) -> int:
         print("\nSetting up exclusion regions...")
         exclusion_detector = ExclusionRegionDetector(flanking_bp=args.pol3_flanking)
 
-        # Load from GFF if provided (resolved above: --gff, else the bundled/organism annotation)
-        gff_path = annotation_path
+        # 🔴 EXCLUSION uses the EXPLICIT --gff only, never the organism fallback.
+        # `_resolve_annotation` exists so the junction pool can be built under --Scer, but feeding
+        # it here too would silently turn `rectify netseq --Scer` from "exclude the rDNA box" into
+        # "exclude 610 regions incl. every tRNA and snRNA" -- and the 829 QC gate's primary
+        # observable is the SNR7 (U5 snRNA) 3' end, which that would delete. Pass --gff to opt in.
+        gff_path = getattr(args, 'gff', None)
         if gff_path and Path(gff_path).exists():
             n_regions = exclusion_detector.load_from_gff(
                 Path(gff_path),
@@ -150,6 +154,10 @@ def run_netseq(args) -> int:
             if exclude_rdna:
                 exclusion_detector.add_rdna_region()
                 print("  Added default yeast rDNA region (chrXII:450,000-490,000)")
+            if annotation_path:
+                print(f"  NOTE: {Path(annotation_path).name} was resolved for the JUNCTION POOL "
+                      "only. Pass --gff to use it for exclusion regions too (that would also "
+                      "exclude every tRNA and snRNA unless --include-pol3 is set).")
 
         # Show summary
         stats = exclusion_detector.get_stats_by_reason()
@@ -277,6 +285,13 @@ def run_netseq(args) -> int:
                 min_mapq=args.min_mapq if hasattr(args, 'min_mapq') else 0,
                 rna3p_at=rna3p_at,
                 max_reads=args.max_reads if hasattr(args, 'max_reads') else None,
+                # SAME correction inputs as the read pass, or the two tracks sit on different
+                # coordinates for every walked-back / rescued read (planning 834 defect (c)).
+                genome=genome, junction_pool=junction_pool,
+                rescue_max_intronic=args.rescue_max_intronic,
+                rescue_min_k=args.rescue_min_k,
+                detect_tail=detect_tail,
+                walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', False),
             )
 
     print(f"\n{'='*60}")
@@ -365,6 +380,12 @@ def _emit_molecule_track(
     min_mapq: int,
     rna3p_at: str,
     max_reads,
+    genome=None,
+    junction_pool=None,
+    rescue_max_intronic: int = 10,
+    rescue_min_k: int = 1,
+    detect_tail: bool = True,
+    walkback_requires_clip_a: bool = False,
 ) -> None:
     """Write the UMI molecule-level outputs for one sample.
 
@@ -383,6 +404,10 @@ def _emit_molecule_track(
     import json
 
     print("\n5. Molecule-level (UMI) counting...")
+    print("   ⚠️  molecule positions carry the randomer-OVERSHOOT correction, which the read track")
+    print("       does not: it assumes EVERY read carries the randomer, so on a MIXED library it")
+    print("       shifts the randomer-free class by the full --umi-length (planning 829 §4). Verify")
+    print("       the randomer is universal before using this track -- 5'-clip histogram, not the kit.")
     print(f"   umi-length={umi_length} umi-source={umi_source} clustering={clustering} "
           f"edit-distance={edit_distance}")
     stats = UmiDedupStats()
@@ -396,6 +421,9 @@ def _emit_molecule_track(
         str(input_path), umi_length=umi_length, umi_source=umi_source,
         exclusion_detector=exclusion_detector, min_mapq=min_mapq,
         rna3p_at=rna3p_at, max_reads=max_reads, stats=stats,
+        genome=genome, junction_pool=junction_pool,
+        rescue_max_intronic=rescue_max_intronic, rescue_min_k=rescue_min_k,
+        detect_tail=detect_tail, walkback_requires_clip_a=walkback_requires_clip_a,
     )
     tmp = mol_path.with_suffix(".tsv.tmp")
     with open(tmp, "w") as fh:

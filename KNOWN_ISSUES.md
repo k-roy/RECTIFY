@@ -236,6 +236,30 @@ and a randomer-aware non-templated 3'-tail call. See
 
 ---
 
+## 🟠 The NET-seq molecule (`--dedup`) track carries a randomer correction the read track does not
+
+- **Status:** narrowed on `feat/netseq-junction-rescue-836`, not eliminated; **worse on `master`**
+- **Affects:** `rectify netseq --dedup --umi-length N`
+
+`netseq_umi.iter_netseq_fragments` used to key molecules on the terminal-oligo(A)-trimmed position
+while the read track keyed on the raw alignment terminus, so the two disagreed on every read with an
+aligned tail base — despite a docstring promising they "sit on the SAME positions". Both now run the
+identical correction chain (trim → walkback → junction rescue).
+
+**One deliberate divergence remains.** `randomer_overshoot(L, N)` returns `N - L` for every clip
+shorter than the randomer, `L == 0` included, because on a library where every read carries an N-nt
+randomer a zero-length clip means all N randomer bases aligned by chance. On a **mixed** library that
+is false for the randomer-free class: measured on PRJNA1521488 wt_rep3 (chrI+chrII, `--umi-length 6`),
+**50.1 % of reads are shifted, 52 % of reads have a zero-length clip**, and 11,152 of the 47,647
+molecule positions do not exist in the read track.
+
+- **Workaround:** do not use `--dedup` unless the randomer is UNIVERSAL in the library. Verify from
+  the aligned 5'-clip histogram, not from the kit — for PRJNA1521488 the standing conclusion is no
+  `--umi-length`, no `--dedup` (a barcode on ~30 % of reads cannot deduplicate the rest).
+- The command now prints this warning whenever `--dedup` runs.
+
+---
+
 ## 🟠 Two NET-seq correction defaults are judgement calls, and the summary JSON reports both sides
 
 - **Status:** OPEN by design on `feat/netseq-junction-rescue-836`; not a bug, a calibration
