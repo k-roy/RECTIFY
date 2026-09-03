@@ -19,6 +19,8 @@ import pytest
 
 from rectify.core.commands.run_command import (
     _validate_protocol_flags,
+    _CORRECT_FORWARDED_FLAGS,
+    _MODALITY_FLAGS,
     _PROTOCOL_FLAGS,
 )
 
@@ -55,7 +57,7 @@ def test_run_all_ont_cdna_defaults_off_and_parses():
 def test_run_all_still_offers_the_other_protocols():
     # Guard against a rename silently dropping one.
     opts = [o for a in _run_all_parser()._actions for o in a.option_strings]
-    for flag, _dest in _PROTOCOL_FLAGS:
+    for flag, _dest in _PROTOCOL_FLAGS + _MODALITY_FLAGS:
         assert flag in opts, f"run-all lost {flag}"
 
 
@@ -140,3 +142,33 @@ def test_cdna_trim_api_accepts_what_we_pass():
     params = inspect.signature(trim_cdna_fastq_polya).parameters
     for needed in ('input_fastq_path', 'output_fastq_path', 'metadata_path', 'trim_5p_polyt'):
         assert needed in params, f"trim_cdna_fastq_polya lost parameter {needed}"
+
+
+# ── --short-read is a MODALITY, not a protocol (planning 832 G-0) ───────────
+def test_short_read_is_not_a_protocol():
+    """Listing it as a fourth mutually exclusive protocol made the documented QuantSeq
+    invocation `run-all --short-read --dT-primed-cDNA` exit 1 — i.e. made the whole run-all
+    QuantSeq path unreachable."""
+    assert '--short-read' not in [f for f, _ in _PROTOCOL_FLAGS]
+    assert '--short-read' in [f for f, _ in _MODALITY_FLAGS]
+
+
+def test_quantseq_invocation_validates():
+    assert _validate_protocol_flags(_ns(short_read=True, dT_primed_cDNA=True)) is None
+
+
+def test_short_read_composes_with_every_protocol():
+    for _flag, dest in _PROTOCOL_FLAGS:
+        assert _validate_protocol_flags(_ns(short_read=True, **{dest: True})) is None
+
+
+# ── every protocol/modality flag must reach `correct` ──────────────────────
+def test_correct_stage_receives_every_forwarded_flag():
+    """stages._run_correction hand-builds correct's Namespace, so a flag missing from it is
+    dropped SILENTLY: --short-read was, leaving poly(A) trim + indel correction on for Illumina
+    reads (832 G-1 / 833 C-1); --netseq would have been, running NET-seq under the sense rule."""
+    import inspect
+    from rectify.core.commands.run import stages
+    src = inspect.getsource(stages)
+    for dest in _CORRECT_FORWARDED_FLAGS:
+        assert f'{dest}=' in src, f"correct_args never assigns {dest}"

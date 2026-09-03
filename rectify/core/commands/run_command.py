@@ -116,12 +116,29 @@ __all__ = [
 
 #: run-all protocol flags, in help order. Each selects a different strand
 #: convention and module set, so exactly one may be active.
+#:
+#: 🔴 ``--short-read`` is NOT one of them. It is a READ-LENGTH MODALITY that composes with a
+#: protocol -- ``--short-read --dT-primed-cDNA`` (QuantSeq) is the documented QuantSeq invocation,
+#: and treating it as a fourth mutually exclusive protocol made that command exit 1, i.e. made the
+#: whole run-all QuantSeq path unreachable (planning 832 G-0, verified by executing the validator).
+#: The chunked-alignment guard below already had to special-case it out for the same reason.
 _PROTOCOL_FLAGS = (
     ('--drs', 'drs'),
     ('--dT-primed-cDNA', 'dT_primed_cDNA'),
     ('--ONT-cDNA', 'ONT_cDNA'),
+)
+
+#: Read-length modality flags -- orthogonal to the protocol, never mutually exclusive with one.
+_MODALITY_FLAGS = (
     ('--short-read', 'short_read'),
 )
+
+#: Every run-all flag that must reach ``rectify correct``'s Namespace. ``stages._run_correction``
+#: hand-builds that Namespace, so anything missing here is silently dropped: ``--short-read`` was,
+#: which left poly(A) trimming and the position-shifting indel module ON for 150-bp Illumina reads
+#: (832 G-1 / 833 C-1), and ``--netseq`` would have been, which would have run a NET-seq library
+#: under the SENSE strand rule (834 §6.4).
+_CORRECT_FORWARDED_FLAGS = ('drs', 'dT_primed_cDNA', 'ONT_cDNA', 'short_read', 'netseq')
 
 
 def _validate_protocol_flags(args: argparse.Namespace) -> Optional[str]:
@@ -255,8 +272,7 @@ def run(args: argparse.Namespace) -> None:
             # wrong terminus for ~half the reads -- with nothing erroring. Refuse
             # rather than emit a script that produces a confident wrong answer.
             _active_proto = [
-                flag for flag, dest in _PROTOCOL_FLAGS
-                if flag != '--short-read' and getattr(args, dest, False)
+                flag for flag, dest in _PROTOCOL_FLAGS if getattr(args, dest, False)
             ]
             if _active_proto:
                 print(

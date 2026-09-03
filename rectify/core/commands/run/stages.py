@@ -357,6 +357,14 @@ def _run_correction(
         dT_primed_cDNA=polya_seq,
         polya_sequenced=polya_seq,  # deprecated attr kept for compat
         ONT_cDNA=ont_cdna,
+        # 🔴 This Namespace is hand-built, so anything not listed here is SILENTLY DROPPED.
+        # `short_read` was: `correct` then ran poly(A) trimming and the position-shifting indel
+        # module on 150-bp Illumina reads with nothing erroring (planning 832 G-1 / 833 C-1).
+        # `netseq` would have been: a NET-seq library would have been corrected under the SENSE
+        # strand rule, i.e. the 3' end taken from the wrong read terminus (834 §6.4).
+        short_read=getattr(args, 'short_read', False),
+        netseq=getattr(args, 'netseq', False),
+        drs=getattr(args, 'drs', False),
         threads=getattr(args, 'threads', 4),
         filter_spikein=getattr(args, 'filter_spikein', None),
         streaming=getattr(args, 'streaming', False),
