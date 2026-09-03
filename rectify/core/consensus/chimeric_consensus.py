@@ -1000,7 +1000,15 @@ def build_chimeric_read(
     # Pairing/QC bits from the template (it supplied the SEQ), but the STRAND
     # bits (0x10 self, 0x20 mate) must describe the ANCHOR's placement.
     out.flag = (template_read.flag & ~0x30) | (anchor.flag & 0x30)
-    out.reference_id = anchor.reference_id
+    # Resolve the contig BY NAME through the OUTPUT header. `reference_id` is an
+    # index into the header of the BAM the anchor was read from; copying the
+    # integer is only correct while every arm's @SQ block matches the output's
+    # in order. It did in the runs that exposed this bug, but a panel whose
+    # indices order contigs differently would silently relabel every record.
+    # get_tid returns -1 for an unknown name, which the caller's invariant
+    # turns into a loud failure instead of a wrong contig.
+    _tid = header.get_tid(anchor.reference_name) if anchor.reference_name else -1
+    out.reference_id = _tid if _tid >= 0 else anchor.reference_id
     out.reference_start = ref_start
     out.cigar = cigar_tuples
     out.mapping_quality = anchor.mapping_quality

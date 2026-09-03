@@ -261,3 +261,41 @@ def test_single_aligner_is_unaffected():
     assert (written[0].reference_name, written[0].reference_start) == ('chrB', 400)
     assert written[0].mapping_quality == 60
     assert stats['placement_invariant_violations'] == 0
+
+
+def test_contig_is_resolved_by_name_not_by_tid():
+    """The anchor's `reference_id` indexes ITS OWN header. Copying the integer
+    is only right while every arm's @SQ block matches the output's in order.
+
+    In the runs that exposed this bug all seven arm BAMs and the output shared a
+    byte-identical 17-entry @SQ block, so a tid copy happened to be correct —
+    but a panel whose indices order contigs differently would silently relabel
+    every record, which is the same failure with a much larger blast radius.
+    """
+    from rectify.core.consensus.chimeric_consensus import (
+        build_chimeric_read, _fallback_simple_selection,
+    )
+
+    # An arm BAM whose @SQ order is the REVERSE of the output's.
+    arm_header = pysam.AlignmentHeader.from_dict({
+        'HD': {'VN': '1.6', 'SO': 'unsorted'},
+        'SQ': [{'SN': 'chrB', 'LN': 1000}, {'SN': 'chrA', 'LN': 1000}],
+    })
+    anchor = pysam.AlignedSegment(arm_header)
+    anchor.query_name = 'read1'
+    anchor.query_sequence = SEQ
+    anchor.flag = 0
+    anchor.reference_id = arm_header.get_tid('chrB')   # tid 0 here, tid 1 in HEADER
+    anchor.reference_start = 400
+    anchor.mapping_quality = 60
+    anchor.cigartuples = [(0, 50)]
+    assert anchor.reference_id != HEADER.get_tid('chrB'), "premise: the tids must differ"
+
+    result = _fallback_simple_selection({'winner': anchor}, GENOME, set())
+    out = build_chimeric_read(
+        template_read=anchor, ref_start=400, cigar_tuples=[(0, 50)],
+        chimeric_result=result, header=HEADER, anchor_read=anchor,
+    )
+    assert out.reference_name == 'chrB', (
+        f"tid was copied blind across headers: got {out.reference_name}"
+    )
