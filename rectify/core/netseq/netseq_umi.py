@@ -405,8 +405,9 @@ def iter_netseq_fragments(
     junction_pool: Any = None,
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
+    rescue_min_k_with_remainder: int = 4,
     detect_tail: bool = True,
-    walkback_requires_clip_a: bool = False,
+    walkback_requires_clip_a: bool = True,
 ):
     """Yield one :class:`NetseqFragment` per usable NET-seq read.
 
@@ -456,6 +457,7 @@ def iter_netseq_fragments(
                 read, chrom, rna3p_at=rna3p_at,
                 junction_pool=junction_pool, genome=genome, umi_length=umi_length,
                 rescue_max_intronic=rescue_max_intronic, rescue_min_k=rescue_min_k,
+                rescue_min_k_with_remainder=rescue_min_k_with_remainder,
                 detect_tail=detect_tail,
                 walkback_requires_clip_a=walkback_requires_clip_a,
             )

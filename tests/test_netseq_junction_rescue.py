@@ -227,9 +227,54 @@ def test_randomer_only_clip_that_does_not_match_exon2_is_an_exon1_end():
 
 
 def test_min_k_raises_the_floor():
+    """A read that fails the floor keeps the class its GEOMETRY implies -- raising the floor must
+    return chance-matched reads to `exon1_end` (the splicing-intermediate readout), not hide them
+    in `ambiguous`."""
     read = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:1])
     assert rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, min_k=1).status == "spliced_rescued"
     assert rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, min_k=2).status == "exon1_end"
+
+
+def test_min_k_floor_is_remainder_aware():
+    """THE CHANCE CHANNEL IS THE REMAINDER. With r == 0 the whole clip is exon-2 sequence, so k=1 is
+    evidence; with r > 0 a randomer is being invoked and a randomer's first base matches exon 2 a
+    quarter of the time, so the floor has to be higher."""
+    pool, genome = plus_pool(), SEQ
+    randomer = non_matching_run(EXON2_PLUS[1], 6)
+
+    clean = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:1])
+    with_rem = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:1] + randomer)
+
+    # default floors: 1 with no remainder, 4 with one
+    c = rescue_read(clean, '+', CHROM, 99, pool, genome, umi_length=6)
+    assert (c.status, c.k, c.r) == ("spliced_rescued", 1, 0)
+    w = rescue_read(with_rem, '+', CHROM, 99, pool, genome, umi_length=6)
+    assert (w.status, w.k, w.r) == ("exon1_end", 1, 6)          # k=1 < 4 -> not moved
+
+    # a 4-nt overhang ahead of the same randomer clears the higher floor
+    randomer4 = non_matching_run(EXON2_PLUS[4], 6)
+    deep = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:4] + randomer4)
+    d = rescue_read(deep, '+', CHROM, 99, pool, genome, umi_length=6)
+    assert (d.status, d.k, d.r) == ("spliced_rescued", 4, 6)
+
+    # setting the two equal restores the old flat rule
+    flat = rescue_read(with_rem, '+', CHROM, 99, pool, genome, umi_length=6,
+                       min_k_with_remainder=1)
+    assert flat.status == "spliced_rescued" and flat.k == 1
+
+
+def test_decoy_uses_the_same_remainder_aware_rule():
+    """`decoy_would_rescue` is the chance floor only if it runs the IDENTICAL acceptance test."""
+    randomer = non_matching_run(EXON2_PLUS[1], 6)
+    read = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:1] + randomer)
+    loose = rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, umi_length=6,
+                        min_k_with_remainder=1)
+    strict = rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, umi_length=6,
+                         min_k_with_remainder=9)
+    # the decoy verdict must track the floor, not be frozen at min_k
+    assert strict.decoy_would_rescue is False
+    assert loose.decoy_would_rescue == (loose.decoy_k >= 1 and
+                                        (len(loose.s_seq) - loose.decoy_k) in (0, 5, 6, 7))
 
 
 def test_no_pooled_donor_means_no_call():
@@ -365,12 +410,12 @@ def test_mirrored_synthetic_read_gives_mirrored_answers_end_to_end():
 # ---------------------------------------------------------------------------------------------
 
 def test_process_netseq_read_records_the_rescue_and_the_tail():
-    randomer = non_matching_run(EXON2_PLUS[3], 6)
-    read = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:3] + randomer)
+    randomer = non_matching_run(EXON2_PLUS[4], 6)   # k=4 clears the default remainder floor
+    read = make_read('+', SEQ[60:100], 60, clip_rna=EXON2_PLUS[:4] + randomer)
     rec = process_netseq_read(read, CHROM, junction_pool=plus_pool(), genome=GENOME, umi_length=6)
-    assert rec.rescue_status == "spliced_rescued" and rec.rescue_k == 3 and rec.rescue_r == 6
-    assert rec.three_prime_corrected == INTRON_END + 2
-    assert rec.clip_rna == EXON2_PLUS[:3] + randomer
+    assert rec.rescue_status == "spliced_rescued" and rec.rescue_k == 4 and rec.rescue_r == 6
+    assert rec.three_prime_corrected == INTRON_END + 3
+    assert rec.clip_rna == EXON2_PLUS[:4] + randomer
 
 
 def test_rescue_and_tail_are_no_ops_without_a_pool_or_a_genome():
@@ -465,3 +510,20 @@ def test_molecule_track_uses_the_same_corrected_position_as_the_read_track(tmp_p
     ))
     assert len(frags) == 2
     assert {f.corrected_3p for f in frags} == read_positions
+
+
+def test_walkback_gate_is_the_netseq_pipeline_default():
+    """`rectify netseq`'s default is now the GATED walkback (nascent 3' ends carry no tail);
+    `call_tail` itself stays neutral (invariant 7) because it is a protocol-agnostic primitive."""
+    import inspect
+
+    from rectify.core.bam.netseq_bam_processor import process_netseq_bam, process_netseq_read
+
+    for fn in (process_netseq_read, process_netseq_bam):
+        assert inspect.signature(fn).parameters['walkback_requires_clip_a'].default is True
+    stop = 'C' if SEQ[96] == 'A' else SEQ[96]
+    genome = {CHROM: SEQ[:96] + stop + "AAA" + SEQ[100:]}
+    read = make_read('+', genome[CHROM][60:100], 60, clip_rna="")
+    assert process_netseq_read(read, CHROM, genome=genome).tail_walkback == 0
+    assert process_netseq_read(read, CHROM, genome=genome,
+                               walkback_requires_clip_a=False).tail_walkback == 3

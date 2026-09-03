@@ -439,8 +439,9 @@ def process_netseq_read(
     umi_length: int = 0,
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
+    rescue_min_k_with_remainder: int = 4,
     detect_tail: bool = True,
-    walkback_requires_clip_a: bool = False,
+    walkback_requires_clip_a: bool = True,
 ) -> UnifiedReadRecord:
     """
     Process single NET-seq read into a UnifiedReadRecord (a NetseqReadRecord when the rescue or
@@ -465,9 +466,11 @@ def process_netseq_read(
         genome: optional ``{chrom: sequence}`` -- required for the walkback and the rescue
         umi_length: declared randomer length (0 = none)
         rescue_max_intronic: how far past the donor the aligned end may sit (nt)
-        rescue_min_k: minimum recovered exon-2 length for a rescue
+        rescue_min_k: minimum recovered exon-2 length for a rescue with NO non-templated remainder
+        rescue_min_k_with_remainder: the (higher) floor when a randomer remainder is invoked
         detect_tail: run the randomer-aware tail call
         walkback_requires_clip_a: require a non-templated A in the clip before walking back
+            (DEFAULT True for NET-seq: most nascent 3' ends carry no tail)
 
     Returns:
         UnifiedReadRecord (NetseqReadRecord) with all fields populated
@@ -519,6 +522,7 @@ def process_netseq_read(
     rescue = rescue_read(
         read, strand, chrom_std, three_prime_raw, junction_pool, genome_seq,
         umi_length=umi_length, max_intronic=rescue_max_intronic, min_k=rescue_min_k,
+        min_k_with_remainder=rescue_min_k_with_remainder,
         clip_rna=clip_rna, ref_to_query=ref_to_query,
     )
     if rescue.position is not None:
@@ -612,8 +616,9 @@ def process_netseq_bam(
     umi_length: int = 0,
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
+    rescue_min_k_with_remainder: int = 4,
     detect_tail: bool = True,
-    walkback_requires_clip_a: bool = False,
+    walkback_requires_clip_a: bool = True,
 ) -> Generator[UnifiedReadRecord, None, None]:
     """
     Stream process NET-seq BAM file.
@@ -638,9 +643,11 @@ def process_netseq_bam(
         genome: optional {chrom: sequence}; required for the walkback and the rescue
         umi_length: declared randomer length (0 = none)
         rescue_max_intronic: how far past the donor the aligned end may sit (nt)
-        rescue_min_k: minimum recovered exon-2 length for a rescue
+        rescue_min_k: minimum recovered exon-2 length for a rescue with NO non-templated remainder
+        rescue_min_k_with_remainder: the (higher) floor when a randomer remainder is invoked
         detect_tail: run the randomer-aware tail call
         walkback_requires_clip_a: require a non-templated A in the clip before walking back
+            (DEFAULT True for NET-seq: most nascent 3' ends carry no tail)
 
     Yields:
         UnifiedReadRecord for each valid read
@@ -716,6 +723,7 @@ def process_netseq_bam(
                 umi_length=umi_length,
                 rescue_max_intronic=rescue_max_intronic,
                 rescue_min_k=rescue_min_k,
+                rescue_min_k_with_remainder=rescue_min_k_with_remainder,
                 detect_tail=detect_tail,
                 walkback_requires_clip_a=walkback_requires_clip_a,
             )

@@ -459,6 +459,7 @@ def rescue_read(
     umi_length: int = 0,
     max_intronic: int = 10,
     min_k: int = 1,
+    min_k_with_remainder: int = 4,
     clip_rna: Optional[str] = None,
     ref_to_query: Optional[Dict[int, int]] = None,
     decoy_offset: int = 50,
@@ -468,12 +469,20 @@ def rescue_read(
     ``S`` = the aligned bases at/past the donor (RNA orientation, donor first) + the read-5' soft
     clip in RNA orientation.  ``k`` = the longest prefix of ``S`` equal to the genome from
     ``exon2_first`` gene-strand-ward; ``r = len(S) - k`` is the non-templated remainder.  A rescue is
-    accepted when ``k >= min_k`` and ``r`` is in :func:`allowed_remainders`, and puts the 3' end
-    ``k - 1`` nt into exon 2.
+    accepted when ``r`` is in :func:`allowed_remainders` and ``k`` clears a **remainder-aware**
+    floor, and puts the 3' end ``k - 1`` nt into exon 2.
+
+    **The floor is remainder-aware because the chance channel IS the remainder.** With ``r == 0``
+    every base of the clip is exon-2 sequence, so even a 1-nt overhang with nothing beyond it is
+    real evidence — ``min_k`` applies.  With ``r > 0`` a randomer is being invoked to explain the
+    rest of the clip, and a randomer's first base matches exon 2 a quarter of the time; the decoy
+    null bears this out (decoy ``k=1`` 70 against 61 observed, ``k=2`` 24 against 4, ``k=3`` 10
+    against 3, on a 504-read candidate set), so ``min_k_with_remainder`` applies instead.
 
     ``decoy_k`` is the same LCP computed against a decoy acceptor ``decoy_offset`` nt further into
-    exon 2.  It is the chance-match null for the ``k`` histogram and is why the accepted-``k``
-    distribution can be read as evidence rather than assertion.
+    exon 2, and ``decoy_would_rescue`` runs the identical acceptance rule against it.  That is the
+    chance-match floor for the rescue count, and is why the accepted-``k`` distribution can be read
+    as evidence rather than assertion.
     """
     if pool is None or genome_seq is None:
         return RescueCall()
@@ -498,16 +507,29 @@ def rescue_read(
     decoy = genome_gene_strand(genome_seq, decoy_start, len(s_seq), strand)
     decoy_k = longest_common_prefix(s_seq, decoy)
     allowed = allowed_remainders(umi_length)
-    decoy_would_rescue = decoy_k >= min_k and (len(s_seq) - decoy_k) in allowed
+
+    def _accept(kk: int, rr: int) -> bool:
+        """The acceptance rule, applied identically to the real and the decoy acceptor."""
+        if rr not in allowed:
+            return False
+        return kk >= (min_k if rr == 0 else min_k_with_remainder)
+
+    decoy_r = len(s_seq) - decoy_k
+    decoy_would_rescue = _accept(decoy_k, decoy_r)
     common = dict(k=k, r=r, n_intronic=n_intronic, decoy_k=decoy_k,
                   decoy_would_rescue=decoy_would_rescue, junction=junction, s_seq=s_seq)
 
-    if k >= min_k and r in allowed:
+    if _accept(k, r):
         step = 1 if strand == '+' else -1
         return RescueCall(status="spliced_rescued",
                           position=junction.exon2_first + step * (k - 1), **common)
-    if k >= min_k:
+    if k >= 1 and r not in allowed:
+        # Something matches exon 2 but the leftover is not a length any randomer can explain --
+        # genuinely undecidable, and kept out of BOTH the rescued and the exon1_end tallies.
         return RescueCall(status="ambiguous", **common)
+    # Below the floor (or no match at all). The read is NOT moved, and it keeps the class its
+    # GEOMETRY implies -- so raising the floor returns chance-matched reads to `exon1_end`, which
+    # is the splicing-intermediate readout, instead of hiding them in `ambiguous`.
     if n_intronic == 0:
         return RescueCall(status="exon1_end", **common)
     return RescueCall(status="intronic_end", **common)
@@ -559,8 +581,10 @@ class NetseqCorrectionSummary:
     ambiguous: int = 0
     intronic_end: int = 0
     rescued_by_k: Dict[int, int] = field(default_factory=dict)
-    rescued_by_k_clean: Dict[int, int] = field(default_factory=dict)   # r == 0
-    rescued_by_k_randomer: Dict[int, int] = field(default_factory=dict)  # r > 0
+    rescued_by_k_clean: Dict[int, int] = field(default_factory=dict)   # r == 0  (min_k floor)
+    rescued_by_k_randomer: Dict[int, int] = field(default_factory=dict)  # r > 0 (min_k_with_remainder floor)
+    near_donor_k_clean: Dict[int, int] = field(default_factory=dict)   # ALL candidates, r == 0
+    near_donor_k_randomer: Dict[int, int] = field(default_factory=dict)  # ALL candidates, r > 0
     decoy_k_at_donor: Dict[int, int] = field(default_factory=dict)     # chance-match null
     decoy_rescued: int = 0               # the SAME rule applied to a decoy acceptor 50 nt away
     rescued_by_r: Dict[int, int] = field(default_factory=dict)
@@ -607,6 +631,11 @@ class NetseqCorrectionSummary:
             self.intronic_end += 1
         if st != "none":
             _bump(self.decoy_k_at_donor, record.rescue_decoy_k)
+            if record.rescue_k >= 1:
+                if record.rescue_r == 0:
+                    _bump(self.near_donor_k_clean, record.rescue_k)
+                else:
+                    _bump(self.near_donor_k_randomer, record.rescue_k)
             if record.rescue_decoy_would_rescue:
                 self.decoy_rescued += 1
 
