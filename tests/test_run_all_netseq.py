@@ -457,3 +457,60 @@ def test_netseq_skip_trim_is_wired(fixture_dir, tmp_path, monkeypatch):
             output_dir=tmp_path / 'o', work_dir=tmp_path / 'w', sample_id='r',
             genome_path=fixture_dir['genome'], annotation_path=fixture_dir['gff'], threads=1)
     assert 'trim' not in called, "--netseq-skip-trim did not skip the trim stage"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7 · Green-run-over-empty-input guards (job 14648677, 2026-09-03)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_cutadapt_temp_name_keeps_the_gz_suffix():
+    """The bug: a `<name>.part` temp made cutadapt write PLAIN TEXT, and renaming it to .gz made
+    STAR's `--readFilesCommand zcat` read ZERO reads and EXIT 0 with an empty BAM."""
+    from pathlib import PurePosixPath
+    trimmed = PurePosixPath('/w/s.trimmed.fastq.gz')
+    part = trimmed.with_name(trimmed.name.replace('.fastq.gz', '.part.fastq.gz'))
+    assert str(part).endswith('.fastq.gz'), (
+        "cutadapt picks its compression from the extension — a temp name that loses .gz writes "
+        "plain text under a .gz name"
+    )
+    # the old, broken form, kept as the counter-example
+    assert not str(trimmed.with_suffix('.part')).endswith('.gz')
+
+
+def test_star_input_reads_parser():
+    from rectify.core.commands.run.netseq_pipeline import _star_input_reads
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / 'L').write_text("   Started job on |\tSep 03\n   Number of input reads |\t48000\n")
+    assert _star_input_reads(d / 'L') == 48000
+    (d / 'L0').write_text("   Number of input reads |\t0\n")
+    assert _star_input_reads(d / 'L0') == 0
+    assert _star_input_reads(d / 'missing') is None
+
+
+def test_cutadapt_out_reads_parser():
+    from rectify.core.commands.run.netseq_pipeline import _cutadapt_out_reads
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / 'r').write_text("status\tin_reads\tout_reads\nOK\t48000\t47500\n")
+    assert _cutadapt_out_reads(d / 'r') == 47500
+    assert _cutadapt_out_reads(d / 'nope') is None
+
+
+def test_trim_refuses_a_gz_named_plaintext_file(tmp_path, monkeypatch):
+    """End of the guard chain: a non-gzip .gz must raise, never reach STAR."""
+    import rectify.core.commands.run.netseq_pipeline as np_mod
+
+    out_dir = tmp_path / 'trim'
+    out_dir.mkdir()
+
+    def fake_run(cmd, log_path=None, **kw):
+        out = Path(cmd[cmd.index('-o') + 1])
+        out.write_text("@a\nACGT\n+\nIIII\n")            # PLAIN TEXT under a .gz name
+        if log_path:
+            Path(log_path).write_text("status\tin_reads\tout_reads\nOK\t1\t1\n")
+
+    monkeypatch.setattr(np_mod, '_run', fake_run)
+    monkeypatch.setattr(np_mod, '_require', lambda b, w: '/bin/true')
+    with pytest.raises(RuntimeError, match='named .gz but is not gzip'):
+        np_mod.netseq_trim(_mode_args(), tmp_path / 'in.fastq.gz', out_dir, 's', 1)

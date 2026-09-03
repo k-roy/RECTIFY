@@ -418,9 +418,15 @@ def netseq_trim(
         print(f"    reusing existing trimmed FASTQ: {trimmed.name}")
         return trimmed
     cutadapt = getattr(args, 'cutadapt_path', None) or _require('cutadapt', 'run-all --netseq')
+    # 🔴 The temp name MUST keep the `.fastq.gz` suffix. cutadapt picks its output compression
+    # from the file extension, so a `<name>.part` temp is written as PLAIN TEXT; renaming it to
+    # `.gz` afterwards then makes STAR's `--readFilesCommand zcat` read **zero reads and exit 0**
+    # (observed 2026-09-03, job 14648677: `Number of input reads | 0`, rc=0, empty BAM). That is a
+    # green run over an empty input, which this codebase treats as worse than a crash.
+    part = trimmed.with_name(trimmed.name.replace('.fastq.gz', '.part.fastq.gz'))
     cmd = build_cutadapt_cmd(
         reads=reads,
-        output=trimmed.with_suffix('.part'),
+        output=part,
         adapter=getattr(args, 'netseq_adapter', CHURCHMAN_3P_LINKER),
         min_length=getattr(args, 'netseq_min_length', 18),
         nextseq_trim=getattr(args, 'netseq_nextseq_trim', 20),
@@ -429,12 +435,44 @@ def netseq_trim(
         cutadapt_path=cutadapt,
     )
     _run(cmd, log_path=report)
-    part = trimmed.with_suffix('.part')
     if not part.exists() or part.stat().st_size == 0:
         raise RuntimeError(f"cutadapt produced no output at {part}; see {report}")
+    with open(part, 'rb') as fh:
+        if fh.read(2) != b'\x1f\x8b':
+            raise RuntimeError(
+                f"{part} is named .gz but is not gzip — the downstream `zcat` would read zero "
+                "reads and STAR would exit 0 with an empty BAM. Check the cutadapt version's "
+                "extension handling."
+            )
+    n_out = _cutadapt_out_reads(report)
+    if n_out is not None:
+        print(f"    cutadapt kept {n_out:,} reads")
+        if n_out == 0:
+            raise RuntimeError(f"cutadapt kept 0 reads; see {report}")
     part.replace(trimmed)
     print(f"    trimmed -> {trimmed.name}   (report: {report.name})")
     return trimmed
+
+
+def _cutadapt_out_reads(report: Path) -> Optional[int]:
+    """``out_reads`` from a cutadapt ``--report=minimal`` table, or None if unparseable."""
+    try:
+        lines = [ln for ln in report.read_text().splitlines() if ln.strip()]
+        header, values = lines[0].split('\t'), lines[1].split('\t')
+        return int(values[header.index('out_reads')])
+    except Exception:
+        return None
+
+
+def _star_input_reads(log_final: Path) -> Optional[int]:
+    """``Number of input reads`` from STAR's Log.final.out, or None."""
+    try:
+        for line in log_final.read_text().splitlines():
+            if 'Number of input reads' in line:
+                return int(line.split('|')[1].strip())
+    except Exception:
+        pass
+    return None
 
 
 def ensure_star_index(
@@ -520,6 +558,18 @@ def netseq_align(
             threads=threads, gzipped=str(trimmed_fastq).endswith('.gz'), star_path=star,
         )
         _run(cmd, log_path=out_dir / f"{sample_id}.star.log")
+        # 🔴 STAR exits 0 on an unreadable/empty input, reporting `Number of input reads | 0`.
+        # Check the INPUT count, not just the output BAM: an empty BAM from zero mapped reads and
+        # an empty BAM from zero input reads are the same file but completely different bugs.
+        n_in = _star_input_reads(out_dir / f"{sample_id}.Log.final.out")
+        if n_in is not None:
+            print(f"    STAR input reads: {n_in:,}")
+            if n_in == 0:
+                raise RuntimeError(
+                    f"STAR read ZERO input reads from {trimmed_fastq} and still exited 0. The "
+                    "usual cause is a file named .gz that is not gzip (--readFilesCommand zcat "
+                    f"then yields nothing). See {out_dir / (sample_id + '.Log.final.out')}."
+                )
         unsorted = out_dir / f"{sample_id}.Aligned.out.bam"
         if not unsorted.exists() or unsorted.stat().st_size == 0:
             raise RuntimeError(f"STAR wrote no alignments at {unsorted}")
