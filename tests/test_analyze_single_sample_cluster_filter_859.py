@@ -33,7 +33,7 @@ def _one_sample_positions():
             rows.append({
                 'chrom': 'chrI',
                 'strand': '+',
-                'corrected_3prime': pos + (i % 3),
+                'corrected_position': pos + (i % 3),
                 'sample': 'wtaa_rep3',
                 'fraction': 1.0,
             })
@@ -75,7 +75,7 @@ def test_single_sample_keeps_its_clusters():
 def test_multi_sample_filter_still_bites():
     """The clamp must NOT weaken the filter when the samples are actually there."""
     positions = _one_sample_positions()
-    extra = positions[positions['corrected_3prime'] < 2000].copy()
+    extra = positions[positions['corrected_position'] < 2000].copy()
     extra['sample'] = 'wtaa_rep4'
     positions = pd.concat([positions, extra], ignore_index=True)
 
