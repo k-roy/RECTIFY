@@ -244,6 +244,30 @@ intermediate. For NET-seq use `run-all --netseq` (or `rectify netseq`), not `cor
 
 ---
 
+## ✅ Mitochondrial group I/II introns were in the NET-seq junction-rescue pool
+
+- **Status:** fixed 2026-09-03 (`--pool-include-organellar` restores the old behaviour).
+  **A checkout between `b806e87` and that fix fabricates rescues on the mitochondrial genome.**
+- **Affects:** `rectify netseq`, `rectify run-all --netseq` — any run given a BAM that retains the
+  mitochondrial contig.
+
+`JunctionPool.from_annotation` dropped **tRNA** introns (not spliceosomal) by parent feature type,
+but yeast **mitochondrial** introns are annotated with parent type `mRNA`, exactly like a nuclear
+intron, so the parent-type filter could never see them. The SGD GFF names the contig `chrmt`
+(which standardizes to `chrMito`) and carries **32 intron features** on COX1 / COB / 21S — **group
+I and group II self-splicing** introns, with no spliceosomal donor/acceptor grammar, on a genome
+Pol II does not transcribe. A nascent Pol II 3' end cannot legitimately sit at one.
+
+**Measured on wt_rep3 (2.36 M reads): 94 of 580 rescues — 16 % — were on chrMito.** Isolating the
+47,023 chrMito reads reproduced the entire discrepancy against a mito-free reference run
+(near-donor 210, rescued 94, exon1_end 45, ambiguous 12, intronic_end 59).
+
+*Workaround on an older checkout:* hand `netseq` a BAM with the organellar contig removed
+(`samtools view -b in.bam chrI … chrXVI`), which is what a hand-built NET-seq pipeline usually did
+anyway. Nuclear results are unaffected either way — the pool entries are organellar only.
+
+---
+
 ## 🟠 The NET-seq molecule (`--dedup`) track carries a randomer correction the read track does not
 
 - **Status:** narrowed on `feat/netseq-junction-rescue-836`, not eliminated; **worse on `master`**
