@@ -398,3 +398,71 @@ Both were recorded internally as outstanding but were checked against the curren
 ⚠️ Historical-data caveat, not a live bug: ONT-cDNA outputs produced **before** `gene_id` was
 assigned on the gene strand carry corrupt `gene_id` for antisense reads. Regenerate rather than
 trust `gene_id` in old cDNA outputs.
+
+## `subprocess.run(capture_output=True)` can deadlock a whole `run-all` for 6 hours
+
+**Status: OPEN (mitigated, not fixed).** Every aligner arm in
+`rectify/core/align/multi_aligner.py` is launched as
+`subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)`
+with `ALIGNER_TIMEOUT = 21600` (6 h). If the aligner is a **wrapper script** that
+re-spawns itself and the re-spawned process is reparented to init while still
+holding the inherited stdout/stderr pipe write ends, `communicate()` never sees
+EOF and the run blocks at 0 % CPU until the timeout — i.e. past most cluster
+walltimes, so the job is killed with no diagnostic in the log.
+
+Measured on Hoffman2, `rectify run-all --short-read --Scer` (planning 861 §S3),
+where the COMPASS indices do not exist inside the package data dir:
+
+```
+python -m rectify run-all …            State S, fds 5,6,11,13 -> pipe:[…]
+                                       2 task wchans = poll_schedule_timeout
+[perl] <defunct>  PPID <python>        rectify's direct hisat2 children, exited
+perl …/hisat2 …   PPID 1   0.0 %CPU    re-spawned wrapper, orphaned, holds the pipes
+```
+
+The same `hisat2 -x <missing index>` run from a shell exits **2** in under a
+second — the deadlock requires the parent to be holding the pipes.
+
+**Mitigation shipped (`fix/runall-truseq-861`):** `_require_compass_index()`
+pre-flights the derived STAR / HISAT2 / BLAST / GSNAP index paths in
+`run_star` / `run_hisat2` / `run_magicblast` / `run_gsnap` and raises
+`FileNotFoundError` *before* the binary is launched, so a missing index becomes
+the `DROPPED-ALIGNER` the caller already handles. **This does not fix the
+deadlock** — any other fast-failing wrapper-script aligner (corrupt index,
+unreadable path, a wrapper that forks for another reason) reaches it. The real
+fix is to stop using `capture_output=True` for aligner subprocesses: redirect
+stdout/stderr to files, use `start_new_session=True`, and kill the whole process
+group on timeout.
+
+## `rectify run-all --chunked-alignment` was a hard `TypeError` on every datatype
+
+**Status: FIXED on `fix/runall-truseq-861`.** `run/chunked_batch.py:221` has
+passed `write_per_aligner_corrected_bams=True` since `9d35ae1`, but the
+parameter was never added to `split_command.generate_alignment_scripts`, so the
+call raised `TypeError: generate_alignment_scripts() got an unexpected keyword
+argument 'write_per_aligner_corrected_bams'` and only `00_split.sh` was written.
+The call site is unconditional, so this affected DRS, ONT-cDNA, QuantSeq and
+TruSeq alike. `9d35ae1` is an ancestor of `429f1c9`, so the path was already
+broken when the 830–834 audits were written — planning `[[833]]` G-3's
+"generates a long-read pipeline with exit 0" was never reachable.
+
+## `hisat2` accepts a non-existent `--known-splicesite-infile` silently
+
+**Status: OPEN (warning added).** Index present + splice-site file absent →
+exit 0, normal alignment rate, no message. A half-built
+`HISAT2_annotated_index/` therefore yields a green run with **zero annotated
+junctions**. `run_hisat2` now logs a WARNING; it does not fail, because novel
+splicing is still on and the arm is usable.
+
+## RECTIFY's bundled S. cerevisiae GTF cannot build any "annotated" COMPASS index
+
+**Status: OPEN.** `rectify/data/genomes/saccharomyces_cerevisiae/
+saccharomyces_cerevisiae_R64-5-1_20240529.gtf` has feature types
+`mRNA / CDS / gene / intron` and **no `exon` lines**. Consequently
+`STAR --sjdbGTFfile` aborts (`Fatal INPUT FILE error, no exon lines in the GTF
+file`), and both `hisat2_extract_splice_sites.py` and `gtf_splicesites` emit
+**0 sites** — so none of `STAR_annotated_<L>_bp_SJDB_index`,
+`HISAT2_annotated_index` or the GSNAP `--use-splicing` map can be produced from
+the annotation RECTIFY ships. Workaround: derive exons as *mRNA span minus its
+`intron` children* from the GFF (planning `861_scripts/861_make_exon_gtf.py`,
+11,562 transcripts / 12,175 exons / 613 introns).
