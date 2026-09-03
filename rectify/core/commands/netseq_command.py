@@ -167,7 +167,10 @@ def run_netseq(args) -> int:
         print(f"{'='*60}")
 
         output_formats = args.output_format if hasattr(args, 'output_format') else ['parquet', 'bedgraph']
+        want_tsv = 'tsv' in output_formats
+        # Both read-level formats need the records materialised; the position tracks never do.
         want_parquet = 'parquet' in output_formats
+        want_records = want_parquet or want_tsv
 
         # Process BAM
         print("\n1. Processing BAM file...")
@@ -192,7 +195,7 @@ def run_netseq(args) -> int:
         # parquet is not requested, so a 100-180M-read library fits in a few GB.
         print("\n2. Aggregating positions (raw + corrected, single pass)...")
         raw_counts, corrected_counts, summary, records = aggregate_netseq_stream(
-            record_stream, collect=want_parquet,
+            record_stream, collect=want_records,
         )
         total_reads = summary.reads
         if not total_reads:
@@ -237,6 +240,7 @@ def run_netseq(args) -> int:
             export_bigwig='bigwig' in output_formats,
             normalize_rpm=normalize_rpm,
             corrected_counts=corrected_counts,
+            export_tsv=want_tsv,
         )
 
         summary_path = output_dir / f"{sample_name}.netseq_summary.json"
@@ -575,7 +579,9 @@ def add_netseq_parser(subparsers) -> None:
         nargs='+',
         choices=['parquet', 'bedgraph', 'bigwig', 'tsv'],
         default=['parquet', 'bedgraph'],
-        help='Output formats to generate (default: parquet bedgraph)',
+        help="Output formats to generate (default: parquet bedgraph). 'parquet' and 'tsv' are the "
+             "read-level table (per-read rescue and tail fields); parquet degrades to TSV with a "
+             "warning when pyarrow is not installed. 'bedgraph'/'bigwig' are the position tracks.",
     )
     output_group.add_argument(
         '--track-position',

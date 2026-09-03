@@ -16,7 +16,9 @@ import pandas as pd
 import numpy as np
 
 from ...config import CHROM_SIZES
-from ..unified_record import UnifiedReadRecord, export_to_parquet, records_to_dataframe
+from ..unified_record import (
+    HAS_PYARROW, UnifiedReadRecord, export_to_parquet, export_to_tsv, records_to_dataframe,
+)
 
 # Try to import pyBigWig
 try:
@@ -210,12 +212,14 @@ def export_netseq_results(
     normalize_rpm: bool = True,
     total_reads: Optional[int] = None,
     corrected_counts: Optional[Dict[Tuple[str, str, int], float]] = None,
+    export_tsv: bool = False,
 ) -> Dict[str, Path]:
     """
     Export all NET-seq output files.
 
     Creates:
-    - {sample_name}.unified_reads.parquet (read-level)
+    - {sample_name}.unified_reads.parquet (read-level; .tsv when pyarrow is missing or
+      ``--output-format tsv`` is given)
     - {sample_name}.raw.plus.bedgraph (RAW alignment terminus, plus strand)
     - {sample_name}.raw.minus.bedgraph (RAW alignment terminus, minus strand)
     - {sample_name}.corrected.plus.bedgraph (after tail walkback + junction rescue)
@@ -241,6 +245,8 @@ def export_netseq_results(
         total_reads: Read total for RPM normalization. Defaults to len(records); pass it
             explicitly when records were streamed (not materialised) into raw_counts.
         corrected_counts: Corrected-3'-end position counts (three_prime_corrected). None to skip.
+        export_tsv: also write the read-level table as TSV (``--output-format tsv``). Forced on
+            when parquet was requested but pyarrow is not importable.
 
     Returns:
         Dict mapping output type to path
@@ -254,12 +260,25 @@ def export_netseq_results(
     if total_reads is None:
         total_reads = len(records) if records else int(sum(raw_counts.values()))
 
-    # Export parquet (read-level)
+    # Export the read-level table.
+    # Parquet needs pyarrow; when it is missing, fall back to the (already implemented) TSV writer
+    # rather than raising AFTER the whole BAM pass and the deconvolution have been paid for.
     if export_parquet and records:
-        parquet_path = output_dir / f"{sample_name}.unified_reads.parquet"
-        export_to_parquet(records, parquet_path)
-        outputs['parquet'] = parquet_path
-        print(f"  Exported parquet: {parquet_path.name} ({len(records):,} records)")
+        if HAS_PYARROW:
+            parquet_path = output_dir / f"{sample_name}.unified_reads.parquet"
+            export_to_parquet(records, parquet_path)
+            outputs['parquet'] = parquet_path
+            print(f"  Exported parquet: {parquet_path.name} ({len(records):,} records)")
+        else:
+            print("  WARNING: pyarrow is not importable -- writing the read-level table as TSV "
+                  "instead of parquet (install pyarrow for the columnar format)")
+            export_tsv = True
+
+    if export_tsv and records:
+        tsv_path = output_dir / f"{sample_name}.unified_reads.tsv"
+        export_to_tsv(records, tsv_path, include_sequences=True)
+        outputs['tsv'] = tsv_path
+        print(f"  Exported TSV: {tsv_path.name} ({len(records):,} records)")
 
     # Export raw bedgraph
     if export_bedgraph and raw_counts:
