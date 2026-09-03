@@ -397,6 +397,22 @@ def run_analyze(args: argparse.Namespace) -> int:
         count_col=count_col,
         fraction_col=fraction_col,
     )
+    # planning/859: the >=N-samples presence filter is a REPRODUCIBILITY filter, and on a
+    # run with fewer than N samples it cannot be satisfied by any cluster — so it silently
+    # discarded 100% of them.  Measured on `run-all --drs` (one sample): 1,384 clusters
+    # formed, 98.8% gene-annotated, then "Kept 0/1,384 clusters present in >= 2 samples",
+    # and cpa_clusters.tsv / cluster_counts.tsv / cluster_gene_attributions.tsv were all
+    # written EMPTY with exit 0.  Clamp to the number of samples actually present; a
+    # multi-sample run is unaffected.
+    if _min_cluster_samples > 1 and not count_matrix.empty:
+        _n_samples_present = count_matrix.shape[1]
+        if _n_samples_present < _min_cluster_samples:
+            print(
+                f"  NOTE: min_cluster_samples={_min_cluster_samples} exceeds the "
+                f"{_n_samples_present} sample(s) in this run — the reproducibility filter "
+                f"would discard every cluster. Clamping to {_n_samples_present}."
+            )
+            _min_cluster_samples = _n_samples_present
     if _min_cluster_samples > 1 and not count_matrix.empty:
         _sample_counts = (count_matrix > 0).sum(axis=1)
         _keep_cluster_ids = set(_sample_counts[_sample_counts >= _min_cluster_samples].index)
