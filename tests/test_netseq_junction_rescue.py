@@ -527,3 +527,116 @@ def test_walkback_gate_is_the_netseq_pipeline_default():
     assert process_netseq_read(read, CHROM, genome=genome).tail_walkback == 0
     assert process_netseq_read(read, CHROM, genome=genome,
                                walkback_requires_clip_a=False).tail_walkback == 3
+
+
+# ---------------------------------------------------------------------------------------------
+# CLASSIFICATION ORDER -- the floor is tested BEFORE the remainder
+# ---------------------------------------------------------------------------------------------
+
+def test_randomer_clip_matching_exon2_by_chance_is_an_exon1_end_not_ambiguous():
+    """L=6 randomer clip, first 2 bases match exon 2 by chance -> k=2, r=4.
+
+    4 is not an allowed remainder, so a remainder-FIRST test called this `ambiguous` and removed it
+    from the splicing-intermediate tally. Measured on the full wt_rep3 library: 66 reads at k=2 and
+    12 at k=3. Below the floor the match is not evidence of anything, so the read keeps the class
+    its geometry implies.
+    """
+    clip = EXON2_PLUS[:2] + non_matching_run(EXON2_PLUS[2], 4)     # 6 nt total, k=2, r=4
+    read = make_read('+', SEQ[60:100], 60, clip_rna=clip)
+    call = rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, umi_length=6)
+    assert (call.k, call.r) == (2, 4)
+    assert call.r not in allowed_remainders(6)        # the remainder really is disallowed
+    assert call.status == "exon1_end"                 # ...and it is STILL an exon-1 end
+    assert call.position is None
+
+
+def test_same_read_inside_the_intron_is_an_intronic_end():
+    n_intronic = 3
+    aligned = SEQ[60:100] + EXON2_PLUS[:n_intronic]
+    clip = non_matching_run(EXON2_PLUS[n_intronic], 3)
+    read = make_read('+', aligned, 60, clip_rna=clip)
+    call = rescue_read(read, '+', CHROM, 102, plus_pool(), SEQ, umi_length=6)
+    assert call.k == 3 and call.r == 3 and call.r not in allowed_remainders(6)
+    assert call.status == "intronic_end"
+
+
+def test_disallowed_remainder_ABOVE_the_floor_is_still_ambiguous():
+    """`ambiguous` survives for the case it was meant for: the match clears the floor but the
+    leftover is not a length any randomer can explain."""
+    clip = EXON2_PLUS[:5] + non_matching_run(EXON2_PLUS[5], 3)     # k=5 >= 4, r=3 not allowed
+    read = make_read('+', SEQ[60:100], 60, clip_rna=clip)
+    call = rescue_read(read, '+', CHROM, 99, plus_pool(), SEQ, umi_length=6)
+    assert (call.k, call.r) == (5, 3)
+    assert call.status == "ambiguous" and call.position is None
+
+
+# ---------------------------------------------------------------------------------------------
+# POOL FILTER -- tRNA introns are not spliceosomal
+# ---------------------------------------------------------------------------------------------
+
+_SYNTHETIC_GFF = """\
+##gff-version 3
+chrT\tSGD\tgene\t101\t900\t.\t+\t.\tID=YAA001W;Name=MRNA1
+chrT\tSGD\tmRNA\t101\t900\t.\t+\t.\tID=YAA001W_mRNA;Parent=YAA001W
+chrT\tSGD\tintron\t201\t300\t.\t+\t.\tParent=YAA001W_mRNA;Name=YAA001W_intron
+chrT\tSGD\ttRNA_gene\t1001\t1105\t.\t+\t.\tID=YNCT0001W;Name=YNCT0001W
+chrT\tSGD\ttRNA\t1001\t1105\t.\t+\t.\tID=YNCT0001W_tRNA;Parent=YNCT0001W
+chrT\tSGD\tintron\t1037\t1069\t.\t+\t.\tParent=YNCT0001W_tRNA;Name=YNCT0001W_intron
+chrT\tSGD\tncRNA_gene\t2001\t2400\t.\t-\t.\tID=snR100;Name=snR100
+chrT\tSGD\tsnoRNA\t2001\t2400\t.\t-\t.\tID=snR100_snoRNA;Parent=snR100
+chrT\tSGD\tintron\t2101\t2200\t.\t-\t.\tParent=snR100_snoRNA;Name=snR100_intron
+"""
+
+
+def _write_gff(tmp_path, gzipped=False):
+    if gzipped:
+        import gzip
+        path = tmp_path / "ann.gff.gz"
+        with gzip.open(path, "wt") as fh:
+            fh.write(_SYNTHETIC_GFF)
+    else:
+        path = tmp_path / "ann.gff"
+        path.write_text(_SYNTHETIC_GFF)
+    return path
+
+
+def test_parse_gff_introns_resolves_the_parent_feature_type(tmp_path):
+    from rectify.core.netseq.netseq_rescue import parse_gff_introns
+
+    rows = parse_gff_introns(_write_gff(tmp_path))
+    types = {r[4] for r in rows}
+    assert types == {"mRNA", "tRNA", "snoRNA"}
+    trna = next(r for r in rows if r[4] == "tRNA")
+    assert trna[1:4] == (1036, 1069, '+') and trna[5] == "YNCT0001W_tRNA"
+
+
+def test_trna_introns_are_dropped_from_the_pool_by_default(tmp_path):
+    """A tRNA intron is excised by the tRNA endonuclease, not the spliceosome, at a Pol III locus
+    this command already drops from its tracks -- so it can only manufacture rescues. Measured on
+    wt_rep3: the single locus YNCO0031W_tRNA collected 46."""
+    gff = _write_gff(tmp_path)
+    default = JunctionPool.from_annotation(gff)
+    assert len(default) == 2
+    assert default.by_parent_type == {"mRNA": 1, "snoRNA": 1}
+    assert default.dropped_by_parent_type == {"tRNA": 1}
+    assert default.lookup(CHROM, '+', 1036, 10) is None      # the tRNA donor is not in the pool
+
+    kept = JunctionPool.from_annotation(gff, include_trna=True)
+    assert len(kept) == 3 and kept.by_parent_type["tRNA"] == 1
+    assert kept.dropped_by_parent_type == {}
+
+
+def test_pol2_introns_of_every_class_are_kept(tmp_path):
+    pool = JunctionPool.from_annotation(_write_gff(tmp_path, gzipped=True))
+    assert pool.lookup(CHROM, '+', 200, 10) is not None      # mRNA exon1_last = 200
+    assert pool.lookup(CHROM, '-', 2200, 10) is not None     # snoRNA, minus strand
+
+
+def test_is_trna_parent_matches_the_type_or_the_id_suffix():
+    from rectify.core.netseq.netseq_rescue import is_trna_parent
+
+    assert is_trna_parent("tRNA", "YNCO0031W_tRNA")
+    assert is_trna_parent("tRNA_gene", "YNCO0031W")
+    assert is_trna_parent("unknown", "YNCO0031W_tRNA")       # annotation omits the tRNA line
+    assert not is_trna_parent("mRNA", "YAL003W_id001")
+    assert not is_trna_parent("snoRNA", "snR100_snoRNA")

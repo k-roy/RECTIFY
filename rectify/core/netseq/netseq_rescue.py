@@ -116,6 +116,9 @@ class JunctionPool:
     def __init__(self, junctions: Iterable[NetseqJunction] = ()):
         self._by_exon1: Dict[Tuple[str, str], Dict[int, NetseqJunction]] = {}
         self.n_junctions = 0
+        #: kept / dropped intron counts by PARENT FEATURE TYPE (mRNA, tRNA, snoRNA, ...)
+        self.by_parent_type: Dict[str, int] = {}
+        self.dropped_by_parent_type: Dict[str, int] = {}
         for j in junctions:
             self.add(j)
 
@@ -161,19 +164,46 @@ class JunctionPool:
     # -- constructors -------------------------------------------------------------------------
 
     @classmethod
-    def from_annotation(cls, annotation_path) -> "JunctionPool":
+    def from_annotation(cls, annotation_path, include_trna: bool = False) -> "JunctionPool":
         """Build the pool from a GFF/GTF.
 
-        Reuses :func:`rectify.core.consensus.consensus.load_annotated_junctions` verbatim -- it
-        returns ``(chrom, intron_start, intron_end, strand)`` with chrom already standardized, and
-        it derives introns from ``exon`` records when the annotation carries no ``intron`` feature.
+        Introns are read with :func:`parse_gff_introns`, which also resolves each intron's PARENT
+        FEATURE TYPE, so tRNA introns can be excluded -- see ``include_trna``. When the annotation
+        carries no ``intron`` feature at all (an exon-only GTF), it falls back to
+        :func:`rectify.core.consensus.consensus.load_annotated_junctions`, which derives introns
+        from ``exon`` records; parent types are unknown on that path and nothing is filtered.
+
+        Args:
+            annotation_path: GFF3/GTF, optionally gzipped.
+            include_trna: keep tRNA introns in the pool. **OFF by default.** tRNA splicing is a
+                different machinery (a tRNA endonuclease/ligase pathway, not the spliceosome) at
+                Pol III loci that ``rectify netseq`` excludes from its tracks anyway, so a tRNA
+                intron in the pool can only manufacture rescues -- measured on wt_rep3, the single
+                tRNA locus ``YNCO0031W_tRNA`` collected 46 of them.
+
+        The pool records ``by_parent_type`` (kept) and ``dropped_by_parent_type``, which
+        ``rectify netseq`` prints so the composition is visible rather than assumed.
         """
+        pool = cls()
+        rows = parse_gff_introns(annotation_path)
+        if rows:
+            for chrom, start, end, strand, parent_type, parent_id in rows:
+                if end <= start or strand not in ('+', '-'):
+                    continue
+                if not include_trna and is_trna_parent(parent_type, parent_id):
+                    pool.dropped_by_parent_type[parent_type] = \
+                        pool.dropped_by_parent_type.get(parent_type, 0) + 1
+                    continue
+                pool.by_parent_type[parent_type] = pool.by_parent_type.get(parent_type, 0) + 1
+                pool.add(make_junction(chrom, start, end, strand))
+            return pool
+
         from ..consensus.consensus import load_annotated_junctions
 
-        pool = cls()
         for chrom, start, end, strand in load_annotated_junctions(str(annotation_path)):
             if end <= start or strand not in ('+', '-'):
                 continue
+            pool.by_parent_type['unknown'] = pool.by_parent_type.get('unknown', 0) + 1
             pool.add(make_junction(chrom, start, end, strand))
         return pool
 
@@ -184,6 +214,68 @@ class JunctionPool:
         for junction in load_junction_tsv(tsv_path):
             pool.add(junction)
         return pool
+
+
+#: Parent feature types that mean "this intron is spliced by the tRNA endonuclease, not the
+#: spliceosome". SGD writes the parent of a tRNA intron as a ``tRNA`` feature whose own parent is a
+#: ``tRNA_gene``; the id also carries the ``_tRNA`` suffix, and both are checked because an
+#: annotation that omits the ``tRNA`` feature line still names its parent that way.
+_TRNA_PARENT_TYPES = frozenset({'trna', 'trna_gene'})
+
+
+def is_trna_parent(parent_type: str, parent_id: str) -> bool:
+    """Whether an intron's parent identifies it as a tRNA intron."""
+    if (parent_type or '').lower() in _TRNA_PARENT_TYPES:
+        return True
+    return (parent_id or '').endswith('_tRNA')
+
+
+def parse_gff_introns(annotation_path):
+    """Read ``intron``-class features from a GFF3, resolving each one's PARENT FEATURE TYPE.
+
+    Returns a list of ``(chrom, intron_start, intron_end, strand, parent_type, parent_id)`` with
+    ``intron_start`` 0-based and ``intron_end`` exclusive, chrom standardized the same way
+    :func:`rectify.core.consensus.consensus.load_annotated_junctions` standardizes it (so pool
+    lookups match the read chrom names).
+
+    The parent type is what makes a tRNA intron distinguishable from an mRNA one: SGD's GFF gives
+    an intron ``Parent=YNCO0031W_tRNA``, and a separate line declares ``ID=YNCO0031W_tRNA`` with
+    feature type ``tRNA``. Any subtype containing "intron" is collected
+    (``intron``, ``five_prime_UTR_intron``, ...). Returns ``[]`` for an annotation with no intron
+    features, which is the caller's signal to fall back to exon-derived junctions.
+    """
+    import gzip as _gzip
+
+    from ...utils.genome import standardize_chrom_name
+
+    path = str(annotation_path)
+    _open = _gzip.open if path.endswith('.gz') else open
+
+    id_type: Dict[str, str] = {}
+    raw: List[Tuple[str, int, int, str, str]] = []
+    with _open(path, 'rt') as fh:
+        for line in fh:
+            if line.startswith('#'):
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 9:
+                continue
+            attrs = {}
+            for kv in parts[8].split(';'):
+                if '=' in kv:
+                    key, value = kv.split('=', 1)
+                    attrs[key.strip()] = value.strip()
+            feature = parts[2]
+            if 'ID' in attrs:
+                id_type[attrs['ID']] = feature
+            if 'intron' in feature.lower():
+                parent = (attrs.get('Parent') or '').split(',')[0]
+                strand = parts[6] if parts[6] in ('+', '-') else '+'
+                raw.append((standardize_chrom_name(parts[0]),
+                            int(parts[3]) - 1, int(parts[4]), strand, parent))
+
+    return [(chrom, start, end, strand, id_type.get(parent, 'unknown'), parent)
+            for chrom, start, end, strand, parent in raw]
 
 
 def load_junction_tsv(tsv_path) -> List[NetseqJunction]:
@@ -508,31 +600,38 @@ def rescue_read(
     decoy_k = longest_common_prefix(s_seq, decoy)
     allowed = allowed_remainders(umi_length)
 
+    def _floor(rr: int) -> int:
+        """The k floor that applies to a remainder of ``rr``."""
+        return min_k if rr == 0 else min_k_with_remainder
+
     def _accept(kk: int, rr: int) -> bool:
         """The acceptance rule, applied identically to the real and the decoy acceptor."""
-        if rr not in allowed:
-            return False
-        return kk >= (min_k if rr == 0 else min_k_with_remainder)
+        return kk >= _floor(rr) and rr in allowed
 
     decoy_r = len(s_seq) - decoy_k
     decoy_would_rescue = _accept(decoy_k, decoy_r)
     common = dict(k=k, r=r, n_intronic=n_intronic, decoy_k=decoy_k,
                   decoy_would_rescue=decoy_would_rescue, junction=junction, s_seq=s_seq)
 
-    if _accept(k, r):
-        step = 1 if strand == '+' else -1
-        return RescueCall(status="spliced_rescued",
-                          position=junction.exon2_first + step * (k - 1), **common)
-    if k >= 1 and r not in allowed:
-        # Something matches exon 2 but the leftover is not a length any randomer can explain --
+    # ORDER MATTERS: the k FLOOR is tested first, the remainder second.
+    #
+    # A read at a donor with a 6-nt randomer clip whose first 2 bases match exon 2 by chance has
+    # k=2, r=4 -- and 4 is not an allowed remainder, so a remainder-first test called it
+    # `ambiguous` (measured on the full wt_rep3 library: 66 reads at k=2, 12 at k=3). Those are
+    # genuine exon-1 3' ends carrying a randomer, and hiding them in `ambiguous` removes them from
+    # the splicing-intermediate tally. Below the floor the match is not evidence of ANYTHING, so
+    # the read simply keeps the class its geometry implies.
+    if k < _floor(r):
+        if n_intronic == 0:
+            return RescueCall(status="exon1_end", **common)
+        return RescueCall(status="intronic_end", **common)
+    if r not in allowed:
+        # Cleared the floor, but the leftover is not a length any randomer can explain --
         # genuinely undecidable, and kept out of BOTH the rescued and the exon1_end tallies.
         return RescueCall(status="ambiguous", **common)
-    # Below the floor (or no match at all). The read is NOT moved, and it keeps the class its
-    # GEOMETRY implies -- so raising the floor returns chance-matched reads to `exon1_end`, which
-    # is the splicing-intermediate readout, instead of hiding them in `ambiguous`.
-    if n_intronic == 0:
-        return RescueCall(status="exon1_end", **common)
-    return RescueCall(status="intronic_end", **common)
+    step = 1 if strand == '+' else -1
+    return RescueCall(status="spliced_rescued",
+                      position=junction.exon2_first + step * (k - 1), **common)
 
 
 # ---------------------------------------------------------------------------------------------
