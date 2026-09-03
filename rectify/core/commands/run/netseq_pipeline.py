@@ -596,9 +596,14 @@ def run_netseq_pipeline(
           "--netseq-exclude-pol3 to change.")
 
     if input_type in ('fastq', 'fastq.gz'):
-        print("\n[Step 1/3] Trimming (cutadapt; randomer LEFT IN PLACE)...")
-        print("-" * 50)
-        trimmed = netseq_trim(args, input_path, work_dir / 'netseq_trim', sample_id, threads)
+        if getattr(args, 'netseq_skip_trim', False):
+            print("\n[Step 1/3] Trimming SKIPPED (--netseq-skip-trim): input is already "
+                  "linker-trimmed.")
+            trimmed = Path(input_path)
+        else:
+            print("\n[Step 1/3] Trimming (cutadapt; randomer LEFT IN PLACE)...")
+            print("-" * 50)
+            trimmed = netseq_trim(args, input_path, work_dir / 'netseq_trim', sample_id, threads)
 
         print("\n[Step 2/3] Aligning (STAR, planning-829 §4 absolute match floors)...")
         print("-" * 50)

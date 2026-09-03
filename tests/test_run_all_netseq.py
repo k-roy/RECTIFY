@@ -438,3 +438,22 @@ def test_fastq_entrypoint_builds_an_index_and_runs(fixture_dir, tmp_path):
     assert (tmp_path / 'idx' / 'SAindex').exists()
     assert (tmp_path / 'work' / 'netseq_align' / 'mini.spikein.tsv').exists()
     assert (out / 'mini.corrected.plus.bedgraph').exists()
+
+
+def test_netseq_skip_trim_is_wired(fixture_dir, tmp_path, monkeypatch):
+    """A flag that parses but is never read is the same silent no-op class as 832 G-1."""
+    import rectify.core.commands.run.netseq_pipeline as np_mod
+
+    called = {}
+    monkeypatch.setattr(np_mod, 'netseq_trim',
+                        lambda *a, **k: called.setdefault('trim', True))
+    monkeypatch.setattr(np_mod, 'ensure_star_index', lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError('reached align stage')))
+    fq = tmp_path / 'r.fastq'
+    fq.write_text("@a\nACGT\n+\nIIII\n")
+    with pytest.raises(RuntimeError, match='reached align stage'):
+        np_mod.run_netseq_pipeline(
+            _mode_args(netseq_skip_trim=True), input_path=fq, input_type='fastq',
+            output_dir=tmp_path / 'o', work_dir=tmp_path / 'w', sample_id='r',
+            genome_path=fixture_dir['genome'], annotation_path=fixture_dir['gff'], threads=1)
+    assert 'trim' not in called, "--netseq-skip-trim did not skip the trim stage"
