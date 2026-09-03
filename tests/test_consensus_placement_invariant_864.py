@@ -220,9 +220,12 @@ def test_invariant_raises_if_the_writer_reintroduces_the_splice():
     """The emit-time assertion must catch a two-candidate record, not just the
     one code path that produced it.  Re-create the pre-fix writer and confirm
     the record is refused instead of written."""
-    import rectify.core.consensus.consensus as consensus_mod
     from rectify.core.consensus import chimeric_consensus as cc
 
+    # Patch the SOURCE module, not consensus.py: `_process_and_write_batch`
+    # does `from .chimeric_consensus import ... build_chimeric_read` INSIDE the
+    # function, so the name is rebound locally on every call and patching
+    # consensus.build_chimeric_read is a silent no-op.
     real = cc.build_chimeric_read
 
     def _pre_fix(template_read, ref_start, cigar_tuples, chimeric_result,
@@ -238,7 +241,7 @@ def test_invariant_raises_if_the_writer_reintroduces_the_splice():
 
     arms = _cross_contig_arms()
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(consensus_mod, 'build_chimeric_read', _pre_fix, raising=False)
+    monkey.setattr(cc, 'build_chimeric_read', _pre_fix)
     try:
         with pytest.raises(RuntimeError, match='placement invariant violated'):
             _run(arms)
