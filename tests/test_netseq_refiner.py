@@ -584,3 +584,70 @@ class TestEdgeCases:
         assert 'refined_position' in result
         # With no signal, should fall back to the corrected anchor (original_position).
         assert result['refined_position'] == 1500
+
+
+class TestBigwigStrandAndKindSelection:
+    """`--netseq-dir` used to sum EVERY loaded BigWig regardless of strand or flavour.
+
+    With the usual ``<sample>.{raw,corrected,deconv}.{plus,minus}.bw`` layout that put the minus
+    strand's signal into every plus-strand query AND added the deconvolved track to the raw one --
+    and the regularised NNLS does not conserve mass (planning 829 §4 measured 3.14 M deconvolved
+    vs 2.39 M reads), so the inflation is position-dependent and invisible.
+    Planning 834 §5 / 835 §3.5 gap (5).
+    """
+
+    def test_classify_bigwig_name(self):
+        from rectify.core.netseq.netseq_refiner import classify_bigwig_name
+        assert classify_bigwig_name('wt_rep3.raw.plus.bw') == ('+', 'raw')
+        assert classify_bigwig_name('wt_rep3.deconv.minus.bw') == ('-', 'deconv')
+        assert classify_bigwig_name('wt_rep3.corrected.plus.bw') == ('+', 'corrected')
+        assert classify_bigwig_name('sample_plus.bw') == ('+', None)
+        assert classify_bigwig_name('anything.bw') == (None, None)
+
+    def test_classification_is_token_based_not_substring(self):
+        """A substring test would read the 'rev' in 'quantseq_rev_wt' as a minus-strand track."""
+        from rectify.core.netseq.netseq_refiner import classify_bigwig_name
+        assert classify_bigwig_name('quantseqrev_wt.bw') == (None, None)
+
+    def _loader_with(self, entries, **kw):
+        loader = netseq_refiner.NetseqLoader(**kw)
+        for filename, values in entries.items():
+            bw = MagicMock()
+            bw.values.return_value = values
+            name = filename
+            loader.bigwigs[name] = bw
+            loader.bigwig_meta[name] = netseq_refiner.classify_bigwig_name(filename)
+        return loader
+
+    def test_plus_query_ignores_the_minus_track(self):
+        loader = self._loader_with({
+            's.raw.plus.bw': [1.0, 1.0, 1.0],
+            's.raw.minus.bw': [9.0, 9.0, 9.0],
+        })
+        np.testing.assert_array_equal(loader.get_signal('chrI', 0, 3, '+'), [1.0, 1.0, 1.0])
+        np.testing.assert_array_equal(loader.get_signal('chrI', 0, 3, '-'), [9.0, 9.0, 9.0])
+
+    def test_raw_query_ignores_the_deconvolved_track(self):
+        loader = self._loader_with({
+            's.raw.plus.bw': [1.0, 1.0, 1.0],
+            's.deconv.plus.bw': [5.0, 5.0, 5.0],
+        })
+        np.testing.assert_array_equal(loader.get_signal('chrI', 0, 3, '+'), [1.0, 1.0, 1.0])
+
+    def test_signal_kind_selects_the_flavour(self):
+        entries = {'s.raw.plus.bw': [1.0], 's.deconv.plus.bw': [5.0]}
+        assert self._loader_with(entries, signal_kind='deconv').get_signal('chrI', 0, 1, '+')[0] == 5.0
+        assert self._loader_with(entries, signal_kind='corrected').get_signal('chrI', 0, 1, '+')[0] == 1.0
+
+    def test_unlabelled_tracks_are_still_summed(self):
+        """External tracks (and callers that inject a handle directly) must keep working: only a
+        POSITIVE mismatch excludes a file."""
+        loader = self._loader_with({'mystery.bw': [2.0, 2.0], 's.raw.plus.bw': [1.0, 1.0]})
+        np.testing.assert_array_equal(loader.get_signal('chrI', 0, 2, '+'), [3.0, 3.0])
+
+    def test_replicates_on_the_same_strand_are_still_combined(self):
+        loader = self._loader_with({
+            'rep1.raw.plus.bw': [1.0, 1.0],
+            'rep2.raw.plus.bw': [2.0, 2.0],
+        })
+        np.testing.assert_array_equal(loader.get_signal('chrI', 0, 2, '+'), [3.0, 3.0])

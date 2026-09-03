@@ -93,6 +93,41 @@ DEFAULT_PSF_0A = np.array([
 DEFAULT_PSF_0A = DEFAULT_PSF_0A / DEFAULT_PSF_0A.sum()
 
 
+#: Filename tokens that identify a track's strand and flavour. NET-seq bedgraph/BigWig sets are
+#: conventionally named ``<sample>.<kind>.<strand>.bw`` (what ``rectify netseq`` writes) or
+#: ``<sample>_plus.bw`` / ``<sample>_minus.bw``; both tokenize the same way.
+_STRAND_TOKENS = {
+    'plus': '+', 'fwd': '+', 'forward': '+', 'pos': '+', 'p': '+', 'watson': '+',
+    'minus': '-', 'rev': '-', 'reverse': '-', 'neg': '-', 'm': '-', 'crick': '-',
+}
+_KIND_TOKENS = {
+    'raw': 'raw',
+    'corrected': 'corrected',
+    'deconv': 'deconv', 'deconvolved': 'deconv',
+}
+#: Preference order when the requested flavour is not present among the loaded files.
+_KIND_PREFERENCE = ('raw', 'corrected', 'deconv')
+
+
+def classify_bigwig_name(filename: str):
+    """What a BigWig's FILENAME says it is: ``(strand or None, kind or None)``.
+
+    Token-based, not substring-based -- a substring test would read the ``rev`` in a sample called
+    ``quantseq_rev_wt`` as a minus-strand track. ``None`` means "the name does not say", and a
+    track that does not say is never excluded from a query.
+    """
+    import re as _re
+
+    tokens = [t.lower() for t in _re.split(r'[^A-Za-z0-9]+', filename) if t]
+    strand = kind = None
+    for token in tokens:
+        if strand is None and token in _STRAND_TOKENS:
+            strand = _STRAND_TOKENS[token]
+        if kind is None and token in _KIND_TOKENS:
+            kind = _KIND_TOKENS[token]
+    return strand, kind
+
+
 class NetseqLoader:
     """
     Loader for NET-seq BigWig files with caching.
@@ -104,14 +139,23 @@ class NetseqLoader:
     # Maximum number of cached signal arrays
     MAX_CACHE_SIZE = 10000
 
-    def __init__(self, max_cache_size: int = None):
+    def __init__(self, max_cache_size: int = None, signal_kind: str = 'raw'):
         """
         Initialize NET-seq loader with thread-safe LRU cache.
 
         Args:
             max_cache_size: Maximum number of cached signal arrays (default: 10000)
+            signal_kind: which track flavour to serve when the filenames say -- 'raw' (default),
+                'corrected' or 'deconv'. Mixing them is not a mistake you can see in the output:
+                the deconvolved track does not conserve mass, so summing it with the raw track
+                inflates the signal by an amount that varies with local A-content.
         """
         self.bigwigs = {}  # {name: pyBigWig object}
+        #: {name: (strand or None, kind or None)} -- what the FILENAME says each track is.
+        self.bigwig_meta = {}
+        self.signal_kind = signal_kind
+        self._effective_kind_cached = False
+        self._effective_kind = None
         self._max_cache_size = max_cache_size or self.MAX_CACHE_SIZE
         # Use OrderedDict for LRU cache behavior, with lock for thread safety
         self._cache = OrderedDict()  # {(chrom, start, end, strand): signal_array}
@@ -149,6 +193,8 @@ class NetseqLoader:
 
         bw = pyBigWig.open(str(filepath))
         self.bigwigs[name] = bw
+        self.bigwig_meta[name] = classify_bigwig_name(Path(filepath).name)
+        self._effective_kind_cached = False
 
     def load_directory(self, directory: str, pattern: str = "*.bw"):
         """
@@ -218,11 +264,25 @@ class NetseqLoader:
                     self._cache.popitem(last=False)
             return result
 
-        # Combine signal from all loaded BigWigs
+        # Combine signal from the loaded BigWigs that BELONG to this query.
+        #
+        # 🔴 This used to sum EVERY loaded BigWig regardless of strand or flavour
+        # (planning 834 §5 / 835: "--netseq-dir sums every loaded BigWig"). With the usual
+        # <sample>.{raw,corrected,deconv}.{plus,minus}.bw layout that means a '+' query got the
+        # '-' strand's signal added to it AND the deconvolved track added to the raw track -- and
+        # the NNLS deconvolution does not conserve mass, so the inflation is position-dependent
+        # and invisible. Filenames that say nothing are still summed (external tracks, and the
+        # loaders that inject a handle directly), so only a POSITIVE mismatch is excluded.
         length = end - start
         combined_signal = np.zeros(length)
+        want_kind = self._resolve_signal_kind()
 
         for name, bw in self.bigwigs.items():
+            bw_strand, bw_kind = self.bigwig_meta.get(name, (None, None))
+            if bw_strand is not None and bw_strand != strand:
+                continue
+            if want_kind is not None and bw_kind is not None and bw_kind != want_kind:
+                continue
             try:
                 values = bw.values(chrom, start, end)
                 values = [v if v is not None else 0.0 for v in values]
@@ -241,6 +301,32 @@ class NetseqLoader:
 
         return combined_signal
 
+    def _resolve_signal_kind(self):
+        """Which flavour to serve, given what was actually loaded.
+
+        Returns the requested ``signal_kind`` when at least one loaded file declares it; otherwise
+        the first declared flavour in ``_KIND_PREFERENCE`` (with a warning, because silently
+        serving the deconvolved track where raw was asked for is a counting error); ``None`` when
+        no filename declares a flavour at all, which disables the flavour filter entirely.
+        """
+        if self._effective_kind_cached:
+            return self._effective_kind
+        declared = {k for _s, k in self.bigwig_meta.values() if k is not None}
+        if not declared:
+            effective = None
+        elif self.signal_kind in declared:
+            effective = self.signal_kind
+        else:
+            effective = next((k for k in _KIND_PREFERENCE if k in declared), None)
+            import logging
+            logging.getLogger(__name__).warning(
+                "NET-seq signal kind %r is not among the loaded tracks %s; using %r instead",
+                self.signal_kind, sorted(declared), effective,
+            )
+        self._effective_kind = effective
+        self._effective_kind_cached = True
+        return effective
+
     def clear_cache(self):
         """Clear signal cache."""
         self._cache.clear()
@@ -250,6 +336,8 @@ class NetseqLoader:
         for bw in self.bigwigs.values():
             bw.close()
         self.bigwigs.clear()
+        self.bigwig_meta.clear()
+        self._effective_kind_cached = False
         self._cache.clear()
 
 
