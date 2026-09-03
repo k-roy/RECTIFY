@@ -209,21 +209,28 @@ def export_netseq_results(
     export_bigwig: bool = True,
     normalize_rpm: bool = True,
     total_reads: Optional[int] = None,
+    corrected_counts: Optional[Dict[Tuple[str, str, int], float]] = None,
 ) -> Dict[str, Path]:
     """
     Export all NET-seq output files.
 
     Creates:
     - {sample_name}.unified_reads.parquet (read-level)
-    - {sample_name}.raw.plus.bedgraph (raw signal, plus strand)
-    - {sample_name}.raw.minus.bedgraph (raw signal, minus strand)
+    - {sample_name}.raw.plus.bedgraph (RAW alignment terminus, plus strand)
+    - {sample_name}.raw.minus.bedgraph (RAW alignment terminus, minus strand)
+    - {sample_name}.corrected.plus.bedgraph (after tail walkback + junction rescue)
+    - {sample_name}.corrected.minus.bedgraph
     - {sample_name}.deconv.plus.bedgraph (deconvolved, plus strand)
     - {sample_name}.deconv.minus.bedgraph (deconvolved, minus strand)
     - (Same with .bw extension if bigwig enabled)
 
+    ``raw`` and ``corrected`` are BOTH written whenever ``corrected_counts`` is supplied, so a run
+    can be diffed against the pre-correction track without a second pass. ``raw`` keeps exactly the
+    contents it had before the correction pass existed.
+
     Args:
         records: List of UnifiedReadRecord
-        raw_counts: Raw position counts
+        raw_counts: Raw position counts (three_prime_raw)
         deconv_counts: Deconvolved position counts (None to skip)
         output_dir: Output directory
         sample_name: Sample name for output files
@@ -233,6 +240,7 @@ def export_netseq_results(
         normalize_rpm: Apply RPM normalization
         total_reads: Read total for RPM normalization. Defaults to len(records); pass it
             explicitly when records were streamed (not materialised) into raw_counts.
+        corrected_counts: Corrected-3'-end position counts (three_prime_corrected). None to skip.
 
     Returns:
         Dict mapping output type to path
@@ -267,6 +275,20 @@ def export_netseq_results(
             n_positions = sum(1 for (_, s, _) in raw_counts if s == strand)
             print(f"  Exported bedgraph: {bg_path.name} ({n_positions:,} positions)")
 
+    # Export corrected bedgraph (tail walkback + donor-side junction rescue)
+    if export_bedgraph and corrected_counts:
+        for strand, strand_name in [('+', 'plus'), ('-', 'minus')]:
+            bg_path = output_dir / f"{sample_name}.corrected.{strand_name}.bedgraph"
+            track_name = f"{sample_name}_corrected_{strand_name}"
+            write_bedgraph(
+                corrected_counts, bg_path, strand, total_reads,
+                normalize_rpm=normalize_rpm,
+                track_name=track_name,
+            )
+            outputs[f'corrected_{strand_name}_bedgraph'] = bg_path
+            n_positions = sum(1 for (_, s, _) in corrected_counts if s == strand)
+            print(f"  Exported bedgraph: {bg_path.name} ({n_positions:,} positions)")
+
     # Export deconvolved bedgraph
     if export_bedgraph and deconv_counts:
         for strand, strand_name in [('+', 'plus'), ('-', 'minus')]:
@@ -282,6 +304,9 @@ def export_netseq_results(
             print(f"  Exported bedgraph: {bg_path.name} ({n_positions:,} positions)")
 
     # Export bigwig files
+    if export_bigwig and not HAS_PYBIGWIG:
+        print("  WARNING: --output-format bigwig requested but pyBigWig is not importable -- "
+              "NO .bw files were written (install with: pip install pyBigWig)")
     if export_bigwig and HAS_PYBIGWIG:
         if raw_counts:
             for strand, strand_name in [('+', 'plus'), ('-', 'minus')]:
@@ -292,6 +317,17 @@ def export_netseq_results(
                 )
                 if result:
                     outputs[f'raw_{strand_name}_bigwig'] = result
+                    print(f"  Exported bigwig: {bw_path.name}")
+
+        if corrected_counts:
+            for strand, strand_name in [('+', 'plus'), ('-', 'minus')]:
+                bw_path = output_dir / f"{sample_name}.corrected.{strand_name}.bw"
+                result = write_bigwig(
+                    corrected_counts, bw_path, strand, total_reads,
+                    normalize_rpm=normalize_rpm,
+                )
+                if result:
+                    outputs[f'corrected_{strand_name}_bigwig'] = result
                     print(f"  Exported bigwig: {bw_path.name}")
 
         if deconv_counts:

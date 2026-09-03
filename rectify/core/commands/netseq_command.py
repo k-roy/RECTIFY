@@ -13,6 +13,7 @@ Usage:
 Author: Kevin R. Roy
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -21,8 +22,10 @@ from ..bam.netseq_bam_processor import (
     NETSEQ_RNA3P_CHOICES,
     NETSEQ_RNA3P_DEFAULT,
     process_netseq_bam,
+    aggregate_netseq_stream,
     aggregate_positions,
 )
+from ..netseq.netseq_rescue import JunctionPool, allowed_remainders, load_junction_tsv
 from ..netseq.netseq_umi import (
     NETSEQ_UMI_LENGTH,
     NETSEQ_UMI_SOURCES,
@@ -66,6 +69,9 @@ def run_netseq(args) -> int:
     # Validate inputs
     input_paths = args.input
     output_dir = Path(args.output_dir)
+    if args.genome is None:
+        print("Error: --genome is required (or use --Scer / --organism for bundled data)")
+        return 1
     genome_path = Path(args.genome)
 
     if not genome_path.exists():
@@ -80,12 +86,44 @@ def run_netseq(args) -> int:
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load genome (needed for deconvolution)
+    # ---- annotation resolution -----------------------------------------------------------------
+    # resolve_reference_paths() fills args.annotation, never args.gff, and this parser has no
+    # --annotation slot -- so under --Scer the GFF was silently absent (exclusion regions fell back
+    # to the hard-coded rDNA box, and a --gff-gated junction rescue would never fire). Resolve here.
+    annotation_path = _resolve_annotation(args)
+
+    # ---- genome --------------------------------------------------------------------------------
+    # Needed by deconvolution AND by the poly(A) walkback and the donor-side junction rescue, so it
+    # is loaded unless every consumer is off.
+    detect_tail = not getattr(args, 'no_tail_detection', False)
+    want_rescue = _want_rescue(args, annotation_path)
     genome = None
-    if not args.no_deconvolution:
+    if (not args.no_deconvolution) or detect_tail or want_rescue:
         print(f"\nLoading genome: {genome_path}")
         genome = load_genome(str(genome_path))
         print(f"  Loaded {len(genome)} chromosomes")
+
+    # ---- junction pool -------------------------------------------------------------------------
+    junction_pool = None
+    if want_rescue:
+        pool_tsv = getattr(args, 'junction_pool', None)
+        junction_pool = JunctionPool()
+        if annotation_path:
+            junction_pool = JunctionPool.from_annotation(annotation_path)
+            print(f"\nJunction pool: {len(junction_pool):,} annotated introns from "
+                  f"{Path(annotation_path).name}")
+        if pool_tsv:
+            n_before = len(junction_pool)
+            for j in load_junction_tsv(pool_tsv):
+                junction_pool.add(j)
+            print(f"  + {len(junction_pool) - n_before:,} junctions from {Path(pool_tsv).name}")
+        if not len(junction_pool):
+            print("  WARNING: junction rescue requested but the pool is EMPTY -- rescue disabled")
+            junction_pool = None
+        else:
+            print(f"  rescue window: aligned end within {args.rescue_max_intronic} nt past the donor; "
+                  f"min k = {args.rescue_min_k}; allowed non-templated remainder = "
+                  f"{list(allowed_remainders(umi_length))}")
 
     # Set up exclusion regions
     exclusion_detector = None
@@ -96,8 +134,8 @@ def run_netseq(args) -> int:
         print("\nSetting up exclusion regions...")
         exclusion_detector = ExclusionRegionDetector(flanking_bp=args.pol3_flanking)
 
-        # Load from GFF if provided
-        gff_path = getattr(args, 'gff', None)
+        # Load from GFF if provided (resolved above: --gff, else the bundled/organism annotation)
+        gff_path = annotation_path
         if gff_path and Path(gff_path).exists():
             n_regions = exclusion_detector.load_from_gff(
                 Path(gff_path),
@@ -141,35 +179,41 @@ def run_netseq(args) -> int:
             max_reads=args.max_reads if hasattr(args, 'max_reads') else None,
             show_progress=True,
             rna3p_at=rna3p_at,
+            junction_pool=junction_pool,
+            genome=genome,
+            umi_length=umi_length,
+            rescue_max_intronic=args.rescue_max_intronic,
+            rescue_min_k=args.rescue_min_k,
+            detect_tail=detect_tail,
         )
 
         # Only the read-level parquet needs every record in memory (~23 GB per 50M reads).
-        # Position tracks are aggregated in one streaming pass when parquet is not requested,
-        # so a 100-180M-read library fits in a few GB.
-        if want_parquet:
-            records = list(record_stream)
-            if not records:
-                print("  Warning: No records generated!")
-                continue
-            print("\n2. Aggregating positions...")
-            raw_counts = aggregate_positions(iter(records))
-            total_reads = len(records)
-        else:
-            records = []
-            print("\n2. Aggregating positions (streaming; no parquet requested)...")
-            raw_counts = aggregate_positions(record_stream)
-            total_reads = int(sum(raw_counts.values()))
-            if not raw_counts:
-                print("  Warning: No records generated!")
-                continue
-        print(f"  Unique positions: {len(raw_counts):,}  (reads: {total_reads:,})")
+        # Position tracks AND the correction counters are accumulated in ONE streaming pass when
+        # parquet is not requested, so a 100-180M-read library fits in a few GB.
+        print("\n2. Aggregating positions (raw + corrected, single pass)...")
+        raw_counts, corrected_counts, summary, records = aggregate_netseq_stream(
+            record_stream, collect=want_parquet,
+        )
+        total_reads = summary.reads
+        if not total_reads:
+            print("  Warning: No records generated!")
+            continue
+        summary.junction_pool_size = len(junction_pool) if junction_pool else 0
+        print(f"  Unique positions: raw {len(raw_counts):,}  corrected {len(corrected_counts):,}  "
+              f"(reads: {total_reads:,})")
+        _print_correction_summary(summary)
+
+        # Which track the deconvolution and the downstream analyses key on.
+        track_position = getattr(args, 'track_position', 'corrected')
+        primary_counts = corrected_counts if track_position == 'corrected' else raw_counts
+        print(f"  Primary track (deconvolution input): {track_position}")
 
         # Deconvolution
         deconv_counts = None
         if not args.no_deconvolution and genome:
             print("\n3. Applying deconvolution...")
             deconv_counts, deconv_results = deconvolve_all_regions(
-                raw_counts,
+                primary_counts,
                 genome,
                 min_downstream_a=args.min_atract_length if hasattr(args, 'min_atract_length') else 3,
                 show_progress=True,
@@ -192,7 +236,23 @@ def run_netseq(args) -> int:
             export_bedgraph='bedgraph' in output_formats,
             export_bigwig='bigwig' in output_formats,
             normalize_rpm=normalize_rpm,
+            corrected_counts=corrected_counts,
         )
+
+        summary_path = output_dir / f"{sample_name}.netseq_summary.json"
+        payload = summary.as_dict()
+        payload.update({
+            'sample': sample_name, 'input_bam': str(input_path), 'rna3p_at': rna3p_at,
+            'umi_length': umi_length, 'track_position': track_position,
+            'junction_rescue': junction_pool is not None,
+            'rescue_max_intronic': args.rescue_max_intronic,
+            'rescue_min_k': args.rescue_min_k,
+            'allowed_remainders': list(allowed_remainders(umi_length)),
+            'tail_detection': detect_tail,
+            'annotation': str(annotation_path) if annotation_path else None,
+        })
+        summary_path.write_text(json.dumps(payload, indent=1))
+        outputs['netseq_summary'] = summary_path
 
         print(f"\n  Generated {len(outputs)} output files")
         for name, path in outputs.items():
@@ -219,6 +279,68 @@ def run_netseq(args) -> int:
     print(f"{'='*60}")
 
     return 0
+
+
+
+def _resolve_annotation(args):
+    """Annotation path for exclusion regions AND the junction pool.
+
+    Priority: explicit ``--gff`` -> ``args.annotation`` (filled by ``resolve_reference_paths`` when
+    the parser exposes it) -> the bundled annotation for ``--organism``/``--Scer``. The netseq parser
+    has no ``--annotation`` slot, so without this a bundled-organism run silently had NO annotation:
+    exclusion fell back to the hard-coded rDNA box and the junction rescue would never fire.
+    """
+    gff = getattr(args, 'gff', None)
+    if gff and Path(gff).exists():
+        return Path(gff)
+    annotation = getattr(args, 'annotation', None)
+    if annotation and Path(annotation).exists():
+        return Path(annotation)
+    organism = getattr(args, 'organism', None)
+    if organism:
+        from rectify.data import get_bundled_annotation_path, normalize_organism
+        bundled = get_bundled_annotation_path(normalize_organism(organism))
+        if bundled and Path(bundled).exists():
+            return Path(bundled)
+    return None
+
+
+def _want_rescue(args, annotation_path) -> bool:
+    """Whether the donor-side junction rescue runs.
+
+    Default ON as soon as a junction source exists (an annotation or ``--junction-pool``);
+    ``--no-junction-rescue`` forces it off, ``--junction-rescue`` makes its absence an explicit
+    request that warns rather than silently doing nothing.
+    """
+    if getattr(args, 'junction_rescue', None) is False:
+        return False
+    have_source = bool(annotation_path) or bool(getattr(args, 'junction_pool', None))
+    if getattr(args, 'junction_rescue', None) is True and not have_source:
+        print("  WARNING: --junction-rescue given but no --gff/--organism annotation and no "
+              "--junction-pool -- there is nothing to rescue against")
+        return False
+    return have_source
+
+
+def _print_correction_summary(summary) -> None:
+    """One compact block per sample; the full detail lands in <sample>.netseq_summary.json."""
+    print(f"  near a pooled donor: {summary.reads_near_donor:,}"
+          f"   rescued: {summary.rescued:,}"
+          f" (mis-extended into intron: {summary.rescued_mis_extended:,})"
+          f"   exon1_end: {summary.exon1_end:,}"
+          f"   ambiguous: {summary.ambiguous:,}"
+          f"   intronic_end: {summary.intronic_end:,}")
+    if summary.rescued:
+        by_k = ", ".join(f"k={k}:{n}" for k, n in sorted(summary.rescued_by_k.items()))
+        print(f"    rescued by k: {by_k}")
+        decoy = ", ".join(f"k={k}:{n}" for k, n in sorted(summary.decoy_k_at_donor.items()) if k)
+        print(f"    decoy-acceptor null (same reads, acceptor + 50 nt): {decoy or 'k>=1: 0'}")
+    pct = (lambda n: 100.0 * n / summary.reads if summary.reads else 0.0)
+    print(f"  tails: >=1 nt {summary.tailed_ge1:,} ({pct(summary.tailed_ge1):.2f}%)"
+          f"   >=3 nt {summary.tailed_ge3:,} ({pct(summary.tailed_ge3):.2f}%)"
+          f"   partly aligned (walkback>0) {summary.tail_walkback_gt0:,}")
+    print(f"  corrected end differs from raw for {summary.end_moved:,} reads "
+          f"({pct(summary.end_moved):.2f}%)")
 
 
 def _emit_molecule_track(
@@ -345,11 +467,59 @@ def add_netseq_parser(subparsers) -> None:
         help='Output directory',
     )
 
-    # Annotation for exclusion
+    # Annotation for exclusion + the junction pool
     parser.add_argument(
         '--gff',
         type=Path,
-        help='GFF annotation file for exclusion region detection',
+        help='GFF/GTF annotation for exclusion regions AND the donor-side junction rescue pool. '
+             'Defaults to the bundled annotation under --Scer/--organism.',
+    )
+
+    rescue_group = parser.add_argument_group(
+        'Donor-side junction rescue',
+        "A nascent RNA whose 3' end sits 1-10 nt into exon 2 cannot be anchored across the junction "
+        "by a short-read aligner: the overhang is soft-clipped (STAR Local, bbmap) or the alignment "
+        "is mis-extended a few nt into the intron, and the read is called at the 5' SPLICE SITE -- "
+        "manufacturing a false splicing intermediate at exactly the coordinate the real signal "
+        "occupies. This pass matches that clip to the start of exon 2 of a pooled intron and moves "
+        "the 3' end there. ON by default whenever an annotation or --junction-pool is available.",
+    )
+    rescue_group.add_argument(
+        '--junction-rescue',
+        dest='junction_rescue', action='store_true', default=None,
+        help='Force the rescue on (warns if no junction source is available).',
+    )
+    rescue_group.add_argument(
+        '--no-junction-rescue',
+        dest='junction_rescue', action='store_false',
+        help='Disable the rescue.',
+    )
+    rescue_group.add_argument(
+        '--junction-pool',
+        type=Path,
+        default=None,
+        help="External junction table (TSV, header chrom/donor/acceptor/strand), merged with the "
+             "annotated introns -- e.g. a long-read-derived pool. BOTH sites are INTRONIC and on "
+             "the GENE strand: donor = first intronic base, acceptor = last intronic base, 0-based "
+             "(so donor > acceptor on a '-' gene).",
+    )
+    rescue_group.add_argument(
+        '--rescue-max-intronic',
+        type=int, default=10,
+        help="How far past the donor the aligned RNA 3' end may sit and still be considered "
+             "(aligner mis-extension into the intron). Default 10.",
+    )
+    rescue_group.add_argument(
+        '--rescue-min-k',
+        type=int, default=1,
+        help='Minimum number of exon-2 bases that must be recovered for a rescue (default 1). '
+             'Raise it to suppress the 1-nt chance matches that a randomer produces -- the '
+             'summary JSON reports the decoy-acceptor null so the cost is measurable.',
+    )
+    rescue_group.add_argument(
+        '--no-tail-detection',
+        action='store_true',
+        help="Disable the non-templated 3'-tail call (clip A-run + genome-aware walkback).",
     )
 
     from rectify.data import add_organism_args
@@ -402,6 +572,15 @@ def add_netseq_parser(subparsers) -> None:
         choices=['parquet', 'bedgraph', 'bigwig', 'tsv'],
         default=['parquet', 'bedgraph'],
         help='Output formats to generate (default: parquet bedgraph)',
+    )
+    output_group.add_argument(
+        '--track-position',
+        choices=['raw', 'corrected'],
+        default='corrected',
+        help="Which 3' end drives the PRIMARY track (deconvolution input): 'corrected' (default; "
+             "after terminal oligo(A) trim, poly(A) walkback and junction rescue) or 'raw' (the "
+             "bare alignment terminus, the pre-2026-09 behaviour). Both the .raw.* and .corrected.* "
+             "bedgraphs are written either way, so before/after is always diffable.",
     )
     output_group.add_argument(
         '--no-rpm-normalize',
