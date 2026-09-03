@@ -34,6 +34,15 @@ rectify run-all reads.fastq.gz \
 # DRS workflow (Dorado direct RNA BAM)
 rectify run-all sample_dorado.bam --drs --Scer -o results/
 
+# NET-seq / mNET-seq (nascent Pol II 3' ends) — FASTQ in, stranded tracks out
+rectify run-all reads.fastq.gz --netseq --Scer -o results/
+
+# NET-seq with an S. pombe spike-in and a cached STAR index
+rectify run-all reads.fastq.gz --netseq \
+    --genome scer.fa --annotation scer.gff \
+    --spikein-fasta pombe.fa --star-index-dir ref/star_scer_pombe \
+    -o results/
+
 # Multi-sample differential expression
 rectify run-all \
     --manifest manifest.tsv \
@@ -98,9 +107,69 @@ rectify run-all \
 
 ### NET-seq
 
-| Argument | Description |
-|----------|-------------|
-| `--netseq-dir` | Custom NET-seq BigWig directory |
+`--netseq` selects a **three-stage pipeline of its own** — it does not run the aligner panel,
+the consensus stage or `rectify correct`:
+
+```
+[1] cutadapt   3' linker trim (randomer LEFT IN PLACE)
+[2] STAR       absolute match floors, optional spike-in genome, index built/cached if absent
+[3] rectify netseq   --rna3p-at read5p, donor-side junction rescue, corrected-end tracks
+```
+
+🔴 **Why there is no `correct` stage.** The junction-overhang resolver is a junction *discovery*
+stage wrapping minimap2 and belongs to the long-read protocols. The 1–10 nt soft-clip
+*re-placement* NET-seq needs — a nascent 3' end sitting a few nt into exon 2, which every
+short-read aligner either soft-clips (so the read is called at the 5' splice site, manufacturing a
+false splicing intermediate) or mis-extends into the intron — is implemented for the NET-seq
+geometry directly inside `rectify netseq`: donor-side junction-pool rescue against the exon-2
+start, with a randomer-tolerant remainder and a decoy-acceptor chance floor reported on every run.
+Running the COMPASS panel plus a `correct` arm on 35-nt reads adds no placement information and
+costs the `correct` arm, which is ~87× the whole align stage per BAM.
+
+🔴 **The 5' randomer is never trimmed.** These libraries are a *mixture*: in PRJNA1521488, 58–60 %
+of unique Pol II reads carry no randomer at all and ~21 % carry a 6-nt one. An unconditional
+`-u 6` would delete six genuine nucleotides from the majority class. The aligner soft-clips the
+randomer (`--alignEndsType Local`), and `--netseq-umi-length N` accounts for it per read — as a
+non-templated remainder the rescue may invoke, and as a distal strip before the 3'-tail A-run is
+measured. It is **not** a trim, and it does not imply dedup.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--netseq` | off | Select the NET-seq pipeline (antisense chemistry, Churchman convention) |
+| `--netseq-adapter` | Churchman 2011 linker | 3' linker literal for cutadapt |
+| `--netseq-min-length` | 18 | cutadapt `-m`; adapter dimers fall below this |
+| `--netseq-nextseq-trim` | 20 | Two-colour-aware quality trim (a no-signal base reads as a high-quality G) |
+| `--netseq-quality-cutoff` | — | Use cutadapt `-q N` instead (four-colour chemistry) |
+| `--netseq-skip-trim` | off | Input FASTQ is already linker-trimmed |
+| `--spikein-fasta` | — | Spike-in genome; contigs are prefixed and appended for one combined index |
+| `--spikein-prefix` | `Sp_` | Prefix for spike-in contigs; `idxstats` splits on it |
+| `--star-index` | — | Prebuilt STAR index; used as-is, never rebuilt |
+| `--star-index-dir` | `<output>/star_index` | Where to build and cache the index |
+| `--netseq-umi-length` | 0 | Randomer length, forwarded to `netseq --umi-length`. **Not a trim.** |
+| `--netseq-dedup` | off | Molecule track. Only valid when the randomer is *universal* |
+| `--netseq-exclude-pol3` | off | See below — Pol III/snRNA loci are **included** by default here |
+| `--netseq-rpm` | off | RPM-normalise. Off by default: NNLS does not conserve mass |
+| `--netseq-output-format` | `parquet bedgraph` | `bedgraph`/`bigwig` stream; `parquet`/`tsv` materialise every record |
+| `--netseq-track-position` | `corrected` | Which 3' end drives the primary track |
+| `--netseq-rescue-min-k` | 1 | Minimum exon-2 match with no non-templated remainder |
+| `--netseq-rescue-min-k-with-remainder` | 4 | Minimum match when a randomer remainder is invoked |
+| `--netseq-walkback-unconditional` | off | Restore invariant-7 walkback (poly(A)-selected input only) |
+| `--netseq-dir` | — | (unrelated) Custom NET-seq BigWig directory for `correct`'s A-tract refiner |
+
+**Two defaults that differ from `rectify netseq`'s, deliberately:**
+
+* **Pol III / snRNA loci are INCLUDED.** The Pol III exclusion also drops every `snRNA` GFF
+  feature, and the U5 (SNR7) 3' end — 3.1 % of all reads in a typical library, at
+  `chrVII:939,521` on the minus strand in R64 — is the QC observable that proves the strand
+  convention is right. Excluding it deletes the check. rDNA stays excluded either way.
+* **Tracks are counts, not RPM.** NNLS deconvolution does not conserve mass, the `--netseq-dir`
+  refiner is calibrated on raw signal, and a spike-in-normalised claim needs counts.
+
+**Outputs** (in `-o`): `<sample>.{raw,corrected,deconv}.{plus,minus}.bedgraph` (+ `.bw` with
+`--netseq-output-format bigwig`), `<sample>.netseq_summary.json` (rescue classes, the k histogram
+split by remainder, the decoy chance floor, tail classes, shift histogram),
+`<sample>.runall_netseq.json` (the flags the run actually used), and under `netseq_align/`:
+`<sample>.spikein.tsv`, `<sample>.idxstats.tsv`, the sorted BAM and STAR's logs.
 
 ### Aligner options
 

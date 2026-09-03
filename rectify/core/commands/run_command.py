@@ -52,6 +52,8 @@ Date: 2026-03-28
 import argparse
 import sys
 from pathlib import Path
+
+from .run.netseq_pipeline import CHURCHMAN_3P_LINKER
 from typing import Optional
 
 # Re-exports for backwards compatibility with batch_command.py and
@@ -126,6 +128,7 @@ _PROTOCOL_FLAGS = (
     ('--drs', 'drs'),
     ('--dT-primed-cDNA', 'dT_primed_cDNA'),
     ('--ONT-cDNA', 'ONT_cDNA'),
+    ('--netseq', 'netseq'),
 )
 
 #: Read-length modality flags -- orthogonal to the protocol, never mutually exclusive with one.
@@ -286,6 +289,41 @@ def run(args: argparse.Namespace) -> None:
                 sys.exit(1)
             rc = _generate_chunked_pipeline(args)
             sys.exit(rc)
+
+    # ── run-all --netseq: its own three-stage pipeline, not the align/correct chain ─────────
+    # trim -> STAR (absolute floors) -> `rectify netseq`. Dispatched here rather than inside
+    # _run_single_sample's Step 0/1/2 chain because it shares NONE of those stages: there is no
+    # aligner panel, no consensus and no `correct` arm (planning 835 §2, Kevin 17:40).
+    if getattr(args, 'netseq', False):
+        if getattr(args, 'manifest', None):
+            print("ERROR: --netseq does not support --manifest yet; run one library per "
+                  "invocation (the mode writes per-library tracks + spike-in accounting).",
+                  file=sys.stderr)
+            sys.exit(1)
+        _resolve_reference_paths(args)
+        from .run.netseq_pipeline import run_netseq_pipeline
+        from .run.single_sample import _canonical_sample_id
+        from ..align.preprocess import detect_input_type
+        _in = Path(str(args.input))
+        _out = Path(args.output_dir)
+        _work = Path(getattr(args, 'scratch_dir', None) or _out)
+        try:
+            rc = run_netseq_pipeline(
+                args,
+                input_path=_in,
+                input_type=detect_input_type(_in),
+                output_dir=_out,
+                work_dir=_work,
+                sample_id=_canonical_sample_id(_in),
+                genome_path=Path(args.genome) if getattr(args, 'genome', None) else None,
+                annotation_path=(Path(args.annotation)
+                                 if getattr(args, 'annotation', None) else None),
+                threads=getattr(args, 'threads', 4),
+            )
+        except Exception as exc:
+            print(f"ERROR: run-all --netseq failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(rc)
 
     if getattr(args, 'manifest', None):
         rc = _run_multi_sample(args)
@@ -620,6 +658,206 @@ def create_run_parser(subparsers):
              'molecule and duplicates inflate counts unevenly between libraries: '
              'use "b" only for read-level diagnostics, never for abundance.'
     )
+    # ═══════════════════════════════════════════════════════════════════════
+    # NET-seq / mNET-seq  (planning 829 / 834 / 835 WP2 / 836)
+    # ═══════════════════════════════════════════════════════════════════════
+    netseq_group = run_parser.add_argument_group(
+        'NET-seq (--netseq)',
+        "Nascent Pol II 3'-end pipeline: cutadapt 3' linker trim -> STAR with ABSOLUTE match "
+        "floors -> `rectify netseq`. \n"
+        "🔴 There is deliberately NO `correct` / consensus stage. The junction-overhang resolver "
+        "is a junction-DISCOVERY stage for long reads; the 1-10 nt soft-clip RE-PLACEMENT that "
+        "NET-seq needs is `correct`'s logic, and it is implemented for the NET-seq geometry "
+        "directly inside `rectify netseq` (donor-side junction-pool rescue against the exon-2 "
+        "start, randomer-tolerant remainder, evidence-gated poly(A) walkback -- planning 836). "
+        "Running the COMPASS panel plus a `correct` arm on 35-nt reads adds no placement "
+        "information and costs the `correct` arm, which is 87x the whole align stage per BAM "
+        "(planning 586 / 728).\n"
+        "🔴 The 5' randomer is NEVER trimmed. planning 829 §4 measured these libraries as a "
+        "MIXTURE (58-60 %% of reads carry no randomer), so `-u 6` would delete six genuine "
+        "nucleotides from the majority class. The aligner soft-clips it and "
+        "--netseq-umi-length accounts for it per read.",
+    )
+    netseq_group.add_argument(
+        '--netseq',
+        dest='netseq',
+        action='store_true',
+        default=False,
+        help="Input is NET-seq / mNET-seq (Pol II-associated nascent RNA). Antisense chemistry: "
+             "the RNA 3' end is the read 5' terminus and the gene strand is the INVERSE of the "
+             "BAM strand (Churchman convention, --rna3p-at read5p). Selects the three-stage "
+             "pipeline described above. For paired-end mNET-seq, isolate read 2 first "
+             "(see `rectify netseq-cpa`).",
+    )
+
+    trim_help = netseq_group.add_argument
+    trim_help(
+        '--netseq-adapter',
+        dest='netseq_adapter',
+        default=CHURCHMAN_3P_LINKER,
+        help="3' linker literal for cutadapt. Default is the Churchman 2011 linker, measured in "
+             "81.4 %% of PRJNA1521488 reads (planning 829 §2).",
+    )
+    trim_help(
+        '--netseq-min-length',
+        dest='netseq_min_length', type=int, default=18,
+        help="cutadapt -m: discard reads shorter than this after trimming. Adapter dimers are "
+             "<18 nt (8.4 %% of PRJNA1521488).",
+    )
+    trim_help(
+        '--netseq-nextseq-trim',
+        dest='netseq_nextseq_trim', type=int, default=20,
+        help="cutadapt --nextseq-trim: two-colour-aware quality trim. On NextSeq/NovaSeq a "
+             "no-signal base reads as a HIGH-QUALITY G, so plain -q does not remove the poly-G "
+             "tail. This is what planning 829 ran on all 52 libraries.",
+    )
+    trim_help(
+        '--netseq-quality-cutoff',
+        dest='netseq_quality_cutoff', type=int, default=None,
+        help="Use cutadapt -q N instead of --nextseq-trim (four-colour chemistry).",
+    )
+    trim_help(
+        '--netseq-skip-trim',
+        dest='netseq_skip_trim', action='store_true', default=False,
+        help="Input FASTQ is already linker-trimmed.",
+    )
+
+    trim_help(
+        '--spikein-fasta',
+        dest='spikein_fasta', type=Path, default=None,
+        help="Spike-in genome FASTA (e.g. S. pombe ASM294v2 for the 1:10 spike-in of Bryll & "
+             "Peterson 2022). Its contigs are prefixed and appended to the primary genome for a "
+             "single combined STAR index; `samtools idxstats` then splits the two organisms and "
+             "the spike-in fraction is written to <sample>.spikein.tsv. The BAM handed to "
+             "`netseq` carries the PRIMARY contigs only. RPM erases a spike-in-normalised claim "
+             "by construction, which is why this mode writes counts by default.",
+    )
+    trim_help(
+        '--spikein-prefix',
+        dest='spikein_prefix', default='Sp_',
+        help="Prefix added to every spike-in contig name in the combined index.",
+    )
+    trim_help(
+        '--star-index',
+        dest='star_index', type=Path, default=None,
+        help="Prebuilt STAR index directory. Used as-is and never rebuilt.",
+    )
+    trim_help(
+        '--star-index-dir',
+        dest='star_index_dir', type=Path, default=None,
+        help="Where to build/cache the STAR index when --star-index is not given "
+             "(default: <output>/star_index). Reused across runs; the SAindex file is the "
+             "completion sentinel.",
+    )
+    trim_help(
+        '--star-path', dest='star_path', default=None, help=argparse.SUPPRESS)
+    trim_help(
+        '--cutadapt-path', dest='cutadapt_path', default=None, help=argparse.SUPPRESS)
+    trim_help(
+        '--star-sa-index-nbases', dest='star_sa_index_nbases', type=int, default=11,
+        help="STAR --genomeSAindexNbases for the index build. 11 is the manual's value for a "
+             "~12 Mb genome; the mammalian default 14 will not build.",
+    )
+
+    trim_help(
+        '--netseq-umi-length',
+        dest='netseq_umi_length', type=int, default=0,
+        help="Randomer/UMI length, forwarded to `rectify netseq --umi-length`. It does NOT trim: "
+             "it lets the donor-side rescue explain a non-templated clip remainder and strips the "
+             "distal N nt before the 3'-tail A-run is measured. 0 (default) = do not assume a "
+             "randomer. Use 6 only after CONFIRMING one on the aligned 5'-clip histogram.",
+    )
+    trim_help(
+        '--netseq-dedup',
+        dest='netseq_dedup', action='store_true', default=False,
+        help="Emit the molecule (UMI-deduplicated) track alongside the read track. Requires "
+             "--netseq-umi-length. 🔴 Only valid when the randomer is UNIVERSAL: the overshoot "
+             "correction shifts every read with a short clip, so on a MIXED library it moves the "
+             "randomer-free class by the full UMI length (planning 829 §4 measured PRJNA1521488 "
+             "at 52 %% zero-length clips, so dedup is WRONG for it).",
+    )
+    trim_help(
+        '--netseq-umi-source', dest='netseq_umi_source', default=None,
+        choices=['read5p', 'name'], help=argparse.SUPPRESS)
+    trim_help(
+        '--netseq-exclude-pol3',
+        dest='netseq_exclude_pol3', action='store_true', default=False,
+        help="Exclude Pol III loci. OFF by default here: the exclusion also drops every `snRNA` "
+             "GFF feature, and the U5/SNR7 3' end (planning 829 §4: chrVII:939,521 -, 3.1 %% of "
+             "all reads) is the QC observable that proves the strand convention. rDNA stays "
+             "excluded either way.",
+    )
+    trim_help(
+        '--netseq-exclude-mito', dest='netseq_exclude_mito', action='store_true', default=False,
+        help="Exclude the mitochondrial genome (Pol II does not transcribe it).")
+    trim_help(
+        '--netseq-rpm',
+        dest='netseq_rpm', action='store_true', default=False,
+        help="RPM-normalise the tracks. OFF by default: NNLS deconvolution does not conserve "
+             "mass so counting must use raw counts, the --netseq-dir refiner is calibrated on "
+             "raw signal, and a spike-in-normalised claim needs counts.",
+    )
+    trim_help(
+        '--netseq-output-format', dest='netseq_output_format', nargs='+', default=None,
+        choices=['parquet', 'bedgraph', 'bigwig', 'tsv'],
+        help="Forwarded to `rectify netseq --output-format`. bedgraph/bigwig STREAM; parquet/tsv "
+             "are the read-level table and materialise every record (~23 GB / 50 M reads).",
+    )
+    trim_help(
+        '--netseq-track-position', dest='netseq_track_position', default='corrected',
+        choices=['raw', 'corrected'],
+        help="Which 3' end drives the primary track. 'corrected' (default) is the post-rescue, "
+             "post-walkback end; 'raw' is the bare alignment terminus.",
+    )
+    trim_help(
+        '--netseq-junction-pool', dest='netseq_junction_pool', type=Path, default=None,
+        help="External junction table merged with the annotated introns (e.g. long-read-derived).")
+    trim_help(
+        '--netseq-rescue-min-k', dest='netseq_rescue_min_k', type=int, default=None,
+        help="Minimum recovered exon-2 length for a rescue with NO non-templated remainder.")
+    trim_help(
+        '--netseq-rescue-min-k-with-remainder',
+        dest='netseq_rescue_min_k_with_remainder', type=int, default=None,
+        help="Minimum recovered exon-2 length when a randomer remainder is invoked (the chance "
+             "channel). Default 4 in `rectify netseq`.")
+    trim_help(
+        '--netseq-rescue-max-intronic', dest='netseq_rescue_max_intronic', type=int, default=None,
+        help="How far past the donor a mis-extended aligned 3' end may sit and still be rescued.")
+    trim_help(
+        '--netseq-pool-include-trna', dest='netseq_pool_include_trna',
+        action='store_true', default=False,
+        help="Keep tRNA introns in the rescue pool (they are excised by the tRNA endonuclease, "
+             "not the spliceosome, and can only manufacture rescues).")
+    trim_help(
+        '--netseq-pool-include-organellar', dest='netseq_pool_include_organellar',
+        action='store_true', default=False,
+        help="Keep mitochondrial/organellar introns in the rescue pool. OFF by default: they are "
+             "group I/II SELF-SPLICING introns on a genome Pol II does not transcribe, and their "
+             "parent feature type is `mRNA` so the tRNA filter misses them. Measured on wt_rep3, "
+             "94 of 580 rescues (16%%) were fabricated on chrMito before this filter existed.")
+    trim_help(
+        '--netseq-walkback-unconditional', dest='netseq_walkback_unconditional',
+        action='store_true', default=False,
+        help="Walk back through terminal A's over genomic A's even with no non-templated A in the "
+             "clip. Correct for poly(A)-selected input, wrong for nascent RNA (it moved 22 %% of "
+             "ends and erased the RPL32 exon-1 3'-end peak, 33 reads -> 1).")
+    trim_help(
+        '--netseq-no-tail-detection', dest='netseq_no_tail_detection',
+        action='store_true', default=False, help=argparse.SUPPRESS)
+    trim_help(
+        '--netseq-no-deconvolution', dest='netseq_no_deconvolution',
+        action='store_true', default=False,
+        help="Disable NNLS deconvolution (raw + corrected tracks only).")
+    trim_help(
+        '--netseq-min-atract-length', dest='netseq_min_atract_length', type=int, default=None,
+        help=argparse.SUPPRESS)
+    trim_help(
+        '--netseq-min-mapq', dest='netseq_min_mapq', type=int, default=None,
+        help=argparse.SUPPRESS)
+    trim_help(
+        '--netseq-max-reads', dest='netseq_max_reads', type=int, default=None,
+        help="Process at most N reads (smoke tests).")
+
     run_parser.add_argument(
         '--ont-cdna-poa',
         dest='ont_cdna_poa',

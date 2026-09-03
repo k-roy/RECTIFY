@@ -133,7 +133,10 @@ def run_netseq(args) -> int:
         junction_pool = JunctionPool()
         if annotation_path:
             include_trna = bool(getattr(args, 'pool_include_trna', False))
-            junction_pool = JunctionPool.from_annotation(annotation_path, include_trna=include_trna)
+            include_organellar = bool(getattr(args, 'pool_include_organellar', False))
+            junction_pool = JunctionPool.from_annotation(
+                annotation_path, include_trna=include_trna,
+                include_organellar=include_organellar)
             kept = ", ".join(f"{t} {n}" for t, n in
                              sorted(junction_pool.by_parent_type.items(), key=lambda kv: -kv[1]))
             print(f"\nJunction pool: {len(junction_pool):,} annotated introns from "
@@ -142,8 +145,9 @@ def run_netseq(args) -> int:
             if junction_pool.dropped_by_parent_type:
                 dropped = ", ".join(f"{t} {n}" for t, n in
                                     sorted(junction_pool.dropped_by_parent_type.items()))
-                print(f"  DROPPED (tRNA endonuclease introns, not spliceosomal; "
-                      f"--pool-include-trna to keep): {dropped}")
+                print(f"  DROPPED (not spliceosomal -- tRNA endonuclease introns and "
+                      f"mitochondrial group I/II self-splicing introns; --pool-include-trna / "
+                      f"--pool-include-organellar to keep): {dropped}")
         if pool_tsv:
             n_before = len(junction_pool)
             for j in load_junction_tsv(pool_tsv):
@@ -297,6 +301,7 @@ def run_netseq(args) -> int:
             'junction_pool_dropped_by_parent_type':
                 dict(junction_pool.dropped_by_parent_type) if junction_pool else {},
             'pool_include_trna': bool(getattr(args, 'pool_include_trna', False)),
+            'pool_include_organellar': bool(getattr(args, 'pool_include_organellar', False)),
             'rescue_max_intronic': args.rescue_max_intronic,
             'rescue_min_k': args.rescue_min_k,
             'rescue_min_k_with_remainder': args.rescue_min_k_with_remainder,
@@ -584,6 +589,17 @@ def add_netseq_parser(subparsers) -> None:
              "(measured on wt_rep3: the single locus YNCO0031W_tRNA collected 46). mRNA, snoRNA, "
              "snRNA and other Pol II introns are always kept; the pool composition by parent "
              "feature type is printed at startup.",
+    )
+    rescue_group.add_argument(
+        '--pool-include-organellar',
+        action='store_true',
+        help="Keep mitochondrial/organellar introns in the junction pool. OFF by default, for the "
+             "same reason as tRNA introns and with the same kind of measurement behind it: mito "
+             "introns are group I/II SELF-SPLICING introns on a genome Pol II does not transcribe, "
+             "so a nascent Pol II 3' end cannot legitimately sit at one. Their parent feature type "
+             "is `mRNA`, so the tRNA filter does not catch them -- the CONTIG is the signal. "
+             "Measured on wt_rep3 with chrMito reads included: 94 of 580 rescues (16%%) were on "
+             "chrMito.",
     )
     rescue_group.add_argument(
         '--junction-pool',
