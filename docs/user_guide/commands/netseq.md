@@ -62,6 +62,20 @@ rectify netseq netseq.bam \
 | `--include-pol3` | off | Include Pol III transcripts (excluded by default) |
 | `--pol3-flanking` | 100 | Flanking bp around Pol III genes to exclude |
 
+### Donor-side junction rescue and 3'-tail calling
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--junction-rescue` / `--no-junction-rescue` | ON when a junction source exists | Re-place a 1-10 nt exon-2 overhang across the 5' splice site |
+| `--junction-pool FILE` | — | External junction TSV (`chrom`/`donor`/`acceptor`/`strand`) merged with the annotated introns |
+| `--rescue-max-intronic` | 10 | How far past the donor the aligned RNA 3' end may sit |
+| `--rescue-min-k` | 1 | Minimum recovered exon-2 length for a rescue |
+| `--walkback-requires-clip-a` | off | Only walk back when the clip carries a non-templated A |
+| `--no-tail-detection` | off | Disable the tail call entirely |
+
+See [NET-seq Refinement](../../algorithms/netseq_refinement.md#donor-side-junction-rescue-rectify-netseq)
+for the geometry, the acceptance rule and the chance-match null.
+
 ### Deconvolution
 
 | Argument | Default | Description |
@@ -73,7 +87,8 @@ rectify netseq netseq.bam \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--output-format` | parquet bedgraph | One or more of `parquet`, `bedgraph`, `bigwig`, `tsv` |
+| `--output-format` | parquet bedgraph | One or more of `parquet`, `bedgraph`, `bigwig`, `tsv`. `parquet` falls back to `tsv` with a warning when pyarrow is not installed |
+| `--track-position` | corrected | Which 3' end drives the primary track (deconvolution input): `corrected` or `raw` |
 | `--no-rpm-normalize` | off | Disable RPM normalization for bedgraph/bigwig output |
 
 ### Processing
@@ -97,7 +112,14 @@ Defaults: per-read records as parquet plus per-position signal as bedgraph (one 
 | `{sample}.raw.minus.bedgraph` | Minus strand 3' end signal (default) |
 | `{sample}.deconv.plus.bedgraph` | NNLS-deconvolved plus strand signal (default) |
 | `{sample}.deconv.minus.bedgraph` | NNLS-deconvolved minus strand signal (default) |
-| `{sample}.{raw,deconv}.{plus,minus}.bw` | BigWig variants of the above (only with `--output-format bigwig`) |
+| `{sample}.corrected.plus.bedgraph` | Plus strand signal on the CORRECTED 3' end (tail walkback + junction rescue) |
+| `{sample}.corrected.minus.bedgraph` | Minus strand corrected signal |
+| `{sample}.netseq_summary.json` | Per-sample correction counters: rescue classes, rescued-by-k (split into the clean and randomer channels), the decoy-acceptor null, tail-length histogram, and the fraction of ends that moved |
+| `{sample}.{raw,corrected,deconv}.{plus,minus}.bw` | BigWig variants of the above (only with `--output-format bigwig`) |
+
+`--track-position raw|corrected` (default `corrected`) selects which track the NNLS deconvolution
+consumes; **both** the `raw` and `corrected` bedgraphs are always written, so before/after is
+diffable without a second pass.
 
 ---
 

@@ -155,6 +155,101 @@ during NNLS.
 
 ---
 
+## Donor-side junction rescue (`rectify netseq`)
+
+Everything above is the *consumer* side — NET-seq signal used as a prior for long-read 3'-end
+correction. This section is the *producer* side: two corrections `rectify netseq` applies while
+extracting 3' ends from a NET-seq BAM.
+
+**Implementation:** `rectify/core/netseq/netseq_rescue.py`
+(`JunctionPool`, `rescue_read`, `call_tail`), wired through
+`rectify/core/bam/netseq_bam_processor.py`.
+
+### The problem
+
+Under Churchman geometry the RNA 3' end is the read's **5' terminus** and the gene strand is the
+inverse of the BAM strand. A nascent RNA whose 3' end sits only 1–10 nt into exon 2 therefore has
+an exon-2 overhang too short to anchor a spliced alignment, so a short-read aligner either
+soft-clips it (STAR `--alignEndsType Local`, bbmap) or mis-extends the alignment a few nt into the
+intron. Either way the read is reported at the **5' splice site** — manufacturing a false splicing
+intermediate at exactly the coordinate where the real splicing-intermediate signal lives.
+
+Nothing in `rectify correct` re-places that clip: its one junction-aware clip re-placer
+(Module 2F, `rescue_3ss_truncation`) is transcript-**5'**-only, and the three 3'-side modules
+(poly-A walkback, homopolymer soft-clip rescue, over-call terminal-match rescue) all match
+**contiguous** reference and take no junction pool.
+
+### Coordinates
+
+All gene-strand. For an intron at 0-based half-open `[intron_start, intron_end)`:
+
+| term | `+` gene | `-` gene |
+|---|---|---|
+| `donor` (first intronic base) | `intron_start` | `intron_end - 1` |
+| `exon1_last` | `intron_start - 1` | `intron_end` |
+| `exon2_first` | `intron_end` | `intron_start - 1` |
+| 5'-ward in RNA | decreasing coordinate | increasing coordinate |
+
+The `--junction-pool` TSV uses the same convention: `donor` = **first** intronic base, `acceptor` =
+**last** intronic base, both on the gene strand (so `donor > acceptor` on a `-` gene).
+
+### The rule
+
+For a read whose aligned RNA 3' end `p` sits between `exon1_last` and `--rescue-max-intronic` nt
+past the donor:
+
+```
+S = (read bases aligned at/past the donor, gene-strand order) + (read-5' soft clip in RNA orientation)
+k = length of the longest prefix of S equal to the genome from exon2_first, gene-strand-ward
+r = len(S) - k                                    # the non-templated remainder
+```
+
+Rescue when `k >= --rescue-min-k` **and** `r` is an allowed remainder — `{0}` with no randomer, and
+`{0, N-1, N, N+1}` with `--umi-length N`, because a randomer's terminal 1–2 nt align by chance
+(measured 1 : 0.28 : 0.09 for a 6-nt randomer). The rescued 3' end is `k - 1` nt into exon 2.
+
+Read classes, all reported in `<sample>.netseq_summary.json`:
+
+| class | meaning |
+|---|---|
+| `spliced_rescued` | overhang recovered; 3' end moved into exon 2 |
+| `exon1_end` | aligned end exactly at the exon-1 3' end, nothing matches exon 2 — a genuine splicing intermediate, **left where it is** |
+| `ambiguous` | `k >= min_k` but the remainder is not an allowed length |
+| `intronic_end` | alignment runs into the intron and nothing matches exon 2 |
+| `none` | no pooled donor within reach |
+
+### The chance-match null — read it before trusting a low `k`
+
+Every candidate read is also matched against a **decoy acceptor** 50 nt further into exon 2, under
+the identical acceptance rule. `decoy_rescued` in the summary is therefore the chance-match floor
+for the rescue count itself. On a 194 k-read *S. cerevisiae* chrI+chrII slice: 504 reads reached a
+pooled donor, 227 were rescued, and the decoy would have rescued **54** — all of the decoy's hits at
+`k <= 4`, none at `k >= 5`. A `--rescue-min-k` of 1 is therefore noise-dominated in a randomer
+library; raise it (or read `rescued_by_k_clean`, the `r == 0` channel) when single-nt calls matter.
+
+### Non-templated tails
+
+The same clip carries the poly(A)/oligo(A) tail, and in a randomer library it carries the randomer
+**distal** to the tail — `[tail A's][randomer]` in RNA orientation. So:
+
+1. strip the distal `--umi-length` nt (a 6-nt clip is randomer-only and contributes no tail);
+2. take the A-run adjacent to the alignment;
+3. add a genome-aware walkback — walk 5'-ward in RNA from `p` while the read base **and** the
+   genome base are `A` — gated on the non-randomer clip region being entirely A, because a non-A
+   base 3' of the A-run bounds the RNA terminus there.
+
+This replaces the legacy "≥ 80 % A over the whole clip" test, which classifies every
+randomer-bearing read as untailed.
+
+⚠️ Step 3 is invariant 7 (a terminal read A over a genomic A is *not* skipped) and is right for a
+library where every read has a tail. Nascent RNA is not that library: on the slice above, 41,711 of
+42,644 walkbacks had no clip evidence at all, and at *RPL32* — whose exon 1 ends `…AAAA` — 24 of the
+33 reads sitting on the exon-1 3' end were walked 4 nt off it. `--walkback-requires-clip-a` gates
+the walkback on a non-templated A being present; the summary always reports `tail_clip_evidence`
+against `tail_walkback_only` so the choice can be made from data.
+
+---
+
 ## See also
 
 - [rectify netseq command](../user_guide/commands/netseq.md) — process raw NET-seq BAMs
