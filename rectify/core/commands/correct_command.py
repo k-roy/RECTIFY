@@ -156,6 +156,11 @@ def validate_inputs(args) -> dict:
             AG mispriming (``apply_ag_mispriming``) is also NOT disabled when
             ``--dT-primed-cDNA`` is set — QuantSeq is the primary use case.
             Use for Illumina/Aviti ≤150 bp data.
+        ``--netseq``:
+            Selects the Churchman geometry (implies ``--dT-primed-cDNA``'s antisense
+            walkback) but DISABLES AG-mispriming detection: NET-seq has no oligo-dT
+            priming step, so there is no mispriming artifact to screen for and the
+            screen can only discard real nascent 3' ends (planning 832 G-9).
 
     Returns:
         Dict with the following keys:
@@ -366,7 +371,10 @@ def validate_inputs(args) -> dict:
         # correctly for both short and long reads.  In fact, short-read (QuantSeq) data is
         # the primary use case: the reads stop at the cleavage site and the AG-rich context
         # is only detectable from the genome, not from the reads.
-        'apply_ag_mispriming': is_dt_primed and not args.skip_ag_check,
+        # NET-seq inherits is_dt_primed for its GEOMETRY only (the antisense walkback), but the
+        # chemistry has NO oligo-dT priming step -- there is nothing to misprime, so screening for
+        # it can only remove real nascent 3' ends (planning 832 G-9).
+        'apply_ag_mispriming': is_dt_primed and not is_netseq and not args.skip_ag_check,
         'ag_threshold': getattr(args, 'ag_threshold', 17.0),
         # Poly(A) trimming and indel correction: always enabled for long reads — poly-A
         # is present in the read sequence for both DRS and dT-primed cDNA protocols.
