@@ -35,8 +35,26 @@ HEADER = pysam.AlignmentHeader.from_dict({
     'SQ': [{'SN': 'chrA', 'LN': 1000}, {'SN': 'chrB', 'LN': 1000}],
 })
 
-GENOME = {'chrA': 'ACGT' * 250, 'chrB': 'TGCA' * 250}
-SEQ = 'ACGTACGTAC' * 5          # 50 nt
+SEQ = 'ACGTTGCAAGTCCTGAACGTTAGCCATGGTTACCAGGTTCAAGGTTCACA'   # 50 nt
+assert len(SEQ) == 50
+
+# Filler that does not resemble SEQ, so the only exact matches are the ones planted below.
+_FILL = ('GGTTCC' * 200)[:1000]
+
+
+def _with_insert(fill, seq, at):
+    return fill[:at] + seq + fill[at + len(seq):]
+
+
+# chrA carries SEQ[10:] at 100  -> bwa's 10S40M matches the reference EXACTLY
+#                                  (40 aligned bases, but a 10-base 5' soft clip: -20)
+# chrB carries the whole SEQ at 400 -> bbmap's 50M matches EXACTLY, no clip: 0
+# => the fallback scorer must pick bbmap, which is NOT first in dict order.
+GENOME = {
+    'chrA': _with_insert(_FILL, SEQ[10:], 100),
+    'chrB': _with_insert(_FILL, SEQ, 400),
+}
+assert len(GENOME['chrA']) == 1000 and len(GENOME['chrB']) == 1000
 
 
 class _FakeOutBam:
@@ -97,19 +115,46 @@ def _run(aligner_reads):
     return out.written
 
 
-def test_cross_contig_fallback_keeps_the_winners_contig():
-    """bwa on chrA (5'-clipped, loses) + bbmap on chrB (clean, wins).
+def _arm_positions(aligner_reads):
+    return {(r.reference_name, r.reference_start) for r in aligner_reads.values()}
 
-    The written record must be chrB:400 — never chrA:400, which is the
-    fabricated coordinate the 862 smoke produced.
+
+def test_cross_contig_record_is_self_consistent():
+    """THE invariant: the written (chrom, pos) must be a pair that some ARM produced.
+
+    On `master` the record came out as <loser's chrom> x <winner's pos>, a pair no
+    aligner ever reported — and it is only caught downstream when that chromosome
+    happens to be too short.  Scorer-independent, so it keeps holding if the
+    scoring terms are ever retuned.
     """
-    # dict order puts the LOSER first, reproducing the field failure exactly.
     aligner_reads = {
-        'bwa': _read('chrA', 100, [(4, 10), (0, 40)]),   # 10S40M — 5' clip penalty
-        'bbmap': _read('chrB', 400, [(0, 50)]),          # 50M — clean, wins
+        'bwa': _read('chrA', 100, [(4, 10), (0, 40)]),   # 10S40M, exact on chrA
+        'bbmap': _read('chrB', 400, [(0, 50)]),          # 50M, exact on chrB
     }
     written = _run(aligner_reads)
     assert len(written) == 1, "the read must not be dropped"
+    rec = written[0]
+    assert (rec.reference_name, rec.reference_start) in _arm_positions(aligner_reads), (
+        f"fabricated locus {rec.reference_name}:{rec.reference_start} — no arm reported it "
+        f"(arms: {sorted(_arm_positions(aligner_reads))})"
+    )
+
+
+def test_cross_contig_fallback_keeps_the_winners_contig():
+    """The clean 50M arm on chrB outscores the 10S40M arm on chrA (-20), and it is
+    NOT first in dict order — exactly the shape that failed in the field."""
+    aligner_reads = {
+        'bwa': _read('chrA', 100, [(4, 10), (0, 40)]),
+        'bbmap': _read('chrB', 400, [(0, 50)]),
+    }
+    # Guard the premise: if the scorer stops preferring bbmap this test is vacuous.
+    infos = {n: extract_alignment_info(r, n, GENOME) for n, r in aligner_reads.items()}
+    from rectify.core.consensus.scoring import score_alignment
+    scores = {n: score_alignment(i, GENOME, set()) for n, i in infos.items()}
+    assert scores['bbmap'] > scores['bwa'], f"premise broken: {scores}"
+
+    written = _run(aligner_reads)
+    assert len(written) == 1
     rec = written[0]
     assert rec.reference_start == 400
     assert rec.reference_name == 'chrB', (
