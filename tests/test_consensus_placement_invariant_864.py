@@ -227,9 +227,13 @@ def test_invariant_raises_if_the_writer_reintroduces_the_splice():
 
     def _pre_fix(template_read, ref_start, cigar_tuples, chimeric_result,
                  header, anchor_read=None):
-        # master's behaviour: placement identity from the TEMPLATE.
+        # Re-create master's output: the winner's POS/CIGAR on a bystander's
+        # contig. Overwriting reference_id AFTER the real build is the only
+        # faithful way -- passing anchor_read=template_read would be a no-op,
+        # because the fixed template selection already picks the anchor first.
         out = real(template_read, ref_start, cigar_tuples, chimeric_result,
-                   header, anchor_read=template_read)
+                   header, anchor_read=anchor_read)
+        out.reference_id = header.get_tid('chrA')   # the LOSER's contig
         return out
 
     arms = _cross_contig_arms()

@@ -432,6 +432,17 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
 # Set to 6 h as a safe upper bound before treating a run as hung.
 ALIGNER_TIMEOUT = 21600
 
+#: Fallback max intron (bp) when no annotation is available to derive one
+#: from. This is the historical S. cerevisiae constant (minimap2 -G 5000);
+#: kept only as the no-annotation fallback — see derive_max_intron().
+DEFAULT_MAX_INTRON = 5000
+
+#: Bounds on the annotation-derived max intron. The floor keeps a sparse or
+#: intron-poor annotation from strangling the aligners; the ceiling matches
+#: the long-standing "use 500000 or larger for human" guidance and caps the
+#: compute/false-positive bill an outlier annotated intron would otherwise buy.
+_DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
+
 # uLTRA --reduce_read_ployA threshold high enough that poly-A reduction never
 # fires (longest plausible long read « this), so uLTRA never truncates the
 # emitted SEQ. See run_ultra for the no-trim rationale.
@@ -2731,16 +2742,6 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
                 fh.write('\t'.join(ex_parts) + '\n')
 
 
-#: Fallback max intron (bp) when no annotation is available to derive one
-#: from. This is the historical S. cerevisiae constant (minimap2 -G 5000);
-#: kept only as the no-annotation fallback — see derive_max_intron().
-DEFAULT_MAX_INTRON = 5000
-
-#: Bounds on the annotation-derived max intron. The floor keeps a sparse or
-#: intron-poor annotation from strangling the aligners; the ceiling matches
-#: the long-standing "use 500000 or larger for human" guidance and caps the
-#: compute/false-positive bill an outlier annotated intron would otherwise buy.
-_DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
 
 
 def derive_max_intron(
