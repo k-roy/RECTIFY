@@ -193,6 +193,16 @@ All gene-strand. For an intron at 0-based half-open `[intron_start, intron_end)`
 The `--junction-pool` TSV uses the same convention: `donor` = **first** intronic base, `acceptor` =
 **last** intronic base, both on the gene strand (so `donor > acceptor` on a `-` gene).
 
+**tRNA introns are excluded from the pool by default.** A GFF's `intron` features include them, and
+a tRNA intron is excised by the tRNA endonuclease/ligase pathway — not the spliceosome — at a Pol
+III locus this command already drops from its tracks, so its presence in the pool can only
+manufacture rescues (measured on wt_rep3: the single locus `YNCO0031W_tRNA` collected 46). The
+parent feature type is resolved from the annotation (`Parent=YNCO0031W_tRNA` → the line declaring
+`ID=YNCO0031W_tRNA` with type `tRNA`), with the `_tRNA` id suffix as a fallback; mRNA, snoRNA,
+snRNA and every other Pol II intron are kept. `--pool-include-trna` restores them. The composition
+is printed at startup and recorded in the summary JSON — on the bundled R64-5-1 GFF, 385 → 325
+junctions, kept `{mRNA 339, snoRNA 2, rRNA 1}`, dropped `{tRNA 60}`.
+
 ### The rule
 
 For a read whose aligned RNA 3' end `p` sits between `exon1_last` and `--rescue-max-intronic` nt
@@ -217,10 +227,14 @@ into exon 2.
 **The chance channel is the remainder, not low `k` as such** — the decoy table below is what settles
 it. Setting the two flags equal restores a flat floor.
 
-A read that fails the floor is **not** moved and keeps the class its geometry implies (`exon1_end` at
-the exon-1 boundary, `intronic_end` inside the intron), so raising a floor returns chance-matched
-reads to the splicing-intermediate tally rather than hiding them. `ambiguous` is reserved for the
-genuinely undecidable case: `k >= 1` with a remainder no randomer length can explain.
+**The floor is tested BEFORE the remainder**, and the order is load-bearing. A read at a donor
+whose 6-nt randomer clip happens to start with 2 exon-2 bases has `k = 2, r = 4`; 4 is not an
+allowed remainder, so a remainder-first test called it `ambiguous` and removed a genuine exon-1
+3' end from the splicing-intermediate tally (measured on the full wt_rep3 library: 66 reads at
+`k = 2`, 12 at `k = 3`). Below the floor the match is not evidence of anything, so the read is not
+moved and keeps the class its geometry implies — `exon1_end` at the exon-1 boundary,
+`intronic_end` inside the intron. `ambiguous` is reserved for the genuinely undecidable case: the
+match **clears** the floor but the leftover is not a length any randomer can explain.
 
 Read classes, all reported in `<sample>.netseq_summary.json`:
 

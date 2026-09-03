@@ -277,6 +277,9 @@ defaults are and what reverting them costs.
    defaults the run rescues **160 reads at `decoy_rescued` = 0**; with a flat `min_k = 1` it
    rescued 227 at a chance floor of 54. **Read `decoy_rescued`, `rescued_by_k_clean` and
    `near_donor_k_randomer` in `<sample>.netseq_summary.json` before trusting a rescue count.**
+   The floor is tested BEFORE the remainder, so a chance randomer match stays an `exon1_end`
+   rather than being hidden in `ambiguous`; and tRNA introns are dropped from the pool by default
+   (`--pool-include-trna` to keep them) because they are not spliceosomal.
 2. **The poly(A) walkback is GATED on clip evidence by default in `rectify netseq`.** Invariant 7
    (a terminal read A over a genomic A is not skipped) is right when every read has a tail; most
    nascent 3' ends have none, and ~25 % of reads end on an A over a genomic A by chance. Measured

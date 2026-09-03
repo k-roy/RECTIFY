@@ -68,6 +68,7 @@ rectify netseq netseq.bam \
 |----------|---------|-------------|
 | `--junction-rescue` / `--no-junction-rescue` | ON when a junction source exists | Re-place a 1-10 nt exon-2 overhang across the 5' splice site |
 | `--junction-pool FILE` | — | External junction TSV (`chrom`/`donor`/`acceptor`/`strand`) merged with the annotated introns |
+| `--pool-include-trna` | off | Keep tRNA introns in the pool (they are dropped by default — excised by the tRNA endonuclease, not the spliceosome, at Pol III loci) |
 | `--rescue-max-intronic` | 10 | How far past the donor the aligned RNA 3' end may sit |
 | `--rescue-min-k` | 1 | Minimum recovered exon-2 length when there is NO non-templated remainder (`r == 0`) |
 | `--rescue-min-k-with-remainder` | 4 | The floor when a randomer remainder is invoked (`r > 0`) — that is where the chance matches live |
