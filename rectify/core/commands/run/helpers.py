@@ -119,7 +119,26 @@ def _emit_legacy_consensus_symlink(final_bam: Path) -> None:
                 pass
 
 
-_ALIGNER_NAMES = ['minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT', 'bbmap', 'bwa']
+#: Every aligner name ``align_command`` can emit a ``<sample>.<aligner>.bam`` for.
+#:
+#: 🔴 This list is what ``_collect_per_aligner_bams`` globs, so an arm missing here is INVISIBLE to
+#: correction, to the Module-2H junction pool and to the merged ``corrected_reads.tsv`` — with no
+#: error. The COMPASS arms (STAR x2, HISAT2 x2, magicblast, gsnap) were all missing, so
+#: ``run-all --short-read`` (TruSeq SE and PE alike) collected the **bbmap arm only** while the
+#: 5- or 7-way consensus sat unused in ``multialigned.bam`` (planning 833 C-2). Keep it a superset
+#: of ``align_command``'s ``--aligners`` choices; ``COMPASS_{SE,PE}_ALIGNERS`` is the panel, this is
+#: the emitter inventory.
+_ALIGNER_NAMES = [
+    # Long-read arms
+    'minimap2', 'mapPacBio', 'gapmm2', 'uLTRA', 'deSALT',
+    'winnowmap2', 'minisplice_mm2',
+    # Short-read 3'-end arms (--dT-primed-cDNA panel)
+    'bbmap', 'bwa',
+    # COMPASS short-read panel (833 C-2)
+    'STAR_default', 'STAR_noncanonical',
+    'HISAT2_default', 'HISAT2_noncanonical',
+    'magicblast', 'gsnap',
+]
 
 
 def _collect_per_aligner_bams(

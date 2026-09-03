@@ -606,6 +606,27 @@ def _process_one_sample(
     finally:
         if _using_scratch and _work.exists():
             _shutil.rmtree(_work, ignore_errors=True)
+#: Read-file suffixes stripped to derive a sample id, longest first.
+_READ_SUFFIXES = ('.fastq.gz', '.fq.gz', '.fasta.gz', '.fa.gz',
+                  '.fastq', '.fq', '.fasta', '.fa',
+                  '.bam', '.sam', '.cram')
+
+
+def _canonical_sample_id(input_path) -> str:
+    """Sample id from the ORIGINAL run-all input, before any Step-0 rewrite.
+
+    Pure, so the naming contract is unit-testable without running a pipeline. Equivalent to the
+    old ``stem.replace('.fastq','').replace('.gz','')`` for every real input; the point is WHERE
+    it is called, not what it computes -- see the comment at the call site (planning 831).
+    """
+    name = Path(input_path).name
+    lowered = name.lower()
+    for sfx in _READ_SUFFIXES:
+        if lowered.endswith(sfx):
+            return name[: -len(sfx)]
+    return Path(input_path).stem
+
+
 def _run_single_sample(args) -> int:
     """
     Single-sample pipeline:
@@ -642,6 +663,16 @@ def _run_single_sample(args) -> int:
     from ...align.preprocess import detect_input_type
     input_type = detect_input_type(input_path)
     print(f"Input type: {input_type}")
+
+    # 🔴 Canonical sample id — derived from the ORIGINAL input, ONCE, BEFORE any Step-0 rewrite.
+    # Step 0 REPLACES ``input_path`` with a derived file: ``<sample>_trimmed.fastq.gz`` under
+    # ``--drs``, ``stage1/stage1_consensus.fastq.gz`` under ``--ONT-cDNA`` Path A. Every downstream
+    # site used to re-derive the id from ``input_path.stem``, so a positional
+    # ``run-all --ONT-cDNA reads.fastq`` renamed the sample to **stage1_consensus** — every output
+    # file and the ``sample`` column of ``corrected_reads.tsv`` (planning 831), which silently
+    # breaks any multi-sample join keyed on the sample name.
+    sample_id = _canonical_sample_id(input_path)
+    print(f"Sample id:  {sample_id}")
 
     bam_to_correct = input_path
     per_aligner_bams: Dict[str, Path] = {}
@@ -754,8 +785,7 @@ def _run_single_sample(args) -> int:
         _t0_cdna = _time.perf_counter()
         _cdna_in = input_path
         input_path, input_type = _run_ont_cdna_prepare(
-            args, input_path, input_type, work_dir, output_dir,
-            input_path.stem.replace('.fastq', '').replace('.gz', ''),
+            args, input_path, input_type, work_dir, output_dir, sample_id,
         )
         print(f"[TIMING] ONT-cDNA prep: {_time.perf_counter() - _t0_cdna:.1f}s")
         tracker.record_step(
@@ -766,7 +796,8 @@ def _run_single_sample(args) -> int:
 
     # ── Step 0/1: Alignment ───────────────────────────────────────────────────
     if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
-        sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
+        # sample_id is the canonical one computed above — NOT re-derived from input_path,
+        # which Step 0 may have replaced with a derived FASTQ (planning 831).
         if getattr(args, 'short_read', False):
             if getattr(args, 'read2', None):
                 _align_mode = 'short-read paired-end (COMPASS panel)'
@@ -815,7 +846,7 @@ def _run_single_sample(args) -> int:
         tracker.record_step('align', input_files=[input_path], output_files=[bam_to_correct])
         step_correction = 2
     elif input_type in ('fastq', 'fastq.gz'):
-        sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '')
+        # canonical sample_id from above (planning 831)
         multialigned_bam = _multialigned_bam_path(sample_id, output_dir)
         _legacy_bam = output_dir / f"{sample_id}.consensus.bam"
         if not multialigned_bam.exists() and _legacy_bam.exists():
@@ -1009,7 +1040,8 @@ def _run_single_sample(args) -> int:
     # The sample column belongs in the REGION TSVs, which is what
     # `_load_manifest_as_dataframe` actually reads. The manifest is an index and must stay a
     # 7-column index.
-    sample_id = input_path.stem.replace('.fastq', '').replace('.gz', '').replace('.bam', '')
+    # canonical sample_id from above (planning 831) — was re-derived from a Step-0-rewritten
+    # input_path here too, so the TSV's `sample` column disagreed with the file names.
     try:
         import pandas as pd
         from ...bam.tsv_partition import load_manifest
@@ -1055,13 +1087,11 @@ def _run_single_sample(args) -> int:
     # optional stage (junction aggregation, DRS poly(A) restore) cannot cost the
     # browser bundle; nothing downstream feeds the packer. work_dir == output_dir
     # by this point on the scratch path too, so analysis.json lands durably.
-    # Derived locally rather than reusing ``sample_id``: that name is only bound
-    # on the FASTQ branches and by the (try-wrapped) sample-column block above,
-    # so referencing it here could raise NameError on a BAM input — in the one
-    # step that must never fail the run.
-    _bp_sample_id = (
-        input_path.stem.replace('.fastq', '').replace('.gz', '').replace('.bam', '')
-    )
+    # ``sample_id`` is now bound UNCONDITIONALLY at the top of this function (from the original
+    # input, before Step 0 — planning 831), so this no longer needs a local re-derivation. It used
+    # to, because the name was only bound on the FASTQ branches; re-deriving it here also meant the
+    # browser bundle was named ``stage1_consensus`` on the ONT-cDNA path.
+    _bp_sample_id = sample_id
     _run_browser_pack(
         analysis_dir=work_dir,
         samples=[{
