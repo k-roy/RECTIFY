@@ -24,7 +24,8 @@ broken is worse than no list at all.
 
 ## 🟡 Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — fixed on a branch, not on `master`
 
-- **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`); **`master` still has it**
+- **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`), also merged into
+  `feat/netseq-junction-rescue-836`; **`master` still has it**
 - **Affects:** `rectify correct-cdna` (ONT PCR-cDNA Stage 1), all versions up to and including `47e3b39`
 - **Impact:** Type-2 record counts understated ~2×, **depth-dependently**
 
@@ -57,7 +58,8 @@ Note: `docs/quickstart_cdna.md` already specified the correct behaviour ("Dedupl
 
 ## 🟡 Stage-1 cDNA QC is missing whenever `--workers > 1` — fixed on a branch, not on `master`
 
-- **Status:** fixed on `feat/cdna-stage1-qc` (`7ff8f5c`); **`master` still has it**
+- **Status:** fixed on `feat/cdna-stage1-qc` (`7ff8f5c`), also merged into
+  `feat/netseq-junction-rescue-836`; **`master` still has it**
 - **Affects:** `rectify correct-cdna` with `--workers > 1` — i.e. effectively every production run
 - **Impact:** no correctness effect on the output FASTQ; QC reporting only
 
@@ -186,6 +188,73 @@ minimap2's return code before samtools'.
   drop `-y`.
 - **Diagnosis:** run the alignment and the sort by hand and capture **both** stderr streams;
   samtools names the problem precisely.
+
+---
+
+## 🟡 NET-seq / QuantSeq defects — fixed on a branch, not on `master`
+
+- **Status:** fixed on `feat/netseq-junction-rescue-836`; **`master` still has all of them**
+- **Affects:** `rectify netseq`, `rectify correct --netseq` / `--dT-primed-cDNA`,
+  `rectify run-all --short-read`, `rectify align --help`, `rectify correct --netseq-dir`
+
+Six independent defects, each verified by execution against `master` before the fix:
+
+1. **`rectify netseq` tracks are built on the RAW alignment terminus.** `aggregate_positions`
+   defaults to `three_prime_raw` and the command never overrides it, so every bedgraph, BigWig and
+   the deconvolution input ignore the module's own corrections; they survive only in a parquet
+   column. *Workaround on `master`:* read `three_prime_corrected` from the parquet yourself.
+2. **The minus-strand terminal-oligo(A) trim sign is inverted.** The correction must move the 3'
+   end 5'-ward IN RNA, which is `-1` on a `+` gene and `+1` on a `-` gene; `master` subtracts on
+   both, doubling the error on minus-strand reads (synthetic read: 97 returned, 103 correct). Latent
+   for the tracks because of (1), but the exclusion-region test and the UMI molecule track consume
+   the wrong value.
+3. **Module 2F reads the wrong soft clip under any antisense protocol.** `rescue_3ss_truncation`
+   takes coordinates from the gene strand but the clip from `read.is_reverse`
+   (`splice_aware_5prime.py:363-372`, `:420`). Under `--netseq` / `--dT-primed-cDNA` those are
+   opposite ends of the read, so it compares the RNA-3'-end clip — which holds the randomer and the
+   poly(A) tail — against exon-1 sequence, and can write a false `five_prime_position`.
+4. **`run-all --short-read --dT-primed-cDNA` exits 1.** `--short-read` is listed as a mutually
+   exclusive protocol, so the documented QuantSeq invocation is unreachable. And `run-all`'s
+   hand-built `correct` Namespace omits `short_read`, so once that is fixed, poly(A) trimming and
+   the position-shifting indel module run on 150-bp Illumina reads with nothing erroring.
+   *Workaround on `master`:* run `align` / `correct` / `split` stepwise instead of `run-all`.
+5. **`rectify align --help` raises `TypeError: %o format`** — a literal `%` in a help string
+   (`align_command.py:195-196`) that argparse tries to %-format. The help is unreachable.
+   *Workaround:* read `docs/user_guide/commands/align.md`.
+6. **`correct --netseq-dir` sums every loaded BigWig** regardless of strand or raw-vs-deconv
+   (`netseq_refiner.py:225-229`). With the standard `<sample>.<kind>.<strand>.bw` layout a `+`
+   query gets the minus strand added AND the deconvolved track added to the raw one — and the
+   regularised NNLS does not conserve mass, so the inflation varies with local A-content.
+   *Workaround on `master`:* point `--netseq-dir` at a directory holding one flavour only, and
+   accept that both strands are still summed.
+
+Also on that branch, and NOT defects on `master` so much as missing capability: a donor-side
+junction rescue for NET-seq geometry (nothing in RECTIFY re-places a 3' soft clip across a
+junction — Module 2F is transcript-5'-only and the three 3'-side modules are contiguous-reference),
+and a randomer-aware non-templated 3'-tail call. See
+`docs/algorithms/netseq_refinement.md` § *Donor-side junction rescue*.
+
+---
+
+## 🟠 Two NET-seq correction defaults are judgement calls, and the summary JSON reports both sides
+
+- **Status:** OPEN by design on `feat/netseq-junction-rescue-836`; not a bug, a calibration
+- **Affects:** `rectify netseq --junction-rescue` and the poly(A) walkback
+
+1. **`--rescue-min-k 1` is noise-dominated in a randomer library.** A 1-nt exon-2 match plus an
+   allowed randomer remainder is accepted, and a randomer's first base matches exon 2 by chance a
+   quarter of the time. Measured on a 194 k-read yeast slice: 227 rescues, of which the built-in
+   decoy-acceptor null (the same rule against a sequence 50 nt further into exon 2) would have
+   produced **54**, all at `k <= 4`; the decoy never reaches `k >= 5`. At *EFB1* this moved 9 reads
+   off the genuine exon-1 3' end. **Read `decoy_rescued` and `rescued_by_k_clean` in
+   `<sample>.netseq_summary.json`, and raise `--rescue-min-k` for single-nt work.**
+2. **The unconditional poly(A) walkback moves ~22 % of NET-seq ends on no evidence.** Invariant:
+   a terminal read A over a genomic A is deliberately not skipped, which is right when every read
+   has a tail. Most nascent 3' ends have none, and ~25 % of reads end on an A over a genomic A by
+   chance. Measured: 42,644 walkbacks, 41,711 with no clip evidence; at *RPL32*, whose exon 1 ends
+   `...AAAA`, 24 of the 33 reads on the exon-1 3' end were walked 4 nt off it, taking the
+   splicing-intermediate peak from 33 to 1. **`--walkback-requires-clip-a` gates it**; the summary
+   always reports `tail_clip_evidence` against `tail_walkback_only`.
 
 ---
 
