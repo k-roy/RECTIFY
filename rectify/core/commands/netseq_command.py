@@ -334,11 +334,15 @@ def _print_correction_summary(summary) -> None:
         by_k = ", ".join(f"k={k}:{n}" for k, n in sorted(summary.rescued_by_k.items()))
         print(f"    rescued by k: {by_k}")
         decoy = ", ".join(f"k={k}:{n}" for k, n in sorted(summary.decoy_k_at_donor.items()) if k)
-        print(f"    decoy-acceptor null (same reads, acceptor + 50 nt): {decoy or 'k>=1: 0'}")
+        print(f"    decoy-acceptor null (same reads, exon2 + 50 nt): {decoy or 'k>=1: 0'}")
+        print(f"    the SAME rule applied to the decoy acceptor would have rescued "
+              f"{summary.decoy_rescued:,} of these reads -- that is the chance-match floor")
     pct = (lambda n: 100.0 * n / summary.reads if summary.reads else 0.0)
     print(f"  tails: >=1 nt {summary.tailed_ge1:,} ({pct(summary.tailed_ge1):.2f}%)"
           f"   >=3 nt {summary.tailed_ge3:,} ({pct(summary.tailed_ge3):.2f}%)"
           f"   partly aligned (walkback>0) {summary.tail_walkback_gt0:,}")
+    print(f"    tail evidence: {summary.tail_clip_evidence:,} reads carry a non-templated A next to "
+          f"the alignment; {summary.tail_walkback_only:,} were called from aligned A's alone")
     print(f"  corrected end differs from raw for {summary.end_moved:,} reads "
           f"({pct(summary.end_moved):.2f}%)")
 

@@ -423,6 +423,7 @@ class RescueCall:
     n_intronic: int = 0              # aligned bases at/past the donor
     position: Optional[int] = None   # rescued 3' end (reference coordinate); None unless rescued
     decoy_k: int = 0                 # LCP against a decoy acceptor -- the chance-match null
+    decoy_would_rescue: bool = False  # the SAME acceptance rule applied to the decoy acceptor
     junction: Optional[NetseqJunction] = None
     s_seq: str = ""                  # the matched string S, RNA orientation
 
@@ -487,20 +488,20 @@ def rescue_read(
     decoy_start = junction.exon2_first + (decoy_offset if strand == '+' else -decoy_offset)
     decoy = genome_gene_strand(genome_seq, decoy_start, len(s_seq), strand)
     decoy_k = longest_common_prefix(s_seq, decoy)
+    allowed = allowed_remainders(umi_length)
+    decoy_would_rescue = decoy_k >= min_k and (len(s_seq) - decoy_k) in allowed
+    common = dict(k=k, r=r, n_intronic=n_intronic, decoy_k=decoy_k,
+                  decoy_would_rescue=decoy_would_rescue, junction=junction, s_seq=s_seq)
 
-    if k >= min_k and r in allowed_remainders(umi_length):
+    if k >= min_k and r in allowed:
         step = 1 if strand == '+' else -1
-        position = junction.exon2_first + step * (k - 1)
-        return RescueCall(status="spliced_rescued", k=k, r=r, n_intronic=n_intronic,
-                          position=position, decoy_k=decoy_k, junction=junction, s_seq=s_seq)
+        return RescueCall(status="spliced_rescued",
+                          position=junction.exon2_first + step * (k - 1), **common)
     if k >= min_k:
-        return RescueCall(status="ambiguous", k=k, r=r, n_intronic=n_intronic,
-                          decoy_k=decoy_k, junction=junction, s_seq=s_seq)
+        return RescueCall(status="ambiguous", **common)
     if n_intronic == 0:
-        return RescueCall(status="exon1_end", k=k, r=r, n_intronic=0,
-                          decoy_k=decoy_k, junction=junction, s_seq=s_seq)
-    return RescueCall(status="intronic_end", k=k, r=r, n_intronic=n_intronic,
-                      decoy_k=decoy_k, junction=junction, s_seq=s_seq)
+        return RescueCall(status="exon1_end", **common)
+    return RescueCall(status="intronic_end", **common)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -520,6 +521,7 @@ class NetseqReadRecord(UnifiedReadRecord):
     rescue_r: int = 0
     rescue_n_intronic: int = 0
     rescue_decoy_k: int = 0
+    rescue_decoy_would_rescue: bool = False
     rescue_intron_start: int = -1
     rescue_intron_end: int = -1
     tail_len: int = 0
@@ -551,10 +553,13 @@ class NetseqCorrectionSummary:
     rescued_by_k_clean: Dict[int, int] = field(default_factory=dict)   # r == 0
     rescued_by_k_randomer: Dict[int, int] = field(default_factory=dict)  # r > 0
     decoy_k_at_donor: Dict[int, int] = field(default_factory=dict)     # chance-match null
+    decoy_rescued: int = 0               # the SAME rule applied to a decoy acceptor 50 nt away
     rescued_by_r: Dict[int, int] = field(default_factory=dict)
     tailed_ge1: int = 0
     tailed_ge3: int = 0
     tail_walkback_gt0: int = 0
+    tail_clip_evidence: int = 0          # >=1 non-templated A in the clip adjacent to the alignment
+    tail_walkback_only: int = 0          # tail called from aligned A's ALONE -- no clip evidence
     tail_len_hist: Dict[int, int] = field(default_factory=dict)
     tail_class_hist: Dict[str, int] = field(default_factory=dict)
     xtrim_reads: int = 0                 # reads with a terminal oligo(A) X/MD mismatch trim
@@ -593,6 +598,8 @@ class NetseqCorrectionSummary:
             self.intronic_end += 1
         if st != "none":
             _bump(self.decoy_k_at_donor, record.rescue_decoy_k)
+            if record.rescue_decoy_would_rescue:
+                self.decoy_rescued += 1
 
         if record.tail_len >= 1:
             self.tailed_ge1 += 1
@@ -600,6 +607,10 @@ class NetseqCorrectionSummary:
             self.tailed_ge3 += 1
         if record.tail_walkback > 0:
             self.tail_walkback_gt0 += 1
+        if getattr(record, 'tail_clip_a_run', 0) > 0:
+            self.tail_clip_evidence += 1
+        elif record.tail_walkback > 0:
+            self.tail_walkback_only += 1
         _bump(self.tail_len_hist, record.tail_len)
         self.tail_class_hist[record.tail_class] = self.tail_class_hist.get(record.tail_class, 0) + 1
         if record.aligned_a_length > 0:
@@ -632,7 +643,8 @@ class _RecordView:
 
     _DEFAULTS = {
         'rescue_status': 'none', 'rescue_k': 0, 'rescue_r': 0, 'rescue_n_intronic': 0,
-        'rescue_decoy_k': 0, 'tail_len': 0, 'tail_walkback': 0, 'tail_class': 'none',
+        'rescue_decoy_k': 0, 'rescue_decoy_would_rescue': False,
+        'tail_len': 0, 'tail_clip_a_run': 0, 'tail_walkback': 0, 'tail_class': 'none',
         'aligned_a_length': 0, 'three_prime_shift': 0,
     }
 

@@ -580,6 +580,7 @@ def process_netseq_read(
         rescue_r=rescue.r,
         rescue_n_intronic=rescue.n_intronic,
         rescue_decoy_k=rescue.decoy_k,
+        rescue_decoy_would_rescue=rescue.decoy_would_rescue,
         rescue_intron_start=rescue.junction.intron_start if rescue.junction else -1,
         rescue_intron_end=rescue.junction.intron_end if rescue.junction else -1,
         tail_len=tail.tail_len,
