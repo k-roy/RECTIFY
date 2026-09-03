@@ -25,8 +25,11 @@ broken is worse than no list at all.
 ## 🔴 Chimeric consensus can emit a FABRICATED chromosome × position — fixed on a branch, not on `master`
 
 - **Status:** fixed on `fix/runall-quantseq-862`; **`master` (`fd2e2d2`) still has it**
-- **Affects:** every multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
-  default** (`run_command.py:1021-1034`) — all datatypes, not just short reads
+- **Affects:** any multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
+  default** (`run_command.py:1021-1034`). The mechanism is datatype-independent — it lives in the
+  cross-contig fallback, not in anything short-read-specific — but it was **measured only on the
+  2-arm bbmap+bwa short-read panel**. How often long-read arms (minimap2 + resolver, which share a
+  seed chain) disagree on contig is **not measured**.
 - **Impact:** an output record can carry one aligner's **chromosome** with another aligner's
   **position and CIGAR**. Sometimes it crashes; otherwise it is written silently.
 - **Workaround on `master`:** `run-all --no-chimeric-consensus`, or a single-aligner panel.
