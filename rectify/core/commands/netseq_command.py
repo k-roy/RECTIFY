@@ -86,6 +86,29 @@ def run_netseq(args) -> int:
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ---- output-format preflight ---------------------------------------------------------------
+    # Fail (or warn) HERE, not after a multi-hour BAM pass. Which formats keep the streaming path:
+    #   bedgraph / bigwig -> STREAMING (built from the position dicts; records are never held)
+    #   parquet / tsv     -> the read-level table, so every record is materialised (~23 GB / 50 M)
+    _formats = getattr(args, 'output_format', ['parquet', 'bedgraph'])
+    if 'bigwig' in _formats:
+        from ..netseq.netseq_output import HAS_PYBIGWIG
+        if not HAS_PYBIGWIG:
+            print("Error: --output-format bigwig requires pyBigWig, which is not importable.\n"
+                  "       Install it (pip install pyBigWig) or drop 'bigwig' from --output-format.\n"
+                  "       Refusing to start: the .bw files would be silently missing at the end of "
+                  "the run.")
+            return 1
+    if 'parquet' in _formats:
+        from ..unified_record import HAS_PYARROW
+        if not HAS_PYARROW:
+            print("  WARNING: pyarrow is not importable, so --output-format parquet will fall back "
+                  "to TSV.\n"
+                  "           That fallback MATERIALISES every read record (~23 GB per 50M reads). "
+                  "For a large\n"
+                  "           library either install pyarrow or use --output-format bedgraph bigwig,"
+                  " which stream.")
+
     # ---- annotation resolution -----------------------------------------------------------------
     # resolve_reference_paths() fills args.annotation, never args.gff, and this parser has no
     # --annotation slot -- so under --Scer the GFF was silently absent (exclusion regions fell back
@@ -122,7 +145,8 @@ def run_netseq(args) -> int:
             junction_pool = None
         else:
             print(f"  rescue window: aligned end within {args.rescue_max_intronic} nt past the donor; "
-                  f"min k = {args.rescue_min_k}; allowed non-templated remainder = "
+                  f"min k = {args.rescue_min_k} (r == 0) / "
+                  f"{args.rescue_min_k_with_remainder} (r > 0); allowed remainder = "
                   f"{list(allowed_remainders(umi_length))}")
 
     # Set up exclusion regions
@@ -195,8 +219,9 @@ def run_netseq(args) -> int:
             umi_length=umi_length,
             rescue_max_intronic=args.rescue_max_intronic,
             rescue_min_k=args.rescue_min_k,
+            rescue_min_k_with_remainder=args.rescue_min_k_with_remainder,
             detect_tail=detect_tail,
-            walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', False),
+            walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', True),
         )
 
         # Only the read-level parquet needs every record in memory (~23 GB per 50M reads).
@@ -260,9 +285,10 @@ def run_netseq(args) -> int:
             'junction_rescue': junction_pool is not None,
             'rescue_max_intronic': args.rescue_max_intronic,
             'rescue_min_k': args.rescue_min_k,
+            'rescue_min_k_with_remainder': args.rescue_min_k_with_remainder,
             'allowed_remainders': list(allowed_remainders(umi_length)),
             'tail_detection': detect_tail,
-            'walkback_requires_clip_a': getattr(args, 'walkback_requires_clip_a', False),
+            'walkback_requires_clip_a': getattr(args, 'walkback_requires_clip_a', True),
             'annotation': str(annotation_path) if annotation_path else None,
         })
         summary_path.write_text(json.dumps(payload, indent=1))
@@ -290,8 +316,9 @@ def run_netseq(args) -> int:
                 genome=genome, junction_pool=junction_pool,
                 rescue_max_intronic=args.rescue_max_intronic,
                 rescue_min_k=args.rescue_min_k,
+                rescue_min_k_with_remainder=args.rescue_min_k_with_remainder,
                 detect_tail=detect_tail,
-                walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', False),
+                walkback_requires_clip_a=getattr(args, 'walkback_requires_clip_a', True),
             )
 
     print(f"\n{'='*60}")
@@ -384,8 +411,9 @@ def _emit_molecule_track(
     junction_pool=None,
     rescue_max_intronic: int = 10,
     rescue_min_k: int = 1,
+    rescue_min_k_with_remainder: int = 4,
     detect_tail: bool = True,
-    walkback_requires_clip_a: bool = False,
+    walkback_requires_clip_a: bool = True,
 ) -> None:
     """Write the UMI molecule-level outputs for one sample.
 
@@ -423,6 +451,7 @@ def _emit_molecule_track(
         rna3p_at=rna3p_at, max_reads=max_reads, stats=stats,
         genome=genome, junction_pool=junction_pool,
         rescue_max_intronic=rescue_max_intronic, rescue_min_k=rescue_min_k,
+        rescue_min_k_with_remainder=rescue_min_k_with_remainder,
         detect_tail=detect_tail, walkback_requires_clip_a=walkback_requires_clip_a,
     )
     tmp = mol_path.with_suffix(".tsv.tmp")
@@ -550,19 +579,37 @@ def add_netseq_parser(subparsers) -> None:
     rescue_group.add_argument(
         '--rescue-min-k',
         type=int, default=1,
-        help='Minimum number of exon-2 bases that must be recovered for a rescue (default 1). '
-             'Raise it to suppress the 1-nt chance matches that a randomer produces -- the '
-             'summary JSON reports the decoy-acceptor null so the cost is measurable.',
+        help="Minimum recovered exon-2 length for a rescue with NO non-templated remainder "
+             "(r == 0, i.e. the clip is exon-2 sequence and nothing else). Default 1: a 1-nt "
+             "overhang with nothing beyond it is legitimate evidence.",
+    )
+    rescue_group.add_argument(
+        '--rescue-min-k-with-remainder',
+        type=int, default=4,
+        help="Minimum recovered exon-2 length when a randomer remainder is invoked to explain the "
+             "rest of the clip (r > 0). Default 4, because THE CHANCE CHANNEL IS THE REMAINDER: a "
+             "randomer's first base matches exon 2 a quarter of the time. Measured on a 504-read "
+             "candidate set, the decoy acceptor produced k=1 70 times against 61 observed, k=2 24 "
+             "against 4, k=3 10 against 3 -- indistinguishable from chance -- while k>=4 observed "
+             "11 against 2. Set equal to --rescue-min-k for the old flat behaviour.",
     )
     rescue_group.add_argument(
         '--walkback-requires-clip-a',
-        action='store_true',
-        help="Only run the poly(A) walkback on reads whose clip carries a non-templated A next to "
-             "the alignment. OFF by default = invariant 7 (a terminal read A over a genomic A is "
-             "NOT skipped), which is right for a library where every read has a tail. For nascent "
-             "RNA most 3' ends have NO tail, so the unconditional walkback moves ~22%% of ends 1-5 "
-             "nt on no evidence and specifically erodes the exon-1 3' end of A-ending exons "
-             "(measured: RPL32, 24 of 33 splicing-intermediate reads walked 4 nt off the 5'SS).",
+        dest='walkback_requires_clip_a', action='store_true', default=True,
+        help="ON BY DEFAULT for `rectify netseq`. Only run the poly(A) walkback on reads whose clip "
+             "carries a non-templated A next to the alignment. Nascent 3' ends have no tail by "
+             "default, and ~25%% of reads end on an A over a genomic A by chance, so the "
+             "unconditional walkback moved 22%% of ends 1-5 nt on no evidence and ERASED the RPL32 "
+             "exon-1 3' end peak (33 reads -> 1) -- the splicing-intermediate signal this command "
+             "exists to measure. Use --walkback-unconditional for a poly(A)+ input.",
+    )
+    rescue_group.add_argument(
+        '--walkback-unconditional',
+        dest='walkback_requires_clip_a', action='store_false',
+        help="Restore invariant-7 behaviour: walk back through terminal A's over genomic A's even "
+             "with no non-templated A in the clip. Correct for a poly(A)-SELECTED input where every "
+             "read really does carry a tail (and it is what rectify's own walkback_3prime does); "
+             "wrong for nascent RNA.",
     )
     rescue_group.add_argument(
         '--no-tail-detection',
