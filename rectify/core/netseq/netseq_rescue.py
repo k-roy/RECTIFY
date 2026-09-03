@@ -256,8 +256,18 @@ def is_organellar_contig(chrom: str) -> bool:
     from ..exclusion_regions import ExclusionRegionDetector
 
     lowered = (chrom or '').lower()
-    if any(pat.lower() in lowered for pat in ExclusionRegionDetector.MITO_PATTERNS):
-        return True
+    for pat in ExclusionRegionDetector.MITO_PATTERNS:
+        low = pat.lower()
+        # Short patterns ('MT', 'Mt', 'chrM') must match the WHOLE contig name. As substrings they
+        # would drop legitimate nuclear introns from the pool on other assemblies -- 'mt' alone is
+        # inside 'scaffold_amt1', and this predicate silently REMOVES rescue candidates, so a false
+        # positive costs real signal. Longer, unambiguous patterns ('chrmt', 'mito',
+        # 'mitochondrion') still match as substrings, which is what catches 'chrMito'.
+        if len(low) >= 4:
+            if low in lowered:
+                return True
+        elif low == lowered:
+            return True
     return chrom in ExclusionRegionDetector.MITO_NCBI
 
 

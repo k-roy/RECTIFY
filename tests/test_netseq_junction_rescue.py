@@ -703,3 +703,25 @@ def test_exon_derived_fallback_also_drops_organellar(tmp_path):
     )
     pool = JunctionPool.from_annotation(p)
     assert {c for c, _s in pool._by_exon1} == {'chrI'}, "exon-derived fallback kept a mito intron"
+
+
+@pytest.mark.parametrize("contig,expected", [
+    ('chrMito', True), ('chrmt', True), ('chrM', True), ('MT', True), ('mt', True),
+    ('mitochondrion', True), ('chrMT', True), ('Mito', True),
+    # 🔴 false positives here silently REMOVE rescue candidates, so they cost real signal.
+    ('chrI', False), ('chrXIII', False), ('chrXVI', False), ('chrIV', False),
+    ('scaffold_amt1', False), ('chr_MTOR_region', False), ('Smt3', False), ('', False),
+])
+def test_is_organellar_contig_does_not_over_match(contig, expected):
+    from rectify.core.netseq.netseq_rescue import is_organellar_contig
+    assert is_organellar_contig(contig) is expected, contig
+
+
+def test_no_yeast_nuclear_contig_is_called_organellar():
+    """All 16 R64 nuclear contigs, in both naming conventions this repo sees."""
+    from rectify.core.netseq.netseq_rescue import is_organellar_contig
+    romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII',
+              'IX', 'X', 'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI']
+    for r in romans:
+        assert not is_organellar_contig(r), r
+        assert not is_organellar_contig('chr' + r), 'chr' + r
