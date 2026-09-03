@@ -22,6 +22,36 @@ broken is worse than no list at all.
 
 ---
 
+## 🔴 Chimeric consensus can emit a FABRICATED chromosome × position — fixed on a branch, not on `master`
+
+- **Status:** fixed on `fix/runall-quantseq-862`; **`master` (`fd2e2d2`) still has it**
+- **Affects:** every multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
+  default** (`run_command.py:1021-1034`) — all datatypes, not just short reads
+- **Impact:** an output record can carry one aligner's **chromosome** with another aligner's
+  **position and CIGAR**. Sometimes it crashes; otherwise it is written silently.
+- **Workaround on `master`:** `run-all --no-chimeric-consensus`, or a single-aligner panel.
+
+`select_best_chimeric` refuses to assemble across contigs and falls back to
+`_fallback_simple_selection`, which returns the **winner's** `chimeric_ref_start` and CIGAR but no
+chromosome. `consensus._process_and_write_batch` then chooses the template read by **iteration
+order over `aligner_reads.values()`**, gated only on sequence length, and
+`chimeric_consensus.build_chimeric_read` takes `reference_id` from that template. When the arms
+disagree on contig, the record is `<template's chrom>:<winner's position>`.
+
+Observed on a QuantSeq `run-all --short-read --dT-primed-cDNA` smoke (200k in-house Lexogen REV
+reads, bbmap + bwa, rectify `fd2e2d2`): read `D00689:118:C890GANXX:8:2204:16881:55011` was placed
+by bwa at `chrIX:300228` (`2S48M`) and by bbmap at `chrXIII:480619` (`1=1X47=1X`), and the
+consensus wrote `chrIX:480619`. The run aborted at consensus checkpoint batch 16 only because
+chrIX is 439,888 nt — **shorter** than the borrowed coordinate — so `_validate_bam_sample` caught
+it. Whenever the template's contig is long enough to contain the winner's position, the fabricated
+locus passes every guard.
+
+**Fix:** restrict the template pool to reads on the winning aligner's contig
+(`consensus.py`, chimeric branch). A no-op when all arms share a contig, which includes every
+true-chimeric assembly.
+
+---
+
 ## 🟡 Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — fixed on a branch, not on `master`
 
 - **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`), also merged into

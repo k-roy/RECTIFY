@@ -848,6 +848,40 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             if chimeric_stats is not None:
                 chimeric_stats.update(chimeric_result)
 
+            # 🔴 The template supplies the output record's CONTIG
+            # (`chimeric_consensus.build_chimeric_read` sets
+            # ``out.reference_id = template_read.reference_id``) while ``ref_start`` and the
+            # CIGAR come from the WINNING aligner. On the true-chimeric path that is safe:
+            # ``select_best_chimeric`` refuses to assemble unless every arm is on ONE contig.
+            # But its cross-contig FALLBACK (``_fallback_simple_selection``) returns the
+            # winner's ``chimeric_ref_start`` with the arms still on DIFFERENT contigs — so a
+            # template picked by dict order emits <template's chrom> x <winner's position>, a
+            # coordinate that never existed.
+            #
+            # Measured on a QuantSeq smoke, rectify master @ fd2e2d2, 2026-09-03
+            # (planning/862): read D00689:118:C890GANXX:8:2204:16881:55011 was placed by bwa at
+            # chrIX:300228 (2S48M) and by bbmap at chrXIII:480619 (1=1X47=1X); the consensus
+            # wrote chrIX:480619, which is past the end of chrIX (439,888 nt). It surfaced only
+            # because chrIX is SHORTER than the borrowed position — with a longer template
+            # contig the fabricated locus is written SILENTLY, on the wrong chromosome.
+            #
+            # Restrict the template pool to reads on the winning aligner's contig. When every
+            # arm is already on one contig (the normal case, and every true-chimeric case) the
+            # pool is unchanged and this is a no-op.
+            _winner_name = (
+                chimeric_result.segment_winners[0][1]
+                if chimeric_result.segment_winners else None
+            )
+            _winner_read = aligner_reads.get(_winner_name) if _winner_name else None
+            _winner_chrom = _winner_read.reference_name if _winner_read is not None else None
+            if _winner_chrom is not None:
+                _template_pool = [
+                    r for r in aligner_reads.values()
+                    if r.reference_name == _winner_chrom
+                ] or list(aligner_reads.values())
+            else:
+                _template_pool = list(aligner_reads.values())
+
             # Pick a template read with a valid sequence (gapmm2 yields None).
             # Pass 1: prefer a read whose sequence length matches the chimeric CIGAR
             # query length (prevents "CIGAR and query sequence lengths differ" crash).
@@ -858,14 +892,14 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 length for op, length in chimeric_result.chimeric_cigar if op in query_ops
             ) if chimeric_result.chimeric_cigar else 0
             template = None
-            for r in aligner_reads.values():
+            for r in _template_pool:
                 seq = r.query_sequence
                 if seq is not None and (expected_len == 0 or len(seq) == expected_len):
                     template = r
                     break
             if template is None:
                 # Fallback: accept any read with a sequence even if length mismatches.
-                for r in aligner_reads.values():
+                for r in _template_pool:
                     if r.query_sequence is not None:
                         template = r
                         break
