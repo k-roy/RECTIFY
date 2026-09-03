@@ -2410,6 +2410,7 @@ def generate_alignment_scripts(
     pbs_queue: str = 'workq',
     junction_penalty_table: str = '',
     str_penalty_table: str = '',
+    write_per_aligner_corrected_bams: bool = False,
 ) -> dict:
     """
     Public API: generate correct-first pipeline scripts for a given chunk configuration.
@@ -2452,6 +2453,13 @@ def generate_alignment_scripts(
         args, n_chunks, sample_prefix,
         junction_penalty_table=junction_penalty_table,
         str_penalty_table=str_penalty_table,
+        # 🔴 `run/chunked_batch.py` has passed this since 9d35ae1 ("request per-aligner
+        # corrected BAMs when wiring the consensus stage") but the parameter was never
+        # added HERE, so every `rectify run-all --chunked-alignment` died with
+        # `TypeError: generate_alignment_scripts() got an unexpected keyword argument
+        # 'write_per_aligner_corrected_bams'` — on every datatype, not just short-read
+        # (planning 861 S5; the call at chunked_batch.py:221 is unconditional).
+        write_per_aligner_corrected_bams=write_per_aligner_corrected_bams,
     )
 
     return {
