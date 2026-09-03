@@ -32,6 +32,7 @@ Author: Kevin R. Roy
 Date: 2026-03-24
 """
 
+import logging
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from collections import defaultdict
@@ -42,6 +43,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+
+# planning/859: run_5prime_distribution_analysis referenced `logger` with no module
+# logger defined, so the "column not in DataFrame" guard raised NameError instead of
+# warning.  analyze_command's broad `except Exception` then downgraded it to
+# "5' end distribution analysis failed: name 'logger' is not defined" and skipped the
+# whole 5'-end distribution silently — masking the real reason.
+logger = logging.getLogger(__name__)
 
 
 # Internal category names → display labels
