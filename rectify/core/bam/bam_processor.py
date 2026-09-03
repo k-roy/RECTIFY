@@ -46,8 +46,10 @@ from ..netseq import netseq_refiner
 from ..correct.indel_corrector import VariantAwareHomopolymerRescue
 from ..correct.protocols.quantseq_rev import walkback_quantseq_rev
 from ..correct.protocols.ont_cdna import (
+    POLYA_SOURCE_STAGE1 as _POLYA_SOURCE_STAGE1,
     POLYA_SOURCE_TRIM as _POLYA_SOURCE_TRIM,
     resolve_rna_strand as _resolve_ont_cdna_strand,
+    stage1_tail_length as _stage1_tail_length,
     three_prime_position as _ont_cdna_3prime,
     trim_stage_tail_length as _trim_stage_tail_length,
     walkback_ont_cdna,
@@ -726,6 +728,21 @@ def correct_read_3prime(
             if _trim_tail is not None:
                 result['polya_length'] = _trim_tail
                 result['polya_source'] = _POLYA_SOURCE_TRIM
+            else:
+                # Path A (`run-all --ONT-cDNA`, the DEFAULT) never runs
+                # `trim-cdna-polya`, so there is no `pl`.  `correct-cdna` stage 1
+                # pretrims the tail off the CONSENSUS instead and records its
+                # length as `XA:i` -- the same quantity by a different route, and
+                # on Path A the only carrier that reaches this function.  Absent
+                # tag => fall through to the post-alignment value; a PRESENT
+                # `XA:i:0` is a real zero-length tail, not a fallback trigger.
+                # planning/860: without this, XA was non-zero on 95.5% of stage-1
+                # molecules while every corrected_reads.tsv row came back
+                # polya_source='none'.
+                _stage1_tail = _stage1_tail_length(read)
+                if _stage1_tail is not None:
+                    result['polya_length'] = _stage1_tail
+                    result['polya_source'] = _POLYA_SOURCE_STAGE1
         # Dorado pt:i estimate (None when absent) — recorded for comparison and,
         # under --use-dorado-polya, already folded into polya_length above.
         result['dorado_polya_length'] = polya_result['dorado_polya_length']
