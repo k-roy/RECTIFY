@@ -837,6 +837,11 @@ def run_align(args: argparse.Namespace) -> int:
                     bwa_path=exec_path,
                 )
             elif aligner in ('STAR_default', 'STAR_noncanonical'):
+                # planning/833 G-8: the COMPASS arms must receive rectify's
+                # DERIVED --max-intron, not their own defaults (STAR ~589 kb,
+                # HISAT2 200 kb, Magic-BLAST 500 kb, GSNAP 200 kb). Otherwise
+                # they emit junctions rectify itself calls impossible, and those
+                # candidates enter the consensus pool.
                 run_star(
                     reads_path=str(args.reads),
                     reads2_path=_reads2,
@@ -845,6 +850,7 @@ def run_align(args: argparse.Namespace) -> int:
                     threads=n_threads,
                     read_length=_read_length,
                     noncanonical=(aligner == 'STAR_noncanonical'),
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner in ('HISAT2_default', 'HISAT2_noncanonical'):
                 run_hisat2(
@@ -854,6 +860,7 @@ def run_align(args: argparse.Namespace) -> int:
                     output_bam=str(output_bam),
                     threads=n_threads,
                     noncanonical=(aligner == 'HISAT2_noncanonical'),
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'magicblast':
                 run_magicblast(
@@ -862,6 +869,7 @@ def run_align(args: argparse.Namespace) -> int:
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=min(n_threads, 12),
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'gsnap':
                 run_gsnap(
@@ -870,6 +878,7 @@ def run_align(args: argparse.Namespace) -> int:
                     genome_path=str(args.genome),
                     output_bam=str(output_bam),
                     threads=n_threads,
+                    max_intron=getattr(args, 'max_intron', 5000),
                 )
             elif aligner == 'winnowmap2':
                 run_winnowmap2(

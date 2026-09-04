@@ -227,6 +227,18 @@ class ChimericResult:
     # ChimericStats to separate real segment wins from degenerate single-aligner
     # pass-throughs so a measurement can't be confounded by fallback rate.
     is_fallback: bool = False
+    # ---- Anchor: WHICH reference sequence / strand the coordinates above are on.
+    # `chimeric_ref_start` and `chimeric_cigar` are meaningless without it, and
+    # before planning/864 the record writer had to guess -- it took RNAME, strand
+    # and MAPQ from an arbitrary "template" candidate while POS+CIGAR came from
+    # the winner, so ~1 in 800 short-read consensus records were written to the
+    # right coordinate on the WRONG chromosome. `anchor_aligner` names the
+    # candidate whose placement these coordinates belong to; `ref_name` /
+    # `anchor_is_reverse` restate its contig and strand so a caller can assert
+    # the invariant without re-deriving them.
+    anchor_aligner: str = ""
+    ref_name: str = ""
+    anchor_is_reverse: Optional[bool] = None
 
 
 # ============================================================================
@@ -922,39 +934,84 @@ def _merge_cigar_ops(ops: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
 # Chimeric read construction
 # ============================================================================
 
+_COMPLEMENT = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
+
+
+def _revcomp(seq: str) -> str:
+    """Reverse complement. Used only when a SEQ donor and the anchor differ in strand."""
+    return seq.translate(_COMPLEMENT)[::-1]
+
+
 def build_chimeric_read(
     template_read: pysam.AlignedSegment,
     ref_start: int,
     cigar_tuples: List[Tuple[int, int]],
     chimeric_result: 'ChimericResult',
     header: pysam.AlignmentHeader,
+    anchor_read: Optional[pysam.AlignedSegment] = None,
 ) -> pysam.AlignedSegment:
     """
     Construct a new pysam.AlignedSegment from chimeric selection results.
 
-    Uses the template read for sequence, quality, and basic flags.
-    Replaces CIGAR and reference_start with the chimeric version.
-    Adds custom tags documenting the chimeric selection.
+    SEQ, QUAL and aux tags come from the template read; the PLACEMENT (RNAME,
+    strand, MAPQ) comes from the ANCHOR -- the candidate the coordinates
+    actually belong to -- and reference_start / CIGAR from the chimeric result.
+
+    🔴 planning/861 + 862 + 864. RNAME, strand and MAPQ used to come from
+    `template_read`, which the caller picks by sequence length and dict order,
+    while POS and CIGAR come from the WINNING candidate. Whenever the candidates
+    disagreed on contig (exactly the case that routes to
+    `_fallback_simple_selection`) the record was assembled from two different
+    alignments: the winner's coordinate written onto a bystander's chromosome.
+    Measured on TruSeq/COMPASS `run-all`: 0.073 % (SE, 5 arms) to 0.125 % (PE,
+    7 arms) of consensus records -- ~1 in 800 -- of which only ~8 % overran the
+    borrowed contig and raised; the rest were silent. The same line copied the
+    template's strand bits alongside its SEQ, so a strand-mismatched template
+    also emitted a SEQ that did not correspond to its own CIGAR.
 
     Args:
-        template_read: Any aligner's read for this query (for seq/qual)
+        template_read: Any aligner's read for this query (for seq/qual/tags)
         ref_start: Chimeric reference start position
         cigar_tuples: Chimeric CIGAR tuples
         chimeric_result: ChimericResult with metadata
         header: BAM header for the output file
+        anchor_read: The candidate whose placement `ref_start`/`cigar_tuples`
+            belong to (``chimeric_result.anchor_aligner``). Defaults to
+            ``template_read`` only for callers that cannot supply it.
 
     Returns:
         New pysam.AlignedSegment ready to write
     """
+    anchor = anchor_read if anchor_read is not None else template_read
+
     out = pysam.AlignedSegment(header)
     out.query_name = template_read.query_name
-    out.query_sequence = template_read.query_sequence
-    out.query_qualities = template_read.query_qualities
-    out.flag = template_read.flag
-    out.reference_id = template_read.reference_id
+    # A BAM SEQ is stored reference-forward. When the SEQ donor and the anchor
+    # disagree on strand (only reachable on the last-resort template pass, when
+    # the anchor itself carries no SEQ) the donor's SEQ is the reverse
+    # complement of what the anchor's CIGAR describes -- flip it back.
+    _seq = template_read.query_sequence
+    _qual = template_read.query_qualities
+    if _seq is not None and template_read.is_reverse != anchor.is_reverse:
+        _seq = _revcomp(_seq)
+        _qual = _qual[::-1] if _qual is not None else None
+    out.query_sequence = _seq
+    out.query_qualities = _qual
+    # Pairing/QC bits from the template (it supplied the SEQ), but the STRAND
+    # bits (0x10 self, 0x20 mate) must describe the ANCHOR's placement.
+    out.flag = (template_read.flag & ~0x30) | (anchor.flag & 0x30)
+    # Resolve the contig BY NAME through the OUTPUT header. `reference_id` is an
+    # index into the header of the BAM the anchor was read from; copying the
+    # integer is only correct while every arm's @SQ block matches the output's
+    # in order. It did in the runs that exposed this bug, but a panel whose
+    # indices order contigs differently would silently relabel every record.
+    # get_tid returns -1 for an unknown name, which the caller's invariant
+    # turns into a loud failure instead of a wrong contig.
+    _tid = header.get_tid(anchor.reference_name) if anchor.reference_name else -1
+    out.reference_id = _tid if _tid >= 0 else anchor.reference_id
     out.reference_start = ref_start
     out.cigar = cigar_tuples
-    out.mapping_quality = template_read.mapping_quality
+    out.mapping_quality = anchor.mapping_quality
 
     # 🔴 Carry the template's aux tags across. A fresh AlignedSegment starts with
     # NO tags, so every per-read annotation upstream of alignment was being
@@ -1231,6 +1288,13 @@ def select_best_chimeric(
         interior_aligners=interior_aligners,
         three_prime_aligner=three_prime_aligner,
         all_segment_scores=chimeric_segments,
+        # Every candidate that reached this point passed the same-contig +
+        # same-strand precondition above, so `chrom`/`is_reverse` describe the
+        # stitched CIGAR unambiguously and any candidate is a safe template.
+        anchor_aligner=(chimeric_segments[0].winning_aligner
+                        if chimeric_segments else aligner_names[0]),
+        ref_name=chrom,
+        anchor_is_reverse=is_reverse,
     )
 
 
@@ -1265,6 +1329,9 @@ def _single_aligner_result(
         five_prime_aligner=aligner_name,
         interior_aligners=[aligner_name],
         three_prime_aligner=aligner_name,
+        anchor_aligner=aligner_name,
+        ref_name=read.reference_name,
+        anchor_is_reverse=read.is_reverse,
     )
 
 
@@ -1308,6 +1375,13 @@ def _fallback_simple_selection(
         interior_aligners=[best_aligner],
         three_prime_aligner=best_aligner,
         is_fallback=True,
+        # planning/864: this path is reached precisely BECAUSE the candidates
+        # disagree on contig or strand, so the anchor is load-bearing here --
+        # without it the writer took RNAME (and strand, and MAPQ) from whichever
+        # candidate happened to be first in the aligner dict.
+        anchor_aligner=best_aligner,
+        ref_name=best_read.reference_name,
+        anchor_is_reverse=best_read.is_reverse,
     )
 
 

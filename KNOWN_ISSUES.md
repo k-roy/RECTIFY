@@ -22,6 +22,61 @@ broken is worse than no list at all.
 
 ---
 
+## 🔴 Chimeric consensus can emit a record assembled from TWO aligners — fixed on a branch, not on `master`
+
+- **Status:** fixed on `fix/consensus-contig-swap-864` (which supersedes and includes the
+  narrower `fix/runall-quantseq-862`); **`master` (`fd2e2d2`) still has it**
+- **Affects:** any multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
+  default** (`run_command.py:1021-1034`). `rectify align` / `rectify consensus` default it OFF.
+  The mechanism is datatype-independent — it lives in the disagreement fallback, not in anything
+  short-read-specific — and it has now been measured on **four** panels, short-read AND long-read
+  (below).
+- **Impact:** an output record can carry one aligner's **chromosome, strand, MAPQ and aux tags**
+  with another aligner's **position and CIGAR**, while the `Xa` tag credits the second one.
+  Sometimes it crashes; otherwise it is written silently to a locus no aligner reported.
+- **Workaround on `master`:** `run-all --no-chimeric-consensus`, or a single-aligner panel.
+
+`select_best_chimeric` refuses to assemble unless every candidate is on one contig AND one strand,
+and otherwise falls back to `_fallback_simple_selection` — which returns the **winner's**
+`chimeric_ref_start` and CIGAR **but no chromosome and no strand**.
+`consensus._process_and_write_batch` then chooses a "template" read by **iteration order over
+`aligner_reads.values()`**, gated only on sequence length, and
+`chimeric_consensus.build_chimeric_read` builds a fresh record taking `reference_id`, the strand
+bits, `mapping_quality` and the aux tags from that template. When the candidates disagree, the
+record is `<template's chrom/strand>` × `<winner's position/CIGAR>`.
+
+Measured on `fd2e2d2`:
+
+| panel | rate |
+|---|---|
+| QuantSeq `--short-read --dT-primed-cDNA`, 200k reads, bbmap + bwa | 2,532 / 179,062 reads took the cross-contig fallback |
+| TruSeq short-read panel, 200k reads SE, 5 arms | **115 / 157,475 = 0.073 %** written to the wrong chromosome |
+| TruSeq short-read panel, 200k read pairs PE, 7 arms | **25 / 20,000 = 0.125 %** (first two checkpoint batches) |
+| ONT DRS, 50k reads, minimap2 + uLTRA + deSALT + overhang-resolver | **29 / 48,362 = 0.060 %** |
+| ONT DRS, 10k reads, same panel | **7 / 9,743 = 0.072 %** |
+| ONT PCR-cDNA, 5k clusters, minimap2 + uLTRA | **5 / 4,787 = 0.104 %** (4 contig + 1 **strand**) |
+
+The two long-read rows are **lower bounds**: those runs deleted their per-aligner BAMs, so the
+check there was contig+strand against each arm's per-read correction record, not the full
+(RNAME, POS, CIGAR) triple.
+
+Only ~8 % of the swapped records overran the borrowed contig and were caught by
+`_validate_bam_sample`; the rest passed every guard. One QuantSeq example: read
+`D00689:118:C890GANXX:8:2204:16881:55011` was placed by bwa at `chrIX:300228` (`2S48M`) and by
+bbmap at `chrXIII:480619` (`1=1X47=1X`), and the consensus wrote `chrIX:480619` — past the end of
+chrIX (439,888 nt). One TruSeq example: bbmap won with `chrI:165474 49=1X25=`, and the first arm
+in the dict supplied chrX, MAPQ 60, FLAG 89 and its entire tag set.
+
+**Fix:** `ChimericResult` now carries an **anchor** — the candidate whose placement
+`chimeric_ref_start`/`chimeric_cigar` describe — and `build_chimeric_read` takes RNAME, strand and
+MAPQ from it, with the template preferred to be the anchor itself. An **emit-time invariant**
+refuses to write any record whose RNAME/POS/CIGAR/strand are not all the selector's, and, for a
+pass-through (unstitched) result, whose triple is not exactly the winning candidate's own
+placement. A no-op when all arms share a contig and strand, which includes every true-chimeric
+assembly.
+
+---
+
 ## 🟡 Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — fixed on a branch, not on `master`
 
 - **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`), also merged into

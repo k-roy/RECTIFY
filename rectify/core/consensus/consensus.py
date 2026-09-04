@@ -830,6 +830,92 @@ def _enforce_intron_sanity(read, out_bam, max_intron_bp, stats=None):
         read.cigartuples = new_cigar
 
 
+def _assert_placement_invariant(out_read, anchor, chimeric_result, read_id, stats=None):
+    """Fail loud if a consensus record's RNAME/POS/CIGAR/strand do not all come
+    from the SAME candidate.
+
+    🔴 planning/861 + 862 + 864. `build_chimeric_read` assembles a FRESH record:
+    SEQ/QUAL and aux tags from a "template" candidate, placement from the
+    selector's winner. Before the anchor was threaded through, RNAME, strand and
+    MAPQ came from the template while POS and CIGAR came from the winner, so
+    ~1 record in 800 (COMPASS `run-all`) was written to the winner's coordinate
+    on a bystander's chromosome -- and only ~8 % of those overran the borrowed
+    contig and raised. Everything else passed every downstream check.
+
+    Two levels:
+      (a) always -- the emitted placement is exactly what the selector decided,
+          on the anchor's contig and strand. `out_read.reference_name` resolves
+          through the OUTPUT header and `anchor.reference_name` through the ARM
+          BAM's, so this also catches an @SQ-order mismatch between them.
+      (b) pass-through results (single-aligner, or the disagreement fallback --
+          the ones where nothing was stitched) -- the emitted
+          (RNAME, POS, CIGAR) must equal the winning candidate's OWN placement.
+          That is the planning/861 provenance classifier, run inline on every
+          record.
+
+    Cheap: a handful of integer/tuple comparisons per record, no genome access.
+    """
+    if anchor is None:
+        return
+
+    def _cig(ops):
+        return tuple((int(op), int(ln)) for op, ln in (ops or []) if ln)
+
+    emitted_name = out_read.reference_name
+    emitted_cigar = _cig(out_read.cigartuples)
+    want_cigar = _cig(chimeric_result.chimeric_cigar)
+
+    problems = []
+    if emitted_name != anchor.reference_name:
+        problems.append(
+            f"RNAME {emitted_name!r} != anchor {anchor.reference_name!r}"
+        )
+    if chimeric_result.ref_name and emitted_name != chimeric_result.ref_name:
+        problems.append(
+            f"RNAME {emitted_name!r} != selector contig {chimeric_result.ref_name!r}"
+        )
+    if out_read.reference_start != chimeric_result.chimeric_ref_start:
+        problems.append(
+            f"POS {out_read.reference_start} != selector "
+            f"{chimeric_result.chimeric_ref_start}"
+        )
+    if emitted_cigar != want_cigar:
+        problems.append("CIGAR is not the selector's chimeric CIGAR")
+    if out_read.is_reverse != anchor.is_reverse:
+        problems.append(
+            f"strand is_reverse={out_read.is_reverse} != anchor {anchor.is_reverse}"
+        )
+
+    # (b) nothing was stitched -> the record must BE the winner's alignment.
+    winners = chimeric_result.segment_winners or []
+    is_passthrough = chimeric_result.is_fallback or (
+        len(winners) == 1 and winners[0][0] == 'whole'
+    )
+    if is_passthrough and (
+            emitted_name != anchor.reference_name
+            or out_read.reference_start != anchor.reference_start
+            or emitted_cigar != _cig(anchor.cigartuples)):
+        problems.append(
+            f"pass-through record != the winning candidate's own placement "
+            f"({chimeric_result.anchor_aligner} "
+            f"{anchor.reference_name}:{anchor.reference_start} "
+            f"{anchor.cigarstring})"
+        )
+
+    if not problems:
+        return
+    if stats is not None:
+        stats['placement_invariant_violations'] += 1
+    raise RuntimeError(
+        f"Consensus placement invariant violated for read {read_id!r} "
+        f"(anchor aligner {chimeric_result.anchor_aligner!r}): "
+        + "; ".join(problems)
+        + f". Emitted {emitted_name}:{out_read.reference_start} "
+          f"{out_read.cigarstring}. The record would have been assembled from "
+          f"more than one candidate -- see planning/864."
+    )
+
+
 def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junctions, out_bam, stats, use_chimeric=False, read_num_sidecar=None, chimeric_stats=None, tiebreak='rectify', pool_min_anchor_bp=0, pool_max_intron_len=0):
     """Process a batch of reads and write best alignments to output BAM."""
     _max_reportable_intron = max_reportable_intron_from_env()
@@ -848,21 +934,81 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             if chimeric_stats is not None:
                 chimeric_stats.update(chimeric_result)
 
+            # 🔴 The ANCHOR is the candidate whose placement `chimeric_ref_start`
+            # and `chimeric_cigar` actually describe. RNAME, strand and MAPQ must
+            # come from IT -- `chimeric_consensus.build_chimeric_read` builds a
+            # fresh record and used to take all three from whichever "template"
+            # read happened to be first in `aligner_reads`, gated only on
+            # sequence length, while POS and CIGAR came from the winner.
+            #
+            # On the true-chimeric path that was safe: `select_best_chimeric`
+            # refuses to assemble unless every arm is on ONE contig and ONE
+            # strand. But its disagreement FALLBACK (`_fallback_simple_selection`)
+            # returns the winner's coordinates with the arms still on DIFFERENT
+            # contigs/strands -- so the record came out as
+            # <template's chrom> x <winner's position>, a locus no aligner
+            # reported.
+            #
+            # Measured twice on rectify master @ fd2e2d2, 2026-09-03:
+            #  * QuantSeq `run-all --short-read --dT-primed-cDNA`, bbmap+bwa
+            #    (planning/862): read D00689:118:C890GANXX:8:2204:16881:55011 was
+            #    placed by bwa at chrIX:300228 (2S48M) and by bbmap at
+            #    chrXIII:480619 (1=1X47=1X); the consensus wrote chrIX:480619 --
+            #    past the end of chrIX (439,888 nt). 2,532 / 179,062 reads took
+            #    that path.
+            #  * TruSeq/COMPASS `run-all --short-read` (planning/861/864):
+            #    0.073 % (SE, 5 arms) to 0.125 % (PE, 7 arms) of ALL consensus
+            #    records were written to the wrong chromosome at the right
+            #    coordinate, and only ~8 % of those overran the borrowed contig
+            #    and raised. Example SRR40431829.159 R1: bbmap chrI:165474
+            #    `49=1X25=` won, HISAT2_default (first in the dict) supplied
+            #    chrX, MAPQ 60, FLAG 89 and its whole tag set.
+            #
+            # Prefer the anchor itself as the template; failing that a candidate
+            # on the anchor's contig AND strand; only then anything with a
+            # sequence (build_chimeric_read reverse-complements a strand
+            # mismatch). When every arm shares a contig -- the normal case, and
+            # every true-chimeric case -- the anchor is already in the pool and
+            # this is a no-op.
+            anchor = aligner_reads.get(chimeric_result.anchor_aligner)
+            if anchor is None:
+                # Only reachable for a result built without an anchor (an
+                # `_empty_result`, or a third-party caller); degrade to the old
+                # first-with-a-sequence behaviour rather than dropping the read.
+                anchor = next(
+                    (r for r in aligner_reads.values() if r is not None), None
+                )
+
             # Pick a template read with a valid sequence (gapmm2 yields None).
-            # Pass 1: prefer a read whose sequence length matches the chimeric CIGAR
-            # query length (prevents "CIGAR and query sequence lengths differ" crash).
-            # Pass 2 (fallback): accept any read with a sequence; the CIGAR may be
-            # slightly wrong in length, but losing the read entirely is worse.
+            # Pass 1: the anchor -- for a single-aligner / fallback result
+            # `chimeric_cigar` IS its own CIGAR, so the query span matches by
+            # construction.
+            # Pass 2: another candidate on the anchor's contig and strand whose
+            # sequence length matches the chimeric CIGAR query length (prevents
+            # "CIGAR and query sequence lengths differ").
+            # Pass 3: any read with a sequence; the CIGAR may be slightly wrong
+            # in length, but losing the read entirely is worse.
             query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
             expected_len = sum(
                 length for op, length in chimeric_result.chimeric_cigar if op in query_ops
             ) if chimeric_result.chimeric_cigar else 0
-            template = None
-            for r in aligner_reads.values():
+
+            def _template_len_ok(r):
                 seq = r.query_sequence
-                if seq is not None and (expected_len == 0 or len(seq) == expected_len):
-                    template = r
-                    break
+                return seq is not None and (expected_len == 0 or len(seq) == expected_len)
+
+            template = None
+            if anchor is not None and _template_len_ok(anchor):
+                template = anchor
+            if template is None:
+                for r in aligner_reads.values():
+                    if anchor is not None and (
+                            r.reference_id != anchor.reference_id
+                            or r.is_reverse != anchor.is_reverse):
+                        continue
+                    if _template_len_ok(r):
+                        template = r
+                        break
             if template is None:
                 # Fallback: accept any read with a sequence even if length mismatches.
                 for r in aligner_reads.values():
@@ -881,8 +1027,16 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 cigar_tuples=chimeric_result.chimeric_cigar,
                 chimeric_result=chimeric_result,
                 header=out_bam.header,
+                anchor_read=anchor,
             )
             out_read.flag &= ~0x900  # enforce primary
+
+            # 🔴 INVARIANT (planning/864). Checked BEFORE _enforce_intron_sanity,
+            # which legitimately rewrites the CIGAR. Raises -- a record assembled
+            # from two candidates must never reach the BAM.
+            _assert_placement_invariant(
+                out_read, anchor, chimeric_result, read_id, stats,
+            )
 
             # Validate CIGAR/sequence consistency.  The Pass-2 fallback above can
             # produce a mismatched template whose sequence length differs from the
@@ -1127,6 +1281,10 @@ def run_consensus_selection(
         # Consensus selected an alignment carrying a physically impossible
         # intron (planning/684c); truncated at that junction before writing.
         'impossible_intron_truncated': 0,
+        # planning/864: records whose RNAME/POS/CIGAR/strand did not all come
+        # from the same candidate. Any non-zero value is a hard bug; the writer
+        # raises on the first one, so a finished run always reports 0.
+        'placement_invariant_violations': 0,
         'by_aligner': defaultdict(int),
         'by_aligner_combo': defaultdict(int),  # frozenset of available aligners → count
     }

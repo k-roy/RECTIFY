@@ -432,6 +432,17 @@ def _inject_rn_into_bam(bam_path: str, qname_to_rn: Mapping[str, int],
 # Set to 6 h as a safe upper bound before treating a run as hung.
 ALIGNER_TIMEOUT = 21600
 
+#: Fallback max intron (bp) when no annotation is available to derive one
+#: from. This is the historical S. cerevisiae constant (minimap2 -G 5000);
+#: kept only as the no-annotation fallback — see derive_max_intron().
+DEFAULT_MAX_INTRON = 5000
+
+#: Bounds on the annotation-derived max intron. The floor keeps a sparse or
+#: intron-poor annotation from strangling the aligners; the ceiling matches
+#: the long-standing "use 500000 or larger for human" guidance and caps the
+#: compute/false-positive bill an outlier annotated intron would otherwise buy.
+_DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
+
 # uLTRA --reduce_read_ployA threshold high enough that poly-A reduction never
 # fires (longest plausible long read « this), so uLTRA never truncates the
 # emitted SEQ. See run_ultra for the no-trim rationale.
@@ -1486,7 +1497,8 @@ def _is_gz(p) -> bool:
 # ── Pure command builders (unit-testable without the binaries) ───────────────
 
 def _build_star_cmd(reads_r1, reads_r2, star_genome_dir, out_prefix, threads,
-                    read_length: int = 150, noncanonical: bool = False) -> List[str]:
+                    read_length: int = 150, noncanonical: bool = False,
+                    max_intron: int = 0) -> List[str]:
     # reads_r2=None -> single-end (TruSeq-style SE COMPASS subset)
     reads_in = [str(reads_r1)] + ([str(reads_r2)] if reads_r2 else [])
     cmd = [
@@ -1499,6 +1511,14 @@ def _build_star_cmd(reads_r1, reads_r2, star_genome_dir, out_prefix, threads,
         '--alignEndsType', 'EndToEnd',
         '--outSAMattributes', 'NH', 'HI', 'NM', 'MD', 'AS', 'nM', 'jM', 'jI', 'XS',
     ]
+    # planning/833 G-8: without this STAR uses its own winBinNbits-derived
+    # default (~589 kb), so it emits junctions rectify itself calls impossible
+    # and they enter the consensus candidate pool. `--alignMatesGapMax` is the
+    # paired counterpart -- STAR treats an uncapped mate gap the same way.
+    if max_intron and max_intron > 0:
+        cmd += ['--alignIntronMax', str(max_intron)]
+        if reads_r2:
+            cmd += ['--alignMatesGapMax', str(max_intron)]
     if _is_gz(reads_r1):
         cmd += ['--readFilesCommand', 'zcat']
     if noncanonical:
@@ -1539,8 +1559,8 @@ def _build_hisat2_cmd(reads_r1, reads_r2, hisat2_index, splice_sites, out_sam,
 
 
 def _build_magicblast_cmd(reads_r1, reads_r2, blast_index, out_sam,
-                         threads: int = 12) -> List[str]:
-    return [
+                         threads: int = 12, max_intron: int = 0) -> List[str]:
+    cmd = [
         'magicblast',
         '-query', str(reads_r1),
         '-query_mate', str(reads_r2),
@@ -1549,8 +1569,12 @@ def _build_magicblast_cmd(reads_r1, reads_r2, blast_index, out_sam,
         '-infmt', 'fastq',
         '-num_threads', str(threads),
         '-max_db_word_count', '10',
-        '-out', str(out_sam),
     ]
+    # planning/833 G-8: Magic-BLAST's own default is 500,000 bp.
+    if max_intron and max_intron > 0:
+        cmd += ['-max_intron_length', str(max_intron)]
+    cmd += ['-out', str(out_sam)]
+    return cmd
 
 
 _GSNAP_AMBIG_SUPPORT = None
@@ -1576,7 +1600,8 @@ def _gsnap_supports_ambig_noclip() -> bool:
 
 
 def _build_gsnap_cmd(reads_r1, reads_r2, gsnap_dir, genome_version, out_sam,
-                    threads, ambig_splice_noclip: bool = True) -> List[str]:
+                    threads, ambig_splice_noclip: bool = True,
+                    max_intron: int = 0) -> List[str]:
     cmd = [
         'gsnap',
         '-D', str(gsnap_dir),
@@ -1595,6 +1620,12 @@ def _build_gsnap_cmd(reads_r1, reads_r2, gsnap_dir, genome_version, out_sam,
         '--sam-extended-cigar',
         '--format=sam',
     ]
+    # planning/833 G-8: GSNAP's own --localsplicedist default is 200,000 bp.
+    # (--pairmax-rna, the mate-distance cap, is deliberately left alone: it
+    # bounds fragment length + intron, not the intron, so max_intron is not the
+    # right value for it.)
+    if max_intron and max_intron > 0:
+        cmd.append(f'--localsplicedist={max_intron}')
     if _is_gz(reads_r1):
         cmd.append('--gunzip')
     return cmd
@@ -1719,6 +1750,7 @@ def run_star(
     read_length: int = 150,
     noncanonical: bool = False,
     star_genome_dir: Optional[str] = None,
+    max_intron: int = 0,
 ) -> str:
     """STAR splice-aware alignment (COMPASS default / non-canonical).
 
@@ -1740,6 +1772,7 @@ def run_star(
     cmd = _build_star_cmd(
         reads_path, reads2_path, star_dir, out_prefix, threads,
         read_length=read_length, noncanonical=noncanonical,
+        max_intron=max_intron,
     )
     label = 'STAR_noncanonical' if noncanonical else 'STAR_default'
     logger.info("Running %s: %s ...", label, ' '.join(cmd[:6]))
@@ -1761,12 +1794,17 @@ def run_hisat2(
     output_bam: str,
     threads: int = 8,
     min_intron: int = 20,
-    max_intron: int = 200000,
+    max_intron: int = DEFAULT_MAX_INTRON,
     noncanonical: bool = False,
     hisat2_index: Optional[str] = None,
     splice_sites: Optional[str] = None,
 ) -> str:
     """HISAT2 splice-aware alignment (COMPASS default / non-canonical).
+
+    ``max_intron`` defaults to rectify's own cap, NOT hisat2's 200,000 --
+    planning/833 G-8: both dispatchers used to omit it, so HISAT2 kept its own
+    default and emitted junctions rectify itself calls impossible (a recurring
+    5,584 nt N-op on yeast), which then entered the consensus candidate pool.
 
     Paired-end when ``reads2_path`` is given, single-end (``-U``) when it is
     None (TruSeq-style SE mode). noncanonical=True adds
@@ -1816,6 +1854,7 @@ def run_magicblast(
     output_bam: str,
     threads: int = 12,
     blast_index: Optional[str] = None,
+    max_intron: int = 0,
 ) -> str:
     """Magic-BLAST paired-end alignment (splice-site agnostic, COMPASS panel).
 
@@ -1856,7 +1895,8 @@ def run_magicblast(
     try:
         r1_plain = _ensure_plain(reads_path)
         r2_plain = _ensure_plain(reads2_path)
-        cmd = _build_magicblast_cmd(r1_plain, r2_plain, idx, sam_path, threads=threads)
+        cmd = _build_magicblast_cmd(r1_plain, r2_plain, idx, sam_path,
+                                    threads=threads, max_intron=max_intron)
         logger.info("Running magicblast: %s ...", ' '.join(cmd[:6]))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
         if result.returncode != 0:
@@ -1879,6 +1919,7 @@ def run_gsnap(
     threads: int = 8,
     gsnap_genome_dir: Optional[str] = None,
     genome_version: Optional[str] = None,
+    max_intron: int = 0,
 ) -> str:
     """GSNAP paired-end splice-aware alignment (COMPASS panel)."""
     output_bam = Path(output_bam)
@@ -1893,7 +1934,8 @@ def run_gsnap(
     _require_compass_index('gsnap', 'gsnap', Path(gdir) / gv)
     sam_path = output_bam.with_suffix('.sam')
     cmd = _build_gsnap_cmd(reads_path, reads2_path, gdir, gv, sam_path, threads,
-                           ambig_splice_noclip=_gsnap_supports_ambig_noclip())
+                           ambig_splice_noclip=_gsnap_supports_ambig_noclip(),
+                           max_intron=max_intron)
     logger.info("Running gsnap: %s ...", ' '.join(cmd[:6]))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=ALIGNER_TIMEOUT)
     if result.returncode != 0:
@@ -2700,16 +2742,6 @@ def _normalize_gtf_for_ultra(gtf_path: str, out_path: str) -> None:
                 fh.write('\t'.join(ex_parts) + '\n')
 
 
-#: Fallback max intron (bp) when no annotation is available to derive one
-#: from. This is the historical S. cerevisiae constant (minimap2 -G 5000);
-#: kept only as the no-annotation fallback — see derive_max_intron().
-DEFAULT_MAX_INTRON = 5000
-
-#: Bounds on the annotation-derived max intron. The floor keeps a sparse or
-#: intron-poor annotation from strangling the aligners; the ceiling matches
-#: the long-standing "use 500000 or larger for human" guidance and caps the
-#: compute/false-positive bill an outlier annotated intron would otherwise buy.
-_DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
 
 
 def derive_max_intron(
@@ -3433,6 +3465,7 @@ def run_multi_aligner(
     aligners: Optional[List[str]] = None,
     reads2_path: Optional[str] = None,
     read_length: int = 150,
+    max_intron: int = DEFAULT_MAX_INTRON,
 ) -> Dict[str, str]:
     """Run multiple aligners on the same reads.
 
@@ -3449,6 +3482,10 @@ def run_multi_aligner(
             (bbmap, STAR_*, HISAT2_*, magicblast, gsnap). When None those
             aligners run single-end where supported.
         read_length: Read length for STAR sjdbOverhang / index selection.
+        max_intron: Intron-length cap handed to every splice-aware arm
+            (planning/833 G-8). Callers should pass the value derived from the
+            annotation by ``derive_max_intron``; the default is the historical
+            S. cerevisiae constant, never an aligner's own default.
 
     Returns:
         Dict mapping aligner name to output BAM path
@@ -3567,6 +3604,7 @@ def run_multi_aligner(
                     threads=threads,
                     read_length=read_length,
                     noncanonical=(aligner == 'STAR_noncanonical'),
+                    max_intron=max_intron,
                 )
             elif aligner in ('HISAT2_default', 'HISAT2_noncanonical'):
                 results[aligner] = run_hisat2(
@@ -3576,6 +3614,7 @@ def run_multi_aligner(
                     output_bam=str(output_bam),
                     threads=threads,
                     noncanonical=(aligner == 'HISAT2_noncanonical'),
+                    max_intron=max_intron,
                 )
             elif aligner == 'magicblast':
                 results['magicblast'] = run_magicblast(
@@ -3584,6 +3623,7 @@ def run_multi_aligner(
                     genome_path=genome_path,
                     output_bam=str(output_bam),
                     threads=min(threads, 12),
+                    max_intron=max_intron,
                 )
             elif aligner == 'gsnap':
                 results['gsnap'] = run_gsnap(
@@ -3592,6 +3632,7 @@ def run_multi_aligner(
                     genome_path=genome_path,
                     output_bam=str(output_bam),
                     threads=threads,
+                    max_intron=max_intron,
                 )
             else:
                 logger.warning(f"Unknown aligner: {aligner}")
