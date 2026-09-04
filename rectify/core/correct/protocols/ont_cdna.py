@@ -114,6 +114,28 @@ TAIL_LEN_TAG = "pl"
 #: ``polya_source`` value recorded when the length came from the trim stage.
 POLYA_SOURCE_TRIM = "trim_stage"
 
+#: BAM aux tag carrying the STAGE-1 CONSENSUS poly(A) tail length, written by
+#: ``rectify correct-cdna`` (``core/cdna/io.py``, ``XA:i:<len>`` in the FASTQ
+#: comment) and carried into the BAM by ``rectify align -y`` / ``minimap2 -y``.
+#:
+#: 🔴 THIS IS THE PATH-A ANALOGUE OF ``pl``, AND ON PATH A IT IS THE ONLY CARRIER.
+#: ``run-all --ONT-cDNA`` (Path A, the DEFAULT) never runs ``trim-cdna-polya``, so
+#: ``pl`` is absent; instead ``correct-cdna``'s ``pretrim_consensus`` strips the
+#: tail off the emitted consensus and records its length here.  The aligned
+#: molecule therefore has no tail left to measure, exactly as after the Path-B
+#: trim.  Measured on 49,831 real in-house PCB114 reads (planning/860 smoke, at
+#: rectify fd2e2d2): ``XA:i`` present on 100% of stage-1 molecules and NON-ZERO on
+#: 95.5% of them (per-cluster median tail 20-30 nt), while ``corrected_reads.tsv``
+#: came back with ``polya_source='none'`` on 100% of rows, ``polya_length``
+#: non-zero on only 27% and median 1 nt among those.  Without this fallback the
+#: tail is measured by stage 1 and then silently discarded.
+STAGE1_TAIL_LEN_TAG = "XA"
+
+#: ``polya_source`` value recorded when the length came from the stage-1 consensus
+#: pretrim (``XA``).  Deliberately DISTINCT from ``trim_stage`` so a downstream
+#: reader can tell which route produced the number.
+POLYA_SOURCE_STAGE1 = "cdna_stage1"
+
 
 def trim_stage_tail_length(read: pysam.AlignedSegment) -> Optional[int]:
     """Return the trim-stage tail length from the ``pl`` tag, or ``None``.
@@ -131,6 +153,27 @@ def trim_stage_tail_length(read: pysam.AlignedSegment) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return value if value >= 0 else None
+
+
+def stage1_tail_length(read: pysam.AlignedSegment) -> Optional[int]:
+    """Return the stage-1 consensus tail length from the ``XA`` tag, or ``None``.
+
+    ``None`` means the tag is ABSENT -- the BAM did not come through
+    ``correct-cdna`` + ``align -y``, so the caller should fall back to the
+    post-alignment measurement.  A tag that is PRESENT and zero is a real
+    zero-length tail and is returned as ``0``: ``None`` and ``0`` must stay
+    distinguishable, exactly as for :func:`trim_stage_tail_length`.
+    """
+    try:
+        value = read.get_tag(STAGE1_TAIL_LEN_TAG)
+    except KeyError:
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
 
 #: Canonical per-molecule orientation tag written by ``rectify correct-cdna``
 #: stage 1 and carried into the BAM by ``rectify align -y`` / ``minimap2 -y``.

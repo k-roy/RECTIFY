@@ -81,6 +81,17 @@ assembly.
 
 - **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`), also merged into
   `feat/netseq-junction-rescue-836`; **`master` still has it**
+
+## ✅ Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — FIXED ON `master`
+
+- **Status:** **FIXED.** `599260c` is an ancestor of `master` as of `fd2e2d2`
+  (`git merge-base --is-ancestor 599260c master` → true); the default is now
+  `--type2-collapse none` (`core/cdna/cluster.py:23`, `commands/cdna_correct_command.py:124,266,384`).
+  **Verified on real output, not on the default value**: a `run-all --ONT-cDNA` on 49,831 in-house
+  PCB114 reads reported `type2_reads = 8,517` and `type2_clusters = 8,517` — exactly equal, i.e.
+  zero Type-2 reads collapsed (planning/860). Type-1 collapse on the same run was a real 12.7 %.
+  Kept here with the history because the measured magnitude below is still the reason to distrust
+  any Type-2 count produced before `fd2e2d2`.
 - **Affects:** `rectify correct-cdna` (ONT PCR-cDNA Stage 1), all versions up to and including `47e3b39`
 - **Impact:** Type-2 record counts understated ~2×, **depth-dependently**
 
@@ -134,6 +145,47 @@ FASTQ.
 fractions are **different quantities**. The ~82 % figure documented in
 `docs/algorithms/cdna_correct.md` is the **read-level** one; comparing a molecule-level fraction
 against it reads as a false failure. Both are now reported and explicitly labelled.
+
+---
+
+## 🔴 `run-all --ONT-cDNA` zeroed the poly(A) length column — fixed on a branch, not on `master`
+
+- **Status:** fixed on `fix/runall-cdna-860`; **`master` still has it**
+- **Affects:** `rectify run-all --ONT-cDNA` (Path A — the DEFAULT for this datatype), every version
+  up to and including `fd2e2d2`. The stepwise route (`correct-cdna` → `align` → **`cdna-analyze`**)
+  is unaffected, because `cdna-analyze` is the one consumer that reads `XA`.
+- **Impact:** `polya_length` in `corrected_reads.tsv` is ~0 for the whole library and
+  `polya_source` is `none` for every row — on the datatype whose purpose is 3′-end and poly(A)
+  analysis.
+
+`correct --ONT-cDNA` took the pre-trim tail length only from the `pl` tag, which **only**
+`trim-cdna-polya` writes. Path A deliberately does not run `trim-cdna-polya`: `correct-cdna`
+stage 1 pretrims the tail off the emitted CONSENSUS and records its length as `XA:i` instead.
+So the aligned molecule has no tail left to measure, `pl` is absent, and the post-alignment
+measurement is made on a read that by construction has none — the *same* failure the `pl` tag was
+introduced to prevent on Path B, reached by a different route.
+
+Measured on 49,831 real in-house PCB114 reads (`wtaa_rep1`, at `fd2e2d2`):
+
+| carrier | state |
+|---|---|
+| stage-1 `XA:i` (consensus pretrim) | present on **100 %** of molecules, **non-zero on 95.5 %**, per-cluster median tail **20–30 nt** |
+| dorado `pt:i` (in the input FASTQ comment) | present on **100 %** of input reads, non-zero on 86.9 % |
+| `pl` (trim stage) | **never written** on this path |
+| ⇒ `corrected_reads.tsv` `polya_source` | **`none` on 100 % of rows** |
+| ⇒ `corrected_reads.tsv` `polya_length` | non-zero on 27 %, **median 1 nt**, only 40 of 4,726 rows ≥ 20 nt |
+| ⇒ `corrected_reads.tsv` `pt_tag` | **empty on 100 % of rows** |
+
+Three independent carriers of the same quantity, none of them read.
+
+- **Workaround on `master`:** do not use `polya_length` from a `run-all --ONT-cDNA` run. Either run
+  the stepwise route and take the tail from `cdna-analyze`, or read `XA:i` off
+  `stage1_consensus.fastq.gz` yourself and join on the molecule id.
+- **The fix:** `correct --ONT-cDNA` falls back to `XA` when `pl` is absent, recording
+  `polya_source = "cdna_stage1"` — deliberately distinct from `trim_stage` so the route stays
+  legible. `None` (tag absent → fall through to the post-alignment value) and `0` (a measured
+  zero-length tail) stay distinguishable, as they already did for `pl`. The fallback is inside the
+  existing `if ont_cDNA:` gate, so DRS and every other protocol are untouched.
 
 ---
 
