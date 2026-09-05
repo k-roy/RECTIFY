@@ -419,12 +419,35 @@ _CANONICAL_5SS_PLUS  = frozenset(['GT', 'GC'])   # donor dinucleotide (intron_st
 _CANONICAL_5SS_MINUS = frozenset(['AC', 'GC'])   # genomic = RC of donor
 
 # Canonical HP prior: edit-distance discount applied to canonical-tier junctions
-# (tier < 4) when the current N-op is non-canonical (tier_beats_alt=True).  The
+# when the current N-op is non-canonical (tier_beats_alt=True).  The
 # value 0.5 equals one Nanopore HP-deletion equivalent — the expected noise floor
 # for splice-site scoring.  This ensures canonical junctions win over non-canonical
 # ones within the HP noise floor regardless of which penalty table is in use.
 # Non-canonical candidates must beat canonical alternatives by more than this amount.
 _CANONICAL_HP_PRIOR = 0.5
+
+# The line between "canonical" and "not" for BOTH uses of the prior — which
+# incumbents forfeit their is_alt priority, and which candidates earn the
+# discount.  `_canonical_tier` returns t3 (0..4) when the donor is GT/GC and
+# 4 + t3 when it is not, and t3 <= 1 is exactly "the acceptor ends in AG"
+# (0 = YAG, 1 = RAG; every t3 >= 2 is a non-AG acceptor).  So tier <= 1 means
+# "a proper GT/GC..AG junction" and tier >= 2 means at least one splice site is
+# not a recognized dinucleotide.
+#
+# This was `4` until 2026-09-05, which drew the line at "the DONOR is broken"
+# and so counted GT-AT (tier 3) and GT-GG (tier 2) as canonical — junctions with
+# no AG acceptor at all.  Two consequences, both wrong in the same direction:
+# such an incumbent kept is_alt priority over a real GT-AG alternative, and it
+# collected the canonical discount itself, so the alternative could not win even
+# at equal read score.  Measured on the Sumner panel: reads bc1283c7 (GT-AT) and
+# 12b2bc34 (GT-GG) sat 6-7 nt from an annotated GT-AG and would not move.
+#
+# NOTE: U12 AT-AC introns are NOT canonical by this measure — `_canonical_tier`
+# implements the GT/GC..AG grammar only, and AT-AC is an opt-in paired class
+# (`overhang_informativeness._ATAC_DINUCS`, ResolverConfig.atac).  A minus-strand
+# AT-AC junction therefore scores tier 8 here.  That is deliberate, not an
+# oversight of this constant.
+_CANONICAL_TIER_MAX = 1
 
 # 3'SS acceptor quality hierarchy based on yeast splicing observations.
 # In RNA orientation (reading the intron 5'→3'):
