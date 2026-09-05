@@ -156,6 +156,30 @@ def _run_alignment(
         _junction_aligners = junction_aligners
     all_aligners = _base_aligners + _junction_aligners
     aligner_desc = ' + '.join(all_aligners)
+    # planning 861 S3 / 862: NOTHING in rectify builds the COMPASS or deSALT indices, and a
+    # missing one does not fail cleanly -- with --Scer all five COMPASS paths are absent and the
+    # run DEADLOCKED for six hours. Even mitigated, a dropped arm still exits 0, so the panel
+    # silently shrinks. Report every index the selected arms need, once, before launching; and
+    # flag an annotation with no `exon` features, which yields an index that builds fine and
+    # carries ZERO annotated junctions.
+    _needs = [a for a in ('STAR', 'HISAT2', 'magicblast', 'gsnap')
+              if any(x.startswith(a) for x in all_aligners)]
+    if _needs:
+        _needs.append('splice_sites')
+    if _needs or 'deSALT' in all_aligners:
+        try:
+            from ...align.compass_preflight import compass_preflight
+            _pf = compass_preflight(
+                genome_path, annotation_path, read_length=read_length,
+                arms=_needs or [], desalt='deSALT' in all_aligners)
+            if _pf.missing or _pf.annotation_status in ('cds_only', 'unusable'):
+                print('    ' + _pf.render().replace('\n', '\n    '))
+            if _pf.missing and require_compass_index:
+                raise FileNotFoundError(
+                    f"{len(_pf.missing)} aligner index/indices are missing and "
+                    "--require-compass-index was given; see the pre-flight above.")
+        except ImportError:
+            pass
     print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
     from ..align_command import run_align
 

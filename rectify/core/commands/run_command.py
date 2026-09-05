@@ -485,6 +485,12 @@ def create_run_parser(subparsers):
         ),
     )
     run_parser.add_argument(
+        '--require-compass-index', dest='require_compass_index', action='store_true',
+        default=False,
+        help='Fail instead of silently dropping an aligner arm whose prebuilt index is missing. '
+             'Nothing in rectify builds these indices, and a dropped arm still exits 0, so the '
+             'panel shrinks without a word; --Scer bundles no index at all.')
+    run_parser.add_argument(
         '--read-length',
         dest='read_length',
         type=int,
