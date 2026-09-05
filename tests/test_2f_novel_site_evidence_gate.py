@@ -294,6 +294,30 @@ def test_tsv_columns_refuse_mode(refuse):
     refused = _row(_intronic_read(4), annotated_junctions=set(), pool_chrom_index=pool)
     assert not refused['five_prime_rescued']
     assert refused['five_prime_rescue_refused'] == TOKEN
-    assert refused['five_prime_landing_annotated'] == ''          # not rescued -> empty
+    assert refused['five_prime_landing_annotated'] == 0           # the ATTEMPTED landing was novel
     assert refused['five_prime_novel_evidence'] == ''             # the token lives in the refusal column
-    assert _cells(refused)['five_prime_landing_annotated'] == ''
+    assert _cells(refused)['five_prime_landing_annotated'] == '0'
+
+
+def test_refuse_then_rerescue_is_traced(refuse, monkeypatch):
+    """Refuse mode, defect (c) from the tester's FAST on 34d6852: a read whose
+    novel sequence rescue was refused and that a later structural path then
+    rescued onto an ANNOTATED intron (hold-out 03c6013e) must say both things:
+    landing 1, novel_evidence '<token>>annotated', refusal column empty, the
+    token counted once. The body's result is stubbed; this pins the wrapper's
+    bookkeeping (the on-read case is the tester's T1 check)."""
+    import rectify.core.splice.splice_aware_5prime as sa
+
+    def _body(*a, **kw):
+        return {'rescued': True, 'rescue_type': 'intronic_snap', 'five_prime_corrected': 19,
+                'rescued_junction': ('chrT', 20, 140), 'edit_distance': -1, 'query_bp': 2,
+                'five_prime_exon_cigar': '2M', 'five_prime_upstream_trim': 0,
+                'landing_annotated': True, 'novel_evidence': '', 'novel_refused_first': TOKEN}
+
+    monkeypatch.setattr(sa, '_rescue_3ss_truncation_body', _body)
+    res = rescue_3ss_truncation(_clip_read(15), GENOME, {JUNCTION}, '+',
+                                annotated_junctions={JUNCTION}, terminal_peel=False)
+    assert res['rescued'] and res['landing_annotated'] is True
+    assert res['novel_evidence'] == TOKEN + '>annotated'
+    assert not res.get('clip_refused') and 'novel_refused_first' not in res
+    assert COUNTERS[TOKEN] == 1

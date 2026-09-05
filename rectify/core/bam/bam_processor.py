@@ -747,9 +747,11 @@ def correct_read_3prime(
         'five_prime_rescue_refused': _five_prime_rescue_refused,
         # ISSUE-017: provenance + evidence verdict of the 5' rescue (TSV
         # columns; '' when the row carries no drawn rescue).
+        # Provenance of the rescue this row FOUND (drawn or not — a writer
+        # refusal or a refuse-mode verdict keeps it): '' only when no rescue
+        # was found at all (tester FAST 34d6852, defect a).
         'five_prime_landing_annotated': (
-            int(bool(_landing_annotated))
-            if (five_prime_rescued and _landing_annotated is not None) else ''),
+            int(bool(_landing_annotated)) if _landing_annotated is not None else ''),
         'five_prime_novel_evidence': _novel_evidence,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op

@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F: the off-by-4 decoy placement (ISSUE-017) and candidate order
+  (ISSUE-019)** (`splice/splice_aware_5prime.py`). On the Sumner human cohort
+  106/160 near-annotated novel junctions sat exactly 4 nt into the intron, on
+  the GTRAGT +5 GT. Mechanism, confirmed by replaying the reads: when the
+  alignment started inside the intron the rescue compared only the FIRST 1–2
+  bases of the soft clip (`rescue_seq[:_n_intr]` took the 5'-most bases, not
+  the intron-mapped ones), a 1–2-mer found edit distance 0 somewhere in the
+  shift × offset sweep, and the nearest canonical donor won. Now the whole
+  clip plus the intron-mapped bases are compared (both strands), a truncated
+  comparison below the informative floor is not a sequence search (the
+  structural Case-4 snap decides), an equal-edit-distance tie across
+  candidates goes to the ANNOTATED candidate before any geometry tiebreaker,
+  and every candidate collection is iterated in a documented order (annotated
+  first, then coordinate; Case 4 by snap distance) so no outcome depends on
+  set order (PYTHONHASHSEED-invariant, tested). Replayed reads flip from the
+  decoy to the annotated junction at the clip's own edit distance.
 - **Module 2F: provenance-aware evidence gate for novel landing sites
   (ISSUE-017)** (`splice/splice_aware_5prime.py`, `bam/bam_processor.py`).
   On the 16-library Sumner cohort 83 % of RECTIFY's false junctions were 2F

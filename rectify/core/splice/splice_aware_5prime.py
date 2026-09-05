@@ -1726,11 +1726,24 @@ def rescue_3ss_truncation(
 
     if _result.get('rescued'):
         _result['reanchor_clip_len'] = _reanchor_clip_len
+    # Refuse-mode bookkeeping (tester FAST 34d6852, defects a + c): a refused
+    # novel rescue that was NOT re-rescued still names its attempted
+    # provenance (landing 0; the token sits in clip_refused); one that WAS
+    # re-rescued by a later path carries '<token>>annotated' / '<token>>novel'
+    # in novel_evidence so the T0 accounting sees the refusal.
+    _refused_tok = (_result.get('clip_refused') or _result.get('novel_refused_first') or '')
+    _result.pop('novel_refused_first', None)
+    if _refused_tok in NOVEL_EXON_REFUSALS and not _result.get('rescued'):
+        _result.setdefault('landing_annotated', False)
+    elif _refused_tok in NOVEL_EXON_REFUSALS and _result.get('rescued'):
+        _result['novel_evidence'] = (
+            f"{_refused_tok}>" + ('annotated' if _result.get('landing_annotated') else 'novel'))
+        _result['clip_refused'] = ''
     # Novel-site evidence-gate token, counted once per READ (the body runs once
     # per terminal-peel depth as well, so it must not count). In report mode
     # the token rides on a DRAWN rescue (novel_evidence); in refuse mode it is
-    # the refusal (clip_refused).
-    _tok = _result.get('clip_refused') or _result.get('novel_evidence')
+    # the refusal (clip_refused) or the '<token>>…' trace of a re-rescue.
+    _tok = (_result.get('clip_refused') or _result.get('novel_evidence') or '').split('>')[0]
     if _tok in NOVEL_EXON_REFUSALS:
         _OI_COUNTERS[_tok] = _OI_COUNTERS.get(_tok, 0) + 1
     return _result
@@ -2013,7 +2026,14 @@ def _rescue_3ss_truncation_body(
     # gates (planning/596) meaningful; it also fixes the distance-cap slice below,
     # whose ``sorted``/``sort`` are stable and therefore only as deterministic as
     # their input order.
-    _nearby_junctions.sort(key=lambda _j: (_j[0], _j[1], _j[2]))
+    # ISSUE-019 (arbiter RULING 8): annotated candidates first, then coordinate,
+    # so every downstream consumer — the distance cap below, the sequence loop,
+    # the Case-4 intronic snap and the Case-3 proximity scan — sees the
+    # annotated intron before any novel one at equal standing, and never
+    # depends on set order. `annotated_keys is None` = legacy: nothing is novel.
+    def _is_ann(_j) -> bool:
+        return annotated_keys is None or (_j[0], _j[1], _j[2]) in annotated_keys
+    _nearby_junctions.sort(key=lambda _j: (not _is_ann(_j), _j[0], _j[1], _j[2]))
 
     # --- A rescue may not DISPLACE a canonical junction the aligner already
     # called ------------------------------------------------------------------
@@ -2084,7 +2104,10 @@ def _rescue_3ss_truncation_body(
     # search-space size this loop actually uses (dev/PERF_AUDIT.md drift rule).
     _MAX_RESCUE_JUNCTIONS = MAX_RESCUE_JUNCTIONS
     if len(_nearby_junctions) > _MAX_RESCUE_JUNCTIONS:
-        _edge_key = lambda _j: abs(align_5prime - (_j[2] if strand == '+' else _j[1]))
+        # Annotated candidates are never dropped by the cap in favour of a
+        # closer novel one (ISSUE-019): distance ranks within provenance.
+        _edge_key = lambda _j: (not _is_ann(_j),
+                                abs(align_5prime - (_j[2] if strand == '+' else _j[1])))
         if _n_intervals:
             _n_matched = [
                 _j for _j in _nearby_junctions
@@ -2242,10 +2265,23 @@ def _rescue_3ss_truncation_body(
                 # Upper bound: intron_end - align_5prime reference positions (1 query
                 # base per non-deletion ref base, so this slightly over-counts in the
                 # presence of deletions, which is safe).
+                _edge_truncated = False
                 if dist == 0 and align_5prime < intron_end:
                     _n_intr = intron_end - align_5prime
-                    _rseq = rescue_seq[:_n_intr] if _n_intr < rescue_len else rescue_seq
+                    # ISSUE-017: keep the 5' end THROUGH the last intron-mapped
+                    # base — the soft clip (all of it) plus the _n_intr aligned
+                    # bases that sit inside the intron — and drop only the
+                    # exon-2-mapped tail. `[:_n_intr]` kept the 5'-MOST bases of
+                    # rescue_seq, i.e. the START of the clip: a 13-nt clip was
+                    # ranked on its first 2 bases, which found ED 0 somewhere in
+                    # the ±15 shift × 11 offset sweep and the nearest canonical
+                    # donor (the GTRAGT +5 GT) won — 106/160 near-annotated
+                    # added_nov on the Sumner cohort sat exactly 4 nt into the
+                    # intron (ISSUE-017; arbiter RULING 6).
+                    _keep = five_clip + _n_intr
+                    _rseq = rescue_seq[:_keep] if _keep < rescue_len else rescue_seq
                     _rlen = len(_rseq)
+                    _edge_truncated = True
                 else:
                     _rseq = rescue_seq
                     _rlen = rescue_len
@@ -2259,6 +2295,15 @@ def _rescue_3ss_truncation_body(
                         _rseq = _rseq[-_RESCUE_DP_CAP:]
                         _rlen = _RESCUE_DP_CAP
                 if not _rseq:
+                    continue
+                if _edge_truncated and _rlen < _min_clip_bp:
+                    # ISSUE-017 (b): a truncated comparison shorter than the
+                    # informative floor is not a sequence search — a 1–2-mer
+                    # finds ED 0 somewhere in the shift × offset sweep. Leave
+                    # this candidate to the structural Case-4 snap (annotated
+                    # boundary, or "favours intron" = the read stays as is).
+                    _OI_COUNTERS['intronic_edge_below_floor'] = (
+                        _OI_COUNTERS.get('intronic_edge_below_floor', 0) + 1)
                     continue
 
                 _best_local_ed: float = _rlen + 1
@@ -2416,10 +2461,17 @@ def _rescue_3ss_truncation_body(
                 # of the rescue_seq (minus strand 5' = rightmost query bases) may
                 # extend into exon-2 territory (positions <= intron_start); those
                 # bases must not participate in candidate scoring.
+                _edge_truncated = False
                 if dist == 0 and align_5prime > intron_start:
                     _n_intr = align_5prime - intron_start
-                    _rseq = rescue_seq[-_n_intr:] if _n_intr < rescue_len else rescue_seq
+                    # ISSUE-017 mirror: the minus-strand 5' end is the RIGHT end
+                    # of rescue_seq; keep the clip plus the _n_intr intron-mapped
+                    # bases, drop the exon-2-mapped head. `[-_n_intr:]` kept the
+                    # END of the clip (the 5'-most bases) — the same defect.
+                    _keep = five_clip + _n_intr
+                    _rseq = rescue_seq[-_keep:] if _keep < rescue_len else rescue_seq
                     _rlen = len(_rseq)
+                    _edge_truncated = True
                 else:
                     _rseq = rescue_seq
                     _rlen = rescue_len
@@ -2432,6 +2484,15 @@ def _rescue_3ss_truncation_body(
                         _rseq = _rseq[:_RESCUE_DP_CAP]
                         _rlen = _RESCUE_DP_CAP
                 if not _rseq:
+                    continue
+                if _edge_truncated and _rlen < _min_clip_bp:
+                    # ISSUE-017 (b): a truncated comparison shorter than the
+                    # informative floor is not a sequence search — a 1–2-mer
+                    # finds ED 0 somewhere in the shift × offset sweep. Leave
+                    # this candidate to the structural Case-4 snap (annotated
+                    # boundary, or "favours intron" = the read stays as is).
+                    _OI_COUNTERS['intronic_edge_below_floor'] = (
+                        _OI_COUNTERS.get('intronic_edge_below_floor', 0) + 1)
                     continue
 
                 _best_local_ed: float = _rlen + 1
@@ -2518,16 +2579,27 @@ def _rescue_3ss_truncation_body(
                 #   3. canonical 5'SS donor (GT/GC plus, AC/GC minus) — donor signal
                 #   4. smallest |shift| from annotated position
                 #   5. 3'SS acceptor quality: AG=0, CG=1, TG=2, AT=3, other=4
-                _cur_outer  = (ed_exon, not _best_in_amb, not _best_local_canonical,
+                # ISSUE-017 / RULING 8 prior: on an equal-ED tie across
+                # candidates the ANNOTATED candidate wins before any geometry
+                # tiebreaker. Without it a pool junction 4 nt into the intron
+                # reached the annotated candidate's best window through its
+                # own `_off` sweep, tied on ED, and won on `shift_abs` (0 vs
+                # the annotated's 1–2) — its junction was then emitted 2–4 bp
+                # from the compared window, the `…4D` gap-at-junction shape
+                # (tester bundle: 5b20c72a, a5a5a1bb, c887bc16).
+                _cand_annotated = (
+                    annotated_keys is None
+                    or (j_chrom, intron_start, intron_end) in annotated_keys)
+                _cur_outer  = (ed_exon, not _cand_annotated, not _best_in_amb,
+                               not _best_local_canonical,
                                _best_local_shift_abs, _acceptor_priority)
-                _best_outer = (best_ed, not best_in_amb, not best_is_canonical,
+                _best_outer = (best_ed, not best_candidate_annotated, not best_in_amb,
+                               not best_is_canonical,
                                best_shift_abs, best_acceptor_priority)
                 _overall_update = (best_ed < 0 or _cur_outer < _best_outer)
                 if _overall_update:
                     best_ed = ed_exon
-                    best_candidate_annotated = (
-                        annotated_keys is None
-                        or (j_chrom, intron_start, intron_end) in annotated_keys)
+                    best_candidate_annotated = _cand_annotated
                     best_is_canonical = _best_local_canonical
                     best_in_amb = _best_in_amb
                     best_shift_abs = _best_local_shift_abs
@@ -2757,7 +2829,12 @@ def _rescue_3ss_truncation_body(
                     _cigar_ops, len(_align_seq), strand, max_edit_frac)
             if _novel_tok and novel_gate_mode() == 'refuse':
                 _novel_refused = _novel_tok
-                best_junction = None      # counted once per read, in the wrapper
+                # Counted once per read, in the wrapper. Reset the score with
+                # the junction: Case 4's "no candidate produced a sequence
+                # match" precondition reads best_ed, and a refused match must
+                # not stand in the way of the structural snap.
+                best_junction = None
+                best_ed = -1.0
             else:
                 return {
                     'rescued': True,
@@ -2800,6 +2877,7 @@ def _rescue_3ss_truncation_body(
             'landing_annotated': (annotated_keys is None
                                   or tuple(_forced_snap_junction[:3]) in annotated_keys),
             'novel_evidence': '',
+            'novel_refused_first': _novel_refused,
         }
 
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
@@ -2811,7 +2889,15 @@ def _rescue_3ss_truncation_body(
     # Only fires if no existing N-op in the CIGAR already covers this intron
     # (prevents double-rescue for reads that have a correct but off-by-a-few-bp N).
     # _n_intervals already computed above (before the sequence-rescue loop).
-    for j_entry in _nearby_junctions:
+    # ISSUE-019: the snap prefers an ANNOTATED intron containing the 5' end;
+    # among novel introns the smallest snap distance wins (iteration 4's LR
+    # ranks by evidence). Sorted, so the outcome never depends on set order.
+    def _snap_depth(_j) -> int:
+        # How far the 5' end moves to reach the exon-1-side boundary: plus
+        # strand snaps to intron_start - 1, minus strand to intron_end.
+        return (align_5prime - _j[1]) if strand == '+' else (_j[2] - align_5prime)
+    for j_entry in sorted(_nearby_junctions,
+                          key=lambda _j: (not _is_ann(_j), _snap_depth(_j), _j[0], _j[1], _j[2])):
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
             continue
@@ -2914,9 +3000,13 @@ def _rescue_3ss_truncation_body(
             'five_prime_upstream_trim': 0,
             'landing_annotated': _annot4,
             'novel_evidence': '' if _annot4 else (_tok4 or 'pass'),
+            # A sequence rescue refused before this snap (refuse mode) — the
+            # wrapper turns it into the '<token>>annotated|novel' trace.
+            'novel_refused_first': _novel_refused,
         }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
+    # (annotated first, then coordinate — the list is already in that order)
     for j_entry in _nearby_junctions:
         j_chrom, intron_start, intron_end = j_entry[0], j_entry[1], j_entry[2]
         if j_chrom != chrom:
