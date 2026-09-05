@@ -1,0 +1,232 @@
+{
+ "$schema_note": "MAGESTIC figure design tokens. SINGLE SOURCE OF TRUTH for palette, type and geometry. Every renderer (SVG glyph library, matplotlib theme, slide theme) reads this file. Do not hard-code a colour anywhere else.",
+ "version": "rectify-vep-1.0.0",
+ "adopted": "2026-08-18",
+ "provenance": "The eight MAGESTIC semantic hexes (tokens.json v1.1.0) reassigned to VEP consequence classes by rectify/visualize/config.py. Hexes unchanged; only the meaning is new. Chanfreau planning/871, 2026-09-04.",
+ "palette": {
+  "semantic": {
+   "stop_gained": "#B02418",
+   "start_lost": "#762238",
+   "frameshift": "#CC79A7",
+   "missense": "#E69F00",
+   "inframe_insertion": "#0072B2",
+   "inframe_deletion": "#56B4E9",
+   "stop_lost": "#2400B2",
+   "splice_region": "#009E73"
+  },
+  "structural": {
+   "ink": "#14213D",
+   "rule": "#5C6672",
+   "mute": "#C3CAD1"
+  },
+  "slide_dark": {
+   "_note": "Dark presentation theme, echoing the MAGESTIC cover art's navy field. NOT a naive lightening of the print palette: a first attempt at that FAILED validation (guide vs donor collapsed to dE2000 11.2 even in normal vision, because lightening both blues moved them together). These values are separately validated by tests/palette_check.py, which checks this group too.",
+   "paper": "#0B1220",
+   "wash": "#131C2E",
+   "ink": "#E8EDF4",
+   "rule": "#8A97A8",
+   "mute": "#3A465A",
+   "guide": "#2E86C8",
+   "donor": "#9BDCF7",
+   "barcode": "#F2B33D",
+   "recruit": "#35BE95",
+   "edit": "#E2564A",
+   "phospho": "#D98CBE"
+  }
+ },
+ "roles": {
+  "_doc": "Every token has a role. The validator applies DIFFERENT rules per role. This is why `mute` is allowed a low contrast ratio that would fail a semantic colour.",
+  "semantic": {
+   "tokens": [
+    "stop_gained",
+    "start_lost",
+    "frameshift",
+    "missense",
+    "inframe_insertion",
+    "inframe_deletion",
+    "stop_lost",
+    "splice_region"
+   ],
+   "rule": "Encodes molecular identity. Must be mutually distinguishable under normal, deuteranopia and protanopia (dE2000 >= 12), and must reach contrast >= 2.0 on paper. Colour is the ONLY thing these carry \u2014 never use a semantic colour decoratively.",
+   "min_delta_e": 12.0,
+   "min_contrast_on_paper": 2.0
+  },
+  "structural": {
+   "tokens": [
+    "ink",
+    "rule",
+    "mute"
+   ],
+   "rule": "Carries no meaning: outlines, rails, vessel/cell outlines, recessive process arrows, step dividers. Exempt from the semantic contrast floor because being recessive is the point; still must not be mistaken for a semantic colour it sits beside.",
+   "min_contrast_on_paper": 1.5
+  },
+  "background": {
+   "tokens": [
+    "paper",
+    "wash",
+    "cell",
+    "pool",
+    "agar",
+    "colony",
+    "sun",
+    "sun_rim",
+    "moon",
+    "nucleoplasm",
+    "protein_body"
+   ],
+   "rule": "The ground itself, including the ground INSIDE a glyph: a cell's cytoplasm, the broth in a flask, agar, a colony. Being near-invisible against paper is the function, so no contrast floor applies, and nothing may ever be encoded by one of these alone. MEASURED, not asserted (2026-09-03), and adding the two co-occurrence sets is what caught both of these: (i) the FIRST sun #F2C14E sat at dE2000 6.7 from `barcode` under deuteranopia, and fixing the disc to #FDE08A (13.9) left its DERIVED rays at #D39F04, dE 2.3 -- the rays are what a reader sees as the sun's colour, so `sun_rim` is now an explicit token at 23.3. (ii) `colony` vs `agar` was dE 3.6 and FAILED the set check; they are now 15.5, which also makes a plate legible in print. `cell` clears `barcode` at 16.9 and `pool` at 20.6, so an edited cell separates from an unedited one. `moon` vs `mute` stays at 2.3 by design -- a moon is separated from an arrow by being a crescent, and neither pair ever encodes by hue. \u26a0 `sun` and `moon` are the ONE place a hue carries something that is not a molecular identity: the light/dark CONDITION. The colour is support, never the cue. 2026-09-04, Kevin on colony appearance: 'Yeast colonies are opaque, dull beige, rounded, rising slightly above the surface and becoming dome-like as they grow to saturation. E. coli colonies are more translucent, flatter, with a slightly shiny appearance.' `colony` and `agar` were re-valued to that description and re-measured at dE2000 16.7 normal / 16.5 deuteranopia / 16.9 protanopia. The two organisms are then told apart by THREE non-hue channels -- opacity, relief and specularity -- which is why the same two tokens serve both. `nucleoplasm` #DDE5EC added 2026-09-04: a GENOME-VIEW nucleus is a CONTAINER for the thing the panel is about, and its fill must not compete with what it holds. The warm organelle tint used for the anatomy view sat at dE 12.3 and dL* 3.3 from `barcode` -- the same lightness, so the bars vanished against it and would vanish entirely in greyscale. The pale cool ground clears `barcode` at 36.1 and `edit` at 53.2 while staying 20.9 from `cell`, so the nucleus is still visible against the cytoplasm. \ud83d\udd34 The anatomy nucleus stays WARM: there the nucleus is one organelle among several and a cool high-contrast one reads as a googly eye. The fill follows the nucleus's ROLE in the panel, not a single global choice. \ud83d\udd34 `protein_body` #D6D6D6 added 2026-09-04 (Kevin: \"we can keep a single color for the proteins, and have them distinguished by their shape\"). It is filed as a BACKGROUND role precisely because of that instruction: in a one-colour scheme the protein fill ENCODES NOTHING -- identity is carried by the silhouette, which is derived from real coordinates, and by the ink keyline. Chosen by search, not picked: it is the only neutral that clears dL* >= 15 from BOTH `donor` (15.8) and `guide` (39.7), which are the molecules drawn on top of it in all three MAGESTIC complexes, while keeping shading headroom (a shaded body spans L* 86 down to 62). It clears every semantic token at dE2000 >= 16.5. It sits close to `mute` (dE 5.2) BY DESIGN and under the same declared exception as `moon` vs `mute`: a protein body is a large lumpy shaded shape and a process arrow is a thin line with a head, so the two are separated by form and neither ever encodes by hue.",
+   "min_contrast_on_paper": 0.0
+  }
+ },
+ "meaning": {
+  "_doc": "The semantic contract. One colour = one molecular identity, everywhere, in every figure, in every project. Propagate a colour through EVERY stage the entity survives (library -> transformant -> readout). This is the Findlay 2018 device and it is the core of the style.",
+  "guide": "guide RNA / spacer / protospacer; the targeting half of a guide-donor",
+  "donor": "donor DNA / HDR template / homology arms; retron-derived ssDNA donor",
+  "barcode": "genomic barcode (bc1, N20), the landing pad and integrated barcode cassette",
+  "recruit": "recruitment machinery: LexA operator sites, LexA-FHA / MCP-FHA fusion",
+  "edit": "the introduced edit itself: SNV, indel, the variant allele, the cut site",
+  "phospho": "phosphothreonine (pT) marks and other post-translational recruitment marks",
+  "ink": "primary linework, text, chromosome rails, plasmid backbone",
+  "rule": "secondary structure: gridlines, vessel outlines, unemphasised loci",
+  "mute": "recessive process arrows, step dividers, panel wash, 'other/unedited' category",
+  "domain": "The INSERTED functional module and the landing pad that holds its place -- the AsLOV2 photoswitch domain, its PaqCI stuffer, and any other payload swapped in as its own cloning step. Promoted from 556_tokens.local.json to the shipped palette on 2026-09-03 after Kevin: 'I think we need the edit payload more clearly called out in the donor, especially since this is a separate cloning step.' Before this the payload was drawn in `barcode` amber -- the SAME colour as bc1 -- so the two molecular identities were conflated and the payload could not stand out. The value was SEARCHED, not guessed (556): #8C5FA8 collapses against `guide` under protanopia and #6B2D5C against `rule` under deuteranopia; #762238 clears every token.",
+  "pam": "The protospacer-adjacent motif. \ud83d\udd34 Promoted to a TOKEN on 2026-09-04 because SKILL section 8.3 had been assigning it #E69F00 -- the SAME hex as `barcode` -- so one hue carried two molecular identities, which is the one thing this contract forbids. It never fired because the alignment figures and the schematic figures had never met in a panel; a molecular vocabulary puts them together immediately. `palette_check` could not see it either: co-occurrence sets are lists of token NAMES, and the PAM was a hex in a prose table. The value was SEARCHED over hue x lightness x saturation, not guessed: 18,578 candidates screened against all 7 existing semantic tokens in three visions plus ink and rule, filtered to those clearing the semantic contrast floor (>= 2.0 on paper), and further filtered to keep dE >= 22 from `guide` in NORMAL vision -- because a PAM sits immediately beside the protospacer in every alignment figure, and clearing a CVD threshold there is not enough. \ud83d\udd34 The FIRST pick, a teal #2A746D, FAILED -- my search had checked `ink` and `rule` in normal vision only, so it collided with `rule` at dE 1.8 under deuteranopia. That is the same ignored-condition error this workspace keeps finding in its own gates. The corrected search adds three constraints -- CVD on the structural tokens too, and dL* >= 15 from both `guide` and `edit`, since all three share the `alignment` set and must survive a mono printout -- leaving 1,916 survivors from 130k sampled. #2400B2 is the best per-hue-family winner outside the blue family, at worst-case dE 19.8 and L* 22.3 against guide's 46."
+ },
+ "cooccurrence_sets": {
+  "_doc": "A VEP legend never shows more than four consequence accents at once.",
+  "vep_severity": [
+   "ink",
+   "mute",
+   "stop_gained",
+   "missense",
+   "splice_region"
+  ],
+  "vep_lof": [
+   "ink",
+   "mute",
+   "stop_gained",
+   "start_lost",
+   "frameshift"
+  ],
+  "vep_inframe": [
+   "ink",
+   "mute",
+   "missense",
+   "inframe_insertion",
+   "inframe_deletion"
+  ],
+  "vep_stops": [
+   "ink",
+   "mute",
+   "stop_gained",
+   "stop_lost",
+   "missense"
+  ]
+ },
+ "typography": {
+  "_doc": "Helvetica/Arial confirmed as the existing house font from pdffonts on the native .ai masters. Helvetica Neue first for Mac authoring; Arial is the universal fallback and is metrically compatible enough for layout QA.",
+  "family": [
+   "Arial",
+   "Helvetica Neue",
+   "Helvetica",
+   "sans-serif"
+  ],
+  "family_css": "Arial, 'Helvetica Neue', Helvetica, sans-serif",
+  "manuscript_pt": {
+   "panel_letter": 11.0,
+   "axis_label": 8.5,
+   "tick_label": 7.5,
+   "in_figure": 8.0,
+   "annotation": 7.5,
+   "provenance": 6.0
+  },
+  "slide_pt": {
+   "panel_letter": 20.0,
+   "axis_label": 16.0,
+   "tick_label": 14.0,
+   "in_figure": 14.0,
+   "annotation": 12.0,
+   "provenance": 9.0
+  },
+  "weights": {
+   "regular": 400,
+   "bold": 700
+  },
+  "conventions": {
+   "panel_letter": "bold lowercase a, b, c (Nature style; matches the house figure-standard skill)",
+   "gene_names": "italic for yeast gene names (ADE2, FCY1); roman for proteins (Cas9, LexA-FHA)",
+   "strain_ids": "roman, never italic (yKR888, cV522, pF834)",
+   "units": "thin space before unit; use 'bp', 'kb', 'nt' roman"
+  },
+  "_floor_doc": "MINIMUM ON-PAGE CAP HEIGHT, not a font size. Kevin has now said three times, in three workspaces, that the old 6-9 pt manuscript scale renders too small: 2026-09-01 on SGTC 25_donor_strand_fig.py ('the manuscript_pt scale (6-9 pt) is unreadable'), and twice on 2026-09-03 on the AsLOV2 package figures ('the font is a bit small'). manuscript_pt was raised on 2026-09-03 so that every role except `provenance` clears cap_min_mm. A figure that wants smaller type must call glyphs.exempt() on that Text and say why.",
+  "cap_height_ratio": 0.717,
+  "cap_min_mm": 1.89,
+  "_family_doc": "\ud83d\udd34 ARIAL IS FIRST, AND THAT IS NOT A STYLE PREFERENCE. On this machine matplotlib registers 'Helvetica Neue' and 'Helvetica' at weight 400 ONLY, while 'Arial' carries 400 and 700. With Helvetica first, fontweight='bold' silently renders IDENTICAL ink -- measured ratio 1.000, versus 1.390 with Arial first. Every bold panel letter and every bold (a)/(b) legend callout that `figure-standard` mandates was therefore rendering at regular weight, in every figure, and no gate could see it: the text is present, correctly sized, and not overlapping. Found by the 2026-09-03 review panel and reproduced independently. Verify with the ink-ratio assert, never by eye. If a machine ever has a real Helvetica Neue Bold, this order can be revisited."
+ },
+ "geometry": {
+  "_doc": "Stroke hierarchy is what makes a figure recede properly. The 2026-08 audit of the legacy figures found everything drawn at one weight, so nothing receded. Three tiers, always.",
+  "stroke_pt": {
+   "primary": 1.6,
+   "secondary": 1.0,
+   "hairline": 0.6,
+   "emphasis": 2.4
+  },
+  "manuscript_width_mm": {
+   "single": 89,
+   "onehalf": 120,
+   "double": 183
+  },
+  "slide_width_px": {
+   "wide_16_9": 1920,
+   "height_16_9": 1080
+  },
+  "corner_radius_pt": 1.5,
+  "cassette_height_pt": 11,
+  "rail_gap_pt": 3.2,
+  "callout": {
+   "style": "dashed",
+   "dash": [
+    2.5,
+    1.8
+   ],
+   "stroke": "rule",
+   "note": "Detail is QUARANTINED in a dashed callout box (Levy 2015 / Findlay 2018 device), never inlined into the overview."
+  },
+  "process_arrow": {
+   "colour_token": "mute",
+   "stroke_pt": 1.0,
+   "note": "Process arrows are RECESSIVE and neutral. They must never compete with semantic colour. Prefer a verb-labelled divider rule over an arrow where the step is sequential rather than molecular."
+  },
+  "_floor_doc": "The four tiers were multiplied by 1.6 on 2026-09-03. This is NOT a new number: 556_essentialome_schematic_fig.py has shipped STROKE_SCALE = 1.6 since 2026-08-18, when Kevin asked for it for the same reason he is giving now ('the lines too thin'), and he approved that render. Promoting it from one file to the house default is all that changed. A pool member drawn as multiplicity (magestic-figure rule 3) is EXEMPT from stroke_min_pt; glyphs.flask marks its own cells.",
+  "stroke_min_pt": 0.6
+ },
+ "principles": {
+  "_doc": "Derived in planning/magestic_figure_style/03_exemplar_survey.md from figures actually viewed (Wong 2011; Levy 2015 Fig 1; Findlay 2018 Fig 1; Sharon 2018 Fig 1; Roy 2018 Fig 1).",
+  "1_one_reading_path": "Each panel has exactly one unambiguous reading order. Lanes read build -> grow -> read.",
+  "2_steps_are_typography": "Sequential steps are verb-labelled divider rules, not arrow thickets. Arrows are reserved for genuine molecular transitions.",
+  "3_multiplicity_not_detail": "Pooled complexity is shown by many small flat coloured blobs, not by one elaborately rendered cell.",
+  "4_quarantine_detail": "Mechanism detail lives in a dashed callout box tied to the overview by leaders.",
+  "5_colour_is_identity": "Colour encodes molecular identity and nothing else, and must vary in LIGHTNESS as well as hue (Wong 2011). Structure stays neutral.",
+  "6_rank_visual_weight": "Three stroke tiers and a 2-neutral + <=4-accent budget per panel, so unimportant things actually recede.",
+  "7_propagate_identity": "A colour assigned to an entity follows it through every stage of the experiment (Findlay 2018)."
+ },
+ "identity": {
+  "motif": "barcode-as-helix-rungs",
+  "source": "MAGESTIC_1.0 cover art (gdrive_archive/.../MAGESTIC_1.0/Proof/MAGESTIC_Cover_Art.jpg)",
+  "note": "A literal black-and-white barcode forming the base-pair rungs of a duplex. Scientifically honest (the barcode really is written into the genome) and visually distinctive. Use as the project mark on title slides, dividers, posters and preprint banners, and as the flat-vector `barcode` glyph in figures. The photoreal 3D treatment of the cover does NOT survive greyscale or small sizes and must not become the manuscript language."
+ },
+ "changelog": [
+  {
+   "version": "1.1.0",
+   "date": "2026-09-03",
+   "change": "Type and stroke FLOORS added (cap_min_mm, stroke_min_pt); manuscript_pt and stroke_pt raised to clear them. Palette untouched. Adds the glyphs.py organism/process vocabulary alongside alignment_grammar.py.",
+   "affects": [
+    "SGTC HEK293_retron_editing 14/15/25_*_fig.py read manuscript_pt live and will render larger on their next build -- intended, and 25's own docstring already complains the old scale is unreadable",
+    "UCSB 556_* reads a FROZEN 556_tokens_merged.json (Aug 18) and is NOT affected"
+   ]
+  }
+ ],
+ "greyscale_redundancy": {
+  "_doc": "Honest record, 2026-09-04. CODON_VARIANT_MARKERS in config.py supplies the non-colour cue these sets need, but vep_panels.py hardcodes marker='o' for the consequence legend and does not yet read it. No set is declared redundant, because the cue is not wired. [3b] is therefore EXPECTED TO FAIL until that wiring lands; [1] and [2], the CVD checks this change exists to fix, must PASS."
+ }
+}

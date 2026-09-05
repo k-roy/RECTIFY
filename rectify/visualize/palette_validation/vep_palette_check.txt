@@ -1,0 +1,36 @@
+MAGESTIC token validation - rectify/visualize/palette_validation/vep_tokens.json
+  semantic: 8   structural: 3
+
+[1] semantic palette, red-green tier (deuteranopia + protanopia):
+  [warn] normal        closest pair: stop_gained vs start_lost  dE2000=19.2
+  [warn] deuteranopia  closest pair: frameshift vs splice_region  dE2000=15.5
+  [warn] protanopia    closest pair: frameshift vs inframe_deletion  dE2000=13.7
+    -> PASS  (8 advisory-close pairs)
+
+[2] sanctioned co-occurrence sets (2 neutrals + <=4 accents each):
+      PASS vep_severity         n=5 accents=3
+      PASS vep_lof              n=5 accents=3
+      PASS vep_inframe          n=5 accents=3
+      PASS vep_stops            n=5 accents=3
+
+[3] contrast on paper, per role:
+    -> semantic floor 2.0, structural floor 1.5
+
+[3b] greyscale separation within each sanctioned set (dL* >= 15, or declared redundancy):
+      FAIL vep_severity         1 pair(s) below dL* 15 with no declared redundancy:
+             missense vs splice_region  dL*=12.9
+      FAIL vep_lof              1 pair(s) below dL* 15 with no declared redundancy:
+             stop_gained vs start_lost  dL*=11.3
+      FAIL vep_inframe          1 pair(s) below dL* 15 with no declared redundancy:
+             missense vs inframe_deletion  dL*=0.8
+      PASS vep_stops           
+
+[4] slide_dark theme, on its own dark ground:
+    -> PASS (0 advisory-close pairs)
+
+[5] tritanopia (<0.01% prevalence) - ADVISORY ONLY:
+      advisory  frameshift vs missense  dE2000=8.0  -> distinguish by shape/label, not colour alone
+      advisory  inframe_deletion vs splice_region  dE2000=10.2  -> distinguish by shape/label, not colour alone
+      advisory  inframe_insertion vs splice_region  dE2000=10.6  -> distinguish by shape/label, not colour alone
+
+RESULT: FAIL

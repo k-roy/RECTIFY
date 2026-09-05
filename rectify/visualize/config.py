@@ -37,33 +37,93 @@ WONG_COLORS: Dict[str, str] = {
 # ============================================================================
 # Codon Variant Type Colors
 # ============================================================================
-# Used for Evo2, ESM1-v, and variant map panels
-# Colors match publication style
+# Used for Evo2, ESM1-v, and variant map panels.
+#
+# 🔴 REPLACED 2026-09-04 (Chanfreau planning/871). The previous values were the
+# flat-UI web palette (#3498db / #2ecc71 / #e74c3c / #9b59b6 ...). They were never
+# colour-vision validated, and they assigned RED to `stop_gained` and GREEN to
+# `synonymous` — the single most consequential distinction in the panel, drawn as
+# exactly the red/green pair that ~8% of male readers cannot separate. It is also
+# the known-bad case that palette_check.py plants in its own --self-test.
+#
+# These values are the eight MAGESTIC semantic tokens, which are already proven
+# mutually distinguishable at dE2000 >= 12 under normal vision, deuteranopia and
+# protanopia (tokens.json v1.1.0, validated by
+# ~/.claude/skills/magestic-figure/tests/palette_check.py). They are REASSIGNED
+# here to consequence classes; the hexes are not new and the separation is not a
+# fresh claim. Assignment follows severity so hue carries meaning:
+#
+#   loss of function   crimson family   stop_gained, start_lost   + pink frameshift
+#   in-frame altering  amber / blues    missense, inframe_*, stop_lost
+#   splice             green            splice_region
+#   silent / noncoding neutral ramp     synonymous, intronic, intergenic, unknown
+#
+# The silent and non-coding tier is deliberately NEUTRAL, not a hue. `synonymous`
+# is the null class in these panels and hue is spent only on classes that carry a
+# claim (magestic-figure section 1, "structure is never coloured").
+#
+# ⚠️ KNOWN LIMITATION, recorded rather than papered over. The palette passes the
+# CVD checks but NOT the greyscale check ([3b], dL* >= 15 within a legend): amber
+# `missense` and sky `inframe_deletion` sit at L* 70.6 and 69.8 and are the same
+# grey in a mono printout. An assignment that satisfies greyscale exists but makes
+# stop_gained blue and missense purple, i.e. hue stops carrying severity. The
+# correct fix is a SECOND CHANNEL, and CODON_VARIANT_MARKERS below supplies it —
+# vep_panels.py currently hardcodes marker='o' for the consequence legend, so
+# adopting it is the follow-up, not this change.
 
 CODON_VARIANT_COLORS: Dict[str, str] = {
-    # Protein-coding changes
-    'missense': '#3498db',           # Blue
-    'synonymous': '#2ecc71',         # Green
-    'stop_gained': '#e74c3c',        # Red
-    'stop_gain': '#e74c3c',          # Red (alias)
-    'frameshift': '#9b59b6',         # Purple
-    'stop_lost': '#f39c12',          # Orange
-    'stop_loss': '#f39c12',          # Orange (alias)
-    'inframe_insertion': '#1abc9c',  # Teal
-    'inframe_deletion': '#e67e22',   # Dark orange
-    'inframe_indel': '#17a2b8',      # Cyan
-    'in-frame_indel': '#17a2b8',     # Cyan (alias)
-    'start_lost': '#c0392b',         # Dark red
-    'start_loss': '#c0392b',         # Dark red (alias)
-    'splice_region': '#8e44ad',      # Dark purple
-    # Non-coding
-    'intergenic': '#95a5a6',         # Gray
-    'intronic': '#7f8c8d',           # Dark gray
-    'non_coding': '#bdc3c7',         # Light gray
-    'non-coding': '#bdc3c7',         # Light gray (alias)
-    # Special
-    'complete_CDS_deletion': '#2c3e50',  # Dark blue-gray
-    'unknown': '#95a5a6',            # Gray
+    # --- loss of function -------------------------------------------------
+    'stop_gained': '#B02418',            # crimson
+    'stop_gain': '#B02418',              # (alias)
+    'start_lost': '#762238',             # dark maroon
+    'start_loss': '#762238',             # (alias)
+    'frameshift': '#CC79A7',             # pink - LoF via indel
+    # --- in-frame protein-altering ---------------------------------------
+    'missense': '#E69F00',               # amber
+    'inframe_insertion': '#0072B2',      # blue
+    'inframe_deletion': '#56B4E9',       # sky
+    'inframe_indel': '#56B4E9',          # sky (alias of deletion)
+    'in-frame_indel': '#56B4E9',         # (alias)
+    'stop_lost': '#2400B2',              # deep blue
+    'stop_loss': '#2400B2',              # (alias)
+    # --- splice -----------------------------------------------------------
+    'splice_region': '#009E73',          # green
+    # --- silent / non-coding: NEUTRAL, lightness-ordered ------------------
+    'synonymous': '#5C6672',             # rule grey - the null class
+    'intronic': '#8A97A8',
+    'intergenic': '#C3CAD1',
+    'non_coding': '#DDE5EC',
+    'non-coding': '#DDE5EC',             # (alias)
+    # --- special ----------------------------------------------------------
+    'complete_CDS_deletion': '#14213D',  # ink - total loss reads darkest
+    'unknown': '#C3CAD1',
+}
+
+
+# ============================================================================
+# Codon Variant Type Marker Shapes
+# ============================================================================
+# The non-colour channel for consequence, added 2026-09-04 alongside the palette
+# fix above. Shape is what lets the panel survive a mono printout and the tritan
+# advisories; gene_type already had GENE_TYPE_MARKERS and consequence did not.
+#
+# ⚠️ NOT YET CONSUMED. vep_panels.py hardcodes marker='o' at its consequence
+# legend and scatter. Wiring it is a rendering change and is deliberately left
+# out of this commit, which changes data only.
+
+CODON_VARIANT_MARKERS: Dict[str, str] = {
+    'stop_gained': 'X', 'stop_gain': 'X',
+    'start_lost': 'P', 'start_loss': 'P',
+    'frameshift': 'd',
+    'missense': 'o',
+    'inframe_insertion': '^', 'inframe_deletion': 'v',
+    'inframe_indel': 'D', 'in-frame_indel': 'D',
+    'stop_lost': 's', 'stop_loss': 's',
+    'splice_region': '*',
+    'synonymous': '.', 'intronic': '.', 'intergenic': '.',
+    'non_coding': '.', 'non-coding': '.',
+    'complete_CDS_deletion': 'H',
+    'unknown': '.',
 }
 
 

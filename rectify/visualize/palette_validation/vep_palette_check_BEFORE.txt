@@ -1,0 +1,42 @@
+MAGESTIC token validation - rectify/visualize/palette_validation/vep_tokens_BEFORE.json
+  semantic: 8   structural: 3
+
+[1] semantic palette, red-green tier (deuteranopia + protanopia):
+  [FAIL] normal        closest pair: frameshift vs splice_region  dE2000=6.3
+  [FAIL] deuteranopia  closest pair: inframe_deletion vs stop_lost  dE2000=5.9
+  [FAIL] protanopia    closest pair: frameshift vs splice_region  dE2000=6.3
+      FAIL deuteranopia  inframe_deletion vs stop_lost  dE2000=5.9
+      FAIL deuteranopia  frameshift vs splice_region  dE2000=6.1
+      FAIL normal        frameshift vs splice_region  dE2000=6.3
+      FAIL protanopia    frameshift vs splice_region  dE2000=6.3
+      FAIL deuteranopia  stop_gained vs inframe_deletion  dE2000=6.9
+      FAIL deuteranopia  frameshift vs missense  dE2000=7.5
+      FAIL protanopia    inframe_deletion vs stop_lost  dE2000=7.9
+      FAIL protanopia    stop_gained vs start_lost  dE2000=9.1
+      FAIL deuteranopia  stop_gained vs start_lost  dE2000=9.9
+      FAIL normal        stop_gained vs start_lost  dE2000=10.0
+      FAIL normal        inframe_deletion vs stop_lost  dE2000=10.8
+    -> FAIL  (7 advisory-close pairs)
+
+[2] sanctioned co-occurrence sets (2 neutrals + <=4 accents each):
+      PASS vep_severity         n=5 accents=3
+
+[3] contrast on paper, per role:
+    -> semantic floor 2.0, structural floor 1.5
+
+[3b] greyscale separation within each sanctioned set (dL* >= 15, or declared redundancy):
+      FAIL vep_severity         2 pair(s) below dL* 15 with no declared redundancy:
+             stop_gained vs missense  dL*=5.6
+             stop_gained vs splice_region  dL*=11.9
+
+[4] slide_dark theme, on its own dark ground:
+    -> PASS (0 advisory-close pairs)
+
+[5] tritanopia (<0.01% prevalence) - ADVISORY ONLY:
+      advisory  frameshift vs splice_region  dE2000=6.1  -> distinguish by shape/label, not colour alone
+      advisory  missense vs inframe_insertion  dE2000=6.6  -> distinguish by shape/label, not colour alone
+      advisory  inframe_deletion vs stop_lost  dE2000=7.0  -> distinguish by shape/label, not colour alone
+      advisory  stop_gained vs start_lost  dE2000=10.0  -> distinguish by shape/label, not colour alone
+      advisory  stop_gained vs inframe_deletion  dE2000=10.1  -> distinguish by shape/label, not colour alone
+
+RESULT: FAIL
