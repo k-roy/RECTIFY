@@ -23,7 +23,10 @@ from typing import List, Tuple
 import pysam
 import pytest
 
-from rectify.core.bam.read_edits import reroute_intronic_tail_5prime_via_junction
+from rectify.core.bam.read_edits import (
+    reroute_intronic_tail_5prime_via_junction,
+    softclip_intronic_tail_5prime,
+)
 
 
 def _make_read(start: int, cigar: List[Tuple[int, int]], strand: str,
@@ -146,3 +149,37 @@ class TestNoQueryCorruption:
             exon_cigar_str='30M', strand='-')
         q_after = sum(l for op, l in read.cigartuples if op in (0, 1, 4, 7, 8))
         assert q_after == q_before == len(read.query_sequence)
+
+
+class TestSoftclipIntronicTailAlsoRefusesACutJunction:
+    """ISSUE-007's second call site, found via Sumner hold-out read 34625d8e.
+
+    When the icp gate routes away from `extend` and the reroute refuses, the
+    writer falls back to `softclip_intronic_tail_5prime` — which trims to the
+    same clip_boundary with the same `min(length, excess)` and so could shorten
+    an aligner-called junction on its own. On 34625d8e that turned an annotated
+    CT-AC 91378775-91382812 into 91378775-91380924; the canonical-destination
+    guard could not see it, because both edges are still CT-AC.
+    """
+
+    def test_minus_strand_cut_is_refused(self):
+        read = _make_read(100, [(0, 50), (3, 200), (0, 30)], '-')
+        before = read.cigartuples
+        assert softclip_intronic_tail_5prime(read, clip_boundary=300, strand='-') is False
+        assert read.cigartuples == before
+        assert _n_ops(read) == [(150, 350)]
+
+    def test_plus_strand_cut_is_refused(self):
+        read = _make_read(100, [(0, 30), (3, 200), (0, 50)], '+')
+        before = read.cigartuples
+        assert softclip_intronic_tail_5prime(read, clip_boundary=300, strand='+') is False
+        assert read.cigartuples == before
+        assert _n_ops(read) == [(130, 330)]
+
+    def test_a_boundary_outside_any_junction_still_soft_clips(self):
+        """The guard must not disable the helper: a clip_boundary that falls in
+        an M op trims normally."""
+        read = _make_read(100, [(0, 50), (3, 200), (0, 30)], '-')
+        assert softclip_intronic_tail_5prime(read, clip_boundary=360, strand='-') is True
+        assert _n_ops(read) == [(150, 350)]      # junction intact
+        assert read.cigartuples[-1][0] == 4      # trailing soft clip added

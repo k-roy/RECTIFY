@@ -75,6 +75,19 @@ DEFAULT_JUNCTION_PROXIMITY_BP = 10  # max bp between 5' align end and intron edg
 DEFAULT_PEEL_MAX_BP = 100          # deepest terminal peel attempted
 MAX_RESCUE_JUNCTIONS = 25          # per-read candidate cap (see the narrowing block)
 
+# Longest 5' soft clip the rescue will try to place as exon 1 (ISSUE-015).
+#
+# Measured, not assumed: over the 7,950 GENCODE v48 basic transcripts on human
+# chr5 the first exon is 184 nt at the median, 3,038 at p99, 7,973 at p99.9 and
+# 12,358 at the maximum. So "an 8 kb clip is not a missed exon-1" is NOT what the
+# annotation says — 8 kb first exons exist. This cap is therefore set from the
+# observed maximum with a x2 margin, and it is a backstop against an absurd clip
+# (and against align_clip_to_exon's O(n*m) DP, which is what turned the ISSUE-015
+# read into 1.5 h of work), NOT the check that catches that read: b06afeb3's clip
+# was 8,134 nt and passes this cap. What catches it is the contig-bounds test in
+# the body, which needs no constant at all.
+MAX_RESCUABLE_CLIP_BP = 25_000
+
 
 def min_informative_clip_bp(
     junction_proximity_bp: int = DEFAULT_JUNCTION_PROXIMITY_BP,
@@ -1691,6 +1704,36 @@ def _rescue_3ss_truncation_body(
     # them, and the tester's table is keyed on clip length: without this the peel
     # re-admits exactly the 1-3 nt-clip rows ISSUE-006 is about (3 survived on the
     # panel, all non-canonical, and had to be caught downstream by the writer).
+    # --- The clip must physically fit on the contig (ISSUE-015) --------------
+    # A rescue places the exon UPSTREAM of the read's 5' edge (plus strand) or
+    # downstream of it (minus). A clip longer than the distance to the contig
+    # edge therefore describes an exon that starts before position 0 or ends past
+    # the contig — a placement that cannot exist. Read b06afeb3 on the
+    # 16,569-nt chrM: an 8,134-nt clip at chrM:4561, rescued to an 8,835 M
+    # "exon" at reference_start -5843. `pysam.index` then refused the BAM
+    # ("pos=-5843 cannot be indexed") and a 1.5 h `correct` exited 1 with the
+    # corrected BAM unindexed.
+    #
+    # This is the test that actually catches it, and it needs no constant: the
+    # contig length is the bound.
+    _contig_len = len(genome_seq)
+    _fits_contig = (
+        (align_5prime - five_clip) >= 0 if strand == '+'
+        else (align_5prime + five_clip) < _contig_len
+    )
+    if five_clip > 0 and not _fits_contig:
+        _OI_COUNTERS['clip_exceeds_contig'] = (
+            _OI_COUNTERS.get('clip_exceeds_contig', 0) + 1)
+        _res_oob = _no_rescue(read, strand)
+        _res_oob['clip_refused'] = 'clip_exceeds_contig'
+        return _res_oob
+    if five_clip > MAX_RESCUABLE_CLIP_BP:
+        _OI_COUNTERS['clip_too_long'] = (
+            _OI_COUNTERS.get('clip_too_long', 0) + 1)
+        _res_long = _no_rescue(read, strand)
+        _res_long['clip_refused'] = 'clip_too_long'
+        return _res_long
+
     _min_clip_bp = min_informative_clip_bp(junction_proximity_bp)
     _seq_search_refused = False
     if rescue_type_candidate == 'softclip' and rescue_seq and (

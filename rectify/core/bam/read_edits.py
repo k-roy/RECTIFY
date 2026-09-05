@@ -933,6 +933,17 @@ def softclip_intronic_tail_5prime(
             op, length = cigar[-1]
             if op in _REF_CONSUMING:
                 trim = min(length, excess_ref)
+                if op == 3 and trim < length:
+                    # ISSUE-007, second call site: clip_boundary falls INSIDE a
+                    # junction the aligner already called, and soft-clipping to
+                    # it would SHORTEN that junction — the read would silently
+                    # come out spliced somewhere it never was. Hold-out read
+                    # 34625d8e: an annotated CT-AC 91378775-91382812 cut to
+                    # 91378775-91380924, which the writer's canonical guard could
+                    # not see because both edges are still CT-AC. Refuse; the
+                    # caller leaves the read unmodified, which is correct — no
+                    # 5' surgery is defensible when it costs a real junction.
+                    return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
                 cigar[-1] = (op, length - trim)
@@ -994,6 +1005,10 @@ def softclip_intronic_tail_5prime(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
+                if op == 3 and trim < length:
+                    # Mirror of the minus-strand guard above (ISSUE-007): never
+                    # shorten a junction the aligner already called.
+                    return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
                 cigar[0] = (op, length - trim)

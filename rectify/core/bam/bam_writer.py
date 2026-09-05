@@ -412,6 +412,42 @@ REFUSAL_NONCANONICAL = 'noncanonical_destination'   # the writer's own N-op was 
 # bam_processor, which must keep `five_prime_rescued` set or the writer would
 # skip the soft-clip surgery this token is reporting.
 REFUSAL_SOFTCLIP_ONLY = 'softclipped_no_junction'
+# The surgery would have placed the read off the contig (ISSUE-015).
+REFUSAL_OFF_CONTIG = 'placement_off_contig'
+
+
+def _placement_within_contig(read: pysam.AlignedSegment,
+                             genome: Optional[Dict[str, str]]) -> bool:
+    """Does *read*'s current alignment fit inside its contig?
+
+    `extend_read_5prime_for_junction_rescue` has carried its own off-edge
+    refusal since 17d1c35 (planning/719), but that check lives INSIDE extend and
+    the ISSUE-015 read never went through it: its rescue published
+    `five_prime_intron_clip_pos` 5270, so the icp gate routed it to
+    `reroute_intronic_tail_5prime_via_junction`, which computes its own
+    `new_ref_start = five_prime_position - exon_ref_span + 1` (2990 - 8834 = -5843)
+    with no bounds test. Rather than copy the guard into every helper, assert the
+    invariant ONCE on the result of whichever helper ran.
+
+    A single negative-POS record makes the whole BAM unindexable and the failure
+    is silent until `samtools index` — on the 145k run that cost 1.5 h and a
+    non-zero exit with an unindexed corrected BAM.
+    """
+    if read.reference_start is not None and read.reference_start < 0:
+        return False
+    end = read.reference_end
+    if end is None:
+        return True
+    length = None
+    try:
+        if read.reference_name is not None:
+            length = read.header.get_reference_length(read.reference_name)
+    except Exception:
+        length = None
+    if length is None and genome is not None:
+        seq, _k = get_chrom_sequence(genome, read.reference_name)
+        length = len(seq) if seq else None
+    return length is None or end <= length
 
 
 def apply_5prime_rescue_surgery(
@@ -507,6 +543,20 @@ def apply_5prime_rescue_surgery(
             clip_boundary=_icp,
             strand=correction['strand'],
         )
+
+    # Hard invariant, checked on whichever helper ran (ISSUE-015): a rescue may
+    # not place the read off its contig. Nothing downstream can recover from a
+    # negative POS — it makes the entire BAM unindexable.
+    if modified and not _placement_within_contig(read, genome):
+        logger.warning(
+            "5' rescue refused for %s: surgery placed the read off %s "
+            "(start=%s end=%s)",
+            read.query_name, read.reference_name,
+            read.reference_start, read.reference_end,
+        )
+        read.cigartuples = _pre_cigar
+        read.reference_start = _pre_start
+        return False, REFUSAL_OFF_CONTIG
 
     if _revert_selfinflicted_noncanonical_n(
             read, genome, _pre_nops, _pre_cigar, _pre_start):
