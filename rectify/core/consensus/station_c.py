@@ -71,10 +71,12 @@ dev/sumner_misplaced_panel_20260904):
   both-boundary refusal). Reading only the op next to the N scored those as
   anchor 0 and dropped them from the census entirely — neither admitted,
   reviewed nor demoted. ``_anchor_run`` sums the aligned run across a bounded
-  number of intervening indel ops and records what it stepped over
-  (``adj_indel_l``/``adj_indel_r``/``n_adj_indel``). Measured: 16/121 → 80/121
-  created N-ops censused. Thresholds are unchanged — this is coverage, not
-  policy.
+  number of intervening indel ops (``cfg.adj_indel_max_ops`` /
+  ``cfg.adj_indel_max_bp``, both exposed on the CLI) and records what it
+  stepped over (``adj_indel_l``/``adj_indel_r``/``n_adj_indel``). Measured:
+  16/121 → 80/121 created N-ops censused at the defaults; ``_anchor_run``'s
+  docstring carries the full budget sensitivity, including which of the two
+  budgets binds. Thresholds are unchanged — this is coverage, not policy.
 - **A missing track must say so.** The repeat, self-homology and background-SV
   tracks have no human equivalent, so all three read empty on a human run while
   the table looked like a clean bill of health. An absent track now writes
@@ -129,13 +131,16 @@ TRACK_UNAVAILABLE = 'track_unavailable'
 @dataclass
 class PoolGateConfig:
     min_anchor: int = 8          # census: min adjacent exon anchor per N-op
-    # Census anchor walk: intervening I/D ops tolerated between the N-op and
-    # the aligned run that anchors it (see `_anchor_run`). Module 2H realizes a
-    # single-boundary junction move by planting a COMPENSATING indel right
-    # beside the N, so reading only ops[i±1] scored 87% of the junctions
-    # RECTIFY creates as anchor 0 — never censused, never gated.
-    max_adj_indel_ops: int = 2   # per side
-    max_adj_indel_bp: int = 20   # per side, summed over those ops
+    # Census anchor walk (see `_anchor_run`): how much intervening I/D the walk
+    # may step over between the N-op and the aligned run that anchors it.
+    # Module 2H realizes a single-boundary junction move by planting a
+    # COMPENSATING indel right beside the N, so reading only ops[i±1] scored
+    # 87% of the junctions RECTIFY creates as anchor 0 — never censused, never
+    # gated. Both budgets are per SIDE of the N-op. The full measured
+    # sensitivity of the pair is tabulated in `_anchor_run`; on the Sumner
+    # panel the OP limit is the binding one, not the bp budget.
+    adj_indel_max_ops: int = 2   # intervening I/D ops tolerated, per side
+    adj_indel_max_bp: int = 30   # their summed length, per side
     overhang_cap: int = 60       # junction-adjacent query bases assessed
     err_bits: float = 2.0        # bits removed per alignment error in window
     q_canon: float = 40.0        # canonical-track admit threshold (644h)
@@ -357,7 +362,8 @@ def _canonicalize(chrom_seq: str, start: int, end: int, max_shift: int) -> Tuple
 
 
 def _anchor_run(ops, i_n: int, direction: int,
-                cfg: PoolGateConfig) -> Tuple[int, str]:
+                adj_indel_max_ops: int = 2,
+                adj_indel_max_bp: int = 30) -> Tuple[int, str]:
     """Aligned bases anchoring one side of the N-op at cigar index ``i_n``.
 
     Returns ``(anchor_bases, adjacent_indel_label)``, the label using the
@@ -365,9 +371,10 @@ def _anchor_run(ops, i_n: int, direction: int,
     the FIRST indel op met walking toward the flank.
 
     The run sums the contiguous ``M``/``=``/``X`` ops toward the flank, stepping
-    over at most ``cfg.max_adj_indel_ops`` intervening ``I``/``D`` ops totalling
-    at most ``cfg.max_adj_indel_bp`` bp; it stops at ``N``/``S``/``H``/``P``, and
-    at an indel run past either budget.
+    over at most ``adj_indel_max_ops`` intervening ``I``/``D`` ops whose lengths
+    sum to at most ``adj_indel_max_bp``; it stops at ``N``/``S``/``H``/``P``, and
+    at an indel run past either budget. Both budgets apply PER SIDE, and the bp
+    budget is a TOTAL over the stepped-over ops (not per op).
 
     **Why walk at all.** Module 2H realizes a single-boundary junction move by
     re-labelling the boundary with a COMPENSATING indel placed immediately
@@ -376,15 +383,40 @@ def _anchor_run(ops, i_n: int, direction: int,
     ``69M 3699N 61M 468N`` becomes ``69M 3699N 60M 1I 469N``. Reading only
     ``ops[i±1]`` and requiring it to be M/=/X therefore scored exactly the
     junctions most in need of gating as anchor 0, so they were never enumerated
-    — not admitted, not reviewed, not demoted. Measured on the Sumner RNA004
-    panel (dev/sumner_misplaced_panel_20260904, 100 reads, 121 created N-ops):
-    16/121 censused before, 80/121 after.
+    — not admitted, not reviewed, not demoted.
+
+    **Measured sensitivity** — created N-ops censused on the Sumner RNA004
+    panel (dev/sumner_misplaced_panel_20260904, 100 reads, 121 junctions that
+    ``correct`` created), replayed from the panel's own CIGARs. The single
+    adjacent op (the pre-fix rule) censuses **16/121**:
+
+    ==========  ====  ====  ====  ====  =====  =====
+    max_ops \\   10    20    30    50    100    inf   (max_bp)
+    ==========  ====  ====  ====  ====  =====  =====
+    1             60    69    69    75     75     75
+    **2**         69  **80**  **80**  87     87     87
+    3             70    84    85    92     92     92
+    4             70    85    90    97     97     97
+    inf           70    85    90    97     97     97
+    ==========  ====  ====  ====  ====  =====  =====
+
+    Read the table before changing either default. On this panel the **op count
+    is the binding constraint, not the bp budget**: at ``max_ops=2`` the 20 and
+    30 bp budgets are identical (80/121), and the 97/121 ceiling needs
+    ``max_ops>=4`` *and* ``max_bp>=50``. The extra junctions bought by relaxing
+    the op limit are 2F's ``4M4I3M4I1M``-style rescued exons — shapes where no
+    contiguous anchor really exists and the "anchor" is a sum over fragments —
+    which is why the default keeps ``max_ops=2`` while allowing 30 bp of
+    single-boundary indel. Both are exposed on ``rectify pool-gate``
+    (``--adj-indel-max-ops`` / ``--adj-indel-max-bp``) so the trade-off can be
+    re-measured rather than argued.
 
     This is a **coverage** fix, not a threshold change: ``min_anchor`` and both
     track thresholds are untouched, and a genuinely short anchor
-    (``4M 60N 30M``) still yields 4 and is still refused. The budgets keep it
-    that way — 2F's ``4M4I3M4I1M``-style rescued exons, where no contiguous
-    anchor really exists, stay out.
+    (``4M 60N 30M``) still yields 4 and is still refused. The returned anchor is
+    monotone non-decreasing in both budgets and is never smaller than the
+    pre-fix single-op rule, so widening a budget can only ADD junctions to the
+    census, never drop one.
 
     The sibling ``_side_features`` (the q-scorer) has always walked I/D ops, so
     this also removes an internal inconsistency: the score was indel-tolerant
@@ -405,7 +437,7 @@ def _anchor_run(ops, i_n: int, direction: int,
                 label = ('I' if op == 1 else 'D') + str(ln)
             n_ops += 1
             n_bp += ln
-            if n_ops > cfg.max_adj_indel_ops or n_bp > cfg.max_adj_indel_bp:
+            if n_ops > adj_indel_max_ops or n_bp > adj_indel_max_bp:
                 break
         else:                        # N / S / H / P
             break
@@ -448,8 +480,12 @@ def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
             ref = read.reference_start
             for i, (op, ln) in enumerate(ops):
                 if op == 3:
-                    lf, adj_l = _anchor_run(ops, i, -1, cfg)
-                    rt, adj_r = _anchor_run(ops, i, +1, cfg)
+                    lf, adj_l = _anchor_run(ops, i, -1,
+                                            cfg.adj_indel_max_ops,
+                                            cfg.adj_indel_max_bp)
+                    rt, adj_r = _anchor_run(ops, i, +1,
+                                            cfg.adj_indel_max_ops,
+                                            cfg.adj_indel_max_bp)
                     if min(lf, rt) >= cfg.min_anchor:
                         s, e = _canonicalize(chrom_seq, ref, ref + ln,
                                              cfg.max_ambiguity_shift)
