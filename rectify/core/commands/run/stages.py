@@ -57,7 +57,7 @@ def _run_alignment(
     require_compass_index: bool = False,
     bbmap_path: Optional[str] = None,
     bwa_path: Optional[str] = None,
-    resolver_atac: bool = False,
+    resolver_atac: bool = True,
     junction_pool_max_intron_len: int = 0,
     junction_pool_min_anchor_bp: int = 0,
 ) -> Tuple[Dict[str, Path], Path]:

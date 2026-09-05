@@ -450,7 +450,7 @@ def _process_one_sample(
                         require_compass_index=getattr(args, 'require_compass_index', False),
                         bbmap_path=getattr(args, 'bbmap_path', None),
                         bwa_path=getattr(args, 'bwa_path', None),
-                        resolver_atac=getattr(args, 'resolver_atac', False),
+                        resolver_atac=getattr(args, 'resolver_atac', True),
                         junction_pool_max_intron_len=getattr(
                             args, 'junction_pool_max_intron_len', 0),
                         junction_pool_min_anchor_bp=getattr(
@@ -903,7 +903,7 @@ def _run_single_sample(args) -> int:
             require_compass_index=getattr(args, 'require_compass_index', False),
             bbmap_path=getattr(args, 'bbmap_path', None),
             bwa_path=getattr(args, 'bwa_path', None),
-            resolver_atac=getattr(args, 'resolver_atac', False),
+            resolver_atac=getattr(args, 'resolver_atac', True),
             junction_pool_max_intron_len=getattr(
                 args, 'junction_pool_max_intron_len', 0),
             junction_pool_min_anchor_bp=getattr(
