@@ -122,6 +122,106 @@ def _strip_aligner_prefix(bam_entry: str) -> str:
     return bam_entry
 
 
+def penalty_table_protocol(config) -> str:
+    """Map this run's protocol flags onto a bundled penalty-table protocol key.
+
+    The bundled tables are keyed ``drs`` / ``cdna`` / ``qsrev``:
+
+    * ``cdna``  — ONT PCR-cDNA (``--ONT-cDNA``).
+    * ``qsrev`` — QuantSeq REV geometry: dT-primed cDNA (``--dT-primed-cDNA``)
+      and NET-seq (``--netseq``), which shares that geometry.
+    * ``drs``   — direct RNA (the default).
+    """
+    if config.get('ont_cDNA'):
+        return 'cdna'
+    if config.get('is_netseq') or config.get('dt_primed_cDNA'):
+        return 'qsrev'
+    return 'drs'
+
+
+def select_penalty_tables(config, log=None):
+    """Resolve the junction / STR penalty tables for Module 2H.
+
+    An explicit ``--junction-penalty-table`` / ``--str-penalty-table`` always
+    wins.  Otherwise the tables bundled for **this run's own organism and
+    protocol** are selected; a table calibrated on a different organism is
+    never substituted, and when nothing is bundled for the organism the
+    scorer falls back to flat edit costs with a WARNING that names it.
+
+    Empirical HP/STR penalties are the whole basis of the "within the
+    sub-integer HP noise floor" comparison in ``refine_read_junctions``, so
+    silently running with none of them is a materially different algorithm —
+    hence a log line in every case (ISSUE-005).
+
+    Args:
+        config: the correction config dict (needs ``organism``,
+            ``genome_path`` and the protocol flags).
+        log:    logger to use (defaults to this module's).
+
+    Returns:
+        ``(junction_table_path, str_table_path)`` as strings or ``None``.
+    """
+    log = log or logging.getLogger(__name__)
+    explicit_j = config.get('junction_penalty_table')
+    explicit_s = config.get('str_penalty_table')
+    if explicit_j or explicit_s:
+        log.info(
+            "  Module 2H penalty tables (user-supplied): junction=%s str=%s",
+            explicit_j or 'none', explicit_s or 'none',
+        )
+        return explicit_j, explicit_s
+
+    from ...data import (
+        BUNDLED_GENOMES,
+        detect_organism_from_genome,
+        get_bundled_junction_penalty_table,
+        get_bundled_str_penalty_table,
+        normalize_organism,
+    )
+
+    org = config.get('organism')
+    if not org and config.get('genome_path'):
+        try:
+            org = detect_organism_from_genome(Path(str(config['genome_path'])))
+        except Exception:               # detection is best-effort, never fatal
+            org = None
+    if not org:
+        log.warning(
+            "  Module 2H: organism unknown (pass --organism) — no empirical "
+            "penalty table loaded; scoring falls back to flat edit costs."
+        )
+        return None, None
+
+    org = normalize_organism(org)
+    protocol = penalty_table_protocol(config)
+    jpt = get_bundled_junction_penalty_table(org, protocol=protocol)
+    spt = get_bundled_str_penalty_table(org, protocol=protocol)
+    if jpt is None:
+        log.warning(
+            "  Module 2H: no bundled %s junction penalty table for organism "
+            "'%s' — scoring falls back to flat edit costs (no HP/STR context). "
+            "Supply one with --junction-penalty-table.",
+            protocol, org,
+        )
+        return None, None
+
+    version = (BUNDLED_GENOMES.get(org, {})
+               .get('junction_penalty_table', {})
+               .get('version', 'unversioned'))
+    log.info(
+        "  Module 2H penalty table: organism=%s protocol=%s version=%s path=%s",
+        org, protocol, version, jpt,
+    )
+    if spt is None:
+        log.info(
+            "  Module 2H: no bundled STR penalty table for organism=%s "
+            "protocol=%s — HP penalties only.", org, protocol,
+        )
+    else:
+        log.info("  Module 2H STR penalty table: %s", spt)
+    return str(jpt), (str(spt) if spt is not None else None)
+
+
 def setup_logging(verbose: bool = False):
     """Configure logging for command execution."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -787,6 +887,12 @@ def run(args):
                                 "(will use single-table mode): %s", _pts_exc
                             )
 
+                    # Empirical penalty tables (ISSUE-005): before this, `correct`
+                    # loaded NONE unless the user passed a path (the per-UMI-bin
+                    # branch above is ONT-cDNA only), so every DRS run scored
+                    # junctions with flat edit costs and no STR context — silently.
+                    _jpt, _spt = select_penalty_tables(config)
+
                     _refine_stats = refine_bam_junctions(
                         input_bam=bam_to_process,
                         output_bam=_refined_bam,
@@ -802,8 +908,8 @@ def run(args):
                         max_junction_size=config.get('junction_max_size'),
                         max_candidates_per_nop=config.get('junction_max_candidates_per_nop'),
                         sort_and_index=True,
-                        penalty_table_path=config.get('junction_penalty_table'),
-                        str_penalty_table_path=config.get('str_penalty_table'),
+                        penalty_table_path=_jpt,
+                        str_penalty_table_path=_spt,
                         prebuilt_junction_pool=_prebuilt_pool,
                         prebuilt_annotated_set=_prebuilt_annot_set,
                         sort_threads=config.get('threads', 1),
