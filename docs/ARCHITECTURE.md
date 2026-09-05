@@ -380,14 +380,32 @@ The resolver rebuilds it around several deliberate improvements:
   `--resolver-acceptor-classes prp18` opts in the alternative-3'SS classes
   measured in Roy et al. 2023 NAR (BG: TG/CG/GG + non-G: AT) for
   alternative-splicing missions (~×4.8 acceptor candidate density, hence
-  opt-in). `--resolver-atac` adds AT-AC introns as a **paired** class (AT
-  donor ↔ AC acceptor only, never AT..AG / GT..AC): yeast splices AT-AC
-  through its major spliceosome (Talkish et al. 2019 PLoS Genet, SUT635) and
-  in human it is the U12-type minor-spliceosome class. AT-AC placements rank
-  below GT..AG and GC..AG at equal score.
+  opt-in). AT-AC introns are enumerated as a **paired** class (AT donor ↔ AC
+  acceptor only, never AT..AG / GT..AC) — **on by default since 2026-09-05**,
+  for every organism: yeast splices AT-AC through its *major* spliceosome
+  (Talkish et al. 2019 PLoS Genet, SUT635) and in human it is the U12-type
+  minor-spliceosome class, so every eukaryote has real AT-AC junctions and
+  leaving the class off let a real one be snapped onto a chance GT..AG. AT-AC
+  runs as a second paired pass — never a union with the GT/GC..AG kinds, which
+  would admit AT..AG / GT..AC — and its placements rank below GT..AG and
+  GC..AG at equal score, so the canonical answer wins every tie. Pass
+  `--no-resolver-atac` to reproduce the pre-flip candidate space;
+  `--resolver-atac` is kept as a no-op for scripts written while it was opt-in.
 - **HP-aware scoring.** Each candidate placement is scored with the same
   chemistry-calibrated homopolymer-aware edit distance used everywhere else in
-  RECTIFY, with a strict `>`-only early-exit cutoff.
+  RECTIFY, with a strict `>`-only early-exit cutoff. The resolver's numba
+  kernel for this DP is **on by default** (lazily loaded; `RECTIFY_HP_ED_NUMBA=0`
+  opts out) — it is ~20× faster per candidate than the pure-Python fallback,
+  which matters because the per-clip candidate budget scales with the search
+  window (below). The correct-stage kernel in `splice_aware_5prime.py` remains
+  opt-in.
+- **Window-scaled candidate ceiling.** `max_candidates_per_clip` is a *floor*,
+  scaled by each clip's information-bounded window: the configured count is the
+  budget for a 5,000 bp window (the yeast calibration) and grows from there, so
+  a mammalian `--max-intron` does not silently strangle the search. Measured on
+  human chr5, the old flat ceiling abandoned 62% of enumerating clips and cost 5
+  of 7 genuine junctions; the scaled one abandons 4% and recovers them. If numba
+  is genuinely unavailable, the resolver warns once that the run will be slow.
 - **Unambiguous-winner acceptance.** A placement is accepted only when
   `ed <= max_edit_frac * L` **and** every competitor within `min_margin` is the
   *same* junction after ambiguity canonicalization — never a fixed ±k window.

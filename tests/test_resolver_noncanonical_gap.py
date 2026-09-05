@@ -133,8 +133,17 @@ def test_index_kinds_are_pinned():
 
 
 def test_default_query_path_is_still_canonical_only():
-    """The 721 figures describe DEFAULT behavior; pin that the default
-    resolver kind selection never touches the extended arrays."""
+    """The 721 figures describe DEFAULT behavior; pin that the CANONICAL
+    resolver kind selectors never touch the extended arrays.
+
+    2026-09-05: AT-AC became the default (Kevin, every organism), so a default
+    RUN now does enumerate don_at_*/acc_ac_* — via a SECOND paired pass through
+    `_site_kinds_atac` / `_boundary_kinds_atac`. This pin is unchanged and still
+    meaningful because it is about the canonical SELECTORS below, which the
+    second-pass design deliberately leaves alone: if AT-AC (or anything else)
+    ever leaks into `_site_kinds` / `_boundary_kinds` themselves, that is the
+    union planning/722 refuted and this fails. Re-pinned rather than deleted so
+    the 721/722b evidence survives the flip."""
     from rectify.core.align.overhang_resolver import (
         _boundary_kinds, _site_kinds,
     )

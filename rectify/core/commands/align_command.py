@@ -234,18 +234,35 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         )
     )
 
+    # AT-AC is ON by default since 2026-09-05. Both flags carry default=True so
+    # the resulting value does not depend on argparse's registration order for
+    # a shared dest.
     aligner_group.add_argument(
         '--resolver-atac',
         dest='resolver_atac',
         action='store_true',
-        default=False,
+        default=True,
         help=(
-            "Also enumerate AT-AC introns in the overhang_resolver, as a PAIRED "
-            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC). Yeast "
-            "splices AT-AC through its major spliceosome (Talkish et al. 2019 "
-            "PLoS Genet 15:e1008249, SUT635); in human, AT-AC is the U12-type "
-            "minor-spliceosome class. Ranked below GT..AG / GC..AG at equal "
-            "score. Default off = the planning/720-measured candidate space."
+            "Enumerate AT-AC introns in the overhang_resolver (DEFAULT ON since "
+            "2026-09-05). Retained as a no-op for compatibility with scripts "
+            "written while it was opt-in; use --no-resolver-atac to disable."
+        )
+    )
+    aligner_group.add_argument(
+        '--no-resolver-atac',
+        dest='resolver_atac',
+        action='store_false',
+        default=True,
+        help=(
+            "Disable AT-AC intron enumeration in the overhang_resolver, "
+            "reproducing the pre-2026-09-05 candidate space. AT-AC is a PAIRED "
+            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC), "
+            "ranked below GT..AG / GC..AG at equal score. It is on by default "
+            "because yeast splices AT-AC through its MAJOR spliceosome (Talkish "
+            "et al. 2019 PLoS Genet 15:e1008249, SUT635) and in human AT-AC is "
+            "the U12-type minor-spliceosome class — every eukaryote has them, "
+            "and with the class off a real AT-AC junction gets snapped onto a "
+            "chance GT..AG."
         )
     )
 
@@ -1076,7 +1093,7 @@ def run_align(args: argparse.Namespace) -> int:
                 max_intron=getattr(args, 'max_intron', 5000),
                 acceptor_classes=getattr(
                     args, 'resolver_acceptor_classes', 'canonical'),
-                atac=getattr(args, 'resolver_atac', False),
+                atac=getattr(args, 'resolver_atac', True),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"

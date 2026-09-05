@@ -273,14 +273,22 @@ class TestWindowScaledCeiling:
         """The scaling trades a silent refusal for real work: on the human
         holdout it took candidates from 65k to 2.08M, which is ~50 min on the
         Python DP versus ~2 min with the numba kernel. A silent multi-hour run
-        is the very failure mode this ceiling was added to prevent, so say so."""
+        is the very failure mode this ceiling was added to prevent, so say so.
+
+        The kernel is default-ON (lazily loaded) as of the integration tip, so
+        reaching this warning means numba is genuinely UNAVAILABLE — the text
+        must say "install it / do not set RECTIFY_HP_ED_NUMBA=0", never
+        "switch it on"."""
         ohr._SLOW_WINDOW_WARNED.clear()
         caplog.set_level(logging.WARNING)
         cfg = ResolverConfig()
         for _ in range(20):
             ohr._candidate_ceiling(cfg, 500_000)
-        n = caplog.text.count('RECTIFY_HP_ED_NUMBA=1')
+        n = caplog.text.count('RECTIFY_HP_ED_NUMBA=0 is not set')
         assert n == 1, f'expected exactly one slow-path warning, got {n}'
+        assert 'RECTIFY_HP_ED_NUMBA=1' not in caplog.text, (
+            'the advice still tells the operator to switch on a kernel that is '
+            'already on by default')
         ohr._SLOW_WINDOW_WARNED.clear()
 
     def test_no_slow_path_warning_at_yeast_scale(self, caplog):
@@ -300,6 +308,51 @@ class TestWindowScaledCeiling:
         assert 'RECTIFY_HP_ED_NUMBA' not in caplog.text
         ohr._SLOW_WINDOW_WARNED.clear()
 
+    def test_a_second_class_gets_its_own_budget(self, tmp_path):
+        """A lower-ranked optional class must not starve the canonical one.
+
+        2026-09-05, when AT-AC became the default: the second pass pushed clips
+        over a SHARED per-clip budget, and the blow-up then discarded the whole
+        clip — including the canonical placement the GT/GC pass had already
+        found inside its own budget. Measured cost on the bundled yeast
+        validation arms: resolved 4 -> 3 and 7 -> 5, i.e. 3 real junctions lost,
+        all of them restored at cap=20000 (so it was the ceiling, not AT-AC
+        judgement). Budgeting per pass fixes it without loosening the guard.
+
+        On this fixture the canonical pass enumerates 781 candidates and the
+        AT-AC pass 537. With a budget of 900 each pass fits its own, so nothing
+        is refused; under the old shared budget 781+537=1318 > 900 would have
+        abandoned the clip."""
+        ohr._BLOWUP_WARNED.clear()
+        seq = _planted_genome(tmp_path)
+        bam_in = _clipped_bam(tmp_path, seq)
+        run_overhang_resolver(
+            str(bam_in), str(tmp_path / 'g.fa'), str(tmp_path / 'o.bam'),
+            config=ResolverConfig(max_candidates_per_clip=900, atac=True))
+        st = run_overhang_resolver.last_stats
+        assert st.refused_candidate_blowup == 0, (
+            'a per-pass budget was not applied — the second class is still '
+            'spending the first one budget')
+        assert st.candidates_evaluated > 900, (
+            f'fixture no longer exceeds a shared budget ({st.candidates_evaluated}) '
+            'so this test would pass vacuously')
+
+    def test_canonical_pass_overflow_still_abandons_the_whole_clip(self, tmp_path):
+        """The other direction: when the FIRST pass itself overflows there is no
+        completed class to keep, so the historical whole-clip refusal stands —
+        the guard is not being loosened, only stopped from cross-charging."""
+        ohr._BLOWUP_WARNED.clear()
+        seq = _planted_genome(tmp_path)
+        bam_in = _clipped_bam(tmp_path, seq)
+        run_overhang_resolver(
+            str(bam_in), str(tmp_path / 'g.fa'), str(tmp_path / 'o.bam'),
+            config=ResolverConfig(max_candidates_per_clip=700, atac=True))
+        st = run_overhang_resolver.last_stats
+        assert st.refused_candidate_blowup == 1
+        assert st.resolved == 0
+        # and it is counted ONCE, as a blow-up, not also as no_candidates
+        assert st.no_candidates == 0
+
     def test_warning_names_the_contig_count_and_window_not_a_yeast_remedy(self, caplog):
         """ISSUE-010(b): the advice used to declare the contig repetitive and
         tell the operator to add it to RECTIFY_SKIP_REGIONS — on human that
@@ -310,7 +363,7 @@ class TestWindowScaledCeiling:
         txt = caplog.text
         assert 'chr5' in txt and '221,086' in txt and '500,000' in txt
         assert '200,000' in txt
-        assert '--max-intron' in txt and 'RECTIFY_HP_ED_NUMBA' in txt
+        assert '--max-intron' in txt and 'RECTIFY_HP_ED_NUMBA=0' in txt
         # skip-regions may still be MENTIONED, but only as the conditional
         # last resort for a genuinely repetitive contig
         i = txt.find('RECTIFY_SKIP_REGIONS')
