@@ -35,10 +35,17 @@ from rectify.core.splice.junction_scoring import (  # noqa: E402
 )
 
 CHROM = "chr5"
-# The pool builders key junctions by ``standardize_chrom_name``.  These tests are
-# about COORDINATES, so they compare against the standardized name rather than the
-# raw one — chromosome-name policy is a separate defect (ISSUE-001).
-POOL_CHROM = standardize_chrom_name(CHROM)
+
+
+def _pool_chrom():
+    """The pool builders key junctions by ``standardize_chrom_name``.
+
+    These tests are about COORDINATES, so they compare against the standardized
+    name rather than the raw one — chromosome-name policy is a separate defect
+    (ISSUE-001).  Resolved at CALL time, not import time: the contig registry is
+    process-global module state that another test module may have populated.
+    """
+    return standardize_chrom_name(CHROM)
 CHROM_LEN = 200_000
 REF_START = 1_000
 
@@ -186,7 +193,7 @@ def test_pool_builders_report_only_real_coordinates(tmp_path):
              _make_read(SINGLE_CIGAR, name="single", ref_start=150_000)]
     _write_bam(bam, reads)
 
-    truth = {(POOL_CHROM, s, e) for r in reads
+    truth = {(_pool_chrom(), s, e) for r in reads
              for _i, s, e in _expected_n_ops(r.reference_start, r.cigartuples)}
     assert len(truth) == 4
 
@@ -203,5 +210,5 @@ def test_pool_builder_single_intron_read_unchanged(tmp_path):
     bam = tmp_path / "single_intron.bam"
     _write_bam(bam, [_make_read(SINGLE_CIGAR, name="single")])
     assert collect_junctions_from_bam(str(bam)) == {
-        (POOL_CHROM, REF_START + 50, REF_START + 350)
+        (_pool_chrom(), REF_START + 50, REF_START + 350)
     }
