@@ -182,8 +182,137 @@ def test_warning_is_throttled_to_once_per_contig(caplog):
     ohr._BLOWUP_WARNED.clear()
     caplog.set_level(logging.WARNING)
     for _ in range(50):
-        ohr._warn_blowup('chrBad', 2000)
+        ohr._warn_blowup('chrBad', 2000, 2001, 5000)
     assert caplog.text.count('candidate blow-up') == 1
     assert 'chrBad' in caplog.text
-    ohr._warn_blowup('chrOther', 2000)  # a different contig still gets a line
+    ohr._warn_blowup('chrOther', 2000, 2001, 5000)  # a different contig still logs
     assert caplog.text.count('candidate blow-up') == 2
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-010 — the ceiling is a FLOOR that scales with the search window.
+# ---------------------------------------------------------------------------
+
+class TestWindowScaledCeiling:
+    """`max_candidates_per_clip` was calibrated on yeast at max_intron=5000.
+    Candidates are near_sites x far_sites and the far factor is the search
+    WINDOW times the reference's site density, so the same healthy clip
+    enumerates orders of magnitude more on a mammalian genome at a mammalian
+    max_intron — without being pathological.
+
+    Measured on human chr5 (GRCh38, 181.5 Mbp) over the 1,000 real ONT reads of
+    `dev/sumner_misplaced_panel_20260904/holdout/chr5_holdout1k.bam`:
+
+        max_intron    median cands/clip     max     abandoned at a FLAT 2000
+        5,000 (yeast)              774    2,742     1/50  ( 2%)
+        500,000 (human)         31,829  221,086    31/50  (62%)
+
+    and the flat ceiling cost 5 of 7 genuine junctions on that data (removing it
+    recovered all 5 at byte-identical coordinates and edit distances). The
+    window-scaled ceiling takes that 62% back to 4% while still catching the
+    221k-candidate outlier.
+
+    Both directions are pinned: yeast-scale behaviour must be byte-identical,
+    human-scale must actually scale."""
+
+    def test_at_or_below_the_reference_window_the_config_value_is_verbatim(self):
+        cfg = ResolverConfig()
+        for w in (0, 1, 50, 4999, ohr._CEILING_REF_WINDOW):
+            assert ohr._candidate_ceiling(cfg, w) == cfg.max_candidates_per_clip, (
+                f'yeast-scale behaviour changed at W={w} — every run at or '
+                f'below max_intron={ohr._CEILING_REF_WINDOW} must be identical')
+
+    def test_above_the_reference_window_it_scales_linearly(self):
+        cfg = ResolverConfig()
+        base, ref = cfg.max_candidates_per_clip, ohr._CEILING_REF_WINDOW
+        assert ohr._candidate_ceiling(cfg, 10 * ref) == 10 * base
+        assert ohr._candidate_ceiling(cfg, 100 * ref) == 100 * base
+        # the human case that motivated this: 500 kb window -> 200k candidates,
+        # which covers 48 of the 50 measured chr5 clips
+        assert ohr._candidate_ceiling(cfg, 500_000) == 200_000
+
+    def test_it_is_a_floor_never_a_reduction(self):
+        # a tightened config must not be loosened by the scaling, and a loosened
+        # one must not be pulled down toward the default
+        tight = ResolverConfig(max_candidates_per_clip=5)
+        assert ohr._candidate_ceiling(tight, 1_000_000) >= 5
+        loose = ResolverConfig(max_candidates_per_clip=10 ** 9)
+        for w in (50, 5000, 500_000):
+            assert ohr._candidate_ceiling(loose, w) >= 10 ** 9
+
+    def test_the_guard_still_fires_on_a_genuine_outlier(self):
+        # 221,086 candidates in a 500 kb window — the worst real human clip —
+        # is still refused. The scaling must not disarm the circuit breaker.
+        cfg = ResolverConfig()
+        assert 221_086 > ohr._candidate_ceiling(cfg, 500_000)
+
+    def test_yeast_scale_run_is_unchanged_end_to_end(self, tmp_path):
+        # the fixture's window is max_intron=5000, so the scaled ceiling must
+        # reproduce the flat-ceiling result exactly
+        stats, _ = _run(tmp_path, ResolverConfig().max_candidates_per_clip,
+                        'scaled_default')
+        assert stats.refused_candidate_blowup == 0
+        assert stats.candidates_evaluated > 100
+
+    def test_tight_ceiling_still_bounds_work_at_a_large_max_intron(self, tmp_path):
+        # scaling is relative to the configured value, so an operator who
+        # deliberately tightens the guard keeps a tight guard
+        ohr._BLOWUP_WARNED.clear()
+        seq = _planted_genome(tmp_path)
+        bam_in = _clipped_bam(tmp_path, seq)
+        out = tmp_path / 'out_bigwin.bam'
+        run_overhang_resolver(
+            str(bam_in), str(tmp_path / 'g.fa'), str(out),
+            config=ResolverConfig(max_candidates_per_clip=5, max_intron=500_000),
+        )
+        st = run_overhang_resolver.last_stats
+        assert st.refused_candidate_blowup == 1
+        assert st.candidates_evaluated <= 5 * (500_000 // ohr._CEILING_REF_WINDOW) + 1
+
+    def test_slow_path_is_announced_once_not_silently_endured(self, caplog):
+        """The scaling trades a silent refusal for real work: on the human
+        holdout it took candidates from 65k to 2.08M, which is ~50 min on the
+        Python DP versus ~2 min with the numba kernel. A silent multi-hour run
+        is the very failure mode this ceiling was added to prevent, so say so."""
+        ohr._SLOW_WINDOW_WARNED.clear()
+        caplog.set_level(logging.WARNING)
+        cfg = ResolverConfig()
+        for _ in range(20):
+            ohr._candidate_ceiling(cfg, 500_000)
+        n = caplog.text.count('RECTIFY_HP_ED_NUMBA=1')
+        assert n == 1, f'expected exactly one slow-path warning, got {n}'
+        ohr._SLOW_WINDOW_WARNED.clear()
+
+    def test_no_slow_path_warning_at_yeast_scale(self, caplog):
+        ohr._SLOW_WINDOW_WARNED.clear()
+        caplog.set_level(logging.WARNING)
+        cfg = ResolverConfig()
+        for w in (50, 5000, 9999):        # < 10x the floor => not the slow case
+            ohr._candidate_ceiling(cfg, w)
+        assert 'RECTIFY_HP_ED_NUMBA' not in caplog.text
+
+    def test_no_slow_path_warning_when_the_kernel_is_active(self, caplog, monkeypatch):
+        from rectify.core.splice import overhang_informativeness as oi
+        ohr._SLOW_WINDOW_WARNED.clear()
+        caplog.set_level(logging.WARNING)
+        monkeypatch.setattr(oi, '_hp_ed_bounded_numba', object(), raising=False)
+        ohr._candidate_ceiling(ResolverConfig(), 500_000)
+        assert 'RECTIFY_HP_ED_NUMBA' not in caplog.text
+        ohr._SLOW_WINDOW_WARNED.clear()
+
+    def test_warning_names_the_contig_count_and_window_not_a_yeast_remedy(self, caplog):
+        """ISSUE-010(b): the advice used to declare the contig repetitive and
+        tell the operator to add it to RECTIFY_SKIP_REGIONS — on human that
+        means discarding a whole chromosome."""
+        ohr._BLOWUP_WARNED.clear()
+        caplog.set_level(logging.WARNING)
+        ohr._warn_blowup('chr5', 200_000, 221_086, 500_000)
+        txt = caplog.text
+        assert 'chr5' in txt and '221,086' in txt and '500,000' in txt
+        assert '200,000' in txt
+        assert '--max-intron' in txt and 'RECTIFY_HP_ED_NUMBA' in txt
+        # skip-regions may still be MENTIONED, but only as the conditional
+        # last resort for a genuinely repetitive contig
+        i = txt.find('RECTIFY_SKIP_REGIONS')
+        assert i > 0 and 'genuinely repetitive' in txt[:i]
+        assert 'repetitive/low-complexity-contig class' not in txt

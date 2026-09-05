@@ -128,6 +128,12 @@ Case B1 intron-length-D -> N snap, and ``mm:<d>-<e>:<ed>><ed'>`` /
 linear rescues. **Both tags are written ONLY on records the resolver actually
 changed — there is no sentinel value on an untouched read**, so a census must
 treat "tag absent" as "not rewritten" and never as "rewritten with no move".
+Every ``XB`` write here is unconditional, so when one read takes several moves
+in a pass (a D-merge and then a shift, say) ``XB`` reports only the LAST one —
+it is the final move, not a move log. And ``XB`` is not ours alone: the ONT
+cDNA pipeline writes ``XB:Z:<n_top>/<n_bot>`` strand-split cluster counts
+(``core/cdna/io.py``), so a value like ``1/0`` in a cDNA BAM is that tag, not
+this one.
 MD/NM are dropped on rewritten records (stale after CIGAR surgery), and a
 calmd '='-compressed SEQ is decoded to real letters on any rewrite (a '=' only
 means anything under the alignment it was written for — see
@@ -259,6 +265,37 @@ class ResolverConfig:
     # A ceiling set too LOW silently refuses legitimate clips — the failure mode
     # this guard must not become. That is why every refusal is counted and
     # logged rather than silent.
+    #
+    # 🔴 THIS IS A FLOOR, NOT THE CEILING (2026-09-05, ISSUE-010). The number
+    # above was calibrated on yeast at `max_intron=5000`. Candidates are
+    # near_sites x far_sites, and the far factor is the SEARCH WINDOW times the
+    # reference's acceptor density — so on a large genome at a large
+    # `max_intron` the same healthy clip enumerates orders of magnitude more
+    # candidates without being pathological at all. Measured on human chr5
+    # (GRCh38, 181.5 Mbp; 1,000 real ONT reads, `holdout/chr5_holdout1k.bam`;
+    # 964 clips, 50 of which enumerate):
+    #
+    #     max_intron    median cands/clip   max      >2000
+    #     5,000 (yeast)              774    2,742    1/50   (2%)
+    #     500,000 (human)         31,829  221,086   31/50  (62%)
+    #
+    # and the recall cost is real, not theoretical: the same 1,000 reads resolve
+    # 7 clips at max_intron=5,000 but only 2 at max_intron=500,000 — the flat
+    # ceiling ABANDONS 5 genuine junctions. Removing the ceiling entirely
+    # recovers all 5 at byte-identical coordinates and edit distances, plus one
+    # 267 kb junction only reachable at the human window (8 total), while
+    # ambiguity rejections move 0 -> 1. So the refusals were not chance hits
+    # from a bigger candidate space; they were real junctions.
+    #
+    # `_candidate_ceiling` therefore scales this number with the clip's OWN
+    # information-bounded window W (already organism-derived: W is
+    # `alpha * 2**I_eff` clamped by `max_intron`, and 30/50 measured human clips
+    # sat BELOW the clamp). At W <= _CEILING_REF_WINDOW the value here is used
+    # verbatim, so every yeast-scale run is byte-identical. Measured effect of
+    # the scaling on the same human data: 62% -> 4% of enumerating clips
+    # abandoned, with the genuine outliers (221k candidates in a 500 kb window)
+    # still caught — i.e. it reproduces the yeast REFUSAL RATE on human data
+    # rather than importing a yeast COUNT.
     max_candidates_per_clip: int = 2000
 
     # --- v2 junction re-arbitration (planning/644b) --------------------------
@@ -407,26 +444,104 @@ def _donor_rank(chrom_seq: str, side: str, strand: str,
 
 _BLOWUP_WARNED: set = set()
 
+# The window `ResolverConfig.max_candidates_per_clip` was calibrated against
+# (the yeast `max_intron` default). `_candidate_ceiling` treats the configured
+# count as the budget for a window of THIS size and scales from there, so a
+# yeast-scale run is byte-identical and a mammalian-scale one is not silently
+# strangled by a constant derived from a 12 Mbp genome. See the long note on
+# `ResolverConfig.max_candidates_per_clip` for the human measurement.
+_CEILING_REF_WINDOW = 5000
 
-def _warn_blowup(chrom: str, ceiling: int) -> None:
+
+def _hp_ed_numba():
+    """The active numba kernel, or None. Read through the module rather than
+    imported by value: the kernel is installed at import time from
+    RECTIFY_HP_ED_NUMBA, and tests monkeypatch it."""
+    from ..splice import overhang_informativeness as _oi
+    return getattr(_oi, '_hp_ed_bounded_numba', None)
+
+
+def _candidate_ceiling(cfg: ResolverConfig, w: int) -> int:
+    """Per-clip candidate ceiling, scaled to the window actually searched.
+
+    Candidates are near_sites x far_sites; the far factor grows with the search
+    window W and the reference's site density, neither of which is a property
+    of the CLIP being pathological. Scaling with W keeps the guard meaning "this
+    clip is enumerating far more than its own window can justify" on every
+    genome, instead of "this clip is enumerating more than a yeast clip would".
+    """
+    if w <= _CEILING_REF_WINDOW:
+        return cfg.max_candidates_per_clip      # byte-identical at yeast scale
+    ceiling = max(cfg.max_candidates_per_clip,
+                  int(math.ceil(cfg.max_candidates_per_clip * w / _CEILING_REF_WINDOW)))
+    if ceiling >= 10 * cfg.max_candidates_per_clip and _hp_ed_numba() is None:
+        _warn_slow_window(ceiling, cfg.max_candidates_per_clip, w)
+    return ceiling
+
+
+_SLOW_WINDOW_WARNED: list = []
+
+
+def _warn_slow_window(ceiling: int, floor: int, window: int) -> None:
+    """Warn ONCE when the window-scaled ceiling has raised the per-clip budget
+    far above its floor while the DP is still the pure-Python one.
+
+    The scaling (ISSUE-010) trades a silent REFUSAL for real work: on the human
+    chr5 holdout it takes the abandoned fraction from 62% to 4%, but it also
+    takes the candidate count from 65k to 2.08M, which is ~1.5 ms each on the
+    Python path (~50 min) versus ~65 us with the numba kernel (~2 min). A silent
+    multi-hour run is exactly the failure mode `max_candidates_per_clip` was
+    added to prevent, so the trade is announced rather than made quietly — the
+    same discipline as counting every refusal instead of dropping it.
+    """
+    if _SLOW_WINDOW_WARNED:
+        return
+    _SLOW_WINDOW_WARNED.append(True)
+    logger.warning(
+        'overhang_resolver: the %d bp search window scales the per-clip '
+        'candidate budget to %s (floor %s), but the HP edit-distance DP is the '
+        'pure-Python one — a large candidate set is ~20x slower per candidate '
+        'than the numba kernel. Set RECTIFY_HP_ED_NUMBA=1 for this stage, or '
+        'lower --max-intron, if this run takes longer than you expect.',
+        window, f'{ceiling:,}', f'{floor:,}',
+    )
+
+
+def _warn_blowup(chrom: str, ceiling: int, n_cand: int = 0, window: int = 0) -> None:
     """Log a candidate blow-up ONCE per contig.
 
     A pathological contig produces one blow-up per clip — potentially millions
     — so an unthrottled warning would itself become the performance problem it
-    is reporting. One line names the contig, which is the actionable part: the
-    operator adds it to RECTIFY_SKIP_REGIONS. The per-clip tally stays exact in
+    is reporting. The per-clip tally stays exact in
     `stats.refused_candidate_blowup`.
+
+    The line names the contig, the observed candidate count and the window that
+    produced it, because those are what an operator can act on. It deliberately
+    does NOT assert a cause: before 2026-09-05 (ISSUE-010) this warning declared
+    the contig "the repetitive/low-complexity class" and advised adding it to
+    RECTIFY_SKIP_REGIONS — advice calibrated for the yeast rDNA locus, and
+    actively wrong on a mammalian chromosome, where the ceiling fires because
+    `max_intron` is large and the genome is big, not because the contig is bad.
+    Telling a human user to skip chr5 would discard a whole chromosome.
     """
     if chrom in _BLOWUP_WARNED:
         return
     _BLOWUP_WARNED.add(chrom)
     logger.warning(
-        "overhang_resolver: candidate blow-up on contig %r — a clip exceeded "
-        "%d candidates and was ABANDONED (read passes through untouched). "
-        "This is the repetitive/low-complexity-contig class; further "
+        "overhang_resolver: candidate blow-up on contig %r — a clip enumerated "
+        "%s candidates against a %s bp search window, over its ceiling of %s, "
+        "and was ABANDONED (the read passes through untouched). Further "
         "occurrences on this contig are counted in refused_candidate_blowup "
-        "but not logged. Consider adding %r to RECTIFY_SKIP_REGIONS.",
-        chrom, ceiling, chrom,
+        "but not logged. Candidates are near_sites x far_sites, so the levers, "
+        "in order of effect: (1) lower --max-intron to the largest intron you "
+        "actually expect — the window is the dominant term; (2) set "
+        "RECTIFY_HP_ED_NUMBA=1, which makes a large candidate set affordable "
+        "rather than refused; (3) only if %r is genuinely repetitive or "
+        "low-complexity (a reporter construct, an rDNA array), add it to "
+        "RECTIFY_SKIP_REGIONS — do NOT do this for an ordinary large "
+        "chromosome, which would discard it wholesale.",
+        chrom, f'{n_cand:,}' if n_cand else 'more than its ceiling of',
+        f'{window:,}' if window else '(unrecorded)', f'{ceiling:,}', chrom,
     )
 
 
@@ -484,6 +599,10 @@ def resolve_clip(
         stats.refused_low_info += 1
         return None
     w = assessment.w_max_bp
+    # Per-clip budget, scaled to the window this clip actually earned (the
+    # configured count is the budget at _CEILING_REF_WINDOW; see
+    # ResolverConfig.max_candidates_per_clip and ISSUE-010).
+    ceiling = _candidate_ceiling(cfg, w)
 
     # One (near, far) kind pair per enabled class. The AT-AC pair is a
     # separate pass, never a union, so the pair constraint holds by
@@ -540,9 +659,9 @@ def resolve_clip(
                     stats.candidates_evaluated += 1
                     COUNTERS['candidates_evaluated'] += 1
                     n_cand += 1
-                    if n_cand > cfg.max_candidates_per_clip:
+                    if n_cand > ceiling:
                         stats.refused_candidate_blowup += 1
-                        _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                        _warn_blowup(chrom_key, ceiling, n_cand, w)
                         return None
                     _c = _cutoff()
                     ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
@@ -578,9 +697,9 @@ def resolve_clip(
                     stats.candidates_evaluated += 1
                     COUNTERS['candidates_evaluated'] += 1
                     n_cand += 1
-                    if n_cand > cfg.max_candidates_per_clip:
+                    if n_cand > ceiling:
                         stats.refused_candidate_blowup += 1
-                        _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                        _warn_blowup(chrom_key, ceiling, n_cand, w)
                         return None
                     _c = _cutoff()
                     ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
@@ -1675,11 +1794,16 @@ def run_overhang_resolver(
     # skims the summary must not have to notice a non-zero field buried mid-row.
     if stats.refused_candidate_blowup:
         logger.warning(
-            'overhang_resolver: %d clip(s) ABANDONED on the candidate ceiling '
-            '(%d). Those reads passed through unresolved — real junctions may '
-            'be unplaced on the affected contig(s). Investigate before trusting '
-            'junction counts there.',
-            stats.refused_candidate_blowup, cfg.max_candidates_per_clip,
+            'overhang_resolver: %d of %d clip(s) ABANDONED on the candidate '
+            'ceiling (%d per %d bp of search window, floor %d; max_intron=%d). '
+            'Those reads passed through unresolved — real junctions may be '
+            'unplaced. Measured on human chr5 (ISSUE-010), the clips this '
+            'refuses ARE resolvable: lower --max-intron toward the largest '
+            'intron you expect, or set RECTIFY_HP_ED_NUMBA=1, before trusting '
+            'junction counts here.',
+            stats.refused_candidate_blowup, stats.clips_assessed,
+            cfg.max_candidates_per_clip, _CEILING_REF_WINDOW,
+            cfg.max_candidates_per_clip, cfg.max_intron,
         )
     run_overhang_resolver.last_stats = stats
     return output_bam
