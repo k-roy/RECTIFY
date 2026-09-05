@@ -79,7 +79,7 @@ _SAM_REF_CONSUMING = {0, 2, 3, 7, 8}
 # pool junctions, hold-out 5 of 46), so any new phantom coordinate fails here.
 BASELINE = {
     #            harmful       beneficial          phantom pool junctions
-    'panel':   {'max_harmful': 0, 'min_beneficial': 5,  'max_phantom': 4},
+    'panel':   {'max_harmful': 0, 'min_beneficial': 7,  'max_phantom': 4},
     'holdout': {'max_harmful': 0, 'min_beneficial': 12, 'max_phantom': 5},
 }
 

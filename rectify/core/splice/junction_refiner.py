@@ -135,6 +135,7 @@ from ...utils.genome import standardize_chrom_name
 from .junction_scoring import (
     Junction,
     _CANONICAL_HP_PRIOR,
+    _CANONICAL_TIER_MAX,
     _D,
     _EQ,
     _H,
@@ -772,11 +773,16 @@ def refine_read_junctions(
         # boundary_error_window reference bases of either junction endpoint.
         # Clean M-op alignments at the boundary indicate the aligner was
         # confident; noisy boundaries are the cases that benefit from refinement.
-        # Exception: non-canonical junctions (tier >= 4, e.g. GG/AT donor) are
+        # Exception: junctions that are not a proper GT/GC..AG (tier >
+        # _CANONICAL_TIER_MAX, e.g. a GG/AT donor OR a non-AG acceptor) are
         # ALWAYS scored regardless of boundary cleanliness — the aligner can
         # produce a locally-optimal but canonically-wrong split with no nearby
         # errors (e.g. 54= leading into a GG donor), and these are exactly the
-        # cases that need correction.
+        # cases that need correction.  This bypass used to require tier >= 4,
+        # i.e. a broken DONOR, so a cleanly-aligned GT-AT (tier 3) or GT-GG
+        # (tier 2) N-op was never even scored: panel reads bc1283c7 and
+        # 12b2bc34 sat 6-7 nt from an annotated GT-AG with no indel within the
+        # boundary window, and 2H never looked at them.
         if boundary_error_window > 0:
             _t_boundary = time.perf_counter() if profile is not None else 0.0
             has_boundary_error = _has_boundary_error(
@@ -788,7 +794,7 @@ def refine_read_junctions(
                 _t_tier = time.perf_counter() if profile is not None else 0.0
                 current_filter_tier = _canonical_tier(ns, ne, genome_seq, strand)
                 _profile_time(profile, 'canonical_tier_current_filter', _t_tier)
-                if current_filter_tier < 4:
+                if current_filter_tier <= _CANONICAL_TIER_MAX:
                     if profile is not None:
                         profile.inc('n_ops_skipped_boundary_clean')
                     continue
@@ -842,11 +848,12 @@ def refine_read_junctions(
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
-        # When the current junction is non-canonical (tier ≥ 4), a canonical
-        # alternative should be preferred at equal edit-distance score (i.e., tier
-        # comparison wins over is_alt).  When the current junction is acceptably
-        # canonical (tier < 4), the read was placed there for good reason and the
-        # current junction is preferred at equal score (is_alt wins over tier).
+        # When the current junction is NOT a proper GT/GC..AG junction
+        # (tier > _CANONICAL_TIER_MAX), a canonical alternative should be preferred
+        # at equal edit-distance score (i.e., tier comparison wins over is_alt).
+        # When it IS one (tier <= _CANONICAL_TIER_MAX), the read was placed there
+        # for good reason and the current junction is preferred at equal score
+        # (is_alt wins over tier).
         _t_tier = time.perf_counter() if profile is not None else 0.0
         current_tier = _canonical_tier(ns, ne, genome_seq, strand)
         _profile_time(profile, 'canonical_tier_current_scoring', _t_tier)
@@ -855,7 +862,7 @@ def refine_read_junctions(
         # _CANONICAL_HP_PRIOR discount below is also disabled), and tier / is_novel
         # are dropped from the tie-break sort (below).  motif_blind=False is
         # byte-identical to the incumbent (arm-A).
-        tier_beats_alt = (current_tier >= 4) and not motif_blind  # True → prefer canonical over current
+        tier_beats_alt = (current_tier > _CANONICAL_TIER_MAX) and not motif_blind
 
         # The read's own junction as the POOL spells it: `_merge_del_into_intron`
         # folds a D abutting an N into the intron, so a read with `111N 3D`
@@ -914,10 +921,15 @@ def refine_read_junctions(
             # When the current junction is non-canonical, apply _CANONICAL_HP_PRIOR
             # (0.5 edit-distance units) as a discount to canonical-tier junctions so
             # that canonical alternatives win within the HP noise floor regardless of
-            # which penalty table is in use.  Non-canonical candidates (tier ≥ 4) get
-            # no discount.  When the current junction is canonical, compare raw scores.
+            # which penalty table is in use.  Non-canonical candidates get no
+            # discount.  When the current junction is canonical, compare raw scores.
+            # The SAME line defines canonical here as above: a candidate whose own
+            # acceptor is not AG must not collect the canonical prior — which is how
+            # a GT-AT incumbent used to out-discount the real GT-AG alternative.
             if tier_beats_alt:
-                canonical_discount = _CANONICAL_HP_PRIOR if tier < 4 else 0.0
+                canonical_discount = (
+                    _CANONICAL_HP_PRIOR if tier <= _CANONICAL_TIER_MAX else 0.0
+                )
                 score_cmp = score - canonical_discount
             else:
                 score_cmp = score
