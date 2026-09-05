@@ -106,6 +106,12 @@ def _run_all_parser():
     return p
 
 
+def _parse(*extra):
+    """run-all requires -o/--output-dir; omitting it makes argparse SystemExit(2)."""
+    return _run_all_parser().parse_args(
+        ['run-all', 'r.fastq.gz', '-o', 'out', '--short-read', *extra])
+
+
 @pytest.mark.parametrize('flag,dest,value,expected', [
     ('--short-read-adapter', 'short_read_adapter', 'ACGT', 'ACGT'),
     ('--short-read-adapter-r2', 'short_read_adapter_r2', 'TTTT', 'TTTT'),
@@ -115,18 +121,16 @@ def _run_all_parser():
     ('--bbmap-path', 'bbmap_path', '/opt/bbmap.sh', '/opt/bbmap.sh'),
 ])
 def test_run_all_accepts_the_new_flags(flag, dest, value, expected):
-    args = _run_all_parser().parse_args(['run-all', 'r.fastq.gz', '--short-read', flag, value])
+    args = _parse(flag, value)
     assert getattr(args, dest) == expected
 
 
 def test_trim_defaults_are_on_with_a_skip_switch():
-    args = _run_all_parser().parse_args(['run-all', 'r.fastq.gz', '--short-read'])
+    args = _parse()
     assert args.skip_short_read_trim is False           # the stage runs by default
     assert args.short_read_min_length == 20
     assert args.short_read_adapter is None              # None -> the TruSeq stem
-    args2 = _run_all_parser().parse_args(
-        ['run-all', 'r.fastq.gz', '--short-read', '--skip-short-read-trim'])
-    assert args2.skip_short_read_trim is True
+    assert _parse('--skip-short-read-trim').skip_short_read_trim is True
 
 
 def test_run_alignment_forwards_bbmap_and_bwa_paths_into_align_args():
