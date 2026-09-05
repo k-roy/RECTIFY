@@ -217,3 +217,23 @@ def test_region_axis_reverses_for_minus_strand(ax):
 def test_region_axis_explicit_unit(ax):
     T.region_axis(ax, ("chrI", 0, 5000), unit="bp")
     assert "(bp)" in ax.get_xlabel()
+
+
+# ----------------------------------------------------------------- audit 879 additions
+def test_mark_label_alignment(ax):
+    ax.set_xlim(0, 100)
+    lab = T.mark(ax, 50, "polya", label="x", ha="right")[-1]
+    assert lab.get_ha() == "right"
+    with pytest.raises(ValueError):
+        T.mark(ax, 50, "polya", label="x", ha="middle")
+
+
+def test_reads_and_strand_coverage_take_xform(ax):
+    xf = lambda p: p / 10.0
+    n = T.reads(ax, [100, 200], [400, 500], junctions=[[(200, 300)], []], xform=xf)
+    assert n >= 1
+    lo, hi = ax.get_xlim()
+    assert hi <= 60      # drawn in transformed space, not genome space
+    pos = np.arange(0, 100)
+    out = T.strand_coverage(ax, pos, np.ones(100), pos, np.ones(100), xform=xf)
+    assert out[0].get_paths()[0].vertices[:, 0].max() <= 10.5

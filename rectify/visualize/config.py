@@ -46,38 +46,25 @@ WONG_COLORS: Dict[str, str] = {
 # exactly the red/green pair that ~8% of male readers cannot separate. It is also
 # the known-bad case that palette_check.py plants in its own --self-test.
 #
-# These values are the eight MAGESTIC semantic tokens, which are already proven
-# mutually distinguishable at dE2000 >= 12 under normal vision, deuteranopia and
-# protanopia (tokens.json v1.1.0, validated by
-# ~/.claude/skills/magestic-figure/tests/palette_check.py). They are REASSIGNED
-# here to consequence classes; the hexes are not new and the separation is not a
-# fresh claim. Assignment follows severity so hue carries meaning:
-#
-#   loss of function   crimson family   stop_gained, start_lost   + pink frameshift
-#   in-frame altering  amber / blues    missense, inframe_*, stop_lost
-#   splice             green            splice_region
-#   silent / noncoding neutral ramp     synonymous, intronic, intergenic, unknown
-#
-# The silent and non-coding tier is deliberately NEUTRAL, not a hue. `synonymous`
-# is the null class in these panels and hue is spent only on classes that carry a
-# claim (magestic-figure section 1, "structure is never coloured").
-#
-# ⚠️ KNOWN LIMITATION, recorded rather than papered over. The palette passes the
-# CVD checks but NOT the greyscale check ([3b], dL* >= 15 within a legend): amber
-# `missense` and sky `inframe_deletion` sit at L* 70.6 and 69.8 and are the same
-# grey in a mono printout. An assignment that satisfies greyscale exists but makes
-# stop_gained blue and missense purple, i.e. hue stops carrying severity. The
-# correct fix is a SECOND CHANNEL, and CODON_VARIANT_MARKERS below supplies it —
-# vep_panels.py currently hardcodes marker='o' for the consequence legend, so
-# adopting it is the follow-up, not this change.
-
+# These values are the eight MAGESTIC semantic tokens (tokens.json v1.1.0) for the
+# consequence classes, plus a lightness-ordered NULL TIER from the rna-figure grey ramp.
+# 🔴 MEASURED 2026-09-05 (Chanfreau planning/879, F3.3/F6): the earlier claim that all
+# 20 values were "proven mutually distinguishable at dE2000 >= 12" was false --
+# `frameshift` #CC79A7 (the retired 806 purple) sat at dE 4.1 from `intronic`, and
+# `intergenic` vs `non_coding` at 6.2. Now: every hue-carrying consequence class
+# clears every other at >= 12 under normal / deuteranopia / protanopia except
+# start_lost vs complete_CDS_deletion (7.2, both 'total loss'); the null tier is
+# three greys (subtle / neutral / mute) that separate from each other at >= 12.9
+# and from the accents by MARKER -- CODON_VARIANT_MARKERS is the mandatory second
+# channel and is wired into vep_panels. synonymous vs splice_region (9.3) and
+# intronic vs splice_region (10.4) are below 12 and carried by marker ('.' vs '*').
 CODON_VARIANT_COLORS: Dict[str, str] = {
     # --- loss of function -------------------------------------------------
     'stop_gained': '#B02418',            # crimson
     'stop_gain': '#B02418',              # (alias)
     'start_lost': '#762238',             # dark maroon
     'start_loss': '#762238',             # (alias)
-    'frameshift': '#CC79A7',             # pink - LoF via indel
+    'frameshift': '#853272',             # plum - LoF via indel (was #CC79A7: dE 4.1 vs intronic grey)
     # --- in-frame protein-altering ---------------------------------------
     'missense': '#E69F00',               # amber
     'inframe_insertion': '#0072B2',      # blue
@@ -89,14 +76,14 @@ CODON_VARIANT_COLORS: Dict[str, str] = {
     # --- splice -----------------------------------------------------------
     'splice_region': '#009E73',          # green
     # --- silent / non-coding: NEUTRAL, lightness-ordered ------------------
-    'synonymous': '#5C6672',             # rule grey - the null class
-    'intronic': '#8A97A8',
-    'intergenic': '#C3CAD1',
-    'non_coding': '#DDE5EC',
-    'non-coding': '#DDE5EC',             # (alias)
+    'synonymous': '#737373',             # subtle grey - the null class
+    'intronic': '#999999',               # neutral grey
+    'intergenic': '#C7C7C7',             # mute grey
+    'non_coding': '#C7C7C7',             # mute grey -- one hex with intergenic: the two were dE 6.2 apart and both are 'not coding'
+    'non-coding': '#C7C7C7',             # (alias)
     # --- special ----------------------------------------------------------
     'complete_CDS_deletion': '#14213D',  # ink - total loss reads darkest
-    'unknown': '#C3CAD1',
+    'unknown': '#C7C7C7',
 }
 
 

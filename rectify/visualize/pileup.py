@@ -99,6 +99,11 @@ class Read:
         self.blocks = [(int(s), int(l)) for s, l in self.blocks]
         if not self.blocks:
             self.blocks = [(int(self.start), int(self.end - self.start))]
+        span = int(self.end) - int(self.start)
+        if any(l > span or l <= 0 for _, l in self.blocks):
+            raise ValueError(f"Read {self.id!r}: blocks are (start, LENGTH) -- rbrowse's wire format -- "
+                             f"not (start, end); a block of length {max(l for _, l in self.blocks)} cannot "
+                             f"fit a read spanning {span} bp (audit 879, F3.8)")
         if self.junctions is None:
             self.junctions = [(self.blocks[i][0] + self.blocks[i][1],
                                self.blocks[i + 1][0] - (self.blocks[i][0] + self.blocks[i][1]))
@@ -307,6 +312,9 @@ class Segment:
     wbp: float = 0.0
     t0: float = 0.0
     t1: float = 0.0
+    hidden_n: int = 0        # exon_only: reads with bases in this REMOVED segment
+    across: int = 0          # exon_only: reads spanning it with no bases
+    hidden_frac: float = 0.0
 
 
 class SplicedAxis:
@@ -353,18 +361,59 @@ class SplicedAxis:
                         seen.add(i)
             for i in seen:
                 segs[i].cov += 1
+        n_reads = len(reads) or 1
+        # 🔴 THE 3' FLANK STAYS 1:1 WHERE READS END THERE (rbrowse spliced.js:155-170, Kevin
+        # 2026-08-16: "the read alignments look cut off"). Segments on a gene's 3' side that >= 1 %
+        # of the reads cover keep their real width up to `downstream_keep_bp` in total; beyond that
+        # the flank compresses like any non-exonic stretch. Without this every 3' end past the
+        # annotation -- a longer-than-annotated UTR, the very landscape this lab works on -- piles
+        # onto one compression boundary and reads as truncated. Missing from the first port
+        # (audit 879, F7.3).
+        self.downstream_keep_bp = G.get("spliced_downstream_keep_bp", 3000)
+        keep3 = set()
+        for tx in transcripts:
+            plus = tx.strand != "-"
+            end3 = tx.end if plus else tx.start
+            budget = self.downstream_keep_bp
+            for sg in (segs if plus else reversed(segs)):
+                past = sg.s >= end3 if plus else sg.e <= end3
+                if not past or sg.exonic:
+                    continue
+                if any(o is not tx and sg.s >= o.start and sg.e <= o.end for o in transcripts):
+                    break                     # reached the next gene
+                if sg.cov < 0.01 * n_reads:
+                    break
+                ln = sg.e - sg.s
+                if ln > budget:
+                    break
+                keep3.add(id(sg)); budget -= ln
         t = 0.0
         gap = 0.0 if strict else self.gap_bp
         for sg in segs:
-            sg.keep = (sg.exonic if exon_only else (sg.cov > 0 if strict else (sg.cov > 0 or sg.exonic)))
+            k3 = id(sg) in keep3
+            sg.keep = ((sg.exonic or k3) if exon_only else (sg.cov > 0 if strict else (sg.cov > 0 or sg.exonic)))
             ln = sg.e - sg.s
             if not sg.keep:
                 gu = 0.0 if (exon_only and sg.intronic) else gap
                 sg.wbp = 0.0; sg.t0 = t; t += gu; sg.t1 = t; sg.compressed = False
                 continue
-            sg.compressed = (not sg.exonic) and ln > self.seg_cap_bp
+            sg.compressed = (not sg.exonic) and ln > self.seg_cap_bp and not k3
             sg.wbp = float(self.seg_cap_bp if sg.compressed else ln)
             sg.t0 = t; t += sg.wbp; sg.t1 = t
+        # 🔴 NOTHING HIDDEN SILENTLY (spliced.js:205-225). For every REMOVED segment in the
+        # exon-only level: how many reads have bases in it (retention / alt site / novel exon --
+        # invisible once the axis drops it) against how many span it without bases. Exposed as
+        # `hidden` and drawn by `ruler` as a faint tick. Missing from the first port (879, F7.4).
+        self.hidden: List[Segment] = []
+        if exon_only:
+            for sg in segs:
+                if sg.keep:
+                    continue
+                across = sum(1 for r in reads if r.start < sg.s and r.end > sg.e and not r.has_bases_in(sg.s, sg.e))
+                sg.hidden_n = sg.cov; sg.across = across
+                sg.hidden_frac = (sg.cov / (sg.cov + across)) if across else 0.0
+                if sg.cov:
+                    self.hidden.append(sg)
         self.segs = segs
         self.t_end = t
         self._starts = [sg.s for sg in segs]
@@ -417,6 +466,13 @@ class SplicedAxis:
                     out.append(ax.text((sg.t0 + sg.t1) / 2, y + height / 2, "∼", ha="center", va="center",
                                        fontsize=T["annotation"], color=TOK.color("subtle"),
                                        fontfamily=[TOK.load()["typography"]["family"][0], "DejaVu Sans"]))
+                if sg.hidden_n:
+                    # a removed segment some reads had bases in: a faint tick and the rate, never silence
+                    out.append(ax.plot([sg.t0, sg.t0], [y - height * 0.3, y + height * 1.3], color=TOK.color("polya"),
+                                       lw=S["hairline"], alpha=0.6)[0])
+                    out.append(ax.annotate(f"{100 * sg.hidden_frac:.0f}% ({sg.hidden_n})" if sg.across else f"({sg.hidden_n})",
+                                           xy=(sg.t0, y + height * 1.3), xytext=(1, 1), textcoords="offset points",
+                                           ha="left", va="bottom", fontsize=T["annotation"], color=TOK.color("polya")))
                 continue
             col = TOK.color("ink") if sg.exonic else TOK.color("hairline")
             hh = height if sg.exonic else height * 0.5
@@ -435,8 +491,14 @@ class SplicedAxis:
 # ============================================================================
 # isoform chains
 # ============================================================================
-MIN_PARENT_N = 3
-MIN_PARENT_FRAC = 0.5
+# 🔴 THE SAME NUMBERS AS rbrowse spliced.js:24-25, AND THE INCIDENT THAT SET THEM (spliced.js:18-23):
+# "at a long gene (SDHA: 15 exons, 1,823 reads) the 989-read all-canonical suffix chain was declared
+# 'shared' among a handful of n<=7 novel chains that happen to extend it -- the rare chains hijacked
+# the main isoform." A parent chain must carry >= max(MIN_PARENT_N, MIN_PARENT_FRAC * n) reads to
+# claim a suffix. The first port shipped 3 / 0.5 with no comment (audit 879, F7.1): 2.5x stricter,
+# so the browser and the figure called the same reads differently. Never change one side alone.
+MIN_PARENT_N = 2
+MIN_PARENT_FRAC = 0.2
 NEAR_DUP_NT = 3
 
 
@@ -584,7 +646,21 @@ def chain_clusters(reads: Sequence[Read], scope: Interval, model: Optional[Trans
                 cls = "novel" if cls == "fl" else cls; glyph = "✱"
                 parts.append("novel" + (f"×{len(novel)}" if len(novel) > 1 else ""))
             if not parts:
-                parts.append("FL" if c.maximal else "FL-compatible")
+                # an all-canonical chain: FL, saying where its reads START -- DRS reads are
+                # 5'-truncated, so "FL" means canonical junctions over its span, not that exon 1
+                # was reached (spliced.js; missing from the first port, audit 879 F7.2)
+                frm = ""
+                if exons and c.junctions:
+                    first, last = c.junctions[0], c.junctions[-1]
+                    if minus:
+                        idx = next((i for i, (a, b) in enumerate(exons) if a == last[0] + last[1]), -1)
+                    else:
+                        idx = next((i for i, (a, b) in enumerate(exons) if b == first[0]), -1)
+                    if idx >= 0:
+                        ord_ = exon_name(idx)
+                        if ord_ != exon_name(n_ex - 1 if minus else 0):
+                            frm = f" from e{ord_}"
+                parts.append(("FL" if c.maximal else "FL-compatible") + frm)
         if c.shared:
             glyph = "≈"; parts.insert(0, "shared")
         ck = "|".join(sorted(c.jset, key=lambda k: int(k.split("-")[0])))
@@ -712,6 +788,8 @@ def junction_arcs(ax, counts: Dict[Interval, int], *, y: float = 0.0, height: Op
     ``height`` is the apex above ``y`` in data units (default: the token ratio of the y-range).
     """
     X = xform or (lambda p: p)
+    if role is not None:
+        TOK.role(role)                      # refuse a layer-B token even when nothing is drawn
     out = []
     if not counts and not annotated:
         return out

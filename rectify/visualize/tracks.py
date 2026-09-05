@@ -375,7 +375,14 @@ def gene_track(
         if not placed:
             levels[t.name] = len(ends)
             ends.append(t.end)
-    pitch = row_pitch if row_pitch is not None else (1.75 if (label and label_pos == "above") else 1.0)
+    # a label above a lower row rises into the row above it; a TSS arrow lifts the label further
+    # (877 sheet, audit 879 F4.8) -- both are paid for in the default pitch
+    if row_pitch is not None:
+        pitch = row_pitch
+    elif label and label_pos == "above":
+        pitch = 1.75 + (0.9 if tss else 0.0)
+    else:
+        pitch = 1.0 + (0.5 if tss else 0.0)
     ys: Dict[str, float] = {}
     for t in keep:
         y = -pitch * levels[t.name] if levels[t.name] else 0.0
@@ -419,13 +426,16 @@ def mark(
     strand: str = "+",
     zorder: int = 6,
     xform: XForm = None,
+    ha: str = "center",
 ) -> list:
     """A site mark on a track at data ``x``: a molecular identity, so NO colour argument.
 
     ``kind`` is one of :data:`MARK_KINDS`. ``y``/``height`` locate the track the mark sits on
     (the same values passed to :func:`gene_model`). Lollipop stems are in points, so the
     mark keeps its size when the axes is resized. ``side`` is ``"above"`` or ``"below"``.
-    ``strand`` orients the splice-site triangle so it points INTO the intron.
+    ``strand`` orients the splice-site triangle so it points INTO the intron. ``ha`` places the
+    label centred on the mark, or hanging ``"left"`` / ``"right"`` of it (two long labels 500 bp
+    apart cannot both be centred -- the 176 rebuild had to hand-place them; audit 879 F4.10).
     """
     if kind not in MARK_KINDS:
         raise ValueError(f"unknown mark kind {kind!r}; kinds are {sorted(MARK_KINDS)}")
@@ -490,8 +500,11 @@ def mark(
         raise AssertionError(shape)
 
     if label:
-        t = ax.annotate(label, xy=text_anchor, xytext=(0, text_off), textcoords="offset points",
-                        ha="center", va="bottom" if sgn > 0 else "top", fontsize=T["annotation"],
+        if ha not in ("center", "left", "right"):
+            raise ValueError("ha must be 'center', 'left' or 'right'")
+        dx = 0 if ha == "center" else (ms * 0.6 + 2) * (1 if ha == "left" else -1)
+        t = ax.annotate(label, xy=text_anchor, xytext=(dx, text_off), textcoords="offset points",
+                        ha=ha, va="bottom" if sgn > 0 else "top", fontsize=T["annotation"],
                         color=col, zorder=zorder + 2)
         out.append(t)
     return out
@@ -566,12 +579,13 @@ def strand_coverage(
     region=None,
     fill_alpha: Optional[float] = None,
     labels: Tuple[str, str] = ("+ strand", "− strand"),
+    xform: XForm = None,
 ):
     """Plus above, minus below the axis, in ONE colour: strand is position, not hue."""
     out = coverage(ax, positions_plus, depths_plus, role=role, region=region, strand="+",
-                   fill_alpha=fill_alpha, label=labels[0])
+                   fill_alpha=fill_alpha, label=labels[0], xform=xform)
     out += coverage(ax, positions_minus, depths_minus, role=role, region=region, strand="-",
-                    mirror=True, fill_alpha=fill_alpha, label=labels[1])
+                    mirror=True, fill_alpha=fill_alpha, label=labels[1], xform=xform)
     ax.axhline(0, color=TOK.color("hairline"), lw=TOK.stroke()["hairline"], zorder=3)
     return out
 
@@ -590,16 +604,23 @@ def arc(
     alpha: float = 1.0,
     zorder: int = 5,
     xform: XForm = None,
+    on_signal: bool = False,
 ) -> list:
     """A junction arc from ``x0`` to ``x1`` with its apex ``height`` data units above ``y``.
 
     With no ``role`` it is an ANNOTATION arc in layer-B ``splice``. With a role it is a
     SIGNAL arc (junction reads counted per sample) in that layer-A colour; scale ``lw`` with
-    the count. ``height`` defaults to ``geometry.track.arc_height_ratio`` of the y-range.
+    the count. ``on_signal=True`` is for an arc drawn OVER its own sample's coverage: it is
+    ``ink`` at hairline weight with an ``ink`` count, whatever the role -- a signal glyph never
+    overprints the signal it summarizes in the same colour (audit 879 F4.2; SKILL.md section 7).
+    ``height`` defaults to ``geometry.track.arc_height_ratio`` of the y-range.
     """
     G = TOK.track_geometry()
     S = TOK.stroke()
     col = TOK.color("splice") if role is None else TOK.role(role)
+    if on_signal:
+        col = TOK.color("ink")
+        lw = S["hairline"] if lw is None else lw
     if xform is not None:
         x0, x1 = xform(x0), xform(x1)
     if height is None:
@@ -633,13 +654,21 @@ def reads(
     region=None,
     read_lw: float = 4.0,
     alpha: float = 0.9,
+    xform: XForm = None,
 ) -> int:
     """Stacked individual reads (a signal glyph). ``roles`` is one layer-A role (or ``None``
-    for ``subtle``) per read; wraps :mod:`read_browser`. Returns the number of rows."""
+    for ``subtle``) per read; wraps :mod:`read_browser`. ``xform`` draws in spliced space
+    (starts, ends and junctions are all mapped). Returns the number of rows."""
     from .read_browser import assign_rows, draw_stacked_reads
-    _apply_xlim(ax, region)
+    if xform is None:
+        _apply_xlim(ax, region)
     starts = np.asarray(starts)
     ends = np.asarray(ends)
+    if xform is not None:
+        starts = np.array([xform(float(v)) for v in starts]); ends = np.array([xform(float(v)) for v in ends])
+        starts, ends = np.minimum(starts, ends), np.maximum(starts, ends)
+        if junctions is not None:
+            junctions = [[(xform(float(a)), xform(float(b))) for a, b in js] for js in junctions]
     if roles is None:
         colors = [TOK.color("subtle")] * len(starts)
     else:

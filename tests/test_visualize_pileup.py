@@ -176,7 +176,7 @@ def test_chains_suffix_assignment_and_shared():
     shared = [c for c in chains if c.shared]
     assert shared and shared[0].glyph == "≈" and shared[0].label.startswith("shared")
     assigned = [c for c in chains if c.assigned_to]
-    assert assigned and assigned[0].label == "FL-compatible"
+    assert assigned and assigned[0].label == "FL-compatible from e2"   # DRS suffix: says where it starts
     assert summary["shared"] == 2 and summary["compatible"] == 2
 
 
@@ -213,3 +213,66 @@ def test_junction_counts_and_arcs(ax):
     assert len(patches) == 3      # two supported junctions + one unsupported annotated arc
     cols = {_hex(p.get_edgecolor()) for p in patches}
     assert TOK.color("focal").upper() in cols and TOK.color("splice").upper() in cols
+
+
+# ----------------------------------------------------------------- audit 879: the rules the first port lacked
+def test_parent_floor_matches_rbrowse():
+    """spliced.js:24-25 -- the SDHA incident set these; the browser and the figure must agree."""
+    assert (P.MIN_PARENT_N, P.MIN_PARENT_FRAC, P.NEAR_DUP_NT) == (2, 0.2, 3)
+
+
+def test_parent_floor_regime_where_it_separates():
+    # chain A (n=10, one junction) whose extension B has n=3: with 2/0.2 B is A's parent (3 >= max(2, 2))
+    m = _model()
+    a = [P.Read(f"a{i}", "+", 100, 600, [(100, 100), (300, 100), (500, 100)]) for i in range(10)]
+    b = [P.Read(f"b{i}", "+", 100, 800, [(100, 100), (300, 100), (500, 100), (700, 100)]) for i in range(3)]
+    chains, summ = P.chain_clusters(a + b, (0, 900), m)
+    assert summ["unambiguous"] == 3 and summ["compatible"] == 10
+    assert any(c.label.startswith("FL-compatible") and c.n == 10 for c in chains)
+
+
+def test_fl_from_exon_suffix():
+    m = _model()
+    fl = [P.Read(f"fl{i}", "+", 100, 800, [(100, 100), (300, 100), (500, 100), (700, 100)]) for i in range(4)]
+    from3 = [P.Read(f"s{i}", "+", 520, 800, [(520, 80), (700, 100)]) for i in range(2)]
+    chains, _ = P.chain_clusters(fl + from3, (0, 900), m)
+    labels = {c.label for c in chains}
+    assert "FL" in labels and "FL-compatible from e3" in labels
+
+
+def test_read_refuses_start_end_blocks():
+    with pytest.raises(ValueError):
+        P.Read("x", "+", 100, 400, [(100, 200), (300, 400)])     # (start, end) given as blocks
+    P.Read("ok", "+", 100, 400, [(100, 100), (300, 100)])        # (start, length) is fine
+
+
+def test_spliced_axis_keeps_covered_3prime_flank():
+    """spliced.js DOWNSTREAM_KEEP_BP: a covered 3' flank past the last exon stays 1:1 (not compressed)."""
+    tx = T.Transcript("g", "chrI", "+", exons=[(100, 300), (500, 700)])
+    # 20 reads run 1,200 bp past the annotated end; 1 read stops at the annotation
+    reads = [P.Read(f"r{i}", "+", 100, 1900, [(100, 200), (500, 1400)]) for i in range(20)]
+    reads.append(P.Read("short", "+", 100, 700, [(100, 200), (500, 200)]))
+    ax_ = P.SplicedAxis((0, 2200), reads, [tx])
+    # read ends are not cut points, so the covered flank is ONE segment from 700 to the scope edge
+    flank = [sg for sg in ax_.segs if sg.s >= 700 and sg.cov >= 20]
+    assert flank and all(sg.keep and not sg.compressed for sg in flank)
+    assert ax_.to_t(1900) - ax_.to_t(700) == pytest.approx(1200)   # 1:1, the whole covered flank
+    # and the same flank with no coverage compresses as before
+    ax2 = P.SplicedAxis((0, 2200), [reads[-1]], [tx])
+    assert all((not sg.keep) or sg.compressed for sg in ax2.segs if sg.s >= 700 and sg.e <= 1900 and not sg.exonic)
+
+
+def test_exon_only_reports_hidden_reads():
+    tx = T.Transcript("g", "chrI", "+", exons=[(100, 200), (500, 600)])
+    spliced = [P.Read(f"s{i}", "+", 100, 600, [(100, 100), (500, 100)]) for i in range(6)]
+    retained = [P.Read(f"r{i}", "+", 100, 600, [(100, 500)]) for i in range(2)]
+    ax_ = P.SplicedAxis((0, 700), spliced + retained, [tx], exon_only=True)
+    assert len(ax_.hidden) == 1
+    sg = ax_.hidden[0]
+    assert (sg.s, sg.e) == (200, 500) and sg.hidden_n == 2 and sg.across == 6
+    assert sg.hidden_frac == pytest.approx(0.25)
+
+
+def test_junction_arcs_validates_role_even_when_empty(ax):
+    with pytest.raises(ValueError):
+        P.junction_arcs(ax, {}, role="polya")
