@@ -1126,6 +1126,21 @@ def reroute_intronic_tail_5prime_via_junction(
             excess = cur_end - clip_boundary
             if op in _REF_CONSUMING:
                 trim = min(length, excess)
+                if op == 3 and trim < length:
+                    # clip_boundary falls INSIDE a junction the aligner already
+                    # called. Continuing would shorten that N and the merge block
+                    # below would then fuse the remnant with the new N, silently
+                    # deleting every junction in between (read eca6079d: 1241N
+                    # cut to 755N, merged into a 97,213 bp AG-AG "intron" that
+                    # replaced six real junctions). Refuse instead — the writer
+                    # falls back to softclip_intronic_tail_5prime.
+                    #
+                    # Keyed on the N being CUT, not on the terminal op being N:
+                    # the legitimate Case-5 `n_boundary_adjust` merge has a FULLY
+                    # INTACT N ending exactly at clip_boundary, which never
+                    # reaches here because the loop breaks on cur_end <=
+                    # clip_boundary first.
+                    return False
                 cigar[-1] = (op, length - trim)
                 if cigar[-1][1] == 0:
                     cigar.pop()
@@ -1210,6 +1225,14 @@ def reroute_intronic_tail_5prime_via_junction(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
+                if op == 3 and trim < length:
+                    # Mirror of the minus-strand guard above (ISSUE-007):
+                    # clip_boundary falls inside an aligner-called junction, and
+                    # the merge below would fuse its remnant with the new N,
+                    # deleting every junction in between. The legitimate Case-5
+                    # abutting merge has an INTACT N and breaks out of the loop
+                    # before reaching this branch.
+                    return False
                 cigar[0] = (op, length - trim)
                 if cigar[0][1] == 0:
                     cigar.pop(0)

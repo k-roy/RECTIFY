@@ -440,9 +440,11 @@ class TestChr5Holdout:
         assert not bad, f'{len(bad)} non-canonical introns created: {bad[:5]}'
 
     def test_destroys_no_preexisting_junction(self, replay):
-        """FP guard. Case 4 used to snap reads across their OWN junctions, and
-        the writer's reroute then trimmed those junctions away (baseline 3 lost;
-        after the informative-clip floor alone it was 18)."""
+        """FP guard. Three mechanisms deleted aligner-called junctions: Case 4
+        snapping a read across its OWN junctions, the writer's reroute trimming
+        the intronic tail, and the reroute's N-merge fusing a partially trimmed N
+        (ISSUE-007). Baseline lost 3 N-ops; after the informative-clip floor alone
+        it was 18. Now 0 — the read's junction count never drops."""
         lost = []
         for row in replay['rows']:
             after = set(row['after'])
@@ -451,7 +453,14 @@ class TestChr5Holdout:
                     continue      # a terminal N extended onto the rescued acceptor
                 if n not in after:
                     lost.append((row['read_id'][:12], n))
-        assert len(lost) <= 3, f'{len(lost)} pre-existing N-ops destroyed: {lost[:6]}'
+        assert not lost, f'{len(lost)} pre-existing N-ops destroyed: {lost[:6]}'
+
+    def test_no_read_loses_junctions(self, replay):
+        """The ISSUE-007 invariant stated on read counts rather than coordinates:
+        a 5' rescue may add an intron, never subtract one."""
+        shrank = [(r['read_id'][:12], len(r['before']), len(r['after']))
+                  for r in replay['rows'] if len(r['after']) < len(r['before'])]
+        assert not shrank, shrank
 
     def test_rescue_still_fires_and_lands_on_annotation(self, replay):
         """FN guard, and the one the panel cannot give. Baseline: 25 of 222
