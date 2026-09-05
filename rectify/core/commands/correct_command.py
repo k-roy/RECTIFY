@@ -141,6 +141,180 @@ def module_2h_skip_reason(config) -> Optional[str]:
     return "; ".join(reasons) if reasons else None
 
 
+# ---------------------------------------------------------------------------
+# Indexable-BAM guard (ISSUE-015)
+# ---------------------------------------------------------------------------
+# One malformed tail record must not cost a multi-hour run its output. A single
+# 2F rescue placed an 8,835-nt "exon" at chrM:-5843 — 1 record in 145,000 — and
+# `pysam.index` refused the whole file, so `correct` exited 1 after 1.5 h with
+# the corrected BAM written but unindexed and nothing said about which read did
+# it. The admission and writer layers are fixed separately; this is the floor
+# under them, and it has to hold for a defect nobody has thought of yet.
+UNINDEXABLE_TSV_SUFFIX = '.unindexable_reads.tsv'
+
+_UNINDEXABLE_TSV_COLUMNS = (
+    'read_name', 'contig', 'contig_length', 'reference_start', 'reference_end',
+    'reason', 'flag', 'mapping_quality', 'leading_softclip', 'trailing_softclip',
+    'cigar',
+)
+
+
+def unindexable_reason(read, contig_lengths) -> Optional[str]:
+    """Why this record cannot be indexed, or ``None`` if it can.
+
+    A coordinate-sorted index can only address positions inside the contig, so
+    a record that starts before base 0 or reaches past the contig's end is
+    unrepresentable — htslib rejects the file, not the record.
+    """
+    if read.is_unmapped or read.reference_id is None or read.reference_id < 0:
+        return None                      # unplaced reads are indexed fine
+    start = read.reference_start
+    if start is None or start < 0:
+        return f'reference_start={start} < 0'
+    length = contig_lengths.get(read.reference_name)
+    if length is None:
+        return None                      # no length in the header — cannot judge
+    if start >= length:
+        return f'reference_start={start} >= contig length {length}'
+    try:
+        end = read.reference_end
+    except (ValueError, TypeError):      # malformed CIGAR
+        return 'reference_end could not be computed (malformed CIGAR)'
+    if end is not None and end > length:
+        return f'reference_end={end} > contig length {length}'
+    return None
+
+
+def _terminal_clip(read, leading: bool) -> int:
+    ops = read.cigartuples or []
+    if not ops:
+        return 0
+    op, length = ops[0] if leading else ops[-1]
+    return length if op in (4, 5) else 0
+
+
+def quarantine_unindexable_records(src_path, cleaned_path, tsv_path, log) -> int:
+    """Copy *src_path* to *cleaned_path* minus records that cannot be indexed.
+
+    Every dropped record is logged at ERROR and written to *tsv_path* with the
+    fields that let the writer bug be found from the read alone: the contig and
+    its length, both coordinates, and the terminal soft clips — a 5' rescue that
+    ran off the contig edge shows up as an enormous leading clip on the stock
+    read. Returns the number of records dropped.
+    """
+    n_off = 0
+    with pysam.AlignmentFile(str(src_path), 'rb', check_sq=False) as src:
+        contig_lengths = dict(zip(src.references, src.lengths))
+        with pysam.AlignmentFile(str(cleaned_path), 'wb', template=src) as out, \
+                open(str(tsv_path), 'w') as tsv:
+            tsv.write('\t'.join(_UNINDEXABLE_TSV_COLUMNS) + '\n')
+            for read in src:
+                reason = unindexable_reason(read, contig_lengths)
+                if reason is None:
+                    out.write(read)
+                    continue
+                n_off += 1
+                contig = read.reference_name
+                row = (
+                    read.query_name or '',
+                    contig or '',
+                    contig_lengths.get(contig, ''),
+                    read.reference_start,
+                    _safe_reference_end(read),
+                    reason,
+                    read.flag,
+                    read.mapping_quality,
+                    _terminal_clip(read, leading=True),
+                    _terminal_clip(read, leading=False),
+                    read.cigarstring or '',
+                )
+                tsv.write('\t'.join(str(f) for f in row) + '\n')
+                log.error(
+                    "  UNINDEXABLE RECORD dropped: %s on %s (length %s): %s "
+                    "[flag=%s mapq=%s clips=%s/%s cigar=%.60s]",
+                    row[0], row[1], row[2], reason, row[6], row[7], row[8], row[9], row[10],
+                )
+    return n_off
+
+
+def _safe_reference_end(read):
+    try:
+        return read.reference_end
+    except (ValueError, TypeError):
+        return ''
+
+
+def _safe_unlink(path) -> None:
+    try:
+        import os as _os_unlink
+        if path and _os_unlink.path.exists(str(path)):
+            _os_unlink.unlink(str(path))
+    except OSError:
+        pass
+
+
+def sort_and_index_bam(unsorted_path, out_path, log=None) -> dict:
+    """Sort *unsorted_path* into *out_path* and index it — without ever raising.
+
+    The happy path is exactly ``pysam.sort`` + ``pysam.index`` and makes no
+    extra pass over the data. Only when one of them FAILS do we scan for records
+    outside their contig, write them to ``<out>.unindexable_reads.tsv``, rewrite
+    the BAM without them, and retry (ISSUE-015).
+
+    Returns ``{'indexed': bool, 'offenders': int, 'offender_tsv': str | None}``.
+    Never raises: a run that has already produced its output must not exit 1
+    over a record it can name and set aside.
+    """
+    log = log or logging.getLogger(__name__)
+    unsorted_path, out_path = str(unsorted_path), str(out_path)
+    try:
+        pysam.sort('-o', out_path, unsorted_path)
+        pysam.index(out_path)
+        return {'indexed': True, 'offenders': 0, 'offender_tsv': None}
+    except Exception as exc:
+        log.error("Sorting/indexing %s FAILED: %s", out_path, exc)
+        log.error("  Scanning %s for records outside their contig...", unsorted_path)
+
+    stem = out_path[:-4] if out_path.endswith('.bam') else out_path
+    tsv_path = stem + UNINDEXABLE_TSV_SUFFIX
+    cleaned = unsorted_path + '.indexable.bam'
+    try:
+        n_off = quarantine_unindexable_records(unsorted_path, cleaned, tsv_path, log)
+    except Exception as exc:
+        log.error(
+            "  Could not scan %s (%s). %s is left unindexed; the run continues.",
+            unsorted_path, exc, out_path,
+        )
+        _safe_unlink(cleaned)
+        return {'indexed': False, 'offenders': 0, 'offender_tsv': None}
+
+    if n_off == 0:
+        log.error(
+            "  No off-contig records found, so the index failure has another "
+            "cause. %s is left as-is and unindexed; the run continues.", out_path,
+        )
+        _safe_unlink(cleaned)
+        _safe_unlink(tsv_path)
+        return {'indexed': False, 'offenders': 0, 'offender_tsv': None}
+
+    log.error("  Quarantined %d unindexable record(s) -> %s", n_off, tsv_path)
+    try:
+        pysam.sort('-o', out_path, cleaned)
+        pysam.index(out_path)
+        indexed = True
+        log.error(
+            "  Re-sorted and indexed %s without them. THE OUTPUT IS INCOMPLETE BY "
+            "%d READ(S) — see %s.", out_path, n_off, tsv_path,
+        )
+    except Exception as exc:
+        indexed = False
+        log.error(
+            "  %s still could not be indexed after quarantine: %s", out_path, exc,
+        )
+    _safe_unlink(cleaned)
+    return {'indexed': indexed, 'offenders': n_off, 'offender_tsv': tsv_path}
+
+
 def _warn_self_pool(config, log) -> bool:
     """Warn when the junction pool is being built from the BAM being corrected.
 
@@ -1305,6 +1479,11 @@ def run(args):
         # "RECTIFY completed successfully!" is a warning nobody reads.
         _no_bam_warn_lines = build_no_bam_output_warning(config, stats)
 
+        # Every sort+index below goes through sort_and_index_bam, which never
+        # raises: a malformed tail record gets named, set aside and reported
+        # instead of aborting a multi-hour run (ISSUE-015).
+        _index_reports = []
+
         # Write poly(A)-trimmed BAM if requested
         if config.get('output_bam'):
             _t_bam = _time.perf_counter()
@@ -1319,8 +1498,8 @@ def run(args):
                 f"trimmed: {bam_stats['trimmed']:,}  "
                 f"bases removed: {bam_stats['bases_trimmed']:,}"
             )
-            pysam.sort('-o', str(config['output_bam']), _unsorted_polya)
-            pysam.index(str(config['output_bam']))
+            _index_reports.append(
+                sort_and_index_bam(_unsorted_polya, config['output_bam'], logger))
             import os as _os_polya
             _os_polya.unlink(_unsorted_polya)
             logger.info(f"  Sorted and indexed {config['output_bam']}")
@@ -1367,8 +1546,7 @@ def run(args):
                 (_unsorted_bam,  config['corrected_bam']),
                 (_unsorted_sbam, config['softclipped_bam']),
             ]:
-                pysam.sort('-o', str(_final), _unsorted)
-                pysam.index(str(_final))
+                _index_reports.append(sort_and_index_bam(_unsorted, _final, logger))
                 _os.unlink(_unsorted)
                 logger.info(f"  Sorted and indexed {_final}")
             logger.info(f"[TIMING] Dual BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
@@ -1423,8 +1601,8 @@ def run(args):
                     f"clipped: {cbam_stats['clipped']:,}  "
                     f"unchanged: {cbam_stats['unchanged']:,}"
                 )
-                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
-                pysam.index(str(config['corrected_bam']))
+                _index_reports.append(
+                    sort_and_index_bam(_unsorted_bam, config['corrected_bam'], logger))
                 import os as _os
                 _os.unlink(_unsorted_bam)
             else:
@@ -1444,8 +1622,8 @@ def run(args):
                     f"clipped: {cbam_stats['clipped']:,}  "
                     f"unchanged: {cbam_stats['unchanged']:,}"
                 )
-                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
-                pysam.index(str(config['corrected_bam']))
+                _index_reports.append(
+                    sort_and_index_bam(_unsorted_bam, config['corrected_bam'], logger))
                 import os as _os
                 _os.unlink(_unsorted_bam)
 
@@ -1467,8 +1645,8 @@ def run(args):
                 f"clipped: {sbam_stats['clipped']:,}  "
                 f"unchanged: {sbam_stats['unchanged']:,}"
             )
-            pysam.sort('-o', str(config['softclipped_bam']), _unsorted_sbam)
-            pysam.index(str(config['softclipped_bam']))
+            _index_reports.append(
+                sort_and_index_bam(_unsorted_sbam, config['softclipped_bam'], logger))
             import os as _os
             _os.unlink(_unsorted_sbam)
             logger.info(f"  Sorted and indexed {config['softclipped_bam']}")
@@ -1580,6 +1758,12 @@ def run(args):
             stats_path = Path(str(config['output_path']).replace('.tsv', '_stats.tsv'))
             if stats_path.exists():
                 provenance.add_output_file(stats_path)
+            for _rep in _index_reports:
+                if _rep['offender_tsv'] and Path(_rep['offender_tsv']).exists():
+                    provenance.add_output_file(
+                        Path(_rep['offender_tsv']),
+                        metadata={'unindexable_records': _rep['offenders']},
+                    )
             provenance.save()
             logger.info(f"Provenance saved to {provenance.output_dir}")
 
@@ -1601,6 +1785,28 @@ def run(args):
         logger.info("RECTIFY completed successfully!")
         logger.info(f"[TIMING] Correction total: {_wall_total_secs:.1f}s")
         logger.info("=" * 70)
+
+        # Unindexable-record summary (ISSUE-015). The run is green — that is the
+        # point — but the output is short by these reads and the console must say
+        # so, on stderr, where a SLURM .err will keep it.
+        _n_unindexable = sum(r['offenders'] for r in _index_reports)
+        _unindexable_tsvs = [r['offender_tsv'] for r in _index_reports if r['offender_tsv']]
+        _unindexed_outputs = [r for r in _index_reports if not r['indexed']]
+        if _n_unindexable or _unindexed_outputs:
+            if _n_unindexable:
+                logger.error(
+                    "%d record(s) could not be indexed and were dropped from the "
+                    "output BAM(s); they are listed in: %s",
+                    _n_unindexable, ', '.join(_unindexable_tsvs),
+                )
+                print(f"WARNING: {_n_unindexable} unindexable record(s) dropped; "
+                      f"see {', '.join(_unindexable_tsvs)}", file=sys.stderr)
+            if _unindexed_outputs:
+                logger.error(
+                    "%d output BAM(s) could not be indexed at all — they are "
+                    "written but have no .bai.", len(_unindexed_outputs),
+                )
+            sys.stderr.flush()
 
         # Silent-discard guard (see the block next to the summary report above).
         # Emitted LAST, after the success banner, so it is the final thing on the
@@ -1642,6 +1848,11 @@ def run(args):
                     _sidecar_outputs['corrected_bam'] = str(config['corrected_bam'])
                 if config.get('corrected_bam') and Path(str(config['corrected_bam']) + '.bai').exists():
                     _sidecar_outputs['corrected_bam_index'] = (str(config['corrected_bam']) + '.bai', True)
+                for _i_rep, _rep in enumerate(_index_reports):
+                    if _rep['offender_tsv'] and Path(_rep['offender_tsv']).exists():
+                        _key = ('unindexable_reads_tsv' if _i_rep == 0
+                                else f'unindexable_reads_tsv_{_i_rep}')
+                        _sidecar_outputs[_key] = str(_rep['offender_tsv'])
 
                 # Determine protocol subtype
                 _subtype = 'drs'
@@ -1665,6 +1876,11 @@ def run(args):
                     stats={
                         'wall_seconds': _wall_total_secs,
                         'n_threads': n_threads,
+                        # ISSUE-015: 0 on every healthy run. Non-zero means the
+                        # BAM is short by that many reads and they are named in
+                        # the unindexable_reads TSV.
+                        'unindexable_records': _n_unindexable,
+                        'unindexed_output_bams': len(_unindexed_outputs),
                     },
                     skip_check_config={
                         'ignore_argv': [
