@@ -791,6 +791,17 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--junction-pool-min-anchor-bp', type=int, default=0, metavar='BP',
+        help=(
+            'Minimum flanking anchor (nt) for a non-annotated junction to enter the '
+            "same candidate-junction pool (see --junction-pool-max-intron-len) used "
+            "by the align-stage consensus selection's 5' soft-clip rescue. "
+            '0 = off (default); 8 is the validated value. Mirrors '
+            '`rectify consensus --junction-pool-min-anchor-bp`.'
+        ),
+    )
+
+    run_parser.add_argument(
         '--chimeric-consensus',
         action='store_true',
         default=True,
