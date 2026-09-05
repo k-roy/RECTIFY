@@ -32,6 +32,7 @@ import numpy as _np
 import pysam
 
 from ...utils.genome import standardize_chrom_name
+from .overhang_informativeness import _ATAC_DINUCS
 from .hp_penalty import (
     HpPenaltyTable,
     _NUMBA_AVAILABLE,
@@ -426,6 +427,29 @@ _CANONICAL_5SS_MINUS = frozenset(['AC', 'GC'])   # genomic = RC of donor
 # Non-canonical candidates must beat canonical alternatives by more than this amount.
 _CANONICAL_HP_PRIOR = 0.5
 
+# Paired AT-AC (U12 / minor-spliceosome) introns. Kevin's call 2026-09-05: AT-AC
+# is a canonical intron class for EVERY organism rectify runs on, not an opt-in
+# — yeast splices it through its major spliceosome (Talkish et al. 2019) and in
+# human it is the U12 class.
+#
+# It is a PAIR, and that is the whole point: AT..AC on the forward genome is
+# canonical only together. AT..AG and GT..AC are NOT members and must keep
+# scoring as broken junctions. `overhang_informativeness._ATAC_DINUCS` is the
+# single source of truth for the pair; this map only says which of its two
+# members is the transcript-frame form on each strand (a plus-strand transcript
+# reads AT..AC directly; a minus-strand one reads it as forward GT..AT).
+_ATAC_FORWARD_BY_STRAND = {'+': ('AT', 'AC'), '-': ('GT', 'AT')}
+assert set(_ATAC_FORWARD_BY_STRAND.values()) == set(_ATAC_DINUCS), (
+    "_ATAC_FORWARD_BY_STRAND drifted from overhang_informativeness._ATAC_DINUCS"
+)
+
+# Rank for the AT-AC class. 1 = below GT-AG/GC-AG (tier 0) but still within
+# _CANONICAL_TIER_MAX, so an annotated AT-AC incumbent is PROTECTED by the
+# annotated-canonical evidence gate and the clean-boundary pre-filter treats it
+# as a proper junction, while an AT-AC candidate never outranks a GT-AG one at
+# equal read score.
+_ATAC_TIER = 1
+
 # The line between "canonical" and "not" for BOTH uses of the prior — which
 # incumbents forfeit their is_alt priority, and which candidates earn the
 # discount.  `_canonical_tier` returns t3 (0..4) when the donor is GT/GC and
@@ -500,9 +524,16 @@ def _canonical_tier(
     genome_seq: str,
     strand: str,
 ) -> int:
-    """Return splice-site quality tier (0=best): considers 5'SS GT-AG and 3'SS YAG hierarchy.
+    """Return splice-site quality tier (0=best).
 
-    Returns the combined tier:
+    Two grammars, checked in this order:
+
+    * the PAIRED AT-AC class (U12 / minor spliceosome) -> ``_ATAC_TIER``. It is
+      checked first and as a pair: forward AT..AC for a plus-strand transcript,
+      forward GT..AT for a minus-strand one. AT..AG and GT..AC are not members
+      and fall through to the GT/GC..AG grammar below, where they score as the
+      broken junctions they are.
+    * 5'SS GT/GC with the 3'SS YAG hierarchy:
       0 — 5'SS GT/GC AND 3'SS YAG (canonical)
       1 — 5'SS GT/GC AND 3'SS RAG
       2 — 5'SS GT/GC AND 3'SS NBG, OR non-canonical 5'SS with YAG
@@ -510,6 +541,16 @@ def _canonical_tier(
       4 — non-canonical at both sites
     """
     gs = len(genome_seq)
+    # Paired AT-AC probe. Ordered so the DONOR is compared first and the second
+    # slice is skipped for everything that is not an AT-AC donor — this runs on
+    # every candidate of every N-op, so the common GT/GC case must not pay for a
+    # class it can never be in.
+    _atac = _ATAC_FORWARD_BY_STRAND.get(strand)
+    if (_atac is not None and 0 <= intron_start
+            and intron_start + 2 <= gs and 2 <= intron_end <= gs
+            and genome_seq[intron_start:intron_start + 2].upper() == _atac[0]
+            and genome_seq[intron_end - 2:intron_end].upper() == _atac[1]):
+        return _ATAC_TIER
     if strand == '+':
         di5  = genome_seq[intron_start:intron_start + 2].upper() if intron_start + 2 <= gs else 'NN'
         tri3 = genome_seq[intron_end - 3:intron_end].upper() if intron_end >= 3 else 'NNN'
