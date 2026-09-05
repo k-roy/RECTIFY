@@ -495,15 +495,29 @@ def correct_read_3prime(
                 _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
                 _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
                 _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
-                # Record the exon-side intron boundary for BAM hard-clip when:
-                #   (a) the alignment's 5' end sits inside the rescued intron, AND
-                #   (b) there is no 5' soft-clip to extend via extend_read_5prime.
-                # This covers both Case 4 (intronic_snap, no soft clip) and Case 1/2
-                # Diagnostic: flag reads whose 5' alignment end falls inside the intron.
-                # five_prime_intron_clip_pos records the exon-side boundary for future
-                # BAM rerouting surgery (converting intronic M ops → N + upstream exon M).
-                # Currently no BAM surgery is performed for these reads — their TSV
-                # five_prime_position is correct and no sequence data is hidden.
+                # five_prime_intron_clip_pos ("icp") = the exon-2-side intron
+                # boundary, recorded whenever the alignment's 5' end sits inside
+                # the rescued intron — Case 4 (intronic_snap) and Cases 1/2 alike,
+                # with or without a 5' soft clip.
+                #
+                # This field DRIVES BAM surgery; it is not a diagnostic. In
+                # bam_writer.apply_corrected_edits_to_read it selects which of the
+                # three mutually exclusive 5' helpers runs: `extend` only when the
+                # N-op it would draw lands on icp, otherwise
+                # `reroute_intronic_tail_5prime_via_junction` (which uses icp as
+                # its clip_boundary), otherwise `softclip_intronic_tail_5prime`.
+                # The rescue sizes `five_prime_exon_cigar` from the intronic query
+                # run for exactly these reads so the reroute's query-span check
+                # can pass (ISSUE-002). An earlier comment here claimed "no BAM
+                # surgery is performed for these reads"; that stopped being true
+                # when the reroute/softclip helpers landed, and believing it is
+                # how the writer came to draw introns the rescue never chose.
+                #
+                # NOTE (latent, not fixed here): this is computed from the
+                # RESTORED, pre-reanchor read, while the rescue body's
+                # align_5prime is post-reanchor. For a read the reanchor pre-pass
+                # materially changed, icp and the exon CIGAR can therefore be
+                # sized against different geometries.
                 _rj = _3ss_result.get('rescued_junction')
                 if _rj:
                     _, _intron_start, _intron_end = _rj
