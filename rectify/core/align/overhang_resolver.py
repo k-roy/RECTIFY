@@ -111,7 +111,11 @@ junction-proximal ``max_clip_match`` bases, the remainder stays soft-clipped.
 The resolver consumes the (name-sorted) minimap2 arm BAM and emits a BAM in
 the same order, so it drops into the panel exactly where mapPacBio's arm
 did. Accepted placements carry ``XJ:Z:<intron_start>-<intron_end>:<ed>:<side>``;
-MD/NM are dropped on rewritten records (stale after CIGAR surgery).
+MD/NM are dropped on rewritten records (stale after CIGAR surgery), and a
+calmd '='-compressed SEQ is decoded to real letters on any rewrite (a '=' only
+means anything under the alignment it was written for — see
+:func:`_set_decoded_sequence`). Records the resolver leaves alone keep their
+'=' bytes, and their compression, untouched.
 
 **Emission spells out the indels the score assumed** (:func:`_block_cigar`).
 Scoring is indel-tolerant, so writing the placed exon block as one flat ``M``
@@ -811,6 +815,42 @@ def _decoded_query(read: pysam.AlignedSegment, chrom_seq: str) -> str:
     return ''.join(out)
 
 
+def _set_decoded_sequence(read: pysam.AlignedSegment, decoded: str) -> None:
+    """Replace a calmd '='-compressed SEQ with the decoded letters.
+
+    A '=' byte means "identical to the reference AT THIS POSITION", so it is
+    only interpretable under the alignment it was written for. Every rewrite in
+    this module moves query bases to new reference positions — the clip
+    resolver re-assigns ``k_inside`` bases across the junction, and the
+    arbiter's boundary shifts, D-op snaps and mismatch rescues move whole
+    blocks by an intron length — so a surviving '=' would decode against the
+    WRONG reference downstream. The resolver already decodes for SCORING
+    (``_decoded_query`` / the ``inside_seq`` the caller builds); this writes the
+    same answer back into the record so the two agree.
+
+    ``decoded`` MUST have been computed against the INPUT alignment, before any
+    CIGAR surgery. pysam clears ``query_qualities`` whenever ``query_sequence``
+    is assigned, so they are saved across the assignment and restored — a
+    silently qual-stripped BAM would be a worse bug than the one being fixed.
+
+    Input BAMs that carry '=' are common, not exotic: ``samtools calmd -e``
+    writes them and the 748 fixture's minimap2 BAM has '=' on 42,409/42,409
+    reads.
+    """
+    if len(decoded) != len(read.query_sequence):
+        # Only reachable from a CIGAR that does not cover the whole query, i.e.
+        # a corrupt record. Loud, per planning/638 §3 — assigning a shorter SEQ
+        # under the existing CIGAR would corrupt it further.
+        raise ValueError(
+            "overhang_resolver: '='-decoded SEQ is %d bases but the record "
+            "carries %d — the CIGAR does not cover the query (corrupt input)"
+            % (len(decoded), len(read.query_sequence)))
+    quals = read.query_qualities
+    read.query_sequence = decoded
+    if quals is not None:
+        read.query_qualities = quals
+
+
 def _iter_ref_ops(cigartuples):
     """Yield (op_index, op, length, ref_start, q_start) walking the CIGAR."""
     ref = 0
@@ -1385,6 +1425,26 @@ def resolve_read(
     strand = '-' if read.is_reverse else '+'
     changed = False
 
+    # calmd '='-compressed SEQ: decode ONCE against the INPUT alignment (the
+    # only one the '=' bytes are valid under) and write the letters back on the
+    # first rewrite. It has to happen before the arbiter runs, not at the end:
+    # the arbiter builds its own `dq = _decoded_query(read, chrom_seq)` from
+    # whatever alignment it is handed, so if the clip resolver has already moved
+    # `k_inside` bases across a junction, those '=' would decode against the new
+    # reference positions and the arbiter would score garbage exactly at the
+    # junction it is arbitrating. A read the resolver leaves alone keeps its '='
+    # bytes untouched — including the arbiter's `eq_mode` mismatch-count fast
+    # path, which is the common case.
+    decoded_seq = (_decoded_query(read, chrom_seq)
+                   if '=' in read.query_sequence else None)
+
+    def _decode_seq_now():
+        nonlocal decoded_seq
+        if decoded_seq is not None:
+            _set_decoded_sequence(read, decoded_seq)
+            _bump(stats, 'seq_eq_decoded')
+            decoded_seq = None
+
     left_len, _ = _clip_lens(read.cigartuples)
     if _LEFT in sides and left_len >= cfg.min_clip:
         clip_seq = read.query_sequence[:left_len]
@@ -1411,6 +1471,7 @@ def resolve_read(
             stats.resolved_left += 1
             if placement.k_inside:
                 stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
+            _decode_seq_now()
             changed = True
 
     _, right_len = _clip_lens(read.cigartuples)
@@ -1438,12 +1499,21 @@ def resolve_read(
             stats.resolved_right += 1
             if placement.k_inside:
                 stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
+            _decode_seq_now()
             changed = True
 
     # v2: re-arbitrate junction assignments and suspicious linear structure
     # (runs after clip resolution so a freshly placed junction competes too).
     if cfg.arb_enable:
         if _rearbitrate_read(read, chrom_seq, index, chrom_key, strand, cfg, stats):
+            # Every arbiter rewrite except the A0 D-merge moves query bases to
+            # new reference positions (a boundary shift swaps |delta| bases
+            # between the flanking Ms; a B1 snap with delta != 0 does the same;
+            # B2/B3 split an M into M-N-M and displace everything past the split
+            # by the intron length), so the surviving '=' bytes are stale here
+            # too. The D-merge alone is alignment-identical, but distinguishing
+            # it would buy nothing: decoding is idempotent and correct either way.
+            _decode_seq_now()
             changed = True
 
     return changed
