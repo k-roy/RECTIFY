@@ -192,9 +192,10 @@ def test_run_all_exposes_require_compass_index():
     from rectify.core.commands.run_command import create_run_parser
     p = argparse.ArgumentParser()
     create_run_parser(p.add_subparsers(dest='command'))
-    assert p.parse_args(['run-all', 'r.fq', '--short-read']).require_compass_index is False
-    assert p.parse_args(
-        ['run-all', 'r.fq', '--short-read', '--require-compass-index']).require_compass_index is True
+    # run-all requires -o/--output-dir; omitting it makes argparse SystemExit(2).
+    base = ['run-all', 'r.fq', '-o', 'out', '--short-read']
+    assert p.parse_args(base).require_compass_index is False
+    assert p.parse_args(base + ['--require-compass-index']).require_compass_index is True
 
 
 def test_alignment_stage_runs_the_preflight_before_launching_the_panel():

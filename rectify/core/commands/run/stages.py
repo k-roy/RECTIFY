@@ -54,6 +54,7 @@ def _run_alignment(
     read_length: int = 150,
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
+    require_compass_index: bool = False,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -178,8 +179,10 @@ def _run_alignment(
                 raise FileNotFoundError(
                     f"{len(_pf.missing)} aligner index/indices are missing and "
                     "--require-compass-index was given; see the pre-flight above.")
-        except ImportError:
-            pass
+        except FileNotFoundError:
+            raise
+        except Exception as _e:                      # noqa: BLE001 - a pre-flight must never be
+            print(f'    (index pre-flight skipped: {_e})')   # the thing that stops a run
     print(f"    Running {len(all_aligners)}-aligner consensus ({aligner_desc})...")
     from ..align_command import run_align
 

@@ -228,7 +228,9 @@ def compass_preflight(
 
     p = _compass_index_paths(genome_path, read_length=read_length)
     g = Path(genome_path)
-    want = arms or ['STAR', 'HISAT2', 'splice_sites', 'magicblast', 'gsnap']
+    # `arms or [...]` would make an EXPLICIT empty list mean 'the full panel', which is the
+    # opposite of what a caller checking only the deSALT arm asks for.
+    want = ['STAR', 'HISAT2', 'splice_sites', 'magicblast', 'gsnap'] if arms is None else arms
     rep = PreflightReport(annotation_path=Path(annotation_path) if annotation_path else None)
     rep.annotation_status, rep.annotation_census = gtf_exon_status(annotation_path)
     gtf = str(annotation_path) if annotation_path else '<annotation.gtf>'
