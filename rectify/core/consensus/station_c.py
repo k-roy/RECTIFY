@@ -61,6 +61,26 @@ Verdicts (non-annotated junctions), applied in this order:
 
 Cross-sample recurrence and the orthogonal-evidence channels are recorded as
 columns for downstream tooling but not computed in v0 (single-sample scope).
+
+Two coverage properties the gate depends on (ISSUE-008, Sumner RNA004 panel,
+dev/sumner_misplaced_panel_20260904):
+
+- **The census must see the junctions RECTIFY creates.** Module 2H realizes a
+  single-boundary move by planting a compensating I/D op immediately beside the
+  N (``junction_refiner.py`` L1300-1309, deliberately exempt from the
+  both-boundary refusal). Reading only the op next to the N scored those as
+  anchor 0 and dropped them from the census entirely — neither admitted,
+  reviewed nor demoted. ``_anchor_run`` sums the aligned run across a bounded
+  number of intervening indel ops and records what it stepped over
+  (``adj_indel_l``/``adj_indel_r``/``n_adj_indel``). Measured: 16/121 → 80/121
+  created N-ops censused. Thresholds are unchanged — this is coverage, not
+  policy.
+- **A missing track must say so.** The repeat, self-homology and background-SV
+  tracks have no human equivalent, so all three read empty on a human run while
+  the table looked like a clean bill of health. An absent track now writes
+  ``TRACK_UNAVAILABLE`` in its column and lands in
+  ``summary['tracks_unavailable']`` with a logged warning. The annotated-intron
+  shield is likewise parsed from GFF3 *and* GTF dialects (:func:`_exon_parents`).
 """
 
 from __future__ import annotations
@@ -69,6 +89,7 @@ import gzip
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -93,9 +114,28 @@ REPEAT_FEATURE_TYPES = frozenset({
 })
 
 
+#: Value written into a flag column when the TRACK IT COMES FROM does not
+#: exist for this genome, as opposed to "the track was consulted and this
+#: junction is clean". Human input has no bundled self-homology / background-SV
+#: track and no REPEAT_FEATURE_TYPES equivalent, so all three columns used to
+#: read 0/'' — indistinguishable from a clean bill of health (the Sumner
+#: RNA004 panel, dev/sumner_misplaced_panel_20260904 CP2: three of Station C's
+#: four demotion terms were silently dead). A sentinel here is deliberately
+#: TRUTHY, so a downstream reader that tests the cell errs toward caution.
+#: Station C's own verdict never sees it — the verdict reads the boolean flags.
+TRACK_UNAVAILABLE = 'track_unavailable'
+
+
 @dataclass
 class PoolGateConfig:
     min_anchor: int = 8          # census: min adjacent exon anchor per N-op
+    # Census anchor walk: intervening I/D ops tolerated between the N-op and
+    # the aligned run that anchors it (see `_anchor_run`). Module 2H realizes a
+    # single-boundary junction move by planting a COMPENSATING indel right
+    # beside the N, so reading only ops[i±1] scored 87% of the junctions
+    # RECTIFY creates as anchor 0 — never censused, never gated.
+    max_adj_indel_ops: int = 2   # per side
+    max_adj_indel_bp: int = 20   # per side, summed over those ops
     overhang_cap: int = 60       # junction-adjacent query bases assessed
     err_bits: float = 2.0        # bits removed per alignment error in window
     q_canon: float = 40.0        # canonical-track admit threshold (644h)
@@ -316,12 +356,82 @@ def _canonicalize(chrom_seq: str, start: int, end: int, max_shift: int) -> Tuple
     return start - l_amb, end - l_amb
 
 
+def _anchor_run(ops, i_n: int, direction: int,
+                cfg: PoolGateConfig) -> Tuple[int, str]:
+    """Aligned bases anchoring one side of the N-op at cigar index ``i_n``.
+
+    Returns ``(anchor_bases, adjacent_indel_label)``, the label using the
+    ``747_panel.py::junctions()`` encoding — ``'I1'``, ``'D10'``, or ``''`` for
+    the FIRST indel op met walking toward the flank.
+
+    The run sums the contiguous ``M``/``=``/``X`` ops toward the flank, stepping
+    over at most ``cfg.max_adj_indel_ops`` intervening ``I``/``D`` ops totalling
+    at most ``cfg.max_adj_indel_bp`` bp; it stops at ``N``/``S``/``H``/``P``, and
+    at an indel run past either budget.
+
+    **Why walk at all.** Module 2H realizes a single-boundary junction move by
+    re-labelling the boundary with a COMPENSATING indel placed immediately
+    beside the N-op — deliberate behavior, explicitly exempted from the
+    both-boundary refusal (``junction_refiner.py`` L1300-1309):
+    ``69M 3699N 61M 468N`` becomes ``69M 3699N 60M 1I 469N``. Reading only
+    ``ops[i±1]`` and requiring it to be M/=/X therefore scored exactly the
+    junctions most in need of gating as anchor 0, so they were never enumerated
+    — not admitted, not reviewed, not demoted. Measured on the Sumner RNA004
+    panel (dev/sumner_misplaced_panel_20260904, 100 reads, 121 created N-ops):
+    16/121 censused before, 80/121 after.
+
+    This is a **coverage** fix, not a threshold change: ``min_anchor`` and both
+    track thresholds are untouched, and a genuinely short anchor
+    (``4M 60N 30M``) still yields 4 and is still refused. The budgets keep it
+    that way — 2F's ``4M4I3M4I1M``-style rescued exons, where no contiguous
+    anchor really exists, stay out.
+
+    The sibling ``_side_features`` (the q-scorer) has always walked I/D ops, so
+    this also removes an internal inconsistency: the score was indel-tolerant
+    while the census gate that fed it was not.
+    """
+    rng = (range(i_n + 1, len(ops)) if direction > 0
+           else range(i_n - 1, -1, -1))
+    total = 0
+    n_ops = 0
+    n_bp = 0
+    label = ''
+    for k in rng:
+        op, ln = ops[k]
+        if op in (0, 7, 8):          # M / = / X
+            total += ln
+        elif op in (1, 2):           # I / D
+            if not label:
+                label = ('I' if op == 1 else 'D') + str(ln)
+            n_ops += 1
+            n_bp += ln
+            if n_ops > cfg.max_adj_indel_ops or n_bp > cfg.max_adj_indel_bp:
+                break
+        else:                        # N / S / H / P
+            break
+    return total, label
+
+
+def _pick_label(counts: Dict[str, int]) -> str:
+    """Most frequent adjacent-indel label; ties broken by label, not BAM order."""
+    if not counts:
+        return ''
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
 def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
                max_q_reads_per_junction: int = 50) -> Dict[Tuple[str, int, int], dict]:
     """One streaming pass: per canonical junction, support + q statistics.
 
     ``max_q_reads_per_junction`` caps the per-read overhang scoring (q_max is
     a max — extra reads beyond the cap still count toward support).
+
+    The per-side anchor is the aligned run reached by ``_anchor_run``, which
+    steps over the compensating indel Module 2H plants beside every junction it
+    moves. Each record also carries what was stepped over: ``adj_l`` / ``adj_r``
+    (label -> count over supporting reads) and ``n_adj_indel`` (supporting reads
+    with an adjacent indel on either side), so the flag survives into the
+    report instead of being silently absorbed.
     """
     J: Dict[Tuple[str, int, int], dict] = {}
     with pysam.AlignmentFile(bam_path, 'rb', check_sq=False) as fh:
@@ -338,9 +448,8 @@ def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
             ref = read.reference_start
             for i, (op, ln) in enumerate(ops):
                 if op == 3:
-                    lf = ops[i - 1][1] if i >= 1 and ops[i - 1][0] in (0, 7, 8) else 0
-                    rt = (ops[i + 1][1]
-                          if i + 1 < len(ops) and ops[i + 1][0] in (0, 7, 8) else 0)
+                    lf, adj_l = _anchor_run(ops, i, -1, cfg)
+                    rt, adj_r = _anchor_run(ops, i, +1, cfg)
                     if min(lf, rt) >= cfg.min_anchor:
                         s, e = _canonicalize(chrom_seq, ref, ref + ln,
                                              cfg.max_ambiguity_shift)
@@ -348,8 +457,16 @@ def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
                         rec = J.get(key)
                         if rec is None:
                             rec = J[key] = {'support': 0, 'q_max': 0.0,
-                                            'q_2nd': 0.0, 'q_scored': 0}
+                                            'q_2nd': 0.0, 'q_scored': 0,
+                                            'adj_l': {}, 'adj_r': {},
+                                            'n_adj_indel': 0}
                         rec['support'] += 1
+                        if adj_l:
+                            rec['adj_l'][adj_l] = rec['adj_l'].get(adj_l, 0) + 1
+                        if adj_r:
+                            rec['adj_r'][adj_r] = rec['adj_r'].get(adj_r, 0) + 1
+                        if adj_l or adj_r:
+                            rec['n_adj_indel'] += 1
                         if (rec['q_scored'] < max_q_reads_per_junction
                                 and read.query_sequence is not None):
                             if offs is None:
@@ -367,13 +484,50 @@ def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
     return J
 
 
+#: GFF3 exon -> transcript link. Matched FIRST, so the yeast path is unchanged.
+_PARENT_RE = re.compile(r'Parent=([^;]+)')
+#: GTF exon -> transcript link (GENCODE/Ensembl `transcript_id "X";`, and the
+#: unquoted `transcript_id=X;` some GFF3 writers add). The leading
+#: `(?:^|[;\s])` stops it matching a longer key that merely ends in
+#: `transcript_id`.
+_TRANSCRIPT_ID_RE = re.compile(r'(?:^|[;\s])transcript_id[ =]+"?([^";]+)"?')
+
+
+def _exon_parents(attrs: str) -> List[str]:
+    """Transcript key(s) an exon line belongs to, across annotation dialects.
+
+    GFF3 (the bundled yeast R64 annotation) writes ``Parent=<id>[,<id>…]``;
+    GTF (GENCODE, Ensembl, StringTie) writes ``transcript_id "<id>";`` and no
+    ``Parent=`` at all. ``Parent=`` is matched FIRST, so every GFF3 line
+    resolves exactly as it did before this function existed — the fallback is
+    only reached by a line with no ``Parent=``.
+
+    Station C used to look for ``Parent=`` only, so a GENCODE GTF (which also
+    has no ``intron`` feature) yielded **zero** annotated introns and every real
+    annotated junction was reported as a discovery candidate — measured on
+    GENCODE v48 chr5, 222 junctions censused, ``n_annotated=0``
+    (dev/sumner_misplaced_panel_20260904 CP2). The sibling
+    ``multi_aligner.derive_max_intron`` has known the GTF dialect all along.
+    """
+    m = _PARENT_RE.search(attrs)
+    if m:
+        return m.group(1).split(',')
+    m = _TRANSCRIPT_ID_RE.search(attrs)
+    return [m.group(1).strip()] if m else []
+
+
 def load_annotated_canonical(annotation_path: Path, genome: Dict[str, str],
                              cfg: PoolGateConfig) -> set:
     """Annotated introns (intron features + inferred from exon adjacency),
-    ambiguity-canonicalised so census keys match."""
-    import re
+    ambiguity-canonicalised so census keys match.
+
+    Both annotation dialects are handled: explicit ``intron`` features (yeast
+    GFF3) and per-transcript exon adjacency keyed on ``Parent=`` (GFF3) or
+    ``transcript_id`` (GTF — see :func:`_exon_parents`).
+    """
     from collections import defaultdict
     exons = defaultdict(list)
+    chrom_pool: Dict[str, str] = {}
     ann = set()
     with _gff_open(annotation_path) as fh:
         for line in fh:
@@ -388,10 +542,11 @@ def load_annotated_canonical(annotation_path: Path, genome: Dict[str, str],
             if ftype in ('intron', 'five_prime_UTR_intron'):
                 ann.add((chrom, int(s1) - 1, int(e1)))
             elif ftype in ('exon', 'noncoding_exon'):
-                m = re.search(r'Parent=([^;]+)', attrs)
-                if m:
-                    for parent in m.group(1).split(','):
-                        exons[parent].append((chrom, int(s1) - 1, int(e1)))
+                # Pool the chrom string: a human GTF has ~1.6 M exon lines and
+                # str.split makes a fresh object for each.
+                chrom = chrom_pool.setdefault(chrom, chrom)
+                for parent in _exon_parents(attrs):
+                    exons[parent].append((chrom, int(s1) - 1, int(e1)))
     for parent, ex in exons.items():
         if len(ex) < 2:
             continue
@@ -423,6 +578,13 @@ def pool_gate(
     Rows cover NON-annotated junctions only (one dict per junction, sorted by
     verdict then descending support); annotated junctions are counted in the
     summary. Report-only: nothing upstream is modified.
+
+    A flag whose TRACK does not exist for this genome is reported as
+    ``TRACK_UNAVAILABLE`` in its column, never as 0/'' — an absent track and a
+    consulted-and-clean track must not read the same (Sumner RNA004: three of
+    the four demotion terms were dead on human and the table looked clean).
+    ``summary['tracks_unavailable']`` lists them and each is logged as a
+    warning.
     """
     cfg = cfg or PoolGateConfig()
     ann_flags = load_repeat_flags(annotation_path, margin=cfg.repeat_margin)
@@ -430,6 +592,28 @@ def pool_gate(
     bg_flags = (load_background_sv_bed(background_sv_bed)
                 if background_sv_bed else None)
     annotated = load_annotated_canonical(annotation_path, genome, cfg)
+
+    # Which demotion terms actually have something behind them here. The
+    # repeat track is annotation-derived, so "no REPEAT_FEATURE_TYPES feature
+    # in this annotation" is the same practical condition as "no track": the
+    # column would otherwise report a clean bill of health it never checked.
+    have_repeat = ann_flags.n_intervals > 0
+    have_selfhom = sh_flags is not None
+    have_bg = bg_flags is not None
+    tracks_unavailable = [name for name, ok in (
+        ('repeat', have_repeat), ('selfhom', have_selfhom),
+        ('background_sv', have_bg)) if not ok]
+    for name in tracks_unavailable:
+        logger.warning(
+            'station-c: %s track UNAVAILABLE for this genome/annotation — the '
+            '%s column reports %r, not a clean result. Junctions are gated on '
+            'the remaining terms only.',
+            name, f'{name}_flag', TRACK_UNAVAILABLE)
+    if not annotated:
+        logger.warning(
+            'station-c: 0 annotated introns parsed from %s — every annotated '
+            'junction will be reported as a discovery candidate.',
+            annotation_path)
 
     J = census_bam(bam_path, genome, cfg)
 
@@ -495,10 +679,18 @@ def pool_gate(
             'support': support,
             'q_max': round(q, 2), 'q_2nd': round(rec['q_2nd'], 2),
             'canonical_in_class': int(canon),
-            'repeat_flag': ann_flag or '',
-            'selfhom_flag': int(bool(sh_flag)),
-            'background_sv_flag': bg_flag or '',
+            'repeat_flag': (ann_flag or '') if have_repeat else TRACK_UNAVAILABLE,
+            'selfhom_flag': (int(bool(sh_flag)) if have_selfhom
+                             else TRACK_UNAVAILABLE),
+            'background_sv_flag': ((bg_flag or '') if have_bg
+                                   else TRACK_UNAVAILABLE),
             'over_max_intron': int(over_len),
+            # What the census anchor walk stepped over on each side (ISSUE-008:
+            # 2H's compensating indel is the signature of a junction it MOVED,
+            # so it must survive into the report rather than be absorbed).
+            'adj_indel_l': _pick_label(rec['adj_l']),
+            'adj_indel_r': _pick_label(rec['adj_r']),
+            'n_adj_indel': rec['n_adj_indel'],
             'verdict': verdict,
             'orthogonal_evidence': '',   # v0 placeholder columns for the
             'cross_sample_support': '',  # downstream evidence channels
@@ -520,6 +712,12 @@ def pool_gate(
         'repeat_intervals': ann_flags.n_intervals,
         'selfhom_intervals': sh_flags.n_intervals if sh_flags else 0,
         'background_sv_intervals': bg_flags.n_intervals if bg_flags else 0,
+        # Which demotion terms were live for this run. An empty list means all
+        # three were consulted; anything listed did not run at all.
+        'tracks_unavailable': tracks_unavailable,
+        'n_annotated_introns_parsed': len(annotated),
+        'n_junctions_with_adjacent_indel': sum(
+            1 for r in rows if r['n_adj_indel']),
     }
     logger.info('station-c: %d junctions censused (%d annotated); verdicts %s',
                 len(J), n_annotated, verdict_counts)
@@ -552,7 +750,8 @@ def write_pool_gate_outputs(rows: List[dict], summary: dict, out_prefix: Path) -
     js = Path(raw + '.pool_gate.json')
     cols = ['chrom', 'start', 'end', 'support', 'q_max', 'q_2nd',
             'canonical_in_class', 'repeat_flag', 'selfhom_flag',
-            'background_sv_flag', 'over_max_intron', 'verdict',
+            'background_sv_flag', 'over_max_intron',
+            'adj_indel_l', 'adj_indel_r', 'n_adj_indel', 'verdict',
             'orthogonal_evidence', 'cross_sample_support']
     with open(tsv, 'w') as fh:
         fh.write('\t'.join(cols) + '\n')

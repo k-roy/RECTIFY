@@ -60,6 +60,8 @@ def run_triage(args: argparse.Namespace) -> int:
         annotated_junctions=annotated,
         policy=policy,
         pool_bams=list(args.pool_bams) if args.pool_bams else None,
+        original_bams=(list(args.original_bams)
+                       if getattr(args, 'original_bams', None) else None),
         penalty_table=penalty_table,
         realign=args.realign,
     )
@@ -67,7 +69,7 @@ def run_triage(args: argparse.Namespace) -> int:
     tsv_path = out_dir / 'triage.tsv'
     fieldnames = ['read_id', 'label', 'reasons', 'junction_proximal_errors',
                   'clip_5p', 'clip_3p', 'n_junctions', 'n_unannotated',
-                  'realigned', 'accepted']
+                  'realigned', 'accepted', 'reverted_to_original']
     with open(tsv_path, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames, delimiter='\t')
         w.writeheader()
@@ -81,6 +83,16 @@ def run_triage(args: argparse.Namespace) -> int:
     if args.realign:
         print(f"Re-align: {stats['realigned']} moved by the motif-blind refiner; "
               f"{stats['accepted']} accepted by hp_ed re-entry -> {out_bam}")
+        if stats['orig_leg']:
+            print(f"Pre-correction candidates: {stats['orig_leg']} offered, "
+                  f"{stats['orig_proposed']} differed from the incumbent, "
+                  f"{stats['orig_accepted']} reverted to the original "
+                  f"alignment by hp_ed re-entry")
+            if stats['orig_skipped_unknown_chrom']:
+                print(f"  WARNING: {stats['orig_skipped_unknown_chrom']} "
+                      f"pre-correction record(s) skipped — reference name not "
+                      f"in the input BAM header (chromosome naming mismatch)",
+                      file=sys.stderr)
     else:
         print("Re-align: skipped (--no-realign)")
     print(f"Per-read table: {tsv_path}")
@@ -102,6 +114,15 @@ def create_triage_parser(subparsers) -> argparse.ArgumentParser:
                         '(default: the input BAM itself). Pass the per-aligner '
                         'panel BAMs when available — the pool must reflect FULL '
                         'evidence, never the triaged subset.')
+    p.add_argument('--original-bams', nargs='+', default=None,
+                   help='PRE-CORRECTION BAM(s) — the aligner output before '
+                        '`rectify correct`. Each triaged read\'s original '
+                        'alignment is offered as a CANDIDATE against the same '
+                        'strict hp_ed re-entry arbiter, so Station B can undo '
+                        '2F/2H damage when the original strictly wins. Without '
+                        'this the only proposer is Module 2H itself, which '
+                        're-derives its own fixed point and can never offer '
+                        'back the placement it moved away from.')
     p.add_argument('--penalty-table', default=None,
                    help='Empirical HP penalty table TSV for the hp_ed re-entry '
                         'metric (default: flat costs)')
