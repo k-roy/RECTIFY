@@ -25,6 +25,7 @@ import logging
 import pysam
 
 from ...utils.genome import get_chrom_sequence
+from ..splice.overhang_informativeness import is_canonical_junction
 from .read_edits import (
     clip_read_to_corrected_3prime,
     softclip_read_to_corrected_3prime,
@@ -235,6 +236,85 @@ def _load_corrections_from_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
         return _load_corrections_from_single_tsv(corrected_tsv_path)
 
 
+def _n_op_intervals(read: pysam.AlignedSegment) -> Tuple[Tuple[int, int], ...]:
+    """(start, end) genomic interval of every N-op in the live CIGAR.
+
+    0-based half-open, matching the pool/annotation convention.
+    """
+    if not read.cigartuples or read.reference_start is None:
+        return ()
+    out = []
+    pos = read.reference_start
+    for op, length in read.cigartuples:
+        if op == 3:
+            out.append((pos, pos + length))
+            pos += length
+        elif op in (0, 2, 7, 8):
+            pos += length
+    return tuple(out)
+
+
+def _revert_selfinflicted_noncanonical_n(
+    read: pysam.AlignedSegment,
+    genome: Optional[Dict[str, str]],
+    pre_nops: Tuple[Tuple[int, int], ...],
+    pre_cigar,
+    pre_start: Optional[int],
+) -> bool:
+    """Undo a 5' rescue surgery that INVENTED a non-canonical intron.
+
+    Returns True when the read was reverted.
+
+    This is a guard against a **self-inflicted junction**, not a motif filter on
+    aligner evidence.  Only N-ops that were absent from ``pre_nops`` — i.e. that
+    this writer's own 5' surgery drew — are judged; an N-op the aligner already
+    reported is never touched, whatever its motif, because RECTIFY's job is to
+    place the read's evidence, not to censor the aligner's.  The rescue that
+    requested the surgery scored a junction from the annotation pool; the writer
+    can end up drawing the N-op at *different* coordinates (ISSUE-002: `extend`
+    derives its intron length from the live alignment edge and never reads
+    ``five_prime_intron_clip_pos``; ISSUE-007: the reroute merge can fuse a
+    partially trimmed N with the new one).  Nothing scored the motif at the
+    coordinates that actually reach the BAM — this does.
+
+    "Canonical" is the human/yeast splice grammar GT-AG, GC-AG and AT-AC
+    (:func:`overhang_informativeness.is_canonical_junction` with ``atac=True``,
+    which encodes all six forward-genome dinucleotide pairs, both strands).
+    Motivation: on the Sumner human RNA004 chr5 slice the 5' rescue added
+    ~24.9k N-ops of which ~74% were non-canonical, and the tester's clip-length
+    table shows a length floor alone is not enough — even 15-29 nt rescues are
+    40-58% non-canonical — so the floor is paired with this destination guard.
+
+    A read whose genome sequence cannot be resolved is left alone (the guard
+    cannot judge what it cannot read); that is logged at debug level so a
+    silent no-op is not mistaken for "nothing to revert".
+    """
+    if genome is None or pre_start is None:
+        return False
+    new_nops = [n for n in _n_op_intervals(read) if n not in pre_nops]
+    if not new_nops:
+        return False
+    chrom_seq, _key = get_chrom_sequence(genome, read.reference_name)
+    if not chrom_seq:
+        logger.debug(
+            "5' rescue canonical guard skipped for %s: no genome sequence for %s",
+            read.query_name, read.reference_name,
+        )
+        return False
+    for start, end in new_nops:
+        if not is_canonical_junction(chrom_seq, start, end, atac=True):
+            logger.debug(
+                "5' rescue reverted for %s: writer-created N-op %d-%d is "
+                "non-canonical (%s..%s)",
+                read.query_name, start, end,
+                chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper(),
+            )
+            read.cigartuples = pre_cigar
+            read.reference_start = pre_start
+            return True
+    return False
+
+
 def apply_corrected_edits_to_read(
     read: pysam.AlignedSegment,
     correction: Optional[Dict],
@@ -276,6 +356,14 @@ def apply_corrected_edits_to_read(
     if genome is not None:
         modified |= realign_exon_blocks(read, genome)
 
+    # --- 5' junction-rescue surgery (Cat3 / Cases 1/2/2b/4) -----------------
+    # Snapshot BEFORE the surgery so _revert_selfinflicted_noncanonical_n below
+    # can tell an N-op this writer invented from one the aligner already had.
+    _pre_nops = _n_op_intervals(read)
+    _pre_cigar = read.cigartuples
+    _pre_start = read.reference_start
+    _pre_modified = modified
+
     # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
     if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
         modified |= extend_read_5prime_for_junction_rescue(
@@ -305,6 +393,10 @@ def apply_corrected_edits_to_read(
             clip_boundary=_icp,
             strand=correction['strand'],
         )
+
+    if _revert_selfinflicted_noncanonical_n(
+            read, genome, _pre_nops, _pre_cigar, _pre_start):
+        modified = _pre_modified
 
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):

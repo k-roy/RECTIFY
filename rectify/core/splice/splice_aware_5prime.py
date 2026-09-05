@@ -30,6 +30,7 @@ Date: 2026-03-24
 from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 import array as _array_mod
+import math as _math
 import os
 import pysam
 
@@ -37,9 +38,11 @@ from ...utils.genome import standardize_chrom_name
 from ...config import CHROM_TO_GENOME
 from .overhang_informativeness import (
     COUNTERS as _OI_COUNTERS,
+    DEFAULT_ALPHA as _OI_DEFAULT_ALPHA,
     assess_overhang as _oi_assess,
     gate_alpha as _oi_gate_alpha,
     gate_enabled as _oi_gate_enabled,
+    min_self_match_period as _oi_period,
 )
 from .region_skip import overlaps_skip_region, skip_regions_from_env
 
@@ -67,6 +70,130 @@ except ImportError:
 MAX_SS_SHIFT = 15                  # max splice-site slide explored per candidate
 DEFAULT_JUNCTION_PROXIMITY_BP = 10  # max bp between 5' align end and intron edge
 DEFAULT_PEEL_MAX_BP = 100          # deepest terminal peel attempted
+MAX_RESCUE_JUNCTIONS = 25          # per-read candidate cap (see the narrowing block)
+
+
+def min_informative_clip_bp(
+    junction_proximity_bp: int = DEFAULT_JUNCTION_PROXIMITY_BP,
+    alpha: float = _OI_DEFAULT_ALPHA,
+) -> int:
+    """Shortest 5' soft clip whose zero-edit-distance hit can be evidence.
+
+    The sequence rescue compares the clip against, at worst,
+
+        W = MAX_RESCUE_JUNCTIONS x (2*MAX_SS_SHIFT + 1) x (junction_proximity_bp + 1)
+
+    genomic windows — the candidate cap, the ``_shift`` sweep and the ``_off``
+    sweep of the rescue loops below (25 x 31 x 11 = 8,525 at the defaults).
+    Under the null (the clip is basecaller noise or intronic sequence, not
+    exon 1) the expected number of chance zero-ED hits in that space is
+    ``E = W * 2**(-I_eff)`` for a clip of effective information content
+    ``I_eff`` bits — the same bound ``overhang_informativeness.assess_overhang``
+    inverts to a search window.  Requiring ``E <= alpha`` gives
+
+        I_eff >= log2(W / alpha) = 19.70 bits   (defaults)
+
+    and, because DNA carries at most 2 bits per base, a *necessary* condition
+    on the clip itself:
+
+        len(clip) >= ceil(19.70 / 2) = 10 nt
+
+    Below that no clip — however clean its match — can distinguish its true
+    placement from chance anywhere in the searched space, so ``ed_exon == 0``
+    is not evidence and the rescue must not fire on it (ISSUE-006: 17 of 26
+    rescued rows on the Sumner human RNA004 panel had a 1-3 nt clip, and on
+    the full chr5 slice the <10 nt bins were >=80% non-canonical, <=3%
+    annotated, and held 92% of all rescues).
+
+    This is deliberately the *ceiling* bound, not a per-clip ``I_eff`` test:
+    measured on real chr5 sequence a strict ``I_eff >= 19.7`` test does not
+    cut until 16-20 nt, which would refuse genuine exon-1 clips (the bundled
+    yeast cat3 fixtures carry 10/13/16/22 nt clips and must keep rescuing).
+    Per-clip complexity is handled separately, by the periodicity refusal in
+    :func:`_clip_search_refused`.
+    """
+    w = MAX_RESCUE_JUNCTIONS * (2 * MAX_SS_SHIFT + 1) * (junction_proximity_bp + 1)
+    return max(1, int(_math.ceil(_math.log2(w / alpha) / 2.0)))
+
+
+# Junction-adjacent window actually assessed for complexity. min_self_match_period
+# is an O(32*n) pure-Python scan and DRS slippage clips reach ~200 kb, so only the
+# bases that could align to exon 1 are examined (plus strand: the clip's 3' end
+# abuts the acceptor; minus strand: its 5' end does).
+_CLIP_ASSESS_BP = 200
+
+# Scope — NOT the criterion — of the whole-read short-circuit in
+# rescue_3ss_truncation. A long low-complexity clip is where the wasted work is
+# (it is compared against every candidate junction in the pool); a 3 nt clip
+# costs nothing to search and its read's STRUCTURAL evidence (Case-4 intronic
+# snap, Case-3 proximity) must stay live, so short clips are never short-circuited
+# at the read level — they are handled inside the body by the minimum informative
+# clip length, which refuses only the sequence search. 30 bp is the measured DRS
+# slippage-artifact regime (~90% of human RNA004 reads entering rescue with a
+# >=30 bp 5' clip are expansions) and is inherited from the rule this replaces.
+_CLIP_ARTIFACT_SCOPE_BP = 30
+
+
+def _clip_search_refused(clip_seq: str, strand: str) -> bool:
+    """True when the 5' clip cannot localize itself, so the sequence search
+    should be refused — a first-class outcome, not a failure.
+
+    Replaces the old ``is_repeat_expansion(clip)`` criterion at this call site
+    (ISSUE-006).  That rule refused a clip only when it was at least
+    ``DEFAULT_MIN_LEN`` = 30 bp AND >= 75% dominated by one low-period k-mer
+    family, which is wrong in both directions: a 20 nt ``(AAG)n`` clip slipped
+    through, while a genuinely informative 33-388 nt exon-1 clip was refused by
+    a *length* threshold — on the Sumner human panel 3 of the 5 C1 control reads
+    stopped here (ISSUE-006 "the module fires on noise and declines real exon-1
+    candidates").
+
+    The criterion here is informativeness, not length, and is the graded form of
+    the same idea (``overhang_informativeness`` module docstring):
+
+    * ``assess_overhang(...).refused`` — ``W_max < 1``: the clip cannot
+      distinguish its placement from chance in ANY window (poly(A), ``(AG)n``).
+    * a tandem self-match ``period`` — the clip matches itself at a shift of at
+      most ``DEFAULT_PERIOD_MAX_SHIFT`` (32), i.e. within the very
+      ``+/- MAX_SS_SHIFT`` slide window the rescue loops explore, so placements
+      a period apart are ties and the winning shift is arbitrary.  This catches
+      ``(AAG)n`` / ``(CTT)n`` at EVERY length (measured: ``W_max`` = 2 bp for
+      ``(AAG)13``, ``(CTT)30`` and ``(AAG)130`` alike), where the old rule only
+      caught them at >= 30 bp.
+
+    Verified against both guard populations: all four bundled yeast cat3 clips
+    (``GAGGAAAAAT`` 10 nt, ``TCATATGTAGACA`` 13, ``TTTTTCTTTGCTTAAA`` 16,
+    ``GGCTGACAAGTCATCATTGAAG`` 22) are aperiodic and are NOT refused; all five
+    Sumner C1 control clips (33-388 nt) carry period 2 or 3 and ARE refused —
+    two of them (69 nt / 62 nt) that the old length+dominance rule let through.
+    """
+    if not clip_seq:
+        return False
+    assessment = _oi_assess(_clip_assess_window(clip_seq, strand))
+    return assessment.refused or assessment.period is not None
+
+
+def _clip_assess_window(clip_seq: str, strand: str) -> str:
+    """The junction-adjacent slice of the clip that any assessment looks at."""
+    return clip_seq[-_CLIP_ASSESS_BP:] if strand == '+' else clip_seq[:_CLIP_ASSESS_BP]
+
+
+def _clip_is_periodic(clip_seq: str, strand: str) -> bool:
+    """True when the clip tandem-matches itself within the rescue's slide window.
+
+    The narrow half of :func:`_clip_search_refused`, and the only part of it a
+    minimum LENGTH cannot already express: a ``(AAG)5`` clip is 15 nt — past the
+    floor — yet every placement a period apart scores identically, so the winning
+    shift is arbitrary.  ``min_self_match_period`` needs a 12 bp overlap, so this
+    is silent below 13 nt by construction and never double-judges a clip the
+    length floor already refused.
+
+    The ``W_max < 1`` half is deliberately NOT applied here: over a clip that has
+    already cleared the length floor it fires only on near-homopolymers, whose
+    placement the writer's canonical-destination guard is the right place to
+    reject — and applying it here would refuse the (unrealistic but load-bearing)
+    homopolymer toy genomes the rescue's own unit tests are built on.
+    """
+    return bool(clip_seq) and _oi_period(_clip_assess_window(clip_seq, strand)) is not None
 
 
 # =============================================================================
@@ -1279,16 +1406,22 @@ def rescue_3ss_truncation(
     if not genome_seq:
         return _no_rescue(read, strand)
 
-    # Short-circuit: a 5' soft-clip that is itself a long low-period repeat
-    # expansion ((AAG)n / (CTT)n etc.) is a Nanopore DRS basecaller artifact
-    # (motor slippage at RNA secondary structure), NOT a missed upstream intron.
-    # Rescuing it is wasted work — the low-complexity clip is compared against
-    # every candidate junction in the pool (~10k+ on human) and matches many
-    # spuriously — and any "rescue" produced is wrong. On human RNA004 DRS ~90% of
-    # reads entering rescue with a >=30 bp 5' soft-clip are these artifacts (clips
-    # up to ~200 kb). Real Cat3 rescues have a diverse exon-1 5' clip that does NOT
-    # trigger this, so they are unaffected. See core/splice/repeat_expansion.py.
-    from .repeat_expansion import is_repeat_expansion
+    # Short-circuit: a 5' soft-clip that cannot localize itself is a Nanopore DRS
+    # basecaller artifact (motor slippage at RNA secondary structure produces
+    # (AAG)n / (CTT)n expansions), NOT a missed upstream intron. Rescuing it is
+    # wasted work — the low-complexity clip is compared against every candidate
+    # junction in the pool (~10k+ on human) and matches many spuriously — and any
+    # "rescue" produced is wrong. On human RNA004 DRS ~90% of reads entering
+    # rescue with a >=30 bp 5' soft-clip are these artifacts (clips up to ~200 kb).
+    #
+    # The criterion is _clip_search_refused (informativeness), NOT the old
+    # is_repeat_expansion length+dominance rule — see that helper for why, and
+    # for the two guard populations it was verified against. Real Cat3 rescues
+    # have a diverse exon-1 5' clip that does not trigger it, so they are
+    # unaffected. The refusal deliberately keeps its original SHAPE (whole-read
+    # no-rescue + the `repeat_expansion` flag) rather than only clearing
+    # rescue_seq: letting these reads reach the Case-4 intronic snap would be a
+    # new rescue path for reads the panel's C1 controls say must stay untouched.
     _cigar = read.cigartuples
     _seq = read.query_sequence
     if _cigar and _seq:
@@ -1296,7 +1429,8 @@ def rescue_3ss_truncation(
             _clip5 = _seq[:_cigar[0][1]] if _cigar[0][0] == 4 else ""
         else:
             _clip5 = _seq[-_cigar[-1][1]:] if _cigar[-1][0] == 4 else ""
-        if is_repeat_expansion(_clip5):
+        if (len(_clip5) >= _CLIP_ARTIFACT_SCOPE_BP
+                and _clip_search_refused(_clip5, strand)):
             _res = _no_rescue(read, strand)
             _res['repeat_expansion'] = True
             return _res
@@ -1437,6 +1571,57 @@ def _rescue_3ss_truncation_body(
         else:
             rescue_seq = rescue_seq[:five_clip]
 
+    # --- Minimum informative clip length (ISSUE-006) -----------------------
+    # A soft clip is UNALIGNED sequence: the rescue is a genuine search, and a
+    # zero-edit-distance hit is only evidence when the clip could not have found
+    # one by chance somewhere in the space searched. min_informative_clip_bp()
+    # derives that floor from this module's own search-space constants; see its
+    # docstring for the bound and the two guard populations it was checked on.
+    #
+    # Scoped to the softclip branch on purpose. An 'mpb_mismatch' 5' edge is
+    # ALIGNED sequence whose reference position the aligner already chose — the
+    # rescue is re-interpreting an existing placement rather than searching for
+    # one, so the multiple-testing burden that motivates the floor does not
+    # apply. (The bundled yeast cat3 fixtures rescue via mpb_mismatch on the
+    # merged BAM and via softclip on the per-aligner BAMs; both must keep
+    # working, and the softclip clips there are 10/13/16/22 nt.)
+    #
+    # Refusing the SEQUENCE search — not the read — leaves the structural
+    # evidence paths (N-op snap, Case-4 intronic snap, Case-3 proximity) live.
+    #
+    # This sets a FLAG rather than clearing rescue_seq (the shape the DARK gate
+    # below uses), because rescue_seq carries a second, unrelated meaning: Case 4
+    # reads `not rescue_seq` as "the alignment inside the intron is completely
+    # clean, so the bases genuinely belong there — skip the snap". Clearing it
+    # here silently suppressed 11 of the panel's intronic-snap rescues, which is
+    # exactly the "passes the panel by disabling rescue" failure mode.
+    #
+    # Two ways a soft clip fails to be evidence, both refusing only the search:
+    #   (a) too short to carry log2(W/alpha) bits at ANY composition, and
+    #   (b) long enough but tandem-periodic, so the winning shift is arbitrary.
+    #       The whole-read short-circuit above only scopes to the
+    #       >= _CLIP_ARTIFACT_SCOPE_BP clips where the wasted work lives, so a
+    #       15 nt (AAG)5 clip would otherwise reach the search.
+    #
+    # The floor is applied to the SOFT CLIP as well as to rescue_seq, because the
+    # terminal-peel driver re-enters this body with a deliberately deeper
+    # rescue_seq_override borrowed from the ALIGNED body. Those bases are not
+    # independent evidence for a placement that contradicts where the aligner put
+    # them, and the tester's table is keyed on clip length: without this the peel
+    # re-admits exactly the 1-3 nt-clip rows ISSUE-006 is about (3 survived on the
+    # panel, all non-canonical, and had to be caught downstream by the writer).
+    _min_clip_bp = min_informative_clip_bp(junction_proximity_bp)
+    _seq_search_refused = False
+    if rescue_type_candidate == 'softclip' and rescue_seq and (
+            five_clip < _min_clip_bp
+            or len(rescue_seq) < _min_clip_bp
+            or _clip_is_periodic(rescue_seq, strand)):
+        # Registered lazily so this file does not have to edit the shared
+        # COUNTERS table; RECTIFY_OVERHANG_INFO_COUNTS still dumps it.
+        _OI_COUNTERS['clip_below_min_informative'] = (
+            _OI_COUNTERS.get('clip_below_min_informative', 0) + 1)
+        _seq_search_refused = True
+
     # --- Informativeness gate (planning/641 §2; DARK by default) -----------
     # RECTIFY_OVERHANG_INFO_GATE=1 enables. A rescue sequence whose effective
     # information content cannot distinguish its true placement from chance in
@@ -1564,7 +1749,9 @@ def _rescue_3ss_truncation_body(
     # would drop them.  Preserve all N-op-matched junctions; apply the distance-based
     # cap only to the remainder.  When _n_intervals is empty (non-mapPacBio, typical
     # for MSP/WM2), the else-branch is the simple O(1) sort-and-slice.
-    _MAX_RESCUE_JUNCTIONS = 25
+    # Module-level so min_informative_clip_bp() derives its bound from the SAME
+    # search-space size this loop actually uses (dev/PERF_AUDIT.md drift rule).
+    _MAX_RESCUE_JUNCTIONS = MAX_RESCUE_JUNCTIONS
     if len(_nearby_junctions) > _MAX_RESCUE_JUNCTIONS:
         _edge_key = lambda _j: abs(align_5prime - (_j[2] if strand == '+' else _j[1]))
         if _n_intervals:
@@ -1630,7 +1817,7 @@ def _rescue_3ss_truncation_body(
               and _5p_ops_m[2] == 3):
             _leading_del_minus = True
 
-    if rescue_seq:
+    if rescue_seq and not _seq_search_refused:
         rescue_len = len(rescue_seq)
         _gs = len(genome_seq)
         for j_entry in _nearby_junctions:
