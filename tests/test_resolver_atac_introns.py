@@ -325,13 +325,16 @@ class TestGrammar:
         s[P_DON:P_DON + 2] = 'GC'
         assert _donor_rank(''.join(s), 'L', '+', P_DON, P_ACC) == 1
 
-    def test_canonical_in_class_accepts_atac_only_when_asked(self):
+    def test_canonical_in_class_accepts_atac_by_default_and_can_be_disabled(self):
+        # 2026-09-05 (Kevin): AT-AC is a canonical class everywhere by default;
+        # atac=False is the opt-out (kept for A/B runs).
         g = GENOME_SEQ
         for j in ((P_DON, P_ACC), (M_ACC, M_DON)):
-            assert not is_canonical_junction(g, *j)
+            assert is_canonical_junction(g, *j)
             assert is_canonical_junction(g, *j, atac=True)
-            assert not canonical_in_class(g, *j)
-            assert canonical_in_class(g, *j, atac=True)
+            assert not is_canonical_junction(g, *j, atac=False)
+            assert canonical_in_class(g, *j)
+            assert not canonical_in_class(g, *j, atac=False)
         # a GT..AG junction is canonical either way
         s = list(g); s[P_DON:P_DON + 2] = 'GT'; s[P_ACC - 2:P_ACC] = 'AG'
         assert is_canonical_junction(''.join(s), P_DON, P_ACC)
