@@ -601,6 +601,132 @@ def load_annotated_canonical(annotation_path: Path, genome: Dict[str, str],
     return out
 
 
+#: Same bounds ``multi_aligner.derive_max_intron`` clamps to, so the pre-gate
+#: can never be looser than the aligner's own cap or absurdly tight.
+_POOL_GATE_MAX_INTRON_BOUNDS = (1000, 500_000)
+
+
+def _quantile(sorted_values: List[int], q: float) -> float:
+    """Linear-interpolated quantile of a pre-sorted list (numpy-free)."""
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    pos = q * (len(sorted_values) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    return sorted_values[lo] + (pos - lo) * (sorted_values[hi] - sorted_values[lo])
+
+
+def annotated_intron_lengths(annotation_path: Path) -> List[int]:
+    """Every annotated intron length in an annotation, sorted ascending.
+
+    Explicit ``intron`` features when the annotation has them (the R64 GFF3
+    does); otherwise per-transcript exon gaps, across both dialects via
+    :func:`_exon_parents`. Same precedence as
+    ``multi_aligner.derive_max_intron``, which takes only the max of this.
+    """
+    from collections import defaultdict
+    lens: List[int] = []
+    exons = defaultdict(list)
+    with _gff_open(annotation_path) as fh:
+        for line in fh:
+            if line.startswith('##FASTA') or line.startswith('>'):
+                break
+            if line.startswith('#'):
+                continue
+            f = line.rstrip('\n').split('\t')
+            if len(f) < 9:
+                continue
+            if f[2] == 'intron':
+                lens.append(int(f[4]) - int(f[3]) + 1)
+            elif f[2] in ('exon', 'noncoding_exon') and not lens:
+                # Only pay the exon bookkeeping while no intron feature has
+                # been seen — the derive_max_intron precedence.
+                for parent in _exon_parents(f[8]):
+                    exons[parent].append((int(f[3]), int(f[4])))
+    if not lens:
+        for ivs in exons.values():
+            if len(ivs) < 2:
+                continue
+            ivs.sort()
+            for (_s1, e1), (s2, _e2) in zip(ivs, ivs[1:]):
+                gap = s2 - e1 - 1
+                if gap > 0:
+                    lens.append(gap)
+    lens.sort()
+    return lens
+
+
+def derive_pool_gate_max_intron(
+    annotation_path: Optional[Path],
+    quantile: float = 0.995,
+    multiplier: int = 2,
+    fallback: int = 5000,
+) -> int:
+    """Station C's length pre-gate bound: ``multiplier x`` the ``quantile``
+    of the annotated intron-length distribution, rounded up to 100 and clamped.
+
+    **Why not the aligner's bound.** ``multi_aligner.derive_max_intron`` takes
+    ``2 x the LONGEST annotated intron`` and clamps to 500,000. That is the
+    right shape for an aligner's hard ``-G`` cap — it must not amputate real
+    biology — but it makes Station C's pre-gate inert on any organism with a
+    long tail. Measured on GENCODE v48 chr5: longest annotated intron 772,519
+    bp, so the aligner rule saturates at the 500,000 clamp and NO junction can
+    ever trip the pre-gate. The single term meant to stop the physically
+    impossible was dead on every human run.
+
+    A high quantile keeps the property that matters (real introns pass) while
+    restoring a live ceiling:
+
+    ===================  =========  =========  ============  ==============
+    annotation                    n       max   p99.5 x 2    derive_max_intron
+    ===================  =========  =========  ============  ==============
+    R64 GFF3 (yeast)           378      2,483       **5,000**          5,000
+    R64 GTF (yeast)            378      2,483       **5,000**          5,000
+    GENCODE v48 chr5        38,849    772,519       310,100    500,000 (clamped)
+    ===================  =========  =========  ============  ==============
+
+    Yeast is unchanged — with 378 introns the top 0.5% IS the 2,483 bp maximum,
+    so p99.5 x 2 reproduces the historical 5,000 exactly. This is asserted, not
+    assumed (``test_station_c_max_intron.py``). Human gains a bound at 310 kb,
+    below the clamp, so a 400 kb "intron" now demotes instead of admitting.
+
+    ``p99.9 x 2`` was measured too and rejected: 524,000 on chr5, i.e. back
+    above the clamp and inert again.
+
+    The aligner's own ``max_intron`` is deliberately NOT changed — a pre-gate
+    that annotates and a cap that amputates want different bounds.
+    """
+    if not annotation_path:
+        return fallback
+    try:
+        lens = annotated_intron_lengths(Path(annotation_path))
+    except Exception as exc:  # unreadable/malformed annotation: fall back
+        logger.warning('station-c: could not derive the length pre-gate from '
+                       '%s (%s); using %d', annotation_path, exc, fallback)
+        return fallback
+    if not lens:
+        logger.warning('station-c: no annotated introns in %s; length pre-gate '
+                       'falls back to %d', annotation_path, fallback)
+        return fallback
+    raw = multiplier * _quantile(lens, quantile)
+    derived = -(-int(raw) // 100) * 100          # round UP to the nearest 100
+    lo, hi = _POOL_GATE_MAX_INTRON_BOUNDS
+    value = max(lo, min(hi, derived))
+    # Log the PRE-clamp value too: when the clamp bites, the pre-gate is back
+    # to being inert and the operator has to be able to see that it happened.
+    logger.info('station-c length pre-gate: %d bp (%gx p%.4g of %d annotated '
+                'introns; pre-clamp %d, max annotated %d)',
+                value, multiplier, quantile * 100, len(lens), derived, lens[-1])
+    if derived > hi:
+        logger.warning('station-c: the derived length pre-gate (%d bp) exceeds '
+                       'the %d bp ceiling and was clamped — the pre-gate is '
+                       'inert for junctions between %d and %d bp.',
+                       derived, hi, hi, derived)
+    return value
+
+
 def pool_gate(
     bam_path: str,
     genome: Dict[str, str],
