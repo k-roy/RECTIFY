@@ -66,7 +66,7 @@ except ImportError:
 # NOTE: tracks.gene_track and tracks.coverage are NOT re-exported here -- their names
 # collide with the gene_track / coverage SUBMODULES and would shadow them. Use
 # ``from rectify.visualize import tracks as T`` for the full layer-B API.
-from . import tokens, tracks
+from . import tokens, tracks, pileup
 from .tracks import (
     Transcript,
     Region,
@@ -192,6 +192,7 @@ __all__ = [
     # Tokens + tracks (rna-figure standard)
     'tokens',
     'tracks',
+    'pileup',
     'Transcript',
     'Region',
     'gene_model',

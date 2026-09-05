@@ -41,7 +41,7 @@ Author: Kevin R. Roy
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -61,6 +61,7 @@ __all__ = [
 ]
 
 Interval = Tuple[int, int]
+XForm = Optional[Callable[[float], float]]
 
 
 # ============================================================================
@@ -229,6 +230,7 @@ def gene_model(
     show_utr: bool = True,
     zorder: int = 3,
     alpha: float = 1.0,
+    xform: XForm = None,
 ) -> Dict[str, list]:
     """Draw one transcript as exon boxes joined by an intron line, in the grey ramp.
 
@@ -238,7 +240,8 @@ def gene_model(
     are spaced in inches, so set the axes limits -- pass ``region`` -- before calling).
     ``tss=True`` adds a bent TSS arrow at the 5' end. ``label`` is the gene name in
     italics (a string overrides ``tx.label``); ``label_pos`` is ``"left"``, ``"right"``,
-    ``"above"`` or ``"inside"``.
+    ``"above"`` or ``"inside"``. ``xform`` maps genome coordinates to display coordinates
+    (e.g. ``pileup.SplicedAxis(...).to_t``) so the model draws in union-exon space.
 
     Returns the artists by kind, for callers that need to restyle or exempt them.
     """
@@ -248,29 +251,33 @@ def gene_model(
     S = TOK.stroke()
     T = TOK.typography()
     ink, hairline = TOK.color("ink"), TOK.color("hairline")
-    _apply_xlim(ax, region)
+    if xform is None:
+        _apply_xlim(ax, region)
+    X = xform or (lambda p: p)
     style = intron_style or G.get("intron_style", "line")
     out: Dict[str, list] = {"exons": [], "utrs": [], "introns": [], "chevrons": [], "tss": [], "label": []}
 
     # exons (CDS at full height, UTR at the ratio)
     for (s, e), is_cds in tx.utr_cds_parts():
         h = height if (is_cds or not show_utr) else height * G["utr_height_ratio"]
-        patch = Rectangle((s, y - h / 2), e - s, h, facecolor=ink, edgecolor="none",
+        xa, xb = sorted((X(s), X(e)))
+        patch = Rectangle((xa, y - h / 2), xb - xa, h, facecolor=ink, edgecolor="none",
                           alpha=alpha, zorder=zorder)
         ax.add_patch(patch)
         (out["exons"] if is_cds else out["utrs"]).append(patch)
 
     # introns
     for s, e in tx.introns:
-        (line,) = ax.plot([s, e], [y, y], color=hairline, lw=S["hairline"], solid_capstyle="butt",
+        xa, xb = X(s), X(e)
+        (line,) = ax.plot([xa, xb], [y, y], color=hairline, lw=S["hairline"], solid_capstyle="butt",
                           zorder=zorder - 1, alpha=alpha)
         out["introns"].append(line)
         if style == "chevron":
             sign = _transcription_sign(ax, tx.strand)
             spacing = G["chevron_spacing_in"] * _bp_per_inch(ax)
-            n = int((e - s) // spacing)
+            n = int(abs(xb - xa) // spacing)
             if n >= 1:
-                xs = s + (e - s) / (n + 1) * np.arange(1, n + 1)
+                xs = xa + (xb - xa) / (n + 1) * np.arange(1, n + 1)
                 (chev,) = ax.plot(xs, np.full(n, y), linestyle="none",
                                   marker=">" if sign > 0 else "<", ms=G["mark_size_pt"] * 0.8,
                                   color=hairline, mec=hairline, zorder=zorder - 1, alpha=alpha)
@@ -279,7 +286,7 @@ def gene_model(
     # TSS: a bent arrow at the 5' end, rising from the exon and pointing with transcription
     if tss:
         sign = _transcription_sign(ax, tx.strand)
-        x0, ytop = tx.tss, y + height * 0.5
+        x0, ytop = X(tx.tss), y + height * 0.5
         rise_pt = G["tss_arrow_in"] * 72 * 0.9
         head_pt = G["tss_arrow_in"] * 72
         stem = ax.annotate("", xy=(x0, ytop), xytext=(0, rise_pt), textcoords="offset points",
@@ -297,19 +304,20 @@ def gene_model(
     if label:
         text = tx.label if label is True else str(label)
         xdir = _x_direction(ax)
+        xs_, xe_ = X(tx.start), X(tx.end)
         if label_pos == "inside":
-            t = ax.text((tx.start + tx.end) / 2, y, text, ha="center", va="center",
+            t = ax.text((xs_ + xe_) / 2, y, text, ha="center", va="center",
                         fontsize=T["in_figure"], fontstyle="italic",
                         color=TOK.color("paper"), zorder=zorder + 2)
         elif label_pos == "above":
             lift = 2.5 + (G["tss_arrow_in"] * 72 * 0.9 + 1.0 if tss else 0.0)
-            t = ax.annotate(text, xy=((tx.start + tx.end) / 2, y + height / 2), xytext=(0, lift),
+            t = ax.annotate(text, xy=((xs_ + xe_) / 2, y + height / 2), xytext=(0, lift),
                             textcoords="offset points", ha="center", va="bottom",
                             fontsize=T["in_figure"], fontstyle="italic", color=ink, zorder=zorder + 2)
         else:
             left = (label_pos == "left")
             # "left"/"right" are SCREEN sides; on a reversed axis the data end flips
-            xdata = (min if (left == (xdir > 0)) else max)(tx.start, tx.end)
+            xdata = (min if (left == (xdir > 0)) else max)(xs_, xe_)
             t = ax.annotate(text, xy=(xdata, y), xytext=(-4 if left else 4, 0),
                             textcoords="offset points", ha="right" if left else "left",
                             va="center", fontsize=T["in_figure"], fontstyle="italic",
@@ -332,6 +340,7 @@ def gene_track(
     show_utr: bool = True,
     priority: Sequence[str] = (),
     row_pitch: Optional[float] = None,
+    xform: XForm = None,
 ) -> Dict[str, float]:
     """Stack several transcripts in one axes without overlaps (greedy levels), draw each
     with :func:`gene_model`, and hide the y-axis.
@@ -344,7 +353,7 @@ def gene_track(
     Transcripts outside ``region`` are skipped; those straddling it are clipped by the axes.
     """
     G = TOK.track_geometry()
-    r = _apply_xlim(ax, region)
+    r = _as_region(region) if xform is not None else _apply_xlim(ax, region)
     height = G["exon_height"] if height is None else height
     min_gap = G["min_gap_bp"] if min_gap_bp is None else min_gap_bp
     keep = [t for t in transcripts
@@ -371,7 +380,7 @@ def gene_track(
     for t in keep:
         y = -pitch * levels[t.name] if levels[t.name] else 0.0
         gene_model(ax, t, y=y, height=height, label=label, label_pos=label_pos,
-                   intron_style=intron_style, tss=tss, show_utr=show_utr)
+                   intron_style=intron_style, tss=tss, show_utr=show_utr, xform=xform)
         ys[t.name] = y
     n_levels = (max(levels.values()) + 1) if levels else 1
     ax.set_ylim(-pitch * (n_levels - 1) - 0.9, 0.9 if label_pos != "above" else 1.6)
@@ -409,6 +418,7 @@ def mark(
     side: str = "above",
     strand: str = "+",
     zorder: int = 6,
+    xform: XForm = None,
 ) -> list:
     """A site mark on a track at data ``x``: a molecular identity, so NO colour argument.
 
@@ -421,6 +431,8 @@ def mark(
         raise ValueError(f"unknown mark kind {kind!r}; kinds are {sorted(MARK_KINDS)}")
     token, shape = MARK_KINDS[kind]
     col = TOK.color(token)
+    if xform is not None:
+        x = xform(x)
     G = TOK.track_geometry()
     S = TOK.stroke()
     T = TOK.typography()
@@ -510,6 +522,7 @@ def coverage(
     log: bool = False,
     smooth: Optional[int] = None,
     zorder: int = 2,
+    xform: XForm = None,
 ):
     """A coverage / signal fill for ONE sample.
 
@@ -522,8 +535,11 @@ def coverage(
     """
     G = TOK.track_geometry()
     col = _signal_color(role)
-    _apply_xlim(ax, region)
+    if xform is None:
+        _apply_xlim(ax, region)
     pos = np.asarray(positions)
+    if xform is not None:
+        pos = np.array([xform(float(p)) for p in pos])
     dep = np.asarray(depths, dtype=float)
     if smooth is not None and smooth > 1:
         dep = np.convolve(dep, np.ones(smooth) / smooth, mode="same")
@@ -573,6 +589,7 @@ def arc(
     direction: str = "up",
     alpha: float = 1.0,
     zorder: int = 5,
+    xform: XForm = None,
 ) -> list:
     """A junction arc from ``x0`` to ``x1`` with its apex ``height`` data units above ``y``.
 
@@ -583,6 +600,8 @@ def arc(
     G = TOK.track_geometry()
     S = TOK.stroke()
     col = TOK.color("splice") if role is None else TOK.role(role)
+    if xform is not None:
+        x0, x1 = xform(x0), xform(x1)
     if height is None:
         lo, hi = ax.get_ylim()
         height = G["arc_height_ratio"] * abs(hi - lo)

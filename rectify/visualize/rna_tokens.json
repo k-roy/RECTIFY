@@ -1,6 +1,6 @@
 {
  "$schema_note": "rna-figure design tokens -- the RNA figure house standard for the Chanfreau and Sumner spaces. SINGLE SOURCE OF TRUTH for both colour layers, typography, geometry and the two floors. Every renderer (rectify/visualize, panels.py, tracks.py) reads this file or its byte-identical copy rectify/visualize/rna_tokens.json (kept in sync by tests/sync_tokens.sh --check). Edit HERE, run tests/palette_check.py, then sync. Never hard-code a colour, font size or stroke weight anywhere else.",
- "version": "1.0.0",
+ "version": "1.1.0",
  "adopted": "2026-09-05",
  "provenance": "Layer A hexes are the Okabe-Ito colour-vision-deficiency-safe set (Wong, B. 'Points of view: Color blindness', Nature Methods 8, 441 (2011), doi:10.1038/nmeth.1618) exactly as Kevin approved them in Chanfreau planning/806_house_palette.py (2026-08-26), with ONE replacement (control) made after measurement -- see `meaning.control`. Layer B marks and the plum control were SEARCHED, not picked: an HLS grid of ~2,000 candidates scored with the MAGESTIC validator's CIEDE2000 + Vienot dichromat simulation against every layer-A role and every neutral under normal, deuteranopia and protanopia, filtered to contrast >= 2.0 on paper. Structural greys are 806's own ramp. Validated by tests/palette_check.py (rna-figure), which imports the maths of ~/.claude/skills/magestic-figure/tests/palette_check.py rather than forking it. Scoped by Chanfreau planning/871 (2026-09-04); decisions ruled by Kevin 2026-09-05 (two layers with a hard boundary; B neutral-first with accents disjoint from A; sample identity from A, strand by position; replace control, declare focal/stratum_a).",
  "layers": {
@@ -47,7 +47,11 @@
     "tss": "bent arrow in ink at the 5' end",
     "read": "`subtle` fill for an aligned block; soft-clip = `mute` fill with hatch; junction gap = hairline",
     "coverage_single_sample": "`subtle` fill, no outline",
-    "strand": "carried by POSITION (mirrored above/below the axis) and by arrow direction, never by hue (Kevin, 2026-09-05)"
+    "strand": "carried by POSITION (mirrored above/below the axis) and by arrow direction, never by hue (Kevin, 2026-09-05)",
+    "read_tail": "the A-rich poly(A) PREFIX of a read's 3' clip is a `polya` fill on that read -- ONE hue for the 3' end, its site mark and its tail (rbrowse paints tails base-A green on screen; the publication path keeps one identity per hue). A 1-px ink rule at the body/tail junction is the form cue (rbrowse finding [9]: that boundary is the most-read edge in the tool and a rule survives any palette)",
+    "read_clip": "the non-A remainder of a soft clip is `mute` -- unaligned, not poly(A)",
+    "compressed_reads": "a merged raster (per-column MAJORITY) or a ribbon wedge (per-column FRACTION as height) -- rbrowse's representations, ported to rectify.visualize.pileup; the body is `subtle` or the sample's layer-A role",
+    "isoform_identity": "a LETTER badge at the 3' anchor and on the isoform row, never a hue (Kevin, rbrowse 2026-08-12: 'too many colors on the figure'); shared-suffix chains are hatched"
    },
    "applies_to": [
     "gene / transcript models",
@@ -58,7 +62,10 @@
     "read pileups and soft clips",
     "splice arcs as ANNOTATION",
     "RNA modification marks (m6A, psi)",
-    "browser views"
+    "browser views",
+    "compressed read views (merged raster, ribbon wedge)",
+    "union-exon (spliced) axis and isoform chain rows",
+    "junction arcs as counts (signal) or annotation"
    ]
   },
   "boundary_rule": "A colour from layer A never touches a molecular glyph; a colour from layer B never encodes a sample, a condition, a stratum or a claim. Enforced by API: tracks.gene_model / tracks.mark take no colour argument at all; panels.* take a ROLE name, not a hex.",
@@ -212,6 +219,22 @@
    "stratum_b",
    "splice",
    "polya"
+  ],
+  "reads_compressed": [
+   "ink",
+   "hairline",
+   "subtle",
+   "mute",
+   "polya",
+   "splice"
+  ],
+  "reads_by_sample": [
+   "ink",
+   "mute",
+   "focal",
+   "reference",
+   "polya",
+   "splice"
   ]
  },
  "cvd_redundancy": {
@@ -297,7 +320,23 @@
   "_cue_splice_polya": "Three different SHAPES by construction in tracks.mark: splice = tick with an inward triangle (or an arc), polya = circle-headed lollipop, mod = diamond-headed lollipop. A mark carries its identity by form; hue is the second channel.",
   "_cue_polya_mod": "circle-headed vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
   "_cue_splice_mod": "tick/arc vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
-  "_cue_focal_reference": "In a browser view tracks.coverage draws ONE sample per row, each row carrying its label, so two samples are separated by position and text, not by value. Two samples overlaid on one axes must take stratum_a / stratum_b (hatched), never focal / reference -- written into tracks.coverage's docstring."
+  "_cue_focal_reference": "In a browser view tracks.coverage draws ONE sample per row, each row carrying its label, so two samples are separated by position and text, not by value. Two samples overlaid on one axes must take stratum_a / stratum_b (hatched), never focal / reference -- written into tracks.coverage's docstring.",
+  "reads_compressed": [
+   [
+    "splice",
+    "polya"
+   ]
+  ],
+  "reads_by_sample": [
+   [
+    "splice",
+    "polya"
+   ],
+   [
+    "focal",
+    "reference"
+   ]
+  ]
  },
  "typography": {
   "_doc": "Same family and floors as magestic-figure v1.1.0, so a Chanfreau figure and a MAGESTIC figure on one page share one type scale. Arial FIRST for the same measured reason (Helvetica Neue and Helvetica register at weight 400 only on this machine, so fontweight='bold' silently renders regular; Arial carries 700). 806's 7.0 pt base is BELOW the house floor: Kevin ruled three times after 806 was written (2026-09-01, 2026-09-03 x2) that the 6-9 pt scale renders too small, and the floor follows the later ruling. Nature's 5-7 pt is a MINIMUM, not a target.",
@@ -305,9 +344,10 @@
    "Arial",
    "Helvetica Neue",
    "Helvetica",
+   "DejaVu Sans",
    "sans-serif"
   ],
-  "family_css": "Arial, 'Helvetica Neue', Helvetica, sans-serif",
+  "family_css": "Arial, 'Helvetica Neue', Helvetica, 'DejaVu Sans', sans-serif",
   "manuscript_pt": {
    "panel_letter": 11.0,
    "axis_label": 8.5,
@@ -339,7 +379,8 @@
    "primes": "use U+2032 (′) for 5′ and 3′, never an apostrophe"
   },
   "cap_height_ratio": 0.717,
-  "cap_min_mm": 1.89
+  "cap_min_mm": 1.89,
+  "_family_doc": "Arial first for the bold-weight reason magestic-figure measured. 'DejaVu Sans' is listed as the glyph fallback, BUT MEASURED 2026-09-05 on matplotlib 3.9.4: the rcParams family list does NOT fall through per glyph -- '★ ⊘ ▮ ⇢ ✱ ∼' rendered as tofu with this list in rcParams, with or without a trailing generic. Only an EXPLICIT per-Text list -- Text(..., fontfamily=['Arial', 'DejaVu Sans']) -- engages the fallback. So any Text that carries a glyph outside Arial/Helvetica (the isoform class glyphs, the spliced ruler's ~) must set fontfamily explicitly; rectify.visualize.pileup does. figure-qa's overlap gate cannot see tofu; its glyph_coverage check can."
  },
  "geometry": {
   "_doc": "Stroke tiers and floor as magestic-figure v1.1.0 (STROKE_SCALE 1.6 promoted to the house default on 2026-09-03). Track geometry is in fractions of the track's unit height so a gene model looks the same in a 0.4 in strip and a 1.2 in panel.",
@@ -372,7 +413,11 @@
    "arc_height_ratio": 0.55,
    "mark_size_pt": 4.5,
    "lollipop_stem_in": 0.1,
-   "tss_arrow_in": 0.12
+   "tss_arrow_in": 0.12,
+   "merged_alpha_floor": 0.2,
+   "spliced_gap_bp": 60,
+   "spliced_seg_cap_bp": 500,
+   "tail_rule_alpha": 0.5
   },
   "callout": {
    "style": "dashed",
@@ -381,7 +426,8 @@
     1.8
    ],
    "stroke": "hairline"
-  }
+  },
+  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP)."
  },
  "principles": {
   "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",
@@ -394,6 +440,15 @@
   "7_rank_visual_weight": "Three stroke tiers and a 2-neutral + <= 4-accent budget per panel."
  },
  "changelog": [
+  {
+   "version": "1.1.0",
+   "date": "2026-09-05",
+   "change": "rbrowse's read-alignment vocabulary integrated on the publication path: merged raster, ribbon wedge, union-exon axis, isoform chains (letters, never hues), junction arcs -- rectify.visualize.pileup. Two sets (reads_compressed, reads_by_sample) and four track geometry keys added; the read tail is the `polya` identity; no new colour.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup (new); tracks.gene_model/mark/arc/coverage take xform= for spliced space"
+   ]
+  },
   {
    "version": "1.0.0",
    "date": "2026-09-05",
