@@ -3,7 +3,12 @@ rectify prescan — pre-compute variant scan and junction pool for chunked corre
 
 Outputs two pickle files used by per-chunk `rectify correct` runs:
   - rescue_scan.pkl    : VariantAwareHomopolymerRescue (Module 2D, Pass 1)
-  - junction_pool.pkl  : {'all_junctions': Set, 'annotated_set': Set} (Module 2H)
+  - junction_pool.pkl  : {'all_junctions': Set, 'annotated_set': Set,
+                          'cache_format': int, ...} (Module 2H). `rectify
+                          correct` REJECTS a pool whose 'cache_format' it does
+                          not recognise — including every pool written before
+                          2026-09-05, whose observed junctions are phantom
+                          coordinates (ISSUE-004). Regenerate, don't reuse.
 
 Usage:
     rectify prescan \\
@@ -287,12 +292,17 @@ def run(args: argparse.Namespace) -> int:
                 _before, len(all_junctions),
             )
 
+        from ..splice.junction_scoring import junction_pool_cache_stamp
         pool_data = {
             'all_junctions': all_junctions,
             'annotated_set': annotated_set,
             'min_observed_support': args.junction_min_support,
             'max_junction_size': args.junction_max_size,
             'complexity_alpha': args.complexity_alpha,
+            # Provenance: `rectify correct` refuses a pool whose format stamp it
+            # does not recognise, so a cache built by a version with a known
+            # coordinate defect can never be silently reused (ISSUE-004/011).
+            **junction_pool_cache_stamp(),
         }
         with open(junction_pool_path, 'wb') as fh:
             pickle.dump(pool_data, fh, protocol=pickle.HIGHEST_PROTOCOL)

@@ -122,6 +122,38 @@ def _strip_aligner_prefix(bam_entry: str) -> str:
     return bam_entry
 
 
+def _warn_self_pool(config, log) -> bool:
+    """Warn when the junction pool is being built from the BAM being corrected.
+
+    ``--aligner-bams minimap2:<the input itself>`` is a legitimate way to switch
+    Module 2H on, but it is not multi-aligner evidence: the pool then contains
+    the input's own junction calls, including its errors, and a single read's
+    mistake enters as a full-weight candidate that other reads can be moved onto
+    (ISSUE-011). Worth saying out loud, since nothing else distinguishes it from
+    a genuine multi-aligner pool.
+    """
+    try:
+        _input = Path(str(config.get('bam_path') or '')).resolve()
+    except (OSError, RuntimeError):
+        return False
+    selves = []
+    for _b in config.get('aligner_bams') or []:
+        try:
+            if Path(str(_b)).resolve() == _input:
+                selves.append(str(_b))
+        except (OSError, RuntimeError):
+            continue
+    if not selves:
+        return False
+    log.warning(
+        "  Module 2H: --aligner-bams resolves to the input BAM itself (%s) — "
+        "the junction pool is this BAM's own calls, not independent evidence. "
+        "A single-read mis-split enters as a full-weight candidate.",
+        ', '.join(selves),
+    )
+    return True
+
+
 def penalty_table_protocol(config) -> str:
     """Map this run's protocol flags onto a bundled penalty-table protocol key.
 
@@ -493,6 +525,7 @@ def validate_inputs(args) -> dict:
         'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
         'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
         'junction_max_size':         getattr(args, 'junction_max_size', None),
+        'junction_min_observed_support': getattr(args, 'junction_min_observed_support', 1),
         'junction_max_candidates_per_nop': getattr(args, 'junction_max_candidates_per_nop', None),
         'junction_profile':          getattr(args, 'junction_profile', None),
         'junction_profile_sample_rate': getattr(args, 'junction_profile_sample_rate', 1),
@@ -773,25 +806,45 @@ def run(args):
                 _prebuilt_annot_set = None
                 if _junction_pool_cache and Path(_junction_pool_cache).exists():
                     import pickle as _pkl
+                    from ..splice.junction_scoring import junction_pool_cache_problem
                     logger.info(f"  Loading pre-built junction pool from cache: {_junction_pool_cache}")
                     with open(_junction_pool_cache, 'rb') as _pf:
                         _pool_data = _pkl.load(_pf)
-                    _prebuilt_pool = _pool_data['all_junctions']
-                    _prebuilt_annot_set = _pool_data['annotated_set']
-                    logger.info(
-                        "  Pre-built pool: %d junctions (%d annotated)",
-                        len(_prebuilt_pool), len(_prebuilt_annot_set),
-                    )
+                    # Refuse a cache this build cannot vouch for. A pool written
+                    # before the ISSUE-004 N-advance fix is not stale, it is
+                    # WRONG — on multi-intron reads its observed arm is phantom
+                    # coordinates — and using it silently is how that defect
+                    # outlives the code fix.
+                    _cache_problem = junction_pool_cache_problem(_pool_data)
+                    if _cache_problem:
+                        logger.warning(
+                            "  Junction pool cache REJECTED (%s): %s. Rebuilding "
+                            "from --aligner-bams; re-run `rectify prescan` to "
+                            "regenerate the cache.",
+                            _cache_problem, _junction_pool_cache,
+                        )
+                    else:
+                        _prebuilt_pool = _pool_data['all_junctions']
+                        _prebuilt_annot_set = _pool_data['annotated_set']
+                        logger.info(
+                            "  Pre-built pool: %d junctions (%d annotated)",
+                            len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        )
 
                 if _prebuilt_pool is None and config.get('aligner_bams'):
+                    _warn_self_pool(config, logger)
+                    _min_support = int(config.get('junction_min_observed_support') or 1)
                     _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
                         config['aligner_bams'],
                         _annot_j,
+                        min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
                     )
                     logger.info(
-                        "  Built junction pool: %d junctions (%d annotated)",
+                        "  Built junction pool: %d junctions (%d annotated, "
+                        "%d observed with support >= %d)",
                         len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        len(_prebuilt_pool) - len(_prebuilt_annot_set), _min_support,
                     )
 
                 _pool_for_index = _prebuilt_pool
@@ -2120,6 +2173,20 @@ def create_correct_parser(subparsers):
              'from --aligner-bams, and longer candidates from a pre-built pool '
              'are skipped during scoring. For S. cerevisiae, 10000 is a '
              'conservative organism-tuned cap.'
+    )
+    junc_group.add_argument(
+        '--junction-min-observed-support',
+        dest='junction_min_observed_support',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Reads that must cross an OBSERVED (non-annotated) junction, with a '
+             'clean exon anchor on both flanks, before it enters the Module 2H '
+             'candidate pool built from --aligner-bams. Default 1 — a junction '
+             'seen in a single read is a full-weight candidate other reads can '
+             'be moved onto. Annotated junctions are never subject to this. '
+             'Raise to 2 to require corroboration (this is `rectify prescan`\'s '
+             '--junction-min-support for the inline pool).'
     )
     junc_group.add_argument(
         '--junction-max-candidates-per-nop',
