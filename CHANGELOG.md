@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Station C's census now accounts for every N-op (ISSUE-016)**
+  (`consensus/station_c.py`, `rectify pool-gate`). On real corrected output
+  87 % of the junctions RECTIFY created read as ABSENT from
+  `<prefix>.pool_gate.tsv` at every anchor-walk budget and support gate. Neither
+  knob was binding: the table lists non-annotated junctions only (2F/2H create
+  mostly annotated ones — that is their job), and it keys each junction at the
+  leftmost ambiguity-equivalent coordinate while the BAM's N-op sits at the
+  motif coordinate. Now: `<prefix>.pool_gate.annotated.tsv` lists the censused
+  annotated junctions; `<prefix>.census_refusals.tsv` lists every N-op refused
+  at the anchor gate by raw coordinate with the walk's stop reason per side
+  (`L=indel_ops`, `R=softclip`, `read_end`, `n_op`, `indel_bp`, …); the main
+  table gains `start_raw` / `end_raw` / `n_raw_variants`; the JSON gains a
+  `census` block (N-ops seen / censused / refused, reasons, reads skipped);
+  and `--attribute FILE` scores a supplied junction list (created-junction
+  JSON, `fpfn_events.tsv`, headed TSV or BED) as reported / annotated /
+  refused / annotated_not_seen / not_seen in `<prefix>.attribution.tsv`. On
+  the 100-read Sumner panel: 10 created junctions, 0 in the table before, 9
+  annotated + 1 annotated_not_seen after, none refused.
+
 ### Added
 
 - **`rectify prescan --complexity-alpha` — structural pool-admission gate,
