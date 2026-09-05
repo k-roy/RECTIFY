@@ -152,14 +152,14 @@ def test_the_walk_is_bounded_in_ops_and_in_bases(tmp_path):
     past either budget still terminates the anchor, so a rescued exon made of
     tiny match runs (2F's `4M4I3M4I1M` shape) stays refused."""
     cfg = PoolGateConfig()
-    assert (cfg.max_adj_indel_ops, cfg.max_adj_indel_bp) == (2, 20)
+    assert (cfg.adj_indel_max_ops, cfg.adj_indel_max_bp) == (2, 30)
 
-    # 30 bp of intervening deletion > max_adj_indel_bp -> left anchor stops at 0
+    # 40 bp of intervening deletion > adj_indel_max_bp -> left anchor stops at 0
     seq = CHRSEQ[10:30] + CHRSEQ[100:130]
-    over_bp = [(10, '20M30D40N30M', seq) for _ in range(2)]
+    over_bp = [(10, '20M40D30N30M', seq) for _ in range(2)]
     assert not census_bam(_bam(tmp_path, 'over_bp.bam', over_bp), GENOME, cfg)
 
-    # three separate indel ops > max_adj_indel_ops, each small: the walk gets
+    # three separate indel ops > adj_indel_max_ops, each small: the walk gets
     # 1M + 5M = 6 aligned bases before the third indel stops it -> < min_anchor
     q = (CHRSEQ[10:30] + 'AAA' + CHRSEQ[30:35] + 'CC' + CHRSEQ[36:37]
          + CHRSEQ[97:127])
@@ -170,6 +170,43 @@ def test_the_walk_is_bounded_in_ops_and_in_bases(tmp_path):
     ok = [(10, '20M3I10M60N30M', CHRSEQ[10:30] + 'AAA' + CHRSEQ[30:40]
            + CHRSEQ[100:130]) for _ in range(2)]
     assert census_bam(_bam(tmp_path, 'ok.bam', ok), GENOME, cfg)
+
+
+def test_both_budgets_are_tunable_and_the_op_limit_is_the_binding_one(tmp_path):
+    """The two budgets are independent knobs (exposed as --adj-indel-max-ops /
+    --adj-indel-max-bp). Pins the measured panel finding in miniature: the read
+    below is refused at the default and admitted only by raising the OP limit —
+    raising the bp budget alone does nothing, because no single budget-crossing
+    indel is involved."""
+    q = (CHRSEQ[10:30] + 'AAA' + CHRSEQ[30:35] + 'CC' + CHRSEQ[36:37]
+         + CHRSEQ[97:127])
+    bam = _bam(tmp_path, 'three_indels.bam',
+               [(10, '20M3I5M2I1D1M60N30M', q) for _ in range(2)])
+
+    assert not census_bam(bam, GENOME, PoolGateConfig())
+    # bp budget alone: no effect (total intervening indel is only 6 bp)
+    assert not census_bam(bam, GENOME, PoolGateConfig(adj_indel_max_bp=1000))
+    # op budget is what binds
+    assert census_bam(bam, GENOME, PoolGateConfig(adj_indel_max_ops=3))
+
+
+def test_widening_a_budget_can_only_add_junctions(tmp_path):
+    """Monotonicity — the property that makes this safe to tune: a wider budget
+    is a superset census, never a different one. Guards against a future
+    'optimization' that terminates the walk early on the wide setting."""
+    q = (CHRSEQ[10:30] + 'AAA' + CHRSEQ[30:35] + 'CC' + CHRSEQ[36:37]
+         + CHRSEQ[97:127])
+    reads = [(10, '20M3I5M2I1D1M60N30M', q) for _ in range(2)]
+    reads += [(10, '30M1I60N30M', CHRSEQ[10:40] + 'A' + CHRSEQ[100:130])
+              for _ in range(2)]
+    bam = _bam(tmp_path, 'mixed.bam', reads)
+    prev = set()
+    for ops_budget in (0, 1, 2, 3, 4):
+        cur = set(census_bam(bam, GENOME,
+                             PoolGateConfig(adj_indel_max_ops=ops_budget,
+                                            adj_indel_max_bp=1000)))
+        assert prev <= cur, f'census shrank when max_ops rose to {ops_budget}'
+        prev = cur
 
 
 def test_unavailable_flag_tracks_are_reported_not_silently_clean(tmp_path, gencode_gtf):

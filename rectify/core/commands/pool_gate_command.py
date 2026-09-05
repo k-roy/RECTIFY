@@ -52,6 +52,8 @@ def run_pool_gate(args: argparse.Namespace) -> int:
         q_noncanon=args.q_noncanon,
         min_support=args.min_support,
         max_intron=_max_intron,
+        adj_indel_max_ops=args.adj_indel_max_ops,
+        adj_indel_max_bp=args.adj_indel_max_bp,
     )
     rows, summary = pool_gate(
         args.input, genome, Path(args.annotation), cfg=cfg, selfhom_bed=selfhom,
@@ -126,6 +128,21 @@ def create_pool_gate_parser(subparsers) -> argparse.ArgumentParser:
                    help='Non-canonical-track threshold, bits (default 80)')
     p.add_argument('--min-support', type=int, default=2,
                    help='Within-sample read-support gate (default 2)')
+    p.add_argument('--adj-indel-max-ops', type=int, default=2, metavar='N',
+                   help='Census anchor walk: intervening I/D ops tolerated '
+                        'between an N-op and the aligned run that anchors it, '
+                        'per side (default 2). Module 2H plants a compensating '
+                        'indel beside every junction it moves, so a walk of 0 '
+                        'censuses only 16/121 of the junctions RECTIFY created '
+                        'on the Sumner panel. On that panel THIS is the binding '
+                        'budget: 2 -> 80/121, 3 -> 85, 4 -> 90 (at 30 bp). '
+                        'Raising it admits 2F rescued-exon shapes where no '
+                        'contiguous anchor exists — see _anchor_run.')
+    p.add_argument('--adj-indel-max-bp', type=int, default=30, metavar='BP',
+                   help='Census anchor walk: summed length of those '
+                        'stepped-over indel ops, per side (default 30). At the '
+                        'default op limit, 20 and 30 bp are identical on the '
+                        'Sumner panel (80/121); 50 bp gives 87/121.')
     p.add_argument('--max-intron', type=int, default=None, metavar='BP',
                    help='Length pre-gate: junctions longer than this demote '
                         'before the verdict (planning/684c). Default: derived '
