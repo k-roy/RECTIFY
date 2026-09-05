@@ -104,7 +104,7 @@ from ..position_index import write_position_index  # noqa: F401  (re-exported)
 # TSV emitter in ``output``.  All other peer-module dispatch entry points
 # (region planning, parallel/streaming workers, variant scan) are imported
 # directly from their home modules by their callers.
-from .output import write_output_tsv
+from .output import consensus_tag_fields, write_output_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +315,12 @@ def correct_read_3prime(
     if genome is not None and not read.is_unmapped:
         _decode_eq_seq_inplace(read, genome)
 
+    # Multi-aligner consensus tags (Xa/Xc/Xn/Xt) carried through to the
+    # per-read TSV as four separate columns.  Read once, here, ABOVE the
+    # chimeric ``try/except KeyError`` below — a KeyError raised inside that
+    # block would be swallowed and silently reroute the read.
+    _consensus_tags = consensus_tag_fields(read)
+
     # Skip chimeric reads — they have already been reconstructed by multi_aligner
     # and must not be re-corrected (Xz=1 flag set by chimeric_consensus.py).
     try:
@@ -384,6 +390,7 @@ def correct_read_3prime(
                 'junctions_str': _chimeric_junctions_str,
                 'n_junctions': len(_chimeric_junctions),
                 'strand_evidence': _strand_evidence,
+                **_consensus_tags,
             }]
     except KeyError:
         pass
@@ -646,6 +653,9 @@ def correct_read_3prime(
             'pt_tag' if _pt_tag is not None else
             ('model' if _polya_score is not None else 'none')
         ),
+        # consensus_aligner / consensus_confidence / consensus_n_agree /
+        # consensus_tied — '' when the input BAM carried no Xa/Xc/Xn/Xt.
+        **_consensus_tags,
     }
 
     # Per-read gene attribution via read body overlap
