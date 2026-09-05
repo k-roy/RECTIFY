@@ -1,6 +1,6 @@
 {
  "$schema_note": "rna-figure design tokens -- the RNA figure house standard for the Chanfreau and Sumner spaces. SINGLE SOURCE OF TRUTH for both colour layers, typography, geometry and the two floors. Every renderer (rectify/visualize, panels.py, tracks.py) reads this file or its byte-identical copy rectify/visualize/rna_tokens.json (kept in sync by tests/sync_tokens.sh --check). Edit HERE, run tests/palette_check.py, then sync. Never hard-code a colour, font size or stroke weight anywhere else.",
- "version": "1.1.0",
+ "version": "1.2.0",
  "adopted": "2026-09-05",
  "provenance": "Layer A hexes are the Okabe-Ito colour-vision-deficiency-safe set (Wong, B. 'Points of view: Color blindness', Nature Methods 8, 441 (2011), doi:10.1038/nmeth.1618) exactly as Kevin approved them in Chanfreau planning/806_house_palette.py (2026-08-26), with ONE replacement (control) made after measurement -- see `meaning.control`. Layer B marks and the plum control were SEARCHED, not picked: an HLS grid of ~2,000 candidates scored with the MAGESTIC validator's CIEDE2000 + Vienot dichromat simulation against every layer-A role and every neutral under normal, deuteranopia and protanopia, filtered to contrast >= 2.0 on paper. Structural greys are 806's own ramp. Validated by tests/palette_check.py (rna-figure), which imports the maths of ~/.claude/skills/magestic-figure/tests/palette_check.py rather than forking it. Scoped by Chanfreau planning/871 (2026-09-04); decisions ruled by Kevin 2026-09-05 (two layers with a hard boundary; B neutral-first with accents disjoint from A; sample identity from A, strand by position; replace control, declare focal/stratum_a).",
  "layers": {
@@ -344,10 +344,9 @@
    "Arial",
    "Helvetica Neue",
    "Helvetica",
-   "DejaVu Sans",
    "sans-serif"
   ],
-  "family_css": "Arial, 'Helvetica Neue', Helvetica, 'DejaVu Sans', sans-serif",
+  "family_css": "Arial, 'Helvetica Neue', Helvetica, sans-serif",
   "manuscript_pt": {
    "panel_letter": 11.0,
    "axis_label": 8.5,
@@ -380,7 +379,7 @@
   },
   "cap_height_ratio": 0.717,
   "cap_min_mm": 1.89,
-  "_family_doc": "Arial first for the bold-weight reason magestic-figure measured. 'DejaVu Sans' is listed as the glyph fallback, BUT MEASURED 2026-09-05 on matplotlib 3.9.4: the rcParams family list does NOT fall through per glyph -- '★ ⊘ ▮ ⇢ ✱ ∼' rendered as tofu with this list in rcParams, with or without a trailing generic. Only an EXPLICIT per-Text list -- Text(..., fontfamily=['Arial', 'DejaVu Sans']) -- engages the fallback. So any Text that carries a glyph outside Arial/Helvetica (the isoform class glyphs, the spliced ruler's ~) must set fontfamily explicitly; rectify.visualize.pileup does. figure-qa's overlap gate cannot see tofu; its glyph_coverage check can."
+  "_family_doc": "Arial first for the bold-weight reason magestic-figure measured. 'DejaVu Sans' is NOT in this list (audit 879 F6.4: an rcParams entry that does nothing is a difference from magestic-figure for no reason) -- MEASURED 2026-09-05 on matplotlib 3.9.4: the rcParams family list does NOT fall through per glyph -- '★ ⊘ ▮ ⇢ ✱ ∼' rendered as tofu with this list in rcParams, with or without a trailing generic. Only an EXPLICIT per-Text list -- Text(..., fontfamily=['Arial', 'DejaVu Sans']) -- engages the fallback. So any Text that carries a glyph outside Arial/Helvetica (the isoform class glyphs, the spliced ruler's ~) must set fontfamily explicitly; rectify.visualize.pileup does. figure-qa's overlap gate cannot see tofu; its glyph_coverage check can."
  },
  "geometry": {
   "_doc": "Stroke tiers and floor as magestic-figure v1.1.0 (STROKE_SCALE 1.6 promoted to the house default on 2026-09-03). Track geometry is in fractions of the track's unit height so a gene model looks the same in a 0.4 in strip and a 1.2 in panel.",
@@ -417,7 +416,10 @@
    "merged_alpha_floor": 0.2,
    "spliced_gap_bp": 60,
    "spliced_seg_cap_bp": 500,
-   "tail_rule_alpha": 0.5
+   "tail_rule_alpha": 0.5,
+   "band_floor_mm": 0.8,
+   "pitch_floor_mm": 0.423,
+   "spliced_downstream_keep_bp": 3000
   },
   "callout": {
    "style": "dashed",
@@ -427,7 +429,7 @@
    ],
    "stroke": "hairline"
   },
-  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP)."
+  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880. spliced_downstream_keep_bp: segments on a gene's 3' side that >= 1 % of reads cover keep their real width up to this budget (rbrowse DOWNSTREAM_KEEP_BP; Kevin 2026-08-16 'the read alignments look cut off'); without it every 3' end past the annotation piles onto a compression boundary (audit 879 F7.3)."
  },
  "principles": {
   "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",
@@ -440,6 +442,15 @@
   "7_rank_visual_weight": "Three stroke tiers and a 2-neutral + <= 4-accent budget per panel."
  },
  "changelog": [
+  {
+   "version": "1.2.0",
+   "date": "2026-09-05",
+   "change": "Audit 879 integrated: `ramps` for heatmaps (section 7 rulings), `spliced_downstream_keep_bp` (the 3'-flank rule the port lacked), the inert DejaVu rc entry dropped (per-Text fallback lists keep it). No colour changed.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup reads spliced_downstream_keep_bp (its code default was already 3000)"
+   ]
+  },
   {
    "version": "1.1.0",
    "date": "2026-09-05",
@@ -458,5 +469,25 @@
     "rectify.visualize defaults: single-sample coverage is now subtle grey and strand is mirrored in one colour; GENE_TYPE_COLORS / EFFECT_DIRECTION_COLORS re-pointed to validated hexes, keys unchanged"
    ]
   }
- ]
+ ],
+ "ramps": {
+  "_doc": "Heatmap / matrix colormaps (SKILL.md section 7, audit 879 F5.1): a ramp of ONE layer-A role from paper to the role hex, chosen by what the matrix argues; `signed` is reference -> paper -> focal with zero at paper. Endpoints are token NAMES so the validator's structure check sees them; panels.ramp() builds the matplotlib colormap. Never a rainbow, never jet.",
+  "focal": [
+   "paper",
+   "focal"
+  ],
+  "reference": [
+   "paper",
+   "reference"
+  ],
+  "neutral": [
+   "paper",
+   "neutral"
+  ],
+  "signed": [
+   "reference",
+   "paper",
+   "focal"
+  ]
+ }
 }
