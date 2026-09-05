@@ -19,6 +19,8 @@ try:
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
+from . import tokens as TOK
+
 
 class MultiTrackFigure:
     """
@@ -88,11 +90,33 @@ class MultiTrackFigure:
         })
         return self
 
+    def add_gene_model_track(
+        self,
+        transcripts,
+        height_ratio: float = 0.7,
+        **kwargs,
+    ) -> 'MultiTrackFigure':
+        """Add a plain-coordinate gene-model track (exons, UTRs, introns) drawn by
+        :func:`rectify.visualize.tracks.gene_track` -- the layer-B glyph, in the grey ramp.
+
+        Args:
+            transcripts: sequence of :class:`rectify.visualize.tracks.Transcript`
+            height_ratio: Relative height of this panel
+            **kwargs: passed to ``tracks.gene_track`` (label_pos, intron_style, tss, ...)
+        """
+        self.tracks.append({
+            'type': 'gene_model',
+            'data': list(transcripts),
+            'height_ratio': height_ratio,
+            'kwargs': kwargs,
+        })
+        return self
+
     def add_coverage_track(
         self,
         label: str,
         coverage_data: Union[Tuple[np.ndarray, np.ndarray], Dict],
-        color: str = '#0072B2',
+        color: Optional[str] = None,
         height_ratio: float = 1.0,
         **kwargs,
     ) -> 'MultiTrackFigure':
@@ -102,7 +126,8 @@ class MultiTrackFigure:
             label: Track label
             coverage_data: Either (positions, depths) tuple or dict with
                            {'positions': array, 'depths': array}
-            color: Line/fill color
+            color: Line/fill color. None = `subtle` grey; a sample that carries the
+                   argument takes tokens.role('focal') etc. (rna-figure signal rule)
             height_ratio: Relative height of this panel
             **kwargs: Additional arguments passed to draw_coverage_track
 
@@ -150,7 +175,7 @@ class MultiTrackFigure:
         self,
         label: str,
         profile_result: Dict,
-        color: str = '#0072B2',
+        color: Optional[str] = None,
         height_ratio: float = 1.0,
         **kwargs,
     ) -> 'MultiTrackFigure':
@@ -235,6 +260,7 @@ class MultiTrackFigure:
         )
         from .metagene import MetagenePipeline
         from .figure_utils import format_genomic_axis
+        from .tracks import gene_track as _gene_track
 
         n_tracks = len(self.tracks)
         if n_tracks == 0:
@@ -269,6 +295,10 @@ class MultiTrackFigure:
                     **track['kwargs'],
                 )
 
+            elif track_type == 'gene_model':
+                _gene_track(ax, track['data'], (chrom or '', region_start, region_end),
+                            **track['kwargs'])
+
             elif track_type == 'coverage':
                 data = track['data']
                 if isinstance(data, dict):
@@ -287,7 +317,7 @@ class MultiTrackFigure:
                     label=track['label'],
                     **track['kwargs'],
                 )
-                ax.set_ylabel(track['label'], fontsize=8)
+                ax.set_ylabel(track['label'], fontsize=TOK.typography()['axis_label'])
 
             elif track_type == 'vep':
                 panel_type = track['panel_type'].lower()
@@ -343,7 +373,7 @@ class MultiTrackFigure:
         format_genomic_axis(axes[-1], region_start, region_end)
 
         if title:
-            fig.suptitle(title, fontsize=12, fontweight='bold')
+            fig.suptitle(title, fontsize=TOK.typography()['axis_label'], fontweight='bold')
 
         return fig
 
@@ -418,8 +448,7 @@ def create_gene_browser(
 
     # Add coverage tracks
     if coverage_tracks:
-        from .config import WONG_COLORS
-        colors = list(WONG_COLORS.values())
+        colors = TOK.role_cycle()
         for i, (label, data) in enumerate(coverage_tracks.items()):
             builder.add_coverage_track(label, data, color=colors[i % len(colors)])
 

@@ -133,12 +133,16 @@ CODON_VARIANT_MARKERS: Dict[str, str] = {
 # Used for Yorzoi/Shorkie per-gene expression panels
 # Colors match box-arrow gene track for visual consistency
 
+# 🔴 RE-POINTED 2026-09-05 (rna-figure standard, Chanfreau planning/871): the flat-UI
+# hexes were never CVD-validated. Keys unchanged; values are layer-A roles from
+# rna_tokens.json -- `target` is FOCAL (the gene the panel is about IS the argument),
+# the neighbours take the remaining roles so identity propagates track -> panel.
 GENE_TYPE_COLORS: Dict[str, str] = {
-    'target': '#e74c3c',             # Red - target gene (most important)
-    'upstream_1': '#3498db',         # Blue - immediate upstream
-    'upstream_2': '#1abc9c',         # Teal - second upstream
-    'downstream_1': '#9b59b6',       # Purple - immediate downstream
-    'downstream_2': '#f39c12',       # Orange - second downstream
+    'target': '#D55E00',             # focal
+    'upstream_1': '#0072B2',         # reference
+    'upstream_2': '#56B4E9',         # stratum_b
+    'downstream_1': '#853272',       # control
+    'downstream_2': '#E69F00',       # stratum_a
 }
 
 
@@ -147,15 +151,16 @@ GENE_TYPE_COLORS: Dict[str, str] = {
 # ============================================================================
 # Used for variant map panel to show strain distribution
 
+# Re-pointed 2026-09-05 to validated hexes (rna_tokens.json); keys unchanged.
 STRAIN_ORIGIN_COLORS: Dict[str, str] = {
-    'shared_only': '#3498db',        # Blue - only in shared parent
-    'shared_plus_left': '#9b59b6',   # Purple - shared + left neighbor
-    'shared_plus_right': '#e67e22',  # Orange - shared + right neighbor
-    'both_neighbors': '#e74c3c',     # Red - both neighbors, not shared
-    'left_only': '#1abc9c',          # Teal - only left neighbor (filtered)
-    'right_only': '#f39c12',         # Yellow - only right neighbor (filtered)
-    'all_three': '#7f8c8d',          # Gray - in all three (filtered)
-    'other_strains': '#bdc3c7',      # Light gray - other combinations
+    'shared_only': '#0072B2',        # reference
+    'shared_plus_left': '#853272',   # control
+    'shared_plus_right': '#E69F00',  # stratum_a
+    'both_neighbors': '#D55E00',     # focal
+    'left_only': '#009E73',          # match
+    'right_only': '#56B4E9',         # stratum_b
+    'all_three': '#999999',          # neutral
+    'other_strains': '#C7C7C7',      # mute
 }
 
 
@@ -164,10 +169,13 @@ STRAIN_ORIGIN_COLORS: Dict[str, str] = {
 # ============================================================================
 # Used for MAGESTIC control panels (PTC, SYN, DEL)
 
+# Re-pointed 2026-09-05 to the SAME hexes CODON_VARIANT_COLORS gives these classes
+# (stop_gained / synonymous / complete_CDS_deletion), so a control panel and a VEP
+# panel agree; the old red/green pair was the CVD failure the validator plants.
 CONTROL_TYPE_COLORS: Dict[str, str] = {
-    'PTC': '#e74c3c',                # Red - premature termination codon
-    'SYN': '#2ecc71',                # Green - synonymous
-    'DEL': '#2c3e50',                # Dark blue-gray - CDS deletion
+    'PTC': '#B02418',                # crimson - premature termination codon
+    'SYN': '#5C6672',                # rule grey - synonymous (the null class)
+    'DEL': '#14213D',                # ink - CDS deletion
 }
 
 
@@ -176,10 +184,11 @@ CONTROL_TYPE_COLORS: Dict[str, str] = {
 # ============================================================================
 # Used for trio dissection and other effect-based plots
 
+# Re-pointed 2026-09-05 (rna_tokens.json); keys unchanged.
 EFFECT_DIRECTION_COLORS: Dict[str, str] = {
-    'positive': '#e74c3c',           # Red - positive effect
-    'negative': '#3498db',           # Blue - negative effect
-    'neutral': '#95a5a6',            # Gray - no effect
+    'positive': '#D55E00',           # focal
+    'negative': '#0072B2',           # reference
+    'neutral': '#999999',            # neutral
 }
 
 
@@ -365,6 +374,15 @@ class FigureConfig:
             })
         except ImportError:
             pass
+
+    @classmethod
+    def house(cls, dpi: int = 300) -> 'FigureConfig':
+        """The rna-figure house scale (rna_tokens.json typography.manuscript_pt)."""
+        from . import tokens as _TOK
+        T = _TOK.typography()
+        return cls(dpi=dpi, title_fontsize=T['axis_label'], label_fontsize=T['axis_label'],
+                   tick_fontsize=T['tick_label'], legend_fontsize=T['annotation'],
+                   line_width=_TOK.stroke()['secondary'])
 
     @classmethod
     def publication(cls) -> 'FigureConfig':

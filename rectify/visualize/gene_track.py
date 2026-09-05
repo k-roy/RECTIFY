@@ -22,6 +22,7 @@ except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
 from .config import GENE_TYPE_COLORS
+from . import tokens as TOK
 
 
 def assign_feature_levels(
@@ -160,8 +161,8 @@ def draw_gene_track(
             f'{gene_name}\n(no GFF)',
             ha='center', va='center',
             transform=ax.transAxes,
-            fontsize=8,
-            color='gray',
+            fontsize=TOK.typography()['annotation'],
+            color=TOK.color('subtle'),
         )
         ax.set_yticks([])
         ax.set_ylim(0, 1)
@@ -219,8 +220,8 @@ def draw_gene_track(
             'No CDS in region',
             ha='center', va='center',
             transform=ax.transAxes,
-            fontsize=8,
-            color='gray',
+            fontsize=TOK.typography()['annotation'],
+            color=TOK.color('subtle'),
         )
         ax.set_yticks([])
         ax.set_ylim(0, 1)
@@ -267,13 +268,13 @@ def draw_gene_track(
             alpha = 0.9 if gene_type == 'target' else 0.8
             linewidth = 1.5 if gene_type == 'target' else 1.0
         elif feature['is_target']:
-            color = '#e74c3c'  # Red
+            color = TOK.role('focal')       # the gene the panel is about IS the argument
             alpha = 0.95
-            linewidth = 1.5
+            linewidth = TOK.stroke()['secondary']
         else:
-            color = '#95a5a6'  # Gray
-            alpha = 0.5
-            linewidth = 0.8
+            color = TOK.color('neutral')    # structure is grey
+            alpha = 0.7
+            linewidth = TOK.stroke()['hairline']
 
         # Arrow tip size
         arrow_tip = min(width * arrow_tip_fraction, max_arrow_tip)
@@ -306,7 +307,7 @@ def draw_gene_track(
             vertices,
             closed=True,
             facecolor=color,
-            edgecolor='black',
+            edgecolor=TOK.color('ink'),
             linewidth=linewidth,
             alpha=alpha,
         )
@@ -324,15 +325,16 @@ def draw_gene_track(
                 label_text = feature.get('systematic_name', feature['name'])
 
             # Shorter labels for non-target genes
+            _T = TOK.typography()
             if feature['is_target']:
-                fontsize = 8
+                fontsize = _T['in_figure']
                 fontweight = 'bold'
-                fontcolor = 'white'
+                fontcolor = TOK.color('paper')
             else:
                 label_text = label_text[:10] if len(label_text) > 10 else label_text
-                fontsize = 6
+                fontsize = _T['annotation']
                 fontweight = 'normal'
-                fontcolor = 'white'
+                fontcolor = TOK.color('paper')
 
             ax.text(
                 label_x, label_y, label_text,
@@ -344,7 +346,7 @@ def draw_gene_track(
             )
 
     ax.set_yticks([])
-    ax.set_ylabel('Genes', fontsize=8)
+    ax.set_ylabel('Genes', fontsize=TOK.typography()['axis_label'])
 
 
 def get_genes_in_region(
@@ -404,11 +406,11 @@ def draw_gene_arrow(
     strand: str,
     y_level: float = 0,
     height: float = 0.8,
-    color: str = '#95a5a6',
+    color: Optional[str] = None,
     alpha: float = 0.8,
-    linewidth: float = 1.0,
+    linewidth: Optional[float] = None,
     label: Optional[str] = None,
-    label_fontsize: int = 7,
+    label_fontsize: Optional[float] = None,
 ):
     """
     Draw a single gene arrow (standalone function).
@@ -428,6 +430,12 @@ def draw_gene_arrow(
         label: Optional label text
         label_fontsize: Font size for label
     """
+    if color is None:
+        color = TOK.color('neutral')
+    if linewidth is None:
+        linewidth = TOK.stroke()['hairline']
+    if label_fontsize is None:
+        label_fontsize = TOK.typography()['annotation']
     if not MATPLOTLIB_AVAILABLE:
         raise ImportError("matplotlib is required for draw_gene_arrow")
 
@@ -474,5 +482,5 @@ def draw_gene_arrow(
             ha='center',
             va='center',
             fontsize=label_fontsize,
-            color='white',
+            color=TOK.color('paper'),
         )

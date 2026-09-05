@@ -28,6 +28,7 @@ except ImportError:
 
 from .config import (
     CODON_VARIANT_COLORS,
+    CODON_VARIANT_MARKERS,
     GENE_TYPE_COLORS,
     GENE_TYPE_MARKERS,
 )
@@ -105,11 +106,15 @@ def _add_codon_type_legend(ax, variant_types_shown: List[str]):
         if vtype in CODON_VARIANT_COLORS:
             color = CODON_VARIANT_COLORS[vtype]
             label = vtype.replace('_', ' ').title()
+            # 🔴 the SHAPE is the second channel (greyscale redundancy): amber `missense`
+            # and sky `inframe_deletion` sit at the same L*, so a mono printout separates
+            # them only by marker. Wired 2026-09-05 (Chanfreau planning/871 follow-up).
             handles.append(Line2D(
                 [0], [0],
-                marker='o',
+                marker=CODON_VARIANT_MARKERS.get(vtype, 'o'),
                 color='w',
                 markerfacecolor=color,
+                markeredgecolor=color,
                 markersize=6,
                 label=label,
             ))
@@ -259,6 +264,7 @@ def draw_evo2_panel(
         ax.scatter(
             x, y,
             c=color,
+            marker=CODON_VARIANT_MARKERS.get(vtype, 'o'),
             s=marker_size,
             alpha=alpha,
             edgecolors='black',
@@ -378,6 +384,7 @@ def draw_esm1v_panel(
         ax.scatter(
             x, y,
             c=color,
+            marker=CODON_VARIANT_MARKERS.get(vtype, 'o'),
             s=marker_size,
             alpha=alpha,
             edgecolors='black',
@@ -765,6 +772,7 @@ def draw_vep_panel_styled(
         ax.scatter(
             x, y,
             c=color,
+            marker=CODON_VARIANT_MARKERS.get(vtype, 'o'),
             s=marker_size,
             alpha=alpha,
             edgecolors='black',

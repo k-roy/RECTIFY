@@ -62,6 +62,23 @@ except ImportError:
         "Install with: pip install rectify-rna[visualize]"
     )
 
+# Design tokens + layer-B tracks (rna-figure house standard, 2026-09-05)
+# NOTE: tracks.gene_track and tracks.coverage are NOT re-exported here -- their names
+# collide with the gene_track / coverage SUBMODULES and would shadow them. Use
+# ``from rectify.visualize import tracks as T`` for the full layer-B API.
+from . import tokens, tracks
+from .tracks import (
+    Transcript,
+    Region,
+    gene_model,
+    strand_coverage,
+    arc,
+    mark,
+    reads,
+    region_axis,
+    MARK_KINDS,
+)
+
 # Config exports
 from .config import (
     # Color palettes
@@ -171,6 +188,19 @@ from .read_browser import (
 __all__ = [
     # Flag
     'MATPLOTLIB_AVAILABLE',
+
+    # Tokens + tracks (rna-figure standard)
+    'tokens',
+    'tracks',
+    'Transcript',
+    'Region',
+    'gene_model',
+    'strand_coverage',
+    'arc',
+    'mark',
+    'reads',
+    'region_axis',
+    'MARK_KINDS',
 
     # Config - Color palettes
     'CODON_VARIANT_COLORS',

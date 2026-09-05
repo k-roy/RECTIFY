@@ -17,6 +17,8 @@ from typing import List, Dict, Optional, Union, Tuple
 
 import numpy as np
 
+from . import tokens as TOK
+
 try:
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
@@ -43,46 +45,20 @@ def set_publication_style():
     if not MATPLOTLIB_AVAILABLE:
         return
 
+    # Type, family and stroke tiers come from the house token file (rna-figure standard,
+    # 2026-09-05); this function adds only the figure-level defaults the tokens leave alone.
+    import matplotlib
+    from . import tokens as TOK
+    TOK.apply_rc(matplotlib)
     plt.rcParams.update({
-        # Font settings
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
-        'font.size': 10,
-
-        # Figure settings
         'figure.dpi': 150,
         'figure.facecolor': 'white',
         'figure.edgecolor': 'white',
-
-        # Axes settings
-        'axes.linewidth': 1.0,
-        'axes.labelsize': 10,
-        'axes.titlesize': 12,
         'axes.facecolor': 'white',
-        'axes.edgecolor': 'black',
-        'axes.spines.top': False,
-        'axes.spines.right': False,
-
-        # Tick settings
-        'xtick.labelsize': 8,
-        'ytick.labelsize': 8,
-        'xtick.major.width': 1.0,
-        'ytick.major.width': 1.0,
-        'xtick.major.size': 4,
-        'ytick.major.size': 4,
-
-        # Line settings
-        'lines.linewidth': 1.5,
         'lines.markersize': 6,
-
-        # Legend settings
-        'legend.fontsize': 8,
-        'legend.framealpha': 0.8,
-        'legend.edgecolor': 'gray',
-
-        # Save settings
+        # exact geometry: bbox_inches='tight' silently changes an 89/183 mm figure's width
         'savefig.dpi': 300,
-        'savefig.bbox': 'tight',
+        'savefig.bbox': None,
         'savefig.facecolor': 'white',
         'savefig.edgecolor': 'white',
     })
@@ -145,10 +121,12 @@ def format_genomic_axis(
     region_end: int,
     show_unit: bool = True,
     n_ticks: int = 5,
+    unit: str = 'auto',
 ):
     """Format x-axis with genomic coordinates.
 
-    Automatically selects appropriate units (bp, kb, Mb) based on region size.
+    Automatically selects appropriate units (bp, kb, Mb) based on region size,
+    unless ``unit`` names one explicitly.
 
     Args:
         ax: Matplotlib axes object
@@ -156,11 +134,15 @@ def format_genomic_axis(
         region_end: End of genomic region
         show_unit: Whether to show unit in axis label
         n_ticks: Approximate number of tick marks
+        unit: 'auto', 'bp', 'kb' or 'Mb'
     """
     region_size = region_end - region_start
 
     # Determine appropriate unit
-    if region_size >= 1_000_000:
+    divisors = {'bp': 1, 'kb': 1_000, 'Mb': 1_000_000}
+    if unit in divisors:
+        divisor = divisors[unit]
+    elif region_size >= 1_000_000:
         unit = 'Mb'
         divisor = 1_000_000
     elif region_size >= 1_000:
@@ -175,7 +157,8 @@ def format_genomic_axis(
 
     # Create tick formatter
     def format_tick(x, pos):
-        return f'{x / divisor:.1f}' if divisor > 1 else f'{int(x)}'
+        # thousands separators: a reader compares coordinates across panels by eye
+        return f'{x / divisor:,.1f}' if divisor > 1 else f'{int(x):,}'
 
     ax.xaxis.set_major_formatter(ticker.FuncFormatter(format_tick))
 
@@ -198,7 +181,7 @@ def add_trt_markers(
     ax,
     trt_positions: List[Dict],
     y_frac: float = 0.95,
-    color: str = 'red',
+    color: Optional[str] = None,
     linestyle: str = '--',
     linewidth: float = 1.0,
     alpha: float = 0.7,
@@ -227,6 +210,8 @@ def add_trt_markers(
         ]
         add_trt_markers(ax, trts)
     """
+    if color is None:
+        color = TOK.color('polya')   # the 3' end is a layer-B identity
     ymin, ymax = ax.get_ylim()
     y_label = ymin + (ymax - ymin) * y_frac
 
@@ -287,7 +272,7 @@ def add_significance_bracket(
     text: str,
     bracket_height: float = 0.02,
     fontsize: int = 8,
-    color: str = 'black',
+    color: Optional[str] = None,
 ):
     """Add significance bracket with text (e.g., p-value annotation).
 
@@ -304,6 +289,8 @@ def add_significance_bracket(
     Example:
         add_significance_bracket(ax, 1, 2, 5.5, '***')
     """
+    if color is None:
+        color = TOK.color('ink')
     # Get y-axis range for scaling
     ymin, ymax = ax.get_ylim()
     bracket_dy = (ymax - ymin) * bracket_height
@@ -545,7 +532,7 @@ def plot_ridge_profiles(
         offsets[key] = y_offset
 
         mean = agg_profiles[key]
-        color = colors.get(key, 'gray')
+        color = colors.get(key, TOK.color('subtle'))
         label = labels.get(key, key)
 
         ax.fill_between(
@@ -571,10 +558,10 @@ def add_metagene_annotations(
     ax,
     x_positions: np.ndarray,
     highlight_region: Optional[Tuple[float, float]] = None,
-    highlight_color: str = 'yellow',
+    highlight_color: Optional[str] = None,
     highlight_alpha: float = 0.15,
     grid_range: Optional[Tuple[int, int]] = None,
-    grid_color: str = 'gray',
+    grid_color: Optional[str] = None,
     grid_alpha: float = 0.5,
     zero_line_width: float = 1.0,
     minor_line_width: float = 0.3,
@@ -604,6 +591,10 @@ def add_metagene_annotations(
             grid_range=(-10, 10),
         )
     """
+    if highlight_color is None:
+        highlight_color = TOK.color('wash')
+    if grid_color is None:
+        grid_color = TOK.color('mute')
     # Add highlight region
     if highlight_region is not None:
         ax.axvspan(

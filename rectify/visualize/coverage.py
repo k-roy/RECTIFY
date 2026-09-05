@@ -20,6 +20,8 @@ try:
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
+from . import tokens as TOK
+
 
 def extract_coverage_from_bam(
     bam_path: Union[str, Path],
@@ -143,7 +145,7 @@ def draw_coverage_track(
     depths: np.ndarray,
     region_start: int,
     region_end: int,
-    color: str = '#0072B2',
+    color: Optional[str] = None,
     fill: bool = True,
     fill_alpha: float = 0.5,
     line_alpha: float = 1.0,
@@ -162,7 +164,8 @@ def draw_coverage_track(
         depths: Array of coverage depths
         region_start: Start of display region
         region_end: End of display region
-        color: Fill and line color
+        color: Fill and line color. None = the `subtle` grey (a single sample carries
+               no argument); pass tokens.role('focal') etc. when it does.
         fill: Whether to fill area under curve
         fill_alpha: Transparency of fill
         line_alpha: Transparency of line
@@ -176,6 +179,8 @@ def draw_coverage_track(
         positions, depths = extract_coverage_from_bam(bam_path, chrom, start, end)
         draw_coverage_track(ax, positions, depths, start, end, label="NET-seq")
     """
+    if color is None:
+        color = TOK.color('subtle')
     ax.set_xlim(region_start, region_end)
 
     # Apply smoothing if requested
@@ -229,8 +234,8 @@ def draw_strand_coverage(
     depths_minus: np.ndarray,
     region_start: int,
     region_end: int,
-    color_plus: str = '#0072B2',
-    color_minus: str = '#D55E00',
+    color_plus: Optional[str] = None,
+    color_minus: Optional[str] = None,
     fill_alpha: float = 0.5,
     labels: Tuple[str, str] = ('+ strand', '- strand'),
     mirror: bool = True,
@@ -246,8 +251,9 @@ def draw_strand_coverage(
         depths_minus: Depths for minus strand
         region_start: Start of display region
         region_end: End of display region
-        color_plus: Color for plus strand
-        color_minus: Color for minus strand
+        color_plus: Color for plus strand (None = `subtle`)
+        color_minus: Color for minus strand. None = SAME colour as plus: strand is
+                     carried by position (mirrored below the axis), never by hue.
         fill_alpha: Fill transparency
         labels: Labels for legend
         mirror: If True, show minus strand below axis (negated)
@@ -260,6 +266,10 @@ def draw_strand_coverage(
         # Draw mirrored
         draw_strand_coverage(ax, pos_plus, dep_plus, pos_minus, dep_minus, start, end)
     """
+    if color_plus is None:
+        color_plus = TOK.color('subtle')
+    if color_minus is None:
+        color_minus = color_plus
     ax.set_xlim(region_start, region_end)
 
     # Plus strand (above axis)
@@ -296,10 +306,10 @@ def draw_strand_coverage(
         ax.plot(positions_minus, depths_minus, color=color_minus, linewidth=0.5)
 
     # Add center line
-    ax.axhline(y=0, color='black', linewidth=0.5, alpha=0.5)
+    ax.axhline(y=0, color=TOK.color('hairline'), linewidth=TOK.stroke()['hairline'])
 
     ax.set_ylabel('Coverage')
-    ax.legend(loc='upper right', fontsize=6)
+    ax.legend(loc='upper right', fontsize=TOK.typography()['annotation'])
 
 
 def compare_coverage_tracks(
@@ -332,9 +342,7 @@ def compare_coverage_tracks(
         }
         compare_coverage_tracks(ax, coverage, start, end)
     """
-    from .config import WONG_COLORS
-
-    default_colors = list(WONG_COLORS.values())
+    default_colors = TOK.role_cycle()
 
     ax.set_xlim(region_start, region_end)
 
@@ -354,6 +362,6 @@ def compare_coverage_tracks(
         )
 
     if show_legend:
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right', fontsize=TOK.typography()['annotation'])
 
     ax.set_ylabel('Normalized' if normalize else 'Coverage')

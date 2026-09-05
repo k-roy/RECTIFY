@@ -1060,26 +1060,27 @@ class MetagenePipeline:
         self,
         ax,
         result: Dict,
-        color: str = '#0072B2',
+        color: Optional[str] = None,
         label: Optional[str] = None,
         show_sem: bool = True,
         sem_alpha: float = 0.2,
         linewidth: float = 1.5,
         show_feature_bounds: bool = True,
-        feature_color: str = 'red',
+        feature_color: Optional[str] = None,
     ):
         """Plot a single metagene profile.
 
         Args:
             ax: Matplotlib axes
             result: Result dict from compute_profile
-            color: Line color
+            color: Line color. None = `subtle` grey; a profile that carries the
+                   argument takes tokens.role('focal') etc.
             label: Legend label
             show_sem: Whether to show SEM shading
             sem_alpha: Alpha for SEM shading
             linewidth: Line width
             show_feature_bounds: Whether to show vertical lines at feature start/end
-            feature_color: Color for feature boundary lines
+            feature_color: Color for feature boundary lines (None = `hairline`)
         """
         x = result['x_positions']
         y = result['profile']
@@ -1087,6 +1088,11 @@ class MetagenePipeline:
         body_width = result['body_width']
 
         # Plot profile line
+        from . import tokens as _TOK
+        if color is None:
+            color = _TOK.color('subtle')
+        if feature_color is None:
+            feature_color = _TOK.color('hairline')
         ax.plot(x, y, color=color, linewidth=linewidth, label=label)
 
         # Add SEM shading
@@ -1139,8 +1145,9 @@ class MetagenePipeline:
         """
         from .config import WONG_COLORS
 
-        # Default colors from Wong palette
-        default_colors = list(WONG_COLORS.values())
+        # Default colours: the layer-A role cycle (rna-figure standard)
+        from . import tokens as _TOK
+        default_colors = _TOK.role_cycle()
 
         for i, (condition, result) in enumerate(results.items()):
             color = colors.get(condition) if colors else default_colors[i % len(default_colors)]
@@ -1156,7 +1163,7 @@ class MetagenePipeline:
             )
 
         if show_legend:
-            ax.legend(loc='upper right', fontsize=8, framealpha=0.8)
+            ax.legend(loc='upper right', fontsize=_TOK.typography()['annotation'], framealpha=0.8)
 
 
 def build_index_from_bam(
