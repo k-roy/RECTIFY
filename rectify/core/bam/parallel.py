@@ -130,6 +130,55 @@ def _process_region_worker_from_state(
     )
 
 
+class RegionWorkerDied(RuntimeError):
+    """A BAM-region worker process died (SIGABRT/SIGSEGV/OOM-kill) while a region was in flight.
+
+    `multiprocessing.Pool` silently replaces a dead worker but never re-queues the task it
+    was running, so a plain ``for r in pool.imap(...)`` waits forever. Observed 2026-08-22 on
+    4/48 DRS samples (glibc ``free(): invalid next size`` in a worker; 9.7 h of idle wallclock
+    each before anyone noticed). This error is raised instead so the run fails loudly.
+    """
+
+
+def _iter_pool_results(pool, result_iter, *, poll_s: float = 30.0, what: str = "region"):
+    """Yield from a ``Pool.imap``/``imap_unordered`` iterator, failing loudly if a worker dies.
+
+    Uses ``IMapIterator.next(timeout)`` so the loop wakes every ``poll_s`` seconds and compares
+    the pool's worker roster: a worker whose pid has vanished (Pool repopulates) or whose
+    ``exitcode`` is set died mid-task. Raises :class:`RegionWorkerDied` naming the signal.
+    Results still arrive in the iterator's own order. Private ``pool._pool`` is the only
+    handle stdlib offers; it has been stable since 2.6.
+    """
+    known = {p.pid: p for p in getattr(pool, '_pool', [])}
+    while True:
+        try:
+            yield result_iter.next(timeout=poll_s)
+            continue
+        except StopIteration:
+            return
+        except mp.TimeoutError:
+            pass
+        current = {p.pid: p for p in getattr(pool, '_pool', [])}
+        dead = []
+        for pid, proc in known.items():
+            code = proc.exitcode
+            if pid not in current or (code is not None and code != 0):
+                dead.append((pid, code))
+        if dead:
+            desc = ', '.join(
+                f"pid {pid} exit={code if code is not None else 'replaced'}"
+                + (f" (signal {-code})" if isinstance(code, int) and code < 0 else '')
+                for pid, code in dead
+            )
+            raise RegionWorkerDied(
+                f"{len(dead)} BAM-{what} worker(s) died while a {what} was in flight: {desc}. "
+                "A native-extension crash in the worker (check the log for 'Error in' / "
+                "'Fatal Python error' / 'Memory map'); the run cannot complete. "
+                "Re-run with PYTHONFAULTHANDLER=1 to see the Python frame, or -j 1 for a traceback."
+            )
+        known = current
+
+
 def _write_results_chunk(fh, results: List[Dict]):
     """Write a chunk of results to file handle."""
     for result in results:
@@ -444,10 +493,24 @@ def _rebuild_output_from_region_files(
 
                 with open(_region_tsv_path(checkpoint_dir, region_idx), 'r') as region_fh:
                     for line in region_fh:
-                        out_fh.write(line)
+                        if not line.strip():
+                            continue
                         fields = line.rstrip('\n').split('\t')
                         if len(fields) != len(CORRECTION_TSV_HEADER):
-                            continue
+                            # A width mismatch means the checkpoint was written by a
+                            # rectify with a different corrected-TSV schema (every
+                            # column addition — strand_evidence, consensus_*,
+                            # five_prime_rescue_refused — has this property). Silently
+                            # skipping rows here used to yield a current header over
+                            # foreign rows and an empty pos_counts; refuse instead.
+                            raise RuntimeError(
+                                f"Checkpoint {_region_tsv_path(checkpoint_dir, region_idx)} has "
+                                f"{len(fields)}-column rows but this rectify writes "
+                                f"{len(CORRECTION_TSV_HEADER)} columns — it was written by a "
+                                f"different schema. Delete {checkpoint_dir} (or run without "
+                                f"resuming) so the sample is re-corrected from scratch."
+                            )
+                        out_fh.write(line)
                         result = _parse_tsv_result(fields, seen_read_ids)
                         key = (result['chrom'], result['corrected_3prime'], result['strand'])
                         pos_counts[key] = pos_counts.get(key, 0.0) + float(result.get('fraction', 1.0))
@@ -855,16 +918,14 @@ def process_bam_file_parallel(
             _pool_cm = _new_pool  # Pool is its own context manager; terminates on __exit__
 
     with _pool_cm as pool:
+        _guarded = _iter_pool_results(
+            pool, pool.imap(_process_region_worker_from_state, region_tasks))
         try:
             # Try to use tqdm for progress if available
             from tqdm import tqdm
-            results_iter = tqdm(
-                pool.imap(_process_region_worker_from_state, region_tasks),
-                total=len(region_tasks),
-                desc="Processing regions"
-            )
+            results_iter = tqdm(_guarded, total=len(region_tasks), desc="Processing regions")
         except ImportError:
-            results_iter = pool.imap(_process_region_worker_from_state, region_tasks)
+            results_iter = _guarded
 
         for region_results in results_iter:
             all_results.extend(region_results)
@@ -1297,7 +1358,8 @@ def process_bam_streaming_parallel(
                 initializer=_init_region_worker_state,
                 initargs=(str(genome_path), polya_model_path, shared_kwargs),
             ) as pool:
-                _iter = getattr(pool, _map_fn)(_process_region_worker_from_state, _region_tasks)
+                _iter = _iter_pool_results(
+                    pool, getattr(pool, _map_fn)(_process_region_worker_from_state, _region_tasks))
                 for _batch_num, _worker_ret in enumerate(_iter):
                     # Workers return a temp-file path (str) when tmp_dir is set.
                     # Load the pickle and delete the file immediately to free space.

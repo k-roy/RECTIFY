@@ -37,11 +37,29 @@ The primary per-read output of `rectify correct` (and the per-sample output of
 | `sc_original_softclip_len` | int | Original soft-clip length before Module 2G rescue |
 | `oc_homopolymer_extension` / `oc_overcall_count` / `oc_terminal_base` | int/str | Over-call (over-extension) diagnostics |
 | `five_prime_intron_clip_pos` / `five_prime_upstream_trim` / `reanchor_clip_len` | int | 5' rescue / re-anchoring diagnostics |
+| `strand_evidence` | str | How `strand` was decided; ONT PCR-cDNA only (`polyA_3p`, `polyT_5p`, `gene_overlap`, `unassigned`) |
+| `consensus_aligner` | str | `Xa` — aligner the multi-aligner consensus chose for this read (comma list for a chimeric stitch) |
+| `consensus_confidence` | str | `Xc` — consensus confidence for the choice |
+| `consensus_n_agree` | int | `Xn` — how many aligners agreed |
+| `consensus_tied` | str | `Xt` — comma-separated tied aligners; empty unless the vote tied |
 
-The full 38-column header is defined by `CORRECTION_TSV_HEADER`
+The full 43-column header is defined by `CORRECTION_TSV_HEADER`
 (`rectify/core/bam/output.py`). After consensus merge (`rectify run-all`,
 `rectify consensus`), a `winning_aligner` column is appended recording the
 aligner selected per read.
+
+!!! note "`consensus_*` vs `winning_aligner`"
+    The four `consensus_*` columns are the input BAM's `Xa`/`Xc`/`Xn`/`Xt`
+    tags, which the **alignment** stage writes onto
+    `<sample>.multialigned.bam`. `rectify correct` copies them straight
+    through when it reads a BAM that carries them. In the default order it
+    does not: it corrects each per-aligner BAM, and those carry no tags — so
+    the **merge** joins the tags back in by read name from
+    `<sample>.multialigned.bam`, which it finds next to the per-aligner BAMs
+    (override with `--consensus-bam`; the path used is logged). Only empty
+    cells are filled, and the columns stay empty when no such BAM exists.
+    `winning_aligner` is the separate, later verdict of the merge itself —
+    these columns are never derived from it.
 
 !!! note "Coordinate convention"
     All positions are **0-based, half-open** (BED/pysam convention). See the [Coordinate System](../coordinate_system.md) page for strand-specific definitions.

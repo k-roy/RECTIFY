@@ -64,6 +64,65 @@ def _multialigned_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
 _rectified_bam_path = _multialigned_bam_path
 
 
+def _resolve_consensus_tag_bam(
+    explicit: Optional[str],
+    sample_id: str,
+    search_dirs,
+    fallback: Optional[Path] = None,
+) -> Optional[Path]:
+    """BAM to read ``Xa``/``Xc``/``Xn``/``Xt`` from for the merged TSV.
+
+    Order: an explicit ``--consensus-bam``; else ``<sample>.multialigned.bam``
+    (then the pre-2026-06-25 ``<sample>.consensus.bam``) in each of
+    *search_dirs* — the align stage may write next to the per-aligner arms in
+    scratch, in ``--bam-dir/<sample>``, or in the sample output dir; else
+    *fallback*, the BAM the correct stage was actually handed.
+
+    Returns None when nothing is found, and the merge then leaves the four
+    ``consensus_*`` columns empty exactly as before.  Always prints which path
+    was chosen: a silently-absent BAM and a genuinely untagged one produce the
+    same empty columns downstream, and only the log distinguishes them.
+    """
+    if explicit:
+        path = Path(explicit)
+        if path.exists():
+            print(f"    Consensus tags: {path} (--consensus-bam)")
+            return path
+        print(
+            f"    WARNING: --consensus-bam {path} does not exist; "
+            f"the consensus_* columns will be empty",
+            file=sys.stderr,
+        )
+        return None
+
+    seen = []
+    for directory in search_dirs:
+        if directory is None:
+            continue
+        directory = Path(directory)
+        if directory in seen:
+            continue
+        seen.append(directory)
+        for candidate, label in (
+            (_multialigned_bam_path(sample_id, directory), 'auto'),
+            (directory / f"{sample_id}.consensus.bam", 'auto, legacy name'),
+        ):
+            if candidate.exists():
+                print(f"    Consensus tags: {candidate} ({label})")
+                return candidate
+
+    if fallback is not None and Path(fallback).exists():
+        print(f"    Consensus tags: {fallback} (the corrected input BAM)")
+        return Path(fallback)
+
+    print(
+        "    Consensus tags: no multialigned BAM found next to the arms "
+        f"({', '.join(str(d) for d in seen) or 'no search dirs'}) — "
+        "the consensus_* columns will be empty"
+    )
+    return None
+
+
 def _final_rectified_bam_path(sample_id: str, sample_output_dir: Path) -> Path:
     """Canonical path for the FINAL corrected (rectified) BAM for a sample.
 

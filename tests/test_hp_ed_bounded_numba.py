@@ -14,12 +14,11 @@ import pytest
 from rectify.core.splice.overhang_informativeness import hp_edit_distance_bounded
 
 
-def test_default_off_no_kernel():
-    if os.environ.get('RECTIFY_HP_ED_NUMBA', '0').strip() in ('', '0', 'false',
-                                                              'False', 'no', 'off'):
-        from rectify.core.splice import overhang_informativeness as oi
-        assert oi._hp_ed_bounded_numba is None
-
+def test_kernel_not_imported_at_module_import():
+    """2026-09-05: the kernel is ON by default but imported LAZILY — module import
+    must not pull numba in (that is what keeps spawn workers' RSS flat)."""
+    from rectify.core.splice import overhang_informativeness as oi
+    assert oi._HP_ED_NUMBA_LOADED is False or oi._hp_ed_bounded_numba is not None
 
 def test_python_path_reference_values():
     # anchors the reference semantics the kernel must reproduce
@@ -39,6 +38,7 @@ def test_kernel_bit_identity_subprocess():
     code = r"""
 import random
 from rectify.core.splice import overhang_informativeness as oi
+oi._load_numba_kernel()   # 2026-09-05: the import is lazy
 assert oi._hp_ed_bounded_numba is not None
 def py_ref(s1, s2, cutoff):
     saved = oi._hp_ed_bounded_numba

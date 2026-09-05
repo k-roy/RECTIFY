@@ -122,6 +122,331 @@ def _strip_aligner_prefix(bam_entry: str) -> str:
     return bam_entry
 
 
+def module_2h_skip_reason(config) -> Optional[str]:
+    """Why Module 2H will not run for this config, or ``None`` if it will.
+
+    A bare ``rectify correct <bam> --annotation …`` used to run no junction
+    refinement at all and log NOTHING about it, so the corrected BAM looked like
+    it had been through Module 2H.  On the tester's 62k-read human slice that is
+    6 reads changed instead of 30,703 (ISSUE-003).
+    """
+    reasons = []
+    if not (config.get('aligner_bams') or config.get('junction_pool_cache')):
+        reasons.append("no --aligner-bams and no --junction-pool-cache")
+    if not config.get('annotation_path'):
+        reasons.append("no --annotation")
+    if (config.get('skip_junction_refinement', False)
+            and not config.get('apply_3ss_rescue', True)):
+        reasons.append("--skip-junction-refinement with --skip-3ss-rescue")
+    return "; ".join(reasons) if reasons else None
+
+
+# ---------------------------------------------------------------------------
+# Indexable-BAM guard (ISSUE-015)
+# ---------------------------------------------------------------------------
+# One malformed tail record must not cost a multi-hour run its output. A single
+# 2F rescue placed an 8,835-nt "exon" at chrM:-5843 — 1 record in 145,000 — and
+# `pysam.index` refused the whole file, so `correct` exited 1 after 1.5 h with
+# the corrected BAM written but unindexed and nothing said about which read did
+# it. The admission and writer layers are fixed separately; this is the floor
+# under them, and it has to hold for a defect nobody has thought of yet.
+UNINDEXABLE_TSV_SUFFIX = '.unindexable_reads.tsv'
+
+_UNINDEXABLE_TSV_COLUMNS = (
+    'read_name', 'contig', 'contig_length', 'reference_start', 'reference_end',
+    'reason', 'flag', 'mapping_quality', 'leading_softclip', 'trailing_softclip',
+    'cigar',
+)
+
+
+def unindexable_reason(read, contig_lengths) -> Optional[str]:
+    """Why this record cannot be indexed, or ``None`` if it can.
+
+    A coordinate-sorted index can only address positions inside the contig, so
+    a record that starts before base 0 or reaches past the contig's end is
+    unrepresentable — htslib rejects the file, not the record.
+    """
+    if read.is_unmapped or read.reference_id is None or read.reference_id < 0:
+        return None                      # unplaced reads are indexed fine
+    start = read.reference_start
+    if start is None or start < 0:
+        return f'reference_start={start} < 0'
+    length = contig_lengths.get(read.reference_name)
+    if length is None:
+        return None                      # no length in the header — cannot judge
+    if start >= length:
+        return f'reference_start={start} >= contig length {length}'
+    try:
+        end = read.reference_end
+    except (ValueError, TypeError):      # malformed CIGAR
+        return 'reference_end could not be computed (malformed CIGAR)'
+    if end is not None and end > length:
+        return f'reference_end={end} > contig length {length}'
+    return None
+
+
+def _terminal_clip(read, leading: bool) -> int:
+    ops = read.cigartuples or []
+    if not ops:
+        return 0
+    op, length = ops[0] if leading else ops[-1]
+    return length if op in (4, 5) else 0
+
+
+def quarantine_unindexable_records(src_path, cleaned_path, tsv_path, log) -> int:
+    """Copy *src_path* to *cleaned_path* minus records that cannot be indexed.
+
+    Every dropped record is logged at ERROR and written to *tsv_path* with the
+    fields that let the writer bug be found from the read alone: the contig and
+    its length, both coordinates, and the terminal soft clips — a 5' rescue that
+    ran off the contig edge shows up as an enormous leading clip on the stock
+    read. Returns the number of records dropped.
+    """
+    n_off = 0
+    with pysam.AlignmentFile(str(src_path), 'rb', check_sq=False) as src:
+        contig_lengths = dict(zip(src.references, src.lengths))
+        with pysam.AlignmentFile(str(cleaned_path), 'wb', template=src) as out, \
+                open(str(tsv_path), 'w') as tsv:
+            tsv.write('\t'.join(_UNINDEXABLE_TSV_COLUMNS) + '\n')
+            for read in src:
+                reason = unindexable_reason(read, contig_lengths)
+                if reason is None:
+                    out.write(read)
+                    continue
+                n_off += 1
+                contig = read.reference_name
+                row = (
+                    read.query_name or '',
+                    contig or '',
+                    contig_lengths.get(contig, ''),
+                    read.reference_start,
+                    _safe_reference_end(read),
+                    reason,
+                    read.flag,
+                    read.mapping_quality,
+                    _terminal_clip(read, leading=True),
+                    _terminal_clip(read, leading=False),
+                    read.cigarstring or '',
+                )
+                tsv.write('\t'.join(str(f) for f in row) + '\n')
+                log.error(
+                    "  UNINDEXABLE RECORD dropped: %s on %s (length %s): %s "
+                    "[flag=%s mapq=%s clips=%s/%s cigar=%.60s]",
+                    row[0], row[1], row[2], reason, row[6], row[7], row[8], row[9], row[10],
+                )
+    return n_off
+
+
+def _safe_reference_end(read):
+    try:
+        return read.reference_end
+    except (ValueError, TypeError):
+        return ''
+
+
+def _safe_unlink(path) -> None:
+    try:
+        import os as _os_unlink
+        if path and _os_unlink.path.exists(str(path)):
+            _os_unlink.unlink(str(path))
+    except OSError:
+        pass
+
+
+def sort_and_index_bam(unsorted_path, out_path, log=None) -> dict:
+    """Sort *unsorted_path* into *out_path* and index it — without ever raising.
+
+    The happy path is exactly ``pysam.sort`` + ``pysam.index`` and makes no
+    extra pass over the data. Only when one of them FAILS do we scan for records
+    outside their contig, write them to ``<out>.unindexable_reads.tsv``, rewrite
+    the BAM without them, and retry (ISSUE-015).
+
+    Returns ``{'indexed': bool, 'offenders': int, 'offender_tsv': str | None}``.
+    Never raises: a run that has already produced its output must not exit 1
+    over a record it can name and set aside.
+    """
+    log = log or logging.getLogger(__name__)
+    unsorted_path, out_path = str(unsorted_path), str(out_path)
+    try:
+        pysam.sort('-o', out_path, unsorted_path)
+        pysam.index(out_path)
+        return {'indexed': True, 'offenders': 0, 'offender_tsv': None}
+    except Exception as exc:
+        log.error("Sorting/indexing %s FAILED: %s", out_path, exc)
+        log.error("  Scanning %s for records outside their contig...", unsorted_path)
+
+    stem = out_path[:-4] if out_path.endswith('.bam') else out_path
+    tsv_path = stem + UNINDEXABLE_TSV_SUFFIX
+    cleaned = unsorted_path + '.indexable.bam'
+    try:
+        n_off = quarantine_unindexable_records(unsorted_path, cleaned, tsv_path, log)
+    except Exception as exc:
+        log.error(
+            "  Could not scan %s (%s). %s is left unindexed; the run continues.",
+            unsorted_path, exc, out_path,
+        )
+        _safe_unlink(cleaned)
+        return {'indexed': False, 'offenders': 0, 'offender_tsv': None}
+
+    if n_off == 0:
+        log.error(
+            "  No off-contig records found, so the index failure has another "
+            "cause. %s is left as-is and unindexed; the run continues.", out_path,
+        )
+        _safe_unlink(cleaned)
+        _safe_unlink(tsv_path)
+        return {'indexed': False, 'offenders': 0, 'offender_tsv': None}
+
+    log.error("  Quarantined %d unindexable record(s) -> %s", n_off, tsv_path)
+    try:
+        pysam.sort('-o', out_path, cleaned)
+        pysam.index(out_path)
+        indexed = True
+        log.error(
+            "  Re-sorted and indexed %s without them. THE OUTPUT IS INCOMPLETE BY "
+            "%d READ(S) — see %s.", out_path, n_off, tsv_path,
+        )
+    except Exception as exc:
+        indexed = False
+        log.error(
+            "  %s still could not be indexed after quarantine: %s", out_path, exc,
+        )
+    _safe_unlink(cleaned)
+    return {'indexed': indexed, 'offenders': n_off, 'offender_tsv': tsv_path}
+
+
+def _warn_self_pool(config, log) -> bool:
+    """Warn when the junction pool is being built from the BAM being corrected.
+
+    ``--aligner-bams minimap2:<the input itself>`` is a legitimate way to switch
+    Module 2H on, but it is not multi-aligner evidence: the pool then contains
+    the input's own junction calls, including its errors, and a single read's
+    mistake enters as a full-weight candidate that other reads can be moved onto
+    (ISSUE-011). Worth saying out loud, since nothing else distinguishes it from
+    a genuine multi-aligner pool.
+    """
+    try:
+        _input = Path(str(config.get('bam_path') or '')).resolve()
+    except (OSError, RuntimeError):
+        return False
+    selves = []
+    for _b in config.get('aligner_bams') or []:
+        try:
+            if Path(str(_b)).resolve() == _input:
+                selves.append(str(_b))
+        except (OSError, RuntimeError):
+            continue
+    if not selves:
+        return False
+    log.warning(
+        "  Module 2H: --aligner-bams resolves to the input BAM itself (%s) — "
+        "the junction pool is this BAM's own calls, not independent evidence. "
+        "A single-read mis-split enters as a full-weight candidate.",
+        ', '.join(selves),
+    )
+    return True
+
+
+def penalty_table_protocol(config) -> str:
+    """Map this run's protocol flags onto a bundled penalty-table protocol key.
+
+    The bundled tables are keyed ``drs`` / ``cdna`` / ``qsrev``:
+
+    * ``cdna``  — ONT PCR-cDNA (``--ONT-cDNA``).
+    * ``qsrev`` — QuantSeq REV geometry: dT-primed cDNA (``--dT-primed-cDNA``)
+      and NET-seq (``--netseq``), which shares that geometry.
+    * ``drs``   — direct RNA (the default).
+    """
+    if config.get('ont_cDNA'):
+        return 'cdna'
+    if config.get('is_netseq') or config.get('dt_primed_cDNA'):
+        return 'qsrev'
+    return 'drs'
+
+
+def select_penalty_tables(config, log=None):
+    """Resolve the junction / STR penalty tables for Module 2H.
+
+    An explicit ``--junction-penalty-table`` / ``--str-penalty-table`` always
+    wins.  Otherwise the tables bundled for **this run's own organism and
+    protocol** are selected; a table calibrated on a different organism is
+    never substituted, and when nothing is bundled for the organism the
+    scorer falls back to flat edit costs with a WARNING that names it.
+
+    Empirical HP/STR penalties are the whole basis of the "within the
+    sub-integer HP noise floor" comparison in ``refine_read_junctions``, so
+    silently running with none of them is a materially different algorithm —
+    hence a log line in every case (ISSUE-005).
+
+    Args:
+        config: the correction config dict (needs ``organism``,
+            ``genome_path`` and the protocol flags).
+        log:    logger to use (defaults to this module's).
+
+    Returns:
+        ``(junction_table_path, str_table_path)`` as strings or ``None``.
+    """
+    log = log or logging.getLogger(__name__)
+    explicit_j = config.get('junction_penalty_table')
+    explicit_s = config.get('str_penalty_table')
+    if explicit_j or explicit_s:
+        log.info(
+            "  Module 2H penalty tables (user-supplied): junction=%s str=%s",
+            explicit_j or 'none', explicit_s or 'none',
+        )
+        return explicit_j, explicit_s
+
+    from ...data import (
+        BUNDLED_GENOMES,
+        detect_organism_from_genome,
+        get_bundled_junction_penalty_table,
+        get_bundled_str_penalty_table,
+        normalize_organism,
+    )
+
+    org = config.get('organism')
+    if not org and config.get('genome_path'):
+        try:
+            org = detect_organism_from_genome(Path(str(config['genome_path'])))
+        except Exception:               # detection is best-effort, never fatal
+            org = None
+    if not org:
+        log.warning(
+            "  Module 2H: organism unknown (pass --organism) — no empirical "
+            "penalty table loaded; scoring falls back to flat edit costs."
+        )
+        return None, None
+
+    org = normalize_organism(org)
+    protocol = penalty_table_protocol(config)
+    jpt = get_bundled_junction_penalty_table(org, protocol=protocol)
+    spt = get_bundled_str_penalty_table(org, protocol=protocol)
+    if jpt is None:
+        log.warning(
+            "  Module 2H: no bundled %s junction penalty table for organism "
+            "'%s' — scoring falls back to flat edit costs (no HP/STR context). "
+            "Supply one with --junction-penalty-table.",
+            protocol, org,
+        )
+        return None, None
+
+    version = (BUNDLED_GENOMES.get(org, {})
+               .get('junction_penalty_table', {})
+               .get('version', 'unversioned'))
+    log.info(
+        "  Module 2H penalty table: organism=%s protocol=%s version=%s path=%s",
+        org, protocol, version, jpt,
+    )
+    if spt is None:
+        log.info(
+            "  Module 2H: no bundled STR penalty table for organism=%s "
+            "protocol=%s — HP penalties only.", org, protocol,
+        )
+    else:
+        log.info("  Module 2H STR penalty table: %s", spt)
+    return str(jpt), (str(spt) if spt is not None else None)
+
+
 def setup_logging(verbose: bool = False):
     """Configure logging for command execution."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -401,6 +726,7 @@ def validate_inputs(args) -> dict:
         'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
         'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
         'junction_max_size':         getattr(args, 'junction_max_size', None),
+        'junction_min_observed_support': getattr(args, 'junction_min_observed_support', 1),
         'junction_max_candidates_per_nop': getattr(args, 'junction_max_candidates_per_nop', None),
         'junction_profile':          getattr(args, 'junction_profile', None),
         'junction_profile_sample_rate': getattr(args, 'junction_profile_sample_rate', 1),
@@ -492,6 +818,33 @@ def run(args):
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False) or is_netseq
     is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     is_short_read = getattr(args, 'short_read', False)
+
+    # Register the reference contig names BEFORE anything loads an annotation,
+    # builds a junction pool or keys a chrom index.  standardize_chrom_name()
+    # consults this registry to decide whether a name is already a real contig;
+    # with it EMPTY the yeast arabic->roman fallback rewrites human 'chr5' to
+    # 'chrV' (and 'chr10' onto the REAL 'chrX').  Registration used to happen
+    # after the Module 2H block, so on human input 2H's annotation, pool and
+    # chrom index were all keyed 'chrV' while its reads — standardized after
+    # load_genome populated the registry mid-block — were keyed 'chr5'.  Every
+    # candidate lookup missed and 2H reported "0 refined" as if the alignments
+    # were already perfect (ISSUE-001).  Module 2F's pool arm was equally blind.
+    if config.get('genome_path'):
+        from ...utils.genome import (
+            known_contig_count as _known_contig_count,
+            register_genome_contigs_from_fasta as _register_contigs,
+        )
+        _register_contigs(str(config['genome_path']))
+        _n_contigs = _known_contig_count()
+        if _n_contigs:
+            logger.info("Reference contigs registered: %d", _n_contigs)
+        else:
+            logger.warning(
+                "Could not read any contig name from %s — chromosome names will "
+                "be standardized in legacy S. cerevisiae mode, which rewrites "
+                "'chr5' to 'chrV'. Check the FASTA and its .fai index.",
+                config['genome_path'],
+            )
 
     # Log configuration
     logger.info("Configuration:")
@@ -664,6 +1017,11 @@ def run(args):
         # Per-chromosome sorted junction index for Module 2F pool lookup.
         # Built from the prescan pool if available; otherwise None (GFF-only mode).
         _pool_chrom_index = None
+        if not _has_junction_context:
+            logger.info(
+                "Module 2H: SKIPPED (%s) — N-op junction boundaries are passed "
+                "through unchanged.", module_2h_skip_reason(config),
+            )
         if _has_junction_context:
             _t_refine = _time.perf_counter()
             if _skip_junction_refinement:
@@ -681,25 +1039,45 @@ def run(args):
                 _prebuilt_annot_set = None
                 if _junction_pool_cache and Path(_junction_pool_cache).exists():
                     import pickle as _pkl
+                    from ..splice.junction_scoring import junction_pool_cache_problem
                     logger.info(f"  Loading pre-built junction pool from cache: {_junction_pool_cache}")
                     with open(_junction_pool_cache, 'rb') as _pf:
                         _pool_data = _pkl.load(_pf)
-                    _prebuilt_pool = _pool_data['all_junctions']
-                    _prebuilt_annot_set = _pool_data['annotated_set']
-                    logger.info(
-                        "  Pre-built pool: %d junctions (%d annotated)",
-                        len(_prebuilt_pool), len(_prebuilt_annot_set),
-                    )
+                    # Refuse a cache this build cannot vouch for. A pool written
+                    # before the ISSUE-004 N-advance fix is not stale, it is
+                    # WRONG — on multi-intron reads its observed arm is phantom
+                    # coordinates — and using it silently is how that defect
+                    # outlives the code fix.
+                    _cache_problem = junction_pool_cache_problem(_pool_data)
+                    if _cache_problem:
+                        logger.warning(
+                            "  Junction pool cache REJECTED (%s): %s. Rebuilding "
+                            "from --aligner-bams; re-run `rectify prescan` to "
+                            "regenerate the cache.",
+                            _cache_problem, _junction_pool_cache,
+                        )
+                    else:
+                        _prebuilt_pool = _pool_data['all_junctions']
+                        _prebuilt_annot_set = _pool_data['annotated_set']
+                        logger.info(
+                            "  Pre-built pool: %d junctions (%d annotated)",
+                            len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        )
 
                 if _prebuilt_pool is None and config.get('aligner_bams'):
+                    _warn_self_pool(config, logger)
+                    _min_support = int(config.get('junction_min_observed_support') or 1)
                     _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
                         config['aligner_bams'],
                         _annot_j,
+                        min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
                     )
                     logger.info(
-                        "  Built junction pool: %d junctions (%d annotated)",
+                        "  Built junction pool: %d junctions (%d annotated, "
+                        "%d observed with support >= %d)",
                         len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        len(_prebuilt_pool) - len(_prebuilt_annot_set), _min_support,
                     )
 
                 _pool_for_index = _prebuilt_pool
@@ -795,6 +1173,12 @@ def run(args):
                                 "(will use single-table mode): %s", _pts_exc
                             )
 
+                    # Empirical penalty tables (ISSUE-005): before this, `correct`
+                    # loaded NONE unless the user passed a path (the per-UMI-bin
+                    # branch above is ONT-cDNA only), so every DRS run scored
+                    # junctions with flat edit costs and no STR context — silently.
+                    _jpt, _spt = select_penalty_tables(config)
+
                     _refine_stats = refine_bam_junctions(
                         input_bam=bam_to_process,
                         output_bam=_refined_bam,
@@ -810,8 +1194,8 @@ def run(args):
                         max_junction_size=config.get('junction_max_size'),
                         max_candidates_per_nop=config.get('junction_max_candidates_per_nop'),
                         sort_and_index=True,
-                        penalty_table_path=config.get('junction_penalty_table'),
-                        str_penalty_table_path=config.get('str_penalty_table'),
+                        penalty_table_path=_jpt,
+                        str_penalty_table_path=_spt,
                         prebuilt_junction_pool=_prebuilt_pool,
                         prebuilt_annotated_set=_prebuilt_annot_set,
                         sort_threads=config.get('threads', 1),
@@ -841,12 +1225,8 @@ def run(args):
                 import gc as _gc
                 _gc.collect()
 
-        # Register genome contigs before annotation loading so non-yeast chrom
-        # names (e.g. human "chr5") survive standardize_chrom_name verbatim and
-        # the GTF-derived junctions/genes key the same way the reads do.
-        if config.get('genome_path'):
-            from ...utils.genome import register_genome_contigs_from_fasta
-            register_genome_contigs_from_fasta(str(config['genome_path']))
+        # (Genome contigs are registered at the top of run(), before Module 2H —
+        # they used to be registered HERE, which is after it. See ISSUE-001.)
 
         # Load annotated junctions for Module 2F (3'SS truncation rescue).
         # Without these, only reads whose own CIGAR contains an N operation near
@@ -1115,6 +1495,11 @@ def run(args):
         # "RECTIFY completed successfully!" is a warning nobody reads.
         _no_bam_warn_lines = build_no_bam_output_warning(config, stats)
 
+        # Every sort+index below goes through sort_and_index_bam, which never
+        # raises: a malformed tail record gets named, set aside and reported
+        # instead of aborting a multi-hour run (ISSUE-015).
+        _index_reports = []
+
         # Write poly(A)-trimmed BAM if requested
         if config.get('output_bam'):
             _t_bam = _time.perf_counter()
@@ -1129,8 +1514,8 @@ def run(args):
                 f"trimmed: {bam_stats['trimmed']:,}  "
                 f"bases removed: {bam_stats['bases_trimmed']:,}"
             )
-            pysam.sort('-o', str(config['output_bam']), _unsorted_polya)
-            pysam.index(str(config['output_bam']))
+            _index_reports.append(
+                sort_and_index_bam(_unsorted_polya, config['output_bam'], logger))
             import os as _os_polya
             _os_polya.unlink(_unsorted_polya)
             logger.info(f"  Sorted and indexed {config['output_bam']}")
@@ -1177,8 +1562,7 @@ def run(args):
                 (_unsorted_bam,  config['corrected_bam']),
                 (_unsorted_sbam, config['softclipped_bam']),
             ]:
-                pysam.sort('-o', str(_final), _unsorted)
-                pysam.index(str(_final))
+                _index_reports.append(sort_and_index_bam(_unsorted, _final, logger))
                 _os.unlink(_unsorted)
                 logger.info(f"  Sorted and indexed {_final}")
             logger.info(f"[TIMING] Dual BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
@@ -1233,8 +1617,8 @@ def run(args):
                     f"clipped: {cbam_stats['clipped']:,}  "
                     f"unchanged: {cbam_stats['unchanged']:,}"
                 )
-                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
-                pysam.index(str(config['corrected_bam']))
+                _index_reports.append(
+                    sort_and_index_bam(_unsorted_bam, config['corrected_bam'], logger))
                 import os as _os
                 _os.unlink(_unsorted_bam)
             else:
@@ -1254,8 +1638,8 @@ def run(args):
                     f"clipped: {cbam_stats['clipped']:,}  "
                     f"unchanged: {cbam_stats['unchanged']:,}"
                 )
-                pysam.sort('-o', str(config['corrected_bam']), _unsorted_bam)
-                pysam.index(str(config['corrected_bam']))
+                _index_reports.append(
+                    sort_and_index_bam(_unsorted_bam, config['corrected_bam'], logger))
                 import os as _os
                 _os.unlink(_unsorted_bam)
 
@@ -1277,8 +1661,8 @@ def run(args):
                 f"clipped: {sbam_stats['clipped']:,}  "
                 f"unchanged: {sbam_stats['unchanged']:,}"
             )
-            pysam.sort('-o', str(config['softclipped_bam']), _unsorted_sbam)
-            pysam.index(str(config['softclipped_bam']))
+            _index_reports.append(
+                sort_and_index_bam(_unsorted_sbam, config['softclipped_bam'], logger))
             import os as _os
             _os.unlink(_unsorted_sbam)
             logger.info(f"  Sorted and indexed {config['softclipped_bam']}")
@@ -1390,6 +1774,12 @@ def run(args):
             stats_path = Path(str(config['output_path']).replace('.tsv', '_stats.tsv'))
             if stats_path.exists():
                 provenance.add_output_file(stats_path)
+            for _rep in _index_reports:
+                if _rep['offender_tsv'] and Path(_rep['offender_tsv']).exists():
+                    provenance.add_output_file(
+                        Path(_rep['offender_tsv']),
+                        metadata={'unindexable_records': _rep['offenders']},
+                    )
             provenance.save()
             logger.info(f"Provenance saved to {provenance.output_dir}")
 
@@ -1411,6 +1801,28 @@ def run(args):
         logger.info("RECTIFY completed successfully!")
         logger.info(f"[TIMING] Correction total: {_wall_total_secs:.1f}s")
         logger.info("=" * 70)
+
+        # Unindexable-record summary (ISSUE-015). The run is green — that is the
+        # point — but the output is short by these reads and the console must say
+        # so, on stderr, where a SLURM .err will keep it.
+        _n_unindexable = sum(r['offenders'] for r in _index_reports)
+        _unindexable_tsvs = [r['offender_tsv'] for r in _index_reports if r['offender_tsv']]
+        _unindexed_outputs = [r for r in _index_reports if not r['indexed']]
+        if _n_unindexable or _unindexed_outputs:
+            if _n_unindexable:
+                logger.error(
+                    "%d record(s) could not be indexed and were dropped from the "
+                    "output BAM(s); they are listed in: %s",
+                    _n_unindexable, ', '.join(_unindexable_tsvs),
+                )
+                print(f"WARNING: {_n_unindexable} unindexable record(s) dropped; "
+                      f"see {', '.join(_unindexable_tsvs)}", file=sys.stderr)
+            if _unindexed_outputs:
+                logger.error(
+                    "%d output BAM(s) could not be indexed at all — they are "
+                    "written but have no .bai.", len(_unindexed_outputs),
+                )
+            sys.stderr.flush()
 
         # Silent-discard guard (see the block next to the summary report above).
         # Emitted LAST, after the success banner, so it is the final thing on the
@@ -1452,6 +1864,11 @@ def run(args):
                     _sidecar_outputs['corrected_bam'] = str(config['corrected_bam'])
                 if config.get('corrected_bam') and Path(str(config['corrected_bam']) + '.bai').exists():
                     _sidecar_outputs['corrected_bam_index'] = (str(config['corrected_bam']) + '.bai', True)
+                for _i_rep, _rep in enumerate(_index_reports):
+                    if _rep['offender_tsv'] and Path(_rep['offender_tsv']).exists():
+                        _key = ('unindexable_reads_tsv' if _i_rep == 0
+                                else f'unindexable_reads_tsv_{_i_rep}')
+                        _sidecar_outputs[_key] = str(_rep['offender_tsv'])
 
                 # Determine protocol subtype
                 _subtype = 'drs'
@@ -1475,6 +1892,11 @@ def run(args):
                     stats={
                         'wall_seconds': _wall_total_secs,
                         'n_threads': n_threads,
+                        # ISSUE-015: 0 on every healthy run. Non-zero means the
+                        # BAM is short by that many reads and they are named in
+                        # the unindexable_reads TSV.
+                        'unindexable_records': _n_unindexable,
+                        'unindexed_output_bams': len(_unindexed_outputs),
                     },
                     skip_check_config={
                         'ignore_argv': [
@@ -1971,7 +2393,10 @@ def create_correct_parser(subparsers):
              'junction (canonical GT-AG > annotated > highest split-alignment '
              'score). Improves junction accuracy for reads where the chosen '
              'aligner placed the intron boundary a few bp off from the true '
-             'splice site.'
+             'splice site. REQUIRED to switch Module 2H on: without this (or '
+             '--junction-pool-cache) AND --annotation, junction refinement is '
+             'SKIPPED and N-op boundaries are passed through unchanged — the '
+             'run logs "Module 2H: SKIPPED" and says why.'
     )
     junc_group.add_argument(
         '--junction-hp-pen',
@@ -2030,6 +2455,20 @@ def create_correct_parser(subparsers):
              'from --aligner-bams, and longer candidates from a pre-built pool '
              'are skipped during scoring. For S. cerevisiae, 10000 is a '
              'conservative organism-tuned cap.'
+    )
+    junc_group.add_argument(
+        '--junction-min-observed-support',
+        dest='junction_min_observed_support',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Reads that must cross an OBSERVED (non-annotated) junction, with a '
+             'clean exon anchor on both flanks, before it enters the Module 2H '
+             'candidate pool built from --aligner-bams. Default 1 — a junction '
+             'seen in a single read is a full-weight candidate other reads can '
+             'be moved onto. Annotated junctions are never subject to this. '
+             'Raise to 2 to require corroboration (this is `rectify prescan`\'s '
+             '--junction-min-support for the inline pool).'
     )
     junc_group.add_argument(
         '--junction-max-candidates-per-nop',

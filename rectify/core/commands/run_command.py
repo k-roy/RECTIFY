@@ -1052,6 +1052,21 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--resolver-atac',
+        dest='resolver_atac',
+        action='store_true',
+        default=False,
+        help=(
+            "Also enumerate AT-AC introns in the overhang_resolver, as a PAIRED "
+            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC). Yeast "
+            "splices AT-AC through its major spliceosome (Talkish et al. 2019 "
+            "PLoS Genet 15:e1008249, SUT635); in human, AT-AC is the U12-type "
+            "minor-spliceosome class. Ranked below GT..AG / GC..AG at equal "
+            "score. Default off = the planning/720-measured candidate space."
+        )
+    )
+
+    run_parser.add_argument(
         '--max-intron',
         type=int,
         default=None,
@@ -1063,6 +1078,29 @@ def create_run_parser(subparsers):
             'S. cerevisiae annotation this derives the historical 5000. '
             'Fallback without an annotation: 5000.'
         )
+    )
+
+    run_parser.add_argument(
+        '--junction-pool-max-intron-len', type=int, default=0, metavar='BP',
+        help=(
+            'Maximum intron length (nt) for a non-annotated junction to enter the '
+            "candidate-junction pool used by the align-stage consensus selection's "
+            "5' soft-clip rescue (the pass that produces multialigned.bam, before "
+            'per-aligner correction). Distinct from --max-intron, which bounds the '
+            'aligner panel itself. 0 = no limit (default); 3000 suits S. cerevisiae. '
+            'Mirrors `rectify consensus --junction-pool-max-intron-len`.'
+        ),
+    )
+
+    run_parser.add_argument(
+        '--junction-pool-min-anchor-bp', type=int, default=0, metavar='BP',
+        help=(
+            'Minimum flanking anchor (nt) for a non-annotated junction to enter the '
+            "same candidate-junction pool (see --junction-pool-max-intron-len) used "
+            "by the align-stage consensus selection's 5' soft-clip rescue. "
+            '0 = off (default); 8 is the validated value. Mirrors '
+            '`rectify consensus --junction-pool-min-anchor-bp`.'
+        ),
     )
 
     run_parser.add_argument(
@@ -1194,6 +1232,22 @@ def create_run_parser(subparsers):
              'Use OverhangTable.default() behaviour by passing the path to a pre-calibrated '
              'table, or generate one from a completed reference run with '
              'calibrate_junction_overhang.py.'
+    )
+
+    run_parser.add_argument(
+        '--consensus-bam',
+        dest='consensus_bam',
+        default=None,
+        metavar='PATH',
+        help='Align-stage multi-aligner BAM to read the per-read consensus tags from '
+             '(Xa=best aligner, Xc=confidence, Xn=aligners agreeing, Xt=tied aligners). '
+             'The merge joins them by read name into the consensus_aligner / '
+             'consensus_confidence / consensus_n_agree / consensus_tied columns of '
+             'corrected_reads.tsv, filling only cells that are empty — the per-aligner '
+             'BAMs corrected upstream of the merge carry no such tags, so without this '
+             'the four columns are empty. Defaults to <sample>.multialigned.bam next to '
+             'the per-aligner BAMs; the chosen path is logged. Raw tags only: '
+             'winning_aligner remains the merge\'s own separate verdict.'
     )
 
     run_parser.add_argument(

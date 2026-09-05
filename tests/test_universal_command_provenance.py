@@ -62,10 +62,17 @@ class TestCommandSidecar:
         """Guard against the skip list quietly becoming the escape hatch."""
         assert aus.SKIP_COMMANDS <= {"test", "install-aligners", "verify"}
 
-    def test_never_raises_on_a_bad_output_dir(self):
+    def test_never_raises_on_a_bad_output_dir(self, tmp_path, monkeypatch):
+        # The unwritable output_dir forces the Path.cwd() fallback (see
+        # auto_sidecar.write_command_sidecar) — chdir into tmp_path first so
+        # that fallback write lands in the test's own temp dir instead of
+        # wherever pytest happened to be invoked from (e.g. the repo root).
+        monkeypatch.chdir(tmp_path)
         ns = argparse.Namespace(output_dir="/proc/nonexistent/cannot/create")
         # Must degrade, never propagate — provenance may not break a command.
-        aus.write_command_sidecar("export", ns, "t", 0.0, 0)
+        p = aus.write_command_sidecar("export", ns, "t", 0.0, 0)
+        assert p == tmp_path / "export.command.provenance.json"
+        assert p.exists()
 
     def test_write_is_atomic_no_tmp_left_behind(self, tmp_path):
         ns = argparse.Namespace(output_dir=str(tmp_path))

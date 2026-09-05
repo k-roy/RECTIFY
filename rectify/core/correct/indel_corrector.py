@@ -1834,7 +1834,7 @@ def detect_indel_artifacts(
         search_end = min(read_len, INDEL_SEARCH_WINDOW)
 
     # Extract deletions
-    deletions = extract_deletions(read)
+    deletions = extract_deletions(read, genome)
     for deletion in deletions:
         # Check if deletion is near 3' end
         del_pos = deletion['read_pos']

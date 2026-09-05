@@ -222,6 +222,12 @@ class TestWriteResultsChunk:
             'oc_terminal_base': 'G',
             'five_prime_upstream_trim': 4,
             'reanchor_clip_len': 5,
+            # Multi-aligner consensus tags (Xa/Xc/Xn/Xt) — see
+            # tests/test_consensus_tag_columns.py for the full contract.
+            'consensus_aligner': 'minimap2',
+            'consensus_confidence': 'high',
+            'consensus_n_agree': '3',
+            'consensus_tied': 'deSALT,minimap2',
         }
 
         output = StringIO()
@@ -235,6 +241,10 @@ class TestWriteResultsChunk:
         assert by_col['oc_terminal_base'] == 'G'
         assert by_col['five_prime_upstream_trim'] == '4'
         assert by_col['reanchor_clip_len'] == '5'
+        assert by_col['consensus_aligner'] == 'minimap2'
+        assert by_col['consensus_confidence'] == 'high'
+        assert by_col['consensus_n_agree'] == '3'
+        assert by_col['consensus_tied'] == 'deSALT,minimap2'
 
 
 class TestCheckpointRegionFiles:
