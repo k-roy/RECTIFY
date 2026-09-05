@@ -142,6 +142,7 @@ from .junction_scoring import (
     _N,
     _QUERY_CONSUMING,
     _REF_CONSUMING,
+    _REF_CONSUMING_POS,
     _S,
     _X,
     _build_junction_index,
@@ -379,6 +380,11 @@ def _iter_n_ops(
     leading soft-clips and do NOT count toward q_split.
     S ops after at least one ref-consuming op (trailing in genomic terms) DO
     count toward q_split.
+
+    The genomic cursor advances on ``_REF_CONSUMING_POS`` (M/D/=/X **and N**):
+    an intron consumes reference, so a walker that skipped it reported every
+    N-op after the first short by the summed length of the preceding introns
+    (ISSUE-004).
     """
     q_pos = 0
     r_pos = read.reference_start
@@ -389,8 +395,11 @@ def _iter_n_ops(
             continue  # H never in query_sequence; skip entirely
         if op == _N:
             yield i, r_pos, r_pos + length, q_pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             r_pos += length
+        if op in _REF_CONSUMING:
+            # q_split semantics unchanged: a leading soft-clip is one that
+            # precedes the first ALIGNED op, so N does not open the alignment.
             seen_ref_op = True
         if op in _QUERY_CONSUMING and op != _S:
             q_pos += length
@@ -1259,8 +1268,8 @@ def _apply_junction_replacement(
             new_cigar.insert(n_idx + 1, (_D, d))
 
     # Validate: total ref span must be preserved (sum ref ops + N = constant)
-    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING | {_N})
-    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING | {_N})
+    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING_POS)
+    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING_POS)
     if old_ref_span != new_ref_span:
         logger.debug(
             "refine_junction: ref span mismatch (%d → %d) for read %s; skipping",
@@ -2030,11 +2039,15 @@ def evaluate_hp_pen_values(
 
 
 def _n_op_ref_start(read: pysam.AlignedSegment, target_idx: int) -> int:
-    """Return reference position at start of N-op at cigar index target_idx."""
+    """Return reference position at start of N-op at cigar index target_idx.
+
+    Cursor walker — advances on ``_REF_CONSUMING_POS`` so preceding introns are
+    counted (ISSUE-004).
+    """
     pos = read.reference_start
     for i, (op, length) in enumerate(read.cigartuples):
         if i == target_idx:
             return pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             pos += length
     return pos

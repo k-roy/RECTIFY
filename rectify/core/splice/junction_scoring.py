@@ -135,7 +135,19 @@ _EQ = 7  # sequence match (=)
 _X = 8   # sequence mismatch (X)
 
 _QUERY_CONSUMING: FrozenSet[int] = frozenset([_M, _I, _S, _EQ, _X])
+# EXON-flank op set: reference-consuming ops that belong to an ALIGNED block.
+# N is deliberately EXCLUDED — the flank walkers in
+# junction_refiner._apply_junction_replacement (find/consume the exon ops that
+# abut an N-op) must stop at an intron, never walk through it.
 _REF_CONSUMING:   FrozenSet[int] = frozenset([_M, _D, _EQ, _X])
+# POSITION-tracking op set: every op that advances the genomic cursor per the SAM
+# spec, N included. Any walker that maintains a reference position while stepping
+# through a CIGAR MUST use this set. Using _REF_CONSUMING for a cursor reports
+# every N-op after the first short by the summed length of all preceding introns
+# (the ISSUE-004 defect: 81/81 multi-intron human panel reads wrong, 85 % of the
+# observed junction pool phantom). Yeast hid it — ~95 % of intron-bearing yeast
+# genes have a single intron.
+_REF_CONSUMING_POS: FrozenSet[int] = _REF_CONSUMING | frozenset([_N])
 _MATCH_OPS:       FrozenSet[int] = frozenset([_M, _EQ])  # consume query+ref, no indel
 
 # Minimum clean exon overhang (bp) on BOTH flanks for an observed N-op to seed a
@@ -466,6 +478,14 @@ def collect_junctions_from_bam(
 
     Returns:
         Set of (chrom, intron_start, intron_end) tuples (0-based half-open).
+
+    .. warning::
+       Before the ISSUE-004 fix this walker advanced the reference cursor with
+       ``_REF_CONSUMING`` (no N), so on a multi-intron read every junction after
+       the first was reported short by the summed length of the preceding
+       introns. **Any ``rectify prescan`` junction-pool pickle written before
+       that fix is contaminated with those phantom coordinates and must be
+       rebuilt** — it cannot be repaired in place.
     """
     junctions: Set[Tuple[str, int, int]] = set()
     try:
@@ -486,7 +506,7 @@ def collect_junctions_from_bam(
                     if op == _N:
                         if max_junction_size is None or length <= max_junction_size:
                             junctions.add((chrom, pos, pos + length))
-                    if op in _REF_CONSUMING:
+                    if op in _REF_CONSUMING_POS:
                         pos += length
     except Exception as exc:
         logger.warning("collect_junctions_from_bam(%s): %s", bam_path, exc)
@@ -536,7 +556,7 @@ def _collect_junction_counts_core(
                         if _junction_anchor_ok(
                                 cigar, idx, qpos, query_seq, min_anchor_overhang):
                             anchor[j] += 1
-                    if op in _REF_CONSUMING:
+                    if op in _REF_CONSUMING_POS:
                         pos += length
                     if op in _QUERY_CONSUMING:
                         qpos += length
