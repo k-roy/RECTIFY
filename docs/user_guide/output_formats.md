@@ -49,12 +49,17 @@ The full 43-column header is defined by `CORRECTION_TSV_HEADER`
 aligner selected per read.
 
 !!! note "`consensus_*` vs `winning_aligner`"
-    The four `consensus_*` columns are read straight off the input BAM's
-    `Xa`/`Xc`/`Xn`/`Xt` tags, which the **alignment** stage writes onto
-    `<prefix>.multialigned.bam`. They are empty when `correct` runs on a
-    single-aligner BAM — including the per-aligner correction that precedes
-    `merge_corrected_tsvs` — and the merge carries them through untouched.
-    `winning_aligner` is the separate, later verdict of that merge.
+    The four `consensus_*` columns are the input BAM's `Xa`/`Xc`/`Xn`/`Xt`
+    tags, which the **alignment** stage writes onto
+    `<sample>.multialigned.bam`. `rectify correct` copies them straight
+    through when it reads a BAM that carries them. In the default order it
+    does not: it corrects each per-aligner BAM, and those carry no tags — so
+    the **merge** joins the tags back in by read name from
+    `<sample>.multialigned.bam`, which it finds next to the per-aligner BAMs
+    (override with `--consensus-bam`; the path used is logged). Only empty
+    cells are filled, and the columns stay empty when no such BAM exists.
+    `winning_aligner` is the separate, later verdict of the merge itself —
+    these columns are never derived from it.
 
 !!! note "Coordinate convention"
     All positions are **0-based, half-open** (BED/pysam convention). See the [Coordinate System](../coordinate_system.md) page for strand-specific definitions.

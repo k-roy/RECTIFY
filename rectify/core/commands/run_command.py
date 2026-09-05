@@ -910,6 +910,22 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--consensus-bam',
+        dest='consensus_bam',
+        default=None,
+        metavar='PATH',
+        help='Align-stage multi-aligner BAM to read the per-read consensus tags from '
+             '(Xa=best aligner, Xc=confidence, Xn=aligners agreeing, Xt=tied aligners). '
+             'The merge joins them by read name into the consensus_aligner / '
+             'consensus_confidence / consensus_n_agree / consensus_tied columns of '
+             'corrected_reads.tsv, filling only cells that are empty — the per-aligner '
+             'BAMs corrected upstream of the merge carry no such tags, so without this '
+             'the four columns are empty. Defaults to <sample>.multialigned.bam next to '
+             'the per-aligner BAMs; the chosen path is logged. Raw tags only: '
+             'winning_aligner remains the merge\'s own separate verdict.'
+    )
+
+    run_parser.add_argument(
         '--write-softclip-bam',
         action='store_true',
         default=False,
