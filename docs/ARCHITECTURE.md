@@ -62,9 +62,10 @@ search) plus an *evidence arbiter* (a proposal is accepted only when it strictly
 improves the HP-aware edit distance or wins unambiguously within an explicit
 false-discovery budget), with **refusal as a first-class outcome** — a
 low-information overhang is left untouched and counted, never force-placed.
-Station A (the overhang resolver) acts per terminal soft clip at align time;
-Station B (consensus triage) acts per read after correction; Station C (the
-pool gate) acts per junction over the whole read pool. See
+Station A (the overhang resolver) re-arbitrates junction placement and
+terminal-clip overhangs at align time; Station B (consensus triage) acts per
+read after correction; Station C (the pool gate) acts per junction over the
+whole read pool. See
 [The Re-aligner: Stations A-C](#the-re-aligner-stations-a-c).
 
 ---
@@ -101,9 +102,12 @@ Dorado-aligned BAM (with pt:i: tags)
 [Step 1: Alignment]        multi-aligner rectification pipeline
     │                      Long-read panel: minimap2 + uLTRA + deSALT
     │                      + overhang resolver (Station A): a native post-pass on the
-    │                        finished minimap2 arm that re-places terminal soft-clipped
-    │                        overhangs across splice junctions, then SUBSTITUTES the
-    │                        resolved BAM for the raw minimap2 arm in the panel.
+    │                        finished minimap2 arm. By volume mainly JUNCTION
+    │                        RE-ARBITRATION (re-scores the aligner's own junction calls
+    │                        anywhere in the CIGAR: merge/shift/D-op-snap/mismatch-rescue
+    │                        moves, tagged XB) plus terminal soft-clip placement across
+    │                        splice junctions (tagged XJ), then SUBSTITUTES the resolved
+    │                        BAM for the raw minimap2 arm in the panel.
     │                      (junction-aligner default = [uLTRA, deSALT, overhang_resolver];
     │                       disable with --no-junction-aligners. mapPacBio / gapmm2 /
     │                       GMAP / winnowmap2 / minisplice remain opt-in arms;
@@ -347,36 +351,101 @@ three different granularities. All three share **one contract**:
 
 | Station | Granularity | Runs at | Module | CLI |
 |---|---|---|---|---|
-| **A — overhang resolver** | per terminal soft clip | align stage (on the minimap2 arm) | `core/align/overhang_resolver.py` | inside `rectify align` (default junction aligner) |
+| **A — overhang resolver** | per junction (incl. interior) + per terminal clip | align stage (on the minimap2 arm) | `core/align/overhang_resolver.py` | inside `rectify align` (default junction aligner) |
 | **B — consensus triage** | per read | after correction + consensus | `core/consensus/triage.py` | `rectify triage` / `run-all --triage` |
 | **C — pool gate** | per junction | after Station B (or on the rectified BAM) | `core/consensus/station_c.py` | `rectify pool-gate` / on by default in `run-all` |
 
 ### Station A — the overhang resolver
 
-A native (no external binary) post-pass that consumes the finished, name-sorted
-minimap2 BAM, re-places terminal soft-clipped overhangs across splice
-junctions, and emits a BAM in the same order — so it drops into the panel as a
-substitute for the raw minimap2 arm (`_collect_per_aligner_bams` swaps the
-resolved BAM into the minimap2 slot so per-aligner `correct` runs on the
-resolved arm, not the raw one). Accepted placements carry
+A native (no external binary) post-pass that consumes the finished,
+name-sorted minimap2 BAM and emits a BAM in the same order — so it drops
+into the panel as a substitute for the raw minimap2 arm
+(`_collect_per_aligner_bams` swaps the resolved BAM into the minimap2 slot
+so per-aligner `correct` runs on the resolved arm, not the raw one). It does
+two jobs that share most of the same underlying machinery (detailed below),
+and by volume the first is the larger one.
+
+**Junction re-arbitration** (v2, `_rearbitrate_read`, planning/644b/644c)
+re-scores the aligner's *own* junction assignment anywhere in the CIGAR,
+including interior junctions, against the same splice-site index used for
+clip placement. A rewritten read carries one of four move families as its
+`XB` tag value:
+
+- `dmerge` — a boundary deletion abutting an intron is merged into it when
+  the merged junction is canonical-in-class (the SRC1 case: minimap2
+  encoded the GC-donor evidence as a `D` op *and* asserted the wrong `GT`
+  boundary as `N` in the same CIGAR; merging is alignment-identical and
+  strictly more parsimonious).
+- `shift:` — a donor/acceptor boundary moves to a better-scoring nearby index
+  site, tagged
+  `shift:<old_start>-<old_end>><new_start>-<new_end>:<ed_before>><ed_after>`,
+  plus a trailing `:g` when the win was admitted only via the
+  canonical-donor grammar tiebreak (counted separately as
+  `arb_grammar_tiebreak`). Three geometries share this one tag:
+  right-boundary (intron-length change, last `N` op only), left-boundary
+  (query swapped between the flanking `M` ops, any `N` op), and
+  diagonal/pseudo-slide (both boundaries move together, intron length
+  fixed, last `N` op only).
+- `dop:` — a stand-alone intron-length deletion (flanked by `M` on both
+  sides, not already abutting an `N` — that is `dmerge`'s territory) is
+  snapped onto an index-confirmed splice site, tagged
+  `dop:<old_start>-<old_end>><new_start>-<new_end>`: a missed junction the
+  aligner had expressed as a plain deletion.
+- `mm:` / `mmL:` — a linear (unspliced) alignment whose terminal `M` block
+  carries a mismatch-density spike is re-spliced at the true
+  donor/acceptor found where the mismatches begin, tagged
+  `mm:<new_start>-<new_end>:<ed_before>><ed_after>` (or `mmL:` with the same
+  fields); `mm` is the 3' (right-side) case, `mmL` its 5' mirror.
+
+Measured (Chanfreau planning/720, 897k cDNA reads — the precise count
+behind the ~900k admission figure below): boundary-deletion merges alone
+(`arb_dmerge`) rewrote 24,686 junctions against 2,491 `XJ` clip
+placements — roughly 10× the clip volume from this one family alone.
+
+**Terminal-clip placement** (v1) re-places a terminal soft-clipped overhang
+across a splice junction. This was the resolver's original mission; the
+idea — post-processing a minimap2 alignment to recover terminal splice
+overhangs — was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2).
+Accepted placements carry
 `XJ:Z:<intron_start>-<intron_end>:<ed>:<side>`.
 
-The idea — post-processing a minimap2 alignment to recover terminal splice
-overhangs — was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2).
-The resolver rebuilds it around several deliberate improvements:
+**Tags.** Both `XJ` and `XB` are written only on a read the resolver actually
+rewrites — presence means the record was changed, absence means passthrough;
+neither tag carries a `0`/`1` "touched but unchanged" sentinel. All five
+`XB`-setting call sites overwrite unconditionally (no `has_tag` guard) and
+run in a fixed order (`dmerge` → `shift` → `dop` → `mm` → `mmL`) with no
+early return between them, so when more than one family fires on the same
+read in one pass, `XB` holds only the
+**last** family applied — the `arb_*` counters in
+`<sample>.overhang_resolver.stats.json` (`arb_dmerge`, `arb_shifted`,
+`arb_dop_spliced`, `arb_mm_spliced`, …) are the complete per-run record, not
+the per-read tag. `XB` is also used, unrelated, by the ONT cDNA pipeline for
+strand-split cluster counts (`XB:Z:<n_top>/<n_bot>`, documented above) — a
+1-vs-0 split there can literally read `XB:Z:1/0`, which is easy to mistake
+for a boolean; it is not related to the resolver's `XB`.
 
-- **Information-bounded search.** Each clip is assessed by the shared
-  informativeness gate (`core/splice/overhang_informativeness.py`): its
-  effective information content `I_eff` sets the search window
-  `W_max = alpha * 2**I_eff`. The false-discovery budget is explicit — a
-  12-base A-rich clip gets a tiny window, not a genome-scale one.
-- **Refusal.** A refused clip (poly(A), repeat expansion, low information) is
-  emitted unchanged; no candidate is ever evaluated for it, and the refusal is
-  counted.
+Clip placement rebuilds gapmm2's idea around the deliberate improvements
+below. The Case A (shift) and Case B2/B3 (mismatch-rescue) re-arbitration
+moves reuse most of the same machinery; each bullet notes where the Case A0
+(D-merge) and Case B1 (D-op snap) moves differ, since those two are simpler
+local checks:
+
+- **Information-bounded search.** Each clip (or Case A/B2/B3 junction window)
+  is assessed by the shared informativeness gate
+  (`core/splice/overhang_informativeness.py`): its effective information
+  content `I_eff` sets the search window `W_max = alpha * 2**I_eff`. The
+  false-discovery budget is explicit — a 12-base A-rich clip gets a tiny
+  window, not a genome-scale one.
+- **Refusal.** A refused clip (or Case A/B2/B3 junction window — poly(A),
+  repeat expansion, low information) is left unchanged; no candidate is ever
+  evaluated for it, and the refusal is counted (`arb_refused` for
+  re-arbitration).
 - **Indexed candidates.** Candidate splice sites come from a precomputed
   `SpliceSiteIndex` (`core/splice/splice_site_index.py`) — a binary-search
-  range query bounded by `W_max`, never a scan. Acceptor classes are
-  configurable: the default is canonical GT/GC donors + AG acceptors, and
+  range query bounded by `W_max`, never a scan (Case B1's D-op snap also
+  queries this index, but within its own fixed `arb_dop_slop` window rather
+  than `W_max`). Acceptor classes are configurable: the default is canonical
+  GT/GC donors + AG acceptors, and
   `--resolver-acceptor-classes prp18` opts in the alternative-3'SS classes
   measured in Roy et al. 2023 NAR (BG: TG/CG/GG + non-G: AT) for
   alternative-splicing missions (~×4.8 acceptor candidate density, hence
@@ -385,12 +454,18 @@ The resolver rebuilds it around several deliberate improvements:
   through its major spliceosome (Talkish et al. 2019 PLoS Genet, SUT635) and
   in human it is the U12-type minor-spliceosome class. AT-AC placements rank
   below GT..AG and GC..AG at equal score.
-- **HP-aware scoring.** Each candidate placement is scored with the same
-  chemistry-calibrated homopolymer-aware edit distance used everywhere else in
-  RECTIFY, with a strict `>`-only early-exit cutoff.
-- **Unambiguous-winner acceptance.** A placement is accepted only when
-  `ed <= max_edit_frac * L` **and** every competitor within `min_margin` is the
-  *same* junction after ambiguity canonicalization — never a fixed ±k window.
+- **HP-aware scoring.** Every candidate placement or rewrite — clip, Case A
+  shift, Case B1 D-op snap, Case B2/B3 mismatch rescue — is scored with the
+  same chemistry-calibrated homopolymer-aware edit distance used everywhere
+  else in RECTIFY, with a strict `>`-only early-exit cutoff. Case A0's
+  D-merge is the one exception: it is a structural canonical-motif test with
+  no edit-distance scoring at all.
+- **Unambiguous-winner acceptance.** A clip placement, Case A shift, or Case
+  B2/B3 rewrite is accepted only when `ed <= max_edit_frac * L` **and** every
+  competitor within `min_margin` is the *same* junction after ambiguity
+  canonicalization — never a fixed ±k window. Case B1's D-op snap uses a
+  simpler rule (best candidate no worse than the current placement, within
+  `max_edit_frac`) with no runner-up ambiguity check.
 - **Annotation-derived `max_intron`.** The search bound is derived as 2× the
   longest annotated intron (capped to [1000, 500000]); yeast derives the
   historical 5000.
