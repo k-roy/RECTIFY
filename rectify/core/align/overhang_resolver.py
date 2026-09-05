@@ -117,7 +117,17 @@ junction-proximal ``max_clip_match`` bases, the remainder stays soft-clipped.
 
 The resolver consumes the (name-sorted) minimap2 arm BAM and emits a BAM in
 the same order, so it drops into the panel exactly where mapPacBio's arm
-did. Accepted placements carry ``XJ:Z:<intron_start>-<intron_end>:<ed>:<side>``;
+did. Accepted CLIP placements carry
+``XJ:Z:<intron_start>-<intron_end>:<ed>:<side>``, and each re-arbitration move
+carries ``XB:Z:`` naming its family: ``dmerge`` (a boundary D absorbed into the
+abutting N, Case A0), ``shift:<d>-<e>><d'>-<e'>:<ed>><ed'>`` for a Case A
+boundary/diagonal shift — with a trailing ``:g`` when the canonical-grammar
+tiebreak, not the margin, admitted it — ``dop:<start>-<end>><d>-<e>`` for a
+Case B1 intron-length-D -> N snap, and ``mm:<d>-<e>:<ed>><ed'>`` /
+``mmL:<d>-<e>:<ed>><ed'>`` for the B2 (right) and B3 (left) mismatch-flagged
+linear rescues. **Both tags are written ONLY on records the resolver actually
+changed — there is no sentinel value on an untouched read**, so a census must
+treat "tag absent" as "not rewritten" and never as "rewritten with no move".
 MD/NM are dropped on rewritten records (stale after CIGAR surgery), and a
 calmd '='-compressed SEQ is decoded to real letters on any rewrite (a '=' only
 means anything under the alignment it was written for — see
@@ -139,6 +149,7 @@ alignment falls back to it and is counted as ``emit_fallback_flat``.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -612,7 +623,8 @@ def _block_cigar(
     chrom_seq: str,
     intron_start: int,
     intron_end: int,
-    max_indel: int = _EMIT_MAX_INDEL,
+    max_edit_frac: float = 0.0,
+    min_allowance: int = _EMIT_MAX_INDEL,
 ) -> Optional[Tuple[List[Tuple[int, int]], int]]:
     """Real M/I/D CIGAR for the exon block a placement puts across the junction.
 
@@ -637,21 +649,38 @@ def _block_cigar(
     edit distance are all untouched; the only thing that changes is how the
     already-accepted block is spelled.
 
+    The allowance scales with the block. A flat 5 (the Cat3-rescue constant) is
+    right for a 30-bp exon head and wrong for a 200-bp ONT one: acceptance has
+    already admitted up to ``max_edit_frac * (m + lead)`` edits, so a fixed 5
+    would refuse to SPELL most of the blocks this function exists for (a 2-3%
+    indel rate over 150-224 bp is 3-7 events before any clustering).
+    ``min_allowance`` keeps short blocks tight, and the reference window grows
+    with the allowance so the total-indel cap stays the operative test rather
+    than the window silently doing the refusing.
+
     Degeneracy (fall back to the flat M rather than write something worse):
-      * total indel above ``max_indel`` — the window allows no more anyway,
-        and a placement needing that much was mis-scored;
-      * a D touching the junction — that D silently redefines the intron
-        boundary the caller is about to write as ``N``. An I touching the
-        junction is NOT refused: it adds bases without moving the junction.
+      * total indel above the allowance — a placement needing that much was
+        mis-scored, and the window will not host it anyway;
+      * ANY gap touching the junction, I or D alike. At the ANCHORED end of a
+        semi-global alignment a gap is not "this exon has an indel", it is the
+        aligner saying the block's first bases do not belong at
+        ``intron_end`` / ``intron_start`` — the register-shift shape (P06/P07).
+        Writing ``N…I`` or ``N…D`` bakes that wrong boundary into the record,
+        and it also costs the one move that could repair it: the arbiter's
+        Case A shift families require M ops on both flanks (``flank_m``), and
+        the CIGAR shape persists in the output BAM, so the junction would be
+        DURABLY unarbitrable on every later pass. Falling back reproduces the
+        pre-existing flat M (no regression) and keeps the junction shiftable.
     """
     m = len(qblock)
     if m == 0:
         return None
+    allowance = max(min_allowance, int(math.ceil(max_edit_frac * m)))
     if side == _RIGHT:
         region_start = intron_end
-        region_end = min(len(chrom_seq), intron_end + m + max_indel)
+        region_end = min(len(chrom_seq), intron_end + m + allowance)
     else:
-        region_start = max(0, intron_start - m - max_indel)
+        region_start = max(0, intron_start - m - allowance)
         region_end = intron_start
     ref_region = chrom_seq[region_start:region_end]
     if len(ref_region) < m:
@@ -677,10 +706,10 @@ def _block_cigar(
         return None
     if sum(ln for op, ln in ops if op in (0, 1)) != m:
         return None          # defensive: the aligner must consume all of qblock
-    if sum(ln for op, ln in ops if op in (1, 2)) > max_indel:
+    if sum(ln for op, ln in ops if op in (1, 2)) > allowance:
         return None
     junction_op = ops[0][0] if side == _RIGHT else ops[-1][0]
-    if junction_op == 2:
+    if junction_op in (1, 2):
         return None
     return ops, block_ref_start
 
@@ -693,6 +722,7 @@ def _rewrite_cigar(
     clip_used_len: int,
     chrom_seq: Optional[str] = None,
     stats: Optional[ResolverStats] = None,
+    cfg: Optional[ResolverConfig] = None,
 ) -> None:
     """Apply an accepted placement to ``read`` in place (CIGAR + position).
 
@@ -719,7 +749,9 @@ def _rewrite_cigar(
         qblock = (placement.qseg[placement.lead:] if side == _RIGHT
                   else placement.qseg[:placement.m])
         got = _block_cigar(side, qblock, chrom_seq,
-                           placement.intron_start, placement.intron_end)
+                           placement.intron_start, placement.intron_end,
+                           max_edit_frac=(cfg.max_edit_frac if cfg is not None
+                                          else 0.0))
         if got is None:
             if stats is not None:
                 _bump(stats, 'emit_fallback_flat')
@@ -1504,7 +1536,7 @@ def resolve_read(
         )
         if placement is not None:
             _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len,
-                           chrom_seq=chrom_seq, stats=stats)
+                           chrom_seq=chrom_seq, stats=stats, cfg=cfg)
             stats.resolved += 1
             stats.resolved_left += 1
             if placement.k_inside:
@@ -1532,7 +1564,7 @@ def resolve_read(
         )
         if placement is not None:
             _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len,
-                           chrom_seq=chrom_seq, stats=stats)
+                           chrom_seq=chrom_seq, stats=stats, cfg=cfg)
             stats.resolved += 1
             stats.resolved_right += 1
             if placement.k_inside:

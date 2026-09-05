@@ -401,18 +401,68 @@ class TestFallback:
         assert r.cigartuples == [(0, 60), (3, P_ACC - P_DON), (0, 29)]
         assert junction_of(r) == (P_DON, P_ACC)
 
-    def test_indel_budget_exceeded_falls_back(self, index):
-        # 3 bp deleted at 15 and 3 bp inserted at 35: 6 bp of indel, above the
-        # 5-bp emission allowance, so the block is not trustworthy enough to
-        # spell out even though scoring accepted the placement.
-        clip = GENOME_SEQ[P_ACC:P_ACC + 60]
-        q = clip[:15] + clip[18:35] + 'TTT' + clip[35:]
-        query = GENOME_SEQ[P_DON - 60:P_DON] + q
-        r = _read('budget', query, [(0, 60), (4, len(q))], P_DON - 60)
+    def test_junction_adjacent_insertion_falls_back_and_stays_shiftable(self, index):
+        # An extra base AT the exon start. A gap at the ANCHORED end is the
+        # aligner saying the block's first bases do not belong at intron_end —
+        # a register shift, not an exon insertion — so `N 1I 30M` would bake in
+        # a boundary the read does not support. Worse, it would be permanent:
+        # the arbiter's Case A shift families need M ops on BOTH flanks
+        # (`flank_m`), and the CIGAR shape persists in the output BAM, so the
+        # junction could never be repaired on any later pass. Falling back
+        # reproduces the old flat M and leaves the junction arbitrable.
+        clip = GENOME_SEQ[P_ACC:P_ACC + 30]
+        query = GENOME_SEQ[P_DON - 60:P_DON] + 'T' + clip
+        r = _read('adj_ins', query, [(0, 60), (4, 31)], P_DON - 60)
         changed, stats = _resolve(r, index)
         assert changed, stats.as_dict()
         assert stats.extra.get('emit_fallback_flat') == 1
-        assert block_ops(r, _RIGHT) == [(0, len(q))]
+        assert r.cigartuples == [(0, 60), (3, P_ACC - P_DON), (0, 31)]
+        ct = list(r.cigartuples)
+        i = next(j for j, (op, _) in enumerate(ct) if op == 3)
+        assert ct[i - 1][0] in (0, 7, 8) and ct[i + 1][0] in (0, 7, 8), (
+            'the junction lost its M flanks and is no longer arbitrable: '
+            f'{ct}')
+
+    def test_scaled_allowance_admits_what_a_flat_five_refused(self, index):
+        # 3 bp deleted at 15 and 3 bp inserted at 35 of a 60-bp block: 6 bp of
+        # indel. The old flat _EMIT_MAX_INDEL=5 refused this; the block-scaled
+        # allowance (ceil(max_edit_frac * m) = 12 here) spells it out, which is
+        # the point — acceptance had already admitted up to that many edits.
+        clip = GENOME_SEQ[P_ACC:P_ACC + 60]
+        q = clip[:15] + clip[18:35] + 'TTT' + clip[35:]
+        query = GENOME_SEQ[P_DON - 60:P_DON] + q
+        r = _read('scaled', query, [(0, 60), (4, len(q))], P_DON - 60)
+        changed, stats = _resolve(r, index)
+        assert changed, stats.as_dict()
+        assert stats.extra.get('emit_fallback_flat', 0) == 0
+        ops = block_ops(r, _RIGHT)
+        assert any(op in (1, 2) for op, _ in ops), ops
+        # ...and the flat-5 allowance would still have refused it
+        assert _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC,
+                            max_edit_frac=0.0) is None
+
+    def test_long_block_with_scattered_indels_emits_gapped(self, index):
+        # The case the scaled allowance exists for: a 200-bp ONT block at a
+        # few percent indel. Eight scattered 1-bp events are far above a flat
+        # 5 and far below ceil(0.2 * 200) = 40.
+        head = list(GENOME_SEQ[P_ACC:P_ACC + 200])
+        for pos in (170, 140, 110, 80):          # descending: indices stay valid
+            del head[pos]
+        for pos in (30, 60, 95, 125):
+            head.insert(pos, 'T')
+        q = ''.join(head)
+        assert len(q) == 200
+        query = GENOME_SEQ[P_DON - 60:P_DON] + q
+        r = _read('long_gapped', query, [(0, 60), (4, 200)], P_DON - 60)
+        changed, stats = _resolve(r, index)
+        assert changed, stats.as_dict()
+        assert stats.extra.get('emit_fallback_flat', 0) == 0
+        assert junction_of(r) == (P_DON, P_ACC)
+        ops = block_ops(r, _RIGHT)
+        assert sum(ln for op, ln in ops if op in (1, 2)) == 8, ops
+        assert sum(ln for op, ln in ops if op in (0, 1)) == 200
+        m, t = block_identity(r, _RIGHT, GENOME_SEQ)
+        assert m / t >= 0.95, f'emitted block identity {m}/{t}'
 
     def test_clean_reads_never_count_a_fallback(self, index):
         query = GENOME_SEQ[P_DON - 30:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 60]
@@ -424,6 +474,31 @@ class TestFallback:
 # ---------------------------------------------------------------------------
 # Unit-level pins on the emitter itself.
 # ---------------------------------------------------------------------------
+
+class TestTagContract:
+    """The module docstring promises XJ/XB are written ONLY on records the
+    resolver changed, with no sentinel on an untouched read — a census that
+    read "tag absent" as "rewritten with no move" would be counting wrong."""
+
+    def test_untouched_read_carries_neither_tag(self, index):
+        r = _read('linear', GENOME_SEQ[100:220], [(0, 120)], 100)
+        changed, _ = _resolve(r, index)
+        assert not changed
+        assert not r.has_tag('XJ') and not r.has_tag('XB')
+
+    def test_refused_clip_carries_neither_tag(self, index):
+        query = 'A' * 30 + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('polya', query, [(4, 30), (0, 60)], P_ACC)
+        changed, _ = _resolve(r, index)
+        assert not changed
+        assert not r.has_tag('XJ') and not r.has_tag('XB')
+
+    def test_resolved_clip_carries_xj(self, index):
+        query = GENOME_SEQ[P_DON - 30:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('resolved', query, [(4, 30), (0, 60)], P_ACC)
+        assert _resolve(r, index)[0]
+        assert r.get_tag('XJ') == f'{P_DON}-{P_ACC}:0.0:{_LEFT}'
+
 
 class TestBlockCigarUnit:
     def test_gap_free_block_is_a_single_m(self):
@@ -443,21 +518,44 @@ class TestBlockCigarUnit:
         assert rs + span == P_DON
         assert sum(ln for op, ln in ops if op in (0, 1)) == len(q)
 
-    def test_junction_adjacent_deletion_is_refused(self):
-        # RIGHT: a D at the block's first position moves the acceptor
-        q = GENOME_SEQ[P_ACC + 1:P_ACC + 41]
-        assert _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC) is None
+    def test_any_junction_adjacent_gap_is_refused(self):
+        # A gap at the ANCHORED end is a register shift, not an exon indel:
+        # refuse both ops, both sides. (All four shapes are reachable — a
+        # 4,000-sample random-mutation sweep of 20-45 bp blocks produced
+        # RIGHT leading I/D in ~6% of blocks and LEFT trailing I/D in ~0.2%.)
+        cases = [
+            (_RIGHT, GENOME_SEQ[P_ACC + 1:P_ACC + 41]),      # leading D
+            (_RIGHT, 'T' + GENOME_SEQ[P_ACC:P_ACC + 40]),    # leading I
+            (_LEFT, GENOME_SEQ[P_DON - 40:P_DON - 3]),       # trailing D
+        ]
+        for side, q in cases:
+            assert _block_cigar(side, q, GENOME_SEQ, P_DON, P_ACC) is None, (
+                f'{side} block {q[:8]}... should have fallen back')
 
-    def test_junction_adjacent_insertion_is_allowed(self):
-        # ...but an I at the same position does NOT move the junction, so it
-        # is emitted rather than thrown away (that asymmetry is the point).
-        q = 'T' + GENOME_SEQ[P_ACC:P_ACC + 40]
+    def test_interior_gaps_are_still_emitted(self):
+        # the control for the rule above: one base further in and it is fine
+        q = GENOME_SEQ[P_ACC:P_ACC + 1] + GENOME_SEQ[P_ACC + 2:P_ACC + 41]
         ops, rs = _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC)
-        assert ops == [(1, 1), (0, 40)] and rs == P_ACC
+        assert ops[0][0] == 0 and any(op == 2 for op, _ in ops) and rs == P_ACC
 
-    def test_oversized_indel_is_refused(self):
-        q = GENOME_SEQ[P_ACC:P_ACC + 20] + GENOME_SEQ[P_ACC + 28:P_ACC + 48]
-        assert _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC) is None
+    def test_allowance_scales_with_the_block(self):
+        # a 60-bp block with a 10-bp deletion: refused at a flat 5, emitted
+        # once the allowance follows max_edit_frac (ceil(0.2*60) = 12)
+        q = GENOME_SEQ[P_ACC:P_ACC + 30] + GENOME_SEQ[P_ACC + 40:P_ACC + 70]
+        assert _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC,
+                            max_edit_frac=0.0) is None
+        ops, _ = _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC,
+                              max_edit_frac=0.2)
+        assert sum(ln for op, ln in ops if op in (1, 2)) == 10
+
+    def test_one_huge_deletion_still_falls_back(self):
+        # 100-bp block, single 40-bp D: allowance is ceil(0.2*100) = 20, and
+        # the reference window (m + allowance) cannot host the gap either —
+        # this is the "wildly wrong placement" the bound exists for.
+        q = GENOME_SEQ[P_ACC:P_ACC + 50] + GENOME_SEQ[P_ACC + 90:P_ACC + 140]
+        assert len(q) == 100
+        assert _block_cigar(_RIGHT, q, GENOME_SEQ, P_DON, P_ACC,
+                            max_edit_frac=0.2) is None
 
     def test_empty_and_out_of_range_blocks_are_refused(self):
         assert _block_cigar(_RIGHT, '', GENOME_SEQ, P_DON, P_ACC) is None
