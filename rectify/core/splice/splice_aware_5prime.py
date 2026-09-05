@@ -753,6 +753,67 @@ def _get_n_op_intervals(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
     return intervals
 
 
+def _intronic_bases_favour_intron(
+    read: pysam.AlignedSegment,
+    genome_seq: str,
+    intron_start: int,
+    intron_end: int,
+    align_5prime: int,
+    strand: str,
+    strict: bool = False,
+) -> Optional[bool]:
+    """Does the read's intron-mapped 5' run look like unspliced pre-mRNA?
+
+    Compares the query bases that map inside ``[intron_start, intron_end)``
+    against the intron reference and against the exon-1 reference with the
+    HP-aware edit distance. For a spliced mRNA mis-aligned into the intron the
+    exon-1 sequence is the better match and the read should be snapped; for
+    unspliced pre-mRNA the intron sequence is, and snapping would be wrong.
+
+    Returns ``True`` (unspliced — do not snap), ``False`` (spliced — snap is
+    supported) or ``None`` when no comparison is possible (no intronic query
+    bases, or a reference window that runs off the contig).
+
+    ``strict`` controls the tie:
+
+    * ``False`` (Case 4's long-standing rule) — a tie favours unspliced. Case 4
+      is a purely POSITIONAL snap with no sequence evidence of its own, so when
+      the bases decide nothing the conservative reading is to leave the read in
+      the intron.
+    * ``True`` (Cases 1/2) — only a STRICTLY better intron match vetoes. Those
+      reads arrive with positive evidence: a scored exon-1 sequence match that
+      already won the canonical-donor and ambiguity-window tie-breakers. A tie
+      here means the intronic bases decide nothing, and discarding the scored
+      match on a non-decision loses real rescues (it flips the bundled
+      `test_minus_ac_donor_canonical` fixture onto a non-canonical donor).
+
+    Extracted so the Case-4 snap and the Cases-1/2 sequence rescue share ONE
+    implementation: Cases 1/2 returned before Case 4 ran, so this test was
+    unreachable for them (ISSUE-006).
+    """
+    clip_bd = intron_start if strand == '-' else intron_end
+    seq = _get_intronic_query_bases(read, clip_bd, strand)
+    if not seq:
+        return None
+    n = len(seq)
+    if strand == '-':
+        # Intronic query bases span [intron_start, align_5prime]; anchor at
+        # intron_start. Exon-1 reference is just past the 5'SS boundary.
+        intron_ref = genome_seq[intron_start:intron_start + n].upper()
+        exon_ref = genome_seq[intron_end:intron_end + n].upper()
+    else:
+        # Plus strand: intronic bases span [align_5prime, intron_end); exon-1
+        # reference is just before the 5'SS boundary.
+        intron_ref = genome_seq[align_5prime:align_5prime + n].upper()
+        exon_ref = genome_seq[max(0, intron_start - n):intron_start].upper()
+    if len(intron_ref) != n or len(exon_ref) != n:
+        return None
+    seq_u = seq.upper()
+    ed_intron = _hp_edit_distance(seq_u, intron_ref)
+    ed_exon = _hp_edit_distance(seq_u, exon_ref)
+    return ed_intron < ed_exon if strict else ed_intron <= ed_exon
+
+
 def _edit_distance(s1: str, s2: str) -> int:
     """Simple edit distance (Levenshtein) for short sequences."""
     n, m = len(s1), len(s2)
@@ -2206,6 +2267,25 @@ def _rescue_3ss_truncation_body(
                         best_junction = (j_chrom, intron_start, _eff_intron_end)
                         best_five_prime_corrected = _eff_intron_end
 
+        # --- Case-4 unspliced guard, made reachable here (ISSUE-006) ---------
+        # Cases 1/2 return below without ever reaching the Case-4 pre-mRNA test
+        # at the bottom of this function (:2277), so a read whose 5' end lies
+        # INSIDE the rescued intron used to be spliced by fiat even when its
+        # intronic bases match the INTRON better than exon 1. Apply the identical
+        # test here; on failure drop the sequence rescue and fall through to
+        # Case 4.5 / 4 / 3, which re-apply it themselves.
+        #
+        # Vacuous unless the 5' edge is inside the rescued intron and there are
+        # intronic query bases to compare — i.e. exactly the population Fix 1b
+        # below reroutes.
+        if best_junction is not None:
+            _gj_chrom, _gj_start, _gj_end = best_junction
+            if _gj_start <= align_5prime < _gj_end:
+                if _intronic_bases_favour_intron(
+                        read, genome_seq, _gj_start, _gj_end, align_5prime,
+                        strand, strict=True) is True:
+                    best_junction = None
+
         if best_junction is not None:
             # Compute local alignment CIGAR for the exon portion so that
             # bam_writer can emit M/I/D ops instead of a flat nM block.
@@ -2221,17 +2301,38 @@ def _rescue_3ss_truncation_body(
             _j_chrom, _intron_start, _intron_end = best_junction
             _clip_bd = _intron_start if strand == '-' else _intron_end
             _intronic_seq = _get_intronic_query_bases(read, _clip_bd, strand)
-            # For soft-clip rescues, rescue_seq has already been truncated to
-            # exactly the soft-clip bases (lines above).  _intronic_seq can
-            # include one extra body base when the alignment ends exactly at
-            # intron_start (the boundary straddle: last M op's final ref base
-            # == intron_start), producing a CIGAR with one more query-consuming
-            # op than five_prime_soft_clip_length.  The bam_writer guard would
-            # then fall back to a flat M block (wrong geometry).  Use rescue_seq
-            # directly for soft-clip rescues to keep query span == soft-clip len.
-            # For mpb_mismatch rescues _intronic_seq correctly excludes exon-2
-            # body bases beyond the intron, so keep the original logic there.
-            if rescue_type_candidate == 'softclip':
+            # Which sequence the exon CIGAR is sized from must match the BAM
+            # surgery the writer will run, because each helper checks a different
+            # query span:
+            #
+            #   * `extend_read_5prime_for_junction_rescue` converts the SOFT CLIP
+            #     to exon ops and demands exon_query_span == soft-clip length;
+            #   * `reroute_intronic_tail_5prime_via_junction` reassigns the
+            #     INTRON-MAPPED query run and demands
+            #     exon_q_bases == n_intronic_q.
+            #
+            # bam_processor publishes `five_prime_intron_clip_pos` (which sends
+            # the read to reroute) exactly when the 5' edge lies inside the
+            # rescued intron — so key the decision on that, and NOT on
+            # `soft_clip_length == 0`: 6 of the 13 panel rows that already take
+            # this path successfully carry a 2-16 nt clip (ISSUE-002 Fix 1b).
+            #
+            # Sizing from rescue_seq for those reads is what made the exon CIGAR
+            # span 1-10 query bases while the intronic run was 46-2,370, so
+            # reroute refused (0/22) and `extend` drew an intron to the read's
+            # old 5' edge instead. The contrasting control: the reads that reach
+            # here with `_intronic_seq` (exon_q 69-284) reroute 13/13.
+            #
+            # For a 5' edge OUTSIDE the intron, `extend` is the writer path and
+            # rescue_seq stays correct: _intronic_seq can include one extra body
+            # base at the boundary straddle (last M op's final ref base ==
+            # intron_start), which would give the CIGAR one more query-consuming
+            # op than five_prime_soft_clip_length and make the writer fall back
+            # to a flat M block.
+            _five_prime_in_intron = _intron_start <= align_5prime < _intron_end
+            if _five_prime_in_intron and _intronic_seq:
+                _align_seq = _intronic_seq
+            elif rescue_type_candidate == 'softclip':
                 _align_seq = rescue_seq
             else:
                 _align_seq = _intronic_seq if _intronic_seq else rescue_seq
@@ -2423,6 +2524,23 @@ def _rescue_3ss_truncation_body(
         )
         if already_has_n:
             continue
+        # Skip when the read is itself SPLICED inside this candidate intron.
+        # Case 4's premise is that the 5' end sits UNSPLICED in intron X; a read
+        # carrying its own N-op inside X contradicts that — it is spliced from
+        # X's donor (or nearby) to a closer acceptor, i.e. a different isoform.
+        # `already_has_n` above cannot see this: it requires BOTH edges to match,
+        # so a read sharing the donor but not the acceptor slips past it.
+        #
+        # Snapping such a read is not merely a wrong 5' position: the writer's
+        # reroute trims the whole intronic tail, DELETING every junction it
+        # contained. Measured on the 1,000-read chr5 hold-out — where the
+        # informative-clip floor makes these reads fall through to Case 4 for the
+        # first time — that cost 25 annotated junctions across 10 reads (one read
+        # went 6 N-ops -> 2; e.g. 01afaf17 has an annotated
+        # 111735507-111755769 while the candidate was 111735507-111975273, the
+        # same donor with a farther acceptor).
+        if any(intron_start <= ns and ne <= intron_end for ns, ne in _n_intervals):
+            continue
         # Snap to exon-1-side boundary.  five_prime_position is an inclusive
         # aligned-base coordinate, so the plus-strand upstream exon base is
         # intron_start - 1; intron_start itself is the first skipped base.
@@ -2440,36 +2558,16 @@ def _rescue_3ss_truncation_body(
         # snap would be wrong, so skip this junction.
         # Also skip when rescue_seq is empty (no imperfect ops = the alignment
         # is clean inside the intron = the bases genuinely belong there).
-        if _intronic_seq4:
-            _n4 = len(_intronic_seq4)
-            if strand == '-':
-                # Intron reference: the intronic query bases span [intron_start,
-                # align_5prime] in genomic coords; use intron_start as anchor.
-                _intron_ref4 = genome_seq[intron_start : intron_start + _n4].upper()
-                # Exon-1 reference: just past the 5'SS boundary.
-                _exon_ref4 = genome_seq[intron_end : intron_end + _n4].upper()
-            else:
-                # Plus strand: intronic bases span [align_5prime, intron_end).
-                _intron_ref4 = genome_seq[align_5prime : align_5prime + _n4].upper()
-                # Exon-1 reference: just before the 5'SS boundary.
-                _exon_ref4 = genome_seq[
-                    max(0, intron_start - _n4) : intron_start
-                ].upper()
-            _seq4_upper = _intronic_seq4.upper()
-            if len(_intron_ref4) == _n4 and len(_exon_ref4) == _n4:
-                _ed_intron4 = _hp_edit_distance(_seq4_upper, _intron_ref4)
-                _ed_exon4 = _hp_edit_distance(_seq4_upper, _exon_ref4)
-                # Snap only when exon-1 is strictly a better match; ties favour
-                # keeping the read in the intron (unspliced interpretation).
-                if _ed_intron4 <= _ed_exon4:
-                    continue  # Sequence belongs in intron → unspliced, skip snap
-            elif not rescue_seq:
-                # Cannot compare (boundary conditions) but alignment is clean →
-                # conservatively treat as unspliced and skip the snap.
-                continue
-        elif not rescue_seq:
-            # _intronic_seq4 is empty AND no terminal errors: completely clean
-            # alignment inside the intron → sequence belongs there → skip snap.
+        # Shared with the Cases-1/2 sequence rescue above (ISSUE-006 made it
+        # reachable there); _intronic_bases_favour_intron is the one
+        # implementation of this comparison.
+        _favours_intron = _intronic_bases_favour_intron(
+            read, genome_seq, intron_start, intron_end, align_5prime, strand)
+        if _favours_intron is True:
+            continue  # Sequence belongs in intron → unspliced, skip snap
+        if _favours_intron is None and not rescue_seq:
+            # No intronic bases, or a reference window off the contig — and the
+            # alignment is clean → conservatively treat as unspliced, skip snap.
             continue
 
         _exon_cigar_str4 = ''

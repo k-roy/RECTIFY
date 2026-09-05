@@ -268,11 +268,89 @@ _PANEL_BAM = _PANEL_DIR / '175_panel_orig.bam'
 _PANEL_FA = _PANEL_DIR / 'ref' / 'chr5.fa'
 _PANEL_GTF = _PANEL_DIR / 'ref' / 'gencode.v48.basic.chr5.gtf'
 _PANEL_TSV = _PANEL_DIR / '175_panel.tsv'
+_HOLDOUT_BAM = _PANEL_DIR / 'holdout' / 'chr5_holdout1k.bam'
 
 _HAVE_PANEL = all(p.exists() for p in (_PANEL_BAM, _PANEL_FA, _PANEL_GTF, _PANEL_TSV))
+_HAVE_HOLDOUT = _HOLDOUT_BAM.exists() and _PANEL_FA.exists() and _PANEL_GTF.exists()
 
 _CANONICAL_PAIRS = {('GT', 'AG'), ('CT', 'AC'), ('GC', 'AG'),
                     ('CT', 'GC'), ('AT', 'AC'), ('GT', 'AT')}
+
+
+def _replay_2f(bam_path, want_categories=False):
+    """Run Module 2F + the bam_writer 5' surgery over *bam_path* and return one
+    row per primary read. The 3' fields are chosen so the 3' clip is a no-op, so
+    every difference is attributable to the modules under test."""
+    import copy
+    import csv
+
+    import rectify.core.splice.splice_aware_5prime as s5
+    from rectify.core.bam.bam_writer import apply_corrected_edits_to_read
+    from rectify.core.consensus.consensus import load_annotated_junctions
+
+    # These inputs were produced with the tester's RECTIFY_CHROM_VERBATIM patch;
+    # the real chrom fix is ISSUE-001 and belongs to another change.
+    saved = s5.standardize_chrom_name
+    s5.standardize_chrom_name = lambda c: c
+    try:
+        fa = pysam.FastaFile(str(_PANEL_FA))
+        chrom = fa.references[0]
+        genome = {chrom: fa.fetch(chrom)}
+        ann_raw = load_annotated_junctions(str(_PANEL_GTF))
+        cand = {(chrom,) + tuple(j[1:]) for j in ann_raw}
+        ann = {(j[1], j[2]) for j in ann_raw}
+        cats = {}
+        if want_categories:
+            cats = {r['read_id']: r['category'] for r in
+                    csv.DictReader(open(_PANEL_TSV), delimiter='\t')}
+        out = []
+        for read in pysam.AlignmentFile(str(bam_path)):
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+            strand = '-' if read.is_reverse else '+'
+            ct = read.cigartuples
+            clip = ((ct[-1][1] if ct[-1][0] == 4 else 0) if strand == '-'
+                    else (ct[0][1] if ct[0][0] == 4 else 0))
+            res = s5.rescue_3ss_truncation(copy.deepcopy(read), genome,
+                                           cand, strand=strand)
+            icp = -1
+            rj = res.get('rescued_junction')
+            if res['rescued'] and rj:
+                _c, i_s, i_e = rj
+                a5 = (read.reference_end - 1) if strand == '-' else read.reference_start
+                if i_s <= a5 < i_e:
+                    icp = i_s if strand == '-' else i_e
+            corr = {
+                'five_prime_rescued': bool(res['rescued']),
+                'five_prime_position': res['five_prime_corrected'],
+                'five_prime_soft_clip': clip,
+                'five_prime_exon_cigar': res.get('five_prime_exon_cigar', ''),
+                'five_prime_upstream_trim': res.get('five_prime_upstream_trim', 0),
+                'reanchor_clip_len': res.get('reanchor_clip_len', 0),
+                'five_prime_intron_clip_pos': icp,
+                'strand': strand,
+                'corrected_3prime': ((read.reference_end - 1) if strand == '+'
+                                     else read.reference_start),
+            }
+            before = _n_op_intervals(read)
+            edited = copy.deepcopy(read)
+            apply_corrected_edits_to_read(edited, corr, genome)
+            out.append({
+                'read_id': read.query_name,
+                'category': cats.get(read.query_name, ''),
+                # The reanchor pre-pass can collapse a mangled 5' edge into a
+                # LONGER leading soft clip; that clip is what the rescue
+                # actually searches, so it is the length the floor judges.
+                'clip': max(clip, int(res.get('reanchor_clip_len', 0) or 0)),
+                'raw_clip': clip,
+                'rescued': bool(res['rescued']),
+                'rescue_type': res['rescue_type'],
+                'before': before,
+                'after': _n_op_intervals(edited),
+            })
+        return {'rows': out, 'seq': genome[chrom], 'ann': ann}
+    finally:
+        s5.standardize_chrom_name = saved
 
 
 @pytest.mark.skipif(not _HAVE_PANEL,
@@ -288,74 +366,7 @@ class TestSumnerHumanPanel:
 
     @pytest.fixture(scope='class')
     def replay(self):
-        import copy
-        import csv
-
-        import rectify.core.splice.splice_aware_5prime as s5
-        from rectify.core.bam.bam_writer import apply_corrected_edits_to_read
-        from rectify.core.consensus.consensus import load_annotated_junctions
-
-        # The panel was produced with the tester's RECTIFY_CHROM_VERBATIM patch;
-        # the real chrom fix is ISSUE-001 and belongs to another change.
-        saved = s5.standardize_chrom_name
-        s5.standardize_chrom_name = lambda c: c
-        try:
-            fa = pysam.FastaFile(str(_PANEL_FA))
-            chrom = fa.references[0]
-            genome = {chrom: fa.fetch(chrom)}
-            cand = {(chrom,) + tuple(j[1:])
-                    for j in load_annotated_junctions(str(_PANEL_GTF))}
-            panel = {r['read_id']: r for r in
-                     csv.DictReader(open(_PANEL_TSV), delimiter='\t')}
-            out = []
-            for read in pysam.AlignmentFile(str(_PANEL_BAM)):
-                if read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    continue
-                strand = '-' if read.is_reverse else '+'
-                ct = read.cigartuples
-                clip = ((ct[-1][1] if ct[-1][0] == 4 else 0) if strand == '-'
-                        else (ct[0][1] if ct[0][0] == 4 else 0))
-                res = s5.rescue_3ss_truncation(copy.deepcopy(read), genome,
-                                               cand, strand=strand)
-                icp = -1
-                rj = res.get('rescued_junction')
-                if res['rescued'] and rj:
-                    _c, i_s, i_e = rj
-                    a5 = (read.reference_end - 1) if strand == '-' else read.reference_start
-                    if i_s <= a5 < i_e:
-                        icp = i_s if strand == '-' else i_e
-                corr = {
-                    'five_prime_rescued': bool(res['rescued']),
-                    'five_prime_position': res['five_prime_corrected'],
-                    'five_prime_soft_clip': clip,
-                    'five_prime_exon_cigar': res.get('five_prime_exon_cigar', ''),
-                    'five_prime_upstream_trim': res.get('five_prime_upstream_trim', 0),
-                    'reanchor_clip_len': res.get('reanchor_clip_len', 0),
-                    'five_prime_intron_clip_pos': icp,
-                    'strand': strand,
-                    # chosen so the 3' clip is a no-op: this isolates Module 2F
-                    'corrected_3prime': ((read.reference_end - 1) if strand == '+'
-                                         else read.reference_start),
-                }
-                before = _n_op_intervals(read)
-                edited = copy.deepcopy(read)
-                apply_corrected_edits_to_read(edited, corr, genome)
-                out.append({
-                    'read_id': read.query_name,
-                    'category': panel.get(read.query_name, {}).get('category', ''),
-                    # The reanchor pre-pass can collapse a mangled 5' edge into a
-                    # LONGER leading soft clip; that clip is what the rescue
-                    # actually searches, so it is the length the floor judges.
-                    'clip': max(clip, int(res.get('reanchor_clip_len', 0) or 0)),
-                    'raw_clip': clip,
-                    'rescued': bool(res['rescued']),
-                    'rescue_type': res['rescue_type'],
-                    'before': before,
-                    'after': _n_op_intervals(edited),
-                })
-            return {'rows': out, 'seq': genome[chrom]}
-        finally:
-            s5.standardize_chrom_name = saved
+        return _replay_2f(_PANEL_BAM, want_categories=True)
 
     def test_no_noncanonical_intron_is_created(self, replay):
         seq = replay['seq']
@@ -387,9 +398,73 @@ class TestSumnerHumanPanel:
                and r['rescued']]
         assert not bad, f'sub-floor softclip rescues survived: {bad}'
 
-    def test_rescue_is_not_globally_disabled(self, replay):
-        """A fix that passes this panel by turning the rescue off fails the brief."""
+    def test_the_panel_still_rescues_something(self, replay):
+        """The panel is ADVERSARIAL — its rows were selected because RECTIFY
+        changed them, and 92% of its rescues are 1-3 nt clips by construction —
+        so it cannot show that the module is still useful. That is the hold-out's
+        job (TestChr5Holdout below). Here we only assert the module did not go
+        completely silent."""
+        assert any(r['rescued'] for r in replay['rows'])
+
+
+@pytest.mark.skipif(not _HAVE_HOLDOUT,
+                    reason='chr5 hold-out is git-ignored; set '
+                           'RECTIFY_SUMNER_PANEL_DIR to run')
+class TestChr5Holdout:
+    """1,000 UNSELECTED primary chr5 reads (panel reads excluded) — the set that
+    shows whether the guards generalize rather than fit the adversarial panel.
+
+    Baseline recorded 2026-09-05 on 4eefd1f: 228/1000 rescued, 222 introns
+    created of which 158 non-canonical and only 25 annotated (11%), 3 pre-existing
+    N-ops lost; scorer FP_total 186 / TP_total 25.
+    """
+
+    @pytest.fixture(scope='class')
+    def replay(self):
+        return _replay_2f(_HOLDOUT_BAM)
+
+    def _created(self, replay):
+        out = []
+        for row in replay['rows']:
+            for n in row['after']:
+                if n not in row['before']:
+                    out.append(n)
+        return out
+
+    def test_creates_no_noncanonical_intron(self, replay):
+        """FP guard. Baseline: 158 of 222 created introns were non-canonical."""
+        seq = replay['seq']
+        bad = [n for n in self._created(replay)
+               if (seq[n[0]:n[0] + 2].upper(),
+                   seq[n[1] - 2:n[1]].upper()) not in _CANONICAL_PAIRS]
+        assert not bad, f'{len(bad)} non-canonical introns created: {bad[:5]}'
+
+    def test_destroys_no_preexisting_junction(self, replay):
+        """FP guard. Case 4 used to snap reads across their OWN junctions, and
+        the writer's reroute then trimmed those junctions away (baseline 3 lost;
+        after the informative-clip floor alone it was 18)."""
+        lost = []
+        for row in replay['rows']:
+            after = set(row['after'])
+            for n in row['before']:
+                if n not in after and any(m[0] == n[0] or m[1] == n[1] for m in after):
+                    continue      # a terminal N extended onto the rescued acceptor
+                if n not in after:
+                    lost.append((row['read_id'][:12], n))
+        assert len(lost) <= 3, f'{len(lost)} pre-existing N-ops destroyed: {lost[:6]}'
+
+    def test_rescue_still_fires_and_lands_on_annotation(self, replay):
+        """FN guard, and the one the panel cannot give. Baseline: 25 of 222
+        created introns were annotated (11%)."""
+        created = self._created(replay)
         rescued = [r for r in replay['rows'] if r['rescued']]
-        assert len(rescued) >= 25, (
-            f'only {len(rescued)}/100 panel reads rescued — the guard has '
+        assert len(rescued) >= 40, (
+            f'only {len(rescued)}/1000 hold-out reads rescued — the guards have '
             'disabled the module rather than aiming it')
+        assert created, 'no introns created at all'
+        annotated = [n for n in created if n in replay['ann']]
+        assert len(annotated) >= 25, (
+            f'{len(annotated)} annotated introns created, baseline was 25')
+        assert len(annotated) / len(created) >= 0.70, (
+            f'only {len(annotated)}/{len(created)} created introns are annotated '
+            '(baseline 25/222 = 11%)')

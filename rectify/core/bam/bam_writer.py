@@ -34,6 +34,7 @@ from .read_edits import (
     extend_read_3prime_for_softclip_rescue,
     softclip_intronic_tail_5prime,
     reroute_intronic_tail_5prime_via_junction,
+    projected_5prime_rescue_intron_edge,
     realign_exon_blocks,
     _apply_reanchor_from_clip_len,
     _hardclip_trailing_a_run,
@@ -364,30 +365,67 @@ def apply_corrected_edits_to_read(
     _pre_start = read.reference_start
     _pre_modified = modified
 
-    # 5' junction rescue: extend soft-clip to exon 1 (Cat3).
-    if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
+    # 5' junction rescue (Cat3 / Cases 1/2/2b/4). Exactly ONE of the three
+    # helpers below may run — they are alternative geometries for the same
+    # rescue, not stages of one.
+    #
+    # ISSUE-002: `extend_read_5prime_for_junction_rescue` derives its intron
+    # length from the LIVE alignment edge and never reads
+    # `five_prime_intron_clip_pos`. That is correct only when the edge it will
+    # use IS the icp (or when the rescue published no icp at all). Otherwise it
+    # fabricates an N-op running to the read's OLD 5' edge: 22 of the 26 F1+F2
+    # rows on the Sumner human panel, 15 of them replacing the annotated GT-AG
+    # the TSV names with a novel non-canonical junction.
+    #
+    # The gate is NOT `icp < 0`: two panel rows (cea5e842, 7d297145) have
+    # icp >= 0 and reach the correct annotated junction through extend plus
+    # `five_prime_upstream_trim`, a geometry reroute cannot express. Ask
+    # extend's own projection where its N-op would land instead.
+    _icp = correction.get('five_prime_intron_clip_pos', -1)
+    _exon_cig = correction.get('five_prime_exon_cigar', '')
+    _rescued_flag = bool(correction.get('five_prime_rescued'))
+    _rescued = _rescued_flag and correction['five_prime_position'] is not None
+
+    _extend_ok = True
+    if _rescued and _icp >= 0:
+        _edge = projected_5prime_rescue_intron_edge(
+            read,
+            correction['five_prime_soft_clip'],
+            correction['strand'],
+            correction.get('five_prime_upstream_trim', 0),
+        )
+        _extend_ok = (_edge is not None and _edge == _icp)
+
+    if _rescued and _extend_ok:
         modified |= extend_read_5prime_for_junction_rescue(
             read,
             correction['five_prime_position'],
             correction['five_prime_soft_clip'],
             correction['strand'],
-            exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
+            exon_cigar_str=_exon_cig,
             upstream_trim=correction.get('five_prime_upstream_trim', 0),
         )
-
-    # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
-    _icp = correction.get('five_prime_intron_clip_pos', -1)
-    _exon_cig = correction.get('five_prime_exon_cigar', '')
-    if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
-            and correction['five_prime_position'] is not None):
-        modified |= reroute_intronic_tail_5prime_via_junction(
-            read,
-            clip_boundary=_icp,
-            five_prime_position=correction['five_prime_position'],
-            exon_cigar_str=_exon_cig,
-            strand=correction['strand'],
-        )
-    elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
+    elif _rescued:
+        # The N-op has to end at _icp and extend cannot express that. Reroute
+        # draws it there; if reroute refuses, hide the intronic bases as a soft
+        # clip at the true acceptor rather than fabricating a junction.
+        _done = False
+        if _exon_cig:
+            _done = reroute_intronic_tail_5prime_via_junction(
+                read,
+                clip_boundary=_icp,
+                five_prime_position=correction['five_prime_position'],
+                exon_cigar_str=_exon_cig,
+                strand=correction['strand'],
+            )
+        if not _done and _icp >= 0:
+            _done = softclip_intronic_tail_5prime(
+                read,
+                clip_boundary=_icp,
+                strand=correction['strand'],
+            )
+        modified |= _done
+    elif _rescued_flag and _icp >= 0 and not _exon_cig:
         modified |= softclip_intronic_tail_5prime(
             read,
             clip_boundary=_icp,

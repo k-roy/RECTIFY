@@ -1255,6 +1255,61 @@ def reroute_intronic_tail_5prime_via_junction(
         return True
 
 
+def projected_5prime_rescue_intron_edge(
+    read: pysam.AlignedSegment,
+    soft_clip_len: int,
+    strand: str,
+    upstream_trim: int = 0,
+) -> Optional[int]:
+    """Exon-2-side reference edge of the N-op :func:`extend_read_5prime_for_junction_rescue`
+    would draw on *read*, or ``None`` when that function would not run at all.
+
+    ``extend`` derives ``intron_len`` from the LIVE alignment edge and never
+    reads ``five_prime_intron_clip_pos``; the N-op it writes therefore always
+    ends where the read currently starts (plus) or ends (minus), adjusted by the
+    equivalence-extension trim it will actually be able to apply. Callers use
+    this to ask whether that is the boundary the rescue intended before letting
+    ``extend`` run — see ISSUE-002: for reads whose 5' end lies inside the
+    rescued intron the two differ, and ``extend`` silently fabricates an intron
+    running to the read's OLD 5' edge.
+
+    The ``effective_trim`` logic mirrors ``extend``'s own guard exactly
+    (L1359-1366 / L1425-1432), so this is a projection of that function, not an
+    independent re-derivation.
+    """
+    cigar = list(read.cigartuples or [])
+    if not cigar or read.is_unmapped or soft_clip_len <= 0:
+        return None
+    _MX_OPS = frozenset([0, 7, 8])  # M, =, X
+
+    if strand == '+':
+        if cigar[0][0] != 4:
+            return None
+        cigar.pop(0)
+        effective_trim = (
+            upstream_trim
+            if (upstream_trim > 0 and cigar and cigar[0][0] in _MX_OPS
+                and cigar[0][1] >= upstream_trim)
+            else 0
+        )
+        if read.reference_start is None:
+            return None
+        return read.reference_start + effective_trim
+
+    if cigar[-1][0] != 4:
+        return None
+    cigar.pop()
+    effective_trim = (
+        upstream_trim
+        if (upstream_trim > 0 and cigar and cigar[-1][0] in _MX_OPS
+            and cigar[-1][1] >= upstream_trim)
+        else 0
+    )
+    if read.reference_end is None:
+        return None
+    return read.reference_end - effective_trim
+
+
 def _cigar_ref_end(ref_start: int, cigar: list) -> int:
     """Compute the exclusive reference end from a CIGAR list."""
     _ref_consuming = frozenset([0, 2, 3, 7, 8])
