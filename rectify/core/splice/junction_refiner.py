@@ -427,6 +427,38 @@ def _iter_n_ops(
                 q_pos += length
 
 
+def _dn_run_extent(
+    cigartuples: List[Tuple[int, int]],
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+) -> Tuple[int, int]:
+    """Reference extent of the D/N run containing the N-op at *cigar_idx*.
+
+    ``junction_scoring._merge_del_into_intron`` collapses any run of adjacent
+    D/N ops containing an N into a single N — RECTIFY's stated convention that
+    ``1D 112N`` and ``113N`` are the same intron, since D and N both consume
+    reference and no query.  The junction POOL is built through that
+    normalization, but ``_iter_n_ops`` reports the RAW N-op, so for a read with
+    ``111N 3D`` the pool holds a junction 3 bp longer than the one the read is
+    scored at.
+
+    That twin is not an alternative placement: the read's bases sit in exactly
+    the same reference positions either way.  Returning its extent lets the
+    refiner recognise and skip it (see ``refine_read_junctions``).
+    """
+    start, end = ns, ne
+    k = cigar_idx - 1
+    while k >= 0 and cigartuples[k][0] in (_D, _N):
+        start -= cigartuples[k][1]
+        k -= 1
+    k = cigar_idx + 1
+    while k < len(cigartuples) and cigartuples[k][0] in (_D, _N):
+        end += cigartuples[k][1]
+        k += 1
+    return start, end
+
+
 def _has_boundary_error(
     cigartuples: List[Tuple[int, int]],
     intron_start: int,
@@ -806,7 +838,7 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
@@ -825,11 +857,39 @@ def refine_read_junctions(
         # byte-identical to the incumbent (arm-A).
         tier_beats_alt = (current_tier >= 4) and not motif_blind  # True → prefer canonical over current
 
+        # The read's own junction as the POOL spells it: `_merge_del_into_intron`
+        # folds a D abutting an N into the intron, so a read with `111N 3D`
+        # contributes a junction 3 bp longer than the N-op it is scored at. The
+        # twin is the SAME alignment — identical reference span, identical query
+        # bases, only the op labels differ — so choosing between the two is a
+        # REPRESENTATION question, and the scorer is the wrong instrument for it
+        # (see the candidate loop).
+        _dn_twin = _dn_run_extent(read.cigartuples, cigar_idx, ns, ne)
+
         for js, je in candidates:
             if je <= js:
                 if profile is not None:
                     profile.inc('candidates_invalid')
                 continue
+            if (js, je) == _dn_twin and (js, je) != (ns, ne):
+                # Neither representation is universally right — the ANNOTATION is
+                # what decides which one this read should carry. So relabel only
+                # when it lands on annotation and the read's own form is not
+                # annotated; otherwise keep the aligner's form. Both directions
+                # occur on the hold-out, which is why this is a rule and not a
+                # blanket skip:
+                #   05e2f8d8  annotated 111N -> unannotated 114N   (must NOT move)
+                #   3178286c  unannotated 109N -> annotated 114N   (SHOULD move)
+                # Never decide it on score: the score always favours the merged
+                # form, because the abutting deletion stops costing once it is
+                # relabelled as intron. That is not read evidence — 05e2f8d8's
+                # 1.128-unit "improvement" cleared even the annotated-canonical
+                # evidence gate on exactly that artifact.
+                if not ((chrom, js, je) in annotated_set
+                        and (chrom, ns, ne) not in annotated_set):
+                    if profile is not None:
+                        profile.inc('candidates_dn_merge_twin')
+                    continue
 
             _t_score = time.perf_counter() if profile is not None else 0.0
             score, delta = _score_junction(
@@ -843,6 +903,9 @@ def refine_read_junctions(
 
             # Tie-breakers (only matter when score is identical or within noise floor):
             is_alt   = 0 if (js == ns and je == ne) else 1  # current junction preferred
+            # L1 distance from the aligner's own placement. Zero for the
+            # incumbent, so it is consistent with is_alt by construction.
+            move_dist = abs(js - ns) + abs(je - ne)
             _t_tiebreak = time.perf_counter() if profile is not None else 0.0
             tier     = _canonical_tier(js, je, genome_seq, strand)
             is_novel = 0 if (chrom, js, je) in annotated_set else 1
@@ -866,29 +929,38 @@ def refine_read_junctions(
             #   2. tier / is_alt (order depends on current_tier — see above)
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
-            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only).
-            #      INERT: `_score_junction` returns delta=0 for every candidate
-            #      (it never slides — `max_slide` is API-compat only), so this
-            #      slot is a constant and ties fall through to (js, je), i.e. to
-            #      the lower genomic coordinate. Closing that gap means DEFINING
-            #      a new tie-break signal, not restoring a lost one (ISSUE-005).
+            #   5. move_dist — at a genuine tie, take the SMALLER move
+            #      (ISSUE-005(b)). This slot used to hold `abs(delta)` from the
+            #      scorer, which is the applied SLIDE and is structurally 0 for
+            #      every candidate (`max_slide` is API-compatibility only —
+            #      `tests/test_junction_refiner.py` pins that contract). The slot
+            #      was therefore a constant, and equal-scoring candidates were
+            #      separated by nothing but (js, je) — the LOWER GENOMIC
+            #      COORDINATE, an arbitrary leftward bias that has nothing to do
+            #      with the read. The distance is now derived from coordinates
+            #      instead: among candidates the read cannot distinguish, the one
+            #      closest to where the aligner put it is the smaller claim.
+            #      It is the FIFTH key and can never override score, tier, is_alt
+            #      or annotation — all four still decide first.
             # Motif-blind drops the canonical-tier and annotation priors from the
             # tie-break (they collapse to constants), leaving score → is_alt → shift.
             tier_key = 0 if motif_blind else tier
             novel_key = 0 if motif_blind else is_novel
             if tier_beats_alt:
                 # Current junction is non-canonical: prefer canonical alternatives
-                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, move_dist, js, je, delta)
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
-                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
             if best_tuple is None or candidate_tuple < best_tuple:
                 best_tuple = candidate_tuple
 
         if best_tuple is None:
             continue
 
-        # best_tuple = (score, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
+        # (the trailing `delta` is the scorer's applied slide, structurally 0;
+        #  kept so the tuple shape still mirrors _score_junction's contract.)
         best_score_cmp = best_tuple[0]
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
