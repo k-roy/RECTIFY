@@ -67,10 +67,17 @@ AT-AC through its major spliceosome (Talkish et al. 2019 PLoS Genet
 15:e1008249 — an AT-AC junction in SUT635), and human AT-AC introns are the
 U12-type class. Because the pair is enforced this is NOT the motif-free
 extension refuted in planning/722; it adds one dinucleotide pair, not a
-spectrum. The arbiter's two-boundary discovery paths (Case B D-op snap and
-the mismatch-flagged linear rescue) still enumerate GT/GC..AG only; the
-clip resolver (Station A's job) and the class-preserving boundary shifts
-are wired.
+spectrum.
+
+Every enumeration path is wired: the clip resolver (Station A's job), the
+class-preserving boundary shifts, and — since 2026-09-05 — the arbiter's two
+two-boundary DISCOVERY paths, the Case B1 intron-length-D -> N snap and both
+mismatch-flagged linear rescues (B2 right, B3 left). In each, AT-AC runs as a
+SEPARATE PAIRED pass over ``don_at_*``/``acc_ac_*``, never as a union with the
+GT/GC..AG kinds — a union would admit AT..AG and GT..AC, which is exactly the
+motif-free extension refuted above. The GT/GC pass always runs first and every
+cross-pass comparison is strict, so an exact edit-distance tie keeps the
+GT/GC..AG answer (the same ordering ``_donor_rank`` gives the clip resolver).
 
 Per terminal soft clip:
 
@@ -930,6 +937,17 @@ def _rearbitrate_read(
         return False
     dq = None  # decoded lazily, once
     left_kind, right_kind = _boundary_kinds(strand, cfg.acceptor_classes)
+    # One (left, right) boundary-kind pair per enabled class, for the arbiter's
+    # two-boundary DISCOVERY paths (Case B1's D-op snap and the B2/B3
+    # mismatch-flagged linear rescues, which choose BOTH boundaries). The AT-AC
+    # pair is a separate pass and never a union with the GT/GC..AG kinds — a
+    # union would enumerate AT..AG and GT..AC, the motif-free extension
+    # planning/722 refuted (module docstring; Chanfreau planning/722). The
+    # GT/GC pass is first, so an exact ED tie keeps the GT/GC..AG answer,
+    # matching _donor_rank's rank-2 placement of AT-AC.
+    pair_kinds = [(left_kind, right_kind)]
+    if cfg.atac:
+        pair_kinds.append(_boundary_kinds_atac(strand))
     changed = False
 
     # ---- Case A0: boundary-deletion merge (planning/644c, the SRC1 smoking
@@ -1156,39 +1174,49 @@ def _rearbitrate_read(
         # the right flank — allow it only when there are none (v5.1)
         b1_tail_clear = all(o in (1, 4, 5) for o, _ in ct[i + 2:])
         alts = []
-        for d_alt in index.sites_in(chrom_key, left_kind, p_start - s2, p_start + s2 + 1):
-            d_alt = int(d_alt)
-            delta = d_alt - p_start
-            if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0:
-                continue
-            if q_split + delta - L1 < 0 or q_split + delta + L2 > len(dq):
-                continue
-            for e_alt in index.sites_in(chrom_key, right_kind, p_end - s2, p_end + s2 + 1):
-                e_alt = int(e_alt)
-                if not (cfg.min_intron <= e_alt - d_alt <= cfg.max_intron):
+        # The pair loop encloses BOTH site loops: an AT donor may only be
+        # offered with an AC acceptor (see `pair_kinds` above).
+        for lk_b, rk_b in pair_kinds:
+            for d_alt in index.sites_in(chrom_key, lk_b, p_start - s2, p_start + s2 + 1):
+                d_alt = int(d_alt)
+                delta = d_alt - p_start
+                if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0:
                     continue
-                if e_alt + L2 > len(chrom_seq):
+                if q_split + delta - L1 < 0 or q_split + delta + L2 > len(dq):
                     continue
-                if not b1_tail_clear and (e_alt - p_end) != (d_alt - p_start):
-                    continue
-                alts.append((d_alt, e_alt,
-                             chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
-                             dq[q_split + delta - L1:q_split + delta + L2]))
+                for e_alt in index.sites_in(chrom_key, rk_b, p_end - s2, p_end + s2 + 1):
+                    e_alt = int(e_alt)
+                    if not (cfg.min_intron <= e_alt - d_alt <= cfg.max_intron):
+                        continue
+                    if e_alt + L2 > len(chrom_seq):
+                        continue
+                    if not b1_tail_clear and (e_alt - p_end) != (d_alt - p_start):
+                        continue
+                    alts.append((d_alt, e_alt,
+                                 chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                                 dq[q_split + delta - L1:q_split + delta + L2]))
         if not alts:
             continue
         cur_ref = chrom_seq[p_start - L1:p_start] + chrom_seq[p_end:p_end + L2]
         # A deletion and an intron at identical bounds are the same spliced
         # product, so no margin is demanded — canonical-class snapping within
         # the slop is the win; ties go to the index site.
+        #
+        # The rank term keeps that tiebreak class-aware. Unlike _score_alts,
+        # this selection takes scored[0] outright with no ambiguity check, so
+        # without it an opt-in AT-AC alt could displace a GT..AG one at equal
+        # ED purely on coordinate order — the opposite of the rank-2 ordering
+        # _donor_rank gives the clip resolver.
         ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
         scored = sorted(
-            (hp_edit_distance_bounded(aq, ref, cutoff=ed_cur), da, ea)
+            (hp_edit_distance_bounded(aq, ref, cutoff=ed_cur),
+             2 if _is_atac(chrom_seq, strand, da, ea) else 0, da, ea)
             for da, ea, ref, aq in alts)
         best = scored[0]
         if best[0] > ed_cur or best[0] > cfg.max_edit_frac * len(qwin):
             _bump(stats, 'arb_no_gain')
             continue
-        _, d_new, e_new = best
+        _, _, d_new, e_new = best
         delta = d_new - p_start
         if delta:
             ct[i - 1] = (0, m_l + delta)
@@ -1239,46 +1267,52 @@ def _rearbitrate_read(
         if onset is not None:
             _bump(stats, 'arb_mm_flagged')
             L1 = cfg.arb_seg
-            # The true donor sits where matching stops — anywhere within the
-            # flagged window (mismatches begin mid-window), so search a span
-            # covering the window plus slack on both sides.
-            donors = index.sites_in(
-                chrom_key, left_kind,
-                block_ref + max(0, onset - 20),
-                block_ref + onset + cfg.arb_mm_win + 20)
             best_overall = None
             ed_cur_o = None
-            for d_alt in donors:
-                d_alt = int(d_alt)
-                o = d_alt - block_ref
-                if o < L1 or mlen - o < 10:
-                    continue
-                q_j = m_qs + o
-                L2 = min(cfg.arb_seg, mlen - o)
-                qwin = dq[q_j - L1:q_j + L2]
-                a = assess_overhang(dq[q_j:q_j + L2], alpha=cfg.alpha,
-                                    max_window=cfg.max_intron)
-                if a.refused:
-                    _bump(stats, 'arb_refused')
-                    continue
-                W = a.w_max_bp
-                alts = []
-                for e_alt in index.sites_in(chrom_key, right_kind,
-                                            d_alt + cfg.min_intron, d_alt + W + 1):
-                    e_alt = int(e_alt)
-                    if e_alt + L2 > len(chrom_seq):
+            # The pair loop encloses the DONOR loop, not just the acceptor
+            # lookup: pairing an AT donor with an AG acceptor is exactly the
+            # union `pair_kinds` exists to prevent. The GT/GC pass runs first
+            # and the comparison below is strict, so an exact ED tie keeps the
+            # GT/GC..AG answer.
+            for lk_b, rk_b in pair_kinds:
+                # The true donor sits where matching stops — anywhere within
+                # the flagged window (mismatches begin mid-window), so search a
+                # span covering the window plus slack on both sides.
+                donors = index.sites_in(
+                    chrom_key, lk_b,
+                    block_ref + max(0, onset - 20),
+                    block_ref + onset + cfg.arb_mm_win + 20)
+                for d_alt in donors:
+                    d_alt = int(d_alt)
+                    o = d_alt - block_ref
+                    if o < L1 or mlen - o < 10:
                         continue
-                    alts.append((d_alt, e_alt,
-                                 chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
-                                 qwin))
-                if not alts:
-                    continue
-                cur_ref = chrom_seq[d_alt - L1:d_alt + L2]
-                ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
-                if win is not None and (best_overall is None or win[0] < best_overall[0]):
-                    best_overall = win
-                    ed_cur_o = ed_cur
-                    best_o = o
+                    q_j = m_qs + o
+                    L2 = min(cfg.arb_seg, mlen - o)
+                    qwin = dq[q_j - L1:q_j + L2]
+                    a = assess_overhang(dq[q_j:q_j + L2], alpha=cfg.alpha,
+                                        max_window=cfg.max_intron)
+                    if a.refused:
+                        _bump(stats, 'arb_refused')
+                        continue
+                    W = a.w_max_bp
+                    alts = []
+                    for e_alt in index.sites_in(chrom_key, rk_b,
+                                                d_alt + cfg.min_intron, d_alt + W + 1):
+                        e_alt = int(e_alt)
+                        if e_alt + L2 > len(chrom_seq):
+                            continue
+                        alts.append((d_alt, e_alt,
+                                     chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                                     qwin))
+                    if not alts:
+                        continue
+                    cur_ref = chrom_seq[d_alt - L1:d_alt + L2]
+                    ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+                    if win is not None and (best_overall is None or win[0] < best_overall[0]):
+                        best_overall = win
+                        ed_cur_o = ed_cur
+                        best_o = o
             if best_overall is not None:
                 _, d_new, e_new = best_overall
                 new_ct = ct[:last_m] + [(0, best_o), (3, e_new - d_new),
@@ -1328,47 +1362,51 @@ def _rearbitrate_read(
         if resume is not None:
             _bump(stats, 'arb_mm_flagged')
             L2c = cfg.arb_seg
-            accs = index.sites_in(
-                chrom_key, right_kind,
-                block_ref + max(10, resume - cfg.arb_mm_win - 20),
-                block_ref + resume + 20)
             best_overall = None
             ed_cur_o = None
             best_o = None
-            for e_alt in accs:
-                e_alt = int(e_alt)
-                o = e_alt - block_ref
-                if o < 10 or mlen - o < 10:
-                    continue
-                q_j = m_qs + o
-                L1 = min(cfg.arb_seg, q_j)
-                L2 = min(L2c, mlen - o)
-                if L1 < 10:
-                    continue
-                qwin = dq[q_j - L1:q_j + L2]
-                a = assess_overhang(dq[q_j - L1:q_j], alpha=cfg.alpha,
-                                    max_window=cfg.max_intron)
-                if a.refused:
-                    _bump(stats, 'arb_refused')
-                    continue
-                W = a.w_max_bp
-                alts = []
-                for d_alt in index.sites_in(chrom_key, left_kind,
-                                            max(0, e_alt - W), e_alt - cfg.min_intron + 1):
-                    d_alt = int(d_alt)
-                    if d_alt - L1 < 0:
+            # Mirror of B2: the pair loop encloses the ACCEPTOR loop here, so
+            # an AC acceptor is only ever offered with an AT donor.
+            for lk_b, rk_b in pair_kinds:
+                accs = index.sites_in(
+                    chrom_key, rk_b,
+                    block_ref + max(10, resume - cfg.arb_mm_win - 20),
+                    block_ref + resume + 20)
+                for e_alt in accs:
+                    e_alt = int(e_alt)
+                    o = e_alt - block_ref
+                    if o < 10 or mlen - o < 10:
                         continue
-                    alts.append((d_alt, e_alt,
-                                 chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
-                                 qwin))
-                if not alts:
-                    continue
-                cur_ref = chrom_seq[e_alt - L1:e_alt + L2]
-                ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
-                if win is not None and (best_overall is None or win[0] < best_overall[0]):
-                    best_overall = win
-                    ed_cur_o = ed_cur
-                    best_o = o
+                    q_j = m_qs + o
+                    L1 = min(cfg.arb_seg, q_j)
+                    L2 = min(L2c, mlen - o)
+                    if L1 < 10:
+                        continue
+                    qwin = dq[q_j - L1:q_j + L2]
+                    a = assess_overhang(dq[q_j - L1:q_j], alpha=cfg.alpha,
+                                        max_window=cfg.max_intron)
+                    if a.refused:
+                        _bump(stats, 'arb_refused')
+                        continue
+                    W = a.w_max_bp
+                    alts = []
+                    for d_alt in index.sites_in(chrom_key, lk_b,
+                                                max(0, e_alt - W),
+                                                e_alt - cfg.min_intron + 1):
+                        d_alt = int(d_alt)
+                        if d_alt - L1 < 0:
+                            continue
+                        alts.append((d_alt, e_alt,
+                                     chrom_seq[d_alt - L1:d_alt] + chrom_seq[e_alt:e_alt + L2],
+                                     qwin))
+                    if not alts:
+                        continue
+                    cur_ref = chrom_seq[e_alt - L1:e_alt + L2]
+                    ed_cur, win, _ = _score_alts(qwin, cur_ref, alts, chrom_seq, cfg)
+                    if win is not None and (best_overall is None or win[0] < best_overall[0]):
+                        best_overall = win
+                        ed_cur_o = ed_cur
+                        best_o = o
             if best_overall is not None:
                 _, d_new, e_new = best_overall
                 new_ct = ct[:first_m] + [(0, best_o), (3, e_new - d_new),

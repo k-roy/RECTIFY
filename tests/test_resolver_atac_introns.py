@@ -15,6 +15,9 @@ spliceosome. These tests pin:
   refuted), and ``_donor_rank`` ranks a genuine AT-AC pair below GT and GC;
 * ``canonical_in_class`` accepts AT..AC only when asked (Station C and every
   other default caller are unchanged);
+* the arbiter's two-boundary DISCOVERY paths are wired too (2026-09-05): the
+  Case B1 intron-length-D -> N snap and both mismatch-flagged linear rescues
+  (B2 right, B3 left) each run AT-AC as a separate paired pass;
 * the default config is unchanged and the CLI knob is plumbed.
 """
 
@@ -184,6 +187,132 @@ class TestClipResolution:
                                ResolverStats())
         if changed:
             assert not r.get_tag('XJ').startswith(f'{P_DON}-{P_ACC}:')
+
+
+class TestArbiterDiscoveryPaths:
+    """The arbiter's two-boundary DISCOVERY paths — the ones that choose BOTH
+    intron boundaries from the index rather than shifting an existing junction.
+    Until 2026-09-05 these enumerated GT/GC..AG only, so an AT-AC intron the
+    aligner had encoded as a deletion (Case B1) or smeared over linearly
+    (Case B2/B3) could not be recovered even with ``atac=True``.
+
+    Mirrors the GT..AG fixtures in ``tests/test_overhang_resolver.py``:
+    ``test_dop_converted_to_snapped_intron`` (L612), the B2 right-side storm
+    (L623) and the B3 head-storm mirror (L665)."""
+
+    INTRON = P_ACC - P_DON
+
+    @staticmethod
+    def _junction(read):
+        ref = read.reference_start
+        for op, ln in read.cigartuples:
+            if op == 3:
+                return ref, ref + ln
+            if op in (0, 2, 3, 7, 8):
+                ref += ln
+        return None
+
+    @staticmethod
+    def _run(g, read, **cfg_kw):
+        genome = {'chrI': g}
+        stats = ResolverStats()
+        changed = resolve_read(read, genome, SpliceSiteIndex.build(genome),
+                               ResolverConfig(alpha=0.01, max_intron=5000,
+                                              **BIG, **cfg_kw),
+                               stats)
+        qlen = sum(ln for op, ln in read.cigartuples if op in (0, 1, 4, 7, 8))
+        assert qlen == len(read.query_sequence), read.cigartuples
+        return changed, stats
+
+    # -- Case B1: the intron arrived as a deletion --------------------------
+
+    def _dop_read(self, g=GENOME_SEQ):
+        query = g[P_DON - 60:P_DON] + g[P_ACC:P_ACC + 60]
+        return _read('atac_dop', query,
+                     [(0, 60), (2, self.INTRON), (0, 60)], P_DON - 60)
+
+    def test_dop_stays_a_deletion_by_default(self):
+        r = self._dop_read()
+        changed, stats = self._run(GENOME_SEQ, r)
+        assert stats.extra.get('arb_dop_checked') == 1, (
+            'the fixture never reached Case B1')
+        assert stats.extra.get('arb_dop_spliced', 0) == 0
+        assert not changed
+        assert r.cigartuples == [(0, 60), (2, self.INTRON), (0, 60)]
+
+    def test_dop_becomes_an_intron_under_atac(self):
+        r = self._dop_read()
+        changed, stats = self._run(GENOME_SEQ, r, atac=True)
+        assert changed and stats.extra.get('arb_dop_spliced') == 1, stats.extra
+        assert r.cigartuples == [(0, 60), (3, self.INTRON), (0, 60)]
+        assert self._junction(r) == (P_DON, P_ACC)
+        assert r.get_tag('XB').startswith(f'dop:{P_DON}-{P_ACC}>')
+
+    def test_dop_minus_strand(self):
+        span = M_DON - M_ACC
+        query = GENOME_SEQ[M_ACC - 60:M_ACC] + GENOME_SEQ[M_DON:M_DON + 60]
+        r = _read('atac_dop_minus', query, [(0, 60), (2, span), (0, 60)],
+                  M_ACC - 60, reverse=True)
+        assert not self._run(GENOME_SEQ, r)[0]
+        r = _read('atac_dop_minus', query, [(0, 60), (2, span), (0, 60)],
+                  M_ACC - 60, reverse=True)
+        changed, stats = self._run(GENOME_SEQ, r, atac=True)
+        assert changed and stats.extra.get('arb_dop_spliced') == 1, stats.extra
+        assert self._junction(r) == (M_ACC, M_DON)
+
+    def test_dop_pairing_is_enforced(self):
+        # AT donor + AG acceptor: the union that would admit it is exactly what
+        # planning/722 refuted, so even atac=True must leave the D alone.
+        seq = list(GENOME_SEQ)
+        seq[P_ACC - 2:P_ACC] = 'AG'
+        g = ''.join(seq)
+        r = self._dop_read(g)
+        changed, stats = self._run(g, r, atac=True)
+        assert stats.extra.get('arb_dop_checked') == 1
+        if changed:
+            assert self._junction(r) != (P_DON, P_ACC)
+        else:
+            assert r.cigartuples == [(0, 60), (2, self.INTRON), (0, 60)]
+
+    # -- Case B2 / B3: the intron was aligned through linearly ---------------
+    #
+    # NOTE the default arm here does not simply refuse: on this dense 4.2 kb
+    # synthetic contig it splices to a CHANCE GT..AG pair a few bp away
+    # (measured: (1189, 1484) for B2, (1184, 1484) for B3, both at a worse edit
+    # distance than the truth). That is the planning/721 residual in miniature —
+    # a real non-canonical junction absorbed by a canonical decoy — so the
+    # assertion is "only atac=True reaches the TRUE junction", not "the default
+    # does nothing".
+
+    def test_linear_read_reaches_the_true_junction_only_under_atac(self):
+        query = GENOME_SEQ[P_DON - 200:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 160]
+        r = _read('atac_mm', query, [(0, 360)], P_DON - 200)
+        _, stats = self._run(GENOME_SEQ, r)
+        assert stats.extra.get('arb_mm_flagged', 0) >= 1, (
+            'the fixture never reached the mismatch-flagged rescue')
+        assert self._junction(r) != (P_DON, P_ACC)
+
+        r = _read('atac_mm', query, [(0, 360)], P_DON - 200)
+        changed, stats = self._run(GENOME_SEQ, r, atac=True)
+        assert changed and stats.extra.get('arb_mm_spliced') == 1, stats.extra
+        assert r.cigartuples == [(0, 200), (3, self.INTRON), (0, 160)]
+        assert self._junction(r) == (P_DON, P_ACC)
+        assert r.get_tag('XB').startswith(f'mm:{P_DON}-{P_ACC}:')
+
+    def test_head_storm_left_mirror_only_under_atac(self):
+        query = GENOME_SEQ[P_DON - 160:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 200]
+        r = _read('atac_mmL', query, [(0, 360)], P_ACC - 160)
+        _, stats = self._run(GENOME_SEQ, r)
+        assert stats.extra.get('arb_mm_flagged', 0) >= 1
+        assert self._junction(r) != (P_DON, P_ACC)
+
+        r = _read('atac_mmL', query, [(0, 360)], P_ACC - 160)
+        changed, stats = self._run(GENOME_SEQ, r, atac=True)
+        assert changed and stats.extra.get('arb_mm_spliced') == 1, stats.extra
+        assert r.cigartuples == [(0, 160), (3, self.INTRON), (0, 200)]
+        assert self._junction(r) == (P_DON, P_ACC)
+        assert r.reference_start == P_DON - 160
+        assert r.get_tag('XB').startswith(f'mmL:{P_DON}-{P_ACC}:')
 
 
 class TestGrammar:
