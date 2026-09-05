@@ -407,6 +407,7 @@ def _process_one_sample(
                         max_intron=getattr(args, 'max_intron', None),
                         resolver_acceptor_classes=getattr(
                             args, 'resolver_acceptor_classes', 'canonical'),
+                        require_compass_index=getattr(args, 'require_compass_index', False),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -840,6 +841,7 @@ def _run_single_sample(args) -> int:
             max_intron=getattr(args, 'max_intron', None),
             resolver_acceptor_classes=getattr(
                 args, 'resolver_acceptor_classes', 'canonical'),
+            require_compass_index=getattr(args, 'require_compass_index', False),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
