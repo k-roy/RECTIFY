@@ -1102,6 +1102,107 @@ def _chimeric_winner_read_ids(
     return drop
 
 
+# ---------------------------------------------------------------------------
+# Consensus-tag join (Xa/Xc/Xn/Xt from the align-stage multialigned BAM)
+# ---------------------------------------------------------------------------
+# `correct` copies these tags into its per-read TSV whenever the BAM it reads
+# carries them (`bam/output.consensus_tag_fields`).  In the production
+# correct-first order the arms are PER-ALIGNER BAMs, which carry none — so the
+# four columns arrive here empty.  The tags do exist, one stage earlier, on
+# `<sample>.multialigned.bam` (written by `consensus.run_consensus_selection`
+# from `align_command`), so the merge joins them back in by read name.
+#
+# This carries the RAW tags across a join; it does not compute a concordance
+# class.  `winning_aligner` stays the merge's own, separate verdict.
+
+def _load_consensus_tags_from_bam(consensus_bam: Path) -> Dict[str, Tuple[str, ...]]:
+    """Stream *consensus_bam* once into ``{read name: (Xa, Xc, Xn, Xt)}``.
+
+    Only the four short strings are retained per read — never a record — and
+    only for reads that actually carry at least one tag, so an untagged BAM
+    costs nothing.  Keys are ``_normalize_bam_read_name``d, which is exactly
+    what ``_load_tsv`` applies to the TSV ``read_id`` column, so the two sides
+    of the join cannot drift apart.
+    """
+    from ..bam.output import CONSENSUS_TAG_COLUMNS, consensus_tag_fields
+
+    tags: Dict[str, Tuple[str, ...]] = {}
+    if _pysam is None:  # pragma: no cover — pysam is a hard runtime dependency
+        logger.warning("pysam unavailable; skipping the consensus-tag join")
+        return tags
+    with _pysam.AlignmentFile(str(consensus_bam), 'rb', check_sq=False) as bam:
+        for read in bam.fetch(until_eof=True):
+            if read.is_secondary or read.is_supplementary:
+                continue
+            fields = consensus_tag_fields(read)
+            if not any(fields.values()):
+                continue
+            key = _normalize_bam_read_name(read.query_name or '')
+            if key:
+                tags.setdefault(
+                    key, tuple(fields[c] for c in CONSENSUS_TAG_COLUMNS)
+                )
+    return tags
+
+
+def _fill_consensus_tag_columns(
+    result_df: "pd.DataFrame",
+    consensus_bam: Path,
+) -> int:
+    """Fill EMPTY consensus-tag cells in *result_df* from *consensus_bam*.
+
+    Returns the number of rows that gained at least one value.  A cell that
+    already carries a value is never overwritten: a per-aligner TSV produced
+    from a BAM that really did carry the tags is the more direct evidence.
+    """
+    from ..bam.output import CONSENSUS_TAG_COLUMNS
+
+    empty = ('',) * len(CONSENSUS_TAG_COLUMNS)
+    tags = _load_consensus_tags_from_bam(consensus_bam)
+    if not tags:
+        logger.warning(
+            "Consensus-tag join: %s carries no Xa/Xc/Xn/Xt on any primary "
+            "record — the four consensus_* columns stay empty. Is this the "
+            "align-stage multialigned BAM?", consensus_bam,
+        )
+        return 0
+
+    keys = result_df['read_id'].astype(str)
+    mapped = pd.DataFrame(
+        [tags.get(k, empty) for k in keys],
+        columns=list(CONSENSUS_TAG_COLUMNS),
+        index=result_df.index,
+    )
+
+    gained = pd.Series(False, index=result_df.index)
+    for column in CONSENSUS_TAG_COLUMNS:
+        incoming = mapped[column]
+        if column in result_df.columns:
+            existing = result_df[column].fillna('').astype(str)
+            fill_here = (existing == '') & (incoming != '')
+            result_df[column] = existing.where(~fill_here, incoming)
+        else:
+            fill_here = incoming != ''
+            result_df[column] = incoming
+        gained |= fill_here
+
+    n_filled = int(gained.sum())
+    if n_filled == 0:
+        logger.warning(
+            "Consensus-tag join: %d tagged reads in %s matched 0 of %d merged "
+            "rows — read-name mismatch between the BAM and the per-aligner "
+            "TSVs; the consensus_* columns stay empty.",
+            len(tags), consensus_bam, len(result_df),
+        )
+    else:
+        logger.info(
+            "Consensus-tag join: filled %d/%d merged rows from %s "
+            "(%d tagged reads)",
+            n_filled, len(result_df), consensus_bam, len(tags),
+        )
+    return n_filled
+
+
 def merge_corrected_tsvs(
     per_aligner_tsvs: Dict[str, Path],
     output_tsv: Path,
@@ -1115,6 +1216,7 @@ def merge_corrected_tsvs(
     lazy_scoring_workers: int = 1,
     min_junction_anchor_bp: int = _MIN_JUNCTION_ANCHOR,
     drop_chimeric_winners: bool = False,
+    consensus_bam: Optional[Path] = None,
 ) -> Path:
     """
     Merge N per-aligner corrected TSVs into a single corrected_reads.tsv.
@@ -1187,6 +1289,15 @@ def merge_corrected_tsvs(
         spurious splice.  A precision-for-recall trade for human DRS; off by default
         (K=0 / yeast byte-identical).  Requires the HP-ED path (the
         _effective_chimera_ok column); a no-op if that column is absent.
+    consensus_bam:
+        Optional align-stage ``<sample>.multialigned.bam``.  When given, its
+        ``Xa``/``Xc``/``Xn``/``Xt`` tags are joined by read name into the
+        ``consensus_aligner`` / ``consensus_confidence`` / ``consensus_n_agree``
+        / ``consensus_tied`` columns, filling only cells that are empty.  The
+        arms of a correct-first run are per-aligner BAMs and carry no such
+        tags, so without this the four columns are empty by construction.
+        Raw tags only — never a derived concordance class; ``winning_aligner``
+        remains the merge's own, separate verdict.
 
     Returns
     -------
@@ -1659,6 +1770,18 @@ def merge_corrected_tsvs(
         inplace=True,
     )
     result_df.reset_index(drop=True, inplace=True)
+
+    # Join the align-stage Xa/Xc/Xn/Xt back in (see _fill_consensus_tag_columns).
+    # Done here, after winner selection, so it costs one lookup per surviving
+    # row rather than one per aligner arm.
+    if consensus_bam is not None:
+        try:
+            _fill_consensus_tag_columns(result_df, Path(consensus_bam))
+        except Exception as _tag_exc:  # non-fatal: the merge itself is the product
+            logger.warning(
+                "Consensus-tag join failed for %s (non-fatal): %s",
+                consensus_bam, _tag_exc,
+            )
 
     result_df.to_csv(output_tsv, sep='\t', index=False)
     logger.info(

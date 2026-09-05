@@ -469,3 +469,243 @@ class TestMergeCarriesColumnsThrough:
         assert len(merged) == 1
         for column in CONSENSUS_TAG_COLUMNS:
             assert merged.iloc[0][column] == ''
+
+
+# ---------------------------------------------------------------------------
+# The merge-time join: fill the columns from the align-stage multialigned BAM
+# ---------------------------------------------------------------------------
+def _write_consensus_bam(path, reads):
+    """*reads* = [(query_name, {tag: value}), ...] → a tiny sorted+indexed BAM."""
+    header = _header()
+    with pysam.AlignmentFile(str(path), "wb", header=header) as out:
+        for offset, (name, tags) in enumerate(reads):
+            out.write(_read(1000 + 300 * offset, 200, query_name=name,
+                            tags=tags, header=header))
+    pysam.index(str(path))
+    return path
+
+
+class TestMergeJoinsConsensusBam:
+    """`correct` runs on PER-ALIGNER BAMs, which carry no Xa/Xc/Xn/Xt, so the
+    four columns reach the merge empty. The align stage wrote those tags one
+    step earlier onto `<sample>.multialigned.bam`; the merge joins them back by
+    read name. Raw tags across a join — not a computed concordance class."""
+
+    def _merge(self, tmp_path, per_aligner_rows, consensus_bam=None):
+        import pandas as pd
+        from rectify.core.consensus.corrected_consensus import merge_corrected_tsvs
+
+        per_aligner_tsvs = {}
+        for aligner, rows in per_aligner_rows.items():
+            path = tmp_path / f"{aligner}.tsv"
+            pd.DataFrame(rows, columns=_MERGE_COLUMNS).to_csv(
+                path, sep='\t', index=False
+            )
+            per_aligner_tsvs[aligner] = path
+        out_tsv = tmp_path / "merged.tsv"
+        merge_corrected_tsvs(
+            per_aligner_tsvs=per_aligner_tsvs,
+            output_tsv=out_tsv,
+            per_aligner_corrected_bams=None,
+            consensus_bam=consensus_bam,
+        )
+        return pd.read_csv(out_tsv, sep='\t', keep_default_na=False)
+
+    def _two_empty_arms(self, read_id='r1'):
+        return {
+            'minimap2': [_merge_row(read_id, 'chrI', 500, span=200)],
+            'deSALT': [_merge_row(read_id, 'chrI', 500, span=100)],
+        }
+
+    def test_tagged_bam_fills_the_four_columns(self, tmp_path):
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 3,
+                    'Xt': 'deSALT,minimap2'}),
+        ])
+        merged = self._merge(tmp_path, self._two_empty_arms(), consensus_bam=bam)
+        assert len(merged) == 1
+        row = merged.iloc[0]
+        assert row['consensus_aligner'] == 'minimap2'
+        assert row['consensus_confidence'] == 'high'
+        assert str(row['consensus_n_agree']) == '3'
+        assert row['consensus_tied'] == 'deSALT,minimap2'
+        # The merge's own verdict is untouched and still separate.
+        assert row['winning_aligner'] in ('minimap2', 'deSALT')
+
+    def test_no_bam_leaves_them_empty(self, tmp_path):
+        merged = self._merge(tmp_path, self._two_empty_arms(), consensus_bam=None)
+        for column in CONSENSUS_TAG_COLUMNS:
+            assert merged.iloc[0][column] == ''
+
+    def test_untagged_bam_leaves_them_empty(self, tmp_path):
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [('r1', {})])
+        merged = self._merge(tmp_path, self._two_empty_arms(), consensus_bam=bam)
+        for column in CONSENSUS_TAG_COLUMNS:
+            assert merged.iloc[0][column] == ''
+
+    def test_existing_values_are_not_overwritten(self, tmp_path):
+        """A per-aligner TSV whose own BAM really did carry the tags is the
+        more direct evidence; the join must not clobber it."""
+        rows = {
+            'minimap2': [_merge_row(
+                'r1', 'chrI', 500, span=200,
+                consensus_aligner='uLTRA', consensus_confidence='low',
+                consensus_n_agree='1', consensus_tied='',
+            )],
+            'deSALT': [_merge_row(
+                'r1', 'chrI', 500, span=100,
+                consensus_aligner='uLTRA', consensus_confidence='low',
+                consensus_n_agree='1', consensus_tied='',
+            )],
+        }
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 3, 'Xt': 'a,b'}),
+        ])
+        merged = self._merge(tmp_path, rows, consensus_bam=bam)
+        row = merged.iloc[0]
+        assert row['consensus_aligner'] == 'uLTRA'
+        assert row['consensus_confidence'] == 'low'
+        assert str(row['consensus_n_agree']) == '1'
+        # Only the genuinely empty cell is filled.
+        assert row['consensus_tied'] == 'a,b'
+
+    def test_existing_n_agree_survives_a_disagreeing_bam(self, tmp_path):
+        """Sharper than the case above, which used '1' on both sides so int-vs-str
+        dtype inference could not be told apart. An all-numeric column is read
+        back from the arms as int64, so the no-overwrite path has to survive
+        `.astype(str)` — assert a value the BAM actively disagrees with."""
+        rows = {
+            'minimap2': [_merge_row(
+                'r1', 'chrI', 500, span=200,
+                consensus_aligner='uLTRA', consensus_n_agree='3',
+            )],
+            'deSALT': [_merge_row(
+                'r1', 'chrI', 500, span=100,
+                consensus_aligner='uLTRA', consensus_n_agree='3',
+            )],
+        }
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 5, 'Xt': 'a,b'}),
+        ])
+        merged = self._merge(tmp_path, rows, consensus_bam=bam)
+        row = merged.iloc[0]
+        assert str(row['consensus_n_agree']) == '3'   # NOT the BAM's 5
+        assert row['consensus_aligner'] == 'uLTRA'    # NOT the BAM's minimap2
+        # The two cells that really were empty do fill.
+        assert row['consensus_confidence'] == 'high'
+        assert row['consensus_tied'] == 'a,b'
+
+    def test_read_absent_from_the_bam_stays_empty(self, tmp_path):
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('someone_else', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 2}),
+        ])
+        merged = self._merge(tmp_path, self._two_empty_arms(), consensus_bam=bam)
+        for column in CONSENSUS_TAG_COLUMNS:
+            assert merged.iloc[0][column] == ''
+
+    def test_qname_suffix_is_normalized_before_the_join(self, tmp_path):
+        """The join key must be `_normalize_bam_read_name` on BOTH sides —
+        `_load_tsv` already normalizes the TSV `read_id`. An unnormalized BAM
+        key would match nothing and fail silently as four empty columns."""
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1_pt:i:25', {'Xa': 'mapPacBio', 'Xc': 'medium', 'Xn': 2}),
+        ])
+        merged = self._merge(tmp_path, self._two_empty_arms(), consensus_bam=bam)
+        assert merged.iloc[0]['consensus_aligner'] == 'mapPacBio'
+        assert str(merged.iloc[0]['consensus_n_agree']) == '2'
+
+    def test_columns_are_created_when_the_arms_predate_them(self, tmp_path):
+        """Per-aligner TSVs written before this feature have no such columns."""
+        import pandas as pd
+        from rectify.core.consensus.corrected_consensus import merge_corrected_tsvs
+
+        legacy_cols = [c for c in _MERGE_COLUMNS
+                       if c not in CONSENSUS_TAG_COLUMNS]
+        per_aligner_tsvs = {}
+        for aligner, span in (('minimap2', 200), ('deSALT', 100)):
+            path = tmp_path / f"{aligner}.tsv"
+            pd.DataFrame([_merge_row('r1', 'chrI', 500, span=span)],
+                         columns=legacy_cols).to_csv(path, sep='\t', index=False)
+            per_aligner_tsvs[aligner] = path
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1', {'Xa': 'deSALT', 'Xc': 'high', 'Xn': 4}),
+        ])
+        out_tsv = tmp_path / "merged.tsv"
+        merge_corrected_tsvs(
+            per_aligner_tsvs=per_aligner_tsvs,
+            output_tsv=out_tsv,
+            per_aligner_corrected_bams=None,
+            consensus_bam=bam,
+        )
+        merged = pd.read_csv(out_tsv, sep='\t', keep_default_na=False)
+        assert merged.iloc[0]['consensus_aligner'] == 'deSALT'
+        assert merged.iloc[0]['consensus_tied'] == ''
+
+    def test_only_tagged_reads_are_retained_in_memory(self, tmp_path):
+        """The BAM is streamed once into four short strings per TAGGED read;
+        untagged reads cost nothing."""
+        from rectify.core.consensus.corrected_consensus import (
+            _load_consensus_tags_from_bam,
+        )
+
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('tagged', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 3}),
+            ('untagged', {}),
+        ])
+        tags = _load_consensus_tags_from_bam(bam)
+        assert set(tags) == {'tagged'}
+        assert tags['tagged'] == ('minimap2', 'high', '3', '')
+
+
+class TestResolveConsensusTagBam:
+    def _paths(self, tmp_path, name):
+        path = tmp_path / name
+        path.write_bytes(b'')  # existence is all the resolver checks
+        return path
+
+    def test_explicit_path_wins(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        explicit = self._paths(tmp_path, 'explicit.bam')
+        self._paths(tmp_path, 's.multialigned.bam')
+        assert _resolve_consensus_tag_bam(str(explicit), 's', (tmp_path,)) == explicit
+
+    def test_missing_explicit_path_returns_none(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        self._paths(tmp_path, 's.multialigned.bam')
+        assert _resolve_consensus_tag_bam(
+            str(tmp_path / 'nope.bam'), 's', (tmp_path,)) is None
+
+    def test_auto_discovers_multialigned(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        expected = self._paths(tmp_path, 's.multialigned.bam')
+        assert _resolve_consensus_tag_bam(None, 's', (tmp_path,)) == expected
+
+    def test_auto_discovers_legacy_consensus_name(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        expected = self._paths(tmp_path, 's.consensus.bam')
+        assert _resolve_consensus_tag_bam(None, 's', (tmp_path,)) == expected
+
+    def test_searches_later_dirs_and_skips_none(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        second = tmp_path / 'second'
+        second.mkdir()
+        expected = self._paths(second, 's.multialigned.bam')
+        assert _resolve_consensus_tag_bam(
+            None, 's', (tmp_path, None, second)) == expected
+
+    def test_falls_back_to_the_corrected_input_bam(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        fallback = self._paths(tmp_path, 'input.bam')
+        assert _resolve_consensus_tag_bam(
+            None, 's', (tmp_path,), fallback=fallback) == fallback
+
+    def test_returns_none_when_nothing_exists(self, tmp_path):
+        from rectify.core.commands.run.helpers import _resolve_consensus_tag_bam
+
+        assert _resolve_consensus_tag_bam(None, 's', (tmp_path,)) is None
