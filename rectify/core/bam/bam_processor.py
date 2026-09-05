@@ -599,6 +599,13 @@ def correct_read_3prime(
     # Placed after five_prime_soft_clip_len is final (the reanchor propagation
     # above), because the writer reads that value as `five_prime_soft_clip`.
     _five_prime_rescue_refused = ''
+    if (not five_prime_rescued and '_3ss_result' in locals()
+            and _3ss_result.get('displaced_canonical_refused')):
+        # Not a writer verdict: the RESCUE declined every candidate that would
+        # have destroyed a canonical junction the aligner already called
+        # (splice_aware_5prime, hold-out read 34625d8e). Recorded in the same
+        # column so one field answers "why is this read not rescued".
+        _five_prime_rescue_refused = 'would_displace_canonical'
     if five_prime_rescued and genome is not None:
         from .bam_writer import predict_5prime_rescue_refusal as _predict_5p_refusal
         _five_prime_rescue_refused = _predict_5p_refusal(

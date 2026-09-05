@@ -39,9 +39,12 @@ from ...config import CHROM_TO_GENOME
 from .overhang_informativeness import (
     COUNTERS as _OI_COUNTERS,
     DEFAULT_ALPHA as _OI_DEFAULT_ALPHA,
+    _MAX_I_EFF_EXP as _OI_MAX_I_EFF_EXP,
     assess_overhang as _oi_assess,
+    effective_information_bits as _oi_bits,
     gate_alpha as _oi_gate_alpha,
     gate_enabled as _oi_gate_enabled,
+    is_canonical_junction as _is_canonical_junction,
     min_self_match_period as _oi_period,
 )
 from .region_skip import overlaps_skip_region, skip_regions_from_env
@@ -168,8 +171,21 @@ def _clip_search_refused(clip_seq: str, strand: str) -> bool:
     """
     if not clip_seq:
         return False
-    assessment = _oi_assess(_clip_assess_window(clip_seq, strand))
-    return assessment.refused or assessment.period is not None
+    seg = _clip_assess_window(clip_seq, strand)
+    # Deliberately NOT assess_overhang(): that increments the shared
+    # overhang_informativeness COUNTERS, and 'assessed' is the instrument the
+    # resolver's and triage's "ONE refusal discipline" tests assert on
+    # (tests/test_triage_clip_legs.py asserts COUNTERS['assessed'] == 1 for a
+    # single clip-leg rescue). This is a second, independent question about the
+    # same clip, so it must not be counted as another assessment. The arithmetic
+    # below is assess_overhang's, inlined: W_max = alpha * 2**I_eff, capped at
+    # (period - 1), refused when W_max < 1.
+    period = _oi_period(seg)
+    if period is not None:
+        return True
+    w_max = _OI_DEFAULT_ALPHA * (2.0 ** min(
+        _oi_bits(seg), _OI_MAX_I_EFF_EXP))
+    return w_max < 1.0
 
 
 def _clip_assess_window(clip_seq: str, strand: str) -> str:
@@ -1492,6 +1508,10 @@ def rescue_3ss_truncation(
             _clip5 = _seq[-_cigar[-1][1]:] if _cigar[-1][0] == 4 else ""
         if (len(_clip5) >= _CLIP_ARTIFACT_SCOPE_BP
                 and _clip_search_refused(_clip5, strand)):
+            # Observable without touching the resolver's 'assessed'/'refused'
+            # instrument — this is a different decision from assess_overhang's.
+            _OI_COUNTERS['clip_search_refused'] = (
+                _OI_COUNTERS.get('clip_search_refused', 0) + 1)
             _res = _no_rescue(read, strand)
             _res['repeat_expansion'] = True
             return _res
@@ -1798,6 +1818,60 @@ def _rescue_3ss_truncation_body(
     # whose ``sorted``/``sort`` are stable and therefore only as deterministic as
     # their input order.
     _nearby_junctions.sort(key=lambda _j: (_j[0], _j[1], _j[2]))
+
+    # --- A rescue may not DISPLACE a canonical junction the aligner already
+    # called ------------------------------------------------------------------
+    # Module 2F corrects the 5' END. It has no mandate to re-splice a junction
+    # the input alignment already carries with canonical signal: that junction is
+    # evidence, and the read is the only witness to it.
+    #
+    # Hold-out read 34625d8e (Sumner chr5, minus strand) is the shape this
+    # prevents. Its aligner CIGAR carries seven annotated CT-AC junctions; the
+    # correction replaced the 5'-most, 91378775-91382812, with
+    # 91378775-91380924 — one edge from that junction and the other from a
+    # DIFFERENT annotated junction (91380924-91418708), 1,888 nt inside the
+    # original intron. The result is not annotated, but it IS CT-AC, so the
+    # writer's canonical-destination guard passed it: a motif check cannot see
+    # that a real junction was destroyed to build it. Only the read's own CIGAR
+    # can, so the check belongs here, where that CIGAR is in scope.
+    #
+    # Keyed on CANONICAL rather than annotated because `candidate_junctions` is
+    # not an annotation set — in `run-all` it also carries novel pool junctions —
+    # so membership in it proves nothing. The canonical motif at coordinates the
+    # ALIGNER chose (not ones this module invented) is the available evidence.
+    #
+    # Deliberately does NOT refuse:
+    #   * the legitimate rescue where the aligner called no junction at all —
+    #     nothing is protected, so nothing is filtered;
+    #   * the same junction re-affirmed, or nudged within junction_proximity_bp
+    #     on BOTH edges — that is a boundary adjustment, not a displacement, and
+    #     is the `already_has_n` equivalence Case 4 already uses.
+    if _n_intervals:
+        _protected = [
+            (_ns, _ne) for _ns, _ne in _n_intervals
+            if _is_canonical_junction(genome_seq, _ns, _ne, atac=True)
+        ]
+        if _protected:
+            _kept = []
+            for _j in _nearby_junctions:
+                _js, _je = _j[1], _j[2]
+                _displaces = any(
+                    not (_je <= _ns or _ne <= _js)          # overlaps it
+                    and not (abs(_js - _ns) <= junction_proximity_bp
+                             and abs(_je - _ne) <= junction_proximity_bp)
+                    for _ns, _ne in _protected
+                )
+                if _displaces:
+                    _OI_COUNTERS['candidate_would_displace_canonical'] = (
+                        _OI_COUNTERS.get('candidate_would_displace_canonical', 0) + 1)
+                else:
+                    _kept.append(_j)
+            _displaced_any = len(_kept) != len(_nearby_junctions)
+            _nearby_junctions = _kept
+        else:
+            _displaced_any = False
+    else:
+        _displaced_any = False
 
     # Cap to K closest junctions when the set is large.  On junction-dense loci
     # (human chr5 SMN1/SMN2) the proximity filter can still admit 50-200+ entries.
@@ -2613,9 +2687,15 @@ def _rescue_3ss_truncation_body(
                 'query_bp': 0,
                 'five_prime_exon_cigar': '',
                 'five_prime_upstream_trim': 0,
+                'displaced_canonical_refused': _displaced_any,
             }
 
-    return _no_rescue(read, strand)
+    _res_none = _no_rescue(read, strand)
+    # Audit trail: the read reached no-rescue with at least one candidate removed
+    # because taking it would have destroyed a canonical junction the aligner
+    # called. bam_processor surfaces this in `five_prime_rescue_refused`.
+    _res_none['displaced_canonical_refused'] = _displaced_any
+    return _res_none
 
 
 def _no_rescue(read: pysam.AlignedSegment, strand: str) -> Dict:

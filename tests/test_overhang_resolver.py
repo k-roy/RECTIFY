@@ -696,7 +696,23 @@ class TestRearbitration:
 
 class TestRescueGate:
     """The gate kills the poly(A)-clip false-positive rescue when enabled,
-    changes nothing when the clip is informative, and is OFF by default."""
+    changes nothing when the clip is informative, and is OFF by default.
+
+    2026-09-05 (ISSUE-006): the poly(A) false rescue these two tests were written
+    around is now refused unconditionally, before the env-gated path is reached.
+    `rescue_3ss_truncation`'s whole-read short-circuit no longer asks
+    `is_repeat_expansion` (a length + k-mer-dominance rule) but
+    `_clip_search_refused` (informativeness: W_max < 1, or a tandem self-match
+    period inside the rescue's slide window) — and a 30 nt poly(A) clip scores
+    I_eff 0.00 with period 1, so it is refused whether or not
+    RECTIFY_OVERHANG_INFO_GATE is set. The two poly(A) tests below therefore
+    assert the NEW behaviour; the premise "with the gate off this false-rescues"
+    is obsolete, not merely unverified.
+
+    `test_gate_on_informative_clip_identical_result` is untouched and still
+    proves the env gate is a no-op on an informative clip — the property that
+    made it safe to leave DARK.
+    """
 
     # A-run exon end: genome[FP_DON-30:FP_DON] == 'A'*30, so a poly(A) clip
     # FALSELY sequence-matches the exon-1 side of this junction.
@@ -714,7 +730,12 @@ class TestRescueGate:
         query = 'A' * 30 + genome['chrI'][self.FP_ACC:self.FP_ACC + 60]
         return _read('fp', query, [(4, 30), (0, 60)], self.FP_ACC)
 
-    def test_gate_off_polya_clip_false_rescues(self, monkeypatch):
+    def test_gate_off_polya_clip_still_refused(self, monkeypatch):
+        """WAS `test_gate_off_polya_clip_false_rescues`, asserting `rescued is
+        True` — the defect the DARK gate was built to fix. ISSUE-006 moved that
+        refusal into the always-on path, so the false rescue no longer happens
+        with the gate off either. Asserting the old behaviour would now pin the
+        bug in place."""
         from rectify.core.splice.splice_aware_5prime import rescue_3ss_truncation
         monkeypatch.delenv('RECTIFY_OVERHANG_INFO_GATE', raising=False)
         genome = self._fp_genome()
@@ -722,11 +743,18 @@ class TestRescueGate:
             self._polya_read(genome), genome,
             {('chrI', self.FP_DON, self.FP_ACC)},
         )
-        # the defect the gate exists to fix: a poly(A) clip "confirms" the
-        # A-run exon end
-        assert res['rescued'] is True
+        assert res['rescued'] is False
+        assert res.get('repeat_expansion') is True
+        assert COUNTERS.get('clip_search_refused', 0) >= 1
 
     def test_gate_on_polya_clip_refused(self, monkeypatch):
+        """Unchanged verdict, earlier mechanism: the clip is refused by the
+        always-on informativeness short-circuit before the env-gated
+        `assess_overhang` call is reached, so `COUNTERS['refused']` (the gate's
+        own instrument) is no longer the thing that moves — `clip_search_refused`
+        is. Both are counted separately on purpose: the resolver's and triage's
+        "ONE refusal discipline" tests assert on `assessed`/`refused`, and the 2F
+        clip decision must not perturb them."""
         from rectify.core.splice.splice_aware_5prime import rescue_3ss_truncation
         monkeypatch.setenv('RECTIFY_OVERHANG_INFO_GATE', '1')
         genome = self._fp_genome()
@@ -735,7 +763,7 @@ class TestRescueGate:
             {('chrI', self.FP_DON, self.FP_ACC)},
         )
         assert res['rescued'] is False
-        assert COUNTERS['refused'] >= 1
+        assert COUNTERS.get('clip_search_refused', 0) >= 1
 
     def test_gate_on_informative_clip_identical_result(self, monkeypatch):
         from rectify.core.splice.splice_aware_5prime import rescue_3ss_truncation

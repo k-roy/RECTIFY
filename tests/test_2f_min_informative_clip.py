@@ -477,3 +477,91 @@ class TestChr5Holdout:
         assert len(annotated) / len(created) >= 0.70, (
             f'only {len(annotated)}/{len(created)} created introns are annotated '
             '(baseline 25/222 = 11%)')
+
+
+# ---------------------------------------------------------------------------
+# A rescue may not displace a canonical junction the aligner already called
+# ---------------------------------------------------------------------------
+
+class TestNoDisplacementOfAlignerCanonicalJunction:
+    """Shape of Sumner hold-out read 34625d8e.
+
+    Its aligner CIGAR carried seven annotated CT-AC junctions; the correction
+    replaced the 5'-most, 91378775-91382812, with 91378775-91380924 — one edge
+    from that junction and the other from a DIFFERENT annotated junction
+    (91380924-91418708), 1,888 nt inside the original intron. Not annotated, but
+    CT-AC, so a motif check on the written coordinates cannot see that a real
+    junction was destroyed to build it. Only the read's own CIGAR can.
+    """
+
+    # exon [0,1000) | intron A [1000,3000) CT..AC | exon [3000,3400)
+    # candidate C [2500,3200) also CT..AC — overlaps A, shares neither edge.
+    @staticmethod
+    def _genome():
+        seq = list('ACGTTGCAT' * 400)          # 3600 nt, aperiodic
+        def put(at, s):
+            seq[at:at + len(s)] = list(s)
+        put(1000, 'CT'); put(2998, 'AC')       # intron A, canonical on '-'
+        put(2500, 'CT'); put(3198, 'AC')       # candidate C, canonical on '-'
+        return {'chrD': ''.join(seq)}
+
+    @staticmethod
+    def _read(with_n_op):
+        """Minus-strand read whose 5' end (reference_end - 1) sits at ~3004."""
+        hdr = pysam.AlignmentHeader.from_dict(
+            {'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrD', 'LN': 3600}]})
+        r = pysam.AlignedSegment(hdr)
+        r.query_name = 'displace'
+        r.reference_name = 'chrD'
+        r.is_reverse = True
+        r.is_unmapped = r.is_secondary = r.is_supplementary = False
+        r.mapping_quality = 60
+        if with_n_op:
+            r.reference_start = 900
+            r.cigartuples = [(0, 100), (3, 2000), (0, 5), (4, 12)]
+            r.query_sequence = 'A' * 117
+        else:
+            r.reference_start = 2900
+            r.cigartuples = [(0, 105), (4, 12)]
+            r.query_sequence = 'A' * 117
+        return r
+
+    def test_candidate_overlapping_an_aligner_canonical_junction_is_refused(self):
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+        import rectify.core.splice.splice_aware_5prime as s5
+
+        genome = self._genome()
+        cands = {('chrD', 1000, 3000), ('chrD', 2500, 3200)}
+        COUNTERS['candidate_would_displace_canonical'] = 0
+        res = s5.rescue_3ss_truncation(self._read(True), genome, cands, strand='-')
+        assert COUNTERS.get('candidate_would_displace_canonical', 0) >= 1, (
+            'the overlapping candidate was not filtered')
+        assert res.get('displaced_canonical_refused') is not False or not res['rescued']
+        # Whatever else happens, the read must not be rescued ONTO the displacing
+        # junction.
+        assert res.get('rescued_junction') != ('chrD', 2500, 3200)
+
+    def test_the_same_junction_within_proximity_is_not_a_displacement(self):
+        """A boundary nudge of the read's OWN junction is an adjustment, not a
+        displacement — the `already_has_n` equivalence."""
+        import rectify.core.splice.splice_aware_5prime as s5
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+
+        genome = self._genome()
+        COUNTERS['candidate_would_displace_canonical'] = 0
+        s5.rescue_3ss_truncation(
+            self._read(True), genome, {('chrD', 1002, 2998)}, strand='-')
+        assert COUNTERS.get('candidate_would_displace_canonical', 0) == 0
+
+    def test_a_read_with_no_junction_is_unaffected(self):
+        """The legitimate case the rule must not touch: the aligner called no
+        junction, so the rescue is free to create the annotated one."""
+        import rectify.core.splice.splice_aware_5prime as s5
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+
+        genome = self._genome()
+        COUNTERS['candidate_would_displace_canonical'] = 0
+        s5.rescue_3ss_truncation(
+            self._read(False), genome,
+            {('chrD', 1000, 3000), ('chrD', 2500, 3200)}, strand='-')
+        assert COUNTERS.get('candidate_would_displace_canonical', 0) == 0

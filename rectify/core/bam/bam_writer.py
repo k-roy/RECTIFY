@@ -256,6 +256,67 @@ def _n_op_intervals(read: pysam.AlignedSegment) -> Tuple[Tuple[int, int], ...]:
     return tuple(out)
 
 
+# A 5' rescue whose N-op overshoots the acceptor by a base or two is the read
+# MISSING those bases at the exon-2 start, not an invented junction: `extend`
+# ends its N-op at the read's own alignment start, so every exon-2 base the
+# basecaller dropped is swallowed into the intron. Pulling the acceptor back onto
+# the canonical position and representing the dropped bases as D recovers the
+# real junction. Bounded deliberately: beyond a few bases the disagreement is
+# about placement, not about lost terminal bases, and the junction should be
+# refused rather than massaged.
+_MAX_ACCEPTOR_REPAIR_BP = 3
+
+
+def _repair_acceptor_overshoot(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    n_index: int,
+    start: int,
+    end: int,
+) -> bool:
+    """Pull a non-canonical rescued N-op back onto the nearest canonical acceptor.
+
+    ``n_index`` is the position of the N op in ``read.cigartuples``. The recovered
+    reference bases become a D op on the BODY side of the N — which is the side
+    the acceptor abuts on either strand: for a plus-strand rescue the CIGAR is
+    ``[exon..., N, body...]`` and the acceptor is the N's HIGH edge, for a minus-
+    strand rescue it is ``[body..., N, exon...]`` and the acceptor is the LOW
+    edge. Returns True when a repair was applied.
+
+    The smallest qualifying shift wins, so a nearer canonical position is never
+    passed over for a farther one (on the bundled upf1d cat3_plus_2 read both
+    delta=2 — the annotated GT-AG — and delta=4 are canonical).
+    """
+    cigar = list(read.cigartuples or [])
+    if not (0 <= n_index < len(cigar)) or cigar[n_index][0] != 3:
+        return False
+    length = cigar[n_index][1]
+    # Which edge abuts the read body? The exon ops the rescue wrote sit on the
+    # other side of the N.
+    body_is_after = any(op in (0, 7, 8) for op, _l in cigar[n_index + 1:])
+    for delta in range(1, _MAX_ACCEPTOR_REPAIR_BP + 1):
+        if length - delta <= 0:
+            break
+        cand = (start, end - delta) if body_is_after else (start + delta, end)
+        if not is_canonical_junction(chrom_seq, cand[0], cand[1], atac=True):
+            continue
+        new_cigar = list(cigar)
+        new_cigar[n_index] = (3, length - delta)
+        if body_is_after:
+            new_cigar.insert(n_index + 1, (2, delta))
+        else:
+            new_cigar.insert(n_index, (2, delta))
+            # reference_start is unchanged: the D consumes reference that the N
+            # used to cover, on the body side.
+        read.cigartuples = new_cigar
+        logger.debug(
+            "5' rescue acceptor repaired for %s: N %d-%d -> %d-%d (+%dD)",
+            read.query_name, start, end, cand[0], cand[1], delta,
+        )
+        return True
+    return False
+
+
 def _revert_selfinflicted_noncanonical_n(
     read: pysam.AlignedSegment,
     genome: Optional[Dict[str, str]],
@@ -304,16 +365,38 @@ def _revert_selfinflicted_noncanonical_n(
         )
         return False
     for start, end in new_nops:
-        if not is_canonical_junction(chrom_seq, start, end, atac=True):
-            logger.debug(
-                "5' rescue reverted for %s: writer-created N-op %d-%d is "
-                "non-canonical (%s..%s)",
-                read.query_name, start, end,
-                chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper(),
-            )
-            read.cigartuples = pre_cigar
-            read.reference_start = pre_start
-            return True
+        if is_canonical_junction(chrom_seq, start, end, atac=True):
+            continue
+        # A near miss is the read MISSING a base or two at the exon-2 start, not
+        # an invented junction. Try to pull the acceptor back onto the canonical
+        # position first; only a junction that cannot be recovered that way is
+        # reverted. (Bundled upf1d cat3_plus_2: extend drew GT-TC 148194-148284
+        # because the read lacks the 2 exon-2 bases TC, and shrinking by 2
+        # recovers the ANNOTATED GT-AG 148194-148282. Reverting instead cost that
+        # read its rescue and, through merge_corrected_tsvs' HP-edit-distance
+        # scoring of the corrected reads, handed the merged row to a different
+        # aligner with the wrong 5' position.)
+        _idx = None
+        _pos = read.reference_start
+        for _i, (_op, _l) in enumerate(read.cigartuples or []):
+            if _op == 3 and _pos == start:
+                _idx = _i
+                break
+            if _op in (0, 2, 3, 7, 8):
+                _pos += _l
+        if _idx is not None and _repair_acceptor_overshoot(
+                read, chrom_seq, _idx, start, end):
+            continue
+        logger.debug(
+            "5' rescue reverted for %s: writer-created N-op %d-%d is "
+            "non-canonical (%s..%s) and not recoverable within %d bp",
+            read.query_name, start, end,
+            chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper(),
+            _MAX_ACCEPTOR_REPAIR_BP,
+        )
+        read.cigartuples = pre_cigar
+        read.reference_start = pre_start
+        return True
     return False
 
 
