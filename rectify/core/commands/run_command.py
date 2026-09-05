@@ -779,6 +779,18 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--junction-pool-max-intron-len', type=int, default=0, metavar='BP',
+        help=(
+            'Maximum intron length (nt) for a non-annotated junction to enter the '
+            "candidate-junction pool used by the align-stage consensus selection's "
+            "5' soft-clip rescue (the pass that produces multialigned.bam, before "
+            'per-aligner correction). Distinct from --max-intron, which bounds the '
+            'aligner panel itself. 0 = no limit (default); 3000 suits S. cerevisiae. '
+            'Mirrors `rectify consensus --junction-pool-max-intron-len`.'
+        ),
+    )
+
+    run_parser.add_argument(
         '--chimeric-consensus',
         action='store_true',
         default=True,
