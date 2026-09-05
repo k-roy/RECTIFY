@@ -186,6 +186,49 @@ def get_scratch_dir() -> Optional[Path]:
     return None
 
 
+#: Minimum free space (GiB) a scratch filesystem must have before rectify will stage onto it.
+#: An alignment + consensus run writes tens of GB of intermediate BAMs, and a full scratch
+#: fails LATE and confusingly: on Hoffman2 (`/u/scratch` at 97 % in 2026-09) a near-full quota
+#: produces an empty stderr, a low maxvmem and every array task dying inside a minute
+#: (memory `reference-h2-scratch-quota-silent-kill`). Overridable with $RECTIFY_MIN_SCRATCH_GIB.
+MIN_SCRATCH_FREE_GIB = 20.0
+
+
+def scratch_free_gib(path: Path) -> Optional[float]:
+    """Free space on *path*'s filesystem in GiB, or None if it cannot be determined.
+
+    Uses ``shutil.disk_usage``, which reports the FILESYSTEM, not a per-user quota — a scratch
+    with room but no quota left still looks free here. The check is therefore a guard against
+    the common case (a genuinely full scratch), not a guarantee.
+    """
+    import shutil as _shutil
+    try:
+        return _shutil.disk_usage(str(path)).free / (1024 ** 3)
+    except OSError:
+        return None
+
+
+def _scratch_has_room(path: Path, min_free_gib: Optional[float] = None) -> bool:
+    """True when *path* has at least *min_free_gib* free (or free space is unknown)."""
+    if min_free_gib is None:
+        try:
+            min_free_gib = float(os.environ.get('RECTIFY_MIN_SCRATCH_GIB', MIN_SCRATCH_FREE_GIB))
+        except ValueError:
+            min_free_gib = MIN_SCRATCH_FREE_GIB
+    free = scratch_free_gib(path)
+    if free is None:
+        return True
+    if free < min_free_gib:
+        logger.warning(
+            "scratch %s has only %.1f GiB free (< %.1f GiB); NOT staging there. "
+            "Intermediates will be written to the output directory instead. "
+            "Pass --scratch-dir DIR to choose another filesystem, or raise the floor with "
+            "$RECTIFY_MIN_SCRATCH_GIB.", path, free, min_free_gib,
+        )
+        return False
+    return True
+
+
 def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
     """
     Create a unique per-job scratch directory and return its path.
@@ -208,7 +251,8 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
         prefix: Directory name prefix (default: 'rectify')
 
     Returns:
-        Path to created scratch dir, or None if scratch unavailable.
+        Path to created scratch dir, or None if scratch is unavailable **or too full**
+        (below ``MIN_SCRATCH_FREE_GIB``) — the caller then writes to the output filesystem.
     """
     scratch_base = get_scratch_dir()
     if scratch_base is None:
@@ -216,6 +260,8 @@ def make_job_scratch_dir(prefix: str = 'rectify') -> Optional[Path]:
 
     job_id = get_job_id()
     task_id = get_task_id()
+    if not _scratch_has_room(scratch_base):
+        return None
     scratch_dir = scratch_base / f'{prefix}_{job_id}_{task_id}'
     scratch_dir.mkdir(parents=True, exist_ok=True)
     return scratch_dir

@@ -54,6 +54,8 @@ def _run_alignment(
     read_length: int = 150,
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
+    bbmap_path: Optional[str] = None,
+    bwa_path: Optional[str] = None,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -183,6 +185,11 @@ def _run_alignment(
         junc_bed=None,
         parallel_aligners=parallel_aligners,
         minimap2_path='minimap2',
+        # planning 862 G-10: the short-read panel's two executables had no run-all
+        # flag, so a cluster env with bbmap/bwa outside PATH silently lost those
+        # arms (align_command resolves each arm's path from this Namespace).
+        bbmap_path=bbmap_path or 'bbmap.sh',
+        bwa_path=bwa_path or 'bwa',
         mapPacBio_path='mapPacBio.sh',
         gapmm2_path='gapmm2',
         ultra_path=ultra_path,

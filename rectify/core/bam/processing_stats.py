@@ -231,14 +231,19 @@ def write_stats_tsv(
     Args:
         stats:       ProcessingStats object.
         output_path: Path to output TSV file.
-        protocol:    'drs' (direct RNA-seq, default) or 'dt_cdna'
+        protocol:    'drs' (default), 'dt_cdna', 'ont_cdna', 'short_read' or 'netseq'
                      (oligo-dT-primed cDNA, i.e. --dT-primed-cDNA).
                      Controls which mode-specific sections are included and
                      what the comment header says.
     """
     total = stats.total_reads_in_bam
     processed = stats.reads_processed
-    is_drs = protocol not in ('dt_cdna', 'ont_cdna')
+    # planning 861 G-21: the branch below was three-way (dt_cdna / ont_cdna / else -> DRS),
+    # so EVERY --short-read and --netseq run wrote "Protocol: DRS (direct RNA-seq)" into its
+    # stats file and printed it to the console. C-1 fixed the BEHAVIOUR (poly(A)/indel modules
+    # are off for short reads); this fixes the OBSERVABILITY, which was telling a log reader
+    # the opposite of the truth.
+    is_drs = protocol not in ('dt_cdna', 'ont_cdna', 'short_read', 'netseq')
     is_ont_cdna = protocol == 'ont_cdna'
 
     with open(output_path, 'w') as f:
@@ -257,6 +262,18 @@ def write_stats_tsv(
                 "# Protocol: ONT PCR-cDNA (--ONT-cDNA, e.g. SQK-PCB114)\n"
                 "#   reads_with_polya / polya_length_*  — poly(A) tail from 3' soft-clip (meaningful)\n"
                 "#   ends_flagged_ag_mispriming          — always 0; no oligo-dT priming step in PCR-cDNA\n"
+            )
+        elif protocol == 'short_read':
+            f.write(
+                "# Protocol: short-read Illumina (--short-read; TruSeq-style RNA-seq)\n"
+                "#   reads_with_polya / polya_length_*  — always 0; poly(A) trimming is disabled on this path\n"
+                "#   ends_flagged_ag_mispriming          — always 0; no oligo-dT priming step\n"
+            )
+        elif protocol == 'netseq':
+            f.write(
+                "# Protocol: NET-seq (--netseq; nascent Pol II 3' ends, read 5' end = RNA 3' end)\n"
+                "#   reads_with_polya / polya_length_*  — always 0; NET-seq RNA is not poly(A)-selected\n"
+                "#   ends_flagged_ag_mispriming          — always 0; no oligo-dT priming step\n"
             )
         else:
             f.write(
@@ -389,7 +406,7 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
 
     Args:
         stats:    ProcessingStats object.
-        protocol: 'drs' (direct RNA-seq, default) or 'dt_cdna'
+        protocol: 'drs' (default), 'dt_cdna', 'ont_cdna', 'short_read' or 'netseq'
                   (--dT-primed-cDNA).  Adds a note next to sections that are
                   inactive for the current protocol.
 
@@ -398,7 +415,7 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
     """
     total = stats.total_reads_in_bam
     processed = stats.reads_processed
-    is_drs = protocol not in ('dt_cdna', 'ont_cdna')
+    is_drs = protocol not in ('dt_cdna', 'ont_cdna', 'short_read', 'netseq')
     is_ont_cdna = protocol == 'ont_cdna'
 
     lines = []
@@ -408,6 +425,10 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
         proto_label = "oligo-dT-primed cDNA (--dT-primed-cDNA)"
     elif is_ont_cdna:
         proto_label = "ONT PCR-cDNA (--ONT-cDNA)"
+    elif protocol == 'short_read':
+        proto_label = "short-read Illumina (--short-read)"
+    elif protocol == 'netseq':
+        proto_label = "NET-seq (--netseq)"
     else:
         proto_label = "DRS (direct RNA-seq)"
     lines.append(f"Protocol: {proto_label}")
