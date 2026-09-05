@@ -889,7 +889,15 @@ def run(args):
         # Choose processing mode
         _t_proc = _time.perf_counter()
         _polya_model_path = str(config['polya_model_path']) if config.get('polya_model_path') else None
-        _protocol = 'netseq' if is_netseq else ('dt_cdna' if is_dt_primed else ('ont_cdna' if is_ont_cdna else 'drs'))
+        # planning 861 G-21: 'short_read' must reach the stats writer, or every TruSeq /
+        # QuantSeq run is labelled DRS. Order matters: --short-read --dT-primed-cDNA is a
+        # QuantSeq library and keeps the oligo-dT label (AG-mispriming IS meaningful there).
+        _is_short_read = bool(getattr(args, 'short_read', False))
+        _protocol = ('netseq' if is_netseq
+                     else 'dt_cdna' if is_dt_primed
+                     else 'ont_cdna' if is_ont_cdna
+                     else 'short_read' if _is_short_read
+                     else 'drs')
 
         # Build rRNA / Pol III exclusion detector (mirrors `analyze`'s default-on
         # exclusion). rDNA, tRNAs, SNR6, RDN5, etc. are dropped downstream by

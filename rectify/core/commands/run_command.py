@@ -484,6 +484,48 @@ def create_run_parser(subparsers):
             '--manifest or --chunked-alignment.'
         ),
     )
+    # ── short-read adapter trim (planning 861 §S0c / 833 G-5) ──────────────────
+    # 13.0 % of R1 carried the TruSeq adapter on the 861 smoke and 11.5 % were
+    # full-length dimers, yet only 0.01 % of BAM records showed any terminal clip:
+    # HISAT2 runs --no-softclip and STAR EndToEnd on this path, so an untrimmed
+    # adapter becomes mismatches or an unaligned read, never a visible clip.
+    sr_trim = run_parser.add_argument_group(
+        'Short-read adapter trimming (--short-read; cutadapt)')
+    sr_trim.add_argument(
+        '--skip-short-read-trim', dest='skip_short_read_trim', action='store_true',
+        default=False,
+        help='Input FASTQ is already adapter-trimmed; skip the cutadapt stage.')
+    sr_trim.add_argument(
+        '--short-read-adapter', dest='short_read_adapter', default=None,
+        help="3' adapter for read 1 (default: the Illumina TruSeq/universal stem "
+             'AGATCGGAAGAGCACACGTCTGAACTCCAGTCA, which is also the prefix of the '
+             'NEBNext and Lexogen QuantSeq adapters).')
+    sr_trim.add_argument(
+        '--short-read-adapter-r2', dest='short_read_adapter_r2', default=None,
+        help="3' adapter for read 2 when --read2 is given (default: the TruSeq read-2 "
+             'stem AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT). Both mates are trimmed in one '
+             'cutadapt pass so the FASTQs stay synchronised.')
+    sr_trim.add_argument(
+        '--short-read-min-length', dest='short_read_min_length', type=int, default=20,
+        help='Discard reads shorter than N after trimming (cutadapt -m, default 20). '
+             '0-length records are written by -m 0 and are rejected by bbmap and '
+             'magicblast and silently dropped by STAR.')
+    sr_trim.add_argument(
+        '--short-read-quality-cutoff', dest='short_read_quality_cutoff', type=int,
+        default=None, help='cutadapt -q quality trim (four-colour chemistry).')
+    sr_trim.add_argument(
+        '--short-read-nextseq-trim', dest='short_read_nextseq_trim', type=int, default=None,
+        help='cutadapt --nextseq-trim=N two-colour-aware quality trim (NextSeq/NovaSeq, '
+             'where a no-signal base reads as a high-quality G). Mutually exclusive with '
+             '--short-read-quality-cutoff.')
+    sr_trim.add_argument(
+        '--bwa-path', dest='bwa_path', default=None,
+        help='Path to the bwa executable (QuantSeq-class --short-read --dT-primed-cDNA '
+             'panel). Default: bwa on PATH.')
+    sr_trim.add_argument(
+        '--bbmap-path', dest='bbmap_path', default=None,
+        help='Path to bbmap.sh (short-read panel). Default: bbmap.sh on PATH.')
+
     run_parser.add_argument(
         '--require-compass-index', dest='require_compass_index', action='store_true',
         default=False,

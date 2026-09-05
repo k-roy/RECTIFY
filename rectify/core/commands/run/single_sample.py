@@ -369,6 +369,45 @@ def _process_one_sample(
                           file=sys.stderr)
                     return sample_id, 1
 
+            # ── Short-read Step 0: Illumina adapter trim ───────────────────
+            # planning 861 §S0c: 13.0 % of R1 carry the TruSeq adapter and 11.5 % are
+            # full-length dimers, and NONE of it is visible in the BAM because HISAT2
+            # runs --no-softclip and STAR EndToEnd on this path. Without a trim stage
+            # the adapter becomes mismatches or an unaligned read. QuantSeq
+            # (--short-read --dT-primed-cDNA) is worse: there the trimmed 3' end IS the
+            # measured RNA 3' end, so untrimmed adapter MOVES called cleavage sites.
+            _sr_read2: Optional[Path] = None
+            if (getattr(args, 'short_read', False) and input_type in ('fastq', 'fastq.gz')
+                    and not getattr(args, 'skip_short_read_trim', False)):
+                from .short_read_trim import (TRUSEQ_R1_ADAPTER, TRUSEQ_R2_ADAPTER,
+                                              run_short_read_trim)
+                _r2_arg = getattr(args, 'read2', None)
+                try:
+                    print(f"  [{sample_id}] Trimming Illumina adapters…", flush=True)
+                    _t1, _t2, _rep = run_short_read_trim(
+                        input_path, _work, sample_id,
+                        read2=Path(_r2_arg) if _r2_arg else None,
+                        adapter=getattr(args, 'short_read_adapter', None) or TRUSEQ_R1_ADAPTER,
+                        adapter2=getattr(args, 'short_read_adapter_r2', None) or TRUSEQ_R2_ADAPTER,
+                        min_length=getattr(args, 'short_read_min_length', 20),
+                        quality_cutoff=getattr(args, 'short_read_quality_cutoff', None),
+                        nextseq_trim=getattr(args, 'short_read_nextseq_trim', None),
+                        threads=getattr(args, 'threads', 4),
+                        cutadapt_path=getattr(args, 'cutadapt_path', None),
+                        log=log,
+                    )
+                    input_path, input_type = _t1, 'fastq.gz'
+                    if _t2 is not None:
+                        _sr_read2 = _t2
+                    if _rep.get('in_reads'):
+                        print(f"  [{sample_id}] trimmed {_rep.get('in_reads'):,} → "
+                              f"{_rep.get('out_reads', 0):,} reads", flush=True)
+                except Exception as e:
+                    log.write(f"Short-read adapter trim failed: {e}\n")
+                    print(f"ERROR: [{sample_id}] short-read adapter trim failed: {e}",
+                          file=sys.stderr)
+                    return sample_id, 1
+
             if input_type in ('fastq', 'fastq.gz') and not getattr(args, 'skip_alignment', False):
                 print(f"  [{sample_id}] Aligning…", flush=True)
                 # --bam-dir: per-sample subdir within the requested bam_dir
@@ -401,13 +440,15 @@ def _process_one_sample(
                         checkpoint_dir=_consensus_ckpt_dir,
                         short_read=getattr(args, 'short_read', False),
                         trust_existing_bams=getattr(args, 'trust_existing_bams', False),
-                        read2=getattr(args, 'read2', None),
+                        read2=_sr_read2 or getattr(args, 'read2', None),
                         dt_primed_cdna=getattr(args, 'dT_primed_cDNA', False),
                         read_length=getattr(args, 'read_length', 150),
                         max_intron=getattr(args, 'max_intron', None),
                         resolver_acceptor_classes=getattr(
                             args, 'resolver_acceptor_classes', 'canonical'),
                         require_compass_index=getattr(args, 'require_compass_index', False),
+                        bbmap_path=getattr(args, 'bbmap_path', None),
+                        bwa_path=getattr(args, 'bwa_path', None),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -842,6 +883,8 @@ def _run_single_sample(args) -> int:
             resolver_acceptor_classes=getattr(
                 args, 'resolver_acceptor_classes', 'canonical'),
             require_compass_index=getattr(args, 'require_compass_index', False),
+            bbmap_path=getattr(args, 'bbmap_path', None),
+            bwa_path=getattr(args, 'bwa_path', None),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
