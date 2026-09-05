@@ -569,6 +569,32 @@ class TestMergeJoinsConsensusBam:
         # Only the genuinely empty cell is filled.
         assert row['consensus_tied'] == 'a,b'
 
+    def test_existing_n_agree_survives_a_disagreeing_bam(self, tmp_path):
+        """Sharper than the case above, which used '1' on both sides so int-vs-str
+        dtype inference could not be told apart. An all-numeric column is read
+        back from the arms as int64, so the no-overwrite path has to survive
+        `.astype(str)` — assert a value the BAM actively disagrees with."""
+        rows = {
+            'minimap2': [_merge_row(
+                'r1', 'chrI', 500, span=200,
+                consensus_aligner='uLTRA', consensus_n_agree='3',
+            )],
+            'deSALT': [_merge_row(
+                'r1', 'chrI', 500, span=100,
+                consensus_aligner='uLTRA', consensus_n_agree='3',
+            )],
+        }
+        bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
+            ('r1', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 5, 'Xt': 'a,b'}),
+        ])
+        merged = self._merge(tmp_path, rows, consensus_bam=bam)
+        row = merged.iloc[0]
+        assert str(row['consensus_n_agree']) == '3'   # NOT the BAM's 5
+        assert row['consensus_aligner'] == 'uLTRA'    # NOT the BAM's minimap2
+        # The two cells that really were empty do fill.
+        assert row['consensus_confidence'] == 'high'
+        assert row['consensus_tied'] == 'a,b'
+
     def test_read_absent_from_the_bam_stays_empty(self, tmp_path):
         bam = _write_consensus_bam(tmp_path / "s.multialigned.bam", [
             ('someone_else', {'Xa': 'minimap2', 'Xc': 'high', 'Xn': 2}),
