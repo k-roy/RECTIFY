@@ -39,10 +39,83 @@ CORRECTION_TSV_HEADER = [
     'reanchor_clip_len',
     # How `strand` was determined. Populated by ONT PCR-cDNA only (other
     # protocols carry a fixed protocol-level strand rule); one of
-    # polyA_3p / polyT_5p / gene_overlap / unassigned. Appended last so
-    # existing positional consumers are unaffected.
+    # polyA_3p / polyT_5p / gene_overlap / unassigned. Appended after the
+    # pre-2026-08 columns so their positions are unaffected.
     'strand_evidence',
+    # Multi-aligner consensus tags, carried through verbatim from the input
+    # BAM record — see CONSENSUS_TAG_COLUMNS below. Appended last so every
+    # column above keeps its index.
+    'consensus_aligner',
+    'consensus_confidence',
+    'consensus_n_agree',
+    'consensus_tied',
 ]
+
+
+#: Per-read multi-aligner consensus tags, stamped on the winning record by
+#: ``consensus/consensus.py:971-975`` (``Xa``/``Xc`` also by
+#: ``consensus/chimeric_consensus.py:989-992``), exposed as four SEPARATE
+#: columns — never collapsed into a derived concordance class, because
+#: downstream browsers consume the raw values live.
+#:
+#: Empty string when the tag is absent.  A per-aligner BAM carries none, so a
+#: correct-first run (align → correct per aligner → merge → consensus) leaves
+#: all four blank; they populate when ``correct`` runs on the align-stage
+#: ``<prefix>.multialigned.bam``, which ``align_command.py:1212`` writes via
+#: ``run_consensus_selection`` and ``commands/run/stages.py:79-89`` hands to
+#: the correct stage.
+#:
+#: Order matters: these are the last four columns of ``CORRECTION_TSV_HEADER``
+#: (pinned by ``tests/test_consensus_tag_columns.py``).
+CONSENSUS_TAG_COLUMNS = (
+    'consensus_aligner',      # Xa — winning aligner; comma list when chimeric
+    'consensus_confidence',   # Xc — consensus confidence level
+    'consensus_n_agree',      # Xn — number of aligners agreeing
+    'consensus_tied',         # Xt — tied aligners, comma list; only when tied
+)
+
+#: ``CONSENSUS_TAG_COLUMNS`` entry → BAM tag it is read from.
+_CONSENSUS_COLUMN_TAGS = (
+    ('consensus_aligner', 'Xa'),
+    ('consensus_confidence', 'Xc'),
+    ('consensus_n_agree', 'Xn'),
+    ('consensus_tied', 'Xt'),
+)
+
+
+def consensus_tag_fields(read) -> Dict[str, str]:
+    """Read the consensus tags off *read* as strings, ``''`` when absent.
+
+    Args:
+        read: A ``pysam.AlignedSegment`` (duck-typed: only ``has_tag`` /
+            ``get_tag`` are used).
+
+    Returns:
+        Dict with exactly the ``CONSENSUS_TAG_COLUMNS`` keys.
+
+    This MUST stay exception-free.  ``bam_processor.correct_read_3prime``
+    builds its chimeric (``Xz=1``) row inside a ``try/except KeyError``; an
+    escaping ``KeyError`` would be swallowed there and silently reroute the
+    read down the non-chimeric path — a wrong row, not a missing column.
+    """
+    fields: Dict[str, str] = {}
+    for column, tag in _CONSENSUS_COLUMN_TAGS:
+        value = ''
+        try:
+            if read.has_tag(tag):
+                raw = read.get_tag(tag)
+                if raw is not None:
+                    value = str(raw)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            value = ''
+        fields[column] = value
+    return fields
+
+
+def _consensus_cell(result: Dict, column: str) -> str:
+    """One consensus-tag TSV cell — ``''`` for a missing or ``None`` value."""
+    value = result.get(column)
+    return '' if value is None else str(value)
 
 
 def correction_result_to_tsv_row(result: Dict) -> List[str]:
@@ -89,6 +162,12 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         str(result.get('five_prime_upstream_trim', 0)),
         str(result.get('reanchor_clip_len', 0)),
         result.get('strand_evidence', '') or '',
+        # Multi-aligner consensus tags — populated by
+        # ``consensus_tag_fields`` at intake; '' when the input BAM had none.
+        _consensus_cell(result, 'consensus_aligner'),
+        _consensus_cell(result, 'consensus_confidence'),
+        _consensus_cell(result, 'consensus_n_agree'),
+        _consensus_cell(result, 'consensus_tied'),
     ]
 
 

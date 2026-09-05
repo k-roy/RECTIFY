@@ -37,13 +37,22 @@ import pytest
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
 #
+# 2026-09-05 — re-recorded for the consensus-tag columns (ledger D3).  The
+# change is a pure SCHEMA addition: `consensus_aligner`, `consensus_confidence`,
+# `consensus_n_agree` and `consensus_tied` were added to the result dict
+# (bam_processor.py reads Xa/Xc/Xn/Xt via output.consensus_tag_fields) and are
+# `''` for every row of a single-aligner BAM — this fixture is one, so all 36
+# rows carry four empty strings.  Verified before re-recording that stripping
+# the four new keys from the observed results reproduces the previous golden
+# 93af5e77… exactly, i.e. no correction semantics moved.
+#
 # 2026-08-01 — re-recorded for the ONT-cDNA strand fix (planning/541).  The
 # change is a pure SCHEMA addition: `strand_evidence` was added to the result
 # dict and is `''` for every non-ONT-cDNA row.  Verified before re-recording
 # that stripping the new key from the observed results reproduces the previous
 # golden a41ec734… exactly, i.e. no correction semantics moved.
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "93af5e77671e51127d5b22dc5d8c6836cbcce90cef4a6b441e73392fd593d629"
+    "957be21ebc6d9802899b1bbcec2501d407fb9219d375f3553571c4cf1b1869d7"
 )
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a
