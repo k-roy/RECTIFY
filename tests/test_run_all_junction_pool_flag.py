@@ -141,6 +141,61 @@ def test_align_also_exposes_the_min_anchor_flag_with_the_same_default():
     assert align_default == consensus_default
 
 
+# ── hop 0: single_sample.py -> both flags reach BOTH _run_alignment call ────
+# sites. Closes a gap the coordinator named after 854db78: the parser and
+# hop-1/hop-2 tests above exercise stages.py and align_command.py directly,
+# so none of them would notice if single_sample.py itself dropped a flag
+# before ever calling _run_alignment. single_sample.py has TWO call sites
+# (_process_one_sample for manifest/multi-sample mode, _run_single_sample
+# for the single-sample CLI entry — see LOG.md's C3 multi_sample-coverage
+# checkpoint) and each must pass BOTH flags, or the flag parses on run-all
+# and is silently dropped on the floor -- the exact defect class this whole
+# file exists to catch, just one hop earlier than hop 1 tests for.
+#
+# House pattern (test_run_all_protocol_flags.py::test_correct_stage_receives_ont_cdna)
+# checks a single call site with `'X' in src` / `'X=' in src`. That is not
+# enough here: with two call sites, deleting the kwarg line from ONE of them
+# would still leave the substring present once, and a bare `in` check would
+# not notice. Count occurrences instead so a single deletion at EITHER site
+# fails the assertion.
+
+def test_single_sample_both_call_sites_pass_both_flags():
+    """Both _run_alignment call sites in single_sample.py must pass BOTH
+    junction-pool flags through as getattr(args, '<flag>', 0) kwargs.
+
+    Without this, a flag parses on run-all's own parser (proven above) and
+    reaches stages.py._run_alignment's default value ONLY by accident of
+    single_sample.py's own default matching -- an attacker-free but very
+    real failure mode: someone edits one call site (e.g. adding a new
+    kwarg) and forgets the other, and no test catches it because the
+    parser tests never call single_sample.py, and hop 1/hop 2 tests call
+    _run_alignment / run_align directly, bypassing single_sample.py
+    entirely.
+    """
+    import inspect
+    from rectify.core.commands.run import single_sample
+
+    src = inspect.getsource(single_sample)
+
+    for flag_name in ('junction_pool_max_intron_len', 'junction_pool_min_anchor_bp'):
+        # Assigned (not merely mentioned) as a kwarg at both call sites.
+        assign_count = src.count(f'{flag_name}=getattr(')
+        assert assign_count == 2, (
+            f"{flag_name}=getattr(...) must appear at BOTH _run_alignment "
+            f"call sites in single_sample.py (_process_one_sample and "
+            f"_run_single_sample); found {assign_count} occurrence(s) -- "
+            f"a call site is dropping this flag."
+        )
+        # And it must read the MATCHING args attribute at both sites --
+        # guards a copy-paste that keeps the right kwarg name but reads the
+        # wrong (or misspelled) source attribute.
+        read_count = src.count(f"args, '{flag_name}', 0")
+        assert read_count == 2, (
+            f"getattr(args, '{flag_name}', 0) must appear at BOTH call "
+            f"sites; found {read_count} occurrence(s)."
+        )
+
+
 # ── hop 1: stages.py._run_alignment -> the args Namespace handed to run_align ─
 
 class _Stop(Exception):
