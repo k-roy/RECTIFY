@@ -269,13 +269,17 @@ class TestWindowScaledCeiling:
         assert st.refused_candidate_blowup == 1
         assert st.candidates_evaluated <= 5 * (500_000 // ohr._CEILING_REF_WINDOW) + 1
 
-    def test_slow_path_is_announced_once_not_silently_endured(self, caplog):
+    def test_slow_path_is_announced_once_not_silently_endured(self, caplog, monkeypatch):
         """The scaling trades a silent refusal for real work: on the human
         holdout it took candidates from 65k to 2.08M, which is ~50 min on the
         Python DP versus ~2 min with the numba kernel. A silent multi-hour run
         is the very failure mode this ceiling was added to prevent, so say so."""
         ohr._SLOW_WINDOW_WARNED.clear()
         caplog.set_level(logging.WARNING)
+        # 2026-09-05: the kernel is on by default (lazy) — force the pure-Python path
+        from rectify.core.splice import overhang_informativeness as _oi
+        monkeypatch.setattr(_oi, '_HP_ED_NUMBA_LOADED', True)
+        monkeypatch.setattr(_oi, '_hp_ed_bounded_numba', None)
         cfg = ResolverConfig()
         for _ in range(20):
             ohr._candidate_ceiling(cfg, 500_000)

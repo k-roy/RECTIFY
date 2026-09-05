@@ -918,6 +918,10 @@ _hp_ed_ins = _array_mod.array('d', [0.0] * _HP_ED_MAX_LEN)
 # with the Python loop) -- the cost is RSS, not correctness.
 #
 # ⇒ Opt in explicitly on a machine with headroom:  RECTIFY_HP_ED_NUMBA=1
+# 2026-09-05: deliberately still opt-in HERE (this kernel runs inside spawn
+# workers, where the OOM above happened, and 2F/2H on human took 84 s per
+# 145k reads without it). The resolver's kernel (overhang_informativeness.py)
+# is default-on with a lazy import — that is where human-scale windows bite.
 _HP_ED_NUMBA_REQUESTED = os.environ.get('RECTIFY_HP_ED_NUMBA', '0').strip() not in (
     '', '0', 'false', 'False', 'no', 'off',
 )

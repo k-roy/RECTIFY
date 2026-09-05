@@ -454,11 +454,12 @@ _CEILING_REF_WINDOW = 5000
 
 
 def _hp_ed_numba():
-    """The active numba kernel, or None. Read through the module rather than
-    imported by value: the kernel is installed at import time from
-    RECTIFY_HP_ED_NUMBA, and tests monkeypatch it."""
+    """The active numba kernel, or None. Read through the module's lazy loader
+    (2026-09-05: the kernel is ON by default but imported on first use, so the
+    raw global is None until then); tests force it off by setting
+    `_HP_ED_NUMBA_LOADED = True` and `_hp_ed_bounded_numba = None`."""
     from ..splice import overhang_informativeness as _oi
-    return getattr(_oi, '_hp_ed_bounded_numba', None)
+    return _oi._load_numba_kernel()
 
 
 def _candidate_ceiling(cfg: ResolverConfig, w: int) -> int:

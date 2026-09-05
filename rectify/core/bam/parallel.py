@@ -493,10 +493,24 @@ def _rebuild_output_from_region_files(
 
                 with open(_region_tsv_path(checkpoint_dir, region_idx), 'r') as region_fh:
                     for line in region_fh:
-                        out_fh.write(line)
+                        if not line.strip():
+                            continue
                         fields = line.rstrip('\n').split('\t')
                         if len(fields) != len(CORRECTION_TSV_HEADER):
-                            continue
+                            # A width mismatch means the checkpoint was written by a
+                            # rectify with a different corrected-TSV schema (every
+                            # column addition — strand_evidence, consensus_*,
+                            # five_prime_rescue_refused — has this property). Silently
+                            # skipping rows here used to yield a current header over
+                            # foreign rows and an empty pos_counts; refuse instead.
+                            raise RuntimeError(
+                                f"Checkpoint {_region_tsv_path(checkpoint_dir, region_idx)} has "
+                                f"{len(fields)}-column rows but this rectify writes "
+                                f"{len(CORRECTION_TSV_HEADER)} columns — it was written by a "
+                                f"different schema. Delete {checkpoint_dir} (or run without "
+                                f"resuming) so the sample is re-corrected from scratch."
+                            )
+                        out_fh.write(line)
                         result = _parse_tsv_result(fields, seen_read_ids)
                         key = (result['chrom'], result['corrected_3prime'], result['strand'])
                         pos_counts[key] = pos_counts.get(key, 0.0) + float(result.get('fraction', 1.0))
