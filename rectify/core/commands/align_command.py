@@ -293,6 +293,28 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--junction-pool-max-intron-len', type=int, default=0, metavar='BP',
+        help=(
+            'Maximum intron length (nt) for a non-annotated junction to enter the '
+            "candidate-junction pool used by consensus selection's 5' soft-clip "
+            'rescue. 0 = no limit (default); 3000 suits S. cerevisiae. Mirrors '
+            '`rectify consensus --junction-pool-max-intron-len`. No effect with '
+            '--no-consensus.'
+        ),
+    )
+
+    aligner_group.add_argument(
+        '--junction-pool-min-anchor-bp', type=int, default=0, metavar='BP',
+        help=(
+            'Minimum flanking anchor (nt) for a non-annotated junction to enter the '
+            "same candidate-junction pool used by consensus selection's 5' soft-clip "
+            'rescue. 0 = off (default); 8 is the validated value. Mirrors '
+            '`rectify consensus --junction-pool-min-anchor-bp`. No effect with '
+            '--no-consensus.'
+        ),
+    )
+
+    aligner_group.add_argument(
         '--minimap2-path',
         default='minimap2',
         help='Path to minimap2 executable'
@@ -1218,6 +1240,8 @@ def run_align(args: argparse.Namespace) -> int:
             checkpoint_dir=getattr(args, 'checkpoint_dir', None),
             keep_checkpoints=getattr(args, 'keep_checkpoints', False),
             tiebreak=_tiebreak,
+            pool_max_intron_len=getattr(args, 'junction_pool_max_intron_len', 0),
+            pool_min_anchor_bp=getattr(args, 'junction_pool_min_anchor_bp', 0),
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")
 

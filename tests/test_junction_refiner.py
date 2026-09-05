@@ -34,6 +34,7 @@ from rectify.core.splice.junction_refiner import (
     refine_read_junctions,
     _apply_junction_replacement,
     _iter_n_ops,
+    refine_bam_junctions,
 )
 
 GENOME_PATH = RECTIFY_ROOT / "rectify/data/genomes/saccharomyces_cerevisiae/S288C_reference_sequence_R64-5-1_20240529.fsa.gz"
@@ -1150,3 +1151,92 @@ def test_junction_profile_records_candidate_cap_counts():
     assert summary['counts']['candidates_dropped_by_cap'] == 2
     assert summary['candidate_count_summary']['max'] == 4
     assert summary['candidate_count_after_cap_summary']['max'] == 2
+
+
+class TestSortAndIndexFailureIsFatal:
+    """dev/BUGS_TO_FIX.md D2: a sort/index failure must not be swallowed.
+
+    Before this fix, refine_bam_junctions() caught any exception raised by
+    _sort_and_index() and only logged a warning, then returned its stats
+    dict as if the run had fully succeeded. A caller that promotes
+    output_bam to its "current" BAM on a normal return (e.g.
+    correct_command.py's Module 2H step, which does
+    ``bam_to_process = _refined_bam`` right after this call) would silently
+    carry forward an unsorted/unindexed BAM, and the run would fail much
+    later with no pointer back to the real cause.
+    """
+
+    @staticmethod
+    def _empty_bam(path: Path) -> None:
+        """A zero-read BAM with one contig -- enough to drive
+        refine_bam_junctions all the way to its sort_and_index step without
+        needing real reads, a real genome, or a real junction pool."""
+        header = {'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrI', 'LN': 1000}]}
+        with pysam.AlignmentFile(str(path), 'wb', header=header):
+            pass
+
+    def test_raises_and_names_the_output_bam(self, tmp_path, monkeypatch):
+        import subprocess
+
+        input_bam = tmp_path / "in.bam"
+        output_bam = tmp_path / "out.bam"
+        self._empty_bam(input_bam)
+
+        # The real failure mode: `samtools sort`/`index` (subprocess.run
+        # with check=True) exiting non-zero. Using this concrete type (not
+        # already a RuntimeError) means pytest.raises(RuntimeError) below
+        # only passes if refine_bam_junctions actually WRAPS it -- a bare
+        # re-raise or an unguarded propagation would surface as
+        # CalledProcessError instead and fail this assertion.
+        original_exc = subprocess.CalledProcessError(1, ['samtools', 'sort'])
+
+        def _boom(bam_path, n_threads=1):
+            raise original_exc
+
+        monkeypatch.setattr(
+            "rectify.core.splice.junction_refiner._sort_and_index", _boom
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            refine_bam_junctions(
+                input_bam=str(input_bam),
+                output_bam=str(output_bam),
+                aligner_bams=[],
+                annotated_junctions=set(),
+                genome={},
+                prebuilt_junction_pool=set(),
+                prebuilt_annotated_set=set(),
+                sort_and_index=True,
+            )
+
+        # The whole point of D2: the message names the output BAM, so a
+        # failure here is attributable instead of surfacing 90s later as an
+        # unrelated-looking error.
+        assert str(output_bam) in str(excinfo.value)
+        # The original exception is chained, not discarded.
+        assert excinfo.value.__cause__ is original_exc
+
+    def test_sort_and_index_false_is_unaffected(self, tmp_path, monkeypatch):
+        """sort_and_index=False must not even look at _sort_and_index."""
+        input_bam = tmp_path / "in.bam"
+        output_bam = tmp_path / "out.bam"
+        self._empty_bam(input_bam)
+
+        def _boom(bam_path, n_threads=1):
+            raise AssertionError("_sort_and_index must not be called")
+
+        monkeypatch.setattr(
+            "rectify.core.splice.junction_refiner._sort_and_index", _boom
+        )
+
+        stats = refine_bam_junctions(
+            input_bam=str(input_bam),
+            output_bam=str(output_bam),
+            aligner_bams=[],
+            annotated_junctions=set(),
+            genome={},
+            prebuilt_junction_pool=set(),
+            prebuilt_annotated_set=set(),
+            sort_and_index=False,
+        )
+        assert stats['total'] == 0

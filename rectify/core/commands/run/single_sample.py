@@ -408,6 +408,10 @@ def _process_one_sample(
                         resolver_acceptor_classes=getattr(
                             args, 'resolver_acceptor_classes', 'canonical'),
                         resolver_atac=getattr(args, 'resolver_atac', False),
+                        junction_pool_max_intron_len=getattr(
+                            args, 'junction_pool_max_intron_len', 0),
+                        junction_pool_min_anchor_bp=getattr(
+                            args, 'junction_pool_min_anchor_bp', 0),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -811,6 +815,10 @@ def _run_single_sample(args) -> int:
             resolver_acceptor_classes=getattr(
                 args, 'resolver_acceptor_classes', 'canonical'),
             resolver_atac=getattr(args, 'resolver_atac', False),
+            junction_pool_max_intron_len=getattr(
+                args, 'junction_pool_max_intron_len', 0),
+            junction_pool_min_anchor_bp=getattr(
+                args, 'junction_pool_min_anchor_bp', 0),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")

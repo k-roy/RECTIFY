@@ -55,6 +55,8 @@ def _run_alignment(
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
     resolver_atac: bool = False,
+    junction_pool_max_intron_len: int = 0,
+    junction_pool_min_anchor_bp: int = 0,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -179,6 +181,8 @@ def _run_alignment(
         max_intron=max_intron,
         resolver_acceptor_classes=resolver_acceptor_classes,
         resolver_atac=resolver_atac,
+        junction_pool_max_intron_len=junction_pool_max_intron_len,
+        junction_pool_min_anchor_bp=junction_pool_min_anchor_bp,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
         junc_bonus=9,

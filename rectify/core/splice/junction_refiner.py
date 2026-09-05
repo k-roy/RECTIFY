@@ -1857,7 +1857,21 @@ def refine_bam_junctions(
             _sort_and_index(output_bam, n_threads=sort_threads)
             _profile_time(profile, 'sort_and_index_output_bam', _t_sort)
         except Exception as exc:
-            logger.warning("refine_bam_junctions: sort/index failed: %s", exc)
+            # Do NOT swallow this: an unsorted/unindexed output_bam is not a
+            # usable refined BAM. A caller that promotes output_bam to its
+            # "current" BAM on a normal return (e.g. correct_command.py's
+            # Module 2H step) would silently carry that broken file forward,
+            # surfacing as an unrelated-looking failure much later. Log at
+            # ERROR (the debuggable moment) and re-raise so this failure is
+            # attributed to its real cause, not lost.
+            logger.error(
+                "refine_bam_junctions: sort/index failed for %s: %s",
+                output_bam, exc,
+            )
+            raise RuntimeError(
+                f"refine_bam_junctions: sort/index failed for output BAM "
+                f"{output_bam!r}"
+            ) from exc
 
     logger.info(
         "refine_bam_junctions done: %d total, %d with N-ops, %d refined, %d unchanged, %d errors",
