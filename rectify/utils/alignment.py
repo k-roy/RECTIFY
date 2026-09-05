@@ -13,6 +13,8 @@ Date: 2026-03-09
 """
 
 from typing import List, Tuple, Dict, Optional
+import re
+
 import pysam
 
 # CIGAR operation codes
@@ -166,12 +168,54 @@ def has_soft_clip(read: pysam.AlignedSegment, side: str = 'any') -> bool:
 _MAX_PLAUSIBLE_INTRON_BP = 50000
 
 
-def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
+_MD_TOKEN = re.compile(r"(\d+)|(\^[A-Za-z]+)|([A-Za-z])")
+
+
+def md_reference_length(md: str) -> int:
+    """Reference bases described by an MD tag (matches + mismatches + deleted bases)."""
+    n = 0
+    for num, dele, sub in _MD_TOKEN.findall(md):
+        if num:
+            n += int(num)
+        elif dele:
+            n += len(dele) - 1
+        else:
+            n += 1
+    return n
+
+
+def md_consistent_with_cigar(read: pysam.AlignedSegment) -> bool:
+    """True iff the read carries an MD tag whose reference length equals the CIGAR's
+    M/D/=/X span (MD does not cover N). A False here means pysam's MD-based
+    reconstruction must NOT be called on this read (heap corruption, see
+    :func:`extract_deletions`)."""
+    try:
+        md = read.get_tag('MD')
+    except KeyError:
+        return False
+    if not isinstance(md, str) or not read.cigartuples:
+        return False
+    cigar_ref = sum(length for op, length in read.cigartuples if op in (0, 2, 7, 8))
+    return md_reference_length(md) == cigar_ref
+
+
+def _reference_sequence_from_md(read: pysam.AlignedSegment) -> Optional[str]:
+    """Thin, patchable wrapper around pysam's MD-based reconstruction."""
+    if not hasattr(read, 'get_reference_sequence'):
+        return None
+    return read.get_reference_sequence()
+
+
+def extract_deletions(read: pysam.AlignedSegment,
+                      genome: Optional[Dict[str, str]] = None) -> List[Dict]:
     """
     Extract all deletions from CIGAR string.
 
     Args:
         read: pysam AlignedSegment
+        genome: optional genome dict (chrom -> sequence, as from load_genome). When
+            given and it has the read's chromosome, deleted bases are sliced from
+            it and the MD tag is never consulted (safe + exact).
 
     Returns:
         List of deletion dicts with keys:
@@ -188,25 +232,32 @@ def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
     ref_pos = read.reference_start
     query_pos = 0
 
-    # Try to get reference sequence (if MD tag available)
-    read_seq = read.query_sequence or ''
-    # get_reference_sequence() reconstructs ref bases from the MD tag over the
-    # read's full reference span. On reads carrying a spurious multi-kb N-op
-    # (e.g. 140 kb "introns" emitted by long-read splice aligners like
-    # deSALT/uLTRA; real S. cerevisiae introns are <3 kb) pysam's C
-    # implementation corrupts the process heap and aborts (SIGABRT) — which the
-    # try/except below CANNOT catch. Skip the call for implausible N-ops;
-    # ref_seq=None is already handled (deleted_seq stays '' so such a spurious
-    # alignment is simply not A-tract-classified). Root-cause fix 2026-07-22.
+    # Deleted-base lookup. Preferred source is the GENOME (the correct-stage
+    # workers hold it): exact, and it never touches the MD tag. Fallback is
+    # pysam's get_reference_sequence(), which reconstructs reference bases from
+    # the MD tag over the read's full reference span — and whose C
+    # implementation CORRUPTS THE PROCESS HEAP when MD and CIGAR disagree
+    # (SIGABRT "free(): invalid next size", uncatchable from Python; the abort
+    # may land thousands of reads later, so it looks random and sample-
+    # specific). Reads with spurious multi-kb N-ops from long-read splice
+    # aligners (deSALT/uLTRA 100-190 kb "introns"; real S. cerevisiae introns
+    # are <3 kb) carry exactly such MD tags. The 2026-07-22 guard skipped only
+    # max(N) > 50 kb; 2026-08-22 (planning/746) found reads with several N-ops
+    # each <= 50 kb that passed it and took down 4/48 DRS samples. Now: never
+    # call it unless the MD tag's reference length equals the CIGAR's, and
+    # guard on TOTAL intron length.
     ref_seq = None
-    _max_n_op = max((length for op, length in read.cigartuples if op == 3),
-                    default=0)
-    if _max_n_op <= _MAX_PLAUSIBLE_INTRON_BP:
-        try:
-            ref_seq = read.get_reference_sequence() if hasattr(read, 'get_reference_sequence') else None
-        except (ValueError, KeyError, AssertionError):
-            # pysam ≥0.22 raises AssertionError for MD/CIGAR length mismatches
-            ref_seq = None
+    _genome_chrom = None
+    if genome is not None:
+        _genome_chrom = genome.get(read.reference_name) if hasattr(genome, 'get') else None
+    if _genome_chrom is None:
+        _total_n = sum(length for op, length in read.cigartuples if op == 3)
+        if _total_n <= _MAX_PLAUSIBLE_INTRON_BP and md_consistent_with_cigar(read):
+            try:
+                ref_seq = _reference_sequence_from_md(read)
+            except (ValueError, KeyError, AssertionError):
+                # pysam ≥0.22 raises AssertionError for MD/CIGAR length mismatches
+                ref_seq = None
 
     for i, (op, length) in enumerate(read.cigartuples):
         if op == 2:  # Deletion
@@ -219,7 +270,9 @@ def extract_deletions(read: pysam.AlignedSegment) -> List[Dict]:
 
             # Get deleted sequence if possible
             deleted_seq = ''
-            if ref_seq:
+            if _genome_chrom is not None:
+                deleted_seq = _genome_chrom[ref_pos:ref_pos + length]
+            elif ref_seq:
                 # Calculate position in reference sequence
                 ref_offset = ref_pos - read.reference_start
                 deleted_seq = ref_seq[ref_offset:ref_offset + length]

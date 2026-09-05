@@ -194,8 +194,11 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             'junctions — planning/720). '
             # NOTE: argparse runs every help string through %-formatting, so a literal
             # percent sign MUST be written '%%'. A bare '%' here raised
-            # "TypeError: %o format: an integer is required, not dict" on `rectify align --help`
-            # (planning 830 G2 / 831 / 832) -- the help was unreachable, not merely ugly.
+            # "TypeError: %o format: an integer is required, not dict" on
+            # `rectify align --help` -- the help was unreachable, not merely ugly.
+            # Independently found and fixed on both sides of this merge (planning
+            # 830 G2 / 831 / 832, and ISSUE-014) — same bug, same fix.
+            # tests/test_cli_help_all_subcommands.py pins it for every subcommand.
             'LIMITATION: it recovers 99%% of the annotated junctions mapPacBio '
             'finds but only ~35%% of the NON-CANONICAL ones, because its '
             'candidates come from a GT/AG-class splice-site index and a '
@@ -231,6 +234,38 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "~x4.8 acceptor candidate density (planning/722b). Pair with "
             "non-canonical discovery settings (arb_grammar off) where "
             "appropriate."
+        )
+    )
+
+    # AT-AC is ON by default since 2026-09-05. Both flags carry default=True so
+    # the resulting value does not depend on argparse's registration order for
+    # a shared dest.
+    aligner_group.add_argument(
+        '--resolver-atac',
+        dest='resolver_atac',
+        action='store_true',
+        default=True,
+        help=(
+            "Enumerate AT-AC introns in the overhang_resolver (DEFAULT ON since "
+            "2026-09-05). Retained as a no-op for compatibility with scripts "
+            "written while it was opt-in; use --no-resolver-atac to disable."
+        )
+    )
+    aligner_group.add_argument(
+        '--no-resolver-atac',
+        dest='resolver_atac',
+        action='store_false',
+        default=True,
+        help=(
+            "Disable AT-AC intron enumeration in the overhang_resolver, "
+            "reproducing the pre-2026-09-05 candidate space. AT-AC is a PAIRED "
+            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC), "
+            "ranked below GT..AG / GC..AG at equal score. It is on by default "
+            "because yeast splices AT-AC through its MAJOR spliceosome (Talkish "
+            "et al. 2019 PLoS Genet 15:e1008249, SUT635) and in human AT-AC is "
+            "the U12-type minor-spliceosome class — every eukaryote has them, "
+            "and with the class off a real AT-AC junction gets snapped onto a "
+            "chance GT..AG."
         )
     )
 
@@ -279,6 +314,28 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             'for each read segment, then assemble a chimeric CIGAR from the winners. '
             'Experimental — requires further validation before enabling by default.'
         )
+    )
+
+    aligner_group.add_argument(
+        '--junction-pool-max-intron-len', type=int, default=0, metavar='BP',
+        help=(
+            'Maximum intron length (nt) for a non-annotated junction to enter the '
+            "candidate-junction pool used by consensus selection's 5' soft-clip "
+            'rescue. 0 = no limit (default); 3000 suits S. cerevisiae. Mirrors '
+            '`rectify consensus --junction-pool-max-intron-len`. No effect with '
+            '--no-consensus.'
+        ),
+    )
+
+    aligner_group.add_argument(
+        '--junction-pool-min-anchor-bp', type=int, default=0, metavar='BP',
+        help=(
+            'Minimum flanking anchor (nt) for a non-annotated junction to enter the '
+            "same candidate-junction pool used by consensus selection's 5' soft-clip "
+            'rescue. 0 = off (default); 8 is the validated value. Mirrors '
+            '`rectify consensus --junction-pool-min-anchor-bp`. No effect with '
+            '--no-consensus.'
+        ),
     )
 
     aligner_group.add_argument(
@@ -1070,6 +1127,7 @@ def run_align(args: argparse.Namespace) -> int:
                 max_intron=getattr(args, 'max_intron', 5000),
                 acceptor_classes=getattr(
                     args, 'resolver_acceptor_classes', 'canonical'),
+                atac=getattr(args, 'resolver_atac', True),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"
@@ -1215,6 +1273,8 @@ def run_align(args: argparse.Namespace) -> int:
             checkpoint_dir=getattr(args, 'checkpoint_dir', None),
             keep_checkpoints=getattr(args, 'keep_checkpoints', False),
             tiebreak=_tiebreak,
+            pool_max_intron_len=getattr(args, 'junction_pool_max_intron_len', 0),
+            pool_min_anchor_bp=getattr(args, 'junction_pool_min_anchor_bp', 0),
         )
         logger.info(f"[TIMING] Aligner selection: {_time.perf_counter() - _t_sel:.1f}s")
 

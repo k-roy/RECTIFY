@@ -441,18 +441,40 @@ _CANONICAL_DINUCS = frozenset(
 )
 
 
-def is_canonical_junction(chrom_seq: str, start: int, end: int) -> bool:
-    """Canonical splice grammar at the WRITTEN coordinates (either strand)."""
+_ATAC_DINUCS = frozenset(
+    # AT-AC introns on the FORWARD genome: AT..AC plus-strand, GT..AT
+    # minus-strand. A PAIRED class: AT..AG and GT..AC are NOT members and must
+    # keep scoring as broken junctions. Yeast splices AT-AC through its major
+    # spliceosome (Talkish et al. 2019 PLoS Genet 15:e1008249, SUT635); in
+    # human it is the U12-type minor-spliceosome class.
+    #
+    # `atac` was opt-in (ResolverConfig.atac) until 2026-09-05, when Kevin ruled
+    # that AT-AC is a canonical intron class for EVERY organism rectify runs on.
+    # It now defaults to True here, so a caller that does not think about splice
+    # grammar gets the whole grammar; pass atac=False to ask the narrower
+    # GT/GC..AG question deliberately.
+    [('AT', 'AC'), ('GT', 'AT')]
+)
+
+
+def is_canonical_junction(chrom_seq: str, start: int, end: int,
+                          atac: bool = True) -> bool:
+    """Canonical splice grammar at the WRITTEN coordinates (either strand).
+
+    Includes the paired AT-AC class by default (Kevin 2026-09-05); pass
+    ``atac=False`` for the narrower GT/GC..AG-only question."""
     if start < 0 or end > len(chrom_seq):
         return False
-    return (chrom_seq[start:start + 2].upper(),
-            chrom_seq[end - 2:end].upper()) in _CANONICAL_DINUCS
+    pair = (chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper())
+    return pair in _CANONICAL_DINUCS or (atac and pair in _ATAC_DINUCS)
 
 
-def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60) -> bool:
-    """True iff ANY member of the junction's ambiguity class is canonical."""
+def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60,
+                       atac: bool = True) -> bool:
+    """True iff ANY member of the junction's ambiguity class is canonical,
+    AT-AC included by default (``atac=False`` for GT/GC..AG only)."""
     l, r = ambiguity_window(chrom_seq, start, end, max_shift=max_shift)
-    return any(is_canonical_junction(chrom_seq, start + d, end + d)
+    return any(is_canonical_junction(chrom_seq, start + d, end + d, atac=atac)
                for d in range(-l, r + 1))
 
 
@@ -477,22 +499,42 @@ _HP_ED_MAX_LEN = 200
 # legitimately pass the gate and each one scores ~hundreds of candidates with
 # this pure-Python DP (cProfile: 122 s of a 125 s / 50-read run inside this
 # function). Same knob + guard pattern as splice_aware_5prime's kernel
-# (RECTIFY_HP_ED_NUMBA; import-guarded; default OFF for the spawn-RSS reason
-# documented there — production job scripts opt in explicitly). This kernel
+# (RECTIFY_HP_ED_NUMBA; import-guarded). 2026-09-05 (Kevin): default ON here,
+# with the numba import deferred to the FIRST call that needs the kernel —
+# the resolver's candidate cap now admits human-scale windows (ISSUE-010), and
+# on those the pure-Python DP is 26x slower (2,259 s vs ~135 s per 1,000
+# reads), which turns a 145k-read run into days. Deferring the import keeps
+# the spawn-RSS cost documented in splice_aware_5prime.py (~100 MB per worker
+# that imports numba) off every process that never scores a large DP — yeast
+# region workers included — and the resolver itself runs single-process.
+# RECTIFY_HP_ED_NUMBA=0 opts out (memory-constrained hosts). This kernel
 # prunes EVERY row (not every 8th) and returns cutoff + 1.0 at the same
 # detection point as the Python loop, so results are bit-identical in both
 # the pruned and unpruned regimes.
 
-_HP_ED_NUMBA_REQUESTED = os.environ.get('RECTIFY_HP_ED_NUMBA', '0').strip() not in (
+_HP_ED_NUMBA_REQUESTED = os.environ.get('RECTIFY_HP_ED_NUMBA', '1').strip() not in (
     '', '0', 'false', 'False', 'no', 'off',
 )
 _hp_ed_bounded_numba = None
 _HP_ED_NUMBA_MIN_CELLS = 400
+_HP_ED_NUMBA_LOADED = False   # the import is attempted once, lazily, in _load_numba_kernel()
+import numpy as _np_mod   # numpy is a hard dependency; only the numba import is deferred
 
-if _HP_ED_NUMBA_REQUESTED:
+
+def _load_numba_kernel():
+    """Import numba and compile the kernel on first use; None when unavailable.
+
+    Called from hp_edit_distance_bounded the first time a DP large enough to
+    benefit is requested, so the import cost lands only on processes that
+    actually score big alignments."""
+    global _hp_ed_bounded_numba, _HP_ED_NUMBA_LOADED
+    if _HP_ED_NUMBA_LOADED:
+        return _hp_ed_bounded_numba
+    _HP_ED_NUMBA_LOADED = True
+    if not _HP_ED_NUMBA_REQUESTED:
+        return None
     try:
         import numba as _numba_mod
-        import numpy as _np_mod
 
         @_numba_mod.njit(cache=True)
         def _hp_ed_bounded_numba(a1, a2, cutoff):
@@ -548,6 +590,7 @@ if _HP_ED_NUMBA_REQUESTED:
             return prev[m]
     except ImportError:  # pragma: no cover - numba genuinely absent
         _hp_ed_bounded_numba = None
+    return _hp_ed_bounded_numba
 
 
 def hp_edit_distance_bounded(s1: str, s2: str, cutoff: float = -1.0) -> float:
@@ -566,8 +609,8 @@ def hp_edit_distance_bounded(s1: str, s2: str, cutoff: float = -1.0) -> float:
     if m == 0:
         return float(n)
 
-    if (_hp_ed_bounded_numba is not None
-            and n * m >= _HP_ED_NUMBA_MIN_CELLS):
+    if n * m >= _HP_ED_NUMBA_MIN_CELLS and (
+            _hp_ed_bounded_numba if _HP_ED_NUMBA_LOADED else _load_numba_kernel()) is not None:
         a1 = _np_mod.frombuffer(s1.encode('ascii', 'replace'), dtype=_np_mod.uint8)
         a2 = _np_mod.frombuffer(s2.encode('ascii', 'replace'), dtype=_np_mod.uint8)
         return float(_hp_ed_bounded_numba(a1, a2, float(cutoff)))

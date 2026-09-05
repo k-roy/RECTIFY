@@ -23,6 +23,7 @@ from .helpers import (
     _emit_legacy_consensus_symlink,
     _final_rectified_bam_path,
     _multialigned_bam_path,
+    _resolve_consensus_tag_bam,
     _validate_bam_integrity,
     _resolve_reference_paths,
 )
@@ -449,6 +450,11 @@ def _process_one_sample(
                         require_compass_index=getattr(args, 'require_compass_index', False),
                         bbmap_path=getattr(args, 'bbmap_path', None),
                         bwa_path=getattr(args, 'bwa_path', None),
+                        resolver_atac=getattr(args, 'resolver_atac', True),
+                        junction_pool_max_intron_len=getattr(
+                            args, 'junction_pool_max_intron_len', 0),
+                        junction_pool_min_anchor_bp=getattr(
+                            args, 'junction_pool_min_anchor_bp', 0),
                     )
                     log.write(f"Alignment complete: {bam_to_correct}\n")
                 except Exception as e:
@@ -507,11 +513,23 @@ def _process_one_sample(
                             a: str(p) for a, p in _sample_per_aligner_bams.items()
                         } if _sample_per_aligner_bams else {}
                         from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
+                        # Align-stage Xa/Xc/Xn/Xt for the four consensus_* columns:
+                        # the per-aligner arms carry none, so the merge joins them
+                        # back in from the multialigned BAM.
+                        _bam_dir_s1 = getattr(args, 'bam_dir', None)
+                        _consensus_tag_bam_s1 = _resolve_consensus_tag_bam(
+                            getattr(args, 'consensus_bam', None),
+                            sample_id,
+                            (_work, sample_output,
+                             (Path(_bam_dir_s1) / sample_id) if _bam_dir_s1 else None),
+                            fallback=bam_to_correct,
+                        )
                         with _stage_raw_bams(_raw_bams_s1) as _staged_s1:
                             merge_corrected_tsvs(
                                 per_aligner_tsvs=per_aligner_tsvs,
                                 output_tsv=_work / 'corrected_reads.tsv',
                                 summary_tsv=_summary_tsv,
+                                consensus_bam=_consensus_tag_bam_s1,
                                 per_aligner_corrected_bams={
                                     a: str(p) for a, p in per_aligner_corrected_bams.items()
                                 } if per_aligner_corrected_bams else None,
@@ -885,6 +903,11 @@ def _run_single_sample(args) -> int:
             require_compass_index=getattr(args, 'require_compass_index', False),
             bbmap_path=getattr(args, 'bbmap_path', None),
             bwa_path=getattr(args, 'bwa_path', None),
+            resolver_atac=getattr(args, 'resolver_atac', True),
+            junction_pool_max_intron_len=getattr(
+                args, 'junction_pool_max_intron_len', 0),
+            junction_pool_min_anchor_bp=getattr(
+                args, 'junction_pool_min_anchor_bp', 0),
         )
         print(f"\nAlignment complete: {bam_to_correct}")
         print(f"[TIMING] Alignment: {_time.perf_counter() - _t0:.1f}s")
@@ -972,11 +995,21 @@ def _run_single_sample(args) -> int:
                     a: str(p) for a, p in per_aligner_bams.items()
                 } if per_aligner_bams else {}
                 from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
+                # Align-stage Xa/Xc/Xn/Xt for the four consensus_* columns:
+                # the per-aligner arms carry none, so the merge joins them
+                # back in from the multialigned BAM.
+                _consensus_tag_bam_s2 = _resolve_consensus_tag_bam(
+                    getattr(args, 'consensus_bam', None),
+                    sample_id,
+                    (work_dir, output_dir, bam_dir),
+                    fallback=bam_to_correct,
+                )
                 with _stage_raw_bams(_raw_bams_s2) as _staged_s2:
                     corrected_tsv = merge_corrected_tsvs(
                         per_aligner_tsvs=per_aligner_tsvs,
                         output_tsv=work_dir / 'corrected_reads.tsv',
                         summary_tsv=_summary_tsv,
+                        consensus_bam=_consensus_tag_bam_s2,
                         per_aligner_corrected_bams={
                             a: str(p) for a, p in per_aligner_corrected_bams.items()
                         } if per_aligner_corrected_bams else None,

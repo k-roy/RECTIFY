@@ -57,6 +57,9 @@ def _run_alignment(
     require_compass_index: bool = False,
     bbmap_path: Optional[str] = None,
     bwa_path: Optional[str] = None,
+    resolver_atac: bool = True,
+    junction_pool_max_intron_len: int = 0,
+    junction_pool_min_anchor_bp: int = 0,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -206,6 +209,9 @@ def _run_alignment(
         # historical 5000).
         max_intron=max_intron,
         resolver_acceptor_classes=resolver_acceptor_classes,
+        resolver_atac=resolver_atac,
+        junction_pool_max_intron_len=junction_pool_max_intron_len,
+        junction_pool_min_anchor_bp=junction_pool_min_anchor_bp,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
         junc_bonus=9,
@@ -1186,6 +1192,52 @@ def _record_station_failure(
         pass
 
 
+def _pre_correction_bams(
+    work_dir: Path,
+    sample_id: str,
+    args,
+) -> List[str]:
+    """Pre-correction BAM(s) to offer Station B as candidates (ISSUE-009).
+
+    Station B's junction leg proposes with Module 2H — the engine that produced
+    the corrected BAM — so on its own it re-derives its own fixed point and can
+    never offer back the placement it moved away from. Handing it the
+    pre-correction record fixes that, and ``run-all`` already knows where that
+    record is, so the user should not have to assemble paths.
+
+    Resolution order:
+
+    1. explicit paths from ``--triage-original-bams a.bam b.bam``;
+    2. ``<sample>.multialigned.bam`` — the merged pre-correction artifact that
+       ``correct`` actually CONSUMED, so it is the exact "before" of this run's
+       "after". This is also the shape the fix was measured on (one
+       pre-correction BAM per corrected BAM: panel FP 152 -> 9, hold-out FP
+       178 -> 77), which is why it is preferred over (3);
+    3. the per-aligner BAMs, one step further back, when no multialigned BAM
+       survives. Each is a legitimate candidate and they compete in turn under
+       the same strict hp_ed arbiter — but this is best-of-panel rather than a
+       straight revert, so it is the fallback, not the default.
+
+    Returns ``[]`` when nothing is found, which leaves the leg inert.
+    """
+    explicit = getattr(args, 'triage_original_bams', None)
+    if explicit:
+        return [str(p) for p in explicit]
+
+    multi = _multialigned_bam_path(sample_id, work_dir)
+    try:
+        if multi.exists() and multi.stat().st_size > 0:
+            return [str(multi)]
+    except OSError:
+        pass
+
+    try:
+        per_aligner = _collect_per_aligner_bams(sample_id, work_dir)
+    except Exception:
+        return []
+    return [str(p) for p in per_aligner.values()]
+
+
 def _run_station_bc(
     work_dir: Path,
     sample_id: str,
@@ -1233,15 +1285,31 @@ def _run_station_bc(
             import argparse as _ap
             t0 = _time.perf_counter()
             triage_dir = work_dir / 'triage'
+            # ISSUE-009/012: opt-in, exactly like the `rectify triage` flag.
+            # `--triage-original-bams` with no paths auto-discovers this run's
+            # own pre-correction record; the leg stays inert without the flag,
+            # so the default `run-all --triage` is unchanged.
+            _orig_bams: Optional[List[str]] = None
+            if getattr(args, 'triage_original_bams', None) is not None:
+                _orig_bams = _pre_correction_bams(work_dir, sample_id, args) or None
+                if _orig_bams is None:
+                    print("[station-b] --triage-original-bams: no "
+                          "pre-correction BAM found for this sample; the "
+                          "pre-correction candidate leg is inert",
+                          file=sys.stderr)
             print(f"\n[station-b] triage (clip legs "
-                  f"{'ON' if getattr(args, 'triage_clip_legs', False) else 'off'}) "
+                  f"{'ON' if getattr(args, 'triage_clip_legs', False) else 'off'}"
+                  f"{'; pre-correction candidates from ' + str(len(_orig_bams)) + ' BAM(s)' if _orig_bams else ''}) "
                   f"on {bam.name} ...")
             ns = _ap.Namespace(
                 input=str(bam), output=str(triage_dir),
                 genome=str(genome_path), annotation=str(annotation_path),
-                pool_bams=None, penalty_table=None, realign=True,
+                pool_bams=None, original_bams=_orig_bams,
+                penalty_table=None, realign=True,
                 max_junction_proximal_errors=1.0, max_clip_5p=30,
                 max_clip_3p=30, no_triage_unannotated=False,
+                max_correction_regression_ratio=getattr(
+                    args, 'triage_correction_regression_ratio', 1.0),
                 organism=None, Scer=False,
                 clip_legs=getattr(args, 'triage_clip_legs', False),
             )
@@ -1261,7 +1329,8 @@ def _run_station_bc(
         import time as _time
         from rectify.utils.genome import load_genome as _load_g
         from ...consensus.station_c import (
-            PoolGateConfig, find_bundled_background_sv_bed,
+            PoolGateConfig, derive_pool_gate_max_intron,
+            find_bundled_background_sv_bed,
             find_bundled_selfhom_bed, pool_gate,
             write_pool_gate_outputs,
         )
@@ -1270,12 +1339,19 @@ def _run_station_bc(
               f"{Path(gate_input).name} ...")
         genome = _load_g(Path(genome_path))
         selfhom = find_bundled_selfhom_bed(Path(genome_path))
-        # Length pre-gate bound: the user's --max-intron if given, else
-        # annotation-derived (the same rule the aligner panel uses).
+        # Length pre-gate bound (ISSUE-013): the user's --max-intron if given,
+        # else 2x the p99.5 of the annotated intron lengths — Station C's own
+        # rule, NOT the aligner's `2x the longest intron`. The aligner rule
+        # saturates its 500,000 clamp on any annotation with a long tail
+        # (GENCODE v48 chr5's longest intron is 772,519 bp), which left this
+        # pre-gate unable to fire on a single human junction. Yeast is
+        # unchanged at 5,000 either way.
         _mi = getattr(args, 'max_intron', None)
+        _mi_src = 'explicit --max-intron'
         if _mi is None:
-            from rectify.core.align.multi_aligner import derive_max_intron
-            _mi = derive_max_intron(str(annotation_path))
+            _mi = derive_pool_gate_max_intron(Path(annotation_path))
+            _mi_src = '2x p99.5 of the annotated intron lengths'
+        print(f"[station-c] length pre-gate: {_mi:,} bp ({_mi_src})")
         rows, summary = pool_gate(
             str(gate_input), genome, Path(annotation_path),
             cfg=PoolGateConfig(max_intron=_mi), selfhom_bed=selfhom,
@@ -1319,6 +1395,35 @@ def add_station_bc_args(parser) -> None:
         dest='triage_clip_legs',
         help='With --triage: enable the clip legs (terminal clips to the '
              'overhang resolver, 5\' clips to Cat3 rescue).',
+    )
+    parser.add_argument(
+        '--triage-original-bams',
+        nargs='*',
+        default=None,
+        metavar='BAM',
+        dest='triage_original_bams',
+        help='With --triage: offer each triaged read its PRE-correction '
+             'alignment as a candidate, judged by the same strict hp_ed '
+             're-entry arbiter (Station B\'s only other proposer is Module 2H '
+             'itself, so it re-derives its own fixed point and can never offer '
+             'back the placement it moved away from). Pass the flag with NO '
+             'paths to use this run\'s own pre-correction BAM '
+             '(<sample>.multialigned.bam, else the per-aligner BAMs); pass '
+             'paths to override. Opt-in: without the flag the leg is inert and '
+             'the run is unchanged. Measured on human chr5 DRS: junction FP '
+             '178 -> 77 on 1,000 unselected reads, true positives unchanged.',
+    )
+    parser.add_argument(
+        '--triage-correction-regression-ratio',
+        type=float,
+        default=1.0,
+        metavar='K',
+        dest='triage_correction_regression_ratio',
+        help='With --triage --triage-original-bams: a read may not be bypassed '
+             'as high-confidence when correction raised its HP-aware edit '
+             'distance by more than K times the read\'s OWN pre-correction edit '
+             'distance (default 1.0 = "more than doubled it"). Needs the '
+             'pre-correction BAM; without it the guard cannot fire.',
     )
     parser.add_argument(
         '--no-pool-gate',

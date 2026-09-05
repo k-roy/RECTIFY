@@ -1280,8 +1280,13 @@ class TestRescue3SSTruncationExtended:
           pos 100-197: exon-candidate for junction B: G*98
           pos 198-199: 'AC' → canonical   (junction A intron_end=200)
           pos 200-297: exon-candidate for junction A: G*98
-        Both junction exons start with 'G'*8 → soft-clip 'G'*8 matches both with ed=0.
+        Both junction exons start with 'G'*10 → soft-clip 'G'*10 matches both with ed=0.
         align_5prime = reference_end - 1 = 99; intron_start=99 for both → dist=0.
+
+        The clip is 10 nt, not 8, so it clears ``min_informative_clip_bp()``
+        (ISSUE-006): below that floor no clip can distinguish its placement from
+        chance and the sequence rescue is refused by design. The donor tie-break
+        this test asserts is unchanged — only the clip length is.
         """
         genome = {
             'chrM2': (
@@ -1298,14 +1303,14 @@ class TestRescue3SSTruncationExtended:
         }
         # Minus strand read: align_5prime = reference_end - 1 = 99
         # dist = intron_start(99) - align_5prime(99) = 0 ≤ junction_proximity_bp ✓
-        # Soft clip at HIGH end (last op) = 'G'*8, matching genome[200:208] and genome[100:108]
+        # Soft clip at HIGH end (last op) = 'G'*10, matching genome[200:210] and genome[100:110]
         read = MockRead(
             reference_name='chrM2',
             reference_start=10,
             reference_end=100,
             is_reverse=True,
-            query_sequence='C' * 82 + 'G' * 8,  # last 8 = soft-clip at 5' (high) end
-            cigartuples=[(0, 82), (4, 8)],
+            query_sequence='C' * 82 + 'G' * 10,  # last 10 = soft-clip at 5' (high) end
+            cigartuples=[(0, 82), (4, 10)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='-')
         assert r['rescued'] is True
@@ -1345,8 +1350,11 @@ class TestRescue3SSTruncationExtended:
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 8 + 'A' * 50,
-            cigartuples=[(4, 8), (0, 50)],
+            # 10 nt clip = min_informative_clip_bp() (ISSUE-006); both exon-1
+            # candidates are poly-A so the acceptor tie-break under test is
+            # unaffected by the length change.
+            query_sequence='A' * 10 + 'A' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1356,14 +1364,17 @@ class TestRescue3SSTruncationExtended:
 
     def test_plus_hp_edit_prefers_hp_match(self):
         """
-        Soft-clip = 'AAAAAC' (5 A's + C).
+        Soft-clip = 'A'*10 + 'C' (11 nt: a 10-A run plus C).
         Two junctions both close to align_5prime (within proximity=10):
-          Junction A (intron_start=100): exon ends at genome[95:101]='AAAAAC'
-            Wait — need exon BEFORE intron_start. genome[95:100]='AAAAC' (4 A's + C).
-            hp_ed('AAAAAC', 'AAAAC') = 0.5 (delete one A from run).
-          Junction B (intron_start=106): exon ends at genome[101:106]='AACCG'.
-            hp_ed('AAAAAC', 'AACCG') = 3 (two subs).
-        Both junctions have GT donors.  Junction A wins (hp_ed=0.5 < 3).
+          Junction A (intron_start=100): exon window genome[89:100]='A'*10 + 'C'... —
+            with an 11 nt clip the window is genome[89:100] = 'A'*10 + 'C' minus one
+            A, i.e. 'AAAAAAAAAAC' vs the genome's 'AAAAAAAAAC' run → hp_ed = 0.5
+            (one deletion INSIDE a homopolymer run, the HP-discounted cost).
+          Junction B (intron_start=107): exon window ends in 'GTGTAAC' → several subs.
+        Both junctions have GT donors.  Junction A wins on the HP-discounted cost.
+
+        The clip is 11 nt rather than 6 so it clears ``min_informative_clip_bp()``
+        (ISSUE-006); the HP-vs-substitution preference under test is unchanged.
 
         Genome:
           pos 0-94:   A*95  (poly-A exon body)
@@ -1392,15 +1403,15 @@ class TestRescue3SSTruncationExtended:
             ('chrHP', 100, 190),   # GT at 100; exon candidate = genome[95:100]='AAAAC'
             ('chrHP', 107, 197),   # GT at 107; exon candidate = genome[102:107]='GTAAC'
         }
-        # Read starts at 199 (exon2), soft clip 'AAAAAC' must match exon near each intron_start.
+        # Read starts at 199 (exon2), soft clip must match exon near each intron_start.
         # dist(jA) = 199 - 190 = 9 ≤ 10 ✓; dist(jB) = 199 - 197 = 2 ≤ 10 ✓
         read = MockRead(
             reference_name='chrHP',
             reference_start=199,
             reference_end=249,
             is_reverse=False,
-            query_sequence='AAAAAC' + 'G' * 50,
-            cigartuples=[(4, 6), (0, 50)],
+            query_sequence='A' * 10 + 'C' + 'G' * 50,
+            cigartuples=[(4, 11), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1429,54 +1440,56 @@ class TestInAmbVsDonorOkPriority:
     def test_plus_in_amb_beats_canonical_out_of_window(self):
         """
         Genome layout (chrP):
-          pos 0-1:   CC  (exon1 head, irrelevant)
-          pos 2-7:   GTGTGT  (repeating exon1 tail — both windows land here)
-          pos 8-9:   NN  (non-canonical 5'SS donor at intron_start=8)
-          pos 10-107: N*98  (intron body)
-          pos 108-109: AG  (canonical 3'SS acceptor, intron_end=110)
-          pos 110-159: C*50  (exon2 / read body)
+          pos 0-1:    CC  (exon1 head, irrelevant)
+          pos 2-13:   GT*6  (repeating exon1 tail — both windows land here)
+          pos 14-15:  NN  (non-canonical 5'SS donor at intron_start=14)
+          pos 16-113: N*98  (intron body)
+          pos 114-115: AG  (canonical 3'SS acceptor, intron_end=116)
+          pos 116-165: C*50  (exon2 / read body)
 
-        soft-clip rescue_seq = 'GTGT' (4 bases).
+        soft-clip rescue_seq = 'GTGTGTGTGT' (10 bases — the shortest clip that
+        clears ``min_informative_clip_bp()``, ISSUE-006; the repeating tail was
+        lengthened to 12 nt so both windows below still fit).
 
         Within the ±5 shift search:
-          shift= 0: _eff_start=8, exon window genome[4:8]='GTGT', ED=0,
+          shift= 0: _eff_start=14, exon window genome[4:14]='GTGTGTGTGT', ED=0,
                     in_amb=True  (only shift=0 is in_amb because _r_amb=0, _l_amb=0),
-                    donor genome[8:10]='NN' → non-canonical.
-          shift=-2: _eff_start=6, exon window genome[2:6]='GTGT', ED=0,
+                    donor genome[14:16]='NN' → non-canonical.
+          shift=-2: _eff_start=12, exon window genome[2:12]='GTGTGTGTGT', ED=0,
                     in_amb=False (2 positions outside the ambiguity window),
-                    donor genome[6:8]='GT' → canonical.
+                    donor genome[12:14]='GT' → canonical.
 
         The two-step scoring tuple (not in_amb, not donor_ok, shift_abs):
           shift= 0 → (False, True,  0)
           shift=-2 → (True,  False, 2)
-        (False, True, 0) < (True, False, 2) → shift=0 wins → five_prime_corrected=7.
+        (False, True, 0) < (True, False, 2) → shift=0 wins → five_prime_corrected=13.
 
         With the OLD pre-99558c1 ordering (not donor_ok, not in_amb, shift_abs):
           shift= 0 → (True,  False, 0)
           shift=-2 → (False, True,  2)
-        (False, True, 2) < (True, False, 0) → shift=-2 would win → five_prime_corrected=5.
+        (False, True, 2) < (True, False, 0) → shift=-2 would win → five_prime_corrected=11.
         """
         genome = {'chrP':
                   'CC'              # pos 0-1
-                  + 'GTGTGT'        # pos 2-7: exon1 tail; GT at 6-7 = canonical donor
-                  + 'NN'            # pos 8-9: non-canonical donor (intron_start=8)
-                  + 'N' * 98        # pos 10-107: intron body
-                  + 'AG'            # pos 108-109: canonical acceptor (intron_end=110)
-                  + 'C' * 50}       # pos 110-159: exon2
-        junction = {('chrP', 8, 110)}
+                  + 'GT' * 6        # pos 2-13: exon1 tail; GT at 12-13 = canonical donor
+                  + 'NN'            # pos 14-15: non-canonical donor (intron_start=14)
+                  + 'N' * 98        # pos 16-113: intron body
+                  + 'AG'            # pos 114-115: canonical acceptor (intron_end=116)
+                  + 'C' * 50}       # pos 116-165: exon2
+        junction = {('chrP', 14, 116)}
         read = MockRead(
             reference_name='chrP',
-            reference_start=110,
-            reference_end=160,
+            reference_start=116,
+            reference_end=166,
             is_reverse=False,
-            query_sequence='GTGT' + 'C' * 50,
-            cigartuples=[(4, 4), (0, 50)],
+            query_sequence='GT' * 5 + 'C' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junction, strand='+')
         assert r['rescued'] is True
         # shift=0 (in_amb) wins over shift=-2 (canonical GT, out-of-window)
-        assert r['five_prime_corrected'] == 7   # intron_start(8) - 1 = 7
-        assert r['rescued_junction'] == ('chrP', 8, 110)
+        assert r['five_prime_corrected'] == 13   # intron_start(14) - 1 = 13
+        assert r['rescued_junction'] == ('chrP', 14, 116)
 
     def test_plus_canonical_wins_when_both_in_amb(self):
         """
@@ -1519,8 +1532,11 @@ class TestInAmbVsDonorOkPriority:
             reference_start=118,
             reference_end=168,
             is_reverse=False,
-            query_sequence='AAAA' + 'C' * 50,
-            cigartuples=[(4, 4), (0, 50)],
+            # 10 nt clip = min_informative_clip_bp() (ISSUE-006); genome[6:16] and
+            # genome[8:18] are both 'A'*10, so both shifts still tie at ED 0 and
+            # the canonical-donor tie-break under test is unchanged.
+            query_sequence='A' * 10 + 'C' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junction, strand='+')
         assert r['rescued'] is True

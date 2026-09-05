@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -134,6 +135,7 @@ from ...utils.genome import standardize_chrom_name
 from .junction_scoring import (
     Junction,
     _CANONICAL_HP_PRIOR,
+    _CANONICAL_TIER_MAX,
     _D,
     _EQ,
     _H,
@@ -142,6 +144,7 @@ from .junction_scoring import (
     _N,
     _QUERY_CONSUMING,
     _REF_CONSUMING,
+    _REF_CONSUMING_POS,
     _S,
     _X,
     _build_junction_index,
@@ -164,6 +167,22 @@ from .junction_scoring import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Annotated-canonical evidence gate (edit-distance units)
+# ---------------------------------------------------------------------------
+# Read evidence a candidate must have OVER an annotated + canonical incumbent
+# before Module 2H will move the junction somewhere that is not both annotated
+# and canonical.  1.0 = one full edit-distance unit, i.e. the sub-integer HP
+# noise floor named in refine_read_junctions' scoring policy: below that, the
+# difference between two placements is homopolymer noise, not evidence.
+# Set RECTIFY_ANNOT_CANON_HOLD=0 to restore the pre-2026-09 behaviour (any
+# score win, however small, could move an annotated GT-AG onto a novel
+# non-canonical junction).
+_ANNOTATED_CANONICAL_HOLD: float = float(
+    os.environ.get("RECTIFY_ANNOT_CANON_HOLD", "1.0")
+)
 
 
 class JunctionRefineProfile:
@@ -379,6 +398,11 @@ def _iter_n_ops(
     leading soft-clips and do NOT count toward q_split.
     S ops after at least one ref-consuming op (trailing in genomic terms) DO
     count toward q_split.
+
+    The genomic cursor advances on ``_REF_CONSUMING_POS`` (M/D/=/X **and N**):
+    an intron consumes reference, so a walker that skipped it reported every
+    N-op after the first short by the summed length of the preceding introns
+    (ISSUE-004).
     """
     q_pos = 0
     r_pos = read.reference_start
@@ -389,8 +413,11 @@ def _iter_n_ops(
             continue  # H never in query_sequence; skip entirely
         if op == _N:
             yield i, r_pos, r_pos + length, q_pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             r_pos += length
+        if op in _REF_CONSUMING:
+            # q_split semantics unchanged: a leading soft-clip is one that
+            # precedes the first ALIGNED op, so N does not open the alignment.
             seen_ref_op = True
         if op in _QUERY_CONSUMING and op != _S:
             q_pos += length
@@ -399,6 +426,38 @@ def _iter_n_ops(
             # (i.e., this is NOT a leading soft-clip)
             if seen_ref_op:
                 q_pos += length
+
+
+def _dn_run_extent(
+    cigartuples: List[Tuple[int, int]],
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+) -> Tuple[int, int]:
+    """Reference extent of the D/N run containing the N-op at *cigar_idx*.
+
+    ``junction_scoring._merge_del_into_intron`` collapses any run of adjacent
+    D/N ops containing an N into a single N — RECTIFY's stated convention that
+    ``1D 112N`` and ``113N`` are the same intron, since D and N both consume
+    reference and no query.  The junction POOL is built through that
+    normalization, but ``_iter_n_ops`` reports the RAW N-op, so for a read with
+    ``111N 3D`` the pool holds a junction 3 bp longer than the one the read is
+    scored at.
+
+    That twin is not an alternative placement: the read's bases sit in exactly
+    the same reference positions either way.  Returning its extent lets the
+    refiner recognise and skip it (see ``refine_read_junctions``).
+    """
+    start, end = ns, ne
+    k = cigar_idx - 1
+    while k >= 0 and cigartuples[k][0] in (_D, _N):
+        start -= cigartuples[k][1]
+        k -= 1
+    k = cigar_idx + 1
+    while k < len(cigartuples) and cigartuples[k][0] in (_D, _N):
+        end += cigartuples[k][1]
+        k += 1
+    return start, end
 
 
 def _has_boundary_error(
@@ -714,11 +773,16 @@ def refine_read_junctions(
         # boundary_error_window reference bases of either junction endpoint.
         # Clean M-op alignments at the boundary indicate the aligner was
         # confident; noisy boundaries are the cases that benefit from refinement.
-        # Exception: non-canonical junctions (tier >= 4, e.g. GG/AT donor) are
+        # Exception: junctions that are not a proper GT/GC..AG (tier >
+        # _CANONICAL_TIER_MAX, e.g. a GG/AT donor OR a non-AG acceptor) are
         # ALWAYS scored regardless of boundary cleanliness — the aligner can
         # produce a locally-optimal but canonically-wrong split with no nearby
         # errors (e.g. 54= leading into a GG donor), and these are exactly the
-        # cases that need correction.
+        # cases that need correction.  This bypass used to require tier >= 4,
+        # i.e. a broken DONOR, so a cleanly-aligned GT-AT (tier 3) or GT-GG
+        # (tier 2) N-op was never even scored: panel reads bc1283c7 and
+        # 12b2bc34 sat 6-7 nt from an annotated GT-AG with no indel within the
+        # boundary window, and 2H never looked at them.
         if boundary_error_window > 0:
             _t_boundary = time.perf_counter() if profile is not None else 0.0
             has_boundary_error = _has_boundary_error(
@@ -730,7 +794,7 @@ def refine_read_junctions(
                 _t_tier = time.perf_counter() if profile is not None else 0.0
                 current_filter_tier = _canonical_tier(ns, ne, genome_seq, strand)
                 _profile_time(profile, 'canonical_tier_current_filter', _t_tier)
-                if current_filter_tier < 4:
+                if current_filter_tier <= _CANONICAL_TIER_MAX:
                     if profile is not None:
                         profile.inc('n_ops_skipped_boundary_clean')
                     continue
@@ -780,15 +844,16 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
-        # When the current junction is non-canonical (tier ≥ 4), a canonical
-        # alternative should be preferred at equal edit-distance score (i.e., tier
-        # comparison wins over is_alt).  When the current junction is acceptably
-        # canonical (tier < 4), the read was placed there for good reason and the
-        # current junction is preferred at equal score (is_alt wins over tier).
+        # When the current junction is NOT a proper GT/GC..AG junction
+        # (tier > _CANONICAL_TIER_MAX), a canonical alternative should be preferred
+        # at equal edit-distance score (i.e., tier comparison wins over is_alt).
+        # When it IS one (tier <= _CANONICAL_TIER_MAX), the read was placed there
+        # for good reason and the current junction is preferred at equal score
+        # (is_alt wins over tier).
         _t_tier = time.perf_counter() if profile is not None else 0.0
         current_tier = _canonical_tier(ns, ne, genome_seq, strand)
         _profile_time(profile, 'canonical_tier_current_scoring', _t_tier)
@@ -797,13 +862,41 @@ def refine_read_junctions(
         # _CANONICAL_HP_PRIOR discount below is also disabled), and tier / is_novel
         # are dropped from the tie-break sort (below).  motif_blind=False is
         # byte-identical to the incumbent (arm-A).
-        tier_beats_alt = (current_tier >= 4) and not motif_blind  # True → prefer canonical over current
+        tier_beats_alt = (current_tier > _CANONICAL_TIER_MAX) and not motif_blind
+
+        # The read's own junction as the POOL spells it: `_merge_del_into_intron`
+        # folds a D abutting an N into the intron, so a read with `111N 3D`
+        # contributes a junction 3 bp longer than the N-op it is scored at. The
+        # twin is the SAME alignment — identical reference span, identical query
+        # bases, only the op labels differ — so choosing between the two is a
+        # REPRESENTATION question, and the scorer is the wrong instrument for it
+        # (see the candidate loop).
+        _dn_twin = _dn_run_extent(read.cigartuples, cigar_idx, ns, ne)
 
         for js, je in candidates:
             if je <= js:
                 if profile is not None:
                     profile.inc('candidates_invalid')
                 continue
+            if (js, je) == _dn_twin and (js, je) != (ns, ne):
+                # Neither representation is universally right — the ANNOTATION is
+                # what decides which one this read should carry. So relabel only
+                # when it lands on annotation and the read's own form is not
+                # annotated; otherwise keep the aligner's form. Both directions
+                # occur on the hold-out, which is why this is a rule and not a
+                # blanket skip:
+                #   05e2f8d8  annotated 111N -> unannotated 114N   (must NOT move)
+                #   3178286c  unannotated 109N -> annotated 114N   (SHOULD move)
+                # Never decide it on score: the score always favours the merged
+                # form, because the abutting deletion stops costing once it is
+                # relabelled as intron. That is not read evidence — 05e2f8d8's
+                # 1.128-unit "improvement" cleared even the annotated-canonical
+                # evidence gate on exactly that artifact.
+                if not ((chrom, js, je) in annotated_set
+                        and (chrom, ns, ne) not in annotated_set):
+                    if profile is not None:
+                        profile.inc('candidates_dn_merge_twin')
+                    continue
 
             _t_score = time.perf_counter() if profile is not None else 0.0
             score, delta = _score_junction(
@@ -817,6 +910,9 @@ def refine_read_junctions(
 
             # Tie-breakers (only matter when score is identical or within noise floor):
             is_alt   = 0 if (js == ns and je == ne) else 1  # current junction preferred
+            # L1 distance from the aligner's own placement. Zero for the
+            # incumbent, so it is consistent with is_alt by construction.
+            move_dist = abs(js - ns) + abs(je - ne)
             _t_tiebreak = time.perf_counter() if profile is not None else 0.0
             tier     = _canonical_tier(js, je, genome_seq, strand)
             is_novel = 0 if (chrom, js, je) in annotated_set else 1
@@ -825,10 +921,15 @@ def refine_read_junctions(
             # When the current junction is non-canonical, apply _CANONICAL_HP_PRIOR
             # (0.5 edit-distance units) as a discount to canonical-tier junctions so
             # that canonical alternatives win within the HP noise floor regardless of
-            # which penalty table is in use.  Non-canonical candidates (tier ≥ 4) get
-            # no discount.  When the current junction is canonical, compare raw scores.
+            # which penalty table is in use.  Non-canonical candidates get no
+            # discount.  When the current junction is canonical, compare raw scores.
+            # The SAME line defines canonical here as above: a candidate whose own
+            # acceptor is not AG must not collect the canonical prior — which is how
+            # a GT-AT incumbent used to out-discount the real GT-AG alternative.
             if tier_beats_alt:
-                canonical_discount = _CANONICAL_HP_PRIOR if tier < 4 else 0.0
+                canonical_discount = (
+                    _CANONICAL_HP_PRIOR if tier <= _CANONICAL_TIER_MAX else 0.0
+                )
                 score_cmp = score - canonical_discount
             else:
                 score_cmp = score
@@ -840,24 +941,38 @@ def refine_read_junctions(
             #   2. tier / is_alt (order depends on current_tier — see above)
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
-            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only)
+            #   5. move_dist — at a genuine tie, take the SMALLER move
+            #      (ISSUE-005(b)). This slot used to hold `abs(delta)` from the
+            #      scorer, which is the applied SLIDE and is structurally 0 for
+            #      every candidate (`max_slide` is API-compatibility only —
+            #      `tests/test_junction_refiner.py` pins that contract). The slot
+            #      was therefore a constant, and equal-scoring candidates were
+            #      separated by nothing but (js, je) — the LOWER GENOMIC
+            #      COORDINATE, an arbitrary leftward bias that has nothing to do
+            #      with the read. The distance is now derived from coordinates
+            #      instead: among candidates the read cannot distinguish, the one
+            #      closest to where the aligner put it is the smaller claim.
+            #      It is the FIFTH key and can never override score, tier, is_alt
+            #      or annotation — all four still decide first.
             # Motif-blind drops the canonical-tier and annotation priors from the
             # tie-break (they collapse to constants), leaving score → is_alt → shift.
             tier_key = 0 if motif_blind else tier
             novel_key = 0 if motif_blind else is_novel
             if tier_beats_alt:
                 # Current junction is non-canonical: prefer canonical alternatives
-                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, move_dist, js, je, delta)
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
-                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
             if best_tuple is None or candidate_tuple < best_tuple:
                 best_tuple = candidate_tuple
 
         if best_tuple is None:
             continue
 
-        # best_tuple = (score, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
+        # (the trailing `delta` is the scorer's applied slide, structurally 0;
+        #  kept so the tuple shape still mirrors _score_junction's contract.)
         best_score_cmp = best_tuple[0]
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
@@ -928,6 +1043,40 @@ def refine_read_junctions(
                     moves = False
                     if profile is not None:
                         profile.inc('move_margin_vetoes')
+
+        # --- Annotated-canonical evidence gate (the R1 class) -----------------
+        # The policy stated at the top of this loop — "within the sub-integer HP
+        # noise floor (|ed_A - ed_B| < 1.0) canonical annotated junctions are
+        # preferred" — was only ever implemented for the tier_beats_alt branch
+        # (where _CANONICAL_HP_PRIOR discounts canonical candidates).  In the
+        # other branch, where the incumbent IS canonical, candidates are ranked
+        # on the RAW score, so a 0.03 edit-distance win could take an annotated
+        # GT-AG junction onto a novel non-canonical one.  Measured on the Sumner
+        # human panel: three such moves at margins 0.031 / 0.434 / 0.463, all far
+        # inside the noise floor, each turning an annotated GT-AG into GT-GT /
+        # GT-GA / CT-TC.
+        #
+        # So: when the incumbent is BOTH annotated and canonical, a candidate
+        # that is not both must beat it by a full edit-distance unit.  Moves to
+        # another annotated canonical junction (isoform swaps) and moves whose
+        # incumbent is novel or non-canonical (the corrections 2H exists for) are
+        # untouched.  Disabled under motif_blind, which decides on read evidence
+        # alone by construction.
+        if (
+            moves
+            and _ANNOTATED_CANONICAL_HOLD > 0.0
+            and not motif_blind
+            and incumbent_score is not None
+            and current_tier < 4
+            and (chrom, ns, ne) in annotated_set
+        ):
+            _win_tier = _canonical_tier(new_js, new_je, genome_seq, strand)
+            _win_annot = (chrom, new_js, new_je) in annotated_set
+            if not (_win_annot and _win_tier < 4):
+                if best_score_cmp > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
+                    moves = False
+                    if profile is not None:
+                        profile.inc('annotated_canonical_holds')
 
         # Only emit a replacement if the junction actually changes.
         if moves:
@@ -1259,8 +1408,8 @@ def _apply_junction_replacement(
             new_cigar.insert(n_idx + 1, (_D, d))
 
     # Validate: total ref span must be preserved (sum ref ops + N = constant)
-    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING | {_N})
-    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING | {_N})
+    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING_POS)
+    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING_POS)
     if old_ref_span != new_ref_span:
         logger.debug(
             "refine_junction: ref span mismatch (%d → %d) for read %s; skipping",
@@ -1857,7 +2006,21 @@ def refine_bam_junctions(
             _sort_and_index(output_bam, n_threads=sort_threads)
             _profile_time(profile, 'sort_and_index_output_bam', _t_sort)
         except Exception as exc:
-            logger.warning("refine_bam_junctions: sort/index failed: %s", exc)
+            # Do NOT swallow this: an unsorted/unindexed output_bam is not a
+            # usable refined BAM. A caller that promotes output_bam to its
+            # "current" BAM on a normal return (e.g. correct_command.py's
+            # Module 2H step) would silently carry that broken file forward,
+            # surfacing as an unrelated-looking failure much later. Log at
+            # ERROR (the debuggable moment) and re-raise so this failure is
+            # attributed to its real cause, not lost.
+            logger.error(
+                "refine_bam_junctions: sort/index failed for %s: %s",
+                output_bam, exc,
+            )
+            raise RuntimeError(
+                f"refine_bam_junctions: sort/index failed for output BAM "
+                f"{output_bam!r}"
+            ) from exc
 
     logger.info(
         "refine_bam_junctions done: %d total, %d with N-ops, %d refined, %d unchanged, %d errors",
@@ -2030,11 +2193,15 @@ def evaluate_hp_pen_values(
 
 
 def _n_op_ref_start(read: pysam.AlignedSegment, target_idx: int) -> int:
-    """Return reference position at start of N-op at cigar index target_idx."""
+    """Return reference position at start of N-op at cigar index target_idx.
+
+    Cursor walker — advances on ``_REF_CONSUMING_POS`` so preceding introns are
+    counted (ISSUE-004).
+    """
     pos = read.reference_start
     for i, (op, length) in enumerate(read.cigartuples):
         if i == target_idx:
             return pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             pos += length
     return pos

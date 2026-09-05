@@ -31,6 +31,7 @@ import gzip
 import re
 import subprocess
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Mapping
@@ -442,6 +443,16 @@ DEFAULT_MAX_INTRON = 5000
 #: the long-standing "use 500000 or larger for human" guidance and caps the
 #: compute/false-positive bill an outlier annotated intron would otherwise buy.
 _DERIVED_MAX_INTRON_BOUNDS = (1000, 500_000)
+
+# mapPacBio is CPU-bound Java at ~1,000 reads/min/4 threads on ONT cDNA/DRS reads:
+# a whole 900k-read arm takes 4-15 h depending on the node and is killed by
+# ALIGNER_TIMEOUT with NOTHING to show for it (2026-08-22: 9/11 cohort tasks lost
+# after 6 h each; the same trap was hit in planning/259, 475, 557, 617, 632 and
+# documented in docs/aligners/mapPacBio.md — documentation an agent must know to
+# look up does not prevent the next recurrence, a refusal does). Above this many
+# reads a single-pass mapPacBio run is refused with the chunk recipe; override
+# with RECTIFY_MAPPACBIO_ALLOW_MONOLITH=1 for a deliberate long run.
+MPB_MONOLITH_MAX_READS = 300_000
 
 # uLTRA --reduce_read_ployA threshold high enough that poly-A reduction never
 # fires (longest plausible long read « this), so uLTRA never truncates the
@@ -1001,6 +1012,23 @@ def run_map_pacbio(
         actual_reads_path = chunk_tmp_fq
 
     qname_to_rn = _load_fastq_rn_map(str(actual_reads_path))
+
+    # ── Refuse a monolithic run that cannot finish inside ALIGNER_TIMEOUT ──
+    if (chunk_idx is None and not (n_chunks and n_chunks > 1)
+            and len(qname_to_rn) > MPB_MONOLITH_MAX_READS
+            and os.environ.get('RECTIFY_MAPPACBIO_ALLOW_MONOLITH') != '1'):
+        n_rec = max(2, -(-len(qname_to_rn) // 120_000))
+        raise RuntimeError(
+            f"mapPacBio: {len(qname_to_rn):,} reads in a single pass exceeds "
+            f"MPB_MONOLITH_MAX_READS={MPB_MONOLITH_MAX_READS:,}; at ~1,000 reads/min "
+            f"per 4 threads this would exceed the {ALIGNER_TIMEOUT // 3600} h "
+            f"ALIGNER_TIMEOUT and be killed with no output. Run it CHUNKED "
+            f"(one task per chunk, then merge): "
+            f"--mapPacBio-chunks {n_rec} --mapPacBio-chunk-idx K  (K=0..{n_rec - 1}), "
+            f"then --mapPacBio-chunks {n_rec} with no chunk-idx to merge. "
+            f"See docs/aligners/mapPacBio.md. Set RECTIFY_MAPPACBIO_ALLOW_MONOLITH=1 "
+            f"to run single-pass anyway."
+        )
 
     # Check if mapPacBio is available
     map_pacbio_path = shutil.which('mapPacBio.sh')

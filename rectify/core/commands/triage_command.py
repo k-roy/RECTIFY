@@ -44,6 +44,8 @@ def run_triage(args: argparse.Namespace) -> int:
         max_clip_3p=args.max_clip_3p,
         triage_unannotated_junctions=not args.no_triage_unannotated,
         clip_legs_enable=getattr(args, 'clip_legs', False),
+        max_correction_regression_ratio=getattr(
+            args, 'max_correction_regression_ratio', 1.0),
     )
 
     penalty_table = None
@@ -60,6 +62,8 @@ def run_triage(args: argparse.Namespace) -> int:
         annotated_junctions=annotated,
         policy=policy,
         pool_bams=list(args.pool_bams) if args.pool_bams else None,
+        original_bams=(list(args.original_bams)
+                       if getattr(args, 'original_bams', None) else None),
         penalty_table=penalty_table,
         realign=args.realign,
     )
@@ -67,7 +71,8 @@ def run_triage(args: argparse.Namespace) -> int:
     tsv_path = out_dir / 'triage.tsv'
     fieldnames = ['read_id', 'label', 'reasons', 'junction_proximal_errors',
                   'clip_5p', 'clip_3p', 'n_junctions', 'n_unannotated',
-                  'realigned', 'accepted']
+                  'correction_regression', 'realigned', 'accepted',
+                  'reverted_to_original']
     with open(tsv_path, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames, delimiter='\t')
         w.writeheader()
@@ -78,9 +83,24 @@ def run_triage(args: argparse.Namespace) -> int:
           f"{stats['high_confidence']} high-confidence (bypass), "
           f"{stats['triaged']} triaged "
           f"({stats['junction_leg']} junction-leg)")
+    if stats.get('correction_regression'):
+        print(f"  {stats['correction_regression']} read(s) pulled out of the "
+              f"bypass: correction raised hp_ed by more than "
+              f"{policy.max_correction_regression_ratio:g}x the read's own "
+              f"pre-correction edit distance")
     if args.realign:
         print(f"Re-align: {stats['realigned']} moved by the motif-blind refiner; "
               f"{stats['accepted']} accepted by hp_ed re-entry -> {out_bam}")
+        if stats['orig_leg']:
+            print(f"Pre-correction candidates: {stats['orig_leg']} offered, "
+                  f"{stats['orig_proposed']} differed from the incumbent, "
+                  f"{stats['orig_accepted']} reverted to the original "
+                  f"alignment by hp_ed re-entry")
+            if stats['orig_skipped_unknown_chrom']:
+                print(f"  WARNING: {stats['orig_skipped_unknown_chrom']} "
+                      f"pre-correction record(s) skipped — reference name not "
+                      f"in the input BAM header (chromosome naming mismatch)",
+                      file=sys.stderr)
     else:
         print("Re-align: skipped (--no-realign)")
     print(f"Per-read table: {tsv_path}")
@@ -102,6 +122,28 @@ def create_triage_parser(subparsers) -> argparse.ArgumentParser:
                         '(default: the input BAM itself). Pass the per-aligner '
                         'panel BAMs when available — the pool must reflect FULL '
                         'evidence, never the triaged subset.')
+    p.add_argument('--original-bams', nargs='+', default=None,
+                   help='PRE-CORRECTION BAM(s) — the aligner output before '
+                        '`rectify correct`. Each triaged read\'s original '
+                        'alignment is offered as a CANDIDATE against the same '
+                        'strict hp_ed re-entry arbiter, so Station B can undo '
+                        '2F/2H damage when the original strictly wins. Without '
+                        'this the only proposer is Module 2H itself, which '
+                        're-derives its own fixed point and can never offer '
+                        'back the placement it moved away from.')
+    p.add_argument('--max-correction-regression-ratio', type=float, default=1.0,
+                   metavar='K',
+                   help='Correction-regression guard: a read may not be '
+                        'bypassed as high-confidence when correction raised '
+                        'its HP-aware edit distance by more than K times the '
+                        'read\'s OWN pre-correction edit distance (default '
+                        '1.0 = "more than doubled it"). The scale is the read '
+                        'itself, so there is no per-library constant. Needs '
+                        '--original-bams; without it the guard cannot fire. '
+                        'Measured on 1,000 unselected chr5 reads: K=1.0 fires '
+                        'on 1.2%% of otherwise-bypassed reads, K=0.5 on 2.9%%, '
+                        'K=0.25 on 5.5%%; triaging on ANY regression fires on '
+                        '84.7%% and empties the bypass.')
     p.add_argument('--penalty-table', default=None,
                    help='Empirical HP penalty table TSV for the hp_ed re-entry '
                         'metric (default: flat costs)')
