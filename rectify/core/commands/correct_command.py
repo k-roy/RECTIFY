@@ -122,6 +122,25 @@ def _strip_aligner_prefix(bam_entry: str) -> str:
     return bam_entry
 
 
+def module_2h_skip_reason(config) -> Optional[str]:
+    """Why Module 2H will not run for this config, or ``None`` if it will.
+
+    A bare ``rectify correct <bam> --annotation …`` used to run no junction
+    refinement at all and log NOTHING about it, so the corrected BAM looked like
+    it had been through Module 2H.  On the tester's 62k-read human slice that is
+    6 reads changed instead of 30,703 (ISSUE-003).
+    """
+    reasons = []
+    if not (config.get('aligner_bams') or config.get('junction_pool_cache')):
+        reasons.append("no --aligner-bams and no --junction-pool-cache")
+    if not config.get('annotation_path'):
+        reasons.append("no --annotation")
+    if (config.get('skip_junction_refinement', False)
+            and not config.get('apply_3ss_rescue', True)):
+        reasons.append("--skip-junction-refinement with --skip-3ss-rescue")
+    return "; ".join(reasons) if reasons else None
+
+
 def _warn_self_pool(config, log) -> bool:
     """Warn when the junction pool is being built from the BAM being corrected.
 
@@ -816,6 +835,11 @@ def run(args):
         # Per-chromosome sorted junction index for Module 2F pool lookup.
         # Built from the prescan pool if available; otherwise None (GFF-only mode).
         _pool_chrom_index = None
+        if not _has_junction_context:
+            logger.info(
+                "Module 2H: SKIPPED (%s) — N-op junction boundaries are passed "
+                "through unchanged.", module_2h_skip_reason(config),
+            )
         if _has_junction_context:
             _t_refine = _time.perf_counter()
             if _skip_junction_refinement:
@@ -2137,7 +2161,10 @@ def create_correct_parser(subparsers):
              'junction (canonical GT-AG > annotated > highest split-alignment '
              'score). Improves junction accuracy for reads where the chosen '
              'aligner placed the intron boundary a few bp off from the true '
-             'splice site.'
+             'splice site. REQUIRED to switch Module 2H on: without this (or '
+             '--junction-pool-cache) AND --annotation, junction refinement is '
+             'SKIPPED and N-op boundaries are passed through unchanged — the '
+             'run logs "Module 2H: SKIPPED" and says why.'
     )
     junc_group.add_argument(
         '--junction-hp-pen',
