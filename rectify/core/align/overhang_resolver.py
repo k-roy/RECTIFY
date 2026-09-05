@@ -184,6 +184,7 @@ from ..splice.overhang_informativeness import (
 from ..splice.region_skip import overlaps_skip_region, skip_regions_from_env
 from ..splice.repeat_expansion import is_repeat_expansion
 from ..splice.splice_site_index import SpliceSiteIndex
+from ..splice.resolver_verdict import VERDICT_TAG, format_verdict_entry
 from ...config import CHROM_TO_GENOME
 from ...utils.genome import load_genome, standardize_chrom_name
 
@@ -594,6 +595,7 @@ def resolve_clip(
     cfg: ResolverConfig,
     stats: Optional[ResolverStats] = None,
     inside_seq: str = '',
+    verdict: Optional[Dict[str, object]] = None,
 ) -> Optional[_Placement]:
     """Resolve one terminal soft clip against the splice-site index.
 
@@ -604,12 +606,25 @@ def resolve_clip(
     ``inside_seq``: the aligned query bases immediately adjacent to the clip
     (already '='-decoded by the caller), enabling inside-edge near sites —
     the mis-anchored-edge geometry from planning/644 T4c. Empty disables.
+
+    ``verdict``: when a dict is passed it receives the outcome for this clip —
+    ``token`` (see ``splice.resolver_verdict.VERDICT_TOKENS``), ``bits`` (the
+    assessed slice's effective information, None before assessment) and
+    ``window`` (W_max bp, 0 = refused). Clips below ``cfg.min_clip`` leave it
+    empty: they were never assessed. ``resolve_read`` writes it as ``XW``.
     """
     if stats is None:
         stats = ResolverStats()
     if len(clip_seq) < cfg.min_clip:
         return None
     stats.clips_seen += 1
+
+    vb: Optional[float] = None    # bits of the assessed slice (None until assessed)
+    vw = 0                        # W_max bp (0 = refused)
+
+    def _verdict(token: str) -> None:
+        if verdict is not None:
+            verdict.update(token=token, bits=vb, window=vw)
 
     if '=' in clip_seq:
         # calmd never encodes soft-clip bases as '='; seeing one means the
@@ -630,13 +645,17 @@ def resolve_clip(
     # --- The gate: refuse before any candidate is touched -----------------
     if is_repeat_expansion(clip_used):
         stats.refused_repeat += 1
+        _verdict('repeat')
         return None
     stats.clips_assessed += 1
     assessment = assess_overhang(clip_used, alpha=cfg.alpha, max_window=cfg.max_intron)
+    vb = assessment.i_eff_bits
     if assessment.refused:
         stats.refused_low_info += 1
+        _verdict('low_info')
         return None
     w = assessment.w_max_bp
+    vw = w
     # Per-clip budget, scaled to the window this clip actually earned (the
     # configured count is the budget at _CEILING_REF_WINDOW; see
     # ResolverConfig.max_candidates_per_clip and ISSUE-010).
@@ -778,9 +797,11 @@ def resolve_clip(
     if blown_out and not placements:
         # Every pass that ran overflowed — the historical whole-clip refusal.
         # Counted above, so do NOT also count it as no_candidates.
+        _verdict('blowup')
         return None
     if not placements:
         stats.no_candidates += 1
+        _verdict('no_candidates')
         return None
 
     # --- Selection: unambiguous winner only --------------------------------
@@ -790,6 +811,7 @@ def resolve_clip(
     # both equal p.m + p.lead.
     if best.ed > cfg.max_edit_frac * (best.m + best.lead):
         stats.rejected_edit += 1
+        _verdict('rejected_edit')
         return None
     for other in placements[1:]:
         if other.ed - best.ed >= cfg.min_margin:
@@ -800,7 +822,9 @@ def resolve_clip(
             (other.intron_start, other.intron_end),
         ):
             stats.rejected_ambiguous += 1
+            _verdict('ambiguous')
             return None
+    _verdict('resolved')
     return best
 
 
@@ -1681,6 +1705,10 @@ def resolve_read(
 
     strand = '-' if read.is_reverse else '+'
     changed = False
+    # Per-clip verdicts for the XW tag (splice.resolver_verdict): one entry per
+    # assessed side, written whether or not the clip was placed, so Module 2F
+    # can reuse the sequence-only refusal and count its disagreements.
+    verdict_entries: List[str] = []
 
     # calmd '='-compressed SEQ: decode ONCE against the INPUT alignment (the
     # only one the '=' bytes are valid under) and write the letters back on the
@@ -1717,10 +1745,15 @@ def resolve_read(
             rs = read.reference_start
             inside = ''.join(
                 chrom_seq[rs + i] if b == '=' else b for i, b in enumerate(raw))
+        vd: Dict[str, object] = {}
         placement = resolve_clip(
             chrom_seq, index, chrom_key, _LEFT, strand, clip_seq,
             edge=read.reference_start, cfg=cfg, stats=stats, inside_seq=inside,
+            verdict=vd,
         )
+        if vd:
+            verdict_entries.append(format_verdict_entry(
+                _LEFT, vd['token'], vd['bits'], vd['window'], left_len))
         if placement is not None:
             _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len,
                            chrom_seq=chrom_seq, stats=stats, cfg=cfg)
@@ -1745,10 +1778,15 @@ def resolve_read(
             inside = ''.join(
                 chrom_seq[re_ - n_in + i] if b == '=' else b
                 for i, b in enumerate(raw))
+        vd = {}
         placement = resolve_clip(
             chrom_seq, index, chrom_key, _RIGHT, strand, clip_seq,
             edge=read.reference_end, cfg=cfg, stats=stats, inside_seq=inside,
+            verdict=vd,
         )
+        if vd:
+            verdict_entries.append(format_verdict_entry(
+                _RIGHT, vd['token'], vd['bits'], vd['window'], right_len))
         if placement is not None:
             _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len,
                            chrom_seq=chrom_seq, stats=stats, cfg=cfg)
@@ -1758,6 +1796,11 @@ def resolve_read(
                 stats.extra['resolved_inside_edge'] = stats.extra.get('resolved_inside_edge', 0) + 1
             _decode_seq_now()
             changed = True
+
+    if verdict_entries:
+        # A tag, not an alignment change: `changed` stays as the clips left it.
+        read.set_tag(VERDICT_TAG, ';'.join(verdict_entries))
+        _bump(stats, 'verdict_tags_written')
 
     # v2: re-arbitrate junction assignments and suspicious linear structure
     # (runs after clip resolution so a freshly placed junction competes too).

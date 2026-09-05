@@ -48,6 +48,11 @@ from .overhang_informativeness import (
     min_self_match_period as _oi_period,
 )
 from .region_skip import overlaps_skip_region, skip_regions_from_env
+from .resolver_verdict import (
+    SEQUENCE_ONLY_VERDICTS as _RV_SEQUENCE_ONLY,
+    VERDICT_REFUSALS as _RV_REFUSALS,
+    verdict_for_clip as _rv_for_clip,
+)
 
 # Reference regions whose reads bypass junction rescue entirely (the yeast
 # rDNA repeat is the canonical case — planning/644b: 47% of resolver CPU;
@@ -1290,6 +1295,7 @@ def _terminal_peel_rescue(
     peel_max_bp: int,
     peel_clean_anchor: int,
     accept_margin: float,
+    resolver_seq_search_refused: bool = False,
 ) -> Optional[Dict]:
     """Multi-hypothesis terminal peel (Module 2F).
 
@@ -1410,6 +1416,7 @@ def _terminal_peel_rescue(
             read, genome, nearby_junctions, strand,
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq, rescue_seq_override=peeled,
+            resolver_seq_search_refused=resolver_seq_search_refused,
         )
         if not res.get('rescued'):
             continue
@@ -1542,19 +1549,39 @@ def rescue_3ss_truncation(
     # new rescue path for reads the panel's C1 controls say must stay untouched.
     _cigar = read.cigartuples
     _seq = read.query_sequence
+    # Station A's verdict for THIS clip (XW; splice.resolver_verdict). The
+    # sequence-only verdict (low_info) is reused instead of re-derived — same
+    # 200 bp junction-proximal slice, same information bound on both sides —
+    # and it refuses only the SEQUENCE search, exactly as 2F's own
+    # informativeness refusals do; the structural paths (N-op snap, Case-4
+    # intronic snap, proximity) stay live because annotation is evidence the
+    # resolver deliberately lacks. Every other token is a judgement the
+    # annotation-guided rescue may overturn; a rescue there is reported as
+    # resolver_relation='rescued_over_refusal' so the disagreement is counted.
+    _rv_token = ''
+    _rv_skip = False
     if _cigar and _seq:
         if strand == '+':
             _clip5 = _seq[:_cigar[0][1]] if _cigar[0][0] == 4 else ""
         else:
             _clip5 = _seq[-_cigar[-1][1]:] if _cigar[-1][0] == 4 else ""
+        _rv = _rv_for_clip(read, 'L' if strand == '+' else 'R', len(_clip5))
+        if _rv is not None:
+            _rv_token = str(_rv['token'])
+            _rv_skip = _rv_token in _RV_SEQUENCE_ONLY
+        if _rv_skip:
+            _OI_COUNTERS['resolver_low_info_skip'] = (
+                _OI_COUNTERS.get('resolver_low_info_skip', 0) + 1)
         if (len(_clip5) >= _CLIP_ARTIFACT_SCOPE_BP
-                and _clip_search_refused(_clip5, strand)):
+                and (_rv_skip or _clip_search_refused(_clip5, strand))):
             # Observable without touching the resolver's 'assessed'/'refused'
             # instrument — this is a different decision from assess_overhang's.
             _OI_COUNTERS['clip_search_refused'] = (
                 _OI_COUNTERS.get('clip_search_refused', 0) + 1)
             _res = _no_rescue(read, strand)
             _res['repeat_expansion'] = True
+            _res['resolver_verdict'] = _rv_token
+            _res['resolver_relation'] = 'skip' if _rv_skip else ''
             return _res
 
     # 5'-edge reanchor pre-pass (for mapPacBio-style reads whose 5' edge has a
@@ -1596,6 +1623,7 @@ def rescue_3ss_truncation(
             read, genome, candidate_junctions, strand,
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq,
+            resolver_seq_search_refused=_rv_skip,
         )
         # Module 2F: multi-hypothesis terminal peel. Monotonic — only overrides
         # the baseline when a deeper peel is a strictly-better sequence rescue.
@@ -1606,6 +1634,7 @@ def rescue_3ss_truncation(
                 chrom, genome_seq, baseline=_result,
                 peel_max_bp=peel_max_bp, peel_clean_anchor=peel_clean_anchor,
                 accept_margin=peel_accept_margin,
+                resolver_seq_search_refused=_rv_skip,
             )
             if _peeled is not None:
                 _result = _peeled
@@ -1616,6 +1645,22 @@ def rescue_3ss_truncation(
 
     if _result.get('rescued'):
         _result['reanchor_clip_len'] = _reanchor_clip_len
+    # Station A ↔ 2F relation (splice.resolver_verdict), for ProcessingStats:
+    # 'skip' when the sequence search was refused on the resolver's low_info
+    # verdict; 'rescued_over_refusal' when 2F SEQUENCE-rescued (edit_distance
+    # >= 0; snaps and proximity hits are structural, not a disagreement) a clip
+    # the resolver had refused for any other reason.
+    _result['resolver_verdict'] = _rv_token
+    _ed = _result.get('edit_distance', -1)
+    if _rv_skip:
+        _result['resolver_relation'] = 'skip'
+    elif (_rv_token in _RV_REFUSALS and _result.get('rescued')
+            and _ed is not None and _ed >= 0):
+        _result['resolver_relation'] = 'rescued_over_refusal'
+        _OI_COUNTERS['resolver_refused_2f_rescued'] = (
+            _OI_COUNTERS.get('resolver_refused_2f_rescued', 0) + 1)
+    else:
+        _result['resolver_relation'] = ''
     return _result
 
 
@@ -1630,8 +1675,13 @@ def _rescue_3ss_truncation_body(
     chrom: str,
     genome_seq: str,
     rescue_seq_override: Optional[str] = None,
+    resolver_seq_search_refused: bool = False,
 ) -> Dict:
     """Inner body of rescue_3ss_truncation — see that function's docstring.
+
+    ``resolver_seq_search_refused``: Station A's ``low_info`` verdict for this
+    clip (XW). Refuses the softclip SEQUENCE search the way the ISSUE-006 floor
+    does; the structural paths stay live.
 
     ``rescue_seq_override``: when not None, use this sequence as the 5' rescue
     sequence instead of extracting it via ``_extract_5prime_rescue_seq``. Used by
@@ -1765,7 +1815,12 @@ def _rescue_3ss_truncation_body(
 
     _min_clip_bp = min_informative_clip_bp(junction_proximity_bp)
     _seq_search_refused = False
-    if rescue_type_candidate == 'softclip' and rescue_seq and (
+    if rescue_type_candidate == 'softclip' and rescue_seq and resolver_seq_search_refused:
+        # Station A already found this clip uninformative (XW low_info) — the
+        # same bound the floor below derives from, so the answer is known.
+        # Counted in the wrapper (resolver_low_info_skip); refuse the search.
+        _seq_search_refused = True
+    elif rescue_type_candidate == 'softclip' and rescue_seq and (
             five_clip < _min_clip_bp
             or len(rescue_seq) < _min_clip_bp
             or _clip_is_periodic(rescue_seq, strand)):

@@ -467,6 +467,8 @@ def correct_read_3prime(
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
     _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
+    _rv_token = ''                   # Station A's XW verdict for the 5' clip ('' = none)
+    _rv_rel = ''                     # 'skip' | 'rescued_over_refusal' | '' (resolver_verdict.py)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -517,6 +519,8 @@ def correct_read_3prime(
             _t0 = _time.perf_counter()
             _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
             _ms['five_prime_rescue_2f'] += _time.perf_counter() - _t0
+            _rv_token = str(_3ss_result.get('resolver_verdict', '') or '')
+            _rv_rel = str(_3ss_result.get('resolver_relation', '') or '')
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
@@ -733,6 +737,10 @@ def correct_read_3prime(
         # ProcessingStats.update_from_result). Same dict object as _ms, so the
         # modules below keep filling it after this literal is built.
         'module_seconds': _ms,
+        # Station A ↔ 2F relation for the 5' clip (not TSV columns; counted by
+        # ProcessingStats): the resolver's XW token and what 2F did with it.
+        'resolver_verdict_5p': _rv_token,
+        'resolver_2f_relation': _rv_rel,
         # New fields for unified record
         'junctions': junctions,  # List of (start, end) tuples
         'junctions_str': junctions_str,  # Semicolon-separated string

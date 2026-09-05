@@ -10,6 +10,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Station A → Module 2F verdict tags (`XW`)** (`splice/resolver_verdict.py`,
+  `align/overhang_resolver.py`, `splice/splice_aware_5prime.py`). The overhang
+  resolver now records its verdict for every terminal soft clip it assesses —
+  refusals included — as `XW:Z:<side>:<token>:<bits>:<window>:<clip_len>`
+  (`repeat` / `low_info` / `blowup` / `no_candidates` / `rejected_edit` /
+  `ambiguous` / `resolved`; `XJ` still marks placements). Module 2F reads it at
+  its clip-assessment entry: a `low_info` verdict on a clip that is still the
+  tagged length skips 2F's sequence search (both sides assess the same 200 bp
+  junction-proximal slice with the same information bound; the structural
+  rescue paths stay live), every other token is a judgement the annotation +
+  pool may overturn, and a sequence rescue there is counted as a disagreement.
+  New `<sample>_stats.tsv` rows: `ends_2f_skipped_by_resolver`,
+  `ends_2f_rescued_over_resolver_refusal`.
+- **Per-module wall-time counter in `rectify correct`**
+  (`bam/processing_stats.py`, `bam/bam_processor.py`, `correct_command.py`).
+  Each per-read module (2E pre-pass, 2F, 2C, 2G/2G.5, 2E walkback, NET-seq) is
+  timed per read and summed over primary rows; the stage walls (Module 2H,
+  junction-pool setup, the per-read loop, every BAM writer) join them. Surfaced
+  as `module_seconds_*` rows in `<sample>_stats.tsv` (per-read modules as a
+  share of `read_total`), a "Module wall time" block in the report, one
+  `[TIMING] correct modules:` log line, and `stats.module_seconds` in the
+  correct-stage provenance sidecar. Region-checkpoint JSON carries the map
+  beside the integer counters; the corrected-TSV schema is unchanged.
+- **AT-AC intron class ON BY DEFAULT for every organism** (`align/overhang_resolver.py`,
+  `splice/junction_scoring.py`; `--no-resolver-atac` on `align` and `run-all`
+  reproduces the previous candidate space, `--resolver-atac` is kept as a
+  no-op). Yeast splices AT-AC introns through its major spliceosome (Talkish
+  et al. 2019, SUT635) and in human it is the U12-type class; Module 2H's
+  canonical tier now ranks the paired AT-AC class with GC-AG. The AT-AC pass
+  has its own candidate budget — a shared budget let the optional pass starve
+  the canonical GT/GC pass and cost 3 real yeast junctions. Price: ×1.15 on the
+  yeast validation suite; ×2.9 wall on a 1,000-read human hold-out.
+- **Resolver homopolymer-aware edit-distance kernel compiled by default**
+  (`splice/overhang_informativeness.py`; `RECTIFY_HP_ED_NUMBA=0` opts out). The
+  numba kernel is imported lazily on the first large DP, so yeast runs and
+  spawn workers never pay for it; with the window-scaled candidate ceiling a
+  human run is ~20× cheaper per candidate (pure-Python 21,542 s vs 10,621 s on
+  a 145k-read chromosome slice, identical output). The correct-stage kernel in
+  `splice_aware_5prime.py` stays opt-in. Landed together with a loud
+  checkpoint-schema guard: `rectify correct` now refuses a checkpoint whose
+  row width differs from the current corrected-TSV header (the TSV grew
+  39 → 44 columns across the 2F/2H fixes), naming the directory to delete,
+  instead of silently dropping every row.
 - **`rectify prescan --complexity-alpha` — structural pool-admission gate,
   ON BY DEFAULT at `0.01`** (`prescan_command.py`,
   `splice/overhang_informativeness.py`). A novel junction is admitted to the

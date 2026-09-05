@@ -142,6 +142,11 @@ class ProcessingStats:
     ends_walkback_readgenome: int = 0        # Position changed by read-vs-reference walkback (NEW-075)
     ends_refined_netseq: int = 0
     ends_five_prime_rescued: int = 0        # 5' end rescued at 3'SS boundary
+    # Station A ↔ Module 2F (2026-09-05, splice.resolver_verdict): 2F skipped its
+    # sequence search on the resolver's XW low_info verdict, or 2F sequence-
+    # rescued a clip the resolver had refused for any other reason.
+    ends_2f_skipped_by_resolver: int = 0
+    ends_2f_rescued_over_resolver_refusal: int = 0
 
     # Poly(A) tail length statistics — DRS ONLY
     # Will be 0 for --dT-primed-cDNA (poly-A not sequenced in that protocol).
@@ -189,6 +194,8 @@ class ProcessingStats:
             'ends_walkback_readgenome': self.ends_walkback_readgenome,
             'ends_refined_netseq': self.ends_refined_netseq,
             'ends_five_prime_rescued': self.ends_five_prime_rescued,
+            'ends_2f_skipped_by_resolver': self.ends_2f_skipped_by_resolver,
+            'ends_2f_rescued_over_resolver_refusal': self.ends_2f_rescued_over_resolver_refusal,
             'reads_with_polya': self.reads_with_polya,
             'polya_length_sum': self.polya_length_sum,
             'polya_length_max': self.polya_length_max,
@@ -215,6 +222,8 @@ class ProcessingStats:
         self.ends_walkback_readgenome += other.ends_walkback_readgenome
         self.ends_refined_netseq += other.ends_refined_netseq
         self.ends_five_prime_rescued += other.ends_five_prime_rescued
+        self.ends_2f_skipped_by_resolver += other.ends_2f_skipped_by_resolver
+        self.ends_2f_rescued_over_resolver_refusal += other.ends_2f_rescued_over_resolver_refusal
         self.reads_with_polya += other.reads_with_polya
         self.polya_length_sum += other.polya_length_sum
         self.polya_length_max = max(self.polya_length_max, other.polya_length_max)
@@ -261,6 +270,11 @@ class ProcessingStats:
                 self.ends_corrected_false_junction += 1
             if result.get('five_prime_rescued'):
                 self.ends_five_prime_rescued += 1
+            _rv_rel = result.get('resolver_2f_relation')
+            if _rv_rel == 'skip':
+                self.ends_2f_skipped_by_resolver += 1
+            elif _rv_rel == 'rescued_over_refusal':
+                self.ends_2f_rescued_over_resolver_refusal += 1
             if 'atract_ambiguity' in corrections:
                 if result.get('corrected_3prime') != result.get('original_3prime'):
                     self.ends_shifted_atract_walking += 1
@@ -398,6 +412,8 @@ def write_stats_tsv(
             f.write(f"ends_walkback_readgenome\t{stats.ends_walkback_readgenome}\t{100*stats.ends_walkback_readgenome/processed:.2f}\t3' ends corrected by read-vs-reference walkback (NEW-075, --dT-primed-cDNA)\n")
             f.write(f"ends_refined_netseq\t{stats.ends_refined_netseq}\t{100*stats.ends_refined_netseq/processed:.2f}\t3' ends refined by NET-seq\n")
             f.write(f"total_position_shifts\t{stats.total_position_shifts}\t{100*stats.total_position_shifts/processed:.2f}\tTotal 3' ends with position changed\n")
+            f.write(f"ends_2f_skipped_by_resolver\t{stats.ends_2f_skipped_by_resolver}\t{100*stats.ends_2f_skipped_by_resolver/processed:.2f}\t5' clips whose Module 2F sequence search was skipped on Station A's low_info verdict (XW tag)\n")
+            f.write(f"ends_2f_rescued_over_resolver_refusal\t{stats.ends_2f_rescued_over_resolver_refusal}\t{100*stats.ends_2f_rescued_over_resolver_refusal/processed:.2f}\t5' ends Module 2F rescued after Station A refused the clip (rejected_edit / ambiguous / no_candidates / blowup / repeat) — the two modules disagreed\n")
 
         # Poly(A) tail statistics — DRS and ONT PCR-cDNA; always 0 for oligo-dT cDNA
         if processed > 0:
@@ -548,6 +564,8 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
         lines.append(f"  Read-genome walkback:     {stats.ends_walkback_readgenome:>12,} ({100*stats.ends_walkback_readgenome/processed:>5.1f}%)")
         lines.append(f"  NET-seq refinement:       {stats.ends_refined_netseq:>12,} ({100*stats.ends_refined_netseq/processed:>5.1f}%)")
         lines.append(f"  5' soft-clip rescued:     {stats.ends_five_prime_rescued:>12,} ({100*stats.ends_five_prime_rescued/processed:>5.1f}%)")
+        lines.append(f"  2F skipped (XW low_info): {stats.ends_2f_skipped_by_resolver:>12,} ({100*stats.ends_2f_skipped_by_resolver/processed:>5.1f}%)")
+        lines.append(f"  2F rescued vs resolver:   {stats.ends_2f_rescued_over_resolver_refusal:>12,} ({100*stats.ends_2f_rescued_over_resolver_refusal/processed:>5.1f}%)")
         lines.append(f"  Total position shifts:    {stats.total_position_shifts:>12,} ({100*stats.total_position_shifts/processed:>5.1f}%)")
     lines.append("")
 

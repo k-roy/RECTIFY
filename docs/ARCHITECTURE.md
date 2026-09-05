@@ -409,6 +409,25 @@ overhangs — was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2).
 Accepted placements carry
 `XJ:Z:<intron_start>-<intron_end>:<ed>:<side>`.
 
+**Per-clip verdicts (`XW`, 2026-09-05).** Every clip the resolver *assesses*
+(≥ `min_clip` bases) leaves its verdict on the record whether or not it was
+placed: `XW:Z:<side>:<token>:<bits>:<window>:<clip_len>[;…]` with `token` one of
+`repeat` / `low_info` / `blowup` / `no_candidates` / `rejected_edit` /
+`ambiguous` / `resolved`, `bits` the assessed slice's effective information,
+`window` its W_max (0 = refused) and `clip_len` the soft-clip length the verdict
+was formed on. Module 2F in `correct` reads it at its clip-assessment entry
+(`splice/resolver_verdict.py`): a `low_info` verdict on a clip that is still
+that long **skips 2F's sequence search** — both sides assess the same 200 bp
+junction-proximal slice with the same information bound, so re-deriving it
+would give the same answer; the structural paths (N-op snap, Case-4 intronic
+snap, proximity) stay live. Every other token is a judgement 2F may overturn
+with the annotation and the junction pool — evidence the resolver deliberately
+lacks — and a sequence rescue there is counted as a disagreement
+(`ends_2f_rescued_over_resolver_refusal` beside `ends_2f_skipped_by_resolver`
+in `<sample>_stats.tsv`). The tag is advisory: malformed entries are ignored,
+and a clip whose length changed since the verdict (a resolved remainder, a
+reanchor) is assessed afresh.
+
 **Tags.** Both `XJ` and `XB` are written only on a read the resolver actually
 rewrites — presence means the record was changed, absence means passthrough;
 neither tag carries a `0`/`1` "touched but unchanged" sentinel. All five
