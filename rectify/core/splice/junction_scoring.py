@@ -1050,6 +1050,16 @@ def _score_junction(
 
     Returns:
         ``(best_score, 0)`` where ``best_score`` is ``min_k (t1(k) + t2(k))``.
+
+        The second element is the SLIDE this scorer applied.  It is always 0
+        because ``max_slide`` is API-compatibility only in this implementation
+        (see the arg list) — the scorer never slides a boundary, it scores the
+        candidate as given.  ``refine_read_junctions`` still carries it as the
+        ``abs_delta`` tie-breaker, where it is therefore a constant and cannot
+        separate anything; ties fall through to ``(js, je)``, i.e. to the lower
+        genomic coordinate.  That is a real gap (ISSUE-005) but closing it means
+        DEFINING a new tie-break signal, not restoring a lost one — do not
+        quietly repurpose this slot.
     """
     if profile is not None:
         profile.inc('score_junction_calls')

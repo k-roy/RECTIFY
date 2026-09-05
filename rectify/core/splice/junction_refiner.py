@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -165,6 +166,22 @@ from .junction_scoring import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Annotated-canonical evidence gate (edit-distance units)
+# ---------------------------------------------------------------------------
+# Read evidence a candidate must have OVER an annotated + canonical incumbent
+# before Module 2H will move the junction somewhere that is not both annotated
+# and canonical.  1.0 = one full edit-distance unit, i.e. the sub-integer HP
+# noise floor named in refine_read_junctions' scoring policy: below that, the
+# difference between two placements is homopolymer noise, not evidence.
+# Set RECTIFY_ANNOT_CANON_HOLD=0 to restore the pre-2026-09 behaviour (any
+# score win, however small, could move an annotated GT-AG onto a novel
+# non-canonical junction).
+_ANNOTATED_CANONICAL_HOLD: float = float(
+    os.environ.get("RECTIFY_ANNOT_CANON_HOLD", "1.0")
+)
 
 
 class JunctionRefineProfile:
@@ -849,7 +866,12 @@ def refine_read_junctions(
             #   2. tier / is_alt (order depends on current_tier — see above)
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
-            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only)
+            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only).
+            #      INERT: `_score_junction` returns delta=0 for every candidate
+            #      (it never slides — `max_slide` is API-compat only), so this
+            #      slot is a constant and ties fall through to (js, je), i.e. to
+            #      the lower genomic coordinate. Closing that gap means DEFINING
+            #      a new tie-break signal, not restoring a lost one (ISSUE-005).
             # Motif-blind drops the canonical-tier and annotation priors from the
             # tie-break (they collapse to constants), leaving score → is_alt → shift.
             tier_key = 0 if motif_blind else tier
@@ -937,6 +959,40 @@ def refine_read_junctions(
                     moves = False
                     if profile is not None:
                         profile.inc('move_margin_vetoes')
+
+        # --- Annotated-canonical evidence gate (the R1 class) -----------------
+        # The policy stated at the top of this loop — "within the sub-integer HP
+        # noise floor (|ed_A - ed_B| < 1.0) canonical annotated junctions are
+        # preferred" — was only ever implemented for the tier_beats_alt branch
+        # (where _CANONICAL_HP_PRIOR discounts canonical candidates).  In the
+        # other branch, where the incumbent IS canonical, candidates are ranked
+        # on the RAW score, so a 0.03 edit-distance win could take an annotated
+        # GT-AG junction onto a novel non-canonical one.  Measured on the Sumner
+        # human panel: three such moves at margins 0.031 / 0.434 / 0.463, all far
+        # inside the noise floor, each turning an annotated GT-AG into GT-GT /
+        # GT-GA / CT-TC.
+        #
+        # So: when the incumbent is BOTH annotated and canonical, a candidate
+        # that is not both must beat it by a full edit-distance unit.  Moves to
+        # another annotated canonical junction (isoform swaps) and moves whose
+        # incumbent is novel or non-canonical (the corrections 2H exists for) are
+        # untouched.  Disabled under motif_blind, which decides on read evidence
+        # alone by construction.
+        if (
+            moves
+            and _ANNOTATED_CANONICAL_HOLD > 0.0
+            and not motif_blind
+            and incumbent_score is not None
+            and current_tier < 4
+            and (chrom, ns, ne) in annotated_set
+        ):
+            _win_tier = _canonical_tier(new_js, new_je, genome_seq, strand)
+            _win_annot = (chrom, new_js, new_je) in annotated_set
+            if not (_win_annot and _win_tier < 4):
+                if best_score_cmp > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
+                    moves = False
+                    if profile is not None:
+                        profile.inc('annotated_canonical_holds')
 
         # Only emit a replacement if the junction actually changes.
         if moves:
