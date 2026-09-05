@@ -112,6 +112,17 @@ The resolver consumes the (name-sorted) minimap2 arm BAM and emits a BAM in
 the same order, so it drops into the panel exactly where mapPacBio's arm
 did. Accepted placements carry ``XJ:Z:<intron_start>-<intron_end>:<ed>:<side>``;
 MD/NM are dropped on rewritten records (stale after CIGAR surgery).
+
+**Emission spells out the indels the score assumed** (:func:`_block_cigar`).
+Scoring is indel-tolerant, so writing the placed exon block as one flat ``M``
+produced alignments that could not express their own score — read r060_2601
+(P06) was written ``...405N24M`` for a 24-bp block at 13/24 apparent identity.
+The block is re-aligned against the reference at the accepted junction with the
+affine-gap semi-global aligner from :mod:`~rectify.core.align.local_aligner`
+(the same one ``rescue_3ss_truncation`` uses) and emitted as real M/I/D. This
+is emission only: scoring, acceptance, the junction and ``XJ`` are untouched,
+a gap-free block still emits exactly the old flat ``M``, and a degenerate
+alignment falls back to it and is counted as ``emit_fallback_flat``.
 """
 
 from __future__ import annotations
@@ -123,6 +134,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
+from .local_aligner import _align_left_anchored, _align_right_anchored
 from ..splice.overhang_informativeness import (
     COUNTERS,
     assess_overhang,
@@ -140,6 +152,15 @@ logger = logging.getLogger(__name__)
 
 _LEFT = 'L'
 _RIGHT = 'R'
+
+# Emission allowance for the exon block a placement puts across the junction
+# (mirrors ``local_aligner.align_clip_to_exon``'s ``max_indel``). The reference
+# window handed to the affine-gap aligner is the block length plus this many
+# bases on the FREE side only — the junction side is anchored — so a wildly
+# wrong placement cannot manufacture a huge deletion. A block whose optimal
+# alignment needs more indel than this is refused back to the flat M and
+# counted as ``emit_fallback_flat``.
+_EMIT_MAX_INDEL = 5
 
 
 @dataclass
@@ -286,6 +307,10 @@ class _Placement:
     canonical_rank: int  # 0 = GT/AG-class donor, 1 = GC-class, 2 = AT-AC (paired, opt-in)
     k_inside: int = 0    # aligned bases re-assigned across the junction
                          # (inside-edge near site; planning/644 T4c)
+    qseg: str = ''       # the query bases this placement was SCORED on
+                         # (``cmp_seq``: lead + m, already '='-decoded). Kept so
+                         # the emitter can align them and write a real M/I/D
+                         # CIGAR instead of the flat M the score never implied.
 
 
 def _clip_lens(cigartuples) -> Tuple[int, int]:
@@ -503,7 +528,7 @@ def resolve_clip(
                         placements.append(_Placement(
                             ed=ed, intron_start=f, intron_end=e, lead=lead, m=m,
                             canonical_rank=_donor_rank(chrom_seq, side, strand, f, e),
-                            k_inside=k,
+                            k_inside=k, qseg=cmp_seq,
                         ))
                         best_ed = min(best_ed, ed)
         else:
@@ -541,7 +566,7 @@ def resolve_clip(
                         placements.append(_Placement(
                             ed=ed, intron_start=d, intron_end=e, lead=lead, m=m,
                             canonical_rank=_donor_rank(chrom_seq, side, strand, d, e),
-                            k_inside=k,
+                            k_inside=k, qseg=cmp_seq,
                         ))
                         best_ed = min(best_ed, ed)
 
@@ -570,28 +595,135 @@ def resolve_clip(
     return best
 
 
+def _block_cigar(
+    side: str,
+    qblock: str,
+    chrom_seq: str,
+    intron_start: int,
+    intron_end: int,
+    max_indel: int = _EMIT_MAX_INDEL,
+) -> Optional[Tuple[List[Tuple[int, int]], int]]:
+    """Real M/I/D CIGAR for the exon block a placement puts across the junction.
+
+    Returns ``(ops, block_ref_start)``, or None when the aligner's answer is
+    degenerate and the caller must fall back to the flat M.
+
+    Why this exists: :func:`resolve_clip` SCORES a candidate with
+    ``hp_edit_distance_bounded`` (indels allowed) but the emitter used to write
+    the matched block as ONE flat M, so an accepted placement whose true fit
+    needs a 1-bp shift was written as an ungapped block the alignment could not
+    express — read r060_2601 (P06) got ``...405N24M`` for a 24-bp block at
+    13/24 apparent identity. MD/NM are dropped in the same breath, so nothing
+    downstream noticed the disagreement. The block is re-aligned here with the
+    same affine-gap semi-global aligner ``rescue_3ss_truncation`` uses
+    (``local_aligner.align_clip_to_exon`` is the precedent), anchored at the
+    junction it must not move:
+
+      RIGHT clip — the block starts AT ``intron_end``: left-anchored, free suffix.
+      LEFT clip  — the block ends AT ``intron_start``: right-anchored, free prefix.
+
+    EMISSION ONLY. Scoring, acceptance, the accepted junction and the ``XJ``
+    edit distance are all untouched; the only thing that changes is how the
+    already-accepted block is spelled.
+
+    Degeneracy (fall back to the flat M rather than write something worse):
+      * total indel above ``max_indel`` — the window allows no more anyway,
+        and a placement needing that much was mis-scored;
+      * a D touching the junction — that D silently redefines the intron
+        boundary the caller is about to write as ``N``. An I touching the
+        junction is NOT refused: it adds bases without moving the junction.
+    """
+    m = len(qblock)
+    if m == 0:
+        return None
+    if side == _RIGHT:
+        region_start = intron_end
+        region_end = min(len(chrom_seq), intron_end + m + max_indel)
+    else:
+        region_start = max(0, intron_start - m - max_indel)
+        region_end = intron_start
+    ref_region = chrom_seq[region_start:region_end]
+    if len(ref_region) < m:
+        return None
+
+    # Exact shortcut, not a heuristic: a block with zero ungapped mismatches
+    # scores 2*m, and every gap costs at least gap_open+gap_extend = -5 against
+    # a best-case +2, so no gapped alignment can tie it. Reproducing the flat M
+    # here keeps the (common) clean case free of the O(m^2) Gotoh DP and makes
+    # the "gap-free segment emits exactly the old CIGAR" invariant structural.
+    ungapped = ref_region[:m] if side == _RIGHT else ref_region[-m:]
+    if qblock.upper() == ungapped.upper():
+        return ([(0, m)],
+                intron_end if side == _RIGHT else intron_start - m)
+
+    if side == _RIGHT:
+        ops, _ref_consumed = _align_left_anchored(qblock, ref_region)
+        block_ref_start = intron_end
+    else:
+        ops, ref_skip = _align_right_anchored(qblock, ref_region)
+        block_ref_start = region_start + ref_skip
+    if not ops:
+        return None
+    if sum(ln for op, ln in ops if op in (0, 1)) != m:
+        return None          # defensive: the aligner must consume all of qblock
+    if sum(ln for op, ln in ops if op in (1, 2)) > max_indel:
+        return None
+    junction_op = ops[0][0] if side == _RIGHT else ops[-1][0]
+    if junction_op == 2:
+        return None
+    return ops, block_ref_start
+
+
 def _rewrite_cigar(
     read: pysam.AlignedSegment,
     side: str,
     placement: _Placement,
     clip_len: int,
     clip_used_len: int,
+    chrom_seq: Optional[str] = None,
+    stats: Optional[ResolverStats] = None,
 ) -> None:
     """Apply an accepted placement to ``read`` in place (CIGAR + position).
 
-    The matched portion of the clip becomes ``M / N / M``; any clip bases
-    beyond ``max_clip_match`` remain soft-clipped. MD/NM are dropped (stale).
+    The matched portion of the clip becomes ``M[/I/D] / N / M[/I/D]``; any clip
+    bases beyond ``max_clip_match`` remain soft-clipped. MD/NM are dropped
+    (stale). ``chrom_seq`` enables the gapped emission of :func:`_block_cigar`;
+    without it (or without ``placement.qseg``) the historical flat M is written.
+
+    The ``lead`` bases stay a flat M merged into the neighbouring op on
+    purpose: they sit between the near site and the untouched aligned edge, so
+    their reference span is pinned at BOTH ends and any gap inside them would
+    have to be a balanced I+D pair — churn, not information, and it would move
+    the N. Only the ``m`` block, which is free at its outer end, is re-aligned.
     """
     ct = list(read.cigartuples)
     remainder = clip_len - clip_used_len
     intron_len = placement.intron_end - placement.intron_start
     k = placement.k_inside
 
+    block_ops: Optional[List[Tuple[int, int]]] = None
+    block_ref_start: Optional[int] = None
+    if chrom_seq is not None and placement.qseg:
+        # RIGHT: cmp_seq is lead-then-m; LEFT: m-then-lead (see resolve_clip).
+        qblock = (placement.qseg[placement.lead:] if side == _RIGHT
+                  else placement.qseg[:placement.m])
+        got = _block_cigar(side, qblock, chrom_seq,
+                           placement.intron_start, placement.intron_end)
+        if got is None:
+            if stats is not None:
+                _bump(stats, 'emit_fallback_flat')
+        else:
+            block_ops, block_ref_start = got
+    if block_ops is None:
+        block_ops = [(0, placement.m)]
+        block_ref_start = (placement.intron_end if side == _RIGHT
+                           else placement.intron_start - placement.m)
+
     if side == _LEFT:
         new_ops: List[Tuple[int, int]] = []
         if remainder > 0:
             new_ops.append((4, remainder))
-        new_ops.append((0, placement.m))
+        new_ops.extend(block_ops)
         new_ops.append((3, intron_len))
         rest = ct[1:]
         if k > 0:
@@ -604,7 +736,10 @@ def _rewrite_cigar(
             else:
                 new_ops.append((0, placement.lead))
         read.cigartuples = new_ops + rest
-        read.reference_start = placement.intron_start - placement.m
+        # The block's REFERENCE span is no longer placement.m once it carries
+        # I/D ops, so the new start comes from the aligner's own consumption
+        # (block_ref_start + ref span == intron_start by construction).
+        read.reference_start = block_ref_start
     else:
         rest = ct[:-1]
         if k > 0:
@@ -616,7 +751,7 @@ def _rewrite_cigar(
             else:
                 new_ops.append((0, placement.lead))
         new_ops.append((3, intron_len))
-        new_ops.append((0, placement.m))
+        new_ops.extend(block_ops)
         if remainder > 0:
             new_ops.append((4, remainder))
         read.cigartuples = rest + new_ops
@@ -1270,7 +1405,8 @@ def resolve_read(
             edge=read.reference_start, cfg=cfg, stats=stats, inside_seq=inside,
         )
         if placement is not None:
-            _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len)
+            _rewrite_cigar(read, _LEFT, placement, left_len, clip_used_len,
+                           chrom_seq=chrom_seq, stats=stats)
             stats.resolved += 1
             stats.resolved_left += 1
             if placement.k_inside:
@@ -1296,7 +1432,8 @@ def resolve_read(
             edge=read.reference_end, cfg=cfg, stats=stats, inside_seq=inside,
         )
         if placement is not None:
-            _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len)
+            _rewrite_cigar(read, _RIGHT, placement, right_len, clip_used_len,
+                           chrom_seq=chrom_seq, stats=stats)
             stats.resolved += 1
             stats.resolved_right += 1
             if placement.k_inside:
