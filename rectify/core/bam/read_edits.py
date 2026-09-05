@@ -1126,6 +1126,21 @@ def reroute_intronic_tail_5prime_via_junction(
             excess = cur_end - clip_boundary
             if op in _REF_CONSUMING:
                 trim = min(length, excess)
+                if op == 3 and trim < length:
+                    # clip_boundary falls INSIDE a junction the aligner already
+                    # called. Continuing would shorten that N and the merge block
+                    # below would then fuse the remnant with the new N, silently
+                    # deleting every junction in between (read eca6079d: 1241N
+                    # cut to 755N, merged into a 97,213 bp AG-AG "intron" that
+                    # replaced six real junctions). Refuse instead — the writer
+                    # falls back to softclip_intronic_tail_5prime.
+                    #
+                    # Keyed on the N being CUT, not on the terminal op being N:
+                    # the legitimate Case-5 `n_boundary_adjust` merge has a FULLY
+                    # INTACT N ending exactly at clip_boundary, which never
+                    # reaches here because the loop breaks on cur_end <=
+                    # clip_boundary first.
+                    return False
                 cigar[-1] = (op, length - trim)
                 if cigar[-1][1] == 0:
                     cigar.pop()
@@ -1210,6 +1225,14 @@ def reroute_intronic_tail_5prime_via_junction(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
+                if op == 3 and trim < length:
+                    # Mirror of the minus-strand guard above (ISSUE-007):
+                    # clip_boundary falls inside an aligner-called junction, and
+                    # the merge below would fuse its remnant with the new N,
+                    # deleting every junction in between. The legitimate Case-5
+                    # abutting merge has an INTACT N and breaks out of the loop
+                    # before reaching this branch.
+                    return False
                 cigar[0] = (op, length - trim)
                 if cigar[0][1] == 0:
                     cigar.pop(0)
@@ -1253,6 +1276,61 @@ def reroute_intronic_tail_5prime_via_junction(
         read.cigartuples = cigar
         read.reference_start = new_ref_start
         return True
+
+
+def projected_5prime_rescue_intron_edge(
+    read: pysam.AlignedSegment,
+    soft_clip_len: int,
+    strand: str,
+    upstream_trim: int = 0,
+) -> Optional[int]:
+    """Exon-2-side reference edge of the N-op :func:`extend_read_5prime_for_junction_rescue`
+    would draw on *read*, or ``None`` when that function would not run at all.
+
+    ``extend`` derives ``intron_len`` from the LIVE alignment edge and never
+    reads ``five_prime_intron_clip_pos``; the N-op it writes therefore always
+    ends where the read currently starts (plus) or ends (minus), adjusted by the
+    equivalence-extension trim it will actually be able to apply. Callers use
+    this to ask whether that is the boundary the rescue intended before letting
+    ``extend`` run — see ISSUE-002: for reads whose 5' end lies inside the
+    rescued intron the two differ, and ``extend`` silently fabricates an intron
+    running to the read's OLD 5' edge.
+
+    The ``effective_trim`` logic mirrors ``extend``'s own guard exactly
+    (L1359-1366 / L1425-1432), so this is a projection of that function, not an
+    independent re-derivation.
+    """
+    cigar = list(read.cigartuples or [])
+    if not cigar or read.is_unmapped or soft_clip_len <= 0:
+        return None
+    _MX_OPS = frozenset([0, 7, 8])  # M, =, X
+
+    if strand == '+':
+        if cigar[0][0] != 4:
+            return None
+        cigar.pop(0)
+        effective_trim = (
+            upstream_trim
+            if (upstream_trim > 0 and cigar and cigar[0][0] in _MX_OPS
+                and cigar[0][1] >= upstream_trim)
+            else 0
+        )
+        if read.reference_start is None:
+            return None
+        return read.reference_start + effective_trim
+
+    if cigar[-1][0] != 4:
+        return None
+    cigar.pop()
+    effective_trim = (
+        upstream_trim
+        if (upstream_trim > 0 and cigar and cigar[-1][0] in _MX_OPS
+            and cigar[-1][1] >= upstream_trim)
+        else 0
+    )
+    if read.reference_end is None:
+        return None
+    return read.reference_end - effective_trim
 
 
 def _cigar_ref_end(ref_start: int, cigar: list) -> int:
