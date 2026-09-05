@@ -43,6 +43,17 @@ def register_genome_contigs(names) -> None:
     _KNOWN_CONTIGS.update(names)
 
 
+def known_contig_count() -> int:
+    """How many contigs the registry currently holds.
+
+    Zero means nothing has been registered yet, and ``standardize_chrom_name``
+    is running in its legacy yeast-only mode — the state in which human
+    ``chr5`` becomes ``chrV``.  Commands log this so the condition is visible
+    rather than inferred from downstream emptiness.
+    """
+    return len(_KNOWN_CONTIGS)
+
+
 def register_genome_contigs_from_fasta(genome_path) -> None:
     """Populate the contig registry from a FASTA's ``.fai`` index without
     loading sequence. Falls back to scanning ``>`` headers if no index exists.
@@ -383,7 +394,17 @@ def standardize_chrom_name(chrom: str) -> str:
     if chrom.startswith('chr'):
         num = chrom[3:]
         if num in roman_map:
-            return 'chr' + roman_map[num]
+            romanized = 'chr' + roman_map[num]
+            # Only romanize when the ROMANIZED name is itself a contig of the
+            # loaded genome. 'chr5' -> 'chrV' is right for S. cerevisiae and
+            # catastrophic for anything else — and 'chr10' -> 'chrX' does not
+            # merely mislabel, it MERGES the reads with the real chrX. With an
+            # empty registry (nothing loaded yet) keep the legacy behavior; the
+            # commands are responsible for registering before they load an
+            # annotation or build a junction pool (ISSUE-001).
+            if not _KNOWN_CONTIGS or romanized in _KNOWN_CONTIGS:
+                return romanized
+            return chrom
 
     # Roman numeral only
     if chrom in ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII',

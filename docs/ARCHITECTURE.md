@@ -1664,15 +1664,31 @@ as the scoring mechanism used by the standalone `rectify consensus` subcommand,
 which operates on raw alignment BAMs without per-aligner correction.
 They are NOT used in the `run-all` pipeline, which uses the correct-first approach.
 
-**Why does Module 2H (junction refinement) run after Module 2F?**
-Module 2F (5' junction rescue) runs before Module 2H (N-op refinement).
-2F resolves Cat3/Cat4 5' end truncations by snapping soft-clipped or
-misplaced 5' ends to the correct exon-1 boundary; this can shift N-op
-positions as CIGAR surgery adjusts the read's leading edge. Module 2H
-then operates on the post-2F N-op coordinates, refining all remaining
-junction boundaries using HP-aware split-alignment. Running 2H after
-2F ensures N-op boundaries already corrected by 2F are not moved again
-by junction refinement scoring.
+**In `rectify correct`, Module 2H runs BEFORE Module 2F.**
+This paragraph used to claim the opposite. The code is the authority and it
+has always run 2H first (corrected 2026-09-05, ISSUE-003):
+
+* 2H is a whole-BAM **pre-processing pass**. `correct_command.py` builds the
+  junction pool, calls `refine_bam_junctions` into
+  `<sample>.junction_refined_<id>.bam`, and then sets `bam_to_process` to that
+  file (`correct_command.py:1001`).
+* Everything downstream reads `bam_to_process` — every
+  `process_bam_*` call (`:1110`, `:1140`, `:1178`) and every BAM writer
+  (`:1290`, `:1327`, `:1371`, `:1392`, `:1413`, `:1436`). Module 2F (5' rescue)
+  runs *inside* that per-read processing, so it sees N-ops 2H has already moved.
+
+The consequence is worth stating plainly: **2F's rescue candidates are
+post-2H coordinates**, and the pool index 2F consults is the one 2H built. A
+junction 2H moves is a junction 2F then rescues against. `--skip-junction-
+refinement` keeps the pool construction (so 2F still gets its index) while
+leaving the N-ops alone; `--skip-3ss-rescue` turns 2F off. With neither
+`--aligner-bams` nor `--junction-pool-cache`, 2H does not run at all and says
+so ("Module 2H: SKIPPED (…)").
+
+The ordering is not arbitrary: 2H removes the aligner's N-op placement error
+first, so 2F's 5' snapping is measured against corrected intron boundaries
+rather than the reverse. But nothing downstream re-checks a 2H move, so a
+wrong one propagates into the 5' rescue.
 
 **Why does the rescue in consensus scoring not change positions?**
 `_rescue_5prime_softclip` in `score_alignment` is a scoring heuristic only

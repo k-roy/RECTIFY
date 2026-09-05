@@ -122,6 +122,157 @@ def _strip_aligner_prefix(bam_entry: str) -> str:
     return bam_entry
 
 
+def module_2h_skip_reason(config) -> Optional[str]:
+    """Why Module 2H will not run for this config, or ``None`` if it will.
+
+    A bare ``rectify correct <bam> --annotation …`` used to run no junction
+    refinement at all and log NOTHING about it, so the corrected BAM looked like
+    it had been through Module 2H.  On the tester's 62k-read human slice that is
+    6 reads changed instead of 30,703 (ISSUE-003).
+    """
+    reasons = []
+    if not (config.get('aligner_bams') or config.get('junction_pool_cache')):
+        reasons.append("no --aligner-bams and no --junction-pool-cache")
+    if not config.get('annotation_path'):
+        reasons.append("no --annotation")
+    if (config.get('skip_junction_refinement', False)
+            and not config.get('apply_3ss_rescue', True)):
+        reasons.append("--skip-junction-refinement with --skip-3ss-rescue")
+    return "; ".join(reasons) if reasons else None
+
+
+def _warn_self_pool(config, log) -> bool:
+    """Warn when the junction pool is being built from the BAM being corrected.
+
+    ``--aligner-bams minimap2:<the input itself>`` is a legitimate way to switch
+    Module 2H on, but it is not multi-aligner evidence: the pool then contains
+    the input's own junction calls, including its errors, and a single read's
+    mistake enters as a full-weight candidate that other reads can be moved onto
+    (ISSUE-011). Worth saying out loud, since nothing else distinguishes it from
+    a genuine multi-aligner pool.
+    """
+    try:
+        _input = Path(str(config.get('bam_path') or '')).resolve()
+    except (OSError, RuntimeError):
+        return False
+    selves = []
+    for _b in config.get('aligner_bams') or []:
+        try:
+            if Path(str(_b)).resolve() == _input:
+                selves.append(str(_b))
+        except (OSError, RuntimeError):
+            continue
+    if not selves:
+        return False
+    log.warning(
+        "  Module 2H: --aligner-bams resolves to the input BAM itself (%s) — "
+        "the junction pool is this BAM's own calls, not independent evidence. "
+        "A single-read mis-split enters as a full-weight candidate.",
+        ', '.join(selves),
+    )
+    return True
+
+
+def penalty_table_protocol(config) -> str:
+    """Map this run's protocol flags onto a bundled penalty-table protocol key.
+
+    The bundled tables are keyed ``drs`` / ``cdna`` / ``qsrev``:
+
+    * ``cdna``  — ONT PCR-cDNA (``--ONT-cDNA``).
+    * ``qsrev`` — QuantSeq REV geometry: dT-primed cDNA (``--dT-primed-cDNA``)
+      and NET-seq (``--netseq``), which shares that geometry.
+    * ``drs``   — direct RNA (the default).
+    """
+    if config.get('ont_cDNA'):
+        return 'cdna'
+    if config.get('is_netseq') or config.get('dt_primed_cDNA'):
+        return 'qsrev'
+    return 'drs'
+
+
+def select_penalty_tables(config, log=None):
+    """Resolve the junction / STR penalty tables for Module 2H.
+
+    An explicit ``--junction-penalty-table`` / ``--str-penalty-table`` always
+    wins.  Otherwise the tables bundled for **this run's own organism and
+    protocol** are selected; a table calibrated on a different organism is
+    never substituted, and when nothing is bundled for the organism the
+    scorer falls back to flat edit costs with a WARNING that names it.
+
+    Empirical HP/STR penalties are the whole basis of the "within the
+    sub-integer HP noise floor" comparison in ``refine_read_junctions``, so
+    silently running with none of them is a materially different algorithm —
+    hence a log line in every case (ISSUE-005).
+
+    Args:
+        config: the correction config dict (needs ``organism``,
+            ``genome_path`` and the protocol flags).
+        log:    logger to use (defaults to this module's).
+
+    Returns:
+        ``(junction_table_path, str_table_path)`` as strings or ``None``.
+    """
+    log = log or logging.getLogger(__name__)
+    explicit_j = config.get('junction_penalty_table')
+    explicit_s = config.get('str_penalty_table')
+    if explicit_j or explicit_s:
+        log.info(
+            "  Module 2H penalty tables (user-supplied): junction=%s str=%s",
+            explicit_j or 'none', explicit_s or 'none',
+        )
+        return explicit_j, explicit_s
+
+    from ...data import (
+        BUNDLED_GENOMES,
+        detect_organism_from_genome,
+        get_bundled_junction_penalty_table,
+        get_bundled_str_penalty_table,
+        normalize_organism,
+    )
+
+    org = config.get('organism')
+    if not org and config.get('genome_path'):
+        try:
+            org = detect_organism_from_genome(Path(str(config['genome_path'])))
+        except Exception:               # detection is best-effort, never fatal
+            org = None
+    if not org:
+        log.warning(
+            "  Module 2H: organism unknown (pass --organism) — no empirical "
+            "penalty table loaded; scoring falls back to flat edit costs."
+        )
+        return None, None
+
+    org = normalize_organism(org)
+    protocol = penalty_table_protocol(config)
+    jpt = get_bundled_junction_penalty_table(org, protocol=protocol)
+    spt = get_bundled_str_penalty_table(org, protocol=protocol)
+    if jpt is None:
+        log.warning(
+            "  Module 2H: no bundled %s junction penalty table for organism "
+            "'%s' — scoring falls back to flat edit costs (no HP/STR context). "
+            "Supply one with --junction-penalty-table.",
+            protocol, org,
+        )
+        return None, None
+
+    version = (BUNDLED_GENOMES.get(org, {})
+               .get('junction_penalty_table', {})
+               .get('version', 'unversioned'))
+    log.info(
+        "  Module 2H penalty table: organism=%s protocol=%s version=%s path=%s",
+        org, protocol, version, jpt,
+    )
+    if spt is None:
+        log.info(
+            "  Module 2H: no bundled STR penalty table for organism=%s "
+            "protocol=%s — HP penalties only.", org, protocol,
+        )
+    else:
+        log.info("  Module 2H STR penalty table: %s", spt)
+    return str(jpt), (str(spt) if spt is not None else None)
+
+
 def setup_logging(verbose: bool = False):
     """Configure logging for command execution."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -393,6 +544,7 @@ def validate_inputs(args) -> dict:
         'junction_max_slide':        getattr(args, 'junction_max_slide', 10),
         'junction_max_boundary_shift': getattr(args, 'junction_max_boundary_shift', 50),
         'junction_max_size':         getattr(args, 'junction_max_size', None),
+        'junction_min_observed_support': getattr(args, 'junction_min_observed_support', 1),
         'junction_max_candidates_per_nop': getattr(args, 'junction_max_candidates_per_nop', None),
         'junction_profile':          getattr(args, 'junction_profile', None),
         'junction_profile_sample_rate': getattr(args, 'junction_profile_sample_rate', 1),
@@ -484,6 +636,33 @@ def run(args):
     is_dt_primed = getattr(args, 'dT_primed_cDNA', False) or getattr(args, 'polya_sequenced', False) or is_netseq
     is_ont_cdna = getattr(args, 'ONT_cDNA', False)
     is_short_read = getattr(args, 'short_read', False)
+
+    # Register the reference contig names BEFORE anything loads an annotation,
+    # builds a junction pool or keys a chrom index.  standardize_chrom_name()
+    # consults this registry to decide whether a name is already a real contig;
+    # with it EMPTY the yeast arabic->roman fallback rewrites human 'chr5' to
+    # 'chrV' (and 'chr10' onto the REAL 'chrX').  Registration used to happen
+    # after the Module 2H block, so on human input 2H's annotation, pool and
+    # chrom index were all keyed 'chrV' while its reads — standardized after
+    # load_genome populated the registry mid-block — were keyed 'chr5'.  Every
+    # candidate lookup missed and 2H reported "0 refined" as if the alignments
+    # were already perfect (ISSUE-001).  Module 2F's pool arm was equally blind.
+    if config.get('genome_path'):
+        from ...utils.genome import (
+            known_contig_count as _known_contig_count,
+            register_genome_contigs_from_fasta as _register_contigs,
+        )
+        _register_contigs(str(config['genome_path']))
+        _n_contigs = _known_contig_count()
+        if _n_contigs:
+            logger.info("Reference contigs registered: %d", _n_contigs)
+        else:
+            logger.warning(
+                "Could not read any contig name from %s — chromosome names will "
+                "be standardized in legacy S. cerevisiae mode, which rewrites "
+                "'chr5' to 'chrV'. Check the FASTA and its .fai index.",
+                config['genome_path'],
+            )
 
     # Log configuration
     logger.info("Configuration:")
@@ -656,6 +835,11 @@ def run(args):
         # Per-chromosome sorted junction index for Module 2F pool lookup.
         # Built from the prescan pool if available; otherwise None (GFF-only mode).
         _pool_chrom_index = None
+        if not _has_junction_context:
+            logger.info(
+                "Module 2H: SKIPPED (%s) — N-op junction boundaries are passed "
+                "through unchanged.", module_2h_skip_reason(config),
+            )
         if _has_junction_context:
             _t_refine = _time.perf_counter()
             if _skip_junction_refinement:
@@ -673,25 +857,45 @@ def run(args):
                 _prebuilt_annot_set = None
                 if _junction_pool_cache and Path(_junction_pool_cache).exists():
                     import pickle as _pkl
+                    from ..splice.junction_scoring import junction_pool_cache_problem
                     logger.info(f"  Loading pre-built junction pool from cache: {_junction_pool_cache}")
                     with open(_junction_pool_cache, 'rb') as _pf:
                         _pool_data = _pkl.load(_pf)
-                    _prebuilt_pool = _pool_data['all_junctions']
-                    _prebuilt_annot_set = _pool_data['annotated_set']
-                    logger.info(
-                        "  Pre-built pool: %d junctions (%d annotated)",
-                        len(_prebuilt_pool), len(_prebuilt_annot_set),
-                    )
+                    # Refuse a cache this build cannot vouch for. A pool written
+                    # before the ISSUE-004 N-advance fix is not stale, it is
+                    # WRONG — on multi-intron reads its observed arm is phantom
+                    # coordinates — and using it silently is how that defect
+                    # outlives the code fix.
+                    _cache_problem = junction_pool_cache_problem(_pool_data)
+                    if _cache_problem:
+                        logger.warning(
+                            "  Junction pool cache REJECTED (%s): %s. Rebuilding "
+                            "from --aligner-bams; re-run `rectify prescan` to "
+                            "regenerate the cache.",
+                            _cache_problem, _junction_pool_cache,
+                        )
+                    else:
+                        _prebuilt_pool = _pool_data['all_junctions']
+                        _prebuilt_annot_set = _pool_data['annotated_set']
+                        logger.info(
+                            "  Pre-built pool: %d junctions (%d annotated)",
+                            len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        )
 
                 if _prebuilt_pool is None and config.get('aligner_bams'):
+                    _warn_self_pool(config, logger)
+                    _min_support = int(config.get('junction_min_observed_support') or 1)
                     _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
                         config['aligner_bams'],
                         _annot_j,
+                        min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
                     )
                     logger.info(
-                        "  Built junction pool: %d junctions (%d annotated)",
+                        "  Built junction pool: %d junctions (%d annotated, "
+                        "%d observed with support >= %d)",
                         len(_prebuilt_pool), len(_prebuilt_annot_set),
+                        len(_prebuilt_pool) - len(_prebuilt_annot_set), _min_support,
                     )
 
                 _pool_for_index = _prebuilt_pool
@@ -787,6 +991,12 @@ def run(args):
                                 "(will use single-table mode): %s", _pts_exc
                             )
 
+                    # Empirical penalty tables (ISSUE-005): before this, `correct`
+                    # loaded NONE unless the user passed a path (the per-UMI-bin
+                    # branch above is ONT-cDNA only), so every DRS run scored
+                    # junctions with flat edit costs and no STR context — silently.
+                    _jpt, _spt = select_penalty_tables(config)
+
                     _refine_stats = refine_bam_junctions(
                         input_bam=bam_to_process,
                         output_bam=_refined_bam,
@@ -802,8 +1012,8 @@ def run(args):
                         max_junction_size=config.get('junction_max_size'),
                         max_candidates_per_nop=config.get('junction_max_candidates_per_nop'),
                         sort_and_index=True,
-                        penalty_table_path=config.get('junction_penalty_table'),
-                        str_penalty_table_path=config.get('str_penalty_table'),
+                        penalty_table_path=_jpt,
+                        str_penalty_table_path=_spt,
                         prebuilt_junction_pool=_prebuilt_pool,
                         prebuilt_annotated_set=_prebuilt_annot_set,
                         sort_threads=config.get('threads', 1),
@@ -833,12 +1043,8 @@ def run(args):
                 import gc as _gc
                 _gc.collect()
 
-        # Register genome contigs before annotation loading so non-yeast chrom
-        # names (e.g. human "chr5") survive standardize_chrom_name verbatim and
-        # the GTF-derived junctions/genes key the same way the reads do.
-        if config.get('genome_path'):
-            from ...utils.genome import register_genome_contigs_from_fasta
-            register_genome_contigs_from_fasta(str(config['genome_path']))
+        # (Genome contigs are registered at the top of run(), before Module 2H —
+        # they used to be registered HERE, which is after it. See ISSUE-001.)
 
         # Load annotated junctions for Module 2F (3'SS truncation rescue).
         # Without these, only reads whose own CIGAR contains an N operation near
@@ -1955,7 +2161,10 @@ def create_correct_parser(subparsers):
              'junction (canonical GT-AG > annotated > highest split-alignment '
              'score). Improves junction accuracy for reads where the chosen '
              'aligner placed the intron boundary a few bp off from the true '
-             'splice site.'
+             'splice site. REQUIRED to switch Module 2H on: without this (or '
+             '--junction-pool-cache) AND --annotation, junction refinement is '
+             'SKIPPED and N-op boundaries are passed through unchanged — the '
+             'run logs "Module 2H: SKIPPED" and says why.'
     )
     junc_group.add_argument(
         '--junction-hp-pen',
@@ -2014,6 +2223,20 @@ def create_correct_parser(subparsers):
              'from --aligner-bams, and longer candidates from a pre-built pool '
              'are skipped during scoring. For S. cerevisiae, 10000 is a '
              'conservative organism-tuned cap.'
+    )
+    junc_group.add_argument(
+        '--junction-min-observed-support',
+        dest='junction_min_observed_support',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Reads that must cross an OBSERVED (non-annotated) junction, with a '
+             'clean exon anchor on both flanks, before it enters the Module 2H '
+             'candidate pool built from --aligner-bams. Default 1 — a junction '
+             'seen in a single read is a full-weight candidate other reads can '
+             'be moved onto. Annotated junctions are never subject to this. '
+             'Raise to 2 to require corroboration (this is `rectify prescan`\'s '
+             '--junction-min-support for the inline pool).'
     )
     junc_group.add_argument(
         '--junction-max-candidates-per-nop',

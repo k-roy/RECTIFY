@@ -135,8 +135,67 @@ _EQ = 7  # sequence match (=)
 _X = 8   # sequence mismatch (X)
 
 _QUERY_CONSUMING: FrozenSet[int] = frozenset([_M, _I, _S, _EQ, _X])
+# EXON-flank op set: reference-consuming ops that belong to an ALIGNED block.
+# N is deliberately EXCLUDED — the flank walkers in
+# junction_refiner._apply_junction_replacement (find/consume the exon ops that
+# abut an N-op) must stop at an intron, never walk through it.
 _REF_CONSUMING:   FrozenSet[int] = frozenset([_M, _D, _EQ, _X])
+# POSITION-tracking op set: every op that advances the genomic cursor per the SAM
+# spec, N included. Any walker that maintains a reference position while stepping
+# through a CIGAR MUST use this set. Using _REF_CONSUMING for a cursor reports
+# every N-op after the first short by the summed length of all preceding introns
+# (the ISSUE-004 defect: 81/81 multi-intron human panel reads wrong, 85 % of the
+# observed junction pool phantom). Yeast hid it — ~95 % of intron-bearing yeast
+# genes have a single intron.
+_REF_CONSUMING_POS: FrozenSet[int] = _REF_CONSUMING | frozenset([_N])
 _MATCH_OPS:       FrozenSet[int] = frozenset([_M, _EQ])  # consume query+ref, no indel
+
+# Chromosomes already reported as absent from a junction index (see
+# _candidates_near). Process-local, warn-once bookkeeping only.
+_MISSING_CHROM_WARNED: Set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# Junction-pool cache provenance
+# ---------------------------------------------------------------------------
+# Bumped whenever a change makes previously written `rectify prescan`
+# junction-pool pickles WRONG rather than merely stale. A cache without this
+# stamp, or with an older one, must be rebuilt — it cannot be repaired.
+#
+#   1 — pools written before 2026-09-05. The observed arm was built by a walker
+#       that did not advance the reference cursor across an N op (ISSUE-004), so
+#       on multi-intron reads every junction after the first is a phantom
+#       coordinate that exists in no read (85 % of the observed arm on the
+#       Sumner human panel; ~99 % on the full slice).
+#   2 — cursor fixed.
+JUNCTION_POOL_CACHE_FORMAT: int = 2
+
+
+def junction_pool_cache_stamp() -> Dict[str, Any]:
+    """Provenance keys every written junction-pool cache must carry."""
+    return {'cache_format': JUNCTION_POOL_CACHE_FORMAT}
+
+
+def junction_pool_cache_problem(pool_data: Dict[str, Any]) -> Optional[str]:
+    """Return why *pool_data* cannot be trusted, or ``None`` if it can.
+
+    Kept next to the writer's stamp so the two can never drift apart.
+    """
+    if not isinstance(pool_data, dict):
+        return "cache is not a dict"
+    fmt = pool_data.get('cache_format')
+    if fmt is None:
+        return (
+            "cache carries no 'cache_format' stamp, so it predates the "
+            "ISSUE-004 N-advance fix; its observed junctions are phantom "
+            "coordinates"
+        )
+    if fmt != JUNCTION_POOL_CACHE_FORMAT:
+        return (
+            f"cache_format {fmt} != {JUNCTION_POOL_CACHE_FORMAT} expected by "
+            "this build"
+        )
+    return None
 
 # Minimum clean exon overhang (bp) on BOTH flanks for an observed N-op to seed a
 # pool junction. Aligners (notably gapmm2) occasionally emit a tiny-anchor
@@ -466,6 +525,14 @@ def collect_junctions_from_bam(
 
     Returns:
         Set of (chrom, intron_start, intron_end) tuples (0-based half-open).
+
+    .. warning::
+       Before the ISSUE-004 fix this walker advanced the reference cursor with
+       ``_REF_CONSUMING`` (no N), so on a multi-intron read every junction after
+       the first was reported short by the summed length of the preceding
+       introns. **Any ``rectify prescan`` junction-pool pickle written before
+       that fix is contaminated with those phantom coordinates and must be
+       rebuilt** — it cannot be repaired in place.
     """
     junctions: Set[Tuple[str, int, int]] = set()
     try:
@@ -486,7 +553,7 @@ def collect_junctions_from_bam(
                     if op == _N:
                         if max_junction_size is None or length <= max_junction_size:
                             junctions.add((chrom, pos, pos + length))
-                    if op in _REF_CONSUMING:
+                    if op in _REF_CONSUMING_POS:
                         pos += length
     except Exception as exc:
         logger.warning("collect_junctions_from_bam(%s): %s", bam_path, exc)
@@ -536,7 +603,7 @@ def _collect_junction_counts_core(
                         if _junction_anchor_ok(
                                 cigar, idx, qpos, query_seq, min_anchor_overhang):
                             anchor[j] += 1
-                    if op in _REF_CONSUMING:
+                    if op in _REF_CONSUMING_POS:
                         pos += length
                     if op in _QUERY_CONSUMING:
                         qpos += length
@@ -743,6 +810,22 @@ def _candidates_near(
 
     entries = idx.get(chrom, [])
     if not entries:
+        # A chromosome the index has never heard of is almost never "a real
+        # contig with no junctions" — it is a name mismatch between the reads
+        # and whatever built the pool (ISSUE-001: a pool keyed 'chrV' against
+        # reads keyed 'chr5' silently returns zero candidates for EVERY N-op,
+        # and Module 2H reports "0 refined" as if the alignments were perfect).
+        # Say so once per chromosome; the pool's own keys are the diagnosis.
+        if idx and chrom not in idx and chrom not in _MISSING_CHROM_WARNED:
+            _MISSING_CHROM_WARNED.add(chrom)
+            _keys = sorted(idx)
+            logger.warning(
+                "junction pool has no entry for chromosome %r — every candidate "
+                "lookup on it returns nothing (pool keys: %s%s). If those names "
+                "look like a different naming convention, the pool and the reads "
+                "disagree.",
+                chrom, ', '.join(_keys[:5]), '…' if len(_keys) > 5 else '',
+            )
         return []
 
     # The index is sorted by intron_start.  Bound the scan to the same start
@@ -1030,6 +1113,16 @@ def _score_junction(
 
     Returns:
         ``(best_score, 0)`` where ``best_score`` is ``min_k (t1(k) + t2(k))``.
+
+        The second element is the SLIDE this scorer applied.  It is always 0
+        because ``max_slide`` is API-compatibility only in this implementation
+        (see the arg list) — the scorer never slides a boundary, it scores the
+        candidate as given.  ``refine_read_junctions`` still carries it as the
+        ``abs_delta`` tie-breaker, where it is therefore a constant and cannot
+        separate anything; ties fall through to ``(js, je)``, i.e. to the lower
+        genomic coordinate.  That is a real gap (ISSUE-005) but closing it means
+        DEFINING a new tie-break signal, not restoring a lost one — do not
+        quietly repurpose this slot.
     """
     if profile is not None:
         profile.inc('score_junction_calls')

@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -142,6 +143,7 @@ from .junction_scoring import (
     _N,
     _QUERY_CONSUMING,
     _REF_CONSUMING,
+    _REF_CONSUMING_POS,
     _S,
     _X,
     _build_junction_index,
@@ -164,6 +166,22 @@ from .junction_scoring import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Annotated-canonical evidence gate (edit-distance units)
+# ---------------------------------------------------------------------------
+# Read evidence a candidate must have OVER an annotated + canonical incumbent
+# before Module 2H will move the junction somewhere that is not both annotated
+# and canonical.  1.0 = one full edit-distance unit, i.e. the sub-integer HP
+# noise floor named in refine_read_junctions' scoring policy: below that, the
+# difference between two placements is homopolymer noise, not evidence.
+# Set RECTIFY_ANNOT_CANON_HOLD=0 to restore the pre-2026-09 behaviour (any
+# score win, however small, could move an annotated GT-AG onto a novel
+# non-canonical junction).
+_ANNOTATED_CANONICAL_HOLD: float = float(
+    os.environ.get("RECTIFY_ANNOT_CANON_HOLD", "1.0")
+)
 
 
 class JunctionRefineProfile:
@@ -379,6 +397,11 @@ def _iter_n_ops(
     leading soft-clips and do NOT count toward q_split.
     S ops after at least one ref-consuming op (trailing in genomic terms) DO
     count toward q_split.
+
+    The genomic cursor advances on ``_REF_CONSUMING_POS`` (M/D/=/X **and N**):
+    an intron consumes reference, so a walker that skipped it reported every
+    N-op after the first short by the summed length of the preceding introns
+    (ISSUE-004).
     """
     q_pos = 0
     r_pos = read.reference_start
@@ -389,8 +412,11 @@ def _iter_n_ops(
             continue  # H never in query_sequence; skip entirely
         if op == _N:
             yield i, r_pos, r_pos + length, q_pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             r_pos += length
+        if op in _REF_CONSUMING:
+            # q_split semantics unchanged: a leading soft-clip is one that
+            # precedes the first ALIGNED op, so N does not open the alignment.
             seen_ref_op = True
         if op in _QUERY_CONSUMING and op != _S:
             q_pos += length
@@ -840,7 +866,12 @@ def refine_read_junctions(
             #   2. tier / is_alt (order depends on current_tier — see above)
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
-            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only)
+            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only).
+            #      INERT: `_score_junction` returns delta=0 for every candidate
+            #      (it never slides — `max_slide` is API-compat only), so this
+            #      slot is a constant and ties fall through to (js, je), i.e. to
+            #      the lower genomic coordinate. Closing that gap means DEFINING
+            #      a new tie-break signal, not restoring a lost one (ISSUE-005).
             # Motif-blind drops the canonical-tier and annotation priors from the
             # tie-break (they collapse to constants), leaving score → is_alt → shift.
             tier_key = 0 if motif_blind else tier
@@ -928,6 +959,40 @@ def refine_read_junctions(
                     moves = False
                     if profile is not None:
                         profile.inc('move_margin_vetoes')
+
+        # --- Annotated-canonical evidence gate (the R1 class) -----------------
+        # The policy stated at the top of this loop — "within the sub-integer HP
+        # noise floor (|ed_A - ed_B| < 1.0) canonical annotated junctions are
+        # preferred" — was only ever implemented for the tier_beats_alt branch
+        # (where _CANONICAL_HP_PRIOR discounts canonical candidates).  In the
+        # other branch, where the incumbent IS canonical, candidates are ranked
+        # on the RAW score, so a 0.03 edit-distance win could take an annotated
+        # GT-AG junction onto a novel non-canonical one.  Measured on the Sumner
+        # human panel: three such moves at margins 0.031 / 0.434 / 0.463, all far
+        # inside the noise floor, each turning an annotated GT-AG into GT-GT /
+        # GT-GA / CT-TC.
+        #
+        # So: when the incumbent is BOTH annotated and canonical, a candidate
+        # that is not both must beat it by a full edit-distance unit.  Moves to
+        # another annotated canonical junction (isoform swaps) and moves whose
+        # incumbent is novel or non-canonical (the corrections 2H exists for) are
+        # untouched.  Disabled under motif_blind, which decides on read evidence
+        # alone by construction.
+        if (
+            moves
+            and _ANNOTATED_CANONICAL_HOLD > 0.0
+            and not motif_blind
+            and incumbent_score is not None
+            and current_tier < 4
+            and (chrom, ns, ne) in annotated_set
+        ):
+            _win_tier = _canonical_tier(new_js, new_je, genome_seq, strand)
+            _win_annot = (chrom, new_js, new_je) in annotated_set
+            if not (_win_annot and _win_tier < 4):
+                if best_score_cmp > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
+                    moves = False
+                    if profile is not None:
+                        profile.inc('annotated_canonical_holds')
 
         # Only emit a replacement if the junction actually changes.
         if moves:
@@ -1259,8 +1324,8 @@ def _apply_junction_replacement(
             new_cigar.insert(n_idx + 1, (_D, d))
 
     # Validate: total ref span must be preserved (sum ref ops + N = constant)
-    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING | {_N})
-    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING | {_N})
+    old_ref_span = sum(l for op, l in cigar     if op in _REF_CONSUMING_POS)
+    new_ref_span = sum(l for op, l in new_cigar if op in _REF_CONSUMING_POS)
     if old_ref_span != new_ref_span:
         logger.debug(
             "refine_junction: ref span mismatch (%d → %d) for read %s; skipping",
@@ -2044,11 +2109,15 @@ def evaluate_hp_pen_values(
 
 
 def _n_op_ref_start(read: pysam.AlignedSegment, target_idx: int) -> int:
-    """Return reference position at start of N-op at cigar index target_idx."""
+    """Return reference position at start of N-op at cigar index target_idx.
+
+    Cursor walker — advances on ``_REF_CONSUMING_POS`` so preceding introns are
+    counted (ISSUE-004).
+    """
     pos = read.reference_start
     for i, (op, length) in enumerate(read.cigartuples):
         if i == target_idx:
             return pos
-        if op in _REF_CONSUMING:
+        if op in _REF_CONSUMING_POS:
             pos += length
     return pos
