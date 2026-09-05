@@ -58,6 +58,18 @@ CORRECTION_TSV_HEADER = [
     # token keeps the decision auditable instead of silently dropping it.
     # Appended last (the codebase convention: newest column last, every existing column keeps its absolute index).
     'five_prime_rescue_refused',
+    # Provenance of the 5' rescue's landing site (2026-09-05, ISSUE-017):
+    # 1 = the rescued junction is in the annotation, 0 = a novel candidate
+    # (pool junction, the read's own N-op), '' = not rescued. Lets a rescue be
+    # partitioned by provenance OFFLINE from the TSV — re-deriving it from
+    # coordinates is the leftmost-vs-motif trap that produced ISSUE-016.
+    'five_prime_landing_annotated',
+    # The novel-site evidence verdict for THIS rescue's placed segment
+    # (splice_aware_5prime.NOVEL_EXON_REFUSALS), '' = passed or annotated site.
+    # In RECTIFY_2F_NOVEL_GATE=report mode the rescue is still drawn and the
+    # token here says what refuse mode would have done; in refuse mode the
+    # same token also appears in five_prime_rescue_refused.
+    'five_prime_novel_evidence',
 ]
 
 
@@ -178,6 +190,8 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         _consensus_cell(result, 'consensus_n_agree'),
         _consensus_cell(result, 'consensus_tied'),
         result.get('five_prime_rescue_refused', '') or '',
+        _consensus_cell(result, 'five_prime_landing_annotated'),
+        result.get('five_prime_novel_evidence', '') or '',
     ]
 
 

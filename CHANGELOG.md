@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F: provenance-aware evidence gate for novel landing sites
+  (ISSUE-017)** (`splice/splice_aware_5prime.py`, `bam/bam_processor.py`).
+  On the 16-library Sumner cohort 83 % of RECTIFY's false junctions were 2F
+  rescues that placed 1–8 matched bases across a NEW intron onto an
+  unannotated pool candidate (exon CIGARs `4M`, `2M5D1M`, `2M8I2M2I1M1D1M`);
+  the ISSUE-006 floor covered only the soft-clip path, and the correct
+  annotated rescues share the same 5' shape. `rescue_3ss_truncation` now takes
+  `annotated_junctions=`: a rescue (sequence, terminal peel, or Case-4
+  intronic snap) onto an ANNOTATED junction keeps its historical acceptance;
+  onto any other candidate the placed segment is judged: >= 10 matched bases,
+  no gap at the junction-side end, a bounded indel burden, and an exon CIGAR
+  at all. What the verdict does is a mode — `rectify correct --2f-novel-gate
+  {report,refuse}` / `RECTIFY_2F_NOVEL_GATE`. **`report` (default)** draws the
+  rescue and records the verdict; `refuse` refuses only the sequence/snap
+  rescue (the structural paths stay live) and puts the token in
+  `five_prime_rescue_refused`. Two new trailing `corrected_reads.tsv` columns
+  make provenance an offline join: `five_prime_landing_annotated` (1 / 0 / ''
+  when not rescued) and `five_prime_novel_evidence` (`pass`,
+  `novel_exon_matched_below_floor`, `novel_exon_gap_at_junction`,
+  `novel_exon_indel_burden`, `novel_exon_no_cigar`; '' on an annotated site).
+  The shape verdict was measured NON-selective on recurrence and on Snaptron
+  support (tester R2a), which is why it reports rather than refuses by
+  default. A caller without an annotation (`annotated_junctions=None`) keeps
+  the legacy behavior: nothing is novel. The corrected-TSV header grows
+  44 -> 46 columns; `correct` refuses to resume a pre-existing checkpoint
+  (delete the checkpoint directory).
 - **Station C's census now accounts for every N-op (ISSUE-016)**
   (`consensus/station_c.py`, `rectify pool-gate`). On real corrected output
   87 % of the junctions RECTIFY created read as ABSENT from

@@ -452,6 +452,8 @@ def correct_read_3prime(
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
     _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
+    _landing_annotated = None        # ISSUE-017: provenance of the rescue's landing site (None = no rescue)
+    _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -497,7 +499,16 @@ def correct_read_3prime(
                                          five_prime_position + _w + 1):
                     _ss_junctions.add((chrom_std, _iv.data[0], _iv.data[1]))
         if _ss_junctions:
-            _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
+            # The annotated subset of the candidates: a sequence rescue onto any
+            # OTHER candidate (pool junction, the read's own N-op) must carry
+            # full evidence (splice_aware_5prime novel-site gate, 2026-09-05).
+            _3ss_result = _rescue_3ss(
+                read, genome, _ss_junctions, strand,
+                annotated_junctions=(annotated_junctions
+                                     if annotated_junctions is not None else set()),
+            )
+            _landing_annotated = _3ss_result.get('landing_annotated')
+            _novel_evidence = str(_3ss_result.get('novel_evidence', '') or '')
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
@@ -734,6 +745,12 @@ def correct_read_3prime(
         # five_prime_rescued/exon_cigar/intron_clip_pos already downgraded and the
         # rescued junction dropped from `junctions`.
         'five_prime_rescue_refused': _five_prime_rescue_refused,
+        # ISSUE-017: provenance + evidence verdict of the 5' rescue (TSV
+        # columns; '' when the row carries no drawn rescue).
+        'five_prime_landing_annotated': (
+            int(bool(_landing_annotated))
+            if (five_prime_rescued and _landing_annotated is not None) else ''),
+        'five_prime_novel_evidence': _novel_evidence,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

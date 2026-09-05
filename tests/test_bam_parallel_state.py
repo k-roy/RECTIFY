@@ -65,8 +65,14 @@ import pytest
 # that stripping the new key from the observed results reproduces the previous
 # golden a41ec734… exactly, i.e. no correction semantics moved.  Prior golden
 # 93af5e77…
+# 2026-09-05 — re-recorded for ISSUE-017 (2F novel-site evidence gate, report
+# mode). A pure SCHEMA addition: `five_prime_landing_annotated` and
+# `five_prime_novel_evidence` joined the result dict. Verified before
+# re-recording that stripping the two new keys reproduces the previous golden
+# 5195e1c0… exactly, i.e. no correction semantics moved (report mode draws
+# every rescue exactly as before). Prior golden 5195e1c0…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "5195e1c04c3124b8ada003dd561e55a1c6cb6a36d01796463f1f2b371d56a265"
+    "625586c3ecf0f0c972659d2034f331d578071e4d76d120f3eea50d8110ad1ecd"
 )
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a

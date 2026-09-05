@@ -784,6 +784,11 @@ def run(args):
 
     # Capture stage start time for provenance sidecar (must be before any work).
     _stage_started_at = datetime.now(timezone.utc).isoformat()
+    # ISSUE-017: the --2f-novel-gate flag mirrors into the environment so the
+    # spawned region workers (and every 2F entry point) read one answer.
+    if getattr(args, 'novel_gate_2f', None):
+        import os as _os_gate
+        _os_gate.environ['RECTIFY_2F_NOVEL_GATE'] = str(args.novel_gate_2f)
 
     # Determine thread count and set limits BEFORE numpy import
     n_threads = args.threads if args.threads > 0 else get_available_cpus()
@@ -2469,6 +2474,22 @@ def create_correct_parser(subparsers):
              'be moved onto. Annotated junctions are never subject to this. '
              'Raise to 2 to require corroboration (this is `rectify prescan`\'s '
              '--junction-min-support for the inline pool).'
+    )
+    junc_group.add_argument(
+        '--2f-novel-gate',
+        dest='novel_gate_2f',
+        choices=['report', 'refuse'],
+        default=None,
+        help='Module 2F novel-site evidence gate (ISSUE-017). A 5\' rescue onto '
+             'an UNANNOTATED candidate (pool junction, the read\'s own N-op) is '
+             'judged on the placed exon segment: >= 10 matched bases, no gap at '
+             'the junction-side end, bounded indel burden, a CIGAR at all. '
+             '"report" (default) draws the rescue and records the verdict in '
+             'five_prime_novel_evidence (pass or the token); "refuse" refuses '
+             'the sequence/snap rescue and also puts the token in '
+             'five_prime_rescue_refused. Annotated landing sites are never '
+             'gated; five_prime_landing_annotated (0/1) is emitted for every '
+             'rescue. Mirrors RECTIFY_2F_NOVEL_GATE.'
     )
     junc_group.add_argument(
         '--junction-max-candidates-per-nop',

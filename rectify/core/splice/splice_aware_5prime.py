@@ -31,6 +31,7 @@ from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 import array as _array_mod
 import math as _math
+import logging as _logging
 import os
 import pysam
 
@@ -137,6 +138,103 @@ def min_informative_clip_bp(
 # bases that could align to exon 1 are examined (plus strand: the clip's 3' end
 # abuts the acceptor; minus strand: its 5' end does).
 _CLIP_ASSESS_BP = 200
+
+# --- Evidence gate for a NOVEL landing site (2026-09-05, Sumner cohort) -------
+# A sequence rescue onto an ANNOTATED junction rests on two priors — the read
+# ends at (or inside) an intron the annotation already asserts — so a few
+# matched bases suffice and always have. Onto an UNANNOTATED candidate (a pool
+# junction, the read's own N-op) the placed exon segment IS the evidence, and
+# the search space that motivates min_informative_clip_bp() applies in full.
+# Measured on the 16-library Sumner cohort (tester, corrected_reads.tsv join):
+# the added_nov FP class (2F onto canonical unannotated 5'-terminal sites; 83%
+# of all cohort FP) and the rescue_annot TP class share the SAME 5' shape —
+# soft clip q50 14 vs 13 nt, exon-CIGAR M-sum q50 11 vs 13, M<10 in 40% vs
+# 29%, I+D bp>5 in 46% vs 20% — so no evidence gate applied to BOTH classes
+# removes a majority of added_nov without dropping >35% of rescue_annot. What
+# separates them is only the annotation status of the landing site. Hence the
+# gate is keyed on provenance: a novel landing site must carry
+#   matched >= min_informative_clip_bp()  (10 nt at the defaults),
+#   no I/D at the junction-side end of the exon CIGAR (the resolver's
+#     _block_cigar rule: a gap there says the block does not start at the
+#     junction), and
+#   I+D bp <= max(_NOVEL_EXON_INDEL_ALLOWANCE, ceil(max_edit_frac * matched)),
+# while an annotated landing site keeps today's acceptance untouched. Refusing
+# only the SEQUENCE rescue leaves the structural paths (N-op snap, Case-4
+# intronic snap, proximity) live; the token lands in five_prime_rescue_refused.
+_NOVEL_EXON_INDEL_ALLOWANCE = 5
+NOVEL_EXON_REFUSALS = ('novel_exon_matched_below_floor',
+                       'novel_exon_gap_at_junction',
+                       'novel_exon_indel_burden',
+                       'novel_exon_no_cigar')
+
+# What the gate DOES with its verdict on a novel site (RECTIFY_2F_NOVEL_GATE):
+#   refuse — the sequence/snap rescue is refused; the token lands in
+#            five_prime_rescue_refused (arbiter RULING 1, 2026-09-05).
+#   report — the rescue is drawn as before; the token is recorded in
+#            five_prime_novel_evidence only, so the join over the TSV says
+#            exactly what refuse mode would have removed (the tester's R2a
+#            showed the shape verdict is NON-selective on recurrence and on
+#            Snaptron support — DISPUTE 1 asks for this as the default).
+# Either way five_prime_landing_annotated is emitted for every rescue.
+_NOVEL_GATE_MODES = ('refuse', 'report')
+NOVEL_GATE_DEFAULT = 'report'      # arbiter RULING 2 (2026-09-05): report by default
+
+# The except branches below log through this; the module never had a logger
+# and the fail-closed path (a local-alignment exception on a novel site) was
+# the first to reach one of them.
+logger = _logging.getLogger(__name__)
+
+
+def novel_gate_mode() -> str:
+    """``report`` (default) or ``refuse`` — ``RECTIFY_2F_NOVEL_GATE``; the
+    ``rectify correct --2f-novel-gate`` flag mirrors into that variable so
+    spawned region workers see the same answer."""
+    mode = os.environ.get('RECTIFY_2F_NOVEL_GATE', NOVEL_GATE_DEFAULT).strip().lower()
+    return mode if mode in _NOVEL_GATE_MODES else NOVEL_GATE_DEFAULT
+
+
+def _junction_is_annotated(genome_seq: str, junction, annotated_keys: set,
+                           max_shift: int = MAX_SS_SHIFT) -> bool:
+    """Is the EMITTED junction an annotated one — exactly, or as a slide inside
+    the sequence-ambiguity window of an annotated junction (the same junction
+    written at an equivalent coordinate)?"""
+    chrom, s, e = junction[0], int(junction[1]), int(junction[2])
+    if (chrom, s, e) in annotated_keys:
+        return True
+    from .overhang_informativeness import same_junction as _same_junction
+    for k in annotated_keys:
+        if k[0] != chrom or abs(k[1] - s) > max_shift or abs(k[2] - e) > max_shift:
+            continue
+        try:
+            if _same_junction(genome_seq, (s, e), (k[1], k[2])):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _novel_exon_evidence_refusal(cigar_ops, placed_len: int, strand: str,
+                                 max_edit_frac: float) -> str:
+    """'' when the placed exon segment is evidence for a NOVEL junction, else
+    the refusal token (see NOVEL_EXON_REFUSALS). Without a CIGAR the gate
+    fails CLOSED (``novel_exon_no_cigar``): a local-alignment failure must not
+    pass the floor on the one class where the segment is the only evidence."""
+    floor = min_informative_clip_bp()
+    if not cigar_ops:
+        return 'novel_exon_no_cigar'
+    matched = sum(ln for op, ln in cigar_ops if op in (0, 7, 8))
+    indel = sum(ln for op, ln in cigar_ops if op in (1, 2))
+    junction_op = cigar_ops[-1][0] if strand == '+' else cigar_ops[0][0]
+    junction_gap = junction_op in (1, 2)
+    if matched < floor:
+        return 'novel_exon_matched_below_floor'
+    if junction_gap:
+        return 'novel_exon_gap_at_junction'
+    allowance = max(_NOVEL_EXON_INDEL_ALLOWANCE,
+                    int(_math.ceil(max_edit_frac * matched)))
+    if indel > allowance:
+        return 'novel_exon_indel_burden'
+    return ''
 
 # Scope — NOT the criterion — of the whole-read short-circuit in
 # rescue_3ss_truncation. A long low-complexity clip is where the wasted work is
@@ -1290,6 +1388,7 @@ def _terminal_peel_rescue(
     peel_max_bp: int,
     peel_clean_anchor: int,
     accept_margin: float,
+    annotated_keys: Optional[set] = None,
 ) -> Optional[Dict]:
     """Multi-hypothesis terminal peel (Module 2F).
 
@@ -1410,6 +1509,7 @@ def _terminal_peel_rescue(
             read, genome, nearby_junctions, strand,
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq, rescue_seq_override=peeled,
+            annotated_keys=annotated_keys,
         )
         if not res.get('rescued'):
             continue
@@ -1451,8 +1551,14 @@ def rescue_3ss_truncation(
     peel_max_bp: int = DEFAULT_PEEL_MAX_BP,
     peel_clean_anchor: int = 10,
     peel_accept_margin: float = 0.0,
+    annotated_junctions: Optional[Set[Tuple]] = None,
 ) -> Dict:
     """Rescue reads truncated or mis-aligned at the exon 2 / 3' splice site boundary.
+
+    ``annotated_junctions``: which of ``candidate_junctions`` the annotation
+    asserts. When given, a sequence rescue onto a candidate NOT in it must carry
+    full evidence (:func:`_novel_exon_evidence_refusal`); None keeps the
+    legacy behavior (every candidate treated as annotated).
 
     **General approach**: for any read whose 5' alignment end is near (within
     ``junction_proximity_bp`` bp of) a known 3'SS, or whose 5' end falls inside
@@ -1540,6 +1646,8 @@ def rescue_3ss_truncation(
     # no-rescue + the `repeat_expansion` flag) rather than only clearing
     # rescue_seq: letting these reads reach the Case-4 intronic snap would be a
     # new rescue path for reads the panel's C1 controls say must stay untouched.
+    _annotated_keys = (None if annotated_junctions is None
+                       else {(j[0], j[1], j[2]) for j in annotated_junctions})
     _cigar = read.cigartuples
     _seq = read.query_sequence
     if _cigar and _seq:
@@ -1596,6 +1704,7 @@ def rescue_3ss_truncation(
             read, genome, candidate_junctions, strand,
             max_edit_frac, junction_proximity_bp, scan_bp,
             chrom, genome_seq,
+            annotated_keys=_annotated_keys,
         )
         # Module 2F: multi-hypothesis terminal peel. Monotonic — only overrides
         # the baseline when a deeper peel is a strictly-better sequence rescue.
@@ -1606,6 +1715,7 @@ def rescue_3ss_truncation(
                 chrom, genome_seq, baseline=_result,
                 peel_max_bp=peel_max_bp, peel_clean_anchor=peel_clean_anchor,
                 accept_margin=peel_accept_margin,
+                annotated_keys=_annotated_keys,
             )
             if _peeled is not None:
                 _result = _peeled
@@ -1616,6 +1726,13 @@ def rescue_3ss_truncation(
 
     if _result.get('rescued'):
         _result['reanchor_clip_len'] = _reanchor_clip_len
+    # Novel-site evidence-gate token, counted once per READ (the body runs once
+    # per terminal-peel depth as well, so it must not count). In report mode
+    # the token rides on a DRAWN rescue (novel_evidence); in refuse mode it is
+    # the refusal (clip_refused).
+    _tok = _result.get('clip_refused') or _result.get('novel_evidence')
+    if _tok in NOVEL_EXON_REFUSALS:
+        _OI_COUNTERS[_tok] = _OI_COUNTERS.get(_tok, 0) + 1
     return _result
 
 
@@ -1630,8 +1747,13 @@ def _rescue_3ss_truncation_body(
     chrom: str,
     genome_seq: str,
     rescue_seq_override: Optional[str] = None,
+    annotated_keys: Optional[set] = None,
 ) -> Dict:
     """Inner body of rescue_3ss_truncation — see that function's docstring.
+
+    ``annotated_keys``: ``(chrom, start, end)`` of the annotated candidates;
+    a sequence rescue onto any other candidate passes the novel-site evidence
+    gate first. None = every candidate counts as annotated (legacy).
 
     ``rescue_seq_override``: when not None, use this sequence as the 5' rescue
     sequence instead of extracting it via ``_extract_5prime_rescue_seq``. Used by
@@ -1796,6 +1918,8 @@ def _rescue_3ss_truncation_body(
     # --- Try sequence-based rescue against each candidate junction ---
     best_ed: float = -1.0
     best_junction = None
+    best_candidate_annotated = True   # provenance of best_junction's candidate
+    _novel_refused = ''               # novel-site evidence-gate token, if it fired
     best_five_prime_corrected = align_5prime
     best_is_canonical = False    # tiebreaker 1: canonical GT/GC donor
     best_in_amb = False          # tiebreaker 2: shift within ambiguity window
@@ -2401,6 +2525,9 @@ def _rescue_3ss_truncation_body(
                 _overall_update = (best_ed < 0 or _cur_outer < _best_outer)
                 if _overall_update:
                     best_ed = ed_exon
+                    best_candidate_annotated = (
+                        annotated_keys is None
+                        or (j_chrom, intron_start, intron_end) in annotated_keys)
                     best_is_canonical = _best_local_canonical
                     best_in_amb = _best_in_amb
                     best_shift_abs = _best_local_shift_abs
@@ -2599,6 +2726,7 @@ def _rescue_3ss_truncation_body(
                             break
 
             _exon_cigar_str = ''
+            _cigar_ops = None
             try:
                 from ..align.local_aligner import align_clip_to_exon, cigar_ops_to_str
                 _cigar_ops, _ = align_clip_to_exon(
@@ -2608,16 +2736,44 @@ def _rescue_3ss_truncation_body(
                 _exon_cigar_str = cigar_ops_to_str(_cigar_ops)
             except Exception as _e:
                 logger.debug("Local alignment failed for read %s: %s", read.query_name, _e)
-            return {
-                'rescued': True,
-                'rescue_type': rescue_type_candidate,
-                'five_prime_corrected': best_five_prime_corrected,
-                'rescued_junction': best_junction,
-                'edit_distance': best_ed,
-                'query_bp': len(rescue_seq),
-                'five_prime_exon_cigar': _exon_cigar_str,
-                'five_prime_upstream_trim': _upstream_trim,
-            }
+            # --- Novel-site evidence gate (see _novel_exon_evidence_refusal) ---
+            # An annotated landing site keeps the acceptance above untouched.
+            # A novel one must be carried by the placed segment itself; when it
+            # is not, only the SEQUENCE rescue is refused — the structural
+            # paths below (N-op snap, Case-4 intronic snap, proximity) stay live.
+            # Provenance is a property of the EMITTED junction, not of the
+            # candidate it was reached from: the shift sweep can move the donor
+            # off the annotated coordinate (ISSUE-017: exactly 4 nt into the
+            # intron onto the GTRAGT +5 GT), and that placement is novel even
+            # though the candidate was annotated. A slide inside the sequence-
+            # ambiguity window is the same junction and stays annotated.
+            _emitted_annotated = best_candidate_annotated
+            if annotated_keys is not None and best_candidate_annotated:
+                _emitted_annotated = _junction_is_annotated(
+                    genome_seq, best_junction, annotated_keys)
+            _novel_tok = ''
+            if not _emitted_annotated:
+                _novel_tok = _novel_exon_evidence_refusal(
+                    _cigar_ops, len(_align_seq), strand, max_edit_frac)
+            if _novel_tok and novel_gate_mode() == 'refuse':
+                _novel_refused = _novel_tok
+                best_junction = None      # counted once per read, in the wrapper
+            else:
+                return {
+                    'rescued': True,
+                    'rescue_type': rescue_type_candidate,
+                    'five_prime_corrected': best_five_prime_corrected,
+                    'rescued_junction': best_junction,
+                    'edit_distance': best_ed,
+                    'query_bp': len(rescue_seq),
+                    'five_prime_exon_cigar': _exon_cigar_str,
+                    'five_prime_upstream_trim': _upstream_trim,
+                    'landing_annotated': _emitted_annotated,
+                    # '' on an annotated site; 'pass' or the token on a novel one
+                    # (both modes — the join over the TSV is exact either way).
+                    'novel_evidence': ('' if _emitted_annotated
+                                       else (_novel_tok or 'pass')),
+                }
 
     # --- Case 4.5: forced N-op snap for mapPacBio terminal-D overshoot ---
     # Fires when the distance gate confirmed _n_match AND _leading_del (the N-op
@@ -2639,6 +2795,11 @@ def _rescue_3ss_truncation_body(
             'query_bp': 0,
             'five_prime_exon_cigar': '',
             'five_prime_upstream_trim': 0,
+            # Structural (the read's own N-op proves the intron): no evidence
+            # gate, but the provenance column is still filled.
+            'landing_annotated': (annotated_keys is None
+                                  or tuple(_forced_snap_junction[:3]) in annotated_keys),
+            'novel_evidence': '',
         }
 
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
@@ -2717,6 +2878,7 @@ def _rescue_3ss_truncation_body(
             continue
 
         _exon_cigar_str4 = ''
+        _cigar_ops4 = None
         if _intronic_seq4:
             try:
                 from ..align.local_aligner import align_clip_to_exon, cigar_ops_to_str
@@ -2727,6 +2889,20 @@ def _rescue_3ss_truncation_body(
             except Exception as _e4:
                 logger.debug("Case 4 local alignment failed for read %s: %s",
                              read.query_name, _e4)
+        # Novel-site evidence gate (see _novel_exon_evidence_refusal): a snap
+        # onto an ANNOTATED intron rests on the annotation; onto a pool intron
+        # the re-placed intronic segment must itself be evidence. On the Sumner
+        # 145k the tiny created junctions (exon CIGARs 4M / 3M / 2M5D1M) were
+        # 5'-terminal snaps of 1-8 intronic bases onto unannotated sites.
+        _annot4 = (annotated_keys is None
+                   or (j_chrom, intron_start, intron_end) in annotated_keys)
+        _tok4 = ''
+        if not _annot4:
+            _tok4 = _novel_exon_evidence_refusal(
+                _cigar_ops4, len(_intronic_seq4 or ''), strand, max_edit_frac)
+            if _tok4 and novel_gate_mode() == 'refuse':
+                _novel_refused = _tok4    # counted once per read, in the wrapper
+                continue
         return {
             'rescued': True,
             'rescue_type': 'intronic_snap',
@@ -2736,6 +2912,8 @@ def _rescue_3ss_truncation_body(
             'query_bp': intronic_depth,
             'five_prime_exon_cigar': _exon_cigar_str4,
             'five_prime_upstream_trim': 0,
+            'landing_annotated': _annot4,
+            'novel_evidence': '' if _annot4 else (_tok4 or 'pass'),
         }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
@@ -2760,6 +2938,7 @@ def _rescue_3ss_truncation_body(
                 'five_prime_exon_cigar': '',
                 'five_prime_upstream_trim': 0,
                 'displaced_canonical_refused': _displaced_any,
+                'clip_refused': _novel_refused,
             }
 
     _res_none = _no_rescue(read, strand)
@@ -2767,6 +2946,10 @@ def _rescue_3ss_truncation_body(
     # because taking it would have destroyed a canonical junction the aligner
     # called. bam_processor surfaces this in `five_prime_rescue_refused`.
     _res_none['displaced_canonical_refused'] = _displaced_any
+    if _novel_refused:
+        # The sequence rescue found a NOVEL landing site but the placed segment
+        # was not evidence for it (same column, same reader).
+        _res_none['clip_refused'] = _novel_refused
     return _res_none
 
 

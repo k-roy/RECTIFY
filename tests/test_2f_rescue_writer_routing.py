@@ -486,7 +486,11 @@ class TestRefusalIsReportedNotSwallowed:
         from rectify.core.bam.output import (
             CORRECTION_TSV_HEADER, correction_result_to_tsv_row,
         )
-        assert CORRECTION_TSV_HEADER[-1] == 'five_prime_rescue_refused'
+        # ISSUE-017 (2026-09-05) appended the two provenance/evidence columns
+        # after it; every earlier column keeps its absolute index.
+        assert CORRECTION_TSV_HEADER[-3:] == [
+            'five_prime_rescue_refused', 'five_prime_landing_annotated',
+            'five_prime_novel_evidence']
         row = correction_result_to_tsv_row({
             'read_id': 'r', 'chrom': 'chrR', 'strand': '+',
             'original_3prime': 1, 'corrected_3prime': 1,
@@ -495,7 +499,8 @@ class TestRefusalIsReportedNotSwallowed:
             'five_prime_rescue_refused': REFUSAL_REROUTE,
         })
         assert len(row) == len(CORRECTION_TSV_HEADER)
-        assert row[-1] == REFUSAL_REROUTE
+        assert row[-3] == REFUSAL_REROUTE
+        assert row[-2:] == ['', '']
 
     def test_all_three_writers_share_one_implementation(self):
         """write_corrected_bam / write_softclipped_bam / write_dual_bam used to
