@@ -419,10 +419,18 @@ read in one pass, `XB` holds only the
 **last** family applied — the `arb_*` counters in
 `<sample>.overhang_resolver.stats.json` (`arb_dmerge`, `arb_shifted`,
 `arb_dop_spliced`, `arb_mm_spliced`, …) are the complete per-run record, not
-the per-read tag. `XB` is also used, unrelated, by the ONT cDNA pipeline for
-strand-split cluster counts (`XB:Z:<n_top>/<n_bot>`, documented above) — a
-1-vs-0 split there can literally read `XB:Z:1/0`, which is easy to mistake
-for a boolean; it is not related to the resolver's `XB`.
+the per-read tag.
+
+**Warning: `XB` collides with an unrelated tag from the ONT cDNA
+pipeline.** Stage 1 writes `XB:Z:<n_top>/<n_bot>` strand-split cluster
+counts (`core/cdna/io.py:250`; documented above) — a 1-vs-0 split can
+literally read `XB:Z:1/0`, easy to mistake for a boolean. Because `'XB'`
+is listed in `_CDNA_COMMENT_TAGS` (`core/consensus/consensus.py:408`),
+`_restore_sidecar_tags` (`consensus.py:457-483`, called at
+`consensus.py:923` and `980`) unconditionally overwrites it back to the
+Stage-1 `n_top/n_bot` value at the consensus step: on cDNA reads, the
+resolver's `XB` is **not visible in the final consensus BAM**. Read the
+resolver's own arm BAM or the `arb_*` stats for the move record instead.
 
 Clip placement rebuilds gapmm2's idea around the deliberate improvements
 below. The Case A (shift) and Case B2/B3 (mismatch-rescue) re-arbitration
@@ -1132,11 +1140,13 @@ per-aligner BAM paths.
 
 **`core/align/overhang_resolver.py`** — Station A of the Re-aligner: the
 information-bounded splice-overhang resolver. Consumes the finished,
-name-sorted minimap2 BAM, re-places terminal soft-clipped overhangs across
-splice junctions (candidates from `SpliceSiteIndex`, HP-aware scoring,
-unambiguous-winner acceptance, refusal first-class), and emits a BAM in the
-same order that **substitutes** for the raw minimap2 arm in the panel. Inspired
-by gapmm2's terminal-refinement idea; see
+name-sorted minimap2 BAM and, by volume mainly through junction
+re-arbitration (re-scores the aligner's own junction calls anywhere in the
+CIGAR) plus terminal soft-clip placement across splice junctions
+(candidates from `SpliceSiteIndex`, HP-aware scoring, unambiguous-winner
+acceptance, refusal first-class), emits a BAM in the same order that
+**substitutes** for the raw minimap2 arm in the panel. The clip-placement
+half was inspired by gapmm2's terminal-refinement idea; see
 [The Re-aligner: Stations A-C](#the-re-aligner-stations-a-c) for the design,
 the measured admission numbers, and the non-canonical scope limit.
 
@@ -1383,7 +1393,7 @@ Support modules called by `bam_processor`:
 | `core/consensus/extract.py` | `extract_alignment_info`, `extract_junctions_from_cigar` |
 | `core/consensus/scoring.py` | `score_alignment`, `_rescue_5prime_softclip`, `_get_effective_5prime_clip`, `_get_effective_3prime_clip`, `_count_junction_proximity_errors` |
 | `core/consensus/select.py` | `select_best_alignment` |
-| `core/align/overhang_resolver.py` | Station A: `run_overhang_resolver`, `resolve_read` — terminal-overhang re-placement on the minimap2 arm |
+| `core/align/overhang_resolver.py` | Station A: `run_overhang_resolver`, `resolve_read`, `_rearbitrate_read` — junction re-arbitration (by volume) plus terminal-overhang re-placement on the minimap2 arm |
 | `core/consensus/triage.py` | Station B: read-evidence classification, targeted re-align legs, hp_ed re-entry |
 | `core/consensus/station_c.py` | Station C: pool-level junction census + admission report |
 | `core/splice/splice_site_index.py` | Precomputed donor/acceptor index (binary-search range queries; configurable acceptor classes) |
