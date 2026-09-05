@@ -22,7 +22,7 @@ from ...slurm import set_thread_limits, get_available_cpus, get_slurm_info
 
 from ..bam import bam_processor
 from ..bam import parallel as bam_parallel
-from ..bam.processing_stats import write_stats_tsv, generate_stats_report
+from ..bam.processing_stats import write_stats_tsv, generate_stats_report, format_module_seconds
 from ..spikein_filter import filter_spikein_reads
 from ...utils import genome as genome_utils
 from ...utils.provenance import init_provenance
@@ -948,6 +948,14 @@ def run(args):
     # Process BAM file
     import time as _time
     _t_correct_total = _time.perf_counter()
+    # Stage-level wall clocks (Module 2H, the BAM writers) that join the per-read
+    # module timers from the workers in the stats TSV, the [TIMING] summary and
+    # the stage sidecar — the measured share Kevin asked for (2026-09-05).
+    _module_wall: dict = {}
+
+    def _add_module_wall(name: str, seconds: float) -> None:
+        _module_wall[name] = _module_wall.get(name, 0.0) + float(seconds)
+
     try:
         # Guard: detect empty/headerless BAM (e.g. aligner SIGSEGV fallback) before
         # spending time on junction refinement or genome loading.
@@ -1111,6 +1119,7 @@ def run(args):
                     logger.info(
                         f"[TIMING] Junction pool setup: {_time.perf_counter() - _t_refine:.1f}s"
                     )
+                    _add_module_wall('junction_pool_setup', _time.perf_counter() - _t_refine)
                 else:
                     _bam_stem = Path(bam_to_process).stem
                     for _sfx in ('.consensus.sorted', '.consensus', '.rectified', '.sorted'):
@@ -1211,6 +1220,7 @@ def run(args):
                         _refine_stats['unchanged'],
                     )
                     logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
+                    _add_module_wall('junction_refinement_2h', _time.perf_counter() - _t_refine)
             except Exception as _exc:
                 logger.warning(
                     "Module 2H junction refinement failed (non-fatal, continuing): %s", _exc
@@ -1420,6 +1430,7 @@ def run(args):
             report = generate_stats_report(stats, protocol=_protocol)
 
         logger.info(f"[TIMING] BAM processing: {_time.perf_counter() - _t_proc:.1f}s")
+        _add_module_wall('bam_processing', _time.perf_counter() - _t_proc)
 
         # ---------- Manifest TSV emission (Commit B, 2026-05-20) ----------
         # The canonical artifact going forward is corrected_reads.manifest.tsv.
@@ -1479,6 +1490,12 @@ def run(args):
             stats_path = str(config['output_path']).replace('.tsv', '_stats.tsv')
             if stats_path == str(config['output_path']):
                 stats_path = str(config['output_path']) + '_stats.tsv'
+            # Fold the stage-level walls known by now (2H, the per-read loop)
+            # in beside the workers' per-read module timers. Writer walls are
+            # measured after this file exists; they reach the sidecar + log.
+            for _k, _v in _module_wall.items():
+                if _k not in stats.module_seconds:
+                    stats.add_module_seconds(_k, _v)
             write_stats_tsv(stats, stats_path, protocol=_protocol)
             logger.info(f"Wrote processing statistics to {stats_path}")
 
@@ -1520,6 +1537,7 @@ def run(args):
             _os_polya.unlink(_unsorted_polya)
             logger.info(f"  Sorted and indexed {config['output_bam']}")
             logger.info(f"[TIMING] Poly(A) BAM trim: {_time.perf_counter() - _t_bam:.1f}s")
+            _add_module_wall('bam_write_polya_trim', _time.perf_counter() - _t_bam)
 
         # Write corrected BAMs (hard-clip and/or soft-clip).
         # When both are requested, use write_dual_bam for a single-pass read of the input BAM.
@@ -1566,6 +1584,7 @@ def run(args):
                 _os.unlink(_unsorted)
                 logger.info(f"  Sorted and indexed {_final}")
             logger.info(f"[TIMING] Dual BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
+            _add_module_wall('bam_write_corrected', _time.perf_counter() - _t_cbam)
 
         elif _want_hc:
             _t_cbam = _time.perf_counter()
@@ -1645,6 +1664,7 @@ def run(args):
 
             logger.info(f"  Sorted and indexed {config['corrected_bam']}")
             logger.info(f"[TIMING] Corrected BAM write: {_time.perf_counter() - _t_cbam:.1f}s")
+            _add_module_wall('bam_write_corrected', _time.perf_counter() - _t_cbam)
 
         elif _want_sc:
             _t_sbam = _time.perf_counter()
@@ -1667,6 +1687,7 @@ def run(args):
             _os.unlink(_unsorted_sbam)
             logger.info(f"  Sorted and indexed {config['softclipped_bam']}")
             logger.info(f"[TIMING] Soft-clipped BAM write: {_time.perf_counter() - _t_sbam:.1f}s")
+            _add_module_wall('bam_write_softclipped', _time.perf_counter() - _t_sbam)
 
         # Write NET-seq-assigned bedgraph for Cat6 reads (rectified_ambiguous_pA_netseq_assigned)
         # Automatically produced whenever a corrected or soft-clipped BAM is written.
@@ -1800,6 +1821,17 @@ def run(args):
         logger.info("=" * 70)
         logger.info("RECTIFY completed successfully!")
         logger.info(f"[TIMING] Correction total: {_wall_total_secs:.1f}s")
+        # Measured per-module share: the workers' per-read timers (via
+        # ProcessingStats) plus every stage-level wall collected above.
+        try:
+            _ms_all = dict(stats.module_seconds)
+        except NameError:
+            _ms_all = {}
+        for _k, _v in _module_wall.items():
+            if _k not in _ms_all:
+                _ms_all[_k] = _v
+        if _ms_all:
+            logger.info(f"[TIMING] correct modules: {format_module_seconds(_ms_all)}")
         logger.info("=" * 70)
 
         # Unindexable-record summary (ISSUE-015). The run is green — that is the
@@ -1897,6 +1929,10 @@ def run(args):
                         # the unindexable_reads TSV.
                         'unindexable_records': _n_unindexable,
                         'unindexed_output_bams': len(_unindexed_outputs),
+                        # Per-module wall time (s): per-read modules summed over
+                        # reads + stage walls (2H, writers). See
+                        # processing_stats.MODULE_DESCRIPTIONS.
+                        'module_seconds': _ms_all,
                     },
                     skip_check_config={
                         'ignore_argv': [

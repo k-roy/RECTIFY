@@ -235,6 +235,15 @@ def test_sidecar_written_with_correct_fields(tmp_path):
     assert sidecar["exit_status"] == 0
     assert sidecar["stage"] == "correct"
 
+    # Per-module wall time (2026-09-05): the workers' per-read timers reach the
+    # sidecar beside the stage-level walls, so the 2F/2H share is measurable
+    # from the sidecar alone.
+    module_seconds = sidecar["stats"]["module_seconds"]
+    assert module_seconds["read_total"] >= module_seconds["five_prime_rescue_2f"] >= 0.0
+    assert "bam_processing" in module_seconds
+    stats_tsv = tmp_path / "corrected_reads_stats.tsv"
+    assert "module_seconds_read_total\t" in stats_tsv.read_text()
+
     # All path fields in inputs/outputs must be PortablePath envelopes
     valid_kinds = {"sample_relative", "env_relative", "absolute", "cached_absolute"}
     for inp in sidecar.get("inputs", []):

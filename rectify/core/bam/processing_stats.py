@@ -9,11 +9,73 @@ Author: Kevin R. Roy
 Date: 2026-03-17
 """
 
-from dataclasses import dataclass
-from typing import Dict
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Per-module wall time (seconds). Per-read modules are timed inside
+# correct_read_3prime and summed over PRIMARY result rows; stage-level entries
+# are added by correct_command (Module 2H, the BAM writers). Kevin 2026-09-05:
+# the 2F/2H/walkback/indel share of `correct` is MEASURED here, not estimated,
+# before deciding whether the resolver-verdict skip in 2F is worth a cache.
+PER_READ_MODULES: Tuple[str, ...] = (
+    'false_junction_prepass_2e',
+    'five_prime_rescue_2f',
+    'indel_correction_2c',
+    'softclip_rescue_2g',
+    'polya_walkback_2e',
+    'netseq_refinement',
+)
+MODULE_DESCRIPTIONS: Dict[str, str] = {
+    'read_total': "correct_read_3prime wall per read, summed over reads (every per-read module + bookkeeping)",
+    'false_junction_prepass_2e': "Module 2E pre-pass: poly(A)-artifact junction filter",
+    'five_prime_rescue_2f': "Module 2F: 3'SS truncation / 5' soft-clip rescue (annotation + pool)",
+    'indel_correction_2c': "Module 2C: indel artifact correction",
+    'softclip_rescue_2g': "Module 2G/2G.5: 3' soft-clip homopolymer + over-call rescue",
+    'polya_walkback_2e': "Module 2E: poly(A) walkback (incl. the stop-base re-anchor)",
+    'netseq_refinement': "NET-seq refinement of ambiguous 3' ends",
+    'junction_pool_setup': "Module 2H: junction pool build / prescan load (stage wall)",
+    'junction_refinement_2h': "Module 2H: junction refinement pass incl. pool setup (stage wall)",
+    'bam_processing': "correct per-read loop, parent wall (workers + streaming TSV write)",
+    'bam_write_polya_trim': "poly(A)-trimmed BAM write + sort + index (stage wall)",
+    'bam_write_corrected': "corrected BAM write(s) + sort + index (stage wall)",
+    'bam_write_softclipped': "soft-clipped BAM write + sort + index (stage wall)",
+}
+
+
+def module_seconds_rows(module_seconds: Dict[str, float]) -> List[Tuple[str, float, str, str]]:
+    """``(name, seconds, percent-or-'-', description)`` rows in a stable order.
+
+    Per-read modules report their share of ``read_total``; stage-level entries
+    (2H, the writers) are wall clocks of a different denominator and carry '-'.
+    """
+    read_total = float(module_seconds.get('read_total', 0.0) or 0.0)
+    ordered = list(MODULE_DESCRIPTIONS) + sorted(
+        k for k in module_seconds if k not in MODULE_DESCRIPTIONS
+    )
+    rows: List[Tuple[str, float, str, str]] = []
+    for name in ordered:
+        if name not in module_seconds:
+            continue
+        secs = float(module_seconds[name])
+        if name in PER_READ_MODULES and read_total > 0:
+            pct = f"{100.0 * secs / read_total:.2f}"
+        else:
+            pct = '-'
+        rows.append((name, secs, pct, MODULE_DESCRIPTIONS.get(name, 'module wall time')))
+    return rows
+
+
+def format_module_seconds(module_seconds: Dict[str, float]) -> str:
+    """One-line ``name 1.2s (34.5%) | ...`` summary for the [TIMING] log."""
+    parts = [
+        f"{name} {secs:.1f}s" + (f" ({pct}%)" if pct != '-' else '')
+        for name, secs, pct, _desc in module_seconds_rows(module_seconds)
+    ]
+    return ' | '.join(parts) if parts else '(none recorded)'
 
 
 @dataclass
@@ -100,6 +162,16 @@ class ProcessingStats:
     # Position changes — both modes
     total_position_shifts: int = 0
 
+    # Per-module wall time in seconds (see PER_READ_MODULES / MODULE_DESCRIPTIONS).
+    # Deliberately NOT part of to_dict(): the region-checkpoint JSON int-casts
+    # every to_dict() key on the way back in (parallel._stats_from_dict); the
+    # checkpoint writer serializes this map beside those ints instead.
+    module_seconds: Dict[str, float] = field(default_factory=dict)
+
+    def add_module_seconds(self, module: str, seconds: float) -> None:
+        """Accumulate ``seconds`` of wall time under ``module``."""
+        self.module_seconds[module] = self.module_seconds.get(module, 0.0) + float(seconds)
+
     def to_dict(self) -> Dict[str, int]:
         """Convert to dictionary."""
         return {
@@ -151,6 +223,8 @@ class ProcessingStats:
         self.confidence_medium += other.confidence_medium
         self.confidence_low += other.confidence_low
         self.total_position_shifts += other.total_position_shifts
+        for module, seconds in other.module_seconds.items():
+            self.add_module_seconds(module, seconds)
 
     def update_from_result(self, result: Dict) -> None:
         """Update stats from a single read correction result.
@@ -165,6 +239,11 @@ class ProcessingStats:
 
         if is_primary:
             self.reads_processed += 1
+
+            # Per-module wall time recorded by correct_read_3prime (absent on
+            # rows that never ran the per-read modules, e.g. chimeric stubs).
+            for module, seconds in (result.get('module_seconds') or {}).items():
+                self.add_module_seconds(module, seconds)
 
             # A-tract stats
             downstream_a = result.get('downstream_a_count', 0)
@@ -344,6 +423,12 @@ def write_stats_tsv(
             f.write(f"confidence_high\t{stats.confidence_high}\t{100*stats.confidence_high/conf_total:.2f}\tHigh confidence assignments (% of output rows)\n")
             f.write(f"confidence_low\t{stats.confidence_low}\t{100*stats.confidence_low/conf_total:.2f}\tLow confidence assignments (% of output rows)\n")
 
+        # Per-module wall time (seconds). Per-read modules are % of read_total;
+        # stage-level entries (2H, writers) are wall clocks and carry '-'.
+        if stats.module_seconds:
+            for name, secs, pct, desc in module_seconds_rows(stats.module_seconds):
+                f.write(f"module_seconds_{name}\t{secs:.3f}\t{pct}\t{desc}\n")
+
     logger.info(f"Wrote processing statistics to {output_path}")
 
 
@@ -498,6 +583,14 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
         lines.append(f"  High:                     {stats.confidence_high:>12,} ({100*stats.confidence_high/conf_total:>5.1f}%)")
         lines.append(f"  Low:                      {stats.confidence_low:>12,} ({100*stats.confidence_low/conf_total:>5.1f}%)")
     lines.append("")
+
+    # Per-module wall time — measured share of the correct stage.
+    if stats.module_seconds:
+        lines.append("Module wall time (s; per-read modules as % of read_total):")
+        for name, secs, pct, _desc in module_seconds_rows(stats.module_seconds):
+            pct_s = f"({pct:>6}%)" if pct != '-' else ''
+            lines.append(f"  {name:<26}{secs:>12.1f} {pct_s}")
+        lines.append("")
     lines.append("=" * 70)
 
     return "\n".join(lines)

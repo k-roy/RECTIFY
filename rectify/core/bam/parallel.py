@@ -233,10 +233,24 @@ def _stats_for_results(results: List[Dict]) -> ProcessingStats:
     return stats
 
 
+def _stats_to_checkpoint_dict(stats: ProcessingStats) -> Dict:
+    """``to_dict()`` (int counters) plus the float ``module_seconds`` map.
+
+    The two live apart because ``_stats_from_dict`` int-casts every
+    ``to_dict()`` key on the way back in; the timing map rides beside them.
+    """
+    out = dict(stats.to_dict())
+    if stats.module_seconds:
+        out['module_seconds'] = {k: float(v) for k, v in stats.module_seconds.items()}
+    return out
+
+
 def _stats_from_dict(values: Dict) -> ProcessingStats:
     stats = ProcessingStats()
     for key in stats.to_dict():
         setattr(stats, key, int(values.get(key, 0) or 0))
+    for key, value in (values.get('module_seconds') or {}).items():
+        stats.add_module_seconds(key, float(value or 0.0))
     return stats
 
 
@@ -414,7 +428,9 @@ def _write_region_results_atomic(checkpoint_dir: Path, region_idx: int, results:
     _fsync_parent_dir(tsv_path)
 
     stats_path = _region_stats_path(checkpoint_dir, region_idx)
-    stats_text = json.dumps(_stats_for_results(results).to_dict(), sort_keys=True) + '\n'
+    stats_text = json.dumps(
+        _stats_to_checkpoint_dict(_stats_for_results(results)), sort_keys=True
+    ) + '\n'
     _atomic_write_text(stats_path, stats_text)
 
     # The done sentinel is written last. A crash before this point leaves files

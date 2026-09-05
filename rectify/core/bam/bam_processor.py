@@ -35,6 +35,7 @@ Date: 2026-03-09
 
 from typing import Dict, List, Optional, Tuple
 import logging
+import time as _time
 
 import pysam
 
@@ -307,6 +308,20 @@ def correct_read_3prime(
     Returns:
         Dict with correction results
     """
+    # Per-module wall time for THIS read (seconds inside each module's calls;
+    # read_total = the whole function). Summed over primary rows into
+    # ProcessingStats.module_seconds so the 2F/2H/walkback/indel share of the
+    # correct stage is measured, not estimated. ~1 µs/read of overhead.
+    _t_read0 = _time.perf_counter()
+    _ms: Dict[str, float] = {
+        'read_total': 0.0,
+        'false_junction_prepass_2e': 0.0,
+        'five_prime_rescue_2f': 0.0,
+        'indel_correction_2c': 0.0,
+        'softclip_rescue_2g': 0.0,
+        'polya_walkback_2e': 0.0,
+        'netseq_refinement': 0.0,
+    }
     # Decode SAM-spec ``=`` shorthand in SEQ before any module reads
     # query_sequence. Aligners with ``=``-CIGAR emission (minimap2, gapmm2,
     # deSALT, uLTRA) propagate ``=`` chars into SEQ at match positions; any
@@ -455,8 +470,10 @@ def correct_read_3prime(
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
+    _t0 = _time.perf_counter()
     _genome_ref = _fjf._GenomeDictReference(genome)
     _real_junctions, _artifact_analyses = _fjf.filter_polya_artifact_junctions(read, _genome_ref, strand)
+    _ms['false_junction_prepass_2e'] += _time.perf_counter() - _t0
 
     # Module 2F: 3'SS truncation rescue (post-consensus).
     # Corrects five_prime_position for reads truncated or soft-clipped at the
@@ -497,7 +514,9 @@ def correct_read_3prime(
                                          five_prime_position + _w + 1):
                     _ss_junctions.add((chrom_std, _iv.data[0], _iv.data[1]))
         if _ss_junctions:
+            _t0 = _time.perf_counter()
             _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
+            _ms['five_prime_rescue_2f'] += _time.perf_counter() - _t0
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
@@ -710,6 +729,10 @@ def correct_read_3prime(
         'correction_applied': [],
         'qc_flags': [],
         'confidence': 'high',
+        # Per-module wall time for this read (not a TSV column; consumed by
+        # ProcessingStats.update_from_result). Same dict object as _ms, so the
+        # modules below keep filling it after this literal is built.
+        'module_seconds': _ms,
         # New fields for unified record
         'junctions': junctions,  # List of (start, end) tuples
         'junctions_str': junctions_str,  # Semicolon-separated string
@@ -854,7 +877,9 @@ def correct_read_3prime(
     # Module 2C: Indel artifact correction (when poly(A) is sequenced)
     indel_shift = 0
     if apply_indel_correction:
+        _t0 = _time.perf_counter()
         indel_result = indel_corrector.correct_indels_from_read(read, strand, genome)
+        _ms['indel_correction_2c'] += _time.perf_counter() - _t0
 
         if indel_result['has_artifacts']:
             result['correction_applied'].append('indel_correction')
@@ -912,9 +937,11 @@ def correct_read_3prime(
 
     softclip_rescue_applied = False
     if genome and not _has_3prime_hardclip and _3prime_sc_len >= 3:
+        _t0 = _time.perf_counter()
         _sc_result = indel_corrector.rescue_softclip_at_homopolymer(
             read, strand, genome, end='3prime'
         )
+        _ms['softclip_rescue_2g'] += _time.perf_counter() - _t0
         if _sc_result is not None:
             result['correction_applied'].append('softclip_rescue')
             current_position = _sc_result['corrected_pos']
@@ -948,9 +975,11 @@ def correct_read_3prime(
         and not softclip_rescue_applied
         and _3prime_sc_len >= 1
     ):
+        _t0 = _time.perf_counter()
         _oc_result = indel_corrector.rescue_overcall_terminal_match(
             read, strand, genome,
         )
+        _ms['softclip_rescue_2g'] += _time.perf_counter() - _t0
         if _oc_result is not None:
             result['correction_applied'].append('overcall_rescue')
             current_position = _oc_result['corrected_pos']
@@ -996,10 +1025,12 @@ def correct_read_3prime(
             # ONT PCR-cDNA: same walkback core as DRS, but side/stop_base come
             # from the per-read resolved RNA strand rather than from is_reverse.
             _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
+            _t0 = _time.perf_counter()
             wb = walkback_ont_cdna(
                 read, _chrom_seq, strand,
                 artifact_analyses=_artifact_analyses,
             ) if _chrom_seq else None
+            _ms['polya_walkback_2e'] += _time.perf_counter() - _t0
             if wb is not None:
                 result['correction_applied'].append('polya_walkback')
                 polya_walkback_applied = True
@@ -1015,10 +1046,12 @@ def correct_read_3prime(
         elif dt_primed_cDNA:
             _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
             if _chrom_seq:
+                _t0 = _time.perf_counter()
                 _orig_wb, _corr_wb, _applied_wb, _gene_strand_wb = walkback_quantseq_rev(
                     read, _chrom_seq,
                     artifact_analyses=_artifact_analyses,
                 )
+                _ms['polya_walkback_2e'] += _time.perf_counter() - _t0
                 if _applied_wb == _APPLIED_WALKBACK_READGENOME:
                     result['correction_applied'].append('polya_walkback_readgenome')
                     polya_walkback_applied = True
@@ -1038,10 +1071,12 @@ def correct_read_3prime(
             # as the legacy find_polya_boundary (which now delegates to it).
             _chrom_seq, _chrom_seq_key = get_chrom_sequence(genome, chrom)
             if _chrom_seq:
+                _t0 = _time.perf_counter()
                 wb = walkback_drs_full(
                     read, _chrom_seq,
                     artifact_analyses=_artifact_analyses,
                 )
+                _ms['polya_walkback_2e'] += _time.perf_counter() - _t0
             else:
                 wb = None
             if wb is not None:
@@ -1169,9 +1204,11 @@ def correct_read_3prime(
             and _cs_enf[current_position].upper() == _stop_enf
         ):
             _target = None
+            _t0 = _time.perf_counter()
             _wb_enf = walkback_drs_full(
                 read, _cs_enf, artifact_analyses=_artifact_analyses
             )
+            _ms['polya_walkback_2e'] += _time.perf_counter() - _t0
             if (
                 _wb_enf is not None
                 and 0 <= _wb_enf['corrected_pos'] < len(_cs_enf)
@@ -1244,6 +1281,7 @@ def correct_read_3prime(
     use_deconvolution = not getattr(netseq_loader, '_bundled_loaded', False)
 
     if netseq_loader is not None and result['ambiguity_range'] > 0:
+        _t0 = _time.perf_counter()
         assignments = netseq_refiner.refine_with_netseq(
             netseq_loader,
             chrom_std,
@@ -1254,6 +1292,7 @@ def correct_read_3prime(
             use_deconvolution=use_deconvolution,
             proportional_split=True,
         )
+        _ms['netseq_refinement'] += _time.perf_counter() - _t0
 
         if result['ambiguity_range'] > 0:
             result['correction_applied'].append('netseq_refinement')
@@ -1327,6 +1366,7 @@ def correct_read_3prime(
     result['is_primary_result'] = True
     if not result['qc_flags']:
         result['qc_flags'].append('PASS')
+    _ms['read_total'] = _time.perf_counter() - _t_read0
     return [result]
 
 
