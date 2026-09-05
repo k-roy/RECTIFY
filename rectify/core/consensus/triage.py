@@ -73,10 +73,14 @@ REASON_JUNCTION_ERRORS = 'junction_proximal_errors'
 REASON_CLIP_5P = 'softclip_5p'
 REASON_CLIP_3P = 'softclip_3p'
 REASON_UNANNOTATED_JUNCTION = 'unannotated_junction'
+REASON_CORRECTION_REGRESSION = 'correction_regression'
 
 # Reasons the JUNCTION re-align leg acts on. Soft-clip-only triage waits for
 # the clip legs (Cat3 5' rescue / overhang_resolver).
-_JUNCTION_LEG_REASONS = frozenset({REASON_JUNCTION_ERRORS, REASON_UNANNOTATED_JUNCTION})
+_JUNCTION_LEG_REASONS = frozenset({
+    REASON_JUNCTION_ERRORS, REASON_UNANNOTATED_JUNCTION,
+    REASON_CORRECTION_REGRESSION,
+})
 
 # Strict-improvement epsilon for the hp_ed re-entry comparison: a candidate
 # must beat the incumbent by MORE than float noise. Ties keep the incumbent
@@ -96,6 +100,15 @@ class TriagePolicy:
     max_clip_3p: int = 30                       # bases of 3' soft clip tolerated
     triage_unannotated_junctions: bool = True   # unannotated junction => re-check placement
     junction_window_bp: int = 5                 # window for the proximity-error signal
+    # Correction-regression guard (ISSUE-012). A read may not be bypassed when
+    # correction added MORE error than the read's own pre-correction alignment
+    # already carried: hp_ed(corrected) - hp_ed(original) >
+    # ratio * hp_ed(original). The scale is the read's OWN measured error
+    # burden, so there is no per-library constant to tune; the default 1.0
+    # means "correction more than doubled this read's edit distance".
+    # Requires the pre-correction record (``original_bams``); without one the
+    # signal cannot fire and classification is unchanged.
+    max_correction_regression_ratio: float = 1.0
     # Clip legs (landscape §4 step 2). OFF by default: with False the triage
     # output is byte-identical to the junction-leg-only behavior.
     clip_legs_enable: bool = False
@@ -111,6 +124,13 @@ class TriageResult:
     clip_3p: int = 0
     n_junctions: int = 0
     n_unannotated: int = 0
+    # Correction-regression signal (ISSUE-012); populated only when the
+    # pre-correction record is available. ``correction_regression`` is
+    # (ed_corrected - ed_original) / ed_original, or ``inf`` when the original
+    # was a perfect alignment and correction made it worse.
+    hp_ed_corrected: Optional[float] = None
+    hp_ed_original: Optional[float] = None
+    correction_regression: Optional[float] = None
 
     @property
     def junction_leg(self) -> bool:
@@ -141,11 +161,64 @@ def _annotated_3tuples(
     return out
 
 
+def _apply_correction_regression(
+    res: TriageResult,
+    ed_corrected: float,
+    ed_original: float,
+    policy: TriagePolicy,
+) -> bool:
+    """Record the correction-regression signal on ``res``; triage if it fires.
+
+    **The guard (ISSUE-012).** The read-evidence signals are all LOCAL —
+    junction-proximal errors in a ±5 bp window, terminal clips, annotation
+    status of each junction. A correction can therefore wreck a read globally
+    and still look clean: both panel reads that motivated this
+    (``45ecf8ed`` R5, ``3f941baa`` L1) land every junction ON annotation with
+    zero clips and junction-proximal error exactly at the bypass threshold,
+    while correction took their HP-aware edit distance from 81.50 to 292.25 and
+    from 127.25 to 271.25. They were bypassed as ``high_confidence``, so no leg
+    ever offered them a candidate — even though the re-entry arbiter accepts
+    their pre-correction record on sight.
+
+    **Why this bound and not a threshold.** The scale is the read's OWN
+    pre-correction hp_ed — its measured error burden against this reference, in
+    the arbiter's own currency — so there is no per-library or per-length
+    constant. ``ratio=1.0`` means "correction more than doubled the error it
+    started with", which is a statement about the read, not about the dataset.
+    Measured on 1,000 unselected chr5 reads (the hold-out): the rule fires on
+    **1.2%** of otherwise-bypassed reads, while both panel reads fire (ratios
+    1.13 and 2.59). The alternative of triaging on ANY hp_ed regression — the
+    same inequality the arbiter uses — was rejected on that evidence: it fires
+    on **84.7%** of bypassed hold-out reads and would empty the
+    high-confidence class.
+
+    ``ed_original == 0`` is the degenerate input and the choice is explicit: a
+    perfect original made worse by correction always triages (ratio ``inf``).
+
+    Returns True when the read was moved out of the bypass.
+    """
+    res.hp_ed_corrected = ed_corrected
+    res.hp_ed_original = ed_original
+    gap = ed_corrected - ed_original
+    if ed_original > 0:
+        res.correction_regression = gap / ed_original
+    else:
+        res.correction_regression = float('inf') if gap > _REENTRY_EPS else 0.0
+    if gap > policy.max_correction_regression_ratio * ed_original + _REENTRY_EPS:
+        if REASON_CORRECTION_REGRESSION not in res.reasons:
+            res.reasons.append(REASON_CORRECTION_REGRESSION)
+        res.label = LABEL_TRIAGE
+        return True
+    return False
+
+
 def classify_read(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
     annotated_3: Optional[Set[Tuple[str, int, int]]] = None,
     policy: Optional[TriagePolicy] = None,
+    original: Optional[pysam.AlignedSegment] = None,
+    penalty_table=None,
 ) -> TriageResult:
     """Classify one alignment as ``high_confidence`` or ``triage``.
 
@@ -153,6 +226,11 @@ def classify_read(
     matching (the up_amb/down_amb enhancement) is a follow-up, so a junction
     one bp inside a repeat may read as unannotated — which errs toward
     re-checking, never toward silently trusting.
+
+    ``original`` is this read's PRE-correction record. When supplied it enables
+    the correction-regression guard (:func:`_apply_correction_regression`),
+    the one signal here that is not purely local. Without it the classifier is
+    byte-identical to its previous behavior — the new reason cannot be reached.
     """
     policy = policy or TriagePolicy()
     res = TriageResult(read_id=read.query_name or '', label=LABEL_HIGH_CONFIDENCE)
@@ -180,6 +258,14 @@ def classify_read(
 
     if res.reasons:
         res.label = LABEL_TRIAGE
+
+    if original is not None:
+        from .corrected_consensus import _cigar_hp_edit_distance
+        _apply_correction_regression(
+            res,
+            _cigar_hp_edit_distance(read, genome, penalty_table),
+            _cigar_hp_edit_distance(original, genome, penalty_table),
+            policy)
     return res
 
 
@@ -205,6 +291,22 @@ def classify_bam(
 
 
 def _read_signature(read: pysam.AlignedSegment) -> Tuple:
+    """Identity of an alignment for the "is this candidate a no-op?" fast path.
+
+    Placement only — the query SEQUENCE is deliberately NOT part of it, and
+    that was checked rather than assumed. A same-placement/different-bases pair
+    would be dropped here before the arbiter scored it, so the omission looks
+    like a hole; measured on real data it is not reachable. ``rectify correct``
+    never rewrites bases without also changing the CIGAR (the rewrite comes
+    from indel correction, which is a CIGAR edit by construction): over the
+    Sumner panel and the 1,000-read chr5 hold-out, **0** reads share
+    name/start/CIGAR with their pre-correction record while differing in SEQ
+    (panel: 0 of 100 share a placement at all; hold-out: 165 share one and all
+    165 have identical SEQ). Widening this to include the sequence therefore
+    buys nothing real and changes a contract three legs depend on
+    (``tests/test_triage.py::TestReentryGate::test_identical_signature_rejected``
+    pins it).
+    """
     return (read.reference_name, read.reference_start, tuple(read.cigartuples or ()))
 
 
@@ -385,6 +487,14 @@ def triage_realign_bam(
       PRE-CORRECTION alignment as a further candidate (``original_bams``) →
       clip legs (``policy.clip_legs_enable``, OFF by default) → final BAM.
 
+    ``original_bams`` also feeds the correction-regression guard (ISSUE-012):
+    a read whose corrected alignment carries more than
+    ``policy.max_correction_regression_ratio`` times its own pre-correction
+    hp_ed cannot be bypassed as ``high_confidence``, because the read-evidence
+    signals are all local and miss a globally-wrecked-but-locally-tidy read.
+    Such a read is routed to the junction leg, where the candidate below can
+    win. See :func:`_apply_correction_regression`.
+
     ``original_bams`` (ISSUE-009): the junction leg's only proposer is
     ``refine_bam_junctions(motif_blind=True)`` — Module 2H itself — so on a BAM
     2H has already refined it re-derives its own fixed point and can never
@@ -440,8 +550,49 @@ def triage_realign_bam(
                 n_dup += 1
                 continue
             results[r.read_id] = r
+            if original_bams and r.label == LABEL_HIGH_CONFIDENCE:
+                # Only the BYPASS candidates need the corrected-side hp_ed for
+                # the ISSUE-012 guard; a read already triaged cannot be moved
+                # further by it. Storing the float (not the record) keeps this
+                # O(1) per read on top of the TriageResult already held.
+                from .corrected_consensus import _cigar_hp_edit_distance
+                r.hp_ed_corrected = _cigar_hp_edit_distance(
+                    read, genome, penalty_table)
     if n_dup:
         logger.warning("triage: %d duplicate primary read ids — first record kept", n_dup)
+
+    # ── Pass 1b: correction-regression guard (ISSUE-012) ────────────────────
+    # One extra stream over the pre-correction BAMs, touching only the reads
+    # pass 1 wanted to bypass. It must run BEFORE junction_ids is taken: a read
+    # the guard rescues has to reach the junction leg, which is where the
+    # ISSUE-009 candidate can win it back.
+    n_regression = 0
+    if original_bams:
+        bypassed = {rid for rid, r in results.items()
+                    if r.label == LABEL_HIGH_CONFIDENCE
+                    and r.hp_ed_corrected is not None}
+        from .corrected_consensus import _cigar_hp_edit_distance
+        for orig_path in original_bams:
+            if not bypassed:
+                break
+            with pysam.AlignmentFile(orig_path, 'rb', check_sq=False) as ob:
+                for rec in ob.fetch(until_eof=True):
+                    rid = rec.query_name
+                    if rid not in bypassed or not _classifiable(rec):
+                        continue
+                    bypassed.discard(rid)
+                    res = results[rid]
+                    if _apply_correction_regression(
+                            res, res.hp_ed_corrected,
+                            _cigar_hp_edit_distance(rec, genome, penalty_table),
+                            policy):
+                        n_regression += 1
+        if n_regression:
+            logger.info(
+                'triage: %d read(s) pulled out of the high-confidence bypass — '
+                'correction raised hp_ed by more than %.2fx the read\'s own '
+                'pre-correction edit distance (ISSUE-012)',
+                n_regression, policy.max_correction_regression_ratio)
 
     junction_ids = {rid for rid, r in results.items() if r.junction_leg}
     stats = {
@@ -451,6 +602,9 @@ def triage_realign_bam(
         'junction_leg': len(junction_ids),
         'realigned': 0,
         'accepted': 0,
+        # Reads the ISSUE-012 guard pulled out of the bypass (zero without
+        # `original_bams`; they are counted in `triaged`/`junction_leg` above)
+        'correction_regression': n_regression,
         # Original-alignment candidates (zero without `original_bams`)
         'orig_leg': 0,
         'orig_proposed': 0,
@@ -681,6 +835,10 @@ def triage_realign_bam(
             'clip_3p': r.clip_3p,
             'n_junctions': r.n_junctions,
             'n_unannotated': r.n_unannotated,
+            # ISSUE-012 signal: (hp_ed_corrected - hp_ed_original) /
+            # hp_ed_original. Empty without a pre-correction record.
+            'correction_regression': ('' if r.correction_regression is None
+                                      else round(r.correction_regression, 3)),
             'realigned': rid in realigned_ids,
             'accepted': rid in accepted,
             # True when the record that won is the PRE-CORRECTION alignment
