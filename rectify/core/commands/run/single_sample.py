@@ -408,7 +408,7 @@ def _process_one_sample(
                         max_intron=getattr(args, 'max_intron', None),
                         resolver_acceptor_classes=getattr(
                             args, 'resolver_acceptor_classes', 'canonical'),
-                        resolver_atac=getattr(args, 'resolver_atac', False),
+                        resolver_atac=getattr(args, 'resolver_atac', True),
                         junction_pool_max_intron_len=getattr(
                             args, 'junction_pool_max_intron_len', 0),
                         junction_pool_min_anchor_bp=getattr(
@@ -827,7 +827,7 @@ def _run_single_sample(args) -> int:
             max_intron=getattr(args, 'max_intron', None),
             resolver_acceptor_classes=getattr(
                 args, 'resolver_acceptor_classes', 'canonical'),
-            resolver_atac=getattr(args, 'resolver_atac', False),
+            resolver_atac=getattr(args, 'resolver_atac', True),
             junction_pool_max_intron_len=getattr(
                 args, 'junction_pool_max_intron_len', 0),
             junction_pool_min_anchor_bp=getattr(

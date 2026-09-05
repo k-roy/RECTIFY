@@ -54,7 +54,7 @@ def _run_alignment(
     read_length: int = 150,
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
-    resolver_atac: bool = False,
+    resolver_atac: bool = True,
     junction_pool_max_intron_len: int = 0,
     junction_pool_min_anchor_bp: int = 0,
 ) -> Tuple[Dict[str, Path], Path]:

@@ -57,8 +57,8 @@ search stands: extending further would change both the candidate space and
 the false-discovery budget (``alpha`` is calibrated against the candidate
 density), so it is a design change, not a flag.
 
-**AT-AC introns (2026-09-04, opt-in, PAIRED):** ``ResolverConfig(atac=True)`` /
-``--resolver-atac`` adds a second clip-enumeration pass over the index's
+**AT-AC introns (PAIRED) — ON BY DEFAULT since 2026-09-05.**
+``ResolverConfig.atac`` adds a second clip-enumeration pass over the index's
 ``don_at_*`` / ``acc_ac_*`` arrays with the pair enforced (AT donor ↔ AC
 acceptor only), ranks such placements below GT..AG and GC..AG at equal ED,
 and teaches the arbiter's canonical-class tests to accept AT..AC so a real
@@ -68,6 +68,17 @@ AT-AC through its major spliceosome (Talkish et al. 2019 PLoS Genet
 U12-type class. Because the pair is enforced this is NOT the motif-free
 extension refuted in planning/722; it adds one dinucleotide pair, not a
 spectrum.
+
+It shipped opt-in on 2026-09-04 under the 722b precedent — a new dinucleotide
+class stays opt-in until its price is measured — and **Kevin flipped the
+default on 2026-09-05, for every organism**, once that price was measured. The
+reason is biological, not a tuning preference: AT-AC is not an exotic class
+that only some genomes carry, it is present in every eukaryote rectify is
+pointed at, so defaulting it OFF meant routinely mis-snapping a real AT-AC
+junction onto a chance GT..AG. The arbiter tests show that concretely: with
+AT-AC off, the linear-rescue paths splice to a decoy 11-16 bp away at a WORSE
+edit distance than the truth. Pass ``--no-resolver-atac`` (``atac=False``) to
+reproduce the pre-flip candidate space.
 
 Every enumeration path is wired: the clip resolver (Station A's job), the
 class-preserving boundary shifts, and — since 2026-09-05 — the arbiter's two
@@ -207,13 +218,29 @@ class ResolverConfig:
     # arb_grammar=False (the canonical-preference snap works against exactly
     # these junctions).
     acceptor_classes: str = 'canonical'
-    # AT-AC introns — opt-in, PAIRED class (module docstring). True runs a
-    # second clip-enumeration pass over don_at_*/acc_ac_* with the pair
-    # enforced (never AT..AG / GT..AC), ranks AT-AC placements after GT..AG
-    # and GC..AG at equal ED, and makes the arbiter's canonical-class tests
-    # accept AT..AC. Default False = the planning/720-measured candidate
-    # space, byte-identical.
-    atac: bool = False
+    # AT-AC introns — PAIRED class (module docstring). True runs a second
+    # clip-enumeration pass over don_at_*/acc_ac_* with the pair enforced
+    # (never AT..AG / GT..AC), ranks AT-AC placements after GT..AG and GC..AG
+    # at equal ED, and makes the arbiter's canonical-class tests accept AT..AC.
+    #
+    # DEFAULT FLIPPED False -> True on 2026-09-05 (Kevin's call). It shipped
+    # opt-in on 2026-09-04 under the 722b precedent — "a new dinucleotide class
+    # is opt-in until its price is measured" — and the price has now been
+    # measured (see the module docstring's AT-AC paragraph). The reason to flip
+    # is biological, not a tuning preference: AT-AC is not an exotic edge class
+    # that some organisms have. Yeast splices AT-AC through its MAJOR
+    # spliceosome (Talkish et al. 2019, SUT635) and human AT-AC is the U12-type
+    # minor-spliceosome signature, so every eukaryote rectify is pointed at has
+    # real AT-AC junctions. Leaving it off meant a real junction could be
+    # grammar-snapped onto a chance GT..AG — which the arbiter tests demonstrate
+    # concretely (test_resolver_atac_introns.py: the default arm splices to a
+    # decoy 11-16 bp away at a WORSE edit distance than the truth).
+    #
+    # This is NOT the motif-free extension planning/722 refuted: the pair is
+    # enforced, so it adds one dinucleotide pair, not a spectrum, and the
+    # GT/GC pass still runs first and wins every tie. Set atac=False (or
+    # --no-resolver-atac) to reproduce the pre-2026-09-05 candidate space.
+    atac: bool = True
     min_intron: int = 40         # matches BBMap intronlen=40 D->N semantics
     min_clip: int = 8            # clips shorter than this are never assessed
     max_clip_match: int = 200    # junction-proximal bases used for matching
@@ -257,10 +284,11 @@ class ResolverConfig:
     # distribution that no longer exists.
     #
     # The guard bounds COUNT, not time, and the two differ by the DP backend:
-    # 2000 candidates is ~24 ms/clip with the numba kernel (RECTIFY_HP_ED_NUMBA)
-    # but ~7 s/clip on the pure-Python path, so a numba-less run on a truly
-    # pathological contig is still slow — bounded, but slow. If that case ever
-    # shows up, prefer enabling numba over lowering this.
+    # 2000 candidates is ~24 ms/clip with the numba kernel (default-ON, lazily
+    # loaded; RECTIFY_HP_ED_NUMBA=0 opts out) but ~7 s/clip on the pure-Python
+    # fallback, so a numba-less run on a truly pathological contig is still
+    # slow — bounded, but slow. If that case shows up, prefer making numba
+    # available over lowering this.
     #
     # A ceiling set too LOW silently refuses legitimate clips — the failure mode
     # this guard must not become. That is why every refusal is counted and
@@ -455,9 +483,11 @@ _CEILING_REF_WINDOW = 5000
 
 def _hp_ed_numba():
     """The active numba kernel, or None. Read through the module's lazy loader
-    (2026-09-05: the kernel is ON by default but imported on first use, so the
-    raw global is None until then); tests force it off by setting
-    `_HP_ED_NUMBA_LOADED = True` and `_hp_ed_bounded_numba = None`."""
+    rather than imported by value (2026-09-05: the kernel is ON by default but
+    imported on first use, so the raw global is None until then; opted out of
+    with RECTIFY_HP_ED_NUMBA=0). None here therefore means numba is genuinely
+    unavailable or opted out, not merely unrequested. Tests force it off by
+    setting `_HP_ED_NUMBA_LOADED = True` and `_hp_ed_bounded_numba = None`."""
     from ..splice import overhang_informativeness as _oi
     return _oi._load_numba_kernel()
 
@@ -494,6 +524,11 @@ def _warn_slow_window(ceiling: int, floor: int, window: int) -> None:
     multi-hour run is exactly the failure mode `max_candidates_per_clip` was
     added to prevent, so the trade is announced rather than made quietly — the
     same discipline as counting every refusal instead of dropping it.
+
+    Since the resolver's numba kernel became DEFAULT-ON (lazy-loaded), reaching
+    this warning means numba is genuinely unavailable — not installed, or
+    explicitly disabled with RECTIFY_HP_ED_NUMBA=0 — so the remedy is to make it
+    available rather than to switch it on.
     """
     if _SLOW_WINDOW_WARNED:
         return
@@ -502,8 +537,9 @@ def _warn_slow_window(ceiling: int, floor: int, window: int) -> None:
         'overhang_resolver: the %d bp search window scales the per-clip '
         'candidate budget to %s (floor %s), but the HP edit-distance DP is the '
         'pure-Python one — a large candidate set is ~20x slower per candidate '
-        'than the numba kernel. Set RECTIFY_HP_ED_NUMBA=1 for this stage, or '
-        'lower --max-intron, if this run takes longer than you expect.',
+        'than the numba kernel, which is normally ON by default. Install numba '
+        '(and make sure RECTIFY_HP_ED_NUMBA=0 is not set), or lower '
+        '--max-intron, if this run takes longer than you expect.',
         window, f'{ceiling:,}', f'{floor:,}',
     )
 
@@ -535,9 +571,10 @@ def _warn_blowup(chrom: str, ceiling: int, n_cand: int = 0, window: int = 0) -> 
         "occurrences on this contig are counted in refused_candidate_blowup "
         "but not logged. Candidates are near_sites x far_sites, so the levers, "
         "in order of effect: (1) lower --max-intron to the largest intron you "
-        "actually expect — the window is the dominant term; (2) set "
-        "RECTIFY_HP_ED_NUMBA=1, which makes a large candidate set affordable "
-        "rather than refused; (3) only if %r is genuinely repetitive or "
+        "actually expect — the window is the dominant term; (2) make the numba "
+        "kernel available (it is ON by default; RECTIFY_HP_ED_NUMBA=0 disables "
+        "it), which makes a large candidate set affordable rather than refused; "
+        "(3) only if %r is genuinely repetitive or "
         "low-complexity (a reporter construct, an rDNA array), add it to "
         "RECTIFY_SKIP_REGIONS — do NOT do this for an ordinary large "
         "chromosome, which would discard it wholesale.",
@@ -615,13 +652,27 @@ def resolve_clip(
     # --- Candidate lookup (binary search, bounded by W) --------------------
     placements: List[_Placement] = []
     best_ed = float('inf')
-    # Per-clip candidate budget (see ResolverConfig.max_candidates_per_clip).
-    # Checked inside both enumeration loops rather than pre-counted: the DP's
-    # pruning cutoff tightens as `best_ed` improves, so the loops must run in
-    # their existing order, and a pre-count would have to duplicate the range
+    # Candidate budget (see ResolverConfig.max_candidates_per_clip). Checked
+    # inside the enumeration loops rather than pre-counted: the DP's pruning
+    # cutoff tightens as `best_ed` improves, so the loops must run in their
+    # existing order, and a pre-count would have to duplicate the range
     # arithmetic and could drift from it. The cost of bailing late is bounded
     # by the ceiling itself.
+    #
+    # PER PASS, not per clip (2026-09-05). Measured when AT-AC became the
+    # default: the second pass pushed clips over a shared budget and the
+    # blow-up then discarded the WHOLE clip — including the canonical placement
+    # the GT/GC pass had already found within its own budget. That lost 3
+    # junctions across the two bundled yeast validation arms (4->3 and 7->5,
+    # restored in full at cap=20000), i.e. an optional lower-ranked class was
+    # starving the canonical answer. Budgeting per pass keeps the guard's
+    # contract — no decision is ever made on a partially enumerated class,
+    # because an overflowing pass discards ITS OWN placements — while a
+    # completed pass keeps what it found. Total work stays proportional to the
+    # number of classes actually searched, the same logic as scaling the
+    # ceiling with the window.
     n_cand = 0
+    blown_out = False
 
     k_cap = min(cfg.edge_inside_slop, len(inside_seq))
 
@@ -635,6 +686,8 @@ def resolve_clip(
         # (the DP prunes on > only).
         return min(best_ed, cfg.max_edit_frac * (lc + k_cap)) + cfg.min_margin
     for near_kind, far_kind in kind_pairs:
+        n_cand = 0
+        mark = len(placements)      # this pass's placements start here
         if side == _LEFT:
             # near site e in [edge - slop, edge + k_cap]; far f in [e - w, e - min_intron]
             near_sites = index.sites_in(chrom_key, near_kind,
@@ -661,9 +714,8 @@ def resolve_clip(
                     COUNTERS['candidates_evaluated'] += 1
                     n_cand += 1
                     if n_cand > ceiling:
-                        stats.refused_candidate_blowup += 1
-                        _warn_blowup(chrom_key, ceiling, n_cand, w)
-                        return None
+                        blown_out = True
+                        break
                     _c = _cutoff()
                     ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                     if ed <= _c:
@@ -673,6 +725,8 @@ def resolve_clip(
                             k_inside=k, qseg=cmp_seq,
                         ))
                         best_ed = min(best_ed, ed)
+                if blown_out:
+                    break
         else:
             # near site d in [edge - k_cap, edge + slop]; far e in [d + min_intron, d + w]
             near_sites = index.sites_in(chrom_key, near_kind,
@@ -699,9 +753,8 @@ def resolve_clip(
                     COUNTERS['candidates_evaluated'] += 1
                     n_cand += 1
                     if n_cand > ceiling:
-                        stats.refused_candidate_blowup += 1
-                        _warn_blowup(chrom_key, ceiling, n_cand, w)
-                        return None
+                        blown_out = True
+                        break
                     _c = _cutoff()
                     ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
                     if ed <= _c:
@@ -711,7 +764,21 @@ def resolve_clip(
                             k_inside=k, qseg=cmp_seq,
                         ))
                         best_ed = min(best_ed, ed)
+                if blown_out:
+                    break
+        if blown_out:
+            # This pass overflowed: drop ITS placements (never decide on a
+            # partially enumerated class) and stop searching further classes.
+            # Passes that already completed keep what they found.
+            del placements[mark:]
+            stats.refused_candidate_blowup += 1
+            _warn_blowup(chrom_key, ceiling, n_cand, w)
+            break
 
+    if blown_out and not placements:
+        # Every pass that ran overflowed — the historical whole-clip refusal.
+        # Counted above, so do NOT also count it as no_candidates.
+        return None
     if not placements:
         stats.no_candidates += 1
         return None
@@ -1717,7 +1784,7 @@ def run_overhang_resolver(
     max_intron: int = 5000,
     alpha: float = 0.01,
     acceptor_classes: str = 'canonical',
-    atac: bool = False,
+    atac: bool = True,
     config: Optional[ResolverConfig] = None,
 ) -> str:
     """Stream the (name-sorted) minimap2 arm BAM through the resolver.
@@ -1800,7 +1867,8 @@ def run_overhang_resolver(
             'Those reads passed through unresolved — real junctions may be '
             'unplaced. Measured on human chr5 (ISSUE-010), the clips this '
             'refuses ARE resolvable: lower --max-intron toward the largest '
-            'intron you expect, or set RECTIFY_HP_ED_NUMBA=1, before trusting '
+            'intron you expect, or make the numba kernel available (ON by '
+            'default; RECTIFY_HP_ED_NUMBA=0 disables it), before trusting '
             'junction counts here.',
             stats.refused_candidate_blowup, stats.clips_assessed,
             cfg.max_candidates_per_clip, _CEILING_REF_WINDOW,
