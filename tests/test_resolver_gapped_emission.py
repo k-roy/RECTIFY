@@ -304,6 +304,44 @@ class TestGappedEmission:
         assert [op for op, _ in ops] == [0, 2, 0]
         assert r.reference_start == M_ACC - 30
 
+    def test_remainder_softclip_composes_with_a_gapped_block_left(self, index):
+        # clip longer than max_clip_match AND the used portion carries an
+        # indel: the remainder S and the block ops have to compose, and the
+        # block must still begin with an M (an `S I M` opening would be a
+        # nonsense record). The gap-free version of this case takes the
+        # zero-mismatch fast path, so only this one exercises the composition.
+        tail = GENOME_SEQ[P_DON - 31:P_DON]           # 31 reference bases
+        used = tail[:15] + tail[16:]                  # 30 query bases, 1 deleted
+        query = 'C' * 10 + used + GENOME_SEQ[P_ACC:P_ACC + 60]
+        r = _read('rem_gap_L', query, [(4, 40), (0, 60)], P_ACC)
+        changed, stats = _resolve(r, index, max_clip_match=30)
+        assert changed, stats.as_dict()
+        assert r.cigartuples[0] == (4, 10)
+        assert r.cigartuples[1][0] == 0, (
+            f'block does not open with an M: {r.cigartuples}')
+        ops = block_ops(r, _LEFT)
+        assert [op for op, _ in ops] == [0, 2, 0]
+        assert sum(ln for op, ln in ops if op == 0) == 30
+        assert junction_of(r) == (P_DON, P_ACC)
+        assert r.reference_start == P_DON - 31       # 30 query over 31 ref
+        m, t = block_identity(r, _LEFT, GENOME_SEQ)
+        assert m == t == 30
+
+    def test_remainder_softclip_composes_with_a_gapped_block_right(self, index):
+        head = GENOME_SEQ[P_ACC:P_ACC + 31]
+        used = head[:15] + head[16:]                  # 30 query bases, 1 deleted
+        query = GENOME_SEQ[P_DON - 60:P_DON] + used + 'C' * 10
+        r = _read('rem_gap_R', query, [(0, 60), (4, 40)], P_DON - 60)
+        changed, stats = _resolve(r, index, max_clip_match=30)
+        assert changed, stats.as_dict()
+        assert r.cigartuples[-1] == (4, 10)
+        assert r.cigartuples[-2][0] == 0, (
+            f'block does not close with an M: {r.cigartuples}')
+        ops = block_ops(r, _RIGHT)
+        assert [op for op, _ in ops] == [0, 2, 0]
+        assert sum(ln for op, ln in ops if op == 0) == 30
+        assert junction_of(r) == (P_DON, P_ACC)
+
     def test_minus_strand_gapped_right(self, index):
         clip = GENOME_SEQ[M_DON:M_DON + 30]
         q = clip[:15] + 'T' + clip[15:]

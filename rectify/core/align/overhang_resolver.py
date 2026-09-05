@@ -1625,6 +1625,20 @@ def run_overhang_resolver(
         stats.refused_candidate_blowup, stats.no_candidates,
         stats.rejected_edit, stats.rejected_ambiguous, stats.candidates_evaluated,
     )
+    # The emission counters live in `extra` (which `as_dict()` folds into the
+    # per-dataset stats JSON align_command writes), but the info line above
+    # enumerates named fields only, so they would never reach an operator
+    # reading a log. `emit_fallback_flat` in particular says the resolver wrote
+    # a block it could not justify a gapped spelling for — surface it.
+    _fallbacks = stats.extra.get('emit_fallback_flat', 0)
+    _decoded = stats.extra.get('seq_eq_decoded', 0)
+    if _fallbacks or _decoded:
+        logger.info(
+            'overhang_resolver: %d block(s) emitted as a flat M after a '
+            'degenerate gapped alignment (emit_fallback_flat), %d record(s) '
+            "had a calmd '=' SEQ decoded on rewrite",
+            _fallbacks, _decoded,
+        )
     # Escalate the blow-up count out of the info line: an acceptance gate that
     # skims the summary must not have to notice a non-zero field buried mid-row.
     if stats.refused_candidate_blowup:
