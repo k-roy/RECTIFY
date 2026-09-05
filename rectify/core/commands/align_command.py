@@ -192,8 +192,12 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             'RECOMMENDED for general use (measured: +26.5k annotated junctions '
             'recovered per 900k cDNA reads, 31 reads harmed, 0 impossible '
             'junctions — planning/720). '
-            'LIMITATION: it recovers 99% of the annotated junctions mapPacBio '
-            'finds but only ~35% of the NON-CANONICAL ones, because its '
+            # %% — argparse %-expands help strings, so a bare "99% of" is read
+            # as the "% o" octal conversion and `align --help` dies with
+            # "TypeError: %o format: an integer is required, not dict"
+            # (ISSUE-014). tests/test_cli_help_all_subcommands.py pins it.
+            'LIMITATION: it recovers 99%% of the annotated junctions mapPacBio '
+            'finds but only ~35%% of the NON-CANONICAL ones, because its '
             'candidates come from a GT/AG-class splice-site index and a '
             'non-canonical junction has no entry there (planning/721). For '
             'non-canonical discovery work (upf1D, prp18D, cryptic splicing) it '
